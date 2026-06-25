@@ -13,6 +13,7 @@ import { chatKeys } from "@/hooks/useChat";
 import { useAgentModels } from "@/hooks/useAgentModels";
 import { useProjects } from "@/hooks/useProjects";
 import { useEventBus } from "@/providers/EventProvider";
+import { PlanArtifactEventSchema } from "@/types/events";
 import { useAgentArtifactController } from "./useAgentArtifactController";
 import { useAgentConversationTitleEvents } from "./useAgentConversationTitleEvents";
 import { useAgentArtifactResize } from "./useAgentArtifactResize";
@@ -30,6 +31,7 @@ import { useAgentConversationInvalidation } from "./useAgentConversationInvalida
 import { useAgentUserMessageAutoTitle } from "./useAgentUserMessageAutoTitle";
 import { useAgentUserMessageJiraInvalidation } from "./useAgentUserMessageJiraInvalidation";
 import { hasJiraIntegrationReference } from "./agentJiraIssueQueries";
+import { hasLinearIntegrationReference } from "./agentLinearIssueQueries";
 import { useAgentsSessionBindings } from "./useAgentsSessionBindings";
 import { useSyncedAgentProjectFocus } from "./useSyncedAgentProjectFocus";
 import { useAgentsOptimisticState } from "./useAgentsOptimisticState";
@@ -41,6 +43,7 @@ import { runtimeFromConversation } from "./agentConversationRuntime";
 import {
   agentWorkspaceKeys,
   preflightAgentWorkspaceFreshness,
+  prReviewContextForConversation,
 } from "./agentWorkspaceQueries";
 import type { IdeationArtifactTab } from "./agentArtifactTabs";
 import {
@@ -199,6 +202,26 @@ export function useAgentsViewController({
     },
     [],
   );
+  const handleFocusTaskRuntime = useCallback(
+    (
+      taskId: string,
+      contextType: Extract<AgentsChatFocus, { type: "task_runtime" }>["contextType"],
+    ) => {
+      const nextFocus: Extract<AgentsChatFocus, { type: "task_runtime" }> = {
+        type: "task_runtime",
+        taskId,
+        contextType,
+      };
+      setChatFocus((current) =>
+        current.type === "task_runtime" &&
+        current.taskId === taskId &&
+        current.contextType === contextType
+          ? current
+          : nextFocus,
+      );
+    },
+    [],
+  );
   const handleReturnToWorkspaceChat = useCallback(() => {
     setChatFocus({ type: "workspace" });
   }, []);
@@ -339,19 +362,25 @@ export function useAgentsViewController({
     invalidateProjectConversations,
     selectedConversationMessages,
   });
-  const shouldLoadPrReviewContext = Boolean(
-    selectedConversationId &&
-      activeConversation?.contextType === "project" &&
-      activeConversationMode === "review_pr",
-  );
+  const prReviewConversationId =
+    activeConversation?.contextType === "project" &&
+    activeConversationMode === "review_pr" &&
+    activeWorkspace?.mode === "review_pr"
+      ? activeWorkspace.conversationId
+      : null;
+  const shouldLoadPrReviewContext = Boolean(prReviewConversationId);
   const prReviewContextQuery = useQuery({
-    queryKey: agentWorkspaceKeys.prReview(selectedConversationId ?? ""),
-    queryFn: () => chatApi.getAgentWorkspacePrReviewContext(selectedConversationId!),
+    queryKey: agentWorkspaceKeys.prReview(prReviewConversationId ?? ""),
+    queryFn: () => chatApi.getAgentWorkspacePrReviewContext(prReviewConversationId!),
     enabled: shouldLoadPrReviewContext,
     staleTime: 5_000,
   });
+  const prReviewContext = prReviewContextForConversation(
+    prReviewContextQuery.data,
+    prReviewConversationId,
+  );
   const reviewArtifactId =
-    prReviewContextQuery.data?.monitor?.reviewArtifactId ?? null;
+    prReviewContext?.monitor?.reviewArtifactId ?? null;
   const availableArtifactTabsWithReview = useMemo<IdeationArtifactTab[]>(() => {
     if (!reviewArtifactId || availableArtifactTabs.includes("review")) {
       return availableArtifactTabs;
@@ -412,18 +441,22 @@ export function useAgentsViewController({
     lastVerificationFocus.parentSessionId === focusSwitcherIdeationSessionId
       ? lastVerificationFocus
       : null;
+  const taskRuntimeFocusTarget =
+    chatFocus.type === "task_runtime" ? chatFocus : null;
   const hasAttachedPlanArtifact = availableArtifactTabs.includes("plan");
   const chatFocusOptions = useMemo(() => {
     return getAgentChatFocusSwitchOptions({
       mode: activeConversationMode,
       focusSwitcherIdeationSessionId,
       verificationFocusTarget,
+      taskRuntimeFocusTarget,
       hasPlanArtifact: hasAttachedPlanArtifact,
     });
   }, [
     activeConversationMode,
     focusSwitcherIdeationSessionId,
     hasAttachedPlanArtifact,
+    taskRuntimeFocusTarget,
     verificationFocusTarget,
   ]);
   useEffect(() => {
@@ -450,8 +483,13 @@ export function useAgentsViewController({
         return;
       }
 
-      if (verificationFocusTarget) {
+      if (type === "verification" && verificationFocusTarget) {
         setChatFocus(verificationFocusTarget);
+        return;
+      }
+
+      if (type === "task_runtime" && taskRuntimeFocusTarget) {
+        setChatFocus(taskRuntimeFocusTarget);
       }
     },
     [
@@ -459,6 +497,7 @@ export function useAgentsViewController({
       focusSwitcherIdeationSessionId,
       handleFocusIdeationSession,
       handleReturnToWorkspaceChat,
+      taskRuntimeFocusTarget,
       verificationFocusTarget,
     ],
   );
@@ -480,6 +519,12 @@ export function useAgentsViewController({
   const openJiraTabForConversation = useCallback(
     (conversationId: string) => {
       openArtifactTab(conversationId, "jira");
+    },
+    [openArtifactTab],
+  );
+  const openLinearTabForConversation = useCallback(
+    (conversationId: string) => {
+      openArtifactTab(conversationId, "linear");
     },
     [openArtifactTab],
   );
@@ -542,6 +587,38 @@ export function useAgentsViewController({
     };
   }, [eventBus, openArtifactTab, queryClient, selectedConversationId]);
 
+  useEffect(() => {
+    const unsubscribeCreated = eventBus.subscribe<unknown>(
+      "plan_artifact:created",
+      (payload) => {
+        const parsed = PlanArtifactEventSchema.safeParse({
+          type: "created",
+          ...(payload as Record<string, unknown>),
+        });
+        if (!parsed.success || parsed.data.type !== "created") {
+          return;
+        }
+        if (
+          !selectedConversationId ||
+          activeConversationMode !== "plan" ||
+          parsed.data.sessionId !== attachedIdeationSessionId
+        ) {
+          return;
+        }
+
+        openArtifactTab(selectedConversationId, "plan");
+      },
+    );
+
+    return unsubscribeCreated;
+  }, [
+    activeConversationMode,
+    attachedIdeationSessionId,
+    eventBus,
+    openArtifactTab,
+    selectedConversationId,
+  ]);
+
   const handleStartAgentConversation = useStartAgentConversation({
     handleAutoManagedTitle,
     invalidateProjectConversations,
@@ -554,6 +631,7 @@ export function useAgentsViewController({
     setOptimisticWorkspacesByConversationId,
     setRuntimeForConversation,
     onJiraLinked: openJiraTabForConversation,
+    onLinearLinked: openLinearTabForConversation,
   });
 
   const {
@@ -709,12 +787,15 @@ export function useAgentsViewController({
       invalidateAgentUserMessageJira(event);
       if (hasJiraIntegrationReference(event.composerIntegrationReferences)) {
         openJiraTabForConversation(event.result.conversationId);
+      } else if (hasLinearIntegrationReference(event.composerIntegrationReferences)) {
+        openLinearTabForConversation(event.result.conversationId);
       }
     },
     [
       handleAgentUserMessageAutoTitle,
       invalidateAgentUserMessageJira,
       openJiraTabForConversation,
+      openLinearTabForConversation,
     ],
   );
   const handleStartRuntimePreferenceChange = useCallback(
@@ -810,6 +891,8 @@ export function useAgentsViewController({
       onConversationModeSwitched: handleConversationModeSwitched,
       onCreateProject,
       onFocusIdeationSession: handleFocusIdeationSession,
+      onFocusVerificationSession: handleFocusVerificationSession,
+      onFocusTaskRuntime: handleFocusTaskRuntime,
       onForkConversation: handleForkConversation,
       onOpenPublishPane: handleOpenPublishPane,
       onOpenPublishFile: handleOpenPublishFile,

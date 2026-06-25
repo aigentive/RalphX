@@ -6,6 +6,7 @@ pub mod agent_lane_resolution;
 pub mod agent_conversation_fork;
 pub mod agent_conversation_jira_issue;
 pub mod agent_conversation_linear_issue;
+pub mod agent_conversation_start_service;
 pub mod agent_conversation_workspace;
 pub mod agent_conversation_workspace_base;
 pub mod agent_issue_report;
@@ -13,6 +14,7 @@ pub(crate) mod agent_planning_session_titles;
 pub mod agent_workspace_pr_description;
 pub mod agent_workspace_external_pr_reconciliation;
 pub(crate) mod plan_pr_description;
+pub mod project_pr_template;
 pub(crate) mod agent_workspace_pr_supervision_recovery;
 pub mod agent_workspace_publish_recovery;
 pub mod agent_workspace_review;
@@ -35,6 +37,7 @@ pub mod atlassian_integration_service;
 pub mod chat_attachment_service;
 pub mod chat_resumption;
 pub mod chat_service;
+pub mod clickup_integration_service;
 pub mod dependency_service;
 pub mod event_cleanup_service;
 pub mod execution_settings_bootstrap;
@@ -103,6 +106,10 @@ pub mod team_events;
 pub mod team_service;
 pub mod team_state_tracker;
 pub mod team_stream_processor;
+pub mod ticket_canonical_branch;
+pub mod ticketing_cache_invalidator;
+pub mod ticketing_pr_summary;
+pub mod ticketing_service;
 pub mod webhook_service;
 
 // Re-export commonly used items
@@ -125,9 +132,16 @@ pub use apply_service::{
 pub use atlassian_integration_service::{
     AtlassianApiClient, AtlassianAuthContext, AtlassianConnectivity, AtlassianCredential,
     AtlassianIntegrationService, AtlassianJiraAttachment, AtlassianJiraComment,
-    AtlassianOAuthAuthorization, AtlassianOAuthResource, AtlassianOAuthTokenResponse,
+    AtlassianJiraTransition, AtlassianOAuthAuthorization, AtlassianOAuthResource,
+    AtlassianOAuthTokenResponse,
     AtlassianResourceContent, AtlassianResourceKind, AtlassianResourceSummary,
-    EmptyAtlassianApiClient, UnavailableAtlassianApiClient,
+    EmptyAtlassianApiClient, JiraIssueDetail, JiraProjectSummary, JiraStatusSummary,
+    UnavailableAtlassianApiClient,
+};
+pub use clickup_integration_service::{
+    ClickUpApiClient, ClickUpAuthContext, ClickUpComment, ClickUpIntegrationService, ClickUpSpace,
+    ClickUpStatus, ClickUpTag, ClickUpTaskContent, ClickUpTaskSummary, ClickUpUser,
+    ClickUpWorkspace, EmptyClickUpApiClient, UnavailableClickUpApiClient,
 };
 pub use chat_attachment_service::ChatAttachmentService;
 pub use agent_terminal::AgentTerminalService;
@@ -155,9 +169,10 @@ pub use git_service::{
 };
 pub use interactive_process_registry::{InteractiveProcessKey, InteractiveProcessRegistry};
 pub use linear_integration_service::{
-    EmptyLinearApiClient, LinearApiClient, LinearAuthContext, LinearIntegrationService,
-    LinearIntegrationSettings, LinearIntegrationSettingsRepository, LinearIssueContent,
-    LinearIssueSummary, UnavailableLinearApiClient,
+    resolve_linear_label_ids, EmptyLinearApiClient, LinearApiClient, LinearAuthContext,
+    LinearIntegrationService, LinearComment, LinearIntegrationSettings,
+    LinearIntegrationSettingsRepository, LinearIssueContent, LinearIssueSummary, LinearLabel,
+    LinearProject, LinearUser, LinearWorkflowState, UnavailableLinearApiClient,
 };
 pub use ideation_service::{
     CreateProposalOptions, IdeationService, SessionStats, SessionWithData, UpdateProposalOptions,
@@ -184,6 +199,16 @@ pub use prune_engine::PruneEngine;
 pub use qa_service::{QAPrepStatus, QAService, TaskQAState};
 pub use question_state::{PendingQuestionInfo, QuestionAnswer, QuestionOption, QuestionState};
 pub use reconciliation::ReconciliationRunner;
+pub use ticketing_cache_invalidator::{
+    TicketingCacheInvalidatedEvent, TicketingCacheInvalidator,
+    TICKETING_CACHE_INVALIDATED_EVENT,
+};
+pub use ticketing_service::{
+    TauriTicketingEventSink, TicketAssignRequest, TicketCommentRequest, TicketSetLabelsRequest,
+    TicketTransitionRequest, TicketingCommentResult, TicketingEventSink, TicketingLabelResult,
+    TicketingMutationResult, TicketingPersonResult, TicketingOperationEvent, TicketingService,
+    TicketingTicketIdentity, TicketingTransitionOption, TICKETING_OPERATION_EVENT,
+};
 pub use services::PrPollerRegistry;
 pub use resume_validator::{ResumeValidationResult, ResumeValidator};
 pub use review_issue_service::{CreateIssueInput, ReviewIssueService};
@@ -223,6 +248,8 @@ mod agent_terminal_tests;
 #[cfg(test)]
 mod chat_service_output_tests;
 #[cfg(test)]
+mod clickup_integration_service_tests;
+#[cfg(test)]
 mod git_artifact_cleanup_tests;
 #[cfg(test)]
 mod harness_runtime_registry_tests;
@@ -247,6 +274,8 @@ mod publish_resilience_tests;
 #[cfg(test)]
 mod plan_complexity_assessment_tests;
 #[cfg(test)]
+mod project_pr_template_tests;
+#[cfg(test)]
 mod plan_pr_description_tests;
 #[cfg(test)]
 mod session_export_service_tests;
@@ -258,6 +287,10 @@ mod agent_planning_session_titles_tests;
 mod session_namer_prompt_tests;
 #[cfg(test)]
 mod throttled_emitter_tests;
+#[cfg(test)]
+mod ticketing_cache_invalidator_tests;
+#[cfg(test)]
+mod ticketing_pr_summary_tests;
 #[cfg(test)]
 mod task_transition_service_tests;
 

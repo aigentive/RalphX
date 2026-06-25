@@ -1,6 +1,6 @@
 [package]
 name = "ralphx"
-version = "0.43.1"
+version = "0.46.0"
 description = "RalphX - Autonomous AI-driven development GUI"
 authors = ["RalphX Team"]
 edition = "2021"
@@ -56,6 +56,8 @@ dashmap = "6"
 scopeguard = "1"
 dotenvy = "0.15.7"
 dirs = "6"
+cap-std = "4"
+dunce = "1"
 rand = "0.8"
 nix = { version = "0.29", features = ["signal", "process"] }
 tempfile = "3"

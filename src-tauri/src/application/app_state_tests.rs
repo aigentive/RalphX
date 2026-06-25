@@ -468,6 +468,54 @@ fi
 }
 
 #[tokio::test]
+async fn test_resolve_background_agent_runtime_uses_custom_codex_override() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let custom_codex_path = temp.path().join("codex-wrapper");
+    write_executable(
+        &custom_codex_path,
+        r#"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf 'codex-cli 0.116.0\n'
+elif [ "$1" = "--help" ]; then
+  printf '%s\n' 'Codex CLI' 'Commands:' '  exec' '  resume' '  mcp' 'Options:' '  -c, --config <key=value>' '  -m, --model <MODEL>' '  -s, --sandbox <SANDBOX>' '      --search' '      --add-dir <DIR>'
+elif [ "$1" = "exec" ] && [ "$2" = "--help" ]; then
+  printf '%s\n' 'Run Codex non-interactively' 'Options:' '  -c, --config <key=value>' '  -m, --model <MODEL>' '  -s, --sandbox <SANDBOX>' '      --add-dir <DIR>' '      --json'
+else
+  printf 'unexpected args: %s\n' "$*" >&2
+  exit 64
+fi
+"#,
+    );
+    let default_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
+    let unavailable_codex: Arc<dyn AgenticClient> = Arc::new(UnavailableCodexAgentClient::new());
+    let state = AppState::new_test()
+        .with_agent_client(default_mock)
+        .with_harness_agent_client(AgentHarnessKind::Codex, Arc::clone(&unavailable_codex));
+
+    let mut codex_provider = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Codex);
+    codex_provider.enabled = true;
+    codex_provider.custom_binary_enabled = true;
+    codex_provider.custom_binary_path = Some(custom_codex_path.to_string_lossy().into_owned());
+    state
+        .agent_provider_settings_repo
+        .upsert(&codex_provider)
+        .await
+        .unwrap();
+
+    let runtime = state
+        .resolve_background_agent_runtime_for_harness(
+            AgentHarnessKind::Codex,
+            "custom Codex helper runtime",
+        )
+        .await
+        .expect("custom Codex helper runtime should resolve");
+
+    assert!(Arc::ptr_eq(&runtime.client, &unavailable_codex));
+    assert_eq!(runtime.harness, Some(AgentHarnessKind::Codex));
+    assert_eq!(runtime.cli_path_override, Some(custom_codex_path));
+}
+
+#[tokio::test]
 async fn test_resolve_ideation_background_agent_runtime_uses_codex_default_harness() {
     let codex_default: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
     let mut state = AppState::new_test().with_agent_client(codex_default.clone());

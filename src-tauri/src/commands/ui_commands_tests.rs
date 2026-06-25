@@ -25,6 +25,10 @@ fn test_ui_feature_flags_response_serializes_to_camel_case() {
         json.contains("\"atlassianOauth\":"),
         "Expected camelCase 'atlassianOauth' in JSON: {json}"
     );
+    assert!(
+        json.contains("\"ticketingDashboard\":"),
+        "Expected camelCase 'ticketingDashboard' in JSON: {json}"
+    );
     // Verify snake_case is NOT present
     assert!(
         !json.contains("\"activity_page\":"),
@@ -45,5 +49,9 @@ fn test_ui_feature_flags_response_serializes_to_camel_case() {
     assert!(
         !json.contains("\"atlassian_oauth\":"),
         "Unexpected snake_case 'atlassian_oauth' in JSON: {json}"
+    );
+    assert!(
+        !json.contains("\"ticketing_dashboard\":"),
+        "Unexpected snake_case 'ticketing_dashboard' in JSON: {json}"
     );
 }

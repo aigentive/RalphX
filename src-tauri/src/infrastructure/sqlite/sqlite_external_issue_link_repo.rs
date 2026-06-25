@@ -8,13 +8,16 @@ use uuid::Uuid;
 mod rows;
 
 use self::rows::{
-    completed_at_for, link_select_sql, now_text, row_to_link, row_to_sync_record, sync_select_sql,
+    completed_at_for, link_select_sql, now_text, row_to_link, row_to_sync_record,
+    row_to_ticket_operation, sync_select_sql, ticket_operation_completed_at_for,
+    ticket_operation_select_sql,
 };
 use super::DbConnection;
 use crate::domain::integrations::{
     ExternalIssueLink, ExternalIssueLinkRepository, ExternalIssueLinkUpsert,
     ExternalIssueLocalObject, ExternalIssueSyncRecord, ExternalIssueSyncRecordUpsert,
-    ExternalIssueSyncStatus,
+    ExternalIssueSyncStatus, ProviderTicketOperation, ProviderTicketOperationStatus,
+    ProviderTicketOperationUpsert,
 };
 use crate::error::AppResult;
 
@@ -438,6 +441,240 @@ impl ExternalIssueLinkRepository for SqliteExternalIssueLinkRepository {
                     [sync_record_id.as_str()],
                     |row| {
                         row_to_sync_record(row).map_err(|error| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                0,
+                                rusqlite::types::Type::Text,
+                                Box::new(error),
+                            )
+                        })
+                    },
+                )
+                .optional()
+                .map_err(Into::into)
+            })
+            .await
+    }
+
+    async fn upsert_provider_ticket_operation(
+        &self,
+        input: ProviderTicketOperationUpsert,
+    ) -> AppResult<ProviderTicketOperation> {
+        self.db
+            .run_transaction(move |conn| {
+                let existing_id = conn
+                    .query_row(
+                        "SELECT id FROM provider_ticket_operations
+                         WHERE client_operation_id = ?1",
+                        [input.client_operation_id.as_str()],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()?;
+                let now = now_text();
+                let completed_at = ticket_operation_completed_at_for(input.status);
+                let id = existing_id.unwrap_or_else(|| Uuid::new_v4().to_string());
+                if conn.execute(
+                    "UPDATE provider_ticket_operations
+                     SET provider = ?2,
+                         external_kind = ?3,
+                         external_id = ?4,
+                         external_key = ?5,
+                         link_id = ?6,
+                         local_project_id = ?7,
+                         operation = ?8,
+                         client_operation_id = ?9,
+                         status = ?10,
+                         provider_operation_id = ?11,
+                         error_message = ?12,
+                         metadata_json = ?13,
+                         last_attempt_at = ?14,
+                         completed_at = ?15,
+                         updated_at = ?16
+                     WHERE id = ?1",
+                    params![
+                        id,
+                        input.provider,
+                        input.external_kind,
+                        input.external_id,
+                        input.external_key,
+                        input.link_id,
+                        input.local_project_id,
+                        input.operation.as_str(),
+                        input.client_operation_id,
+                        input.status.as_str(),
+                        input.provider_operation_id,
+                        input.error_message,
+                        input.metadata_json,
+                        now,
+                        completed_at,
+                        now,
+                    ],
+                )? == 0
+                {
+                    conn.execute(
+                        "INSERT INTO provider_ticket_operations (
+                            id, provider, external_kind, external_id, external_key, link_id,
+                            local_project_id, operation, client_operation_id, status,
+                            provider_operation_id, error_message, metadata_json, last_attempt_at,
+                            completed_at, created_at, updated_at
+                        ) VALUES (
+                            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
+                            ?15, ?16, ?16
+                        )",
+                        params![
+                            id,
+                            input.provider,
+                            input.external_kind,
+                            input.external_id,
+                            input.external_key,
+                            input.link_id,
+                            input.local_project_id,
+                            input.operation.as_str(),
+                            input.client_operation_id,
+                            input.status.as_str(),
+                            input.provider_operation_id,
+                            input.error_message,
+                            input.metadata_json,
+                            now,
+                            completed_at,
+                            now,
+                        ],
+                    )?;
+                }
+
+                conn.query_row(
+                    &format!("{} WHERE id = ?1", ticket_operation_select_sql()),
+                    [id.as_str()],
+                    |row| {
+                        row_to_ticket_operation(row).map_err(|error| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                0,
+                                rusqlite::types::Type::Text,
+                                Box::new(error),
+                            )
+                        })
+                    },
+                )
+                .map_err(Into::into)
+            })
+            .await
+    }
+
+    async fn find_provider_ticket_operation_by_client_operation_id(
+        &self,
+        client_operation_id: &str,
+    ) -> AppResult<Option<ProviderTicketOperation>> {
+        let client_operation_id = client_operation_id.to_string();
+        self.db
+            .query_optional(move |conn| {
+                conn.query_row(
+                    &format!(
+                        "{} WHERE client_operation_id = ?1",
+                        ticket_operation_select_sql()
+                    ),
+                    [client_operation_id.as_str()],
+                    |row| {
+                        row_to_ticket_operation(row).map_err(|error| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                0,
+                                rusqlite::types::Type::Text,
+                                Box::new(error),
+                            )
+                        })
+                    },
+                )
+            })
+            .await
+    }
+
+    async fn list_provider_ticket_operations_for_ticket(
+        &self,
+        provider: &str,
+        external_kind: &str,
+        external_id: &str,
+        external_key: Option<&str>,
+        local_project_id: Option<&str>,
+    ) -> AppResult<Vec<ProviderTicketOperation>> {
+        let provider = provider.to_string();
+        let external_kind = external_kind.to_string();
+        let external_id = external_id.to_string();
+        let external_key = external_key.map(str::to_string);
+        let local_project_id = local_project_id.map(str::to_string);
+        self.db
+            .run(move |conn| {
+                let mut stmt = conn.prepare(&format!(
+                    "{} WHERE provider = ?1
+                         AND external_kind = ?2
+                         AND external_id = ?3
+                         AND (?4 IS NULL OR external_key = ?4)
+                         AND (?5 IS NULL OR local_project_id = ?5)
+                     ORDER BY updated_at DESC",
+                    ticket_operation_select_sql()
+                ))?;
+                let operations = stmt
+                    .query_map(
+                        params![
+                            provider,
+                            external_kind,
+                            external_id,
+                            external_key,
+                            local_project_id,
+                        ],
+                        |row| {
+                            row_to_ticket_operation(row).map_err(|error| {
+                                rusqlite::Error::FromSqlConversionFailure(
+                                    0,
+                                    rusqlite::types::Type::Text,
+                                    Box::new(error),
+                                )
+                            })
+                        },
+                    )?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(operations)
+            })
+            .await
+    }
+
+    async fn update_provider_ticket_operation_status(
+        &self,
+        operation_id: &str,
+        status: ProviderTicketOperationStatus,
+        provider_operation_id: Option<&str>,
+        error_message: Option<&str>,
+    ) -> AppResult<Option<ProviderTicketOperation>> {
+        let operation_id = operation_id.to_string();
+        let provider_operation_id = provider_operation_id.map(str::to_string);
+        let error_message = error_message.map(str::to_string);
+        self.db
+            .run(move |conn| {
+                let now = now_text();
+                let completed_at = ticket_operation_completed_at_for(status);
+                let rows = conn.execute(
+                    "UPDATE provider_ticket_operations
+                     SET status = ?2,
+                         provider_operation_id = ?3,
+                         error_message = ?4,
+                         completed_at = ?5,
+                         updated_at = ?6
+                     WHERE id = ?1",
+                    params![
+                        operation_id,
+                        status.as_str(),
+                        provider_operation_id,
+                        error_message,
+                        completed_at,
+                        now,
+                    ],
+                )?;
+                if rows == 0 {
+                    return Ok(None);
+                }
+
+                conn.query_row(
+                    &format!("{} WHERE id = ?1", ticket_operation_select_sql()),
+                    [operation_id.as_str()],
+                    |row| {
+                        row_to_ticket_operation(row).map_err(|error| {
                             rusqlite::Error::FromSqlConversionFailure(
                                 0,
                                 rusqlite::types::Type::Text,

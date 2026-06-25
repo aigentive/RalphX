@@ -481,6 +481,29 @@ describe("uiStore", () => {
     });
   });
 
+  describe("taskCreationContext", () => {
+    it("stores optional flow context when opening task creation", () => {
+      useUiStore.getState().openTaskCreation("project-1", "New task", {
+        ideationSessionId: "session-1",
+        executionPlanId: "exec-plan-1",
+      });
+
+      expect(useUiStore.getState().taskCreationContext).toEqual({
+        projectId: "project-1",
+        defaultTitle: "New task",
+        ideationSessionId: "session-1",
+        executionPlanId: "exec-plan-1",
+      });
+    });
+
+    it("closes task creation context", () => {
+      useUiStore.getState().openTaskCreation("project-1", "New task");
+      useUiStore.getState().closeTaskCreation();
+
+      expect(useUiStore.getState().taskCreationContext).toBeNull();
+    });
+  });
+
   describe("battle mode", () => {
     it("enters battle mode and hides graph panels", () => {
       useUiStore.setState({
@@ -1055,6 +1078,36 @@ describe("uiStore", () => {
         useUiStore.getState().setCurrentView("extensibility");
 
         expect(useUiStore.getState().currentView).toBe("extensibility");
+      });
+
+      it("allows ticketing navigation so the dashboard access can open its screen", () => {
+        useUiStore.setState({
+          featureFlags: {
+            activityPage: true,
+            extensibilityPage: true,
+            battleMode: true,
+            ticketingDashboard: false,
+          },
+        });
+
+        useUiStore.getState().setCurrentView("ticketing");
+
+        expect(useUiStore.getState().currentView).toBe("ticketing");
+      });
+
+      it("allows ticketing navigation when the dashboard flag is enabled", () => {
+        useUiStore.setState({
+          featureFlags: {
+            activityPage: true,
+            extensibilityPage: true,
+            battleMode: true,
+            ticketingDashboard: true,
+          },
+        });
+
+        useUiStore.getState().setCurrentView("ticketing");
+
+        expect(useUiStore.getState().currentView).toBe("ticketing");
       });
 
       it("always allows kanban (not a feature-flagged view)", () => {

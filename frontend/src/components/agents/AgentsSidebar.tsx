@@ -113,6 +113,7 @@ import {
 import { useAgentSidebarPublicationPolling } from "./useAgentSidebarPublicationPolling";
 import { useAgentSidebarRunningStates } from "./useAgentSidebarRunningStates";
 import { useArchivedConversationCounts } from "./useArchivedConversationCounts";
+import { PrTemplateEditorDialog } from "./PrTemplateEditorDialog";
 
 const AGENTS_SEARCH_DEBOUNCE_MS = 180;
 const AGENTS_SIDEBAR_MAX_VISIBLE_SESSION_ROWS = 8;
@@ -2362,6 +2363,7 @@ function ProjectSessionGroup({
   const sessionActionsTriggerRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const [projectActionsOpen, setProjectActionsOpen] = useState(false);
   const [archiveDialogOpen, setArchiveDialogOpen] = useState(false);
+  const [prTemplateDialogOpen, setPrTemplateDialogOpen] = useState(false);
   const [renameDialogConversation, setRenameDialogConversation] =
     useState<AgentConversation | null>(null);
   const [renameDraftTitle, setRenameDraftTitle] = useState("");
@@ -2704,6 +2706,14 @@ function ProjectSessionGroup({
                 >
                   <DropdownMenuItem
                     className="gap-2 text-xs"
+                    onClick={() => setPrTemplateDialogOpen(true)}
+                  >
+                    <Pencil className="w-3.5 h-3.5" />
+                    Edit PR Template
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    className="gap-2 text-xs"
                     onClick={() => setArchiveDialogOpen(true)}
                   >
                     <Archive className="w-3.5 h-3.5" />
@@ -2714,6 +2724,12 @@ function ProjectSessionGroup({
             </div>
           </div>
           )}
+
+          <PrTemplateEditorDialog
+            open={prTemplateDialogOpen}
+            onOpenChange={setPrTemplateDialogOpen}
+            project={project}
+          />
 
           <AlertDialog open={archiveDialogOpen} onOpenChange={setArchiveDialogOpen}>
             <AlertDialogContent>

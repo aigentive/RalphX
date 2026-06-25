@@ -1556,26 +1556,34 @@ pub async fn submit_agent_workspace_pr_review_action(
     {
         Ok(submitted) => submitted,
         Err(error) => {
-            let mut failed_monitor = monitor_for_submission_failure(monitor, error.to_string());
-            failed_monitor.last_seen_head_sha = Some(action.head_sha.clone());
-            let _ = state
-                .app_state
-                .agent_conversation_workspace_repo
-                .upsert_pr_review_monitor(failed_monitor)
-                .await;
-            let _ = state
+            let error_message = error.to_string();
+            state
                 .app_state
                 .agent_conversation_workspace_repo
                 .update_pr_review_action_status(
                     &action.id,
-                    AgentWorkspacePrReviewActionStatus::Failed,
+                    AgentWorkspacePrReviewActionStatus::Pending,
                     None,
                 )
-                .await;
+                .await
+                .map_err(|error| {
+                    json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
+                })?;
+            let mut retry_monitor =
+                monitor_for_retryable_submission_failure(monitor, error_message.clone());
+            retry_monitor.last_seen_head_sha = Some(action.head_sha.clone());
+            state
+                .app_state
+                .agent_conversation_workspace_repo
+                .upsert_pr_review_monitor(retry_monitor)
+                .await
+                .map_err(|error| {
+                    json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
+                })?;
             return Err(json_error(
                 StatusCode::BAD_GATEWAY,
                 "Failed to submit GitHub PR review",
-                Some(error.to_string()),
+                Some(error_message),
             ));
         }
     };
@@ -2465,11 +2473,11 @@ fn pr_review_submission_event(
     }
 }
 
-fn monitor_for_submission_failure(
+fn monitor_for_retryable_submission_failure(
     mut monitor: AgentWorkspacePrReviewMonitor,
     error: String,
 ) -> AgentWorkspacePrReviewMonitor {
-    monitor.status = AgentWorkspacePrReviewMonitorStatus::Blocked;
+    monitor.status = AgentWorkspacePrReviewMonitorStatus::AwaitingUser;
     monitor.last_error = Some(error);
     monitor
 }
@@ -3452,10 +3460,11 @@ mod tests {
     use crate::domain::entities::{
         AgentConversationWorkspace, AgentConversationWorkspaceMode,
         AgentWorkspacePrCommentEvidenceUpsert, ArtifactId, ChatContextType, ChatConversation,
-        IdeationAnalysisBaseRefKind, Project, ProjectId,
+        AgentWorkspaceSourcePullRequest, IdeationAnalysisBaseRefKind, Project, ProjectId,
     };
     use crate::domain::services::github_service::{
-        GithubServiceTrait, PrHealth, PrIssueCommentSummary, PrStatus, PrSyncState,
+        GithubServiceTrait, PrHealth, PrIssueCommentSummary, PrReviewSubmissionEvent, PrStatus,
+        PrSyncState,
     };
     use crate::tests::mock_github_service::MockGithubService;
 
@@ -3721,6 +3730,131 @@ mod tests {
             .await
             .unwrap();
         assert!(actions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn failed_pr_review_submit_keeps_action_pending_for_retry() {
+        let mut app_state = AppState::new_test();
+        let github = Arc::new(MockGithubService::new());
+        github.will_fail_submit_pr_review("network unavailable");
+        app_state.github_service = Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>);
+        let app_state = Arc::new(app_state);
+
+        let conversation_id = ChatConversationId::new();
+        let mut workspace = test_workspace(conversation_id.clone());
+        workspace.mode = AgentConversationWorkspaceMode::ReviewPr;
+        workspace.source_pull_request = Some(AgentWorkspaceSourcePullRequest {
+            number: 411,
+            url: Some("https://github.com/mock/project/pull/411".to_string()),
+            title: Some("Fix review workflow".to_string()),
+            head_ref_name: "feature/review-workflow".to_string(),
+            base_ref_name: Some("main".to_string()),
+            head_ref_oid: Some("head-sha".to_string()),
+        });
+        app_state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace.clone())
+            .await
+            .unwrap();
+
+        let mut monitor = AgentWorkspacePrReviewMonitor::new(
+            conversation_id.clone(),
+            workspace.project_id.clone(),
+            411,
+            Some("head-sha".to_string()),
+        );
+        monitor.status = AgentWorkspacePrReviewMonitorStatus::AwaitingUser;
+        monitor.review_artifact_id = Some(ArtifactId::from_string("review-artifact-1"));
+        monitor.review_artifact_head_sha = Some("head-sha".to_string());
+        monitor.review_artifact_version = Some(1);
+        app_state
+            .agent_conversation_workspace_repo
+            .upsert_pr_review_monitor(monitor)
+            .await
+            .unwrap();
+
+        let action = app_state
+            .agent_conversation_workspace_repo
+            .create_or_update_pr_review_action(AgentWorkspacePrReviewAction::new(
+                conversation_id.clone(),
+                411,
+                "head-sha".to_string(),
+                AgentWorkspacePrReviewActionKind::RequestChanges,
+                "Found a blocking regression".to_string(),
+                "Please fix the regression before merge.".to_string(),
+                None,
+                Some("run-1".to_string()),
+            ))
+            .await
+            .unwrap();
+        let state = test_http_state(Arc::clone(&app_state));
+
+        let (status, Json(body)) = submit_agent_workspace_pr_review_action(
+            State(state),
+            Path((conversation_id.to_string(), action.id.clone())),
+            Json(SubmitAgentWorkspacePrReviewActionRequest { action_kind: None }),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert_eq!(body["error"], "Failed to submit GitHub PR review");
+        assert!(body["details"]
+            .as_str()
+            .unwrap()
+            .contains("network unavailable"));
+
+        let saved_action = app_state
+            .agent_conversation_workspace_repo
+            .get_pr_review_action(&action.id)
+            .await
+            .unwrap()
+            .expect("action should still exist");
+        assert_eq!(
+            saved_action.status,
+            AgentWorkspacePrReviewActionStatus::Pending
+        );
+        assert!(saved_action.submitted_review_id.is_none());
+        assert!(saved_action.resolved_at.is_none());
+
+        let pending = app_state
+            .agent_conversation_workspace_repo
+            .get_pending_pr_review_action_for_head(&conversation_id, 411, "head-sha")
+            .await
+            .unwrap()
+            .expect("failed submit should leave a retryable pending action");
+        assert_eq!(pending.id, action.id);
+
+        let monitor = app_state
+            .agent_conversation_workspace_repo
+            .get_pr_review_monitor(&conversation_id)
+            .await
+            .unwrap()
+            .expect("monitor should exist");
+        assert_eq!(
+            monitor.status,
+            AgentWorkspacePrReviewMonitorStatus::AwaitingUser
+        );
+        assert_eq!(monitor.last_seen_head_sha.as_deref(), Some("head-sha"));
+        assert!(monitor
+            .last_error
+            .as_deref()
+            .unwrap()
+            .contains("network unavailable"));
+
+        let github_state = github.state();
+        assert_eq!(github_state.submit_pr_review_calls, 1);
+        assert_eq!(
+            github_state
+                .last_submit_pr_review_args
+                .as_ref()
+                .map(|(pr_number, event, body)| (*pr_number, *event, body.as_str())),
+            Some((
+                411,
+                PrReviewSubmissionEvent::RequestChanges,
+                "Please fix the regression before merge."
+            ))
+        );
     }
 
     #[tokio::test]

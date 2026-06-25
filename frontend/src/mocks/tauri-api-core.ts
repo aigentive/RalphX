@@ -141,6 +141,22 @@ const mockLinearIntegrationSettings = {
   updatedAt: new Date(0).toISOString(),
 };
 
+const mockClickUpIntegrationSettings = {
+  enabled: false,
+  hasApiToken: false,
+  workspaceId: null as string | null,
+  validationStatus: "not_configured",
+  taskSearchAvailable: false,
+  lastValidatedAt: null as string | null,
+  lastError: null as string | null,
+  updatedAt: new Date(0).toISOString(),
+};
+
+const mockClickUpWorkspaces = [
+  { id: "team-1", name: "Acme Workspace", color: "#ff6b35" },
+  { id: "team-2", name: "Globex Workspace", color: null as string | null },
+];
+
 function mockLinearIssue(input: {
   conversationId: string;
   projectId?: string | null;
@@ -196,6 +212,8 @@ const mockAgentProviderSettings = {
       claudeAllowDangerouslySkipPermissions: false,
       cliManagementMode: "user_managed",
       autoUpdateEnabled: false,
+      customBinaryEnabled: false,
+      customBinaryPath: null,
       available: true,
       binaryFound: true,
       binaryPath: "/opt/homebrew/bin/codex",
@@ -218,6 +236,8 @@ const mockAgentProviderSettings = {
       claudeAllowDangerouslySkipPermissions: true,
       cliManagementMode: "user_managed",
       autoUpdateEnabled: false,
+      customBinaryEnabled: false,
+      customBinaryPath: null,
       available: true,
       binaryFound: true,
       binaryPath: "/opt/homebrew/bin/claude",
@@ -238,6 +258,8 @@ const mockManagedProviderCliStatuses = {
       provider: "codex",
       cliManagementMode: "user_managed",
       autoUpdateEnabled: false,
+      customBinaryEnabled: false,
+      customBinaryPath: null,
       supported: true,
       installed: true,
       binaryPath: "/opt/homebrew/bin/codex",
@@ -253,6 +275,8 @@ const mockManagedProviderCliStatuses = {
       provider: "claude",
       cliManagementMode: "user_managed",
       autoUpdateEnabled: false,
+      customBinaryEnabled: false,
+      customBinaryPath: null,
       supported: true,
       installed: true,
       binaryPath: "/Users/example/.local/bin/claude",
@@ -595,6 +619,129 @@ function mockWorkspaceFileDiff(filePath: string) {
   };
 }
 
+const mockTicketingCapabilities = {
+  supportsBoards: true,
+  supportsKanban: true,
+  kanbanWrite: false,
+  statusWrite: false,
+  assignmentWrite: false,
+  commentWrite: false,
+  labelWrite: false,
+  freshness: "manual",
+};
+
+const mockTicketingColumns = [
+  { id: "todo", name: "To Do", category: "todo", order: 0, color: null },
+  { id: "in_progress", name: "In Progress", category: "in_progress", order: 1, color: null },
+  { id: "review", name: "In Review", category: "in_progress", order: 2, color: null },
+  { id: "done", name: "Done", category: "done", order: 3, color: null },
+];
+
+const mockTicketingTickets = [
+  {
+    ref: { provider: "jira", id: "10001", key: "RX-1" },
+    title: "Fix merge race in transition handler",
+    state: { id: "todo", name: "To Do", category: "todo", color: null },
+    assignee: { id: "user-1", name: "A. Demian", email: null, avatarUrl: null },
+    reporter: { id: "user-2", name: "Platform", email: null, avatarUrl: null },
+    labels: ["backend", "race-condition"],
+    priority: "High",
+    updatedAt: "2026-06-19T22:00:00.000Z",
+    url: "https://example.atlassian.net/browse/RX-1",
+    associationCount: 2,
+  },
+  {
+    ref: { provider: "jira", id: "10002", key: "RX-2" },
+    title: "Add Linear webhook backfill",
+    state: { id: "in_progress", name: "In Progress", category: "in_progress", color: null },
+    assignee: null,
+    reporter: { id: "user-2", name: "Platform", email: null, avatarUrl: null },
+    labels: ["integrations"],
+    priority: "Medium",
+    updatedAt: "2026-06-18T18:30:00.000Z",
+    url: "https://example.atlassian.net/browse/RX-2",
+    associationCount: 0,
+  },
+  {
+    ref: { provider: "jira", id: "10003", key: "RX-3" },
+    title: "Ticketing dashboard shell",
+    state: { id: "review", name: "In Review", category: "in_progress", color: null },
+    assignee: { id: "user-1", name: "A. Demian", email: null, avatarUrl: null },
+    reporter: { id: "user-2", name: "Platform", email: null, avatarUrl: null },
+    labels: ["frontend"],
+    priority: "Medium",
+    updatedAt: "2026-06-19T19:20:00.000Z",
+    url: "https://example.atlassian.net/browse/RX-3",
+    associationCount: 1,
+  },
+  {
+    ref: { provider: "clickup", id: "cu-1001", key: "CU-1001" },
+    title: "Demo ClickUp dashboard task",
+    state: { id: "in_progress", name: "In Progress", category: "in_progress", color: null },
+    assignee: { id: "cu-user-1", name: "A. Demian", email: null, avatarUrl: null },
+    reporter: { id: "cu-user-2", name: "Platform", email: null, avatarUrl: null },
+    labels: ["integrations", "frontend"],
+    priority: "High",
+    updatedAt: "2026-06-20T15:00:00.000Z",
+    url: "https://app.clickup.com/t/cu-1001",
+    associationCount: 0,
+  },
+  {
+    ref: { provider: "clickup", id: "cu-1002", key: "CU-1002" },
+    title: "Validate ClickUp personal API token",
+    state: { id: "todo", name: "To Do", category: "todo", color: null },
+    assignee: null,
+    reporter: { id: "cu-user-2", name: "Platform", email: null, avatarUrl: null },
+    labels: ["backend"],
+    priority: "Medium",
+    updatedAt: "2026-06-20T12:30:00.000Z",
+    url: "https://app.clickup.com/t/cu-1002",
+    associationCount: 0,
+  },
+  {
+    ref: { provider: "clickup", id: "cu-1003", key: "CU-1003" },
+    title: "List ClickUp Spaces as dashboard containers",
+    state: { id: "done", name: "Done", category: "done", color: null },
+    assignee: { id: "cu-user-1", name: "A. Demian", email: null, avatarUrl: null },
+    reporter: { id: "cu-user-2", name: "Platform", email: null, avatarUrl: null },
+    labels: ["frontend"],
+    priority: "Low",
+    updatedAt: "2026-06-19T09:00:00.000Z",
+    url: "https://app.clickup.com/t/cu-1003",
+    associationCount: 0,
+  },
+];
+
+const mockTicketingAssociations = {
+  tasks: [
+    {
+      id: "task-1",
+      title: "Fix merge race",
+      subtitle: "branch ready · PR open",
+      status: "executing",
+      active: true,
+      deepLink: { view: "kanban", id: "task-1" },
+    },
+  ],
+  proposals: [],
+  sessions: [
+    {
+      id: "session-1",
+      title: "Transition hardening",
+      subtitle: "1 linked conversation",
+      status: "active",
+      active: false,
+      deepLink: { view: "ideation", id: "session-1" },
+    },
+  ],
+  conversations: [],
+  pullRequests: [],
+  checks: [],
+  qa: [],
+  specs: [],
+  fetchedAt: "2026-06-19T22:00:00.000Z",
+};
+
 /**
  * Command handlers map - routes Tauri commands to mock implementations
  */
@@ -730,6 +877,7 @@ const commandHandlers: Record<
     Object.assign(status, {
       cliManagementMode: "rx_managed",
       installed: true,
+      customBinaryEnabled: false,
       currentVersion: status.latestVersion ?? "0.137.0",
       updateAvailable: false,
       action: "none",
@@ -746,6 +894,14 @@ const commandHandlers: Record<
   auto_update_managed_provider_clis: async () => ({
     updated: [],
     skipped: mockManagedProviderCliStatuses.providers,
+  }),
+  get_ui_feature_flags: async () => ({
+    activityPage: true,
+    extensibilityPage: true,
+    battleMode: true,
+    teamMode: false,
+    atlassianOauth: false,
+    ticketingDashboard: false,
   }),
   get_atlassian_integration_settings: async () =>
     mockAtlassianIntegrationSettings,
@@ -919,6 +1075,60 @@ const commandHandlers: Record<
     return mockLinearIntegrationSettings;
   },
   search_linear_issues: async () => ({ issues: [] }),
+  get_clickup_integration_settings: async () => mockClickUpIntegrationSettings,
+  save_clickup_integration_settings: async (args) => {
+    const input = args.input as {
+      apiToken?: string | null;
+      workspaceId?: string | null;
+    };
+    // Tri-state token: only re-gate the connection when the token changes.
+    if (input.apiToken !== undefined) {
+      mockClickUpIntegrationSettings.hasApiToken = Boolean(
+        input.apiToken?.trim(),
+      );
+      mockClickUpIntegrationSettings.enabled = false;
+      mockClickUpIntegrationSettings.validationStatus =
+        mockClickUpIntegrationSettings.hasApiToken
+          ? "pending"
+          : "not_configured";
+      mockClickUpIntegrationSettings.taskSearchAvailable = false;
+    }
+    // Tri-state workspace: undefined leaves it untouched, "" clears it.
+    if (input.workspaceId !== undefined) {
+      mockClickUpIntegrationSettings.workspaceId = input.workspaceId?.trim()
+        ? input.workspaceId
+        : null;
+    }
+    mockClickUpIntegrationSettings.lastError = null;
+    mockClickUpIntegrationSettings.updatedAt = new Date(0).toISOString();
+    return mockClickUpIntegrationSettings;
+  },
+  validate_clickup_integration: async () => {
+    Object.assign(mockClickUpIntegrationSettings, {
+      enabled: true,
+      validationStatus: "valid",
+      taskSearchAvailable: true,
+      lastValidatedAt: new Date(0).toISOString(),
+      lastError: null,
+      updatedAt: new Date(0).toISOString(),
+    });
+    return mockClickUpIntegrationSettings;
+  },
+  disconnect_clickup_integration: async () => {
+    Object.assign(mockClickUpIntegrationSettings, {
+      enabled: false,
+      hasApiToken: false,
+      workspaceId: null,
+      validationStatus: "not_configured",
+      taskSearchAvailable: false,
+      lastValidatedAt: null,
+      lastError: null,
+      updatedAt: new Date(0).toISOString(),
+    });
+    return mockClickUpIntegrationSettings;
+  },
+  list_clickup_workspaces: async () => ({ workspaces: mockClickUpWorkspaces }),
+  search_clickup_tasks: async () => ({ tasks: [] }),
   get_agent_conversation_linear_issue: async (args) => {
     const input = args.input as { conversationId: string };
     return {
@@ -959,6 +1169,160 @@ const commandHandlers: Record<
     return { issue: null };
   },
   get_linear_webhook_config: async () => mockLinearWebhookConfig,
+  list_ticketing_providers: async () => [
+    {
+      provider: "jira",
+      label: "Jira",
+      enabled: true,
+      connectionStatus: "connected",
+      capabilities: mockTicketingCapabilities,
+      fetchedAt: "2026-06-19T22:00:00.000Z",
+      staleAt: null,
+      permissionMessage: null,
+      errorMessage: null,
+    },
+    {
+      provider: "linear",
+      label: "Linear",
+      enabled: true,
+      connectionStatus: "connected",
+      capabilities: { ...mockTicketingCapabilities, freshness: "webhook" },
+      fetchedAt: "2026-06-19T22:00:00.000Z",
+      staleAt: null,
+      permissionMessage: null,
+      errorMessage: null,
+    },
+    {
+      provider: "clickup",
+      label: "ClickUp",
+      enabled: true,
+      connectionStatus: "connected",
+      capabilities: mockTicketingCapabilities,
+      fetchedAt: "2026-06-19T22:00:00.000Z",
+      staleAt: null,
+      permissionMessage: null,
+      errorMessage: null,
+    },
+  ],
+  list_ticketing_containers: async (args) => {
+    const provider = (args.provider as string | undefined) ?? "jira";
+    const ticketCount = mockTicketingTickets.filter(
+      (ticket) => ticket.ref.provider === provider,
+    ).length;
+    if (provider === "clickup") {
+      // ClickUp containers are Spaces within the selected Workspace (Team).
+      return [
+        {
+          provider,
+          id: "space-eng",
+          key: null,
+          name: "Engineering",
+          kind: "project",
+          parentId: null,
+          ticketCount,
+        },
+      ];
+    }
+    return [
+      {
+        // Jira/Linear containers are projects; the container id is the project key.
+        provider,
+        id: "RX",
+        key: "RX",
+        name: "RalphX",
+        kind: "project",
+        parentId: null,
+        ticketCount,
+      },
+    ];
+  },
+  list_ticketing_columns: async () => mockTicketingColumns,
+  list_tickets: async (args) => {
+    const query = args.query as { provider?: string; filters?: { text?: string } } | undefined;
+    const provider = query?.provider ?? "jira";
+    const text = query?.filters?.text?.toLowerCase().trim() ?? "";
+    const items = mockTicketingTickets
+      .filter((ticket) => ticket.ref.provider === provider)
+      .filter((ticket) => {
+        if (!text) return true;
+        return `${ticket.ref.key ?? ""} ${ticket.title} ${ticket.labels.join(" ")}`
+          .toLowerCase()
+          .includes(text);
+      });
+    return {
+      items,
+      nextCursor: null,
+      total: items.length,
+      fetchedAt: "2026-06-19T22:00:00.000Z",
+    };
+  },
+  get_ticket_detail: async (args) => {
+    const ticketRef = args.ticketRef as { id?: string } | undefined;
+    const ticket =
+      mockTicketingTickets.find((item) => item.ref.id === ticketRef?.id) ??
+      mockTicketingTickets[0];
+    return {
+      ...ticket,
+      descriptionMarkdown:
+        "When two agents transition the same task, the workflow should stay consistent and preserve review history.",
+      descriptionText:
+        "When two agents transition the same task, the workflow should stay consistent and preserve review history.",
+      acceptanceCriteriaMarkdown: "- No double-transition under contention\n- Activity timeline remains ordered",
+      comments: [
+        {
+          id: "comment-1",
+          author: { id: "user-2", name: "Platform", email: null, avatarUrl: null },
+          bodyMarkdown: "Reproduced on the transition hardening branch.",
+          bodyText: "Reproduced on the transition hardening branch.",
+          createdAt: "2026-06-19T20:00:00.000Z",
+          updatedAt: "2026-06-19T20:00:00.000Z",
+        },
+      ],
+      attachments: [],
+      transitions: [],
+      fetchedAt: "2026-06-19T22:00:00.000Z",
+    };
+  },
+  list_ticket_transitions: async () => [],
+  list_ticket_labels: async (args) => {
+    const provider = args.provider as string | undefined;
+    if (provider === "linear") {
+      return [
+        { id: "label-bug", name: "Bug" },
+        { id: "label-feature", name: "Feature" },
+      ];
+    }
+    return [];
+  },
+  set_ticket_labels: async (args) => {
+    const input = args.input as {
+      provider?: string;
+      ticketRef?: { provider?: string; id?: string; key?: string | null };
+      labels?: string[];
+      clientOperationId?: string;
+    } | undefined;
+    const labels = input?.labels ?? [];
+    return {
+      ticketRef: input?.ticketRef ?? { provider: input?.provider ?? "jira", id: "10001" },
+      operation: {
+        id: "op-labels-1",
+        operation: "set_labels",
+        clientOperationId: input?.clientOperationId ?? "mock-op",
+        status: "succeeded",
+        providerOperationId: null,
+        errorMessage: null,
+        linked: true,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+      idempotent: false,
+      labels: { labels },
+      refreshedAt: new Date().toISOString(),
+    };
+  },
+  get_ticket_associations: async () => mockTicketingAssociations,
+  get_conversation_ticket: async () => null,
+  refresh_tickets: async () => ({ refreshedAt: "2026-06-19T22:00:00.000Z" }),
   save_linear_webhook_signing_secret: async (args) => {
     const input = args.input as { signingSecret?: string; enabled?: boolean };
     if (!input.signingSecret?.trim()) {
@@ -1016,6 +1380,12 @@ const commandHandlers: Record<
     );
     if (provider) {
       Object.assign(provider, input, { updatedAt: new Date(0).toISOString() });
+      if (provider.customBinaryEnabled) {
+        provider.cliManagementMode = "user_managed";
+        provider.autoUpdateEnabled = false;
+      } else if (provider.cliManagementMode === "rx_managed") {
+        provider.customBinaryEnabled = false;
+      }
       if (input.isDefault) {
         for (const entry of mockAgentProviderSettings.providers) {
           entry.isDefault = entry.provider === provider.provider;

@@ -13,6 +13,8 @@ pub struct CreateTaskInput {
     pub description: Option<String>,
     pub priority: Option<i32>,
     pub steps: Option<Vec<String>>,
+    pub ideation_session_id: Option<String>,
+    pub execution_plan_id: Option<String>,
 }
 
 /// Input for updating a task
@@ -87,6 +89,7 @@ pub struct TaskResponse {
     pub internal_status: String,
     pub needs_review_point: bool,
     pub ideation_session_id: Option<String>,
+    pub execution_plan_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     pub started_at: Option<String>,
@@ -111,6 +114,7 @@ impl From<Task> for TaskResponse {
             internal_status: task.internal_status.as_str().to_string(),
             needs_review_point: task.needs_review_point,
             ideation_session_id: task.ideation_session_id.map(|id| id.as_str().to_string()),
+            execution_plan_id: task.execution_plan_id.map(|id| id.as_str().to_string()),
             created_at: task.created_at.to_rfc3339(),
             updated_at: task.updated_at.to_rfc3339(),
             started_at: task.started_at.map(|dt| dt.to_rfc3339()),

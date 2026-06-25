@@ -61,9 +61,11 @@ import type { AgentPublishFocusRequest } from "./agentPublishFocus";
 import {
   agentWorkspaceKeys,
   invalidateWorkspaceQueries,
+  prReviewContextForConversation,
 } from "./agentWorkspaceQueries";
 import {
   buildPlanActionHint,
+  isPlanRecommendationCheckPending,
   PLAN_IMPLEMENT_DIRECTLY_REQUEST,
   PLAN_TO_PROPOSALS_REQUEST,
 } from "./agentPlanModeActions";
@@ -288,15 +290,19 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     inProgress: boolean;
   } | null>(null);
   const conversationId = conversation?.id ?? null;
-  const shouldLoadPrReviewContext = Boolean(
-    conversationId && workspace?.mode === "review_pr",
-  );
+  const prReviewConversationId =
+    workspace?.mode === "review_pr" ? workspace.conversationId : null;
+  const shouldLoadPrReviewContext = Boolean(prReviewConversationId);
   const prReviewContextQuery = useQuery({
-    queryKey: agentWorkspaceKeys.prReview(conversationId ?? ""),
-    queryFn: () => chatApi.getAgentWorkspacePrReviewContext(conversationId!),
+    queryKey: agentWorkspaceKeys.prReview(prReviewConversationId ?? ""),
+    queryFn: () => chatApi.getAgentWorkspacePrReviewContext(prReviewConversationId!),
     enabled: shouldLoadPrReviewContext,
     staleTime: 5_000,
   });
+  const prReviewContext = prReviewContextForConversation(
+    prReviewContextQuery.data,
+    prReviewConversationId,
+  );
   const shouldLoadWorkspaceReviewContext = Boolean(
     conversationId &&
       workspace &&
@@ -312,7 +318,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   const workspaceReviewArtifactId =
     workspaceReviewContext?.monitor.reviewArtifactId ?? null;
   const prReviewArtifactId =
-    prReviewContextQuery.data?.monitor?.reviewArtifactId ?? null;
+    prReviewContext?.monitor?.reviewArtifactId ?? null;
   const reviewArtifactId = workspaceReviewArtifactId ?? prReviewArtifactId;
   const reviewArtifactQuery = useQuery({
     queryKey: ["agents", "artifact", reviewArtifactId],
@@ -320,7 +326,10 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     enabled: Boolean(reviewArtifactId),
     staleTime: 5_000,
   });
-  const reviewArtifact = reviewArtifactQuery.data ?? null;
+  const reviewArtifact =
+    reviewArtifactId && reviewArtifactQuery.data?.id === reviewArtifactId
+      ? reviewArtifactQuery.data
+      : null;
   const startWorkspaceReviewMutation = useMutation({
     mutationFn: ({ force }: { force: boolean }) =>
       chatApi.startAgentWorkspaceReview(conversationId!, { force }),
@@ -449,8 +458,6 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       ? activeTab
       : workspaceReviewContext?.shouldShowTab || reviewArtifactId
         ? "review"
-        : showPublishTab
-        ? "publish"
         : showJiraTab
           ? "jira"
           : showLinearTab
@@ -1296,9 +1303,16 @@ function AgentPlanPanel({
     staleTime: 5_000,
     refetchInterval: (query) => (query.state.data ? false : 4_000),
   });
+  const isPlanRecommendationPending = isPlanRecommendationCheckPending({
+    assessment: planComplexityQuery.data,
+    isFetching:
+      (planComplexityQuery.isFetching || planComplexityQuery.isLoading) &&
+      !planComplexityQuery.data,
+    approvedAt: planArtifact?.planApproval?.approvedAt,
+  });
   const planActionHint = buildPlanActionHint({
     assessment: planComplexityQuery.data,
-    isAssessing: planComplexityQuery.isFetching && !planComplexityQuery.data,
+    isAssessing: isPlanRecommendationPending,
     canChoose: canImplementDirectly && canCreateProposals,
   });
 
@@ -1453,6 +1467,9 @@ function AgentPlanPanel({
               })}
               {...(planComplexityQuery.data && {
                 primaryPlanAction: planComplexityQuery.data.recommendedAction,
+              })}
+              {...(isPlanRecommendationPending && {
+                isPlanActionRecommendationPending: true,
               })}
               {...(planActionHint && { planActionHint })}
               {...(canCreateProposals && { onCreateProposals: handleCreateProposals })}

@@ -1078,7 +1078,7 @@ impl<'a> super::TransitionHandler<'a> {
                 format!("feat: {}\n\nPlan branch: {}", task.title, source_branch)
             }
         } else {
-            build_squash_commit_msg(&task.category, &task.title, source_branch)
+            build_squash_commit_msg(&task.title, task.description.as_deref(), task.id.as_str())
         }
     }
 

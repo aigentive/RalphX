@@ -678,6 +678,34 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
             .await
     }
 
+    async fn list_active_transient_publish_status_workspaces(
+        &self,
+        stale_older_than_secs: u64,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        let cutoff = (chrono::Utc::now()
+            - chrono::Duration::seconds(stale_older_than_secs as i64))
+            .format("%Y-%m-%dT%H:%M:%S+00:00")
+            .to_string();
+        self.db
+            .run(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT * FROM agent_conversation_workspaces
+                     WHERE status = 'active'
+                       AND publication_push_status IN ('refreshing', 'checking', 'committing', 'describing')
+                       AND COALESCE(publication_pr_status, '') NOT IN ('closed', 'merged')
+                       AND updated_at <= ?1
+                     ORDER BY updated_at ASC",
+                )?;
+                let rows = stmt.query_map([cutoff], row_to_workspace)?;
+                let mut workspaces = Vec::new();
+                for row in rows {
+                    workspaces.push(row?);
+                }
+                Ok(workspaces)
+            })
+            .await
+    }
+
     async fn list_active_direct_external_pr_reconciliation_candidates(
         &self,
         limit: usize,

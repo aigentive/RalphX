@@ -54,6 +54,7 @@ html[data-theme="high-contrast"] main {
   --text-subtle:    #999999;
   --text-inverse:   #1A0E07;
   --text-on-accent: #1A0E07;
+  --text-on-scrim:  #FFFFFF;
 
   /* Accent — brand orange from v27. Literals per WKWebView rule —
      inheritance breaks on chained var() for color-bearing props. */

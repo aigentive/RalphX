@@ -7,6 +7,8 @@ import {
   Ticket,
 } from "lucide-react";
 
+import { useTicketingStore } from "@/stores/ticketingStore";
+import { useUiStore } from "@/stores/uiStore";
 import type { MessageComposerReferences } from "./MessageReferences.parse";
 
 export function MessageReferences({
@@ -14,6 +16,10 @@ export function MessageReferences({
   integrationReferences,
   artifactReferences,
 }: MessageComposerReferences) {
+  const setTicketProvider = useTicketingStore((s) => s.setProvider);
+  const setSelectedTicketRef = useTicketingStore((s) => s.setSelectedTicketRef);
+  const setCurrentView = useUiStore((s) => s.setCurrentView);
+
   if (
     projectReferences.length === 0 &&
     integrationReferences.length === 0 &&
@@ -42,21 +48,49 @@ export function MessageReferences({
       {integrationReferences.map((reference) => {
         const isJira = reference.kind === "jira";
         const isLinear = reference.kind === "linear";
+        const isClickUp = reference.kind === "clickup";
+        const ticketProvider = isClickUp
+          ? "clickup"
+          : isLinear
+            ? "linear"
+            : isJira
+              ? "jira"
+              : null;
         const label =
-          isJira || isLinear
+          isJira || isLinear || isClickUp
             ? (reference.key ?? reference.id)
             : (reference.title ?? reference.id);
-        const description = isJira || isLinear ? reference.title : reference.id;
-        const typeLabel = isLinear ? "Linear" : isJira ? "Jira" : "Confluence";
+        const description =
+          isJira || isLinear || isClickUp ? reference.title : reference.id;
+        const typeLabel = isClickUp
+          ? "ClickUp"
+          : isLinear
+            ? "Linear"
+            : isJira
+              ? "Jira"
+              : "Confluence";
         return (
           <ReferenceChip
             key={`integration:${reference.provider}:${reference.kind}:${reference.id}`}
             testId={`message-reference-integration:${reference.kind}:${reference.id}`}
-            icon={isJira || isLinear ? Ticket : BookOpen}
+            icon={isJira || isLinear || isClickUp ? Ticket : BookOpen}
             typeLabel={typeLabel}
             label={label}
             {...(description && description !== label ? { description } : {})}
             {...(reference.url ? { url: reference.url } : {})}
+            {...(ticketProvider
+              ? {
+                  onOpenTicket: () => {
+                    setTicketProvider(ticketProvider);
+                    setSelectedTicketRef({
+                      provider: ticketProvider,
+                      id: reference.id,
+                      ...(reference.key ? { key: reference.key } : {}),
+                    });
+                    setCurrentView("ticketing");
+                  },
+                }
+              : {})}
           />
         );
       })}
@@ -106,6 +140,7 @@ function ReferenceChip({
   label,
   description,
   url,
+  onOpenTicket,
 }: {
   testId: string;
   icon: typeof FileText;
@@ -113,6 +148,7 @@ function ReferenceChip({
   label: string;
   description?: string;
   url?: string;
+  onOpenTicket?: () => void;
 }) {
   const content = (
     <>
@@ -151,6 +187,21 @@ function ReferenceChip({
     color: "var(--text-primary)",
     textDecoration: "none",
   };
+
+  if (onOpenTicket) {
+    return (
+      <button
+        type="button"
+        data-testid={testId}
+        className={className}
+        style={style}
+        title={label}
+        onClick={onOpenTicket}
+      >
+        {content}
+      </button>
+    );
+  }
 
   if (url) {
     return (

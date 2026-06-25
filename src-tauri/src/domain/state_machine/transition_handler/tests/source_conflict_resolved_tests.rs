@@ -15,10 +15,10 @@
 
 use super::helpers::*;
 use crate::domain::entities::{InternalStatus, MergeStrategy, ProjectId, Task};
-use crate::domain::state_machine::transition_handler::merge_helpers::{
-    has_source_conflict_resolved, set_source_conflict_resolved, parse_metadata,
-};
 use crate::domain::state_machine::services::TaskScheduler;
+use crate::domain::state_machine::transition_handler::merge_helpers::{
+    has_source_conflict_resolved, parse_metadata, set_source_conflict_resolved,
+};
 use crate::domain::state_machine::{State, TransitionHandler};
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -177,7 +177,7 @@ async fn rebase_squash_with_source_conflict_resolved_uses_squash_and_merges_clea
         chat_service.call_count(),
     );
 
-    // Verify the squash commit landed on main (squash uses "feat: branch-name (title)" format)
+    // Verify the squash commit landed on main using the task title as the subject.
     let log_output = std::process::Command::new("git")
         .args(["log", "--oneline", "main"])
         .current_dir(git_repo.path())
@@ -185,7 +185,7 @@ async fn rebase_squash_with_source_conflict_resolved_uses_squash_and_merges_clea
         .expect("git log");
     let log_str = String::from_utf8_lossy(&log_output.stdout);
     assert!(
-        log_str.contains("task/test-task-branch") || log_str.contains("feat:"),
+        log_str.contains("source_conflict_resolved squash test"),
         "Git log on main should contain the squash commit. Log:\n{}",
         log_str,
     );

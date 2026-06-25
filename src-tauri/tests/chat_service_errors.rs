@@ -912,6 +912,38 @@ fn test_classify_claude_extra_usage_banner_as_rate_limit() {
 }
 
 #[test]
+fn test_classify_claude_session_limit_banner_as_rate_limit() {
+    // Regression: the Claude session-window banner inserts "session"
+    // ("You've hit your session limit"), which did not match the fixed
+    // "you've hit your limit" prefix. It fell through to AgentExit and the
+    // task was hard-failed instead of paused + auto-resumed.
+    let result = classify_provider_error(
+        "You've hit your session limit · resets 1:20pm (Europe/Bucharest)",
+    );
+    assert!(
+        result.is_some(),
+        "session-limit banner must classify as a provider error, got {result:?}"
+    );
+    match result {
+        Some(StreamError::ProviderError {
+            category,
+            retry_after,
+            ..
+        }) => {
+            assert_eq!(category, ProviderErrorCategory::RateLimit);
+            let parsed = retry_after
+                .as_deref()
+                .and_then(|ts| chrono::DateTime::parse_from_rfc3339(ts).ok());
+            assert!(
+                parsed.is_some(),
+                "session-limit banner should produce retry_after"
+            );
+        }
+        other => panic!("expected ProviderError(RateLimit), got {other:?}"),
+    }
+}
+
+#[test]
 fn test_parse_retry_after_from_claude_reset_banner_returns_future_timestamp() {
     let retry_after = parse_retry_after_from_message(
         "You've hit your limit · resets 11pm (Europe/Bucharest)",

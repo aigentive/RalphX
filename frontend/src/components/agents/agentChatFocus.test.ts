@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   getAgentChatFocusSwitchOptions,
+  getAgentsChatFocusDisplay,
+  getFocusedChatSessionId,
   type AgentsChatFocus,
 } from "./agentChatFocus";
 
@@ -10,6 +12,11 @@ const verificationFocus: Extract<AgentsChatFocus, { type: "verification" }> = {
   parentSessionId: "session-1",
   childSessionId: "verification-1",
 };
+const taskRuntimeFocus: Extract<AgentsChatFocus, { type: "task_runtime" }> = {
+  type: "task_runtime",
+  taskId: "task-1",
+  contextType: "review",
+};
 
 describe("getAgentChatFocusSwitchOptions", () => {
   it("keeps the full ideation focus switcher in ideation mode", () => {
@@ -17,6 +24,7 @@ describe("getAgentChatFocusSwitchOptions", () => {
       mode: "ideation",
       focusSwitcherIdeationSessionId: "session-1",
       verificationFocusTarget: verificationFocus,
+      taskRuntimeFocusTarget: null,
       hasPlanArtifact: true,
     });
 
@@ -32,6 +40,7 @@ describe("getAgentChatFocusSwitchOptions", () => {
       mode: "plan",
       focusSwitcherIdeationSessionId: "session-1",
       verificationFocusTarget: verificationFocus,
+      taskRuntimeFocusTarget: null,
       hasPlanArtifact: true,
     });
 
@@ -46,6 +55,7 @@ describe("getAgentChatFocusSwitchOptions", () => {
       mode: "plan",
       focusSwitcherIdeationSessionId: "session-1",
       verificationFocusTarget: verificationFocus,
+      taskRuntimeFocusTarget: null,
       hasPlanArtifact: false,
     });
 
@@ -57,9 +67,42 @@ describe("getAgentChatFocusSwitchOptions", () => {
       mode: "edit",
       focusSwitcherIdeationSessionId: "session-1",
       verificationFocusTarget: verificationFocus,
+      taskRuntimeFocusTarget: null,
       hasPlanArtifact: true,
     });
 
     expect(options.map((option) => option.type)).toEqual(["workspace"]);
+  });
+
+  it("adds task runtime focus whenever a task runtime target is active", () => {
+    const options = getAgentChatFocusSwitchOptions({
+      mode: "edit",
+      focusSwitcherIdeationSessionId: null,
+      verificationFocusTarget: null,
+      taskRuntimeFocusTarget: taskRuntimeFocus,
+      hasPlanArtifact: false,
+    });
+
+    expect(options.map((option) => option.type)).toEqual([
+      "workspace",
+      "task_runtime",
+    ]);
+    expect(options[1]).toMatchObject({
+      label: "Task",
+      description: "Show the task agent chat",
+      tone: "accent",
+    });
+  });
+});
+
+describe("task runtime focus helpers", () => {
+  it("describes task runtime focus without mapping it to an ideation chat session", () => {
+    expect(getAgentsChatFocusDisplay(taskRuntimeFocus)).toEqual({
+      type: "task_runtime",
+      label: "Task",
+      description: "Focused on a task agent run",
+      tone: "accent",
+    });
+    expect(getFocusedChatSessionId(taskRuntimeFocus)).toBeNull();
   });
 });

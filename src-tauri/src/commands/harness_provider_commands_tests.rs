@@ -29,6 +29,8 @@ fn input(provider: &str) -> UpdateAgentProviderSettingsInput {
         claude_allow_dangerously_skip_permissions: None,
         cli_management_mode: None,
         auto_update_enabled: None,
+        custom_binary_enabled: None,
+        custom_binary_path: None,
         reset_to_defaults: false,
         apply_to_all_lanes: false,
     }
@@ -208,6 +210,71 @@ fn merge_clears_auto_update_when_cli_is_user_managed() {
 }
 
 #[test]
+fn merge_enabling_custom_binary_forces_user_managed_without_auto_update() {
+    let mut settings = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Codex);
+    settings.cli_management_mode = AgentProviderCliManagementMode::RxManaged;
+    settings.auto_update_enabled = true;
+    let next = UpdateAgentProviderSettingsInput {
+        custom_binary_enabled: Some(true),
+        custom_binary_path: Some(Some(" /opt/tools/codex-wrapper ".to_string())),
+        auto_update_enabled: Some(true),
+        ..input("codex")
+    };
+
+    let merged = merge_input(settings, next, true).expect("merge settings");
+
+    assert!(merged.custom_binary_enabled);
+    assert_eq!(
+        merged.custom_binary_path.as_deref(),
+        Some("/opt/tools/codex-wrapper")
+    );
+    assert_eq!(
+        merged.cli_management_mode,
+        AgentProviderCliManagementMode::UserManaged
+    );
+    assert!(!merged.auto_update_enabled);
+}
+
+#[test]
+fn merge_rejects_custom_binary_enable_without_path() {
+    let settings = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Claude);
+    let next = UpdateAgentProviderSettingsInput {
+        custom_binary_enabled: Some(true),
+        custom_binary_path: Some(Some(" ".to_string())),
+        ..input("claude")
+    };
+
+    let err = merge_input(settings, next, true).expect_err("path should be required");
+
+    assert!(err.contains("Custom claude binary path is required"));
+}
+
+#[test]
+fn merge_switching_to_rx_managed_disables_custom_binary_but_keeps_path() {
+    let mut settings = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Codex);
+    settings.custom_binary_enabled = true;
+    settings.custom_binary_path = Some("/opt/tools/codex-wrapper".to_string());
+    let next = UpdateAgentProviderSettingsInput {
+        cli_management_mode: Some("rx_managed".to_string()),
+        auto_update_enabled: Some(true),
+        ..input("codex")
+    };
+
+    let merged = merge_input(settings, next, true).expect("merge settings");
+
+    assert!(!merged.custom_binary_enabled);
+    assert_eq!(
+        merged.custom_binary_path.as_deref(),
+        Some("/opt/tools/codex-wrapper")
+    );
+    assert_eq!(
+        merged.cli_management_mode,
+        AgentProviderCliManagementMode::RxManaged
+    );
+    assert!(merged.auto_update_enabled);
+}
+
+#[test]
 fn merge_rejects_invalid_cli_management_mode() {
     let settings = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Codex);
     let next = UpdateAgentProviderSettingsInput {
@@ -231,6 +298,8 @@ fn merge_reset_to_defaults_preserves_enabled_and_default_state() {
     settings.claude_dangerously_skip_permissions = false;
     settings.cli_management_mode = AgentProviderCliManagementMode::RxManaged;
     settings.auto_update_enabled = true;
+    settings.custom_binary_enabled = true;
+    settings.custom_binary_path = Some("/opt/tools/claude-wrapper".to_string());
     let next = UpdateAgentProviderSettingsInput {
         reset_to_defaults: true,
         ..input("claude")
@@ -252,6 +321,8 @@ fn merge_reset_to_defaults_preserves_enabled_and_default_state() {
         AgentProviderCliManagementMode::UserManaged
     );
     assert!(!merged.auto_update_enabled);
+    assert!(!merged.custom_binary_enabled);
+    assert_eq!(merged.custom_binary_path, None);
 }
 
 #[test]
@@ -349,6 +420,7 @@ fn response_maps_settings_and_probe_fields() {
     settings.sandbox_mode = Some("danger-full-access".to_string());
     settings.cli_management_mode = AgentProviderCliManagementMode::RxManaged;
     settings.auto_update_enabled = true;
+    settings.custom_binary_path = Some("/opt/tools/codex-wrapper".to_string());
     let response = to_response(
         settings,
         HarnessRuntimeProbe {
@@ -373,6 +445,11 @@ fn response_maps_settings_and_probe_fields() {
     assert_eq!(response.sandbox_mode.as_deref(), Some("danger-full-access"));
     assert_eq!(response.cli_management_mode, "rx_managed");
     assert!(response.auto_update_enabled);
+    assert!(!response.custom_binary_enabled);
+    assert_eq!(
+        response.custom_binary_path.as_deref(),
+        Some("/opt/tools/codex-wrapper")
+    );
     assert!(response.available);
     assert!(response.binary_found);
     assert_eq!(
@@ -486,7 +563,15 @@ async fn read_settings_uses_fallback_probe_when_provider_probe_is_missing() {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn update_settings_saves_default_and_applies_lanes_with_ready_probe() {
+    let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("test env mutex");
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let managed_codex_path = temp_dir.path().join("codex");
+    write_modern_codex_cli(&managed_codex_path);
+    let _override = override_managed_codex_binary_path_for_tests(managed_codex_path);
     let state = AppState::new_test();
     let probes = HashMap::from([
         (AgentHarnessKind::Codex, ready_probe("/usr/bin/codex")),
@@ -532,6 +617,88 @@ async fn update_settings_saves_default_and_applies_lanes_with_ready_probe() {
 }
 
 #[tokio::test]
+async fn update_settings_saves_custom_binary_after_candidate_probe() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let codex_path = temp_dir.path().join("codex-wrapper");
+    write_modern_codex_cli(&codex_path);
+    let state = AppState::new_test();
+    let probes = HashMap::from([
+        (
+            AgentHarnessKind::Codex,
+            HarnessRuntimeProbe {
+                available: false,
+                binary_found: false,
+                probe_succeeded: false,
+                binary_path: None,
+                missing_core_exec_features: Vec::new(),
+                cli_version: None,
+                supported_model_aliases: None,
+                supported_efforts: None,
+                error: Some("PATH Codex unavailable".to_string()),
+            },
+        ),
+        (AgentHarnessKind::Claude, ready_probe("/usr/bin/claude")),
+    ]);
+    let next = UpdateAgentProviderSettingsInput {
+        enabled: Some(true),
+        custom_binary_enabled: Some(true),
+        custom_binary_path: Some(Some(codex_path.to_string_lossy().into_owned())),
+        cli_management_mode: Some("rx_managed".to_string()),
+        auto_update_enabled: Some(true),
+        ..input("codex")
+    };
+
+    let response = update_provider_settings_with_probes(next, &state, &probes)
+        .await
+        .expect("update provider settings");
+
+    let codex = response
+        .providers
+        .iter()
+        .find(|provider| provider.provider == "codex")
+        .expect("codex provider");
+    assert!(codex.enabled);
+    assert!(codex.custom_binary_enabled);
+    assert_eq!(
+        codex.custom_binary_path.as_deref(),
+        Some(codex_path.to_string_lossy().as_ref())
+    );
+    assert_eq!(codex.cli_management_mode, "user_managed");
+    assert!(!codex.auto_update_enabled);
+    assert!(codex.available);
+    assert_eq!(
+        codex.binary_path.as_deref(),
+        Some(codex_path.to_string_lossy().as_ref())
+    );
+}
+
+#[tokio::test]
+async fn update_settings_rejects_invalid_custom_binary_candidate_before_save() {
+    let state = AppState::new_test();
+    let probes = HashMap::from([(AgentHarnessKind::Codex, ready_probe("/usr/bin/codex"))]);
+    let next = UpdateAgentProviderSettingsInput {
+        custom_binary_enabled: Some(true),
+        custom_binary_path: Some(Some("relative/codex".to_string())),
+        ..input("codex")
+    };
+
+    let error = update_provider_settings_with_probes(next, &state, &probes)
+        .await
+        .expect_err("relative custom path should fail");
+    let stored = state
+        .agent_provider_settings_repo
+        .get(AgentHarnessKind::Codex)
+        .await
+        .expect("read provider settings")
+        .expect("seeded provider settings");
+
+    assert!(error.contains("absolute path"));
+    assert!(!stored.custom_binary_enabled);
+    assert_eq!(stored.custom_binary_path, None);
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn update_settings_reprobes_managed_cli_after_mode_switch() {
     let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
         .lock()
@@ -684,5 +851,33 @@ async fn apply_default_provider_to_all_global_lanes() {
         assert_eq!(stored.settings.harness, AgentHarnessKind::Codex);
         assert_eq!(stored.settings.model.as_deref(), Some("gpt-5.4"));
         assert_eq!(stored.settings.effort, Some(LogicalEffort::High));
+    }
+}
+
+fn write_modern_codex_cli(path: &std::path::Path) {
+    std::fs::write(
+        path,
+        r#"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf 'codex-cli 0.144.0\n'
+elif [ "$1" = "--help" ]; then
+  printf '%s\n' 'Codex CLI' 'Commands:' '  exec' '  resume' '  mcp' 'Options:' '  -c, --config <key=value>' '  -m, --model <MODEL>' '  -s, --sandbox <SANDBOX>' '      --search' '      --add-dir <DIR>'
+elif [ "$1" = "exec" ] && [ "$2" = "--help" ]; then
+  printf '%s\n' 'Run Codex non-interactively' 'Options:' '  -c, --config <key=value>' '  -m, --model <MODEL>' '  -s, --sandbox <SANDBOX>' '      --add-dir <DIR>' '      --json'
+else
+  printf 'unexpected args: %s\n' "$*" >&2
+  exit 64
+fi
+"#,
+    )
+    .expect("write fake codex");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = std::fs::metadata(path)
+            .expect("fake codex metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(path, permissions).expect("chmod fake codex");
     }
 }

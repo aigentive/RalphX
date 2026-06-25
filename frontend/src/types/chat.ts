@@ -15,6 +15,7 @@ export const VIEW_TYPE_VALUES = [
   "graph",
   "ideation",
   "agents",
+  "ticketing",
   "extensibility",
   "activity",
   "insights",
@@ -77,6 +78,13 @@ export function isTaskDetailContext(context: ChatContext): boolean {
  */
 export function isActivityContext(context: ChatContext): boolean {
   return context.view === "activity";
+}
+
+/**
+ * Check if context is in ticketing view
+ */
+export function isTicketingContext(context: ChatContext): boolean {
+  return context.view === "ticketing";
 }
 
 /**
@@ -144,7 +152,7 @@ export function createTaskDetailContext(
  */
 export function createProjectContext(
   projectId: string,
-  view: "activity" | "insights" | "agents"
+  view: "activity" | "insights" | "agents" | "ticketing"
 ): ChatContext {
   return {
     view,

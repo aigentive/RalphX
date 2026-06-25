@@ -525,6 +525,18 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
     .await;
     startup_phase_completed("stale_workspace_publish_repair", phase_started_at);
 
+    {
+        let workspace_repo = Arc::clone(&agent_conversation_workspace_repo);
+        let periodic_agent_run_repo = Arc::clone(&agent_run_repo);
+        tauri::async_runtime::spawn(async move {
+            crate::application::agent_workspace_publish_recovery::run_periodic_workspace_publish_recovery(
+                workspace_repo,
+                periodic_agent_run_repo,
+            )
+            .await;
+        });
+    }
+
     if let Some(github_service) = github_service.as_ref().map(Arc::clone) {
         tracing::info!("Scheduling agent workspace PR supervision startup recovery...");
         let deps =

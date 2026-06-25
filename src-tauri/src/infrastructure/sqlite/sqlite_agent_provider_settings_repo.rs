@@ -97,6 +97,13 @@ fn parse_row(row: &rusqlite::Row<'_>) -> AppResult<AgentProviderSettings> {
             .get::<_, i64>("auto_update_enabled")
             .map_err(|e| AppError::Database(e.to_string()))?
             != 0,
+        custom_binary_enabled: row
+            .get::<_, i64>("custom_binary_enabled")
+            .map_err(|e| AppError::Database(e.to_string()))?
+            != 0,
+        custom_binary_path: row
+            .get("custom_binary_path")
+            .map_err(|e| AppError::Database(e.to_string()))?,
         updated_at,
     })
 }
@@ -105,7 +112,7 @@ fn select_columns() -> &'static str {
     "provider, enabled, is_default, model, effort, approval_policy, sandbox_mode,
      claude_permission_mode, claude_dangerously_skip_permissions,
      claude_allow_dangerously_skip_permissions, cli_management_mode,
-     auto_update_enabled, updated_at"
+     auto_update_enabled, custom_binary_enabled, custom_binary_path, updated_at"
 }
 
 fn fetch_optional<P: rusqlite::Params>(
@@ -224,8 +231,8 @@ impl AgentProviderSettingsRepository for SqliteAgentProviderSettingsRepository {
                         sandbox_mode, claude_permission_mode,
                         claude_dangerously_skip_permissions,
                         claude_allow_dangerously_skip_permissions, cli_management_mode,
-                        auto_update_enabled, updated_at
-                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+                        auto_update_enabled, custom_binary_enabled, custom_binary_path, updated_at
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
                         strftime('%Y-%m-%dT%H:%M:%S+00:00', 'now'))
                      ON CONFLICT(provider) DO UPDATE SET
                         enabled = excluded.enabled,
@@ -241,6 +248,8 @@ impl AgentProviderSettingsRepository for SqliteAgentProviderSettingsRepository {
                             excluded.claude_allow_dangerously_skip_permissions,
                         cli_management_mode = excluded.cli_management_mode,
                         auto_update_enabled = excluded.auto_update_enabled,
+                        custom_binary_enabled = excluded.custom_binary_enabled,
+                        custom_binary_path = excluded.custom_binary_path,
                         updated_at = excluded.updated_at",
                     rusqlite::params![
                         settings.provider.to_string(),
@@ -255,6 +264,8 @@ impl AgentProviderSettingsRepository for SqliteAgentProviderSettingsRepository {
                         settings.claude_allow_dangerously_skip_permissions as i64,
                         settings.cli_management_mode.to_string(),
                         settings.auto_update_enabled as i64,
+                        settings.custom_binary_enabled as i64,
+                        settings.custom_binary_path,
                     ],
                 )
                 .map_err(|e| AppError::Database(e.to_string()))?;

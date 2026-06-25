@@ -695,6 +695,8 @@ export function Column({ column, projectId, showArchived, showMergeTasks, isOver
               <InlineTaskAdd
                 projectId={projectId}
                 columnId={column.id}
+                ideationSessionId={ideationSessionId}
+                executionPlanId={executionPlanId}
                 {...(pendingQuickAddOpen > 0 && { autoExpandKey: pendingQuickAddOpen })}
                 onAutoExpandConsumed={handleQuickAddConsumed}
               />

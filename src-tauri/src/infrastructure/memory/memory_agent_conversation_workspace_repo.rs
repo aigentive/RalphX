@@ -138,6 +138,22 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             .collect())
     }
 
+    async fn list_active_transient_publish_status_workspaces(
+        &self,
+        stale_older_than_secs: u64,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        let cutoff =
+            Utc::now() - chrono::Duration::seconds(stale_older_than_secs as i64);
+        Ok(self
+            .workspaces
+            .read()
+            .await
+            .values()
+            .filter(|w| is_stale_transient_publish_status_workspace(w, cutoff))
+            .cloned()
+            .collect())
+    }
+
     async fn list_active_direct_external_pr_reconciliation_candidates(
         &self,
         limit: usize,
@@ -797,6 +813,22 @@ fn is_active_needs_agent_workspace(workspace: &AgentConversationWorkspace) -> bo
         )
 }
 
+fn is_stale_transient_publish_status_workspace(
+    workspace: &AgentConversationWorkspace,
+    cutoff: chrono::DateTime<Utc>,
+) -> bool {
+    workspace.status == AgentConversationWorkspaceStatus::Active
+        && matches!(
+            workspace.publication_push_status.as_deref(),
+            Some("refreshing") | Some("checking") | Some("committing") | Some("describing")
+        )
+        && !matches!(
+            workspace.publication_pr_status.as_deref(),
+            Some("closed") | Some("merged")
+        )
+        && workspace.updated_at <= cutoff
+}
+
 #[cfg(test)]
 mod tests {
     use crate::domain::entities::{
@@ -1193,6 +1225,43 @@ mod tests {
         assert!(workspaces
             .iter()
             .any(|workspace| workspace.conversation_id == refreshed.conversation_id));
+    }
+
+    #[tokio::test]
+    async fn transient_publish_status_workspaces_filter_stale_active_open_rows() {
+        let repo = MemoryAgentConversationWorkspaceRepository::new();
+        let stale = chrono::Utc::now() - chrono::Duration::minutes(10);
+
+        let mut refreshing = candidate_workspace("refreshing");
+        refreshing.publication_pr_number = Some(21);
+        refreshing.publication_pr_status = Some("open".to_string());
+        refreshing.publication_push_status = Some("refreshing".to_string());
+        refreshing.updated_at = stale;
+
+        let mut closed = candidate_workspace("closed");
+        closed.publication_pr_number = Some(23);
+        closed.publication_pr_status = Some("closed".to_string());
+        closed.publication_push_status = Some("committing".to_string());
+        closed.updated_at = stale;
+
+        let mut archived = candidate_workspace("archived-transient");
+        archived.status = AgentConversationWorkspaceStatus::Archived;
+        archived.publication_pr_number = Some(24);
+        archived.publication_pr_status = Some("open".to_string());
+        archived.publication_push_status = Some("describing".to_string());
+        archived.updated_at = stale;
+
+        for workspace in [refreshing.clone(), closed, archived] {
+            repo.create_or_update(workspace).await.unwrap();
+        }
+
+        let workspaces = repo
+            .list_active_transient_publish_status_workspaces(0)
+            .await
+            .unwrap();
+
+        assert_eq!(workspaces.len(), 1);
+        assert_eq!(workspaces[0].conversation_id, refreshing.conversation_id);
     }
 
     #[tokio::test]

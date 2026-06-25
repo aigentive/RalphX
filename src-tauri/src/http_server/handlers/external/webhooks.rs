@@ -4,6 +4,7 @@ use axum::body::Bytes;
 use crate::application::{
     LinearWebhookAction, LinearWebhookError, LinearWebhookHeaders,
     LinearWebhookReconciliationService, LinearWebhookRequest, LinearWebhookStore,
+    TicketingCacheInvalidator,
 };
 use crate::domain::services::SecretStore;
 use crate::infrastructure::secret_store::MacosKeychainSecretStore;
@@ -323,6 +324,13 @@ pub async fn receive_linear_webhook_http(
         .handle(request, chrono::Utc::now())
         .await
         .map_err(linear_webhook_http_error)?;
+    if !outcome.duplicate {
+        let _ = TicketingCacheInvalidator::invalidate_linear_webhook(
+            state.app_state.app_handle.as_ref(),
+            &body,
+            linear_action_label(&outcome.action),
+        );
+    }
     if let LinearWebhookAction::TransitionedTask {
         task_id,
         target_status,
@@ -470,13 +478,10 @@ mod tests {
                 .0;
         assert!(unregistered.success);
 
-        let missing = unregister_webhook_http(
-            State(state),
-            headers,
-            Path("missing-webhook".to_string()),
-        )
-        .await
-        .unwrap_err();
+        let missing =
+            unregister_webhook_http(State(state), headers, Path("missing-webhook".to_string()))
+                .await
+                .unwrap_err();
         assert_eq!(missing.status, StatusCode::NOT_FOUND);
     }
 
@@ -520,6 +525,65 @@ mod tests {
         for (action, expected) in actions {
             assert_eq!(linear_action_label(&action), expected);
         }
+    }
+
+    /// The handler's dedupe gate (`if !outcome.duplicate`) skips cache
+    /// invalidation only for `DuplicateDelivery`. Confirm that action is the
+    /// sole one mapping to the `duplicate_delivery` label, so the gate can never
+    /// silently start (or stop) matching the wrong action.
+    #[test]
+    fn duplicate_delivery_is_the_only_skipped_invalidation_label() {
+        let task_id = TaskId::from_string("task-1".to_string());
+        let non_duplicate_actions = [
+            LinearWebhookAction::TransitionedTask {
+                task_id,
+                target_status: InternalStatus::Executing,
+            },
+            LinearWebhookAction::RecordedIssue,
+            LinearWebhookAction::RecordedIssueActivity,
+            LinearWebhookAction::NoLinkedTask,
+            LinearWebhookAction::NoMappedStatus,
+            LinearWebhookAction::UnsupportedEvent,
+        ];
+
+        assert_eq!(
+            linear_action_label(&LinearWebhookAction::DuplicateDelivery),
+            "duplicate_delivery"
+        );
+        for action in non_duplicate_actions {
+            assert_ne!(
+                linear_action_label(&action),
+                "duplicate_delivery",
+                "non-duplicate actions must not share the skipped label"
+            );
+        }
+    }
+
+    /// For a non-duplicate outcome the handler invokes `invalidate_linear_webhook`
+    /// with the action label as the reason. Exercise that exact call (the branch
+    /// the dedupe gate runs) and confirm it constructs a ticketing-cache event
+    /// carrying the action label as its reason.
+    #[test]
+    fn non_duplicate_branch_invalidates_with_action_label_reason() {
+        use crate::application::TicketingCacheInvalidator;
+
+        let action = LinearWebhookAction::RecordedIssue;
+        let body = serde_json::json!({
+            "type": "Issue",
+            "data": { "id": "issue-1", "identifier": "LIN-1" }
+        })
+        .to_string();
+
+        // No app_handle (as in test AppState) → no emit, but the event is built.
+        let event = TicketingCacheInvalidator::invalidate_linear_webhook(
+            None,
+            body.as_bytes(),
+            linear_action_label(&action),
+        )
+        .expect("non-duplicate Issue webhook should produce an invalidation event");
+
+        assert_eq!(event.reason, "recorded_issue");
+        assert_eq!(event.ticket_id.as_deref(), Some("issue-1"));
     }
 
     #[test]

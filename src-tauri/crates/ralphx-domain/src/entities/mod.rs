@@ -34,6 +34,7 @@ pub mod task_metadata;
 pub mod task_qa;
 pub mod task_step;
 pub mod team;
+pub mod ticket_canonical_branch;
 pub mod types;
 pub mod workflow;
 
@@ -48,7 +49,8 @@ pub use agent_conversation_linear_issue::{
     AgentConversationLinearIssueLink, AgentConversationLinearRefreshStatus,
 };
 pub use agent_conversation_workspace::{
-    is_pr_status_pollable_push_status, is_terminal_publication_pr_status, pr_comment_body_excerpt,
+    is_open_pr, is_pr_status_pollable_push_status, is_terminal_publication_pr_status,
+    pr_comment_body_excerpt,
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
     AgentWorkspacePrCommentEvidence, AgentWorkspacePrCommentEvidenceUpsert,
@@ -159,6 +161,7 @@ pub use task_step::{StepProgressSummary, TaskStep, TaskStepStatus};
 pub use team::{
     TeamMessageId, TeamMessageRecord, TeamSession, TeamSessionId, TeammateCost, TeammateSnapshot,
 };
+pub use ticket_canonical_branch::TicketCanonicalBranch;
 pub use types::{
     ApiKeyId, ChatMessageId, ExecutionPlanId, IdeationSessionId, ProjectId, ReviewIssueId,
     SessionLinkId, TaskId, TaskProposalId, TaskQAId, TaskStepId,
