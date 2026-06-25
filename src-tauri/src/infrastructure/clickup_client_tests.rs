@@ -354,7 +354,7 @@ async fn filtered_tasks_searches_metadata_and_stops_at_limit() {
                 sample_task("skip-1", "open"),
                 {
                     "id": "match-title",
-                    "name": "Demo task",
+                    "name": "Alpha demo task",
                     "status": { "status": "to do", "type": "open" },
                     "assignees": [{ "username": "Adrian" }],
                     "tags": []
@@ -369,7 +369,7 @@ async fn filtered_tasks_searches_metadata_and_stops_at_limit() {
                     "name": "Other task",
                     "status": { "status": "to do", "type": "open" },
                     "assignees": [],
-                    "tags": [{ "name": "Inbox" }]
+                    "tags": [{ "name": "Alpha" }]
                 }
             ],
             "last_page": false
@@ -382,7 +382,7 @@ async fn filtered_tasks_searches_metadata_and_stops_at_limit() {
         "9000",
         &[],
         ClickUpTaskListOptions {
-            query: Some("inbox".to_string()),
+            query: Some("alpha".to_string()),
             limit: Some(2),
         },
     )
