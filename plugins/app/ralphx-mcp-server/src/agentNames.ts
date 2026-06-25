@@ -18,6 +18,7 @@ export const AGENT_WORKSPACE_PR_FIXER = "ralphx-agent-workspace-pr-fixer";
 export const CODER = "ralphx-execution-coder";
 export const SESSION_NAMER = "ralphx-utility-session-namer";
 export const PR_DESCRIBER = "ralphx-utility-pr-describer";
+export const WORKSPACE_REVIEWER = "ralphx-workspace-reviewer";
 export const PLAN_COMPLEXITY_ASSESSOR = "ralphx-utility-plan-complexity";
 export const MERGER = "ralphx-execution-merger";
 export const PROJECT_ANALYZER = "ralphx-project-analyzer";

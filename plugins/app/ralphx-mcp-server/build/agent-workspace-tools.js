@@ -104,6 +104,91 @@ export const AGENT_WORKSPACE_TOOLS = [
         },
     },
     {
+        name: "get_workspace_review_context",
+        description: "Read the current general workspace Review context, including the selected review target, diff fingerprint, prior Review artifact version, and freshness state. " +
+            "Call this first when running as the workspace Review artifact writer.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                conversation_id: {
+                    type: "string",
+                    description: "Optional agent workspace conversation ID. Omit when calling from the current workspace Review conversation.",
+                },
+            },
+        },
+    },
+    {
+        name: "write_workspace_review_artifact",
+        description: "Create a new version of the durable Markdown Review artifact for the current agent workspace review target. " +
+            "Call this after inspecting the selected_source or workspace_delta target.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                conversation_id: {
+                    type: "string",
+                    description: "Optional agent workspace conversation ID. Omit when calling from the current workspace Review conversation.",
+                },
+                title: {
+                    type: "string",
+                    description: "Optional review artifact title. Usually omit it; RalphX defaults to a target-specific title such as PR #123, the source branch name, or Workspace changes. Do not duplicate the title as a Markdown H1 in content.",
+                },
+                content: {
+                    type: "string",
+                    description: "Full Markdown content for the durable Review tab artifact.",
+                },
+                target_scope: {
+                    type: "string",
+                    enum: ["selected_source", "workspace_delta"],
+                    description: "Review target scope from get_workspace_review_context.",
+                },
+                head_sha: {
+                    type: "string",
+                    description: "Optional target head SHA covered by this artifact.",
+                },
+                diff_fingerprint: {
+                    type: "string",
+                    description: "Target diff fingerprint from get_workspace_review_context.",
+                },
+                created_by_run_id: {
+                    type: "string",
+                    description: "Optional RalphX run id that produced this review artifact.",
+                },
+            },
+            required: ["content"],
+        },
+    },
+    {
+        name: "complete_workspace_review_run",
+        description: "Record that a general workspace Review run completed or is blocked. " +
+            "Call this after writing the Review artifact, or with blocker when the review could not be completed.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                conversation_id: {
+                    type: "string",
+                    description: "Optional agent workspace conversation ID. Omit when calling from the current workspace Review conversation.",
+                },
+                outcome: {
+                    type: "string",
+                    description: "Optional normalized outcome such as reviewed, no_changes, or blocked.",
+                },
+                summary: {
+                    type: "string",
+                    description: "Brief summary of the review run outcome.",
+                },
+                blocker: {
+                    type: "string",
+                    description: "Optional blocker when review could not be completed safely.",
+                },
+                created_by_run_id: {
+                    type: "string",
+                    description: "Optional RalphX run id that produced this outcome.",
+                },
+            },
+            required: ["summary"],
+        },
+    },
+    {
         name: "propose_pr_review_action",
         description: "Create or update a pending user-approved PR review action for the current PR head. " +
             "Use this after local review when the recommendation is Request Changes, Approve PR, or Comment.",
@@ -330,6 +415,12 @@ export async function callAgentWorkspaceTool(name, callTauri, callTauriGet, args
             return callGetAgentWorkspacePrFixContextTool(callTauriGet, args);
         case "get_pr_review_context":
             return callGetPrReviewContextTool(callTauriGet, args, runtimeContext);
+        case "get_workspace_review_context":
+            return callGetWorkspaceReviewContextTool(callTauriGet, args, runtimeContext);
+        case "write_workspace_review_artifact":
+            return callWriteWorkspaceReviewArtifactTool(callTauri, args, runtimeContext);
+        case "complete_workspace_review_run":
+            return callCompleteWorkspaceReviewRunTool(callTauri, args, runtimeContext);
         case "propose_pr_review_action":
             return callProposePrReviewActionTool(callTauri, args, runtimeContext);
         case "write_pr_review_artifact":
@@ -392,6 +483,32 @@ export async function callGetAgentWorkspacePrFixContextTool(callTauriGet, args) 
 export async function callGetPrReviewContextTool(callTauriGet, args, runtimeContext) {
     const conversation_id = resolveAgentWorkspaceConversationId("get_pr_review_context", args, runtimeContext);
     return callTauriGet(`agent-workspaces/${conversation_id}/pr-review-context`);
+}
+export async function callGetWorkspaceReviewContextTool(callTauriGet, args, runtimeContext) {
+    const conversation_id = resolveAgentWorkspaceConversationId("get_workspace_review_context", args, runtimeContext);
+    return callTauriGet(`agent-workspaces/${conversation_id}/workspace-review-context`);
+}
+export async function callWriteWorkspaceReviewArtifactTool(callTauri, args, runtimeContext) {
+    const conversation_id = resolveAgentWorkspaceConversationId("write_workspace_review_artifact", args, runtimeContext);
+    const artifactArgs = (args && typeof args === "object" ? args : {});
+    return callTauri(`agent-workspaces/${conversation_id}/workspace-review-artifact`, {
+        title: artifactArgs.title,
+        content: artifactArgs.content,
+        target_scope: artifactArgs.target_scope,
+        head_sha: artifactArgs.head_sha,
+        diff_fingerprint: artifactArgs.diff_fingerprint,
+        created_by_run_id: artifactArgs.created_by_run_id,
+    });
+}
+export async function callCompleteWorkspaceReviewRunTool(callTauri, args, runtimeContext) {
+    const conversation_id = resolveAgentWorkspaceConversationId("complete_workspace_review_run", args, runtimeContext);
+    const runArgs = (args && typeof args === "object" ? args : {});
+    return callTauri(`agent-workspaces/${conversation_id}/complete-workspace-review-run`, {
+        outcome: runArgs.outcome,
+        summary: runArgs.summary,
+        blocker: runArgs.blocker,
+        created_by_run_id: runArgs.created_by_run_id,
+    });
 }
 export async function callProposePrReviewActionTool(callTauri, args, runtimeContext) {
     const conversation_id = resolveAgentWorkspaceConversationId("propose_pr_review_action", args, runtimeContext);

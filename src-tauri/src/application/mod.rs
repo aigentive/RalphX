@@ -17,6 +17,7 @@ pub(crate) mod plan_pr_description;
 pub mod project_pr_template;
 pub(crate) mod agent_workspace_pr_supervision_recovery;
 pub mod agent_workspace_publish_recovery;
+pub mod agent_workspace_review;
 pub mod agent_workspace_bridge;
 pub mod agent_terminal;
 pub mod agent_client_bundle;

@@ -329,15 +329,15 @@ mod v20260617122430_agent_workspace_initial_auto_publish_tests;
 mod v20260618123000_agent_workspace_pr_review_monitoring;
 #[cfg(test)]
 mod v20260618123000_agent_workspace_pr_review_monitoring_tests;
-mod v20260619093000_agent_workspace_pr_review_artifacts;
-#[cfg(test)]
-mod v20260619093000_agent_workspace_pr_review_artifacts_tests;
 mod v20260618134600_review_pr_mode_checks;
 #[cfg(test)]
 mod v20260618134600_review_pr_mode_checks_tests;
 mod v20260618181405_agent_conversation_linear_issue_links;
 #[cfg(test)]
 mod v20260618181405_agent_conversation_linear_issue_links_tests;
+mod v20260619093000_agent_workspace_pr_review_artifacts;
+#[cfg(test)]
+mod v20260619093000_agent_workspace_pr_review_artifacts_tests;
 mod v20260619144000_durable_queued_messages;
 #[cfg(test)]
 mod v20260619144000_durable_queued_messages_tests;
@@ -347,6 +347,9 @@ mod v20260620075610_provider_ticket_operations_tests;
 mod v20260621201947_ticket_canonical_branches;
 #[cfg(test)]
 mod v20260621201947_ticket_canonical_branches_tests;
+mod v20260622103000_agent_workspace_reviews;
+#[cfg(test)]
+mod v20260622103000_agent_workspace_reviews_tests;
 mod v20260623074101_clickup_integration_settings;
 #[cfg(test)]
 mod v20260623074101_clickup_integration_settings_tests;
@@ -1222,6 +1225,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260621201947,
         name: "ticket_canonical_branches",
         migrate: v20260621201947_ticket_canonical_branches::migrate,
+    },
+    Migration {
+        version: 20260622103000,
+        name: "agent_workspace_reviews",
+        migrate: v20260622103000_agent_workspace_reviews::migrate,
     },
     Migration {
         version: 20260623074101,

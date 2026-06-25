@@ -4,8 +4,10 @@ use crate::domain::entities::{
     AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription,
     AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
     AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
-    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceSourcePullRequest, ArtifactId,
-    ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId, ProjectId,
+    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewMonitor,
+    AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewTargetScope,
+    AgentWorkspaceSourcePullRequest, ArtifactId, ChatConversationId, IdeationAnalysisBaseRefKind,
+    IdeationSessionId, PlanBranchId, ProjectId,
     DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::repositories::AgentConversationWorkspaceRepository;
@@ -314,6 +316,104 @@ async fn pr_description_round_trips_and_clears() {
         .await
         .unwrap()
         .is_none());
+}
+
+#[tokio::test]
+async fn workspace_review_monitor_round_trips_and_preserves_versioned_artifacts() {
+    let (_db, repo, conversation_id) = setup_repo();
+    repo.create_or_update(make_workspace(conversation_id.clone()))
+        .await
+        .unwrap();
+
+    let artifact_updated_at = chrono::Utc::now();
+    let mut monitor = AgentWorkspaceReviewMonitor::new(
+        conversation_id.clone(),
+        ProjectId::from_string("project-1".to_string()),
+    );
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Ready;
+    monitor.current_target_scope = Some(AgentWorkspaceReviewTargetScope::SelectedSource);
+    monitor.reviewed_target_scope = Some(AgentWorkspaceReviewTargetScope::SelectedSource);
+    monitor.review_artifact_id = Some(ArtifactId::from_string("artifact-current"));
+    monitor.review_artifact_version = Some(4);
+    monitor.review_artifact_updated_at = Some(artifact_updated_at);
+    monitor.reviewed_head_sha = Some("head-sha".to_string());
+    monitor.reviewed_diff_fingerprint = Some("fingerprint".to_string());
+    monitor.selected_source_base_ref = Some("main".to_string());
+    monitor.selected_source_base_sha = Some("base-sha".to_string());
+    monitor.selected_source_head_ref = Some("feature/review".to_string());
+    monitor.selected_source_head_sha = Some("head-sha".to_string());
+    monitor.selected_source_pull_request_number = Some(483);
+    monitor.current_diff_fingerprint = Some("fingerprint".to_string());
+    monitor.previous_version_id = Some(ArtifactId::from_string("artifact-previous"));
+    monitor.last_run_id = Some("run-1".to_string());
+
+    let saved = repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+        .unwrap();
+    assert_eq!(saved.status, AgentWorkspaceReviewMonitorStatus::Ready);
+    assert_eq!(
+        saved.current_target_scope,
+        Some(AgentWorkspaceReviewTargetScope::SelectedSource)
+    );
+    assert_eq!(saved.review_artifact_version, Some(4));
+    assert_eq!(
+        saved.review_artifact_id.as_ref().map(ArtifactId::as_str),
+        Some("artifact-current")
+    );
+    assert_eq!(
+        saved.previous_version_id.as_ref().map(ArtifactId::as_str),
+        Some("artifact-previous")
+    );
+    assert_eq!(saved.selected_source_pull_request_number, Some(483));
+    assert_eq!(saved.last_run_id.as_deref(), Some("run-1"));
+
+    let mut update = AgentWorkspaceReviewMonitor::new(
+        conversation_id.clone(),
+        ProjectId::from_string("project-1".to_string()),
+    );
+    update.status = AgentWorkspaceReviewMonitorStatus::Blocked;
+    update.current_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
+    update.workspace_base_ref = Some("base-sha".to_string());
+    update.workspace_head_ref = Some("HEAD".to_string());
+    update.current_diff_fingerprint = Some("new-fingerprint".to_string());
+    update.last_run_id = Some("run-2".to_string());
+    update.last_error = Some("review failed".to_string());
+
+    let updated = repo
+        .upsert_workspace_review_monitor(update)
+        .await
+        .unwrap();
+    assert_eq!(updated.status, AgentWorkspaceReviewMonitorStatus::Blocked);
+    assert_eq!(
+        updated.current_target_scope,
+        Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta)
+    );
+    assert_eq!(updated.workspace_base_ref.as_deref(), Some("base-sha"));
+    assert_eq!(updated.workspace_head_ref.as_deref(), Some("HEAD"));
+    assert_eq!(
+        updated.current_diff_fingerprint.as_deref(),
+        Some("new-fingerprint")
+    );
+    assert_eq!(
+        updated.review_artifact_id.as_ref().map(ArtifactId::as_str),
+        Some("artifact-current"),
+        "partial monitor updates should preserve the last artifact id"
+    );
+    assert_eq!(updated.review_artifact_version, Some(4));
+    assert_eq!(
+        updated.previous_version_id.as_ref().map(ArtifactId::as_str),
+        Some("artifact-previous")
+    );
+    assert_eq!(updated.last_run_id.as_deref(), Some("run-2"));
+    assert_eq!(updated.last_error.as_deref(), Some("review failed"));
+
+    let loaded = repo
+        .get_workspace_review_monitor(&conversation_id)
+        .await
+        .unwrap()
+        .expect("monitor should load");
+    assert_eq!(loaded, updated);
 }
 
 #[tokio::test]

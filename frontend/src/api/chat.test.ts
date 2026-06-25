@@ -13,6 +13,8 @@ import {
   getAgentTimelineItemToolCallDetail,
   getConversationStats,
   getAgentWorkspacePrReviewContext,
+  getAgentWorkspaceReviewContext,
+  startAgentWorkspaceReview,
   submitAgentWorkspacePrReviewAction,
   skipAgentWorkspacePrReviewAction,
   createConversation,
@@ -2526,6 +2528,10 @@ describe("chat api", () => {
     expect(chatApi.getAgentWorkspacePrReviewContext).toBe(
       getAgentWorkspacePrReviewContext
     );
+    expect(chatApi.getAgentWorkspaceReviewContext).toBe(
+      getAgentWorkspaceReviewContext
+    );
+    expect(chatApi.startAgentWorkspaceReview).toBe(startAgentWorkspaceReview);
     expect(chatApi.submitAgentWorkspacePrReviewAction).toBe(
       submitAgentWorkspacePrReviewAction
     );
@@ -2611,6 +2617,44 @@ describe("getConversationActiveState", () => {
     created_at: "2026-06-18T12:00:00Z",
     updated_at: "2026-06-18T12:00:00Z",
     resolved_at: null,
+    ...overrides,
+  });
+  const rawWorkspaceReviewMonitor = (overrides: Record<string, unknown> = {}) => ({
+    conversation_id: "conversation-1",
+    project_id: "project-1",
+    status: "ready",
+    current_target_scope: "workspace_delta",
+    reviewed_target_scope: "workspace_delta",
+    review_artifact_id: "review-artifact-1",
+    review_artifact_version: 2,
+    review_artifact_updated_at: "2026-06-18T12:05:00Z",
+    reviewed_head_sha: "head-sha",
+    reviewed_diff_fingerprint: "fingerprint-1",
+    selected_source_base_ref: null,
+    selected_source_base_sha: null,
+    selected_source_head_ref: null,
+    selected_source_head_sha: null,
+    selected_source_pull_request_number: null,
+    workspace_base_ref: "main",
+    workspace_base_sha: "base-sha",
+    workspace_head_ref: "HEAD",
+    workspace_head_sha: "head-sha",
+    current_diff_fingerprint: "fingerprint-1",
+    previous_version_id: "review-artifact-0",
+    last_run_id: "run-1",
+    last_error: null,
+    created_at: "2026-06-18T12:00:00Z",
+    updated_at: "2026-06-18T12:05:00Z",
+    ...overrides,
+  });
+  const rawWorkspaceReviewTarget = (overrides: Record<string, unknown> = {}) => ({
+    scope: "workspace_delta",
+    base_ref: "main",
+    base_sha: "base-sha",
+    head_ref: "HEAD",
+    head_sha: "head-sha",
+    diff_fingerprint: "fingerprint-1",
+    source_pull_request_number: null,
     ...overrides,
   });
 
@@ -2772,6 +2816,77 @@ describe("getConversationActiveState", () => {
     expect(result.pendingAction?.proposedAction).toBe("request_changes");
     expect(result.recentActions[0]?.status).toBe("skipped");
     expect(result.issueCommentEvidence).toEqual([{ comment_id: "comment-1" }]);
+  });
+
+  it("fetches and transforms general workspace review context", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          success: true,
+          workspace: rawWorkspace(),
+          events: [],
+          target: rawWorkspaceReviewTarget(),
+          monitor: rawWorkspaceReviewMonitor(),
+          is_current: true,
+          is_outdated: false,
+          should_show_tab: true,
+        }),
+    });
+
+    const result = await getAgentWorkspaceReviewContext("conversation-1");
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      "http://localhost:3847/api/agent-workspaces/conversation-1/workspace-review-context",
+      undefined
+    );
+    expect(result.workspace.conversationId).toBe("conversation-1");
+    expect(result.target?.scope).toBe("workspace_delta");
+    expect(result.target?.diffFingerprint).toBe("fingerprint-1");
+    expect(result.monitor.reviewArtifactVersion).toBe(2);
+    expect(result.monitor.previousVersionId).toBe("review-artifact-0");
+    expect(result.isCurrent).toBe(true);
+  });
+
+  it("starts a general workspace review run through the encoded REST endpoint", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          success: true,
+          target: rawWorkspaceReviewTarget({
+            scope: "selected_source",
+            source_pull_request_number: 42,
+          }),
+          monitor: rawWorkspaceReviewMonitor({
+            status: "reviewing",
+            current_target_scope: "selected_source",
+          }),
+          is_current: false,
+          is_outdated: true,
+          should_show_tab: true,
+          started: true,
+          skipped_reason: null,
+          was_queued: false,
+        }),
+    });
+
+    const result = await startAgentWorkspaceReview("conversation/1", {
+      force: true,
+    });
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      "http://localhost:3847/api/agent-workspaces/conversation%2F1/workspace-review-runs",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ force: true }),
+      }
+    );
+    expect(result.started).toBe(true);
+    expect(result.target?.scope).toBe("selected_source");
+    expect(result.target?.sourcePullRequestNumber).toBe(42);
+    expect(result.monitor.status).toBe("reviewing");
   });
 
   it("submits and skips agent workspace PR review actions through encoded REST endpoints", async () => {

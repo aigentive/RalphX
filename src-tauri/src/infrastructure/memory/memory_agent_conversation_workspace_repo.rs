@@ -9,8 +9,9 @@ use crate::domain::entities::{
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
     AgentWorkspacePrCommentEvidence, AgentWorkspacePrCommentEvidenceUpsert,
     AgentWorkspacePrDescription, AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionStatus,
-    AgentWorkspacePrReviewMonitor, AgentWorkspacePrReviewMonitorStatus, ChatConversationId,
-    IdeationSessionId, PlanBranchId, ProjectId, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+    AgentWorkspacePrReviewMonitor, AgentWorkspacePrReviewMonitorStatus,
+    AgentWorkspaceReviewMonitor, ChatConversationId, IdeationSessionId, PlanBranchId, ProjectId,
+    DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::repositories::AgentConversationWorkspaceRepository;
 use crate::error::AppResult;
@@ -22,6 +23,7 @@ pub struct MemoryAgentConversationWorkspaceRepository {
         RwLock<HashMap<ChatConversationId, Vec<AgentConversationWorkspacePublicationEvent>>>,
     pr_comment_evidence: RwLock<HashMap<(String, i64, String), AgentWorkspacePrCommentEvidence>>,
     pr_review_monitors: RwLock<HashMap<ChatConversationId, AgentWorkspacePrReviewMonitor>>,
+    workspace_review_monitors: RwLock<HashMap<ChatConversationId, AgentWorkspaceReviewMonitor>>,
     pr_review_actions: RwLock<HashMap<String, AgentWorkspacePrReviewAction>>,
 }
 
@@ -33,6 +35,7 @@ impl MemoryAgentConversationWorkspaceRepository {
             publication_events: RwLock::new(HashMap::new()),
             pr_comment_evidence: RwLock::new(HashMap::new()),
             pr_review_monitors: RwLock::new(HashMap::new()),
+            workspace_review_monitors: RwLock::new(HashMap::new()),
             pr_review_actions: RwLock::new(HashMap::new()),
         }
     }
@@ -577,6 +580,39 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
         Ok(monitors)
     }
 
+    async fn upsert_workspace_review_monitor(
+        &self,
+        mut monitor: AgentWorkspaceReviewMonitor,
+    ) -> AppResult<AgentWorkspaceReviewMonitor> {
+        let mut monitors = self.workspace_review_monitors.write().await;
+        if let Some(existing) = monitors.get(&monitor.conversation_id) {
+            monitor.created_at = existing.created_at;
+            if monitor.review_artifact_id.is_none() {
+                monitor.review_artifact_id = existing.review_artifact_id.clone();
+                monitor.review_artifact_version = existing.review_artifact_version;
+                monitor.review_artifact_updated_at = existing.review_artifact_updated_at;
+            }
+            if monitor.previous_version_id.is_none() {
+                monitor.previous_version_id = existing.previous_version_id.clone();
+            }
+        }
+        monitor.updated_at = Utc::now();
+        monitors.insert(monitor.conversation_id, monitor.clone());
+        Ok(monitor)
+    }
+
+    async fn get_workspace_review_monitor(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<AgentWorkspaceReviewMonitor>> {
+        Ok(self
+            .workspace_review_monitors
+            .read()
+            .await
+            .get(conversation_id)
+            .cloned())
+    }
+
     async fn create_or_update_pr_review_action(
         &self,
         mut action: AgentWorkspacePrReviewAction,
@@ -675,6 +711,10 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             .await
             .retain(|(id, _, _), _| id != &conversation_key);
         self.pr_review_monitors
+            .write()
+            .await
+            .remove(conversation_id);
+        self.workspace_review_monitors
             .write()
             .await
             .remove(conversation_id);

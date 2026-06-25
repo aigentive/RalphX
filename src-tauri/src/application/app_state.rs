@@ -39,7 +39,7 @@ use crate::domain::agents::{
     lightweight_model_for_provider, AgentHarnessKind, AgentProviderCliManagementMode,
     AgentProviderSettings, AgenticClient, LogicalEffort, DEFAULT_AGENT_HARNESS,
 };
-use crate::domain::entities::{ChatContextType, ChatConversation, IdeationSession};
+use crate::domain::entities::{AgentRun, ChatContextType, ChatConversation, IdeationSession};
 use crate::domain::qa::QASettings;
 use crate::domain::repositories::{
     ActivePlanRepository, ActivityEventRepository, AgentConversationJiraIssueRepository,
@@ -811,6 +811,57 @@ impl AppState {
             )
             .await?;
         Ok(Self::lock_utility_agent_runtime_model(runtime))
+    }
+
+    pub(crate) async fn resolve_workspace_reviewer_runtime(
+        &self,
+        conversation: &ChatConversation,
+        latest_run: Option<&AgentRun>,
+    ) -> AppResult<ResolvedBackgroundAgentRuntime> {
+        let requested_harness = latest_run
+            .and_then(|run| run.harness)
+            .or(conversation.provider_harness);
+
+        let mut runtime = if let Some(harness) = requested_harness {
+            self.resolve_background_agent_runtime_for_harness(
+                harness,
+                "workspace reviewer owning conversation",
+            )
+            .await?
+        } else {
+            let default_provider = crate::application::resolve_enabled_default_provider(
+                &self.agent_provider_settings_repo,
+                "workspace reviewer default provider",
+            )
+            .await
+            .map_err(AppError::Infrastructure)?;
+            self.resolve_background_agent_runtime_for_harness(
+                default_provider.provider,
+                "workspace reviewer default provider",
+            )
+            .await?
+        };
+
+        if let Some(run) = latest_run {
+            if let Some(model) = run
+                .logical_model
+                .clone()
+                .or_else(|| run.effective_model_id.clone())
+            {
+                runtime.model = Some(model);
+            }
+            if run.logical_effort.is_some() {
+                runtime.logical_effort = run.logical_effort;
+            }
+            if run.approval_policy.is_some() {
+                runtime.approval_policy = run.approval_policy.clone();
+            }
+            if run.sandbox_mode.is_some() {
+                runtime.sandbox_mode = run.sandbox_mode.clone();
+            }
+        }
+
+        Ok(runtime)
     }
 
     pub(crate) async fn resolve_plan_complexity_runtime_for_session(

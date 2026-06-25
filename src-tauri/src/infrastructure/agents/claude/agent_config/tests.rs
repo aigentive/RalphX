@@ -12,7 +12,7 @@ use crate::infrastructure::agents::claude::agent_names::{
     SHORT_PLAN_CRITIC_COMPLETENESS, SHORT_PLAN_CRITIC_IMPLEMENTATION_FEASIBILITY,
     SHORT_PLAN_VERIFIER, SHORT_PROJECT_ANALYZER, SHORT_PR_DESCRIBER, SHORT_PR_REVIEWER,
     SHORT_QA_EXECUTOR, SHORT_QA_PREP, SHORT_REVIEWER, SHORT_REVIEW_CHAT, SHORT_REVIEW_HISTORY,
-    SHORT_SESSION_NAMER, SHORT_WORKER, SHORT_WORKER_TEAM,
+    SHORT_SESSION_NAMER, SHORT_WORKER, SHORT_WORKER_TEAM, SHORT_WORKSPACE_REVIEWER,
 };
 use crate::infrastructure::agents::harness_agent_catalog::{
     has_canonical_agent_definition, list_canonical_prompt_backed_agents, load_harness_agent_prompt,
@@ -277,6 +277,7 @@ fn test_all_agent_names_are_known() {
         SHORT_AGENT_WORKSPACE_REPAIR,
         SHORT_AGENT_WORKSPACE_PR_FIXER,
         SHORT_PR_REVIEWER,
+        SHORT_WORKSPACE_REVIEWER,
         SHORT_WORKER,
         SHORT_CODER,
         SHORT_REVIEWER,

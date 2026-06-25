@@ -6,7 +6,8 @@ use crate::entities::{
     AgentConversationWorkspaceStatus, AgentWorkspacePrCommentEvidence,
     AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription,
     AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionStatus,
-    AgentWorkspacePrReviewMonitor, ChatConversationId, IdeationSessionId, PlanBranchId, ProjectId,
+    AgentWorkspacePrReviewMonitor, AgentWorkspaceReviewMonitor, ChatConversationId,
+    IdeationSessionId, PlanBranchId, ProjectId,
 };
 use crate::error::AppResult;
 
@@ -244,6 +245,20 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         &self,
     ) -> AppResult<Vec<AgentWorkspacePrReviewMonitor>> {
         Ok(Vec::new())
+    }
+
+    async fn upsert_workspace_review_monitor(
+        &self,
+        monitor: AgentWorkspaceReviewMonitor,
+    ) -> AppResult<AgentWorkspaceReviewMonitor> {
+        Ok(monitor)
+    }
+
+    async fn get_workspace_review_monitor(
+        &self,
+        _conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<AgentWorkspaceReviewMonitor>> {
+        Ok(None)
     }
 
     async fn create_or_update_pr_review_action(
