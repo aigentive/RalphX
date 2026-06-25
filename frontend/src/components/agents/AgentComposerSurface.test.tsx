@@ -1404,18 +1404,28 @@ describe("AgentComposerSurface", () => {
       expect(surface).toHaveAttribute("data-collapsed", "true");
     });
 
-    it("keeps the composer expanded while the agent is generating", () => {
+    it("returns to the minimal state after blur while the agent is generating", () => {
       renderComposer({
         dataTestId: "agent-composer",
         collapsible: true,
         agentStatus: "generating",
+        onStop: vi.fn(),
       });
 
-      // No focus, empty prompt — but live agent activity must keep it open.
-      expect(screen.getByTestId("agent-composer")).toHaveAttribute(
-        "data-collapsed",
-        "false",
-      );
+      const surface = screen.getByTestId("agent-composer");
+      const textarea = screen.getByLabelText(
+        "Message input",
+      ) as HTMLTextAreaElement;
+
+      expect(surface).toHaveAttribute("data-collapsed", "true");
+      fireEvent.focus(textarea);
+      expect(surface).toHaveAttribute("data-collapsed", "false");
+      fireEvent.blur(textarea);
+      expect(surface).toHaveAttribute("data-collapsed", "true");
+
+      const stopButton = screen.getByTestId("agent-composer-submit");
+      expect(stopButton).toHaveAccessibleName("Stop agent");
+      expect(stopButton).toBeEnabled();
     });
 
     it("still sends on Enter from the collapsible composer", () => {

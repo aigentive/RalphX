@@ -257,7 +257,7 @@ export interface AgentComposerSurfaceProps {
   showHelperText?: boolean;
   /**
    * Collapse the composer into a minimal one-row resting state when it is idle
-   * (not focused, empty, no agent activity / attachments / references / queue).
+   * (not focused, empty, no attachments / references / queue).
    * Focusing — or any pending activity — expands it with a soft animation.
    * Defaults to false so the new-conversation / start composer keeps its
    * always-expanded layout.
@@ -707,13 +707,14 @@ export function AgentComposerSurface({
 
   // Collapsed (minimal) resting state. The composer expands when the textarea
   // is focused (cursor active, even with no text yet) or when there is real
-  // content to keep visible: text, a live agent, attachments, references,
-  // queued messages, a pending question, or read-only review. Transient
-  // popovers (+, mode, model) intentionally do NOT expand it on their own, so
-  // opening a menu on an unfocused composer never resizes the chat block.
+  // composer-local content to keep visible: text, attachments, references,
+  // queued messages, a pending question, or read-only review. A running agent
+  // alone does not keep the prompt expanded after blur; the Stop action remains
+  // available in the compact footer. Transient popovers (+, mode, model)
+  // intentionally do NOT expand it on their own, so opening a menu on an
+  // unfocused composer never resizes the chat block.
   const hasComposerActivity =
     value.trim().length > 0 ||
-    isAgentAlive ||
     attachments.length > 0 ||
     attachmentsUploading ||
     hasSelectedReferences ||
