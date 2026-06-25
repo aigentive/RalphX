@@ -35,7 +35,7 @@ pub use model_registry::{
     default_model_for_provider, lightweight_model_for_provider, AgentModelDefinition,
     AgentModelRegistrySnapshot, AgentModelSource,
 };
-pub use provider_settings::AgentProviderSettings;
+pub use provider_settings::{AgentProviderCliManagementMode, AgentProviderSettings};
 pub use types::{
     AgentConfig, AgentHandle, AgentOutput, AgentResponse, AgentRole, ClientType, ResponseChunk,
 };

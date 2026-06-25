@@ -1,8 +1,9 @@
 use crate::domain::agents::LogicalEffort;
 use crate::infrastructure::agents::claude::cli_capabilities::{
-    clear_claude_cli_capability_cache, normalize_claude_effort_for_capabilities,
-    normalize_claude_effort_for_cli_path, parse_claude_cli_capabilities, parse_claude_version,
-    probe_claude_cli_cached, ClaudeCliCapabilities,
+    clear_claude_cli_capability_cache, is_claude_fable_model,
+    normalize_claude_effort_for_capabilities, normalize_claude_effort_for_cli_path,
+    parse_claude_cli_capabilities, parse_claude_version, probe_claude_cli_cached,
+    validate_claude_model_for_cli_path, ClaudeCliCapabilities,
 };
 use std::path::Path;
 
@@ -42,6 +43,10 @@ fn parse_capabilities_detects_modern_effort_surface_from_help() {
 
     assert_eq!(capabilities.version.as_deref(), Some("2.1.142"));
     assert_eq!(
+        capabilities.supported_model_aliases,
+        vec!["sonnet", "opus", "haiku"]
+    );
+    assert_eq!(
         capabilities.supported_efforts,
         vec![
             LogicalEffort::Low,
@@ -79,9 +84,30 @@ fn parse_capabilities_falls_back_to_version_when_help_does_not_list_efforts() {
 }
 
 #[test]
+fn parse_capabilities_enables_fable_alias_for_supported_cli_versions() {
+    let before_fable = parse_claude_cli_capabilities("", Some("2.1.169 (Claude Code)"));
+    let with_fable = parse_claude_cli_capabilities("", Some("2.1.170 (Claude Code)"));
+
+    assert!(!before_fable.supports_fable_model());
+    assert!(with_fable.supports_fable_model());
+    assert_eq!(
+        with_fable.supported_model_aliases,
+        vec!["sonnet", "opus", "haiku", "fable"]
+    );
+}
+
+#[test]
+fn fable_model_detection_accepts_alias_and_api_model_id() {
+    assert!(is_claude_fable_model("fable"));
+    assert!(is_claude_fable_model(" Claude-Fable-5 "));
+    assert!(!is_claude_fable_model("opus"));
+}
+
+#[test]
 fn normalize_effort_keeps_supported_xhigh_and_max() {
     let capabilities = ClaudeCliCapabilities {
         version: Some("2.1.142".to_string()),
+        supported_model_aliases: vec!["sonnet".to_string(), "opus".to_string()],
         supported_efforts: vec![
             LogicalEffort::Low,
             LogicalEffort::Medium,
@@ -105,6 +131,7 @@ fn normalize_effort_keeps_supported_xhigh_and_max() {
 fn normalize_effort_downgrades_xhigh_to_high_for_legacy_cli() {
     let capabilities = ClaudeCliCapabilities {
         version: Some("2.1.110".to_string()),
+        supported_model_aliases: vec!["sonnet".to_string(), "opus".to_string()],
         supported_efforts: vec![
             LogicalEffort::Low,
             LogicalEffort::Medium,
@@ -127,6 +154,7 @@ fn normalize_effort_downgrades_xhigh_to_high_for_legacy_cli() {
 fn normalize_effort_falls_back_for_invalid_or_over_requested_effort() {
     let capabilities = ClaudeCliCapabilities {
         version: Some("2.1.142".to_string()),
+        supported_model_aliases: vec!["sonnet".to_string()],
         supported_efforts: vec![LogicalEffort::High],
     };
 
@@ -181,6 +209,76 @@ exit 2
     assert_eq!(first, second);
     assert_eq!(second.version.as_deref(), Some("2.1.142"));
     assert!(second.supports_effort(LogicalEffort::XHigh));
+    assert!(!second.supports_fable_model());
+
+    clear_claude_cli_capability_cache();
+}
+
+#[cfg(unix)]
+#[test]
+fn validate_fable_model_for_cli_path_requires_supported_version() {
+    let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("env mutex");
+    clear_claude_cli_capability_cache();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let cli_path = temp.path().join("claude");
+    write_fake_claude_cli(
+        &cli_path,
+        r#"#!/bin/sh
+case "$1" in
+  --version)
+    echo "2.1.169 (Claude Code)"
+    ;;
+  --help)
+    echo "Options:"
+    echo "  --effort <level>  Effort level for the current session (low, medium, high, xhigh, max)"
+    ;;
+  *)
+    echo "unexpected $1" >&2
+    exit 2
+    ;;
+esac
+"#,
+    );
+
+    let error = validate_claude_model_for_cli_path(&cli_path, "fable")
+        .expect_err("old CLI should reject fable");
+    assert!(error.contains("v2.1.170"));
+    assert!(validate_claude_model_for_cli_path(&cli_path, "opus").is_ok());
+
+    clear_claude_cli_capability_cache();
+}
+
+#[cfg(unix)]
+#[test]
+fn validate_fable_model_for_cli_path_accepts_supported_version() {
+    let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("env mutex");
+    clear_claude_cli_capability_cache();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let cli_path = temp.path().join("claude");
+    write_fake_claude_cli(
+        &cli_path,
+        r#"#!/bin/sh
+case "$1" in
+  --version)
+    echo "2.1.170 (Claude Code)"
+    ;;
+  --help)
+    echo "Options:"
+    echo "  --effort <level>  Effort level for the current session (low, medium, high, xhigh, max)"
+    ;;
+  *)
+    echo "unexpected $1" >&2
+    exit 2
+    ;;
+esac
+"#,
+    );
+
+    assert!(validate_claude_model_for_cli_path(&cli_path, "fable").is_ok());
 
     clear_claude_cli_capability_cache();
 }

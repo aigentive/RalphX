@@ -17,7 +17,10 @@ fn test_auth_token_masking_when_unset() {
 
 #[test]
 fn test_auth_token_mask_value() {
-    assert_eq!(AUTH_TOKEN_MASK, "\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}");
+    assert_eq!(
+        AUTH_TOKEN_MASK,
+        "\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}"
+    );
     assert_eq!(AUTH_TOKEN_MASK.chars().count(), 8);
 }
 

@@ -21,6 +21,8 @@ fn unavailable_probe(error: &str) -> HarnessRuntimeProbe {
         probe_succeeded: false,
         available: false,
         missing_core_exec_features: Vec::new(),
+        cli_version: None,
+        supported_model_aliases: None,
         supported_efforts: None,
         error: Some(error.to_string()),
     }
@@ -45,6 +47,8 @@ fn codex_lane_uses_codex_when_core_exec_support_is_available() {
         probe_succeeded: true,
         available: true,
         missing_core_exec_features: Vec::new(),
+        cli_version: None,
+        supported_model_aliases: None,
         supported_efforts: None,
         error: None,
     };
@@ -54,6 +58,8 @@ fn codex_lane_uses_codex_when_core_exec_support_is_available() {
         probe_succeeded: true,
         available: true,
         missing_core_exec_features: Vec::new(),
+        cli_version: None,
+        supported_model_aliases: None,
         supported_efforts: None,
         error: None,
     };
@@ -81,6 +87,8 @@ fn codex_lane_stays_unavailable_when_codex_is_unavailable() {
         probe_succeeded: true,
         available: true,
         missing_core_exec_features: Vec::new(),
+        cli_version: None,
+        supported_model_aliases: None,
         supported_efforts: None,
         error: None,
     };
@@ -90,6 +98,8 @@ fn codex_lane_stays_unavailable_when_codex_is_unavailable() {
         probe_succeeded: true,
         available: false,
         missing_core_exec_features: vec!["json_output".to_string()],
+        cli_version: None,
+        supported_model_aliases: None,
         supported_efforts: None,
         error: Some("Codex CLI is missing required capability: json_output".to_string()),
     };
@@ -187,6 +197,8 @@ fn missing_requested_probe_does_not_silently_fall_back_to_default_probe() {
             probe_succeeded: true,
             available: true,
             missing_core_exec_features: Vec::new(),
+            cli_version: None,
+            supported_model_aliases: None,
             supported_efforts: None,
             error: None,
         },
@@ -215,6 +227,8 @@ fn project_chat_runtime_override_uses_requested_harness_probe() {
                 probe_succeeded: true,
                 available: true,
                 missing_core_exec_features: Vec::new(),
+                cli_version: None,
+                supported_model_aliases: None,
                 supported_efforts: None,
                 error: None,
             },

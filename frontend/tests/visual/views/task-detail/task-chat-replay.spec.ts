@@ -1,4 +1,4 @@
-import { expect, test, type Locator, type Page } from "@playwright/test";
+import { expect, test, type Locator } from "@playwright/test";
 import { setupTaskChatScenario } from "../../../fixtures/chat.fixtures";
 
 async function visibleY(locator: Locator, label: string) {
@@ -6,6 +6,26 @@ async function visibleY(locator: Locator, label: string) {
   const box = await locator.boundingBox();
   expect(box, `${label} should have a layout box`).not.toBeNull();
   return box!.y;
+}
+
+function collapsedToolCallGroupToggles(root: Locator) {
+  return root.getByRole("button", { name: /^Agent called \d+ tools?$/ });
+}
+
+async function expandToolCallGroups(root: Locator) {
+  await expect(collapsedToolCallGroupToggles(root).first()).toBeVisible({ timeout: 10000 });
+
+  for (let index = 0; index < 20; index += 1) {
+    const toggles = collapsedToolCallGroupToggles(root);
+    const collapsedCount = await toggles.count();
+    if (collapsedCount === 0) {
+      return;
+    }
+    await toggles.first().click();
+    await expect
+      .poll(async () => collapsedToolCallGroupToggles(root).count())
+      .toBeLessThan(collapsedCount);
+  }
 }
 
 const executionContractContextId = "task-mock-4";
@@ -474,6 +494,7 @@ test.describe("Task Chat Replay", () => {
     await expect(
       panel.getByText("Execution replay sampled from a compact two-message worker conversation."),
     ).toBeVisible();
+    await expandToolCallGroups(panel);
     await expect(
       panel.getByText("frontend/src/components/Chat/MessageItem.tsx"),
     ).toBeVisible();
@@ -493,7 +514,7 @@ test.describe("Task Chat Replay", () => {
     await expect(
       panel.getByText("Reviewer replay sampled from a compact two-message real conversation."),
     ).toBeVisible();
-    await expect(panel.getByText(/Changes Requested/i)).toBeVisible();
+    await expect(panel.getByRole("button", { name: "Agent called 1 tool" })).toBeVisible();
 
     await page.getByTestId("chat-session-stats-button").click();
     await expect(page.getByText("1,506")).toBeVisible();
@@ -524,6 +545,7 @@ test.describe("Task Chat Replay", () => {
       mergeContractConversation,
       [mergeUserMessage, mergeLiveProviderMessage],
     );
+    const panel = page.locator('[data-testid="integrated-chat-panel"]');
 
     await emitChatEvent(page, "agent:tool_call", {
       tool_name: "ralphx::get_merge_target",
@@ -541,7 +563,8 @@ test.describe("Task Chat Replay", () => {
     });
 
     await expect(page.getByText("I am checking the merge target now.")).toHaveCount(1);
-    await expect(page.locator('[data-testid="merge-widget-target"]')).toHaveCount(1);
+    await expect(panel.getByRole("button", { name: "Agent called 1 tool" })).toHaveCount(1);
+    await expect(page.locator('[data-testid="merge-widget-target"]')).toHaveCount(0);
 
     await emitChatEvent(page, "agent:message_created", {
       conversation_id: mergeContractConversationId,
@@ -556,19 +579,19 @@ test.describe("Task Chat Replay", () => {
     await expect(
       page.getByText("The target is main, and the merge conflict is isolated to src/commands/gateway.ts."),
     ).toHaveCount(1);
-    await expect(page.locator('[data-testid="merge-widget-target"]')).toHaveCount(1);
+    await expect(panel.getByRole("button", { name: "Agent called 1 tool" })).toHaveCount(1);
 
     const firstText = page.getByText("I am checking the merge target now.");
-    const widget = page.locator('[data-testid="merge-widget-target"]');
+    const toolSummary = panel.getByRole("button", { name: "Agent called 1 tool" });
     const secondText = page.getByText(
       "The target is main, and the merge conflict is isolated to src/commands/gateway.ts.",
     );
     const firstY = await visibleY(firstText, "first merge text");
-    const widgetY = await visibleY(widget, "merge widget");
+    const toolSummaryY = await visibleY(toolSummary, "merge tool summary");
     const secondY = await visibleY(secondText, "second merge text");
 
-    expect(firstY).toBeLessThan(widgetY);
-    expect(widgetY).toBeLessThan(secondY);
+    expect(firstY).toBeLessThan(toolSummaryY);
+    expect(toolSummaryY).toBeLessThan(secondY);
   });
 
   test("keeps live and finalized execution turns deduplicated with stable task-tool ordering", async ({ page }) => {
@@ -578,6 +601,7 @@ test.describe("Task Chat Replay", () => {
       executionContractConversation,
       [executionUserMessage, executionLiveProviderMessage],
     );
+    const panel = page.locator('[data-testid="integrated-chat-panel"]');
 
     await emitChatEvent(page, "agent:tool_call", {
       tool_name: "Read",
@@ -595,7 +619,8 @@ test.describe("Task Chat Replay", () => {
     });
 
     await expect(page.getByText("I am reading the message renderer now.")).toHaveCount(1);
-    await expect(page.getByText("frontend/src/components/Chat/MessageItem.tsx")).toHaveCount(1);
+    await expect(panel.getByRole("button", { name: "Agent called 1 tool" })).toHaveCount(1);
+    await expect(page.getByText("frontend/src/components/Chat/MessageItem.tsx")).toHaveCount(0);
 
     await emitChatEvent(page, "agent:message_created", {
       conversation_id: executionContractConversationId,
@@ -613,19 +638,19 @@ test.describe("Task Chat Replay", () => {
     await expect(
       page.getByText("The provider metadata row is isolated to MessageItem and remains safe to adjust."),
     ).toHaveCount(1);
-    await expect(page.getByText("frontend/src/components/Chat/MessageItem.tsx")).toHaveCount(1);
+    await expect(panel.getByRole("button", { name: "Agent called 1 tool" })).toHaveCount(1);
 
     const firstText = page.getByText("I am reading the message renderer now.");
-    const widget = page.getByText("frontend/src/components/Chat/MessageItem.tsx");
+    const toolSummary = panel.getByRole("button", { name: "Agent called 1 tool" });
     const secondText = page.getByText(
       "The provider metadata row is isolated to MessageItem and remains safe to adjust.",
     );
     const firstY = await visibleY(firstText, "first execution text");
-    const widgetY = await visibleY(widget, "execution widget");
+    const toolSummaryY = await visibleY(toolSummary, "execution tool summary");
     const secondY = await visibleY(secondText, "second execution text");
 
-    expect(firstY).toBeLessThan(widgetY);
-    expect(widgetY).toBeLessThan(secondY);
+    expect(firstY).toBeLessThan(toolSummaryY);
+    expect(toolSummaryY).toBeLessThan(secondY);
   });
 
   test("keeps live and finalized review turns deduplicated with stable widget order", async ({ page }) => {
@@ -635,6 +660,7 @@ test.describe("Task Chat Replay", () => {
       reviewContractConversation,
       [reviewUserMessage, reviewLiveProviderMessage],
     );
+    const panel = page.locator('[data-testid="integrated-chat-panel"]');
 
     await emitChatEvent(page, "agent:tool_call", {
       tool_name: "complete_review",
@@ -656,7 +682,8 @@ test.describe("Task Chat Replay", () => {
     });
 
     await expect(page.getByText("I am completing the review now.")).toHaveCount(1);
-    await expect(page.locator('[data-testid="review-widget-complete"]')).toHaveCount(1);
+    await expect(panel.getByRole("button", { name: "Agent called 1 tool" })).toHaveCount(1);
+    await expect(page.locator('[data-testid="review-widget-complete"]')).toHaveCount(0);
 
     await emitChatEvent(page, "agent:message_created", {
       conversation_id: reviewContractConversationId,
@@ -672,20 +699,20 @@ test.describe("Task Chat Replay", () => {
 
     await expect(page.getByText("I am completing the review now.")).toHaveCount(1);
     await expect(page.getByText("Changes are still required before approval.")).toHaveCount(1);
-    await expect(page.locator('[data-testid="review-widget-complete"]')).toHaveCount(1);
+    await expect(panel.getByRole("button", { name: "Agent called 1 tool" })).toHaveCount(1);
 
     const firstText = page.getByText("I am completing the review now.");
-    const widget = page.locator('[data-testid="review-widget-complete"]');
+    const toolSummary = panel.getByRole("button", { name: "Agent called 1 tool" });
     const secondText = page.getByText("Changes are still required before approval.");
     const firstY = await visibleY(firstText, "first review text");
-    const widgetY = await visibleY(widget, "review widget");
+    const toolSummaryY = await visibleY(toolSummary, "review tool summary");
     const secondY = await visibleY(secondText, "second review text");
 
-    expect(firstY).toBeLessThan(widgetY);
-    expect(widgetY).toBeLessThan(secondY);
+    expect(firstY).toBeLessThan(toolSummaryY);
+    expect(toolSummaryY).toBeLessThan(secondY);
   });
 
-  test("keeps persisted review widgets visible when raw content includes cancelled-tool noise", async ({ page }) => {
+  test("keeps persisted review tool summary visible when raw content includes cancelled-tool noise", async ({ page }) => {
     await seedTaskContractConversation(
       page,
       "review_db_compact",
@@ -693,7 +720,7 @@ test.describe("Task Chat Replay", () => {
       [reviewUserMessage, reviewCancelledProviderMessage],
     );
 
-    await expect(page.locator('[data-testid="review-widget-complete"]')).toHaveCount(1);
+    await expect(page.getByRole("button", { name: "Agent called 1 tool" })).toHaveCount(1);
     await expect(page.getByText("I am completing the review now.")).toHaveCount(1);
     await expect(page.getByText("Changes are still required before approval.")).toHaveCount(1);
     await expect(page.getByText(/\[Agent error: user cancelled MCP tool call\]/)).toHaveCount(0);

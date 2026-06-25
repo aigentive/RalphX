@@ -42,7 +42,7 @@ pub use claude_code_client::{
 pub use cli_capabilities::{
     clear_claude_cli_capability_cache, normalize_claude_effort_for_cli_path,
     parse_claude_cli_capabilities, parse_claude_version, probe_claude_cli,
-    probe_claude_cli_cached, ClaudeCliCapabilities,
+    probe_claude_cli_cached, validate_claude_model_for_cli_path, ClaudeCliCapabilities,
 };
 
 // Re-export stream processor types for use by services
@@ -456,6 +456,7 @@ pub(crate) struct ClaudePermissionCliOptions {
 
 pub(crate) fn resolve_claude_permission_cli_options(
     agent_type: Option<&str>,
+    agent_profile: Option<&str>,
 ) -> ClaudePermissionCliOptions {
     let runtime = claude_runtime_config();
     let override_settings = claude_permission_runtime_override()
@@ -463,7 +464,15 @@ pub(crate) fn resolve_claude_permission_cli_options(
         .ok()
         .and_then(|guard| guard.clone());
     ClaudePermissionCliOptions {
-        permission_prompt_tool: runtime.permission_prompt_tool.clone(),
+        // Transport-aware (and profile-aware): external-transport agents whose private
+        // tools live on the internal sidecar must point `--permission-prompt-tool` at
+        // that sidecar server so the flag matches the injected `--allowed-tools`
+        // permission entry resolved under the same profile.
+        permission_prompt_tool: agent_config::resolve_permission_prompt_tool(
+            agent_type,
+            agent_profile,
+            &runtime.permission_prompt_tool,
+        ),
         permission_mode: resolve_permission_mode(agent_type),
         dangerously_skip_permissions: override_settings
             .as_ref()
@@ -476,8 +485,12 @@ pub(crate) fn resolve_claude_permission_cli_options(
     }
 }
 
-pub(crate) fn append_claude_permission_args(args: &mut Vec<String>, agent_type: Option<&str>) {
-    let options = resolve_claude_permission_cli_options(agent_type);
+pub(crate) fn append_claude_permission_args(
+    args: &mut Vec<String>,
+    agent_type: Option<&str>,
+    agent_profile: Option<&str>,
+) {
+    let options = resolve_claude_permission_cli_options(agent_type, agent_profile);
     args.extend([
         "--permission-prompt-tool".to_string(),
         options.permission_prompt_tool,
@@ -492,8 +505,12 @@ pub(crate) fn append_claude_permission_args(args: &mut Vec<String>, agent_type: 
     }
 }
 
-fn apply_claude_permission_args(cmd: &mut Command, agent_type: Option<&str>) {
-    let options = resolve_claude_permission_cli_options(agent_type);
+fn apply_claude_permission_args(
+    cmd: &mut Command,
+    agent_type: Option<&str>,
+    agent_profile: Option<&str>,
+) {
+    let options = resolve_claude_permission_cli_options(agent_type, agent_profile);
     cmd.args([
         "--permission-prompt-tool",
         &options.permission_prompt_tool,
@@ -631,7 +648,7 @@ fn build_base_cli_command_inner_with_runtime_context_and_profile(
     }
 
     // Configure permission handling from config/harnesses/claude.yaml.
-    apply_claude_permission_args(&mut cmd, agent_type);
+    apply_claude_permission_args(&mut cmd, agent_type, agent_profile);
     // Optional settings JSON passed to claude CLI via --settings.
     // Agent-specific profile overrides global profile when configured.
     if let Some(s) = get_effective_settings(agent_type) {
@@ -678,6 +695,7 @@ fn build_base_cli_command_inner_with_runtime_context_and_profile(
         }
     };
     if let Some(m) = model {
+        validate_claude_model_for_cli_path(cli_path, m)?;
         cmd.args(["--model", m]);
     }
 
@@ -1588,19 +1606,23 @@ fn add_prompt_args(
 
         // Apply CLI tool restrictions from agent_config
         // Frontmatter tools/disallowedTools only work for subagent spawning,
-        // NOT for direct CLI invocations with --agent -p. We must pass --tools flag.
+        // NOT for direct CLI invocations with --agent -p. Pass --tools only when
+        // there are built-in CLI tools to allow; the Claude CLI treats an empty
+        // value as disabling MCP tools too.
         if let Some(allowed_tools) = get_allowed_tools_for_profile(agent_name, agent_profile) {
-            // Pass --tools even if empty (restricts to MCP-only)
-            cmd.args(["--tools", &allowed_tools]);
-            tracing::debug!(
-                agent = agent_name,
-                tools = if allowed_tools.is_empty() {
-                    "(MCP only)"
-                } else {
-                    allowed_tools.as_str()
-                },
-                "Agent restricted to CLI tools"
-            );
+            if allowed_tools.is_empty() {
+                tracing::debug!(
+                    agent = agent_name,
+                    "Agent configured as MCP-only; omitting --tools because Claude CLI treats an empty value as disabling MCP tools"
+                );
+            } else {
+                cmd.args(["--tools", &allowed_tools]);
+                tracing::debug!(
+                    agent = agent_name,
+                    tools = allowed_tools.as_str(),
+                    "Agent restricted to CLI tools"
+                );
+            }
         }
 
         // Pre-approve tools to bypass permission prompts (MCP + CLI permissions)
@@ -2184,8 +2206,37 @@ mod create_mcp_config_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::path_safety::{checked_exists, checked_read_to_string};
     use std::ffi::{OsStr, OsString};
     use std::path::{Path, PathBuf};
+
+    /// Regression: the `--permission-prompt-tool` flag for an external-transport agent
+    /// (mixed external + internal MCP) must name the internal sidecar server, matching
+    /// the `permission_request` tool injected into `--allowed-tools`. Otherwise the
+    /// Claude CLI aborts before any MCP tool (e.g. ideation start) can run.
+    #[test]
+    fn test_resolve_claude_permission_cli_options_external_agent_uses_internal_server() {
+        let options = resolve_claude_permission_cli_options(Some("ralphx-chat-project"), None);
+        assert_eq!(
+            options.permission_prompt_tool,
+            "mcp__ralphx_internal__permission_request"
+        );
+
+        // The flag value must be present in the agent's pre-approved tool surface.
+        let preapproved = get_preapproved_tools("ralphx-chat-project").unwrap();
+        let tool_list: std::collections::HashSet<_> = preapproved.split(',').collect();
+        assert!(tool_list.contains(options.permission_prompt_tool.as_str()));
+    }
+
+    /// Non-external agents keep the primary-server permission-prompt tool unchanged.
+    #[test]
+    fn test_resolve_claude_permission_cli_options_worker_uses_primary_server() {
+        let options = resolve_claude_permission_cli_options(Some("ralphx-execution-worker"), None);
+        assert_eq!(
+            options.permission_prompt_tool,
+            "mcp__ralphx__permission_request"
+        );
+    }
 
     struct EnvGuard {
         key: &'static str,
@@ -2213,6 +2264,16 @@ mod tests {
                 None => std::env::remove_var(self.key),
             }
         }
+    }
+
+    fn read_test_file(path: impl AsRef<Path>) -> String {
+        checked_read_to_string(path.as_ref(), "Claude plugin test fixture")
+            .expect("read Claude plugin test fixture")
+    }
+
+    fn test_path_exists(path: impl AsRef<Path>) -> bool {
+        checked_exists(path.as_ref(), "Claude plugin test fixture")
+            .expect("inspect Claude plugin test fixture")
     }
 
     fn write_executable(path: &Path, contents: &str) {
@@ -2561,8 +2622,7 @@ fi
         let generated_dir =
             materialize_generated_plugin_dir(&plugin_dir).expect("generated plugin dir");
         let generated_session_namer =
-            std::fs::read_to_string(generated_dir.join("agents/ralphx-utility-session-namer.md"))
-                .expect("generated session namer");
+            read_test_file(generated_dir.join("agents/ralphx-utility-session-namer.md"));
         assert!(
             generated_session_namer.contains("Canonical Session Namer Prompt"),
             "generated session namer should use canonical prompt body"
@@ -2572,13 +2632,11 @@ fi
             "generated session namer should render Claude frontmatter"
         );
         assert!(
-            !generated_dir.join("agents/worker.md").exists(),
+            !test_path_exists(generated_dir.join("agents/worker.md")),
             "generated plugin should not carry non-canonical legacy plugin prompt files"
         );
         assert!(
-            generated_dir
-                .join("ralphx-mcp-server/build/index.js")
-                .exists(),
+            test_path_exists(generated_dir.join("ralphx-mcp-server/build/index.js")),
             "generated plugin dir should keep MCP runtime assets available"
         );
     }

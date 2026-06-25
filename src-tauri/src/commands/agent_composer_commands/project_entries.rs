@@ -7,8 +7,7 @@ use tauri::State;
 
 use super::root::{resolve_composer_root, validate_composer_root};
 use super::types::{
-    AgentComposerEntryResponse, SearchAgentComposerEntriesInput,
-    SearchAgentComposerEntriesResponse,
+    AgentComposerEntryResponse, SearchAgentComposerEntriesInput, SearchAgentComposerEntriesResponse,
 };
 use crate::application::AppState;
 use crate::domain::entities::ProjectId;
@@ -188,7 +187,9 @@ fn add_directory_ancestors(path: &str, entries: &mut BTreeMap<String, EntryKind>
             current.push_str(part);
         }
         if !current.is_empty() {
-            entries.entry(current.clone()).or_insert(EntryKind::Directory);
+            entries
+                .entry(current.clone())
+                .or_insert(EntryKind::Directory);
         }
     }
 }
@@ -257,7 +258,7 @@ fn score_entry(entry: &IndexedEntry, query: &str) -> Option<i32> {
 
 fn normalize_query(raw: &str) -> String {
     raw.trim()
-        .trim_start_matches(|ch| matches!(ch, '@' | '/' | '.'))
+        .trim_start_matches(['@', '/', '.'])
         .chars()
         .take(MAX_QUERY_LEN)
         .collect::<String>()

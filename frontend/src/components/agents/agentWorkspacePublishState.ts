@@ -46,6 +46,26 @@ export function isPipelineOwnedAgentWorkspace(
   return Boolean(workspace?.linkedPlanBranchId);
 }
 
+export function getAgentWorkspacePrConflictSummary(
+  workspace: AgentConversationWorkspace | null | undefined,
+): string | null {
+  const status = workspace?.prSupervisionStatus?.trim().toLowerCase();
+  const summary = workspace?.prSupervisionSummary?.trim() ?? "";
+  if (status !== "blocked" || !summary) {
+    return null;
+  }
+
+  const normalized = summary.toLowerCase();
+  if (
+    normalized.includes("merge conflict") ||
+    normalized.includes("reported as conflicting") ||
+    normalized.includes("mergeability blocker")
+  ) {
+    return summary;
+  }
+  return null;
+}
+
 export function isAgentWorkspaceAutoMergeRequestPending({
   autoMergeCurrent,
   autoMergeDesired,
@@ -108,7 +128,7 @@ export function shouldShowAgentWorkspacePublishSurface(
   }
 
   if (workspace.mode === "edit") {
-    return !workspace.linkedIdeationSessionId && !workspace.linkedPlanBranchId;
+    return true;
   }
 
   if (workspace.mode === "ideation") {

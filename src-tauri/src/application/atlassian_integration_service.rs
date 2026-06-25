@@ -70,6 +70,77 @@ pub struct AtlassianResourceSummary {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct AtlassianJiraComment {
+    pub id: Option<String>,
+    pub author: Option<String>,
+    pub body_markdown: String,
+    pub body_text: String,
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AtlassianJiraAttachment {
+    pub id: Option<String>,
+    pub filename: String,
+    pub mime_type: Option<String>,
+    pub size: Option<i64>,
+    pub author: Option<String>,
+    pub content_url: Option<String>,
+    pub thumbnail_url: Option<String>,
+    pub created_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AtlassianJiraTransition {
+    pub provider_transition_id: String,
+    pub to_state_id: String,
+    pub name: String,
+    pub category: String,
+}
+
+/// Lightweight summary of a Jira project used as a ticketing container.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct JiraProjectSummary {
+    pub id: String,
+    pub key: String,
+    pub name: String,
+}
+
+/// A Jira status (deduped across issue types) with a normalized category, used to
+/// build kanban columns for a selected project.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct JiraStatusSummary {
+    pub id: String,
+    pub name: String,
+    pub category: String,
+}
+
+/// Project-scoped Jira issue detail preserving the status/assignee/labels needed
+/// to render kanban columns and the ticket list (richer than the lossy
+/// search-summary shape, which only keeps id/key/title).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct JiraIssueDetail {
+    pub key: String,
+    pub title: String,
+    pub status_id: Option<String>,
+    pub status_name: Option<String>,
+    pub status_category: Option<String>,
+    pub assignee_name: Option<String>,
+    pub assignee_avatar: Option<String>,
+    pub labels: Vec<String>,
+    pub updated: Option<String>,
+    pub priority: Option<String>,
+    pub url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct AtlassianResourceContent {
     pub kind: AtlassianResourceKind,
     pub id: String,
@@ -77,6 +148,26 @@ pub struct AtlassianResourceContent {
     pub title: String,
     pub url: Option<String>,
     pub body: String,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub assignee: Option<String>,
+    #[serde(default)]
+    pub reporter: Option<String>,
+    #[serde(default)]
+    pub updated_at_remote: Option<String>,
+    #[serde(default)]
+    pub description_markdown: Option<String>,
+    #[serde(default)]
+    pub description_text: Option<String>,
+    #[serde(default)]
+    pub acceptance_criteria_markdown: Option<String>,
+    #[serde(default)]
+    pub acceptance_criteria_text: Option<String>,
+    #[serde(default)]
+    pub comments: Vec<AtlassianJiraComment>,
+    #[serde(default)]
+    pub attachments: Vec<AtlassianJiraAttachment>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -147,6 +238,80 @@ pub trait AtlassianApiClient: Send + Sync {
         auth: &AtlassianAuthContext,
         reference: &ComposerIntegrationReference,
     ) -> Result<AtlassianResourceContent, String>;
+
+    async fn assign_jira_issue_to_current_user(
+        &self,
+        auth: &AtlassianAuthContext,
+        issue_key: &str,
+    ) -> Result<(), String>;
+
+    async fn clear_jira_issue_assignee(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _issue_key: &str,
+    ) -> Result<(), String> {
+        Err("Jira issue assignee clearing is not available for this client".to_string())
+    }
+
+    async fn list_jira_issue_transitions(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _issue_key: &str,
+    ) -> Result<Vec<AtlassianJiraTransition>, String> {
+        Err("Jira workflow transitions are not available for this client".to_string())
+    }
+
+    async fn transition_jira_issue(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _issue_key: &str,
+        _transition_id: &str,
+    ) -> Result<(), String> {
+        Err("Jira issue transitions are not available for this client".to_string())
+    }
+
+    async fn add_jira_comment(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _issue_key: &str,
+        _body_markdown: &str,
+    ) -> Result<AtlassianJiraComment, String> {
+        Err("Jira comments are not available for this client".to_string())
+    }
+
+    async fn set_jira_issue_labels(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _issue_key: &str,
+        _labels: Vec<String>,
+    ) -> Result<(), String> {
+        Err("Jira label writes are not available for this client".to_string())
+    }
+
+    async fn list_jira_projects(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _limit: usize,
+    ) -> Result<Vec<JiraProjectSummary>, String> {
+        Err("Jira project enumeration is not available for this client".to_string())
+    }
+
+    async fn list_jira_project_statuses(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _project_key: &str,
+    ) -> Result<Vec<JiraStatusSummary>, String> {
+        Err("Jira project statuses are not available for this client".to_string())
+    }
+
+    async fn list_jira_project_issues(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _project_key: &str,
+        _limit: usize,
+    ) -> Result<Vec<JiraIssueDetail>, String> {
+        Err("Jira project issues are not available for this client".to_string())
+    }
 
     async fn exchange_oauth_code(
         &self,
@@ -223,6 +388,65 @@ impl AtlassianApiClient for EmptyAtlassianApiClient {
                 .unwrap_or_else(|| reference.id.clone()),
             url: reference.url.clone(),
             body: String::new(),
+            status: None,
+            assignee: None,
+            reporter: None,
+            updated_at_remote: None,
+            description_markdown: None,
+            description_text: None,
+            acceptance_criteria_markdown: None,
+            acceptance_criteria_text: None,
+            comments: Vec::new(),
+            attachments: Vec::new(),
+        })
+    }
+
+    async fn assign_jira_issue_to_current_user(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _issue_key: &str,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn clear_jira_issue_assignee(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _issue_key: &str,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn list_jira_issue_transitions(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _issue_key: &str,
+    ) -> Result<Vec<AtlassianJiraTransition>, String> {
+        Ok(Vec::new())
+    }
+
+    async fn transition_jira_issue(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _issue_key: &str,
+        _transition_id: &str,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn add_jira_comment(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _issue_key: &str,
+        body_markdown: &str,
+    ) -> Result<AtlassianJiraComment, String> {
+        Ok(AtlassianJiraComment {
+            id: Some("test-comment".to_string()),
+            author: None,
+            body_markdown: body_markdown.to_string(),
+            body_text: body_markdown.to_string(),
+            created_at: None,
+            updated_at: None,
         })
     }
 
@@ -289,6 +513,40 @@ impl AtlassianApiClient for UnavailableAtlassianApiClient {
         _auth: &AtlassianAuthContext,
         _reference: &ComposerIntegrationReference,
     ) -> Result<AtlassianResourceContent, String> {
+        Err(self.reason.clone())
+    }
+
+    async fn assign_jira_issue_to_current_user(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _issue_key: &str,
+    ) -> Result<(), String> {
+        Err(self.reason.clone())
+    }
+
+    async fn list_jira_issue_transitions(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _issue_key: &str,
+    ) -> Result<Vec<AtlassianJiraTransition>, String> {
+        Err(self.reason.clone())
+    }
+
+    async fn transition_jira_issue(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _issue_key: &str,
+        _transition_id: &str,
+    ) -> Result<(), String> {
+        Err(self.reason.clone())
+    }
+
+    async fn add_jira_comment(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _issue_key: &str,
+        _body_markdown: &str,
+    ) -> Result<AtlassianJiraComment, String> {
         Err(self.reason.clone())
     }
 
@@ -440,6 +698,33 @@ impl AtlassianIntegrationService {
         settings.updated_at = Utc::now();
         self.settings_repo
             .upsert(&settings)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    /// Clears all stored Atlassian secrets (API token, OAuth client secret and
+    /// OAuth access/refresh tokens) and resets the integration to a
+    /// not-configured state so the user can disconnect a valid connection.
+    pub async fn disconnect(&self) -> Result<AtlassianIntegrationSettings, String> {
+        self.shutdown_pending_oauth_callbacks().await;
+        let settings = self.get_settings().await?;
+        for secret_ref in [
+            settings.token_secret_ref.as_deref(),
+            settings.oauth_client_secret_ref.as_deref(),
+            settings.oauth_access_token_ref.as_deref(),
+            settings.oauth_refresh_token_ref.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            self.secret_store
+                .delete_secret(secret_ref)
+                .await
+                .map_err(|error| error.to_string())?;
+        }
+        let cleared = AtlassianIntegrationSettings::default();
+        self.settings_repo
+            .upsert(&cleared)
             .await
             .map_err(|error| error.to_string())
     }
@@ -630,6 +915,99 @@ impl AtlassianIntegrationService {
         let auth = self.enabled_auth_context().await?;
         self.client
             .search(&auth, kind, query, limit.clamp(1, 25))
+            .await
+    }
+
+    pub async fn fetch_resource_content(
+        &self,
+        reference: &ComposerIntegrationReference,
+    ) -> Result<AtlassianResourceContent, String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client.fetch(&auth, reference).await
+    }
+
+    pub async fn assign_jira_issue_to_current_user(
+        &self,
+        issue_key: &str,
+    ) -> Result<(), String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client
+            .assign_jira_issue_to_current_user(&auth, issue_key)
+            .await
+    }
+
+    pub async fn clear_jira_issue_assignee(&self, issue_key: &str) -> Result<(), String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client.clear_jira_issue_assignee(&auth, issue_key).await
+    }
+
+    pub async fn list_jira_issue_transitions(
+        &self,
+        issue_key: &str,
+    ) -> Result<Vec<AtlassianJiraTransition>, String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client.list_jira_issue_transitions(&auth, issue_key).await
+    }
+
+    pub async fn transition_jira_issue(
+        &self,
+        issue_key: &str,
+        transition_id: &str,
+    ) -> Result<(), String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client
+            .transition_jira_issue(&auth, issue_key, transition_id)
+            .await
+    }
+
+    pub async fn add_jira_comment(
+        &self,
+        issue_key: &str,
+        body_markdown: &str,
+    ) -> Result<AtlassianJiraComment, String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client
+            .add_jira_comment(&auth, issue_key, body_markdown)
+            .await
+    }
+
+    pub async fn set_jira_issue_labels(
+        &self,
+        issue_key: &str,
+        labels: Vec<String>,
+    ) -> Result<(), String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client
+            .set_jira_issue_labels(&auth, issue_key, labels)
+            .await
+    }
+
+    pub async fn list_jira_projects(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<JiraProjectSummary>, String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client.list_jira_projects(&auth, limit).await
+    }
+
+    pub async fn list_jira_project_statuses(
+        &self,
+        project_key: &str,
+    ) -> Result<Vec<JiraStatusSummary>, String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client
+            .list_jira_project_statuses(&auth, project_key)
+            .await
+    }
+
+    pub async fn list_jira_project_issues(
+        &self,
+        project_key: &str,
+        limit: usize,
+    ) -> Result<Vec<JiraIssueDetail>, String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client
+            .list_jira_project_issues(&auth, project_key, limit)
             .await
     }
 

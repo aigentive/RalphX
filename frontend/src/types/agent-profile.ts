@@ -14,12 +14,13 @@ export const ProfileRoleSchema = z.enum([
 export type ProfileRole = z.infer<typeof ProfileRoleSchema>;
 
 /**
- * Model short forms for Claude 4.5 models
+ * Model short forms for Claude models
  * - opus: claude-opus-4-5-20251101
  * - sonnet: claude-sonnet-4-5-20250929
  * - haiku: claude-haiku-4-5-20251001
+ * - fable: claude-fable-5
  */
-export const ModelSchema = z.enum(['opus', 'sonnet', 'haiku']);
+export const ModelSchema = z.enum(['opus', 'sonnet', 'haiku', 'fable']);
 
 export type Model = z.infer<typeof ModelSchema>;
 
@@ -34,6 +35,8 @@ export function getModelId(model: Model): string {
       return 'claude-sonnet-4-5-20250929';
     case 'haiku':
       return 'claude-haiku-4-5-20251001';
+    case 'fable':
+      return 'claude-fable-5';
   }
 }
 

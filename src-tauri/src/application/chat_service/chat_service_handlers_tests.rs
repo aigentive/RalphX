@@ -354,13 +354,9 @@ async fn test_load_current_task_execution_attempt_handles_missing_records() {
     });
     let run_repo: Arc<dyn AgentRunRepository> = Arc::new(MemoryAgentRunRepository::new());
 
-    let missing_task = load_current_task_execution_attempt(
-        &task_id,
-        "missing-run",
-        &missing_task_repo,
-        &run_repo,
-    )
-    .await;
+    let missing_task =
+        load_current_task_execution_attempt(&task_id, "missing-run", &missing_task_repo, &run_repo)
+            .await;
     assert!(
         missing_task.is_none(),
         "missing tasks cannot be finalized as execution attempts"
@@ -373,13 +369,9 @@ async fn test_load_current_task_execution_attempt_handles_missing_records() {
         status_entered_at: Some(Utc::now()),
     });
 
-    let missing_run = load_current_task_execution_attempt(
-        &task_id,
-        "missing-run",
-        &active_task_repo,
-        &run_repo,
-    )
-    .await;
+    let missing_run =
+        load_current_task_execution_attempt(&task_id, "missing-run", &active_task_repo, &run_repo)
+            .await;
     assert!(
         missing_run.is_some(),
         "missing agent-run rows should fail open for active execution tasks"
@@ -1087,7 +1079,10 @@ async fn test_incomplete_execution_success_finalizer_fails_current_attempt_with_
     let exec = Arc::new(ExecutionState::new());
     let execution_state = Some(Arc::clone(&exec));
 
-    let project = Project::new("Incomplete Execution".into(), "/tmp/incomplete-execution".into());
+    let project = Project::new(
+        "Incomplete Execution".into(),
+        "/tmp/incomplete-execution".into(),
+    );
     state.project_repo.create(project.clone()).await.unwrap();
 
     let mut task = Task::new(project.id.clone(), "Current execution attempt".into());
@@ -1392,16 +1387,20 @@ async fn test_recovery_retry_background_context_preserves_execution_side_runtime
 
 #[tokio::test]
 async fn test_handle_verification_child_completion_queues_hidden_auto_continue() {
-    let state = AppState::new_test();
+    let app_state = AppState::new_test();
     let project_id = ProjectId::new();
 
     let mut parent = crate::domain::entities::IdeationSession::new(project_id.clone());
     parent.verification_status = VerificationStatus::NeedsRevision;
     parent.verification_in_progress = true;
     let parent_id = parent.id.clone();
-    state.ideation_session_repo.create(parent).await.unwrap();
+    app_state
+        .ideation_session_repo
+        .create(parent)
+        .await
+        .unwrap();
 
-    state
+    app_state
         .ideation_session_repo
         .save_verification_run_snapshot(
             &parent_id,
@@ -1430,7 +1429,14 @@ async fn test_handle_verification_child_completion_queues_hidden_auto_continue()
     child.session_purpose = crate::domain::entities::SessionPurpose::Verification;
     child.parent_session_id = Some(parent_id.clone());
     let child_id = child.id.clone();
-    state.ideation_session_repo.create(child).await.unwrap();
+    app_state.ideation_session_repo.create(child).await.unwrap();
+
+    let app = mock_builder()
+        .manage(app_state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let handle = app.handle().clone();
+    let state = handle.state::<AppState>();
 
     handle_verification_child_completion::<MockRuntime>(
         &child_id,
@@ -1439,7 +1445,7 @@ async fn test_handle_verification_child_completion_queues_hidden_auto_continue()
         &state.chat_conversation_repo,
         &state.chat_message_repo,
         &state.message_queue,
-        &None,
+        &Some(handle.clone()),
         &None,
     )
     .await;
@@ -1447,7 +1453,11 @@ async fn test_handle_verification_child_completion_queues_hidden_auto_continue()
     let queued = state
         .message_queue
         .get_queued(ChatContextType::Ideation, child_id.as_str());
-    assert_eq!(queued.len(), 1, "auto-continue must queue one hidden control message");
+    assert_eq!(
+        queued.len(),
+        1,
+        "auto-continue must queue one hidden control message"
+    );
     assert_eq!(
         queued[0].metadata_override.as_deref(),
         Some(VERIFICATION_AUTO_CONTINUE_METADATA)
@@ -1458,6 +1468,13 @@ async fn test_handle_verification_child_completion_queues_hidden_auto_continue()
             .contains("Continue the active verification loop in this same session"),
         "queued control prompt must instruct the verifier to continue the same loop"
     );
+    let durable = state
+        .queued_message_repo
+        .list(&QueueKey::new(ChatContextType::Ideation, child_id.as_str()))
+        .await
+        .expect("durable auto-continue queue lookup should not fail");
+    assert_eq!(durable.len(), 1);
+    assert_eq!(durable[0].id, queued[0].id);
 
     let child_after = state
         .ideation_session_repo
@@ -1465,7 +1482,10 @@ async fn test_handle_verification_child_completion_queues_hidden_auto_continue()
         .await
         .unwrap()
         .unwrap();
-    assert_ne!(child_after.status, crate::domain::entities::IdeationSessionStatus::Archived);
+    assert_ne!(
+        child_after.status,
+        crate::domain::entities::IdeationSessionStatus::Archived
+    );
 
     let parent_conversation = state
         .chat_conversation_repo
@@ -1549,38 +1569,40 @@ async fn test_handle_stream_error_cancelled_turns_finalized_re_increments_slot()
 }
 
 #[tokio::test]
-async fn test_handle_stream_error_preserves_existing_content_blocks_without_serializing_nonfatal_mcp_cancellation() {
+async fn test_handle_stream_error_preserves_existing_content_blocks_without_serializing_nonfatal_mcp_cancellation(
+) {
     let state = AppState::new_test();
     let conversation_id = ChatConversationId::new();
     let context_id = IdeationSessionId::new();
-    let pre_assistant_message = crate::application::chat_service::chat_service_context::create_assistant_message(
-        ChatContextType::Ideation,
-        context_id.as_str(),
-        "Recovered ideation response",
-        conversation_id.clone(),
-        &[ToolCall {
-            id: Some("tool-1".to_string()),
-            name: "ralphx::get_session_plan".to_string(),
-            arguments: serde_json::json!({ "session_id": context_id.as_str() }),
-            result: Some(serde_json::json!({ "status": "ok" })),
-            parent_tool_use_id: Some("toolu-parent-preserved".to_string()),
-            diff_context: None,
-            stats: None,
-        }],
-        &[
-            ContentBlockItem::Text {
-                text: "Recovered ideation response".to_string(),
-            },
-            ContentBlockItem::ToolUse {
+    let pre_assistant_message =
+        crate::application::chat_service::chat_service_context::create_assistant_message(
+            ChatContextType::Ideation,
+            context_id.as_str(),
+            "Recovered ideation response",
+            conversation_id.clone(),
+            &[ToolCall {
                 id: Some("tool-1".to_string()),
                 name: "ralphx::get_session_plan".to_string(),
                 arguments: serde_json::json!({ "session_id": context_id.as_str() }),
                 result: Some(serde_json::json!({ "status": "ok" })),
                 parent_tool_use_id: Some("toolu-parent-preserved".to_string()),
                 diff_context: None,
-            },
-        ],
-    );
+                stats: None,
+            }],
+            &[
+                ContentBlockItem::Text {
+                    text: "Recovered ideation response".to_string(),
+                },
+                ContentBlockItem::ToolUse {
+                    id: Some("tool-1".to_string()),
+                    name: "ralphx::get_session_plan".to_string(),
+                    arguments: serde_json::json!({ "session_id": context_id.as_str() }),
+                    result: Some(serde_json::json!({ "status": "ok" })),
+                    parent_tool_use_id: Some("toolu-parent-preserved".to_string()),
+                    diff_context: None,
+                },
+            ],
+        );
     let pre_assistant_message_id = pre_assistant_message.id.as_str().to_string();
     state
         .chat_message_repo
@@ -1666,7 +1688,10 @@ async fn test_handle_stream_error_preserves_existing_content_blocks_without_seri
         "non-fatal MCP cancellation finalization must preserve previously persisted content_blocks instead of clearing ordered widget hydration"
     );
     let blocks: serde_json::Value = serde_json::from_str(
-        stored.content_blocks.as_deref().expect("content blocks JSON should be present"),
+        stored
+            .content_blocks
+            .as_deref()
+            .expect("content blocks JSON should be present"),
     )
     .expect("content blocks should remain valid JSON");
     assert_eq!(
@@ -1731,34 +1756,35 @@ async fn test_handle_stream_error_terminal_verification_child_seals_unresolved_t
         .await
         .unwrap();
 
-    let pre_assistant_message = crate::application::chat_service::chat_service_context::create_assistant_message(
-        ChatContextType::Ideation,
-        child_id.as_str(),
-        "Checking verifier MCP context",
-        child_conversation.id.clone(),
-        &[ToolCall {
-            id: Some("probe-1".to_string()),
-            name: "ralphx::read_mcp_resource".to_string(),
-            arguments: serde_json::json!({ "uri": "resource://probe" }),
-            result: None,
-            parent_tool_use_id: None,
-            diff_context: None,
-            stats: None,
-        }],
-        &[
-            ContentBlockItem::Text {
-                text: "Checking verifier MCP context".to_string(),
-            },
-            ContentBlockItem::ToolUse {
+    let pre_assistant_message =
+        crate::application::chat_service::chat_service_context::create_assistant_message(
+            ChatContextType::Ideation,
+            child_id.as_str(),
+            "Checking verifier MCP context",
+            child_conversation.id.clone(),
+            &[ToolCall {
                 id: Some("probe-1".to_string()),
                 name: "ralphx::read_mcp_resource".to_string(),
                 arguments: serde_json::json!({ "uri": "resource://probe" }),
                 result: None,
                 parent_tool_use_id: None,
                 diff_context: None,
-            },
-        ],
-    );
+                stats: None,
+            }],
+            &[
+                ContentBlockItem::Text {
+                    text: "Checking verifier MCP context".to_string(),
+                },
+                ContentBlockItem::ToolUse {
+                    id: Some("probe-1".to_string()),
+                    name: "ralphx::read_mcp_resource".to_string(),
+                    arguments: serde_json::json!({ "uri": "resource://probe" }),
+                    result: None,
+                    parent_tool_use_id: None,
+                    diff_context: None,
+                },
+            ],
+        );
     let pre_assistant_message_id = pre_assistant_message.id.as_str().to_string();
     state
         .chat_message_repo
@@ -1834,7 +1860,10 @@ async fn test_handle_stream_error_terminal_verification_child_seals_unresolved_t
     assert_eq!(stored.content, "Checking verifier MCP context");
 
     let tool_calls: serde_json::Value = serde_json::from_str(
-        stored.tool_calls.as_deref().expect("tool calls should be present"),
+        stored
+            .tool_calls
+            .as_deref()
+            .expect("tool calls should be present"),
     )
     .expect("tool calls should remain valid JSON");
     assert_eq!(
@@ -1929,16 +1958,17 @@ async fn test_handle_stream_error_actionable_verification_child_queues_hidden_au
         .await
         .unwrap();
 
-    let pre_assistant_message = crate::application::chat_service::chat_service_context::create_assistant_message(
-        ChatContextType::Ideation,
-        child_id.as_str(),
-        "Round 2 critique in progress",
-        child_conversation.id.clone(),
-        &[],
-        &[ContentBlockItem::Text {
-            text: "Round 2 critique in progress".to_string(),
-        }],
-    );
+    let pre_assistant_message =
+        crate::application::chat_service::chat_service_context::create_assistant_message(
+            ChatContextType::Ideation,
+            child_id.as_str(),
+            "Round 2 critique in progress",
+            child_conversation.id.clone(),
+            &[],
+            &[ContentBlockItem::Text {
+                text: "Round 2 critique in progress".to_string(),
+            }],
+        );
     let pre_assistant_message_id = pre_assistant_message.id.as_str().to_string();
     state
         .chat_message_repo
@@ -2008,7 +2038,11 @@ async fn test_handle_stream_error_actionable_verification_child_queues_hidden_au
     let queued = state
         .message_queue
         .get_queued(ChatContextType::Ideation, child_id.as_str());
-    assert_eq!(queued.len(), 1, "auto-continue must queue one hidden control message");
+    assert_eq!(
+        queued.len(),
+        1,
+        "auto-continue must queue one hidden control message"
+    );
     assert_eq!(
         queued[0].metadata_override.as_deref(),
         Some(VERIFICATION_AUTO_CONTINUE_METADATA)
@@ -2020,7 +2054,10 @@ async fn test_handle_stream_error_actionable_verification_child_queues_hidden_au
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(parent_after.verification_status, VerificationStatus::NeedsRevision);
+    assert_eq!(
+        parent_after.verification_status,
+        VerificationStatus::NeedsRevision
+    );
     assert!(parent_after.verification_in_progress);
 
     let child_after = state
@@ -2029,7 +2066,10 @@ async fn test_handle_stream_error_actionable_verification_child_queues_hidden_au
         .await
         .unwrap()
         .unwrap();
-    assert_ne!(child_after.status, crate::domain::entities::IdeationSessionStatus::Archived);
+    assert_ne!(
+        child_after.status,
+        crate::domain::entities::IdeationSessionStatus::Archived
+    );
 }
 
 #[tokio::test]
@@ -2037,16 +2077,17 @@ async fn test_handle_stream_error_appends_generic_agent_error_to_existing_conten
     let state = AppState::new_test();
     let conversation_id = ChatConversationId::new();
     let context_id = IdeationSessionId::new();
-    let pre_assistant_message = crate::application::chat_service::chat_service_context::create_assistant_message(
-        ChatContextType::Ideation,
-        context_id.as_str(),
-        "Recovered ideation response",
-        conversation_id.clone(),
-        &[],
-        &[ContentBlockItem::Text {
-            text: "Recovered ideation response".to_string(),
-        }],
-    );
+    let pre_assistant_message =
+        crate::application::chat_service::chat_service_context::create_assistant_message(
+            ChatContextType::Ideation,
+            context_id.as_str(),
+            "Recovered ideation response",
+            conversation_id.clone(),
+            &[],
+            &[ContentBlockItem::Text {
+                text: "Recovered ideation response".to_string(),
+            }],
+        );
     let pre_assistant_message_id = pre_assistant_message.id.as_str().to_string();
     state
         .chat_message_repo
@@ -2537,12 +2578,131 @@ async fn test_task_execution_error_finalizer_fails_current_attempt_with_metadata
 }
 
 #[tokio::test]
+async fn test_task_execution_agent_exit_preserves_worker_error_as_failure_error() {
+    let state = AppState::new_test();
+    let exec = Arc::new(ExecutionState::new());
+    let execution_state = Some(Arc::clone(&exec));
+
+    let project = Project::new(
+        "Failed Worker Command".into(),
+        "/tmp/failed-worker-command".into(),
+    );
+    state.project_repo.create(project.clone()).await.unwrap();
+
+    let mut task = Task::new(project.id.clone(), "Executing task".into());
+    task.internal_status = InternalStatus::Executing;
+    let task_id = task.id.clone();
+    state.task_repo.create(task).await.unwrap();
+
+    let conversation_id = ChatConversationId::new();
+    let event_ctx = crate::application::chat_service::event_context(
+        &conversation_id,
+        &ChatContextType::TaskExecution,
+        task_id.as_str(),
+    );
+    let worker_stderr =
+        "sed: .artifacts/specs/p6-pr-list-affordances/tracker.md: No such file or directory";
+    let stream_error = StreamError::AgentExit {
+        exit_code: Some(1),
+        stderr: worker_stderr.to_string(),
+    };
+    let expected_error = format!("Agent failed: {}", worker_stderr);
+
+    let recovery_spawned = handle_stream_error::<MockRuntime>(
+        &expected_error,
+        Some(&stream_error),
+        ChatContextType::TaskExecution,
+        task_id.as_str(),
+        conversation_id,
+        "run-id-agent-exit-error",
+        "message-id-agent-exit-error",
+        &event_ctx,
+        None,
+        crate::domain::agents::AgentHarnessKind::Codex,
+        false,
+        None,
+        None,
+        None,
+        std::path::Path::new("/tmp/codex"),
+        std::path::Path::new("/tmp/plugin"),
+        std::path::Path::new("/tmp"),
+        &state.chat_message_repo,
+        &state.chat_attachment_repo,
+        &state.artifact_repo,
+        &state.chat_conversation_repo,
+        &state.agent_run_repo,
+        &state.task_repo,
+        &state.task_dependency_repo,
+        &state.project_repo,
+        &state.ideation_session_repo,
+        &None,
+        &state.activity_event_repo,
+        &state.message_queue,
+        &state.running_agent_registry,
+        &state.memory_event_repo,
+        &execution_state,
+        &None,
+        &None,
+        &None,
+        &None::<tauri::AppHandle<MockRuntime>>,
+        None,
+        false,
+        None,
+        &None,
+        &None,
+        &None,
+        &None,
+    )
+    .await;
+
+    assert!(
+        !recovery_spawned,
+        "normal agent-exit path should not spawn stale-session recovery"
+    );
+
+    let updated = state
+        .task_repo
+        .get_by_id(&task_id)
+        .await
+        .unwrap()
+        .expect("task should still exist");
+    assert_eq!(updated.internal_status, InternalStatus::Failed);
+
+    let metadata: serde_json::Value = updated
+        .metadata
+        .as_deref()
+        .and_then(|raw| serde_json::from_str(raw).ok())
+        .expect("agent exit should persist metadata");
+    assert_eq!(
+        metadata
+            .get("last_agent_error")
+            .and_then(|value| value.as_str()),
+        Some(expected_error.as_str())
+    );
+    assert_eq!(
+        metadata
+            .get("failure_error")
+            .and_then(|value| value.as_str()),
+        Some(expected_error.as_str()),
+        "failed task details should show the worker error instead of the generic fallback"
+    );
+    assert_eq!(
+        metadata.get("is_timeout").and_then(|value| value.as_bool()),
+        Some(false),
+        "agent exit failures should be recorded as non-timeout failures"
+    );
+}
+
+#[tokio::test]
 async fn test_task_execution_provider_error_finalizer_pauses_with_metadata() {
     let state = AppState::new_test();
     let exec = Arc::new(ExecutionState::new());
     let execution_state = Some(Arc::clone(&exec));
 
-    let project = Project::new("Provider Pause".into(), "/tmp/provider-pause-finalizer".into());
+    let project = Project::new(
+        "Provider Pause".into(),
+        "/tmp/provider-pause-finalizer".into(),
+    );
     state.project_repo.create(project.clone()).await.unwrap();
 
     let existing_provider_metadata = ProviderErrorMetadata {

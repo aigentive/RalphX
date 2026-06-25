@@ -5,6 +5,7 @@ import {
   chatApi,
   type AgentConversationWorkspace,
   type AgentConversationWorkspaceMode,
+  type ComposerIntegrationReference,
   type ConversationListPageResponse,
 } from "@/api/chat";
 import { ideationApi } from "@/api/ideation";
@@ -12,6 +13,7 @@ import { chatKeys } from "@/hooks/useChat";
 import { useAgentModels } from "@/hooks/useAgentModels";
 import { useProjects } from "@/hooks/useProjects";
 import { useEventBus } from "@/providers/EventProvider";
+import { PlanArtifactEventSchema } from "@/types/events";
 import { useAgentArtifactController } from "./useAgentArtifactController";
 import { useAgentConversationTitleEvents } from "./useAgentConversationTitleEvents";
 import { useAgentArtifactResize } from "./useAgentArtifactResize";
@@ -27,6 +29,9 @@ import { useAgentConversationActions } from "./useAgentConversationActions";
 import { useAgentArtifactActions } from "./useAgentArtifactActions";
 import { useAgentConversationInvalidation } from "./useAgentConversationInvalidation";
 import { useAgentUserMessageAutoTitle } from "./useAgentUserMessageAutoTitle";
+import { useAgentUserMessageJiraInvalidation } from "./useAgentUserMessageJiraInvalidation";
+import { hasJiraIntegrationReference } from "./agentJiraIssueQueries";
+import { hasLinearIntegrationReference } from "./agentLinearIssueQueries";
 import { useAgentsSessionBindings } from "./useAgentsSessionBindings";
 import { useSyncedAgentProjectFocus } from "./useSyncedAgentProjectFocus";
 import { useAgentsOptimisticState } from "./useAgentsOptimisticState";
@@ -38,7 +43,9 @@ import { runtimeFromConversation } from "./agentConversationRuntime";
 import {
   agentWorkspaceKeys,
   preflightAgentWorkspaceFreshness,
+  prReviewContextForConversation,
 } from "./agentWorkspaceQueries";
+import type { IdeationArtifactTab } from "./agentArtifactTabs";
 import {
   getAgentConversationStoreKey,
   toProjectAgentConversation,
@@ -46,6 +53,7 @@ import {
 } from "./agentConversations";
 import { agentConversationKeys } from "./useProjectAgentConversations";
 import type { AgentPublishFocusRequest } from "./agentPublishFocus";
+import type { AgentTaskArtifactFocusRequest } from "./agentTaskArtifactFocus";
 import type { DiffFilterMode } from "./AgentsPublishDiffFilter";
 import {
   getAgentChatFocusSwitchOptions,
@@ -69,6 +77,14 @@ type AgentConversationListPage = Omit<
   conversations: AgentConversation[];
 };
 
+type PrReviewArtifactEventPayload = {
+  conversationId?: string;
+  conversation_id?: string;
+  artifact?: {
+    id?: string;
+  } | null;
+};
+
 export function useAgentsViewController({
   projectId,
   onCreateProject,
@@ -78,6 +94,10 @@ export function useAgentsViewController({
   const [chatFocus, setChatFocus] = useState<AgentsChatFocus>({ type: "workspace" });
   const [publishFocusRequest, setPublishFocusRequest] =
     useState<AgentPublishFocusRequest | null>(null);
+  const [taskArtifactFocusRequest, setTaskArtifactFocusRequest] =
+    useState<AgentTaskArtifactFocusRequest | null>(null);
+  const [selectedTaskArtifactId, setSelectedTaskArtifactId] =
+    useState<string | null>(null);
   const [lastVerificationFocus, setLastVerificationFocus] = useState<Extract<
     AgentsChatFocus,
     { type: "verification" }
@@ -153,6 +173,8 @@ export function useAgentsViewController({
     setChatFocus({ type: "workspace" });
     setLastVerificationFocus(null);
     setPublishFocusRequest(null);
+    setTaskArtifactFocusRequest(null);
+    setSelectedTaskArtifactId(null);
   }, [selectedConversationId]);
   useEffect(() => {
     if (!selectedConversationId || activeConversation?.contextType !== "project") {
@@ -184,6 +206,39 @@ export function useAgentsViewController({
           ? current
           : nextFocus,
       );
+    },
+    [],
+  );
+  const handleFocusTaskRuntime = useCallback(
+    (
+      taskId: string,
+      contextType: Extract<AgentsChatFocus, { type: "task_runtime" }>["contextType"],
+    ) => {
+      const nextFocus: Extract<AgentsChatFocus, { type: "task_runtime" }> = {
+        type: "task_runtime",
+        taskId,
+        contextType,
+      };
+      setChatFocus((current) =>
+        current.type === "task_runtime" &&
+        current.taskId === taskId &&
+        current.contextType === contextType
+          ? current
+          : nextFocus,
+      );
+    },
+    [],
+  );
+  const handleTaskArtifactSelectionChange = useCallback(
+    (taskId: string | null) => {
+      setSelectedTaskArtifactId(taskId);
+      if (taskId) {
+        setChatFocus((current) =>
+          current.type === "task_runtime" && current.taskId === taskId
+            ? current
+            : { type: "task_runtime", taskId, contextType: "task_execution" },
+        );
+      }
     },
     [],
   );
@@ -327,6 +382,33 @@ export function useAgentsViewController({
     invalidateProjectConversations,
     selectedConversationMessages,
   });
+  const prReviewConversationId =
+    activeConversation?.contextType === "project" &&
+    activeConversationMode === "review_pr" &&
+    activeWorkspace?.mode === "review_pr"
+      ? activeWorkspace.conversationId
+      : null;
+  const shouldLoadPrReviewContext = Boolean(prReviewConversationId);
+  const prReviewContextQuery = useQuery({
+    queryKey: agentWorkspaceKeys.prReview(prReviewConversationId ?? ""),
+    queryFn: () => chatApi.getAgentWorkspacePrReviewContext(prReviewConversationId!),
+    enabled: shouldLoadPrReviewContext,
+    staleTime: 5_000,
+  });
+  const prReviewContext = prReviewContextForConversation(
+    prReviewContextQuery.data,
+    prReviewConversationId,
+  );
+  const reviewArtifactId =
+    prReviewContext?.monitor?.reviewArtifactId ?? null;
+  const availableArtifactTabsWithReview = useMemo<IdeationArtifactTab[]>(() => {
+    if (!reviewArtifactId || availableArtifactTabs.includes("review")) {
+      return availableArtifactTabs;
+    }
+    return ["review", ...availableArtifactTabs];
+  }, [availableArtifactTabs, reviewArtifactId]);
+  const hasAutoOpenArtifactsWithReview =
+    hasAutoOpenArtifacts || Boolean(reviewArtifactId);
   const knownFocusIdeationSessionId =
     focusedArtifactIdeationSessionId ?? attachedIdeationSessionId ?? null;
   const latestVerificationChildQuery = useQuery({
@@ -379,18 +461,22 @@ export function useAgentsViewController({
     lastVerificationFocus.parentSessionId === focusSwitcherIdeationSessionId
       ? lastVerificationFocus
       : null;
+  const taskRuntimeFocusTarget =
+    chatFocus.type === "task_runtime" ? chatFocus : null;
   const hasAttachedPlanArtifact = availableArtifactTabs.includes("plan");
   const chatFocusOptions = useMemo(() => {
     return getAgentChatFocusSwitchOptions({
       mode: activeConversationMode,
       focusSwitcherIdeationSessionId,
       verificationFocusTarget,
+      taskRuntimeFocusTarget,
       hasPlanArtifact: hasAttachedPlanArtifact,
     });
   }, [
     activeConversationMode,
     focusSwitcherIdeationSessionId,
     hasAttachedPlanArtifact,
+    taskRuntimeFocusTarget,
     verificationFocusTarget,
   ]);
   useEffect(() => {
@@ -417,8 +503,13 @@ export function useAgentsViewController({
         return;
       }
 
-      if (verificationFocusTarget) {
+      if (type === "verification" && verificationFocusTarget) {
         setChatFocus(verificationFocusTarget);
+        return;
+      }
+
+      if (type === "task_runtime" && taskRuntimeFocusTarget) {
+        setChatFocus(taskRuntimeFocusTarget);
       }
     },
     [
@@ -426,6 +517,7 @@ export function useAgentsViewController({
       focusSwitcherIdeationSessionId,
       handleFocusIdeationSession,
       handleReturnToWorkspaceChat,
+      taskRuntimeFocusTarget,
       verificationFocusTarget,
     ],
   );
@@ -436,14 +528,130 @@ export function useAgentsViewController({
     setArtifactTaskMode,
     toggleArtifactPaneVisibility,
   } = useAgentArtifactController({
-    hasAutoOpenArtifacts,
+    hasAutoOpenArtifacts: hasAutoOpenArtifactsWithReview,
     selectedConversationId,
   });
+  const handleOpenTaskArtifact = useCallback(
+    (taskId: string) => {
+      if (!selectedConversationId) {
+        return;
+      }
+      setSelectedTaskArtifactId(taskId);
+      setTaskArtifactFocusRequest((current) => ({
+        taskId,
+        requestId: (current?.requestId ?? 0) + 1,
+      }));
+      openArtifactTab(selectedConversationId, "tasks");
+    },
+    [openArtifactTab, selectedConversationId],
+  );
 
   const { clearAutoManagedTitle, handleAutoManagedTitle } = useAgentsAutoTitle({
     findConversationById,
     invalidateProjectConversations,
   });
+  const openJiraTabForConversation = useCallback(
+    (conversationId: string) => {
+      openArtifactTab(conversationId, "jira");
+    },
+    [openArtifactTab],
+  );
+  const openLinearTabForConversation = useCallback(
+    (conversationId: string) => {
+      openArtifactTab(conversationId, "linear");
+    },
+    [openArtifactTab],
+  );
+  useEffect(() => {
+    const invalidateReviewArtifact = (payload: PrReviewArtifactEventPayload) => {
+      const conversationId = payload.conversationId ?? payload.conversation_id;
+      if (!conversationId) {
+        return;
+      }
+      void queryClient.invalidateQueries({
+        queryKey: agentWorkspaceKeys.prReview(conversationId),
+      });
+      void queryClient.invalidateQueries({
+        queryKey: agentWorkspaceKeys.workspaceReview(conversationId),
+      });
+      const artifactId = payload.artifact?.id;
+      if (artifactId) {
+        void queryClient.invalidateQueries({
+          queryKey: ["agents", "artifact", artifactId],
+        });
+      }
+    };
+
+    const unsubscribeCreated = eventBus.subscribe<PrReviewArtifactEventPayload>(
+      "pr_review_artifact:created",
+      (payload) => {
+        invalidateReviewArtifact(payload);
+        const conversationId = payload.conversationId ?? payload.conversation_id;
+        if (conversationId && conversationId === selectedConversationId) {
+          openArtifactTab(conversationId, "review");
+        }
+      },
+    );
+    const unsubscribeUpdated = eventBus.subscribe<PrReviewArtifactEventPayload>(
+      "pr_review_artifact:updated",
+      invalidateReviewArtifact,
+    );
+    const unsubscribeWorkspaceCreated =
+      eventBus.subscribe<PrReviewArtifactEventPayload>(
+        "workspace_review_artifact:created",
+        (payload) => {
+          invalidateReviewArtifact(payload);
+          const conversationId = payload.conversationId ?? payload.conversation_id;
+          if (conversationId && conversationId === selectedConversationId) {
+            openArtifactTab(conversationId, "review");
+          }
+        },
+      );
+    const unsubscribeWorkspaceUpdated =
+      eventBus.subscribe<PrReviewArtifactEventPayload>(
+        "workspace_review_artifact:updated",
+        invalidateReviewArtifact,
+      );
+
+    return () => {
+      unsubscribeCreated();
+      unsubscribeUpdated();
+      unsubscribeWorkspaceCreated();
+      unsubscribeWorkspaceUpdated();
+    };
+  }, [eventBus, openArtifactTab, queryClient, selectedConversationId]);
+
+  useEffect(() => {
+    const unsubscribeCreated = eventBus.subscribe<unknown>(
+      "plan_artifact:created",
+      (payload) => {
+        const parsed = PlanArtifactEventSchema.safeParse({
+          type: "created",
+          ...(payload as Record<string, unknown>),
+        });
+        if (!parsed.success || parsed.data.type !== "created") {
+          return;
+        }
+        if (
+          !selectedConversationId ||
+          activeConversationMode !== "plan" ||
+          parsed.data.sessionId !== attachedIdeationSessionId
+        ) {
+          return;
+        }
+
+        openArtifactTab(selectedConversationId, "plan");
+      },
+    );
+
+    return unsubscribeCreated;
+  }, [
+    activeConversationMode,
+    attachedIdeationSessionId,
+    eventBus,
+    openArtifactTab,
+    selectedConversationId,
+  ]);
 
   const handleStartAgentConversation = useStartAgentConversation({
     handleAutoManagedTitle,
@@ -456,11 +664,14 @@ export function useAgentsViewController({
     setOptimisticSelectedConversationId,
     setOptimisticWorkspacesByConversationId,
     setRuntimeForConversation,
+    onJiraLinked: openJiraTabForConversation,
+    onLinearLinked: openLinearTabForConversation,
   });
 
   const {
     handleArchiveConversation,
     handleArchiveProject,
+    handleAutoRenameConversation,
     handleForkConversation,
     handleRenameConversation,
     handleRestoreConversation,
@@ -501,7 +712,7 @@ export function useAgentsViewController({
     handlePreloadArtifacts,
     handleSelectArtifact,
   } = useAgentArtifactActions({
-    hasAutoOpenArtifacts,
+    hasAutoOpenArtifacts: hasAutoOpenArtifactsWithReview,
     openArtifactTab,
     scheduleArtifactPanePreload,
     selectedConversationId,
@@ -590,12 +801,37 @@ export function useAgentsViewController({
   // chat-focus pill.
   const handleSelectArtifactWithChatFocus = handleSelectArtifact;
 
-  const handleAgentUserMessageSent = useAgentUserMessageAutoTitle({
+  const handleAgentUserMessageAutoTitle = useAgentUserMessageAutoTitle({
     activeProjectId,
     findConversationById,
     handleAutoManagedTitle,
     selectedConversationId,
   });
+  const invalidateAgentUserMessageJira = useAgentUserMessageJiraInvalidation({
+    queryClient,
+    selectedConversationId,
+  });
+  const handleAgentUserMessageSent = useCallback(
+    (event: {
+      content: string;
+      result: { conversationId: string };
+      composerIntegrationReferences?: ComposerIntegrationReference[];
+    }) => {
+      handleAgentUserMessageAutoTitle(event);
+      invalidateAgentUserMessageJira(event);
+      if (hasJiraIntegrationReference(event.composerIntegrationReferences)) {
+        openJiraTabForConversation(event.result.conversationId);
+      } else if (hasLinearIntegrationReference(event.composerIntegrationReferences)) {
+        openLinearTabForConversation(event.result.conversationId);
+      }
+    },
+    [
+      handleAgentUserMessageAutoTitle,
+      invalidateAgentUserMessageJira,
+      openJiraTabForConversation,
+      openLinearTabForConversation,
+    ],
+  );
   const handleStartRuntimePreferenceChange = useCallback(
     (targetProjectId: string, runtime: AgentRuntimeSelection) => {
       setLastRuntimeForProject(
@@ -623,6 +859,7 @@ export function useAgentsViewController({
     handleActiveConversationModeMenuOpen,
     handleActiveEffortChange,
     handleActiveModelChange,
+    handleActiveProviderChange,
     switchingConversationModeId,
   } = useAgentsActiveComposerControls({
     activeConversation,
@@ -652,6 +889,7 @@ export function useAgentsViewController({
     onCreateProject,
     onForkConversation: handleSidebarForkConversation,
     onArchiveProject: handleArchiveProject,
+    onAutoRenameConversation: handleAutoRenameConversation,
     onRenameConversation: handleRenameConversation,
     onArchiveConversation: handleArchiveConversation,
     onRestoreConversation: handleRestoreConversation,
@@ -669,12 +907,12 @@ export function useAgentsViewController({
       activeWorkspace,
       activeWorkspaceFreshness,
       attachedIdeationSessionId,
-      availableArtifactTabs,
+      availableArtifactTabs: availableArtifactTabsWithReview,
       chatFocus,
       chatFocusOptions,
       defaultProjectId,
       defaultRuntime,
-      hasAutoOpenArtifacts,
+      hasAutoOpenArtifacts: hasAutoOpenArtifactsWithReview,
       isLoadingProjects,
       modelRegistry,
       normalizedActiveRuntime,
@@ -682,10 +920,14 @@ export function useAgentsViewController({
       onActiveConversationModeMenuOpen: handleActiveConversationModeMenuOpen,
       onActiveEffortChange: handleActiveEffortChange,
       onActiveModelChange: handleActiveModelChange,
+      onActiveProviderChange: handleActiveProviderChange,
       onAgentUserMessageSent: handleAgentUserMessageSent,
       onConversationModeSwitched: handleConversationModeSwitched,
       onCreateProject,
       onFocusIdeationSession: handleFocusIdeationSession,
+      onFocusVerificationSession: handleFocusVerificationSession,
+      onFocusTaskRuntime: handleFocusTaskRuntime,
+      onOpenTaskArtifact: handleOpenTaskArtifact,
       onForkConversation: handleForkConversation,
       onOpenPublishPane: handleOpenPublishPane,
       onOpenPublishFile: handleOpenPublishFile,
@@ -701,6 +943,7 @@ export function useAgentsViewController({
       publishShortcutLabel,
       publishingConversationId,
       selectedConversationId,
+      selectedTaskArtifactId,
       setTerminalChatDockElement,
       switchingConversationModeId,
       terminalUnavailableReason,
@@ -719,10 +962,11 @@ export function useAgentsViewController({
       activeConversation,
       activeProjectBaseBranch,
       activeWorkspace,
+      activeWorkspaceFreshness,
       artifactWidthCss,
       chatDockElement: terminalChatDockElement,
       focusedIdeationSessionId: focusedArtifactIdeationSessionId,
-      hasAutoOpenArtifacts,
+      hasAutoOpenArtifacts: hasAutoOpenArtifactsWithReview,
       isArtifactResizing,
       openArtifactTab,
       panelDockElement: terminalPanelDockElement,
@@ -732,8 +976,10 @@ export function useAgentsViewController({
       setArtifactPaneVisibility,
       setArtifactTaskMode,
       setTerminalPanelDockElement,
+      taskArtifactFocusRequest,
       terminalUnavailableReason,
       onFocusVerificationSession: handleFocusVerificationSession,
+      onTaskArtifactSelectionChange: handleTaskArtifactSelectionChange,
       onPublishWorkspace: handlePublishWorkspace,
       onResizeReset: handleArtifactResizeReset,
       onResizeStart: handleArtifactResizeStart,

@@ -1,4 +1,12 @@
-import { memo, useCallback, useEffect, useMemo, useState, type ElementType } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type ElementType,
+  type ReactNode,
+} from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   CheckCircle2,
@@ -15,6 +23,7 @@ import {
   PanelRightOpen,
   ShieldCheck,
   Terminal as TerminalIcon,
+  Ticket,
 } from "lucide-react";
 
 import type { AgentConversationWorkspace, WorkspaceOpenTarget } from "@/api/chat";
@@ -35,6 +44,7 @@ import {
 import { formatBranchDisplay } from "@/lib/branch-utils";
 import { withAlpha } from "@/lib/theme-colors";
 import { cn } from "@/lib/utils";
+import { useConversationTicket } from "@/hooks/useTicketing";
 import { useChatStore } from "@/stores/chatStore";
 import type { AgentArtifactTab } from "@/stores/agentSessionStore";
 import type { ModelDisplay } from "@/types/chat-conversation";
@@ -68,6 +78,7 @@ const HEADER_ARTIFACT_TABS: Array<{
   label: string;
   icon: ElementType;
 }> = [
+  { id: "review", label: "Review", icon: FileText },
   { id: "plan", label: "Plan", icon: FileText },
   { id: "verification", label: "Verification", icon: CheckCircle2 },
   { id: "proposal", label: "Proposals", icon: GitPullRequestArrow },
@@ -119,6 +130,7 @@ export interface AgentsChatHeaderProps {
   onToggleArtifacts: () => void;
   onSelectArtifact: (tab: AgentArtifactTab) => void;
   showTitle?: boolean;
+  workspaceControl?: ReactNode;
 }
 
 export const AgentsChatFocusBar = memo(function AgentsChatFocusBar({
@@ -294,25 +306,37 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
   onToggleArtifacts,
   onSelectArtifact,
   showTitle = true,
+  workspaceControl,
 }: AgentsChatHeaderProps) {
   const title = conversation?.title || "Untitled agent";
   const conversationMode = conversation
     ? resolveConversationAgentMode(conversation, workspace)
     : null;
+  const isLinkedPlanEditWorkspace =
+    conversationMode === "edit" &&
+    Boolean(workspace?.linkedIdeationSessionId || workspace?.linkedPlanBranchId);
   const visibleHeaderArtifactTabs = useMemo(
-    () =>
-      HEADER_ARTIFACT_TABS.filter((tab) =>
+    () => {
+      const tabs = HEADER_ARTIFACT_TABS.filter((tab) =>
         availableArtifactTabs.includes(tab.id),
-      ),
-    [availableArtifactTabs],
+      );
+      return isLinkedPlanEditWorkspace
+        ? tabs.filter((tab) => tab.id === "plan")
+        : tabs;
+    },
+    [availableArtifactTabs, isLinkedPlanEditWorkspace],
   );
   const showHeaderArtifactShortcuts =
-    (conversationMode === "ideation" || conversationMode === "plan") &&
-    visibleHeaderArtifactTabs.length > 0;
+    visibleHeaderArtifactTabs.length > 0 &&
+    (conversationMode === "ideation" ||
+      conversationMode === "plan" ||
+      conversationMode === "review_pr" ||
+      isLinkedPlanEditWorkspace);
   const showArtifactToggle =
     artifactOpen ||
     conversationMode === "ideation" ||
-    (conversationMode === "plan" && visibleHeaderArtifactTabs.length > 0);
+    (conversationMode === "plan" && visibleHeaderArtifactTabs.length > 0) ||
+    (conversationMode === "review_pr" && visibleHeaderArtifactTabs.length > 0);
   // Hide the publish shortcut whenever any artifact pane is open — the user
   // can already reach Commit & Publish via the artifact tab bar, so the
   // header CTA is redundant (and visually crowds the Update-from-base label).
@@ -338,6 +362,10 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
   const isSending = useChatStore((state) =>
     conversationStoreKey ? state.isSending[conversationStoreKey] ?? false : false,
   );
+  const conversationTicketQuery = useConversationTicket(conversation?.id, {
+    enabled: Boolean(conversation),
+  });
+  const linkedTicket = conversationTicketQuery.data ?? null;
   const isAgentActive = isSending || agentStatus === "generating";
   const sidebarVisibility = useAgentsSidebarVisibility();
   const showOpenSidebarButton =
@@ -363,6 +391,15 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
     await onRenameConversation(conversation.id, trimmed);
     setIsEditing(false);
   }, [conversation, draftTitle, onRenameConversation, title]);
+
+  const openLinkedTicket = useCallback(() => {
+    if (!linkedTicket) {
+      return;
+    }
+    // Open the linked issue in the right-hand artifact sidebar (Jira/Linear tab)
+    // rather than navigating away to the ticketing dashboard.
+    onSelectArtifact(linkedTicket.ticketRef.provider === "jira" ? "jira" : "linear");
+  }, [linkedTicket, onSelectArtifact]);
 
   return (
     <div
@@ -395,7 +432,8 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
             </TooltipContent>
           </Tooltip>
         )}
-        {workspace ? <AgentsWorkspaceStatusPill workspace={workspace} /> : null}
+        {workspaceControl ??
+          (workspace ? <AgentsWorkspaceStatusPill workspace={workspace} /> : null)}
         {showTitle ? (
           <div className="min-w-0 flex-1">
             {isEditing ? (
@@ -456,6 +494,27 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
               {...(modelDisplay !== undefined ? { modelDisplay } : {})}
             />
           </div>
+        )}
+
+        {linkedTicket && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-8 w-8 p-0"
+                onClick={openLinkedTicket}
+                aria-label={`Open ticket ${linkedTicket.ticketRef.key ?? linkedTicket.ticketRef.id}`}
+                data-testid="agents-linked-ticket-button"
+              >
+                <Ticket className="w-4 h-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" className="max-w-[280px] text-xs">
+              {linkedTicket.title ?? linkedTicket.ticketRef.key ?? linkedTicket.ticketRef.id}
+            </TooltipContent>
+          </Tooltip>
         )}
 
         <Tooltip>

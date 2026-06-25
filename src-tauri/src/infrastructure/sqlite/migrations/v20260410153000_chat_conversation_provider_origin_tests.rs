@@ -15,7 +15,9 @@ fn test_chat_conversation_provider_origin_migration_adds_columns() {
 
     v20260410153000_chat_conversation_provider_origin::migrate(&conn).unwrap();
 
-    let mut stmt = conn.prepare("PRAGMA table_info(chat_conversations)").unwrap();
+    let mut stmt = conn
+        .prepare("PRAGMA table_info(chat_conversations)")
+        .unwrap();
     let columns: Vec<String> = stmt
         .query_map([], |row| row.get::<_, String>(1))
         .unwrap()

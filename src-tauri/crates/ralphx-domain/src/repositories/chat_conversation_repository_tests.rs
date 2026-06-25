@@ -79,7 +79,7 @@ impl ChatConversationRepository for MockChatConversationRepository {
                     && conversation.context_id == context_id
                     && (include_archived || conversation.archived_at.is_none())
                     && (!archived_only || conversation.archived_at.is_some())
-                    && search.map_or(true, |term| {
+                    && search.is_none_or(|term| {
                         let normalized = term.trim().to_lowercase();
                         let title = conversation
                             .title
@@ -127,6 +127,32 @@ impl ChatConversationRepository for MockChatConversationRepository {
             })
             .max_by_key(|c| c.created_at)
             .cloned())
+    }
+
+    async fn list_recent_resumable_by_context_type(
+        &self,
+        context_type: ChatContextType,
+        limit: u32,
+    ) -> AppResult<Vec<ChatConversation>> {
+        let mut conversations: Vec<ChatConversation> = self
+            .conversations
+            .iter()
+            .filter(|conversation| {
+                conversation.context_type == context_type
+                    && conversation.archived_at.is_none()
+                    && (conversation.provider_session_id.is_some()
+                        || conversation.claude_session_id.is_some())
+            })
+            .cloned()
+            .collect();
+        conversations.sort_by(|left, right| {
+            right
+                .last_message_at
+                .unwrap_or(right.updated_at)
+                .cmp(&left.last_message_at.unwrap_or(left.updated_at))
+        });
+        conversations.truncate(limit as usize);
+        Ok(conversations)
     }
 
     async fn update_provider_session_ref(

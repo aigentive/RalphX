@@ -130,11 +130,21 @@ jobs:
             artifact_suffix: "2"
     env:
       CARGO_TERM_COLOR: never
+      CARGO_BUILD_JOBS: "2"
       RALPHX_TEST_MODE: "1"
       RUST_LIB_COVERAGE_ARTIFACT: coverage-rust-lib-${{ matrix.artifact_suffix }}
       RUST_LIB_COVERAGE_ROOT: coverage/coverage-rust-lib-${{ matrix.artifact_suffix }}
     steps:
       - uses: actions/checkout@v6
+
+      - name: Free runner disk space
+        shell: bash
+        run: |
+          set -euo pipefail
+          df -h /
+          sudo rm -rf /usr/local/lib/android /opt/ghc /usr/share/dotnet
+          sudo docker system prune -af || true
+          df -h /
 
       - name: Install Linux system dependencies
         shell: bash
@@ -206,7 +216,9 @@ jobs:
               "src/application/chat_service/mod.rs",
               "src/application/plan_complexity_assessment.rs",
               "src/commands/agent_composer_commands/plan_references.rs",
+              "src/commands/harness_provider_commands.rs",
               "src/commands/ideation_commands/ideation_commands_session.rs",
+              "src/commands/provider_cli_management_commands.rs",
               "src/commands/question_commands.rs",
               "src/commands/unified_chat_commands.rs",
               "src/http_server/mod.rs",
@@ -221,6 +233,8 @@ jobs:
               "src/http_server/handlers/questions.rs",
               "src/http_server/types.rs",
               "src/infrastructure/agents/claude/mod.rs",
+              "src/infrastructure/agents/codex/codex_cli_client.rs",
+              "src/infrastructure/agents/spawner.rs",
           }
 
           # Keep patch coverage focused on behavior instead of repeated
@@ -340,9 +354,19 @@ jobs:
     timeout-minutes: 45
     env:
       CARGO_TERM_COLOR: never
+      CARGO_BUILD_JOBS: "1"
       RALPHX_TEST_MODE: "1"
     steps:
       - uses: actions/checkout@v6
+
+      - name: Free runner disk space
+        shell: bash
+        run: |
+          set -euo pipefail
+          df -h /
+          sudo rm -rf /usr/local/lib/android /opt/ghc /usr/share/dotnet
+          sudo docker system prune -af || true
+          df -h /
 
       - name: Install Linux system dependencies
         shell: bash
@@ -384,6 +408,14 @@ jobs:
             --remap-path-prefix \
             ipc_contract \
             | tee ../coverage/rust-ipc/summary.txt
+          cargo llvm-cov nextest \
+            --profile ci \
+            --test metrics_commands \
+            --test metrics_delivery_trends \
+            --test metrics_integration \
+            --test metrics_pr_insights \
+            --remap-path-prefix \
+            | tee -a ../coverage/rust-ipc/summary.txt
           cargo llvm-cov report --lcov --output-path ../coverage/rust-ipc/lcov.info
           cargo llvm-cov report --json --output-path ../coverage/rust-ipc/coverage.json
           cargo llvm-cov report --html --output-dir ../coverage/rust-ipc/html
@@ -420,7 +452,9 @@ jobs:
               "src/application/chat_service/mod.rs",
               "src/application/plan_complexity_assessment.rs",
               "src/commands/agent_composer_commands/plan_references.rs",
+              "src/commands/harness_provider_commands.rs",
               "src/commands/ideation_commands/ideation_commands_session.rs",
+              "src/commands/provider_cli_management_commands.rs",
               "src/commands/question_commands.rs",
               "src/commands/unified_chat_commands.rs",
               "src/http_server/mod.rs",
@@ -435,6 +469,8 @@ jobs:
               "src/http_server/handlers/questions.rs",
               "src/http_server/types.rs",
               "src/infrastructure/agents/claude/mod.rs",
+              "src/infrastructure/agents/codex/codex_cli_client.rs",
+              "src/infrastructure/agents/spawner.rs",
           }
 
           # Keep patch coverage focused on behavior instead of repeated

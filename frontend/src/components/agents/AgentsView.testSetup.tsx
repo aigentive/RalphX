@@ -19,6 +19,7 @@ import {
   agentProjectFixture as project,
   agentRuntimeFixture as runtime,
   conversationFixture as conversation,
+  conversationWorkspaceFixture as conversationWorkspace,
   renderWithAgentProviders as renderWithProviders,
 } from "./agentsTestFixtures";
 
@@ -38,6 +39,7 @@ const agentsViewTestMocks = vi.hoisted(() => ({
   openAgentConversationWorkspacePathMock: vi.fn(),
   listConversationsMock: vi.fn(),
   publishAgentConversationWorkspaceMock: vi.fn(),
+  updateWorkspaceFromBaseMock: vi.fn(),
   setAgentConversationWorkspaceAutoPublishMock: vi.fn(),
   setAgentConversationWorkspacePrSupervisionMock: vi.fn(),
   precomputePrDescriptionMock: vi.fn(),
@@ -49,12 +51,18 @@ const agentsViewTestMocks = vi.hoisted(() => ({
   archiveConversationMock: vi.fn(),
   restoreConversationMock: vi.fn(),
   getAgentRunningStatesMock: vi.fn(),
+  getAgentConversationRuntimeStatusesMock: vi.fn(),
   getPlanBranchesMock: vi.fn(),
+  getTicketAssociationsMock: vi.fn(),
+  loadBranchBaseOptionsMock: vi.fn(),
+  loadPullRequestBaseOptionsMock: vi.fn(),
   listIdeationSessionsMock: vi.fn(),
   getLatestChildSessionIdMock: vi.fn(),
   getWorkspaceChangesMock: vi.fn(),
   getWorkspaceChangeSummaryMock: vi.fn(),
   getWorkspaceReviewMock: vi.fn(),
+  getWorkspaceReviewContextMock: vi.fn(),
+  startWorkspaceReviewMock: vi.fn(),
   getWorkspaceDiffMock: vi.fn(),
   getWorkspaceCommitsMock: vi.fn(),
   getWorkspaceCommitChangesMock: vi.fn(),
@@ -65,10 +73,18 @@ const agentsViewTestMocks = vi.hoisted(() => ({
   getWorkspaceStagedDiffMock: vi.fn(),
   getWorkspaceUnstagedDiffMock: vi.fn(),
   getWorkspaceCumulativeDiffMock: vi.fn(),
+  getWorkspaceRepairSummaryMock: vi.fn(),
+  getWorkspaceRepairStagedChangesMock: vi.fn(),
+  getWorkspaceRepairUnstagedChangesMock: vi.fn(),
+  getWorkspaceRepairStagedDiffMock: vi.fn(),
+  getWorkspaceRepairUnstagedDiffMock: vi.fn(),
   listAgentTasksMock: vi.fn(),
   listAgentTaskListsMock: vi.fn(),
   listAgentTaskListTasksMock: vi.fn(),
+  toastDismissMock: vi.fn(),
   toastErrorMock: vi.fn(),
+  toastInfoMock: vi.fn(),
+  toastLoadingMock: vi.fn(),
   toastSuccessMock: vi.fn(),
   integratedChatPanelRenderMock: vi.fn(),
   preloadAgentsArtifactPaneMock: vi.fn(),
@@ -144,6 +160,7 @@ const {
   openAgentConversationWorkspacePathMock,
   listConversationsMock,
   publishAgentConversationWorkspaceMock,
+  updateWorkspaceFromBaseMock,
   setAgentConversationWorkspaceAutoPublishMock,
   setAgentConversationWorkspacePrSupervisionMock,
   precomputePrDescriptionMock,
@@ -155,12 +172,18 @@ const {
   archiveConversationMock,
   restoreConversationMock,
   getAgentRunningStatesMock,
+  getAgentConversationRuntimeStatusesMock,
   getPlanBranchesMock,
+  getTicketAssociationsMock,
+  loadBranchBaseOptionsMock,
+  loadPullRequestBaseOptionsMock,
   listIdeationSessionsMock,
   getLatestChildSessionIdMock,
   getWorkspaceChangesMock,
   getWorkspaceChangeSummaryMock,
   getWorkspaceReviewMock,
+  getWorkspaceReviewContextMock,
+  startWorkspaceReviewMock,
   getWorkspaceDiffMock,
   getWorkspaceCommitsMock,
   getWorkspaceCommitChangesMock,
@@ -171,10 +194,18 @@ const {
   getWorkspaceStagedDiffMock,
   getWorkspaceUnstagedDiffMock,
   getWorkspaceCumulativeDiffMock,
+  getWorkspaceRepairSummaryMock,
+  getWorkspaceRepairStagedChangesMock,
+  getWorkspaceRepairUnstagedChangesMock,
+  getWorkspaceRepairStagedDiffMock,
+  getWorkspaceRepairUnstagedDiffMock,
   listAgentTasksMock,
   listAgentTaskListsMock,
   listAgentTaskListTasksMock,
+  toastDismissMock,
   toastErrorMock,
+  toastInfoMock,
+  toastLoadingMock,
   toastSuccessMock,
   integratedChatPanelRenderMock,
   preloadAgentsArtifactPaneMock,
@@ -331,7 +362,7 @@ vi.mock("@/hooks/useProjects", () => ({
 }));
 
 vi.mock("@/hooks/useHarnessProviders", () => ({
-  useHarnessProviders: () => useHarnessProvidersMock(),
+  useHarnessProviders: (options?: unknown) => useHarnessProvidersMock(options),
 }));
 
 vi.mock("@/hooks/useAgentModels", () => ({
@@ -351,6 +382,20 @@ vi.mock("@/hooks/useAgentModels", () => ({
           label: "opus",
           menuLabel: "opus",
           defaultEffort: "xhigh",
+          supportedEfforts: ["low", "medium", "high", "xhigh", "max"],
+        },
+        {
+          id: "haiku",
+          label: "haiku",
+          menuLabel: "haiku",
+          defaultEffort: "medium",
+          supportedEfforts: ["low", "medium", "high"],
+        },
+        {
+          id: "fable",
+          label: "fable",
+          menuLabel: "fable",
+          defaultEffort: "high",
           supportedEfforts: ["low", "medium", "high", "xhigh", "max"],
         },
       ],
@@ -627,11 +672,17 @@ vi.mock("@/api/chat", () => ({
       getAgentConversationWorkspaceMock(...args),
     getAgentConversationWorkspaceFreshness: (...args: unknown[]) =>
       getAgentConversationWorkspaceFreshnessMock(...args),
+    getAgentWorkspaceReviewContext: (...args: unknown[]) =>
+      getWorkspaceReviewContextMock(...args),
+    startAgentWorkspaceReview: (...args: unknown[]) =>
+      startWorkspaceReviewMock(...args),
     listAgentConversationWorkspacesByProject: (...args: unknown[]) =>
       listAgentConversationWorkspacesByProjectMock(...args),
     listConversations: (...args: unknown[]) => listConversationsMock(...args),
     publishAgentConversationWorkspace: (...args: unknown[]) =>
       publishAgentConversationWorkspaceMock(...args),
+    updateAgentConversationWorkspaceFromBase: (...args: unknown[]) =>
+      updateWorkspaceFromBaseMock(...args),
     setAgentConversationWorkspaceAutoPublish: (...args: unknown[]) =>
       setAgentConversationWorkspaceAutoPublishMock(...args),
     setAgentConversationWorkspacePrSupervision: (...args: unknown[]) =>
@@ -648,6 +699,8 @@ vi.mock("@/api/chat", () => ({
     archiveConversation: (...args: unknown[]) => archiveConversationMock(...args),
     restoreConversation: (...args: unknown[]) => restoreConversationMock(...args),
     getAgentRunningStates: (...args: unknown[]) => getAgentRunningStatesMock(...args),
+    getAgentConversationRuntimeStatuses: (...args: unknown[]) =>
+      getAgentConversationRuntimeStatusesMock(...args),
     listWorkspaceOpenTargets: (...args: unknown[]) =>
       listWorkspaceOpenTargetsMock(...args),
     openAgentConversationWorkspacePath: (...args: unknown[]) =>
@@ -691,12 +744,22 @@ vi.mock("@/api/diff", () => ({
       getWorkspaceStagedChangesMock(...args),
     getAgentConversationWorkspaceUnstagedFileChanges: (...args: unknown[]) =>
       getWorkspaceUnstagedChangesMock(...args),
+    getAgentConversationWorkspaceRepairChangeSummary: (...args: unknown[]) =>
+      getWorkspaceRepairSummaryMock(...args),
+    getAgentConversationWorkspaceRepairStagedFileChanges: (...args: unknown[]) =>
+      getWorkspaceRepairStagedChangesMock(...args),
+    getAgentConversationWorkspaceRepairUnstagedFileChanges: (...args: unknown[]) =>
+      getWorkspaceRepairUnstagedChangesMock(...args),
     getAgentConversationWorkspaceCumulativeFileChanges: (...args: unknown[]) =>
       getWorkspaceCumulativeChangesMock(...args),
     getAgentConversationWorkspaceStagedFileDiff: (...args: unknown[]) =>
       getWorkspaceStagedDiffMock(...args),
     getAgentConversationWorkspaceUnstagedFileDiff: (...args: unknown[]) =>
       getWorkspaceUnstagedDiffMock(...args),
+    getAgentConversationWorkspaceRepairStagedFileDiff: (...args: unknown[]) =>
+      getWorkspaceRepairStagedDiffMock(...args),
+    getAgentConversationWorkspaceRepairUnstagedFileDiff: (...args: unknown[]) =>
+      getWorkspaceRepairUnstagedDiffMock(...args),
     getAgentConversationWorkspaceCumulativeFileDiff: (...args: unknown[]) =>
       getWorkspaceCumulativeDiffMock(...args),
   },
@@ -714,16 +777,45 @@ vi.mock("@/api/agent-tasks", () => ({
 
 vi.mock("sonner", () => ({
   toast: {
+    dismiss: (...args: unknown[]) => toastDismissMock(...args),
     error: (...args: unknown[]) => toastErrorMock(...args),
+    info: (...args: unknown[]) => toastInfoMock(...args),
+    loading: (...args: unknown[]) => toastLoadingMock(...args),
     success: (...args: unknown[]) => toastSuccessMock(...args),
   },
 }));
+
+vi.mock("@/components/shared/branchBaseOptions", async () => {
+  const actual = await vi.importActual<
+    typeof import("@/components/shared/branchBaseOptions")
+  >("@/components/shared/branchBaseOptions");
+  return {
+    ...actual,
+    loadBranchBaseOptions: (...args: unknown[]) => loadBranchBaseOptionsMock(...args),
+    loadPullRequestBaseOptions: (...args: unknown[]) =>
+      loadPullRequestBaseOptionsMock(...args),
+  };
+});
 
 vi.mock("@/api/plan-branch", () => ({
   planBranchApi: {
     getByProject: (...args: unknown[]) => getPlanBranchesMock(...args),
   },
 }));
+
+vi.mock("@/api/ticketing", async () => {
+  const actual = await vi.importActual<typeof import("@/api/ticketing")>(
+    "@/api/ticketing"
+  );
+  return {
+    ...actual,
+    ticketingApi: {
+      ...actual.ticketingApi,
+      getTicketAssociations: (...args: unknown[]) =>
+        getTicketAssociationsMock(...args),
+    },
+  };
+});
 
 vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
   IntegratedChatPanel: ({
@@ -1171,6 +1263,7 @@ export function setupAgentsViewTest() {
   openAgentConversationWorkspacePathMock.mockReset();
   listConversationsMock.mockReset();
   publishAgentConversationWorkspaceMock.mockReset();
+  updateWorkspaceFromBaseMock.mockReset();
   setAgentConversationWorkspaceAutoPublishMock.mockReset();
   setAgentConversationWorkspacePrSupervisionMock.mockReset();
   switchAgentConversationModeMock.mockReset();
@@ -1181,11 +1274,17 @@ export function setupAgentsViewTest() {
   archiveConversationMock.mockReset();
   restoreConversationMock.mockReset();
   getAgentRunningStatesMock.mockReset();
+  getAgentConversationRuntimeStatusesMock.mockReset();
   getPlanBranchesMock.mockReset();
+  getTicketAssociationsMock.mockReset();
+  loadBranchBaseOptionsMock.mockReset();
+  loadPullRequestBaseOptionsMock.mockReset();
   listIdeationSessionsMock.mockReset();
   getWorkspaceChangesMock.mockReset();
   getWorkspaceChangeSummaryMock.mockReset();
   getWorkspaceReviewMock.mockReset();
+  getWorkspaceReviewContextMock.mockReset();
+  startWorkspaceReviewMock.mockReset();
   getWorkspaceDiffMock.mockReset();
   getWorkspaceCommitsMock.mockReset();
   getWorkspaceCommitChangesMock.mockReset();
@@ -1196,11 +1295,19 @@ export function setupAgentsViewTest() {
   getWorkspaceStagedDiffMock.mockReset();
   getWorkspaceUnstagedDiffMock.mockReset();
   getWorkspaceCumulativeDiffMock.mockReset();
+  getWorkspaceRepairSummaryMock.mockReset();
+  getWorkspaceRepairStagedChangesMock.mockReset();
+  getWorkspaceRepairUnstagedChangesMock.mockReset();
+  getWorkspaceRepairStagedDiffMock.mockReset();
+  getWorkspaceRepairUnstagedDiffMock.mockReset();
   listAgentTasksMock.mockReset();
   listAgentTaskListsMock.mockReset();
   listAgentTaskListTasksMock.mockReset();
   precomputePrDescriptionMock.mockReset();
+  toastDismissMock.mockReset();
   toastErrorMock.mockReset();
+  toastInfoMock.mockReset();
+  toastLoadingMock.mockReset();
   toastSuccessMock.mockReset();
   integratedChatPanelRenderMock.mockReset();
   preloadAgentsArtifactPaneMock.mockReset();
@@ -1241,6 +1348,64 @@ export function setupAgentsViewTest() {
   openAgentConversationWorkspacePathMock.mockResolvedValue(undefined);
   listConversationsMock.mockResolvedValue([]);
   getPlanBranchesMock.mockResolvedValue([]);
+  getTicketAssociationsMock.mockResolvedValue({
+    tasks: [],
+    proposals: [],
+    sessions: [],
+    conversations: [],
+    pullRequests: [],
+    checks: [],
+    qa: [],
+    specs: [],
+  });
+  loadBranchBaseOptionsMock.mockResolvedValue({
+    options: [
+      {
+        key: "project_default:main",
+        label: "Project default (main)",
+        detail: "Configured project base branch",
+        source: "project",
+        selection: {
+          kind: "project_default",
+          ref: "main",
+          displayName: "Project default (main)",
+        },
+      },
+      {
+        key: "local_branch:feature/new-base",
+        label: "feature/new-base",
+        detail: "Local branch",
+        source: "local",
+        selection: {
+          kind: "local_branch",
+          ref: "feature/new-base",
+          displayName: "feature/new-base",
+        },
+      },
+    ],
+    selectedKey: "project_default:main",
+  });
+  loadPullRequestBaseOptionsMock.mockResolvedValue([
+    {
+      key: "pull_request:42:feature/pr-base",
+      label: "#42 Add PR base",
+      detail: "feature/pr-base -> main",
+      source: "pull_request",
+      selection: {
+        kind: "local_branch",
+        ref: "feature/pr-base",
+        displayName: "PR #42: Add PR base",
+        sourcePullRequest: {
+          number: 42,
+          url: "https://github.com/mock/project/pull/42",
+          title: "Add PR base",
+          headRefName: "feature/pr-base",
+          baseRefName: "main",
+          headRefOid: "pr-head-sha",
+        },
+      },
+    },
+  ]);
   listIdeationSessionsMock.mockResolvedValue([]);
   mockAgentSidebarData([]);
   getWorkspaceChangesMock.mockResolvedValue([]);
@@ -1255,6 +1420,35 @@ export function setupAgentsViewTest() {
     baseRef: "main",
     headRef: "HEAD",
   });
+  getWorkspaceReviewContextMock.mockResolvedValue({
+    success: true,
+    workspace: conversationWorkspace,
+    events: [],
+    target: null,
+    monitor: {
+      status: "idle",
+      reviewArtifactId: null,
+      reviewArtifactVersion: null,
+    },
+    isCurrent: false,
+    isOutdated: false,
+    shouldShowTab: false,
+  });
+  startWorkspaceReviewMock.mockResolvedValue({
+    success: true,
+    target: null,
+    monitor: {
+      status: "idle",
+      reviewArtifactId: null,
+      reviewArtifactVersion: null,
+    },
+    isCurrent: false,
+    isOutdated: false,
+    shouldShowTab: false,
+    started: false,
+    skippedReason: "no_reviewable_changes",
+    wasQueued: false,
+  });
   getWorkspaceDiffMock.mockResolvedValue("");
   getWorkspaceCommitsMock.mockResolvedValue([]);
   getWorkspaceCommitChangesMock.mockResolvedValue([]);
@@ -1265,6 +1459,22 @@ export function setupAgentsViewTest() {
   getWorkspaceStagedDiffMock.mockResolvedValue("");
   getWorkspaceUnstagedDiffMock.mockResolvedValue("");
   getWorkspaceCumulativeDiffMock.mockResolvedValue("");
+  getWorkspaceRepairSummaryMock.mockResolvedValue({
+    supportsWorktreeModes: true,
+    staged: { fileCount: 0, additions: 0, deletions: 0 },
+    unstaged: { fileCount: 0, additions: 0, deletions: 0 },
+    conflicted: { fileCount: 0, files: [] },
+    repairState: {
+      expectedBranch: "ralphx/demo/agent-conversation-1",
+      checkedOutBranch: "HEAD",
+      rebaseInProgress: true,
+      mergeInProgress: false,
+    },
+  });
+  getWorkspaceRepairStagedChangesMock.mockResolvedValue([]);
+  getWorkspaceRepairUnstagedChangesMock.mockResolvedValue([]);
+  getWorkspaceRepairStagedDiffMock.mockResolvedValue("");
+  getWorkspaceRepairUnstagedDiffMock.mockResolvedValue("");
   listAgentTasksMock.mockResolvedValue([]);
   listAgentTaskListsMock.mockResolvedValue([]);
   listAgentTaskListTasksMock.mockResolvedValue([]);
@@ -1292,6 +1502,7 @@ export function setupAgentsViewTest() {
       publicationPrStatus: "draft",
       publicationPushStatus: "pushed",
       autoPublishEnabled: true,
+      autoPublishInitialPrEnabled: false,
       autoPublishPausedPrAutofixEnabled: null,
       autoPublishPausedPrAutoMergeDesired: null,
       status: "active",
@@ -1304,6 +1515,36 @@ export function setupAgentsViewTest() {
     prNumber: 42,
     prUrl: "https://github.com/mock/project/pull/42",
   });
+  updateWorkspaceFromBaseMock.mockImplementation(
+    async (
+      conversationId: string,
+      base?: {
+        kind: string;
+        ref: string;
+        displayName: string;
+        sourcePullRequest?: {
+          number: number;
+          url?: string | null;
+          title?: string | null;
+          headRefName: string;
+          baseRefName?: string | null;
+          headRefOid?: string | null;
+        } | null;
+      } | null,
+    ) => ({
+      workspace: conversationWorkspace({
+        conversationId,
+        baseRefKind: base?.kind ?? "project_default",
+        baseRef: base?.ref ?? "main",
+        baseDisplayName: base?.displayName ?? "Project default (main)",
+        baseCommit: "updated-base",
+        sourcePullRequest: base?.sourcePullRequest ?? null,
+      }),
+      updated: true,
+      targetRef: base?.ref ?? "origin/main",
+      baseCommit: "updated-base",
+    }),
+  );
   setAgentConversationWorkspacePrSupervisionMock.mockImplementation(
     async (conversationId: string, input: { autoFixEnabled: boolean; autoMergeDesired: boolean }) => ({
       conversationId,
@@ -1322,6 +1563,7 @@ export function setupAgentsViewTest() {
       publicationPrStatus: "open",
       publicationPushStatus: "pushed",
       autoPublishEnabled: true,
+      autoPublishInitialPrEnabled: false,
       autoPublishPausedPrAutofixEnabled: null,
       autoPublishPausedPrAutoMergeDesired: null,
       prAutofixEnabled: input.autoFixEnabled,
@@ -1352,6 +1594,7 @@ export function setupAgentsViewTest() {
       publicationPrStatus: "open",
       publicationPushStatus: "pushed",
       autoPublishEnabled: input.autoPublishEnabled,
+      autoPublishInitialPrEnabled: input.autoPublishEnabled,
       autoPublishPausedPrAutofixEnabled: input.autoPublishEnabled ? null : true,
       autoPublishPausedPrAutoMergeDesired: input.autoPublishEnabled ? null : false,
       prAutofixEnabled: input.autoPublishEnabled,
@@ -1443,6 +1686,7 @@ export function setupAgentsViewTest() {
   archiveConversationMock.mockResolvedValue(undefined);
   restoreConversationMock.mockResolvedValue(undefined);
   getAgentRunningStatesMock.mockResolvedValue({});
+  getAgentConversationRuntimeStatusesMock.mockResolvedValue({});
   vi.mocked(invoke).mockReset();
   vi.mocked(invoke).mockResolvedValue(undefined);
 

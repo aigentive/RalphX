@@ -12,6 +12,7 @@ import { InternalStatusSchema } from "@/types/status";
 import {
   WorkflowResponseSchema,
   WorkflowColumnResponseSchema,
+  ExternalSyncConfigResponseSchema,
   transformWorkflow,
   transformWorkflowColumn,
   type WorkflowSchema,
@@ -62,6 +63,7 @@ export const CreateWorkflowInputSchema = z.object({
   is_default: z.boolean().optional(),
   worker_profile: z.string().optional(),
   reviewer_profile: z.string().optional(),
+  external_sync: ExternalSyncConfigResponseSchema.optional(),
 });
 
 export type CreateWorkflowInput = z.infer<typeof CreateWorkflowInputSchema>;
@@ -76,6 +78,7 @@ export const UpdateWorkflowInputSchema = z.object({
   is_default: z.boolean().optional(),
   worker_profile: z.string().optional(),
   reviewer_profile: z.string().optional(),
+  external_sync: ExternalSyncConfigResponseSchema.optional(),
 });
 
 export type UpdateWorkflowInput = z.infer<typeof UpdateWorkflowInputSchema>;
@@ -159,7 +162,7 @@ export async function getActiveWorkflowColumns(): Promise<WorkflowColumn[]> {
 }
 
 /**
- * Get the built-in workflow definitions (RalphX Default, Jira Compatible)
+ * Get the built-in workflow definitions
  * @returns Array of built-in workflows (camelCase display types)
  */
 export async function getBuiltinWorkflows(): Promise<WorkflowSchema[]> {

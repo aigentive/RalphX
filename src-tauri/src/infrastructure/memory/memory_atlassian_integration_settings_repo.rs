@@ -51,9 +51,11 @@ mod tests {
 
         assert!(!repo.get().await.unwrap().enabled);
 
-        let mut settings = AtlassianIntegrationSettings::default();
-        settings.enabled = true;
-        settings.site_url = Some("https://example.atlassian.net".to_string());
+        let settings = AtlassianIntegrationSettings {
+            enabled: true,
+            site_url: Some("https://example.atlassian.net".to_string()),
+            ..Default::default()
+        };
 
         let saved = repo.upsert(&settings).await.unwrap();
         assert!(saved.enabled);

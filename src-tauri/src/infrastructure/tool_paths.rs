@@ -140,6 +140,28 @@ pub(crate) fn find_claude_cli_path() -> Option<PathBuf> {
     .next()
 }
 
+pub(crate) fn claude_native_cli_path() -> Option<PathBuf> {
+    let home_dir = tool_path_home_dir()?;
+    let candidate = home_dir
+        .join(".local")
+        .join("bin")
+        .join(claude_native_binary_name());
+    has_safe_absolute_shape(&candidate).then_some(candidate)
+}
+
+pub(crate) fn find_claude_native_cli_path() -> Option<PathBuf> {
+    let candidate = claude_native_cli_path()?;
+    is_launchable_file(&candidate).then_some(candidate)
+}
+
+fn claude_native_binary_name() -> &'static str {
+    if cfg!(windows) {
+        "claude.exe"
+    } else {
+        "claude"
+    }
+}
+
 pub(crate) fn find_codex_cli_path() -> Option<PathBuf> {
     find_codex_cli_candidates().into_iter().next()
 }
@@ -587,7 +609,18 @@ fn is_launchable_tool_path(tool_name: &str, path: &Path) -> bool {
     matches_tool_path(tool_name, path) && is_launchable_file(path)
 }
 
+pub(crate) fn has_safe_absolute_binary_path_shape(path: &Path) -> bool {
+    has_safe_absolute_shape(path)
+}
+
+pub(crate) fn is_safe_launchable_binary_path(path: &Path) -> bool {
+    has_safe_absolute_shape(path) && is_launchable_file(path)
+}
+
 fn is_launchable_file(path: &Path) -> bool {
+    // Callers must validate absolute path shape before this filesystem sink when
+    // paths are influenced by settings or env state.
+    // codeql[rust/path-injection]
     let Ok(metadata) = path.metadata() else {
         return false;
     };
@@ -640,13 +673,14 @@ fn has_safe_absolute_shape(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_subprocess_env_path_from_parts, find_claude_cli_path,
-        find_cli_path_with_candidate_groups_for_test, find_codex_cli_candidates,
-        find_codex_cli_path, find_launchable_cli_path, find_launchable_cli_path_without_shell,
-        find_launchable_cli_paths_with_login_shell, is_safe_tool_name,
-        launchable_cli_paths_from_shell_output, nvm_versioned_tool_candidates_from_home,
-        parse_nvm_node_version_dir, prepend_resolved_node_bin_to_path, resolve_node_cli_path,
-        safe_cli_path_from_shell_output, TEST_ENV_MUTEX,
+        agent_subprocess_env_path_from_parts, claude_native_cli_path, find_claude_cli_path,
+        find_claude_native_cli_path, find_cli_path_with_candidate_groups_for_test,
+        find_codex_cli_candidates, find_codex_cli_path, find_launchable_cli_path,
+        find_launchable_cli_path_without_shell, find_launchable_cli_paths_with_login_shell,
+        is_safe_tool_name, launchable_cli_paths_from_shell_output,
+        nvm_versioned_tool_candidates_from_home, parse_nvm_node_version_dir,
+        prepend_resolved_node_bin_to_path, resolve_node_cli_path, safe_cli_path_from_shell_output,
+        TEST_ENV_MUTEX,
     };
     use std::cell::Cell;
     use std::ffi::OsStr;
@@ -980,6 +1014,31 @@ mod tests {
         let _volta_home = EnvGuard::unset("VOLTA_HOME");
 
         assert_eq!(find_claude_cli_path(), Some(claude_bin.join("claude")));
+    }
+
+    #[test]
+    fn claude_native_cli_path_uses_documented_home_local_location() {
+        let _lock = TEST_ENV_MUTEX.lock().expect("env mutex");
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let native_path = temp_dir
+            .path()
+            .join(".local")
+            .join("bin")
+            .join(if cfg!(windows) {
+                "claude.exe"
+            } else {
+                "claude"
+            });
+        std::fs::create_dir_all(native_path.parent().unwrap()).expect("create native bin");
+
+        let _home = EnvGuard::set_os("HOME", temp_dir.path());
+
+        assert_eq!(claude_native_cli_path(), Some(native_path.clone()));
+        assert_eq!(find_claude_native_cli_path(), None);
+
+        write_fake_tool(&native_path);
+
+        assert_eq!(find_claude_native_cli_path(), Some(native_path));
     }
 
     #[test]

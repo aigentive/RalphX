@@ -7,14 +7,23 @@ use crate::application::harness_runtime_registry::{
 use crate::application::session_namer_prompt::build_session_namer_prompt;
 use crate::application::AppState;
 use crate::domain::agents::{
-    AgentConfig, AgentHarnessKind, AgentRole, AgenticClient, DEFAULT_AGENT_HARNESS,
+    AgentConfig, AgentHarnessKind, AgentOutput, AgentRole, AgenticClient, DEFAULT_AGENT_HARNESS,
 };
 use crate::domain::entities::{
-    ChatContextType, ChatConversation, ChatConversationId, DelegatedSessionId, IdeationSession,
-    IdeationSessionId, ProjectId, TaskId,
+    AgentConversationWorkspaceMode, AgentWorkspaceSourcePullRequest, ChatContextType,
+    ChatConversation, ChatConversationId, DelegatedSessionId, IdeationSession,
+    IdeationSessionFlow, IdeationSessionId, ProjectId, TaskId,
+};
+use crate::domain::repositories::{
+    AgentConversationWorkspaceRepository, ChatConversationRepository, IdeationSessionRepository,
 };
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::agent_names;
+use tauri::Emitter;
+
+const AUTO_TITLE_SOURCE: &str = "auto";
+const USER_TITLE_SOURCE: &str = "user";
+const AGENT_CONVERSATION_SOURCE_CONTEXT: &str = "agent_conversation";
 
 #[derive(Debug, Clone)]
 pub(crate) enum SessionNamerTarget {
@@ -25,6 +34,7 @@ pub(crate) enum SessionNamerTarget {
     ConversationInitial {
         conversation_id: String,
         user_message: String,
+        requested_harness: Option<AgentHarnessKind>,
     },
     AcceptedSession {
         session_id: String,
@@ -38,6 +48,16 @@ pub(crate) struct SessionNamerAgentSpawn {
     pub target_label: String,
     pub project_id: Option<String>,
     pub harness_for_log: Option<AgentHarnessKind>,
+    target: SessionNamerTarget,
+    title_updater: SessionNamerTitleUpdater,
+}
+
+#[derive(Clone)]
+struct SessionNamerTitleUpdater {
+    ideation_session_repo: Arc<dyn IdeationSessionRepository>,
+    chat_conversation_repo: Arc<dyn ChatConversationRepository>,
+    agent_conversation_workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    app_handle: Option<tauri::AppHandle>,
 }
 
 pub(crate) async fn spawn_session_namer_agent(
@@ -54,11 +74,24 @@ pub(crate) async fn spawn_session_namer_agent(
             "Spawning session namer agent"
         );
         match spawn.client.spawn_agent(spawn.config).await {
-            Ok(handle) => {
-                if let Err(error) = spawn.client.wait_for_completion(&handle).await {
+            Ok(handle) => match spawn.client.wait_for_completion(&handle).await {
+                Ok(output) => {
+                    if let Err(error) = spawn
+                        .title_updater
+                        .persist_output_title(&spawn.target, &output)
+                        .await
+                    {
+                        tracing::warn!(
+                            target = %spawn.target_label,
+                            error = %error,
+                            "Session namer title persistence failed"
+                        );
+                    }
+                }
+                Err(error) => {
                     tracing::warn!("Session namer agent failed: {}", error);
                 }
-            }
+            },
             Err(error) => {
                 tracing::warn!("Failed to spawn session namer agent: {}", error);
             }
@@ -72,9 +105,9 @@ pub(crate) async fn build_session_namer_agent_spawn(
     state: &AppState,
     target: SessionNamerTarget,
 ) -> AppResult<SessionNamerAgentSpawn> {
-    let prompt = target.prompt();
     let target_label = target.target_label();
     let resolved = resolve_target_context(state, &target).await?;
+    let prompt = target.prompt(resolved.review_pull_request.as_ref());
     let working_directory =
         resolve_project_working_directory(state, resolved.project_id.as_deref()).await?;
 
@@ -92,6 +125,7 @@ pub(crate) async fn build_session_namer_agent_spawn(
         agent: Some(bootstrap.agent_name),
         model: resolved.runtime.model,
         harness: resolved.runtime.harness,
+        cli_path_override: resolved.runtime.cli_path_override,
         logical_effort: resolved.runtime.logical_effort,
         approval_policy: resolved.runtime.approval_policy,
         sandbox_mode: resolved.runtime.sandbox_mode,
@@ -106,6 +140,8 @@ pub(crate) async fn build_session_namer_agent_spawn(
         target_label,
         project_id: resolved.project_id,
         harness_for_log: resolved.harness_for_log,
+        target,
+        title_updater: SessionNamerTitleUpdater::from_state(state),
     })
 }
 
@@ -114,6 +150,7 @@ struct ResolvedSessionNamerTarget {
     runtime: super::app_state::ResolvedBackgroundAgentRuntime,
     project_id: Option<String>,
     harness_for_log: Option<AgentHarnessKind>,
+    review_pull_request: Option<AgentWorkspaceSourcePullRequest>,
 }
 
 async fn resolve_target_context(
@@ -135,10 +172,13 @@ async fn resolve_target_context(
                 runtime,
                 project_id,
                 harness_for_log,
+                review_pull_request: None,
             })
         }
         SessionNamerTarget::ConversationInitial {
-            conversation_id, ..
+            conversation_id,
+            requested_harness,
+            ..
         } => {
             let conversation = state
                 .chat_conversation_repo
@@ -148,10 +188,13 @@ async fn resolve_target_context(
                     AppError::NotFound(format!("Conversation not found: {conversation_id}"))
                 })?;
             let project_id = resolve_conversation_project_id(state, &conversation).await?;
+            let review_pull_request =
+                resolve_review_pull_request_context(state, &conversation.id).await?;
             let runtime = state
-                .resolve_session_namer_runtime_for_conversation(
+                .resolve_session_namer_runtime_for_conversation_with_requested_harness(
                     &conversation,
                     project_id.as_deref(),
+                    *requested_harness,
                 )
                 .await?;
             let client = Arc::clone(&runtime.client);
@@ -161,9 +204,27 @@ async fn resolve_target_context(
                 runtime,
                 project_id,
                 harness_for_log,
+                review_pull_request,
             })
         }
     }
+}
+
+async fn resolve_review_pull_request_context(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+) -> AppResult<Option<AgentWorkspaceSourcePullRequest>> {
+    let Some(workspace) = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(conversation_id)
+        .await?
+    else {
+        return Ok(None);
+    };
+    if workspace.mode != AgentConversationWorkspaceMode::ReviewPr {
+        return Ok(None);
+    }
+    Ok(workspace.source_pull_request)
 }
 
 async fn load_session(state: &AppState, session_id: &str) -> AppResult<IdeationSession> {
@@ -233,16 +294,6 @@ impl SessionNamerTarget {
         }
     }
 
-    pub(crate) fn conversation_initial(
-        conversation_id: impl Into<String>,
-        user_message: impl Into<String>,
-    ) -> Self {
-        Self::ConversationInitial {
-            conversation_id: conversation_id.into(),
-            user_message: user_message.into(),
-        }
-    }
-
     pub(crate) fn accepted_session(
         session_id: impl Into<String>,
         accepted_proposals: impl Into<String>,
@@ -257,19 +308,22 @@ impl SessionNamerTarget {
         session_id: Option<String>,
         conversation_id: Option<String>,
         user_message: String,
+        requested_harness: Option<AgentHarnessKind>,
     ) -> Result<Self, &'static str> {
         match (session_id, conversation_id) {
             (Some(session_id), None) => Ok(Self::session_initial(session_id, user_message)),
-            (None, Some(conversation_id)) => {
-                Ok(Self::conversation_initial(conversation_id, user_message))
-            }
+            (None, Some(conversation_id)) => Ok(Self::ConversationInitial {
+                conversation_id,
+                user_message,
+                requested_harness,
+            }),
             (Some(_), Some(_)) | (None, None) => {
                 Err("spawn_session_namer requires exactly one of sessionId or conversationId")
             }
         }
     }
 
-    fn prompt(&self) -> String {
+    fn prompt(&self, review_pull_request: Option<&AgentWorkspaceSourcePullRequest>) -> String {
         match self {
             Self::SessionInitial {
                 session_id,
@@ -280,9 +334,15 @@ impl SessionNamerTarget {
             Self::ConversationInitial {
                 conversation_id,
                 user_message,
-            } => build_session_namer_prompt(&format!(
-                "<conversation_id>{conversation_id}</conversation_id>\n<user_message>{user_message}</user_message>"
-            )),
+                ..
+            } => {
+                let review_pull_request_context = review_pull_request
+                    .map(format_review_pull_request_context)
+                    .unwrap_or_default();
+                build_session_namer_prompt(&format!(
+                    "<conversation_id>{conversation_id}</conversation_id>\n<user_message>{user_message}</user_message>{review_pull_request_context}"
+                ))
+            }
             Self::AcceptedSession {
                 session_id,
                 accepted_proposals,
@@ -302,4 +362,324 @@ impl SessionNamerTarget {
             } => format!("conversation:{conversation_id}"),
         }
     }
+}
+
+fn format_review_pull_request_context(pull_request: &AgentWorkspaceSourcePullRequest) -> String {
+    let mut context = format!(
+        "\n<review_pull_request>\n<number>{}</number>",
+        pull_request.number
+    );
+    append_optional_xml_tag(&mut context, "title", pull_request.title.as_deref());
+    append_optional_xml_tag(
+        &mut context,
+        "head_ref_name",
+        Some(pull_request.head_ref_name.as_str()),
+    );
+    append_optional_xml_tag(
+        &mut context,
+        "base_ref_name",
+        pull_request.base_ref_name.as_deref(),
+    );
+    append_optional_xml_tag(
+        &mut context,
+        "head_ref_oid",
+        pull_request.head_ref_oid.as_deref(),
+    );
+    append_optional_xml_tag(&mut context, "url", pull_request.url.as_deref());
+    context.push_str("\n</review_pull_request>");
+    context
+}
+
+fn append_optional_xml_tag(context: &mut String, tag: &str, value: Option<&str>) {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return;
+    };
+    context.push('\n');
+    context.push('<');
+    context.push_str(tag);
+    context.push('>');
+    context.push_str(&escape_xml_text(value));
+    context.push_str("</");
+    context.push_str(tag);
+    context.push('>');
+}
+
+fn escape_xml_text(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+impl SessionNamerTitleUpdater {
+    fn from_state(state: &AppState) -> Self {
+        Self {
+            ideation_session_repo: Arc::clone(&state.ideation_session_repo),
+            chat_conversation_repo: Arc::clone(&state.chat_conversation_repo),
+            agent_conversation_workspace_repo: Arc::clone(&state.agent_conversation_workspace_repo),
+            app_handle: state.app_handle.clone(),
+        }
+    }
+
+    async fn persist_output_title(
+        &self,
+        target: &SessionNamerTarget,
+        output: &AgentOutput,
+    ) -> AppResult<()> {
+        let Some(title) = extract_session_namer_title(&output.content) else {
+            tracing::warn!(
+                success = output.success,
+                exit_code = output.exit_code,
+                content_len = output.content.len(),
+                "Session namer completed without a parseable title"
+            );
+            return Ok(());
+        };
+
+        match target {
+            SessionNamerTarget::SessionInitial { session_id, .. }
+            | SessionNamerTarget::AcceptedSession { session_id, .. } => {
+                let session_id = IdeationSessionId::from_string(session_id.clone());
+                self.ideation_session_repo
+                    .update_title(&session_id, Some(title.clone()), AUTO_TITLE_SOURCE)
+                    .await?;
+                if let Some(app_handle) = &self.app_handle {
+                    let _ = app_handle.emit(
+                        "ideation:session_title_updated",
+                        serde_json::json!({
+                            "sessionId": session_id.as_str(),
+                            "title": title,
+                        }),
+                    );
+                }
+            }
+            SessionNamerTarget::ConversationInitial {
+                conversation_id, ..
+            } => {
+                let conversation_id = ChatConversationId::from_string(conversation_id.clone());
+                self.chat_conversation_repo
+                    .update_title(&conversation_id, &title)
+                    .await?;
+                let conversation = self
+                    .chat_conversation_repo
+                    .get_by_id(&conversation_id)
+                    .await?;
+                let synced_planning_session_id = self
+                    .sync_linked_planning_session_title_from_conversation(&conversation_id, &title)
+                    .await?;
+
+                if let Some(app_handle) = &self.app_handle {
+                    if let Some(session_id) = synced_planning_session_id {
+                        let _ = app_handle.emit(
+                            "ideation:session_title_updated",
+                            serde_json::json!({
+                                "sessionId": session_id.as_str(),
+                                "title": title,
+                            }),
+                        );
+                    }
+                    if let Some(conversation) = conversation {
+                        let _ = app_handle.emit(
+                            "agent:conversation_title_updated",
+                            serde_json::json!({
+                                "conversationId": conversation.id.as_str(),
+                                "contextType": conversation.context_type.to_string(),
+                                "contextId": conversation.context_id,
+                                "title": title,
+                            }),
+                        );
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn sync_linked_planning_session_title_from_conversation(
+        &self,
+        conversation_id: &ChatConversationId,
+        title: &str,
+    ) -> AppResult<Option<IdeationSessionId>> {
+        let Some(workspace) = self
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(conversation_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let Some(session_id) = workspace.linked_ideation_session_id.as_ref() else {
+            return Ok(None);
+        };
+        let Some(session) = self.ideation_session_repo.get_by_id(session_id).await? else {
+            return Ok(None);
+        };
+        if session.session_flow != IdeationSessionFlow::Planning {
+            return Ok(None);
+        }
+        if session.source_context_type.as_deref() != Some(AGENT_CONVERSATION_SOURCE_CONTEXT) {
+            return Ok(None);
+        }
+        if session.title_source.as_deref() == Some(USER_TITLE_SOURCE) {
+            return Ok(None);
+        }
+
+        self.ideation_session_repo
+            .update_title(
+                session_id,
+                Some(title.trim().to_string()),
+                AUTO_TITLE_SOURCE,
+            )
+            .await?;
+        Ok(Some(session_id.clone()))
+    }
+}
+
+pub(crate) fn extract_session_namer_title(output: &str) -> Option<String> {
+    let trimmed = output.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if let Some(title) = extract_title_from_json_text(trimmed) {
+        return Some(title);
+    }
+
+    for line in trimmed.lines() {
+        if let Some(title) = extract_title_from_json_text(line.trim()) {
+            return Some(title);
+        }
+    }
+
+    extract_title_from_text(trimmed)
+}
+
+fn extract_title_from_json_text(text: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(text).ok()?;
+    extract_title_from_json_value(&value)
+}
+
+fn extract_title_from_json_value(value: &serde_json::Value) -> Option<String> {
+    if let Some(title) = value.get("title").and_then(|value| value.as_str()) {
+        if let Some(title) = normalize_title_candidate(title) {
+            return Some(title);
+        }
+    }
+
+    if let Some(result) = value.get("result").and_then(|value| value.as_str()) {
+        if let Some(title) = extract_title_from_text(result) {
+            return Some(title);
+        }
+    }
+
+    if let Some(content) = value
+        .get("message")
+        .and_then(|message| message.get("content"))
+        .and_then(|content| content.as_array())
+    {
+        for block in content {
+            if block.get("type").and_then(|value| value.as_str()) == Some("tool_use") {
+                if let Some(title) = block
+                    .get("input")
+                    .and_then(|input| input.get("title"))
+                    .and_then(|title| title.as_str())
+                    .and_then(normalize_title_candidate)
+                {
+                    return Some(title);
+                }
+            }
+            if let Some(title) = block
+                .get("text")
+                .and_then(|text| text.as_str())
+                .and_then(extract_title_from_text)
+            {
+                return Some(title);
+            }
+        }
+    }
+
+    None
+}
+
+fn extract_title_from_text(text: &str) -> Option<String> {
+    if let Some(title) = extract_between(text, "<parameter name=\"title\">", "</parameter>")
+        .and_then(normalize_title_candidate)
+    {
+        return Some(title);
+    }
+
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some((_, rest)) = line.split_once("Generated Title:") {
+            if let Some(title) =
+                extract_backticked(rest).or_else(|| normalize_title_candidate(rest))
+            {
+                return Some(title);
+            }
+        }
+        if let Some((_, rest)) = line.split_once("Title:") {
+            if let Some(title) =
+                extract_backticked(rest).or_else(|| normalize_title_candidate(rest))
+            {
+                return Some(title);
+            }
+        }
+    }
+
+    let non_empty_lines: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    if non_empty_lines.len() == 1 {
+        return normalize_title_candidate(non_empty_lines[0]);
+    }
+
+    None
+}
+
+fn extract_between<'a>(text: &'a str, start: &str, end: &str) -> Option<&'a str> {
+    let start_idx = text.find(start)? + start.len();
+    let end_idx = text[start_idx..].find(end)? + start_idx;
+    Some(&text[start_idx..end_idx])
+}
+
+fn extract_backticked(text: &str) -> Option<String> {
+    let start = text.find('`')? + 1;
+    let end = text[start..].find('`')? + start;
+    normalize_title_candidate(&text[start..end])
+}
+
+fn normalize_title_candidate(candidate: &str) -> Option<String> {
+    let mut title = candidate.trim();
+    title = title.trim_matches(|c| matches!(c, '`' | '"' | '\'' | '*' | ' '));
+    title = title
+        .strip_prefix("Generated Title:")
+        .unwrap_or(title)
+        .trim();
+    title = title.strip_prefix("Title:").unwrap_or(title).trim();
+    title = title.trim_matches(|c| matches!(c, '`' | '"' | '\'' | '*' | ' '));
+
+    if title.is_empty()
+        || title.contains('\n')
+        || title.contains('\r')
+        || title.contains("<invoke")
+        || title.contains("</invoke>")
+    {
+        return None;
+    }
+
+    let char_count = title.chars().count();
+    if char_count > 80 {
+        return None;
+    }
+    let title = if char_count > 50 {
+        title.chars().take(50).collect::<String>()
+    } else {
+        title.to_string()
+    };
+    Some(title.trim().to_string()).filter(|title| !title.is_empty())
 }

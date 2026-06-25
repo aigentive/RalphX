@@ -660,6 +660,116 @@ describe("chatStore", () => {
     });
   });
 
+  describe("setQueuedMessages", () => {
+    const contextKey = "task:test-task";
+    const otherContextKey = "task:other-task";
+
+    it("replaces a context queue with backend messages", () => {
+      useChatStore.getState().queueMessage(contextKey, "Stale", "stale-id");
+
+      useChatStore.getState().setQueuedMessages(contextKey, [
+        {
+          id: "backend-1",
+          content: "Backend first",
+          createdAt: "2026-06-19T10:00:00Z",
+          isEditing: false,
+          attachmentIds: ["att-1"],
+        },
+        {
+          id: "backend-2",
+          content: "Backend second",
+          createdAt: "2026-06-19T10:01:00Z",
+          isEditing: false,
+          attachmentIds: [],
+        },
+      ]);
+
+      const state = useChatStore.getState();
+      expect(state.queuedMessages[contextKey]).toEqual([
+        {
+          id: "backend-1",
+          content: "Backend first",
+          createdAt: "2026-06-19T10:00:00Z",
+          isEditing: false,
+          attachmentIds: ["att-1"],
+        },
+        {
+          id: "backend-2",
+          content: "Backend second",
+          createdAt: "2026-06-19T10:01:00Z",
+          isEditing: false,
+          attachmentIds: [],
+        },
+      ]);
+    });
+
+    it("clears the context queue when backend has no messages", () => {
+      useChatStore.getState().queueMessage(contextKey, "Queued", "queued-id");
+
+      useChatStore.getState().setQueuedMessages(contextKey, []);
+
+      expect(useChatStore.getState().queuedMessages[contextKey]).toBeUndefined();
+    });
+
+    it("preserves local editing state for matching backend messages", () => {
+      useChatStore.getState().queueMessage(contextKey, "Original", "queued-id");
+      useChatStore.getState().startEditingQueuedMessage(contextKey, "queued-id");
+
+      useChatStore.getState().setQueuedMessages(contextKey, [
+        {
+          id: "queued-id",
+          content: "Original",
+          createdAt: "2026-06-19T10:00:00Z",
+          isEditing: false,
+          attachmentIds: [],
+        },
+      ]);
+
+      expect(useChatStore.getState().queuedMessages[contextKey]?.[0].isEditing).toBe(true);
+    });
+
+    it("keeps the same queue reference when hydrated messages are unchanged", () => {
+      useChatStore.getState().setQueuedMessages(contextKey, [
+        {
+          id: "queued-id",
+          content: "Original",
+          createdAt: "2026-06-19T10:00:00Z",
+          isEditing: false,
+          attachmentIds: ["att-1"],
+        },
+      ]);
+      const before = useChatStore.getState().queuedMessages[contextKey];
+
+      useChatStore.getState().setQueuedMessages(contextKey, [
+        {
+          id: "queued-id",
+          content: "Original",
+          createdAt: "2026-06-19T10:00:00Z",
+          isEditing: false,
+          attachmentIds: ["att-1"],
+        },
+      ]);
+
+      expect(useChatStore.getState().queuedMessages[contextKey]).toBe(before);
+    });
+
+    it("does not change other context queues", () => {
+      useChatStore.getState().queueMessage(otherContextKey, "Other", "other-id");
+
+      useChatStore.getState().setQueuedMessages(contextKey, [
+        {
+          id: "backend-id",
+          content: "Backend",
+          createdAt: "2026-06-19T10:00:00Z",
+          isEditing: false,
+          attachmentIds: [],
+        },
+      ]);
+
+      expect(useChatStore.getState().queuedMessages[otherContextKey]?.[0].content).toBe("Other");
+    });
+  });
+
   describe("editQueuedMessage", () => {
     const contextKey = "task:test-task";
 

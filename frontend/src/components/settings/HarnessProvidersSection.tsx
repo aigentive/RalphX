@@ -1,17 +1,26 @@
 import { useState } from "react";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
+  Check,
   ChevronDown,
   ChevronRight,
   Cpu,
+  Download,
   ExternalLink,
+  FolderOpen,
   RefreshCw,
   RotateCcw,
   ShieldCheck,
 } from "lucide-react";
+import { toast } from "sonner";
 
-import type { AgentProviderSettingsResponse } from "@/api/harness-providers";
-import type { UpdateAgentProviderSettingsInput } from "@/api/harness-providers";
+import type {
+  AgentProviderSettingsResponse,
+  UpdateAgentProviderSettingsInput,
+} from "@/api/harness-providers";
+import type { ManagedProviderCliStatusResponse } from "@/api/provider-cli-management";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -24,12 +33,18 @@ import { Switch } from "@/components/ui/switch";
 import { useAgentModels } from "@/hooks/useAgentModels";
 import { useConfirmation } from "@/hooks/useConfirmation";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
+import { useProviderCliManagement } from "@/hooks/useProviderCliManagement";
 import {
   AGENT_EFFORT_CATALOG,
   agentEffortOptionsForModel,
   defaultModelForProvider,
+  isAgentModelSelectableForProvider,
   type AgentProvider,
 } from "@/lib/agent-models";
+import {
+  providerCliUpdateToastId,
+  providerCliUpdateToastMatchesInstalledStatus,
+} from "@/lib/provider-cli-update-toast";
 
 import { ErrorBanner, SectionCard } from "./SettingsView.shared";
 
@@ -57,6 +72,8 @@ const CODEX_SANDBOX_MODES = ["danger-full-access", "workspace-write", "read-only
 const PROVIDER_DEFAULT_SELECT_VALUE = "__harness_default__";
 const CODEX_MCP_LOCK_COPY =
   "RalphX MCP tools currently require Codex to run with Never approval and Danger Full Access.";
+const RX_MANAGED_CLI_MODE = "rx_managed";
+const USER_MANAGED_CLI_MODE = "user_managed";
 
 function providerLabel(provider: string): string {
   return PROVIDER_LABELS[provider] ?? provider;
@@ -137,6 +154,75 @@ function ProviderCliStatus({
   );
 }
 
+function ProviderManagedCliStatus({
+  provider,
+  status,
+  isLoading,
+  isInstalling,
+  onInstallOrUpdate,
+}: {
+  provider: AgentProviderSettingsResponse;
+  status: ManagedProviderCliStatusResponse | undefined;
+  isLoading: boolean;
+  isInstalling: boolean;
+  onInstallOrUpdate: () => void;
+}) {
+  const label = providerLabel(provider.provider);
+  const isUserManagedNotice =
+    status?.cliManagementMode === USER_MANAGED_CLI_MODE;
+  const canRunAction =
+    !isUserManagedNotice &&
+    status?.supported &&
+    (status.action === "install" || status.action === "update");
+  const actionLabel =
+    status?.action === "install"
+      ? `Install ${label}`
+      : status?.action === "update"
+        ? `Update ${label}`
+        : null;
+
+  return (
+    <div className="border-t border-[var(--border-subtle)] px-4 py-3">
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-3 py-2">
+        <div className="min-w-0 space-y-1">
+          <div className="text-xs font-medium text-[var(--text-primary)]">
+            {isUserManagedNotice ? "CLI update available" : "RX-managed CLI"}
+          </div>
+          <p className="text-[0.6875rem] leading-relaxed text-[var(--text-muted)]">
+            {isLoading && !status ? "Checking managed CLI status." : status?.status}
+          </p>
+          {status?.binaryPath && (
+            <code className="block max-w-full truncate rounded border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-1.5 py-0.5 text-[0.6875rem] text-[var(--text-muted)]">
+              {status.binaryPath}
+            </code>
+          )}
+          {status?.error && !status.supported && (
+            <p className="text-[0.6875rem] leading-relaxed text-[var(--status-warning)]">
+              {status.error}
+            </p>
+          )}
+        </div>
+        {canRunAction && actionLabel && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={isInstalling}
+            onClick={onInstallOrUpdate}
+          >
+            {status.action === "install" ? (
+              <Download className="mr-2 h-4 w-4" />
+            ) : (
+              <RefreshCw className="mr-2 h-4 w-4" />
+            )}
+            {actionLabel}
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function ProvidersLoadingState() {
   return (
     <div className="space-y-4" data-testid="providers-loading-state">
@@ -186,7 +272,20 @@ export function HarnessProvidersSection() {
   const { models } = useAgentModels();
   const { confirm, confirmationDialogProps, ConfirmationDialog } =
     useConfirmation();
+  const {
+    statusByProvider,
+    isLoadingStatus,
+    installOrUpdateProviderAsync,
+    isInstallingProvider,
+    refetchStatus,
+  } = useProviderCliManagement();
   const [expandedPermissions, setExpandedPermissions] = useState<
+    Record<string, boolean>
+  >({});
+  const [customBinaryDrafts, setCustomBinaryDrafts] = useState<
+    Record<string, string>
+  >({});
+  const [customBinaryEditors, setCustomBinaryEditors] = useState<
     Record<string, boolean>
   >({});
 
@@ -224,6 +323,18 @@ export function HarnessProvidersSection() {
       input.claudeAllowDangerouslySkipPermissions =
         changes.claudeAllowDangerouslySkipPermissions;
     }
+    if (changes.cliManagementMode !== undefined) {
+      input.cliManagementMode = changes.cliManagementMode;
+    }
+    if (changes.autoUpdateEnabled !== undefined) {
+      input.autoUpdateEnabled = changes.autoUpdateEnabled;
+    }
+    if (changes.customBinaryEnabled !== undefined) {
+      input.customBinaryEnabled = changes.customBinaryEnabled;
+    }
+    if (changes.customBinaryPath !== undefined) {
+      input.customBinaryPath = changes.customBinaryPath;
+    }
     if (changes.resetToDefaults !== undefined) {
       input.resetToDefaults = changes.resetToDefaults;
     }
@@ -231,6 +342,14 @@ export function HarnessProvidersSection() {
       input.applyToAllLanes = changes.applyToAllLanes;
     }
     await updateProviderAsync(input);
+    if (
+      changes.cliManagementMode !== undefined ||
+      changes.autoUpdateEnabled !== undefined ||
+      changes.customBinaryEnabled !== undefined ||
+      changes.customBinaryPath !== undefined
+    ) {
+      await refetchStatus();
+    }
   };
 
   const applyProviderToAgents = async (
@@ -268,6 +387,93 @@ export function HarnessProvidersSection() {
       resetToDefaults: true,
       applyToAllLanes: provider.isDefault,
     });
+  };
+
+  const installOrUpdateManagedCli = async (
+    provider: AgentProviderSettingsResponse,
+  ) => {
+    const status = statusByProvider.get(provider.provider);
+    const actionVerb = status?.action === "install" ? "Installing" : "Updating";
+    const label = providerLabel(provider.provider);
+    const toastId = `provider-cli-management:${provider.provider}`;
+    toast.loading(`${actionVerb} ${label} CLI...`, { id: toastId });
+    try {
+      const result = await installOrUpdateProviderAsync({
+        provider: provider.provider,
+      });
+      if (providerCliUpdateToastMatchesInstalledStatus(status, result.status)) {
+        toast.dismiss(providerCliUpdateToastId(provider.provider));
+      }
+      toast.success(`${label} CLI is ready.`, { id: toastId });
+      await Promise.all([refetchStatus(), refetchProviders()]);
+    } catch (error) {
+      toast.error(`Failed to update ${label} CLI.`, {
+        id: toastId,
+        description: error instanceof Error ? error.message : undefined,
+      });
+    }
+  };
+
+  const customBinaryDraft = (provider: AgentProviderSettingsResponse) =>
+    customBinaryDrafts[provider.provider] ?? provider.customBinaryPath ?? "";
+
+  const showCustomBinaryEditor = (provider: AgentProviderSettingsResponse) =>
+    Boolean(
+      provider.customBinaryEnabled ||
+        provider.customBinaryPath ||
+        customBinaryEditors[provider.provider],
+    );
+
+  const setCustomBinaryDraft = (provider: string, value: string) => {
+    setCustomBinaryDrafts((current) => ({ ...current, [provider]: value }));
+  };
+
+  const setCustomBinaryEditor = (provider: string, visible: boolean) => {
+    setCustomBinaryEditors((current) => ({ ...current, [provider]: visible }));
+  };
+
+  const saveCustomBinaryPath = async (
+    provider: AgentProviderSettingsResponse,
+    path: string,
+  ) => {
+    const trimmedPath = path.trim();
+    if (!trimmedPath) {
+      setCustomBinaryEditor(provider.provider, true);
+      return;
+    }
+    setCustomBinaryDraft(provider.provider, trimmedPath);
+    await updateProvider(provider, {
+      customBinaryEnabled: true,
+      customBinaryPath: trimmedPath,
+      cliManagementMode: USER_MANAGED_CLI_MODE,
+      autoUpdateEnabled: false,
+    });
+  };
+
+  const toggleCustomBinary = async (
+    provider: AgentProviderSettingsResponse,
+    checked: boolean,
+  ) => {
+    if (!checked) {
+      await updateProvider(provider, { customBinaryEnabled: false });
+      return;
+    }
+    setCustomBinaryEditor(provider.provider, true);
+    const path = customBinaryDraft(provider);
+    if (path.trim()) {
+      await saveCustomBinaryPath(provider, path);
+    }
+  };
+
+  const browseCustomBinary = async (provider: AgentProviderSettingsResponse) => {
+    const selected = await openDialog({
+      directory: false,
+      multiple: false,
+      title: `Select ${providerLabel(provider.provider)} binary`,
+    });
+    const selectedPath = Array.isArray(selected) ? selected[0] : selected;
+    if (typeof selectedPath !== "string" || selectedPath.trim() === "") return;
+    await saveCustomBinaryPath(provider, selectedPath);
   };
 
   return (
@@ -312,7 +518,14 @@ export function HarnessProvidersSection() {
                 ? provider.provider
                 : "claude";
               const providerModels = models.filter(
-                (model) => model.provider === provider.provider && model.enabled,
+                (model) =>
+                  model.provider === provider.provider &&
+                  model.enabled &&
+                  isAgentModelSelectableForProvider(
+                    agentProvider,
+                    model.modelId,
+                    provider.supportedModelAliases,
+                  ),
               );
               const selectedModel =
                 provider.model ?? PROVIDER_DEFAULT_SELECT_VALUE;
@@ -324,6 +537,8 @@ export function HarnessProvidersSection() {
               const effortOptions = agentEffortOptionsForModel(
                 agentProvider,
                 selectedModelId,
+                undefined,
+                provider.supportedEfforts,
               );
               const selectedEffort =
                 provider.effort ?? PROVIDER_DEFAULT_SELECT_VALUE;
@@ -331,6 +546,12 @@ export function HarnessProvidersSection() {
                 provider.model != null &&
                 provider.model.trim() !== "" &&
                 selectedModelEntry == null;
+              const isRxManagedCli =
+                provider.cliManagementMode === RX_MANAGED_CLI_MODE &&
+                !provider.customBinaryEnabled;
+              const managedCliStatus = statusByProvider.get(provider.provider);
+              const showCustomEditor = showCustomBinaryEditor(provider);
+              const customPath = customBinaryDraft(provider);
 
               return (
                 <div
@@ -377,6 +598,164 @@ export function HarnessProvidersSection() {
                       />
                     </div>
                   </div>
+
+                  <div
+                    className={`grid gap-3 border-t border-[var(--border-subtle)] px-4 py-3 md:grid-cols-3 ${
+                      provider.enabled
+                        ? "border-b border-[var(--border-subtle)]"
+                        : ""
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-3 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-3 py-2">
+                      <div className="space-y-1">
+                        <Label
+                          htmlFor={`provider-managed-cli-${provider.provider}`}
+                          className="text-xs text-[var(--text-primary)]"
+                        >
+                          Let RX manage this CLI
+                        </Label>
+                        <p className="text-[0.6875rem] leading-relaxed text-[var(--text-muted)]">
+                          Allows RX-managed installs and updates without
+                          changing user-managed PATH installs.
+                        </p>
+                      </div>
+                      <Switch
+                        id={`provider-managed-cli-${provider.provider}`}
+                        checked={isRxManagedCli}
+                        disabled={isUpdating || Boolean(provider.customBinaryEnabled)}
+                        onCheckedChange={(checked) =>
+                          void updateProvider(provider, {
+                            customBinaryEnabled: false,
+                            cliManagementMode: checked
+                              ? RX_MANAGED_CLI_MODE
+                              : USER_MANAGED_CLI_MODE,
+                            autoUpdateEnabled: checked
+                              ? Boolean(provider.autoUpdateEnabled)
+                              : false,
+                          })
+                        }
+                      />
+                    </div>
+
+                    <div className="flex items-start justify-between gap-3 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-3 py-2">
+                      <div className="space-y-1">
+                        <Label
+                          htmlFor={`provider-custom-binary-${provider.provider}`}
+                          className="text-xs text-[var(--text-primary)]"
+                        >
+                          Use custom binary
+                        </Label>
+                        <p className="text-[0.6875rem] leading-relaxed text-[var(--text-muted)]">
+                          Launch this provider from a user-owned executable or
+                          wrapper.
+                        </p>
+                      </div>
+                      <Switch
+                        id={`provider-custom-binary-${provider.provider}`}
+                        checked={Boolean(provider.customBinaryEnabled)}
+                        disabled={isUpdating}
+                        onCheckedChange={(checked) =>
+                          void toggleCustomBinary(provider, checked)
+                        }
+                      />
+                    </div>
+
+                    <div
+                      className={`flex items-start justify-between gap-3 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-3 py-2 ${
+                        isRxManagedCli ? "" : "opacity-75"
+                      }`}
+                    >
+                      <div className="space-y-1">
+                        <Label
+                          htmlFor={`provider-auto-update-${provider.provider}`}
+                          className="text-xs text-[var(--text-primary)]"
+                        >
+                          Update automatically
+                        </Label>
+                        <p className="text-[0.6875rem] leading-relaxed text-[var(--text-muted)]">
+                          Runs only when RX-managed CLI handling is enabled.
+                          User-managed CLI installs are never modified.
+                        </p>
+                      </div>
+                      <Switch
+                        id={`provider-auto-update-${provider.provider}`}
+                        checked={
+                          isRxManagedCli && Boolean(provider.autoUpdateEnabled)
+                        }
+                        disabled={isUpdating || !isRxManagedCli}
+                        onCheckedChange={(checked) =>
+                          void updateProvider(provider, {
+                            autoUpdateEnabled: checked,
+                          })
+                        }
+                      />
+                    </div>
+
+                    {showCustomEditor && (
+                      <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-3 py-2 md:col-span-3">
+                        <div className="flex flex-col gap-2 md:flex-row md:items-end">
+                          <div className="min-w-0 flex-1 space-y-1">
+                            <Label
+                              htmlFor={`provider-custom-binary-path-${provider.provider}`}
+                              className="text-xs text-[var(--text-primary)]"
+                            >
+                              Binary path
+                            </Label>
+                            <Input
+                              id={`provider-custom-binary-path-${provider.provider}`}
+                              value={customPath}
+                              disabled={isUpdating}
+                              placeholder={`/path/to/${provider.provider}-wrapper`}
+                              onChange={(event) =>
+                                setCustomBinaryDraft(
+                                  provider.provider,
+                                  event.target.value,
+                                )
+                              }
+                            />
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              disabled={isUpdating}
+                              onClick={() => void browseCustomBinary(provider)}
+                            >
+                              <FolderOpen className="mr-2 h-4 w-4" />
+                              Browse
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              disabled={isUpdating || customPath.trim() === ""}
+                              onClick={() =>
+                                void saveCustomBinaryPath(provider, customPath)
+                              }
+                            >
+                              <Check className="mr-2 h-4 w-4" />
+                              Use path
+                            </Button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {(isRxManagedCli ||
+                    (!provider.customBinaryEnabled &&
+                      managedCliStatus?.updateAvailable)) && (
+                    <ProviderManagedCliStatus
+                      provider={provider}
+                      status={managedCliStatus}
+                      isLoading={isLoadingStatus}
+                      isInstalling={isInstallingProvider}
+                      onInstallOrUpdate={() =>
+                        void installOrUpdateManagedCli(provider)
+                      }
+                    />
+                  )}
 
                   {provider.enabled && (
                     <>

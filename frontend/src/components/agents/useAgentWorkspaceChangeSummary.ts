@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
 import { diffApi } from "@/api/diff";
@@ -56,16 +56,21 @@ export function mapReviewCommitsToDiffViewerCommits(
 export function useAgentWorkspaceChangeSummary({
   conversationId,
   review,
+  defaultMode = "uncommitted",
   liveSummary = null,
   hydrateWorktreeFileLists = true,
+  repairMode = false,
 }: {
   conversationId: string;
   review: AgentWorkspaceReview | null;
+  defaultMode?: DiffFilterMode | undefined;
   liveSummary?: AgentWorkspaceChangeSummary | null;
   hydrateWorktreeFileLists?: boolean;
+  repairMode?: boolean;
 }): AgentWorkspaceChangeSummaryState {
-  const [selectedMode, setSelectedMode] = useState<DiffFilterMode>("uncommitted");
+  const [selectedMode, setSelectedMode] = useState<DiffFilterMode>(defaultMode);
   const [hasUserSelectedMode, setHasUserSelectedMode] = useState(false);
+  const previousConversationIdRef = useRef(conversationId);
   const supportsWorktreeModes =
     liveSummary?.supportsWorktreeModes ?? review?.supportsWorktreeModes ?? true;
   const canQueryWorktreeFiles =
@@ -81,13 +86,29 @@ export function useAgentWorkspaceChangeSummary({
   }, []);
 
   useEffect(() => {
-    setSelectedMode("uncommitted");
-    setHasUserSelectedMode(false);
-  }, [conversationId]);
+    const conversationChanged = previousConversationIdRef.current !== conversationId;
+    previousConversationIdRef.current = conversationId;
+
+    if (conversationChanged) {
+      setSelectedMode(defaultMode);
+      setHasUserSelectedMode(false);
+      return;
+    }
+
+    if (!hasUserSelectedMode) {
+      setSelectedMode(defaultMode);
+    }
+  }, [conversationId, defaultMode, hasUserSelectedMode]);
 
   const stagedFilesQuery = useQuery({
-    queryKey: [...agentWorkspaceKeys.diff(conversationId), "staged-files"],
-    queryFn: () => diffApi.getAgentConversationWorkspaceStagedFileChanges(conversationId),
+    queryKey: [
+      ...agentWorkspaceKeys.diff(conversationId),
+      repairMode ? "repair-staged-files" : "staged-files",
+    ],
+    queryFn: () =>
+      repairMode
+        ? diffApi.getAgentConversationWorkspaceRepairStagedFileChanges(conversationId)
+        : diffApi.getAgentConversationWorkspaceStagedFileChanges(conversationId),
     enabled:
       canQueryWorktreeFiles &&
       (!hasLiveWorktreeSummary ||
@@ -100,8 +121,14 @@ export function useAgentWorkspaceChangeSummary({
   });
 
   const unstagedFilesQuery = useQuery({
-    queryKey: [...agentWorkspaceKeys.diff(conversationId), "unstaged-files"],
-    queryFn: () => diffApi.getAgentConversationWorkspaceUnstagedFileChanges(conversationId),
+    queryKey: [
+      ...agentWorkspaceKeys.diff(conversationId),
+      repairMode ? "repair-unstaged-files" : "unstaged-files",
+    ],
+    queryFn: () =>
+      repairMode
+        ? diffApi.getAgentConversationWorkspaceRepairUnstagedFileChanges(conversationId)
+        : diffApi.getAgentConversationWorkspaceUnstagedFileChanges(conversationId),
     enabled:
       canQueryWorktreeFiles &&
       (!hasLiveWorktreeSummary ||
@@ -114,7 +141,7 @@ export function useAgentWorkspaceChangeSummary({
   const stagedCount = liveSummary?.staged.fileCount ?? stagedFilesQuery.data?.length;
   const unstagedCount = liveSummary?.unstaged.fileCount ?? unstagedFilesQuery.data?.length;
   const preferredMode = useMemo<DiffFilterMode>(() => {
-    if (!supportsWorktreeModes || hasUserSelectedMode) {
+    if (!supportsWorktreeModes || hasUserSelectedMode || selectedMode !== "uncommitted") {
       return selectedMode;
     }
     if (unstagedCount !== undefined && unstagedCount > 0) {

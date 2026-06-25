@@ -94,7 +94,55 @@ interface ComposerOption {
   disabledReason?: string;
 }
 
-const PLAN_REFINE_COMMAND_MESSAGE = "Please verify and refine the current plan.";
+const PLAN_REFINE_COMMAND_MESSAGE =
+  "Please verify and refine the current plan.";
+
+function getSkillSourceLabel(skill: AgentComposerSkill): string {
+  return skill.source === "ralphx-internal"
+    ? "RalphX"
+    : (skill.providerHarness ?? "native");
+}
+
+function getSlashSkillLabel(skill: AgentComposerSkill): string {
+  if (skill.source === "ralphx-internal") {
+    return `/${skill.name}`;
+  }
+  return skill.invocationValue || skill.name;
+}
+
+function getSkillInsertionText(
+  skill: AgentComposerSkill | undefined,
+  fallbackName: string,
+): string {
+  if (!skill) {
+    return fallbackName;
+  }
+  if (skill.source === "ralphx-internal") {
+    return skill.invocationValue || skill.name || fallbackName;
+  }
+  return skill.invocationValue || fallbackName;
+}
+
+function skillMatchesComposerQuery(
+  skill: AgentComposerSkill,
+  query: string,
+  label = skill.name,
+): boolean {
+  if (!query) {
+    return true;
+  }
+  const searchable = [
+    label.replace(/^[/$]/, ""),
+    skill.name,
+    skill.displayName ?? "",
+    skill.description ?? "",
+    skill.providerHarness ?? "",
+    skill.scope ?? "",
+  ]
+    .join(" ")
+    .toLowerCase();
+  return searchable.includes(query);
+}
 
 interface ProjectFieldConfig {
   value: string;
@@ -193,7 +241,10 @@ export interface AgentComposerSurfaceProps {
   provider: ProviderFieldConfig;
   model: ModelFieldConfig;
   effort: EffortFieldConfig;
-  onSend: (message: string, options?: AgentComposerSendOptions) => Promise<void> | void;
+  onSend: (
+    message: string,
+    options?: AgentComposerSendOptions,
+  ) => Promise<void> | void;
   onStop?: (() => Promise<unknown> | void) | undefined;
   placeholder?: string;
   isSubmitting?: boolean;
@@ -204,6 +255,14 @@ export interface AgentComposerSurfaceProps {
   isReadOnly?: boolean;
   autoFocus?: boolean;
   showHelperText?: boolean;
+  /**
+   * Collapse the composer into a minimal one-row resting state when it is idle
+   * (not focused, empty, no attachments / references / queue).
+   * Focusing — or any pending activity — expands it with a soft animation.
+   * Defaults to false so the new-conversation / start composer keeps its
+   * always-expanded layout.
+   */
+  collapsible?: boolean;
   questionMode?: AgentComposerQuestionMode;
   hasQueuedMessages?: boolean;
   onEditLastQueued?: (() => void) | undefined;
@@ -212,6 +271,10 @@ export interface AgentComposerSurfaceProps {
   onFilesSelected?: ((files: File[]) => void | Promise<unknown>) | undefined;
   onRemoveAttachment?: ((id: string) => void | Promise<unknown>) | undefined;
   attachmentsUploading?: boolean;
+  initialProjectReferences?: AgentComposerProjectReference[];
+  initialIntegrationReferences?: AgentComposerIntegrationReference[];
+  initialArtifactReferences?: AgentComposerArtifactReference[];
+  onIntegrationReferencesChange?: (references: AgentComposerIntegrationReference[]) => void;
   mode?: ModeFieldConfig;
   chatFocus?: ChatFocusFieldConfig;
   slashCommands?: AgentComposerSlashCommand[];
@@ -222,10 +285,23 @@ export interface AgentComposerSurfaceProps {
   actionTestId?: string;
   submitLabel?: string;
   submittingLabel?: string;
+  emptySubmitMessage?: string;
   sendDisabledReason?: string | null;
   conversationId?: string | null;
   className?: string;
 }
+
+/** Textarea min-height (px) for the default, always-expanded composer. */
+const COMPOSER_MIN_HEIGHT = 56;
+/** Textarea min-height (px) when a collapsible composer is resting/idle. */
+const COMPOSER_COLLAPSED_MIN_HEIGHT = 38;
+/** Textarea min-height (px) when a collapsible composer is active/expanded (~3 rows). */
+const COMPOSER_EXPANDED_MIN_HEIGHT = 92;
+/** Textarea growth ceiling (px) before it scrolls internally. */
+const COMPOSER_MAX_HEIGHT = 220;
+const EMPTY_PROJECT_REFERENCES: AgentComposerProjectReference[] = [];
+const EMPTY_INTEGRATION_REFERENCES: AgentComposerIntegrationReference[] = [];
+const EMPTY_ARTIFACT_REFERENCES: AgentComposerArtifactReference[] = [];
 
 export function AgentComposerSurface({
   project,
@@ -243,6 +319,7 @@ export function AgentComposerSurface({
   isReadOnly = false,
   autoFocus = false,
   showHelperText = true,
+  collapsible = false,
   questionMode,
   hasQueuedMessages = false,
   onEditLastQueued,
@@ -251,6 +328,10 @@ export function AgentComposerSurface({
   onFilesSelected,
   onRemoveAttachment,
   attachmentsUploading = false,
+  initialProjectReferences = EMPTY_PROJECT_REFERENCES,
+  initialIntegrationReferences = EMPTY_INTEGRATION_REFERENCES,
+  initialArtifactReferences = EMPTY_ARTIFACT_REFERENCES,
+  onIntegrationReferencesChange,
   mode,
   chatFocus,
   slashCommands = [],
@@ -261,6 +342,7 @@ export function AgentComposerSurface({
   actionTestId,
   submitLabel = "Send",
   submittingLabel = "Sending...",
+  emptySubmitMessage,
   sendDisabledReason = null,
   conversationId = null,
   className,
@@ -270,15 +352,14 @@ export function AgentComposerSurface({
   const [isFocused, setIsFocused] = useState(false);
   const [cursorPosition, setCursorPosition] = useState(0);
   const [activeMenuIndex, setActiveMenuIndex] = useState(0);
-  const [selectedInternalSkillNames, setSelectedInternalSkillNames] = useState<Set<string>>(
-    () => new Set()
-  );
+  const [selectedInternalSkillNames, setSelectedInternalSkillNames] = useState<
+    Set<string>
+  >(() => new Set());
   const [selectedProjectReferences, setSelectedProjectReferences] = useState<
     Map<string, AgentComposerProjectReference>
   >(() => new Map());
-  const [selectedIntegrationReferences, setSelectedIntegrationReferences] = useState<
-    Map<string, AgentComposerIntegrationReference>
-  >(() => new Map());
+  const [selectedIntegrationReferences, setSelectedIntegrationReferences] =
+    useState<Map<string, AgentComposerIntegrationReference>>(() => new Map());
   const [selectedArtifactReferences, setSelectedArtifactReferences] = useState<
     Map<string, AgentComposerArtifactReference>
   >(() => new Map());
@@ -287,14 +368,20 @@ export function AgentComposerSurface({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const restoreTextareaFocusOnActionMenuCloseRef = useRef(false);
   const restoreTextareaFocusCursorRef = useRef<number | null>(null);
+  const hydratedInitialReferencesSignatureRef = useRef<string | null>(null);
   const value = isControlled ? controlledValue : internalValue;
   const [actionMenuOpen, setActionMenuOpen] = useState(false);
+  const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const isAgentAlive = agentStatus !== "idle";
   const isAgentGenerating = agentStatus === "generating";
   const canQueue = !isReadOnly && isAgentAlive;
-  const shouldShowStop = Boolean(onStop) && isAgentGenerating && value.trim().length === 0;
+  const shouldShowStop =
+    Boolean(onStop) && isAgentGenerating && value.trim().length === 0;
+  const emptySubmitValue = emptySubmitMessage?.trim() ?? "";
+  const hasSubmittableValue =
+    value.trim().length > 0 || emptySubmitValue.length > 0;
   const canSubmit =
-    value.trim().length > 0 &&
+    hasSubmittableValue &&
     !isReadOnly &&
     !sendDisabledReason &&
     (!isSubmitting || canQueue);
@@ -306,25 +393,24 @@ export function AgentComposerSurface({
       : placeholder;
   const activeTrigger = useMemo(
     () => detectAgentComposerTrigger(value, cursorPosition),
-    [cursorPosition, value]
+    [cursorPosition, value],
   );
   const composerAssistEnabled =
     !isReadOnly && !questionMode && project.value.trim().length > 0;
-  const pathQuery =
-    activeTrigger?.kind === "path" ? activeTrigger.query : "";
+  const pathQuery = activeTrigger?.kind === "path" ? activeTrigger.query : "";
   const integrationQuery =
     activeTrigger?.kind === "integration" ? activeTrigger.query : "";
   const planQuery = activeTrigger?.kind === "plan" ? activeTrigger.query : "";
   const integrationKind =
-    activeTrigger?.kind === "integration" ? activeTrigger.integrationKind : null;
+    activeTrigger?.kind === "integration"
+      ? activeTrigger.integrationKind
+      : null;
   const pathEntriesQuery = useAgentComposerEntries({
     projectId: project.value,
     conversationId,
     query: pathQuery,
     enabled:
-      composerAssistEnabled &&
-      isFocused &&
-      activeTrigger?.kind === "path",
+      composerAssistEnabled && isFocused && activeTrigger?.kind === "path",
   });
   const integrationResourcesQuery = useAgentComposerIntegrationResources({
     kind: integrationKind ?? null,
@@ -338,9 +424,7 @@ export function AgentComposerSurface({
     projectId: project.value,
     query: planQuery,
     enabled:
-      composerAssistEnabled &&
-      isFocused &&
-      activeTrigger?.kind === "plan",
+      composerAssistEnabled && isFocused && activeTrigger?.kind === "plan",
   });
   const skillsQuery = useAgentComposerSkills({
     projectId: project.value,
@@ -351,21 +435,13 @@ export function AgentComposerSurface({
   });
 
   useEffect(() => {
-    if (autoFocus && textareaRef.current) {
+    // A collapsible composer must load in its minimal/resting state, so it never
+    // auto-focuses on mount (focusing would expand it). The user expands it by
+    // clicking. Non-collapsible composers (e.g. the start composer) keep autofocus.
+    if (autoFocus && !collapsible && textareaRef.current) {
       textareaRef.current.focus();
     }
-  }, [autoFocus]);
-
-  useEffect(() => {
-    const textarea = textareaRef.current;
-    if (!textarea) {
-      return;
-    }
-
-    textarea.style.height = "auto";
-    const nextHeight = Math.min(textarea.scrollHeight, 220);
-    textarea.style.height = `${Math.max(nextHeight, 56)}px`;
-  }, [value]);
+  }, [autoFocus, collapsible]);
 
   const matchOptionsFromInput = useCallback(
     (input: string) => {
@@ -407,7 +483,7 @@ export function AgentComposerSurface({
 
       questionMode.onMatchedOptions([]);
     },
-    [questionMode]
+    [questionMode],
   );
 
   const setValue = useCallback(
@@ -419,7 +495,7 @@ export function AgentComposerSurface({
       }
       matchOptionsFromInput(nextValue);
     },
-    [isControlled, matchOptionsFromInput, onChangeProp]
+    [isControlled, matchOptionsFromInput, onChangeProp],
   );
 
   const { addEntry: addHistoryEntry, handleHistoryKeyDown } = useInputHistory({
@@ -445,22 +521,26 @@ export function AgentComposerSurface({
     onFocusChange?.(true);
   }, [onFocusChange]);
 
-  const focusTextareaAtComposerCursor = useCallback((fallbackCursor: number) => {
-    const focusTextarea = () => {
-      const textarea = textareaRef.current;
-      if (!textarea) {
-        return;
-      }
-      const nextCursor = restoreTextareaFocusCursorRef.current ?? fallbackCursor;
-      textarea.focus();
-      textarea.setSelectionRange(nextCursor, nextCursor);
-      markComposerFocused();
-    };
-    window.requestAnimationFrame(() => {
-      focusTextarea();
-      window.setTimeout(focusTextarea, 0);
-    });
-  }, [markComposerFocused]);
+  const focusTextareaAtComposerCursor = useCallback(
+    (fallbackCursor: number) => {
+      const focusTextarea = () => {
+        const textarea = textareaRef.current;
+        if (!textarea) {
+          return;
+        }
+        const nextCursor =
+          restoreTextareaFocusCursorRef.current ?? fallbackCursor;
+        textarea.focus();
+        textarea.setSelectionRange(nextCursor, nextCursor);
+        markComposerFocused();
+      };
+      window.requestAnimationFrame(() => {
+        focusTextarea();
+        window.setTimeout(focusTextarea, 0);
+      });
+    },
+    [markComposerFocused],
+  );
 
   const applyComposerText = useCallback(
     (nextValue: string, nextCursor: number) => {
@@ -469,12 +549,12 @@ export function AgentComposerSurface({
       restoreTextareaFocusCursorRef.current = nextCursor;
       focusTextareaAtComposerCursor(nextCursor);
     },
-    [focusTextareaAtComposerCursor, setValue]
+    [focusTextareaAtComposerCursor, setValue],
   );
 
   const skills = useMemo(
     () => skillsQuery.data?.skills ?? [],
-    [skillsQuery.data?.skills]
+    [skillsQuery.data?.skills],
   );
   const skillByMenuId = useMemo(() => {
     const map = new Map<string, AgentComposerSkill>();
@@ -486,6 +566,40 @@ export function AgentComposerSurface({
   const integrationByMenuId = useMemo(() => {
     const map = new Map<string, AgentComposerIntegrationReference>();
     for (const resource of integrationResourcesQuery.data ?? []) {
+      if (integrationKind === "clickup") {
+        const key =
+          "customId" in resource && resource.customId
+            ? resource.customId
+            : resource.id;
+        const reference: AgentComposerIntegrationReference = {
+          provider: "clickup",
+          kind: "clickup",
+          id: resource.id,
+          key,
+          ...("name" in resource ? { title: resource.name } : {}),
+          ...(resource.url ? { url: resource.url } : {}),
+        };
+        map.set(`integration:clickup:${resource.id}`, reference);
+        continue;
+      }
+      if (integrationKind === "linear") {
+        if (!("key" in resource) || !("title" in resource)) {
+          continue;
+        }
+        const reference: AgentComposerIntegrationReference = {
+          provider: "linear",
+          kind: "linear",
+          id: resource.id,
+          ...(resource.key ? { key: resource.key } : {}),
+          title: resource.title,
+          ...(resource.url ? { url: resource.url } : {}),
+        };
+        map.set(`integration:linear:${resource.id}`, reference);
+        continue;
+      }
+      if (!("kind" in resource)) {
+        continue;
+      }
       const reference: AgentComposerIntegrationReference = {
         provider: "atlassian",
         kind: resource.kind,
@@ -497,7 +611,7 @@ export function AgentComposerSurface({
       map.set(`integration:${resource.kind}:${resource.id}`, reference);
     }
     return map;
-  }, [integrationResourcesQuery.data]);
+  }, [integrationKind, integrationResourcesQuery.data]);
   const planReferenceByMenuId = useMemo(() => {
     const map = new Map<string, AgentComposerArtifactReference>();
     for (const plan of planReferencesQuery.data?.plans ?? []) {
@@ -513,7 +627,10 @@ export function AgentComposerSurface({
     return map;
   }, [planReferencesQuery.data?.plans]);
   const selectedProjectReferenceList = useMemo(
-    () => normalizeComposerProjectReferences([...selectedProjectReferences.values()]),
+    () =>
+      normalizeComposerProjectReferences([
+        ...selectedProjectReferences.values(),
+      ]),
     [selectedProjectReferences],
   );
   const selectedIntegrationReferenceList = useMemo(
@@ -524,9 +641,58 @@ export function AgentComposerSurface({
     [selectedIntegrationReferences],
   );
   const selectedArtifactReferenceList = useMemo(
-    () => normalizeComposerArtifactReferences([...selectedArtifactReferences.values()]),
+    () =>
+      normalizeComposerArtifactReferences([
+        ...selectedArtifactReferences.values(),
+      ]),
     [selectedArtifactReferences],
   );
+  useEffect(() => {
+    onIntegrationReferencesChange?.(selectedIntegrationReferenceList);
+  }, [onIntegrationReferencesChange, selectedIntegrationReferenceList]);
+  useEffect(() => {
+    const projectReferences = normalizeComposerProjectReferences(
+      initialProjectReferences,
+    );
+    const integrationReferences = normalizeComposerIntegrationReferences(
+      initialIntegrationReferences,
+    );
+    const artifactReferences = normalizeComposerArtifactReferences(
+      initialArtifactReferences,
+    );
+    const signature = JSON.stringify({
+      projectReferences,
+      integrationReferences,
+      artifactReferences,
+    });
+    if (hydratedInitialReferencesSignatureRef.current === signature) {
+      return;
+    }
+    hydratedInitialReferencesSignatureRef.current = signature;
+    setSelectedProjectReferences(
+      new Map(projectReferences.map((reference) => [reference.path, reference])),
+    );
+    setSelectedIntegrationReferences(
+      new Map(
+        integrationReferences.map((reference) => [
+          `${reference.provider}:${reference.kind}:${reference.id}`,
+          reference,
+        ]),
+      ),
+    );
+    setSelectedArtifactReferences(
+      new Map(
+        artifactReferences.map((reference) => [
+          `${reference.kind}:${reference.artifactId}`,
+          reference,
+        ]),
+      ),
+    );
+  }, [
+    initialArtifactReferences,
+    initialIntegrationReferences,
+    initialProjectReferences,
+  ]);
   const slashCommandByMenuId = useMemo(() => {
     const map = new Map<string, AgentComposerSlashCommand>();
     for (const command of slashCommands) {
@@ -538,6 +704,45 @@ export function AgentComposerSurface({
     selectedProjectReferenceList.length > 0 ||
     selectedIntegrationReferenceList.length > 0 ||
     selectedArtifactReferenceList.length > 0;
+
+  // Collapsed (minimal) resting state. The composer expands when the textarea
+  // is focused (cursor active, even with no text yet) or when there is real
+  // composer-local content to keep visible: text, attachments, references,
+  // queued messages, a pending question, or read-only review. A running agent
+  // alone does not keep the prompt expanded after blur; the Stop action remains
+  // available in the compact footer. Transient popovers (+, mode, model)
+  // intentionally do NOT expand it on their own, so opening a menu on an
+  // unfocused composer never resizes the chat block.
+  const hasComposerActivity =
+    value.trim().length > 0 ||
+    attachments.length > 0 ||
+    attachmentsUploading ||
+    hasSelectedReferences ||
+    hasQueuedMessages ||
+    Boolean(questionMode) ||
+    isReadOnly;
+  const isCollapsed = collapsible && !isFocused && !hasComposerActivity;
+  const isExpanded = !isCollapsed;
+  const compact = isCollapsed;
+
+  // Auto-resize the textarea to its content, floored at a min-height that
+  // depends on the collapsed/expanded state and capped before it scrolls.
+  // Re-runs on collapse changes so focus/blur animates the 1-row ↔ 3-row swap.
+  const textareaMinHeight = collapsible
+    ? isExpanded
+      ? COMPOSER_EXPANDED_MIN_HEIGHT
+      : COMPOSER_COLLAPSED_MIN_HEIGHT
+    : COMPOSER_MIN_HEIGHT;
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) {
+      return;
+    }
+
+    textarea.style.height = "auto";
+    const nextHeight = Math.min(textarea.scrollHeight, COMPOSER_MAX_HEIGHT);
+    textarea.style.height = `${Math.max(nextHeight, textareaMinHeight)}px`;
+  }, [value, textareaMinHeight]);
   const slashCommandItems = useMemo<AgentComposerMenuItem[]>(() => {
     const items: AgentComposerMenuItem[] = [];
     if (mode && !mode.disabled) {
@@ -553,9 +758,12 @@ export function AgentComposerSurface({
           id: `command:mode:${option.id}`,
           kind: "slash-command",
           label: `/${commandName}`,
-          description: option.description ?? `Switch composer mode to ${option.label}`,
+          description:
+            option.description ?? `Switch composer mode to ${option.label}`,
           detail: `mode:${option.id}`,
-          ...(option.disabled !== undefined ? { disabled: option.disabled } : {}),
+          ...(option.disabled !== undefined
+            ? { disabled: option.disabled }
+            : {}),
         });
       }
     }
@@ -574,7 +782,9 @@ export function AgentComposerSurface({
         kind: "slash-command",
         label: command.label,
         detail: `custom:${command.id}`,
-        ...(command.disabled !== undefined ? { disabled: command.disabled } : {}),
+        ...(command.disabled !== undefined
+          ? { disabled: command.disabled }
+          : {}),
       };
       const description = command.disabledReason ?? command.description;
       if (description) {
@@ -590,19 +800,16 @@ export function AgentComposerSurface({
       detail: "clear",
     });
     for (const skill of skills) {
-      if (
-        !skill.enabled ||
-        skill.source !== "harness-native" ||
-        !skill.invocationValue.startsWith("/")
-      ) {
+      if (!skill.enabled) {
         continue;
       }
+      const label = getSlashSkillLabel(skill);
       const item: AgentComposerMenuItem = {
-        id: `command:skill:${skill.id}`,
-        kind: "slash-command",
-        label: skill.invocationValue,
-        detail: `skill:${skill.id}`,
-        sourceLabel: skill.providerHarness ?? "native",
+        id: `skill:${skill.id}`,
+        kind: "skill",
+        label,
+        detail: skill.name,
+        sourceLabel: getSkillSourceLabel(skill),
       };
       if (skill.description) {
         item.description = skill.description;
@@ -621,7 +828,8 @@ export function AgentComposerSurface({
         id: `path:${entry.path}`,
         kind: "path" as const,
         label: `@${entry.path}`,
-        description: entry.parentPath ?? (entry.kind === "directory" ? "Folder" : "File"),
+        description:
+          entry.parentPath ?? (entry.kind === "directory" ? "Folder" : "File"),
         detail: entry.kind,
       }));
     }
@@ -642,12 +850,7 @@ export function AgentComposerSurface({
     if (activeTrigger.kind === "skill") {
       return skills
         .filter((skill) => skill.enabled)
-        .filter((skill) => {
-          if (!query) return true;
-          const label = `${skill.name} ${skill.displayName ?? ""} ${skill.description ?? ""}`
-            .toLowerCase();
-          return label.includes(query);
-        })
+        .filter((skill) => skillMatchesComposerQuery(skill, query))
         .slice(0, 12)
         .map((skill) => {
           const item: AgentComposerMenuItem = {
@@ -655,10 +858,7 @@ export function AgentComposerSurface({
             kind: "skill",
             label: `$${skill.name}`,
             detail: skill.name,
-            sourceLabel:
-              skill.source === "ralphx-internal"
-                ? "RalphX"
-                : skill.providerHarness ?? "native",
+            sourceLabel: getSkillSourceLabel(skill),
           };
           if (skill.description) {
             item.description = skill.description;
@@ -670,37 +870,97 @@ export function AgentComposerSurface({
       if (integrationResourcesQuery.isError) {
         return [];
       }
-      return (integrationResourcesQuery.data ?? []).map((resource) => ({
-        id: `integration:${resource.kind}:${resource.id}`,
-        kind: "integration" as const,
-        label:
-          resource.kind === "jira"
-            ? `@jira:${resource.key ?? resource.id}`
-            : `@confluence:${resource.id}`,
-        description: resource.title,
-        detail: resource.kind,
-        sourceLabel: resource.kind === "jira" ? "Jira" : "Confluence",
-      }));
+      return (integrationResourcesQuery.data ?? []).map((resource) => {
+        const description =
+          integrationKind === "clickup"
+            ? "name" in resource
+              ? resource.name
+              : undefined
+            : "title" in resource
+              ? resource.title
+              : undefined;
+        const item: AgentComposerMenuItem = {
+          id:
+            integrationKind === "clickup"
+              ? `integration:clickup:${resource.id}`
+              : integrationKind === "linear"
+                ? `integration:linear:${resource.id}`
+                : "kind" in resource
+                  ? `integration:${resource.kind}:${resource.id}`
+                  : `integration:unknown:${resource.id}`,
+          kind: "integration",
+          label:
+            integrationKind === "clickup"
+              ? `@clickup:${"customId" in resource && resource.customId ? resource.customId : resource.id}`
+              : integrationKind === "linear"
+                ? `@linear:${"key" in resource ? (resource.key ?? resource.id) : resource.id}`
+                : "kind" in resource && resource.kind === "jira"
+                  ? `@jira:${resource.key ?? resource.id}`
+                  : `@confluence:${resource.id}`,
+          detail:
+            integrationKind === "clickup"
+              ? "statusName" in resource
+                ? (resource.statusName ?? "clickup")
+                : "clickup"
+              : integrationKind === "linear"
+                ? "stateName" in resource
+                  ? (resource.stateName ?? "linear")
+                  : "linear"
+                : "kind" in resource
+                  ? resource.kind
+                  : "integration",
+          sourceLabel:
+            integrationKind === "clickup"
+              ? "ClickUp"
+              : integrationKind === "linear"
+                ? "Linear"
+                : "kind" in resource && resource.kind === "jira"
+                  ? "Jira"
+                  : "Confluence",
+        };
+        if (description) {
+          item.description = description;
+        }
+        return item;
+      });
     }
     return slashCommandItems
-      .filter((item) =>
-        query ? item.label.slice(1).toLowerCase().includes(query) : true
-      )
+      .filter((item) => {
+        if (!query) {
+          return true;
+        }
+        if (item.kind === "skill") {
+          const skill = skillByMenuId.get(item.id);
+          return skill
+            ? skillMatchesComposerQuery(skill, query, item.label)
+            : item.label.replace(/^[/$]/, "").toLowerCase().includes(query);
+        }
+        return item.label.replace(/^[/$]/, "").toLowerCase().includes(query);
+      })
       .slice(0, 12);
   }, [
     activeTrigger,
+    integrationKind,
     integrationResourcesQuery.data,
     integrationResourcesQuery.isError,
     pathEntriesQuery.data?.entries,
     planReferencesQuery.data?.plans,
     skills,
+    skillByMenuId,
     slashCommandItems,
   ]);
   const integrationSearchErrorLabel = useMemo(() => {
     if (!integrationResourcesQuery.isError) {
       return null;
     }
-    const target = integrationKind === "confluence" ? "Confluence" : "Jira";
+    const target =
+      integrationKind === "clickup"
+        ? "ClickUp"
+        : integrationKind === "linear"
+          ? "Linear"
+          : integrationKind === "confluence"
+            ? "Confluence"
+            : "Jira";
     const message = extractErrorMessage(
       integrationResourcesQuery.error,
       `Unable to search ${target}`,
@@ -712,14 +972,12 @@ export function AgentComposerSurface({
     integrationResourcesQuery.isError,
   ]);
   const shouldShowCommandMenu =
-    composerAssistEnabled &&
-    isFocused &&
-    Boolean(activeTrigger);
+    composerAssistEnabled && isFocused && Boolean(activeTrigger);
   const integrationEmptyLabel =
     integrationSearchErrorLabel ??
     (integrationQuery.trim()
       ? "No matching integration items"
-      : "Type to search Jira or Confluence");
+      : "Type to search Jira, Linear, ClickUp, or Confluence");
   const menuEmptyLabel =
     activeTrigger?.kind === "path"
       ? "No matching files or folders"
@@ -727,21 +985,21 @@ export function AgentComposerSurface({
         ? planQuery.trim()
           ? "No matching plans"
           : "Type to search plans"
-      : activeTrigger?.kind === "skill"
-        ? "No matching skills"
-        : activeTrigger?.kind === "integration"
-          ? integrationEmptyLabel
-          : "No matching commands";
+        : activeTrigger?.kind === "skill"
+          ? "No matching skills"
+          : activeTrigger?.kind === "integration"
+            ? integrationEmptyLabel
+            : "No matching commands";
   const menuLoading =
     activeTrigger?.kind === "path"
       ? pathEntriesQuery.isFetching
       : activeTrigger?.kind === "plan"
         ? planReferencesQuery.isFetching
-      : activeTrigger?.kind === "skill"
-        ? skillsQuery.isFetching
-        : activeTrigger?.kind === "integration"
-          ? integrationResourcesQuery.isFetching
-        : false;
+        : activeTrigger?.kind === "skill"
+          ? skillsQuery.isFetching
+          : activeTrigger?.kind === "integration"
+            ? integrationResourcesQuery.isFetching
+            : false;
 
   useEffect(() => {
     setActiveMenuIndex(0);
@@ -753,7 +1011,9 @@ export function AgentComposerSurface({
         return;
       }
       if (item.kind === "path") {
-        const path = item.label.startsWith("@") ? item.label.slice(1) : item.label;
+        const path = item.label.startsWith("@")
+          ? item.label.slice(1)
+          : item.label;
         setSelectedProjectReferences((current) => {
           const nextSet = new Map(current);
           nextSet.set(path, {
@@ -793,11 +1053,12 @@ export function AgentComposerSurface({
             return nextSet;
           });
         }
-        const replacement =
-          skill?.source === "harness-native"
-            ? skill.invocationValue || `$${skillName}`
-            : `$${skillName}`;
-        const next = replaceAgentComposerTrigger(value, activeTrigger, `${replacement} `);
+        const replacement = getSkillInsertionText(skill, skillName);
+        const next = replaceAgentComposerTrigger(
+          value,
+          activeTrigger,
+          `${replacement} `,
+        );
         applyComposerText(next.text, next.cursor);
         return;
       }
@@ -825,13 +1086,26 @@ export function AgentComposerSurface({
         }
         addHistoryEntry(PLAN_REFINE_COMMAND_MESSAGE);
         clearValue();
-        void Promise.resolve(onSend(PLAN_REFINE_COMMAND_MESSAGE)).catch(() => {});
+        void Promise.resolve(onSend(PLAN_REFINE_COMMAND_MESSAGE)).catch(
+          () => {},
+        );
         return;
       }
       if (item.detail?.startsWith("skill:")) {
         const skill = skillByMenuId.get(item.detail);
-        const replacement = skill?.invocationValue || item.label;
-        const next = replaceAgentComposerTrigger(value, activeTrigger, `${replacement} `);
+        if (skill?.source === "ralphx-internal") {
+          setSelectedInternalSkillNames((current) => {
+            const nextSet = new Set(current);
+            nextSet.add(skill.invocationValue || skill.name);
+            return nextSet;
+          });
+        }
+        const replacement = getSkillInsertionText(skill, item.label);
+        const next = replaceAgentComposerTrigger(
+          value,
+          activeTrigger,
+          `${replacement} `,
+        );
         applyComposerText(next.text, next.cursor);
         return;
       }
@@ -849,13 +1123,19 @@ export function AgentComposerSurface({
           return;
         }
         const replacement = command.insertText ?? `${command.label} `;
-        const next = replaceAgentComposerTrigger(value, activeTrigger, replacement);
+        const next = replaceAgentComposerTrigger(
+          value,
+          activeTrigger,
+          replacement,
+        );
         applyComposerText(next.text, next.cursor);
         return;
       }
       if (item.detail?.startsWith("mode:") && mode && !mode.disabled) {
         const nextMode = item.detail.slice("mode:".length);
-        const option = mode.options.find((candidate) => candidate.id === nextMode);
+        const option = mode.options.find(
+          (candidate) => candidate.id === nextMode,
+        );
         if (option && !option.disabled) {
           mode.onValueChange(nextMode);
         }
@@ -879,11 +1159,13 @@ export function AgentComposerSurface({
       slashCommandByMenuId,
       skillByMenuId,
       value,
-    ]
+    ],
   );
 
   const prepareMessageForSend = useCallback(
-    (message: string): { message: string; options?: AgentComposerSendOptions } => {
+    (
+      message: string,
+    ): { message: string; options?: AgentComposerSendOptions } => {
       if (questionMode) {
         return { message };
       }
@@ -894,9 +1176,10 @@ export function AgentComposerSurface({
           internalNames.add(skill.invocationValue || skill.name);
         }
       }
-      const withInternalSkillDirectives = appendInternalSkillDirectives(message, [
-        ...internalNames,
-      ]);
+      const withInternalSkillDirectives = appendInternalSkillDirectives(
+        message,
+        [...internalNames],
+      );
       const references = new Map<string, AgentComposerProjectReference>();
       for (const reference of selectedProjectReferenceList) {
         references.set(reference.path, reference);
@@ -904,16 +1187,29 @@ export function AgentComposerSurface({
       const projectReferences = normalizeComposerProjectReferences([
         ...references.values(),
       ]);
-      const integrationReferences = new Map<string, AgentComposerIntegrationReference>();
+      const integrationReferences = new Map<
+        string,
+        AgentComposerIntegrationReference
+      >();
       for (const reference of selectedIntegrationReferenceList) {
-        integrationReferences.set(`${reference.kind}:${reference.id}`, reference);
+        integrationReferences.set(
+          `${reference.provider}:${reference.kind}:${reference.id}`,
+          reference,
+        );
       }
-      const normalizedIntegrationReferences = normalizeComposerIntegrationReferences([
-        ...integrationReferences.values(),
-      ]);
-      const artifactReferences = new Map<string, AgentComposerArtifactReference>();
+      const normalizedIntegrationReferences =
+        normalizeComposerIntegrationReferences([
+          ...integrationReferences.values(),
+        ]);
+      const artifactReferences = new Map<
+        string,
+        AgentComposerArtifactReference
+      >();
       for (const reference of selectedArtifactReferenceList) {
-        artifactReferences.set(`${reference.kind}:${reference.artifactId}`, reference);
+        artifactReferences.set(
+          `${reference.kind}:${reference.artifactId}`,
+          reference,
+        );
       }
       for (const reference of extractComposerArtifactTokens(message)) {
         const key = `${reference.kind}:${reference.artifactId}`;
@@ -950,7 +1246,7 @@ export function AgentComposerSurface({
       selectedInternalSkillNames,
       selectedProjectReferenceList,
       skills,
-    ]
+    ],
   );
 
   const removeSelectedProjectReference = useCallback(
@@ -970,6 +1266,7 @@ export function AgentComposerSurface({
       setSelectedIntegrationReferences((current) => {
         const nextSet = new Map(current);
         nextSet.delete(`${reference.kind}:${reference.id}`);
+        nextSet.delete(`${reference.provider}:${reference.kind}:${reference.id}`);
         return nextSet;
       });
       focusTextareaAtComposerCursor(cursorPosition);
@@ -1007,7 +1304,7 @@ export function AgentComposerSurface({
 
       event.target.value = "";
     },
-    [onFilesSelected]
+    [onFilesSelected],
   );
 
   const handleOpenAttachmentPicker = useCallback(() => {
@@ -1018,7 +1315,8 @@ export function AgentComposerSurface({
 
   const handleSend = useCallback(async () => {
     const trimmedValue = value.trim();
-    if (!trimmedValue) {
+    const messageValue = trimmedValue || emptySubmitValue;
+    if (!messageValue) {
       if (shouldShowStop) {
         await onStop?.();
       }
@@ -1029,8 +1327,8 @@ export function AgentComposerSurface({
       return;
     }
 
-    addHistoryEntry(trimmedValue);
-    const outgoing = prepareMessageForSend(trimmedValue);
+    addHistoryEntry(messageValue);
+    const outgoing = prepareMessageForSend(messageValue);
 
     const sendOutgoing = () =>
       outgoing.options
@@ -1056,6 +1354,7 @@ export function AgentComposerSurface({
     addHistoryEntry,
     canQueue,
     clearValue,
+    emptySubmitValue,
     isControlled,
     isReadOnly,
     isSubmitting,
@@ -1074,7 +1373,7 @@ export function AgentComposerSurface({
         if (event.key === "ArrowDown") {
           event.preventDefault();
           setActiveMenuIndex((index) =>
-            menuItems.length > 0 ? (index + 1) % menuItems.length : 0
+            menuItems.length > 0 ? (index + 1) % menuItems.length : 0,
           );
           return;
         }
@@ -1083,13 +1382,18 @@ export function AgentComposerSurface({
           setActiveMenuIndex((index) =>
             menuItems.length > 0
               ? (index - 1 + menuItems.length) % menuItems.length
-              : 0
+              : 0,
           );
           return;
         }
-        if ((event.key === "Enter" || event.key === "Tab") && menuItems.length > 0) {
+        if (
+          (event.key === "Enter" || event.key === "Tab") &&
+          menuItems.length > 0
+        ) {
           event.preventDefault();
-          selectMenuItem(menuItems[Math.min(activeMenuIndex, menuItems.length - 1)]!);
+          selectMenuItem(
+            menuItems[Math.min(activeMenuIndex, menuItems.length - 1)]!,
+          );
           return;
         }
       }
@@ -1127,7 +1431,7 @@ export function AgentComposerSurface({
       selectMenuItem,
       shouldShowCommandMenu,
       value,
-    ]
+    ],
   );
 
   const helperText = useMemo(() => {
@@ -1147,29 +1451,28 @@ export function AgentComposerSurface({
         <span aria-hidden="true" style={{ color: "var(--overlay-moderate)" }}>
           •
         </span>
-        <span>Type / for commands</span>
+        <span>Type / for commands and skills</span>
         <span aria-hidden="true" style={{ color: "var(--overlay-moderate)" }}>
           •
         </span>
         <span>@ for references</span>
-        <span aria-hidden="true" style={{ color: "var(--overlay-moderate)" }}>
-          •
-        </span>
-        <span>$ for skills</span>
       </div>
     );
   }, [showHelperText]);
 
-  const updateCursorFromTextarea = useCallback((textarea: HTMLTextAreaElement) => {
-    setCursorPosition(textarea.selectionStart ?? textarea.value.length);
-  }, []);
+  const updateCursorFromTextarea = useCallback(
+    (textarea: HTMLTextAreaElement) => {
+      setCursorPosition(textarea.selectionStart ?? textarea.value.length);
+    },
+    [],
+  );
 
   const handleTextareaChange = useCallback(
     (event: React.ChangeEvent<HTMLTextAreaElement>) => {
       setValue(event.target.value);
       updateCursorFromTextarea(event.target);
     },
-    [setValue, updateCursorFromTextarea]
+    [setValue, updateCursorFromTextarea],
   );
 
   const attachmentDropEnabled =
@@ -1187,21 +1490,31 @@ export function AgentComposerSurface({
     <div
       ref={surfaceRef}
       data-testid={dataTestId}
-      className={cn("agent-composer-surface relative mx-auto w-full max-w-full", className)}
+      data-collapsible={collapsible ? "true" : "false"}
+      data-collapsed={isCollapsed ? "true" : "false"}
+      className={cn(
+        "agent-composer-surface relative mx-auto w-full max-w-full",
+        className,
+      )}
       {...attachmentDropProps}
     >
       <div
         className="overflow-hidden rounded-[22px] border transition-colors"
         style={{
           background: "var(--bg-surface)",
-          borderColor: isFocused ? "var(--accent-border)" : "var(--form-border)",
+          borderColor: isFocused
+            ? "var(--accent-border)"
+            : "var(--form-border)",
           boxShadow: "var(--shadow-sm)",
         }}
       >
         {shouldShowCommandMenu && (
           <AgentComposerCommandMenu
             items={menuItems}
-            activeIndex={Math.min(activeMenuIndex, Math.max(menuItems.length - 1, 0))}
+            activeIndex={Math.min(
+              activeMenuIndex,
+              Math.max(menuItems.length - 1, 0),
+            )}
             onActiveIndexChange={setActiveMenuIndex}
             onSelect={selectMenuItem}
             isLoading={menuLoading}
@@ -1228,7 +1541,11 @@ export function AgentComposerSurface({
           }}
           disabled={isReadOnly || (isSubmitting && !canQueue)}
           placeholder={effectivePlaceholder}
-          className="block min-h-[56px] w-full resize-none border-0 bg-transparent px-5 pb-2 pt-4 text-[0.9375rem] leading-[1.5] shadow-none outline-none ring-0 focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:ring-0 sm:text-[1rem]"
+          className={cn(
+            "agent-composer-textarea block w-full resize-none border-0 bg-transparent px-5 text-[0.9375rem] leading-[1.5] shadow-none outline-none ring-0 focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:ring-0 sm:text-[1rem]",
+            collapsible && "transition-[height] duration-150 ease-out",
+            compact ? "pb-2 pt-2" : "pb-2 pt-4",
+          )}
           style={{
             color: "var(--text-primary)",
             boxShadow: "none",
@@ -1239,13 +1556,17 @@ export function AgentComposerSurface({
           aria-label="Message input"
         />
 
-        {(attachments.length > 0 || hasSelectedReferences || attachmentsUploading || helperText) && (
+        {(attachments.length > 0 ||
+          hasSelectedReferences ||
+          attachmentsUploading) && (
           <div className="px-5 pb-3">
             {attachments.length > 0 && (
               <div className="pb-3">
                 <ChatAttachmentGallery
                   attachments={attachments}
-                  {...(onRemoveAttachment ? { onRemove: onRemoveAttachment } : {})}
+                  {...(onRemoveAttachment
+                    ? { onRemove: onRemoveAttachment }
+                    : {})}
                   uploading={attachmentsUploading}
                   compact
                 />
@@ -1258,23 +1579,51 @@ export function AgentComposerSurface({
                   integrationReferences={selectedIntegrationReferenceList}
                   artifactReferences={selectedArtifactReferenceList}
                   onRemoveProjectReference={removeSelectedProjectReference}
-                  onRemoveIntegrationReference={removeSelectedIntegrationReference}
+                  onRemoveIntegrationReference={
+                    removeSelectedIntegrationReference
+                  }
                   onRemoveArtifactReference={removeSelectedArtifactReference}
                 />
               </div>
             )}
+          </div>
+        )}
+
+        {/* Keyboard helper stays mounted but reveals only when active so the
+            resting composer reclaims that vertical space (collapsible hosts). */}
+        {helperText && (
+          <div
+            data-testid="agent-composer-helper-reveal"
+            data-visible={isExpanded ? "true" : "false"}
+            aria-hidden={isExpanded ? undefined : true}
+            className={cn(
+              "overflow-hidden px-5 transition-all duration-150 ease-out",
+              isExpanded
+                ? "max-h-20 pb-3 opacity-100"
+                : "pointer-events-none max-h-0 pb-0 opacity-0",
+            )}
+          >
             {helperText}
           </div>
         )}
 
         <div
-          className="border-t px-3.5 py-2"
+          className={cn(
+            "border-t px-3.5 transition-[padding] duration-150 ease-out",
+            compact ? "py-1.5" : "py-2",
+          )}
           style={{
             borderColor: "var(--overlay-faint)",
-            background: "color-mix(in srgb, var(--bg-base) 16%, var(--bg-surface) 84%)",
+            background:
+              "color-mix(in srgb, var(--bg-base) 16%, var(--bg-surface) 84%)",
           }}
         >
-          <div className="agent-composer-control-row flex flex-wrap items-center gap-2">
+          <div
+            className={cn(
+              "agent-composer-control-row flex flex-wrap items-center transition-[gap] duration-150 ease-out",
+              compact ? "gap-1.5" : "gap-2",
+            )}
+          >
             {enableAttachments && (
               <input
                 ref={fileInputRef}
@@ -1298,7 +1647,9 @@ export function AgentComposerSurface({
                 ? {
                     onForkSession,
                     forkSessionDisabled:
-                      forkSessionDisabled || isReadOnly || (isSubmitting && !canQueue),
+                      forkSessionDisabled ||
+                      isReadOnly ||
+                      (isSubmitting && !canQueue),
                   }
                 : {})}
               open={actionMenuOpen}
@@ -1334,28 +1685,19 @@ export function AgentComposerSurface({
                 event.preventDefault();
                 focusTextareaAtComposerCursor(cursorPosition);
               }}
-              {...(mode ? { mode } : {})}
+              compact={compact}
             />
 
+            {/* Control order per product direction: mode → model → chat focus.
+                The chat-focus (workspace) selector sits inline to the right of
+                the model/runtime pill rather than wrapping to its own row. */}
             {mode && (
               <ComposerModeChip
                 mode={mode}
-                onClick={() =>
-                  setActionMenuOpen((prev) => {
-                    const nextOpen = !prev;
-                    if (nextOpen) {
-                      void mode.onOpen?.();
-                    }
-                    return nextOpen;
-                  })
-                }
+                open={modeMenuOpen}
+                onOpenChange={setModeMenuOpen}
+                compact={compact}
               />
-            )}
-
-            {chatFocus && chatFocus.options.length > 1 && (
-              <div className="agent-composer-chat-focus-slot flex min-w-0 shrink-0">
-                <ComposerChatFocusPill chatFocus={chatFocus} />
-              </div>
             )}
 
             <div className="flex min-w-0 flex-[0_1_auto] items-stretch gap-2">
@@ -1363,15 +1705,30 @@ export function AgentComposerSurface({
                 provider={provider}
                 model={model}
                 effort={effort}
+                compact={compact}
                 className="max-w-[34rem]"
               />
             </div>
 
+            {chatFocus && chatFocus.options.length > 1 && (
+              <div className="agent-composer-chat-focus-slot flex min-w-0 shrink-0">
+                <ComposerChatFocusPill
+                  chatFocus={chatFocus}
+                  compact={compact}
+                />
+              </div>
+            )}
+
             <Button
               type="button"
               className={cn(
-                "agent-composer-action-button ml-auto h-10 shrink-0 rounded-[12px] px-4 text-[0.75rem] font-semibold tracking-[-0.01em]",
-                shouldShowStop ? "min-w-[100px]" : "min-w-[118px]"
+                "agent-composer-action-button ml-auto shrink-0 rounded-full text-[0.75rem] font-semibold tracking-[-0.01em] transition-[height,min-width,padding] duration-150 ease-out",
+                compact ? "h-8 px-3" : "h-10 px-4",
+                compact
+                  ? "min-w-0"
+                  : shouldShowStop
+                    ? "min-w-[100px]"
+                    : "min-w-[118px]",
               )}
               style={{
                 background:
@@ -1400,12 +1757,16 @@ export function AgentComposerSurface({
               ) : isSubmitting && !canQueue ? (
                 <>
                   <Loader2 className="h-4 w-4 animate-spin" />
-                  <span className="agent-composer-action-label">{submittingLabel}</span>
+                  <span className="agent-composer-action-label">
+                    {submittingLabel}
+                  </span>
                 </>
               ) : (
                 <>
                   <ArrowUp className="h-4 w-4" />
-                  <span className="agent-composer-action-label">{submitLabel}</span>
+                  <span className="agent-composer-action-label">
+                    {submitLabel}
+                  </span>
                 </>
               )}
             </Button>
@@ -1421,7 +1782,6 @@ export function AgentComposerSurface({
 
 function ComposerActionMenu({
   project,
-  mode,
   enableAttachments,
   attachmentDisabled,
   onOpenAttachmentPicker,
@@ -1432,9 +1792,9 @@ function ComposerActionMenu({
   onInsertIntegrationTrigger,
   onInsertPlanTrigger,
   onCloseAutoFocus,
+  compact = false,
 }: {
   project: ProjectFieldConfig;
-  mode?: ModeFieldConfig;
   enableAttachments: boolean;
   attachmentDisabled: boolean;
   onOpenAttachmentPicker: () => void;
@@ -1445,35 +1805,26 @@ function ComposerActionMenu({
   onInsertIntegrationTrigger: (kind: AgentComposerIntegrationKind) => void;
   onInsertPlanTrigger: () => void;
   onCloseAutoFocus?: (event: Event) => void;
+  compact?: boolean;
 }) {
   const hasPersistentActions = true;
   const hasPrimaryActions =
-    enableAttachments ||
-    Boolean(project.endAction) ||
-    Boolean(mode) ||
-    Boolean(onForkSession);
+    enableAttachments || Boolean(project.endAction) || Boolean(onForkSession);
   const setOpen = onOpenChange;
-  const handleOpenChange = useCallback(
-    (nextOpen: boolean) => {
-      if (nextOpen) {
-        void mode?.onOpen?.();
-      }
-      setOpen(nextOpen);
-    },
-    [mode, setOpen],
-  );
 
   return (
-    <Popover open={open} onOpenChange={handleOpenChange}>
+    <Popover open={open} onOpenChange={onOpenChange}>
       <PopoverTrigger asChild>
         <button
           type="button"
           className={cn(
-            "agent-composer-plus-trigger flex h-10 w-10 shrink-0 items-center justify-center rounded-[12px] transition-colors disabled:opacity-40",
-            !hasPersistentActions && "agent-composer-compact-only"
+            "agent-composer-plus-trigger flex shrink-0 items-center justify-center rounded-md transition-[height,width,background-color,color] duration-150 ease-out disabled:opacity-40",
+            compact ? "h-8 w-8" : "h-10 w-10",
+            !hasPersistentActions && "agent-composer-compact-only",
           )}
           style={{
-            background: "color-mix(in srgb, var(--bg-base) 24%, var(--bg-surface) 76%)",
+            background:
+              "color-mix(in srgb, var(--bg-base) 24%, var(--bg-surface) 76%)",
             color: "var(--text-secondary)",
             border: "1px solid var(--form-border)",
             boxShadow: "none",
@@ -1494,13 +1845,8 @@ function ComposerActionMenu({
           borderColor: "var(--border-subtle)",
           color: "var(--text-primary)",
         }}
+        onOpenAutoFocus={(event) => event.preventDefault()}
         onCloseAutoFocus={onCloseAutoFocus}
-        onInteractOutside={(event) => {
-          const target = event.target as HTMLElement | null;
-          if (target?.closest("[data-composer-mode-chip='true']")) {
-            event.preventDefault();
-          }
-        }}
       >
         {enableAttachments && (
           <button
@@ -1521,25 +1867,22 @@ function ComposerActionMenu({
         {project.endAction && (
           <>
             {enableAttachments && (
-              <div className="my-1 h-px" style={{ background: "var(--overlay-weak)" }} />
+              <div
+                className="my-1 h-px"
+                style={{ background: "var(--overlay-weak)" }}
+              />
             )}
             <div className="px-1 py-1">{project.endAction}</div>
           </>
         )}
 
-        {mode && (
-          <>
-            {(enableAttachments || project.endAction) && (
-              <div className="my-1 h-px" style={{ background: "var(--overlay-weak)" }} />
-            )}
-            <ComposerModeMenuSection mode={mode} onDone={() => setOpen(false)} />
-          </>
-        )}
-
         {onForkSession && (
           <>
-            {(enableAttachments || project.endAction || mode) && (
-              <div className="my-1 h-px" style={{ background: "var(--overlay-weak)" }} />
+            {(enableAttachments || project.endAction) && (
+              <div
+                className="my-1 h-px"
+                style={{ background: "var(--overlay-weak)" }}
+              />
             )}
             <button
               type="button"
@@ -1560,7 +1903,10 @@ function ComposerActionMenu({
         )}
 
         {hasPrimaryActions && (
-          <div className="my-1 h-px" style={{ background: "var(--overlay-weak)" }} />
+          <div
+            className="my-1 h-px"
+            style={{ background: "var(--overlay-weak)" }}
+          />
         )}
         <div className="py-1">
           <div className="px-2 py-1 text-[0.625rem] font-medium uppercase tracking-[0.14em] text-[var(--text-muted)]">
@@ -1575,7 +1921,10 @@ function ComposerActionMenu({
             Plan
           </button>
         </div>
-        <div className="my-1 h-px" style={{ background: "var(--overlay-weak)" }} />
+        <div
+          className="my-1 h-px"
+          style={{ background: "var(--overlay-weak)" }}
+        />
         <div className="py-1">
           <div className="px-2 py-1 text-[0.625rem] font-medium uppercase tracking-[0.14em] text-[var(--text-muted)]">
             Integrations
@@ -1597,6 +1946,22 @@ function ComposerActionMenu({
               <Search className="h-4 w-4" />
               Confluence
             </button>
+            <button
+              type="button"
+              className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-[0.8125rem] transition-colors hover:bg-[var(--bg-hover)]"
+              onClick={() => onInsertIntegrationTrigger("linear")}
+            >
+              <Search className="h-4 w-4" />
+              Linear
+            </button>
+            <button
+              type="button"
+              className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-[0.8125rem] transition-colors hover:bg-[var(--bg-hover)]"
+              onClick={() => onInsertIntegrationTrigger("clickup")}
+            >
+              <Search className="h-4 w-4" />
+              ClickUp
+            </button>
           </div>
         </div>
       </PopoverContent>
@@ -1616,8 +1981,12 @@ function ComposerReferencePills({
   integrationReferences: AgentComposerIntegrationReference[];
   artifactReferences: AgentComposerArtifactReference[];
   onRemoveProjectReference: (path: string) => void;
-  onRemoveIntegrationReference: (reference: AgentComposerIntegrationReference) => void;
-  onRemoveArtifactReference: (reference: AgentComposerArtifactReference) => void;
+  onRemoveIntegrationReference: (
+    reference: AgentComposerIntegrationReference,
+  ) => void;
+  onRemoveArtifactReference: (
+    reference: AgentComposerArtifactReference,
+  ) => void;
 }) {
   if (
     projectReferences.length === 0 &&
@@ -1648,16 +2017,29 @@ function ComposerReferencePills({
       })}
       {integrationReferences.map((reference) => {
         const isJira = reference.kind === "jira";
-        const label = isJira ? reference.key ?? reference.id : reference.title ?? reference.id;
-        const description = isJira ? reference.title : reference.id;
+        const isLinear = reference.kind === "linear";
+        const isClickUp = reference.kind === "clickup";
+        const label =
+          isJira || isLinear || isClickUp
+            ? (reference.key ?? reference.id)
+            : (reference.title ?? reference.id);
+        const description =
+          isJira || isLinear || isClickUp ? reference.title : reference.id;
+        const typeLabel = isClickUp
+          ? "ClickUp"
+          : isLinear
+            ? "Linear"
+            : isJira
+              ? "Jira"
+              : "Confluence";
         return (
           <ComposerReferencePill
-            key={`integration:${reference.kind}:${reference.id}`}
+            key={`integration:${reference.provider}:${reference.kind}:${reference.id}`}
             testId={`agent-composer-reference-pill-integration:${reference.kind}:${reference.id}`}
-            icon={isJira ? Ticket : BookOpen}
-            typeLabel={isJira ? "Jira" : "Confluence"}
+            icon={isJira || isLinear || isClickUp ? Ticket : BookOpen}
+            typeLabel={typeLabel}
             label={label}
-            removeLabel={`Remove ${isJira ? "Jira" : "Confluence"} reference ${label}`}
+            removeLabel={`Remove ${typeLabel} reference ${label}`}
             onRemove={() => onRemoveIntegrationReference(reference)}
             {...(description ? { description } : {})}
           />
@@ -1719,7 +2101,10 @@ function ComposerReferencePill({
       <span className="shrink-0 rounded-md border px-1.5 py-0.5 text-[0.625rem] font-medium uppercase text-[var(--text-muted)]">
         {typeLabel}
       </span>
-      <span className="min-w-0 max-w-[16rem] truncate font-medium" title={label}>
+      <span
+        className="min-w-0 max-w-[16rem] truncate font-medium"
+        title={label}
+      >
         {label}
       </span>
       {description && description !== label ? (
@@ -1751,7 +2136,14 @@ function insertIntegrationTrigger(
 ) {
   const start = textarea?.selectionStart ?? cursorPosition;
   const end = textarea?.selectionEnd ?? cursorPosition;
-  const trigger = kind === "jira" ? "@jira:" : "@confluence:";
+  const trigger =
+    kind === "jira"
+      ? "@jira:"
+      : kind === "linear"
+        ? "@linear:"
+        : kind === "clickup"
+          ? "@clickup:"
+          : "@confluence:";
   const before = value.slice(0, start);
   const after = value.slice(end);
   const spacer = before.length > 0 && !/\s$/.test(before) ? " " : "";
@@ -1791,40 +2183,92 @@ function shortReferenceId(id: string): string {
 
 function ComposerModeChip({
   mode,
-  onClick,
+  open,
+  onOpenChange,
+  compact = false,
 }: {
   mode: ModeFieldConfig;
-  onClick?: () => void;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  compact?: boolean;
 }) {
   const activeOption = mode.options.find((o) => o.id === mode.value);
+  const handleOpenChange = useCallback(
+    (next: boolean) => {
+      if (next) {
+        void mode.onOpen?.();
+      }
+      onOpenChange(next);
+    },
+    [mode, onOpenChange],
+  );
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={mode.disabled}
-      data-testid={mode.testId ? `${mode.testId}-chip` : "agent-composer-mode-chip"}
-      data-composer-mode-chip="true"
-      aria-label={`Mode: ${activeOption?.label ?? mode.value}. Click to change.`}
-      className="inline-flex h-10 shrink-0 items-center gap-2 rounded-[12px] border px-3 transition-colors hover:bg-[var(--bg-hover)] disabled:opacity-50 disabled:cursor-not-allowed"
-      style={{
-        background: "color-mix(in srgb, var(--bg-base) 24%, var(--bg-surface) 76%)",
-        borderColor: "var(--form-border)",
-      }}
-    >
-      <span className="text-[0.625rem] font-medium uppercase tracking-[0.14em] text-[var(--text-muted)]">
-        Mode
-      </span>
-      <span className="text-[0.8125rem] font-medium text-[var(--text-primary)]">
-        {activeOption?.label ?? "—"}
-      </span>
-    </button>
+    <Popover open={open} onOpenChange={handleOpenChange}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          disabled={mode.disabled}
+          data-testid={
+            mode.testId ? `${mode.testId}-chip` : "agent-composer-mode-chip"
+          }
+          data-composer-mode-chip="true"
+          aria-label={`Mode: ${activeOption?.label ?? mode.value}. Click to change.`}
+          className={cn(
+            "inline-flex shrink-0 items-center gap-2 rounded-md border transition-[height,padding,background-color] duration-150 ease-out hover:bg-[var(--bg-hover)] disabled:opacity-50 disabled:cursor-not-allowed",
+            compact ? "h-8 px-2.5" : "h-10 px-3",
+          )}
+          style={{
+            background:
+              "color-mix(in srgb, var(--bg-base) 24%, var(--bg-surface) 76%)",
+            borderColor: "var(--form-border)",
+          }}
+        >
+          {/* Eyebrow label only in the expanded state; the mini/resting composer
+              shows just the value to stay minimal. */}
+          {!compact && (
+            <span className="text-[0.625rem] font-medium uppercase tracking-[0.14em] text-[var(--text-muted)]">
+              Mode
+            </span>
+          )}
+          <span className="text-[0.8125rem] font-medium text-[var(--text-primary)]">
+            {activeOption?.label ?? "—"}
+          </span>
+        </button>
+      </PopoverTrigger>
+      {/* The mode chip owns its own popover with ONLY the workflow modes; the
+          "+" action menu carries everything else (attachments, references…). */}
+      <PopoverContent
+        align="start"
+        side="top"
+        sideOffset={8}
+        className="w-56 rounded-xl p-1.5"
+        style={{
+          backgroundColor: "var(--bg-elevated)",
+          borderColor: "var(--border-subtle)",
+          color: "var(--text-primary)",
+        }}
+        onOpenAutoFocus={(event) => event.preventDefault()}
+      >
+        <ComposerModeMenuSection
+          mode={mode}
+          onDone={() => onOpenChange(false)}
+        />
+      </PopoverContent>
+    </Popover>
   );
 }
 
-function ComposerChatFocusPill({ chatFocus }: { chatFocus: ChatFocusFieldConfig }) {
+function ComposerChatFocusPill({
+  chatFocus,
+  compact = false,
+}: {
+  chatFocus: ChatFocusFieldConfig;
+  compact?: boolean;
+}) {
   const [open, setOpen] = useState(false);
   const activeOption =
-    chatFocus.options.find((o) => o.id === chatFocus.value) ?? chatFocus.options[0];
+    chatFocus.options.find((o) => o.id === chatFocus.value) ??
+    chatFocus.options[0];
   const ActiveIcon = activeOption?.icon;
   const triggerStyle = activeOption?.toneColor
     ? {
@@ -1833,7 +2277,8 @@ function ComposerChatFocusPill({ chatFocus }: { chatFocus: ChatFocusFieldConfig 
         color: activeOption.toneColor,
       }
     : {
-        background: "color-mix(in srgb, var(--bg-base) 24%, var(--bg-surface) 76%)",
+        background:
+          "color-mix(in srgb, var(--bg-base) 24%, var(--bg-surface) 76%)",
         borderColor: "var(--form-border)",
         color: "var(--text-primary)",
       };
@@ -1844,15 +2289,24 @@ function ComposerChatFocusPill({ chatFocus }: { chatFocus: ChatFocusFieldConfig 
           type="button"
           disabled={chatFocus.disabled}
           data-testid={
-            chatFocus.testId ? `${chatFocus.testId}-pill` : "agent-composer-chat-focus-pill"
+            chatFocus.testId
+              ? `${chatFocus.testId}-pill`
+              : "agent-composer-chat-focus-pill"
           }
           aria-label={`Chat focus: ${activeOption?.label ?? chatFocus.value}. Click to change.`}
-          className="flex h-10 min-w-0 shrink-0 items-center gap-2 rounded-[12px] border px-3 transition-colors disabled:opacity-50"
+          className={cn(
+            "flex min-w-0 shrink-0 items-center gap-2 rounded-md border transition-[height,padding,background-color] duration-150 ease-out disabled:opacity-50",
+            compact ? "h-8 px-2.5" : "h-10 px-3",
+          )}
           style={triggerStyle}
         >
-          <span className="text-[0.625rem] font-medium uppercase tracking-[0.14em] text-[var(--text-muted)]">
-            Chat
-          </span>
+          {/* Eyebrow label only in the expanded state (matches the Mode chip);
+              the mini/resting composer relies on the icon + value. */}
+          {!compact && (
+            <span className="text-[0.625rem] font-medium uppercase tracking-[0.14em] text-[var(--text-muted)]">
+              Chat
+            </span>
+          )}
           <span className="flex min-w-0 items-center gap-1.5 text-[0.8125rem] font-medium">
             {ActiveIcon ? <ActiveIcon className="h-3.5 w-3.5" /> : null}
             <span className="truncate">{activeOption?.label ?? "—"}</span>
@@ -1873,20 +2327,21 @@ function ComposerChatFocusPill({ chatFocus }: { chatFocus: ChatFocusFieldConfig 
         {chatFocus.options.map((option) => {
           const selected = option.id === chatFocus.value;
           const Icon = option.icon;
-          const optionStyle = selected && option.toneColor
-            ? {
-                color: option.toneColor,
-                background: option.toneBackground ?? "transparent",
-              }
-            : selected
-            ? {
-                color: "var(--text-primary)",
-                background: "var(--bg-surface)",
-              }
-            : {
-                color: "var(--text-secondary)",
-                background: "transparent",
-              };
+          const optionStyle =
+            selected && option.toneColor
+              ? {
+                  color: option.toneColor,
+                  background: option.toneBackground ?? "transparent",
+                }
+              : selected
+                ? {
+                    color: "var(--text-primary)",
+                    background: "var(--bg-surface)",
+                  }
+                : {
+                    color: "var(--text-secondary)",
+                    background: "transparent",
+                  };
           return (
             <button
               key={option.id}
@@ -1945,10 +2400,14 @@ function ComposerModeMenuSection({
               key={option.id}
               type="button"
               disabled={optionDisabled}
-              data-testid={mode.testId ? `${mode.testId}-${option.id}` : undefined}
+              data-testid={
+                mode.testId ? `${mode.testId}-${option.id}` : undefined
+              }
               className={cn(
                 "flex w-full items-start gap-2 rounded-lg px-2 py-2 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-50",
-                isSelected ? "bg-[var(--accent-muted)]" : "hover:bg-[var(--bg-hover)]"
+                isSelected
+                  ? "bg-[var(--accent-muted)]"
+                  : "hover:bg-[var(--bg-hover)]",
               )}
               onClick={() => {
                 if (optionDisabled) {
@@ -1959,7 +2418,9 @@ function ComposerModeMenuSection({
               }}
             >
               <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center">
-                {isSelected && <Check className="h-4 w-4 text-[var(--accent-primary)]" />}
+                {isSelected && (
+                  <Check className="h-4 w-4 text-[var(--accent-primary)]" />
+                )}
               </span>
               <span className="min-w-0 flex-1">
                 <span className="block text-[0.8125rem] font-medium text-[var(--text-primary)]">
@@ -1997,7 +2458,11 @@ function ClaudeProviderIcon({ className }: { className?: string }) {
 
 function CodexProviderIcon({ className }: { className?: string }) {
   return (
-    <svg viewBox="0 0 256 260" preserveAspectRatio="xMidYMid" className={className}>
+    <svg
+      viewBox="0 0 256 260"
+      preserveAspectRatio="xMidYMid"
+      className={className}
+    >
       <path
         d="M239.184 106.203a64.716 64.716 0 0 0-5.576-53.103C219.452 28.459 191 15.784 163.213 21.74A65.586 65.586 0 0 0 52.096 45.22a64.716 64.716 0 0 0-43.23 31.36c-14.31 24.602-11.061 55.634 8.033 76.74a64.665 64.665 0 0 0 5.525 53.102c14.174 24.65 42.644 37.324 70.446 31.36a64.72 64.72 0 0 0 48.754 21.744c28.481.025 53.714-18.361 62.414-45.481a64.767 64.767 0 0 0 43.229-31.36c14.137-24.558 10.875-55.423-8.083-76.483Zm-97.56 136.338a48.397 48.397 0 0 1-31.105-11.255l1.535-.87 51.67-29.825a8.595 8.595 0 0 0 4.247-7.367v-72.85l21.845 12.636c.218.111.37.32.409.563v60.367c-.056 26.818-21.783 48.545-48.601 48.601Zm-104.466-44.61a48.345 48.345 0 0 1-5.781-32.589l1.534.921 51.722 29.826a8.339 8.339 0 0 0 8.441 0l63.181-36.425v25.221a.87.87 0 0 1-.358.665l-52.335 30.184c-23.257 13.398-52.97 5.431-66.404-17.803ZM23.549 85.38a48.499 48.499 0 0 1 25.58-21.333v61.39a8.288 8.288 0 0 0 4.195 7.316l62.874 36.272-21.845 12.636a.819.819 0 0 1-.767 0L41.353 151.53c-23.211-13.454-31.171-43.144-17.804-66.405v.256Zm179.466 41.695-63.08-36.63L161.73 77.86a.819.819 0 0 1 .768 0l52.233 30.184a48.6 48.6 0 0 1-7.316 87.635v-61.391a8.544 8.544 0 0 0-4.4-7.213Zm21.742-32.69-1.535-.922-51.619-30.081a8.39 8.39 0 0 0-8.492 0L99.98 99.808V74.587a.716.716 0 0 1 .307-.665l52.233-30.133a48.652 48.652 0 0 1 72.236 50.391v.205ZM88.061 139.097l-21.845-12.585a.87.87 0 0 1-.41-.614V65.685a48.652 48.652 0 0 1 79.757-37.346l-1.535.87-51.67 29.825a8.595 8.595 0 0 0-4.246 7.367l-.051 72.697Zm11.868-25.58 28.138-16.217 28.188 16.218v32.434l-28.086 16.218-28.188-16.218-.052-32.434Z"
         fill="currentColor"
@@ -2006,7 +2471,10 @@ function CodexProviderIcon({ className }: { className?: string }) {
   );
 }
 
-const PROVIDER_ICONS: Record<AgentProvider, ComponentType<{ className?: string }>> = {
+const PROVIDER_ICONS: Record<
+  AgentProvider,
+  ComponentType<{ className?: string }>
+> = {
   claude: ClaudeProviderIcon,
   codex: CodexProviderIcon,
 };
@@ -2030,7 +2498,9 @@ function EffortBars({
   totalLevels: number;
   className?: string;
 }) {
-  const activeIndex = EFFORT_ORDER.indexOf(effortId as (typeof EFFORT_ORDER)[number]);
+  const activeIndex = EFFORT_ORDER.indexOf(
+    effortId as (typeof EFFORT_ORDER)[number],
+  );
   const activeCount = activeIndex >= 0 ? activeIndex + 1 : 0;
   const color = EFFORT_BAR_COLORS[effortId] ?? "var(--text-muted)";
   return (
@@ -2055,17 +2525,22 @@ function ComposerRuntimePill({
   provider,
   model,
   effort,
+  compact = false,
   className,
 }: {
   provider: ProviderFieldConfig;
   model: ModelFieldConfig;
   effort: EffortFieldConfig;
+  compact?: boolean;
   className?: string;
 }) {
   const [open, setOpen] = useState(false);
-  const [viewingProvider, setViewingProvider] = useState<AgentProvider | null>(null);
+  const [viewingProvider, setViewingProvider] = useState<AgentProvider | null>(
+    null,
+  );
   const providerLabel =
-    provider.options.find((o) => o.id === provider.value)?.label ?? provider.value;
+    provider.options.find((o) => o.id === provider.value)?.label ??
+    provider.value;
   const modelLabel =
     model.options.find((o) => o.id === model.value)?.label ?? model.value;
   const effortLabel =
@@ -2078,38 +2553,57 @@ function ComposerRuntimePill({
     .filter(Boolean)
     .join(" · ");
 
-  if (!providerLabel && !modelLabel && !effortLabel) {
+  // Hide the runtime/model pill entirely when model selection is unavailable —
+  // i.e. there is no model to display and none to pick (no options or disabled).
+  // This avoids an empty/disabled pill in contexts like an unresolved ideation
+  // runtime or a read-only verification child chat.
+  const modelText = (modelLabel ?? "").trim();
+  const modelSelectionAvailable =
+    modelText.length > 0 || (model.options.length > 0 && !model.disabled);
+  if (!modelSelectionAvailable) {
     return null;
   }
 
   const hasMultipleProviders = provider.options.length > 1;
   const activeViewProvider = viewingProvider ?? provider.value;
-  const viewingOption = provider.options.find((o) => o.id === activeViewProvider);
+  const viewingOption = provider.options.find(
+    (o) => o.id === activeViewProvider,
+  );
   const viewingProviderDisabled =
     hasMultipleProviders && (viewingOption?.disabled ?? false);
   const viewingProviderLabel = viewingOption?.label ?? activeViewProvider;
 
   return (
-    <Popover open={open} onOpenChange={(next) => { setOpen(next); if (!next) setViewingProvider(null); }}>
+    <Popover
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (!next) setViewingProvider(null);
+      }}
+    >
       <PopoverTrigger asChild>
         <button
           type="button"
           data-testid="agent-composer-runtime-pill"
           aria-label={`Runtime: ${runtimeSummary}. Click to change.`}
           className={cn(
-            "flex h-10 min-w-0 items-center gap-2 rounded-[12px] border px-3 transition-colors",
-            className
+            "flex min-w-0 items-center gap-2 rounded-md border transition-[height,padding,background-color] duration-150 ease-out",
+            compact ? "h-8 px-2.5" : "h-10 px-3",
+            className,
           )}
           style={{
-            background: "color-mix(in srgb, var(--bg-base) 24%, var(--bg-surface) 76%)",
+            background:
+              "color-mix(in srgb, var(--bg-base) 24%, var(--bg-surface) 76%)",
             borderColor: "var(--form-border)",
           }}
         >
           {(() => {
             const ActiveProviderIcon = PROVIDER_ICONS[provider.value];
-            return ActiveProviderIcon
-              ? <ActiveProviderIcon className="h-3.5 w-3.5 text-[var(--text-secondary)]" />
-              : <Cpu className="h-3.5 w-3.5 text-[var(--text-secondary)]" />;
+            return ActiveProviderIcon ? (
+              <ActiveProviderIcon className="h-3.5 w-3.5 text-[var(--text-secondary)]" />
+            ) : (
+              <Cpu className="h-3.5 w-3.5 text-[var(--text-secondary)]" />
+            );
           })()}
           <span className="truncate text-[0.8125rem] font-medium text-[var(--text-primary)]">
             {modelLabel}
@@ -2139,7 +2633,7 @@ function ComposerRuntimePill({
         onOpenAutoFocus={(e) => e.preventDefault()}
         className={cn(
           "max-h-[var(--radix-popover-content-available-height)] overflow-x-hidden overflow-y-auto overscroll-contain rounded-xl p-0",
-          hasMultipleProviders ? "w-[21rem]" : "w-72"
+          hasMultipleProviders ? "w-[21rem]" : "w-72",
         )}
         style={{
           backgroundColor: "var(--bg-elevated)",
@@ -2152,7 +2646,8 @@ function ComposerRuntimePill({
               className="flex w-12 shrink-0 flex-col gap-1 border-r p-1"
               style={{
                 borderColor: "var(--border-subtle)",
-                backgroundColor: "color-mix(in srgb, var(--bg-base) 30%, var(--bg-elevated) 70%)",
+                backgroundColor:
+                  "color-mix(in srgb, var(--bg-base) 30%, var(--bg-elevated) 70%)",
               }}
             >
               {provider.options.map((option) => {
@@ -2177,14 +2672,20 @@ function ComposerRuntimePill({
                             isSelected
                               ? "shadow-sm"
                               : "hover:bg-[var(--bg-hover)]",
-                            option.disabled && !isSelected && "opacity-50"
+                            option.disabled && !isSelected && "opacity-50",
                           )}
-                          style={isSelected ? {
-                            backgroundColor: "var(--bg-elevated)",
-                            color: option.disabled ? "var(--text-muted)" : "var(--text-primary)",
-                          } : {
-                            color: "var(--text-secondary)",
-                          }}
+                          style={
+                            isSelected
+                              ? {
+                                  backgroundColor: "var(--bg-elevated)",
+                                  color: option.disabled
+                                    ? "var(--text-muted)"
+                                    : "var(--text-primary)",
+                                }
+                              : {
+                                  color: "var(--text-secondary)",
+                                }
+                          }
                           onClick={() => {
                             if (option.disabled) {
                               setViewingProvider(option.id);
@@ -2205,7 +2706,10 @@ function ComposerRuntimePill({
                 );
               })}
               {provider.compactFooterAction && (
-                <div className="mt-auto border-t pt-1" style={{ borderColor: "var(--border-subtle)" }}>
+                <div
+                  className="mt-auto border-t pt-1"
+                  style={{ borderColor: "var(--border-subtle)" }}
+                >
                   {provider.compactFooterAction}
                 </div>
               )}
@@ -2230,22 +2734,32 @@ function ComposerRuntimePill({
                     {provider.footerAction}
                   </div>
                 )}
-                <div className="my-1 h-px" style={{ background: "var(--overlay-weak)" }} />
+                <div
+                  className="my-1 h-px"
+                  style={{ background: "var(--overlay-weak)" }}
+                />
               </>
             )}
             {viewingProviderDisabled ? (
               <div className="flex flex-col items-center gap-2 px-3 py-4 text-center">
-                <AlertCircle className="h-5 w-5" style={{ color: "var(--text-muted)" }} />
-                <span className="text-[0.8125rem] font-medium" style={{ color: "var(--text-secondary)" }}>
+                <AlertCircle
+                  className="h-5 w-5"
+                  style={{ color: "var(--text-muted)" }}
+                />
+                <span
+                  className="text-[0.8125rem] font-medium"
+                  style={{ color: "var(--text-secondary)" }}
+                >
                   {viewingProviderLabel} is not enabled
                 </span>
-                <span className="text-[0.75rem] leading-snug" style={{ color: "var(--text-muted)" }}>
+                <span
+                  className="text-[0.75rem] leading-snug"
+                  style={{ color: "var(--text-muted)" }}
+                >
                   Enable this provider in settings to use its models.
                 </span>
                 {provider.footerAction && (
-                  <div className="mt-1 w-full">
-                    {provider.footerAction}
-                  </div>
+                  <div className="mt-1 w-full">{provider.footerAction}</div>
                 )}
               </div>
             ) : (
@@ -2278,7 +2792,10 @@ function ComposerRuntimePill({
                 )}
                 {effort.options.length > 0 && (
                   <>
-                    <div className="my-1 h-px" style={{ background: "var(--overlay-weak)" }} />
+                    <div
+                      className="my-1 h-px"
+                      style={{ background: "var(--overlay-weak)" }}
+                    />
                     <ComposerOptionList
                       label="Effort"
                       value={effort.value}
@@ -2360,7 +2877,9 @@ function ComposerOptionList({
               data-testid={testId ? `${testId}-${option.id}` : undefined}
               className={cn(
                 "flex w-full items-start justify-between gap-2 rounded-md px-2 py-1.5 text-left text-[0.75rem] transition-colors disabled:cursor-not-allowed disabled:opacity-50",
-                isSelected ? "bg-[var(--accent-muted)]" : "hover:bg-[var(--bg-hover)]"
+                isSelected
+                  ? "bg-[var(--accent-muted)]"
+                  : "hover:bg-[var(--bg-hover)]",
               )}
               onClick={() => {
                 if (!optionDisabled) {
@@ -2429,7 +2948,6 @@ function ComposerOptionList({
   );
 }
 
-
 export function AgentComposerProjectCreateButton({
   onClick,
   testId,
@@ -2476,7 +2994,7 @@ export function AgentComposerProjectLine({
     return options.filter(
       (option) =>
         option.label.toLowerCase().includes(query) ||
-        option.description?.toLowerCase().includes(query)
+        option.description?.toLowerCase().includes(query),
     );
   }, [options, searchQuery]);
 
@@ -2493,7 +3011,7 @@ export function AgentComposerProjectLine({
       className={cn(
         "flex min-w-0 max-w-[min(100%,430px)] items-center gap-2 rounded-full px-2 py-1 text-[0.75rem] transition-colors",
         !disabled && "hover:bg-[var(--bg-hover)]",
-        "disabled:cursor-not-allowed disabled:opacity-60"
+        "disabled:cursor-not-allowed disabled:opacity-60",
       )}
       style={{ color: "var(--text-secondary)" }}
       disabled={disabled}
@@ -2507,7 +3025,11 @@ export function AgentComposerProjectLine({
       </span>
       <span
         className="min-w-0 truncate font-medium"
-        style={{ color: selectedProject ? "var(--text-primary)" : "var(--text-secondary)" }}
+        style={{
+          color: selectedProject
+            ? "var(--text-primary)"
+            : "var(--text-secondary)",
+        }}
       >
         {selectedProject?.label ?? placeholder}
       </span>
@@ -2567,7 +3089,7 @@ export function AgentComposerProjectLine({
                         "flex w-full min-w-0 items-start gap-2 rounded-md px-2 py-1.5 text-left text-xs transition-colors",
                         isSelected
                           ? "bg-[var(--accent-muted)] text-[var(--accent-primary)]"
-                          : "text-[var(--text-primary)] hover:bg-[var(--bg-hover)]"
+                          : "text-[var(--text-primary)] hover:bg-[var(--bg-hover)]",
                       )}
                       onClick={() => {
                         onValueChange(option.id);
@@ -2582,14 +3104,19 @@ export function AgentComposerProjectLine({
                         <span className="block whitespace-normal break-words font-medium leading-snug">
                           {option.label}
                         </span>
-                        {option.description && option.description !== option.label && (
-                          <span
-                            className="mt-0.5 block whitespace-normal break-all font-mono text-[0.625rem] leading-snug"
-                            style={{ color: isSelected ? "currentColor" : "var(--text-muted)" }}
-                          >
-                            {option.description}
-                          </span>
-                        )}
+                        {option.description &&
+                          option.description !== option.label && (
+                            <span
+                              className="mt-0.5 block whitespace-normal break-all font-mono text-[0.625rem] leading-snug"
+                              style={{
+                                color: isSelected
+                                  ? "currentColor"
+                                  : "var(--text-muted)",
+                              }}
+                            >
+                              {option.description}
+                            </span>
+                          )}
                       </span>
                     </button>
                   );

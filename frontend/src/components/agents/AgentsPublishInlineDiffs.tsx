@@ -28,7 +28,13 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { diffApi } from "@/api/diff";
-import type { AgentWorkspaceReview, FileChange, DiffRefKind, PrDiffAnnotation } from "@/api/diff";
+import type {
+  AgentWorkspaceChangeSummary,
+  AgentWorkspaceReview,
+  FileChange,
+  DiffRefKind,
+  PrDiffAnnotation,
+} from "@/api/diff";
 import type { Commit as DiffViewerCommit } from "@/components/diff";
 import { cn } from "@/lib/utils";
 import { AgentsPublishDiffFilter } from "./AgentsPublishDiffFilter";
@@ -57,7 +63,10 @@ export interface AgentsPublishInlineDiffsProps {
   error?: unknown;
   onOpenInDialog?: ((filePath?: string) => void) | undefined;
   focusRequest?: AgentPublishFocusRequest | null | undefined;
+  defaultMode?: DiffFilterMode | undefined;
   workspaceChangeLabel?: string | undefined;
+  liveSummary?: AgentWorkspaceChangeSummary | null | undefined;
+  repairMode?: boolean | undefined;
 }
 
 function getEmptyDiffStateCopy(
@@ -112,6 +121,20 @@ function buildEffectiveCollapsedPaths(
     return new Set();
   }
   return new Set(customCollapsedPaths);
+}
+
+function findFirstRenderedAnnotationRow(
+  root: HTMLElement,
+  filePath: string,
+): HTMLElement | null {
+  const fileRows = root.querySelectorAll<HTMLElement>("[data-publish-file-path]");
+  for (const row of fileRows) {
+    if (row.dataset.publishFilePath !== filePath) {
+      continue;
+    }
+    return row.querySelector<HTMLElement>('[data-testid="diff-annotation-row"]');
+  }
+  return null;
 }
 
 interface AgentsPublishVirtualFileRowProps {
@@ -184,7 +207,10 @@ export function AgentsPublishInlineDiffs({
   error,
   onOpenInDialog,
   focusRequest,
+  defaultMode,
   workspaceChangeLabel,
+  liveSummary = null,
+  repairMode = false,
 }: AgentsPublishInlineDiffsProps) {
   // Set of collapsed file paths; empty = all expanded (default).
   const [collapsedPaths, setCollapsedPaths] = useState<Set<string>>(new Set());
@@ -193,6 +219,7 @@ export function AgentsPublishInlineDiffs({
   // Jump-to-file popover
   const [jumpOpen, setJumpOpen] = useState(false);
   const [jumpSearch, setJumpSearch] = useState("");
+  const inlineDiffsRootRef = useRef<HTMLDivElement | null>(null);
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const [visibleRange, setVisibleRange] = useState<ListRange | null>(null);
   // Lazy hydration tracks which file paths have entered the virtual range.
@@ -203,6 +230,9 @@ export function AgentsPublishInlineDiffs({
   const [pendingFocusRequest, setPendingFocusRequest] =
     useState<AgentPublishFocusRequest | null>(null);
   const [focusTargetPath, setFocusTargetPath] = useState<string | null>(null);
+  const [pendingAnnotationScrollPath, setPendingAnnotationScrollPath] =
+    useState<string | null>(null);
+  const autoScrolledAnnotationKeyRef = useRef<string | null>(null);
   const {
     commitSha,
     currentFiles,
@@ -221,7 +251,13 @@ export function AgentsPublishInlineDiffs({
     totalDeletions,
     workspaceChangeCount,
     unstagedCount,
-  } = useAgentWorkspaceChangeSummary({ conversationId, review });
+  } = useAgentWorkspaceChangeSummary({
+    conversationId,
+    review,
+    defaultMode,
+    liveSummary,
+    repairMode,
+  });
   const rangeRefKind =
     review?.headRef.startsWith(PATCH_BACKED_HEAD_REF_PREFIX) === true
       ? undefined
@@ -243,17 +279,58 @@ export function AgentsPublishInlineDiffs({
     }
     return map;
   }, [annotations, canRenderPrAnnotations]);
+  const firstAnnotatedFilePath = useMemo(() => {
+    if (!canRenderPrAnnotations || annotationsByPath.size === 0) {
+      return null;
+    }
+    return (
+      currentFiles.find(
+        (file) => (annotationsByPath.get(file.path)?.length ?? 0) > 0,
+      )?.path ?? null
+    );
+  }, [annotationsByPath, canRenderPrAnnotations, currentFiles]);
+  const annotationAutoScrollKey = useMemo(() => {
+    if (!firstAnnotatedFilePath) {
+      return null;
+    }
+    const parts = annotations.flatMap((annotation) => {
+      if (!annotation.path || !annotationsByPath.has(annotation.path)) {
+        return [];
+      }
+      return [
+        [
+          annotation.id,
+          annotation.path,
+          annotation.side ?? "",
+          annotation.startLine,
+          annotation.endLine ?? "",
+        ].join(":"),
+      ];
+    });
+    if (parts.length === 0) {
+      return null;
+    }
+    return [conversationId, effectiveMode, parts.join("|")].join(":");
+  }, [
+    annotations,
+    annotationsByPath,
+    conversationId,
+    effectiveMode,
+    firstAnnotatedFilePath,
+  ]);
 
   // ── Conversation/mode changes reset hydrated paths; keep same-list viewport ranges ──
   useEffect(() => {
     setHydratedPaths(new Set());
     setVisibleRange(null);
     setFocusTargetPath(null);
+    setPendingAnnotationScrollPath(null);
   }, [conversationId]);
 
   useEffect(() => {
     setHydratedPaths(new Set());
     setFocusTargetPath(null);
+    setPendingAnnotationScrollPath(null);
   }, [conversationId, effectiveMode]);
 
   const bufferedVisiblePathSet = useMemo(() => {
@@ -369,9 +446,21 @@ export function AgentsPublishInlineDiffs({
   // ── Staged diffs ──────────────────────────────────────────────────────
   const stagedDiffQueries = useQueries({
     queries: (supportsWorktreeModes && isStagedMode ? fetchableFiles : []).map((file) => ({
-      queryKey: [...agentWorkspaceKeys.diff(conversationId), "staged", file.path],
+      queryKey: [
+        ...agentWorkspaceKeys.diff(conversationId),
+        repairMode ? "repair-staged" : "staged",
+        file.path,
+      ],
       queryFn: () =>
-        diffApi.getAgentConversationWorkspaceStagedFileDiff(conversationId, file.path),
+        repairMode
+          ? diffApi.getAgentConversationWorkspaceRepairStagedFileDiff(
+              conversationId,
+              file.path,
+            )
+          : diffApi.getAgentConversationWorkspaceStagedFileDiff(
+              conversationId,
+              file.path,
+            ),
       staleTime: AGENT_WORKSPACE_STALE_MS,
     })),
   });
@@ -379,9 +468,21 @@ export function AgentsPublishInlineDiffs({
   // ── Unstaged diffs ────────────────────────────────────────────────────
   const unstagedDiffQueries = useQueries({
     queries: (supportsWorktreeModes && isUnstagedMode ? fetchableFiles : []).map((file) => ({
-      queryKey: [...agentWorkspaceKeys.diff(conversationId), "unstaged", file.path],
+      queryKey: [
+        ...agentWorkspaceKeys.diff(conversationId),
+        repairMode ? "repair-unstaged" : "unstaged",
+        file.path,
+      ],
       queryFn: () =>
-        diffApi.getAgentConversationWorkspaceUnstagedFileDiff(conversationId, file.path),
+        repairMode
+          ? diffApi.getAgentConversationWorkspaceRepairUnstagedFileDiff(
+              conversationId,
+              file.path,
+            )
+          : diffApi.getAgentConversationWorkspaceUnstagedFileDiff(
+              conversationId,
+              file.path,
+            ),
       staleTime: AGENT_WORKSPACE_STALE_MS,
     })),
   });
@@ -576,6 +677,7 @@ export function AgentsPublishInlineDiffs({
     (_index: number, fileChange: FileChange) => (
       <div
         data-testid={`inline-diffs-file-row-${_index}`}
+        data-publish-file-path={fileChange.path}
         className={cn(
           "box-border min-w-0 w-full overflow-x-hidden px-3",
           _index === 0 ? "pt-2" : "pt-0.5",
@@ -590,8 +692,8 @@ export function AgentsPublishInlineDiffs({
           onCopyPath={handleCopyPath}
           onOpenFullscreenPath={handleOpenFullscreen}
           conversationId={conversationId}
-          refKind={rangeRefKind}
-          diffPageRefKind={refKind}
+          refKind={repairMode ? undefined : rangeRefKind}
+          diffPageRefKind={repairMode ? undefined : refKind}
           shouldHydrate={hydratedPaths.has(fileChange.path)}
           annotations={annotationsByPath.get(fileChange.path) ?? EMPTY_PR_DIFF_ANNOTATIONS}
           isShowAnywayOverridden={userShowAnywayPaths.has(fileChange.path)}
@@ -614,6 +716,7 @@ export function AgentsPublishInlineDiffs({
       focusTargetPath,
       refKind,
       rangeRefKind,
+      repairMode,
       userShowAnywayPaths,
     ],
   );
@@ -622,8 +725,82 @@ export function AgentsPublishInlineDiffs({
   const isFileListLoading = isLoading || isCurrentFilesLoading;
   const emptyStateCopy = getEmptyDiffStateCopy(effectiveMode, workspaceChangeLabel);
 
+  useEffect(() => {
+    if (
+      !firstAnnotatedFilePath ||
+      !annotationAutoScrollKey ||
+      isFileListLoading ||
+      currentFiles.length === 0 ||
+      autoScrolledAnnotationKeyRef.current === annotationAutoScrollKey
+    ) {
+      return;
+    }
+    const index = currentFiles.findIndex(
+      (file) => file.path === firstAnnotatedFilePath,
+    );
+    if (index < 0) {
+      return;
+    }
+
+    if (bulkExpansionPreference === "collapsed") {
+      setBulkExpansionPreference("custom");
+    }
+    setCollapsedPaths((prev) => {
+      const next = buildEffectiveCollapsedPaths(
+        bulkExpansionPreference,
+        currentFiles,
+        prev,
+      );
+      if (!next.has(firstAnnotatedFilePath)) {
+        return prev;
+      }
+      next.delete(firstAnnotatedFilePath);
+      return next;
+    });
+    hydrateVisibleRange({ startIndex: index, endIndex: index });
+    virtuosoRef.current?.scrollToIndex({
+      index,
+      align: "start",
+      behavior: "auto",
+    });
+    setFocusTargetPath(firstAnnotatedFilePath);
+    setPendingAnnotationScrollPath(firstAnnotatedFilePath);
+    autoScrolledAnnotationKeyRef.current = annotationAutoScrollKey;
+  }, [
+    annotationAutoScrollKey,
+    bulkExpansionPreference,
+    currentFiles,
+    firstAnnotatedFilePath,
+    hydrateVisibleRange,
+    isFileListLoading,
+  ]);
+
+  useEffect(() => {
+    if (!pendingAnnotationScrollPath) {
+      return;
+    }
+    const root = inlineDiffsRootRef.current;
+    if (!root) {
+      return;
+    }
+    const annotationRow = findFirstRenderedAnnotationRow(
+      root,
+      pendingAnnotationScrollPath,
+    );
+    if (!annotationRow) {
+      return;
+    }
+    annotationRow.scrollIntoView({
+      block: "center",
+      behavior: "auto",
+      inline: "nearest",
+    });
+    setPendingAnnotationScrollPath(null);
+  }, [diffByPath, pendingAnnotationScrollPath, visibleRange]);
+
   return (
     <div
+      ref={inlineDiffsRootRef}
       data-testid="agents-publish-inline-diffs"
       className="flex min-h-0 flex-1 flex-col overflow-x-hidden"
     >

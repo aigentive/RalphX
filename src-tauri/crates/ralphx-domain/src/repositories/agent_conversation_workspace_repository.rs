@@ -4,7 +4,9 @@ use chrono::{DateTime, Utc};
 use crate::entities::{
     AgentConversationWorkspace, AgentConversationWorkspacePublicationEvent,
     AgentConversationWorkspaceStatus, AgentWorkspacePrCommentEvidence,
-    AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription, ChatConversationId,
+    AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription,
+    AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionStatus,
+    AgentWorkspacePrReviewMonitor, AgentWorkspaceReviewMonitor, ChatConversationId,
     IdeationSessionId, PlanBranchId, ProjectId,
 };
 use crate::error::AppResult;
@@ -20,6 +22,13 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         &self,
         conversation_id: &ChatConversationId,
     ) -> AppResult<Option<AgentConversationWorkspace>>;
+
+    async fn get_by_linked_ideation_session_id(
+        &self,
+        _ideation_session_id: &IdeationSessionId,
+    ) -> AppResult<Option<AgentConversationWorkspace>> {
+        Ok(None)
+    }
 
     async fn get_by_project_id(
         &self,
@@ -55,6 +64,12 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         &self,
     ) -> AppResult<Vec<AgentConversationWorkspace>>;
 
+    async fn list_active_pr_poller_recovery_workspaces(
+        &self,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        self.list_active_direct_published_workspaces().await
+    }
+
     async fn list_active_direct_external_pr_reconciliation_candidates(
         &self,
         limit: usize,
@@ -74,6 +89,14 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
     async fn list_active_needs_agent_workspaces(
         &self,
     ) -> AppResult<Vec<AgentConversationWorkspace>>;
+
+    async fn list_active_transient_publish_status_workspaces(
+        &self,
+        stale_older_than_secs: u64,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        let _ = stale_older_than_secs;
+        Ok(Vec::new())
+    }
 
     async fn update_links(
         &self,
@@ -109,6 +132,14 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         _pr_auto_merge_desired: bool,
         _pr_supervision_status: Option<&str>,
         _pr_supervision_summary: Option<&str>,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn update_auto_publish_initial_pr_preference(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _enabled: bool,
     ) -> AppResult<()> {
         Ok(())
     }
@@ -192,6 +223,80 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         _conversation_id: &ChatConversationId,
         _pr_number: i64,
         _comment_id: &str,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn upsert_pr_review_monitor(
+        &self,
+        monitor: AgentWorkspacePrReviewMonitor,
+    ) -> AppResult<AgentWorkspacePrReviewMonitor> {
+        Ok(monitor)
+    }
+
+    async fn get_pr_review_monitor(
+        &self,
+        _conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<AgentWorkspacePrReviewMonitor>> {
+        Ok(None)
+    }
+
+    async fn list_active_pr_review_monitors(
+        &self,
+    ) -> AppResult<Vec<AgentWorkspacePrReviewMonitor>> {
+        Ok(Vec::new())
+    }
+
+    async fn upsert_workspace_review_monitor(
+        &self,
+        monitor: AgentWorkspaceReviewMonitor,
+    ) -> AppResult<AgentWorkspaceReviewMonitor> {
+        Ok(monitor)
+    }
+
+    async fn get_workspace_review_monitor(
+        &self,
+        _conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<AgentWorkspaceReviewMonitor>> {
+        Ok(None)
+    }
+
+    async fn create_or_update_pr_review_action(
+        &self,
+        action: AgentWorkspacePrReviewAction,
+    ) -> AppResult<AgentWorkspacePrReviewAction> {
+        Ok(action)
+    }
+
+    async fn get_pr_review_action(
+        &self,
+        _action_id: &str,
+    ) -> AppResult<Option<AgentWorkspacePrReviewAction>> {
+        Ok(None)
+    }
+
+    async fn get_pending_pr_review_action_for_head(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _pr_number: i64,
+        _head_sha: &str,
+    ) -> AppResult<Option<AgentWorkspacePrReviewAction>> {
+        Ok(None)
+    }
+
+    async fn list_pr_review_actions(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _limit: usize,
+    ) -> AppResult<Vec<AgentWorkspacePrReviewAction>> {
+        Ok(Vec::new())
+    }
+
+    async fn update_pr_review_action_status(
+        &self,
+        _action_id: &str,
+        _status: AgentWorkspacePrReviewActionStatus,
+        _submitted_review_id: Option<&str>,
     ) -> AppResult<()> {
         Ok(())
     }

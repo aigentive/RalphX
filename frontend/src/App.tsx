@@ -19,13 +19,15 @@ import { ProposalDetailSheet } from "@/components/Ideation/ProposalDetailSheet";
 import type { ProposalDetailEnrichment } from "@/components/Ideation/ProposalDetailSheet";
 import { ExtensibilityView } from "@/components/ExtensibilityView";
 import { ActivityView } from "@/components/activity";
+import { TicketingDashboardView } from "@/components/ticketing";
 import SettingsDialog from "@/components/settings/SettingsDialog";
 import { InsightsView } from "@/components/views/InsightsView";
-import { AgentsView } from "@/components/agents";
+import { AgentsView, AgentIssueReportDialog } from "@/components/agents";
 import { TeamSplitView } from "@/components/Team";
 import { TaskGraphView } from "@/components/TaskGraph";
 import { WelcomeScreen } from "@/components/WelcomeScreen";
 import { UpdateChecker } from "@/components/UpdateChecker";
+import { ProviderCliUpdateChecker } from "@/components/ProviderCliUpdateChecker";
 import { PostUpdatePreparingScreen } from "@/components/PostUpdatePreparingScreen";
 import { ProjectCreationWizard } from "@/components/projects/ProjectCreationWizard";
 import { PlanQuickSwitcherPalette } from "@/components/plan/PlanQuickSwitcherPalette";
@@ -60,12 +62,15 @@ import { useFeatureFlags, isViewEnabled } from "@/hooks/useFeatureFlags";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
 import { useNavCompactBreakpoint } from "@/hooks";
 import { usePostUpdatePreparing } from "@/hooks/usePostUpdatePreparing";
+import { useTicketingCacheEvents } from "@/hooks/useTicketingEvents";
 import { extractErrorMessage } from "@/lib/errors";
 import { resolveIdeationSession } from "@/lib/resolveIdeationSession";
 import { readFreshPostUpdatePreparingMarker } from "@/lib/postUpdatePreparing";
 import { api, getGitBranches, getGitDefaultBranch } from "@/lib/tauri";
 import { executionApi } from "@/api/execution";
 import { tasksApi } from "@/api/tasks";
+import { ticketingApi, type TicketDeepLink } from "@/api/ticketing";
+import { ticketingKeys } from "@/hooks/useTicketing";
 import type { SelectionSource } from "@/api/plan";
 import type { ProjectSettings } from "@/types/settings";
 import { DEFAULT_PROJECT_SETTINGS } from "@/types/settings";
@@ -76,6 +81,19 @@ import { ScreenshotGalleryTestPage } from "@/test-pages/ScreenshotGalleryTest";
 
 const queryClient = getQueryClient();
 const ATLASSIAN_AWARENESS_TOAST_KEY = "ralphx.atlassianIntegrationAwareness.v1";
+
+function ensureCreatedProjectVisibleInAgentFilters(projectId: string) {
+  const {
+    showAllProjects,
+    sidebarProjectFilterIds,
+    setSidebarProjectFilterIds,
+  } = useAgentSessionStore.getState();
+  if (!showAllProjects) {
+    setSidebarProjectFilterIds([
+      ...new Set([...sidebarProjectFilterIds, projectId]),
+    ]);
+  }
+}
 
 /**
  * Test page router - checks URL params and returns test page if applicable
@@ -105,10 +123,12 @@ function FeatureDisabledPlaceholder({
   view,
   yamlKey,
   envVar,
+  settingsPath,
 }: {
   view: string;
-  yamlKey: string;
-  envVar: string;
+  yamlKey?: string;
+  envVar?: string;
+  settingsPath?: string;
 }) {
   return (
     <div
@@ -118,11 +138,19 @@ function FeatureDisabledPlaceholder({
       <p className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
         {view} page is disabled (dev mode)
       </p>
-      <div className="text-xs font-mono rounded p-3 text-left" style={{ background: "var(--bg-surface)", color: "var(--text-secondary)" }}>
-        <p className="mb-2 font-sans" style={{ color: "var(--text-muted)" }}>Enable via ralphx.yaml:</p>
-        <pre>{`ui:\n  feature_flags:\n    ${yamlKey}: true`}</pre>
-        <p className="mt-3 mb-1 font-sans" style={{ color: "var(--text-muted)" }}>Or via env var:</p>
-        <pre>{`${envVar}=true`}</pre>
+      <div className="text-xs font-mono rounded p-3 text-left" style={{ backgroundColor: "var(--bg-surface)", color: "var(--text-secondary)" }}>
+        {settingsPath ? (
+          <p className="font-sans" style={{ color: "var(--text-muted)" }}>
+            Enable it in {settingsPath}.
+          </p>
+        ) : (
+          <>
+            <p className="mb-2 font-sans" style={{ color: "var(--text-muted)" }}>Enable via ralphx.yaml:</p>
+            <pre>{`ui:\n  feature_flags:\n    ${yamlKey}: true`}</pre>
+            <p className="mt-3 mb-1 font-sans" style={{ color: "var(--text-muted)" }}>Or via env var:</p>
+            <pre>{`${envVar}=true`}</pre>
+          </>
+        )}
       </div>
     </div>
   );
@@ -153,8 +181,14 @@ function AppContent() {
   const { data: featureFlags } = useFeatureFlags();
 
   // Redirect to the default project view in production when the current view is disabled.
+  // Ticketing remains directly reachable when a provider enables the dashboard
+  // entry; provider availability is handled by the dashboard/sidebar surfaces.
   useEffect(() => {
-    if (!import.meta.env.DEV && !isViewEnabled(currentView, featureFlags)) {
+    if (
+      currentView !== "ticketing" &&
+      !import.meta.env.DEV &&
+      !isViewEnabled(currentView, featureFlags)
+    ) {
       setCurrentView(DEFAULT_PROJECT_VIEW);
     }
   }, [currentView, featureFlags, setCurrentView]);
@@ -179,9 +213,17 @@ function AppContent() {
   const selectProject = useProjectStore((s) => s.selectProject);
   const clearAgentSelection = useAgentSessionStore((s) => s.clearSelection);
   const setFocusedAgentProject = useAgentSessionStore((s) => s.setFocusedProject);
-  const selectedAgentConversationId = useAgentSessionStore((s) => s.selectedConversationId);
-  const selectedAgentProjectId = useAgentSessionStore((s) => s.selectedProjectId);
-  const focusedAgentProjectId = useAgentSessionStore((s) => s.focusedProjectId);
+  const {
+    selectedAgentProjectId,
+    selectedAgentConversationId,
+    focusedAgentProjectId,
+  } = useAgentSessionStore(
+    useShallow((s) => ({
+      selectedAgentProjectId: s.selectedProjectId,
+      selectedAgentConversationId: s.selectedConversationId,
+      focusedAgentProjectId: s.focusedProjectId,
+    }))
+  );
 
   const prevProjectIdRef = useRef<string | null>(null);
   const agentsReturnViewRef = useRef<ViewType>(DEFAULT_PROJECT_VIEW);
@@ -216,6 +258,7 @@ function AppContent() {
   const [isProjectWizardOpen, setIsProjectWizardOpen] = useState(false);
   const [isCreatingProject, setIsCreatingProject] = useState(false);
   const [projectCreationError, setProjectCreationError] = useState<string | null>(null);
+  const [isAgentIssueReportOpen, setIsAgentIssueReportOpen] = useState(false);
 
   // Plan quick switcher state
   const [isPlanQuickSwitcherOpen, setIsPlanQuickSwitcherOpen] = useState(false);
@@ -276,6 +319,29 @@ function AppContent() {
     !isLoadingProviderSettings &&
     !isPlaceholderProviderSettings;
   const isPostUpdatePreparing = usePostUpdatePreparing(postUpdateAppReady);
+  const agentIssueReportContext = useMemo(() => {
+    if (
+      currentView !== "agents" ||
+      hasNoProjects ||
+      showWelcomeOverlay ||
+      providerSetupRequired ||
+      !selectedAgentProjectId ||
+      !selectedAgentConversationId
+    ) {
+      return null;
+    }
+    return {
+      projectId: selectedAgentProjectId,
+      conversationId: selectedAgentConversationId,
+    };
+  }, [
+    currentView,
+    hasNoProjects,
+    providerSetupRequired,
+    selectedAgentConversationId,
+    selectedAgentProjectId,
+    showWelcomeOverlay,
+  ]);
   const shouldShowAtlassianAwarenessAfterUpdateRef = useRef(
     readFreshPostUpdatePreparingMarker() !== null,
   );
@@ -284,6 +350,7 @@ function AppContent() {
 
   // Real-time execution status updates via Tauri events
   useExecutionEvents(executionProjectParam);
+  useTicketingCacheEvents();
   // Fetch initial execution status and poll every 30s as fallback
   // Scope the Agents footer to the selected/focused agent project instead of the app's active project.
   useExecutionStatus(executionProjectParam, {
@@ -547,6 +614,16 @@ function AppContent() {
     openModal("settings");
   }, [openModal]);
 
+  const handleOpenAgentIssueReport = useCallback(() => {
+    setIsAgentIssueReportOpen(true);
+  }, []);
+
+  useEffect(() => {
+    if (!agentIssueReportContext && isAgentIssueReportOpen) {
+      setIsAgentIssueReportOpen(false);
+    }
+  }, [agentIssueReportContext, isAgentIssueReportOpen]);
+
   const handleOpenProviderSettings = useCallback(() => {
     openModal("settings", { section: "providers" });
   }, [openModal]);
@@ -554,6 +631,38 @@ function AppContent() {
   const handleOpenIntegrationSettings = useCallback(() => {
     openModal("settings", { section: "integrations" });
   }, [openModal]);
+
+  const handleWarmView = useCallback((view: ViewType) => {
+    if (view !== "ticketing" || !currentProjectId) {
+      return;
+    }
+    void queryClient.prefetchQuery({
+      queryKey: ticketingKeys.providers(currentProjectId),
+      queryFn: () => ticketingApi.listProviders({ projectId: currentProjectId }),
+      staleTime: 60_000,
+    }).catch(() => {
+      // Warm-up failures are non-blocking; opening the view surfaces real state.
+    });
+  }, [currentProjectId]);
+
+  const handleNavigateFromTicketAssociation = useCallback((deepLink: TicketDeepLink) => {
+    if (deepLink.view === "kanban") {
+      setCurrentView("kanban");
+      setSelectedTaskId(deepLink.id);
+      return;
+    }
+    if (deepLink.view === "agents" && deepLink.projectId) {
+      // Select the exact linked conversation (not just switch to the Agents view)
+      // so its linked ticket and artifact are visible on arrival.
+      const projectId = deepLink.projectId;
+      setFocusedAgentProject(projectId);
+      useAgentSessionStore.getState().selectConversation(projectId, deepLink.id);
+      useChatStore.getState().setActiveConversation(`project:${projectId}`, deepLink.id);
+      setCurrentView("agents");
+      return;
+    }
+    setCurrentView(deepLink.view);
+  }, [setCurrentView, setSelectedTaskId, setFocusedAgentProject]);
 
   useEffect(() => {
     if (
@@ -723,13 +832,21 @@ function AppContent() {
       await queryClient.invalidateQueries({ queryKey: projectKeys.list() });
       addProject(newProject);
       selectProject(newProject.id);
+      setFocusedAgentProject(newProject.id);
+      clearAgentSelection();
+      ensureCreatedProjectVisibleInAgentFilters(newProject.id);
       setIsProjectWizardOpen(false);
     } catch (error) {
       setProjectCreationError(error instanceof Error ? error.message : "Failed to create project");
     } finally {
       setIsCreatingProject(false);
     }
-  }, [addProject, selectProject]);
+  }, [
+    addProject,
+    clearAgentSelection,
+    selectProject,
+    setFocusedAgentProject,
+  ]);
 
   const handleBrowseFolder = useCallback(async (): Promise<string | null> => {
     try {
@@ -918,6 +1035,7 @@ function AppContent() {
       >
       {/* Update checker - runs on mount, shows toast if update available */}
       <UpdateChecker />
+      <ProviderCliUpdateChecker />
 
       {isPostUpdatePreparing ? (
         <PostUpdatePreparingScreen />
@@ -942,7 +1060,11 @@ function AppContent() {
             <LeftNavRail
               currentView={currentView}
               onViewChange={handleViewChange}
+              onViewWarmUp={handleWarmView}
               onOpenSettings={handleOpenSettings}
+              {...(agentIssueReportContext
+                ? { onOpenIssueReport: handleOpenAgentIssueReport }
+                : {})}
               hideViews={hasNoProjects || showWelcomeOverlay || providerSetupRequired}
             />
 
@@ -1025,6 +1147,12 @@ function AppContent() {
                     ? <FeatureDisabledPlaceholder view="activity" yamlKey="activity_page" envVar="RALPHX_UI_ACTIVITY_PAGE" />
                     : null
               )}
+              {currentView === "ticketing" && (
+                <TicketingDashboardView
+                  projectId={currentProjectId}
+                  onNavigateToAssociation={handleNavigateFromTicketAssociation}
+                />
+              )}
               {currentView === "insights" && <InsightsView />}
               {currentView === "team" && <TeamSplitView />}
             </div>
@@ -1090,6 +1218,12 @@ function AppContent() {
         isSavingSettings={isSavingSettings}
         settingsError={settingsError}
         onSettingsChange={handleSettingsChange}
+      />
+
+      <AgentIssueReportDialog
+        open={isAgentIssueReportOpen}
+        onOpenChange={setIsAgentIssueReportOpen}
+        context={agentIssueReportContext}
       />
 
       {/* Permission Dialog - Global UI-based permission approval */}

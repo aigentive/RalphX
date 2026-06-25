@@ -40,18 +40,24 @@ mod v17_running_agents;
 mod v18_task_metadata;
 mod v19_project_analysis;
 mod v1_initial_schema;
+mod v20260325120000_app_state_execution_halt_mode;
+mod v20260325131500_execution_ideation_allocation_settings;
+mod v20260327233752_pending_initial_prompt;
+mod v20260328194000_ideation_followup_provenance;
+mod v20260329103000_review_note_followup_session;
+mod v20260329113000_ideation_blocker_fingerprint;
 mod v20_merge_validation_mode;
 mod v21_questions_permissions;
 mod v22_project_active_plan;
 mod v23_plan_selection_stats;
 mod v24_memory_framework;
-mod v26_running_agent_worktree;
 mod v25_seed_artifact_buckets;
-mod v30_update_max_concurrent_default;
+mod v26_running_agent_worktree;
 mod v27_merge_strategy;
 mod v28_default_rebase_squash;
 mod v29_repair_schema_drift;
 mod v2_add_dependency_reason;
+mod v30_update_max_concurrent_default;
 mod v31_session_linking;
 mod v32_fix_task_fk_constraints;
 mod v33_agent_run_chain_ids;
@@ -83,6 +89,7 @@ mod v56_api_keys;
 mod v57_plan_verification;
 mod v58_metrics_index;
 mod v59_project_metrics_config;
+mod v5_add_review_summary_issues;
 mod v60_metrics_working_days;
 mod v61_ideation_settings_verification;
 mod v62_api_key_admin_permissions;
@@ -93,11 +100,7 @@ mod v66_cross_project_import;
 mod v67_tasks_session_status_index;
 mod v68_session_purpose;
 mod v69_soft_delete_archived_at;
-mod v5_add_review_summary_issues;
 mod v6_review_issues;
-mod v7_session_status_converted_to_accepted;
-mod v8_task_git_fields;
-mod v9_project_git_fields;
 mod v70_plan_branch_base_override;
 mod v71_add_target_project_to_proposals;
 mod v72_cross_project_check;
@@ -108,14 +111,11 @@ mod v76_session_origin;
 mod v77_expected_proposal_count;
 mod v78_webhook_registrations;
 mod v79_external_session_reliability;
+mod v7_session_status_converted_to_accepted;
 mod v80_dependencies_acknowledged;
 mod v81_external_session_reliability_backfill;
-mod v20260325120000_app_state_execution_halt_mode;
-mod v20260327233752_pending_initial_prompt;
-mod v20260325131500_execution_ideation_allocation_settings;
-mod v20260328194000_ideation_followup_provenance;
-mod v20260329103000_review_note_followup_session;
-mod v20260329113000_ideation_blocker_fingerprint;
+mod v8_task_git_fields;
+mod v9_project_git_fields;
 
 #[cfg(test)]
 mod tests;
@@ -142,94 +142,6 @@ mod v19_project_analysis_tests;
 #[cfg(test)]
 mod v1_initial_schema_tests;
 #[cfg(test)]
-mod v20_merge_validation_mode_tests;
-#[cfg(test)]
-mod v21_questions_permissions_tests;
-#[cfg(test)]
-mod v22_project_active_plan_tests;
-#[cfg(test)]
-mod v23_plan_selection_stats_tests;
-#[cfg(test)]
-mod v24_memory_framework_tests;
-#[cfg(test)]
-mod v26_running_agent_worktree_tests;
-#[cfg(test)]
-mod v27_merge_strategy_tests;
-#[cfg(test)]
-mod v2_add_dependency_reason_tests;
-#[cfg(test)]
-mod v31_session_linking_tests;
-#[cfg(test)]
-mod v32_fix_task_fk_constraints_tests;
-#[cfg(test)]
-mod v33_agent_run_chain_ids_tests;
-#[cfg(test)]
-mod v34_chat_attachments_tests;
-#[cfg(test)]
-mod v35_step_substeps_tests;
-#[cfg(test)]
-mod v37_team_sessions_tests;
-#[cfg(test)]
-mod v38_ideation_team_mode_tests;
-#[cfg(test)]
-mod v39_conversation_parent_id_tests;
-#[cfg(test)]
-mod v3_add_activity_events_tests;
-#[cfg(test)]
-mod v40_dependency_source_tests;
-#[cfg(test)]
-mod v43_session_title_source_tests;
-#[cfg(test)]
-mod v44_remove_local_git_mode_tests;
-#[cfg(test)]
-mod v4_add_blocked_reason_tests;
-#[cfg(test)]
-mod v6_review_issues_tests;
-#[cfg(test)]
-mod v7_session_status_converted_to_accepted_tests;
-#[cfg(test)]
-mod v8_task_git_fields_tests;
-#[cfg(test)]
-mod v9_project_git_fields_tests;
-#[cfg(test)]
-mod v49_backfill_execution_plans_tests;
-#[cfg(test)]
-mod v51_repair_plan_branches_tests;
-#[cfg(test)]
-mod v56_api_keys_tests;
-#[cfg(test)]
-mod v58_metrics_index_tests;
-#[cfg(test)]
-mod v59_project_metrics_config_tests;
-#[cfg(test)]
-mod v60_metrics_working_days_tests;
-#[cfg(test)]
-mod v61_ideation_settings_verification_tests;
-#[cfg(test)]
-mod v62_api_key_admin_permissions_tests;
-#[cfg(test)]
-mod v63_auto_verify_generation_tests;
-#[cfg(test)]
-mod v65_unique_working_directory_tests;
-#[cfg(test)]
-mod v66_cross_project_import_tests;
-#[cfg(test)]
-mod v67_tasks_session_status_index_tests;
-#[cfg(test)]
-mod v68_session_purpose_tests;
-#[cfg(test)]
-mod v69_soft_delete_archived_at_tests;
-#[cfg(test)]
-mod v71_add_target_project_to_proposals_tests;
-#[cfg(test)]
-mod v72_cross_project_check_tests;
-#[cfg(test)]
-mod v73_proposal_migrated_from_tests;
-#[cfg(test)]
-mod v76_session_origin_tests;
-#[cfg(test)]
-mod v81_external_session_reliability_backfill_tests;
-#[cfg(test)]
 mod v20260325120000_app_state_execution_halt_mode_tests;
 #[cfg(test)]
 mod v20260325131500_execution_ideation_allocation_settings_tests;
@@ -237,16 +149,16 @@ mod v20260325131500_execution_ideation_allocation_settings_tests;
 mod v20260327233752_pending_initial_prompt_tests;
 #[cfg(test)]
 mod v20260328194000_ideation_followup_provenance_tests;
-#[cfg(test)]
-mod v20260329103000_review_note_followup_session_tests;
-#[cfg(test)]
-mod v20260329113000_ideation_blocker_fingerprint_tests;
 mod v20260328210000_proposal_affected_paths;
 #[cfg(test)]
 mod v20260328210000_proposal_affected_paths_tests;
 mod v20260329080000_acceptance_status;
 #[cfg(test)]
 mod v20260329080000_acceptance_status_tests;
+#[cfg(test)]
+mod v20260329103000_review_note_followup_session_tests;
+#[cfg(test)]
+mod v20260329113000_ideation_blocker_fingerprint_tests;
 mod v20260330000000_verification_confirmation_status;
 #[cfg(test)]
 mod v20260330000000_verification_confirmation_status_tests;
@@ -284,6 +196,9 @@ mod v20260410101500_chat_message_attribution_tests;
 mod v20260410113000_agent_run_usage;
 #[cfg(test)]
 mod v20260410113000_agent_run_usage_tests;
+mod v20260410124500_chat_message_usage;
+#[cfg(test)]
+mod v20260410124500_chat_message_usage_tests;
 mod v20260410143000_upstream_provider_metadata;
 #[cfg(test)]
 mod v20260410143000_upstream_provider_metadata_tests;
@@ -296,9 +211,6 @@ mod v20260411190000_delegated_sessions_tests;
 mod v20260413043153_drop_agent_lane_settings_fallback_harness;
 #[cfg(test)]
 mod v20260413043153_drop_agent_lane_settings_fallback_harness_tests;
-mod v20260410124500_chat_message_usage;
-#[cfg(test)]
-mod v20260410124500_chat_message_usage_tests;
 mod v20260414060000_verification_run_store;
 #[cfg(test)]
 mod v20260414060000_verification_run_store_tests;
@@ -369,6 +281,9 @@ mod v20260521150003_agent_workspace_source_pull_request_tests;
 mod v20260521222911_agent_plan_mode;
 #[cfg(test)]
 mod v20260521222911_agent_plan_mode_tests;
+mod v20260522090000_agent_workspace_state_history;
+#[cfg(test)]
+mod v20260522090000_agent_workspace_state_history_tests;
 mod v20260522093000_ideation_session_flow;
 #[cfg(test)]
 mod v20260522093000_ideation_session_flow_tests;
@@ -396,9 +311,145 @@ mod v20260611152000_question_metadata_tests;
 mod v20260611191722_agent_workspace_pr_automation_defaults;
 #[cfg(test)]
 mod v20260611191722_agent_workspace_pr_automation_defaults_tests;
+mod v20260612124826_provider_cli_management_policy;
+#[cfg(test)]
+mod v20260612124826_provider_cli_management_policy_tests;
+mod v20260616182441_external_issue_links;
+#[cfg(test)]
+mod v20260616182441_external_issue_links_tests;
+mod v20260616182951_linear_webhook_reconciliation;
+#[cfg(test)]
+mod v20260616182951_linear_webhook_reconciliation_tests;
+mod v20260617121800_agent_conversation_jira_issue_links;
+#[cfg(test)]
+mod v20260617121800_agent_conversation_jira_issue_links_tests;
+mod v20260617122100_linear_integration_settings;
+#[cfg(test)]
+mod v20260617122100_linear_integration_settings_tests;
+mod v20260617122430_agent_workspace_initial_auto_publish;
+#[cfg(test)]
+mod v20260617122430_agent_workspace_initial_auto_publish_tests;
+mod v20260618123000_agent_workspace_pr_review_monitoring;
+#[cfg(test)]
+mod v20260618123000_agent_workspace_pr_review_monitoring_tests;
+mod v20260618134600_review_pr_mode_checks;
+#[cfg(test)]
+mod v20260618134600_review_pr_mode_checks_tests;
+mod v20260618181405_agent_conversation_linear_issue_links;
+#[cfg(test)]
+mod v20260618181405_agent_conversation_linear_issue_links_tests;
+mod v20260619093000_agent_workspace_pr_review_artifacts;
+#[cfg(test)]
+mod v20260619093000_agent_workspace_pr_review_artifacts_tests;
+mod v20260619144000_durable_queued_messages;
+#[cfg(test)]
+mod v20260619144000_durable_queued_messages_tests;
+mod v20260620075610_provider_ticket_operations;
+#[cfg(test)]
+mod v20260620075610_provider_ticket_operations_tests;
+mod v20260621201947_ticket_canonical_branches;
+#[cfg(test)]
+mod v20260621201947_ticket_canonical_branches_tests;
+mod v20260622103000_agent_workspace_reviews;
+#[cfg(test)]
+mod v20260622103000_agent_workspace_reviews_tests;
+mod v20260623074101_clickup_integration_settings;
+#[cfg(test)]
+mod v20260623074101_clickup_integration_settings_tests;
+mod v20260625115000_custom_provider_binary;
+#[cfg(test)]
+mod v20260625115000_custom_provider_binary_tests;
+#[cfg(test)]
+mod v20_merge_validation_mode_tests;
+#[cfg(test)]
+mod v21_questions_permissions_tests;
+#[cfg(test)]
+mod v22_project_active_plan_tests;
+#[cfg(test)]
+mod v23_plan_selection_stats_tests;
+#[cfg(test)]
+mod v24_memory_framework_tests;
+#[cfg(test)]
+mod v26_running_agent_worktree_tests;
+#[cfg(test)]
+mod v27_merge_strategy_tests;
+#[cfg(test)]
+mod v2_add_dependency_reason_tests;
+#[cfg(test)]
+mod v31_session_linking_tests;
+#[cfg(test)]
+mod v32_fix_task_fk_constraints_tests;
+#[cfg(test)]
+mod v33_agent_run_chain_ids_tests;
+#[cfg(test)]
+mod v34_chat_attachments_tests;
+#[cfg(test)]
+mod v35_step_substeps_tests;
+#[cfg(test)]
+mod v37_team_sessions_tests;
+#[cfg(test)]
+mod v38_ideation_team_mode_tests;
+#[cfg(test)]
+mod v39_conversation_parent_id_tests;
+#[cfg(test)]
+mod v3_add_activity_events_tests;
+#[cfg(test)]
+mod v40_dependency_source_tests;
+#[cfg(test)]
+mod v43_session_title_source_tests;
+#[cfg(test)]
+mod v44_remove_local_git_mode_tests;
+#[cfg(test)]
+mod v49_backfill_execution_plans_tests;
+#[cfg(test)]
+mod v4_add_blocked_reason_tests;
+#[cfg(test)]
+mod v51_repair_plan_branches_tests;
+#[cfg(test)]
+mod v56_api_keys_tests;
+#[cfg(test)]
+mod v58_metrics_index_tests;
+#[cfg(test)]
+mod v59_project_metrics_config_tests;
+#[cfg(test)]
+mod v60_metrics_working_days_tests;
+#[cfg(test)]
+mod v61_ideation_settings_verification_tests;
+#[cfg(test)]
+mod v62_api_key_admin_permissions_tests;
+#[cfg(test)]
+mod v63_auto_verify_generation_tests;
+#[cfg(test)]
+mod v65_unique_working_directory_tests;
+#[cfg(test)]
+mod v66_cross_project_import_tests;
+#[cfg(test)]
+mod v67_tasks_session_status_index_tests;
+#[cfg(test)]
+mod v68_session_purpose_tests;
+#[cfg(test)]
+mod v69_soft_delete_archived_at_tests;
+#[cfg(test)]
+mod v6_review_issues_tests;
+#[cfg(test)]
+mod v71_add_target_project_to_proposals_tests;
+#[cfg(test)]
+mod v72_cross_project_check_tests;
+#[cfg(test)]
+mod v73_proposal_migrated_from_tests;
+#[cfg(test)]
+mod v76_session_origin_tests;
+#[cfg(test)]
+mod v7_session_status_converted_to_accepted_tests;
+#[cfg(test)]
+mod v81_external_session_reliability_backfill_tests;
+#[cfg(test)]
+mod v8_task_git_fields_tests;
+#[cfg(test)]
+mod v9_project_git_fields_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260611191722;
+pub const SCHEMA_VERSION: i64 = 20260625115000;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -1069,6 +1120,11 @@ const MIGRATIONS: &[Migration] = &[
         migrate: v20260521222911_agent_plan_mode::migrate,
     },
     Migration {
+        version: 20260522090000,
+        name: "agent_workspace_state_history",
+        migrate: v20260522090000_agent_workspace_state_history::migrate,
+    },
+    Migration {
         version: 20260522093000,
         name: "ideation_session_flow",
         migrate: v20260522093000_ideation_session_flow::migrate,
@@ -1112,6 +1168,86 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260611191722,
         name: "agent_workspace_pr_automation_defaults",
         migrate: v20260611191722_agent_workspace_pr_automation_defaults::migrate,
+    },
+    Migration {
+        version: 20260612124826,
+        name: "provider_cli_management_policy",
+        migrate: v20260612124826_provider_cli_management_policy::migrate,
+    },
+    Migration {
+        version: 20260616182441,
+        name: "external_issue_links",
+        migrate: v20260616182441_external_issue_links::migrate,
+    },
+    Migration {
+        version: 20260616182951,
+        name: "linear_webhook_reconciliation",
+        migrate: v20260616182951_linear_webhook_reconciliation::migrate,
+    },
+    Migration {
+        version: 20260617121800,
+        name: "agent_conversation_jira_issue_links",
+        migrate: v20260617121800_agent_conversation_jira_issue_links::migrate,
+    },
+    Migration {
+        version: 20260617122100,
+        name: "linear_integration_settings",
+        migrate: v20260617122100_linear_integration_settings::migrate,
+    },
+    Migration {
+        version: 20260617122430,
+        name: "agent_workspace_initial_auto_publish",
+        migrate: v20260617122430_agent_workspace_initial_auto_publish::migrate,
+    },
+    Migration {
+        version: 20260618123000,
+        name: "agent_workspace_pr_review_monitoring",
+        migrate: v20260618123000_agent_workspace_pr_review_monitoring::migrate,
+    },
+    Migration {
+        version: 20260618134600,
+        name: "review_pr_mode_checks",
+        migrate: v20260618134600_review_pr_mode_checks::migrate,
+    },
+    Migration {
+        version: 20260618181405,
+        name: "agent_conversation_linear_issue_links",
+        migrate: v20260618181405_agent_conversation_linear_issue_links::migrate,
+    },
+    Migration {
+        version: 20260619093000,
+        name: "agent_workspace_pr_review_artifacts",
+        migrate: v20260619093000_agent_workspace_pr_review_artifacts::migrate,
+    },
+    Migration {
+        version: 20260619144000,
+        name: "durable_queued_messages",
+        migrate: v20260619144000_durable_queued_messages::migrate,
+    },
+    Migration {
+        version: 20260620075610,
+        name: "provider_ticket_operations",
+        migrate: v20260620075610_provider_ticket_operations::migrate,
+    },
+    Migration {
+        version: 20260621201947,
+        name: "ticket_canonical_branches",
+        migrate: v20260621201947_ticket_canonical_branches::migrate,
+    },
+    Migration {
+        version: 20260622103000,
+        name: "agent_workspace_reviews",
+        migrate: v20260622103000_agent_workspace_reviews::migrate,
+    },
+    Migration {
+        version: 20260623074101,
+        name: "clickup_integration_settings",
+        migrate: v20260623074101_clickup_integration_settings::migrate,
+    },
+    Migration {
+        version: 20260625115000,
+        name: "custom_provider_binary",
+        migrate: v20260625115000_custom_provider_binary::migrate,
     },
 ];
 

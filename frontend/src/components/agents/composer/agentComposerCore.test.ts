@@ -44,14 +44,20 @@ describe("agentComposerCore", () => {
       rangeStart: 0,
       rangeEnd: 4,
     });
-    expect(detectAgentComposerTrigger("Before\n/cha", "Before\n/cha".length)).toEqual({
+    expect(
+      detectAgentComposerTrigger("Before\n/cha", "Before\n/cha".length),
+    ).toEqual({
       kind: "slash-command",
       query: "cha",
       rangeStart: "Before\n".length,
       rangeEnd: "Before\n/cha".length,
     });
-    expect(detectAgentComposerTrigger("Use /chat", "Use /chat".length)).toBeNull();
-    expect(detectAgentComposerTrigger("/model spark", "/model spark".length)).toBeNull();
+    expect(
+      detectAgentComposerTrigger("Use /chat", "Use /chat".length),
+    ).toBeNull();
+    expect(
+      detectAgentComposerTrigger("/model spark", "/model spark".length),
+    ).toBeNull();
   });
 
   it("detects scoped Atlassian reference triggers under @", () => {
@@ -61,6 +67,30 @@ describe("agentComposerCore", () => {
       kind: "integration",
       integrationKind: "jira",
       query: "RX-42",
+      rangeStart: "Attach ".length,
+      rangeEnd: text.length,
+    });
+  });
+
+  it("detects scoped Linear issue triggers under @", () => {
+    const text = "Attach @linear:LIN-123";
+
+    expect(detectAgentComposerTrigger(text, text.length)).toEqual({
+      kind: "integration",
+      integrationKind: "linear",
+      query: "LIN-123",
+      rangeStart: "Attach ".length,
+      rangeEnd: text.length,
+    });
+  });
+
+  it("detects scoped ClickUp task triggers under @", () => {
+    const text = "Attach @clickup:TASK-123";
+
+    expect(detectAgentComposerTrigger(text, text.length)).toEqual({
+      kind: "integration",
+      integrationKind: "clickup",
+      query: "TASK-123",
       rangeStart: "Attach ".length,
       rangeEnd: text.length,
     });
@@ -131,7 +161,9 @@ describe("agentComposerCore", () => {
     const trigger = detectAgentComposerTrigger(text, "Open @src".length);
 
     expect(trigger).not.toBeNull();
-    expect(replaceAgentComposerTrigger(text, trigger!, "@src/main.ts ")).toEqual({
+    expect(
+      replaceAgentComposerTrigger(text, trigger!, "@src/main.ts "),
+    ).toEqual({
       text: "Open @src/main.ts then continue",
       cursor: "Open @src/main.ts ".length,
     });
@@ -139,23 +171,26 @@ describe("agentComposerCore", () => {
 
   it("extracts unique skill tokens", () => {
     expect(
-      extractComposerSkillTokens("Use $review and $review plus $plan_2 $github:yeet"),
+      extractComposerSkillTokens(
+        "Use $review and $review plus $plan_2 $github:yeet",
+      ),
     ).toEqual(["review", "plan_2", "github:yeet"]);
   });
 
   it("extracts unique path tokens", () => {
-    expect(extractComposerPathTokens("Read @src/main.ts and @README.md.")).toEqual([
-      { path: "src/main.ts" },
-      { path: "README.md" },
-    ]);
+    expect(
+      extractComposerPathTokens("Read @src/main.ts and @README.md."),
+    ).toEqual([{ path: "src/main.ts" }, { path: "README.md" }]);
   });
 
   it("extracts integration tokens separately from path tokens", () => {
     const text =
-      "Fix @jira:rx-42 with docs @confluence:123456 and @src/main.ts using @plan:artifact-1";
+      "Fix @jira:rx-42 with @linear:lin-123 and @clickup:task-123 and docs @confluence:123456 and @src/main.ts using @plan:artifact-1";
 
     expect(extractComposerIntegrationTokens(text)).toEqual([
       { provider: "atlassian", kind: "jira", id: "RX-42", key: "RX-42" },
+      { provider: "linear", kind: "linear", id: "LIN-123", key: "LIN-123" },
+      { provider: "clickup", kind: "clickup", id: "TASK-123", key: "TASK-123" },
       { provider: "atlassian", kind: "confluence", id: "123456" },
     ]);
     expect(extractComposerPathTokens(text)).toEqual([{ path: "src/main.ts" }]);
@@ -240,12 +275,16 @@ describe("agentComposerCore", () => {
           provider: "external",
           kind: "jira",
           id: "RX-43",
-        } as Parameters<typeof normalizeComposerIntegrationReferences>[0][number],
+        } as Parameters<
+          typeof normalizeComposerIntegrationReferences
+        >[0][number],
         {
           provider: "atlassian",
           kind: "github",
           id: "RX-44",
-        } as Parameters<typeof normalizeComposerIntegrationReferences>[0][number],
+        } as Parameters<
+          typeof normalizeComposerIntegrationReferences
+        >[0][number],
         { provider: "atlassian", kind: "confluence", id: "bad\0id" },
       ]),
     ).toEqual([

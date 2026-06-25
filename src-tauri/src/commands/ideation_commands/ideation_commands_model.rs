@@ -440,6 +440,7 @@ mod tests {
             ("sonnet", ModelLevel::Sonnet),
             ("opus", ModelLevel::Opus),
             ("haiku", ModelLevel::Haiku),
+            ("fable", ModelLevel::Fable),
         ] {
             assert_eq!(ModelLevel::from_str(s).unwrap(), lvl);
             assert_eq!(lvl.to_string(), s);

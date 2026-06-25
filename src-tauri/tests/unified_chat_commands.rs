@@ -19,6 +19,7 @@ use ralphx_lib::commands::unified_chat_commands::{
     agent_workspace_post_repair_action_from_events, get_agent_running_states_for_service,
     mark_agent_workspace_publish_failure, parse_context_type,
     send_agent_workspace_publish_repair_message, switch_agent_conversation_mode_for_state,
+    switch_agent_conversation_mode_for_state_stopping_running_agent,
     AgentRunStatusResponse, AgentWorkspacePostRepairAction, AgentWorkspaceRepairRuntimeOverrides,
     QueuedMessageResponse, SendAgentMessageResponse, SwitchAgentConversationModeInput,
 };
@@ -229,6 +230,7 @@ async fn unlinked_ideation_conversation_can_switch_to_chat_and_updates_workspace
             base_ref_kind: None,
             base_ref: None,
             base_display_name: None,
+            base_source_pull_request: None,
         },
         &state,
     )
@@ -281,6 +283,7 @@ async fn active_linked_ideation_session_blocks_mode_switch() {
             base_ref_kind: None,
             base_ref: None,
             base_display_name: None,
+            base_source_pull_request: None,
         },
         &state,
     )
@@ -288,6 +291,112 @@ async fn active_linked_ideation_session_blocks_mode_switch() {
     .expect_err("active linked ideation should lock mode switch");
 
     assert!(error.contains("Ideation session is still active"));
+}
+
+#[tokio::test]
+async fn mode_switch_stopping_running_agent_stops_current_run_and_switches() {
+    let state = AppState::new_test();
+    let project_id = ProjectId::from_string("project-stop-before-mode-switch".to_string());
+    let conversation_id = ChatConversationId::from_string("35353535-3535-4535-8535-353535353535");
+    seed_mode_switch_workspace(
+        &state,
+        conversation_id,
+        project_id,
+        AgentConversationWorkspaceMode::Plan,
+    )
+    .await;
+
+    let running_key = RunningAgentKey::new(
+        ChatContextType::Project.to_string(),
+        conversation_id.as_str(),
+    );
+    state
+        .running_agent_registry
+        .register(
+            running_key.clone(),
+            0,
+            conversation_id.as_str().to_string(),
+            "run-plan-proposal".to_string(),
+            None,
+            None,
+        )
+        .await;
+
+    let service = state.build_chat_service_with_execution_state(Arc::new(ExecutionState::new()));
+    let response = switch_agent_conversation_mode_for_state_stopping_running_agent(
+        SwitchAgentConversationModeInput {
+            conversation_id: conversation_id.as_str(),
+            mode: "edit".to_string(),
+            base_ref_kind: None,
+            base_ref: None,
+            base_display_name: None,
+            base_source_pull_request: None,
+        },
+        &state,
+        &service,
+    )
+    .await
+    .expect("stop-and-switch mode change should succeed");
+
+    assert_eq!(response.conversation.agent_mode.as_deref(), Some("edit"));
+    assert_eq!(response.workspace.expect("workspace should remain").mode, "edit");
+    assert!(
+        !state.running_agent_registry.is_running(&running_key).await,
+        "running agent registry entry should be stopped before switching"
+    );
+}
+
+#[tokio::test]
+async fn mode_switch_stopping_running_agent_applies_to_other_valid_mode_switches() {
+    let state = AppState::new_test();
+    let project_id = ProjectId::from_string("project-stop-before-plan-switch".to_string());
+    let conversation_id = ChatConversationId::from_string("36363636-3636-4636-8636-363636363636");
+    seed_mode_switch_workspace(
+        &state,
+        conversation_id,
+        project_id,
+        AgentConversationWorkspaceMode::Edit,
+    )
+    .await;
+
+    let running_key = RunningAgentKey::new(
+        ChatContextType::Project.to_string(),
+        conversation_id.as_str(),
+    );
+    state
+        .running_agent_registry
+        .register(
+            running_key.clone(),
+            0,
+            conversation_id.as_str().to_string(),
+            "run-edit-work".to_string(),
+            None,
+            None,
+        )
+        .await;
+
+    let service = state.build_chat_service_with_execution_state(Arc::new(ExecutionState::new()));
+    let response = switch_agent_conversation_mode_for_state_stopping_running_agent(
+        SwitchAgentConversationModeInput {
+            conversation_id: conversation_id.as_str(),
+            mode: "plan".to_string(),
+            base_ref_kind: None,
+            base_ref: None,
+            base_display_name: None,
+            base_source_pull_request: None,
+        },
+        &state,
+        &service,
+    )
+    .await
+    .expect("stop-and-switch should apply to any valid mode switch");
+
+    assert_eq!(response.conversation.agent_mode.as_deref(), Some("plan"));
+    assert_eq!(response.workspace.expect("workspace should remain").mode, "plan");
+    assert!(
+        !state.running_agent_registry.is_running(&running_key).await,
+        "running agent registry entry should be stopped before switching"
+    );
 }
 
 #[tokio::test]
@@ -333,6 +442,7 @@ async fn abandoned_pipeline_link_can_switch_to_edit_and_detaches_links() {
             base_ref_kind: None,
             base_ref: None,
             base_display_name: None,
+            base_source_pull_request: None,
         },
         &state,
     )
@@ -406,6 +516,7 @@ async fn superseded_execution_plan_link_can_switch_to_edit_and_detaches_links() 
             base_ref_kind: None,
             base_ref: None,
             base_display_name: None,
+            base_source_pull_request: None,
         },
         &state,
     )
@@ -460,6 +571,7 @@ async fn active_pipeline_link_blocks_mode_switch() {
             base_ref_kind: None,
             base_ref: None,
             base_display_name: None,
+            base_source_pull_request: None,
         },
         &state,
     )
@@ -1338,8 +1450,9 @@ mod ipc_contract {
         get_agent_conversation_workspace_freshness, get_agent_message_tool_call_detail,
         publish_agent_conversation_workspace_for_app_state, start_agent_conversation,
         switch_agent_conversation_mode_for_state, CreateAgentConversationInput,
-        QueueAgentMessageInput, SendAgentMessageInput, StartAgentConversationInput,
-        SwitchAgentConversationModeInput, UpdateAgentConversationTitleInput,
+        AgentWorkspaceSourcePullRequestInput, QueueAgentMessageInput, SendAgentMessageInput,
+        StartAgentConversationInput, SwitchAgentConversationModeInput,
+        UpdateAgentConversationTitleInput,
     };
     use ralphx_lib::commands::ExecutionState;
     use ralphx_lib::domain::agents::{
@@ -2192,6 +2305,144 @@ mod ipc_contract {
     }
 
     #[tokio::test]
+    async fn ipc_contract_start_agent_conversation_pr_chat_mode_persists_workspace() {
+        let _fake_claude = FakeCliOnPath::new("claude");
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let repo_path = temp.path().join("repo");
+        let worktree_parent = temp.path().join("worktrees");
+        super::setup_publish_repo(&repo_path);
+        super::git(&repo_path, &["checkout", "-b", "feature/source-pr-chat"]);
+        std::fs::write(repo_path.join("README.md"), "source pr chat\n")
+            .expect("fixture update should be written");
+        super::git(&repo_path, &["add", "README.md"]);
+        super::git(&repo_path, &["commit", "-m", "source pr chat"]);
+        let source_sha = super::git(&repo_path, &["rev-parse", "HEAD"]);
+        super::git(&repo_path, &["checkout", "main"]);
+
+        let state = AppState::new_test();
+        let project_id = ProjectId::from_string("project-start-agent-pr-chat-ipc".to_string());
+        let mut project = Project::new(
+            "Start Agent PR Chat".to_string(),
+            repo_path.to_string_lossy().to_string(),
+        );
+        project.id = project_id.clone();
+        project.base_branch = Some("main".to_string());
+        project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+        state
+            .project_repo
+            .create(project)
+            .await
+            .expect("project should persist");
+
+        let execution_state = Arc::new(ExecutionState::new());
+        execution_state.pause();
+        let team_service = Arc::new(TeamService::new_without_events(Arc::new(
+            TeamStateTracker::new(),
+        )));
+        let app = mock_builder()
+            .manage(state)
+            .manage(Arc::clone(&execution_state))
+            .manage(team_service)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        let response = start_agent_conversation(
+            StartAgentConversationInput {
+                project_id: project_id.as_str().to_string(),
+                content: "Review this PR".to_string(),
+                conversation_id: None,
+                provider_harness: None,
+                model_override: None,
+                logical_effort: Some(LogicalEffort::Medium),
+                mode: Some("chat".to_string()),
+                base_ref_kind: Some("local_branch".to_string()),
+                base_ref: Some("feature/source-pr-chat".to_string()),
+                base_display_name: Some("PR #42: Source PR Chat".to_string()),
+                base_source_pull_request: Some(AgentWorkspaceSourcePullRequestInput {
+                    number: 42,
+                    url: Some("https://github.com/owner/repo/pull/42".to_string()),
+                    title: Some("Source PR Chat".to_string()),
+                    head_ref_name: "feature/source-pr-chat".to_string(),
+                    base_ref_name: Some("main".to_string()),
+                    head_ref_oid: Some(source_sha.clone()),
+                }),
+                composer_project_references: Vec::new(),
+                composer_integration_references: Vec::new(),
+                composer_artifact_references: Vec::new(),
+            },
+            app.state::<AppState>(),
+            app.state::<Arc<ExecutionState>>(),
+            app.state::<Arc<TeamService>>(),
+            app.handle().clone(),
+        )
+        .await
+        .expect("PR-backed chat-mode start should succeed");
+
+        assert_eq!(response.conversation.agent_mode.as_deref(), Some("chat"));
+        assert!(response.send_result.was_queued);
+        let workspace = response.workspace.expect("workspace should be returned");
+        assert_eq!(workspace.mode, "chat");
+        assert_eq!(workspace.base_ref_kind, "local_branch");
+        assert_eq!(workspace.base_ref, "feature/source-pr-chat");
+        assert_ne!(
+            workspace.worktree_path.as_str(),
+            repo_path.to_string_lossy().as_ref()
+        );
+        let source = workspace
+            .source_pull_request
+            .expect("source PR metadata should be returned");
+        assert_eq!(source.number, 42);
+        assert_eq!(source.head_ref_name, "feature/source-pr-chat");
+        assert_eq!(source.head_ref_oid.as_deref(), Some(source_sha.as_str()));
+
+        let conversation_id = ChatConversationId::from_string(response.conversation.id.clone());
+        let persisted_workspace = app
+            .state::<AppState>()
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should persist");
+        assert_eq!(
+            persisted_workspace.mode,
+            AgentConversationWorkspaceMode::Chat
+        );
+        assert_eq!(
+            persisted_workspace
+                .source_pull_request
+                .as_ref()
+                .map(|source| source.number),
+            Some(42)
+        );
+        assert!(persisted_workspace.publication_pr_number.is_none());
+
+        let switched = switch_agent_conversation_mode_for_state(
+            SwitchAgentConversationModeInput {
+                conversation_id: conversation_id.as_str(),
+                mode: "edit".to_string(),
+                base_ref_kind: None,
+                base_ref: None,
+                base_display_name: None,
+                base_source_pull_request: None,
+            },
+            app.state::<AppState>().inner(),
+        )
+        .await
+        .expect("PR-backed chat workspace should switch to edit");
+        let switched_workspace = switched
+            .workspace
+            .expect("workspace should be returned after switch");
+        assert_eq!(switched_workspace.mode, "edit");
+        assert_eq!(
+            switched_workspace
+                .source_pull_request
+                .as_ref()
+                .map(|source| source.number),
+            Some(42)
+        );
+    }
+
+    #[tokio::test]
     async fn ipc_contract_start_agent_conversation_edit_mode_persists_workspace() {
         let _fake_claude = FakeCliOnPath::new("claude");
         let temp = tempfile::tempdir().expect("tempdir should be created");
@@ -2386,6 +2637,7 @@ mod ipc_contract {
                 base_ref_kind: None,
                 base_ref: None,
                 base_display_name: None,
+                base_source_pull_request: None,
             },
             app.state::<AppState>().inner(),
         )
@@ -2536,7 +2788,25 @@ mod ipc_contract {
     #[test]
     fn agent_model_registry_ipc_contract_covers_provider_defaults() {
         let built_ins = built_in_agent_models();
-        assert_eq!(built_ins.len(), 8);
+        assert_eq!(built_ins.len(), 9);
+        let fable = built_ins
+            .iter()
+            .find(|model| {
+                model.provider == AgentHarnessKind::Claude && model.model_id == "fable"
+            })
+            .expect("Fable should be exposed as a built-in Claude model");
+        assert_eq!(fable.source, AgentModelSource::BuiltIn);
+        assert_eq!(fable.default_effort, LogicalEffort::High);
+        assert_eq!(
+            fable.supported_efforts,
+            vec![
+                LogicalEffort::Low,
+                LogicalEffort::Medium,
+                LogicalEffort::High,
+                LogicalEffort::XHigh,
+                LogicalEffort::Max
+            ]
+        );
         assert_eq!(
             default_model_for_provider(AgentHarnessKind::Claude),
             "sonnet"

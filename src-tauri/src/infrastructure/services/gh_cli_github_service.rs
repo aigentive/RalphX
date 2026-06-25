@@ -22,7 +22,7 @@ use crate::domain::services::github_service::{
     GithubServiceTrait, PrAnnotationSourceUnavailable, PrAutoMergeRequest, PrBranchMatch,
     PrDiffAnnotation, PrDiffAnnotations, PrHealth, PrHealthCheck, PrIssueCommentSummary,
     PrMergeStateStatus, PrMergeableState, PrReviewCommentFeedback, PrReviewFeedback,
-    PrSearchResult, PrStatus, PrSyncState,
+    PrReviewSubmissionEvent, PrSearchResult, PrStatus, PrSubmittedReview, PrSyncState,
 };
 use crate::error::AppError;
 use crate::infrastructure::agents::claude::git_runtime_config;
@@ -277,6 +277,19 @@ fn build_create_pr_args(
     args
 }
 
+fn build_create_issue_args(repository: &str, title: &str, body_file: &str) -> Vec<String> {
+    vec![
+        "issue".to_string(),
+        "create".to_string(),
+        "--repo".to_string(),
+        repository.to_string(),
+        "--title".to_string(),
+        title.to_string(),
+        "--body-file".to_string(),
+        body_file.to_string(),
+    ]
+}
+
 fn build_update_pr_args(pr_number: i64, title: &str, body_file: &str) -> Vec<String> {
     vec![
         "pr".to_string(),
@@ -335,6 +348,23 @@ fn build_pr_reviews_api_args(pr_number: i64) -> Vec<String> {
         format!("repos/{{owner}}/{{repo}}/pulls/{pr_number}/reviews"),
         "--paginate".to_string(),
         "--slurp".to_string(),
+    ]
+}
+
+fn build_submit_pr_review_api_args(
+    pr_number: i64,
+    event: PrReviewSubmissionEvent,
+    body: &str,
+) -> Vec<String> {
+    vec![
+        "api".to_string(),
+        format!("repos/{{owner}}/{{repo}}/pulls/{pr_number}/reviews"),
+        "-X".to_string(),
+        "POST".to_string(),
+        "-f".to_string(),
+        format!("event={event}"),
+        "-f".to_string(),
+        format!("body={body}"),
     ]
 }
 
@@ -510,6 +540,31 @@ pub(crate) fn scrub_token_urls(s: &str) -> String {
 
 #[async_trait]
 impl GithubServiceTrait for GhCliGithubService {
+    async fn create_issue(
+        &self,
+        working_dir: &Path,
+        repository: &str,
+        title: &str,
+        body_file: &Path,
+    ) -> AppResult<String> {
+        let body_file_str = body_file
+            .to_str()
+            .ok_or_else(|| {
+                AppError::Infrastructure("body_file path is not valid UTF-8".to_string())
+            })?
+            .to_string();
+
+        let stdout = self
+            .runner
+            .run_gh(
+                working_dir,
+                &build_create_issue_args(repository, title, &body_file_str),
+            )
+            .await?;
+
+        parse_issue_create_plain_output(&stdout.join("\n"))
+    }
+
     async fn create_draft_pr(
         &self,
         working_dir: &Path,
@@ -772,6 +827,23 @@ impl GithubServiceTrait for GhCliGithubService {
                 .then(left.id.cmp(&right.id))
         });
         Ok(payload)
+    }
+
+    async fn submit_pr_review(
+        &self,
+        working_dir: &Path,
+        pr_number: i64,
+        event: PrReviewSubmissionEvent,
+        body: &str,
+    ) -> AppResult<PrSubmittedReview> {
+        let stdout = self
+            .runner
+            .run_gh(
+                working_dir,
+                &build_submit_pr_review_api_args(pr_number, event, body),
+            )
+            .await?;
+        parse_submit_pr_review_output(&stdout.join("\n"))
     }
 
     async fn fetch_pr_health(&self, working_dir: &Path, pr_number: i64) -> AppResult<PrHealth> {
@@ -1044,6 +1116,19 @@ pub(crate) fn parse_pr_create_plain_output(stdout_str: &str) -> AppResult<(i64, 
         })?;
 
     Ok((pr_number, url))
+}
+
+pub(crate) fn parse_issue_create_plain_output(stdout_str: &str) -> AppResult<String> {
+    stdout_str
+        .split_whitespace()
+        .map(|token| token.trim_matches(|c: char| "()[]<>{},'\"".contains(c)))
+        .find(|token| token.starts_with("https://") && token.contains("/issues/"))
+        .map(str::to_string)
+        .ok_or_else(|| {
+            AppError::Infrastructure(format!(
+                "gh issue create: could not find issue URL in output: {stdout_str}"
+            ))
+        })
 }
 
 pub(crate) fn parse_pr_list_output(json_str: &str) -> AppResult<Option<(i64, String)>> {
@@ -1465,6 +1550,22 @@ pub(crate) fn parse_pr_review_decision_output(json_str: &str) -> AppResult<bool>
     })?;
 
     Ok(v["reviewDecision"].as_str() == Some("CHANGES_REQUESTED"))
+}
+
+pub(crate) fn parse_submit_pr_review_output(json_str: &str) -> AppResult<PrSubmittedReview> {
+    let value: Value = serde_json::from_str(json_str).map_err(|e| {
+        AppError::Infrastructure(format!(
+            "Failed to parse submitted PR review JSON: {e}\nRaw: {json_str}"
+        ))
+    })?;
+    let id = json_id_to_string(value.get("id")).ok_or_else(|| {
+        AppError::Infrastructure("submitted PR review response missing id".to_string())
+    })?;
+    let url = value
+        .get("html_url")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    Ok(PrSubmittedReview { id, url })
 }
 
 pub(crate) fn parse_pr_review_feedback_output(

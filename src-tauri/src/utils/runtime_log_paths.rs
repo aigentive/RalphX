@@ -1,4 +1,6 @@
 use std::path::PathBuf;
+#[cfg(test)]
+use std::sync::{Mutex, OnceLock};
 
 use sha2::{Digest, Sha256};
 
@@ -15,10 +17,15 @@ pub fn app_runtime_dir() -> PathBuf {
             .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")))
             .join(".artifacts")
     } else {
-        dirs::data_dir()
-            .unwrap_or_else(|| PathBuf::from("/tmp"))
-            .join("com.ralphx.app")
+        app_data_dir()
     }
+}
+
+/// RalphX-owned app data directory for durable runtime-managed state.
+pub fn app_data_dir() -> PathBuf {
+    dirs::data_dir()
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join("com.ralphx.app")
 }
 
 /// RalphX-owned log directory for backend/runtime logs.
@@ -29,6 +36,80 @@ pub fn app_log_dir() -> PathBuf {
 /// RalphX-owned directory for generated non-log artifacts.
 pub fn app_artifact_dir() -> PathBuf {
     app_runtime_dir().join("artifacts")
+}
+
+/// RalphX-owned root for managed provider CLI installs.
+pub fn managed_provider_cli_dir() -> PathBuf {
+    #[cfg(test)]
+    if let Some(path) = managed_provider_cli_dir_override()
+        .lock()
+        .expect("managed provider CLI dir override mutex")
+        .clone()
+    {
+        return path;
+    }
+
+    app_data_dir().join("managed-cli")
+}
+
+/// RalphX-owned visible Codex binary directory used by the standalone installer.
+pub fn managed_codex_bin_dir() -> PathBuf {
+    managed_provider_cli_dir().join("codex").join("bin")
+}
+
+/// RalphX-owned Codex state/package root used by the standalone installer.
+pub fn managed_codex_home_dir() -> PathBuf {
+    managed_provider_cli_dir().join("codex").join("home")
+}
+
+/// RalphX-owned HOME value for the Codex installer process.
+pub fn managed_codex_installer_home_dir() -> PathBuf {
+    managed_provider_cli_dir()
+        .join("codex")
+        .join("installer-home")
+}
+
+pub fn managed_codex_binary_path() -> PathBuf {
+    managed_codex_bin_dir().join(managed_codex_binary_name())
+}
+
+#[cfg(test)]
+fn managed_provider_cli_dir_override() -> &'static Mutex<Option<PathBuf>> {
+    static OVERRIDE: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
+    OVERRIDE.get_or_init(|| Mutex::new(None))
+}
+
+#[cfg(test)]
+pub(crate) struct ManagedProviderCliDirOverrideGuard {
+    previous: Option<PathBuf>,
+}
+
+#[cfg(test)]
+impl Drop for ManagedProviderCliDirOverrideGuard {
+    fn drop(&mut self) {
+        *managed_provider_cli_dir_override()
+            .lock()
+            .expect("managed provider CLI dir override mutex") = self.previous.take();
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn override_managed_provider_cli_dir_for_tests(
+    path: PathBuf,
+) -> ManagedProviderCliDirOverrideGuard {
+    let mut override_path = managed_provider_cli_dir_override()
+        .lock()
+        .expect("managed provider CLI dir override mutex");
+    let previous = override_path.replace(path);
+    ManagedProviderCliDirOverrideGuard { previous }
+}
+
+fn managed_codex_binary_name() -> &'static str {
+    if cfg!(windows) {
+        "codex.exe"
+    } else {
+        "codex"
+    }
 }
 
 /// RalphX-owned directory for MCP proxy JSONL trace files.

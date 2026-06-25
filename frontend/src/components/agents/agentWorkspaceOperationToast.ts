@@ -8,6 +8,7 @@ export type AgentWorkspaceOperationToastKind =
   | "update-from-base";
 
 export interface AgentWorkspaceOperationToast {
+  dismiss: () => void;
   dispose: () => void;
   error: (message: string, options?: AgentWorkspaceOperationToastResultOptions) => void;
   info: (message: string, options?: AgentWorkspaceOperationToastResultOptions) => void;
@@ -29,18 +30,37 @@ export interface AgentWorkspaceOperationToastResultOptions {
 }
 
 const OPERATION_TOAST_INTERVAL_MS = 1_000;
+const MAX_OPERATION_ERROR_DETAIL_CHARS = 240;
 export const AGENT_WORKSPACE_OPERATION_RESULT_DURATION_MS = 8_000;
 export const AGENT_WORKSPACE_OPERATION_ERROR_DURATION_MS = 12_000;
 type ActiveAgentWorkspaceOperationToastOptions =
   AgentWorkspaceOperationToastOptions & {
     startedAtMs: number;
   };
+type ActiveAgentWorkspaceOperationToastController = {
+  dismiss: () => void;
+  settle: () => void;
+};
+
+const activeOperationToastControllers = new Map<
+  string,
+  ActiveAgentWorkspaceOperationToastController
+>();
 
 export function agentWorkspaceOperationToastId(
   conversationId: string,
   kind: AgentWorkspaceOperationToastKind,
 ): string {
   return `agent-workspace-operation:${conversationId}:${kind}`;
+}
+
+export function markAgentWorkspaceOperationToastSettled(id: string): boolean {
+  const controller = activeOperationToastControllers.get(id);
+  if (!controller) {
+    return false;
+  }
+  controller.settle();
+  return true;
 }
 
 export function publishPipelineToastLabel(status: string | null): string {
@@ -79,6 +99,26 @@ export function agentWorkspaceOperationToastDescription(
     .filter((part): part is string => Boolean(part))
     .join(" • ");
   return description || undefined;
+}
+
+export function agentWorkspaceOperationErrorDetail(
+  error: unknown,
+  fallback: string,
+): string {
+  const raw =
+    error instanceof Error
+      ? error.message
+      : typeof error === "string"
+        ? error
+        : fallback;
+  const withoutRawOutput = raw.replace(/\s*Raw output:\s*[\s\S]*$/i, "");
+  const compact = (withoutRawOutput.trim() || fallback)
+    .replace(/\s+/g, " ")
+    .trim();
+  if (compact.length <= MAX_OPERATION_ERROR_DETAIL_CHARS) {
+    return compact;
+  }
+  return `${compact.slice(0, MAX_OPERATION_ERROR_DETAIL_CHARS - 3).trimEnd()}...`;
 }
 
 function progressDescription(options: ActiveAgentWorkspaceOperationToastOptions): string | undefined {
@@ -125,6 +165,7 @@ export function startAgentWorkspaceOperationToast(
     startedAtMs: options.startedAtMs ?? Date.now(),
   };
   let intervalId: ReturnType<typeof setInterval> | null = null;
+  let activeToastId: string | null = null;
   let dismissed = false;
   let settled = false;
 
@@ -135,10 +176,52 @@ export function startAgentWorkspaceOperationToast(
     }
   };
 
+  const unregisterActiveToast = (id: string | null) => {
+    if (id && activeOperationToastControllers.get(id) === controller) {
+      activeOperationToastControllers.delete(id);
+    }
+  };
+
+  const registerActiveToast = (id: string) => {
+    if (activeToastId && activeToastId !== id) {
+      unregisterActiveToast(activeToastId);
+      toast.dismiss(activeToastId);
+    }
+    activeToastId = id;
+    activeOperationToastControllers.set(id, controller);
+  };
+
+  const settle = () => {
+    if (settled) {
+      return;
+    }
+    settled = true;
+    clearTimer();
+    unregisterActiveToast(activeToastId);
+  };
+
+  const dismiss = () => {
+    if (settled || dismissed) {
+      return;
+    }
+    dismissed = true;
+    clearTimer();
+    unregisterActiveToast(activeToastId);
+    if (activeToastId) {
+      toast.dismiss(activeToastId);
+    }
+  };
+
+  const controller: ActiveAgentWorkspaceOperationToastController = {
+    dismiss,
+    settle,
+  };
+
   const render = () => {
     if (settled || dismissed) {
       return;
     }
+    registerActiveToast(currentOptions.id);
     const description = progressDescription(currentOptions);
     toast.loading(currentOptions.title, {
       ...(description ? { description } : {}),
@@ -152,6 +235,7 @@ export function startAgentWorkspaceOperationToast(
         }
         dismissed = true;
         clearTimer();
+        unregisterActiveToast(activeToastId);
       },
     });
   };
@@ -160,12 +244,13 @@ export function startAgentWorkspaceOperationToast(
   intervalId = setInterval(render, OPERATION_TOAST_INTERVAL_MS);
 
   return {
+    dismiss,
     dispose: () => {
       clearTimer();
+      unregisterActiveToast(activeToastId);
     },
     error: (message: string, options?: AgentWorkspaceOperationToastResultOptions) => {
-      settled = true;
-      clearTimer();
+      settle();
       toast.error(message, {
         ...resultToastOptions(
           currentOptions,
@@ -177,8 +262,7 @@ export function startAgentWorkspaceOperationToast(
       });
     },
     info: (message: string, options?: AgentWorkspaceOperationToastResultOptions) => {
-      settled = true;
-      clearTimer();
+      settle();
       toast.info(message, {
         ...resultToastOptions(
           currentOptions,
@@ -189,8 +273,7 @@ export function startAgentWorkspaceOperationToast(
       });
     },
     success: (message: string, options?: AgentWorkspaceOperationToastResultOptions) => {
-      settled = true;
-      clearTimer();
+      settle();
       toast.success(
         message,
         resultToastOptions(
@@ -201,7 +284,7 @@ export function startAgentWorkspaceOperationToast(
       );
     },
     update: (nextOptions: Partial<AgentWorkspaceOperationToastOptions>) => {
-      if (settled) {
+      if (settled || dismissed) {
         return;
       }
       currentOptions = {

@@ -96,6 +96,12 @@ const { runningStatesHook, publicationPollingHook } = vi.hoisted(() => ({
   runningStatesHook: vi.fn(),
   publicationPollingHook: vi.fn(),
 }));
+const { prTemplateDialogCalls } = vi.hoisted(() => ({
+  prTemplateDialogCalls: [] as Array<{
+    open: boolean;
+    projectId: string | null;
+  }>,
+}));
 
 vi.mock("react-virtuoso", async () => {
   const React = await vi.importActual<typeof import("react")>("react");
@@ -288,6 +294,28 @@ vi.mock("./useAgentSidebarRunningStates", () => ({
 vi.mock("./useAgentSidebarPublicationPolling", () => ({
   useAgentSidebarPublicationPolling: publicationPollingHook,
 }));
+
+vi.mock("./PrTemplateEditorDialog", () => {
+  return {
+    PrTemplateEditorDialog: ({
+      open,
+      project,
+    }: {
+      open: boolean;
+      project: Project | null;
+    }) => {
+      prTemplateDialogCalls.push({
+        open,
+        projectId: project?.id ?? null,
+      });
+      return open ? (
+        <div data-testid="pr-template-editor-dialog">
+          Edit PR Template for {project?.name}
+        </div>
+      ) : null;
+    },
+  };
+});
 
 vi.mock("./useArchivedConversationCounts", () => ({
   useArchivedConversationCounts: (projectIds: string[]) => {
@@ -636,6 +664,7 @@ function renderSidebar(
         onCreateAgent={vi.fn()}
         onCreateProject={vi.fn()}
         onArchiveProject={vi.fn()}
+        onAutoRenameConversation={vi.fn()}
         onRenameConversation={vi.fn()}
         onArchiveConversation={vi.fn()}
         onRestoreConversation={vi.fn()}
@@ -700,6 +729,7 @@ describe("AgentsSidebar", () => {
     workspacesByProject.clear();
     workspaceCalls.length = 0;
     publicationGroupCalls.length = 0;
+    prTemplateDialogCalls.length = 0;
     latestProjectOrderData.current = null;
     virtuosoMockState.dimensionsByTestId.clear();
     virtuosoMockState.endReachedByTestId.clear();
@@ -1160,6 +1190,111 @@ describe("AgentsSidebar", () => {
     expect(fetchNextPage).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps project pagination available after a same-size group refresh", async () => {
+    const user = userEvent.setup();
+    const rows = Array.from({ length: 8 }, (_, index) =>
+      conversation({
+        id: `conversation-refresh-${index + 1}`,
+        title: `Refresh row ${index + 1}`,
+      })
+    );
+    const firstFetchNextPage = vi.fn().mockResolvedValue(undefined);
+    const refreshedFetchNextPage = vi.fn().mockResolvedValue(undefined);
+
+    function RefreshingSidebar() {
+      const [refreshVersion, setRefreshVersion] = useState(0);
+      conversationsByProject.set("project-1", {
+        data: rows,
+        total: 24,
+        isLoading: false,
+        hasNextPage: true,
+        isFetchingNextPage: false,
+        fetchNextPage:
+          refreshVersion === 0 ? firstFetchNextPage : refreshedFetchNextPage,
+      });
+
+      return (
+        <TooltipProvider delayDuration={0}>
+          <button
+            type="button"
+            onClick={() => setRefreshVersion((version) => version + 1)}
+          >
+            Refresh group
+          </button>
+          <AgentsSidebar
+            projects={[project()]}
+            focusedProjectId="project-1"
+            selectedConversationId={null}
+            onFocusProject={vi.fn()}
+            onSelectConversation={vi.fn()}
+            onCreateAgent={vi.fn()}
+            onCreateProject={vi.fn()}
+            onArchiveProject={vi.fn()}
+            onAutoRenameConversation={vi.fn()}
+            onRenameConversation={vi.fn()}
+            onArchiveConversation={vi.fn()}
+            onRestoreConversation={vi.fn()}
+            onForkConversation={vi.fn()}
+            showArchived={false}
+            onShowArchivedChange={vi.fn()}
+          />
+        </TooltipProvider>
+      );
+    }
+
+    render(<RefreshingSidebar />);
+
+    virtuosoMockState.endReachedByTestId.get("agents-sidebar-session-list-project-1")?.();
+    expect(firstFetchNextPage).toHaveBeenCalledTimes(1);
+    await waitForAnimationFrame();
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+
+    await user.click(screen.getByRole("button", { name: "Refresh group" }));
+    virtuosoMockState.endReachedByTestId.get("agents-sidebar-session-list-project-1")?.();
+
+    expect(refreshedFetchNextPage).toHaveBeenCalledTimes(1);
+  });
+
+  it("auto-fetches the next project page when the user scrolls the virtual list to the bottom", async () => {
+    const fetchNextPage = vi.fn().mockResolvedValue(undefined);
+    const paginationProject = project({
+      id: "project-pagination",
+      name: "pagination",
+    });
+    virtuosoMockState.dimensionsByTestId.set(
+      "agents-sidebar-session-list-project-pagination",
+      {
+        clientHeight: 368,
+        scrollHeight: 736,
+      }
+    );
+    conversationsByProject.set("project-pagination", {
+      data: Array.from({ length: 8 }, (_, index) =>
+        conversation({
+          id: `conversation-${index + 1}`,
+          title: `Agent ${index + 1}`,
+          projectId: "project-pagination",
+          contextId: "project-pagination",
+        })
+      ),
+      total: 212,
+      isLoading: false,
+      hasNextPage: true,
+      isFetchingNextPage: false,
+      fetchNextPage,
+    });
+
+    renderSidebar([paginationProject], { focusedProjectId: "project-pagination" });
+
+    const list = screen.getByTestId(
+      "agents-sidebar-session-list-project-pagination"
+    );
+    list.scrollTop = 368;
+    fireEvent.scroll(list);
+
+    await waitFor(() => expect(fetchNextPage).toHaveBeenCalledTimes(1));
+  });
+
   it("auto-fills an exact eight-row project page when more pages exist but no scrollbar is present", async () => {
     const fetchNextPage = vi.fn().mockResolvedValue(undefined);
     virtuosoMockState.dimensionsByTestId.set("agents-sidebar-session-list-project-1", {
@@ -1304,6 +1439,7 @@ describe("AgentsSidebar", () => {
             onCreateAgent={vi.fn()}
             onCreateProject={vi.fn()}
             onArchiveProject={vi.fn()}
+            onAutoRenameConversation={vi.fn()}
             onRenameConversation={vi.fn()}
             onArchiveConversation={vi.fn()}
             onRestoreConversation={vi.fn()}
@@ -1401,6 +1537,7 @@ describe("AgentsSidebar", () => {
             onCreateAgent={vi.fn()}
             onCreateProject={vi.fn()}
             onArchiveProject={vi.fn()}
+            onAutoRenameConversation={vi.fn()}
             onRenameConversation={vi.fn()}
             onArchiveConversation={vi.fn()}
             onRestoreConversation={vi.fn()}
@@ -1486,6 +1623,7 @@ describe("AgentsSidebar", () => {
             onCreateAgent={vi.fn()}
             onCreateProject={vi.fn()}
             onArchiveProject={vi.fn()}
+            onAutoRenameConversation={vi.fn()}
             onRenameConversation={vi.fn()}
             onArchiveConversation={vi.fn()}
             onRestoreConversation={vi.fn()}
@@ -2170,6 +2308,40 @@ describe("AgentsSidebar", () => {
     expect(onArchiveProject).toHaveBeenCalledWith("project-1");
   });
 
+  it("opens the PR template editor from project actions before archive", () => {
+    conversationsByProject.set("project-1", {
+      data: [conversation()],
+      total: 1,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+
+    renderSidebar([project()]);
+
+    const actions = screen.getByTestId("agents-project-actions-project-1");
+    const trigger = within(actions).getByRole("button", { name: "Project actions" });
+    fireEvent.pointerDown(trigger);
+
+    const editItem = screen.getByText("Edit PR Template");
+    const archiveItem = screen.getByText("Archive project");
+    expect(
+      editItem.compareDocumentPosition(archiveItem) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
+
+    fireEvent.click(editItem);
+
+    expect(screen.getByTestId("pr-template-editor-dialog")).toHaveTextContent(
+      "Edit PR Template for ralphx"
+    );
+    expect(prTemplateDialogCalls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ open: true, projectId: "project-1" }),
+      ])
+    );
+  });
+
   it("does not show a tooltip for project actions", async () => {
     const user = userEvent.setup();
     conversationsByProject.set("project-1", {
@@ -2217,6 +2389,39 @@ describe("AgentsSidebar", () => {
       expect(onRenameConversation).toHaveBeenCalledWith("conversation-rename", "Review follow-up")
     );
     expect(screen.queryByText("Rename session")).not.toBeInTheDocument();
+  });
+
+  it("starts auto rename from the project session rename dialog", async () => {
+    const user = userEvent.setup();
+    const onAutoRenameConversation = vi.fn().mockResolvedValue(undefined);
+    const onRenameConversation = vi.fn().mockResolvedValue(undefined);
+    const activeConversation = conversation({
+      id: "conversation-auto-rename",
+      title: "Discuss stale fallback",
+    });
+    conversationsByProject.set("project-1", {
+      data: [activeConversation],
+      total: 1,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+
+    renderSidebar([project()], {
+      onAutoRenameConversation,
+      onRenameConversation,
+    });
+
+    await user.click(screen.getByRole("button", { name: "Session actions" }));
+    await user.click(screen.getByText("Rename session"));
+    await user.click(screen.getByRole("button", { name: "Auto rename" }));
+
+    await waitFor(() =>
+      expect(onAutoRenameConversation).toHaveBeenCalledWith(activeConversation)
+    );
+    expect(onRenameConversation).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.queryByLabelText("Session title")).toBeNull());
   });
 
   it("forks a session from row actions", async () => {
@@ -3021,6 +3226,43 @@ describe("AgentsSidebar", () => {
     expect(onArchiveConversation).toHaveBeenCalledWith(active);
   });
 
+  it("starts auto rename from the publication session rename dialog", async () => {
+    const user = userEvent.setup();
+    const onAutoRenameConversation = vi.fn().mockResolvedValue(undefined);
+    const active = conversation({
+      id: "conversation-publication-auto-rename",
+      title: "Discuss stale publication fallback",
+    });
+    useAgentSessionStore.setState({
+      sidebarGroupBy: "publication",
+      sidebarPublicationStateFilters: ["active"],
+    });
+    conversationsByProject.set("project-1", {
+      data: [active],
+      total: 1,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+
+    renderSidebar([project()], {
+      onAutoRenameConversation,
+    });
+
+    const row = screen.getByTestId(
+      "agents-session-conversation-publication-auto-rename"
+    );
+    await user.click(within(row).getByRole("button", { name: "Session actions" }));
+    await user.click(screen.getByText("Rename session"));
+    await user.click(screen.getByRole("button", { name: "Auto rename" }));
+
+    await waitFor(() =>
+      expect(onAutoRenameConversation).toHaveBeenCalledWith(active)
+    );
+    await waitFor(() => expect(screen.queryByLabelText("Session title")).toBeNull());
+  });
+
   it("opens the selected conversation destination group when publication state changes", async () => {
     const selected = conversation({
       id: "conversation-selected-publish",
@@ -3077,6 +3319,7 @@ describe("AgentsSidebar", () => {
           onCreateAgent={vi.fn()}
           onCreateProject={vi.fn()}
           onArchiveProject={vi.fn()}
+          onAutoRenameConversation={vi.fn()}
           onRenameConversation={vi.fn()}
           onArchiveConversation={vi.fn()}
           onRestoreConversation={vi.fn()}

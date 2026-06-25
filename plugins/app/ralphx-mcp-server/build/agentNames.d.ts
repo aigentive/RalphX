@@ -17,6 +17,7 @@ export declare const AGENT_WORKSPACE_PR_FIXER = "ralphx-agent-workspace-pr-fixer
 export declare const CODER = "ralphx-execution-coder";
 export declare const SESSION_NAMER = "ralphx-utility-session-namer";
 export declare const PR_DESCRIBER = "ralphx-utility-pr-describer";
+export declare const WORKSPACE_REVIEWER = "ralphx-workspace-reviewer";
 export declare const PLAN_COMPLEXITY_ASSESSOR = "ralphx-utility-plan-complexity";
 export declare const MERGER = "ralphx-execution-merger";
 export declare const PROJECT_ANALYZER = "ralphx-project-analyzer";

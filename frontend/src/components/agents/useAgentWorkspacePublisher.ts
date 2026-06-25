@@ -10,20 +10,12 @@ import type { AgentConversation } from "./agentConversations";
 import {
   AGENT_WORKSPACE_OPERATION_ERROR_DURATION_MS,
   AGENT_WORKSPACE_OPERATION_RESULT_DURATION_MS,
+  agentWorkspaceOperationErrorDetail,
   agentWorkspaceOperationToastDescription,
   agentWorkspaceOperationToastId,
+  markAgentWorkspaceOperationToastSettled,
 } from "./agentWorkspaceOperationToast";
 import { invalidateWorkspaceQueries } from "./agentWorkspaceQueries";
-
-function getErrorMessage(error: unknown, fallback: string): string {
-  if (error instanceof Error) {
-    return error.message;
-  }
-  if (typeof error === "string" && error.trim()) {
-    return error;
-  }
-  return fallback;
-}
 
 interface UseAgentWorkspacePublisherArgs {
   activeWorkspace: AgentConversationWorkspace | null;
@@ -60,6 +52,7 @@ export function useAgentWorkspacePublisher({
           ["agents", "conversation-workspace", conversationId],
           result.workspace
         );
+        markAgentWorkspaceOperationToastSettled(publishToastId);
         toast.success(prLabel ? `Published ${prLabel}` : "Published branch", {
           ...(conversationTitle ? { description: conversationTitle } : {}),
           duration: AGENT_WORKSPACE_OPERATION_RESULT_DURATION_MS,
@@ -72,7 +65,10 @@ export function useAgentWorkspacePublisher({
             : Promise.resolve(),
         ]).catch(() => undefined);
       } catch (err) {
-        const errorMessage = getErrorMessage(err, "Failed to publish branch");
+        const errorMessage = agentWorkspaceOperationErrorDetail(
+          err,
+          "Failed to publish branch",
+        );
         let refreshedWorkspace: AgentConversationWorkspace | null = null;
         try {
           refreshedWorkspace = await chatApi.getAgentConversationWorkspace(conversationId);
@@ -94,6 +90,7 @@ export function useAgentWorkspacePublisher({
             conversationTitle,
             errorMessage,
           );
+          markAgentWorkspaceOperationToastSettled(publishToastId);
           toast.error("Publish failed. Sent the error to the agent to fix.", {
             closeButton: true,
             ...(description ? { description } : {}),
@@ -110,6 +107,7 @@ export function useAgentWorkspacePublisher({
             conversationTitle,
             errorMessage,
           );
+          markAgentWorkspaceOperationToastSettled(publishToastId);
           toast.error("Failed to publish branch", {
             closeButton: true,
             ...(description ? { description } : {}),

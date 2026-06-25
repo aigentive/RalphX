@@ -36,7 +36,7 @@ use crate::domain::repositories::{
     ReviewRepository, TaskDependencyRepository, TaskProposalRepository, TaskRepository,
     TaskStepRepository,
 };
-use crate::domain::services::{MessageQueue, RunningAgentRegistry};
+use crate::domain::services::{MessageQueue, QueueKey, QueuedMessage, RunningAgentRegistry};
 use crate::domain::state_machine::services::TaskScheduler;
 use crate::error::AppError;
 use crate::infrastructure::agents::claude::{ContentBlockItem, ToolCall};
@@ -65,10 +65,15 @@ fn queue_verification_auto_continue(
     message_queue: &Arc<MessageQueue>,
     child_id: &IdeationSessionId,
     continuation_message: String,
-) {
-    let mut queued = crate::domain::services::QueuedMessage::new(continuation_message);
+) -> QueuedMessage {
+    let mut queued = QueuedMessage::new(continuation_message);
     queued.metadata_override = Some(VERIFICATION_AUTO_CONTINUE_METADATA.to_string());
-    message_queue.queue_front_existing(ChatContextType::Ideation, child_id.as_str(), queued);
+    message_queue.queue_front_existing(
+        ChatContextType::Ideation,
+        child_id.as_str(),
+        queued.clone(),
+    );
+    queued
 }
 
 async fn handle_verification_child_completion<R: Runtime>(
@@ -93,12 +98,17 @@ async fn handle_verification_child_completion<R: Runtime>(
 
     match reconcile_result {
         Some(ReconcileVerificationChildCompletion::Terminal(result)) => {
+            let queued_message_repo = app_handle.as_ref().map(|handle| {
+                let app_state = handle.state::<AppState>();
+                Arc::clone(&app_state.queued_message_repo)
+            });
             verification_handoff::maybe_inject_verification_result_message(
                 parent_id,
                 &result,
                 conversation_repo,
                 chat_message_repo,
                 message_queue,
+                queued_message_repo.as_ref(),
             )
             .await;
 
@@ -111,11 +121,27 @@ async fn handle_verification_child_completion<R: Runtime>(
             }
         }
         Some(ReconcileVerificationChildCompletion::AutoContinue(request)) => {
-            queue_verification_auto_continue(
+            let queued = queue_verification_auto_continue(
                 message_queue,
                 child_id,
                 request.continuation_message,
             );
+            if let Some(handle) = app_handle.as_ref() {
+                let app_state = handle.state::<AppState>();
+                let key = QueueKey::new(ChatContextType::Ideation, child_id.as_str());
+                if let Err(error) = app_state
+                    .queued_message_repo
+                    .enqueue_front(&key, &queued)
+                    .await
+                {
+                    tracing::warn!(
+                        context_id = child_id.as_str(),
+                        queued_message_id = queued.id.as_str(),
+                        error = %error,
+                        "Failed to persist verification auto-continue queued message"
+                    );
+                }
+            }
             tracing::info!(
                 context_id = child_id.as_str(),
                 current_round = request.snapshot.current_round,
@@ -436,6 +462,14 @@ fn build_recovery_retry_background_context<R: Runtime>(
             ideation_effort_settings_repo: ideation_effort_settings_repo.clone(),
             ideation_model_settings_repo: ideation_model_settings_repo.clone(),
             agent_conversation_workspace_repo: None,
+            agent_conversation_jira_issue_repo: app_handle
+                .as_ref()
+                .and_then(|handle| handle.try_state::<crate::application::AppState>())
+                .map(|app_state| Arc::clone(&app_state.agent_conversation_jira_issue_repo)),
+            agent_conversation_linear_issue_repo: app_handle
+                .as_ref()
+                .and_then(|handle| handle.try_state::<crate::application::AppState>())
+                .map(|app_state| Arc::clone(&app_state.agent_conversation_linear_issue_repo)),
             task_proposal_repo: task_proposal_repo.clone(),
             activity_event_repo: Arc::clone(activity_event_repo),
             memory_event_repo: Arc::clone(memory_event_repo),
@@ -451,6 +485,7 @@ fn build_recovery_retry_background_context<R: Runtime>(
         run_chain_id,
         is_retry_attempt: true,
         user_message_content: user_message_content.map(str::to_string),
+        turn_metadata: None,
         conversation: Some(retry_conv),
         agent_name: agent_name.map(str::to_string),
         team_mode,
@@ -629,7 +664,10 @@ fn terminal_tool_result(reason: &str) -> serde_json::Value {
     })
 }
 
-fn seal_unresolved_tool_calls_json(tool_calls_json: Option<String>, reason: &str) -> Option<String> {
+fn seal_unresolved_tool_calls_json(
+    tool_calls_json: Option<String>,
+    reason: &str,
+) -> Option<String> {
     let raw = tool_calls_json?;
     let mut tool_calls: Vec<ToolCall> = match serde_json::from_str(&raw) {
         Ok(parsed) => parsed,
@@ -794,13 +832,8 @@ pub(super) async fn handle_stream_success<R: Runtime>(
                             task_id = task_id.as_str(),
                             "Shutdown detected — skipping task execution transition; task stays in Executing for auto-recovery"
                         );
-                        persist_shutdown_interrupted_metadata(
-                            task_repo,
-                            &task,
-                            "execution",
-                            None,
-                        )
-                        .await;
+                        persist_shutdown_interrupted_metadata(task_repo, &task, "execution", None)
+                            .await;
                         return;
                     }
 
@@ -2020,7 +2053,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
 
         if should_requeue_after_provider_pause(context_type) {
             if let Some(msg) = user_message_content {
-                let _ = message_queue.queue_with_overrides(
+                let queued = message_queue.queue_with_overrides(
                     context_type,
                     context_id.to_string(),
                     msg.to_string(),
@@ -2028,6 +2061,23 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                     None,
                     Some(effective_harness),
                 );
+                if let Some(handle) = app_handle.as_ref() {
+                    let app_state = handle.state::<AppState>();
+                    let key = QueueKey::new(context_type, context_id);
+                    if let Err(error) = app_state
+                        .queued_message_repo
+                        .enqueue_back(&key, &queued)
+                        .await
+                    {
+                        tracing::warn!(
+                            %context_type,
+                            context_id,
+                            queued_message_id = queued.id.as_str(),
+                            error = %error,
+                            "Failed to persist provider-pause queued message"
+                        );
+                    }
+                }
             }
         }
     }
@@ -2116,14 +2166,25 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                 serde_json::json!(chrono::Utc::now().to_rfc3339()),
                             );
 
-                            // Pre-compute failure metadata for timeouts so on_enter(Failed)
-                            // skip guard preserves is_timeout=true via the failure_error key
-                            if matches!(stream_error, Some(StreamError::Timeout { .. })) {
+                            // Pre-compute failure metadata for task execution failures so
+                            // on_enter(Failed) does not replace the worker error with the
+                            // status-only transition's default empty FailedData.
+                            if target_status == InternalStatus::Failed
+                                && stream_error
+                                    .map(|se| !se.is_provider_error())
+                                    .unwrap_or(true)
+                            {
                                 obj.insert(
                                     "failure_error".to_string(),
                                     serde_json::json!(redacted_error),
                                 );
-                                obj.insert("is_timeout".to_string(), serde_json::json!(true));
+                                obj.insert(
+                                    "is_timeout".to_string(),
+                                    serde_json::json!(matches!(
+                                        stream_error,
+                                        Some(StreamError::Timeout { .. })
+                                    )),
+                                );
                             }
 
                             // Classify failure and write ExecutionRecoveryMetadata alongside
@@ -2584,8 +2645,13 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                             task_id = task_id.as_str(),
                             "Shutdown detected — skipping review error escalation; task stays in Reviewing for auto-recovery"
                         );
-                        persist_shutdown_interrupted_metadata(task_repo, &task, "review", Some(error))
-                            .await;
+                        persist_shutdown_interrupted_metadata(
+                            task_repo,
+                            &task,
+                            "review",
+                            Some(error),
+                        )
+                        .await;
                         return false;
                     }
 
@@ -2868,39 +2934,40 @@ async fn fetch_parent_verification_state(
         }
     };
 
-    let (terminal_status, in_progress, convergence_reason, current_gaps) = match ideation_session_repo
-        .get_verification_run_snapshot(
-            &parent_session_id,
-            parent_session.verification_generation,
-        )
-        .await
-    {
-        Ok(Some(snapshot)) => (
-            snapshot.status,
-            snapshot.in_progress,
-            snapshot.convergence_reason.clone(),
-            snapshot.current_gaps.clone(),
-        ),
-        Ok(None) => (
-            parent_session.verification_status,
-            parent_session.verification_in_progress,
-            parent_session.verification_convergence_reason.clone(),
-            vec![],
-        ),
-        Err(e) => {
-            tracing::warn!(
-                parent_id = %parent_session_id.as_str(),
-                error = %e,
-                "Gate B: failed to fetch native verification snapshot"
-            );
-            (
+    let (terminal_status, in_progress, convergence_reason, current_gaps) =
+        match ideation_session_repo
+            .get_verification_run_snapshot(
+                &parent_session_id,
+                parent_session.verification_generation,
+            )
+            .await
+        {
+            Ok(Some(snapshot)) => (
+                snapshot.status,
+                snapshot.in_progress,
+                snapshot.convergence_reason.clone(),
+                snapshot.current_gaps.clone(),
+            ),
+            Ok(None) => (
                 parent_session.verification_status,
                 parent_session.verification_in_progress,
                 parent_session.verification_convergence_reason.clone(),
                 vec![],
-            )
-        }
-    };
+            ),
+            Err(e) => {
+                tracing::warn!(
+                    parent_id = %parent_session_id.as_str(),
+                    error = %e,
+                    "Gate B: failed to fetch native verification snapshot"
+                );
+                (
+                    parent_session.verification_status,
+                    parent_session.verification_in_progress,
+                    parent_session.verification_convergence_reason.clone(),
+                    vec![],
+                )
+            }
+        };
 
     Some(ParentVerificationState {
         parent_id: parent_session_id,

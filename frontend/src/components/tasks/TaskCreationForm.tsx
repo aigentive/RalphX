@@ -25,6 +25,10 @@ export interface TaskCreationFormProps {
   projectId: string;
   /** Pre-fill the title field */
   defaultTitle?: string;
+  /** Optional ideation session ID for plan-scoped task creation */
+  ideationSessionId?: string;
+  /** Optional execution plan ID for implementation-flow task creation */
+  executionPlanId?: string;
   /** Callback when task is created successfully */
   onSuccess?: () => void;
   /** Callback when form is cancelled */
@@ -38,6 +42,8 @@ export interface TaskCreationFormProps {
 export function TaskCreationForm({
   projectId,
   defaultTitle = "",
+  ideationSessionId,
+  executionPlanId,
   onSuccess,
   onCancel,
 }: TaskCreationFormProps) {
@@ -106,6 +112,8 @@ export function TaskCreationForm({
         priority,
         ...(description.trim() && { description: description.trim() }),
         ...(steps.length > 0 && { steps }),
+        ...(executionPlanId ? { executionPlanId } : {}),
+        ...(!executionPlanId && ideationSessionId ? { ideationSessionId } : {}),
       };
 
       // Validate with Zod schema
@@ -131,7 +139,7 @@ export function TaskCreationForm({
         },
       });
     },
-    [title, category, description, priority, steps, projectId, createMutation, onSuccess]
+    [title, category, description, priority, steps, projectId, executionPlanId, ideationSessionId, createMutation, onSuccess]
   );
 
   const isSubmitting = createMutation.isPending;

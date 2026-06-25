@@ -18,6 +18,7 @@ const virtuosoMockState = vi.hoisted(() => ({
   rangeChanged: null as ((range: MockListRange) => void) | null,
   scrollToIndex: vi.fn(),
 }));
+const annotationScrollIntoViewMock = vi.hoisted(() => vi.fn());
 
 vi.mock("react-virtuoso", async () => {
   const React = await vi.importActual<typeof import("react")>("react");
@@ -144,6 +145,7 @@ vi.mock("./AgentsPublishFileDiff", () => ({
     annotations,
     isShowAnywayOverridden,
     onShowAnyway,
+    isFocusTarget,
   }: {
     file: { path: string };
     diff: unknown;
@@ -159,6 +161,7 @@ vi.mock("./AgentsPublishFileDiff", () => ({
     annotations?: unknown[];
     isShowAnywayOverridden: boolean;
     onShowAnyway: () => void;
+    isFocusTarget?: boolean;
   }) => (
     <div
       data-testid={`mock-file-diff-${file.path.replace(/\//g, "-")}`}
@@ -170,6 +173,7 @@ vi.mock("./AgentsPublishFileDiff", () => ({
       data-should-hydrate={String(shouldHydrate)}
       data-annotation-count={String(annotations?.length ?? 0)}
       data-show-anyway-overridden={String(isShowAnywayOverridden)}
+      data-focus-target={String(isFocusTarget)}
     >
       <button
         data-testid={`mock-file-toggle-${file.path.replace(/\//g, "-")}`}
@@ -185,6 +189,9 @@ vi.mock("./AgentsPublishFileDiff", () => ({
       >
         Show anyway
       </button>
+      {shouldHydrate && (annotations?.length ?? 0) > 0 && (
+        <div data-testid="diff-annotation-row">annotation</div>
+      )}
       {file.path}
     </div>
   ),
@@ -303,6 +310,11 @@ const makeAnnotation = (
 describe("AgentsPublishInlineDiffs", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: annotationScrollIntoViewMock,
+    });
+    annotationScrollIntoViewMock.mockClear();
     virtuosoMockState.range = null;
     virtuosoMockState.rangeChanged = null;
     virtuosoMockState.scrollToIndex.mockClear();
@@ -955,6 +967,89 @@ describe("AgentsPublishInlineDiffs", () => {
         "0",
       );
     });
+
+    it("auto-scrolls to the first synced GitHub annotation after annotations arrive", async () => {
+      const changes = [
+        makeFileChange("src/Foo.tsx"),
+        makeFileChange("src/Bar.tsx"),
+        makeFileChange("src/Baz.tsx"),
+      ];
+      const client = makeQueryClient();
+      const { rerender } = render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+            annotations={[]}
+          />,
+          client,
+        ),
+      );
+
+      expect(virtuosoMockState.scrollToIndex).not.toHaveBeenCalled();
+
+      rerender(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+            annotations={[
+              makeAnnotation("src/Baz.tsx", { id: "annotation-baz" }),
+              makeAnnotation("src/Bar.tsx", { id: "annotation-bar" }),
+            ]}
+          />,
+          client,
+        ),
+      );
+
+      await waitFor(() =>
+        expect(virtuosoMockState.scrollToIndex).toHaveBeenCalledWith({
+          align: "start",
+          behavior: "auto",
+          index: 1,
+        }),
+      );
+      await waitFor(() =>
+        expect(screen.getByTestId("mock-file-diff-src-Bar.tsx")).toHaveAttribute(
+          "data-focus-target",
+          "true",
+        ),
+      );
+      await waitFor(() =>
+        expect(annotationScrollIntoViewMock).toHaveBeenCalledWith({
+          block: "center",
+          behavior: "auto",
+          inline: "nearest",
+        }),
+      );
+
+      virtuosoMockState.scrollToIndex.mockClear();
+      annotationScrollIntoViewMock.mockClear();
+
+      rerender(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+            annotations={[
+              makeAnnotation("src/Baz.tsx", { id: "annotation-baz" }),
+              makeAnnotation("src/Bar.tsx", { id: "annotation-bar" }),
+            ]}
+          />,
+          client,
+        ),
+      );
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(virtuosoMockState.scrollToIndex).not.toHaveBeenCalled();
+      expect(annotationScrollIntoViewMock).not.toHaveBeenCalled();
+    });
   });
 
   describe("mode=commit — diff fetching", () => {
@@ -1543,6 +1638,39 @@ describe("AgentsPublishInlineDiffs", () => {
       );
       expect(screen.queryByTestId("inline-diffs-loading")).toBeNull();
       expect(screen.queryByTestId("inline-diffs-empty")).toBeNull();
+    });
+
+    it("defaults merged workspaces to All commits while preserving manual mode changes", async () => {
+      const user = userEvent.setup();
+      mockGetCumulativeFiles.mockResolvedValue([makeFileChange("src/MergedFile.tsx")]);
+
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-merged"
+            review={makeReview([])}
+            commits={[makeCommit("sha-abc")]}
+            isLoading={false}
+            defaultMode="cumulative"
+          />,
+        ),
+      );
+
+      expect(screen.getByTestId("mock-diff-filter")).toHaveAttribute(
+        "data-mode",
+        "cumulative",
+      );
+      await waitFor(() =>
+        expect(screen.getByTestId("mock-file-diff-src-MergedFile.tsx")).toBeInTheDocument(),
+      );
+
+      await user.click(screen.getByRole("button", { name: "Workspace changes" }));
+
+      expect(screen.getByTestId("mock-diff-filter")).toHaveAttribute(
+        "data-mode",
+        "uncommitted",
+      );
+      expect(screen.getByText("No workspace changes")).toBeInTheDocument();
     });
   });
 

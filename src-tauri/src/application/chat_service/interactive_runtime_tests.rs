@@ -1,8 +1,9 @@
 use super::{
-    conversation_spawn_harness_override, edit_mode_plan_handoff_runtime_message, get_agent_name,
+    agent_conversation_mode_for_send, conversation_spawn_harness_override,
+    edit_mode_plan_handoff_runtime_message, get_agent_name,
     interactive_run_started_provider_session, plan_mode_runtime_message,
-    resolve_agent_name_for_send, should_inherit_parent_harness_for_fresh_spawn,
-    spawn_settings_require_task_metadata,
+    provider_harness_switch_requires_fresh_session, resolve_agent_name_for_send,
+    should_inherit_parent_harness_for_fresh_spawn, spawn_settings_require_task_metadata,
 };
 use crate::application::interactive_process_registry::InteractiveProcessMetadata;
 use crate::domain::agents::{AgentHarnessKind, ProviderSessionRef};
@@ -13,6 +14,7 @@ use crate::domain::entities::{
 };
 use crate::infrastructure::agents::claude::agent_names::{
     AGENT_CHAT_PROJECT, AGENT_GENERAL_EXPLORER, AGENT_GENERAL_WORKER, AGENT_ORCHESTRATOR_IDEATION,
+    AGENT_PR_REVIEWER,
 };
 
 #[test]
@@ -49,6 +51,74 @@ fn interactive_run_started_provider_session_falls_back_to_conversation_session_r
 }
 
 #[test]
+fn provider_harness_switch_requires_fresh_session_for_process_harness_mismatch() {
+    let requires_fresh = provider_harness_switch_requires_fresh_session(
+        Some(AgentHarnessKind::Codex),
+        None,
+        Some(&InteractiveProcessMetadata {
+            harness: Some(AgentHarnessKind::Claude),
+            provider_session_id: Some("claude-session-123".to_string()),
+        }),
+    );
+
+    assert!(requires_fresh);
+}
+
+#[test]
+fn provider_harness_switch_uses_conversation_when_process_harness_missing() {
+    let mut conversation =
+        ChatConversation::new_task_execution(TaskId::from_string("task-2".to_string()));
+    conversation.set_provider_session_ref(ProviderSessionRef {
+        harness: AgentHarnessKind::Claude,
+        provider_session_id: "claude-session-123".to_string(),
+    });
+
+    let requires_fresh = provider_harness_switch_requires_fresh_session(
+        Some(AgentHarnessKind::Codex),
+        Some(&conversation),
+        Some(&InteractiveProcessMetadata {
+            harness: None,
+            provider_session_id: Some("legacy-session-123".to_string()),
+        }),
+    );
+
+    assert!(requires_fresh);
+}
+
+#[test]
+fn provider_harness_switch_keeps_same_provider_session() {
+    let mut conversation =
+        ChatConversation::new_task_execution(TaskId::from_string("task-3".to_string()));
+    conversation.set_provider_session_ref(ProviderSessionRef {
+        harness: AgentHarnessKind::Codex,
+        provider_session_id: "codex-session-123".to_string(),
+    });
+
+    let requires_fresh = provider_harness_switch_requires_fresh_session(
+        Some(AgentHarnessKind::Codex),
+        Some(&conversation),
+        None,
+    );
+
+    assert!(!requires_fresh);
+}
+
+#[test]
+fn provider_harness_switch_requires_explicit_requested_provider() {
+    let mut conversation =
+        ChatConversation::new_task_execution(TaskId::from_string("task-4".to_string()));
+    conversation.set_provider_session_ref(ProviderSessionRef {
+        harness: AgentHarnessKind::Claude,
+        provider_session_id: "claude-session-123".to_string(),
+    });
+
+    let requires_fresh =
+        provider_harness_switch_requires_fresh_session(None, Some(&conversation), None);
+
+    assert!(!requires_fresh);
+}
+
+#[test]
 fn project_agent_send_uses_workspace_mode_agent_before_project_default() {
     let edit_agent = resolve_agent_name_for_send(
         &ChatContextType::Project,
@@ -78,6 +148,13 @@ fn project_agent_send_uses_workspace_mode_agent_before_project_default() {
         None,
         Some(AgentConversationWorkspaceMode::Plan),
     );
+    let review_pr_agent = resolve_agent_name_for_send(
+        &ChatContextType::Project,
+        None,
+        false,
+        None,
+        Some(AgentConversationWorkspaceMode::ReviewPr),
+    );
     let default_project_agent =
         resolve_agent_name_for_send(&ChatContextType::Project, None, false, None, None);
 
@@ -85,7 +162,75 @@ fn project_agent_send_uses_workspace_mode_agent_before_project_default() {
     assert_eq!(chat_agent, AGENT_GENERAL_EXPLORER);
     assert_eq!(plan_agent, AGENT_ORCHESTRATOR_IDEATION);
     assert_eq!(ideation_agent, AGENT_CHAT_PROJECT);
+    assert_eq!(review_pr_agent, AGENT_PR_REVIEWER);
     assert_eq!(default_project_agent, AGENT_CHAT_PROJECT);
+}
+
+#[test]
+fn ideation_session_send_ignores_linked_workspace_mode_for_agent_selection() {
+    // Regression: a genuine ideation session linked to an agent-conversation
+    // workspace must resolve to the ideation orchestrator regardless of the
+    // workspace's display mode. Previously an `Ideation`-mode workspace forced the
+    // linked session onto `ralphx-chat-project`, which lacks the
+    // proposal/plan/finalize tools, so the session produced no durable outputs.
+    for workspace_mode in [
+        AgentConversationWorkspaceMode::Chat,
+        AgentConversationWorkspaceMode::Edit,
+        AgentConversationWorkspaceMode::Ideation,
+        AgentConversationWorkspaceMode::ReviewPr,
+    ] {
+        let mode =
+            agent_conversation_mode_for_send(ChatContextType::Ideation, None, Some(workspace_mode));
+        assert_eq!(
+            mode, None,
+            "ideation session must not inherit {workspace_mode:?} from a linked workspace"
+        );
+
+        let agent =
+            resolve_agent_name_for_send(&ChatContextType::Ideation, None, false, None, mode);
+        assert_eq!(
+            agent, AGENT_ORCHESTRATOR_IDEATION,
+            "ideation session linked to a {workspace_mode:?} workspace must use the orchestrator"
+        );
+    }
+}
+
+#[test]
+fn ideation_session_send_preserves_plan_mode_profile() {
+    // Plan mode's linked planning session keeps its constrained plan profile, so
+    // its mode is still honored for the ideation context.
+    let mode = agent_conversation_mode_for_send(
+        ChatContextType::Ideation,
+        None,
+        Some(AgentConversationWorkspaceMode::Plan),
+    );
+    assert_eq!(mode, Some(AgentConversationWorkspaceMode::Plan));
+
+    let agent = resolve_agent_name_for_send(&ChatContextType::Ideation, None, false, None, mode);
+    assert_eq!(agent, AGENT_ORCHESTRATOR_IDEATION);
+}
+
+#[test]
+fn project_workspace_conversation_send_keeps_mode_agent() {
+    // Workspace conversations (Project context) still resolve by workspace mode:
+    // `Ideation` mode intentionally stays on `ralphx-chat-project` + external v1_.
+    let ideation_mode = agent_conversation_mode_for_send(
+        ChatContextType::Project,
+        None,
+        Some(AgentConversationWorkspaceMode::Ideation),
+    );
+    assert_eq!(ideation_mode, Some(AgentConversationWorkspaceMode::Ideation));
+    let project_agent =
+        resolve_agent_name_for_send(&ChatContextType::Project, None, false, None, ideation_mode);
+    assert_eq!(project_agent, AGENT_CHAT_PROJECT);
+
+    // A conversation-level agent_mode override still wins for Project context.
+    let edit_mode = agent_conversation_mode_for_send(
+        ChatContextType::Project,
+        Some(AgentConversationWorkspaceMode::Edit),
+        None,
+    );
+    assert_eq!(edit_mode, Some(AgentConversationWorkspaceMode::Edit));
 }
 
 #[test]

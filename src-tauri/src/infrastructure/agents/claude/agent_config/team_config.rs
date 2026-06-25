@@ -306,6 +306,7 @@ fn model_tier(model: &str) -> u8 {
         "haiku" => 1,
         "sonnet" => 2,
         "opus" => 3,
+        "fable" | "claude-fable-5" => 4,
         _ => 0, // unknown models get lowest tier
     }
 }
@@ -316,7 +317,7 @@ pub fn model_within_cap(requested: &str, cap: &str) -> bool {
 }
 
 /// Return the lesser (more restrictive) of two model caps.
-/// Ordering: haiku < sonnet < opus (lower tier = more restrictive).
+/// Ordering: haiku < sonnet < opus < fable (lower tier = more restrictive).
 /// Unknown models are treated as tier 0 (most restrictive).
 pub fn min_model_cap(a: &str, b: &str) -> String {
     let a_tier = model_tier(a);
@@ -385,7 +386,7 @@ fn merge_constraints(defaults: &TeamConstraints, specific: &TeamConstraints) -> 
 ///
 /// # Rules
 /// - `max_teammates`: min(resolved, ceiling)
-/// - `model_cap`: lesser model tier (haiku < sonnet < opus)
+/// - `model_cap`: lesser model tier (haiku < sonnet < opus < fable)
 /// - `allowed_tools`: intersection of both lists (empty ceiling = no restriction)
 /// - `allowed_mcp_tools`: intersection of both lists
 /// - `presets`: intersection of both lists
@@ -588,7 +589,7 @@ fn apply_env_overrides_with(
 
     if let Some(cap) = lookup(&format!("RALPHX_TEAM_MODEL_CAP_{key}")) {
         let trimmed = cap.trim().to_lowercase();
-        if matches!(trimmed.as_str(), "haiku" | "sonnet" | "opus") {
+        if matches!(trimmed.as_str(), "haiku" | "sonnet" | "opus" | "fable") {
             constraints.model_cap = trimmed;
         }
     }

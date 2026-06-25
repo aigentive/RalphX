@@ -8,7 +8,7 @@
  * react-refresh/only-export-components lint rule.
  */
 
-import { useCallback, useRef } from "react";
+import { useCallback, useRef, useState } from "react";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { Input } from "@/components/ui/input";
@@ -22,7 +22,14 @@ import {
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
-import { Loader2, AlertCircle, X } from "lucide-react";
+import {
+  AlertCircle,
+  CheckCircle2,
+  Loader2,
+  Trash2,
+  X,
+  XCircle,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 
 // Re-export constants from dedicated file
@@ -372,6 +379,153 @@ export function ErrorBanner({ error, onDismiss }: ErrorBannerProps) {
         className="h-6 w-6 hover:bg-[var(--status-error-border)]"
       >
         <X className="w-4 h-4 text-[var(--status-error)]" />
+      </Button>
+    </div>
+  );
+}
+
+// ============================================================================
+// Integration Status Banner
+// ============================================================================
+
+export interface IntegrationStatusBannerProps {
+  /** True when the integration is connected and validated (green). */
+  connected: boolean;
+  /** Headline label, e.g. "Issue references enabled" / "Not configured". */
+  title: string;
+  /** Pre-formatted detail chips, e.g. "API token stored", "Status valid". */
+  chips: string[];
+  /** Most recent backend error, shown beneath the chips when present. */
+  lastError?: string | null;
+}
+
+/**
+ * Connection status banner shared by the integration settings panels. Paints a
+ * green surface when the connection is confirmed working and a red surface
+ * otherwise, with the detail chips laid out in an aligned wrap row.
+ *
+ * Uses explicit `background-color` / `border-color` longhands (via the
+ * `bg-[var(--token)]` / `border-[var(--token)]` utilities) so the themed
+ * surface renders correctly under WKWebView. See
+ * `.claude/rules/wkwebview-css-vars.md` rule 6.
+ */
+export function IntegrationStatusBanner({
+  connected,
+  title,
+  chips,
+  lastError,
+}: IntegrationStatusBannerProps) {
+  return (
+    <div
+      data-testid="integration-status-banner"
+      data-connected={connected}
+      role="status"
+      className={cn(
+        "rounded-md border px-3 py-3",
+        connected
+          ? "bg-[var(--status-success-muted)] border-[var(--status-success-border)]"
+          : "bg-[var(--status-error-muted)] border-[var(--status-error-border)]",
+      )}
+    >
+      <div
+        className={cn(
+          "flex items-center gap-2 text-sm font-medium",
+          connected
+            ? "text-[var(--status-success)]"
+            : "text-[var(--status-error)]",
+        )}
+      >
+        {connected ? (
+          <CheckCircle2 className="h-4 w-4 shrink-0" aria-hidden="true" />
+        ) : (
+          <XCircle className="h-4 w-4 shrink-0" aria-hidden="true" />
+        )}
+        <span>{title}</span>
+      </div>
+      {chips.length > 0 ? (
+        <div className="mt-2 flex flex-wrap items-center gap-1.5">
+          {chips.map((chip) => (
+            <span
+              key={chip}
+              className="inline-flex items-center rounded-full border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-2 py-0.5 text-xs text-[var(--text-secondary)]"
+            >
+              {chip}
+            </span>
+          ))}
+        </div>
+      ) : null}
+      {lastError ? (
+        <p className="mt-2 text-xs text-[var(--status-error)]">{lastError}</p>
+      ) : null}
+    </div>
+  );
+}
+
+// ============================================================================
+// Integration Disconnect Button
+// ============================================================================
+
+export interface IntegrationDisconnectButtonProps {
+  /** Runs the disconnect; should resolve/settle even on failure. */
+  onDisconnect: () => void | Promise<void>;
+  /** Blocks the action while another operation is in flight. */
+  disabled?: boolean;
+  /** True while the disconnect request is pending. */
+  isDisconnecting?: boolean;
+  label?: string;
+  confirmLabel?: string;
+}
+
+/**
+ * Destructive disconnect control with an inline two-step confirmation. The
+ * first click only flips local confirm state (synchronous, first-paint safe);
+ * the actual disconnect runs from the confirm step.
+ */
+export function IntegrationDisconnectButton({
+  onDisconnect,
+  disabled = false,
+  isDisconnecting = false,
+  label = "Disconnect",
+  confirmLabel = "Confirm disconnect",
+}: IntegrationDisconnectButtonProps) {
+  const [confirming, setConfirming] = useState(false);
+
+  if (!confirming) {
+    return (
+      <Button
+        type="button"
+        variant="outline"
+        disabled={disabled || isDisconnecting}
+        onClick={() => setConfirming(true)}
+      >
+        <Trash2 className="h-4 w-4" />
+        {label}
+      </Button>
+    );
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <Button
+        type="button"
+        variant="destructive"
+        disabled={disabled || isDisconnecting}
+        onClick={() => void onDisconnect()}
+      >
+        {isDisconnecting ? (
+          <Loader2 className="h-4 w-4 animate-spin" />
+        ) : (
+          <Trash2 className="h-4 w-4" />
+        )}
+        {confirmLabel}
+      </Button>
+      <Button
+        type="button"
+        variant="ghost"
+        disabled={isDisconnecting}
+        onClick={() => setConfirming(false)}
+      >
+        Cancel
       </Button>
     </div>
   );

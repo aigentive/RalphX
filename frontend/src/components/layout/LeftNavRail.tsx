@@ -6,7 +6,7 @@
  * and the Settings entry, in a compact icon-and-label rail.
  */
 
-import { Settings } from "lucide-react";
+import { Bug, Settings } from "lucide-react";
 import {
   Tooltip,
   TooltipContent,
@@ -15,6 +15,8 @@ import {
 import { cn } from "@/lib/utils";
 import { useFeatureFlags } from "@/hooks/useFeatureFlags";
 import { useProjectStats } from "@/hooks/useProjectStats";
+import { useTicketingProviders } from "@/hooks/useTicketing";
+import { hasValidTicketingProvider } from "@/lib/ticketing-provider-state";
 import { useProjectStore } from "@/stores/projectStore";
 import { ALL_NAV_ITEMS } from "./nav-items";
 import { BrandMark } from "./BrandMark";
@@ -25,7 +27,9 @@ export const LEFT_NAV_RAIL_WIDTH = 72;
 interface LeftNavRailProps {
   currentView: ViewType;
   onViewChange: (view: ViewType) => void;
+  onViewWarmUp?: (view: ViewType) => void;
   onOpenSettings?: () => void;
+  onOpenIssueReport?: () => void;
   /** Hide primary view items (e.g. during welcome screen). Settings stays. */
   hideViews?: boolean;
 }
@@ -37,6 +41,7 @@ interface RailItemProps {
   shortcut?: string | undefined;
   isActive: boolean;
   onClick: () => void;
+  onWarmUp?: () => void;
   testId?: string;
 }
 
@@ -46,6 +51,7 @@ function RailItem({
   shortcut,
   isActive,
   onClick,
+  onWarmUp,
   testId,
 }: RailItemProps) {
   return (
@@ -54,6 +60,8 @@ function RailItem({
         <button
           type="button"
           onClick={onClick}
+          onPointerEnter={onWarmUp}
+          onFocus={onWarmUp}
           aria-label={label}
           aria-current={isActive ? "page" : undefined}
           data-theme-button-skip
@@ -94,17 +102,28 @@ function RailItem({
 export function LeftNavRail({
   currentView,
   onViewChange,
+  onViewWarmUp,
   onOpenSettings,
+  onOpenIssueReport,
   hideViews = false,
 }: LeftNavRailProps) {
   const activeProjectId = useProjectStore((s) => s.activeProjectId);
   const { data: stats } = useProjectStats(activeProjectId ?? undefined);
   const { data: featureFlags } = useFeatureFlags();
+  const { data: ticketingProviders } = useTicketingProviders(
+    activeProjectId ?? undefined,
+    { enabled: !hideViews },
+  );
+  const hasTicketingDashboardProvider = hasValidTicketingProvider(ticketingProviders);
 
   const taskCount = stats?.taskCount ?? 0;
   const visibleItems = hideViews
     ? []
     : ALL_NAV_ITEMS.filter((item) => item.visible(featureFlags, taskCount));
+  const primaryItems = visibleItems.filter((item) => item.view !== "ticketing");
+  const dashboardItems = hasTicketingDashboardProvider
+    ? visibleItems.filter((item) => item.view === "ticketing")
+    : [];
 
   return (
     <aside
@@ -137,7 +156,7 @@ export function LeftNavRail({
 
       {!hideViews && (
         <nav className="flex flex-col items-center gap-1">
-          {visibleItems.map(({ view, label, icon, shortcut }) => (
+          {primaryItems.map(({ view, label, icon, shortcut }) => (
             <RailItem
               key={view}
               view={view}
@@ -146,13 +165,52 @@ export function LeftNavRail({
               shortcut={shortcut}
               isActive={currentView === view}
               onClick={() => onViewChange(view)}
+              onWarmUp={() => onViewWarmUp?.(view)}
               testId={`nav-${view}`}
             />
           ))}
+          {dashboardItems.length > 0 && (
+            <>
+              <div
+                className="my-2 h-px w-7 shrink-0"
+                style={{ backgroundColor: "var(--border-default)" }}
+                aria-hidden="true"
+                data-testid="nav-dashboard-separator"
+              />
+              <div
+                className="flex flex-col items-center gap-1"
+                role="group"
+                aria-label="Dashboard"
+              >
+                {dashboardItems.map(({ view, label, icon, shortcut }) => (
+                  <RailItem
+                    key={view}
+                    view={view}
+                    label={label}
+                    icon={icon}
+                    shortcut={shortcut}
+                    isActive={currentView === view}
+                    onClick={() => onViewChange(view)}
+                    onWarmUp={() => onViewWarmUp?.(view)}
+                    testId={`nav-${view}`}
+                  />
+                ))}
+              </div>
+            </>
+          )}
         </nav>
       )}
 
       <div className="mt-auto flex flex-col items-center gap-1">
+        {onOpenIssueReport && (
+          <RailItem
+            label="Report Issue"
+            icon={Bug}
+            isActive={false}
+            onClick={onOpenIssueReport}
+            testId="nav-report-issue"
+          />
+        )}
         <RailItem
           label="Settings"
           icon={Settings}

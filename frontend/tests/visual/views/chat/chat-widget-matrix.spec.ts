@@ -9,6 +9,26 @@ async function expandWidget(widget: Locator) {
   await widget.locator('[role="button"]').first().click();
 }
 
+function collapsedToolCallGroupToggles(root: Locator) {
+  return root.getByRole("button", { name: /^Agent called \d+ tools?$/ });
+}
+
+async function expandToolCallGroups(root: Locator) {
+  await expect(collapsedToolCallGroupToggles(root).first()).toBeVisible({ timeout: 10000 });
+
+  for (let index = 0; index < 20; index += 1) {
+    const toggles = collapsedToolCallGroupToggles(root);
+    const collapsedCount = await toggles.count();
+    if (collapsedCount === 0) {
+      return;
+    }
+    await toggles.first().click();
+    await expect
+      .poll(async () => collapsedToolCallGroupToggles(root).count())
+      .toBeLessThan(collapsedCount);
+  }
+}
+
 async function expectAndAttachScreenshot(
   widget: Locator,
   snapshotName: string,
@@ -133,6 +153,7 @@ test.describe("Chat Widget Matrix", () => {
       "proposal-update-1",
       "proposal-delete-1",
     ]);
+    await expandToolCallGroups(page.locator("body"));
 
     const createWidget = page.locator('[data-testid="proposal-widget-created"]');
     const updateWidget = page.locator('[data-testid="proposal-widget-updated"]');
@@ -169,6 +190,7 @@ test.describe("Chat Widget Matrix", () => {
       "verification-get-1",
       "verification-pending-1",
     ]);
+    await expandToolCallGroups(page.locator("body"));
 
     const roundReportWidget = page.locator('[data-testid="verification-widget-round-report"]');
     const getWidget = page.locator('[data-testid="verification-widget-get"]');
@@ -206,6 +228,7 @@ test.describe("Chat Widget Matrix", () => {
       "plan-create-1",
       "plan-update-1",
     ]);
+    await expandToolCallGroups(page.locator("body"));
 
     const sendMessageWidget = page.locator('[data-testid="send-message-widget-broadcast"]');
     const askQuestionWidget = page.locator('[data-testid="ideation-widget-ask-question"]');
@@ -217,14 +240,6 @@ test.describe("Chat Widget Matrix", () => {
     await expect(createPlanWidget).toBeVisible();
     await expect(updatePlanWidget).toBeVisible();
 
-    await sendMessageWidget.getByRole("button").click();
-
-    await expectAndAttachScreenshot(
-      sendMessageWidget,
-      "send-message-widget-broadcast.png",
-      "send-message-widget-broadcast",
-      testInfo.attach.bind(testInfo),
-    );
     await expectAndAttachScreenshot(
       askQuestionWidget,
       "ideation-widget-ask-question.png",
@@ -243,6 +258,14 @@ test.describe("Chat Widget Matrix", () => {
       "ideation-widget-update-plan",
       testInfo.attach.bind(testInfo),
     );
+
+    await sendMessageWidget.getByRole("button").click();
+    await expectAndAttachScreenshot(
+      sendMessageWidget,
+      "send-message-widget-broadcast.png",
+      "send-message-widget-broadcast",
+      testInfo.attach.bind(testInfo),
+    );
   });
 
   test("active child session widget state", async ({ page }, testInfo) => {
@@ -251,6 +274,7 @@ test.describe("Chat Widget Matrix", () => {
     });
 
     await focusIdeationWidgetBlocks(page, ["child-session-active-1"]);
+    await expandToolCallGroups(page.locator("body"));
     const activeWidget = page.locator('[data-testid="child-session-widget-active"]').first();
     await expect(activeWidget).toBeVisible();
     await expandWidget(activeWidget);
@@ -268,6 +292,7 @@ test.describe("Chat Widget Matrix", () => {
     });
 
     await focusIdeationWidgetBlocks(page, ["child-session-pending-1"]);
+    await expandToolCallGroups(page.locator("body"));
     const pendingWidget = page.locator('[data-testid="child-session-widget-pending"]').first();
     await expect(pendingWidget).toBeVisible();
     await expectAndAttachScreenshot(
@@ -284,6 +309,7 @@ test.describe("Chat Widget Matrix", () => {
     });
 
     await focusIdeationWidgetBlocks(page, ["child-session-loading-1"], CHILD_SESSION_VISUAL_OVERRIDES);
+    await expandToolCallGroups(page.locator("body"));
     const loadingWidget = page.locator('[data-testid="child-session-widget-loading"]').first();
     await expect(loadingWidget).toBeVisible();
     await expandWidget(loadingWidget);
@@ -301,6 +327,7 @@ test.describe("Chat Widget Matrix", () => {
     });
 
     await focusIdeationWidgetBlocks(page, ["child-session-error-1"], CHILD_SESSION_VISUAL_OVERRIDES);
+    await expandToolCallGroups(page.locator("body"));
     const errorWidget = page.locator('[data-testid="child-session-widget-error"]').first();
     await expect(errorWidget).toBeVisible();
     await expandWidget(errorWidget);
@@ -316,6 +343,7 @@ test.describe("Chat Widget Matrix", () => {
     await setupIdeationChatScenario(page, "ideation_widget_matrix");
 
     await focusIdeationWidgetBlocks(page, ["delegate-wait-1"]);
+    await expandToolCallGroups(page.locator("body"));
     const completedDelegationCard = page
       .locator('[data-testid="task-tool-call-card"]')
       .filter({ hasText: "ralphx-execution-reviewer" })
@@ -405,6 +433,7 @@ test.describe("Chat Widget Matrix", () => {
 
   test("review widget states", async ({ page }, testInfo) => {
     await setupTaskChatScenario(page, "review_widget_matrix");
+    await expandToolCallGroups(page.locator("body"));
 
     const completeWidget = page.locator('[data-testid="review-widget-complete"]');
     const notesWidget = page.locator('[data-testid="review-widget-notes"]');
@@ -430,7 +459,9 @@ test.describe("Chat Widget Matrix", () => {
   });
 
   test("merge widget states", async ({ page }, testInfo) => {
+    await page.setViewportSize({ width: 1280, height: 800 });
     await setupTaskChatScenario(page, "merge_widget_matrix");
+    await expandToolCallGroups(page.locator("body"));
 
     const targetWidget = page.locator('[data-testid="merge-widget-target"]');
     const conflictWidget = page.locator('[data-testid="merge-widget-conflict"]');

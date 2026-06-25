@@ -86,7 +86,10 @@ fn test_index_usable_for_session_status_filter() {
         )
         .unwrap();
 
-    assert_eq!(count, 1, "should find exactly one task matching session+status");
+    assert_eq!(
+        count, 1,
+        "should find exactly one task matching session+status"
+    );
 }
 
 #[test]
@@ -109,5 +112,8 @@ fn test_existing_rows_unaffected() {
         )
         .unwrap();
 
-    assert_eq!(status, "done", "existing rows should be preserved after migration");
+    assert_eq!(
+        status, "done",
+        "existing rows should be preserved after migration"
+    );
 }

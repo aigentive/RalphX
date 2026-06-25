@@ -2,6 +2,7 @@
 // These enable custom Kanban columns that map to internal statuses
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fmt;
 use std::str::FromStr;
 
@@ -257,7 +258,10 @@ impl WorkflowSchema {
                     StateGroup::new(
                         "needs_attention",
                         "Escalated",
-                        vec![InternalStatus::MergeIncomplete, InternalStatus::MergeConflict],
+                        vec![
+                            InternalStatus::MergeIncomplete,
+                            InternalStatus::MergeConflict,
+                        ],
                     )
                     .with_icon("AlertTriangle")
                     .with_accent_color("hsl(var(--warning))")
@@ -304,7 +308,7 @@ impl WorkflowSchema {
             ],
             external_sync: Some(ExternalSyncConfig {
                 provider: SyncProvider::Jira,
-                mapping: std::collections::HashMap::new(),
+                mapping: HashMap::new(),
                 sync: SyncSettings {
                     direction: SyncDirection::Bidirectional,
                     webhook: Some(true),
@@ -314,6 +318,80 @@ impl WorkflowSchema {
             defaults: WorkflowDefaults::default(),
             is_default: false,
         }
+    }
+
+    /// Returns the Linear-compatible workflow
+    pub fn linear_compatible() -> Self {
+        Self {
+            id: WorkflowId::from_string("linear-compat"),
+            name: "Linear Compatible".to_string(),
+            description: Some("Linear-style workflow with external state mapping".to_string()),
+            columns: vec![
+                WorkflowColumn::new("backlog", "Backlog", InternalStatus::Backlog),
+                WorkflowColumn::new("todo", "Todo", InternalStatus::Ready),
+                WorkflowColumn::new("in_progress", "In Progress", InternalStatus::Executing),
+                WorkflowColumn::new("in_review", "In Review", InternalStatus::PendingReview),
+                WorkflowColumn::new("done", "Done", InternalStatus::Approved),
+                WorkflowColumn::new("canceled", "Canceled", InternalStatus::Cancelled),
+            ],
+            external_sync: Some(ExternalSyncConfig {
+                provider: SyncProvider::Linear,
+                mapping: HashMap::from([
+                    Self::external_status_mapping("Backlog", InternalStatus::Backlog, "backlog"),
+                    Self::external_status_mapping("Triage", InternalStatus::Backlog, "backlog"),
+                    Self::external_status_mapping("Todo", InternalStatus::Ready, "todo"),
+                    Self::external_status_mapping("To Do", InternalStatus::Ready, "todo"),
+                    Self::external_status_mapping(
+                        "In Progress",
+                        InternalStatus::Executing,
+                        "in_progress",
+                    ),
+                    Self::external_status_mapping(
+                        "In Review",
+                        InternalStatus::PendingReview,
+                        "in_review",
+                    ),
+                    Self::external_status_mapping(
+                        "Review",
+                        InternalStatus::PendingReview,
+                        "in_review",
+                    ),
+                    Self::external_status_mapping("Done", InternalStatus::Approved, "done"),
+                    Self::external_status_mapping(
+                        "Canceled",
+                        InternalStatus::Cancelled,
+                        "canceled",
+                    ),
+                    Self::external_status_mapping(
+                        "Cancelled",
+                        InternalStatus::Cancelled,
+                        "canceled",
+                    ),
+                ]),
+                sync: SyncSettings {
+                    direction: SyncDirection::Bidirectional,
+                    webhook: Some(true),
+                },
+                conflict_resolution: ConflictResolution::ExternalWins,
+            }),
+            defaults: WorkflowDefaults::default(),
+            is_default: false,
+        }
+    }
+
+    fn external_status_mapping(
+        external_status: &str,
+        internal_status: InternalStatus,
+        column_id: &str,
+    ) -> (String, ExternalStatusMapping) {
+        (
+            external_status.to_string(),
+            ExternalStatusMapping {
+                external_status: external_status.to_string(),
+                internal_status,
+                column_id: column_id.to_string(),
+            },
+        )
     }
 }
 

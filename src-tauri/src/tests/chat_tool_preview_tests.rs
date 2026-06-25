@@ -330,6 +330,48 @@ fn live_preview_payloads_extract_text_from_result_shapes() {
 }
 
 #[test]
+fn live_preview_payloads_preserve_parseable_json_mcp_text_content() {
+    let artifact_content = "Detailed artifact line.\n".repeat(600);
+    let artifact = json!({
+        "id": "artifact-preview-1",
+        "title": "Previewable Artifact",
+        "artifact_type": "design_doc",
+        "content": artifact_content,
+        "version": 3
+    });
+    let result = json!({
+        "content": [{
+            "type": "text",
+            "text": serde_json::to_string(&artifact).expect("artifact json")
+        }]
+    });
+
+    let preview =
+        build_tool_result_preview_payload(Some("mcp__ralphx__get_artifact"), &result, None)
+            .expect("artifact result should be previewed");
+    let preview_text = preview.result["content"][0]["text"]
+        .as_str()
+        .expect("preview text content");
+    let parsed_preview: serde_json::Value =
+        serde_json::from_str(preview_text).expect("preview text remains valid JSON");
+
+    assert_eq!(parsed_preview["title"], "Previewable Artifact");
+    assert_eq!(parsed_preview["artifact_type"], "design_doc");
+    assert_eq!(parsed_preview["version"], 3);
+    assert!(
+        parsed_preview["content"]
+            .as_str()
+            .expect("content preview string")
+            .len()
+            < artifact_content.len()
+    );
+    assert_eq!(
+        preview.paths,
+        vec!["$.content[0].text.content".to_string()]
+    );
+}
+
+#[test]
 fn live_preview_payloads_handle_json_fallback_and_char_limit() {
     let long_value = json!({
         "items": (0..500).map(|index| json!({ "index": index, "value": "x".repeat(20) })).collect::<Vec<_>>()

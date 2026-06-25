@@ -22,9 +22,13 @@ import {
   renderWithAgentProviders as renderWithProviders,
 } from "./agentsTestFixtures";
 const {
+  getAgentConversationRuntimeStatusesMock,
   getAgentConversationWorkspaceFreshnessMock,
   getAgentConversationWorkspaceMock,
   getLatestChildSessionIdMock,
+  loadBranchBaseOptionsMock,
+  loadPullRequestBaseOptionsMock,
+  updateWorkspaceFromBaseMock,
   useConversationMock,
 } = getAgentsViewTestMocks();
 
@@ -74,7 +78,7 @@ describe("AgentsView", () => {
     expect(sidebarContainer).not.toContainElement(footerShell);
   });
 
-  it("shows the conversation base branch as a read-only start-from line", async () => {
+  it("enables the conversation base picker while the workspace agent is idle", async () => {
     mockAgentViewData();
     getAgentConversationWorkspaceMock.mockResolvedValue({
       conversationId: "conversation-1",
@@ -102,7 +106,215 @@ describe("AgentsView", () => {
 
     const baseLine = await screen.findByTestId("agents-conversation-base");
     expect(baseLine).toHaveTextContent("Project default (main)");
-    expect(within(baseLine).getByRole("button", { name: "Start from" })).toBeDisabled();
+    expect(
+      within(baseLine).getByRole("button", {
+        name: "Change workspace base branch",
+      }),
+    ).toBeEnabled();
+  });
+
+  it("rebases an idle workspace from the conversation base picker", async () => {
+    const workspace = conversationWorkspace({
+      branchName: "ralphx/demo/agent-conversation-1",
+      worktreePath: "/tmp/ralphx/conversation-1",
+    });
+    mockAgentViewData();
+    getAgentConversationWorkspaceMock.mockResolvedValue(workspace);
+
+    renderAgentsView();
+    selectSidebarConversationRow();
+
+    const baseLine = await screen.findByTestId("agents-conversation-base");
+    fireEvent.click(
+      within(baseLine).getByRole("button", {
+        name: "Change workspace base branch",
+      }),
+    );
+
+    await waitFor(() =>
+      expect(loadBranchBaseOptionsMock).toHaveBeenCalledWith({
+        projectId: "project-1",
+        workingDirectory: "/tmp/ralphx/conversation-1",
+        includeAgentBranches: false,
+      }),
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: /feature\/new-base/i }),
+    );
+    expect(updateWorkspaceFromBaseMock).not.toHaveBeenCalled();
+
+    fireEvent.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", {
+        name: "Rebase workspace",
+      }),
+    );
+
+    await waitFor(() =>
+      expect(updateWorkspaceFromBaseMock).toHaveBeenCalledWith("conversation-1", {
+        kind: "local_branch",
+        ref: "feature/new-base",
+        displayName: "feature/new-base",
+      }),
+    );
+  });
+
+  it("rebases an idle workspace from a PR selected in the conversation base picker", async () => {
+    const workspace = conversationWorkspace({
+      branchName: "ralphx/demo/agent-conversation-1",
+      worktreePath: "/tmp/ralphx/conversation-1",
+    });
+    mockAgentViewData();
+    getAgentConversationWorkspaceMock.mockResolvedValue(workspace);
+
+    renderAgentsView();
+    selectSidebarConversationRow();
+
+    const baseLine = await screen.findByTestId("agents-conversation-base");
+    fireEvent.click(
+      within(baseLine).getByRole("button", {
+        name: "Change workspace base branch",
+      }),
+    );
+    fireEvent.click(await screen.findByRole("tab", { name: "PRs" }));
+
+    await waitFor(() =>
+      expect(loadPullRequestBaseOptionsMock).toHaveBeenCalledWith({
+        projectId: "project-1",
+        query: "",
+      }),
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: /#42 Add PR base/i }),
+    );
+    expect(updateWorkspaceFromBaseMock).not.toHaveBeenCalled();
+
+    fireEvent.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", {
+        name: "Rebase workspace",
+      }),
+    );
+
+    await waitFor(() =>
+      expect(updateWorkspaceFromBaseMock).toHaveBeenCalledWith("conversation-1", {
+        kind: "local_branch",
+        ref: "feature/pr-base",
+        displayName: "PR #42: Add PR base",
+        sourcePullRequest: {
+          number: 42,
+          url: "https://github.com/mock/project/pull/42",
+          title: "Add PR base",
+          headRefName: "feature/pr-base",
+          baseRefName: "main",
+          headRefOid: "pr-head-sha",
+        },
+      }),
+    );
+  });
+
+  it("keeps the conversation base picker disabled while the agent is generating", async () => {
+    const activeConversation = conversation({ agentMode: "edit" });
+    mockAgentViewData(activeConversation);
+    getAgentConversationWorkspaceMock.mockResolvedValue(
+      conversationWorkspace({ mode: "edit" }),
+    );
+    getAgentConversationRuntimeStatusesMock.mockResolvedValue({
+      [activeConversation.id]: {
+        conversationId: activeConversation.id,
+        isRunning: true,
+        agentStatus: "generating",
+        primarySource: "workspace",
+        summaryLabel: "Agent running",
+        items: [],
+      },
+    });
+
+    renderAgentsView();
+    selectSidebarConversationRow();
+
+    const baseLine = await screen.findByTestId("agents-conversation-base");
+    await waitFor(() =>
+      expect(
+        within(baseLine).getByRole("button", {
+          name: "Change workspace base branch",
+        }),
+      ).toBeDisabled(),
+    );
+    expect(loadBranchBaseOptionsMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps the conversation base picker clickable while the live agent is waiting for input", async () => {
+    const activeConversation = conversation({ agentMode: "edit" });
+    mockAgentViewData(activeConversation);
+    getAgentConversationWorkspaceMock.mockResolvedValue(
+      conversationWorkspace({ mode: "edit" }),
+    );
+    getAgentConversationRuntimeStatusesMock.mockResolvedValue({
+      [activeConversation.id]: {
+        conversationId: activeConversation.id,
+        isRunning: true,
+        agentStatus: "waiting_for_input",
+        primarySource: "workspace",
+        summaryLabel: "Agent running",
+        items: [],
+      },
+    });
+
+    renderAgentsView();
+    selectSidebarConversationRow();
+
+    const baseLine = await screen.findByTestId("agents-conversation-base");
+    const picker = within(baseLine).getByRole("button", {
+      name: "Change workspace base branch",
+    });
+    await waitFor(() => expect(picker).toBeEnabled());
+
+    fireEvent.click(picker);
+    await waitFor(() =>
+      expect(loadBranchBaseOptionsMock).toHaveBeenCalledWith({
+        projectId: "project-1",
+        workingDirectory: "/tmp/ralphx/conversation-1",
+        includeAgentBranches: false,
+      }),
+    );
+  });
+
+  it("shows source PR metadata in the conversation base line", async () => {
+    mockAgentViewData();
+    getAgentConversationWorkspaceMock.mockResolvedValue({
+      conversationId: "conversation-1",
+      projectId: "project-1",
+      mode: "chat",
+      baseRefKind: "local_branch",
+      baseRef: "feature/source-pr",
+      baseDisplayName: "feature/source-pr",
+      baseCommit: null,
+      branchName: "ralphx/demo/agent-conversation-1",
+      worktreePath: "/tmp/ralphx/conversation-1",
+      linkedIdeationSessionId: null,
+      linkedPlanBranchId: null,
+      sourcePullRequest: {
+        number: 42,
+        url: "https://github.com/owner/repo/pull/42",
+        title: "Source PR",
+        headRefName: "feature/source-pr",
+        baseRefName: "main",
+        headRefOid: "abc123",
+      },
+      publicationPrNumber: null,
+      publicationPrUrl: null,
+      publicationPrStatus: null,
+      publicationPushStatus: null,
+      status: "active",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+
+    renderAgentsView();
+    selectSidebarConversationRow();
+
+    const baseLine = await screen.findByTestId("agents-conversation-base");
+    expect(baseLine).toHaveTextContent("PR #42: Source PR");
+    expect(baseLine).toHaveTextContent("feature/source-pr");
   });
 
   it("preflights workspace freshness on selection without duplicate rapid reselect checks", async () => {
@@ -194,7 +406,9 @@ describe("AgentsView", () => {
     const panel = await screen.findByTestId("integrated-chat-panel");
     expect(panel).toHaveAttribute("data-conversation-id-override", "conversation-1");
     expect(panel).toHaveAttribute("data-ideation-session-id", "");
-    expect(await screen.findByTestId("agents-workspace-status")).toBeInTheDocument();
+    expect(
+      await screen.findByTestId("agents-conversation-workspace-line"),
+    ).toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId("mock-open-child-session"));
 
@@ -227,7 +441,9 @@ describe("AgentsView", () => {
         "conversation-1",
       );
     });
-    expect(await screen.findByTestId("agents-workspace-status")).toBeInTheDocument();
+    expect(
+      await screen.findByTestId("agents-conversation-workspace-line"),
+    ).toBeInTheDocument();
   });
 
   it("shows the chat focus switcher on workspace chat when the latest archived/completed verification child is hydrated", async () => {

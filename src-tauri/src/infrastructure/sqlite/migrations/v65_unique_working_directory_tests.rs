@@ -16,9 +16,7 @@ fn test_v65_unique_index_exists() {
         .collect();
 
     assert!(
-        index_names
-            .iter()
-            .any(|n| n == "idx_projects_working_dir"),
+        index_names.iter().any(|n| n == "idx_projects_working_dir"),
         "unique index idx_projects_working_dir should exist, got: {:?}",
         index_names
     );
@@ -42,7 +40,10 @@ fn test_v65_unique_constraint_enforced() {
         [],
     );
 
-    assert!(result.is_err(), "duplicate working_directory should be rejected by unique index");
+    assert!(
+        result.is_err(),
+        "duplicate working_directory should be rejected by unique index"
+    );
 }
 
 #[test]
@@ -62,7 +63,10 @@ fn test_v65_different_directories_allowed() {
         [],
     );
 
-    assert!(result.is_ok(), "two projects with distinct directories should both be insertable");
+    assert!(
+        result.is_ok(),
+        "two projects with distinct directories should both be insertable"
+    );
 }
 
 #[test]
@@ -80,5 +84,8 @@ fn test_v65_idempotent() {
         )
         .unwrap();
 
-    assert_eq!(count, 1, "index should exist exactly once after idempotent run");
+    assert_eq!(
+        count, 1,
+        "index should exist exactly once after idempotent run"
+    );
 }

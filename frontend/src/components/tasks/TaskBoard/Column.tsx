@@ -14,7 +14,7 @@ import type { WorkflowColumnResponse } from "@/lib/api/workflows";
 import type { StateGroup } from "@/types/workflow";
 import type { InternalStatus } from "@/types/status";
 import type { Task } from "@/types/task";
-import { TaskCard } from "./TaskCard";
+import { TaskCard, type TaskCardDisplayMode } from "./TaskCard";
 import { ColumnGroup } from "./ColumnGroup";
 import { Skeleton } from "@/components/ui/skeleton";
 import { InlineTaskAdd } from "../InlineTaskAdd";
@@ -75,6 +75,8 @@ interface ColumnProps {
   /** Preserved for host layout intent; expanded columns still keep their
    * readable minimum and let the board scroll horizontally when constrained. */
   fillWidth?: boolean;
+  /** Card content density for tasks rendered in this column. */
+  cardDisplayMode?: TaskCardDisplayMode;
 }
 
 function InvalidDropIcon() {
@@ -176,7 +178,7 @@ function formatColumnHeaderCount(
   return `(${taskCount})`;
 }
 
-export function Column({ column, projectId, showArchived, showMergeTasks, isOver, isInvalid, onTaskSelect, hiddenTaskId, searchTasks, matchCount, groups, isLast = false, ideationSessionId, executionPlanId, isCollapsed = false, onToggleCollapse }: ColumnProps) {
+export function Column({ column, projectId, showArchived, showMergeTasks, isOver, isInvalid, onTaskSelect, hiddenTaskId, searchTasks, matchCount, groups, isLast = false, ideationSessionId, executionPlanId, isCollapsed = false, onToggleCollapse, cardDisplayMode = "default" }: ColumnProps) {
   const { setNodeRef } = useDroppable({ id: column.id });
   const sentinelRef = useRef<HTMLDivElement>(null);
   const { active } = useDndContext();
@@ -642,6 +644,7 @@ export function Column({ column, projectId, showArchived, showMergeTasks, isOver
                         <TaskCard
                           key={task.id}
                           task={task}
+                          displayMode={cardDisplayMode}
                           isHidden={task.id === hiddenTaskId}
                           groupInfo={columnGroupInfo}
                           {...(onTaskSelect !== undefined && { onSelect: onTaskSelect })}
@@ -668,6 +671,7 @@ export function Column({ column, projectId, showArchived, showMergeTasks, isOver
                   <TaskCard
                     key={task.id}
                     task={task}
+                    displayMode={cardDisplayMode}
                     isHidden={task.id === hiddenTaskId}
                     groupInfo={columnGroupInfo}
                     {...(onTaskSelect !== undefined && { onSelect: onTaskSelect })}
@@ -691,6 +695,8 @@ export function Column({ column, projectId, showArchived, showMergeTasks, isOver
               <InlineTaskAdd
                 projectId={projectId}
                 columnId={column.id}
+                ideationSessionId={ideationSessionId}
+                executionPlanId={executionPlanId}
                 {...(pendingQuickAddOpen > 0 && { autoExpandKey: pendingQuickAddOpen })}
                 onAutoExpandConsumed={handleQuickAddConsumed}
               />

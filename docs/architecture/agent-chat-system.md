@@ -34,7 +34,7 @@ User message
 | Streaming Parser | Parses JSON-stream output, emits events | `chat_service_streaming.rs` |
 | MCP Server | Tool proxy: agent → HTTP :3847 → Tauri backend | `plugins/app/ralphx-mcp-server/src/` |
 | Event System | Tauri emit → EventBus → React hooks | `src/lib/events.ts`, `src/hooks/useAgentEvents.ts` |
-| Message Queue | Queues messages while agent is running | `chat_service_queue.rs`, `MessageQueue` service |
+| Message Queue | Durable pending rows + live drain buffer while agent is running | `chat_service_queue.rs`, `QueuedMessageRepository`, `MessageQueue` service |
 | Session Recovery | Retries on stale session detection | `chat_service_recovery.rs` |
 
 ### Data Flow: New Conversation
@@ -48,7 +48,7 @@ User message
 7. Emit `agent:run_started` → return `SendResult { conversation_id, agent_run_id }`
 8. Stream stdout → parse events → emit `agent:chunk`, `agent:tool_call`, etc.
 9. On completion → persist assistant message → emit `agent:run_completed`
-10. If queued messages exist → auto-send via `--resume`
+10. If durable queued messages exist → auto-send via harness continuation (`--resume`-style path)
 
 ### Data Flow: Resumed Conversation
 
@@ -154,6 +154,7 @@ Defined in both backend (`chat_service_types.rs::events`) and frontend (`src/lib
 | `agent:chunk` | `events::AGENT_CHUNK` | `AGENT_CHUNK` | `AgentChunkPayload` |
 | `agent:tool_call` | `events::AGENT_TOOL_CALL` | `AGENT_TOOL_CALL` | `AgentToolCallPayload` |
 | `agent:error` | `events::AGENT_ERROR` | `AGENT_ERROR` | `AgentErrorPayload` |
+| `agent:message_queued` | `events::AGENT_MESSAGE_QUEUED` | -- | `AgentMessageQueuedPayload` |
 | `agent:queue_sent` | `events::AGENT_QUEUE_SENT` | `AGENT_QUEUE_SENT` | `AgentQueueSentPayload` |
 | `agent:task_started` | `events::AGENT_TASK_STARTED` | `AGENT_TASK_STARTED` | `AgentTaskStartedPayload` |
 | `agent:task_completed` | `events::AGENT_TASK_COMPLETED` | `AGENT_TASK_COMPLETED` | `AgentTaskCompletedPayload` |
@@ -172,6 +173,7 @@ Defined in both backend (`chat_service_types.rs::events`) and frontend (`src/lib
 | `agent:chunk` | text, conversation_id, context_type, context_id |
 | `agent:tool_call` | tool_name, tool_id?, arguments, result?, conversation_id, context_type, context_id, diff_context?, parent_tool_use_id? |
 | `agent:error` | conversation_id?, context_type, context_id, error, stderr? |
+| `agent:message_queued` | message_id, content, conversation_id?, context_type, context_id, created_at, attachment_ids? |
 | `agent:queue_sent` | message_id, conversation_id, context_type, context_id |
 | `agent:task_started` | tool_use_id, description?, subagent_type?, model?, conversation_id, context_type, context_id |
 | `agent:task_completed` | tool_use_id, agent_id?, total_duration_ms?, total_tokens?, total_tool_use_count?, conversation_id, context_type, context_id |
@@ -189,6 +191,7 @@ Defined in both backend (`chat_service_types.rs::events`) and frontend (`src/lib
 | `agent:chunk` | useIntegratedChatEvents (accumulate streaming text) |
 | `agent:tool_call` | useIntegratedChatEvents (accumulate streaming tool calls), useChatPanelHandlers (tool call display) |
 | `agent:error` | useAgentEvents (clear running state, invalidate queries), useChatPanelHandlers (error display) |
+| `agent:message_queued` | useAgentEvents (optimistic queue insert/update) |
 | `agent:queue_sent` | useAgentEvents (remove from frontend optimistic queue) |
 | `agent:task_started` | useIntegratedChatEvents (add to streaming tasks map) |
 | `agent:task_completed` | useIntegratedChatEvents (update streaming tasks map) |
@@ -299,6 +302,9 @@ State machine side effects use short names → `spawner_agent_name()` maps to FQ
 | `src-tauri/src/application/chat_service/chat_service_send_background.rs` | Background task: spawn agent, process stream, handle completion |
 | `src-tauri/src/application/chat_service/chat_service_handlers.rs` | Post-stream success/error handling, task transitions, session recovery |
 | `src-tauri/src/application/chat_service/chat_service_queue.rs` | Message queue processing (auto-send via --resume) |
+| `src-tauri/src/domain/repositories/queued_message_repository.rs` | Durable queued-message repository contract |
+| `src-tauri/src/infrastructure/sqlite/sqlite_queued_message_repo.rs` | SQLite queued-message storage |
+| `src-tauri/src/infrastructure/memory/memory_queued_message_repo.rs` | In-memory queued-message repository for tests/non-SQLite wiring |
 | `src-tauri/src/application/chat_service/chat_service_recovery.rs` | Stale session detection and retry logic |
 | `src-tauri/src/application/chat_service/chat_service_replay.rs` | Conversation replay for debugging |
 | `src-tauri/src/application/chat_service/chat_service_repository.rs` | Conversation/message persistence helpers |
@@ -316,6 +322,7 @@ State machine side effects use short names → `spawner_agent_name()` maps to FQ
 |------|---------|
 | `frontend/src/lib/events.ts` | Event name constants (mirrors backend) |
 | `frontend/src/hooks/useAgentEvents.ts` | Agent lifecycle event listener (run state, messages, queue, errors) |
+| `frontend/src/hooks/useQueuedMessagesHydration.ts` | Hydrates backend-owned queued rows after panel mount/navigation |
 | `frontend/src/hooks/useIntegratedChatEvents.ts` | Streaming event handler (chunks, tool calls, tasks) |
 | `frontend/src/hooks/useChatPanelHandlers.ts` | ChatPanel event handlers and queue management |
 | `frontend/src/hooks/useChat.ts` | TanStack Query hooks for chat API calls |
@@ -367,7 +374,7 @@ All chat-related Tauri IPC commands registered in `unified_chat_commands.rs`.
 | Command | Input | Returns | Description |
 |---------|-------|---------|-------------|
 | `send_agent_message` | `{ contextType, contextId, content }` | `{ conversation_id, agent_run_id, is_new_conversation }` | Send message, returns immediately, processing in background |
-| `queue_agent_message` | `{ contextType, contextId, content, clientId? }` | `{ id, content, created_at, is_editing }` | Queue message for when current run completes |
+| `queue_agent_message` | `{ contextType, contextId, content, clientId? }` | `{ id, content, created_at, is_editing }` | Persist queued message for when current run completes |
 | `get_queued_agent_messages` | `contextType, contextId` | `QueuedMessageResponse[]` | List queued messages for context |
 | `delete_queued_agent_message` | `contextType, contextId, messageId` | `bool` | Delete a queued message |
 | `list_agent_conversations` | `contextType, contextId` | `AgentConversationResponse[]` | List all conversations for context |

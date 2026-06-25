@@ -862,3 +862,66 @@ fn test_validate_git_isolation_retry_base_secs_zero_clamped() {
         "zero git_isolation_retry_base_secs should be clamped to default"
     );
 }
+
+/// Build a default `AllRuntimeConfig` for env-override tests, then apply the
+/// supplied `RALPHX_UI_TICKETING_DASHBOARD` value (if any) via the injectable
+/// lookup so we never touch real process env (deterministic + parallel-safe).
+fn ticketing_dashboard_after_env(value: Option<&str>) -> bool {
+    let mut cfg = AllRuntimeConfig {
+        stream: StreamTimeoutsConfig::default(),
+        reconciliation: ReconciliationConfig::default(),
+        git: GitRuntimeConfig::default(),
+        scheduler: SchedulerConfig::default(),
+        supervisor: SupervisorRuntimeConfig::default(),
+        limits: LimitsConfig::default(),
+        verification: VerificationConfig::default(),
+        external_mcp: ExternalMcpConfig::default(),
+        child_session_activity_threshold_secs: None,
+        ui_feature_flags: Default::default(),
+    };
+    apply_env_overrides_with(&mut cfg, &|name| match name {
+        "RALPHX_UI_TICKETING_DASHBOARD" => value.map(str::to_string),
+        _ => None,
+    });
+    cfg.ui_feature_flags.ticketing_dashboard
+}
+
+#[test]
+fn test_ui_ticketing_dashboard_default_is_false() {
+    use crate::infrastructure::agents::claude::UiFeatureFlagsConfig;
+    assert!(!UiFeatureFlagsConfig::default().ticketing_dashboard);
+}
+
+#[test]
+fn test_ui_ticketing_dashboard_env_true_enables() {
+    assert!(ticketing_dashboard_after_env(Some("true")));
+}
+
+#[test]
+fn test_ui_ticketing_dashboard_env_one_enables() {
+    assert!(ticketing_dashboard_after_env(Some("1")));
+}
+
+#[test]
+fn test_ui_ticketing_dashboard_env_false_disables() {
+    assert!(!ticketing_dashboard_after_env(Some("false")));
+}
+
+#[test]
+fn test_ui_ticketing_dashboard_env_zero_disables() {
+    assert!(!ticketing_dashboard_after_env(Some("0")));
+}
+
+#[test]
+fn test_ui_ticketing_dashboard_env_unrecognized_disables() {
+    // Only "true"/"1" (case-insensitive) enable; anything else parses to false.
+    assert!(!ticketing_dashboard_after_env(Some("yes")));
+    // Case-insensitive: uppercase TRUE still enables.
+    assert!(ticketing_dashboard_after_env(Some("TRUE")));
+}
+
+#[test]
+fn test_ui_ticketing_dashboard_env_missing_keeps_default() {
+    // No env var present → field stays at its default (false).
+    assert!(!ticketing_dashboard_after_env(None));
+}

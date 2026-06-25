@@ -6,7 +6,12 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createElement } from "react";
-import { useFeatureFlags, isViewEnabled, FEATURE_FLAGS_QUERY_KEY } from "./useFeatureFlags";
+import {
+  FEATURE_FLAGS_QUERY_KEY,
+  applyFeatureFlagOverrides,
+  isViewEnabled,
+  useFeatureFlags,
+} from "./useFeatureFlags";
 import { invoke } from "@tauri-apps/api/core";
 import type { FeatureFlags } from "@/types/feature-flags";
 
@@ -26,10 +31,10 @@ function createWrapper() {
 // ============================================================================
 
 describe("isViewEnabled", () => {
-  const allEnabled: FeatureFlags = { activityPage: true, extensibilityPage: true, battleMode: true, teamMode: false, atlassianOauth: false };
-  const activityDisabled: FeatureFlags = { activityPage: false, extensibilityPage: true, battleMode: true, teamMode: false, atlassianOauth: false };
-  const extensibilityDisabled: FeatureFlags = { activityPage: true, extensibilityPage: false, battleMode: true, teamMode: false, atlassianOauth: false };
-  const allDisabled: FeatureFlags = { activityPage: false, extensibilityPage: false, battleMode: true, teamMode: false, atlassianOauth: false };
+  const allEnabled: FeatureFlags = { activityPage: true, extensibilityPage: true, battleMode: true, teamMode: false, atlassianOauth: false, ticketingDashboard: true };
+  const activityDisabled: FeatureFlags = { activityPage: false, extensibilityPage: true, battleMode: true, teamMode: false, atlassianOauth: false, ticketingDashboard: true };
+  const extensibilityDisabled: FeatureFlags = { activityPage: true, extensibilityPage: false, battleMode: true, teamMode: false, atlassianOauth: false, ticketingDashboard: true };
+  const allDisabled: FeatureFlags = { activityPage: false, extensibilityPage: false, battleMode: true, teamMode: false, atlassianOauth: false, ticketingDashboard: false };
 
   it("returns true for kanban regardless of flags", () => {
     expect(isViewEnabled("kanban", allDisabled)).toBe(true);
@@ -57,8 +62,32 @@ describe("isViewEnabled", () => {
     expect(isViewEnabled("extensibility", extensibilityDisabled)).toBe(false);
   });
 
+  it("always enables ticketing because provider validity controls access", () => {
+    expect(isViewEnabled("ticketing", allEnabled)).toBe(true);
+    expect(isViewEnabled("ticketing", allDisabled)).toBe(true);
+  });
+
   it("returns true for unknown views (safe default)", () => {
     expect(isViewEnabled("unknown-view", allDisabled)).toBe(true);
+  });
+});
+
+// ============================================================================
+// applyFeatureFlagOverrides (compatibility identity)
+// ============================================================================
+
+describe("applyFeatureFlagOverrides", () => {
+  const baseFlags: FeatureFlags = {
+    activityPage: true,
+    extensibilityPage: true,
+    battleMode: true,
+    teamMode: false,
+    atlassianOauth: false,
+    ticketingDashboard: true,
+  };
+
+  it("returns flags unchanged", () => {
+    expect(applyFeatureFlagOverrides(baseFlags)).toEqual(baseFlags);
   });
 });
 
@@ -69,6 +98,7 @@ describe("isViewEnabled", () => {
 describe("useFeatureFlags", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    localStorage.clear();
   });
 
   it("returns placeholder data (all enabled) before query resolves", () => {
@@ -86,6 +116,7 @@ describe("useFeatureFlags", () => {
       battleMode: true,
       teamMode: false,
       atlassianOauth: false,
+      ticketingDashboard: false,
     });
   });
 
@@ -105,6 +136,7 @@ describe("useFeatureFlags", () => {
       battleMode: true,
       teamMode: false,
       atlassianOauth: false,
+      ticketingDashboard: false,
     });
     expect(invoke).toHaveBeenCalledWith("get_ui_feature_flags");
   });
@@ -130,6 +162,7 @@ describe("useFeatureFlags", () => {
       battleMode: true,
       teamMode: false,
       atlassianOauth: false,
+      ticketingDashboard: false,
     });
   });
 });

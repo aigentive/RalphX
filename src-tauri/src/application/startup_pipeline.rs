@@ -21,14 +21,16 @@ use crate::application::{
 };
 use crate::commands::{ActiveProjectState, ExecutionState};
 use crate::domain::repositories::{
-    ActivityEventRepository, AgentConversationWorkspaceRepository, AgentLaneSettingsRepository,
-    AgentProviderSettingsRepository, AgentRunRepository, AppStateRepository, ArtifactRepository,
-    ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,
-    ExecutionPlanRepository, ExecutionSettingsRepository, ExternalEventsRepository,
-    IdeationEffortSettingsRepository, IdeationModelSettingsRepository, IdeationSessionRepository,
-    MemoryArchiveRepository, MemoryEntryRepository, MemoryEventRepository,
-    OrphanWorktreeCleanupMarkerRepository, PlanBranchRepository, ProjectRepository,
-    ReviewRepository, TaskDependencyRepository, TaskRepository, TaskStepRepository,
+    ActivityEventRepository, AgentConversationJiraIssueRepository,
+    AgentConversationLinearIssueRepository, AgentConversationWorkspaceRepository,
+    AgentLaneSettingsRepository, AgentProviderSettingsRepository, AgentRunRepository,
+    AppStateRepository, ArtifactRepository, ChatAttachmentRepository, ChatConversationRepository,
+    ChatMessageRepository, ExecutionPlanRepository, ExecutionSettingsRepository,
+    ExternalEventsRepository, IdeationEffortSettingsRepository, IdeationModelSettingsRepository,
+    IdeationSessionRepository, MemoryArchiveRepository, MemoryEntryRepository,
+    MemoryEventRepository, OrphanWorktreeCleanupMarkerRepository, PlanBranchRepository,
+    ProjectRepository, ReviewRepository, TaskDependencyRepository, TaskRepository,
+    TaskStepRepository,
 };
 use crate::domain::services::{
     running_agent_registry::kill_orphaned_mcp_servers, MessageQueue, RunningAgentRegistry,
@@ -58,6 +60,8 @@ pub(crate) struct StartupPipelineDeps {
     pub artifact_repo: Arc<dyn ArtifactRepository>,
     pub conversation_repo: Arc<dyn ChatConversationRepository>,
     pub agent_conversation_workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    pub agent_conversation_jira_issue_repo: Arc<dyn AgentConversationJiraIssueRepository>,
+    pub agent_conversation_linear_issue_repo: Arc<dyn AgentConversationLinearIssueRepository>,
     pub orphan_worktree_cleanup_marker_repo: Arc<dyn OrphanWorktreeCleanupMarkerRepository>,
     pub agent_run_repo: Arc<dyn AgentRunRepository>,
     pub ideation_session_repo: Arc<dyn IdeationSessionRepository>,
@@ -167,6 +171,8 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         artifact_repo,
         conversation_repo,
         agent_conversation_workspace_repo,
+        agent_conversation_jira_issue_repo,
+        agent_conversation_linear_issue_repo,
         orphan_worktree_cleanup_marker_repo,
         agent_run_repo,
         ideation_session_repo,
@@ -370,6 +376,10 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         Arc::clone(&memory_event_repo),
     )
     .with_agent_conversation_workspace_repo(Some(Arc::clone(&agent_conversation_workspace_repo)))
+    .with_agent_conversation_jira_issue_repo(Some(Arc::clone(&agent_conversation_jira_issue_repo)))
+    .with_agent_conversation_linear_issue_repo(Some(Arc::clone(
+        &agent_conversation_linear_issue_repo,
+    )))
     .with_runtime_support(
         Some(Arc::clone(&execution_settings_repo)),
         Some(Arc::clone(&agent_lane_settings_repo)),
@@ -440,6 +450,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
     crate::application::pr_startup_recovery::recover_agent_workspace_pr_pollers(
         Arc::clone(&agent_conversation_workspace_repo),
         Arc::clone(&project_repo),
+        Arc::clone(&plan_branch_repo),
         Arc::clone(&pr_poller_registry),
         Arc::clone(&agent_run_repo),
         Arc::clone(&recovery_chat_service),
@@ -513,6 +524,18 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
     )
     .await;
     startup_phase_completed("stale_workspace_publish_repair", phase_started_at);
+
+    {
+        let workspace_repo = Arc::clone(&agent_conversation_workspace_repo);
+        let periodic_agent_run_repo = Arc::clone(&agent_run_repo);
+        tauri::async_runtime::spawn(async move {
+            crate::application::agent_workspace_publish_recovery::run_periodic_workspace_publish_recovery(
+                workspace_repo,
+                periodic_agent_run_repo,
+            )
+            .await;
+        });
+    }
 
     if let Some(github_service) = github_service.as_ref().map(Arc::clone) {
         tracing::info!("Scheduling agent workspace PR supervision startup recovery...");

@@ -27,7 +27,6 @@ use crate::domain::execution::{
     build_running_workspace_session, elapsed_seconds_for_status, ExecutionStatusInput,
 };
 use crate::domain::execution::{count_execution_status, ScopedExecutionSubject};
-use crate::domain::services::QueueKey;
 use crate::domain::state_machine::services::TaskScheduler;
 use crate::domain::state_machine::transition_handler::get_trigger_origin;
 

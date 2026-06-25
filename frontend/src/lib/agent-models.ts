@@ -95,6 +95,14 @@ const CLAUDE_MODEL_CATALOG = [
     supportedEfforts: ["low", "medium", "high"],
     description: "Claude Haiku model alias.",
   },
+  {
+    id: "fable",
+    label: "fable",
+    menuLabel: "fable",
+    defaultEffort: "high",
+    supportedEfforts: ["low", "medium", "high", "xhigh", "max"],
+    description: "Claude Fable 5 model alias.",
+  },
 ] as const satisfies readonly AgentModelCatalogEntry[];
 
 export const CODEX_MODEL_CATALOG = [
@@ -225,6 +233,33 @@ function findModelEntryForProvider(
   return registry[provider].find((model) => model.id === normalizedModelId) ?? null;
 }
 
+function normalizeModelId(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+export function isClaudeFableModelId(modelId: string): boolean {
+  const normalized = normalizeModelId(modelId);
+  return normalized === "fable" || normalized === "claude-fable-5";
+}
+
+export function isAgentModelSelectableForProvider(
+  provider: AgentProvider,
+  modelId: string,
+  providerSupportedModelAliases?: readonly unknown[] | null
+): boolean {
+  if (provider !== "claude" || !isClaudeFableModelId(modelId)) {
+    return true;
+  }
+
+  if (providerSupportedModelAliases == null) {
+    return false;
+  }
+
+  return providerSupportedModelAliases.some(
+    (alias) => typeof alias === "string" && isClaudeFableModelId(alias)
+  );
+}
+
 function providerDefaultEffort(
   provider: AgentProvider,
   registry: AgentModelRegistry = AGENT_MODEL_CATALOG
@@ -298,9 +333,16 @@ export function defaultEffortForModel(
 
 export function agentModelOptionsForProvider(
   provider: AgentProvider,
-  registry: AgentModelRegistry = AGENT_MODEL_CATALOG
+  registry: AgentModelRegistry = AGENT_MODEL_CATALOG,
+  providerSupportedModelAliases?: readonly unknown[] | null
 ): readonly AgentModelCatalogEntry[] {
-  return registry[provider];
+  return registry[provider].filter((model) =>
+    isAgentModelSelectableForProvider(
+      provider,
+      model.id,
+      providerSupportedModelAliases
+    )
+  );
 }
 
 export function agentEffortOptionsForModel(
@@ -334,7 +376,8 @@ function defaultEffortsForProvider(provider: AgentProvider): readonly AgentEffor
 export function normalizeAgentRuntimeSelection(
   runtime: unknown,
   registry: AgentModelRegistry = AGENT_MODEL_CATALOG,
-  providerSupportedEfforts?: readonly unknown[] | null
+  providerSupportedEfforts?: readonly unknown[] | null,
+  providerSupportedModelAliases?: readonly unknown[] | null
 ): AgentRuntimeSelection {
   const defaultEntry = defaultModelEntryForProvider("codex", registry);
   const defaultRuntime: AgentRuntimeSelection = {
@@ -356,6 +399,32 @@ export function normalizeAgentRuntimeSelection(
   const requestedModelId =
     typeof candidate.modelId === "string" ? candidate.modelId.trim() : "";
   const knownModel = findModelEntryForProvider(provider, requestedModelId, registry);
+  if (
+    requestedModelId &&
+    providerSupportedModelAliases !== undefined &&
+    !isAgentModelSelectableForProvider(
+      provider,
+      requestedModelId,
+      providerSupportedModelAliases
+    )
+  ) {
+    const model = defaultModelEntryForProvider(provider, registry);
+    const supportedEfforts = intersectSupportedEfforts(
+      model.supportedEfforts,
+      providerSupportedEfforts
+    );
+    const effort = fallbackEffortFromSupported(
+      candidate.effort,
+      model.defaultEffort,
+      supportedEfforts
+    );
+    return {
+      provider,
+      modelId: model.id,
+      effort,
+    };
+  }
+
   if (!knownModel && requestedModelId) {
     const providerEfforts =
       providerSupportedEfforts != null

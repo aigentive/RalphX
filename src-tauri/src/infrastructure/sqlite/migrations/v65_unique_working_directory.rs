@@ -1,5 +1,5 @@
-use rusqlite::Connection;
 use crate::error::AppResult;
+use rusqlite::Connection;
 
 /// Migration v65: Deduplicate and canonicalize working_directory values,
 /// then add a UNIQUE partial index to prevent future duplicates.
@@ -15,11 +15,15 @@ pub fn migrate(conn: &Connection) -> AppResult<()> {
     // Step 1: Load all projects with a working_directory
     let rows: Vec<(i64, String)> = {
         let mut stmt = conn
-            .prepare("SELECT rowid, working_directory FROM projects WHERE working_directory IS NOT NULL")
+            .prepare(
+                "SELECT rowid, working_directory FROM projects WHERE working_directory IS NOT NULL",
+            )
             .map_err(|e| crate::error::AppError::Database(e.to_string()))?;
 
         let result = stmt
-            .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))
+            .query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })
             .map_err(|e| crate::error::AppError::Database(e.to_string()))?
             .filter_map(|r| r.ok())
             .collect();

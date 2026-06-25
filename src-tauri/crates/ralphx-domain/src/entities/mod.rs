@@ -1,8 +1,9 @@
 pub mod activity_event;
-pub mod agent_run;
+pub mod agent_conversation_jira_issue;
+pub mod agent_conversation_linear_issue;
 pub mod agent_conversation_workspace;
+pub mod agent_run;
 pub mod agent_task;
-pub mod event_type;
 pub mod api_key;
 pub mod app_state;
 pub mod artifact;
@@ -11,11 +12,12 @@ pub mod chat_attachment;
 pub mod chat_conversation;
 pub mod chat_timeline;
 pub mod delegated_session;
+pub mod event_type;
 pub mod execution_plan;
 pub mod ideation;
 pub mod memory_archive;
-pub mod memory_event;
 pub mod memory_entry;
+pub mod memory_event;
 pub mod memory_rule_binding;
 pub mod merge_progress_event;
 pub mod methodology;
@@ -32,6 +34,7 @@ pub mod task_metadata;
 pub mod task_qa;
 pub mod task_step;
 pub mod team;
+pub mod ticket_canonical_branch;
 pub mod types;
 pub mod workflow;
 
@@ -39,24 +42,33 @@ pub use activity_event::{
     ActivityEvent, ActivityEventId, ActivityEventRole, ActivityEventType,
     ParseActivityEventRoleError, ParseActivityEventTypeError,
 };
+pub use agent_conversation_jira_issue::{
+    AgentConversationJiraIssueLink, AgentConversationJiraRefreshStatus,
+};
+pub use agent_conversation_linear_issue::{
+    AgentConversationLinearIssueLink, AgentConversationLinearRefreshStatus,
+};
+pub use agent_conversation_workspace::{
+    is_open_pr, is_pr_status_pollable_push_status, is_terminal_publication_pr_status,
+    pr_comment_body_excerpt,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode,
+    AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
+    AgentWorkspacePrCommentEvidence, AgentWorkspacePrCommentEvidenceUpsert,
+    AgentWorkspacePrDescription, AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
+    AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
+    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewMonitor,
+    AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewTargetScope,
+    AgentWorkspaceSourcePullRequest, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+};
 pub use agent_run::{
     AgentRun, AgentRunAttribution, AgentRunId, AgentRunStatus, AgentRunUsage,
     InterruptedConversation,
 };
-pub use agent_conversation_workspace::{
-    is_pr_status_pollable_push_status, is_terminal_publication_pr_status,
-    pr_comment_body_excerpt, AgentConversationWorkspace, AgentConversationWorkspaceMode,
-    AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
-    AgentWorkspacePrCommentEvidence, AgentWorkspacePrCommentEvidenceUpsert,
-    AgentWorkspacePrDescription, AgentWorkspaceSourcePullRequest,
-    DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
-};
 pub use agent_task::{
     merge_agent_task_metadata, AgentTaskCreate, AgentTaskDetail, AgentTaskId, AgentTaskList,
-    AgentTaskListId, AgentTaskListSummary, AgentTaskMutationResult, AgentTaskPatch,
-    AgentTaskScope, AgentTaskState, AgentTaskStateChange, AgentTaskSummary,
+    AgentTaskListId, AgentTaskListSummary, AgentTaskMutationResult, AgentTaskPatch, AgentTaskScope,
+    AgentTaskState, AgentTaskStateChange, AgentTaskSummary,
 };
-pub use event_type::{EventType, ParseEventTypeError};
 pub use api_key::{
     ApiKey, AuditLogEntry, PERMISSION_ADMIN, PERMISSION_CREATE_PROJECT, PERMISSION_MAX,
     PERMISSION_READ, PERMISSION_WRITE,
@@ -84,28 +96,28 @@ pub use chat_timeline::{
     ChatTimelinePage,
 };
 pub use delegated_session::{DelegatedSession, DelegatedSessionId};
+pub use event_type::{EventType, ParseEventTypeError};
 pub use execution_plan::{ExecutionPlan, ExecutionPlanStatus, ParseExecutionPlanStatusError};
 pub use ideation::{
     build_child_session, matching_blocker_followup_session, AcceptanceStatus, BusinessValueFactor,
     ChatMessage, ChatMessageAttribution, ChatMessageUsage, ChildSessionDraftInput, Complexity,
-    ComplexityFactor, CriticalPathFactor,
-    DependencyFactor, DependencyGraph, DependencyGraphEdge, DependencyGraphNode,
-    IdeationAnalysisBaseRefKind, IdeationAnalysisState, IdeationAnalysisWorkspaceKind,
-    IdeationSession, IdeationSessionBuilder, IdeationSessionFlow, IdeationSessionStatus,
-    MessageRole, ParseComplexityError, ParseIdeationSessionStatusError, ParseMessageRoleError,
-    ParsePriorityError,
-    ParseProposalCategoryError, ParseProposalStatusError, ParseVerificationStatusError, Priority,
-    PriorityAssessment, PriorityAssessmentFactors, PriorityFactors, ProposalCategory,
-    ProposalStatus, SessionLink, SessionOrigin, SessionPurpose, SessionRelationship, TaskProposal,
-    UserHintFactor, VerificationConfirmationStatus, VerificationError, VerificationGap,
-    VerificationRoundSnapshot, VerificationRunSnapshot, VerificationStatus,
+    ComplexityFactor, CriticalPathFactor, DependencyFactor, DependencyGraph, DependencyGraphEdge,
+    DependencyGraphNode, IdeationAnalysisBaseRefKind, IdeationAnalysisState,
+    IdeationAnalysisWorkspaceKind, IdeationSession, IdeationSessionBuilder, IdeationSessionFlow,
+    IdeationSessionStatus, MessageRole, ParseComplexityError, ParseIdeationSessionStatusError,
+    ParseMessageRoleError, ParsePriorityError, ParseProposalCategoryError,
+    ParseProposalStatusError, ParseVerificationStatusError, Priority, PriorityAssessment,
+    PriorityAssessmentFactors, PriorityFactors, ProposalCategory, ProposalStatus, SessionLink,
+    SessionOrigin, SessionPurpose, SessionRelationship, TaskProposal, UserHintFactor,
+    VerificationConfirmationStatus, VerificationError, VerificationGap, VerificationRoundSnapshot,
+    VerificationRunSnapshot, VerificationStatus,
 };
 pub use memory_archive::{
     ArchiveJobPayload, ArchiveJobStatus, ArchiveJobType, FullRebuildPayload, MemoryArchiveJob,
     MemoryArchiveJobId, MemorySnapshotPayload, RuleSnapshotPayload,
 };
-pub use memory_event::{MemoryActorType, MemoryEvent, MemoryEventId, ParseMemoryActorTypeError};
 pub use memory_entry::{MemoryBucket, MemoryEntry, MemoryEntryId, MemoryStatus};
+pub use memory_event::{MemoryActorType, MemoryEvent, MemoryEventId, ParseMemoryActorTypeError};
 pub use memory_rule_binding::MemoryRuleBinding;
 pub use merge_progress_event::{MergePhase, MergePhaseInfo, MergePhaseStatus, MergeProgressEvent};
 pub use methodology::{
@@ -142,11 +154,14 @@ pub use task_metadata::{
     ExecutionRecoveryMetadata, ExecutionRecoveryReasonCode, ExecutionRecoverySource,
     ExecutionRecoveryState, MergeFailureSource, MergeRecoveryEvent, MergeRecoveryEventKind,
     MergeRecoveryMetadata, MergeRecoveryReasonCode, MergeRecoverySource, MergeRecoveryState,
-    ReviewScopeMetadata, RetryStrategy, ValidationCacheMetadata,
+    RetryStrategy, ReviewScopeMetadata, ValidationCacheMetadata,
 };
 pub use task_qa::TaskQA;
 pub use task_step::{StepProgressSummary, TaskStep, TaskStepStatus};
-pub use team::{TeamMessageId, TeamMessageRecord, TeamSession, TeamSessionId, TeammateCost, TeammateSnapshot};
+pub use team::{
+    TeamMessageId, TeamMessageRecord, TeamSession, TeamSessionId, TeammateCost, TeammateSnapshot,
+};
+pub use ticket_canonical_branch::TicketCanonicalBranch;
 pub use types::{
     ApiKeyId, ChatMessageId, ExecutionPlanId, IdeationSessionId, ProjectId, ReviewIssueId,
     SessionLinkId, TaskId, TaskProposalId, TaskQAId, TaskStepId,

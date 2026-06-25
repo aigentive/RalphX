@@ -2,6 +2,7 @@ import { useCallback, type Dispatch, type SetStateAction } from "react";
 
 import { useChatStore } from "@/stores/chatStore";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
+import { useProjectStore } from "@/stores/projectStore";
 
 interface UseAgentsSessionBindingsArgs {
   setOptimisticSelectedConversationId: Dispatch<SetStateAction<string | null>>;
@@ -18,10 +19,18 @@ export function useAgentsSessionBindings({
   const runtimeByConversationId = useAgentSessionStore((s) => s.runtimeByConversationId);
   const lastRuntimeByProjectId = useAgentSessionStore((s) => s.lastRuntimeByProjectId);
   const setFocusedProject = useAgentSessionStore((s) => s.setFocusedProject);
-  const selectConversation = useAgentSessionStore((s) => s.selectConversation);
+  const selectAgentConversation = useAgentSessionStore((s) => s.selectConversation);
   const clearSelection = useAgentSessionStore((s) => s.clearSelection);
   const setRuntimeForConversation = useAgentSessionStore((s) => s.setRuntimeForConversation);
   const setLastRuntimeForProject = useAgentSessionStore((s) => s.setLastRuntimeForProject);
+  const selectProject = useProjectStore((s) => s.selectProject);
+  const selectConversation = useCallback(
+    (projectId: string, conversationId: string) => {
+      selectProject(projectId);
+      selectAgentConversation(projectId, conversationId);
+    },
+    [selectAgentConversation, selectProject]
+  );
   const clearAgentConversationSelection = useCallback(() => {
     setOptimisticSelectedConversationId(null);
     clearSelection();

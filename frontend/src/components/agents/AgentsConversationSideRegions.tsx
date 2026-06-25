@@ -1,6 +1,9 @@
 import type { MouseEvent as ReactMouseEvent } from "react";
 
-import type { AgentConversationWorkspace } from "@/api/chat";
+import type {
+  AgentConversationWorkspace,
+  AgentConversationWorkspaceFreshness,
+} from "@/api/chat";
 import type {
   AgentArtifactTab,
   AgentTaskArtifactMode,
@@ -10,11 +13,13 @@ import type { AgentConversation } from "./agentConversations";
 import { AgentsArtifactPaneRegion } from "./AgentsArtifactPaneRegion";
 import { AgentsTerminalRegion } from "./AgentsTerminalRegion";
 import type { AgentPublishFocusRequest } from "./agentPublishFocus";
+import type { AgentTaskArtifactFocusRequest } from "./agentTaskArtifactFocus";
 
 interface AgentsConversationSideRegionsProps {
   activeConversation: AgentConversation | null;
   activeProjectBaseBranch: string | null;
   activeWorkspace: AgentConversationWorkspace | null;
+  activeWorkspaceFreshness: AgentConversationWorkspaceFreshness | undefined;
   artifactWidthCss: string;
   chatDockElement: HTMLDivElement | null;
   focusedIdeationSessionId: string | null;
@@ -28,18 +33,21 @@ interface AgentsConversationSideRegionsProps {
   setArtifactPaneVisibility: (conversationId: string, isOpen: boolean) => void;
   setArtifactTaskMode: (conversationId: string, mode: AgentTaskArtifactMode) => void;
   setTerminalPanelDockElement: (element: HTMLDivElement | null) => void;
+  taskArtifactFocusRequest: AgentTaskArtifactFocusRequest | null;
   terminalUnavailableReason: string | null;
   onFocusVerificationSession: (parentSessionId: string, childSessionId: string) => void;
   onPublishWorkspace: (conversationId: string) => Promise<void>;
   onResizeReset: (event: ReactMouseEvent) => void;
   onResizeStart: (event: ReactMouseEvent) => void;
   onSelectArtifact: (tab: AgentArtifactTab) => void;
+  onTaskArtifactSelectionChange: (taskId: string | null) => void;
 }
 
 export function AgentsConversationSideRegions({
   activeConversation,
   activeProjectBaseBranch,
   activeWorkspace,
+  activeWorkspaceFreshness,
   artifactWidthCss,
   chatDockElement,
   focusedIdeationSessionId,
@@ -53,12 +61,14 @@ export function AgentsConversationSideRegions({
   setArtifactPaneVisibility,
   setArtifactTaskMode,
   setTerminalPanelDockElement,
+  taskArtifactFocusRequest,
   terminalUnavailableReason,
   onFocusVerificationSession,
   onPublishWorkspace,
   onResizeReset,
   onResizeStart,
   onSelectArtifact,
+  onTaskArtifactSelectionChange,
 }: AgentsConversationSideRegionsProps) {
   return (
     <>
@@ -67,6 +77,7 @@ export function AgentsConversationSideRegions({
           conversationId={selectedConversationId}
           conversation={activeConversation}
           workspace={activeWorkspace}
+          activeWorkspaceFreshness={activeWorkspaceFreshness}
           projectBaseBranch={activeProjectBaseBranch}
           focusedIdeationSessionId={focusedIdeationSessionId}
           hasAutoOpenArtifacts={hasAutoOpenArtifacts}
@@ -81,7 +92,9 @@ export function AgentsConversationSideRegions({
           onPublishWorkspace={onPublishWorkspace}
           isPublishingWorkspace={publishingConversationId === selectedConversationId}
           publishFocusRequest={publishFocusRequest}
+          taskFocusRequest={taskArtifactFocusRequest}
           onFocusVerificationSession={onFocusVerificationSession}
+          onTaskArtifactSelectionChange={onTaskArtifactSelectionChange}
           onClose={() => setArtifactPaneVisibility(selectedConversationId, false)}
           terminalUnavailableReason={terminalUnavailableReason}
           setTerminalPanelDockElement={setTerminalPanelDockElement}

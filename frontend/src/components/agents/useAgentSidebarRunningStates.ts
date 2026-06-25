@@ -1,6 +1,6 @@
 import { useEffect, useMemo } from "react";
 
-import { chatApi } from "@/api/chat";
+import { chatApi, type AgentConversationRuntimeStatus } from "@/api/chat";
 import { type AgentStatus, useChatStore } from "@/stores/chatStore";
 
 import {
@@ -10,28 +10,12 @@ import {
 
 const AGENT_SIDEBAR_LIVENESS_POLL_MS = 5_000;
 
-type SidebarRunningState =
-  | boolean
-  | {
-      isRunning?: boolean;
-      is_running?: boolean;
-      agentStatus?: AgentStatus;
-      agent_status?: AgentStatus;
-    };
-
-function normalizeRunningState(state: SidebarRunningState | undefined): {
+function normalizeRuntimeStatus(status: AgentConversationRuntimeStatus | undefined): {
   isRunning: boolean;
   agentStatus: AgentStatus;
 } {
-  if (typeof state === "boolean") {
-    return {
-      isRunning: state,
-      agentStatus: state ? "generating" : "idle",
-    };
-  }
-
-  const isRunning = state?.isRunning ?? state?.is_running ?? false;
-  const agentStatus = state?.agentStatus ?? state?.agent_status ?? "generating";
+  const isRunning = status?.isRunning ?? false;
+  const agentStatus = status?.agentStatus ?? "generating";
   return {
     isRunning,
     agentStatus: isRunning
@@ -73,15 +57,15 @@ export function useAgentSidebarRunningStates(
 
       const contextIds = projectConversations.map((conversation) => conversation.id);
       chatApi
-        .getAgentRunningStates("project", contextIds)
-        .then((runningStates) => {
+        .getAgentConversationRuntimeStatuses(contextIds)
+        .then((runtimeStatuses) => {
           if (cancelled) return;
 
           const chatState = useChatStore.getState();
           for (const conversation of projectConversations) {
             const storeKey = getAgentConversationStoreKey(conversation);
-            const { isRunning, agentStatus } = normalizeRunningState(
-              runningStates[conversation.id] as SidebarRunningState | undefined
+            const { isRunning, agentStatus } = normalizeRuntimeStatus(
+              runtimeStatuses[conversation.id]
             );
             const currentStatus = chatState.agentStatus[storeKey] ?? "idle";
 

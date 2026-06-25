@@ -87,6 +87,32 @@ describe("TaskCreationForm", () => {
         expect.anything()
       );
     });
+
+    it("should submit execution plan scope when provided", async () => {
+      render(
+        <TaskCreationForm
+          {...defaultProps}
+          ideationSessionId="session-123"
+          executionPlanId="exec-plan-123"
+        />
+      );
+
+      const titleInput = screen.getByLabelText(/title/i);
+      await userEvent.type(titleInput, "Plan task");
+
+      const submitButton = screen.getByRole("button", { name: /create task/i });
+      await userEvent.click(submitButton);
+
+      expect(mockMutate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectId: "project-123",
+          title: "Plan task",
+          executionPlanId: "exec-plan-123",
+        }),
+        expect.anything()
+      );
+      expect(mockMutate.mock.calls[0]?.[0]).not.toHaveProperty("ideationSessionId");
+    });
   });
 
   describe("Category Selection", () => {

@@ -1,7 +1,9 @@
 use chrono::Utc;
 use rusqlite::Connection;
 
-use crate::domain::agents::{AgentHarnessKind, AgentProviderSettings, LogicalEffort};
+use crate::domain::agents::{
+    AgentHarnessKind, AgentProviderCliManagementMode, AgentProviderSettings, LogicalEffort,
+};
 use crate::domain::repositories::AgentProviderSettingsRepository;
 use crate::infrastructure::sqlite::run_migrations;
 use crate::testing::SqliteTestDb;
@@ -23,6 +25,10 @@ async fn upsert_and_get_provider_settings() {
     let mut settings = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Codex);
     settings.enabled = true;
     settings.is_default = true;
+    settings.cli_management_mode = AgentProviderCliManagementMode::RxManaged;
+    settings.auto_update_enabled = true;
+    settings.custom_binary_enabled = true;
+    settings.custom_binary_path = Some("/opt/tools/codex-wrapper".to_string());
 
     repo.upsert(&settings).await.unwrap();
     let row = repo
@@ -35,6 +41,16 @@ async fn upsert_and_get_provider_settings() {
     assert!(row.is_default);
     assert_eq!(row.model.as_deref(), Some("gpt-5.5"));
     assert_eq!(row.sandbox_mode.as_deref(), Some("danger-full-access"));
+    assert_eq!(
+        row.cli_management_mode,
+        AgentProviderCliManagementMode::RxManaged
+    );
+    assert!(row.auto_update_enabled);
+    assert!(row.custom_binary_enabled);
+    assert_eq!(
+        row.custom_binary_path.as_deref(),
+        Some("/opt/tools/codex-wrapper")
+    );
 }
 
 #[tokio::test]
@@ -119,8 +135,9 @@ fn low_level_fetch_helpers_map_rows_and_missing_rows() {
             provider, enabled, is_default, model, effort, approval_policy,
             sandbox_mode, claude_permission_mode,
             claude_dangerously_skip_permissions,
-            claude_allow_dangerously_skip_permissions, updated_at
-        ) VALUES (?1, 1, 1, ?2, ?3, ?4, ?5, ?6, 1, 0, ?7)",
+            claude_allow_dangerously_skip_permissions, cli_management_mode,
+            auto_update_enabled, updated_at
+        ) VALUES (?1, 1, 1, ?2, ?3, ?4, ?5, ?6, 1, 0, ?7, 1, ?8)",
         rusqlite::params![
             AgentHarnessKind::Claude.to_string(),
             "sonnet",
@@ -128,6 +145,7 @@ fn low_level_fetch_helpers_map_rows_and_missing_rows() {
             "auto",
             "workspace-write",
             "bypassPermissions",
+            "rx_managed",
             "2026-05-08 10:30:00",
         ],
     )
@@ -170,6 +188,13 @@ fn low_level_fetch_helpers_map_rows_and_missing_rows() {
     );
     assert!(selected.claude_dangerously_skip_permissions);
     assert!(!selected.claude_allow_dangerously_skip_permissions);
+    assert_eq!(
+        selected.cli_management_mode,
+        AgentProviderCliManagementMode::RxManaged
+    );
+    assert!(selected.auto_update_enabled);
+    assert!(!selected.custom_binary_enabled);
+    assert_eq!(selected.custom_binary_path, None);
     assert!(missing.is_none());
     assert_eq!(rows.len(), 1);
 }
@@ -183,8 +208,9 @@ fn low_level_fetch_helpers_return_database_errors_for_invalid_rows() {
             provider, enabled, is_default, model, effort, approval_policy,
             sandbox_mode, claude_permission_mode,
             claude_dangerously_skip_permissions,
-            claude_allow_dangerously_skip_permissions, updated_at
-        ) VALUES (?1, 1, 0, NULL, ?2, NULL, NULL, NULL, 0, 0, ?3)",
+            claude_allow_dangerously_skip_permissions, cli_management_mode,
+            auto_update_enabled, updated_at
+        ) VALUES (?1, 1, 0, NULL, ?2, NULL, NULL, NULL, 0, 0, 'user_managed', 0, ?3)",
         rusqlite::params!["claude", "not-effort", "2026-05-08 10:30:00"],
     )
     .unwrap();

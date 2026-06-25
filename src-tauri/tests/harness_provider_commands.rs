@@ -24,6 +24,10 @@ fn input(provider: &str) -> UpdateAgentProviderSettingsInput {
         claude_permission_mode: None,
         claude_dangerously_skip_permissions: None,
         claude_allow_dangerously_skip_permissions: None,
+        cli_management_mode: None,
+        auto_update_enabled: None,
+        custom_binary_enabled: None,
+        custom_binary_path: None,
         reset_to_defaults: false,
         apply_to_all_lanes: false,
     }

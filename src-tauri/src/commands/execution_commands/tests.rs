@@ -3,8 +3,8 @@ use crate::application::chat_service::{ChatService, MockChatService};
 use crate::commands::execution_commands::lifecycle::{
     determine_paused_restore_status, prepare_resumed_task_for_entry_actions,
 };
-use crate::domain::entities::{GitMode, IdeationSession};
-use crate::domain::services::RunningAgentKey;
+use crate::domain::entities::{ChatConversation, GitMode, IdeationSession};
+use crate::domain::services::{QueueKey, QueuedMessage, RunningAgentKey};
 use std::sync::Arc;
 use tauri::test::{mock_builder, mock_context, noop_assets};
 use tauri::Manager;
@@ -1404,6 +1404,107 @@ async fn test_resume_relaunches_one_queued_message_for_active_ideation_session()
 }
 
 #[tokio::test]
+async fn test_resume_relaunches_durable_queued_ideation_message() {
+    let app_state = AppState::new_test();
+    let execution_state = Arc::new(ExecutionState::new());
+    let project = Project::new(
+        "Durable Ideation Resume".to_string(),
+        "/test/durable-ideation".to_string(),
+    );
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+    let session = app_state
+        .ideation_session_repo
+        .create(IdeationSession::new(project.id.clone()))
+        .await
+        .unwrap();
+    let key = QueueKey::new(ChatContextType::Ideation, session.id.as_str());
+    let mut queued = QueuedMessage::with_id(
+        "durable-ideation".to_string(),
+        "durable ideation".to_string(),
+    );
+    queued.metadata_override = Some(r#"{"resume_in_place":true}"#.to_string());
+    app_state
+        .queued_message_repo
+        .enqueue_back(&key, &queued)
+        .await
+        .unwrap();
+
+    let mock = Arc::new(MockChatService::new());
+    let resumed =
+        resume_paused_ideation_queues_with_chat_service(None, &app_state, &execution_state, |_| {
+            Arc::clone(&mock) as Arc<dyn ChatService>
+        })
+        .await
+        .expect("resume durable ideation queue");
+
+    assert_eq!(resumed, 1);
+    assert_eq!(
+        mock.get_sent_messages().await,
+        vec!["durable ideation".to_string()]
+    );
+    assert!(app_state
+        .queued_message_repo
+        .list(&key)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn test_resume_clears_durable_queue_for_inactive_ideation_session() {
+    let app_state = AppState::new_test();
+    let execution_state = Arc::new(ExecutionState::new());
+    let project = Project::new(
+        "Inactive Durable Ideation".to_string(),
+        "/test/inactive-durable-ideation".to_string(),
+    );
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+    let session = app_state
+        .ideation_session_repo
+        .create(IdeationSession::new(project.id.clone()))
+        .await
+        .unwrap();
+    app_state
+        .ideation_session_repo
+        .update_status(&session.id, IdeationSessionStatus::Archived)
+        .await
+        .unwrap();
+    let key = QueueKey::new(ChatContextType::Ideation, session.id.as_str());
+    let queued =
+        QueuedMessage::with_id("archived-ideation".to_string(), "should clear".to_string());
+    app_state
+        .queued_message_repo
+        .enqueue_back(&key, &queued)
+        .await
+        .unwrap();
+
+    let mock = Arc::new(MockChatService::new());
+    let resumed =
+        resume_paused_ideation_queues_with_chat_service(None, &app_state, &execution_state, |_| {
+            Arc::clone(&mock) as Arc<dyn ChatService>
+        })
+        .await
+        .expect("resume durable inactive ideation queue");
+
+    assert_eq!(resumed, 0);
+    assert_eq!(mock.call_count(), 0);
+    assert!(app_state
+        .queued_message_repo
+        .list(&key)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
 async fn test_resume_relaunches_queued_task_chat_message() {
     let app_state = AppState::new_test();
     let project = Project::new(
@@ -1451,6 +1552,107 @@ async fn test_resume_relaunches_queued_task_chat_message() {
         .message_queue
         .get_queued(ChatContextType::Task, task.id.as_str())
         .is_empty());
+}
+
+#[tokio::test]
+async fn test_resume_relaunches_durable_queued_task_chat_message() {
+    let app_state = AppState::new_test();
+    let project = Project::new(
+        "Resume Durable Task Chat".to_string(),
+        "/test/durable-task-chat".to_string(),
+    );
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+    let task = app_state
+        .task_repo
+        .create(Task::new(
+            project.id.clone(),
+            "Durable task chat".to_string(),
+        ))
+        .await
+        .unwrap();
+    let key = QueueKey::new(ChatContextType::Task, task.id.as_str());
+    let queued = QueuedMessage::with_id(
+        "durable-task-chat".to_string(),
+        "durable task chat".to_string(),
+    );
+    app_state
+        .queued_message_repo
+        .enqueue_back(&key, &queued)
+        .await
+        .unwrap();
+
+    let mock = Arc::new(MockChatService::new());
+    let resumed = resume_paused_non_slot_chat_queues_with_chat_service(None, &app_state, || {
+        Arc::clone(&mock) as Arc<dyn ChatService>
+    })
+    .await
+    .expect("resume durable task chat queue");
+
+    assert_eq!(resumed, 1);
+    assert_eq!(
+        mock.get_sent_messages().await,
+        vec!["durable task chat".to_string()]
+    );
+    assert!(app_state
+        .queued_message_repo
+        .list(&key)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn test_resume_restores_durable_non_slot_message_when_send_fails() {
+    let app_state = AppState::new_test();
+    let project = Project::new(
+        "Restore Durable Task Chat".to_string(),
+        "/test/restore-durable-task-chat".to_string(),
+    );
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+    let task = app_state
+        .task_repo
+        .create(Task::new(
+            project.id.clone(),
+            "Restore task chat".to_string(),
+        ))
+        .await
+        .unwrap();
+    let key = QueueKey::new(ChatContextType::Task, task.id.as_str());
+    let queued = QueuedMessage::with_id(
+        "restore-task-chat".to_string(),
+        "restore task chat".to_string(),
+    );
+    app_state
+        .queued_message_repo
+        .enqueue_back(&key, &queued)
+        .await
+        .unwrap();
+
+    let mock = Arc::new(MockChatService::new());
+    mock.set_available(false).await;
+    let resumed = resume_paused_non_slot_chat_queues_with_chat_service(None, &app_state, || {
+        Arc::clone(&mock) as Arc<dyn ChatService>
+    })
+    .await
+    .expect("resume durable task chat queue");
+
+    assert_eq!(resumed, 0);
+    assert_eq!(
+        app_state.message_queue.get_queued_with_key(&key),
+        vec![queued.clone()]
+    );
+    assert_eq!(
+        app_state.queued_message_repo.list(&key).await.unwrap(),
+        vec![queued]
+    );
 }
 
 #[tokio::test]
@@ -1506,6 +1708,57 @@ async fn test_resume_relaunches_queued_review_message_with_harness_override() {
         .message_queue
         .get_queued(ChatContextType::Review, task.id.as_str())
         .is_empty());
+}
+
+#[tokio::test]
+async fn test_resume_restores_durable_slot_message_when_send_fails() {
+    let app_state = AppState::new_test();
+    let execution_state = Arc::new(ExecutionState::new());
+    let project = Project::new(
+        "Restore Durable Slot".to_string(),
+        "/test/restore-durable-slot".to_string(),
+    );
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+    let task = app_state
+        .task_repo
+        .create(Task {
+            internal_status: InternalStatus::Reviewing,
+            ..Task::new(project.id.clone(), "Restore review".to_string())
+        })
+        .await
+        .unwrap();
+    let key = QueueKey::new(ChatContextType::Review, task.id.as_str());
+    let queued = QueuedMessage::with_id("restore-review".to_string(), "restore review".to_string());
+    app_state
+        .queued_message_repo
+        .enqueue_back(&key, &queued)
+        .await
+        .unwrap();
+
+    let mock = Arc::new(MockChatService::new());
+    mock.set_available(false).await;
+    let resumed = resume_paused_slot_consuming_queues_with_chat_service(
+        None,
+        &app_state,
+        &execution_state,
+        || Arc::clone(&mock) as Arc<dyn ChatService>,
+    )
+    .await
+    .expect("resume durable slot queue");
+
+    assert_eq!(resumed, 0);
+    assert_eq!(
+        app_state.message_queue.get_queued_with_key(&key),
+        vec![queued.clone()]
+    );
+    assert_eq!(
+        app_state.queued_message_repo.list(&key).await.unwrap(),
+        vec![queued]
+    );
 }
 
 #[tokio::test]
@@ -1668,6 +1921,157 @@ async fn test_project_scoped_workspace_resume_respects_global_workspace_capacity
         1,
         "project-scoped resume must still respect the global workspace lane cap"
     );
+}
+
+#[tokio::test]
+async fn test_resume_relaunches_durable_project_conversation_queue_with_override() {
+    let app_state = AppState::new_test();
+    let execution_state = Arc::new(ExecutionState::new());
+    let project = Project::new(
+        "Durable Conversation Queue".to_string(),
+        "/test/durable-conversation-queue".to_string(),
+    );
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+    let conversation = app_state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project.id.clone()))
+        .await
+        .unwrap();
+    let key = QueueKey::new(ChatContextType::Project, conversation.id.as_str());
+    let queued = QueuedMessage::with_id(
+        "durable-project-conversation".to_string(),
+        "durable project conversation".to_string(),
+    );
+    app_state
+        .queued_message_repo
+        .enqueue_back(&key, &queued)
+        .await
+        .unwrap();
+
+    let mock = Arc::new(MockChatService::new());
+    let resumed = resume_paused_workspace_queues_with_chat_service(
+        None,
+        &app_state,
+        &execution_state,
+        || Arc::clone(&mock) as Arc<dyn ChatService>,
+    )
+    .await
+    .expect("resume durable project conversation queue");
+
+    assert_eq!(resumed, 1);
+    assert_eq!(
+        mock.get_sent_messages().await,
+        vec!["durable project conversation".to_string()]
+    );
+    let options = mock.get_sent_options().await;
+    assert_eq!(
+        options[0]
+            .conversation_id_override
+            .as_ref()
+            .map(|id| id.as_str()),
+        Some(conversation.id.as_str())
+    );
+    assert!(app_state
+        .queued_message_repo
+        .list(&key)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn test_durable_queue_counts_merge_with_memory_by_message_id() {
+    let app_state = AppState::new_test();
+    let project = Project::new(
+        "Durable Queue Count".to_string(),
+        "/test/durable-queue-count".to_string(),
+    );
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+    let task = app_state
+        .task_repo
+        .create(Task {
+            internal_status: InternalStatus::Reviewing,
+            ..Task::new(project.id.clone(), "Queued review".to_string())
+        })
+        .await
+        .unwrap();
+    let key = QueueKey::new(ChatContextType::Review, task.id.as_str());
+    let shared = QueuedMessage::with_id("shared".to_string(), "Shared".to_string());
+    let durable_only =
+        QueuedMessage::with_id("durable-only".to_string(), "Durable only".to_string());
+    app_state
+        .queued_message_repo
+        .enqueue_back(&key, &shared)
+        .await
+        .unwrap();
+    app_state
+        .queued_message_repo
+        .enqueue_back(&key, &durable_only)
+        .await
+        .unwrap();
+    app_state
+        .message_queue
+        .queue_front_existing(ChatContextType::Review, task.id.as_str(), shared);
+
+    let count = count_slot_consuming_queued_messages(Some(&project.id), &app_state)
+        .await
+        .expect("count durable queued messages");
+
+    assert_eq!(count, 2);
+}
+
+#[tokio::test]
+async fn test_clear_slot_consuming_queues_clears_durable_and_memory_rows() {
+    let app_state = AppState::new_test();
+    let project = Project::new(
+        "Clear Durable Slot Queue".to_string(),
+        "/test/clear-durable-slot-queue".to_string(),
+    );
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+    let task = app_state
+        .task_repo
+        .create(Task {
+            internal_status: InternalStatus::Reviewing,
+            ..Task::new(project.id.clone(), "Clear review".to_string())
+        })
+        .await
+        .unwrap();
+    let key = QueueKey::new(ChatContextType::Review, task.id.as_str());
+    let memory = QueuedMessage::with_id("memory".to_string(), "Memory".to_string());
+    let durable = QueuedMessage::with_id("durable".to_string(), "Durable".to_string());
+    app_state
+        .message_queue
+        .queue_front_existing(ChatContextType::Review, task.id.as_str(), memory);
+    app_state
+        .queued_message_repo
+        .enqueue_back(&key, &durable)
+        .await
+        .unwrap();
+
+    let cleared = clear_slot_consuming_queues(Some(&project.id), &app_state)
+        .await
+        .expect("clear slot queues");
+
+    assert_eq!(cleared, 1);
+    assert!(app_state.message_queue.get_queued_with_key(&key).is_empty());
+    assert!(app_state
+        .queued_message_repo
+        .list(&key)
+        .await
+        .unwrap()
+        .is_empty());
 }
 
 #[tokio::test]

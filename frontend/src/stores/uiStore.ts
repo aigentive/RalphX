@@ -12,7 +12,7 @@ import { enableMapSet } from "immer";
 import { invoke } from "@tauri-apps/api/core";
 import { featureFlagsSchema } from "@/types/feature-flags";
 import type { FeatureFlags } from "@/types/feature-flags";
-import { isViewEnabled } from "@/hooks/useFeatureFlags";
+import { applyFeatureFlagOverrides, isViewEnabled } from "@/hooks/useFeatureFlags";
 import type { AskUserQuestionPayload } from "@/types/ask-user-question";
 import type { ExecutionStatusResponse } from "@/lib/tauri";
 import type { RecoveryPromptEvent } from "@/types/events";
@@ -28,6 +28,9 @@ import {
 // ============================================================================
 
 const SHOW_MERGE_TASKS_KEY = "ralphx-show-merge-tasks";
+const KANBAN_CARD_DISPLAY_MODE_KEY = "ralphx-kanban-card-display-mode";
+
+export type KanbanCardDisplayMode = "default" | "mini";
 
 function loadShowMergeTasks(): boolean {
   try {
@@ -48,6 +51,26 @@ function saveShowMergeTasks(show: boolean): void {
     /* ignore write errors */
   }
 }
+
+function loadKanbanCardDisplayMode(): KanbanCardDisplayMode {
+  try {
+    const saved = localStorage.getItem(KANBAN_CARD_DISPLAY_MODE_KEY);
+    if (saved === "default" || saved === "mini") {
+      return saved;
+    }
+  } catch {
+    /* ignore read errors */
+  }
+  return "default";
+}
+
+function saveKanbanCardDisplayMode(mode: KanbanCardDisplayMode): void {
+  try {
+    localStorage.setItem(KANBAN_CARD_DISPLAY_MODE_KEY, mode);
+  } catch {
+    /* ignore write errors */
+  }
+}
 import { useIdeationStore } from "@/stores/ideationStore";
 import { useProjectStore } from "@/stores/projectStore";
 
@@ -58,6 +81,13 @@ export type GraphSelection =
   | { kind: "planGroup"; id: string }
   | { kind: "tierGroup"; id: string }
   | { kind: "customGroup"; id: string };
+
+export interface TaskCreationContext {
+  projectId: string;
+  defaultTitle?: string;
+  ideationSessionId?: string;
+  executionPlanId?: string;
+}
 
 function applyTaskSelection(
   state: { selectedTaskId: string | null; taskHistoryState: UiState["taskHistoryState"] },
@@ -139,6 +169,7 @@ const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
   battleMode: true,
   teamMode: false,
   atlassianOauth: false,
+  ticketingDashboard: false,
 };
 
 // ============================================================================
@@ -218,6 +249,8 @@ interface UiState {
   showMergeTasks: boolean;
   /** Current search query for the task board */
   boardSearchQuery: string | null;
+  /** App-wide Kanban card density preference */
+  kanbanCardDisplayMode: KanbanCardDisplayMode;
   /** Whether a search request is in flight */
   isSearching: boolean;
   /** ID of selected task for split-screen overlay (kanban view only) */
@@ -242,7 +275,7 @@ interface UiState {
     agentRunId?: string | undefined;
   } | null;
   /** Task creation overlay context, or null if closed */
-  taskCreationContext: { projectId: string; defaultTitle?: string } | null;
+  taskCreationContext: TaskCreationContext | null;
   /** Whether the welcome screen is manually shown (vs. empty state) */
   showWelcomeOverlay: boolean;
   /** View to return to when closing manually-opened welcome screen */
@@ -334,6 +367,8 @@ interface UiActions {
   setShowMergeTasks: (show: boolean) => void;
   /** Set the board search query */
   setBoardSearchQuery: (query: string | null) => void;
+  /** Set app-wide Kanban card density preference */
+  setKanbanCardDisplayMode: (mode: KanbanCardDisplayMode) => void;
   /** Set whether a search is in progress */
   setIsSearching: (searching: boolean) => void;
   /** Set selected task ID for split-screen overlay */
@@ -362,7 +397,11 @@ interface UiActions {
     agentRunId?: string | undefined;
   } | null) => void;
   /** Open task creation overlay */
-  openTaskCreation: (projectId: string, defaultTitle?: string) => void;
+  openTaskCreation: (
+    projectId: string,
+    defaultTitle?: string,
+    context?: Pick<TaskCreationContext, "ideationSessionId" | "executionPlanId">
+  ) => void;
   /** Close task creation overlay */
   closeTaskCreation: () => void;
   /** Open welcome screen overlay, saving current view */
@@ -454,6 +493,7 @@ export const useUiStore = create<UiState & UiActions>()(
     showArchived: false,
     showMergeTasks: loadShowMergeTasks(),
     boardSearchQuery: null,
+    kanbanCardDisplayMode: loadKanbanCardDisplayMode(),
     isSearching: false,
     selectedTaskId: null,
     graphSelection: null,
@@ -501,7 +541,10 @@ export const useUiStore = create<UiState & UiActions>()(
 
     setCurrentView: (view) =>
       set((state) => {
-        const safeView = isViewEnabled(view, state.featureFlags) ? view : DEFAULT_PROJECT_VIEW;
+        const safeView =
+          view === "ticketing" || isViewEnabled(view, state.featureFlags)
+            ? view
+            : DEFAULT_PROJECT_VIEW;
         const projectId = useProjectStore.getState().activeProjectId;
         state.currentView = safeView;
         if (projectId) {
@@ -635,6 +678,12 @@ export const useUiStore = create<UiState & UiActions>()(
         state.boardSearchQuery = query;
       }),
 
+    setKanbanCardDisplayMode: (mode) =>
+      set((state) => {
+        state.kanbanCardDisplayMode = mode;
+        saveKanbanCardDisplayMode(mode);
+      }),
+
     setIsSearching: (searching) =>
       set((state) => {
         state.isSearching = searching;
@@ -713,11 +762,13 @@ export const useUiStore = create<UiState & UiActions>()(
         state.taskHistoryState = historyState;
       }),
 
-    openTaskCreation: (projectId, defaultTitle) =>
+    openTaskCreation: (projectId, defaultTitle, context) =>
       set((state) => {
         state.taskCreationContext = {
           projectId,
           ...(defaultTitle !== undefined && { defaultTitle }),
+          ...(context?.ideationSessionId && { ideationSessionId: context.ideationSessionId }),
+          ...(context?.executionPlanId && { executionPlanId: context.executionPlanId }),
         };
       }),
 
@@ -953,7 +1004,7 @@ void invoke<unknown>("get_ui_feature_flags")
   .then((raw) => {
     const result = featureFlagsSchema.safeParse(raw);
     if (result.success) {
-      useUiStore.getState().setFeatureFlags(result.data);
+      useUiStore.getState().setFeatureFlags(applyFeatureFlagOverrides(result.data));
     }
   })
   .catch(() => {

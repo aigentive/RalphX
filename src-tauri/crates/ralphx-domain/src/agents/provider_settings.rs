@@ -1,5 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::fmt;
+use std::str::FromStr;
 
 use super::harness::{
     AgentHarnessKind, LogicalEffort, CLAUDE_DEFAULT_ALLOW_DANGEROUSLY_SKIP_PERMISSIONS,
@@ -7,6 +9,34 @@ use super::harness::{
     CODEX_DEFAULT_APPROVAL_POLICY, CODEX_DEFAULT_SANDBOX_MODE,
 };
 use super::model_registry::{default_effort_for_provider, default_model_for_provider};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentProviderCliManagementMode {
+    UserManaged,
+    RxManaged,
+}
+
+impl fmt::Display for AgentProviderCliManagementMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UserManaged => write!(f, "user_managed"),
+            Self::RxManaged => write!(f, "rx_managed"),
+        }
+    }
+}
+
+impl FromStr for AgentProviderCliManagementMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "user_managed" => Ok(Self::UserManaged),
+            "rx_managed" => Ok(Self::RxManaged),
+            other => Err(format!("unknown provider CLI management mode: {other}")),
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -26,6 +56,11 @@ pub struct AgentProviderSettings {
     pub claude_permission_mode: Option<String>,
     pub claude_dangerously_skip_permissions: bool,
     pub claude_allow_dangerously_skip_permissions: bool,
+    pub cli_management_mode: AgentProviderCliManagementMode,
+    pub auto_update_enabled: bool,
+    pub custom_binary_enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_binary_path: Option<String>,
     pub updated_at: DateTime<Utc>,
 }
 
@@ -48,6 +83,10 @@ impl AgentProviderSettings {
                 AgentHarnessKind::Claude => CLAUDE_DEFAULT_ALLOW_DANGEROUSLY_SKIP_PERMISSIONS,
                 AgentHarnessKind::Codex => false,
             },
+            cli_management_mode: AgentProviderCliManagementMode::UserManaged,
+            auto_update_enabled: false,
+            custom_binary_enabled: false,
+            custom_binary_path: None,
             updated_at: Utc::now(),
         }
     }
