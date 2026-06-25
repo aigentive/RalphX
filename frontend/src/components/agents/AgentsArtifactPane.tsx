@@ -483,18 +483,22 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     ],
     [availableArtifactTabIds, showJiraTab, showLinearTab, showPublishTab],
   );
+  const fallbackActiveTab =
+    workspaceReviewContext?.shouldShowTab || reviewArtifactId
+      ? "review"
+      : showJiraTab
+        ? "jira"
+        : showLinearTab
+          ? "linear"
+          : visibleTabs.some((tab) => tab.id === "plan")
+            ? "plan"
+            : visibleTabs.some((tab) => tab.id === "issues")
+              ? "issues"
+              : "plan";
   const effectiveActiveTab =
     visibleTabs.some((tab) => tab.id === activeTab)
       ? activeTab
-      : workspaceReviewContext?.shouldShowTab || reviewArtifactId
-        ? "review"
-        : showJiraTab
-          ? "jira"
-          : showLinearTab
-            ? "linear"
-            : visibleTabs.some((tab) => tab.id === "plan")
-              ? "plan"
-              : visibleTabs[0]?.id ?? "plan";
+      : fallbackActiveTab;
   const workspaceReviewAutoStartKey =
     conversationId && workspaceReviewContext?.target
       ? `${conversationId}:${workspaceReviewContext.target.scope}:${workspaceReviewContext.target.diffFingerprint}`
