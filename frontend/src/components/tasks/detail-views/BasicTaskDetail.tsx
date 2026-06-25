@@ -775,13 +775,18 @@ export function BasicTaskDetail({ task, isHistorical = false }: BasicTaskDetailP
     if (task.metadata) {
       try {
         const metadata = JSON.parse(task.metadata);
-        if (metadata.failure_error) {
+        const failureError =
+          typeof metadata.failure_error === "string" ? metadata.failure_error : "";
+        const lastAgentError =
+          typeof metadata.last_agent_error === "string" ? metadata.last_agent_error : "";
+        const displayError = failureError || lastAgentError;
+        if (displayError) {
           const attemptCount =
             typeof metadata.auto_retry_count_executing === "number"
               ? metadata.auto_retry_count_executing
               : 0;
           failureInfo = {
-            failure_error: metadata.failure_error,
+            failure_error: displayError,
             is_timeout: metadata.is_timeout || false,
             attempt_count: attemptCount,
             ...(metadata.failure_details !== undefined && { failure_details: metadata.failure_details as string }),

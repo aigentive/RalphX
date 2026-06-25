@@ -2166,14 +2166,25 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                 serde_json::json!(chrono::Utc::now().to_rfc3339()),
                             );
 
-                            // Pre-compute failure metadata for timeouts so on_enter(Failed)
-                            // skip guard preserves is_timeout=true via the failure_error key
-                            if matches!(stream_error, Some(StreamError::Timeout { .. })) {
+                            // Pre-compute failure metadata for task execution failures so
+                            // on_enter(Failed) does not replace the worker error with the
+                            // status-only transition's default empty FailedData.
+                            if target_status == InternalStatus::Failed
+                                && stream_error
+                                    .map(|se| !se.is_provider_error())
+                                    .unwrap_or(true)
+                            {
                                 obj.insert(
                                     "failure_error".to_string(),
                                     serde_json::json!(redacted_error),
                                 );
-                                obj.insert("is_timeout".to_string(), serde_json::json!(true));
+                                obj.insert(
+                                    "is_timeout".to_string(),
+                                    serde_json::json!(matches!(
+                                        stream_error,
+                                        Some(StreamError::Timeout { .. })
+                                    )),
+                                );
                             }
 
                             // Classify failure and write ExecutionRecoveryMetadata alongside
