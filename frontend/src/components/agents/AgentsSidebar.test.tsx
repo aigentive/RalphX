@@ -1190,6 +1190,71 @@ describe("AgentsSidebar", () => {
     expect(fetchNextPage).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps project pagination available after a same-size group refresh", async () => {
+    const user = userEvent.setup();
+    const rows = Array.from({ length: 8 }, (_, index) =>
+      conversation({
+        id: `conversation-refresh-${index + 1}`,
+        title: `Refresh row ${index + 1}`,
+      })
+    );
+    const firstFetchNextPage = vi.fn().mockResolvedValue(undefined);
+    const refreshedFetchNextPage = vi.fn().mockResolvedValue(undefined);
+
+    function RefreshingSidebar() {
+      const [refreshVersion, setRefreshVersion] = useState(0);
+      conversationsByProject.set("project-1", {
+        data: rows,
+        total: 24,
+        isLoading: false,
+        hasNextPage: true,
+        isFetchingNextPage: false,
+        fetchNextPage:
+          refreshVersion === 0 ? firstFetchNextPage : refreshedFetchNextPage,
+      });
+
+      return (
+        <TooltipProvider delayDuration={0}>
+          <button
+            type="button"
+            onClick={() => setRefreshVersion((version) => version + 1)}
+          >
+            Refresh group
+          </button>
+          <AgentsSidebar
+            projects={[project()]}
+            focusedProjectId="project-1"
+            selectedConversationId={null}
+            onFocusProject={vi.fn()}
+            onSelectConversation={vi.fn()}
+            onCreateAgent={vi.fn()}
+            onCreateProject={vi.fn()}
+            onArchiveProject={vi.fn()}
+            onAutoRenameConversation={vi.fn()}
+            onRenameConversation={vi.fn()}
+            onArchiveConversation={vi.fn()}
+            onRestoreConversation={vi.fn()}
+            onForkConversation={vi.fn()}
+            showArchived={false}
+            onShowArchivedChange={vi.fn()}
+          />
+        </TooltipProvider>
+      );
+    }
+
+    render(<RefreshingSidebar />);
+
+    virtuosoMockState.endReachedByTestId.get("agents-sidebar-session-list-project-1")?.();
+    expect(firstFetchNextPage).toHaveBeenCalledTimes(1);
+    await waitForAnimationFrame();
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+
+    await user.click(screen.getByRole("button", { name: "Refresh group" }));
+    virtuosoMockState.endReachedByTestId.get("agents-sidebar-session-list-project-1")?.();
+
+    expect(refreshedFetchNextPage).toHaveBeenCalledTimes(1);
+  });
+
   it("auto-fetches the next project page when the user scrolls the virtual list to the bottom", async () => {
     const fetchNextPage = vi.fn().mockResolvedValue(undefined);
     const paginationProject = project({
