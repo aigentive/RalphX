@@ -59,12 +59,14 @@ export function useAgentWorkspaceChangeSummary({
   defaultMode = "uncommitted",
   liveSummary = null,
   hydrateWorktreeFileLists = true,
+  repairMode = false,
 }: {
   conversationId: string;
   review: AgentWorkspaceReview | null;
   defaultMode?: DiffFilterMode | undefined;
   liveSummary?: AgentWorkspaceChangeSummary | null;
   hydrateWorktreeFileLists?: boolean;
+  repairMode?: boolean;
 }): AgentWorkspaceChangeSummaryState {
   const [selectedMode, setSelectedMode] = useState<DiffFilterMode>(defaultMode);
   const [hasUserSelectedMode, setHasUserSelectedMode] = useState(false);
@@ -99,8 +101,14 @@ export function useAgentWorkspaceChangeSummary({
   }, [conversationId, defaultMode, hasUserSelectedMode]);
 
   const stagedFilesQuery = useQuery({
-    queryKey: [...agentWorkspaceKeys.diff(conversationId), "staged-files"],
-    queryFn: () => diffApi.getAgentConversationWorkspaceStagedFileChanges(conversationId),
+    queryKey: [
+      ...agentWorkspaceKeys.diff(conversationId),
+      repairMode ? "repair-staged-files" : "staged-files",
+    ],
+    queryFn: () =>
+      repairMode
+        ? diffApi.getAgentConversationWorkspaceRepairStagedFileChanges(conversationId)
+        : diffApi.getAgentConversationWorkspaceStagedFileChanges(conversationId),
     enabled:
       canQueryWorktreeFiles &&
       (!hasLiveWorktreeSummary ||
@@ -113,8 +121,14 @@ export function useAgentWorkspaceChangeSummary({
   });
 
   const unstagedFilesQuery = useQuery({
-    queryKey: [...agentWorkspaceKeys.diff(conversationId), "unstaged-files"],
-    queryFn: () => diffApi.getAgentConversationWorkspaceUnstagedFileChanges(conversationId),
+    queryKey: [
+      ...agentWorkspaceKeys.diff(conversationId),
+      repairMode ? "repair-unstaged-files" : "unstaged-files",
+    ],
+    queryFn: () =>
+      repairMode
+        ? diffApi.getAgentConversationWorkspaceRepairUnstagedFileChanges(conversationId)
+        : diffApi.getAgentConversationWorkspaceUnstagedFileChanges(conversationId),
     enabled:
       canQueryWorktreeFiles &&
       (!hasLiveWorktreeSummary ||

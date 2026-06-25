@@ -71,6 +71,11 @@ const agentsViewTestMocks = vi.hoisted(() => ({
   getWorkspaceStagedDiffMock: vi.fn(),
   getWorkspaceUnstagedDiffMock: vi.fn(),
   getWorkspaceCumulativeDiffMock: vi.fn(),
+  getWorkspaceRepairSummaryMock: vi.fn(),
+  getWorkspaceRepairStagedChangesMock: vi.fn(),
+  getWorkspaceRepairUnstagedChangesMock: vi.fn(),
+  getWorkspaceRepairStagedDiffMock: vi.fn(),
+  getWorkspaceRepairUnstagedDiffMock: vi.fn(),
   listAgentTasksMock: vi.fn(),
   listAgentTaskListsMock: vi.fn(),
   listAgentTaskListTasksMock: vi.fn(),
@@ -185,6 +190,11 @@ const {
   getWorkspaceStagedDiffMock,
   getWorkspaceUnstagedDiffMock,
   getWorkspaceCumulativeDiffMock,
+  getWorkspaceRepairSummaryMock,
+  getWorkspaceRepairStagedChangesMock,
+  getWorkspaceRepairUnstagedChangesMock,
+  getWorkspaceRepairStagedDiffMock,
+  getWorkspaceRepairUnstagedDiffMock,
   listAgentTasksMock,
   listAgentTaskListsMock,
   listAgentTaskListTasksMock,
@@ -726,12 +736,22 @@ vi.mock("@/api/diff", () => ({
       getWorkspaceStagedChangesMock(...args),
     getAgentConversationWorkspaceUnstagedFileChanges: (...args: unknown[]) =>
       getWorkspaceUnstagedChangesMock(...args),
+    getAgentConversationWorkspaceRepairChangeSummary: (...args: unknown[]) =>
+      getWorkspaceRepairSummaryMock(...args),
+    getAgentConversationWorkspaceRepairStagedFileChanges: (...args: unknown[]) =>
+      getWorkspaceRepairStagedChangesMock(...args),
+    getAgentConversationWorkspaceRepairUnstagedFileChanges: (...args: unknown[]) =>
+      getWorkspaceRepairUnstagedChangesMock(...args),
     getAgentConversationWorkspaceCumulativeFileChanges: (...args: unknown[]) =>
       getWorkspaceCumulativeChangesMock(...args),
     getAgentConversationWorkspaceStagedFileDiff: (...args: unknown[]) =>
       getWorkspaceStagedDiffMock(...args),
     getAgentConversationWorkspaceUnstagedFileDiff: (...args: unknown[]) =>
       getWorkspaceUnstagedDiffMock(...args),
+    getAgentConversationWorkspaceRepairStagedFileDiff: (...args: unknown[]) =>
+      getWorkspaceRepairStagedDiffMock(...args),
+    getAgentConversationWorkspaceRepairUnstagedFileDiff: (...args: unknown[]) =>
+      getWorkspaceRepairUnstagedDiffMock(...args),
     getAgentConversationWorkspaceCumulativeFileDiff: (...args: unknown[]) =>
       getWorkspaceCumulativeDiffMock(...args),
   },
@@ -1265,6 +1285,11 @@ export function setupAgentsViewTest() {
   getWorkspaceStagedDiffMock.mockReset();
   getWorkspaceUnstagedDiffMock.mockReset();
   getWorkspaceCumulativeDiffMock.mockReset();
+  getWorkspaceRepairSummaryMock.mockReset();
+  getWorkspaceRepairStagedChangesMock.mockReset();
+  getWorkspaceRepairUnstagedChangesMock.mockReset();
+  getWorkspaceRepairStagedDiffMock.mockReset();
+  getWorkspaceRepairUnstagedDiffMock.mockReset();
   listAgentTasksMock.mockReset();
   listAgentTaskListsMock.mockReset();
   listAgentTaskListTasksMock.mockReset();
@@ -1395,6 +1420,22 @@ export function setupAgentsViewTest() {
   getWorkspaceStagedDiffMock.mockResolvedValue("");
   getWorkspaceUnstagedDiffMock.mockResolvedValue("");
   getWorkspaceCumulativeDiffMock.mockResolvedValue("");
+  getWorkspaceRepairSummaryMock.mockResolvedValue({
+    supportsWorktreeModes: true,
+    staged: { fileCount: 0, additions: 0, deletions: 0 },
+    unstaged: { fileCount: 0, additions: 0, deletions: 0 },
+    conflicted: { fileCount: 0, files: [] },
+    repairState: {
+      expectedBranch: "ralphx/demo/agent-conversation-1",
+      checkedOutBranch: "HEAD",
+      rebaseInProgress: true,
+      mergeInProgress: false,
+    },
+  });
+  getWorkspaceRepairStagedChangesMock.mockResolvedValue([]);
+  getWorkspaceRepairUnstagedChangesMock.mockResolvedValue([]);
+  getWorkspaceRepairStagedDiffMock.mockResolvedValue("");
+  getWorkspaceRepairUnstagedDiffMock.mockResolvedValue("");
   listAgentTasksMock.mockResolvedValue([]);
   listAgentTaskListsMock.mockResolvedValue([]);
   listAgentTaskListTasksMock.mockResolvedValue([]);
