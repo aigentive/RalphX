@@ -33,6 +33,8 @@ interface AgentsConversationMainRegionProps {
   onConversationModeSwitched: ActiveConversationPanelProps["onConversationModeSwitched"];
   onCreateProject: StartConversationPanelProps["onCreateProject"];
   onFocusIdeationSession: ActiveConversationPanelProps["onFocusIdeationSession"];
+  onFocusVerificationSession: ActiveConversationPanelProps["onFocusVerificationSession"];
+  onFocusTaskRuntime: ActiveConversationPanelProps["onFocusTaskRuntime"];
   onForkConversation: ActiveConversationPanelProps["onForkConversation"];
   onOpenPublishPane: ActiveConversationPanelProps["onOpenPublishPane"];
   onOpenPublishFile: ActiveConversationPanelProps["onOpenPublishFile"];
@@ -80,6 +82,8 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
   onConversationModeSwitched,
   onCreateProject,
   onFocusIdeationSession,
+  onFocusVerificationSession,
+  onFocusTaskRuntime,
   onForkConversation,
   onOpenPublishPane,
   onOpenPublishFile,
@@ -123,6 +127,8 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
         onAgentUserMessageSent={onAgentUserMessageSent}
         onConversationModeSwitched={onConversationModeSwitched}
         onFocusIdeationSession={onFocusIdeationSession}
+        onFocusVerificationSession={onFocusVerificationSession}
+        onFocusTaskRuntime={onFocusTaskRuntime}
         onForkConversation={onForkConversation}
         onOpenPublishPane={onOpenPublishPane}
         onOpenPublishFile={onOpenPublishFile}

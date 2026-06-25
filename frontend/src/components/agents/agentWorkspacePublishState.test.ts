@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { AgentConversationWorkspace } from "@/api/chat";
 import {
+  getAgentWorkspacePrConflictSummary,
   isAgentWorkspaceAutoMergeDeferred,
   isAgentWorkspaceAutoMergeRequestPending,
   shouldShowAgentWorkspacePublishSurface,
@@ -178,5 +179,40 @@ describe("shouldShowAgentWorkspacePublishSurface", () => {
         }),
       ),
     ).toBe(false);
+  });
+});
+
+describe("getAgentWorkspacePrConflictSummary", () => {
+  it("returns blocked merge-conflict summaries", () => {
+    expect(
+      getAgentWorkspacePrConflictSummary(
+        workspace({
+          prSupervisionStatus: "blocked",
+          prSupervisionSummary:
+            "PR #470 has merge conflicts. GitHub reports: PR is reported as conflicting.",
+        }),
+      ),
+    ).toBe(
+      "PR #470 has merge conflicts. GitHub reports: PR is reported as conflicting.",
+    );
+  });
+
+  it("ignores generic blocked supervision summaries", () => {
+    expect(
+      getAgentWorkspacePrConflictSummary(
+        workspace({
+          prSupervisionStatus: "blocked",
+          prSupervisionSummary: "Required checks are still pending.",
+        }),
+      ),
+    ).toBeNull();
+    expect(
+      getAgentWorkspacePrConflictSummary(
+        workspace({
+          prSupervisionStatus: "monitoring",
+          prSupervisionSummary: "PR #470 has merge conflicts.",
+        }),
+      ),
+    ).toBeNull();
   });
 });

@@ -45,6 +45,7 @@ import {
   stopAgent,
   isAgentRunning,
   getAgentRunningStates,
+  getAgentConversationRuntimeStatuses,
   chatApi,
   getConversationActiveState,
   getChildSessionStatus,
@@ -2422,6 +2423,82 @@ describe("chat api", () => {
     });
   });
 
+  it("loads conversation runtime statuses", async () => {
+    mockInvoke.mockResolvedValueOnce({
+      c1: {
+        conversationId: "c1",
+        isRunning: true,
+        agentStatus: "generating",
+        primarySource: "task_execution",
+        summaryLabel: "Executing",
+        items: [
+          {
+            source: "task_execution",
+            contextType: "task_execution",
+            contextId: "task-1",
+            label: "Executing",
+            title: "Runtime task",
+            agentStatus: "generating",
+            taskId: "task-1",
+            internalStatus: "executing",
+            runningProcess: {
+              task_id: "task-1",
+              title: "Runtime task",
+              internal_status: "executing",
+              step_progress: null,
+              elapsed_seconds: 12,
+              trigger_origin: null,
+              task_branch: "ralphx/project/task-1",
+            },
+            ideationSession: null,
+            parentSessionId: null,
+            childSessionId: null,
+            conversationId: null,
+          },
+        ],
+      },
+    });
+
+    await expect(getAgentConversationRuntimeStatuses(["c1"])).resolves.toEqual({
+      c1: {
+        conversationId: "c1",
+        isRunning: true,
+        agentStatus: "generating",
+        primarySource: "task_execution",
+        summaryLabel: "Executing",
+        items: [
+          {
+            source: "task_execution",
+            contextType: "task_execution",
+            contextId: "task-1",
+            label: "Executing",
+            title: "Runtime task",
+            agentStatus: "generating",
+            taskId: "task-1",
+            internalStatus: "executing",
+            runningProcess: {
+              taskId: "task-1",
+              title: "Runtime task",
+              internalStatus: "executing",
+              stepProgress: null,
+              elapsedSeconds: 12,
+              triggerOrigin: null,
+              taskBranch: "ralphx/project/task-1",
+            },
+            ideationSession: null,
+            parentSessionId: null,
+            childSessionId: null,
+            conversationId: null,
+          },
+        ],
+      },
+    });
+    expect(mockInvoke).toHaveBeenCalledWith(
+      "get_agent_conversation_runtime_statuses",
+      { conversationIds: ["c1"] },
+    );
+  });
+
   it("exports chatApi namespace", () => {
     expect(chatApi.sendAgentMessage).toBe(sendAgentMessage);
     expect(chatApi.listConversations).toBe(listConversations);
@@ -2433,6 +2510,9 @@ describe("chat api", () => {
     );
     expect(chatApi.listAgentConversationWorkspacePublicationEvents).toBe(
       listAgentConversationWorkspacePublicationEvents
+    );
+    expect(chatApi.getAgentConversationRuntimeStatuses).toBe(
+      getAgentConversationRuntimeStatuses
     );
     expect(chatApi.precomputeAgentConversationWorkspacePrDescription).toBe(
       precomputeAgentConversationWorkspacePrDescription

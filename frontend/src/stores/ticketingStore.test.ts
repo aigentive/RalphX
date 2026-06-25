@@ -52,6 +52,7 @@ describe("useTicketingStore", () => {
       stateIds: ["started"],
       labels: [],
       sprint: null,
+      watcherMe: false,
     });
 
     useTicketingStore.getState().resetFilters();
@@ -62,6 +63,7 @@ describe("useTicketingStore", () => {
       stateIds: [],
       labels: [],
       sprint: null,
+      watcherMe: false,
     });
   });
 

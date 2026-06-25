@@ -558,7 +558,7 @@ impl LinearIntegrationService {
     ) -> Result<Vec<LinearIssueSummary>, String> {
         let auth = self.enabled_auth_context().await?;
         self.client
-            .search_issues(&auth, query, limit.clamp(1, 25))
+            .search_issues(&auth, query, limit.clamp(1, 500))
             .await
     }
 
@@ -580,7 +580,7 @@ impl LinearIntegrationService {
 
     pub async fn list_projects(&self, first: usize) -> Result<Vec<LinearProject>, String> {
         let auth = self.enabled_auth_context().await?;
-        self.client.list_projects(&auth, first.clamp(1, 100)).await
+        self.client.list_projects(&auth, first.clamp(1, 1000)).await
     }
 
     pub async fn current_user(&self) -> Result<LinearUser, String> {

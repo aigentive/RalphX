@@ -864,6 +864,13 @@ describe("AgentsArtifactPane", () => {
     expect(screen.queryByTestId("agents-artifact-tab-tasks")).not.toBeInTheDocument();
   });
 
+  it("does not fall back to publish for generic edit workspace pane opens", () => {
+    renderPane("plan", workspace({ mode: "edit" }));
+
+    expect(screen.getByTestId("agents-artifact-tab-publish")).toBeInTheDocument();
+    expect(screen.queryByTestId("agents-publish-pane")).not.toBeInTheDocument();
+  });
+
   it("shows pre-PR Auto Publish with independent PR automation controls", async () => {
     renderPane("publish", workspace({ mode: "edit" }));
 
@@ -1176,6 +1183,78 @@ describe("AgentsArtifactPane", () => {
     expect(screen.getByTestId("agents-auto-publish-switch")).not.toBeChecked();
     expect(screen.getByTestId("agents-pr-autofix-switch")).toBeDisabled();
     expect(screen.getByTestId("agents-pr-auto-merge-switch")).toBeDisabled();
+  });
+
+  it("surfaces PR conflicts and routes Resolve Conflicts through base update", async () => {
+    const user = userEvent.setup();
+    const conflictingWorkspace = workspace({
+      mode: "edit",
+      publicationPrNumber: 2857,
+      publicationPrUrl: "https://github.com/mock/project/pull/2857",
+      publicationPrStatus: "open",
+      publicationPushStatus: "pushed",
+      autoPublishEnabled: true,
+      prSupervisionStatus: "blocked",
+      prSupervisionSummary:
+        "PR #2857 has merge conflicts. GitHub reports the pull request is conflicting.",
+    });
+    updateWorkspaceFromBaseMock.mockResolvedValue({
+      workspace: conflictingWorkspace,
+      updated: true,
+      targetRef: "origin/main",
+      baseCommit: "base-sha",
+    });
+
+    renderPane("publish", conflictingWorkspace);
+
+    expect(await screen.findByTestId("agents-pr-conflict")).toHaveTextContent(
+      "PR #2857 has merge conflicts",
+    );
+    expect(screen.getByText(/Auto Publish is waiting/i)).toBeInTheDocument();
+    expect(screen.getByText("PR conflicts")).toBeInTheDocument();
+    expect(screen.getByTestId("agents-publish-push-status-pill")).toHaveTextContent(
+      "Conflicting",
+    );
+    await user.click(
+      screen.getByRole("button", { name: "Resolve conflicts" }),
+    );
+    await user.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", {
+        name: "Resolve conflicts",
+      }),
+    );
+
+    await waitFor(() =>
+      expect(updateWorkspaceFromBaseMock).toHaveBeenCalledWith("conversation-1"),
+    );
+  });
+
+  it("surfaces paused PR conflicts without Auto Publish waiting copy", async () => {
+    const conflictingWorkspace = workspace({
+      mode: "edit",
+      publicationPrNumber: 2857,
+      publicationPrUrl: "https://github.com/mock/project/pull/2857",
+      publicationPrStatus: "open",
+      publicationPushStatus: "pushed",
+      autoPublishEnabled: false,
+      prSupervisionStatus: "blocked",
+      prSupervisionSummary:
+        "PR #2857 has merge conflicts. GitHub reports the pull request is conflicting.",
+    });
+
+    renderPane("publish", conflictingWorkspace);
+
+    expect(await screen.findByTestId("agents-pr-conflict")).toHaveTextContent(
+      "PR #2857 has merge conflicts",
+    );
+    expect(
+      screen.getByText(
+        "This pull request has conflicts. Resolve conflicts to update the branch from base before publishing can continue.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Resolve conflicts" }),
+    ).toBeEnabled();
   });
 
   it("surfaces git auth repair actions in the publish pane", () => {

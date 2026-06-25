@@ -103,6 +103,7 @@ pub struct TicketSummaryResponse {
     pub state: TicketStateResponse,
     pub assignee: Option<TicketingPersonResponse>,
     pub assignees: Vec<TicketingPersonResponse>,
+    pub watchers: Vec<TicketingPersonResponse>,
     pub reporter: Option<TicketingPersonResponse>,
     pub labels: Vec<String>,
     pub project: Option<String>,
@@ -123,6 +124,8 @@ pub struct TicketSummaryResponse {
     pub open_pr_status: Option<String>,
     /// Whether the authenticated provider user is assigned to this ticket.
     pub current_user_assigned: bool,
+    /// Whether the authenticated provider user is watching/following this ticket.
+    pub current_user_watching: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -183,6 +186,15 @@ pub struct TicketPageResponse {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct TicketFilterOptionsResponse {
+    pub assignees: Vec<String>,
+    pub sprints: Vec<String>,
+    pub complete: bool,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TicketDeepLinkResponse {
     pub view: String,
     pub id: String,
@@ -200,6 +212,14 @@ pub struct TicketAssociationItemResponse {
     pub status: Option<String>,
     pub active: bool,
     pub deep_link: TicketDeepLinkResponse,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_number: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -307,6 +327,7 @@ pub struct TicketMutationResponse {
 pub struct TicketFiltersInput {
     pub text: Option<String>,
     pub assignee: Option<String>,
+    pub watcher_me: Option<bool>,
     pub state_ids: Option<Vec<String>>,
     pub labels: Option<Vec<String>>,
 }
@@ -321,4 +342,14 @@ pub struct ListTicketsQuery {
     pub limit: Option<usize>,
     pub filters: Option<TicketFiltersInput>,
     pub sort: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListTicketFilterOptionsQuery {
+    pub provider: String,
+    pub project_id: Option<String>,
+    pub container_id: Option<String>,
+    pub limit: Option<usize>,
+    pub filters: Option<TicketFiltersInput>,
 }

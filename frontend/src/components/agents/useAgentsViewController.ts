@@ -31,6 +31,7 @@ import { useAgentConversationInvalidation } from "./useAgentConversationInvalida
 import { useAgentUserMessageAutoTitle } from "./useAgentUserMessageAutoTitle";
 import { useAgentUserMessageJiraInvalidation } from "./useAgentUserMessageJiraInvalidation";
 import { hasJiraIntegrationReference } from "./agentJiraIssueQueries";
+import { hasLinearIntegrationReference } from "./agentLinearIssueQueries";
 import { useAgentsSessionBindings } from "./useAgentsSessionBindings";
 import { useSyncedAgentProjectFocus } from "./useSyncedAgentProjectFocus";
 import { useAgentsOptimisticState } from "./useAgentsOptimisticState";
@@ -195,6 +196,26 @@ export function useAgentsViewController({
         current.type === "verification" &&
         current.parentSessionId === parentSessionId &&
         current.childSessionId === childSessionId
+          ? current
+          : nextFocus,
+      );
+    },
+    [],
+  );
+  const handleFocusTaskRuntime = useCallback(
+    (
+      taskId: string,
+      contextType: Extract<AgentsChatFocus, { type: "task_runtime" }>["contextType"],
+    ) => {
+      const nextFocus: Extract<AgentsChatFocus, { type: "task_runtime" }> = {
+        type: "task_runtime",
+        taskId,
+        contextType,
+      };
+      setChatFocus((current) =>
+        current.type === "task_runtime" &&
+        current.taskId === taskId &&
+        current.contextType === contextType
           ? current
           : nextFocus,
       );
@@ -420,18 +441,22 @@ export function useAgentsViewController({
     lastVerificationFocus.parentSessionId === focusSwitcherIdeationSessionId
       ? lastVerificationFocus
       : null;
+  const taskRuntimeFocusTarget =
+    chatFocus.type === "task_runtime" ? chatFocus : null;
   const hasAttachedPlanArtifact = availableArtifactTabs.includes("plan");
   const chatFocusOptions = useMemo(() => {
     return getAgentChatFocusSwitchOptions({
       mode: activeConversationMode,
       focusSwitcherIdeationSessionId,
       verificationFocusTarget,
+      taskRuntimeFocusTarget,
       hasPlanArtifact: hasAttachedPlanArtifact,
     });
   }, [
     activeConversationMode,
     focusSwitcherIdeationSessionId,
     hasAttachedPlanArtifact,
+    taskRuntimeFocusTarget,
     verificationFocusTarget,
   ]);
   useEffect(() => {
@@ -458,8 +483,13 @@ export function useAgentsViewController({
         return;
       }
 
-      if (verificationFocusTarget) {
+      if (type === "verification" && verificationFocusTarget) {
         setChatFocus(verificationFocusTarget);
+        return;
+      }
+
+      if (type === "task_runtime" && taskRuntimeFocusTarget) {
+        setChatFocus(taskRuntimeFocusTarget);
       }
     },
     [
@@ -467,6 +497,7 @@ export function useAgentsViewController({
       focusSwitcherIdeationSessionId,
       handleFocusIdeationSession,
       handleReturnToWorkspaceChat,
+      taskRuntimeFocusTarget,
       verificationFocusTarget,
     ],
   );
@@ -488,6 +519,12 @@ export function useAgentsViewController({
   const openJiraTabForConversation = useCallback(
     (conversationId: string) => {
       openArtifactTab(conversationId, "jira");
+    },
+    [openArtifactTab],
+  );
+  const openLinearTabForConversation = useCallback(
+    (conversationId: string) => {
+      openArtifactTab(conversationId, "linear");
     },
     [openArtifactTab],
   );
@@ -573,6 +610,7 @@ export function useAgentsViewController({
     setOptimisticWorkspacesByConversationId,
     setRuntimeForConversation,
     onJiraLinked: openJiraTabForConversation,
+    onLinearLinked: openLinearTabForConversation,
   });
 
   const {
@@ -728,12 +766,15 @@ export function useAgentsViewController({
       invalidateAgentUserMessageJira(event);
       if (hasJiraIntegrationReference(event.composerIntegrationReferences)) {
         openJiraTabForConversation(event.result.conversationId);
+      } else if (hasLinearIntegrationReference(event.composerIntegrationReferences)) {
+        openLinearTabForConversation(event.result.conversationId);
       }
     },
     [
       handleAgentUserMessageAutoTitle,
       invalidateAgentUserMessageJira,
       openJiraTabForConversation,
+      openLinearTabForConversation,
     ],
   );
   const handleStartRuntimePreferenceChange = useCallback(
@@ -829,6 +870,8 @@ export function useAgentsViewController({
       onConversationModeSwitched: handleConversationModeSwitched,
       onCreateProject,
       onFocusIdeationSession: handleFocusIdeationSession,
+      onFocusVerificationSession: handleFocusVerificationSession,
+      onFocusTaskRuntime: handleFocusTaskRuntime,
       onForkConversation: handleForkConversation,
       onOpenPublishPane: handleOpenPublishPane,
       onOpenPublishFile: handleOpenPublishFile,

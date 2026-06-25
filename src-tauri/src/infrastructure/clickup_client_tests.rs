@@ -75,6 +75,7 @@ fn sample_task(id: &str, status_type: &str) -> Value {
         "url": format!("https://app.clickup.com/t/{id}"),
         "status": { "status": "in progress", "type": status_type, "color": "#abc" },
         "assignees": [{ "id": 42, "username": "dev", "email": "dev@example.com" }],
+        "followers": [{ "id": 99, "username": "watcher", "email": "watcher@example.com" }],
         "tags": [{ "name": "bug" }, { "name": "backend" }],
         "space": { "id": "space-1" },
         "list": { "id": "list-1", "name": "Sprint" },
@@ -307,6 +308,7 @@ async fn filtered_tasks_paginate_until_last_page() {
     let requests = fake.requests();
     assert_eq!(requests.len(), 2, "should fetch exactly two pages");
     assert!(requests[0].url.contains("page=0"));
+    assert!(requests[0].url.contains("include_closed=true"));
     assert!(requests[0].url.contains("space-1"));
     assert!(requests[0].url.contains("/team/9000/task"));
     assert!(requests[1].url.contains("page=1"));
@@ -591,6 +593,10 @@ async fn task_summary_maps_status_assignees_and_tags() {
     assert_eq!(task.status_category.as_deref(), Some("in_progress"));
     assert_eq!(task.assignees, vec!["dev".to_string()]);
     assert_eq!(task.assignee_ids, vec![42]);
+    assert_eq!(task.watchers.len(), 1);
+    assert_eq!(task.watchers[0].id, 99);
+    assert_eq!(task.watchers[0].username.as_deref(), Some("watcher"));
+    assert_eq!(task.watchers[0].email.as_deref(), Some("watcher@example.com"));
     assert_eq!(task.tags, vec!["bug".to_string(), "backend".to_string()]);
     assert_eq!(task.space_id.as_deref(), Some("space-1"));
     assert_eq!(task.list_name.as_deref(), Some("Sprint"));
@@ -660,6 +666,8 @@ async fn fetch_task_detail_maps_fields() {
     assert_eq!(content.status_category.as_deref(), Some("done"));
     assert_eq!(content.creator.as_deref(), Some("owner"));
     assert_eq!(content.assignees, vec!["dev".to_string()]);
+    assert_eq!(content.watchers.len(), 1);
+    assert_eq!(content.watchers[0].id, 99);
     assert_eq!(content.attachments.len(), 1);
     assert_eq!(content.attachments[0].filename, "mockup.png");
     assert_eq!(

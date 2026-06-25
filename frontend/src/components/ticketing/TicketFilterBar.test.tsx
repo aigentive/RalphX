@@ -13,6 +13,7 @@ const baseFilters: TicketingFilterState = {
   stateIds: [],
   labels: [],
   sprint: null,
+  watcherMe: false,
 };
 
 function renderBar(overrides: Partial<Parameters<typeof TicketFilterBar>[0]> = {}) {
@@ -50,6 +51,22 @@ describe("TicketFilterBar", () => {
   it("shows the Reset button once a filter is active", () => {
     renderBar({ filters: { ...baseFilters, text: "race" } });
     expect(screen.getByRole("button", { name: /reset/i })).toBeInTheDocument();
+  });
+
+  it("shows the ClickUp watcher filter only when enabled and toggles it", () => {
+    const hidden = renderBar();
+    expect(screen.queryByRole("button", { name: "Watched by me" })).not.toBeInTheDocument();
+
+    const props = renderBar({
+      showWatcherFilter: true,
+      filters: { ...baseFilters, watcherMe: true },
+    });
+    const toggle = screen.getByRole("button", { name: "Watched by me" });
+    expect(toggle).toHaveAttribute("aria-pressed", "true");
+
+    fireEvent.click(toggle);
+    expect(props.onFiltersChange).toHaveBeenCalledWith({ watcherMe: false });
+    expect(hidden.onFiltersChange).not.toHaveBeenCalled();
   });
 
   it("renders Everyone, Unassigned, and each assignee option", () => {

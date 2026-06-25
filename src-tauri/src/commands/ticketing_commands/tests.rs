@@ -1,14 +1,23 @@
 use super::*;
-use std::sync::Arc;
+use std::{
+    path::Path,
+    process::Command,
+    sync::{Arc, Mutex},
+};
 
+use async_trait::async_trait;
 use crate::application::clickup_integration_service::ClickUpAttachment;
 use crate::application::linear_integration_service::LinearAttachment;
 use crate::application::{
-    AppState, AtlassianJiraAttachment, AtlassianJiraComment, ClickUpComment, ClickUpSpace,
-    ClickUpStatus, ClickUpTaskContent, ClickUpTaskSummary, ClickUpUser, JiraIssueDetail,
-    JiraProjectSummary, JiraStatusSummary, LinearIntegrationSettings, TeamService,
-    TeamStateTracker, TicketingLabelResult, TicketingMutationResult, TicketingTicketIdentity,
-    TicketingTransitionOption,
+    AtlassianApiClient, AtlassianAuthContext, AtlassianConnectivity, AtlassianIntegrationService,
+    AtlassianOAuthResource, AtlassianOAuthTokenResponse, AppState, AtlassianJiraAttachment,
+    AtlassianJiraComment, ClickUpComment, ClickUpSpace, ClickUpStatus, ClickUpTaskContent,
+    ClickUpTaskSummary, ClickUpUser, JiraIssueDetail, JiraProjectSummary, JiraStatusSummary,
+    AtlassianResourceContent, AtlassianResourceKind, AtlassianResourceSummary,
+    LinearApiClient, LinearAuthContext, LinearIntegrationService, LinearIntegrationSettings,
+    LinearIntegrationSettingsRepository, LinearIssueContent, LinearIssueSummary, LinearProject,
+    TeamService, TeamStateTracker, TicketingLabelResult, TicketingMutationResult,
+    TicketingTicketIdentity, TicketingTransitionOption,
 };
 use crate::commands::unified_chat_commands::StartAgentConversationInput;
 use crate::commands::ExecutionState;
@@ -17,9 +26,16 @@ use crate::domain::entities::{
     ChatConversationId, IdeationAnalysisBaseRefKind, Project, ProjectId,
 };
 use crate::domain::integrations::{
-    AtlassianIntegrationSettings, ClickUpIntegrationSettings, IntegrationValidationStatus,
-    ProviderTicketOperation, ProviderTicketOperationKind, ProviderTicketOperationStatus,
+    AtlassianAuthMethod, AtlassianIntegrationSettings, AtlassianIntegrationSettingsRepository,
+    ClickUpIntegrationSettings, IntegrationValidationStatus, ProviderTicketOperation,
+    ProviderTicketOperationKind, ProviderTicketOperationStatus,
 };
+use crate::domain::services::{ComposerIntegrationReference, SecretStore};
+use crate::infrastructure::memory::{
+    MemoryAtlassianIntegrationSettingsRepository, MemoryLinearIntegrationSettingsRepository,
+    MemorySecretStore,
+};
+use crate::tests::mock_github_service::MockGithubService;
 use tauri::test::{mock_builder, mock_context, noop_assets};
 use tauri::Manager;
 
@@ -216,6 +232,11 @@ fn clickup_summary_maps_status_assignee_tags_and_project() {
         status_color: Some("#112233".to_string()),
         assignees: vec!["Reef Agent".to_string(), "Second Person".to_string()],
         assignee_ids: vec![42, 7],
+        watchers: vec![ClickUpUser {
+            id: 99,
+            username: Some("Watcher Person".to_string()),
+            email: Some("watcher@example.com".to_string()),
+        }],
         tags: vec!["backend".to_string(), "clickup".to_string()],
         space_id: Some("space-1".to_string()),
         list_name: Some("Sprint 1".to_string()),
@@ -246,6 +267,18 @@ fn clickup_summary_maps_status_assignee_tags_and_project() {
             .collect::<Vec<_>>(),
         vec!["Reef Agent", "Second Person"]
     );
+    assert_eq!(
+        ticket
+            .watchers
+            .iter()
+            .map(|person| (
+                person.id.as_deref(),
+                person.name.as_str(),
+                person.email.as_deref()
+            ))
+            .collect::<Vec<_>>(),
+        vec![(Some("99"), "Watcher Person", Some("watcher@example.com"))]
+    );
     // ClickUp tags surface as labels.
     assert_eq!(
         ticket.labels,
@@ -259,6 +292,7 @@ fn clickup_summary_maps_status_assignee_tags_and_project() {
     );
     assert_eq!(ticket.association_count, 0);
     assert!(!ticket.current_user_assigned);
+    assert!(!ticket.current_user_watching);
 }
 
 #[test]
@@ -274,6 +308,7 @@ fn clickup_summary_detects_current_user_assignment_by_username_or_email() {
         status_color: None,
         assignees: vec!["agent@example.com".to_string()],
         assignee_ids: Vec::new(),
+        watchers: Vec::new(),
         tags: Vec::new(),
         space_id: None,
         list_name: Some("Sprint 42".to_string()),
@@ -309,6 +344,47 @@ fn clickup_summary_detects_current_user_assignment_by_username_or_email() {
 }
 
 #[test]
+fn clickup_summary_detects_current_user_watching_by_id_username_or_email() {
+    let user = ClickUpUser {
+        id: 42,
+        username: Some("Agent".to_string()),
+        email: Some("agent@example.com".to_string()),
+    };
+    let summary = ClickUpTaskSummary {
+        id: "task-1".to_string(),
+        custom_id: None,
+        name: "Current watcher task".to_string(),
+        url: None,
+        status_name: None,
+        status_type: None,
+        status_category: None,
+        status_color: None,
+        assignees: Vec::new(),
+        assignee_ids: Vec::new(),
+        watchers: vec![ClickUpUser {
+            id: 7,
+            username: Some("AGENT".to_string()),
+            email: None,
+        }],
+        tags: Vec::new(),
+        space_id: None,
+        list_name: None,
+        updated_at: None,
+    };
+    assert!(clickup_summary_watched_by_user(&summary, &user));
+
+    let id_summary = ClickUpTaskSummary {
+        watchers: vec![ClickUpUser {
+            id: 42,
+            username: None,
+            email: None,
+        }],
+        ..summary
+    };
+    assert!(clickup_summary_watched_by_user(&id_summary, &user));
+}
+
+#[test]
 fn clickup_summary_derives_state_when_status_fields_missing() {
     let ticket = clickup_summary_to_ticket(ClickUpTaskSummary {
         id: "task-2".to_string(),
@@ -321,6 +397,7 @@ fn clickup_summary_derives_state_when_status_fields_missing() {
         status_color: None,
         assignees: Vec::new(),
         assignee_ids: Vec::new(),
+        watchers: Vec::new(),
         tags: Vec::new(),
         space_id: None,
         list_name: None,
@@ -350,6 +427,11 @@ fn clickup_content_maps_description_comments_and_creator() {
         status_category: Some("done".to_string()),
         creator: Some("Reporter Person".to_string()),
         assignees: vec!["Reef Agent".to_string()],
+        watchers: vec![ClickUpUser {
+            id: 99,
+            username: Some("Watcher Person".to_string()),
+            email: Some("watcher@example.com".to_string()),
+        }],
         tags: vec!["backend".to_string()],
         comments: vec![ClickUpComment {
             id: "comment-1".to_string(),
@@ -409,6 +491,14 @@ fn clickup_content_maps_description_comments_and_creator() {
     );
     assert_eq!(detail.summary.labels, vec!["backend".to_string()]);
     assert_eq!(
+        detail
+            .summary
+            .watchers
+            .first()
+            .map(|person| person.name.as_str()),
+        Some("Watcher Person")
+    );
+    assert_eq!(
         detail.description_markdown.as_deref(),
         Some("Implement the ClickUp arms.")
     );
@@ -459,6 +549,7 @@ fn clickup_content_maps_empty_provider_payload_with_fallbacks() {
         status_category: None,
         creator: None,
         assignees: Vec::new(),
+        watchers: Vec::new(),
         tags: Vec::new(),
         comments: Vec::new(),
         attachments: Vec::new(),
@@ -564,6 +655,7 @@ fn clickup_ticket_state_id_aligns_with_column_id_for_kanban() {
         status_color: None,
         assignees: Vec::new(),
         assignee_ids: Vec::new(),
+        watchers: Vec::new(),
         tags: Vec::new(),
         space_id: Some("space-1".to_string()),
         list_name: None,
@@ -627,6 +719,367 @@ async fn clickup_conversation_associations_are_empty_pending_followup() {
         .expect("clickup associations resolve without a provider error");
 
     assert!(associations.is_empty());
+}
+
+#[derive(Default)]
+struct FakeLinearTicketingClient {
+    issues: Mutex<Vec<LinearIssueSummary>>,
+    projects: Mutex<Vec<LinearProject>>,
+    search_limits: Mutex<Vec<usize>>,
+    list_projects_first: Mutex<Vec<usize>>,
+}
+
+#[async_trait]
+impl LinearApiClient for FakeLinearTicketingClient {
+    async fn validate(&self, _auth: &LinearAuthContext) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn search_issues(
+        &self,
+        _auth: &LinearAuthContext,
+        _query: &str,
+        limit: usize,
+    ) -> Result<Vec<LinearIssueSummary>, String> {
+        self.search_limits.lock().unwrap().push(limit);
+        Ok(self.issues.lock().unwrap().clone())
+    }
+
+    async fn fetch_issue(
+        &self,
+        _auth: &LinearAuthContext,
+        reference: &ComposerIntegrationReference,
+    ) -> Result<LinearIssueContent, String> {
+        Ok(LinearIssueContent {
+            id: reference.id.clone(),
+            key: reference.key.clone(),
+            title: reference
+                .title
+                .clone()
+                .unwrap_or_else(|| reference.id.clone()),
+            url: reference.url.clone(),
+            body: String::new(),
+            state_name: None,
+            assignee: None,
+            creator: None,
+            updated_at: None,
+            comments: Vec::new(),
+            attachments: Vec::new(),
+            labels: Vec::new(),
+            project: None,
+        })
+    }
+
+    async fn list_projects(
+        &self,
+        _auth: &LinearAuthContext,
+        first: usize,
+    ) -> Result<Vec<LinearProject>, String> {
+        self.list_projects_first.lock().unwrap().push(first);
+        Ok(self.projects.lock().unwrap().clone())
+    }
+}
+
+#[derive(Default)]
+struct FakeAtlassianTicketingClient {
+    projects: Mutex<Vec<JiraProjectSummary>>,
+    list_project_limits: Mutex<Vec<usize>>,
+}
+
+#[async_trait]
+impl AtlassianApiClient for FakeAtlassianTicketingClient {
+    async fn validate(
+        &self,
+        _auth: &AtlassianAuthContext,
+    ) -> Result<AtlassianConnectivity, String> {
+        Ok(AtlassianConnectivity {
+            jira_available: true,
+            confluence_available: true,
+        })
+    }
+
+    async fn search(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _kind: AtlassianResourceKind,
+        _query: &str,
+        _limit: usize,
+    ) -> Result<Vec<AtlassianResourceSummary>, String> {
+        Ok(Vec::new())
+    }
+
+    async fn fetch(
+        &self,
+        _auth: &AtlassianAuthContext,
+        reference: &ComposerIntegrationReference,
+    ) -> Result<AtlassianResourceContent, String> {
+        Ok(AtlassianResourceContent {
+            kind: reference
+                .kind
+                .parse::<AtlassianResourceKind>()
+                .unwrap_or(AtlassianResourceKind::Jira),
+            id: reference.id.clone(),
+            key: reference.key.clone(),
+            title: reference
+                .title
+                .clone()
+                .unwrap_or_else(|| reference.id.clone()),
+            url: reference.url.clone(),
+            body: String::new(),
+            status: None,
+            assignee: None,
+            reporter: None,
+            updated_at_remote: None,
+            description_markdown: None,
+            description_text: None,
+            acceptance_criteria_markdown: None,
+            acceptance_criteria_text: None,
+            comments: Vec::new(),
+            attachments: Vec::new(),
+        })
+    }
+
+    async fn assign_jira_issue_to_current_user(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _issue_key: &str,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn list_jira_projects(
+        &self,
+        _auth: &AtlassianAuthContext,
+        limit: usize,
+    ) -> Result<Vec<JiraProjectSummary>, String> {
+        self.list_project_limits.lock().unwrap().push(limit);
+        Ok(self.projects.lock().unwrap().clone())
+    }
+
+    async fn exchange_oauth_code(
+        &self,
+        _client_id: &str,
+        _client_secret: &str,
+        _code: &str,
+        _redirect_uri: &str,
+    ) -> Result<AtlassianOAuthTokenResponse, String> {
+        Err("not used by ticketing command tests".to_string())
+    }
+
+    async fn refresh_oauth_token(
+        &self,
+        _client_id: &str,
+        _client_secret: &str,
+        _refresh_token: &str,
+    ) -> Result<AtlassianOAuthTokenResponse, String> {
+        Err("not used by ticketing command tests".to_string())
+    }
+
+    async fn oauth_accessible_resources(
+        &self,
+        _access_token: &str,
+    ) -> Result<Vec<AtlassianOAuthResource>, String> {
+        Ok(Vec::new())
+    }
+}
+
+async fn valid_linear_service(
+    client: Arc<FakeLinearTicketingClient>,
+) -> Arc<LinearIntegrationService> {
+    let repo = Arc::new(MemoryLinearIntegrationSettingsRepository::new());
+    let secret_store = Arc::new(MemorySecretStore::new());
+    secret_store
+        .put_secret("linear-token", "token-value")
+        .await
+        .unwrap();
+    repo.upsert(&LinearIntegrationSettings {
+        enabled: true,
+        token_secret_ref: Some("linear-token".to_string()),
+        validation_status: IntegrationValidationStatus::Valid,
+        issue_search_available: true,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    LinearIntegrationService::new(repo, secret_store, client).into()
+}
+
+async fn valid_atlassian_service(
+    client: Arc<FakeAtlassianTicketingClient>,
+) -> Arc<AtlassianIntegrationService> {
+    let repo = Arc::new(MemoryAtlassianIntegrationSettingsRepository::new());
+    let secret_store = Arc::new(MemorySecretStore::new());
+    secret_store
+        .put_secret("atlassian-token", "token-value")
+        .await
+        .unwrap();
+    repo.upsert(&AtlassianIntegrationSettings {
+        enabled: true,
+        auth_method: AtlassianAuthMethod::ApiToken,
+        site_url: Some("https://example.atlassian.net".to_string()),
+        email: Some("agent@example.com".to_string()),
+        token_secret_ref: Some("atlassian-token".to_string()),
+        validation_status: IntegrationValidationStatus::Valid,
+        jira_available: true,
+        confluence_available: true,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    AtlassianIntegrationService::new(repo, secret_store, client).into()
+}
+
+fn linear_issue_summary(
+    id: &str,
+    title: &str,
+    assignee: Option<&str>,
+    labels: &[&str],
+) -> LinearIssueSummary {
+    LinearIssueSummary {
+        id: id.to_string(),
+        key: Some(id.to_string()),
+        title: title.to_string(),
+        url: None,
+        excerpt: None,
+        state_id: Some("state-todo".to_string()),
+        state_name: Some("Todo".to_string()),
+        state_category: Some("todo".to_string()),
+        state_color: None,
+        assignee: assignee.map(str::to_string),
+        updated_at: Some("2026-06-24T10:00:00Z".to_string()),
+        labels: labels.iter().map(|label| label.to_string()).collect(),
+        project: Some("Platform".to_string()),
+    }
+}
+
+#[tokio::test]
+async fn list_ticketing_containers_uses_expanded_provider_limits() {
+    let linear_client = Arc::new(FakeLinearTicketingClient::default());
+    linear_client
+        .projects
+        .lock()
+        .unwrap()
+        .push(LinearProject {
+            id: "linear-project-1".to_string(),
+            name: "Linear Project".to_string(),
+        });
+    let atlassian_client = Arc::new(FakeAtlassianTicketingClient::default());
+    atlassian_client
+        .projects
+        .lock()
+        .unwrap()
+        .push(JiraProjectSummary {
+            id: "10001".to_string(),
+            key: "RX".to_string(),
+            name: "RalphX".to_string(),
+        });
+    let mut state = AppState::new_test();
+    state.linear_integration_service = valid_linear_service(Arc::clone(&linear_client)).await;
+    state.atlassian_integration_service =
+        valid_atlassian_service(Arc::clone(&atlassian_client)).await;
+    let app = build_ticketing_start_app(state, Arc::new(ExecutionState::new()));
+
+    let jira = list_ticketing_containers("jira".to_string(), None, app.state())
+        .await
+        .expect("jira containers should load");
+    let linear = list_ticketing_containers("linear".to_string(), None, app.state())
+        .await
+        .expect("linear containers should load");
+
+    assert_eq!(jira[0].id, "RX");
+    assert_eq!(linear[0].id, "linear-project-1");
+    assert_eq!(
+        atlassian_client
+            .list_project_limits
+            .lock()
+            .unwrap()
+            .as_slice(),
+        &[TICKETING_CONTAINER_LIMIT]
+    );
+    assert_eq!(
+        linear_client
+            .list_projects_first
+            .lock()
+            .unwrap()
+            .as_slice(),
+        &[TICKETING_CONTAINER_LIMIT]
+    );
+}
+
+#[tokio::test]
+async fn list_tickets_builds_paged_response_from_provider_summaries() {
+    let linear_client = Arc::new(FakeLinearTicketingClient::default());
+    linear_client.issues.lock().unwrap().extend([
+        linear_issue_summary("LIN-1", "First ticket", Some("Ada"), &["backend"]),
+        linear_issue_summary("LIN-2", "Second ticket", Some("Grace"), &["backend"]),
+    ]);
+    let mut state = AppState::new_test();
+    state.linear_integration_service = valid_linear_service(Arc::clone(&linear_client)).await;
+    let app = build_ticketing_start_app(state, Arc::new(ExecutionState::new()));
+
+    let page = list_tickets(
+        ListTicketsQuery {
+            provider: PROVIDER_LINEAR.to_string(),
+            project_id: None,
+            container_id: None,
+            cursor: None,
+            limit: Some(1),
+            filters: Some(TicketFiltersInput {
+                text: Some("ticket".to_string()),
+                assignee: None,
+                state_ids: None,
+                labels: Some(vec!["backend".to_string()]),
+                watcher_me: None,
+            }),
+            sort: Some("updated".to_string()),
+        },
+        app.state(),
+    )
+    .await
+    .expect("ticket page should load");
+
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.items[0].ref_.id, "LIN-1");
+    assert_eq!(page.total, Some(2));
+    assert_eq!(page.next_cursor.as_deref(), Some("offset:1"));
+    assert_eq!(linear_client.search_limits.lock().unwrap().as_slice(), &[2]);
+}
+
+#[tokio::test]
+async fn list_ticket_filter_options_builds_truncated_provider_response() {
+    let linear_client = Arc::new(FakeLinearTicketingClient::default());
+    linear_client.issues.lock().unwrap().extend([
+        linear_issue_summary("LIN-1", "First ticket", Some("Ada"), &[]),
+        linear_issue_summary("LIN-2", "Second ticket", Some("Grace"), &[]),
+    ]);
+    let mut state = AppState::new_test();
+    state.linear_integration_service = valid_linear_service(Arc::clone(&linear_client)).await;
+    let app = build_ticketing_start_app(state, Arc::new(ExecutionState::new()));
+
+    let options = list_ticket_filter_options(
+        ListTicketFilterOptionsQuery {
+            provider: PROVIDER_LINEAR.to_string(),
+            project_id: Some("project-1".to_string()),
+            container_id: None,
+            limit: Some(1),
+            filters: Some(TicketFiltersInput {
+                text: Some("ticket".to_string()),
+                assignee: None,
+                state_ids: None,
+                labels: None,
+                watcher_me: None,
+            }),
+        },
+        app.state(),
+    )
+    .await
+    .expect("filter options should load");
+
+    assert_eq!(options.assignees, vec!["Ada"]);
+    assert!(options.sprints.is_empty());
+    assert!(options.truncated);
+    assert!(!options.complete);
+    assert_eq!(linear_client.search_limits.lock().unwrap().as_slice(), &[2]);
 }
 
 #[test]
@@ -768,6 +1221,7 @@ fn ticket_summary_filters_match_text_status_assignee_and_labels() {
         Some(&TicketFiltersInput {
             text: Some("filter".to_string()),
             assignee: Some("reef".to_string()),
+            watcher_me: None,
             state_ids: Some(vec!["in_progress".to_string()]),
             labels: Some(vec!["linear".to_string()]),
         }),
@@ -792,6 +1246,7 @@ fn ticket_summary_filters_remove_rows_without_requested_metadata() {
         Some(&TicketFiltersInput {
             text: None,
             assignee: Some("me".to_string()),
+            watcher_me: None,
             state_ids: None,
             labels: Some(vec!["backend".to_string()]),
         }),
@@ -1318,11 +1773,172 @@ fn filter_ticket_summaries_returns_all_when_no_filters() {
 }
 
 #[test]
+fn ticket_page_from_loaded_summaries_applies_filters_offset_and_next_cursor() {
+    let items = vec![
+        ticket_summary_fixture("LIN-1", "First", "Todo", None, &["backend"]),
+        ticket_summary_fixture("LIN-2", "Second", "Done", None, &["frontend"]),
+        ticket_summary_fixture("LIN-3", "Third", "Todo", None, &["backend"]),
+    ];
+    let filters = TicketFiltersInput {
+        text: None,
+        assignee: None,
+        state_ids: None,
+        labels: Some(vec!["backend".to_string()]),
+        watcher_me: None,
+    };
+
+    let (page_items, next_cursor, total_loaded) =
+        ticket_page_from_loaded_summaries(items, Some(&filters), 0, 1);
+
+    assert_eq!(total_loaded, 2);
+    assert_eq!(page_items.len(), 1);
+    assert_eq!(page_items[0].ref_.key.as_deref(), Some("LIN-1"));
+    assert_eq!(next_cursor.as_deref(), Some("offset:1"));
+}
+
+#[test]
+fn ticket_page_from_loaded_summaries_omits_next_cursor_at_end() {
+    let items = vec![
+        ticket_summary_fixture("LIN-1", "First", "Todo", None, &[]),
+        ticket_summary_fixture("LIN-2", "Second", "Done", None, &[]),
+    ];
+
+    let (page_items, next_cursor, total_loaded) =
+        ticket_page_from_loaded_summaries(items, None, 1, 40);
+
+    assert_eq!(total_loaded, 2);
+    assert_eq!(page_items.len(), 1);
+    assert_eq!(page_items[0].ref_.key.as_deref(), Some("LIN-2"));
+    assert!(next_cursor.is_none());
+}
+
+#[test]
+fn ticket_offset_cursor_round_trips_and_rejects_invalid_values() {
+    let encoded = encode_ticket_offset_cursor(42);
+
+    assert_eq!(encoded, "offset:42");
+    assert_eq!(decode_ticket_offset_cursor(Some(&encoded)).unwrap(), 42);
+    assert_eq!(decode_ticket_offset_cursor(Some("   ")).unwrap(), 0);
+    assert_eq!(
+        decode_ticket_offset_cursor(Some("cursor:42")).unwrap_err(),
+        "Unsupported ticket cursor"
+    );
+    assert_eq!(
+        decode_ticket_offset_cursor(Some("offset:not-a-number")).unwrap_err(),
+        "Invalid ticket cursor"
+    );
+}
+
+#[test]
+fn ticket_filter_options_collects_assignees_and_clickup_current_user_sprints() {
+    let mut current_sprint =
+        ticket_summary_fixture("CU-1", "Current sprint", "Todo", Some("Zed"), &["backend"]);
+    current_sprint.ref_.provider = "clickup".to_string();
+    current_sprint.assignees = vec![named_person("Ada"), named_person("Zed")];
+    current_sprint.project = Some("Sprint 42".to_string());
+    current_sprint.current_user_assigned = true;
+
+    let mut other_assignee =
+        ticket_summary_fixture("CU-2", "Backlog", "Todo", Some("Grace"), &["backend"]);
+    other_assignee.ref_.provider = "clickup".to_string();
+    other_assignee.project = Some("Backlog".to_string());
+    other_assignee.current_user_assigned = false;
+
+    let mut filtered_out =
+        ticket_summary_fixture("CU-3", "Unrelated", "Todo", Some("Hidden"), &["frontend"]);
+    filtered_out.ref_.provider = "clickup".to_string();
+    filtered_out.project = Some("Sprint Hidden".to_string());
+    filtered_out.current_user_assigned = true;
+
+    let filters = TicketFiltersInput {
+        text: None,
+        assignee: None,
+        state_ids: None,
+        labels: Some(vec!["backend".to_string()]),
+        watcher_me: None,
+    };
+
+    let options = ticket_filter_options_from_loaded_summaries(
+        PROVIDER_CLICKUP,
+        vec![current_sprint, other_assignee, filtered_out],
+        Some(&filters),
+        10,
+        false,
+    );
+
+    assert_eq!(options.assignees, vec!["Ada", "Grace", "Zed"]);
+    assert_eq!(options.sprints, vec!["Sprint 42"]);
+    assert!(options.complete);
+    assert!(!options.truncated);
+}
+
+#[test]
+fn ticket_filter_options_marks_truncation_from_provider_or_limit() {
+    let items = vec![
+        ticket_summary_fixture("LIN-1", "First", "Todo", Some("A"), &[]),
+        ticket_summary_fixture("LIN-2", "Second", "Todo", Some("B"), &[]),
+    ];
+
+    let options =
+        ticket_filter_options_from_loaded_summaries(PROVIDER_LINEAR, items, None, 1, true);
+
+    assert_eq!(options.assignees, vec!["A"]);
+    assert!(options.sprints.is_empty());
+    assert!(!options.complete);
+    assert!(options.truncated);
+}
+
+#[tokio::test]
+async fn load_ticket_summaries_routes_jira_project_scope_before_disabled_error() {
+    let state = AppState::new_test();
+
+    let error = load_ticket_summaries(&state, PROVIDER_JIRA, Some("RX"), "ignored", 10)
+        .await
+        .expect_err("disabled Jira integration should fail");
+
+    assert!(!error.trim().is_empty());
+}
+
+#[tokio::test]
+async fn load_ticket_summaries_routes_jira_global_search_before_disabled_error() {
+    let state = AppState::new_test();
+
+    let error = load_ticket_summaries(&state, PROVIDER_JIRA, None, "merge", 10)
+        .await
+        .expect_err("disabled Jira integration should fail");
+
+    assert!(!error.trim().is_empty());
+}
+
+#[tokio::test]
+async fn load_ticket_summaries_routes_linear_before_disabled_error() {
+    let state = AppState::new_test();
+
+    let error = load_ticket_summaries(&state, PROVIDER_LINEAR, None, "merge", 10)
+        .await
+        .expect_err("disabled Linear integration should fail");
+
+    assert!(!error.trim().is_empty());
+}
+
+#[tokio::test]
+async fn load_ticket_summaries_routes_clickup_space_scope_before_disabled_error() {
+    let state = AppState::new_test();
+
+    let error = load_ticket_summaries(&state, PROVIDER_CLICKUP, Some("space-1"), "merge", 10)
+        .await
+        .expect_err("disabled ClickUp integration should fail");
+
+    assert!(!error.trim().is_empty());
+}
+
+#[test]
 fn ticket_matches_filters_with_empty_filter_input_keeps_all() {
     let ticket = ticket_summary_fixture("LIN-1", "First", "Todo", None, &[]);
     let empty = TicketFiltersInput {
         text: None,
         assignee: None,
+        watcher_me: None,
         state_ids: None,
         labels: None,
     };
@@ -1335,6 +1951,7 @@ fn ticket_matches_filters_text_matches_provider_id_case_insensitively() {
     let by_id = TicketFiltersInput {
         text: Some("lin-99".to_string()),
         assignee: None,
+        watcher_me: None,
         state_ids: None,
         labels: None,
     };
@@ -1343,6 +1960,7 @@ fn ticket_matches_filters_text_matches_provider_id_case_insensitively() {
     let by_title = TicketFiltersInput {
         text: Some("SOME".to_string()),
         assignee: None,
+        watcher_me: None,
         state_ids: None,
         labels: None,
     };
@@ -1351,6 +1969,7 @@ fn ticket_matches_filters_text_matches_provider_id_case_insensitively() {
     let miss = TicketFiltersInput {
         text: Some("absent".to_string()),
         assignee: None,
+        watcher_me: None,
         state_ids: None,
         labels: None,
     };
@@ -1364,6 +1983,7 @@ fn ticket_matches_filters_state_id_matches_category_alias() {
     let by_category = TicketFiltersInput {
         text: None,
         assignee: None,
+        watcher_me: None,
         state_ids: Some(vec!["in_progress".to_string()]),
         labels: None,
     };
@@ -1372,6 +1992,7 @@ fn ticket_matches_filters_state_id_matches_category_alias() {
     let by_state_id = TicketFiltersInput {
         text: None,
         assignee: None,
+        watcher_me: None,
         state_ids: Some(vec!["in_progress".to_string(), "other".to_string()]),
         labels: None,
     };
@@ -1380,6 +2001,7 @@ fn ticket_matches_filters_state_id_matches_category_alias() {
     let miss = TicketFiltersInput {
         text: None,
         assignee: None,
+        watcher_me: None,
         state_ids: Some(vec!["done".to_string()]),
         labels: None,
     };
@@ -1394,6 +2016,7 @@ fn ticket_matches_filters_assignee_matches_any_assignee() {
     let by_second_assignee = TicketFiltersInput {
         text: None,
         assignee: Some("Grace".to_string()),
+        watcher_me: None,
         state_ids: None,
         labels: None,
     };
@@ -1402,10 +2025,29 @@ fn ticket_matches_filters_assignee_matches_any_assignee() {
     let miss = TicketFiltersInput {
         text: None,
         assignee: Some("Katherine".to_string()),
+        watcher_me: None,
         state_ids: None,
         labels: None,
     };
     assert!(!ticket_matches_filters(&ticket, &miss));
+}
+
+#[test]
+fn ticket_matches_filters_watcher_me_requires_current_user_watching() {
+    let mut watched = ticket_summary_fixture("CU-1", "Watched task", "Todo", None, &[]);
+    watched.current_user_watching = true;
+    watched.watchers = vec![named_person("Reef Agent")];
+    let unwatched = ticket_summary_fixture("CU-2", "Unwatched task", "Todo", None, &[]);
+    let filter = TicketFiltersInput {
+        text: None,
+        assignee: None,
+        watcher_me: Some(true),
+        state_ids: None,
+        labels: None,
+    };
+
+    assert!(ticket_matches_filters(&watched, &filter));
+    assert!(!ticket_matches_filters(&unwatched, &filter));
 }
 
 #[test]
@@ -1414,6 +2056,7 @@ fn ticket_matches_filters_requires_all_labels_present() {
     let all_present = TicketFiltersInput {
         text: None,
         assignee: None,
+        watcher_me: None,
         state_ids: None,
         labels: Some(vec!["Backend".to_string(), "LINEAR".to_string()]),
     };
@@ -1423,6 +2066,7 @@ fn ticket_matches_filters_requires_all_labels_present() {
     let missing_one = TicketFiltersInput {
         text: None,
         assignee: None,
+        watcher_me: None,
         state_ids: None,
         labels: Some(vec!["backend".to_string(), "frontend".to_string()]),
     };
@@ -1448,6 +2092,7 @@ fn ticket_summary_fixture(
         state: ticket_state(state_name),
         assignee,
         assignees,
+        watchers: Vec::new(),
         reporter: None,
         labels: labels.iter().map(|label| label.to_string()).collect(),
         project: None,
@@ -1460,6 +2105,7 @@ fn ticket_summary_fixture(
         open_pr_url: None,
         open_pr_status: None,
         current_user_assigned: false,
+        current_user_watching: false,
     }
 }
 
@@ -1477,6 +2123,49 @@ fn build_ticketing_start_app(
         .expect("mock app should build")
 }
 
+fn git(repo: &Path, args: &[&str]) {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(repo)
+        .output()
+        .expect("git should run");
+    assert!(
+        output.status.success(),
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn init_ticket_start_repo() -> (tempfile::TempDir, std::path::PathBuf) {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let origin = temp.path().join("origin.git");
+    let repo = temp.path().join("repo");
+
+    let output = Command::new("git")
+        .args(["init", "--bare", origin.to_str().expect("origin path")])
+        .output()
+        .expect("git init bare should run");
+    assert!(output.status.success());
+    let output = Command::new("git")
+        .args(["init", "-b", "main", repo.to_str().expect("repo path")])
+        .output()
+        .expect("git init should run");
+    assert!(output.status.success());
+
+    git(&repo, &["config", "user.email", "test@example.com"]);
+    git(&repo, &["config", "user.name", "Test User"]);
+    std::fs::write(repo.join("README.md"), "main\n").expect("write readme");
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-m", "initial"]);
+    git(
+        &repo,
+        &["remote", "add", "origin", origin.to_str().unwrap()],
+    );
+
+    (temp, repo)
+}
+
 async fn seed_ticketing_project(state: &AppState, id: &str) -> ProjectId {
     let project_id = ProjectId::from_string(id.to_string());
     let mut project = Project::new(
@@ -1484,6 +2173,23 @@ async fn seed_ticketing_project(state: &AppState, id: &str) -> ProjectId {
         format!("/tmp/{id}-project-worktree"),
     );
     project.id = project_id.clone();
+    state
+        .project_repo
+        .create(project)
+        .await
+        .expect("project should be created");
+    project_id
+}
+
+async fn seed_ticketing_project_with_working_directory(
+    state: &AppState,
+    id: &str,
+    working_directory: String,
+) -> ProjectId {
+    let project_id = ProjectId::from_string(id.to_string());
+    let mut project = Project::new(format!("{id} project"), working_directory);
+    project.id = project_id.clone();
+    project.base_branch = Some("main".to_string());
     state
         .project_repo
         .create(project)
@@ -1624,6 +2330,73 @@ async fn start_work_from_ticket_queues_message_for_clickup_without_link_table() 
         queued[0].composer_integration_references[0].key.as_deref(),
         Some("CU-42")
     );
+}
+
+#[tokio::test]
+async fn start_agent_conversation_with_ticket_default_base_uses_canonical_branch() {
+    crate::application::harness_runtime_registry::seed_available_harness_probes_for_test();
+    let (_temp, repo) = init_ticket_start_repo();
+    let mut state = AppState::new_test();
+    let github = Arc::new(MockGithubService::new());
+    state.github_service = Some(github.clone());
+    let project_id = seed_ticketing_project_with_working_directory(
+        &state,
+        "ticket-start-service",
+        repo.to_string_lossy().into_owned(),
+    )
+    .await;
+    let execution_state = Arc::new(ExecutionState::new());
+    execution_state.pause();
+    let app = build_ticketing_start_app(state, Arc::clone(&execution_state));
+
+    let result = AgentConversationStartService::new(AgentConversationStartDeps {
+        state: app.state::<AppState>().inner(),
+        execution_state: app.state::<Arc<ExecutionState>>().inner(),
+        team_service: Some(app.state::<Arc<TeamService>>().inner().clone()),
+        app_handle: app.handle().clone(),
+    })
+    .start(StartAgentConversationInput {
+        project_id: project_id.as_str().to_string(),
+        content: "Start from attached ticket".to_string(),
+        conversation_id: None,
+        provider_harness: None,
+        model_override: None,
+        logical_effort: None,
+        mode: Some("edit".to_string()),
+        base_ref_kind: Some("project_default".to_string()),
+        base_ref: Some("main".to_string()),
+        base_display_name: Some("Project default (main)".to_string()),
+        base_source_pull_request: None,
+        composer_project_references: Vec::new(),
+        composer_integration_references: vec![ComposerIntegrationReference {
+            provider: "atlassian".to_string(),
+            kind: "jira".to_string(),
+            id: "10077".to_string(),
+            key: Some("RX-77".to_string()),
+            title: Some("Ticket with default base".to_string()),
+            url: None,
+        }],
+        composer_artifact_references: Vec::new(),
+    })
+    .await
+    .expect("start should succeed by queueing while paused");
+
+    let workspace = result.workspace.expect("edit mode creates a workspace");
+    assert_eq!(
+        workspace.base_ref_kind,
+        IdeationAnalysisBaseRefKind::LocalBranch
+    );
+    assert_eq!(workspace.base_ref, "ralphx/ticket/jira-rx-77");
+    assert_eq!(
+        workspace.base_display_name.as_deref(),
+        Some("Ticket RX-77 (ralphx/ticket/jira-rx-77)")
+    );
+    assert_eq!(github.state().push_branch_calls, 1);
+    assert_eq!(
+        github.state().last_push_branch_name.as_deref(),
+        Some("ralphx/ticket/jira-rx-77")
+    );
+    assert!(result.send_result.was_queued);
 }
 
 #[tokio::test]
@@ -1806,6 +2579,7 @@ fn hydrate_input_summary(ticket_ref: TicketRefInput) -> TicketSummaryResponse {
         state: ticket_state("To Do"),
         assignee: None,
         assignees: Vec::new(),
+        watchers: Vec::new(),
         reporter: None,
         labels: Vec::new(),
         project: None,
@@ -1818,6 +2592,7 @@ fn hydrate_input_summary(ticket_ref: TicketRefInput) -> TicketSummaryResponse {
         open_pr_url: None,
         open_pr_status: None,
         current_user_assigned: false,
+        current_user_watching: false,
     }
 }
 
@@ -1981,12 +2756,20 @@ fn pull_request_items_map_pr_and_branch_only_workspaces() {
     assert_eq!(pr.deep_link.view, "agents");
     assert_eq!(pr.deep_link.id, "conv-1");
     assert_eq!(pr.deep_link.project_id.as_deref(), Some("project-1"));
+    assert_eq!(pr.branch_name.as_deref(), Some("ralphx/p/agent-1"));
+    assert_eq!(pr.base_ref.as_deref(), Some("main"));
+    assert_eq!(pr.pr_number, Some(42));
+    assert_eq!(pr.pr_url.as_deref(), Some("https://github.com/x/y/pull/42"));
 
     let branch_only = &items[1];
     assert_eq!(branch_only.title, "ralphx/p/agent-2");
     assert_eq!(branch_only.status.as_deref(), Some("branch"));
     assert!(!branch_only.active);
     assert_eq!(branch_only.id, "conv-2");
+    assert_eq!(branch_only.branch_name.as_deref(), Some("ralphx/p/agent-2"));
+    assert_eq!(branch_only.base_ref.as_deref(), Some("main"));
+    assert_eq!(branch_only.pr_number, None);
+    assert_eq!(branch_only.pr_url, None);
 }
 
 fn base_test_start_input() -> StartAgentConversationInput {
@@ -2040,6 +2823,35 @@ fn workspace_modes_inherit_canonical_branch_chat_does_not() {
     assert!(ticket_start_inherits_canonical_branch(None));
     // Chat-only ticket starts create no workspace, so they skip base injection.
     assert!(!ticket_start_inherits_canonical_branch(Some("chat")));
+}
+
+#[test]
+fn ticket_start_applies_canonical_branch_only_for_default_base() {
+    let start = base_test_start_input();
+    assert!(ticket_start_should_apply_canonical_branch(&start));
+
+    let mut local = base_test_start_input();
+    local.base_ref_kind = Some("local_branch".to_string());
+    local.base_ref = Some("feature/existing".to_string());
+    assert!(!ticket_start_should_apply_canonical_branch(&local));
+
+    let mut invalid = base_test_start_input();
+    invalid.base_ref_kind = Some("not-a-base-kind".to_string());
+    assert!(!ticket_start_should_apply_canonical_branch(&invalid));
+
+    let mut pr = base_test_start_input();
+    pr.base_ref_kind = Some("local_branch".to_string());
+    pr.base_ref = Some("feature/pr-head".to_string());
+    pr.base_source_pull_request =
+        Some(crate::application::agent_conversation_start_service::AgentWorkspaceSourcePullRequestInput {
+        number: 42,
+        url: Some("https://github.com/x/y/pull/42".to_string()),
+        title: Some("PR #42".to_string()),
+        head_ref_name: "feature/pr-head".to_string(),
+        base_ref_name: Some("main".to_string()),
+        head_ref_oid: None,
+    });
+    assert!(!ticket_start_should_apply_canonical_branch(&pr));
 }
 
 #[test]
