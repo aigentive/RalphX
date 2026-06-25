@@ -3288,6 +3288,78 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     }
                 }
             }
+        } else if context_type == ChatContextType::Project {
+            if let Some(ref exec) = self.execution_state {
+                let active_workspaces =
+                    match crate::application::workspace_capacity::count_active_workspace_sessions(
+                        &self.running_agent_registry,
+                        &self.project_repo,
+                        &self.conversation_repo,
+                        None,
+                    )
+                    .await
+                    {
+                        Ok(count) => count,
+                        Err(error) => {
+                            cleanup_and_err!(ChatServiceError::RepositoryError(error))
+                        }
+                    };
+
+                if !crate::application::workspace_capacity::workspace_capacity_available(
+                    active_workspaces,
+                    exec.workspace_max_concurrent(),
+                    exec.running_count(),
+                    exec.global_max_concurrent(),
+                    exec.is_paused(),
+                    exec.is_provider_blocked(),
+                ) {
+                    let capacity_err_msg = if active_workspaces >= exec.workspace_max_concurrent() {
+                        format!(
+                            "workspace capacity reached ({}/{} active workspace agents)",
+                            active_workspaces,
+                            exec.workspace_max_concurrent()
+                        )
+                    } else {
+                        format!(
+                            "execution capacity reached ({}/{} active lane agents)",
+                            exec.running_count().saturating_add(active_workspaces),
+                            exec.global_max_concurrent()
+                        )
+                    };
+
+                    if options.caller_context == SendCallerContext::DrainService {
+                        cleanup_and_err!(ChatServiceError::SpawnFailed(capacity_err_msg));
+                    }
+
+                    self.running_agent_registry
+                        .unregister(&registry_key, &agent_run_id)
+                        .await;
+                    let queued = self.enqueue_pending_send(
+                        context_type,
+                        &runtime_context_id,
+                        message,
+                        &options,
+                        Some(conversation.id.as_str()),
+                    );
+                    tracing::info!(
+                        %context_type,
+                        context_id,
+                        runtime_context_id = %runtime_context_id,
+                        queued_message_id = %queued.id,
+                        active_workspaces,
+                        workspace_max = exec.workspace_max_concurrent(),
+                        "send_message: workspace capacity full, queued agent message instead of spawning"
+                    );
+                    return Ok(SendResult {
+                        conversation_id: conversation.id.as_str().to_string(),
+                        agent_run_id: agent_run_id.clone(),
+                        is_new_conversation: spawn_path_is_new_conversation,
+                        was_queued: true,
+                        queued_message_id: Some(queued.id),
+                        queued_as_pending: false,
+                    });
+                }
+            }
         }
 
         let conversation_id = conversation.id;

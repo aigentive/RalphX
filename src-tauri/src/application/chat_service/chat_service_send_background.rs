@@ -1246,10 +1246,13 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                         let drain = Arc::new(
                             crate::application::pending_session_drain::PendingSessionDrainService::new(
                                 Arc::clone(&ideation_session_repo),
+                                Arc::clone(&project_repo),
                                 Arc::clone(&task_repo),
+                                Arc::clone(&conversation_repo),
                                 exec_settings,
                                 exec_state,
                                 Arc::clone(&running_agent_registry),
+                                Arc::clone(&message_queue),
                                 chat_svc,
                             ),
                         );

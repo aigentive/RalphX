@@ -10,7 +10,9 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Runtime, State};
 use tokio::sync::RwLock;
 
-use crate::application::chat_service::{uses_execution_slot, ChatService, SendMessageOptions};
+use crate::application::chat_service::{
+    uses_execution_slot, ChatService, SendCallerContext, SendMessageOptions,
+};
 use crate::application::reconciliation::UserRecoveryAction;
 use crate::application::team_state_tracker::TeamStateTracker;
 use crate::application::{AppState, ReconciliationRunner, TaskTransitionService};
@@ -42,6 +44,7 @@ use state::*;
 mod control_helpers;
 
 pub use control_helpers::count_active_ideation_slots;
+pub use control_helpers::count_active_workspace_sessions;
 pub use control_helpers::project_has_execution_capacity_for_state;
 use control_helpers::*;
 

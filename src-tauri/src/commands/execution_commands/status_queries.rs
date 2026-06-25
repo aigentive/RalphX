@@ -364,12 +364,14 @@ pub async fn get_running_processes(
         &state,
     )
     .await?;
-    let workspace_waiting = count_queued_messages_for_context_types(
-        &[ChatContextType::Project],
-        effective_project_id.as_ref(),
-        &state,
-    )
-    .await?;
+    let workspace_waiting =
+        crate::application::workspace_capacity::count_queued_workspace_messages(
+            &state.message_queue,
+            &state.project_repo,
+            &state.chat_conversation_repo,
+            effective_project_id.as_ref(),
+        )
+        .await?;
     let ideation_queued_messages = count_queued_messages_for_context_types(
         &[ChatContextType::Ideation],
         effective_project_id.as_ref(),
@@ -386,7 +388,8 @@ pub async fn get_running_processes(
     };
     let ideation_waiting = pending_ideation_sessions + ideation_queued_messages;
 
-    let workspace_active = workspace_sessions.len() as u32;
+    let workspace_active =
+        count_active_workspace_sessions(&state, effective_project_id.as_ref()).await?;
     let workspace_max = execution_state.workspace_max_concurrent();
     let task_active = processes.len() as u32;
     let ideation_active = ideation_sessions

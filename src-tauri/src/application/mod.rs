@@ -93,6 +93,7 @@ pub mod team_service;
 pub mod team_state_tracker;
 pub mod team_stream_processor;
 pub mod webhook_service;
+pub(crate) mod workspace_capacity;
 
 // Re-export commonly used items
 pub use app_state::AppState;
@@ -199,6 +200,8 @@ mod ideation_harness_availability_tests;
 mod orphan_worktree_cleanup_tests;
 #[cfg(test)]
 mod pr_startup_recovery_tests;
+#[cfg(test)]
+mod pending_session_drain_tests;
 #[cfg(test)]
 mod recovery_queue_tests;
 #[cfg(test)]

@@ -133,10 +133,13 @@ pub async fn update_execution_settings(
             let drain = Arc::new(
                 crate::application::pending_session_drain::PendingSessionDrainService::new(
                     Arc::clone(&app_state.ideation_session_repo),
+                    Arc::clone(&app_state.project_repo),
                     Arc::clone(&app_state.task_repo),
+                    Arc::clone(&app_state.chat_conversation_repo),
                     Arc::clone(&app_state.execution_settings_repo),
                     Arc::clone(&execution_state),
                     Arc::clone(&app_state.running_agent_registry),
+                    Arc::clone(&app_state.message_queue),
                     chat_svc,
                 ),
             );
@@ -300,6 +303,7 @@ pub async fn update_global_execution_settings(
     use crate::domain::execution::GlobalExecutionSettings;
 
     let old_global_max = execution_state.global_max_concurrent();
+    let old_workspace_max = execution_state.workspace_max_concurrent();
 
     let settings = GlobalExecutionSettings {
         global_max_concurrent: input.global_max_concurrent,
@@ -320,6 +324,27 @@ pub async fn update_global_execution_settings(
     execution_state.set_global_ideation_max(updated.global_ideation_max);
     execution_state
         .set_allow_ideation_borrow_idle_execution(updated.allow_ideation_borrow_idle_execution);
+
+    if updated.global_max_concurrent > old_global_max
+        || updated.workspace_max_concurrent > old_workspace_max
+    {
+        let chat_service = Arc::new(
+            app_state.build_chat_service_with_execution_state(Arc::clone(&execution_state)),
+        ) as Arc<dyn ChatService>;
+        if let Err(error) = resume_paused_workspace_queues_with_chat_service(
+            None,
+            &app_state,
+            &execution_state,
+            || Arc::clone(&chat_service),
+        )
+        .await
+        {
+            tracing::warn!(
+                error = %error,
+                "Failed to relaunch workspace queues after global capacity update"
+            );
+        }
+    }
 
     // If global capacity increased, trigger scheduler to pick up waiting tasks
     if updated.global_max_concurrent > old_global_max {

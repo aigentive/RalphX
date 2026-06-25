@@ -1531,12 +1531,15 @@ async fn test_resume_relaunches_queued_project_chat_message() {
     );
 
     let mock = Arc::new(MockChatService::new());
-    let resumed =
-        resume_paused_non_slot_chat_queues_with_chat_service(Some(&project.id), &app_state, || {
-            Arc::clone(&mock) as Arc<dyn ChatService>
-        })
-        .await
-        .expect("resume paused project chat queue");
+    let execution_state = Arc::new(ExecutionState::new());
+    let resumed = resume_paused_workspace_queues_with_chat_service(
+        Some(&project.id),
+        &app_state,
+        &execution_state,
+        || Arc::clone(&mock) as Arc<dyn ChatService>,
+    )
+    .await
+    .expect("resume paused project chat queue");
 
     assert_eq!(resumed, 1);
     assert_eq!(mock.call_count(), 1);
@@ -1548,6 +1551,123 @@ async fn test_resume_relaunches_queued_project_chat_message() {
         .message_queue
         .get_queued(ChatContextType::Project, project.id.as_str())
         .is_empty());
+}
+
+#[tokio::test]
+async fn test_resume_workspace_queue_respects_workspace_capacity() {
+    let app_state = AppState::new_test();
+    let execution_state = Arc::new(ExecutionState::new());
+    execution_state.set_workspace_max_concurrent(1);
+    let project = Project::new(
+        "Workspace Capacity".to_string(),
+        "/test/workspace-capacity".to_string(),
+    );
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+
+    app_state
+        .running_agent_registry
+        .register(
+            RunningAgentKey::new("project", project.id.as_str()),
+            45454,
+            "workspace-conv".to_string(),
+            "workspace-run".to_string(),
+            None,
+            None,
+        )
+        .await;
+    app_state.message_queue.queue(
+        ChatContextType::Project,
+        project.id.as_str(),
+        "blocked workspace queue".to_string(),
+    );
+
+    let mock = Arc::new(MockChatService::new());
+    let resumed = resume_paused_workspace_queues_with_chat_service(
+        Some(&project.id),
+        &app_state,
+        &execution_state,
+        || Arc::clone(&mock) as Arc<dyn ChatService>,
+    )
+    .await
+    .expect("resume paused project chat queue");
+
+    assert_eq!(resumed, 0);
+    assert_eq!(mock.call_count(), 0);
+    assert_eq!(
+        app_state
+            .message_queue
+            .get_queued(ChatContextType::Project, project.id.as_str())
+            .len(),
+        1,
+        "workspace queue should stay pending while the workspace lane is full"
+    );
+}
+
+#[tokio::test]
+async fn test_project_scoped_workspace_resume_respects_global_workspace_capacity() {
+    let app_state = AppState::new_test();
+    let execution_state = Arc::new(ExecutionState::new());
+    execution_state.set_workspace_max_concurrent(1);
+    let active_project = Project::new(
+        "Active Workspace".to_string(),
+        "/test/active-workspace".to_string(),
+    );
+    let queued_project = Project::new(
+        "Queued Workspace".to_string(),
+        "/test/queued-workspace".to_string(),
+    );
+    app_state
+        .project_repo
+        .create(active_project.clone())
+        .await
+        .unwrap();
+    app_state
+        .project_repo
+        .create(queued_project.clone())
+        .await
+        .unwrap();
+
+    app_state
+        .running_agent_registry
+        .register(
+            RunningAgentKey::new("project", active_project.id.as_str()),
+            56565,
+            "active-workspace-conv".to_string(),
+            "active-workspace-run".to_string(),
+            None,
+            None,
+        )
+        .await;
+    app_state.message_queue.queue(
+        ChatContextType::Project,
+        queued_project.id.as_str(),
+        "blocked by another project workspace".to_string(),
+    );
+
+    let mock = Arc::new(MockChatService::new());
+    let resumed = resume_paused_workspace_queues_with_chat_service(
+        Some(&queued_project.id),
+        &app_state,
+        &execution_state,
+        || Arc::clone(&mock) as Arc<dyn ChatService>,
+    )
+    .await
+    .expect("resume project-scoped workspace queue");
+
+    assert_eq!(resumed, 0);
+    assert_eq!(mock.call_count(), 0);
+    assert_eq!(
+        app_state
+            .message_queue
+            .get_queued(ChatContextType::Project, queued_project.id.as_str())
+            .len(),
+        1,
+        "project-scoped resume must still respect the global workspace lane cap"
+    );
 }
 
 #[tokio::test]
@@ -1814,6 +1934,80 @@ async fn test_resume_borrowing_stays_blocked_when_ready_execution_waits() {
             .len(),
         1,
         "borrowing must stay blocked while ready execution work exists"
+    );
+}
+
+#[tokio::test]
+async fn test_resume_borrowing_stays_blocked_when_workspace_queue_waits() {
+    let app_state = AppState::new_test();
+    let execution_state = Arc::new(ExecutionState::new());
+    let project = Project::new(
+        "Workspace Borrow Block".to_string(),
+        "/test/workspace-borrow-block".to_string(),
+    );
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+
+    execution_state.set_global_max_concurrent(5);
+    execution_state.set_global_ideation_max(1);
+    execution_state.set_allow_ideation_borrow_idle_execution(true);
+
+    let occupied = app_state
+        .ideation_session_repo
+        .create(IdeationSession::new(project.id.clone()))
+        .await
+        .unwrap();
+    let queued = app_state
+        .ideation_session_repo
+        .create(IdeationSession::new(project.id.clone()))
+        .await
+        .unwrap();
+
+    app_state.message_queue.queue(
+        ChatContextType::Project,
+        project.id.as_str(),
+        "waiting workspace".to_string(),
+    );
+    app_state.message_queue.queue(
+        ChatContextType::Ideation,
+        queued.id.as_str(),
+        "blocked by workspace pressure".to_string(),
+    );
+
+    app_state
+        .running_agent_registry
+        .register(
+            RunningAgentKey::new("ideation", occupied.id.as_str()),
+            24242,
+            "occupied-conv".to_string(),
+            "occupied-run".to_string(),
+            None,
+            None,
+        )
+        .await;
+
+    let mock = Arc::new(MockChatService::new());
+    let resumed = resume_paused_ideation_queues_with_chat_service(
+        Some(&project.id),
+        &app_state,
+        &execution_state,
+        |_| Arc::clone(&mock) as Arc<dyn ChatService>,
+    )
+    .await
+    .expect("resume queued ideation with workspace pressure");
+
+    assert_eq!(resumed, 0);
+    assert_eq!(mock.call_count(), 0);
+    assert_eq!(
+        app_state
+            .message_queue
+            .get_queued(ChatContextType::Ideation, queued.id.as_str())
+            .len(),
+        1,
+        "borrowing must stay blocked while workspace work is waiting"
     );
 }
 
@@ -2507,7 +2701,7 @@ async fn test_resume_mixed_load_relaunches_execution_then_ideation_while_blocked
 }
 
 #[tokio::test]
-async fn test_resume_mixed_context_relaunches_execution_ideation_and_chat_queues() {
+async fn test_resume_mixed_context_relaunches_workspace_execution_ideation_and_task_chat_queues() {
     let app_state = AppState::new_test();
     let execution_state = Arc::new(ExecutionState::new());
 
@@ -2567,6 +2761,22 @@ async fn test_resume_mixed_context_relaunches_execution_ideation_and_chat_queues
         None,
     );
 
+    let workspace_mock = Arc::new(MockChatService::new());
+    let workspace_resumed = resume_paused_workspace_queues_with_chat_service(
+        None,
+        &app_state,
+        &execution_state,
+        || Arc::clone(&workspace_mock) as Arc<dyn ChatService>,
+    )
+    .await
+    .expect("resume mixed workspace queue");
+
+    assert_eq!(workspace_resumed, 1);
+    assert_eq!(
+        workspace_mock.get_sent_messages().await,
+        vec!["resume mixed project chat".to_string()]
+    );
+
     let slot_mock = Arc::new(MockChatService::new());
     let slot_resumed = resume_paused_slot_consuming_queues_with_chat_service(
         None,
@@ -2605,13 +2815,10 @@ async fn test_resume_mixed_context_relaunches_execution_ideation_and_chat_queues
         .await
         .expect("resume mixed non-slot chat queues");
 
-    assert_eq!(chat_resumed, 2);
+    assert_eq!(chat_resumed, 1);
     assert_eq!(
         chat_mock.get_sent_messages().await,
-        vec![
-            "resume mixed project chat".to_string(),
-            "resume mixed task chat".to_string(),
-        ]
+        vec!["resume mixed task chat".to_string()]
     );
     assert!(app_state
         .message_queue
