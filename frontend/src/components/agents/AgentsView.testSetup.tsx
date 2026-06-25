@@ -59,6 +59,8 @@ const agentsViewTestMocks = vi.hoisted(() => ({
   getWorkspaceChangesMock: vi.fn(),
   getWorkspaceChangeSummaryMock: vi.fn(),
   getWorkspaceReviewMock: vi.fn(),
+  getWorkspaceReviewContextMock: vi.fn(),
+  startWorkspaceReviewMock: vi.fn(),
   getWorkspaceDiffMock: vi.fn(),
   getWorkspaceCommitsMock: vi.fn(),
   getWorkspaceCommitChangesMock: vi.fn(),
@@ -171,6 +173,8 @@ const {
   getWorkspaceChangesMock,
   getWorkspaceChangeSummaryMock,
   getWorkspaceReviewMock,
+  getWorkspaceReviewContextMock,
+  startWorkspaceReviewMock,
   getWorkspaceDiffMock,
   getWorkspaceCommitsMock,
   getWorkspaceCommitChangesMock,
@@ -654,6 +658,10 @@ vi.mock("@/api/chat", () => ({
       getAgentConversationWorkspaceMock(...args),
     getAgentConversationWorkspaceFreshness: (...args: unknown[]) =>
       getAgentConversationWorkspaceFreshnessMock(...args),
+    getAgentWorkspaceReviewContext: (...args: unknown[]) =>
+      getWorkspaceReviewContextMock(...args),
+    startAgentWorkspaceReview: (...args: unknown[]) =>
+      startWorkspaceReviewMock(...args),
     listAgentConversationWorkspacesByProject: (...args: unknown[]) =>
       listAgentConversationWorkspacesByProjectMock(...args),
     listConversations: (...args: unknown[]) => listConversationsMock(...args),
@@ -1233,6 +1241,8 @@ export function setupAgentsViewTest() {
   getWorkspaceChangesMock.mockReset();
   getWorkspaceChangeSummaryMock.mockReset();
   getWorkspaceReviewMock.mockReset();
+  getWorkspaceReviewContextMock.mockReset();
+  startWorkspaceReviewMock.mockReset();
   getWorkspaceDiffMock.mockReset();
   getWorkspaceCommitsMock.mockReset();
   getWorkspaceCommitChangesMock.mockReset();
@@ -1352,6 +1362,35 @@ export function setupAgentsViewTest() {
     commits: [],
     baseRef: "main",
     headRef: "HEAD",
+  });
+  getWorkspaceReviewContextMock.mockResolvedValue({
+    success: true,
+    workspace: conversationWorkspace,
+    events: [],
+    target: null,
+    monitor: {
+      status: "idle",
+      reviewArtifactId: null,
+      reviewArtifactVersion: null,
+    },
+    isCurrent: false,
+    isOutdated: false,
+    shouldShowTab: false,
+  });
+  startWorkspaceReviewMock.mockResolvedValue({
+    success: true,
+    target: null,
+    monitor: {
+      status: "idle",
+      reviewArtifactId: null,
+      reviewArtifactVersion: null,
+    },
+    isCurrent: false,
+    isOutdated: false,
+    shouldShowTab: false,
+    started: false,
+    skippedReason: "no_reviewable_changes",
+    wasQueued: false,
   });
   getWorkspaceDiffMock.mockResolvedValue("");
   getWorkspaceCommitsMock.mockResolvedValue([]);

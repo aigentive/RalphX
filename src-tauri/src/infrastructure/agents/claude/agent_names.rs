@@ -29,6 +29,7 @@ pub const SHORT_GENERAL_WORKER: &str = "ralphx-general-worker";
 pub const SHORT_AGENT_WORKSPACE_REPAIR: &str = "ralphx-agent-workspace-repair";
 pub const SHORT_AGENT_WORKSPACE_PR_FIXER: &str = "ralphx-agent-workspace-pr-fixer";
 pub const SHORT_PR_REVIEWER: &str = "ralphx-pr-reviewer";
+pub const SHORT_WORKSPACE_REVIEWER: &str = "ralphx-workspace-reviewer";
 pub const SHORT_REVIEWER: &str = "ralphx-execution-reviewer";
 pub const SHORT_QA_PREP: &str = "ralphx-qa-prep";
 pub const SHORT_QA_EXECUTOR: &str = "ralphx-qa-executor";
@@ -102,6 +103,9 @@ pub const AGENT_WORKSPACE_PR_FIXER: &str = "ralphx:ralphx-agent-workspace-pr-fix
 
 /// Agent-workspace local pull request reviewer
 pub const AGENT_PR_REVIEWER: &str = "ralphx:ralphx-pr-reviewer";
+
+/// Agent-workspace Review artifact writer
+pub const AGENT_WORKSPACE_REVIEWER: &str = "ralphx:ralphx-workspace-reviewer";
 
 /// Worker execution agent (ChatContextType::TaskExecution)
 pub const AGENT_WORKER: &str = "ralphx:ralphx-execution-worker";

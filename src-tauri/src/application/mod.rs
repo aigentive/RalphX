@@ -15,6 +15,7 @@ pub mod agent_workspace_external_pr_reconciliation;
 pub(crate) mod plan_pr_description;
 pub(crate) mod agent_workspace_pr_supervision_recovery;
 pub mod agent_workspace_publish_recovery;
+pub mod agent_workspace_review;
 pub mod agent_workspace_bridge;
 pub mod agent_terminal;
 pub mod agent_client_bundle;

@@ -94,6 +94,70 @@ pub enum AgentWorkspacePrReviewMonitorStatus {
     Terminal,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentWorkspaceReviewMonitorStatus {
+    Idle,
+    Reviewing,
+    Ready,
+    Blocked,
+}
+
+impl std::fmt::Display for AgentWorkspaceReviewMonitorStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Idle => write!(f, "idle"),
+            Self::Reviewing => write!(f, "reviewing"),
+            Self::Ready => write!(f, "ready"),
+            Self::Blocked => write!(f, "blocked"),
+        }
+    }
+}
+
+impl FromStr for AgentWorkspaceReviewMonitorStatus {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "idle" => Ok(Self::Idle),
+            "reviewing" => Ok(Self::Reviewing),
+            "ready" => Ok(Self::Ready),
+            "blocked" => Ok(Self::Blocked),
+            _ => Err(format!(
+                "unknown workspace review monitor status: '{value}'"
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentWorkspaceReviewTargetScope {
+    SelectedSource,
+    WorkspaceDelta,
+}
+
+impl std::fmt::Display for AgentWorkspaceReviewTargetScope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SelectedSource => write!(f, "selected_source"),
+            Self::WorkspaceDelta => write!(f, "workspace_delta"),
+        }
+    }
+}
+
+impl FromStr for AgentWorkspaceReviewTargetScope {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "selected_source" => Ok(Self::SelectedSource),
+            "workspace_delta" => Ok(Self::WorkspaceDelta),
+            _ => Err(format!("unknown workspace review target scope: '{value}'")),
+        }
+    }
+}
+
 impl std::fmt::Display for AgentWorkspacePrReviewMonitorStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -226,6 +290,81 @@ pub struct AgentWorkspacePrReviewMonitor {
     pub last_error: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentWorkspaceReviewMonitor {
+    pub conversation_id: ChatConversationId,
+    pub project_id: ProjectId,
+    pub status: AgentWorkspaceReviewMonitorStatus,
+    pub current_target_scope: Option<AgentWorkspaceReviewTargetScope>,
+    pub reviewed_target_scope: Option<AgentWorkspaceReviewTargetScope>,
+    pub review_artifact_id: Option<ArtifactId>,
+    pub review_artifact_version: Option<u32>,
+    pub review_artifact_updated_at: Option<DateTime<Utc>>,
+    pub reviewed_head_sha: Option<String>,
+    pub reviewed_diff_fingerprint: Option<String>,
+    pub selected_source_base_ref: Option<String>,
+    pub selected_source_base_sha: Option<String>,
+    pub selected_source_head_ref: Option<String>,
+    pub selected_source_head_sha: Option<String>,
+    pub selected_source_pull_request_number: Option<i64>,
+    pub workspace_base_ref: Option<String>,
+    pub workspace_base_sha: Option<String>,
+    pub workspace_head_ref: Option<String>,
+    pub workspace_head_sha: Option<String>,
+    pub current_diff_fingerprint: Option<String>,
+    pub previous_version_id: Option<ArtifactId>,
+    pub last_run_id: Option<String>,
+    pub last_error: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl AgentWorkspaceReviewMonitor {
+    pub fn new(conversation_id: ChatConversationId, project_id: ProjectId) -> Self {
+        let now = Utc::now();
+        Self {
+            conversation_id,
+            project_id,
+            status: AgentWorkspaceReviewMonitorStatus::Idle,
+            current_target_scope: None,
+            reviewed_target_scope: None,
+            review_artifact_id: None,
+            review_artifact_version: None,
+            review_artifact_updated_at: None,
+            reviewed_head_sha: None,
+            reviewed_diff_fingerprint: None,
+            selected_source_base_ref: None,
+            selected_source_base_sha: None,
+            selected_source_head_ref: None,
+            selected_source_head_sha: None,
+            selected_source_pull_request_number: None,
+            workspace_base_ref: None,
+            workspace_base_sha: None,
+            workspace_head_ref: None,
+            workspace_head_sha: None,
+            current_diff_fingerprint: None,
+            previous_version_id: None,
+            last_run_id: None,
+            last_error: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+}
+
+impl AgentWorkspaceReviewMonitor {
+    pub fn is_current_for_target(
+        &self,
+        target_scope: AgentWorkspaceReviewTargetScope,
+        head_sha: Option<&str>,
+        diff_fingerprint: &str,
+    ) -> bool {
+        self.reviewed_target_scope == Some(target_scope)
+            && self.reviewed_head_sha.as_deref() == head_sha
+            && self.reviewed_diff_fingerprint.as_deref() == Some(diff_fingerprint)
+    }
 }
 
 impl AgentWorkspacePrReviewMonitor {

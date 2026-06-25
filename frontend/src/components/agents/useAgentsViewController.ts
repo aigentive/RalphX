@@ -492,6 +492,9 @@ export function useAgentsViewController({
       void queryClient.invalidateQueries({
         queryKey: agentWorkspaceKeys.prReview(conversationId),
       });
+      void queryClient.invalidateQueries({
+        queryKey: agentWorkspaceKeys.workspaceReview(conversationId),
+      });
       const artifactId = payload.artifact?.id;
       if (artifactId) {
         void queryClient.invalidateQueries({
@@ -514,10 +517,28 @@ export function useAgentsViewController({
       "pr_review_artifact:updated",
       invalidateReviewArtifact,
     );
+    const unsubscribeWorkspaceCreated =
+      eventBus.subscribe<PrReviewArtifactEventPayload>(
+        "workspace_review_artifact:created",
+        (payload) => {
+          invalidateReviewArtifact(payload);
+          const conversationId = payload.conversationId ?? payload.conversation_id;
+          if (conversationId && conversationId === selectedConversationId) {
+            openArtifactTab(conversationId, "review");
+          }
+        },
+      );
+    const unsubscribeWorkspaceUpdated =
+      eventBus.subscribe<PrReviewArtifactEventPayload>(
+        "workspace_review_artifact:updated",
+        invalidateReviewArtifact,
+      );
 
     return () => {
       unsubscribeCreated();
       unsubscribeUpdated();
+      unsubscribeWorkspaceCreated();
+      unsubscribeWorkspaceUpdated();
     };
   }, [eventBus, openArtifactTab, queryClient, selectedConversationId]);
 

@@ -26,6 +26,8 @@ const {
   getWorkspacePrAnnotationsMock,
   getConversationWorkspaceMock,
   getPrReviewContextMock,
+  getWorkspaceReviewContextMock,
+  startWorkspaceReviewMock,
   listPublicationEventsMock,
   getWorkspaceFreshnessMock,
   updateWorkspaceFromBaseMock,
@@ -69,6 +71,8 @@ const {
   getWorkspacePrAnnotationsMock: vi.fn(),
   getConversationWorkspaceMock: vi.fn(),
   getPrReviewContextMock: vi.fn(),
+  getWorkspaceReviewContextMock: vi.fn(),
+  startWorkspaceReviewMock: vi.fn(),
   listPublicationEventsMock: vi.fn(),
   getWorkspaceFreshnessMock: vi.fn(),
   updateWorkspaceFromBaseMock: vi.fn(),
@@ -114,6 +118,10 @@ vi.mock("@/api/chat", async (importOriginal) => {
         getConversationWorkspaceMock(...args),
       getAgentWorkspacePrReviewContext: (...args: unknown[]) =>
         getPrReviewContextMock(...args),
+      getAgentWorkspaceReviewContext: (...args: unknown[]) =>
+        getWorkspaceReviewContextMock(...args),
+      startAgentWorkspaceReview: (...args: unknown[]) =>
+        startWorkspaceReviewMock(...args),
       listAgentConversationWorkspacePublicationEvents: (...args: unknown[]) =>
         listPublicationEventsMock(...args),
       getAgentConversationWorkspaceFreshness: (...args: unknown[]) =>
@@ -484,6 +492,36 @@ describe("AgentsArtifactPane", () => {
       recentActions: [],
       issueCommentEvidence: [],
     });
+    getWorkspaceReviewContextMock.mockResolvedValue({
+      success: true,
+      workspace: workspace({ mode: "edit" }),
+      events: [],
+      target: null,
+      monitor: {
+        status: "idle",
+        reviewArtifactId: null,
+        reviewArtifactVersion: null,
+      },
+      isCurrent: false,
+      isOutdated: false,
+      shouldShowTab: false,
+    });
+    startWorkspaceReviewMock.mockClear();
+    startWorkspaceReviewMock.mockResolvedValue({
+      success: true,
+      target: null,
+      monitor: {
+        status: "idle",
+        reviewArtifactId: null,
+        reviewArtifactVersion: null,
+      },
+      isCurrent: false,
+      isOutdated: false,
+      shouldShowTab: false,
+      started: false,
+      skippedReason: "no_reviewable_changes",
+      wasQueued: false,
+    });
     listPublicationEventsMock.mockResolvedValue([]);
     getWorkspaceFreshnessMock.mockResolvedValue({
       conversationId: "conversation-1",
@@ -823,6 +861,90 @@ describe("AgentsArtifactPane", () => {
     expect(screen.queryByTestId("agents-artifact-tab-verification")).not.toBeInTheDocument();
     expect(screen.queryByTestId("agents-artifact-tab-proposal")).not.toBeInTheDocument();
     expect(screen.queryByTestId("agents-artifact-tab-tasks")).not.toBeInTheDocument();
+  });
+
+  it("renders the Review artifact tab first for merged edit workspaces with reviewable PR changes", async () => {
+    getWorkspaceReviewContextMock.mockResolvedValue({
+      success: true,
+      workspace: workspace({
+        mode: "edit",
+        publicationPrNumber: 351,
+        publicationPrStatus: "merged",
+        publicationPushStatus: "pushed",
+      }),
+      events: [],
+      target: {
+        scope: "selected_source",
+        baseRef: "base-sha",
+        baseSha: "base-sha",
+        headRef: "refs/ralphx/pr-heads/351",
+        headSha: "head-sha",
+        diffFingerprint: "fingerprint-351",
+        sourcePullRequestNumber: 351,
+      },
+      monitor: {
+        status: "idle",
+        reviewArtifactId: null,
+        reviewArtifactVersion: null,
+      },
+      isCurrent: false,
+      isOutdated: false,
+      shouldShowTab: true,
+    });
+
+    renderPane(
+      "publish",
+      workspace({
+        mode: "edit",
+        publicationPrNumber: 351,
+        publicationPrStatus: "merged",
+        publicationPushStatus: "pushed",
+      }),
+      vi.fn(),
+      false,
+      conversation(),
+    );
+
+    const tabRow = screen.getByTestId("agents-artifact-tab-row");
+    const reviewTab = await screen.findByTestId("agents-artifact-tab-review");
+
+    expect(
+      tabRow.querySelector("[data-testid^='agents-artifact-tab-']"),
+    ).toBe(reviewTab);
+    expect(screen.getByTestId("agents-artifact-tab-publish")).toBeInTheDocument();
+    expect(screen.getByTestId("agents-publish-pane")).toBeInTheDocument();
+  });
+
+  it("does not repeat the Review tab title inside the pending Review panel", async () => {
+    getWorkspaceReviewContextMock.mockResolvedValue({
+      success: true,
+      workspace: workspace({ mode: "edit" }),
+      events: [],
+      target: {
+        scope: "selected_source",
+        baseRef: "base-sha",
+        baseSha: "base-sha",
+        headRef: "refs/ralphx/pr-heads/351",
+        headSha: "head-sha",
+        diffFingerprint: "fingerprint-351",
+        sourcePullRequestNumber: 351,
+      },
+      monitor: {
+        status: "reviewing",
+        reviewArtifactId: null,
+        reviewArtifactVersion: null,
+      },
+      isCurrent: false,
+      isOutdated: false,
+      shouldShowTab: true,
+    });
+
+    renderPane("review", workspace({ mode: "edit" }), vi.fn(), false, conversation());
+
+    const content = await screen.findByTestId("agents-artifact-content-review");
+
+    expect(await within(content).findByText("Preparing review...")).toBeInTheDocument();
+    expect(within(content).queryByRole("heading", { name: "Review" })).not.toBeInTheDocument();
   });
 
   it("shows pre-PR Auto Publish with independent PR automation controls", async () => {
