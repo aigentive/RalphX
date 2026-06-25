@@ -183,3 +183,7 @@ impl ApiKeyRepository for MemoryApiKeyRepository {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "memory_api_key_repo_tests.rs"]
+mod tests;

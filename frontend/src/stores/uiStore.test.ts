@@ -1176,6 +1176,24 @@ describe("uiStore", () => {
       });
     });
 
+    describe("setFeatureFlags", () => {
+      it("moves the active project back to agents when the current view becomes disabled", () => {
+        mockProjectGetState.mockReturnValue({ activeProjectId: "proj-a" });
+        useUiStore.setState({
+          currentView: "ideation",
+          viewByProject: { "proj-a": "ideation" },
+        });
+
+        useUiStore.getState().setFeatureFlags({ ...ALL_ENABLED, ideationPage: false });
+
+        expect(useUiStore.getState().currentView).toBe("agents");
+        expect(useUiStore.getState().viewByProject["proj-a"]).toBe("agents");
+        expect(JSON.parse(localStorage.getItem("ralphx-views-by-project") ?? "{}")).toEqual({
+          "proj-a": "agents",
+        });
+      });
+    });
+
     describe("switchToProject", () => {
       const PROJECT_A = "proj-a";
       const PROJECT_B = "proj-b";
