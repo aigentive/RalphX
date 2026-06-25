@@ -2660,6 +2660,211 @@ async fn test_resume_workspace_queue_restores_message_when_send_fails() {
 }
 
 #[tokio::test]
+async fn test_queued_context_counts_and_runnable_waiting_include_workspace_and_task_pressure() {
+    let app_state = AppState::new_test();
+    let project = app_state
+        .project_repo
+        .create(Project::new(
+            "Runnable Queue Project".to_string(),
+            "/test/runnable-queue-project".to_string(),
+        ))
+        .await
+        .unwrap();
+    let other_project = app_state
+        .project_repo
+        .create(Project::new(
+            "Other Runnable Queue Project".to_string(),
+            "/test/other-runnable-queue-project".to_string(),
+        ))
+        .await
+        .unwrap();
+    let review_task = app_state
+        .task_repo
+        .create(Task {
+            internal_status: InternalStatus::Reviewing,
+            ..Task::new(project.id.clone(), "Queued review pressure".to_string())
+        })
+        .await
+        .unwrap();
+    let other_review_task = app_state
+        .task_repo
+        .create(Task {
+            internal_status: InternalStatus::Reviewing,
+            ..Task::new(
+                other_project.id.clone(),
+                "Other queued review pressure".to_string(),
+            )
+        })
+        .await
+        .unwrap();
+
+    app_state.message_queue.queue(
+        ChatContextType::Project,
+        project.id.as_str(),
+        "workspace pressure".to_string(),
+    );
+
+    assert_eq!(
+        count_queued_messages_for_context_types(
+            &[ChatContextType::Project],
+            Some(&project.id),
+            &app_state,
+        )
+        .await
+        .expect("count workspace queue"),
+        1
+    );
+    assert!(
+        has_runnable_execution_waiting(&app_state, Some(&project.id))
+            .await
+            .expect("workspace queue should count as waiting execution")
+    );
+
+    app_state
+        .message_queue
+        .clear(ChatContextType::Project, project.id.as_str());
+    app_state.message_queue.queue(
+        ChatContextType::Review,
+        review_task.id.as_str(),
+        "review pressure".to_string(),
+    );
+    app_state.message_queue.queue(
+        ChatContextType::Review,
+        other_review_task.id.as_str(),
+        "other review pressure".to_string(),
+    );
+
+    assert_eq!(
+        count_queued_messages_for_context_types(
+            &[
+                ChatContextType::TaskExecution,
+                ChatContextType::Review,
+                ChatContextType::Merge,
+            ],
+            Some(&project.id),
+            &app_state,
+        )
+        .await
+        .expect("count scoped slot queues"),
+        1
+    );
+    assert!(
+        has_runnable_execution_waiting(&app_state, Some(&project.id))
+            .await
+            .expect("review queue should count as waiting execution")
+    );
+
+    app_state
+        .task_repo
+        .create(Task {
+            internal_status: InternalStatus::Ready,
+            ..Task::new(other_project.id.clone(), "Ready global work".to_string())
+        })
+        .await
+        .unwrap();
+
+    assert!(has_runnable_execution_waiting(&app_state, None)
+        .await
+        .expect("global ready task should count as waiting execution"));
+}
+
+#[tokio::test]
+async fn test_resume_workspace_queue_skips_unmatched_missing_and_already_running_entries() {
+    let app_state = AppState::new_test();
+    let execution_state = Arc::new(ExecutionState::new());
+    let project = app_state
+        .project_repo
+        .create(Project::new(
+            "Workspace Resume Branches".to_string(),
+            "/test/workspace-resume-branches".to_string(),
+        ))
+        .await
+        .unwrap();
+    let other_project = app_state
+        .project_repo
+        .create(Project::new(
+            "Other Workspace Resume Branches".to_string(),
+            "/test/other-workspace-resume-branches".to_string(),
+        ))
+        .await
+        .unwrap();
+
+    app_state.message_queue.queue(
+        ChatContextType::Project,
+        other_project.id.as_str(),
+        "other workspace should stay queued".to_string(),
+    );
+    let mock = Arc::new(MockChatService::new());
+    let resumed = resume_paused_workspace_queues_with_chat_service(
+        Some(&project.id),
+        &app_state,
+        &execution_state,
+        || Arc::clone(&mock) as Arc<dyn ChatService>,
+    )
+    .await
+    .expect("resume scoped workspace queue with non-matching key");
+    assert_eq!(resumed, 0);
+    assert_eq!(mock.call_count(), 0);
+    assert_eq!(
+        app_state
+            .message_queue
+            .get_queued(ChatContextType::Project, other_project.id.as_str())
+            .len(),
+        1
+    );
+
+    app_state
+        .message_queue
+        .clear(ChatContextType::Project, other_project.id.as_str());
+    app_state.message_queue.queue(
+        ChatContextType::Project,
+        "missing-workspace-context",
+        "missing workspace target".to_string(),
+    );
+    let resumed = resume_paused_workspace_queues_with_chat_service(
+        None,
+        &app_state,
+        &execution_state,
+        || Arc::clone(&mock) as Arc<dyn ChatService>,
+    )
+    .await
+    .expect("resume workspace queue with missing target");
+    assert_eq!(resumed, 0);
+    assert_eq!(mock.call_count(), 0);
+    assert_eq!(
+        app_state
+            .message_queue
+            .get_queued(ChatContextType::Project, "missing-workspace-context")
+            .len(),
+        1
+    );
+
+    app_state
+        .message_queue
+        .clear(ChatContextType::Project, "missing-workspace-context");
+    app_state.message_queue.queue(
+        ChatContextType::Project,
+        project.id.as_str(),
+        "already running workspace".to_string(),
+    );
+    mock.set_already_running_after(0).await;
+    let resumed = resume_paused_workspace_queues_with_chat_service(
+        Some(&project.id),
+        &app_state,
+        &execution_state,
+        || Arc::clone(&mock) as Arc<dyn ChatService>,
+    )
+    .await
+    .expect("resume workspace queue with already-running send result");
+    assert_eq!(resumed, 0);
+    assert_eq!(mock.call_count(), 1);
+    assert!(app_state
+        .message_queue
+        .get_queued(ChatContextType::Project, project.id.as_str())
+        .is_empty());
+}
+
+#[tokio::test]
 async fn test_durable_queue_counts_merge_with_memory_by_message_id() {
     let app_state = AppState::new_test();
     let project = Project::new(
