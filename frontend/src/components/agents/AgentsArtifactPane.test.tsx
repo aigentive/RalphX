@@ -4436,6 +4436,93 @@ describe("AgentsArtifactPane", () => {
     );
   });
 
+  it("labels merge-paused repair state", async () => {
+    getWorkspaceRepairSummaryMock.mockResolvedValue({
+      supportsWorktreeModes: true,
+      staged: { fileCount: 0, additions: 0, deletions: 0 },
+      unstaged: { fileCount: 0, additions: 0, deletions: 0 },
+      conflicted: { fileCount: 0, files: [] },
+      repairState: {
+        expectedBranch: "ralphx/demo/agent-conversation-1",
+        checkedOutBranch: "HEAD",
+        rebaseInProgress: false,
+        mergeInProgress: true,
+      },
+    });
+
+    renderPane(
+      "publish",
+      workspace({
+        mode: "edit",
+        publicationPushStatus: "needs_agent",
+      }),
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-publish-repair-state-label")).toHaveTextContent(
+        "Merge paused for repair",
+      ),
+    );
+  });
+
+  it("labels branch-ready repair state", async () => {
+    getWorkspaceRepairSummaryMock.mockResolvedValue({
+      supportsWorktreeModes: true,
+      staged: { fileCount: 0, additions: 0, deletions: 0 },
+      unstaged: { fileCount: 0, additions: 0, deletions: 0 },
+      conflicted: { fileCount: 0, files: [] },
+      repairState: {
+        expectedBranch: "ralphx/demo/agent-conversation-1",
+        checkedOutBranch: "ralphx/demo/agent-conversation-1",
+        rebaseInProgress: false,
+        mergeInProgress: false,
+      },
+    });
+
+    renderPane(
+      "publish",
+      workspace({
+        mode: "edit",
+        publicationPushStatus: "needs_agent",
+      }),
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-publish-repair-state-label")).toHaveTextContent(
+        "Branch ready for repair",
+      ),
+    );
+  });
+
+  it("labels detected repair state when branch details do not match known states", async () => {
+    getWorkspaceRepairSummaryMock.mockResolvedValue({
+      supportsWorktreeModes: true,
+      staged: { fileCount: 0, additions: 0, deletions: 0 },
+      unstaged: { fileCount: 0, additions: 0, deletions: 0 },
+      conflicted: { fileCount: 0, files: [] },
+      repairState: {
+        expectedBranch: "ralphx/demo/agent-conversation-1",
+        checkedOutBranch: "detached-review",
+        rebaseInProgress: false,
+        mergeInProgress: false,
+      },
+    });
+
+    renderPane(
+      "publish",
+      workspace({
+        mode: "edit",
+        publicationPushStatus: "needs_agent",
+      }),
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-publish-repair-state-label")).toHaveTextContent(
+        "Repair state detected",
+      ),
+    );
+  });
+
   it("loads workspace changes for review before publishing", async () => {
     renderPane("publish", workspace({ mode: "edit" }));
 

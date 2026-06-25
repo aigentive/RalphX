@@ -3788,6 +3788,77 @@ new file mode 100644
     }
 
     #[tokio::test]
+    async fn repair_commands_return_summary_lists_and_diffs() {
+        let (_tmp, state, conversation_id, worktree_path) =
+            create_staged_unstaged_workspace_state().await;
+        invalidate_agent_workspace_diff_caches(&conversation_id);
+        mark_workspace_needs_agent(&state, &conversation_id).await;
+
+        std::fs::write(worktree_path.join("staged.txt"), "one\ntwo\n").unwrap();
+        run_git(&worktree_path, &["add", "staged.txt"]);
+        std::fs::write(worktree_path.join("base.txt"), "base\nunstaged\n").unwrap();
+
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app");
+
+        let summary = get_agent_conversation_workspace_repair_change_summary(
+            app.state(),
+            conversation_id.as_str(),
+        )
+        .await
+        .expect("repair summary command should load");
+        assert!(summary.supports_worktree_modes);
+        assert_eq!(summary.staged.file_count, 1);
+        assert_eq!(summary.unstaged.file_count, 1);
+
+        let staged = get_agent_conversation_workspace_repair_staged_file_changes(
+            app.state(),
+            conversation_id.as_str(),
+        )
+        .await
+        .expect("repair staged changes command should load");
+        assert!(staged.iter().any(|file| file.path == "staged.txt"));
+
+        let unstaged = get_agent_conversation_workspace_repair_unstaged_file_changes(
+            app.state(),
+            conversation_id.as_str(),
+        )
+        .await
+        .expect("repair unstaged changes command should load");
+        assert!(unstaged.iter().any(|file| file.path == "base.txt"));
+
+        let staged_diff = get_agent_conversation_workspace_repair_staged_file_diff(
+            app.state(),
+            conversation_id.as_str(),
+            "staged.txt".to_string(),
+        )
+        .await
+        .expect("repair staged diff command should load");
+        assert!(staged_diff
+            .hunks
+            .iter()
+            .flat_map(|hunk| hunk.lines.iter())
+            .any(|line| line.content.contains("two")));
+
+        let unstaged_diff = get_agent_conversation_workspace_repair_unstaged_file_diff(
+            app.state(),
+            conversation_id.as_str(),
+            "base.txt".to_string(),
+        )
+        .await
+        .expect("repair unstaged diff command should load");
+        assert!(unstaged_diff
+            .hunks
+            .iter()
+            .flat_map(|hunk| hunk.lines.iter())
+            .any(|line| line.content.contains("unstaged")));
+
+        invalidate_agent_workspace_diff_caches(&conversation_id);
+    }
+
+    #[tokio::test]
     async fn repair_change_summary_rejects_detached_rebase_without_needs_agent() {
         let (_tmp, state, conversation_id, worktree_path) =
             create_staged_unstaged_workspace_state().await;
