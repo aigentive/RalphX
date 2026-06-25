@@ -105,6 +105,8 @@ pub struct ExecutionState {
     /// Global maximum concurrent tasks across ALL projects (Phase 82)
     /// Default 20, hard cap 50. Enforced alongside per-project max.
     global_max_concurrent: AtomicU32,
+    /// Global maximum concurrent workspace main agents.
+    workspace_max_concurrent: AtomicU32,
     /// Global maximum concurrent ideation sessions allowed to actively generate.
     /// This is a pipeline cap inside the global hard cap so ideation cannot consume
     /// all slots and starve task/review/merge execution.
@@ -147,6 +149,7 @@ impl ExecutionState {
             running_count: AtomicU32::new(0),
             max_concurrent: AtomicU32::new(10),
             global_max_concurrent: AtomicU32::new(20),
+            workspace_max_concurrent: AtomicU32::new(DEFAULT_WORKSPACE_MAX_CONCURRENT),
             global_ideation_max: AtomicU32::new(10),
             project_ideation_max: AtomicU32::new(5),
             allow_ideation_borrow_idle_execution: AtomicBool::new(false),
@@ -165,6 +168,7 @@ impl ExecutionState {
             running_count: AtomicU32::new(0),
             max_concurrent: AtomicU32::new(max),
             global_max_concurrent: AtomicU32::new(20),
+            workspace_max_concurrent: AtomicU32::new(DEFAULT_WORKSPACE_MAX_CONCURRENT),
             global_ideation_max: AtomicU32::new(10),
             project_ideation_max: AtomicU32::new(5),
             allow_ideation_borrow_idle_execution: AtomicBool::new(false),
@@ -265,6 +269,18 @@ impl ExecutionState {
         if ideation_cap > clamped {
             self.global_ideation_max.store(clamped, Ordering::SeqCst);
         }
+    }
+
+    /// Get global max concurrent workspace main agents.
+    pub fn workspace_max_concurrent(&self) -> u32 {
+        self.workspace_max_concurrent.load(Ordering::SeqCst)
+    }
+
+    /// Set global max concurrent workspace main agents.
+    /// Clamped to [1, 50].
+    pub fn set_workspace_max_concurrent(&self, max: u32) {
+        self.workspace_max_concurrent
+            .store(max.clamp(1, 50), Ordering::SeqCst);
     }
 
     /// Get global max concurrent ideation sessions.
@@ -539,6 +555,7 @@ impl ExecutionState {
                 "runningCount": self.running_count(),
                 "maxConcurrent": self.max_concurrent(),
                 "globalMaxConcurrent": self.global_max_concurrent(),
+                "workspaceMaxConcurrent": self.workspace_max_concurrent(),
                 "providerBlocked": self.is_provider_blocked(),
                 "providerBlockedUntil": if blocked_until > 0 { Some(blocked_until) } else { None::<u64> },
                 "reason": reason,
@@ -609,6 +626,8 @@ pub struct UpdateExecutionSettingsInput {
 pub struct GlobalExecutionSettingsResponse {
     /// Maximum total concurrent tasks across ALL projects
     pub global_max_concurrent: u32,
+    /// Maximum concurrent workspace main agents across all projects
+    pub workspace_max_concurrent: u32,
     /// Maximum total concurrent ideation sessions across all projects
     pub global_ideation_max: u32,
     /// Whether ideation may borrow idle execution capacity
@@ -619,6 +638,7 @@ impl From<crate::domain::execution::GlobalExecutionSettings> for GlobalExecution
     fn from(settings: crate::domain::execution::GlobalExecutionSettings) -> Self {
         Self {
             global_max_concurrent: settings.global_max_concurrent,
+            workspace_max_concurrent: settings.workspace_max_concurrent,
             global_ideation_max: settings.global_ideation_max,
             allow_ideation_borrow_idle_execution: settings.allow_ideation_borrow_idle_execution,
         }
@@ -630,10 +650,17 @@ impl From<crate::domain::execution::GlobalExecutionSettings> for GlobalExecution
 pub struct UpdateGlobalExecutionSettingsInput {
     /// Maximum total concurrent tasks across ALL projects (max: 50)
     pub global_max_concurrent: u32,
+    /// Maximum concurrent workspace main agents across ALL projects (max: 50)
+    #[serde(default = "default_workspace_update_max_concurrent")]
+    pub workspace_max_concurrent: u32,
     /// Maximum total concurrent ideation sessions across ALL projects (max: 50)
     pub global_ideation_max: u32,
     /// Whether ideation may borrow idle execution capacity
     pub allow_ideation_borrow_idle_execution: bool,
+}
+
+fn default_workspace_update_max_concurrent() -> u32 {
+    DEFAULT_WORKSPACE_MAX_CONCURRENT
 }
 
 // ========================================

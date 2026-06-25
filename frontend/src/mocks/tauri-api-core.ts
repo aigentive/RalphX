@@ -2320,6 +2320,7 @@ const commandHandlers: Record<
     // Transform to snake_case as backend would return
     return {
       global_max_concurrent: settings.globalMaxConcurrent,
+      workspace_max_concurrent: settings.workspaceMaxConcurrent,
       global_ideation_max: settings.globalIdeationMax,
       allow_ideation_borrow_idle_execution:
         settings.allowIdeationBorrowIdleExecution,
@@ -2328,17 +2329,20 @@ const commandHandlers: Record<
   update_global_execution_settings: async (args) => {
     const input = args.input as {
       global_max_concurrent: number;
+      workspace_max_concurrent: number;
       global_ideation_max: number;
       allow_ideation_borrow_idle_execution: boolean;
     };
     const settings = await mockExecutionApi.updateGlobalSettings({
       globalMaxConcurrent: input.global_max_concurrent,
+      workspaceMaxConcurrent: input.workspace_max_concurrent,
       globalIdeationMax: input.global_ideation_max,
       allowIdeationBorrowIdleExecution:
         input.allow_ideation_borrow_idle_execution,
     });
     return {
       global_max_concurrent: settings.globalMaxConcurrent,
+      workspace_max_concurrent: settings.workspaceMaxConcurrent,
       global_ideation_max: settings.globalIdeationMax,
       allow_ideation_borrow_idle_execution:
         settings.allowIdeationBorrowIdleExecution,

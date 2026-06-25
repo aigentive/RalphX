@@ -8,7 +8,7 @@ use crate::utils::runtime_log_paths::{
 
 use super::{
     checked_managed_provider_cli_launch_path, checked_provider_cli_launch_path,
-    managed_probe_error, managed_provider_cli_launch_path, managed_provider_runtime_probe,
+    managed_probe_error, managed_provider_cli_launch_path,
     override_managed_codex_binary_path_for_tests, provider_cli_launch_path, provider_runtime_probe,
 };
 
@@ -29,7 +29,7 @@ fn user_managed_provider_has_no_managed_launch_override() {
     );
 
     assert!(managed_provider_cli_launch_path(&settings).is_none());
-    assert!(managed_provider_runtime_probe(&settings).is_none());
+    assert!(provider_runtime_probe(&settings).is_none());
 }
 
 #[test]
@@ -59,7 +59,7 @@ fn rx_managed_native_claude_uses_default_launch_resolution() {
     );
 
     assert!(managed_provider_cli_launch_path(&settings).is_none());
-    assert!(managed_provider_runtime_probe(&settings).is_none());
+    assert!(provider_runtime_probe(&settings).is_none());
 }
 
 #[test]
@@ -311,7 +311,7 @@ fn rx_managed_codex_runtime_probe_reports_missing_binary() {
         AgentProviderCliManagementMode::RxManaged,
     );
 
-    let probe = managed_provider_runtime_probe(&settings).expect("managed Codex probe");
+    let probe = provider_runtime_probe(&settings).expect("managed Codex probe");
 
     assert_eq!(
         probe.binary_path.as_deref(),
@@ -385,7 +385,7 @@ fn rx_managed_codex_runtime_probe_reports_probe_error() {
         AgentProviderCliManagementMode::RxManaged,
     );
 
-    let probe = managed_provider_runtime_probe(&settings).expect("managed Codex probe");
+    let probe = provider_runtime_probe(&settings).expect("managed Codex probe");
 
     assert_eq!(
         probe.binary_path.as_deref(),
@@ -464,7 +464,7 @@ fi
         AgentProviderCliManagementMode::RxManaged,
     );
 
-    let probe = managed_provider_runtime_probe(&settings).expect("managed Codex probe");
+    let probe = provider_runtime_probe(&settings).expect("managed Codex probe");
 
     assert!(probe.binary_found);
     assert!(probe.probe_succeeded);
@@ -508,7 +508,7 @@ fi
         AgentProviderCliManagementMode::RxManaged,
     );
 
-    let probe = managed_provider_runtime_probe(&settings).expect("managed Codex probe");
+    let probe = provider_runtime_probe(&settings).expect("managed Codex probe");
 
     assert!(probe.binary_found);
     assert!(probe.probe_succeeded);

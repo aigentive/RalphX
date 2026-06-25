@@ -9,7 +9,7 @@ async fn test_get_default_global_settings() {
     // Get global defaults (project_id = None)
     let settings = repo.get_settings(None).await.unwrap();
     assert_eq!(settings.max_concurrent_tasks, 10);
-    assert_eq!(settings.project_ideation_max, 2);
+    assert_eq!(settings.project_ideation_max, 5);
     assert!(settings.auto_commit);
     assert!(settings.pause_on_failure);
     assert!(!settings.agent_workspace_pr_autofix_default);
@@ -59,7 +59,7 @@ async fn test_per_project_settings() {
     // Initially, get_settings for a project should return global defaults
     let settings = repo.get_settings(Some(&project_id)).await.unwrap();
     assert_eq!(settings.max_concurrent_tasks, 10); // global default
-    assert_eq!(settings.project_ideation_max, 2);
+    assert_eq!(settings.project_ideation_max, 5);
 
     // Create project-specific settings
     let project_settings = ExecutionSettings {
@@ -87,7 +87,7 @@ async fn test_per_project_settings() {
     // Global settings should remain unchanged
     let global = repo.get_settings(None).await.unwrap();
     assert_eq!(global.max_concurrent_tasks, 10);
-    assert_eq!(global.project_ideation_max, 2);
+    assert_eq!(global.project_ideation_max, 5);
     assert!(!global.agent_workspace_pr_autofix_default);
     assert!(!global.agent_workspace_pr_auto_merge_default);
 }
@@ -100,23 +100,27 @@ async fn test_global_execution_settings() {
     // Get default global settings
     let settings = repo.get_settings().await.unwrap();
     assert_eq!(settings.global_max_concurrent, 20);
-    assert_eq!(settings.global_ideation_max, 4);
+    assert_eq!(settings.workspace_max_concurrent, 10);
+    assert_eq!(settings.global_ideation_max, 10);
     assert!(!settings.allow_ideation_borrow_idle_execution);
 
     // Update global settings
     let new_settings = GlobalExecutionSettings {
         global_max_concurrent: 30,
+        workspace_max_concurrent: 8,
         global_ideation_max: 6,
         allow_ideation_borrow_idle_execution: true,
     };
     let updated = repo.update_settings(&new_settings).await.unwrap();
     assert_eq!(updated.global_max_concurrent, 30);
+    assert_eq!(updated.workspace_max_concurrent, 8);
     assert_eq!(updated.global_ideation_max, 6);
     assert!(updated.allow_ideation_borrow_idle_execution);
 
     // Verify persistence
     let retrieved = repo.get_settings().await.unwrap();
     assert_eq!(retrieved.global_max_concurrent, 30);
+    assert_eq!(retrieved.workspace_max_concurrent, 8);
     assert_eq!(retrieved.global_ideation_max, 6);
     assert!(retrieved.allow_ideation_borrow_idle_execution);
 }
@@ -129,6 +133,7 @@ async fn test_global_max_concurrent_capped_at_50() {
     // Try to set above max
     let new_settings = GlobalExecutionSettings {
         global_max_concurrent: 100,
+        workspace_max_concurrent: 100,
         global_ideation_max: 100,
         allow_ideation_borrow_idle_execution: false,
     };
@@ -136,11 +141,13 @@ async fn test_global_max_concurrent_capped_at_50() {
 
     // Should be clamped to 50
     assert_eq!(updated.global_max_concurrent, 50);
+    assert_eq!(updated.workspace_max_concurrent, 50);
     assert_eq!(updated.global_ideation_max, 50);
 
     // Verify persistence
     let retrieved = repo.get_settings().await.unwrap();
     assert_eq!(retrieved.global_max_concurrent, 50);
+    assert_eq!(retrieved.workspace_max_concurrent, 50);
     assert_eq!(retrieved.global_ideation_max, 50);
     assert!(!retrieved.allow_ideation_borrow_idle_execution);
 }
@@ -170,6 +177,7 @@ async fn test_global_execution_settings_are_not_per_project() {
     repo_a
         .update_settings(&GlobalExecutionSettings {
             global_max_concurrent: 25,
+            workspace_max_concurrent: 9,
             global_ideation_max: 5,
             allow_ideation_borrow_idle_execution: true,
         })
@@ -179,6 +187,7 @@ async fn test_global_execution_settings_are_not_per_project() {
     // repo_b (same underlying storage) should see the same value
     let settings_b = repo_b.get_settings().await.unwrap();
     assert_eq!(settings_b.global_max_concurrent, 25);
+    assert_eq!(settings_b.workspace_max_concurrent, 9);
     assert_eq!(settings_b.global_ideation_max, 5);
     assert!(settings_b.allow_ideation_borrow_idle_execution);
 }

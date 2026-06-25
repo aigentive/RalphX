@@ -52,6 +52,8 @@ describe("uiStore", () => {
         queuedMessageCount: 0,
         canStartTask: true,
       },
+      executionBarOpenPopover: null,
+      executionBarRunningTab: "execution",
       viewByProject: {},
       sessionByProject: {},
       selectedTaskByProject: {},
@@ -452,6 +454,33 @@ describe("uiStore", () => {
       expect(state.executionStatus.runningCount).toBe(1);
       expect(state.executionStatus.queuedCount).toBe(10);
       expect(state.executionStatus.queuedMessageCount).toBe(4);
+    });
+  });
+
+  describe("execution bar popover state", () => {
+    it("stores the open execution bar popover and running tab outside the footer component", () => {
+      useUiStore.getState().setExecutionBarOpenPopover("running");
+      useUiStore.getState().setExecutionBarRunningTab("workspaces");
+
+      expect(useUiStore.getState().executionBarOpenPopover).toBe("running");
+      expect(useUiStore.getState().executionBarRunningTab).toBe("workspaces");
+
+      useUiStore.getState().setExecutionBarOpenPopover("terminals");
+      expect(useUiStore.getState().executionBarOpenPopover).toBe("terminals");
+    });
+
+    it("preserves execution bar popover state when switching projects", () => {
+      useUiStore.setState({
+        currentView: "agents",
+        executionBarOpenPopover: "queued",
+        executionBarRunningTab: "ideation",
+        viewByProject: {},
+      });
+
+      useUiStore.getState().switchToProject("proj-a", "proj-b");
+
+      expect(useUiStore.getState().executionBarOpenPopover).toBe("queued");
+      expect(useUiStore.getState().executionBarRunningTab).toBe("ideation");
     });
   });
 

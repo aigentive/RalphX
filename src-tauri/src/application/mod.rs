@@ -111,6 +111,7 @@ pub mod ticketing_cache_invalidator;
 pub mod ticketing_pr_summary;
 pub mod ticketing_service;
 pub mod webhook_service;
+pub(crate) mod workspace_capacity;
 
 // Re-export commonly used items
 pub use app_state::AppState;
@@ -261,6 +262,8 @@ mod ideation_workspace_tests;
 mod orphan_worktree_cleanup_tests;
 #[cfg(test)]
 mod pr_startup_recovery_tests;
+#[cfg(test)]
+mod pending_session_drain_tests;
 #[cfg(test)]
 mod recovery_queue_tests;
 #[cfg(test)]
