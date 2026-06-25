@@ -843,3 +843,7 @@ async fn maybe_register_unrelated_drift_issue(
         }
     }
 }
+
+#[cfg(test)]
+#[path = "complete_tests.rs"]
+mod complete_tests;
