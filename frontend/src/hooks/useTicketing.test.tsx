@@ -645,6 +645,18 @@ describe("useTicketing hooks", () => {
       "containers",
       "jira",
       null,
+      null,
+    ]);
+    expect(ticketingKeys.containers({
+      provider: "clickup",
+      projectId: "project-1",
+      parentContainerId: "space-1",
+    })).toEqual([
+      "ticketing",
+      "containers",
+      "clickup",
+      "project-1",
+      "space-1",
     ]);
     expect(ticketingKeys.columns({ provider: "linear" })).toEqual([
       "ticketing",
