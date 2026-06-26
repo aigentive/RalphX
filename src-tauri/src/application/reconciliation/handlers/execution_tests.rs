@@ -1,7 +1,55 @@
 use chrono::{Duration, Utc};
 use serde_json::{json, Map, Value};
+use std::sync::Arc;
 
+use crate::application::{AppState, ReconciliationRunner, TaskTransitionService};
+use crate::commands::ExecutionState;
+use crate::domain::entities::{
+    task_metadata::StopRetryingReason, ExecutionFailureSource, ExecutionRecoveryEvent,
+    ExecutionRecoveryEventKind, ExecutionRecoveryMetadata, ExecutionRecoveryReasonCode,
+    ExecutionRecoverySource, ExecutionRecoveryState, InternalStatus, Project, Task,
+};
 use super::execution::is_deterministic_agent_command_error;
+
+fn build_reconciler_for_execution_tests(
+    app_state: &AppState,
+    execution_state: &Arc<ExecutionState>,
+) -> ReconciliationRunner<tauri::Wry> {
+    let transition_service = Arc::new(TaskTransitionService::new(
+        Arc::clone(&app_state.task_repo),
+        Arc::clone(&app_state.task_dependency_repo),
+        Arc::clone(&app_state.project_repo),
+        Arc::clone(&app_state.chat_message_repo),
+        Arc::clone(&app_state.chat_attachment_repo),
+        Arc::clone(&app_state.chat_conversation_repo),
+        Arc::clone(&app_state.agent_run_repo),
+        Arc::clone(&app_state.ideation_session_repo),
+        Arc::clone(&app_state.activity_event_repo),
+        Arc::clone(&app_state.message_queue),
+        Arc::clone(&app_state.running_agent_registry),
+        Arc::clone(execution_state),
+        None,
+        Arc::clone(&app_state.memory_event_repo),
+    ));
+    ReconciliationRunner::new(
+        Arc::clone(&app_state.task_repo),
+        Arc::clone(&app_state.task_dependency_repo),
+        Arc::clone(&app_state.project_repo),
+        Arc::clone(&app_state.artifact_repo),
+        Arc::clone(&app_state.chat_conversation_repo),
+        Arc::clone(&app_state.chat_message_repo),
+        Arc::clone(&app_state.chat_attachment_repo),
+        Arc::clone(&app_state.ideation_session_repo),
+        Arc::clone(&app_state.activity_event_repo),
+        Arc::clone(&app_state.message_queue),
+        Arc::clone(&app_state.running_agent_registry),
+        Arc::clone(&app_state.memory_event_repo),
+        Arc::clone(&app_state.agent_run_repo),
+        transition_service,
+        Arc::clone(execution_state),
+        None,
+    )
+}
 
 /// Replicates the staleness check logic from `recover_timeout_failures`.
 ///
@@ -295,4 +343,57 @@ fn deterministic_agent_command_error_detects_invalid_ignored_mode() {
 fn deterministic_agent_command_error_does_not_match_normal_agent_exit() {
     let ordinary_agent_error = "Agent failed: tests failed in frontend/src/App.test.tsx";
     assert!(!is_deterministic_agent_command_error(ordinary_agent_error));
+}
+
+#[tokio::test]
+async fn failed_execution_with_invalid_ignored_mode_stops_retrying() {
+    let app_state = AppState::new_test();
+    let execution_state = Arc::new(ExecutionState::new());
+    let reconciler = build_reconciler_for_execution_tests(&app_state, &execution_state);
+
+    let project = Project::new("Coverage project".to_string(), "/tmp/coverage-project".to_string());
+    app_state.project_repo.create(project.clone()).await.unwrap();
+
+    let mut recovery = ExecutionRecoveryMetadata::new();
+    let failure_message =
+        "Agent failed: fatal: Invalid ignored mode '.artifacts/specs/p8-regression-gate/tracker.md'";
+    recovery.append_event_with_state(
+        ExecutionRecoveryEvent::new(
+            ExecutionRecoveryEventKind::Failed,
+            ExecutionRecoverySource::System,
+            ExecutionRecoveryReasonCode::AgentExit,
+            failure_message,
+        )
+        .with_failure_source(ExecutionFailureSource::AgentCrash),
+        ExecutionRecoveryState::Retrying,
+    );
+
+    let mut task = Task::new(project.id.clone(), "invalid ignored mode".to_string());
+    task.internal_status = InternalStatus::Failed;
+    task.metadata = Some(recovery.update_task_metadata(None).unwrap());
+    let task_id = task.id.clone();
+    app_state.task_repo.create(task.clone()).await.unwrap();
+
+    assert!(
+        !reconciler
+            .reconcile_failed_execution_task(&task, InternalStatus::Failed)
+            .await,
+        "deterministic command failures should stop retries instead of re-queueing"
+    );
+
+    let updated_task = app_state.task_repo.get_by_id(&task_id).await.unwrap().unwrap();
+    let updated_recovery =
+        ExecutionRecoveryMetadata::from_task_metadata(updated_task.metadata.as_deref())
+            .unwrap()
+            .unwrap();
+    assert!(updated_recovery.stop_retrying);
+    assert_eq!(
+        updated_recovery.unrecoverable_reason,
+        Some(StopRetryingReason::AgentCommandInvalid)
+    );
+    assert_eq!(updated_recovery.last_state, ExecutionRecoveryState::Failed);
+    assert!(updated_recovery.events.iter().any(|event| {
+        event.kind == ExecutionRecoveryEventKind::StopRetrying
+            && event.reason_code == ExecutionRecoveryReasonCode::AgentCommandInvalid
+    }));
 }

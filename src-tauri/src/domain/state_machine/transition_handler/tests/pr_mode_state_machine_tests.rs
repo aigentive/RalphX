@@ -12,7 +12,8 @@
 //   6. post_merge_cleanup idempotency: plan_branch.status == Merged → early return
 
 use super::helpers::*;
-use crate::domain::entities::plan_branch::PrPushStatus;
+use crate::application::PrPollerRegistry;
+use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
 use crate::domain::entities::{
     types::IdeationSessionId, Artifact, ArtifactId, ArtifactType, IdeationSession, InternalStatus,
     PlanBranch, PlanBranchStatus, Project, ProjectId, Task, TaskCategory, TaskId,
@@ -296,6 +297,92 @@ async fn test_pr_mode_with_existing_pr_number_push_failure_stays_merge_incomplet
         PrPushStatus::Failed,
         "failed push should be durable on the plan branch"
     );
+}
+
+#[tokio::test]
+async fn test_pr_mode_marks_concurrently_created_pr_ready_after_guard_clears() {
+    let task_repo = Arc::new(MemoryTaskRepository::new());
+    let project_repo = Arc::new(MemoryProjectRepository::new());
+    let plan_branch_repo = Arc::new(MemoryPlanBranchRepository::new());
+
+    let repo = setup_plan_git_repo("plan/feature-branch", true);
+    setup_project_with_path(&project_repo, repo.path().to_string_lossy().into_owned()).await;
+    let task_id = create_pending_merge_task(&task_repo, "task-pr-concurrent-ready").await;
+
+    let pb = make_pr_eligible_plan_branch(&task_id, None, false);
+    let plan_branch_id = pb.id.clone();
+    plan_branch_repo.create(pb).await.unwrap();
+
+    let registry = Arc::new(PrPollerRegistry::new(
+        None,
+        Arc::clone(&plan_branch_repo) as Arc<dyn PlanBranchRepository>,
+    ));
+    registry.pr_creation_guard.insert(plan_branch_id.clone(), ());
+
+    let repo_for_concurrent = Arc::clone(&plan_branch_repo);
+    let guard_for_concurrent = Arc::clone(&registry.pr_creation_guard);
+    let branch_id_for_concurrent = plan_branch_id.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        repo_for_concurrent
+            .update_pr_info(
+                &branch_id_for_concurrent,
+                314,
+                "https://github.com/owner/repo/pull/314".to_string(),
+                PrStatus::Open,
+                true,
+            )
+            .await
+            .expect("concurrent PR info update should succeed");
+        guard_for_concurrent.remove(&branch_id_for_concurrent);
+    });
+
+    let mock_github = Arc::new(MockGithubService::new());
+
+    let services = TaskServices::new_mock()
+        .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>)
+        .with_project_repo(Arc::clone(&project_repo) as Arc<dyn ProjectRepository>)
+        .with_plan_branch_repo(Arc::clone(&plan_branch_repo) as Arc<dyn PlanBranchRepository>)
+        .with_pr_poller_registry(Arc::clone(&registry))
+        .with_pr_creation_guard(Arc::clone(&registry.pr_creation_guard))
+        .with_github_service(Arc::clone(&mock_github) as Arc<dyn GithubServiceTrait>);
+
+    let context = TaskContext::new(task_id.as_str(), "proj-1", services);
+    let mut machine = TaskStateMachine::new(context);
+    let handler = TransitionHandler::new(&mut machine);
+
+    let result = handler.on_enter(&State::PendingMerge).await;
+    assert!(
+        result.is_ok(),
+        "on_enter(PendingMerge) should succeed: {:?}",
+        result
+    );
+
+    {
+        let state = mock_github.state();
+        assert_eq!(state.push_branch_calls, 1);
+        assert_eq!(state.mark_pr_ready_calls, 1);
+        assert_eq!(state.update_pr_details_calls, 1);
+        assert_eq!(
+            state.create_draft_pr_calls, 0,
+            "handler should reuse the concurrently-created PR instead of creating another"
+        );
+    }
+
+    let updated_task = task_repo
+        .get_by_id(&task_id)
+        .await
+        .unwrap()
+        .expect("task should exist");
+    assert_eq!(updated_task.internal_status, InternalStatus::WaitingOnPr);
+
+    let updated_plan_branch = plan_branch_repo
+        .get_by_id(&plan_branch_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(updated_plan_branch.pr_number, Some(314));
+    assert_eq!(updated_plan_branch.pr_push_status, PrPushStatus::Pushed);
 }
 
 #[tokio::test]
