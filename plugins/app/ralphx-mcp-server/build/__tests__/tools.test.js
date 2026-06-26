@@ -939,12 +939,19 @@ describe('getAllowedToolNames - CLI arg priority chain', () => {
             consoleSpy.mockRestore();
         }
     });
-    it('workspace reviewer allowlist mirrors canonical Review artifact tools', () => {
+    it('workspace reviewer allowlist mirrors canonical bounded Review artifact tools', () => {
         const tools = toolsByAgent()[WORKSPACE_REVIEWER];
         expect(tools).toEqual(loadCanonicalMcpTools(WORKSPACE_REVIEWER));
+        expect(tools).toContain('fs_read_file');
+        expect(tools).toContain('fs_list_dir');
+        expect(tools).toContain('fs_grep');
+        expect(tools).toContain('fs_glob');
         expect(tools).toContain('get_workspace_review_context');
         expect(tools).toContain('write_workspace_review_artifact');
         expect(tools).toContain('complete_workspace_review_run');
+        expect(tools).not.toContain('get_agent_task');
+        expect(tools).not.toContain('list_agent_tasks');
+        expect(tools).not.toContain('search_memories');
     });
 });
 // ===========================================================================
@@ -1306,7 +1313,7 @@ describe('agent workspace publish tool transport', () => {
     it('routes workspace Review context reads to the current runtime workspace conversation', async () => {
         const callTauriGet = vi.fn().mockResolvedValue({ success: true });
         await expect(callGetWorkspaceReviewContextTool(callTauriGet, {}, { parentConversationId: 'conversation-from-runtime' })).resolves.toEqual({ success: true });
-        expect(callTauriGet).toHaveBeenCalledWith('agent-workspaces/conversation-from-runtime/workspace-review-context');
+        expect(callTauriGet).toHaveBeenCalledWith('agent-workspaces/conversation-from-runtime/workspace-review-context?include_review_packet=true');
     });
     it('routes workspace Review artifact writes to the runtime workspace conversation', async () => {
         const callTauri = vi.fn().mockResolvedValue({ success: true });
@@ -1412,7 +1419,7 @@ describe('agent workspace publish tool transport', () => {
         await expect(callAgentWorkspaceTool('write_workspace_review_artifact', callTauri, callTauriGet, { content: '## Summary', target_scope: 'selected_source' }, { parentConversationId: 'conversation-from-runtime' })).resolves.toEqual({ success: true });
         await expect(callAgentWorkspaceTool('complete_workspace_review_run', callTauri, callTauriGet, { summary: 'Done', outcome: 'reviewed' }, { parentConversationId: 'conversation-from-runtime' })).resolves.toEqual({ success: true });
         expect(callTauriGet).toHaveBeenCalledWith('agent-workspaces/conversation-from-runtime/pr-review-context');
-        expect(callTauriGet).toHaveBeenCalledWith('agent-workspaces/conversation-from-runtime/workspace-review-context');
+        expect(callTauriGet).toHaveBeenCalledWith('agent-workspaces/conversation-from-runtime/workspace-review-context?include_review_packet=true');
         expect(callTauri).toHaveBeenCalledWith('agent-workspaces/conversation-from-runtime/pr-review-actions', {
             head_sha: undefined,
             proposed_action: undefined,
@@ -1511,7 +1518,7 @@ describe('agent workspace publish tool transport', () => {
         [
             'get_workspace_review_context',
             'get',
-            'agent-workspaces/conversation-1/workspace-review-context',
+            'agent-workspaces/conversation-1/workspace-review-context?include_review_packet=true',
             undefined,
         ],
         [
