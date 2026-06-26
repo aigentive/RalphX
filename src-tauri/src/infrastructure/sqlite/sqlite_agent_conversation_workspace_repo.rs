@@ -9,8 +9,9 @@ use tokio::sync::Mutex;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
-    AgentWorkspacePrCommentEvidence, AgentWorkspacePrCommentEvidenceUpsert,
-    AgentWorkspacePrDescription, AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
+    AgentWorkspaceFollowupProvenance, AgentWorkspacePrCommentEvidence,
+    AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription,
+    AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
     AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
     AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewMonitor,
     AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewTargetScope,
@@ -515,6 +516,75 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                 } else {
                     Ok(None)
                 }
+            })
+            .await
+    }
+
+    async fn save_followup_provenance(
+        &self,
+        conversation_id: &ChatConversationId,
+        provenance: AgentWorkspaceFollowupProvenance,
+    ) -> AppResult<()> {
+        let conversation_id = conversation_id.as_str().to_string();
+        let origin_conversation_id = provenance.origin_conversation_id.as_str().to_string();
+        let source_task_id = provenance.source_task_id;
+        let source_context_type = provenance.source_context_type;
+        let source_context_id = provenance.source_context_id;
+        let source_agent_name = provenance.source_agent_name;
+        let spawn_reason = provenance.spawn_reason;
+        let blocker_fingerprint = provenance.blocker_fingerprint;
+        self.db
+            .run(move |conn| {
+                conn.execute(
+                    "UPDATE agent_conversation_workspaces
+                     SET followup_origin_conversation_id = ?1,
+                         followup_source_task_id = ?2,
+                         followup_source_context_type = ?3,
+                         followup_source_context_id = ?4,
+                         followup_source_agent_name = ?5,
+                         followup_spawn_reason = ?6,
+                         followup_blocker_fingerprint = ?7,
+                         updated_at = ?8
+                     WHERE conversation_id = ?9",
+                    rusqlite::params![
+                        origin_conversation_id,
+                        source_task_id,
+                        source_context_type,
+                        source_context_id,
+                        source_agent_name,
+                        spawn_reason,
+                        blocker_fingerprint,
+                        Utc::now().to_rfc3339(),
+                        conversation_id,
+                    ],
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
+    async fn find_active_followup_by_blocker(
+        &self,
+        origin_conversation_id: &ChatConversationId,
+        source_task_id: &str,
+        blocker_fingerprint: &str,
+    ) -> AppResult<Option<AgentConversationWorkspace>> {
+        let origin_conversation_id = origin_conversation_id.as_str().to_string();
+        let source_task_id = source_task_id.to_string();
+        let blocker_fingerprint = blocker_fingerprint.to_string();
+        self.db
+            .query_optional(move |conn| {
+                conn.query_row(
+                    "SELECT * FROM agent_conversation_workspaces
+                     WHERE followup_origin_conversation_id = ?1
+                       AND followup_source_task_id = ?2
+                       AND followup_blocker_fingerprint = ?3
+                       AND status = 'active'
+                     ORDER BY updated_at DESC
+                     LIMIT 1",
+                    rusqlite::params![origin_conversation_id, source_task_id, blocker_fingerprint],
+                    row_to_workspace,
+                )
             })
             .await
     }

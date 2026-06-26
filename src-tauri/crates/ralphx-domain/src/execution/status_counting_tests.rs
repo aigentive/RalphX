@@ -1,8 +1,8 @@
 use crate::entities::{ChatContextType, InternalStatus, ProjectId};
 
 use super::{
-    ExecutionStatusCounts, ScopedExecutionSubject, context_matches_running_status,
-    count_execution_status,
+    context_matches_running_status, count_execution_status, ExecutionStatusCounts,
+    ScopedExecutionSubject,
 };
 
 #[test]

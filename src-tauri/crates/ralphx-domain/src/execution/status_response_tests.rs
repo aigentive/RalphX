@@ -1,4 +1,4 @@
-use super::{ExecutionStatusInput, build_execution_status_response};
+use super::{build_execution_status_response, ExecutionStatusInput};
 
 #[test]
 fn build_execution_status_response_derives_can_start_and_blocked_until() {

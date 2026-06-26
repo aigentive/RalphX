@@ -16,6 +16,7 @@ import { useAcceptFinalize, useRejectFinalize } from "@/hooks/useAcceptFinalize"
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { withAlpha } from "@/lib/theme-colors";
+import { navigateToIdeationSession } from "@/lib/navigation";
 
 // ============================================================================
 // Inner dialog — rendered only when there's an active session in queue
@@ -237,16 +238,13 @@ function ActiveDialog({ sessionId, onViewPlan }: ActiveDialogProps) {
 
 export function FinalizeConfirmationDialog() {
   const queue = useUiStore((s) => s.pendingConfirmationQueue);
-  const setCurrentView = useUiStore((s) => s.setCurrentView);
-  const setActiveSession = useIdeationStore((s) => s.setActiveSession);
 
   const activeSessionId = queue[0];
 
   const handleViewPlan = useCallback(() => {
     if (!activeSessionId) return;
-    setActiveSession(activeSessionId);
-    setCurrentView("ideation");
-  }, [activeSessionId, setActiveSession, setCurrentView]);
+    navigateToIdeationSession(activeSessionId);
+  }, [activeSessionId]);
 
   if (!activeSessionId) return null;
 

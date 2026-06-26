@@ -11,9 +11,8 @@ use crate::ideation::IdeationModelSettings;
 pub trait IdeationModelSettingsRepository: Send + Sync {
     /// Fetch the global settings row (project_id IS NULL).
     /// Returns `Ok(None)` if no global row exists.
-    async fn get_global(
-        &self,
-    ) -> Result<Option<IdeationModelSettings>, Box<dyn std::error::Error>>;
+    async fn get_global(&self)
+        -> Result<Option<IdeationModelSettings>, Box<dyn std::error::Error>>;
 
     /// Fetch the per-project override row for the given project_id.
     /// Returns `Ok(None)` if no row exists for that project_id.

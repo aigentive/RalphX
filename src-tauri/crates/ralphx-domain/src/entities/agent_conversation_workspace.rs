@@ -271,6 +271,17 @@ pub struct AgentWorkspaceSourcePullRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentWorkspaceFollowupProvenance {
+    pub origin_conversation_id: ChatConversationId,
+    pub source_task_id: Option<String>,
+    pub source_context_type: Option<String>,
+    pub source_context_id: Option<String>,
+    pub source_agent_name: Option<String>,
+    pub spawn_reason: Option<String>,
+    pub blocker_fingerprint: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentWorkspacePrReviewMonitor {
     pub conversation_id: ChatConversationId,
     pub project_id: ProjectId,

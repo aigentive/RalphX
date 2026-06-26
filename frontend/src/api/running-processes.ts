@@ -12,6 +12,10 @@ export type {
   RunningProcess,
   RunningProcessesResponse,
   RunningIdeationSession,
+  RunningWorkspaceSession,
+  ExecutionLaneUsage,
+  ExecutionCapacitySummary,
+  ExecutionLaneName,
   TeammateSummary,
 } from "./running-processes.types";
 
@@ -21,6 +25,10 @@ export {
   RunningProcessSchema,
   RunningProcessesResponseSchema,
   RunningIdeationSessionSchema,
+  RunningWorkspaceSessionSchema,
+  ExecutionLaneUsageSchema,
+  ExecutionCapacitySummarySchema,
+  ExecutionLaneNameSchema,
   TeammateSummarySchema,
 } from "./running-processes.schemas";
 
@@ -30,6 +38,9 @@ export {
   transformTeammateSummary,
   transformRunningProcess,
   transformRunningIdeationSession,
+  transformRunningWorkspaceSession,
+  transformExecutionLaneUsage,
+  transformExecutionCapacitySummary,
   transformRunningProcessesResponse,
 } from "./running-processes.transforms";
 

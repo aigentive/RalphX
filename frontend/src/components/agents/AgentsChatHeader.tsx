@@ -9,6 +9,7 @@ import {
 } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
+  AlertCircle,
   CheckCircle2,
   ChevronDown,
   ClipboardList,
@@ -79,6 +80,7 @@ const HEADER_ARTIFACT_TABS: Array<{
   icon: ElementType;
 }> = [
   { id: "review", label: "Review", icon: FileText },
+  { id: "issues", label: "Issues", icon: AlertCircle },
   { id: "plan", label: "Plan", icon: FileText },
   { id: "verification", label: "Verification", icon: CheckCircle2 },
   { id: "proposal", label: "Proposals", icon: GitPullRequestArrow },
@@ -335,7 +337,7 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
         availableArtifactTabs.includes(tab.id),
       );
       return isLinkedPlanEditWorkspace
-        ? tabs.filter((tab) => tab.id === "plan")
+        ? tabs.filter((tab) => tab.id === "plan" || tab.id === "issues")
         : tabs;
     },
     [availableArtifactTabs, isLinkedPlanEditWorkspace],
@@ -345,10 +347,13 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
     (conversationMode === "ideation" ||
       conversationMode === "plan" ||
       conversationMode === "review_pr" ||
+      conversation?.contextType === "project" ||
       isLinkedPlanEditWorkspace);
   const showArtifactToggle =
     artifactOpen ||
     conversationMode === "ideation" ||
+    (conversation?.contextType === "project" &&
+      visibleHeaderArtifactTabs.length > 0) ||
     (conversationMode === "plan" && visibleHeaderArtifactTabs.length > 0) ||
     (conversationMode === "review_pr" && visibleHeaderArtifactTabs.length > 0);
   // Hide the publish shortcut whenever any artifact pane is open — the user

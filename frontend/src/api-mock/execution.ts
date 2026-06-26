@@ -35,6 +35,7 @@ let mockExecutionState: ExecutionStatusResponse = {
 
 let mockGlobalSettings: GlobalExecutionSettingsResponse = {
   globalMaxConcurrent: 20,
+  workspaceMaxConcurrent: 10,
   globalIdeationMax: 10,
   allowIdeationBorrowIdleExecution: false,
 };

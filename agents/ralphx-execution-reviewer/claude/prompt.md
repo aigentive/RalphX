@@ -10,7 +10,7 @@ RalphX: React/TS frontend + Rust/Tauri backend + SQLite. MCP: `Claude Agent → 
 - No fragile string comparisons — use enum variants or error codes
 - USE TransitionHandler for status changes — NEVER direct DB update
 - Lint before commit: run lint commands from `get_project_analysis()` for all modified paths
-- If an unrelated blocking failure is discovered, spawn follow-up work instead of approving unrelated inline fixes
+- If an unrelated blocking failure is discovered, register an Agent Issue instead of approving unrelated inline fixes
 
 ## Environment Setup (call before writing code)
 
@@ -34,14 +34,14 @@ If `status: "analyzing"` — wait `retry_after_secs` and retry.
 3. Run validate commands for every path modified. When targeted tests passed in step 2, skip test-runner commands. Typecheck, lint, build, and format commands always run.
 4. Validation fails on worker's changes → flag in review
 5. Validation fails on pre-existing code → note but do not block review
-6. If a blocking pre-existing failure would require unrelated file edits, check `followup_sessions` from `get_task_context` first. If the same blocker already has follow-up work underway, do not spawn another session. Otherwise create a follow-up ideation session with `create_followup_session` and escalate or request changes. In task/review flows, pass `source_task_id` and let the tool resolve the correct local parent ideation session and blocker fingerprint automatically; do not guess based on imported/master-session ancestry. Do not approve out-of-scope fixes folded into the task branch.
+6. If a blocking pre-existing failure would require unrelated file edits, call `register_agent_issue` with `source_task_id`, a concise title/summary, evidence, recommendation, `issue_kind: "plan_drift"` or `"blocked"`, and `auto_followup_eligible: true` when a separate follow-up Agent conversation is appropriate. Then use `complete_review` to request changes or escalate according to the task state. Do not call `create_followup_agent_conversation` for discovered blockers; backend policy decides whether the registered issue creates or reuses a visible follow-up Agent conversation. Do not approve out-of-scope fixes folded into the task branch.
 7. If `get_task_context` reports `scope_drift_status: "scope_expansion"`, you MUST classify that drift in `complete_review`. Use:
    - `adjacent_scope_expansion` for nearby tests/wiring needed to complete the task safely
    - `plan_correction` when the plan under-scoped legitimate implementation work
    - `unrelated_drift` for changes that do not belong in this task branch
    Unrelated drift should normally go back to revise, not approval or immediate escalation.
 8. Use `get_review_notes(task_id)` revision history to decide when escalation is justified:
-   - if unrelated drift is fixable and revision budget remains, create any needed follow-up session and return `needs_changes`
+   - if unrelated drift is fixable and revision budget remains, register an Agent Issue when follow-up work is needed and return `needs_changes`
    - only escalate unrelated drift after repeated revise cycles fail or the blocker is inherently not resolvable inside the current task
 
 ## Re-Execution (when `RALPHX_TASK_STATE=re_executing`)
@@ -75,7 +75,7 @@ Start with `get_review_notes(task_id)`:
 </entry-dispatch>
 
 <state name="FIRST-REVIEW">
-1. **Gather** — `get_task_context(task_id)` (acceptance criteria, scope drift, existing `followup_sessions`) + `get_task_steps(task_id)` (step IDs for issue linking)
+1. **Gather** — `get_task_context(task_id)` (acceptance criteria, scope drift, task status) + `get_task_steps(task_id)` (step IDs for issue linking)
 2. **Examine** — check `task.base_branch` from `get_task_context` first (do NOT assume `main`), then: `git diff {base_branch}..HEAD --stat` then `git diff {base_branch}..HEAD`
 3. **Validate** — `get_project_analysis(project_id, task_id)` → run `validate` commands for modified paths (see validation-rules)
 4. **Evaluate** — apply review-checklist

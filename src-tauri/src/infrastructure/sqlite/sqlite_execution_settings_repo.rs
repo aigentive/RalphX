@@ -221,15 +221,17 @@ impl GlobalExecutionSettingsRepository for SqliteGlobalExecutionSettingsReposito
         self.db
             .run(move |conn| {
                 let mut stmt = conn.prepare(
-                    "SELECT global_max_concurrent, global_ideation_max, allow_ideation_borrow_idle_execution
+                    "SELECT global_max_concurrent, workspace_max_concurrent, global_ideation_max, allow_ideation_borrow_idle_execution
                      FROM global_execution_settings WHERE id = 1",
                 )?;
                 let result = stmt.query_row([], |row| {
                     let global_max_concurrent: i64 = row.get(0)?;
-                    let global_ideation_max: i64 = row.get(1)?;
-                    let allow_ideation_borrow_idle_execution: i64 = row.get(2)?;
+                    let workspace_max_concurrent: i64 = row.get(1)?;
+                    let global_ideation_max: i64 = row.get(2)?;
+                    let allow_ideation_borrow_idle_execution: i64 = row.get(3)?;
                     Ok(GlobalExecutionSettings {
                         global_max_concurrent: global_max_concurrent as u32,
+                        workspace_max_concurrent: workspace_max_concurrent as u32,
                         global_ideation_max: global_ideation_max as u32,
                         allow_ideation_borrow_idle_execution: allow_ideation_borrow_idle_execution
                             != 0,
@@ -255,6 +257,9 @@ impl GlobalExecutionSettingsRepository for SqliteGlobalExecutionSettingsReposito
             global_max_concurrent: settings
                 .global_max_concurrent
                 .min(GLOBAL_MAX_CONCURRENT_LIMIT),
+            workspace_max_concurrent: settings
+                .workspace_max_concurrent
+                .min(GLOBAL_MAX_CONCURRENT_LIMIT),
             global_ideation_max: settings
                 .global_ideation_max
                 .min(GLOBAL_MAX_CONCURRENT_LIMIT),
@@ -267,12 +272,14 @@ impl GlobalExecutionSettingsRepository for SqliteGlobalExecutionSettingsReposito
                 conn.execute(
                     "UPDATE global_execution_settings
                      SET global_max_concurrent = ?1,
-                         global_ideation_max = ?2,
-                         allow_ideation_borrow_idle_execution = ?3,
+                         workspace_max_concurrent = ?2,
+                         global_ideation_max = ?3,
+                         allow_ideation_borrow_idle_execution = ?4,
                          updated_at = strftime('%Y-%m-%dT%H:%M:%S+00:00', 'now')
                      WHERE id = 1",
                     rusqlite::params![
                         validated.global_max_concurrent as i64,
+                        validated.workspace_max_concurrent as i64,
                         validated.global_ideation_max as i64,
                         validated.allow_ideation_borrow_idle_execution as i64,
                     ],

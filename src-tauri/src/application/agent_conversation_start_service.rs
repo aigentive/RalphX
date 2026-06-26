@@ -49,6 +49,10 @@ pub struct StartAgentConversationInput {
     pub content: String,
     /// Optional draft conversation to use after uploading pending attachments.
     pub conversation_id: Option<String>,
+    /// Optional visible parent conversation for follow-up/branch conversations.
+    pub parent_conversation_id: Option<String>,
+    /// Optional initial title for a newly created conversation.
+    pub title: Option<String>,
     /// Optional provider harness selected for the initial conversation send.
     pub provider_harness: Option<String>,
     /// Optional explicit model override for the spawned agent.
@@ -148,6 +152,8 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
         let mut base_ref_kind = parse_agent_workspace_base_kind(input.base_ref_kind.as_deref())?;
         let mut base_ref = trim_optional_input(input.base_ref);
         let mut base_display_name = trim_optional_input(input.base_display_name);
+        let parent_conversation_id = trim_optional_input(input.parent_conversation_id);
+        let conversation_title = trim_optional_input(input.title);
         let ticket_start_base_reference =
             first_ticket_start_base_reference(&input.composer_integration_references);
         let source_pull_request = normalize_agent_workspace_source_pull_request(
@@ -242,6 +248,34 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             ChatConversation::new_project(project_id)
         };
         conversation.set_agent_mode(Some(mode));
+        let should_create_conversation = draft_conversation_id.is_none();
+        if let Some(parent_conversation_id) = parent_conversation_id.as_deref() {
+            if should_create_conversation {
+                let parent_id = ChatConversationId::from_string(parent_conversation_id.to_string());
+                let parent = self
+                    .deps
+                    .state
+                    .chat_conversation_repo
+                    .get_by_id(&parent_id)
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| format!("Parent conversation not found: {}", parent_id))?;
+                if parent.context_type != ChatContextType::Project
+                    || parent.context_id != input.project_id
+                {
+                    return Err(format!(
+                        "Parent conversation {} does not belong to project {}",
+                        parent.id, input.project_id
+                    ));
+                }
+                conversation.parent_conversation_id = Some(parent.id.as_str());
+            }
+        }
+        if should_create_conversation {
+            if let Some(title) = conversation_title {
+                conversation.set_title(title);
+            }
+        }
         log_start_agent_conversation_phase(
             &input.project_id,
             Some(&conversation.id),
@@ -249,7 +283,6 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             conversation_resolve_started,
         );
 
-        let should_create_conversation = draft_conversation_id.is_none();
         let workspace_prepare_started = Instant::now();
         if should_create_conversation {
             emit_start_agent_conversation_progress(

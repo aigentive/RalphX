@@ -82,12 +82,6 @@ fn managed_codex_cli_path() -> PathBuf {
     managed_codex_binary_path()
 }
 
-pub(crate) fn managed_provider_runtime_probe(
-    settings: &AgentProviderSettings,
-) -> Option<HarnessRuntimeProbe> {
-    provider_runtime_probe(settings)
-}
-
 pub(crate) fn provider_runtime_probe(
     settings: &AgentProviderSettings,
 ) -> Option<HarnessRuntimeProbe> {

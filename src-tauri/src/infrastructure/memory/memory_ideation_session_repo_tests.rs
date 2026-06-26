@@ -1,7 +1,7 @@
 use super::*;
 use crate::domain::entities::{
-    SessionPurpose, VerificationGap, VerificationRoundSnapshot, VerificationRunSnapshot,
-    VerificationStatus,
+    ArtifactId, SessionPurpose, VerificationGap, VerificationRoundSnapshot,
+    VerificationRunSnapshot, VerificationStatus,
 };
 
 #[tokio::test]
@@ -115,7 +115,9 @@ async fn test_get_latest_child_session_id_filters_by_purpose_and_archive_state()
     repo.create(parent.clone()).await.unwrap();
     repo.create(general_child).await.unwrap();
     repo.create(verification_child.clone()).await.unwrap();
-    repo.create(archived_verification_child.clone()).await.unwrap();
+    repo.create(archived_verification_child.clone())
+        .await
+        .unwrap();
 
     let latest_including_archived = repo
         .get_latest_child_session_id(&parent.id, Some(SessionPurpose::Verification), true)
@@ -238,13 +240,9 @@ async fn test_update_verification_state_roundtrip() {
     assert!(!in_progress);
 
     // Update
-    repo.update_verification_state(
-        &session.id,
-        VerificationStatus::Reviewing,
-        true
-    )
-    .await
-    .unwrap();
+    repo.update_verification_state(&session.id, VerificationStatus::Reviewing, true)
+        .await
+        .unwrap();
 
     let found = repo.get_by_id(&session.id).await.unwrap().unwrap();
     assert_eq!(found.verification_status, VerificationStatus::Reviewing);
@@ -259,13 +257,9 @@ async fn test_reset_verification_clears_all_3_columns_when_not_in_progress() {
     repo.create(session.clone()).await.unwrap();
 
     // Set to needs_revision, not in progress
-    repo.update_verification_state(
-        &session.id,
-        VerificationStatus::NeedsRevision,
-        false
-    )
-    .await
-    .unwrap();
+    repo.update_verification_state(&session.id, VerificationStatus::NeedsRevision, false)
+        .await
+        .unwrap();
 
     repo.reset_verification(&session.id).await.unwrap();
 
@@ -286,13 +280,9 @@ async fn test_reset_verification_is_noop_when_in_progress() {
     repo.create(session.clone()).await.unwrap();
 
     // Set to reviewing with in_progress = true
-    repo.update_verification_state(
-        &session.id,
-        VerificationStatus::Reviewing,
-        true
-    )
-    .await
-    .unwrap();
+    repo.update_verification_state(&session.id, VerificationStatus::Reviewing, true)
+        .await
+        .unwrap();
 
     // Reset should be a no-op because in_progress = true
     repo.reset_verification(&session.id).await.unwrap();
@@ -436,13 +426,9 @@ async fn test_archive_clears_verification_in_progress_when_set() {
     repo.create(session.clone()).await.unwrap();
 
     // Set verification_in_progress = true
-    repo.update_verification_state(
-        &session.id,
-        VerificationStatus::Reviewing,
-        true
-    )
-    .await
-    .unwrap();
+    repo.update_verification_state(&session.id, VerificationStatus::Reviewing, true)
+        .await
+        .unwrap();
 
     // Archive should atomically clear the flag
     repo.update_status(&session.id, IdeationSessionStatus::Archived)
@@ -492,17 +478,16 @@ async fn test_reset_verification_is_noop_for_imported_verified() {
     repo.create(session.clone()).await.unwrap();
 
     // Set to ImportedVerified, not in progress
-    repo.update_verification_state(
-        &session.id,
-        VerificationStatus::ImportedVerified,
-        false
-    )
-    .await
-    .unwrap();
+    repo.update_verification_state(&session.id, VerificationStatus::ImportedVerified, false)
+        .await
+        .unwrap();
 
     // reset_verification should return false (no-op) for ImportedVerified
     let result = repo.reset_verification(&session.id).await.unwrap();
-    assert!(!result, "reset_verification must return false for ImportedVerified");
+    assert!(
+        !result,
+        "reset_verification must return false for ImportedVerified"
+    );
 
     let found = repo.get_by_id(&session.id).await.unwrap().unwrap();
     assert_eq!(
@@ -530,17 +515,16 @@ async fn test_get_stale_in_progress_sessions_excludes_archived() {
         .unwrap();
 
     // Re-set verification_in_progress=true after archiving to simulate defense-in-depth scenario
-    repo.update_verification_state(
-        &session.id,
-        VerificationStatus::Reviewing,
-        true,
-    )
-    .await
-    .unwrap();
+    repo.update_verification_state(&session.id, VerificationStatus::Reviewing, true)
+        .await
+        .unwrap();
 
     // Use a future cutoff so updated_at is definitely before it
     let stale_cutoff = chrono::Utc::now() + chrono::Duration::hours(1);
-    let results = repo.get_stale_in_progress_sessions(stale_cutoff).await.unwrap();
+    let results = repo
+        .get_stale_in_progress_sessions(stale_cutoff)
+        .await
+        .unwrap();
     assert!(
         results.iter().all(|s| s.id != session.id),
         "archived session must be excluded from stale query even with verification_in_progress=true"
@@ -556,16 +540,15 @@ async fn test_get_stale_in_progress_sessions_includes_active() {
     repo.create(session.clone()).await.unwrap();
 
     // Set verification_in_progress=true (session stays Active)
-    repo.update_verification_state(
-        &session.id,
-        VerificationStatus::Reviewing,
-        true,
-    )
-    .await
-    .unwrap();
+    repo.update_verification_state(&session.id, VerificationStatus::Reviewing, true)
+        .await
+        .unwrap();
 
     let stale_cutoff = chrono::Utc::now() + chrono::Duration::hours(1);
-    let results = repo.get_stale_in_progress_sessions(stale_cutoff).await.unwrap();
+    let results = repo
+        .get_stale_in_progress_sessions(stale_cutoff)
+        .await
+        .unwrap();
     assert!(
         results.iter().any(|s| s.id == session.id),
         "active stale session must be included in stale query"
@@ -591,7 +574,10 @@ async fn test_set_pending_if_unset_sets_when_none() {
     assert!(result, "must return true when prompt was None");
 
     let fetched = repo.get_by_id(&session.id).await.unwrap().unwrap();
-    assert_eq!(fetched.pending_initial_prompt.as_deref(), Some("First message"));
+    assert_eq!(
+        fetched.pending_initial_prompt.as_deref(),
+        Some("First message")
+    );
 }
 
 #[tokio::test]
@@ -629,4 +615,125 @@ async fn test_set_pending_if_unset_returns_false_for_missing_session() {
         .await
         .unwrap();
     assert!(!result, "must return false when session does not exist");
+}
+
+#[tokio::test]
+async fn test_get_by_inherited_plan_artifact_id_filters_sessions() {
+    let repo = MemoryIdeationSessionRepository::new();
+    let project_id = ProjectId::new();
+
+    let mut matching = IdeationSession::new(project_id.clone());
+    matching.inherited_plan_artifact_id = Some(ArtifactId::from_string("plan-a"));
+    let mut other = IdeationSession::new(project_id);
+    other.inherited_plan_artifact_id = Some(ArtifactId::from_string("plan-b"));
+
+    repo.create(matching.clone()).await.unwrap();
+    repo.create(other).await.unwrap();
+
+    let sessions = repo
+        .get_by_inherited_plan_artifact_id("plan-a")
+        .await
+        .unwrap();
+
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].id, matching.id);
+}
+
+#[tokio::test]
+async fn test_group_counts_and_list_by_group_exclude_verification_children() {
+    let repo = MemoryIdeationSessionRepository::new();
+    let project_id = ProjectId::new();
+
+    let active = IdeationSession::new(project_id.clone());
+    let mut verification = IdeationSession::new(project_id.clone());
+    verification.session_purpose = SessionPurpose::Verification;
+    let mut accepted = IdeationSession::new(project_id.clone());
+    accepted.status = IdeationSessionStatus::Accepted;
+
+    repo.create(active.clone()).await.unwrap();
+    repo.create(verification).await.unwrap();
+    repo.create(accepted.clone()).await.unwrap();
+
+    let counts = repo.get_group_counts(&project_id, None).await.unwrap();
+    assert_eq!(counts.drafts, 1);
+    assert_eq!(counts.accepted, 1);
+
+    let (drafts, total) = repo
+        .list_by_group(&project_id, "drafts", 0, 10, None)
+        .await
+        .unwrap();
+    assert_eq!(total, 1);
+    assert_eq!(drafts[0].session.id, active.id);
+
+    let error = repo
+        .list_by_group(&project_id, "surprises", 0, 10, None)
+        .await
+        .expect_err("unknown group should be rejected");
+    assert!(error.to_string().contains("Unknown session group"));
+}
+
+#[tokio::test]
+async fn test_update_last_effective_model_only_updates_existing_session() {
+    let repo = MemoryIdeationSessionRepository::new();
+    let project_id = ProjectId::new();
+    let session = IdeationSession::new(project_id);
+
+    repo.create(session.clone()).await.unwrap();
+    repo.update_last_effective_model(session.id.as_str(), "gpt-5.4")
+        .await
+        .unwrap();
+    repo.update_last_effective_model("missing-session", "gpt-5.5")
+        .await
+        .unwrap();
+
+    let fetched = repo.get_by_id(&session.id).await.unwrap().unwrap();
+    assert_eq!(fetched.last_effective_model.as_deref(), Some("gpt-5.4"));
+}
+
+#[tokio::test]
+async fn test_claim_pending_session_for_project_claims_oldest_and_updates_counts() {
+    let repo = MemoryIdeationSessionRepository::new();
+    let project_id = ProjectId::new();
+    let other_project_id = ProjectId::new();
+
+    let mut newest = IdeationSession::new(project_id.clone());
+    newest.pending_initial_prompt = Some("newest prompt".to_string());
+    newest.created_at = newest.created_at + chrono::Duration::minutes(5);
+    let mut oldest = IdeationSession::new(project_id.clone());
+    oldest.pending_initial_prompt = Some("oldest prompt".to_string());
+    oldest.created_at = oldest.created_at - chrono::Duration::minutes(5);
+    let mut other_project = IdeationSession::new(other_project_id);
+    other_project.pending_initial_prompt = Some("other prompt".to_string());
+
+    repo.create(newest.clone()).await.unwrap();
+    repo.create(oldest.clone()).await.unwrap();
+    repo.create(other_project).await.unwrap();
+
+    assert_eq!(
+        repo.count_pending_sessions_for_project(&project_id)
+            .await
+            .unwrap(),
+        2
+    );
+
+    let claimed = repo
+        .claim_pending_session_for_project(project_id.as_str())
+        .await
+        .unwrap()
+        .expect("pending session should be claimed");
+
+    assert_eq!(claimed.0, oldest.id.as_str());
+    assert_eq!(claimed.1, "oldest prompt");
+    assert_eq!(
+        repo.count_pending_sessions_for_project(&project_id)
+            .await
+            .unwrap(),
+        1
+    );
+
+    let project_ids = repo.list_projects_with_pending_sessions().await.unwrap();
+    assert!(project_ids.contains(&project_id.as_str().to_string()));
+
+    let fetched_oldest = repo.get_by_id(&oldest.id).await.unwrap().unwrap();
+    assert!(fetched_oldest.pending_initial_prompt.is_none());
 }

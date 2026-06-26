@@ -62,9 +62,53 @@ export const RunningIdeationSessionSchema = z.object({
 });
 
 /**
+ * Running workspace conversation schema from Rust (snake_case)
+ */
+export const RunningWorkspaceSessionSchema = z.object({
+  conversation_id: z.string(),
+  project_id: z.string(),
+  title: z.string(),
+  elapsed_seconds: z.number().int().nullable(),
+  model: z.string().nullable(),
+});
+
+export const ExecutionLaneNameSchema = z.enum(["workspaces", "tasks", "ideation"]);
+
+/**
+ * Execution lane usage schema from Rust (snake_case)
+ */
+export const ExecutionLaneUsageSchema = z.object({
+  lane: ExecutionLaneNameSchema,
+  active: z.number().int().nonnegative(),
+  idle: z.number().int().nonnegative(),
+  waiting: z.number().int().nonnegative(),
+  max: z.number().int().nonnegative(),
+  borrowed: z.number().int().nonnegative(),
+  priority_rank: z.number().int().positive(),
+});
+
+/**
+ * Execution capacity summary schema from Rust (snake_case)
+ */
+export const ExecutionCapacitySummarySchema = z.object({
+  total_active: z.number().int().nonnegative(),
+  global_max_concurrent: z.number().int().nonnegative(),
+  borrowing_enabled: z.boolean(),
+  priority: z.array(ExecutionLaneNameSchema),
+});
+
+/**
  * Running processes response schema from Rust (snake_case)
  */
 export const RunningProcessesResponseSchema = z.object({
   processes: z.array(RunningProcessSchema),
   ideation_sessions: z.array(RunningIdeationSessionSchema),
+  workspace_sessions: z.array(RunningWorkspaceSessionSchema).default([]),
+  lanes: z.array(ExecutionLaneUsageSchema).default([]),
+  capacity: ExecutionCapacitySummarySchema.default({
+    total_active: 0,
+    global_max_concurrent: 0,
+    borrowing_enabled: false,
+    priority: ["workspaces", "tasks", "ideation"],
+  }),
 });

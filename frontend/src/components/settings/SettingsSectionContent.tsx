@@ -26,6 +26,9 @@ const LazyAgentModelsSection = lazy(() =>
 const LazyReviewPolicySection = lazy(() =>
   import("./sections/ReviewPolicySection"),
 );
+const LazyAutonomyPolicySection = lazy(() =>
+  import("./sections/AutonomyPolicySection"),
+);
 const LazyRepositorySettingsSection = lazy(() =>
   import("./RepositorySettingsSection").then((module) => ({
     default: module.RepositorySettingsSection,
@@ -130,6 +133,7 @@ export function SettingsSectionContent({
       {section === "models" && <LazyAgentModelsSection />}
       {section === "global-execution" && <LazyGlobalExecutionSection />}
       {section === "review" && <LazyReviewPolicySection />}
+      {section === "autonomy" && <LazyAutonomyPolicySection />}
       {section === "repository" && <LazyRepositorySettingsSection />}
       {section === "project-analysis" && <LazyProjectAnalysisSection />}
       {section === "ideation-workflow" && <LazyIdeationSettingsPanel />}

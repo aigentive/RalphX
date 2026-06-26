@@ -45,6 +45,12 @@ vi.mock("./sections/ReviewPolicySection", () => ({
   default: () => <div data-testid="review-policy-section">Review Policy</div>,
 }));
 
+vi.mock("./sections/AutonomyPolicySection", () => ({
+  default: () => (
+    <div data-testid="autonomy-policy-section">Autonomy Policy</div>
+  ),
+}));
+
 vi.mock("./ExternalMcpSettingsPanel", () => ({
   ExternalMcpSettingsPanel: () => (
     <div data-testid="external-mcp-section">External MCP</div>
