@@ -413,12 +413,26 @@ fn publication_state_for_workspace(
     workspace: Option<&AgentConversationWorkspaceResponse>,
     latest_run_status: Option<AgentRunStatus>,
 ) -> SidebarPublicationState {
-    let pr_status = workspace
-        .and_then(|workspace| workspace.publication_pr_status.as_deref())
-        .map(normalize_status);
-    let push_status = workspace
-        .and_then(|workspace| workspace.publication_push_status.as_deref())
-        .map(normalize_status);
+    let Some(workspace) = workspace else {
+        return publication_state_for_missing_workspace(latest_run_status);
+    };
+
+    publication_state_from_publication_statuses(
+        workspace.publication_pr_status.as_deref(),
+        workspace.publication_push_status.as_deref(),
+    )
+}
+
+fn normalize_status(status: &str) -> String {
+    status.trim().to_lowercase()
+}
+
+fn publication_state_from_publication_statuses(
+    pr_status: Option<&str>,
+    push_status: Option<&str>,
+) -> SidebarPublicationState {
+    let pr_status = pr_status.map(normalize_status);
+    let push_status = push_status.map(normalize_status);
 
     match (pr_status.as_deref(), push_status.as_deref()) {
         (Some("merged"), _) => SidebarPublicationState::Merged,
@@ -426,20 +440,21 @@ fn publication_state_for_workspace(
         (_, Some("needs_agent")) => SidebarPublicationState::Uncommitted,
         (_, Some("pending" | "failed" | "description_failed")) => SidebarPublicationState::Unpushed,
         (Some("draft"), _) => SidebarPublicationState::Draft,
-        (None, None)
-            if matches!(
-                latest_run_status,
-                Some(AgentRunStatus::Failed | AgentRunStatus::Cancelled)
-            ) =>
-        {
-            SidebarPublicationState::Closed
-        }
         _ => SidebarPublicationState::Active,
     }
 }
 
-fn normalize_status(status: &str) -> String {
-    status.trim().to_lowercase()
+fn publication_state_for_missing_workspace(
+    latest_run_status: Option<AgentRunStatus>,
+) -> SidebarPublicationState {
+    if matches!(
+        latest_run_status,
+        Some(AgentRunStatus::Failed | AgentRunStatus::Cancelled)
+    ) {
+        return SidebarPublicationState::Closed;
+    }
+
+    SidebarPublicationState::Active
 }
 
 fn publication_groups(
@@ -627,29 +642,14 @@ fn publication_state_from_domain(
     workspace: Option<&crate::domain::entities::AgentConversationWorkspace>,
     latest_run_status: Option<AgentRunStatus>,
 ) -> SidebarPublicationState {
-    let pr_status = workspace
-        .and_then(|w| w.publication_pr_status.as_deref())
-        .map(normalize_status);
-    let push_status = workspace
-        .and_then(|w| w.publication_push_status.as_deref())
-        .map(normalize_status);
+    let Some(workspace) = workspace else {
+        return publication_state_for_missing_workspace(latest_run_status);
+    };
 
-    match (pr_status.as_deref(), push_status.as_deref()) {
-        (Some("merged"), _) => SidebarPublicationState::Merged,
-        (Some("closed"), _) => SidebarPublicationState::Closed,
-        (_, Some("needs_agent")) => SidebarPublicationState::Uncommitted,
-        (_, Some("pending" | "failed" | "description_failed")) => SidebarPublicationState::Unpushed,
-        (Some("draft"), _) => SidebarPublicationState::Draft,
-        (None, None)
-            if matches!(
-                latest_run_status,
-                Some(AgentRunStatus::Failed | AgentRunStatus::Cancelled)
-            ) =>
-        {
-            SidebarPublicationState::Closed
-        }
-        _ => SidebarPublicationState::Active,
-    }
+    publication_state_from_publication_statuses(
+        workspace.publication_pr_status.as_deref(),
+        workspace.publication_push_status.as_deref(),
+    )
 }
 
 fn publication_label_for_workspace_response(
@@ -892,7 +892,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn publication_grouping_treats_failed_unpublished_latest_run_as_closed() {
+    async fn publication_grouping_keeps_failed_unpublished_workspace_active() {
         let state = AppState::new_test();
         let project = create_project(&state, "alpha").await;
         let now = Utc::now();
@@ -901,28 +901,27 @@ mod tests {
         create_run_with_status(&state, &stopped, AgentRunStatus::Failed).await;
 
         let mut input = sidebar_input(&project.id);
-        input.publication_states = Some(vec!["closed".to_string()]);
+        input.publication_states = Some(vec!["active".to_string(), "closed".to_string()]);
 
         let response = list_agent_sidebar_conversations_for_app_state(input, &state)
             .await
             .unwrap();
 
-        assert_eq!(response.groups.len(), 1);
-        assert_eq!(response.groups[0].key, "closed");
+        assert_eq!(response.groups.len(), 2);
+        assert_eq!(response.groups[0].key, "active");
         assert_eq!(response.groups[0].total, 1);
         assert_eq!(
             response.groups[0].rows[0].conversation.id,
             stopped.id.as_str()
         );
-        assert_eq!(response.groups[0].rows[0].publication_state, "closed");
-        assert_eq!(
-            response.groups[0].rows[0].publication_label.as_deref(),
-            Some("closed")
-        );
+        assert_eq!(response.groups[0].rows[0].publication_state, "active");
+        assert!(response.groups[0].rows[0].publication_label.is_none());
+        assert_eq!(response.groups[1].key, "closed");
+        assert_eq!(response.groups[1].total, 0);
     }
 
     #[tokio::test]
-    async fn bulk_publication_states_treat_cancelled_unpublished_latest_run_as_closed() {
+    async fn bulk_publication_states_keep_cancelled_unpublished_workspace_active() {
         let state = AppState::new_test();
         let project = create_project(&state, "alpha").await;
         let conversation =
@@ -942,13 +941,13 @@ mod tests {
             response
                 .get(&conversation_id)
                 .map(|row| row.publication_state.as_str()),
-            Some("closed")
+            Some("active")
         );
         assert_eq!(
             response
                 .get(&conversation_id)
                 .and_then(|row| row.publication_label.as_deref()),
-            Some("closed")
+            None
         );
     }
 
@@ -1392,6 +1391,32 @@ mod tests {
         );
         assert_eq!(
             publication_state_from_domain(None, None),
+            SidebarPublicationState::Active
+        );
+    }
+
+    #[test]
+    fn publication_state_from_domain_active_workspace_failed_run_is_active() {
+        let conversation_id = ChatConversationId::from_string("conversation-1".to_string());
+        let project_id = ProjectId::from_string("project-1".to_string());
+        let workspace = AgentConversationWorkspace::new(
+            conversation_id,
+            project_id,
+            AgentConversationWorkspaceMode::Edit,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main".to_string(),
+            Some("Project default (main)".to_string()),
+            None,
+            "ralphx/project/agent-conversation-1".to_string(),
+            "/tmp/worktrees/agent-conversation-1".to_string(),
+        );
+
+        assert_eq!(
+            publication_state_from_domain(Some(&workspace), Some(AgentRunStatus::Failed)),
+            SidebarPublicationState::Active
+        );
+        assert_eq!(
+            publication_state_from_domain(Some(&workspace), Some(AgentRunStatus::Cancelled)),
             SidebarPublicationState::Active
         );
     }
