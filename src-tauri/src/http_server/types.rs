@@ -6,6 +6,9 @@ use serde_json::Value;
 use std::sync::Arc;
 
 use crate::application::{AppState, TeamService, TeamStateTracker};
+use crate::commands::unified_chat_commands::{
+    AgentConversationResponse, AgentConversationWorkspaceResponse, SendAgentMessageResponse,
+};
 use crate::commands::ExecutionState;
 use crate::domain::agents::{AgentHarnessKind, LogicalEffort};
 use crate::domain::entities::{
@@ -142,6 +145,177 @@ pub struct DelegatedSessionStatusResponse {
     pub conversation_id: Option<String>,
     pub latest_run: Option<DelegatedRunSummary>,
     pub recent_messages: Option<Vec<ChatMessageSummary>>,
+}
+
+// ============================================================================
+// Request/Response Types - Agent Conversation Follow-Ups
+// ============================================================================
+
+#[derive(Debug, Deserialize)]
+pub struct CreateFollowupAgentConversationRequest {
+    /// Optional explicit origin Agent conversation. When omitted, source_task_id
+    /// resolves through the task's attached ideation session/workspace.
+    pub origin_conversation_id: Option<String>,
+    pub source_task_id: Option<String>,
+    pub source_context_type: Option<String>,
+    pub source_context_id: Option<String>,
+    pub source_agent_name: Option<String>,
+    pub title: String,
+    pub description: Option<String>,
+    pub initial_prompt: Option<String>,
+    pub spawn_reason: Option<String>,
+    pub blocker_fingerprint: Option<String>,
+    pub provider_harness: Option<String>,
+    pub model_override: Option<String>,
+    pub logical_effort: Option<LogicalEffort>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CreateFollowupAgentConversationResponse {
+    pub reused_existing: bool,
+    pub origin_conversation_id: String,
+    pub source_task_id: Option<String>,
+    pub source_context_type: Option<String>,
+    pub source_context_id: Option<String>,
+    pub source_agent_name: Option<String>,
+    pub spawn_reason: Option<String>,
+    pub blocker_fingerprint: Option<String>,
+    pub conversation: AgentConversationResponse,
+    pub workspace: Option<AgentConversationWorkspaceResponse>,
+    pub send_result: Option<SendAgentMessageResponse>,
+}
+
+// ============================================================================
+// Request/Response Types - Agent Conversation Issues
+// ============================================================================
+
+#[derive(Debug, Deserialize)]
+pub struct RegisterAgentConversationIssueRequest {
+    pub origin_conversation_id: Option<String>,
+    pub source_task_id: Option<String>,
+    pub source_context_type: Option<String>,
+    pub source_context_id: Option<String>,
+    pub source_agent_name: Option<String>,
+    pub issue_kind: String,
+    pub severity: Option<String>,
+    pub blocking_scope: Option<String>,
+    pub title: String,
+    pub summary: String,
+    pub evidence: Option<String>,
+    pub recommendation: Option<String>,
+    pub blocker_fingerprint: Option<String>,
+    pub followup_title: Option<String>,
+    pub followup_prompt: Option<String>,
+    #[serde(default)]
+    pub auto_followup_eligible: bool,
+    pub provider_harness: Option<String>,
+    pub model_override: Option<String>,
+    pub logical_effort: Option<LogicalEffort>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ListAgentConversationIssuesRequest {
+    pub conversation_id: String,
+    #[serde(default)]
+    pub include_resolved: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateAgentConversationIssueStatusRequest {
+    pub issue_id: String,
+    pub status: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ConvertAgentConversationIssueFollowupRequest {
+    pub issue_id: String,
+    pub title: Option<String>,
+    pub initial_prompt: Option<String>,
+    pub provider_harness: Option<String>,
+    pub model_override: Option<String>,
+    pub logical_effort: Option<LogicalEffort>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AgentConversationIssueResponse {
+    pub id: String,
+    pub project_id: String,
+    pub conversation_id: String,
+    pub source_task_id: Option<String>,
+    pub source_context_type: Option<String>,
+    pub source_context_id: Option<String>,
+    pub source_agent_name: Option<String>,
+    pub issue_kind: String,
+    pub severity: String,
+    pub status: String,
+    pub blocking_scope: String,
+    pub title: String,
+    pub summary: String,
+    pub evidence: Option<String>,
+    pub recommendation: Option<String>,
+    pub blocker_fingerprint: Option<String>,
+    pub followup_title: Option<String>,
+    pub followup_prompt: Option<String>,
+    pub auto_followup_eligible: bool,
+    pub linked_followup_conversation_id: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub resolved_at: Option<String>,
+}
+
+impl From<crate::domain::entities::AgentConversationIssue> for AgentConversationIssueResponse {
+    fn from(issue: crate::domain::entities::AgentConversationIssue) -> Self {
+        Self {
+            id: issue.id,
+            project_id: issue.project_id.as_str().to_string(),
+            conversation_id: issue.conversation_id.as_str(),
+            source_task_id: issue.source_task_id,
+            source_context_type: issue.source_context_type,
+            source_context_id: issue.source_context_id,
+            source_agent_name: issue.source_agent_name,
+            issue_kind: issue.issue_kind,
+            severity: issue.severity,
+            status: issue.status,
+            blocking_scope: issue.blocking_scope,
+            title: issue.title,
+            summary: issue.summary,
+            evidence: issue.evidence,
+            recommendation: issue.recommendation,
+            blocker_fingerprint: issue.blocker_fingerprint,
+            followup_title: issue.followup_title,
+            followup_prompt: issue.followup_prompt,
+            auto_followup_eligible: issue.auto_followup_eligible,
+            linked_followup_conversation_id: issue
+                .linked_followup_conversation_id
+                .map(|id| id.as_str()),
+            created_at: issue.created_at.to_rfc3339(),
+            updated_at: issue.updated_at.to_rfc3339(),
+            resolved_at: issue.resolved_at.map(|value| value.to_rfc3339()),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct RegisterAgentConversationIssueResponse {
+    pub issue: AgentConversationIssueResponse,
+    pub auto_followup_created: bool,
+    pub followup: Option<CreateFollowupAgentConversationResponse>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ListAgentConversationIssuesResponse {
+    pub issues: Vec<AgentConversationIssueResponse>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UpdateAgentConversationIssueStatusResponse {
+    pub issue: AgentConversationIssueResponse,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ConvertAgentConversationIssueFollowupResponse {
+    pub issue: AgentConversationIssueResponse,
+    pub followup: CreateFollowupAgentConversationResponse,
 }
 
 // ============================================================================
@@ -749,6 +923,8 @@ pub struct CompleteReviewResponse {
     pub fix_task_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub followup_session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub followup_conversation_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -266,10 +266,7 @@ impl ChatMessageRepository for MockChatMessageRepository {
         let mut matching: Vec<_> = self
             .messages
             .iter()
-            .filter(|m| {
-                m.session_id.as_ref() == Some(session_id)
-                    && m.role.to_string() == role
-            })
+            .filter(|m| m.session_id.as_ref() == Some(session_id) && m.role.to_string() == role)
             .cloned()
             .collect();
         matching.sort_by(|a, b| b.created_at.cmp(&a.created_at));
@@ -598,7 +595,10 @@ async fn test_count_unread_messages_null_cursor_counts_all_user_orchestrator() {
         .count_unread_messages(session_id.as_str(), None)
         .await
         .unwrap();
-    assert_eq!(count, 2, "NULL cursor must count all User+Orchestrator messages");
+    assert_eq!(
+        count, 2,
+        "NULL cursor must count all User+Orchestrator messages"
+    );
 }
 
 #[tokio::test]
@@ -618,18 +618,18 @@ async fn test_count_unread_messages_cursor_counts_only_after_cursor() {
         base + chrono::Duration::seconds(2),
     );
 
-    let repo = MockChatMessageRepository::with_messages(vec![
-        msg1.clone(),
-        msg2.clone(),
-        msg3.clone(),
-    ]);
+    let repo =
+        MockChatMessageRepository::with_messages(vec![msg1.clone(), msg2.clone(), msg3.clone()]);
 
     // With cursor = msg1.id: should count msg2 and msg3 (created after msg1)
     let count = repo
         .count_unread_messages(session_id.as_str(), Some(msg1.id.0.as_str()))
         .await
         .unwrap();
-    assert_eq!(count, 2, "Cursor branch must count only messages after cursor");
+    assert_eq!(
+        count, 2,
+        "Cursor branch must count only messages after cursor"
+    );
 }
 
 #[tokio::test]
@@ -696,30 +696,37 @@ async fn test_count_unread_messages_parity_null_and_cursor_contract() {
         base + chrono::Duration::seconds(2),
     );
 
-    let repo = MockChatMessageRepository::with_messages(vec![
-        msg1.clone(),
-        msg2.clone(),
-        msg3.clone(),
-    ]);
+    let repo =
+        MockChatMessageRepository::with_messages(vec![msg1.clone(), msg2.clone(), msg3.clone()]);
 
     // NULL cursor: all 3 visible messages
     let total = repo
         .count_unread_messages(session_id.as_str(), None)
         .await
         .unwrap();
-    assert_eq!(total, 3, "NULL cursor should count all User+Orchestrator messages");
+    assert_eq!(
+        total, 3,
+        "NULL cursor should count all User+Orchestrator messages"
+    );
 
     // Cursor at msg1: should return total - 1 (only msg2 and msg3 are after msg1)
     let after_first = repo
         .count_unread_messages(session_id.as_str(), Some(msg1.id.0.as_str()))
         .await
         .unwrap();
-    assert_eq!(after_first, total - 1, "Cursor at first message leaves total-1 messages unread");
+    assert_eq!(
+        after_first,
+        total - 1,
+        "Cursor at first message leaves total-1 messages unread"
+    );
 
     // Cursor at msg3 (last): nothing after it
     let after_last = repo
         .count_unread_messages(session_id.as_str(), Some(msg3.id.0.as_str()))
         .await
         .unwrap();
-    assert_eq!(after_last, 0, "Cursor at last message leaves 0 unread messages");
+    assert_eq!(
+        after_last, 0,
+        "Cursor at last message leaves 0 unread messages"
+    );
 }

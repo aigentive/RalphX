@@ -166,6 +166,7 @@ function saveSelectedTaskByProject(map: Record<string, string | null>): void {
 const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
   activityPage: true,
   extensibilityPage: true,
+  ideationPage: false,
   battleMode: true,
   teamMode: false,
   atlassianOauth: false,
@@ -931,6 +932,14 @@ export const useUiStore = create<UiState & UiActions>()(
     setFeatureFlags: (flags) =>
       set((state) => {
         state.featureFlags = flags;
+        if (!isViewEnabled(state.currentView, flags)) {
+          state.currentView = DEFAULT_PROJECT_VIEW;
+          const projectId = useProjectStore.getState().activeProjectId;
+          if (projectId) {
+            state.viewByProject[projectId] = DEFAULT_PROJECT_VIEW;
+            saveViewByProject(state.viewByProject);
+          }
+        }
       }),
 
     navigateToTask: (taskId) => {

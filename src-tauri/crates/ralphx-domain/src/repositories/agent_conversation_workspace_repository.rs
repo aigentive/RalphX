@@ -3,9 +3,9 @@ use chrono::{DateTime, Utc};
 
 use crate::entities::{
     AgentConversationWorkspace, AgentConversationWorkspacePublicationEvent,
-    AgentConversationWorkspaceStatus, AgentWorkspacePrCommentEvidence,
-    AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription,
-    AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionStatus,
+    AgentConversationWorkspaceStatus, AgentWorkspaceFollowupProvenance,
+    AgentWorkspacePrCommentEvidence, AgentWorkspacePrCommentEvidenceUpsert,
+    AgentWorkspacePrDescription, AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionStatus,
     AgentWorkspacePrReviewMonitor, AgentWorkspaceReviewMonitor, ChatConversationId,
     IdeationSessionId, PlanBranchId, ProjectId,
 };
@@ -34,6 +34,23 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         &self,
         project_id: &ProjectId,
     ) -> AppResult<Vec<AgentConversationWorkspace>>;
+
+    async fn save_followup_provenance(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _provenance: AgentWorkspaceFollowupProvenance,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn find_active_followup_by_blocker(
+        &self,
+        _origin_conversation_id: &ChatConversationId,
+        _source_task_id: &str,
+        _blocker_fingerprint: &str,
+    ) -> AppResult<Option<AgentConversationWorkspace>> {
+        Ok(None)
+    }
 
     async fn get_terminal_local_cleanup_candidates_by_project_id(
         &self,

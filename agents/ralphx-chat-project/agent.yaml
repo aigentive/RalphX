@@ -12,6 +12,8 @@ capabilities:
     - get_artifact
     - propose_plan_mode
     - append_task_to_ideation_plan
+    - create_followup_agent_conversation
+    - register_agent_issue
     - delegate_start
     - delegate_wait
     - delegate_cancel
@@ -52,6 +54,8 @@ harnesses:
       - get_conversation_transcript
       - get_artifact
       - propose_plan_mode
+      - create_followup_agent_conversation
+      - register_agent_issue
       - delegate_start
       - delegate_wait
       - delegate_cancel
@@ -96,6 +100,8 @@ harnesses:
       - get_conversation_transcript
       - get_artifact
       - propose_plan_mode
+      - create_followup_agent_conversation
+      - register_agent_issue
       - delegate_start
       - delegate_wait
       - delegate_cancel

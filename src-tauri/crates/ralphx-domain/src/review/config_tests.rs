@@ -102,6 +102,7 @@ fn test_review_settings_serialize() {
     assert!(json.contains("\"require_fix_approval\":false"));
     assert!(json.contains("\"require_human_review\":false"));
     assert!(json.contains("\"max_fix_attempts\":3"));
+    assert!(json.contains("\"auto_create_followup_agent_conversation\":true"));
 }
 
 #[test]
@@ -112,7 +113,8 @@ fn test_review_settings_deserialize() {
         "require_fix_approval": true,
         "require_human_review": true,
         "max_fix_attempts": 5,
-        "max_revision_cycles": 8
+        "max_revision_cycles": 8,
+        "auto_create_followup_agent_conversation": false
     }"#;
     let settings: ReviewSettings = serde_json::from_str(json).unwrap();
     assert!(!settings.ai_review_enabled);
@@ -121,6 +123,7 @@ fn test_review_settings_deserialize() {
     assert!(settings.require_human_review);
     assert_eq!(settings.max_fix_attempts, 5);
     assert_eq!(settings.max_revision_cycles, 8);
+    assert!(!settings.auto_create_followup_agent_conversation);
 }
 
 #[test]
@@ -132,6 +135,7 @@ fn test_review_settings_roundtrip() {
         require_human_review: false,
         max_fix_attempts: 7,
         max_revision_cycles: 8,
+        auto_create_followup_agent_conversation: false,
     };
     let json = serde_json::to_string(&original).unwrap();
     let deserialized: ReviewSettings = serde_json::from_str(&json).unwrap();

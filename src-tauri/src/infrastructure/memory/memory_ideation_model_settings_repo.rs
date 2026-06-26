@@ -122,7 +122,6 @@ impl IdeationModelSettingsRepository for MemoryIdeationModelSettingsRepository {
     }
 }
 
-
 #[cfg(test)]
 #[path = "memory_ideation_model_settings_repo_tests.rs"]
 mod tests;

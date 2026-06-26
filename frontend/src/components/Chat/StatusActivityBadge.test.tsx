@@ -10,7 +10,16 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, act } from "@testing-library/react";
 import { StatusActivityBadge } from "./StatusActivityBadge";
 
-let mockFeatureFlags = { activityPage: true, extensibilityPage: true, battleMode: true };
+const allFeatureFlags = {
+  activityPage: true,
+  extensibilityPage: true,
+  ideationPage: true,
+  battleMode: true,
+  teamMode: false,
+  atlassianOauth: false,
+};
+
+let mockFeatureFlags = allFeatureFlags;
 
 // ============================================================================
 // Store mocks
@@ -116,7 +125,7 @@ function clearLastToolCompletion(storeKey: string) {
 
 describe("StatusActivityBadge", () => {
   beforeEach(() => {
-    mockFeatureFlags = { activityPage: true, extensibilityPage: true, battleMode: true };
+    mockFeatureFlags = allFeatureFlags;
     for (const key of Object.keys(mockLastAgentEventTimestamp)) {
       delete mockLastAgentEventTimestamp[key];
     }
@@ -247,7 +256,7 @@ describe("StatusActivityBadge", () => {
   });
 
   it("hides the activity button when the activity page flag is disabled", () => {
-    mockFeatureFlags = { activityPage: false, extensibilityPage: true, battleMode: true };
+    mockFeatureFlags = { ...allFeatureFlags, activityPage: false };
 
     render(<StatusActivityBadge {...baseProps} modelDisplay={{ id: "gpt-5.4", label: "gpt-5.4" }} />);
 

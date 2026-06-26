@@ -14,6 +14,10 @@ fn test_ui_feature_flags_response_serializes_to_camel_case() {
         "Expected camelCase 'extensibilityPage' in JSON: {json}"
     );
     assert!(
+        json.contains("\"ideationPage\":"),
+        "Expected camelCase 'ideationPage' in JSON: {json}"
+    );
+    assert!(
         json.contains("\"battleMode\":"),
         "Expected camelCase 'battleMode' in JSON: {json}"
     );
@@ -37,6 +41,10 @@ fn test_ui_feature_flags_response_serializes_to_camel_case() {
     assert!(
         !json.contains("\"extensibility_page\":"),
         "Unexpected snake_case 'extensibility_page' in JSON: {json}"
+    );
+    assert!(
+        !json.contains("\"ideation_page\":"),
+        "Unexpected snake_case 'ideation_page' in JSON: {json}"
     );
     assert!(
         !json.contains("\"battle_mode\":"),

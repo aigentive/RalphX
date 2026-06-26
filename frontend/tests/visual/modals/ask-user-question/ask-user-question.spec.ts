@@ -1,5 +1,5 @@
-import { test, expect } from "@playwright/test";
-import { setupIdeationChatScenario } from "../../../fixtures/chat.fixtures";
+import { test, expect, type Page } from "@playwright/test";
+import { setupIdeationChatShell } from "../../../fixtures/chat.fixtures";
 import {
   triggerAskUserQuestionBanner,
   createSingleSelectQuestion,
@@ -10,9 +10,17 @@ import {
  * Visual regression tests for the inline QuestionInputBanner component.
  */
 
+async function blurQuestionInput(page: Page) {
+  await page.evaluate(() => {
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
+  });
+}
+
 test.describe("QuestionInputBanner", () => {
   test.beforeEach(async ({ page }) => {
-    await setupIdeationChatScenario(page, "ideation_db_widget_mix");
+    await setupIdeationChatShell(page);
   });
 
   test.describe("single-select question", () => {
@@ -52,6 +60,7 @@ test.describe("QuestionInputBanner", () => {
       const banner = page.getByTestId("question-input-banner");
       await expect(banner).toBeVisible();
 
+      await blurQuestionInput(page);
       await page.waitForTimeout(200);
 
       await expect(banner).toHaveScreenshot("ask-user-question-single-select.png", {
@@ -111,6 +120,7 @@ test.describe("QuestionInputBanner", () => {
 
       const banner = page.getByTestId("question-input-banner");
       await expect(banner).toBeVisible();
+      await blurQuestionInput(page);
       await page.waitForTimeout(200);
 
       await expect(banner).toHaveScreenshot("ask-user-question-multi-select.png", {
