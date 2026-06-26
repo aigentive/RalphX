@@ -1,9 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
-import { AlertTriangle, GitBranch, Loader2, Wrench } from "lucide-react";
+import { AlertTriangle, Loader2 } from "lucide-react";
 
 import { diffApi } from "@/api/diff";
 import type { AgentWorkspaceChangeSummary } from "@/api/diff";
-import type { AgentConversationWorkspace } from "@/api/chat";
 
 import { AgentsPublishInlineDiffs } from "./AgentsPublishInlineDiffs";
 import type { AgentPublishFocusRequest } from "./agentPublishFocus";
@@ -32,17 +31,14 @@ function repairStateLabel(summary: AgentWorkspaceChangeSummary | undefined) {
 }
 
 export function AgentsPublishRepairState({
-  workspace,
-  base,
+  conversationId,
   canHydratePublishFacts,
   focusRequest,
 }: {
-  workspace: AgentConversationWorkspace;
-  base: string;
+  conversationId: string;
   canHydratePublishFacts: boolean;
   focusRequest?: AgentPublishFocusRequest | null | undefined;
 }) {
-  const conversationId = workspace.conversationId;
   const repairSummaryQuery = useQuery({
     queryKey: [...agentWorkspaceKeys.diff(conversationId), "repair-summary"],
     queryFn: () =>
@@ -77,112 +73,59 @@ export function AgentsPublishRepairState({
           borderWidth: "0 0 1px 0",
         }}
       >
-        <div className="flex items-start gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <span
-            className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full"
-            style={{
-              backgroundColor: "var(--status-warning-muted)",
-              color: "var(--status-warning)",
-            }}
+            className="shrink-0 text-xs font-medium"
+            data-testid="agents-publish-repair-state-label"
+            style={{ color: "var(--text-secondary)" }}
           >
-            <Wrench className="h-3.5 w-3.5" aria-hidden="true" />
-          </span>
-          <div className="min-w-0 flex-1">
-            <div
-              className="text-sm font-semibold"
-              style={{ color: "var(--text-primary)" }}
-            >
-              Repairing workspace
-            </div>
-            <p
-              className="mt-1 text-xs leading-relaxed"
-              style={{ color: "var(--text-secondary)" }}
-            >
-              RalphX routed this workspace to the agent for repair. Publishing controls
-              are paused until the repair completes.
-            </p>
-          </div>
-        </div>
-
-        <div
-          className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs"
-          style={{ color: "var(--text-secondary)" }}
-        >
-          <span className="inline-flex min-w-0 items-center gap-1.5">
-            <GitBranch
-              className="h-3 w-3 shrink-0"
-              style={{ color: "var(--text-muted)" }}
-              aria-hidden="true"
-            />
-            <span
-              className="truncate font-medium"
-              style={{ color: "var(--text-primary)" }}
-            >
-              {workspace.branchName}
-            </span>
-            <span style={{ color: "var(--text-muted)" }} aria-hidden="true">
-              &rarr;
-            </span>
-            <span className="truncate" style={{ color: "var(--text-muted)" }}>
-              {base}
-            </span>
-          </span>
-          <span
-            className="hidden @xs:inline-block"
-            style={{ color: "var(--border-subtle)" }}
-            aria-hidden="true"
-          >
-            |
-          </span>
-          <span data-testid="agents-publish-repair-state-label">
             {repairStateLabel(summary)}
           </span>
-        </div>
-
-        <div className="mt-3 flex flex-wrap gap-2 text-[0.6875rem]">
-          <span
-            className="rounded-full border px-2 py-1"
-            data-testid="agents-publish-repair-bucket-conflicted"
-            style={{
-              backgroundColor:
-                conflictedCount > 0 ? "var(--status-warning-muted)" : "var(--bg-subtle)",
-              borderColor:
-                conflictedCount > 0
-                  ? "var(--status-warning-border)"
-                  : "var(--border-subtle)",
-              borderStyle: "solid",
-              borderWidth: "1px",
-              color: "var(--text-secondary)",
-            }}
-          >
-            Conflicted: {conflictedCount}
-          </span>
-          <span
-            className="rounded-full border px-2 py-1"
-            data-testid="agents-publish-repair-bucket-unstaged"
-            style={{
-              backgroundColor: "var(--bg-subtle)",
-              borderColor: "var(--border-subtle)",
-              borderStyle: "solid",
-              borderWidth: "1px",
-              color: "var(--text-secondary)",
-            }}
-          >
-            Unstaged: {formatBucket(summary, "unstaged")}
-          </span>
-          <span
-            className="rounded-full border px-2 py-1"
-            data-testid="agents-publish-repair-bucket-staged"
-            style={{
-              backgroundColor: "var(--bg-subtle)",
-              borderColor: "var(--border-subtle)",
-              borderStyle: "solid",
-              borderWidth: "1px",
-              color: "var(--text-secondary)",
-            }}
-          >
-            Staged: {formatBucket(summary, "staged")}
-          </span>
+          <div className="flex flex-wrap items-center gap-2 text-[0.6875rem]">
+            <span
+              className="rounded-full border px-2 py-1"
+              data-testid="agents-publish-repair-bucket-conflicted"
+              style={{
+                backgroundColor:
+                  conflictedCount > 0 ? "var(--status-warning-muted)" : "var(--bg-subtle)",
+                borderColor:
+                  conflictedCount > 0
+                    ? "var(--status-warning-border)"
+                    : "var(--border-subtle)",
+                borderStyle: "solid",
+                borderWidth: "1px",
+                color: "var(--text-secondary)",
+              }}
+            >
+              Conflicted: {conflictedCount}
+            </span>
+            <span
+              className="rounded-full border px-2 py-1"
+              data-testid="agents-publish-repair-bucket-unstaged"
+              style={{
+                backgroundColor: "var(--bg-subtle)",
+                borderColor: "var(--border-subtle)",
+                borderStyle: "solid",
+                borderWidth: "1px",
+                color: "var(--text-secondary)",
+              }}
+            >
+              Unstaged: {formatBucket(summary, "unstaged")}
+            </span>
+            <span
+              className="rounded-full border px-2 py-1"
+              data-testid="agents-publish-repair-bucket-staged"
+              style={{
+                backgroundColor: "var(--bg-subtle)",
+                borderColor: "var(--border-subtle)",
+                borderStyle: "solid",
+                borderWidth: "1px",
+                color: "var(--text-secondary)",
+              }}
+            >
+              Staged: {formatBucket(summary, "staged")}
+            </span>
+          </div>
         </div>
       </div>
 
