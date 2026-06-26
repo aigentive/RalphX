@@ -1518,12 +1518,11 @@ pub async fn resolve_mcp_filesystem_read_roots(
         return Vec::new();
     }
 
-    let normalized_working_directory =
-        crate::utils::path_safety::validate_absolute_non_root_path(
-            working_directory,
-            "MCP working directory",
-        )
-        .unwrap_or_else(|_| working_directory.to_path_buf());
+    let normalized_working_directory = crate::utils::path_safety::validate_absolute_non_root_path(
+        working_directory,
+        "MCP working directory",
+    )
+    .unwrap_or_else(|_| working_directory.to_path_buf());
     if project_path == normalized_working_directory {
         return Vec::new();
     }
@@ -3630,6 +3629,47 @@ exit 0
             ResolvedChatHarnessLaunch::Interactive { spawnable, .. }
             | ResolvedChatHarnessLaunch::Background { spawnable, .. } => spawnable,
         }
+    }
+
+    fn test_spawnable() -> SpawnableCommand {
+        SpawnableCommand::new(Command::new("provider-env-test"), None)
+    }
+
+    #[test]
+    fn resolved_chat_harness_launch_applies_provider_env_to_all_modes() {
+        let provider_env = HashMap::from([(
+            "CUSTOM_PROVIDER_TOKEN".to_string(),
+            "from-provider-env".to_string(),
+        )]);
+        let cli_path = PathBuf::from("provider-env-test");
+
+        let mut interactive = ResolvedChatHarnessLaunch::Interactive {
+            cli_path: cli_path.clone(),
+            spawnable: test_spawnable(),
+        };
+        interactive.apply_provider_env(&provider_env);
+        assert_eq!(
+            interactive.launch_mode(),
+            ResolvedChatHarnessLaunchMode::Interactive
+        );
+        assert_eq!(
+            spawnable_env_value(launch_spawnable(&interactive), "CUSTOM_PROVIDER_TOKEN").as_deref(),
+            Some("from-provider-env")
+        );
+
+        let mut background = ResolvedChatHarnessLaunch::Background {
+            cli_path,
+            spawnable: test_spawnable(),
+        };
+        background.apply_provider_env(&provider_env);
+        assert_eq!(
+            background.launch_mode(),
+            ResolvedChatHarnessLaunchMode::Background
+        );
+        assert_eq!(
+            spawnable_env_value(launch_spawnable(&background), "CUSTOM_PROVIDER_TOKEN").as_deref(),
+            Some("from-provider-env")
+        );
     }
 
     async fn build_project_agent_launch_plan(

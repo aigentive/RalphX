@@ -143,19 +143,7 @@ pub(super) async fn execute_team_spawn(
             }
         }
 
-        let provider_env =
-            crate::application::provider_env_file::load_provider_custom_env_file_for_harness(
-                Some(&state.app_state.agent_provider_settings_repo),
-                crate::domain::agents::AgentHarnessKind::Claude,
-            )
-            .await
-            .map_err(|error| {
-                warn!(error = %error, "Failed to load Claude provider env file for teammate spawn");
-                (StatusCode::BAD_REQUEST, error)
-            })?;
-
-        let mut spawn_config =
-            TeammateSpawnConfig::new(&teammate_name, &team_name, &pending.prompt)
+        let spawn_config = TeammateSpawnConfig::new(&teammate_name, &team_name, &pending.prompt)
             .with_parent_session_id(&parent_session_id)
             .with_context(teammate_context)
             .with_model(&pending.model)
@@ -166,9 +154,11 @@ pub(super) async fn execute_team_spawn(
             .with_effort(resolve_effort(Some(mcp_type)))
             .with_working_dir(working_dir.clone())
             .with_plugin_dir(resolve_teammate_plugin_dir(&working_dir));
-        for (key, value) in provider_env {
-            spawn_config = spawn_config.with_env(key, value);
-        }
+        let spawn_config = load_claude_provider_env_for_teammate_spawn(
+            &state.app_state.agent_provider_settings_repo,
+            spawn_config,
+        )
+        .await?;
 
         let client = ClaudeCodeClient::new();
         match client.spawn_teammate_interactive(spawn_config).await {
