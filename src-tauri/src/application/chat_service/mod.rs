@@ -959,6 +959,7 @@ pub struct AppChatService<R: Runtime = tauri::Wry> {
         Arc<verification_child_process_registry::VerificationChildProcessRegistry>,
 }
 
+#[derive(Debug)]
 struct ResolvedProviderLaunchSettings {
     cli_path: PathBuf,
     provider_env: HashMap<String, String>,
@@ -2734,16 +2735,6 @@ impl<R: Runtime> AppChatService<R> {
             .map_err(ChatServiceError::SpawnFailed)?;
         chat_service_context::apply_provider_env_vars(&mut spawnable, &provider_env);
         Ok(spawnable)
-    }
-
-    async fn resolve_launch_cli_path_for_harness(
-        &self,
-        effective_harness: AgentHarnessKind,
-    ) -> Result<PathBuf, ChatServiceError> {
-        Ok(self
-            .resolve_launch_settings_for_harness(effective_harness)
-            .await?
-            .cli_path)
     }
 
     async fn resolve_launch_settings_for_harness(
@@ -5910,9 +5901,10 @@ mod managed_provider_launch_path_tests {
         let service = app_state.build_chat_service();
 
         let path = service
-            .resolve_launch_cli_path_for_harness(AgentHarnessKind::Codex)
+            .resolve_launch_settings_for_harness(AgentHarnessKind::Codex)
             .await
-            .expect("launch path");
+            .expect("launch settings")
+            .cli_path;
 
         assert_eq!(path, managed_codex_path);
     }
@@ -5935,9 +5927,10 @@ mod managed_provider_launch_path_tests {
         let service = app_state.build_chat_service();
 
         let path = service
-            .resolve_launch_cli_path_for_harness(AgentHarnessKind::Codex)
+            .resolve_launch_settings_for_harness(AgentHarnessKind::Codex)
             .await
-            .expect("launch path");
+            .expect("launch settings")
+            .cli_path;
 
         assert_eq!(path, custom_codex_path);
     }
@@ -6003,7 +5996,7 @@ mod managed_provider_launch_path_tests {
         let service = app_state.build_chat_service();
 
         let error = service
-            .resolve_launch_cli_path_for_harness(AgentHarnessKind::Codex)
+            .resolve_launch_settings_for_harness(AgentHarnessKind::Codex)
             .await
             .expect_err("missing managed Codex should block launch");
 
