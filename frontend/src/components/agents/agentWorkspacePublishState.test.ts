@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 
-import type { AgentConversationWorkspace } from "@/api/chat";
+import type {
+  AgentConversationWorkspace,
+  AgentConversationWorkspaceFreshness,
+} from "@/api/chat";
 import {
   getAgentWorkspacePrConflictSummary,
   isAgentWorkspaceAutoMergeDeferred,
   isAgentWorkspaceAutoMergeRequestPending,
+  shouldAutoRefreshCleanAgentWorkspaceFromBase,
   shouldShowAgentWorkspacePublishSurface,
 } from "./agentWorkspacePublishState";
 
@@ -33,6 +37,30 @@ function workspace(
     status: "active",
     createdAt: "2026-04-23T09:00:00Z",
     updatedAt: "2026-04-23T09:00:00Z",
+    ...overrides,
+  };
+}
+
+function freshness(
+  overrides: Partial<AgentConversationWorkspaceFreshness> = {},
+): AgentConversationWorkspaceFreshness {
+  return {
+    conversationId: "conversation-1",
+    freshnessScope: "full",
+    baseRef: "release/1.2",
+    baseDisplayName: "release/1.2",
+    targetRef: "origin/release/1.2",
+    capturedBaseCommit: "old-base-sha",
+    targetBaseCommit: "new-base-sha",
+    isBaseAhead: true,
+    hasUncommittedChanges: false,
+    unpublishedCommitCount: 0,
+    remoteRefreshed: true,
+    worktreeStatusChecked: true,
+    baseStatus: "valid",
+    effectiveBaseRef: "release/1.2",
+    effectiveBaseDisplayName: "release/1.2",
+    baseBlockReason: null,
     ...overrides,
   };
 }
@@ -177,6 +205,74 @@ describe("shouldShowAgentWorkspacePublishSurface", () => {
           mode: "plan",
           linkedIdeationSessionId: "planning-session-1",
         }),
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("shouldAutoRefreshCleanAgentWorkspaceFromBase", () => {
+  it("allows clean edit workspaces behind their configured base", () => {
+    expect(
+      shouldAutoRefreshCleanAgentWorkspaceFromBase(
+        workspace({ baseRef: "release/1.2", baseDisplayName: "release/1.2" }),
+        freshness(),
+      ),
+    ).toBe(true);
+  });
+
+  it("rejects workspaces with local changes or publishable commits", () => {
+    expect(
+      shouldAutoRefreshCleanAgentWorkspaceFromBase(
+        workspace(),
+        freshness({ hasUncommittedChanges: true }),
+      ),
+    ).toBe(false);
+    expect(
+      shouldAutoRefreshCleanAgentWorkspaceFromBase(
+        workspace(),
+        freshness({ unpublishedCommitCount: 1 }),
+      ),
+    ).toBe(false);
+  });
+
+  it("requires a full remote-refreshed freshness check", () => {
+    expect(
+      shouldAutoRefreshCleanAgentWorkspaceFromBase(
+        workspace(),
+        freshness({ freshnessScope: "local" }),
+      ),
+    ).toBe(false);
+    expect(
+      shouldAutoRefreshCleanAgentWorkspaceFromBase(
+        workspace(),
+        freshness({ remoteRefreshed: false }),
+      ),
+    ).toBe(false);
+    expect(
+      shouldAutoRefreshCleanAgentWorkspaceFromBase(
+        workspace(),
+        freshness({ worktreeStatusChecked: false }),
+      ),
+    ).toBe(false);
+  });
+
+  it("rejects blocked, missing, and non-edit workspaces", () => {
+    expect(
+      shouldAutoRefreshCleanAgentWorkspaceFromBase(
+        workspace(),
+        freshness({ baseStatus: "blocked" }),
+      ),
+    ).toBe(false);
+    expect(
+      shouldAutoRefreshCleanAgentWorkspaceFromBase(
+        workspace({ status: "missing" }),
+        freshness(),
+      ),
+    ).toBe(false);
+    expect(
+      shouldAutoRefreshCleanAgentWorkspaceFromBase(
+        workspace({ mode: "ideation" }),
+        freshness(),
       ),
     ).toBe(false);
   });
