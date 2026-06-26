@@ -83,6 +83,7 @@ import {
   hasPublishedWorkspacePr,
   isPipelineOwnedAgentWorkspace,
   isAgentWorkspacePublishCurrent,
+  shouldAutoRefreshCleanAgentWorkspaceFromBase,
 } from "./agentWorkspacePublishState";
 import {
   AGENT_WORKSPACE_FRESHNESS_STALE_MS,
@@ -216,6 +217,7 @@ export function AgentPublishPanel({
     null,
   );
   const prDescriptionPrecomputeKeysRef = useRef<Set<string>>(new Set());
+  const autoRefreshFromBaseKeysRef = useRef<Set<string>>(new Set());
   const [selectedRebaseBaseKey, setSelectedRebaseBaseKey] = useState("");
   const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
   const conversationId = workspace?.conversationId ?? null;
@@ -280,6 +282,10 @@ export function AgentPublishPanel({
     staleTime: AGENT_WORKSPACE_FRESHNESS_STALE_MS,
   });
   const freshness = freshnessQuery.data;
+  const shouldAutoRefreshFromBase = shouldAutoRefreshCleanAgentWorkspaceFromBase(
+    workspace,
+    freshness,
+  );
   const baseStatus = freshness?.baseStatus ?? "valid";
   const baseBlocked = baseStatus === "blocked";
   const fallbackRebaseOptions = useMemo(
@@ -337,6 +343,50 @@ export function AgentPublishPanel({
       setSelectedRebaseBaseKey(rebaseBaseOptionsQuery.data.selectedKey);
     }
   }, [rebaseBaseOptionsQuery.data]);
+  useEffect(() => {
+    autoRefreshFromBaseKeysRef.current.clear();
+  }, [conversationId]);
+  useEffect(() => {
+    if (
+      !workspace ||
+      !conversationId ||
+      !shouldAutoRefreshFromBase ||
+      isRepairPending ||
+      isPublishingWorkspace ||
+      localPublishInFlight ||
+      isUpdatingFromBase
+    ) {
+      return;
+    }
+
+    const refreshKey = [
+      conversationId,
+      freshness?.targetRef ?? workspace.baseRef,
+      freshness?.targetBaseCommit ?? "",
+    ].join(":");
+    if (autoRefreshFromBaseKeysRef.current.has(refreshKey)) {
+      return;
+    }
+    autoRefreshFromBaseKeysRef.current.add(refreshKey);
+
+    runUpdateFromBase({
+      conversationId,
+      detail: `From ${getAgentWorkspaceEffectiveBaseLabel(workspace, freshness)}`,
+      kind: "update-from-base",
+      title: "Refreshing branch",
+      workspace,
+    });
+  }, [
+    conversationId,
+    freshness,
+    isPublishingWorkspace,
+    isRepairPending,
+    isUpdatingFromBase,
+    localPublishInFlight,
+    runUpdateFromBase,
+    shouldAutoRefreshFromBase,
+    workspace,
+  ]);
   const closePrMutation = useMutation<AgentConversationWorkspace, Error>({
     mutationFn: () => chatApi.closeAgentWorkspacePr(conversationId!),
     onSuccess: async (updatedWorkspace) => {
