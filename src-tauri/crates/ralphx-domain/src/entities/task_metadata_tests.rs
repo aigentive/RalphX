@@ -1803,6 +1803,12 @@ fn stop_retrying_reason_serde_round_trip_new_variants() {
     assert_eq!(json, "\"git_isolation_exhausted\"");
     let parsed: StopRetryingReason = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed, StopRetryingReason::GitIsolationExhausted);
+
+    // AgentCommandInvalid round-trips
+    let json = serde_json::to_string(&StopRetryingReason::AgentCommandInvalid).unwrap();
+    assert_eq!(json, "\"agent_command_invalid\"");
+    let parsed: StopRetryingReason = serde_json::from_str(&json).unwrap();
+    assert_eq!(parsed, StopRetryingReason::AgentCommandInvalid);
 }
 
 #[test]

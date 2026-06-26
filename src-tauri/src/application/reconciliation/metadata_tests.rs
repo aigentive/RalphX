@@ -37,6 +37,14 @@ fn stop_retrying_reason_to_code_maps_git_isolation_exhausted() {
 }
 
 #[test]
+fn stop_retrying_reason_to_code_maps_agent_command_invalid() {
+    assert_eq!(
+        stop_retrying_reason_to_code(&StopRetryingReason::AgentCommandInvalid),
+        ExecutionRecoveryReasonCode::AgentCommandInvalid,
+    );
+}
+
+#[test]
 fn stop_retrying_reason_to_code_maps_other_variants_to_unknown() {
     assert_eq!(
         stop_retrying_reason_to_code(&StopRetryingReason::MaxRetriesExceeded),

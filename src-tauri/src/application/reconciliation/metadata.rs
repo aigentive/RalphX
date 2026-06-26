@@ -681,7 +681,7 @@ impl<R: Runtime> ReconciliationRunner<R> {
             ExecutionRecoveryEventKind::StopRetrying,
             ExecutionRecoverySource::System,
             reason_code,
-            format!("Permanent git error - stopping auto-retry (reason: {:?})", reason),
+            format!("Stopping execution auto-retry (reason: {:?})", reason),
         );
 
         recovery.stop_retrying = true;
@@ -952,6 +952,7 @@ pub(crate) fn stop_retrying_reason_to_code(
         StopRetryingReason::GitIsolationExhausted => {
             ExecutionRecoveryReasonCode::GitIsolationExhausted
         }
+        StopRetryingReason::AgentCommandInvalid => ExecutionRecoveryReasonCode::AgentCommandInvalid,
         _ => ExecutionRecoveryReasonCode::Unknown,
     }
 }
