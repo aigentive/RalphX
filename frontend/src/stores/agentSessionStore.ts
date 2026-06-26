@@ -20,6 +20,7 @@ export type { AgentEffort, AgentProvider, AgentRuntimeSelection } from "@/lib/ag
 
 export type AgentArtifactTab =
   | "review"
+  | "issues"
   | "plan"
   | "verification"
   | "proposal"

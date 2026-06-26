@@ -20,20 +20,40 @@ let uiState = {
   dequeueConfirmation,
   addAutoAcceptSession,
   setCurrentView,
+  featureFlags: {
+    activityPage: true,
+    extensibilityPage: true,
+    ideationPage: false,
+    battleMode: true,
+    teamMode: false,
+    atlassianOauth: false,
+    ticketingDashboard: false,
+  },
 };
 let ideationState = {
   sessions: {} as Record<string, { id: string; title: string | null }>,
   setActiveSession,
 };
 
-vi.mock("@/stores/uiStore", () => ({
-  useUiStore: <T,>(selector: (s: typeof uiState) => T) => selector(uiState),
-}));
+vi.mock("@/stores/uiStore", () => {
+  const useUiStore = <T,>(selector: (s: typeof uiState) => T) =>
+    selector(uiState);
+  return {
+    useUiStore: Object.assign(useUiStore, {
+      getState: () => uiState,
+    }),
+  };
+});
 
-vi.mock("@/stores/ideationStore", () => ({
-  useIdeationStore: <T,>(selector: (s: typeof ideationState) => T) =>
-    selector(ideationState),
-}));
+vi.mock("@/stores/ideationStore", () => {
+  const useIdeationStore = <T,>(selector: (s: typeof ideationState) => T) =>
+    selector(ideationState);
+  return {
+    useIdeationStore: Object.assign(useIdeationStore, {
+      getState: () => ideationState,
+    }),
+  };
+});
 
 // ─── Mutation hook mocks ───────────────────────────────────────────────────
 
@@ -63,6 +83,15 @@ function resetState() {
     dequeueConfirmation,
     addAutoAcceptSession,
     setCurrentView,
+    featureFlags: {
+      activityPage: true,
+      extensibilityPage: true,
+      ideationPage: false,
+      battleMode: true,
+      teamMode: false,
+      atlassianOauth: false,
+      ticketingDashboard: false,
+    },
   };
   ideationState = { sessions: {}, setActiveSession };
 }
@@ -169,7 +198,7 @@ describe("FinalizeConfirmationDialog", () => {
     expect(dequeueConfirmation).not.toHaveBeenCalled();
   });
 
-  it("View Plan dequeues, sets active session and switches view", async () => {
+  it("View Plan dequeues and routes to Agents when standalone ideation is disabled", async () => {
     uiState.pendingConfirmationQueue = ["s1"];
     const user = userEvent.setup();
     render(<FinalizeConfirmationDialog />);
@@ -177,8 +206,8 @@ describe("FinalizeConfirmationDialog", () => {
     await user.click(screen.getByRole("button", { name: /View Plan/i }));
 
     expect(dequeueConfirmation).toHaveBeenCalledTimes(1);
-    expect(setActiveSession).toHaveBeenCalledWith("s1");
-    expect(setCurrentView).toHaveBeenCalledWith("ideation");
+    expect(setActiveSession).not.toHaveBeenCalled();
+    expect(setCurrentView).toHaveBeenCalledWith("agents");
   });
 
   it("disables actions while accept is pending and shows spinner", () => {

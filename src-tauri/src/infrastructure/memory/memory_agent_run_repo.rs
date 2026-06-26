@@ -5,8 +5,7 @@ use std::collections::{HashMap, HashSet};
 use tokio::sync::RwLock;
 
 use crate::domain::entities::{
-    AgentRun, AgentRunAttribution, AgentRunId, AgentRunStatus, AgentRunUsage,
-    ChatConversationId,
+    AgentRun, AgentRunAttribution, AgentRunId, AgentRunStatus, AgentRunUsage, ChatConversationId,
     InterruptedConversation,
 };
 use crate::domain::repositories::{AgentRunRepository, ORPHANED_AGENT_RUN_ON_APP_RESTART};

@@ -16,6 +16,7 @@ export const FEATURE_FLAGS_QUERY_KEY = ["featureFlags"] as const;
 const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
   activityPage: true,
   extensibilityPage: true,
+  ideationPage: false,
   battleMode: true,
   teamMode: false,
   atlassianOauth: false,
@@ -58,6 +59,8 @@ export function isViewEnabled(view: string, flags: FeatureFlags): boolean {
       return flags.activityPage;
     case "extensibility":
       return flags.extensibilityPage;
+    case "ideation":
+      return flags.ideationPage;
     case "ticketing":
       return true;
     default:

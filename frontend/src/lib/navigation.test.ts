@@ -6,12 +6,25 @@ import { navigateToIdeationSession } from "./navigation";
 // Hoisted mock factories
 // ============================================================================
 
-const { mockUiGetState, mockUiSetState, mockIdeationGetState, mockProjectGetState } =
+const {
+  mockUiGetState,
+  mockUiSetState,
+  mockIdeationGetState,
+  mockProjectGetState,
+  mockGetQueriesData,
+  selectConversationMock,
+  setArtifactTabMock,
+  setFocusedProjectMock,
+} =
   vi.hoisted(() => ({
     mockUiGetState: vi.fn(),
     mockUiSetState: vi.fn(),
     mockIdeationGetState: vi.fn(),
     mockProjectGetState: vi.fn(),
+    mockGetQueriesData: vi.fn(),
+    selectConversationMock: vi.fn(),
+    setArtifactTabMock: vi.fn(),
+    setFocusedProjectMock: vi.fn(),
   }));
 
 vi.mock("@/stores/uiStore", () => ({
@@ -33,6 +46,22 @@ vi.mock("@/stores/projectStore", () => ({
   },
 }));
 
+vi.mock("@/stores/agentSessionStore", () => ({
+  useAgentSessionStore: {
+    getState: () => ({
+      selectConversation: selectConversationMock,
+      setArtifactTab: setArtifactTabMock,
+      setFocusedProject: setFocusedProjectMock,
+    }),
+  },
+}));
+
+vi.mock("@/lib/queryClient", () => ({
+  getQueryClient: () => ({
+    getQueriesData: mockGetQueriesData,
+  }),
+}));
+
 // ============================================================================
 // Test constants & helpers
 // ============================================================================
@@ -41,6 +70,21 @@ const PROJECT_A = "project-a";
 const PROJECT_B = "project-b";
 const SESSION_A = "session-a"; // belongs to PROJECT_A
 const SESSION_B = "session-b"; // belongs to PROJECT_B
+const CONVERSATION_A = "conversation-a";
+
+const FEATURE_FLAGS_ENABLED = {
+  activityPage: true,
+  extensibilityPage: true,
+  ideationPage: true,
+  battleMode: true,
+  teamMode: false,
+  atlassianOauth: false,
+};
+
+const FEATURE_FLAGS_IDEATION_DISABLED = {
+  ...FEATURE_FLAGS_ENABLED,
+  ideationPage: false,
+};
 
 function makeSession(id: string, projectId: string): IdeationSession {
   return {
@@ -66,6 +110,40 @@ const setCurrentViewMock = vi.fn();
 const setActiveSessionMock = vi.fn();
 const selectProjectMock = vi.fn();
 
+function cacheLinkedConversation(
+  sessionId: string,
+  conversationId: string,
+  projectId: string,
+) {
+  mockGetQueriesData.mockReturnValue([
+    [
+      ["agents", "sidebar-conversations"],
+      {
+        pages: [
+          {
+            key: "active",
+            label: "Active",
+            total: 1,
+            offset: 0,
+            limit: 8,
+            hasMore: false,
+            rows: [
+              {
+                workspace: {
+                  conversationId,
+                  projectId,
+                  linkedIdeationSessionId: sessionId,
+                },
+              },
+            ],
+          },
+        ],
+        pageParams: [0],
+      },
+    ],
+  ]);
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -84,8 +162,10 @@ describe("navigateToIdeationSession", () => {
     mockUiGetState.mockReturnValue({
       viewByProject: {},
       sessionByProject: {},
+      featureFlags: FEATURE_FLAGS_ENABLED,
       setCurrentView: setCurrentViewMock,
     });
+    mockGetQueriesData.mockReturnValue([]);
 
     // Default: sessions contain SESSION_A (PROJECT_A) and SESSION_B (PROJECT_B)
     mockIdeationGetState.mockReturnValue({
@@ -136,6 +216,7 @@ describe("navigateToIdeationSession", () => {
       mockUiGetState.mockReturnValue({
         viewByProject: { [PROJECT_A]: "kanban", "proj-other": "graph" },
         sessionByProject: { [PROJECT_A]: SESSION_A },
+        featureFlags: FEATURE_FLAGS_ENABLED,
         setCurrentView: setCurrentViewMock,
       });
 
@@ -152,6 +233,7 @@ describe("navigateToIdeationSession", () => {
       mockUiGetState.mockReturnValue({
         viewByProject: {},
         sessionByProject: { [PROJECT_A]: SESSION_A, "proj-other": "session-other" },
+        featureFlags: FEATURE_FLAGS_ENABLED,
         setCurrentView: setCurrentViewMock,
       });
 
@@ -198,6 +280,63 @@ describe("navigateToIdeationSession", () => {
   });
 
   // --------------------------------------------------------------------------
+  // Standalone Ideation disabled
+  // --------------------------------------------------------------------------
+
+  describe("when standalone Ideation is disabled", () => {
+    beforeEach(() => {
+      mockUiGetState.mockReturnValue({
+        viewByProject: {},
+        sessionByProject: {},
+        featureFlags: FEATURE_FLAGS_IDEATION_DISABLED,
+        setCurrentView: setCurrentViewMock,
+      });
+    });
+
+    it("routes same-project legacy session links to Agents", () => {
+      navigateToIdeationSession(SESSION_A);
+
+      expect(setFocusedProjectMock).toHaveBeenCalledWith(PROJECT_A);
+      expect(setCurrentViewMock).toHaveBeenCalledWith("agents");
+      expect(setActiveSessionMock).not.toHaveBeenCalled();
+    });
+
+    it("selects a cached linked Agent conversation and opens the plan artifact tab", () => {
+      cacheLinkedConversation(SESSION_A, CONVERSATION_A, PROJECT_A);
+
+      navigateToIdeationSession(SESSION_A);
+
+      expect(selectConversationMock).toHaveBeenCalledWith(PROJECT_A, CONVERSATION_A);
+      expect(setArtifactTabMock).toHaveBeenCalledWith(CONVERSATION_A, "plan");
+      expect(setCurrentViewMock).toHaveBeenCalledWith("agents");
+      expect(setFocusedProjectMock).not.toHaveBeenCalled();
+    });
+
+    it("pre-writes Agents as the cross-project restore view", () => {
+      navigateToIdeationSession(SESSION_B);
+
+      expect(setFocusedProjectMock).toHaveBeenCalledWith(PROJECT_B);
+      expect(mockUiSetState).toHaveBeenCalledOnce();
+      const args = mockUiSetState.mock.calls[0][0] as Record<string, unknown>;
+      expect((args.viewByProject as Record<string, string>)[PROJECT_B]).toBe("agents");
+      expect(args.sessionByProject).toBeUndefined();
+      expect(selectProjectMock).toHaveBeenCalledWith(PROJECT_B);
+      expect(setCurrentViewMock).not.toHaveBeenCalled();
+    });
+
+    it("falls back to Agents for unknown sessions", () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      navigateToIdeationSession("unknown-session");
+
+      expect(setCurrentViewMock).toHaveBeenCalledWith("agents");
+      expect(setActiveSessionMock).not.toHaveBeenCalled();
+
+      warnSpy.mockRestore();
+    });
+  });
+
+  // --------------------------------------------------------------------------
   // Missing session fallback
   // --------------------------------------------------------------------------
 
@@ -225,23 +364,23 @@ describe("navigateToIdeationSession", () => {
     });
 
     it("does NOT call selectProject when session not found in store", () => {
-      vi.spyOn(console, "warn").mockImplementation(() => {});
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
       navigateToIdeationSession("unknown-session");
 
       expect(selectProjectMock).not.toHaveBeenCalled();
 
-      vi.restoreAllMocks();
+      warnSpy.mockRestore();
     });
 
     it("does NOT call useUiStore.setState when session not found in store", () => {
-      vi.spyOn(console, "warn").mockImplementation(() => {});
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
       navigateToIdeationSession("unknown-session");
 
       expect(mockUiSetState).not.toHaveBeenCalled();
 
-      vi.restoreAllMocks();
+      warnSpy.mockRestore();
     });
   });
 

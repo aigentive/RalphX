@@ -837,6 +837,8 @@ fn project_chat_claude_surface_can_append_to_open_ideation_plans() {
 #[test]
 fn plan_mode_uses_orchestrator_prompt_with_constrained_plan_tools() {
     let root = project_root();
+    let base_definition = load_canonical_agent_definition(&root, "ralphx-ideation")
+        .expect("missing base definition for ralphx-ideation");
     let definition =
         load_canonical_agent_definition_for_profile(&root, "ralphx-ideation", Some("plan"))
             .expect("missing plan profile for ralphx-ideation");
@@ -891,6 +893,14 @@ fn plan_mode_uses_orchestrator_prompt_with_constrained_plan_tools() {
         render_agent_runtime_profile_context(&root, "ralphx-ideation", None).is_none(),
         "default launches should not receive profile context"
     );
+    assert!(
+        base_definition
+            .capabilities
+            .mcp_tools
+            .iter()
+            .any(|tool| tool == "create_child_session"),
+        "Standalone ralphx-ideation should keep child sessions for the opt-in Ideation UI"
+    );
 
     for required_tool in [
         "ask_user_question",
@@ -898,8 +908,8 @@ fn plan_mode_uses_orchestrator_prompt_with_constrained_plan_tools() {
         "update_plan_artifact",
         "edit_plan_artifact",
         "get_session_plan",
-        "create_child_session",
         "get_plan_verification",
+        "stop_verification",
     ] {
         assert!(
             definition
@@ -923,6 +933,9 @@ fn plan_mode_uses_orchestrator_prompt_with_constrained_plan_tools() {
         "finalize_proposals",
         "migrate_proposals",
         "v1_start_ideation",
+        "create_child_session",
+        "create_followup_session",
+        "create_followup_agent_conversation",
     ] {
         assert!(
             !definition
@@ -965,6 +978,18 @@ fn plan_mode_uses_orchestrator_prompt_with_constrained_plan_tools() {
         assert!(prompt.contains("do not park blocking user-owned decisions there"));
         assert!(prompt.contains("Do not create task proposals"));
         assert!(prompt.contains("`Implement Plan` action"));
+        assert!(
+            !prompt.contains("create_child_session"),
+            "Plan profile prompt must not mention off-surface child-session tools"
+        );
+        assert!(
+            !prompt.contains("create_followup_session"),
+            "Plan profile prompt must not mention off-surface follow-up tools"
+        );
+        assert!(
+            !prompt.contains("create_followup_agent_conversation"),
+            "Plan profile prompt must not mention off-surface Agent-conversation follow-up tools"
+        );
         assert!(!prompt.contains("<agent_task_ledger_contract>"));
         assert!(!prompt.contains("## RalphX Delegation Policy"));
     }

@@ -7,8 +7,9 @@ use tokio::sync::RwLock;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
-    AgentWorkspacePrCommentEvidence, AgentWorkspacePrCommentEvidenceUpsert,
-    AgentWorkspacePrDescription, AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionStatus,
+    AgentWorkspaceFollowupProvenance, AgentWorkspacePrCommentEvidence,
+    AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription,
+    AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionStatus,
     AgentWorkspacePrReviewMonitor, AgentWorkspacePrReviewMonitorStatus,
     AgentWorkspaceReviewMonitor, ChatConversationId, IdeationSessionId, PlanBranchId, ProjectId,
     DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
@@ -18,6 +19,7 @@ use crate::error::AppResult;
 
 pub struct MemoryAgentConversationWorkspaceRepository {
     workspaces: RwLock<HashMap<ChatConversationId, AgentConversationWorkspace>>,
+    followup_provenance: RwLock<HashMap<ChatConversationId, AgentWorkspaceFollowupProvenance>>,
     pr_descriptions: RwLock<HashMap<ChatConversationId, AgentWorkspacePrDescription>>,
     publication_events:
         RwLock<HashMap<ChatConversationId, Vec<AgentConversationWorkspacePublicationEvent>>>,
@@ -31,6 +33,7 @@ impl MemoryAgentConversationWorkspaceRepository {
     pub fn new() -> Self {
         Self {
             workspaces: RwLock::new(HashMap::new()),
+            followup_provenance: RwLock::new(HashMap::new()),
             pr_descriptions: RwLock::new(HashMap::new()),
             publication_events: RwLock::new(HashMap::new()),
             pr_comment_evidence: RwLock::new(HashMap::new()),
@@ -94,6 +97,43 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             .values()
             .filter(|workspace| {
                 workspace.linked_ideation_session_id.as_ref() == Some(ideation_session_id)
+            })
+            .max_by(|left, right| left.updated_at.cmp(&right.updated_at))
+            .cloned())
+    }
+
+    async fn save_followup_provenance(
+        &self,
+        conversation_id: &ChatConversationId,
+        provenance: AgentWorkspaceFollowupProvenance,
+    ) -> AppResult<()> {
+        self.followup_provenance
+            .write()
+            .await
+            .insert(conversation_id.clone(), provenance);
+        Ok(())
+    }
+
+    async fn find_active_followup_by_blocker(
+        &self,
+        origin_conversation_id: &ChatConversationId,
+        source_task_id: &str,
+        blocker_fingerprint: &str,
+    ) -> AppResult<Option<AgentConversationWorkspace>> {
+        let provenance = self.followup_provenance.read().await;
+        let workspaces = self.workspaces.read().await;
+        Ok(provenance
+            .iter()
+            .filter_map(|(conversation_id, stored)| {
+                if stored.origin_conversation_id != *origin_conversation_id
+                    || stored.source_task_id.as_deref() != Some(source_task_id)
+                    || stored.blocker_fingerprint.as_deref() != Some(blocker_fingerprint)
+                {
+                    return None;
+                }
+                workspaces.get(conversation_id).filter(|workspace| {
+                    workspace.status == AgentConversationWorkspaceStatus::Active
+                })
             })
             .max_by(|left, right| left.updated_at.cmp(&right.updated_at))
             .cloned())
@@ -700,6 +740,10 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
 
     async fn delete(&self, conversation_id: &ChatConversationId) -> AppResult<()> {
         self.workspaces.write().await.remove(conversation_id);
+        self.followup_provenance
+            .write()
+            .await
+            .remove(conversation_id);
         self.publication_events
             .write()
             .await

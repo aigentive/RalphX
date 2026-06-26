@@ -19,7 +19,8 @@ pub trait ExecutionPlanRepository: Send + Sync {
     async fn get_by_id(&self, id: &ExecutionPlanId) -> AppResult<Option<ExecutionPlan>>;
 
     /// Get all execution plans for a session
-    async fn get_by_session(&self, session_id: &IdeationSessionId) -> AppResult<Vec<ExecutionPlan>>;
+    async fn get_by_session(&self, session_id: &IdeationSessionId)
+        -> AppResult<Vec<ExecutionPlan>>;
 
     /// Get the active execution plan for a session (status = Active)
     async fn get_active_for_session(

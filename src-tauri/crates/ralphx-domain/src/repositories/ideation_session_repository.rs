@@ -325,18 +325,12 @@ pub trait IdeationSessionRepository: Send + Sync {
     ///
     /// Used by the recovery-aware semantic filter to determine whether a
     /// verified session has any active proposals before deciding to preserve it.
-    async fn count_active_proposals(
-        &self,
-        session_id: &IdeationSessionId,
-    ) -> AppResult<usize>;
+    async fn count_active_proposals(&self, session_id: &IdeationSessionId) -> AppResult<usize>;
 
     /// Count non-archived proposals for a session (sync for use inside `db.run()` closures).
     /// WHERE session_id = ? AND status != 'archived'
     /// Do NOT use this for sort_order assignment — use the existing count_by_session_sync instead.
-    fn count_active_by_session_sync(
-        conn: &Connection,
-        session_id: &str,
-    ) -> AppResult<i64>
+    fn count_active_by_session_sync(conn: &Connection, session_id: &str) -> AppResult<i64>
     where
         Self: Sized;
 
@@ -427,11 +421,7 @@ pub trait IdeationSessionRepository: Send + Sync {
     /// Called after successful agent spawn. Failures are non-fatal (caller WARNs and
     /// continues). The value is exposed in `IdeationSessionSummary` and
     /// `ChildSessionStatusResponse` so the frontend can display the model label.
-    async fn update_last_effective_model(
-        &self,
-        session_id: &str,
-        model: &str,
-    ) -> AppResult<()>;
+    async fn update_last_effective_model(&self, session_id: &str, model: &str) -> AppResult<()>;
 
     /// Set (or clear) `pending_initial_prompt` on a session.
     ///
@@ -480,10 +470,7 @@ pub trait IdeationSessionRepository: Send + Sync {
     /// Used by `get_execution_status` to report how many sessions are waiting for
     /// capacity to become available. Only counts `status = 'active'` sessions to
     /// exclude archived/accepted sessions.
-    async fn count_pending_sessions_for_project(
-        &self,
-        project_id: &ProjectId,
-    ) -> AppResult<u32>;
+    async fn count_pending_sessions_for_project(&self, project_id: &ProjectId) -> AppResult<u32>;
 
     /// Set `acceptance_status` on a session using Compare-And-Swap (CAS).
     ///

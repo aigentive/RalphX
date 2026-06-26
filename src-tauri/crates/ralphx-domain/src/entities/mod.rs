@@ -1,4 +1,5 @@
 pub mod activity_event;
+pub mod agent_conversation_issue;
 pub mod agent_conversation_jira_issue;
 pub mod agent_conversation_linear_issue;
 pub mod agent_conversation_workspace;
@@ -42,6 +43,10 @@ pub use activity_event::{
     ActivityEvent, ActivityEventId, ActivityEventRole, ActivityEventType,
     ParseActivityEventRoleError, ParseActivityEventTypeError,
 };
+pub use agent_conversation_issue::{
+    AgentConversationIssue, AGENT_CONVERSATION_ISSUE_STATUS_DISMISSED,
+    AGENT_CONVERSATION_ISSUE_STATUS_OPEN, AGENT_CONVERSATION_ISSUE_STATUS_RESOLVED,
+};
 pub use agent_conversation_jira_issue::{
     AgentConversationJiraIssueLink, AgentConversationJiraRefreshStatus,
 };
@@ -53,8 +58,9 @@ pub use agent_conversation_workspace::{
     pr_comment_body_excerpt,
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
-    AgentWorkspacePrCommentEvidence, AgentWorkspacePrCommentEvidenceUpsert,
-    AgentWorkspacePrDescription, AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
+    AgentWorkspaceFollowupProvenance, AgentWorkspacePrCommentEvidence,
+    AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription,
+    AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
     AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
     AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewMonitor,
     AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewTargetScope,

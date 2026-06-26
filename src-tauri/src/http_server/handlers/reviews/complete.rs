@@ -202,7 +202,7 @@ pub async fn complete_review(
 
     // For now, we don't create fix tasks automatically - that can be added later
     let fix_task_id: Option<TaskId> = None;
-    let followup_session_id = maybe_spawn_unrelated_drift_followup(
+    let followup_conversation_id = maybe_register_unrelated_drift_issue(
         &state,
         &task,
         &review,
@@ -216,6 +216,7 @@ pub async fn complete_review(
         req.escalation_reason.as_deref(),
     )
     .await;
+    let followup_session_id: Option<String> = None;
 
     // Create review note for history.
     // For escalations, prefer escalation_reason over generic feedback so the
@@ -539,10 +540,16 @@ pub async fn complete_review(
     // 9. Return response
     Ok(Json(CompleteReviewResponse {
         success: true,
-        message: complete_review_response_message(followup_session_id.as_deref()),
+        message: match followup_conversation_id.as_deref() {
+            Some(conversation_id) => format!(
+                "Review submitted successfully. Follow-up Agent conversation created: {conversation_id}"
+            ),
+            None => complete_review_response_message(None),
+        },
         new_status: new_status.as_str().to_string(),
         fix_task_id: fix_task_id.map(|id| id.as_str().to_string()),
         followup_session_id,
+        followup_conversation_id,
     }))
 }
 
@@ -630,7 +637,7 @@ async fn persist_followup_activity_event(
     }
 }
 
-async fn maybe_spawn_unrelated_drift_followup(
+async fn maybe_register_unrelated_drift_issue(
     state: &HttpServerState,
     task: &crate::domain::entities::Task,
     review: &Review,
@@ -657,7 +664,56 @@ async fn maybe_spawn_unrelated_drift_followup(
         None => {
             tracing::warn!(
                 task_id = %task.id.as_str(),
-                "Cannot auto-create follow-up session for unrelated drift: task has no ideation session"
+                "Cannot register unrelated-drift Agent issue: task has no ideation session"
+            );
+            return None;
+        }
+    };
+
+    let origin_workspace = match state
+        .app_state
+        .agent_conversation_workspace_repo
+        .get_by_linked_ideation_session_id(&parent_session_id)
+        .await
+    {
+        Ok(Some(workspace)) => workspace,
+        Ok(None) => {
+            tracing::warn!(
+                task_id = %task.id.as_str(),
+                "Cannot register unrelated-drift Agent issue: task ideation session is not attached to an Agent conversation"
+            );
+            return None;
+        }
+        Err(error) => {
+            tracing::warn!(
+                task_id = %task.id.as_str(),
+                error = %error,
+                "Failed to resolve Agent workspace for unrelated-drift issue"
+            );
+            return None;
+        }
+    };
+
+    let origin_conversation = match state
+        .app_state
+        .chat_conversation_repo
+        .get_by_id(&origin_workspace.conversation_id)
+        .await
+    {
+        Ok(Some(conversation)) => conversation,
+        Ok(None) => {
+            tracing::warn!(
+                task_id = %task.id.as_str(),
+                conversation_id = %origin_workspace.conversation_id.as_str(),
+                "Cannot register unrelated-drift Agent issue: origin Agent conversation is missing"
+            );
+            return None;
+        }
+        Err(error) => {
+            tracing::warn!(
+                task_id = %task.id.as_str(),
+                error = %error,
+                "Failed to load origin Agent conversation for unrelated-drift issue"
             );
             return None;
         }
@@ -673,71 +729,121 @@ async fn maybe_spawn_unrelated_drift_followup(
         review_settings,
     );
 
-    match find_existing_unrelated_drift_followup(
-        state,
-        &parent_session_id,
-        &task.id,
-        draft.blocker_fingerprint.as_deref(),
-    )
-    .await
-    {
-        Ok(Some(existing_id)) => return Some(existing_id),
-        Ok(None) => {}
-        Err(e) => {
-            tracing::warn!(
-                task_id = %task.id.as_str(),
-                error = %e,
-                "Failed to check for existing unrelated-drift follow-up session"
-            );
+    let mut issue = AgentConversationIssue::new(
+        ProjectId::from_string(origin_conversation.context_id.clone()),
+        origin_conversation.id.clone(),
+        Some(task.id.as_str().to_string()),
+        Some("review".to_string()),
+        Some(review.id.as_str().to_string()),
+        Some("ralphx-execution-reviewer".to_string()),
+        "plan_drift".to_string(),
+        "high".to_string(),
+        "followup_only".to_string(),
+        draft.title.clone(),
+        draft.description.clone(),
+        Some(task_context.out_of_scope_files.join("\n")),
+        Some(draft.prompt.clone()),
+        draft.blocker_fingerprint.clone(),
+        Some(draft.title.clone()),
+        Some(draft.prompt.clone()),
+        true,
+    );
+
+    if let Some(blocker_fingerprint) = issue.blocker_fingerprint.as_deref() {
+        match state
+            .app_state
+            .agent_conversation_issue_repo
+            .find_open_by_fingerprint(
+                &origin_conversation.id,
+                Some(task.id.as_str()),
+                "plan_drift",
+                blocker_fingerprint,
+            )
+            .await
+        {
+            Ok(Some(mut existing)) => {
+                existing.refresh_from(issue);
+                issue = existing;
+            }
+            Ok(None) => {}
+            Err(error) => {
+                tracing::warn!(
+                    task_id = %task.id.as_str(),
+                    error = %error,
+                    "Failed to check for existing unrelated-drift Agent issue"
+                );
+            }
         }
     }
 
-    let request = CreateChildSessionRequest {
-        parent_session_id: parent_session_id.as_str().to_string(),
-        title: Some(draft.title),
-        description: Some(draft.description),
-        inherit_context: true,
-        initial_prompt: Some(draft.prompt),
-        team_mode: None,
-        team_config: None,
-        purpose: Some("general".to_string()),
-        is_external_trigger: false,
+    let saved_issue = match state
+        .app_state
+        .agent_conversation_issue_repo
+        .save(&issue)
+        .await
+    {
+        Ok(issue) => issue,
+        Err(error) => {
+            tracing::warn!(
+                task_id = %task.id.as_str(),
+                error = %error,
+                "Failed to save unrelated-drift Agent issue"
+            );
+            return None;
+        }
+    };
+
+    if !review_settings.auto_create_followup_agent_conversation {
+        return None;
+    }
+
+    let request = CreateFollowupAgentConversationRequest {
+        origin_conversation_id: Some(origin_conversation.id.as_str()),
         source_task_id: Some(task.id.as_str().to_string()),
         source_context_type: Some("review".to_string()),
         source_context_id: Some(review.id.as_str().to_string()),
+        source_agent_name: Some("ralphx-execution-reviewer".to_string()),
+        title: draft.title,
+        description: Some(draft.description),
+        initial_prompt: Some(draft.prompt),
         spawn_reason: Some("out_of_scope_failure".to_string()),
         blocker_fingerprint: draft.blocker_fingerprint,
+        provider_harness: None,
+        model_override: None,
+        logical_effort: None,
     };
 
-    match create_child_session_impl(state, request).await {
-        Ok(response) => Some(response.session_id),
+    match create_followup_agent_conversation_for_request(state, request).await {
+        Ok(response) => {
+            let followup_conversation_id =
+                ChatConversationId::from_string(response.conversation.id.clone());
+            if let Err(error) = state
+                .app_state
+                .agent_conversation_issue_repo
+                .link_followup_conversation(&saved_issue.id, &followup_conversation_id)
+                .await
+            {
+                tracing::warn!(
+                    task_id = %task.id.as_str(),
+                    issue_id = %saved_issue.id,
+                    error = %error,
+                    "Failed to link unrelated-drift issue to follow-up Agent conversation"
+                );
+            }
+            Some(response.conversation.id)
+        }
         Err((status, body)) => {
             tracing::warn!(
                 task_id = %task.id.as_str(),
                 status = %status,
                 body = %body.0,
-                "Failed to auto-create follow-up session for unrelated scope drift"
+                "Failed to auto-create follow-up Agent conversation for unrelated scope drift"
             );
             None
         }
     }
 }
 
-async fn find_existing_unrelated_drift_followup(
-    state: &HttpServerState,
-    parent_session_id: &crate::domain::entities::IdeationSessionId,
-    task_id: &TaskId,
-    blocker_fingerprint: Option<&str>,
-) -> Result<Option<String>, Box<dyn std::error::Error>> {
-    let children = state
-        .app_state
-        .ideation_session_repo
-        .get_children(parent_session_id)
-        .await?;
-
-    Ok(matching_unrelated_drift_followup_session_id(
-        &children,
-        task_id,
-        blocker_fingerprint,
-    ))
-}
+#[cfg(test)]
+#[path = "complete_tests.rs"]
+mod complete_tests;

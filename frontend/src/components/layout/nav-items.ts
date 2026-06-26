@@ -37,7 +37,7 @@ export const ALL_NAV_ITEMS: NavItemConfig[] = [
     label: "Ideation",
     icon: Lightbulb,
     shortcut: "⌘2",
-    visible: () => true,
+    visible: (flags) => flags.ideationPage,
   },
   {
     view: "graph",

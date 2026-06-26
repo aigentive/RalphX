@@ -230,7 +230,7 @@ function AppContent() {
   const showsExecutionFooter =
     currentView === "kanban" ||
     currentView === "graph" ||
-    currentView === "ideation" ||
+    (currentView === "ideation" && isViewEnabled("ideation", featureFlags)) ||
     currentView === "agents";
   const shouldHydrateAgentHaltState = currentView === "agents";
   const shouldHydrateExecutionStatus =
@@ -243,7 +243,8 @@ function AppContent() {
     currentView === "agents" ? agentFooterProjectId : currentProjectId;
   const executionProjectParam = executionProjectId || undefined;
   const shouldPollExecutionStatus = showsExecutionFooter && Boolean(executionProjectParam);
-  const shouldHydrateIdeationView = currentView === "ideation";
+  const shouldHydrateIdeationView =
+    currentView === "ideation" && isViewEnabled("ideation", featureFlags);
   const shouldHydrateExecutionSettings = activeModal === "settings";
 
   // Fetch projects from backend
@@ -1112,21 +1113,27 @@ function AppContent() {
                 />
               )}
               {currentView === "ideation" && (
-                <IdeationView
-                  session={resolvedSession}
-                  proposals={proposals}
-                  isSessionLoading={isSessionLoading}
-                  onNewSession={handleNewSession}
-                  onSelectSession={handleSelectSession}
-                  onArchiveSession={handleArchiveSession}
-                  onEditProposal={handleEditProposal}
-                  onViewProposal={handleViewProposal}
-                  selectedProposalId={viewingProposalId}
-                  onRemoveProposal={handleRemoveProposal}
-                  onReorderProposals={handleReorderProposals}
-                  onApply={handleApplyProposals}
-                  footer={executionFooter}
-                />
+                isViewEnabled("ideation", featureFlags)
+                  ? (
+                    <IdeationView
+                      session={resolvedSession}
+                      proposals={proposals}
+                      isSessionLoading={isSessionLoading}
+                      onNewSession={handleNewSession}
+                      onSelectSession={handleSelectSession}
+                      onArchiveSession={handleArchiveSession}
+                      onEditProposal={handleEditProposal}
+                      onViewProposal={handleViewProposal}
+                      selectedProposalId={viewingProposalId}
+                      onRemoveProposal={handleRemoveProposal}
+                      onReorderProposals={handleReorderProposals}
+                      onApply={handleApplyProposals}
+                      footer={executionFooter}
+                    />
+                  )
+                  : import.meta.env.DEV
+                    ? <FeatureDisabledPlaceholder view="ideation" yamlKey="ideation_page" envVar="RALPHX_UI_IDEATION_PAGE" />
+                    : null
               )}
               {currentView === "agents" && (
                 <AgentsView

@@ -15,6 +15,9 @@ import {
   getAgentWorkspacePrReviewContext,
   getAgentWorkspaceReviewContext,
   startAgentWorkspaceReview,
+  listAgentConversationIssues,
+  updateAgentConversationIssueStatus,
+  convertAgentConversationIssueFollowup,
   submitAgentWorkspacePrReviewAction,
   skipAgentWorkspacePrReviewAction,
   createConversation,
@@ -2952,6 +2955,103 @@ describe("getConversationActiveState", () => {
     expect(submitted.submittedReviewId).toBe("review-1");
     expect(submitted.action.status).toBe("submitted");
     expect(skipped.action.status).toBe("skipped");
+  });
+
+  it("lists and mutates agent conversation issues through REST endpoints", async () => {
+    const rawIssue = {
+      id: "issue-1",
+      project_id: "project-1",
+      conversation_id: "conversation-1",
+      source_task_id: "task-1",
+      source_context_type: "review",
+      source_context_id: "review-1",
+      source_agent_name: "ralphx-execution-reviewer",
+      issue_kind: "plan_drift",
+      severity: "high",
+      status: "open",
+      blocking_scope: "followup_only",
+      title: "Plan drift",
+      summary: "Reviewer found unrelated work.",
+      evidence: "src/unrelated.rs",
+      recommendation: "Create a follow-up.",
+      blocker_fingerprint: "scope:task-1",
+      followup_title: "Investigate drift",
+      followup_prompt: "Plan the unrelated work separately.",
+      auto_followup_eligible: true,
+      linked_followup_conversation_id: null,
+      created_at: "2026-06-25T12:00:00Z",
+      updated_at: "2026-06-25T12:01:00Z",
+      resolved_at: null,
+    };
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ issues: [rawIssue] }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            issue: { ...rawIssue, status: "resolved", resolved_at: "2026-06-25T12:02:00Z" },
+          }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            issue: {
+              ...rawIssue,
+              linked_followup_conversation_id: "followup-conversation-1",
+            },
+            followup: { reused_existing: false },
+          }),
+      });
+
+    const issues = await listAgentConversationIssues("conversation-1", {
+      includeResolved: true,
+    });
+    const resolved = await updateAgentConversationIssueStatus("issue-1", "resolved");
+    const converted = await convertAgentConversationIssueFollowup("issue-1");
+
+    expect(mockFetch).toHaveBeenNthCalledWith(
+      1,
+      "http://localhost:3847/api/agent_conversation_issues/list",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          conversation_id: "conversation-1",
+          include_resolved: true,
+        }),
+      }
+    );
+    expect(mockFetch).toHaveBeenNthCalledWith(
+      2,
+      "http://localhost:3847/api/agent_conversation_issues/status",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ issue_id: "issue-1", status: "resolved" }),
+      }
+    );
+    expect(mockFetch).toHaveBeenNthCalledWith(
+      3,
+      "http://localhost:3847/api/agent_conversation_issues/convert_followup",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ issue_id: "issue-1" }),
+      }
+    );
+    expect(issues[0]).toMatchObject({
+      id: "issue-1",
+      sourceTaskId: "task-1",
+      blockerFingerprint: "scope:task-1",
+      autoFollowupEligible: true,
+    });
+    expect(resolved.status).toBe("resolved");
+    expect(resolved.resolvedAt).toBe("2026-06-25T12:02:00Z");
+    expect(converted.linkedFollowupConversationId).toBe("followup-conversation-1");
   });
 
   it("surfaces backend error detail for agent workspace PR review requests", async () => {

@@ -354,10 +354,34 @@ describe('getFilteredTools', () => {
         expect(toolNames).toContain('list_tasks');
         expect(toolNames).toContain('propose_plan_mode');
         expect(toolNames).toContain('append_task_to_ideation_plan');
+        expect(toolNames).toContain('create_followup_agent_conversation');
+        expect(toolNames).toContain('register_agent_issue');
         expect(toolNames).not.toContain('start_ideation_session');
         expect(toolNames).not.toContain('create_child_session');
+        expect(toolNames).not.toContain('create_followup_session');
         expect(toolNames).not.toContain('create_task_proposal');
         expect(toolNames).not.toContain('update_plan_artifact');
+    });
+    it.each([WORKER, REVIEWER])('%s should create visible follow-up Agent conversations', (agent) => {
+        setAgentType(agent);
+        const toolNames = getFilteredTools().map((tool) => tool.name);
+        expect(toolNames).toContain('create_followup_agent_conversation');
+        expect(toolNames).toContain('register_agent_issue');
+        expect(toolNames).not.toContain('create_followup_session');
+    });
+    it('register_agent_issue should expose issue and follow-up policy fields', () => {
+        const properties = inputSchemaProperties('register_agent_issue');
+        expect(properties).toHaveProperty('issue_kind');
+        expect(properties).toHaveProperty('blocking_scope');
+        expect(properties).toHaveProperty('auto_followup_eligible');
+        expect(properties).toHaveProperty('followup_prompt');
+    });
+    it('create_followup_agent_conversation should expose Agent conversation provenance fields', () => {
+        const properties = inputSchemaProperties('create_followup_agent_conversation');
+        expect(properties).toHaveProperty('origin_conversation_id');
+        expect(properties).toHaveProperty('source_task_id');
+        expect(properties).toHaveProperty('source_agent_name');
+        expect(properties).toHaveProperty('blocker_fingerprint');
     });
     it('should let the general chat explorer propose a Plan-mode handoff without edit or ideation tools', () => {
         setAgentType(GENERAL_EXPLORER);
