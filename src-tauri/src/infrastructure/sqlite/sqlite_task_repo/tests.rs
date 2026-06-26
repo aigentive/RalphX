@@ -470,6 +470,58 @@ async fn test_get_status_history_returns_empty_for_no_transitions() {
 }
 
 #[tokio::test]
+async fn test_get_status_last_entered_at_returns_most_recent_entry() {
+    let db = setup_test_db();
+    let repo = SqliteTaskRepository::new(db.new_connection());
+    let task = create_test_task("Re-enter status");
+
+    repo.create(task.clone()).await.unwrap();
+
+    repo.persist_status_change(
+        &task.id,
+        InternalStatus::Ready,
+        InternalStatus::Executing,
+        "first",
+    )
+    .await
+    .unwrap();
+    tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
+    repo.persist_status_change(
+        &task.id,
+        InternalStatus::Executing,
+        InternalStatus::Failed,
+        "leave",
+    )
+    .await
+    .unwrap();
+    tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
+    repo.persist_status_change(
+        &task.id,
+        InternalStatus::Ready,
+        InternalStatus::Executing,
+        "second",
+    )
+    .await
+    .unwrap();
+
+    let latest = repo
+        .get_status_last_entered_at(&task.id, InternalStatus::Executing)
+        .await
+        .unwrap()
+        .expect("latest entry should exist");
+    let earliest = repo
+        .get_status_entered_at(&task.id, InternalStatus::Executing)
+        .await
+        .unwrap()
+        .expect("earliest entry should exist");
+
+    assert!(
+        latest > earliest,
+        "latest execution entry should be newer than earliest entry"
+    );
+}
+
+#[tokio::test]
 async fn test_get_by_status_filters_correctly() {
     let db = setup_test_db();
     let repo = SqliteTaskRepository::new(db.new_connection());

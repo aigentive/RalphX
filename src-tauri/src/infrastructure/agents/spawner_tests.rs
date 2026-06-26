@@ -123,6 +123,13 @@ impl TaskRepository for MockTaskRepoForSpawner {
     ) -> AppResult<Option<chrono::DateTime<chrono::Utc>>> {
         Ok(None)
     }
+    async fn get_status_last_entered_at(
+        &self,
+        _: &TaskId,
+        _: crate::domain::entities::InternalStatus,
+    ) -> AppResult<Option<chrono::DateTime<chrono::Utc>>> {
+        Ok(None)
+    }
     async fn get_next_executable(&self, _: &ProjectId) -> AppResult<Option<Task>> {
         Ok(None)
     }

@@ -1,5 +1,7 @@
 use super::helpers::{create_context_with_services, create_test_services};
 use crate::application::{ChatService, MockChatService};
+use crate::domain::entities::{MergeValidationMode, Project, Task, TaskId};
+use crate::domain::repositories::{ProjectRepository, TaskRepository};
 use crate::domain::state_machine::context::TaskServices;
 use crate::domain::state_machine::mocks::{
     MockAgentSpawner, MockDependencyManager, MockEventEmitter, MockNotifier, MockReviewStarter,
@@ -10,7 +12,54 @@ use crate::domain::state_machine::services::{
 use crate::domain::state_machine::{
     State, TaskEvent, TaskStateMachine, TransitionHandler, TransitionResult,
 };
+use crate::infrastructure::memory::{MemoryProjectRepository, MemoryTaskRepository};
 use std::sync::Arc;
+
+async fn build_pre_execution_setup_handler(
+    merge_validation_mode: MergeValidationMode,
+    detected_analysis: String,
+) -> (
+    tempfile::TempDir,
+    tempfile::TempDir,
+    Arc<MemoryTaskRepository>,
+    String,
+    String,
+    TaskStateMachine,
+) {
+    let project_root = tempfile::tempdir().expect("project root");
+    let worktree_root = tempfile::tempdir().expect("worktree root");
+
+    let mut project = Project::new(
+        "setup-mode".to_string(),
+        project_root.path().to_string_lossy().to_string(),
+    );
+    project.merge_validation_mode = merge_validation_mode;
+    project.detected_analysis = Some(detected_analysis);
+
+    let mut task = Task::new(project.id.clone(), "Task with setup".to_string());
+    task.worktree_path = Some(worktree_root.path().to_string_lossy().to_string());
+    let task_id = task.id.clone();
+
+    let task_repo = Arc::new(MemoryTaskRepository::new());
+    let project_repo = Arc::new(MemoryProjectRepository::new());
+    project_repo.create(project.clone()).await.unwrap();
+    task_repo.create(task).await.unwrap();
+
+    let services = TaskServices::new_mock()
+        .with_task_repo(Arc::clone(&task_repo) as Arc<dyn TaskRepository>)
+        .with_project_repo(Arc::clone(&project_repo) as Arc<dyn ProjectRepository>);
+    let context = create_context_with_services(task_id.as_str(), project.id.as_str(), services);
+    let machine = TaskStateMachine::new(context);
+
+    (
+        project_root,
+        worktree_root,
+        task_repo,
+        task_id.to_string(),
+        project.id.to_string(),
+        machine,
+    )
+}
 
 #[tokio::test]
 async fn test_entering_executing_spawns_worker() {
@@ -25,6 +74,159 @@ async fn test_entering_executing_spawns_worker() {
 
     // Test passes if no panic occurs - ExecutionChatService is called
     // (The MockExecutionChatService handles the call gracefully)
+}
+
+#[tokio::test]
+async fn pre_execution_setup_runs_worktree_setup_when_validation_mode_is_off() {
+    let (project_root, worktree_root, task_repo, task_id, project_id, mut machine) =
+        build_pre_execution_setup_handler(
+            MergeValidationMode::Off,
+            r#"[{
+            "path": "frontend",
+            "label": "Frontend",
+            "worktree_setup": [
+                "ln -s {project_root}/frontend/node_modules {worktree_path}/frontend/node_modules"
+            ]
+        }]"#
+            .to_string(),
+        )
+        .await;
+    std::fs::create_dir_all(project_root.path().join("frontend/node_modules"))
+        .expect("source node_modules");
+    let handler = TransitionHandler::new(&mut machine);
+
+    handler
+        .run_and_store_pre_execution_setup(
+            task_id.as_str(),
+            project_id.as_str(),
+            "execution",
+            "execution_setup_log",
+        )
+        .await
+        .expect("off mode should not block setup");
+
+    let linked_modules = worktree_root.path().join("frontend/node_modules");
+    assert!(
+        linked_modules.is_symlink(),
+        "worktree_setup must still create frontend/node_modules when validation is off"
+    );
+    assert_eq!(
+        std::fs::read_link(&linked_modules).expect("read node_modules link"),
+        project_root.path().join("frontend/node_modules")
+    );
+
+    let updated = task_repo
+        .get_by_id(&TaskId::from_string(task_id.clone()))
+        .await
+        .unwrap()
+        .expect("task exists");
+    let metadata: serde_json::Value =
+        serde_json::from_str(updated.metadata.as_deref().unwrap()).unwrap();
+    assert!(
+        metadata
+            .get("execution_setup_log")
+            .and_then(|value| value.as_array())
+            .is_some_and(|entries| !entries.is_empty()),
+        "setup log should be persisted even when validation is off"
+    );
+}
+
+#[tokio::test]
+async fn pre_execution_setup_warns_and_continues_on_install_failure_when_validation_mode_is_off() {
+    let (_project_root, _worktree_root, task_repo, task_id, project_id, mut machine) =
+        build_pre_execution_setup_handler(
+            MergeValidationMode::Off,
+            r#"[{
+                "path": ".",
+                "label": "Root",
+                "install": "false",
+                "worktree_setup": []
+            }]"#
+            .to_string(),
+        )
+        .await;
+    let handler = TransitionHandler::new(&mut machine);
+
+    handler
+        .run_and_store_pre_execution_setup(
+            task_id.as_str(),
+            project_id.as_str(),
+            "execution",
+            "execution_setup_log",
+        )
+        .await
+        .expect("off mode should warn and continue on install failure");
+
+    let updated = task_repo
+        .get_by_id(&TaskId::from_string(task_id.clone()))
+        .await
+        .unwrap()
+        .expect("task exists");
+    let metadata: serde_json::Value =
+        serde_json::from_str(updated.metadata.as_deref().unwrap()).unwrap();
+    assert_eq!(
+        metadata
+            .get("execution_setup_warning")
+            .and_then(|value| value.as_bool()),
+        Some(true)
+    );
+    assert!(
+        metadata
+            .get("execution_setup_log")
+            .and_then(|value| value.as_array())
+            .is_some_and(|entries| !entries.is_empty()),
+        "failed install setup log should be persisted"
+    );
+}
+
+#[tokio::test]
+async fn pre_execution_setup_blocks_on_install_failure_when_validation_mode_is_block() {
+    let (_project_root, _worktree_root, task_repo, task_id, project_id, mut machine) =
+        build_pre_execution_setup_handler(
+            MergeValidationMode::Block,
+            r#"[{
+                "path": ".",
+                "label": "Root",
+                "install": "false",
+                "worktree_setup": []
+            }]"#
+            .to_string(),
+        )
+        .await;
+    let handler = TransitionHandler::new(&mut machine);
+
+    let err = handler
+        .run_and_store_pre_execution_setup(
+            task_id.as_str(),
+            project_id.as_str(),
+            "execution",
+            "execution_setup_log",
+        )
+        .await
+        .expect_err("block mode should block on install failure");
+    assert!(
+        err.to_string().contains("Pre-execution setup failed"),
+        "unexpected error: {err}"
+    );
+
+    let updated = task_repo
+        .get_by_id(&TaskId::from_string(task_id.clone()))
+        .await
+        .unwrap()
+        .expect("task exists");
+    let metadata: serde_json::Value =
+        serde_json::from_str(updated.metadata.as_deref().unwrap()).unwrap();
+    assert!(
+        metadata
+            .get("execution_setup_log")
+            .and_then(|value| value.as_array())
+            .is_some_and(|entries| !entries.is_empty()),
+        "blocking install failure should still persist setup log"
+    );
+    assert!(
+        metadata.get("execution_setup_warning").is_none(),
+        "block mode should not stamp warning metadata"
+    );
 }
 
 #[tokio::test]

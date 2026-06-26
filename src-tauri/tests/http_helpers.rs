@@ -2017,7 +2017,7 @@ async fn test_archived_proposal_not_counted() {
 // compute_validation_hint unit tests
 // ============================================================================
 
-use chrono::Utc;
+use chrono::{Duration, Utc};
 use ralphx_lib::domain::entities::ValidationCacheMetadata;
 
 fn make_validation_cache(
@@ -2039,7 +2039,8 @@ fn make_validation_cache(
 #[test]
 fn compute_validation_hint_sha_match_tests_passed_returns_skip_tests() {
     let cache = make_validation_cache("abc12345def67890", true, true);
-    let (hint, msg) = compute_validation_hint(&cache, "abc12345def67890");
+    let (hint, msg) =
+        compute_validation_hint(&cache, "abc12345def67890", Some(cache.captured_at));
     assert_eq!(hint, "skip_tests");
     assert!(msg.contains("Tests passed"), "hint_message should mention 'Tests passed', got: {}", msg);
     assert!(msg.contains("abc12345"), "hint_message should contain truncated SHA, got: {}", msg);
@@ -2048,7 +2049,8 @@ fn compute_validation_hint_sha_match_tests_passed_returns_skip_tests() {
 #[test]
 fn compute_validation_hint_sha_match_tests_ran_false_returns_skip_test_validation() {
     let cache = make_validation_cache("abc12345def67890", false, false);
-    let (hint, msg) = compute_validation_hint(&cache, "abc12345def67890");
+    let (hint, msg) =
+        compute_validation_hint(&cache, "abc12345def67890", Some(cache.captured_at));
     assert_eq!(hint, "skip_test_validation");
     assert!(msg.contains("No tests were run"), "hint_message should mention 'No tests were run', got: {}", msg);
     assert!(msg.contains("abc12345"), "hint_message should contain truncated SHA, got: {}", msg);
@@ -2057,7 +2059,7 @@ fn compute_validation_hint_sha_match_tests_ran_false_returns_skip_test_validatio
 #[test]
 fn compute_validation_hint_sha_mismatch_returns_run_tests() {
     let cache = make_validation_cache("abc12345def67890", true, true);
-    let (hint, msg) = compute_validation_hint(&cache, "differentsha12345");
+    let (hint, msg) = compute_validation_hint(&cache, "differentsha12345", Some(cache.captured_at));
     assert_eq!(hint, "run_tests");
     assert!(
         msg.contains("SHA changed") || msg.contains("Cache stale"),
@@ -2069,17 +2071,33 @@ fn compute_validation_hint_sha_mismatch_returns_run_tests() {
 #[test]
 fn compute_validation_hint_tests_failed_same_sha_returns_run_tests() {
     let cache = make_validation_cache("abc12345def67890", true, false);
-    let (hint, msg) = compute_validation_hint(&cache, "abc12345def67890");
+    let (hint, msg) =
+        compute_validation_hint(&cache, "abc12345def67890", Some(cache.captured_at));
     assert_eq!(hint, "run_tests");
     assert!(msg.contains("Tests failed"), "hint_message should mention 'Tests failed', got: {}", msg);
     assert!(msg.contains("abc12345"), "hint_message should contain truncated SHA, got: {}", msg);
 }
 
 #[test]
+fn compute_validation_hint_prior_episode_cache_returns_run_tests() {
+    let cache = make_validation_cache("abc12345def67890", true, true);
+    let next_episode = cache.captured_at + Duration::seconds(1);
+
+    let (hint, msg) = compute_validation_hint(&cache, "abc12345def67890", Some(next_episode));
+
+    assert_eq!(hint, "run_tests");
+    assert!(
+        msg.contains("current execution episode"),
+        "hint_message should mention stale episode, got: {}",
+        msg
+    );
+}
+
+#[test]
 fn compute_validation_hint_sha_mismatch_overrides_failed_tests() {
     // Even if tests passed, SHA mismatch always → run_tests
     let cache = make_validation_cache("aaaa1111bbbb2222", true, true);
-    let (hint, _) = compute_validation_hint(&cache, "cccc3333dddd4444");
+    let (hint, _) = compute_validation_hint(&cache, "cccc3333dddd4444", Some(cache.captured_at));
     assert_eq!(hint, "run_tests");
 }
 
@@ -2087,7 +2105,7 @@ fn compute_validation_hint_sha_mismatch_overrides_failed_tests() {
 fn compute_validation_hint_sha_mismatch_with_short_sha() {
     // Edge case: SHA shorter than 8 chars should not panic
     let cache = make_validation_cache("abc", true, true);
-    let (hint, msg) = compute_validation_hint(&cache, "def");
+    let (hint, msg) = compute_validation_hint(&cache, "def", Some(cache.captured_at));
     assert_eq!(hint, "run_tests");
     assert!(msg.contains("Cache stale") || msg.contains("SHA changed"), "got: {}", msg);
 }

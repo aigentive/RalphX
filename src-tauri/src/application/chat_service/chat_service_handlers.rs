@@ -13,6 +13,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
+use crate::application::git_service::GitService;
 use crate::application::question_state::QuestionState;
 use crate::application::runtime_factory::{
     build_task_scheduler_with_fallback, build_transition_service_with_fallback, RuntimeFactoryDeps,
@@ -28,7 +29,8 @@ use crate::domain::entities::{
     ChatConversationId, ChatMessageId, IdeationSessionId, InternalStatus, MergeFailureSource,
     MergeRecoveryEvent, MergeRecoveryEventKind, MergeRecoveryMetadata, MergeRecoveryReasonCode,
     MergeRecoverySource, MergeRecoveryState, ReviewNote, ReviewOutcome, ReviewerType,
-    SessionPurpose, TaskId, TaskStepStatus, VerificationGap, VerificationStatus,
+    SessionPurpose, Task, TaskId, TaskStepStatus, ValidationCacheMetadata, VerificationGap,
+    VerificationStatus,
 };
 use crate::domain::repositories::{
     ActivityEventRepository, AgentRunRepository, ArtifactRepository, ChatAttachmentRepository,
@@ -40,7 +42,7 @@ use crate::domain::repositories::{
 use crate::domain::services::{MessageQueue, QueueKey, QueuedMessage, RunningAgentRegistry};
 use crate::domain::state_machine::services::TaskScheduler;
 use crate::error::AppError;
-use crate::infrastructure::agents::claude::{ContentBlockItem, ToolCall};
+use crate::infrastructure::agents::claude::{stream_timeouts, ContentBlockItem, ToolCall};
 
 use super::chat_service_context;
 use super::chat_service_errors::{
@@ -51,6 +53,7 @@ use super::chat_service_types::{AgentErrorPayload, AgentRunCompletedPayload};
 use super::EventContextPayload;
 use crate::application::reconciliation::verification_handoff;
 use crate::application::reconciliation::verification_reconciliation::ReconcileVerificationChildCompletion;
+use crate::utils::path_safety::validate_absolute_non_root_path;
 use crate::utils::secret_redactor::redact;
 
 fn should_requeue_after_provider_pause(context_type: ChatContextType) -> bool {
@@ -205,6 +208,122 @@ pub(crate) async fn all_steps_completed(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StepCompletionState {
+    NoSteps,
+    AllComplete,
+    Incomplete,
+    Unknown,
+}
+
+pub(crate) async fn fetch_step_completion_state(
+    task_step_repo: &Option<Arc<dyn TaskStepRepository>>,
+    task_id: &TaskId,
+) -> StepCompletionState {
+    let Some(ref repo) = task_step_repo else {
+        return StepCompletionState::Unknown;
+    };
+    match repo.get_by_task(task_id).await {
+        Ok(steps) if steps.is_empty() => StepCompletionState::NoSteps,
+        Ok(steps)
+            if steps.iter().all(|s| {
+                s.status == TaskStepStatus::Completed || s.status == TaskStepStatus::Skipped
+            }) =>
+        {
+            StepCompletionState::AllComplete
+        }
+        Ok(_) => StepCompletionState::Incomplete,
+        Err(e) => {
+            tracing::warn!(
+                task_id = task_id.as_str(),
+                error = %e,
+                "Failed to query steps for completion-state check"
+            );
+            StepCompletionState::Unknown
+        }
+    }
+}
+
+/// Pure predicate: does a HEAD-matched validation cache prove the run's work is
+/// validated-complete?
+///
+/// Requires the cache's commit SHA to match current HEAD **and** tests to have
+/// actually run and passed. A cache with `tests_ran=false` (e.g. a self-blocked
+/// no-op that claimed success without running tests) deliberately does NOT count —
+/// this prevents rescuing a task that never did real work. No git calls, no side
+/// effects — fully unit-testable.
+pub(crate) fn validation_cache_proves_completion(
+    cache: &ValidationCacheMetadata,
+    current_head_sha: &str,
+) -> bool {
+    cache.commit_sha == current_head_sha && cache.tests_ran && cache.tests_passed
+}
+
+pub(crate) fn validation_cache_fresh_for_episode(
+    cache: &ValidationCacheMetadata,
+    current_head_sha: &str,
+    episode_entered_at: chrono::DateTime<chrono::Utc>,
+) -> bool {
+    validation_cache_proves_completion(cache, current_head_sha)
+        && cache.captured_at >= episode_entered_at
+}
+
+/// Async wrapper around [`validation_cache_proves_completion`]: parses the task's
+/// `validation_cache` metadata, resolves the worktree HEAD SHA, and reports whether
+/// the cache proves completion for the current commit.
+///
+/// Used to override a would-be `Failed` transition when `execution_complete` already
+/// captured a green, HEAD-matched validation cache — the case where a lingering
+/// terminal `failed` step (which cannot be cleared) would otherwise trap a fully
+/// validated task in `Failed` and drive an endless auto-retry loop.
+///
+/// Safe-fallback: returns false if there is no cache, no worktree path, or the HEAD
+/// SHA cannot be resolved.
+async fn validated_completion_override(
+    task: &Task,
+    episode_entered_at: chrono::DateTime<chrono::Utc>,
+) -> bool {
+    let cache = match ValidationCacheMetadata::from_task_metadata(task.metadata.as_deref()) {
+        Ok(Some(cache)) => cache,
+        Ok(None) => return false,
+        Err(e) => {
+            tracing::warn!(
+                task_id = task.id.as_str(),
+                error = %e,
+                "Failed to parse validation_cache for completion override"
+            );
+            return false;
+        }
+    };
+    let Some(worktree_path) = task.worktree_path.as_deref() else {
+        return false;
+    };
+    let safe_worktree_path =
+        match validate_absolute_non_root_path(Path::new(worktree_path), "task worktree") {
+            Ok(path) => path,
+            Err(e) => {
+                tracing::warn!(
+                    task_id = task.id.as_str(),
+                    error = %e,
+                    "Rejecting unsafe worktree path for completion override"
+                );
+                return false;
+            }
+        };
+    let current_head_sha = match GitService::get_head_sha(&safe_worktree_path).await {
+        Ok(sha) => sha,
+        Err(e) => {
+            tracing::warn!(
+                task_id = task.id.as_str(),
+                error = %e,
+                "Failed to resolve HEAD SHA for completion override"
+            );
+            return false;
+        }
+    };
+    validation_cache_fresh_for_episode(&cache, &current_head_sha, episode_entered_at)
+}
+
 /// Parse an ISO 8601 retry_after string and set the global provider rate limit gate
 /// on ExecutionState. Called from all agent error contexts (TaskExecution, Merge, Review)
 /// so a single rate limit detection blocks ALL subsequent spawns.
@@ -231,18 +350,6 @@ fn apply_global_rate_limit_backpressure(
     }
 }
 
-fn should_transition_task_execution_to_pending_review(
-    has_output: bool,
-    steps_tracked: bool,
-    all_steps_done: bool,
-) -> bool {
-    if steps_tracked {
-        all_steps_done
-    } else {
-        has_output
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExecutionCompletionAction {
     PendingReview,
@@ -250,15 +357,20 @@ enum ExecutionCompletionAction {
 }
 
 fn execution_completion_action(
-    has_output: bool,
-    steps_tracked: bool,
-    all_steps_done: bool,
+    _has_output: bool,
+    step_state: StepCompletionState,
+    completion_tool_called: bool,
+    validation_complete: bool,
 ) -> ExecutionCompletionAction {
-    if should_transition_task_execution_to_pending_review(has_output, steps_tracked, all_steps_done)
-    {
-        ExecutionCompletionAction::PendingReview
-    } else {
-        ExecutionCompletionAction::Failed
+    match step_state {
+        StepCompletionState::AllComplete => ExecutionCompletionAction::PendingReview,
+        StepCompletionState::NoSteps if completion_tool_called || validation_complete => {
+            ExecutionCompletionAction::PendingReview
+        }
+        StepCompletionState::Incomplete | StepCompletionState::Unknown if validation_complete => {
+            ExecutionCompletionAction::PendingReview
+        }
+        _ => ExecutionCompletionAction::Failed,
     }
 }
 
@@ -765,6 +877,8 @@ async fn finalize_assistant_message_with_terminal_tool_state<R: Runtime>(
 ///
 /// For TaskExecution context:
 /// - If all task steps are completed → transition to PendingReview
+/// - If no steps are tracked but output exists → transition to PendingReview
+/// - If a HEAD-matched green validation cache exists → transition to PendingReview
 /// - Otherwise → transition to Failed (text output alone is not sufficient)
 ///
 /// For Merge context:
@@ -808,6 +922,7 @@ pub(super) async fn handle_stream_success<R: Runtime>(
     context_type: ChatContextType,
     context_id: &str,
     has_output: bool,
+    completion_tool_called: bool,
     execution_slot_held: bool,
     execution_state: &Option<Arc<ExecutionState>>,
     task_repo: &Arc<dyn TaskRepository>,
@@ -853,21 +968,35 @@ pub(super) async fn handle_stream_success<R: Runtime>(
                         return;
                     }
 
-                    if !task_execution_attempt_matches_current_status(
+                    let attempt_resolution = resolve_current_execution_attempt(
                         &task_id,
                         agent_run_id,
                         task_repo,
                         agent_run_repo,
                     )
-                    .await
-                    {
-                        tracing::info!(
-                            task_id = task_id.as_str(),
-                            agent_run_id,
-                            "Skipping stale task-execution completion for an older attempt"
-                        );
-                        return;
-                    }
+                    .await;
+                    let (current_task_for_gate, episode_entered_at) = match attempt_resolution {
+                        AttemptResolution::Current {
+                            task,
+                            episode_entered_at,
+                        } => (*task, Some(episode_entered_at)),
+                        AttemptResolution::IdentityUnknown => {
+                            tracing::warn!(
+                                task_id = task_id.as_str(),
+                                agent_run_id,
+                                "Execution attempt identity unknown; disabling validation-cache rescue and using step-gated completion"
+                            );
+                            (task.clone(), None)
+                        }
+                        AttemptResolution::Stale => {
+                            tracing::info!(
+                                task_id = task_id.as_str(),
+                                agent_run_id,
+                                "Skipping stale task-execution completion for an older attempt"
+                            );
+                            return;
+                        }
+                    };
 
                     // Create scheduler for auto-scheduling next Ready task
                     let scheduler_svc = build_task_scheduler_service(
@@ -928,15 +1057,22 @@ pub(super) async fn handle_stream_success<R: Runtime>(
                     } else {
                         transition_service
                     };
-                    let all_steps_done = all_steps_completed(task_step_repo, &task_id).await;
+                    let step_state = fetch_step_completion_state(task_step_repo, &task_id).await;
+                    let validation_complete = if let Some(episode_entered_at) = episode_entered_at {
+                        validated_completion_override(&current_task_for_gate, episode_entered_at)
+                            .await
+                    } else {
+                        false
+                    };
                     let completion_action = execution_completion_action(
                         has_output,
-                        task_step_repo.is_some(),
-                        all_steps_done,
+                        step_state,
+                        completion_tool_called,
+                        validation_complete,
                     );
 
                     if completion_action == ExecutionCompletionAction::PendingReview
-                        && all_steps_done
+                        && step_state == StepCompletionState::AllComplete
                     {
                         tracing::info!(
                                 task_id = task_id.as_str(),
@@ -953,6 +1089,22 @@ pub(super) async fn handle_stream_success<R: Runtime>(
                             );
                         }
                     } else if completion_action == ExecutionCompletionAction::PendingReview {
+                        if validation_complete {
+                            tracing::info!(
+                                task_id = task_id.as_str(),
+                                "Worker run ended without all steps completed but a HEAD-matched green validation cache proves completion; transitioning to PendingReview"
+                            );
+                        } else if completion_tool_called {
+                            tracing::info!(
+                                task_id = task_id.as_str(),
+                                "Worker run called execution_complete with no tracked steps; transitioning to PendingReview"
+                            );
+                        } else {
+                            tracing::info!(
+                                task_id = task_id.as_str(),
+                                "Worker run reached completion gate; transitioning to PendingReview"
+                            );
+                        }
                         if let Err(e) = transition_service
                             .transition_task(&task_id, InternalStatus::PendingReview)
                             .await
@@ -964,20 +1116,24 @@ pub(super) async fn handle_stream_success<R: Runtime>(
                             );
                         }
                     } else {
-                        let Some(current_task) = load_current_task_execution_attempt(
+                        let current_task = match resolve_current_execution_attempt(
                             &task_id,
                             agent_run_id,
                             task_repo,
                             agent_run_repo,
                         )
                         .await
-                        else {
-                            tracing::info!(
-                                task_id = task_id.as_str(),
-                                agent_run_id,
-                                "Skipping stale incomplete execution finalizer; task is no longer in the same execution attempt"
-                            );
-                            return;
+                        {
+                            AttemptResolution::Current { task, .. } => *task,
+                            AttemptResolution::IdentityUnknown => current_task_for_gate.clone(),
+                            AttemptResolution::Stale => {
+                                tracing::info!(
+                                    task_id = task_id.as_str(),
+                                    agent_run_id,
+                                    "Skipping stale incomplete execution finalizer; task is no longer in the same execution attempt"
+                                );
+                                return;
+                            }
                         };
 
                         // Store last_agent_error for empty-output failure
@@ -987,9 +1143,11 @@ pub(super) async fn handle_stream_success<R: Runtime>(
                             .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
                             .unwrap_or_else(|| serde_json::json!({}));
                         if let Some(obj) = metadata_obj.as_object_mut() {
+                            let incomplete_message =
+                                "Agent ended without completing all task steps";
                             obj.insert(
                                 "last_agent_error".to_string(),
-                                serde_json::json!("Agent ended without completing all task steps"),
+                                serde_json::json!(incomplete_message),
                             );
                             obj.insert(
                                 "last_agent_error_context".to_string(),
@@ -999,6 +1157,32 @@ pub(super) async fn handle_stream_success<R: Runtime>(
                                 "last_agent_error_at".to_string(),
                                 serde_json::json!(chrono::Utc::now().to_rfc3339()),
                             );
+
+                            use crate::domain::entities::{
+                                ExecutionFailureSource, ExecutionRecoveryEvent,
+                                ExecutionRecoveryEventKind, ExecutionRecoveryMetadata,
+                                ExecutionRecoveryReasonCode, ExecutionRecoverySource,
+                                ExecutionRecoveryState,
+                            };
+                            let recovery_event = ExecutionRecoveryEvent::new(
+                                ExecutionRecoveryEventKind::Failed,
+                                ExecutionRecoverySource::System,
+                                ExecutionRecoveryReasonCode::IncompleteSteps,
+                                incomplete_message,
+                            )
+                            .with_failure_source(ExecutionFailureSource::AgentIncomplete);
+                            let mut recovery = ExecutionRecoveryMetadata::from_task_metadata(
+                                current_task.metadata.as_deref(),
+                            )
+                            .unwrap_or(None)
+                            .unwrap_or_default();
+                            recovery.append_event_with_state(
+                                recovery_event,
+                                ExecutionRecoveryState::Failed,
+                            );
+                            if let Ok(recovery_value) = serde_json::to_value(&recovery) {
+                                obj.insert("execution_recovery".to_string(), recovery_value);
+                            }
                         }
                         let updated_metadata =
                             serde_json::to_string(&metadata_obj).unwrap_or_default();
@@ -1295,86 +1479,127 @@ pub(super) async fn task_still_needs_execution_recovery(
     }
 }
 
+#[derive(Debug)]
+enum AttemptResolution {
+    Current {
+        task: Box<Task>,
+        episode_entered_at: chrono::DateTime<chrono::Utc>,
+    },
+    Stale,
+    IdentityUnknown,
+}
+
+fn execution_attempt_start_tolerance() -> chrono::Duration {
+    let secs = stream_timeouts().execution_attempt_start_tolerance_secs;
+    chrono::Duration::seconds(i64::try_from(secs).unwrap_or(i64::MAX))
+}
+
+async fn resolve_current_execution_attempt(
+    task_id: &TaskId,
+    agent_run_id: &str,
+    task_repo: &Arc<dyn TaskRepository>,
+    agent_run_repo: &Arc<dyn AgentRunRepository>,
+) -> AttemptResolution {
+    let task = match task_repo.get_by_id(task_id).await {
+        Ok(Some(task)) => task,
+        Ok(None) => return AttemptResolution::Stale,
+        Err(e) => {
+            tracing::warn!(
+                task_id = task_id.as_str(),
+                error = %e,
+                "Could not load task while resolving execution attempt"
+            );
+            return AttemptResolution::IdentityUnknown;
+        }
+    };
+
+    if !matches!(
+        task.internal_status,
+        InternalStatus::Executing | InternalStatus::ReExecuting
+    ) {
+        return AttemptResolution::Stale;
+    }
+
+    let status_entered_at = match task_repo
+        .get_status_last_entered_at(task_id, task.internal_status)
+        .await
+    {
+        Ok(Some(entered_at)) => entered_at,
+        Ok(None) => return AttemptResolution::IdentityUnknown,
+        Err(e) => {
+            tracing::warn!(
+                task_id = task_id.as_str(),
+                error = %e,
+                "Could not load latest execution status entry"
+            );
+            return AttemptResolution::IdentityUnknown;
+        }
+    };
+
+    let agent_run = match agent_run_repo
+        .get_by_id(&AgentRunId::from_string(agent_run_id))
+        .await
+    {
+        Ok(Some(run)) => run,
+        Ok(None) => return AttemptResolution::IdentityUnknown,
+        Err(e) => {
+            tracing::warn!(
+                task_id = task_id.as_str(),
+                agent_run_id,
+                error = %e,
+                "Could not load agent run while resolving execution attempt"
+            );
+            return AttemptResolution::IdentityUnknown;
+        }
+    };
+
+    if let Ok(Some(active_run)) = agent_run_repo
+        .get_active_for_conversation(&agent_run.conversation_id)
+        .await
+    {
+        if active_run.id != agent_run.id
+            && active_run.run_chain_id.is_some()
+            && agent_run.run_chain_id.is_some()
+            && active_run.run_chain_id != agent_run.run_chain_id
+        {
+            return AttemptResolution::Stale;
+        }
+    }
+
+    if agent_run.started_at + execution_attempt_start_tolerance() >= status_entered_at {
+        AttemptResolution::Current {
+            task: Box::new(task),
+            episode_entered_at: status_entered_at,
+        }
+    } else {
+        AttemptResolution::Stale
+    }
+}
+
+#[cfg(test)]
 async fn task_execution_attempt_matches_current_status(
     task_id: &TaskId,
     agent_run_id: &str,
     task_repo: &Arc<dyn TaskRepository>,
     agent_run_repo: &Arc<dyn AgentRunRepository>,
 ) -> bool {
-    let task = match task_repo.get_by_id(task_id).await {
-        Ok(Some(task)) => task,
-        Ok(None) => return false,
-        Err(_) => return true,
-    };
-
-    if !matches!(
-        task.internal_status,
-        InternalStatus::Executing | InternalStatus::ReExecuting
-    ) {
-        return false;
-    }
-
-    let Some(status_entered_at) = task_repo
-        .get_status_entered_at(task_id, task.internal_status)
-        .await
-        .ok()
-        .flatten()
-    else {
-        return true;
-    };
-
-    let Some(agent_run) = agent_run_repo
-        .get_by_id(&AgentRunId::from_string(agent_run_id))
-        .await
-        .ok()
-        .flatten()
-    else {
-        return true;
-    };
-
-    agent_run.started_at + chrono::Duration::seconds(1) >= status_entered_at
+    matches!(
+        resolve_current_execution_attempt(task_id, agent_run_id, task_repo, agent_run_repo).await,
+        AttemptResolution::Current { .. } | AttemptResolution::IdentityUnknown
+    )
 }
 
+#[cfg(test)]
 async fn load_current_task_execution_attempt(
     task_id: &TaskId,
     agent_run_id: &str,
     task_repo: &Arc<dyn TaskRepository>,
     agent_run_repo: &Arc<dyn AgentRunRepository>,
 ) -> Option<crate::domain::entities::Task> {
-    let task = match task_repo.get_by_id(task_id).await {
-        Ok(Some(task)) => task,
-        Ok(None) | Err(_) => return None,
-    };
-
-    if !matches!(
-        task.internal_status,
-        InternalStatus::Executing | InternalStatus::ReExecuting
-    ) {
-        return None;
-    }
-
-    let Some(status_entered_at) = task_repo
-        .get_status_entered_at(task_id, task.internal_status)
-        .await
-        .ok()
-        .flatten()
-    else {
-        return Some(task);
-    };
-
-    let Some(agent_run) = agent_run_repo
-        .get_by_id(&AgentRunId::from_string(agent_run_id))
-        .await
-        .ok()
-        .flatten()
-    else {
-        return Some(task);
-    };
-
-    if agent_run.started_at + chrono::Duration::seconds(1) >= status_entered_at {
-        Some(task)
-    } else {
-        None
+    match resolve_current_execution_attempt(task_id, agent_run_id, task_repo, agent_run_repo).await
+    {
+        AttemptResolution::Current { task, .. } => Some(*task),
+        AttemptResolution::Stale | AttemptResolution::IdentityUnknown => None,
     }
 }
 
@@ -1485,7 +1710,8 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                 agent_run_id,
                 context_type,
                 context_id,
-                true,  // effective_has_output: turns were finalized → agent produced output
+                true, // effective_has_output: turns were finalized → agent produced output
+                *completion_tool_called,
                 false, // execution_slot_held=false: re-increment happened above at line ~570
                 execution_state,
                 task_repo,
@@ -1566,6 +1792,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                 context_type,
                 context_id,
                 true, // effective_has_output: completion tool was called → agent produced output
+                true,
                 false, // execution_slot_held=false: no TurnComplete decrement to compensate
                 execution_state,
                 task_repo,
@@ -2154,36 +2381,34 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                         return false;
                     }
 
-                    if !task_execution_attempt_matches_current_status(
+                    let attempt_resolution = resolve_current_execution_attempt(
                         &task_id,
                         agent_run_id,
                         task_repo,
                         agent_run_repo,
                     )
-                    .await
-                    {
-                        tracing::info!(
-                            task_id = task_id.as_str(),
-                            agent_run_id,
-                            "Skipping stale task-execution failure for an older attempt"
-                        );
-                        return false;
-                    }
-
-                    let Some(current_task) = load_current_task_execution_attempt(
-                        &task_id,
-                        agent_run_id,
-                        task_repo,
-                        agent_run_repo,
-                    )
-                    .await
-                    else {
-                        tracing::info!(
-                            task_id = task_id.as_str(),
-                            agent_run_id,
-                            "Skipping stale task-execution failure; task is no longer in the same execution attempt"
-                        );
-                        return false;
+                    .await;
+                    let (current_task, episode_entered_at) = match attempt_resolution {
+                        AttemptResolution::Current {
+                            task,
+                            episode_entered_at,
+                        } => (*task, Some(episode_entered_at)),
+                        AttemptResolution::IdentityUnknown => {
+                            tracing::warn!(
+                                task_id = task_id.as_str(),
+                                agent_run_id,
+                                "Execution attempt identity unknown during error handling; disabling validation-cache rescue"
+                            );
+                            (task.clone(), None)
+                        }
+                        AttemptResolution::Stale => {
+                            tracing::info!(
+                                task_id = task_id.as_str(),
+                                agent_run_id,
+                                "Skipping stale task-execution failure for an older attempt"
+                            );
+                            return false;
+                        }
                     };
 
                     // Store last_agent_error in metadata (mirrors review pattern)
@@ -2371,17 +2596,30 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                         }
                     }
 
-                    // AgentExit with all steps completed → agent called execution_complete
-                    // successfully but exited with signal (code=None). Override to PendingReview.
+                    // AgentExit where the work is actually complete → agent called
+                    // execution_complete successfully but exited with signal (code=None).
+                    // Override to PendingReview when either all steps are completed OR a
+                    // HEAD-matched green validation cache proves completion (the latter rescues
+                    // a fully validated task that a lingering terminal `failed` step would
+                    // otherwise trap in Failed).
                     let target_status = if target_status == InternalStatus::Failed
                         && matches!(stream_error, Some(StreamError::AgentExit { .. }))
                     {
                         let all_steps_done = all_steps_completed(task_step_repo, &task_id).await;
+                        let validation_complete = if let Some(episode_entered_at) =
+                            episode_entered_at
+                        {
+                            validated_completion_override(&current_task, episode_entered_at).await
+                        } else {
+                            false
+                        };
 
-                        if all_steps_done {
+                        if all_steps_done || validation_complete {
                             tracing::info!(
                                 task_id = task_id.as_str(),
-                                "AgentExit with all steps completed — overriding Failed → PendingReview"
+                                all_steps_done,
+                                validation_complete,
+                                "AgentExit with completed work — overriding Failed → PendingReview"
                             );
                             InternalStatus::PendingReview
                         } else {

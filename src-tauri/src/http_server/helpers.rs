@@ -1421,7 +1421,7 @@ pub async fn get_task_context_impl(state: &AppState, task_id: &TaskId) -> AppRes
     }
 
     // 10. Compute validation cache hint (if cache present in metadata)
-    let validation_cache = compute_validation_cache(&task, &mut context_hints).await;
+    let validation_cache = compute_validation_cache(&task, state, &mut context_hints).await;
     let out_of_scope_blocker_fingerprint =
         compute_out_of_scope_blocker_fingerprint(&task.id, &out_of_scope_files);
     let followup_sessions = load_task_followup_sessions(state, &task).await?;
@@ -1562,6 +1562,7 @@ async fn resolve_task_context_base_branch(
 pub fn compute_validation_hint(
     cache: &ValidationCacheMetadata,
     current_sha: &str,
+    episode_entered_at: Option<chrono::DateTime<chrono::Utc>>,
 ) -> (String, String) {
     if current_sha != cache.commit_sha {
         (
@@ -1570,6 +1571,17 @@ pub fn compute_validation_hint(
                 "Cache stale (SHA changed from {} to {}). Run tests normally.",
                 &cache.commit_sha[..8.min(cache.commit_sha.len())],
                 &current_sha[..8.min(current_sha.len())]
+            ),
+        )
+    } else if episode_entered_at
+        .map(|entered_at| cache.captured_at < entered_at)
+        .unwrap_or(true)
+    {
+        (
+            "run_tests".to_string(),
+            format!(
+                "Cache was not captured during the current execution episode (commit {}). Run tests normally.",
+                &cache.commit_sha[..8.min(cache.commit_sha.len())]
             ),
         )
     } else if !cache.tests_ran {
@@ -1605,6 +1617,7 @@ pub fn compute_validation_hint(
 /// Also appends a human-readable hint to context_hints when cache is available.
 async fn compute_validation_cache(
     task: &crate::domain::entities::Task,
+    state: &AppState,
     context_hints: &mut Vec<String>,
 ) -> Option<ValidationCacheData> {
     // Parse cache from metadata
@@ -1636,8 +1649,11 @@ async fn compute_validation_cache(
         }
     };
 
-    // Compute hint based on SHA comparison and test results
-    let (validation_hint, hint_message) = compute_validation_hint(&cache, &current_sha);
+    let episode_entered_at = latest_execution_episode_entered_at(state, &task.id).await;
+
+    // Compute hint based on SHA comparison, episode freshness, and test results.
+    let (validation_hint, hint_message) =
+        compute_validation_hint(&cache, &current_sha, episode_entered_at);
 
     context_hints.push(format!(
         "VALIDATION CACHE: {} — {}",
@@ -1653,6 +1669,25 @@ async fn compute_validation_cache(
         validation_hint,
         hint_message,
     })
+}
+
+async fn latest_execution_episode_entered_at(
+    state: &AppState,
+    task_id: &TaskId,
+) -> Option<chrono::DateTime<chrono::Utc>> {
+    let executing = state
+        .task_repo
+        .get_status_last_entered_at(task_id, InternalStatus::Executing)
+        .await
+        .ok()
+        .flatten();
+    let re_executing = state
+        .task_repo
+        .get_status_last_entered_at(task_id, InternalStatus::ReExecuting)
+        .await
+        .ok()
+        .flatten();
+    executing.into_iter().chain(re_executing).max()
 }
 
 #[cfg(test)]
