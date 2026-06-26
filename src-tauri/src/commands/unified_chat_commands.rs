@@ -86,6 +86,7 @@ use crate::application::publish_resilience::{
     remote_tracking_ref_for_publish, review_base_for_publish, PublishBranchFreshnessOutcome,
     PublishBranchFreshnessStatus, PublishFailureClass,
 };
+use crate::application::session_namer_agent::{spawn_session_namer_agent, SessionNamerTarget};
 use crate::application::services::pr_merge_poller::sync_agent_workspace_auto_merge_preference_for_workspace;
 use crate::application::{AppChatService, AppState, ChatService, ChatServiceError, SendResult};
 use crate::commands::agent_model_commands::load_agent_model_registry;
@@ -3151,6 +3152,8 @@ async fn fork_terminal_agent_conversation_for_send<R: Runtime>(
     state: &AppState,
     app: &tauri::AppHandle<R>,
     conversation_id: Option<&ChatConversationId>,
+    new_user_message: &str,
+    requested_harness: Option<AgentHarnessKind>,
 ) -> Result<Option<ChatConversationId>, String> {
     let Some(parent_conversation_id) = conversation_id else {
         return Ok(None);
@@ -3173,9 +3176,54 @@ async fn fork_terminal_agent_conversation_for_send<R: Runtime>(
     let response = fork_agent_conversation_response_for_state(state, result).await?;
     emit_agent_conversation_fork_events(app, &response);
     invalidate_agent_workspace_pr_description_cache(parent_conversation_id);
-    let child_conversation_id = ChatConversationId::from_string(response.conversation.id.clone());
+    let child_conversation_id =
+        ChatConversationId::from_string(response.conversation.id.clone());
     invalidate_agent_workspace_pr_description_cache(&child_conversation_id);
+    spawn_session_namer_for_continuity_fork(
+        state,
+        &child_conversation_id,
+        new_user_message,
+        requested_harness,
+    )
+    .await;
     Ok(Some(child_conversation_id))
+}
+
+async fn spawn_session_namer_for_continuity_fork(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    new_user_message: &str,
+    requested_harness: Option<AgentHarnessKind>,
+) {
+    let new_user_message = new_user_message.trim();
+    if new_user_message.is_empty() {
+        return;
+    }
+
+    let target = match SessionNamerTarget::from_initial_request(
+        None,
+        Some(conversation_id.as_str().to_string()),
+        new_user_message.to_string(),
+        requested_harness,
+    ) {
+        Ok(target) => target,
+        Err(error) => {
+            tracing::warn!(
+                conversation_id = %conversation_id,
+                error,
+                "Failed to build continuity fork session namer target"
+            );
+            return;
+        }
+    };
+
+    if let Err(error) = spawn_session_namer_agent(state, target).await {
+        tracing::warn!(
+            conversation_id = %conversation_id,
+            error = %error,
+            "Failed to spawn continuity fork session namer"
+        );
+    }
 }
 
 #[tauri::command]
@@ -3313,6 +3361,8 @@ pub async fn send_agent_message(
             state.inner(),
             &app,
             parent_conversation_id.as_ref(),
+            &input.content,
+            harness_override,
         )
         .await?
         {
@@ -8662,6 +8712,7 @@ mod tests {
         RunningAgentRegistry,
     };
     use crate::error::AppError;
+    use crate::infrastructure::{MockAgenticClient, MockCallType};
     use crate::tests::mock_github_service::MockGithubService;
     use async_trait::async_trait;
     use futures::{stream, Stream};
@@ -13164,7 +13215,7 @@ mod tests {
             .build(mock_context(noop_assets()))
             .expect("mock app should build");
         assert!(
-            fork_terminal_agent_conversation_for_send(&state, app.handle(), None)
+            fork_terminal_agent_conversation_for_send(&state, app.handle(), None, "", None)
                 .await
                 .expect("missing conversation id should be ignored")
                 .is_none()
@@ -13189,7 +13240,9 @@ mod tests {
         assert!(fork_terminal_agent_conversation_for_send(
             &state,
             app.handle(),
-            Some(&conversation.id)
+            Some(&conversation.id),
+            "",
+            None
         )
         .await
         .expect("missing workspace should be ignored")
@@ -13215,7 +13268,9 @@ mod tests {
         assert!(fork_terminal_agent_conversation_for_send(
             &state,
             app.handle(),
-            Some(&conversation.id)
+            Some(&conversation.id),
+            "",
+            None
         )
         .await
         .expect("non-terminal workspace should be ignored")
@@ -13263,11 +13318,16 @@ mod tests {
             .await
             .expect("workspace should be created");
 
-        let child_id =
-            fork_terminal_agent_conversation_for_send(&state, app.handle(), Some(&parent.id))
-                .await
-                .expect("terminal workspace should fork")
-                .expect("forked conversation id should be returned");
+        let child_id = fork_terminal_agent_conversation_for_send(
+            &state,
+            app.handle(),
+            Some(&parent.id),
+            "",
+            None,
+        )
+        .await
+        .expect("terminal workspace should fork")
+        .expect("forked conversation id should be returned");
         let child = state
             .chat_conversation_repo
             .get_by_id(&child_id)
@@ -13286,6 +13346,99 @@ mod tests {
             .await
             .expect("workspace lookup should succeed")
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn fork_terminal_agent_conversation_for_send_spawns_session_namer_with_new_message() {
+        let concrete_client = Arc::new(MockAgenticClient::new());
+        let agent_client: Arc<dyn AgenticClient> = concrete_client.clone();
+        let state = AppState::new_test().with_agent_client(agent_client);
+        let app = mock_builder()
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+        let project_id = ProjectId::from_string("project-terminal-fork-namer".to_string());
+        let mut project = Project::new(
+            "Terminal Fork Namer".to_string(),
+            "/tmp/terminal-fork-namer".to_string(),
+        );
+        project.id = project_id.clone();
+        state
+            .project_repo
+            .create(project)
+            .await
+            .expect("project should be created");
+        let mut parent = ChatConversation::new_project(project_id.clone());
+        parent.set_title("Stabilize publication recovery");
+        let parent = state
+            .chat_conversation_repo
+            .create(parent)
+            .await
+            .expect("parent conversation should be created");
+        let mut prior_message = ChatMessage::user_in_project(
+            project_id.clone(),
+            "The merged workspace still reopens with stale publication state.",
+        );
+        prior_message.conversation_id = Some(parent.id.clone());
+        state
+            .chat_message_repo
+            .create(prior_message)
+            .await
+            .expect("prior message should be created");
+
+        let mut workspace = AgentConversationWorkspace::new(
+            parent.id.clone(),
+            project_id,
+            AgentConversationWorkspaceMode::Chat,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main".to_string(),
+            Some("Project default (main)".to_string()),
+            Some("base-sha".to_string()),
+            "ralphx/test/terminal-namer".to_string(),
+            "/tmp/terminal-namer".to_string(),
+        );
+        workspace.publication_pr_status = Some("merged".to_string());
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace should be created");
+
+        let child_id = fork_terminal_agent_conversation_for_send(
+            &state,
+            app.handle(),
+            Some(&parent.id),
+            "Please continue the closed run and fix the title fallback.",
+            None,
+        )
+        .await
+        .expect("terminal workspace should fork")
+        .expect("forked conversation id should be returned");
+
+        for _ in 0..20 {
+            if !concrete_client.get_spawn_calls().await.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let spawn_calls = concrete_client.get_spawn_calls().await;
+        let prompt = spawn_calls
+            .iter()
+            .find_map(|call| match &call.call_type {
+                MockCallType::Spawn { prompt, .. } => Some(prompt.as_str()),
+                _ => None,
+            })
+            .expect("session namer should be spawned");
+
+        assert!(prompt.contains(&format!(
+            "<conversation_id>{}</conversation_id>",
+            child_id.as_str()
+        )));
+        assert!(prompt.contains(
+            "<user_message>Please continue the closed run and fix the title fallback.</user_message>"
+        ));
+        assert!(prompt.contains(
+            "<content>The merged workspace still reopens with stale publication state.</content>"
+        ));
     }
 
     #[tokio::test]
