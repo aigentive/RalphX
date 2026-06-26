@@ -1772,11 +1772,26 @@ async fn agent_workspace_pr_autofix_repair_in_flight(
     if matches!(
         workspace.publication_push_status.as_deref(),
         Some("needs_agent")
-    ) || matches!(
+    ) {
+        return Ok(true);
+    }
+
+    if matches!(
         workspace.pr_supervision_status.as_deref(),
         Some("fixing" | "publishing")
     ) {
-        return Ok(true);
+        if workspace.publication_push_status.as_deref() != Some("pushed") {
+            return Ok(true);
+        }
+
+        let Some(agent_run_repo) = agent_run_repo else {
+            return Ok(true);
+        };
+
+        return Ok(agent_run_repo
+            .get_active_for_conversation(&workspace.conversation_id)
+            .await?
+            .is_some());
     }
 
     let Some(agent_run_repo) = agent_run_repo else {

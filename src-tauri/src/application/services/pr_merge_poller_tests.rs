@@ -2218,6 +2218,69 @@ async fn supervised_agent_workspace_pr_autofix_skips_when_supervision_status_is_
 }
 
 #[tokio::test]
+async fn supervised_agent_workspace_pr_autofix_routes_when_pushed_repair_status_is_stale() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let mut workspace = supervised_workspace(
+        "autofix-stale-fixing-conversation",
+        "project-stale-fixing",
+        worktree.path(),
+    );
+    workspace.pr_supervision_status = Some("fixing".to_string());
+    workspace.pr_supervision_summary = Some("Previous PR repair is in progress.".to_string());
+    let conversation_id = workspace.conversation_id.clone();
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+
+    let agent_run_repo: Arc<dyn AgentRunRepository> = Arc::new(MemoryAgentRunRepository::new());
+    let mut health = open_pr_health("stale-fixing-head");
+    health.checks.push(PrHealthCheck {
+        name: "Frontend Visual Tests".to_string(),
+        status: Some("completed".to_string()),
+        conclusion: Some("failure".to_string()),
+        details_url: Some("https://github.com/owner/repo/actions/runs/2".to_string()),
+    });
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(health));
+    let chat = Arc::new(MockChatService::new());
+
+    let routed = super::route_agent_workspace_pr_autofix_if_needed(
+        github as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        101,
+        &conversation_id,
+        Arc::clone(&workspace_repo),
+        Some(agent_run_repo),
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect("stale repair status should not suppress routing");
+
+    assert!(routed);
+    let messages = chat.get_sent_messages().await;
+    assert_eq!(messages.len(), 1);
+    assert!(messages[0].contains("Frontend Visual Tests (failure)"));
+    let updated = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should exist");
+    assert_eq!(
+        updated.publication_push_status.as_deref(),
+        Some("needs_agent")
+    );
+    assert_eq!(updated.pr_supervision_status.as_deref(), Some("fixing"));
+    assert!(updated
+        .pr_supervision_summary
+        .as_deref()
+        .unwrap_or_default()
+        .contains("failing check"));
+}
+
+#[tokio::test]
 async fn supervised_agent_workspace_pr_autofix_marks_healthy_pr_monitoring() {
     let worktree = tempfile::tempdir().expect("worktree path");
     let mut workspace = supervised_workspace(
