@@ -264,6 +264,31 @@ describe("AgentsPublishDiffFilter", () => {
       );
     });
 
+    it("shows conflicted count in popover options when available", async () => {
+      const user = userEvent.setup();
+      render(
+        withProviders(
+          <AgentsPublishDiffFilter
+            mode="conflicted"
+            workspaceChangeCount={6}
+            conflictedCount={2}
+            stagedCount={1}
+            unstagedCount={3}
+            commits={[]}
+            onModeChange={onModeChange}
+          />,
+        ),
+      );
+
+      expect(screen.getByTestId("diff-filter-trigger")).toHaveTextContent(
+        "Conflicted (2 files)",
+      );
+      await user.click(screen.getByTestId("diff-filter-trigger"));
+      expect(screen.getByTestId("diff-filter-option-conflicted")).toHaveTextContent(
+        "Conflicted (2 files)",
+      );
+    });
+
     it("shows All commits radio option in popover", async () => {
       const user = userEvent.setup();
       render(

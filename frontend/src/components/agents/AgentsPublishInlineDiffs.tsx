@@ -40,7 +40,7 @@ import { cn } from "@/lib/utils";
 import { AgentsPublishDiffFilter } from "./AgentsPublishDiffFilter";
 import type { DiffFilterMode } from "./AgentsPublishDiffFilter";
 import { AgentsPublishFileDiff } from "./AgentsPublishFileDiff";
-import type { DiffState } from "./AgentsPublishFileDiff";
+import type { ConflictDiffState, DiffState } from "./AgentsPublishFileDiff";
 import { isLargeInlineDiff } from "./inlineDiffGuards";
 import {
   AGENT_WORKSPACE_STALE_MS,
@@ -77,6 +77,12 @@ function getEmptyDiffStateCopy(
     return {
       title: "No unstaged files",
       detail: "No unstaged changes detected in this workspace.",
+    };
+  }
+  if (mode === "conflicted") {
+    return {
+      title: "No conflicted files",
+      detail: "No merge conflicts detected in this workspace.",
     };
   }
   if (mode === "staged") {
@@ -140,6 +146,8 @@ function findFirstRenderedAnnotationRow(
 interface AgentsPublishVirtualFileRowProps {
   file: FileChange;
   diff: DiffState;
+  conflictDiff?: ConflictDiffState | undefined;
+  isConflictMode: boolean;
   isExpanded: boolean;
   onTogglePath: (path: string) => void;
   onCopyPath: (path: string) => void;
@@ -157,6 +165,8 @@ interface AgentsPublishVirtualFileRowProps {
 const AgentsPublishVirtualFileRow = memo(function AgentsPublishVirtualFileRow({
   file,
   diff,
+  conflictDiff,
+  isConflictMode,
   isExpanded,
   onTogglePath,
   onCopyPath,
@@ -182,6 +192,8 @@ const AgentsPublishVirtualFileRow = memo(function AgentsPublishVirtualFileRow({
     <AgentsPublishFileDiff
       file={file}
       diff={diff}
+      conflictDiff={conflictDiff}
+      isConflictMode={isConflictMode}
       isExpanded={isExpanded}
       onToggle={handleToggle}
       onCopyPath={onCopyPath}
@@ -235,9 +247,11 @@ export function AgentsPublishInlineDiffs({
   const autoScrolledAnnotationKeyRef = useRef<string | null>(null);
   const {
     commitSha,
+    conflictedCount,
     currentFiles,
     currentFilesError,
     effectiveMode,
+    isConflictedMode,
     isCommitMode,
     isCurrentFilesLoading,
     isCumulativeMode,
@@ -262,7 +276,8 @@ export function AgentsPublishInlineDiffs({
     review?.headRef.startsWith(PATCH_BACKED_HEAD_REF_PREFIX) === true
       ? undefined
       : refKind;
-  const canRenderPrAnnotations = refKind.kind === "head" || refKind.kind === "cumulative_head";
+  const canRenderPrAnnotations =
+    !isConflictedMode && (refKind.kind === "head" || refKind.kind === "cumulative_head");
   const annotationsByPath = useMemo(() => {
     const map = new Map<string, PrDiffAnnotation[]>();
     if (!canRenderPrAnnotations) {
@@ -417,9 +432,13 @@ export function AgentsPublishInlineDiffs({
 
   // ── Workspace-change diffs ─────────────────────────────────────────────
   const uncommittedDiffQueries = useQueries({
-    queries: (!isCommitMode && !isStagedMode && !isUnstagedMode && !isCumulativeMode
-      ? fetchableFiles
-      : []
+    queries: (!isCommitMode &&
+      !isConflictedMode &&
+      !isStagedMode &&
+      !isUnstagedMode &&
+      !isCumulativeMode
+        ? fetchableFiles
+        : []
     ).map((file) => ({
       queryKey: [...agentWorkspaceKeys.diff(conversationId), "uncommitted", file.path],
       queryFn: () => diffApi.getAgentConversationWorkspaceFileDiff(conversationId, file.path),
@@ -487,6 +506,23 @@ export function AgentsPublishInlineDiffs({
     })),
   });
 
+  // ── Conflict diffs ─────────────────────────────────────────────────────
+  const conflictDiffQueries = useQueries({
+    queries: (repairMode && isConflictedMode ? fetchableFiles : []).map((file) => ({
+      queryKey: [
+        ...agentWorkspaceKeys.diff(conversationId),
+        "repair-conflicted",
+        file.path,
+      ],
+      queryFn: () =>
+        diffApi.getAgentConversationWorkspaceRepairConflictFileDiff(
+          conversationId,
+          file.path,
+        ),
+      staleTime: AGENT_WORKSPACE_STALE_MS,
+    })),
+  });
+
   // ── Cumulative diffs ──────────────────────────────────────────────────
   const cumulativeDiffQueries = useQueries({
     queries: (isCumulativeMode ? fetchableFiles : []).map((file) => ({
@@ -533,6 +569,25 @@ export function AgentsPublishInlineDiffs({
     cumulativeDiffQueries,
     fetchableFiles,
   ]);
+
+  const conflictDiffByPath = useMemo(() => {
+    const map = new Map<string, ConflictDiffState>();
+    if (!isConflictedMode) {
+      return map;
+    }
+    fetchableFiles.forEach((file, idx) => {
+      const q = conflictDiffQueries[idx];
+      if (!q) return;
+      if (q.isPending) {
+        map.set(file.path, "loading");
+      } else if (q.isError) {
+        map.set(file.path, "error");
+      } else if (q.data !== undefined) {
+        map.set(file.path, q.data);
+      }
+    });
+    return map;
+  }, [conflictDiffQueries, fetchableFiles, isConflictedMode]);
 
   // ── Jump-to-file filtered list ────────────────────────────────────────
   const filteredJumpFiles = useMemo(() => {
@@ -687,6 +742,8 @@ export function AgentsPublishInlineDiffs({
         <AgentsPublishVirtualFileRow
           file={fileChange}
           diff={diffByPath.get(fileChange.path)}
+          conflictDiff={conflictDiffByPath.get(fileChange.path)}
+          isConflictMode={isConflictedMode}
           isExpanded={!effectiveCollapsedPaths.has(fileChange.path)}
           onTogglePath={handleToggle}
           onCopyPath={handleCopyPath}
@@ -706,6 +763,7 @@ export function AgentsPublishInlineDiffs({
       annotationsByPath,
       conversationId,
       currentFiles.length,
+      conflictDiffByPath,
       diffByPath,
       effectiveCollapsedPaths,
       handleCopyPath,
@@ -713,6 +771,7 @@ export function AgentsPublishInlineDiffs({
       handleShowAnyway,
       handleToggle,
       hydratedPaths,
+      isConflictedMode,
       focusTargetPath,
       refKind,
       rangeRefKind,
@@ -817,6 +876,7 @@ export function AgentsPublishInlineDiffs({
           mode={effectiveMode}
           workspaceChangeCount={workspaceChangeCount}
           {...(workspaceChangeLabel !== undefined && { workspaceChangeLabel })}
+          {...(conflictedCount !== undefined && { conflictedCount })}
           {...(stagedCount !== undefined && { stagedCount })}
           {...(unstagedCount !== undefined && { unstagedCount })}
           commits={commits}
