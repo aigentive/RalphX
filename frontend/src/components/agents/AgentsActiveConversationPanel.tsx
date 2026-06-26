@@ -6,6 +6,7 @@ import {
   Lightbulb,
   Loader2,
   MessageSquare,
+  PanelRightOpen,
   Play,
   ShieldCheck,
   type LucideIcon,
@@ -75,6 +76,7 @@ import { useAgentConversationRuntimeStatus } from "./useAgentConversationRuntime
 import { AgentsComposerWorkspaceChangesCard } from "./AgentsComposerWorkspaceChangesCard";
 import { AgentsChatHeaderController } from "./AgentsChatHeaderController";
 import { AgentWorkspaceFileLinkProvider } from "./AgentWorkspaceFileLinkProvider";
+import { useResolvedAgentArtifactState } from "./agentArtifactState";
 import { AGENT_CONVERSATION_MODE_OPTIONS } from "./agentConversationMode";
 import type { DiffFilterMode } from "./AgentsPublishDiffFilter";
 import {
@@ -488,6 +490,7 @@ interface AgentsActiveConversationPanelProps {
   onForkConversation: (
     conversationId: string
   ) => Promise<ForkAgentConversationResult>;
+  onOpenPlanArtifact: () => void;
   onOpenPublishPane: () => void;
   onOpenPublishFile: (filePath: string, mode: DiffFilterMode) => void;
   onPreloadArtifacts: () => void;
@@ -532,6 +535,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   onFocusTaskRuntime,
   onOpenTaskArtifact,
   onForkConversation,
+  onOpenPlanArtifact,
   onOpenPublishPane,
   onOpenPublishFile,
   onPreloadArtifacts,
@@ -678,6 +682,12 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   const focusedPanelKey = taskRuntimeFocus
     ? `${taskRuntimeFocus.contextType}:${taskRuntimeFocus.taskId}`
     : focusedChatSessionId ?? "workspace";
+  const { artifactState } = useResolvedAgentArtifactState(
+    selectedConversationId,
+    hasAutoOpenArtifacts,
+  );
+  const isPlanArtifactVisible =
+    artifactState.isOpen && artifactState.activeTab === "plan";
   const isFocusedChildChat = chatFocus.type !== "workspace";
   const runtimeStatusQuery = useAgentConversationRuntimeStatus(selectedConversationId, {
     enabled: activeConversation.contextType === "project",
@@ -1406,7 +1416,20 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     }
 
     if (canApproveComposerPlan) {
+      const viewPlanAction: PlanComposerCtaAction | null =
+        !isPlanArtifactVisible && availableArtifactTabs.includes("plan")
+          ? {
+              id: "view-plan",
+              label: "View Plan",
+              icon: PanelRightOpen,
+              isPrimary: false,
+              isPending: false,
+              disabled: false,
+              onClick: onOpenPlanArtifact,
+            }
+          : null;
       return [
+        viewPlanAction,
         {
           id: "approve",
           label: "Approve Plan",
@@ -1418,7 +1441,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
             void handleApprovePlanFromQuestion();
           },
         },
-      ];
+      ].filter((action): action is PlanComposerCtaAction => action !== null);
     }
 
     if (!isPlanApproved) {
@@ -1495,6 +1518,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     canImplementPlanDirectly,
     canVerifyComposerPlan,
     activeWorkspaceFreshness?.hasUncommittedChanges,
+    availableArtifactTabs,
     handleApprovePlanFromQuestion,
     handleCreatePlanProposals,
     handleImplementPlanDirectly,
@@ -1502,9 +1526,11 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     isApprovingPlan,
     isCreatingPlanProposals,
     isImplementingPlanDirectly,
+    isPlanArtifactVisible,
     isPlanApproved,
     isPlanRecommendationPending,
     isStartingPlanVerification,
+    onOpenPlanArtifact,
     planApprovalArtifact,
     planApprovalSessionId,
     planComplexityQuery.data?.recommendedAction,

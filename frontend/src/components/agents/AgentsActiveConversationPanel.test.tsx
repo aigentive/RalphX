@@ -12,9 +12,11 @@ import {
   type ForkAgentConversationResult,
 } from "@/api/chat";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { useAgentSessionStore } from "@/stores/agentSessionStore";
 
 import type { AgentConversation } from "./agentConversations";
 import { AgentsActiveConversationPanel } from "./AgentsActiveConversationPanel";
+import { useAgentArtifactUiStore } from "./agentArtifactUiStore";
 
 const {
   getSessionPlanMock,
@@ -683,6 +685,7 @@ function renderPanel(
     onOpenTaskArtifact: vi.fn(),
     onForkConversation: vi.fn().mockResolvedValue(forkResult()),
     onOpenPublishPane: vi.fn(),
+    onOpenPlanArtifact: vi.fn(),
     onOpenPublishFile: vi.fn(),
     onPreloadArtifacts: vi.fn(),
     onPublishWorkspace: vi.fn(),
@@ -714,6 +717,8 @@ describe("AgentsActiveConversationPanel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     eventSubscribers.clear();
+    useAgentSessionStore.setState({ artifactByConversationId: {} });
+    useAgentArtifactUiStore.setState({ artifactByConversationId: {} });
     composerQuestionModeRef.current = undefined;
     composerAgentStatusRef.current = "idle";
     getSessionPlanMock.mockResolvedValue(null);
@@ -1190,6 +1195,76 @@ describe("AgentsActiveConversationPanel", () => {
         artifactId: "artifact-1",
       }),
     );
+  });
+
+  it("shows View Plan before Approve Plan when the plan tab is not visible", async () => {
+    const user = userEvent.setup();
+    const onOpenPlanArtifact = vi.fn();
+    getSessionPlanMock.mockResolvedValue(planArtifact("draft"));
+    approvePlanArtifactMock.mockResolvedValue(planArtifact("approved"));
+    useAgentArtifactUiStore.getState().setArtifactState("conversation-1", {
+      isOpen: false,
+      activeTab: "tasks",
+      taskMode: "graph",
+    });
+
+    renderPanel({
+      activeConversation: { ...projectConversation(), agentMode: "plan" },
+      activeConversationMode: "plan",
+      activeWorkspace: {
+        ...workspace(),
+        mode: "plan",
+        linkedIdeationSessionId: "planning-session-1",
+      },
+      attachedIdeationSessionId: "planning-session-1",
+      availableArtifactTabs: ["plan"],
+      onOpenPlanArtifact,
+    });
+
+    const actionGroup = within(
+      await screen.findByTestId("agents-plan-composer-cta-actions"),
+    );
+    const actionButtons = actionGroup.getAllByRole("button");
+    const viewPlanButton = actionButtons[0];
+    const approvePlanButton = actionButtons[1];
+    expect(viewPlanButton).toBeDefined();
+    expect(approvePlanButton).toBeDefined();
+    expect(viewPlanButton!).toHaveTextContent("View Plan");
+    expect(approvePlanButton!).toHaveTextContent("Approve Plan");
+
+    await user.click(viewPlanButton!);
+
+    expect(onOpenPlanArtifact).toHaveBeenCalledTimes(1);
+    expect(approvePlanArtifactMock).not.toHaveBeenCalled();
+  });
+
+  it("hides View Plan when the plan tab is already visible", async () => {
+    getSessionPlanMock.mockResolvedValue(planArtifact("draft"));
+    useAgentArtifactUiStore.getState().setArtifactState("conversation-1", {
+      isOpen: true,
+      activeTab: "plan",
+      taskMode: "graph",
+    });
+
+    renderPanel({
+      activeConversation: { ...projectConversation(), agentMode: "plan" },
+      activeConversationMode: "plan",
+      activeWorkspace: {
+        ...workspace(),
+        mode: "plan",
+        linkedIdeationSessionId: "planning-session-1",
+      },
+      attachedIdeationSessionId: "planning-session-1",
+      availableArtifactTabs: ["plan"],
+    });
+
+    const row = await screen.findByTestId("agents-plan-composer-cta-row");
+    expect(
+      within(row).queryByRole("button", { name: /View Plan/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(row).getByRole("button", { name: /Approve Plan/i }),
+    ).toBeInTheDocument();
   });
 
   it("emphasizes Create Proposals in the composer CTA row when complexity recommends it", async () => {

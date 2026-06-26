@@ -537,6 +537,12 @@ export function useAgentsViewController({
     hasAutoOpenArtifacts: hasAutoOpenArtifactsWithReview,
     selectedConversationId,
   });
+  const handleOpenPlanArtifact = useCallback(() => {
+    if (!selectedConversationId) {
+      return;
+    }
+    openArtifactTab(selectedConversationId, "plan");
+  }, [openArtifactTab, selectedConversationId]);
   const handleOpenTaskArtifact = useCallback(
     (taskId: string) => {
       if (!selectedConversationId) {
@@ -929,6 +935,7 @@ export function useAgentsViewController({
       onFocusTaskRuntime: handleFocusTaskRuntime,
       onOpenTaskArtifact: handleOpenTaskArtifact,
       onForkConversation: handleForkConversation,
+      onOpenPlanArtifact: handleOpenPlanArtifact,
       onOpenPublishPane: handleOpenPublishPane,
       onOpenPublishFile: handleOpenPublishFile,
       onPreloadArtifacts: handlePreloadArtifacts,
