@@ -317,7 +317,9 @@ async fn test_pr_mode_marks_concurrently_created_pr_ready_after_guard_clears() {
         None,
         Arc::clone(&plan_branch_repo) as Arc<dyn PlanBranchRepository>,
     ));
-    registry.pr_creation_guard.insert(plan_branch_id.clone(), ());
+    registry
+        .pr_creation_guard
+        .insert(plan_branch_id.clone(), ());
 
     let repo_for_concurrent = Arc::clone(&plan_branch_repo);
     let guard_for_concurrent = Arc::clone(&registry.pr_creation_guard);
@@ -1184,6 +1186,105 @@ async fn test_regular_plan_task_completion_pushes_existing_pr_after_local_merge(
 }
 
 #[tokio::test]
+async fn test_regular_plan_task_completion_updates_existing_pr_as_draft_when_plan_open() {
+    let task_repo = Arc::new(MemoryTaskRepository::new());
+    let project_repo = Arc::new(MemoryProjectRepository::new());
+    let plan_branch_repo = Arc::new(MemoryPlanBranchRepository::new());
+
+    setup_project(&project_repo).await;
+    let project = project_repo
+        .get_by_id(&ProjectId::from_string("proj-1".to_string()))
+        .await
+        .unwrap()
+        .unwrap();
+
+    let mut task = Task::new(
+        ProjectId::from_string("proj-1".to_string()),
+        "Merged follow-up while plan remains open".to_string(),
+    );
+    task.id = TaskId::from_string("task-programmatic-plan-pr-draft".to_string());
+    task.internal_status = InternalStatus::Merged;
+    task.category = TaskCategory::Regular;
+    task.ideation_session_id = Some(IdeationSessionId::from_string("sess-1".to_string()));
+    task_repo.create(task.clone()).await.unwrap();
+
+    let mut open_sibling = Task::new(
+        ProjectId::from_string("proj-1".to_string()),
+        "Still executing sibling".to_string(),
+    );
+    open_sibling.id = TaskId::from_string("task-programmatic-plan-open-sibling".to_string());
+    open_sibling.internal_status = InternalStatus::Executing;
+    open_sibling.category = TaskCategory::Regular;
+    open_sibling.ideation_session_id = Some(IdeationSessionId::from_string("sess-1".to_string()));
+    task_repo.create(open_sibling).await.unwrap();
+
+    let branch_name = "plan/existing-pr-draft-update";
+    let mut plan_branch =
+        make_plan_branch("artifact-1", branch_name, PlanBranchStatus::Active, None);
+    plan_branch.pr_eligible = true;
+    plan_branch.pr_number = Some(789);
+    plan_branch.pr_url = Some("https://github.com/owner/repo/pull/789".to_string());
+    plan_branch.pr_push_status = PrPushStatus::Pushed;
+    let branch_id = plan_branch.id.clone();
+    plan_branch_repo.create(plan_branch).await.unwrap();
+
+    let mock_github = Arc::new(MockGithubService::new());
+    let result = super::super::merge_helpers::sync_plan_branch_pr_after_regular_task_merge(
+        &task,
+        &project,
+        &PlanBranchPrSyncServices {
+            task_repo: Some(Arc::clone(&task_repo) as Arc<dyn TaskRepository>),
+            plan_branch_repo: Some(Arc::clone(&plan_branch_repo) as Arc<dyn PlanBranchRepository>),
+            pr_creation_guard: Some(Arc::new(dashmap::DashMap::new())),
+            github_service: Some(Arc::clone(&mock_github) as Arc<dyn GithubServiceTrait>),
+            ideation_session_repo: None,
+            artifact_repo: None,
+        },
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "draft PR sync should succeed while other plan tasks remain open: {:?}",
+        result
+    );
+
+    {
+        let state = mock_github.state();
+        assert_eq!(state.push_branch_calls, 1);
+        assert_eq!(
+            state.update_pr_details_calls, 1,
+            "existing PR should be refreshed with draft details"
+        );
+        assert_eq!(
+            state.mark_pr_ready_calls, 0,
+            "open sibling tasks should keep the existing PR in draft mode"
+        );
+        let (_, title, _) = state
+            .last_update_pr_details_args
+            .as_ref()
+            .expect("update PR details args");
+        assert_eq!(title, "Plan: Merged follow-up while plan remains open");
+        let body = state
+            .last_update_pr_details_body
+            .as_ref()
+            .expect("update PR details body");
+        assert!(
+            body.contains("Draft while RalphX is still merging plan tasks into the plan branch."),
+            "existing PR body should explain why it remains draft: {}",
+            body
+        );
+    }
+
+    let updated_plan_branch = plan_branch_repo
+        .get_by_id(&branch_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(updated_plan_branch.pr_push_status, PrPushStatus::Pushed);
+}
+
+#[tokio::test]
 async fn test_regular_plan_task_completion_push_failure_does_not_mark_task_merged() {
     let task_repo = Arc::new(MemoryTaskRepository::new());
     let project_repo = Arc::new(MemoryProjectRepository::new());
@@ -1277,6 +1378,104 @@ async fn test_regular_plan_task_completion_push_failure_does_not_mark_task_merge
         .unwrap()
         .unwrap();
     assert_eq!(updated_plan_branch.pr_push_status, PrPushStatus::Failed);
+}
+
+#[tokio::test]
+async fn test_regular_plan_task_completion_without_github_service_does_not_mark_task_merged() {
+    let task_repo = Arc::new(MemoryTaskRepository::new());
+    let project_repo = Arc::new(MemoryProjectRepository::new());
+    let plan_branch_repo = Arc::new(MemoryPlanBranchRepository::new());
+
+    let branch_name = "plan/existing-pr-no-github";
+    let repo = setup_plan_git_repo(branch_name, true);
+    setup_project_with_path(&project_repo, repo.path().to_string_lossy().into_owned()).await;
+    let project = project_repo
+        .get_by_id(&ProjectId::from_string("proj-1".to_string()))
+        .await
+        .unwrap()
+        .unwrap();
+
+    let mut task = Task::new(
+        ProjectId::from_string("proj-1".to_string()),
+        "Merged follow-up without GitHub service".to_string(),
+    );
+    task.id = TaskId::from_string("task-programmatic-plan-pr-no-github".to_string());
+    task.internal_status = InternalStatus::PendingMerge;
+    task.category = TaskCategory::Regular;
+    task.ideation_session_id = Some(IdeationSessionId::from_string("sess-1".to_string()));
+    let task_id = task.id.clone();
+    task_repo.create(task).await.unwrap();
+
+    let mut plan_branch =
+        make_plan_branch("artifact-1", branch_name, PlanBranchStatus::Active, None);
+    plan_branch.pr_eligible = true;
+    plan_branch.pr_number = Some(789);
+    plan_branch.pr_url = Some("https://github.com/owner/repo/pull/789".to_string());
+    plan_branch.pr_push_status = PrPushStatus::Pushed;
+    let branch_id = plan_branch.id.clone();
+    plan_branch_repo.create(plan_branch).await.unwrap();
+
+    let commit_output = std::process::Command::new("git")
+        .args(["rev-parse", branch_name])
+        .current_dir(repo.path())
+        .output()
+        .expect("read plan branch sha");
+    assert!(
+        commit_output.status.success(),
+        "rev-parse plan branch should succeed"
+    );
+    let commit_sha = String::from_utf8_lossy(&commit_output.stdout)
+        .trim()
+        .to_string();
+
+    let mut task_for_merge = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
+    let task_repo_dyn: Arc<dyn TaskRepository> = Arc::clone(&task_repo) as Arc<dyn TaskRepository>;
+    let result = complete_merge_internal_with_pr_sync::<tauri::Wry>(
+        &mut task_for_merge,
+        &project,
+        &commit_sha,
+        "task/feature",
+        branch_name,
+        &task_repo_dyn,
+        None,
+        None,
+        None,
+        None,
+        Some(PlanBranchPrSyncServices {
+            task_repo: Some(Arc::clone(&task_repo) as Arc<dyn TaskRepository>),
+            plan_branch_repo: Some(Arc::clone(&plan_branch_repo) as Arc<dyn PlanBranchRepository>),
+            pr_creation_guard: Some(Arc::new(dashmap::DashMap::new())),
+            github_service: None,
+            ideation_session_repo: None,
+            artifact_repo: None,
+        }),
+    )
+    .await;
+
+    assert!(
+        result.is_err(),
+        "merge completion must fail closed when an existing PR cannot be published"
+    );
+
+    let final_task = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
+    assert_eq!(
+        final_task.internal_status,
+        InternalStatus::MergeIncomplete,
+        "missing GitHub service must not mark the task Merged"
+    );
+    let metadata: serde_json::Value =
+        serde_json::from_str(final_task.metadata.as_deref().unwrap()).unwrap();
+    assert_eq!(
+        metadata["error_code"], "pr_branch_publication_failed",
+        "MergeIncomplete should carry the PR publication failure reason"
+    );
+
+    let updated_plan_branch = plan_branch_repo
+        .get_by_id(&branch_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(updated_plan_branch.pr_push_status, PrPushStatus::Pending);
 }
 
 #[tokio::test]
