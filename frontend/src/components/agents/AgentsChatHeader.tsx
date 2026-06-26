@@ -117,6 +117,7 @@ export interface AgentsChatHeaderProps {
   artifactOpen: boolean;
   activeArtifactTab: AgentArtifactTab;
   terminalOpen?: boolean;
+  terminalArchivedReason?: string | null;
   terminalUnavailableReason?: string | null;
   onRenameConversation: (conversationId: string, title: string) => Promise<void>;
   onPublishWorkspace?: (conversationId: string) => Promise<void>;
@@ -293,6 +294,7 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
   artifactOpen,
   activeArtifactTab,
   terminalOpen = false,
+  terminalArchivedReason = null,
   terminalUnavailableReason = null,
   onRenameConversation,
   onPublishWorkspace,
@@ -310,6 +312,18 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
   showTitle = true,
   workspaceControl,
 }: AgentsChatHeaderProps) {
+  const terminalTooltip =
+    terminalUnavailableReason ??
+    terminalArchivedReason ??
+    (terminalOpen ? "Collapse terminal" : "Expand terminal");
+  const terminalAriaLabel = terminalArchivedReason
+    ? terminalOpen
+      ? "Hide archived terminal"
+      : "Show archived terminal"
+    : terminalOpen
+      ? "Collapse terminal"
+      : "Expand terminal";
+  const terminalPreloadHandler = terminalArchivedReason ? undefined : onPreloadTerminal;
   const title = conversation?.title || "Untitled agent";
   const conversationMode = conversation
     ? resolveConversationAgentMode(conversation, workspace)
@@ -530,18 +544,17 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
               size="sm"
               className="h-8 w-8 p-0"
               onClick={onToggleTerminal}
-              onPointerEnter={onPreloadTerminal}
-              onFocus={onPreloadTerminal}
+              onPointerEnter={terminalPreloadHandler}
+              onFocus={terminalPreloadHandler}
               disabled={!onToggleTerminal || Boolean(terminalUnavailableReason)}
-              aria-label={terminalOpen ? "Collapse terminal" : "Expand terminal"}
+              aria-label={terminalAriaLabel}
               data-testid="agents-terminal-toggle"
             >
               <TerminalIcon className="w-4 h-4" />
             </Button>
           </TooltipTrigger>
           <TooltipContent side="bottom" className="max-w-[280px] text-xs">
-            {terminalUnavailableReason ??
-              (terminalOpen ? "Collapse terminal" : "Expand terminal")}
+            {terminalTooltip}
           </TooltipContent>
         </Tooltip>
 

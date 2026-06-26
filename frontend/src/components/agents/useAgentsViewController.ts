@@ -252,6 +252,7 @@ export function useAgentsViewController({
     activeWorkspaceFreshness,
     normalizedActiveRuntime,
     publishShortcutLabel,
+    terminalArchivedReason,
     terminalUnavailableReason,
   } = useAgentsWorkspaceModel({
     activeConversation,
@@ -951,6 +952,7 @@ export function useAgentsViewController({
       selectedTaskArtifactId,
       setTerminalChatDockElement,
       switchingConversationModeId,
+      terminalArchivedReason,
       terminalUnavailableReason,
     },
     shellProps: {
@@ -982,6 +984,7 @@ export function useAgentsViewController({
       setArtifactTaskMode,
       setTerminalPanelDockElement,
       taskArtifactFocusRequest,
+      terminalArchivedReason,
       terminalUnavailableReason,
       onFocusVerificationSession: handleFocusVerificationSession,
       onTaskArtifactSelectionChange: handleTaskArtifactSelectionChange,
