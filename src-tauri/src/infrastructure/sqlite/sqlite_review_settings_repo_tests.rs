@@ -27,6 +27,7 @@ async fn test_update_settings() {
         require_human_review: true,
         max_fix_attempts: 5,
         max_revision_cycles: 10,
+        auto_create_followup_agent_conversation: false,
     };
 
     let updated = repo.update_settings(&new_settings).await.unwrap();
@@ -36,6 +37,7 @@ async fn test_update_settings() {
     assert!(updated.require_human_review);
     assert_eq!(updated.max_fix_attempts, 5);
     assert_eq!(updated.max_revision_cycles, 10);
+    assert!(!updated.auto_create_followup_agent_conversation);
 
     // Verify persistence
     let retrieved = repo.get_settings().await.unwrap();
@@ -45,6 +47,7 @@ async fn test_update_settings() {
     assert!(retrieved.require_human_review);
     assert_eq!(retrieved.max_fix_attempts, 5);
     assert_eq!(retrieved.max_revision_cycles, 10);
+    assert!(!retrieved.auto_create_followup_agent_conversation);
 }
 
 #[tokio::test]

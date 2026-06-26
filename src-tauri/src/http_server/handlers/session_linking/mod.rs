@@ -29,7 +29,6 @@ mod shared;
 mod verification;
 
 pub use create::create_child_session;
-pub(crate) use create::create_child_session_impl;
 pub use parent_context::get_parent_session_context;
 pub use shared::{session_is_team_mode, synthesize_verification_prompt};
 pub(crate) use verification::create_verification_child_session;

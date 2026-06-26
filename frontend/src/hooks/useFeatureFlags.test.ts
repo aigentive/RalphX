@@ -31,17 +31,50 @@ function createWrapper() {
 // ============================================================================
 
 describe("isViewEnabled", () => {
-  const allEnabled: FeatureFlags = { activityPage: true, extensibilityPage: true, battleMode: true, teamMode: false, atlassianOauth: false, ticketingDashboard: true };
-  const activityDisabled: FeatureFlags = { activityPage: false, extensibilityPage: true, battleMode: true, teamMode: false, atlassianOauth: false, ticketingDashboard: true };
-  const extensibilityDisabled: FeatureFlags = { activityPage: true, extensibilityPage: false, battleMode: true, teamMode: false, atlassianOauth: false, ticketingDashboard: true };
-  const allDisabled: FeatureFlags = { activityPage: false, extensibilityPage: false, battleMode: true, teamMode: false, atlassianOauth: false, ticketingDashboard: false };
+  const allEnabled: FeatureFlags = {
+    activityPage: true,
+    extensibilityPage: true,
+    ideationPage: true,
+    battleMode: true,
+    teamMode: false,
+    atlassianOauth: false,
+    ticketingDashboard: true,
+  };
+  const activityDisabled: FeatureFlags = {
+    activityPage: false,
+    extensibilityPage: true,
+    ideationPage: true,
+    battleMode: true,
+    teamMode: false,
+    atlassianOauth: false,
+    ticketingDashboard: true,
+  };
+  const extensibilityDisabled: FeatureFlags = {
+    activityPage: true,
+    extensibilityPage: false,
+    ideationPage: true,
+    battleMode: true,
+    teamMode: false,
+    atlassianOauth: false,
+    ticketingDashboard: true,
+  };
+  const allDisabled: FeatureFlags = {
+    activityPage: false,
+    extensibilityPage: false,
+    ideationPage: false,
+    battleMode: true,
+    teamMode: false,
+    atlassianOauth: false,
+    ticketingDashboard: false,
+  };
 
   it("returns true for kanban regardless of flags", () => {
     expect(isViewEnabled("kanban", allDisabled)).toBe(true);
   });
 
-  it("returns true for ideation regardless of flags", () => {
-    expect(isViewEnabled("ideation", allDisabled)).toBe(true);
+  it("returns flags.ideationPage for ideation view", () => {
+    expect(isViewEnabled("ideation", allEnabled)).toBe(true);
+    expect(isViewEnabled("ideation", allDisabled)).toBe(false);
   });
 
   it("returns true for graph regardless of flags", () => {
@@ -101,7 +134,7 @@ describe("useFeatureFlags", () => {
     localStorage.clear();
   });
 
-  it("returns placeholder data (all enabled) before query resolves", () => {
+  it("returns placeholder data before query resolves", () => {
     // Don't resolve invoke — hook should show placeholderData
     vi.mocked(invoke).mockReturnValue(new Promise(() => {}));
 
@@ -113,6 +146,7 @@ describe("useFeatureFlags", () => {
     expect(result.current.data).toEqual({
       activityPage: true,
       extensibilityPage: true,
+      ideationPage: false,
       battleMode: true,
       teamMode: false,
       atlassianOauth: false,
@@ -133,6 +167,7 @@ describe("useFeatureFlags", () => {
     expect(result.current.data).toEqual({
       activityPage: false,
       extensibilityPage: true,
+      ideationPage: false,
       battleMode: true,
       teamMode: false,
       atlassianOauth: false,
@@ -145,7 +180,7 @@ describe("useFeatureFlags", () => {
     expect(FEATURE_FLAGS_QUERY_KEY).toEqual(["featureFlags"]);
   });
 
-  it("shows placeholder data (all enabled) when invoke fails (retry: false)", async () => {
+  it("shows placeholder data when invoke fails (retry: false)", async () => {
     vi.mocked(invoke).mockRejectedValueOnce(new Error("Backend unavailable"));
 
     const { result } = renderHook(() => useFeatureFlags(), {
@@ -155,10 +190,11 @@ describe("useFeatureFlags", () => {
     // Wait for the query to settle
     await waitFor(() => expect(result.current.isFetching).toBe(false));
 
-    // placeholderData shown when error — pages remain visible (safe fallback)
+    // placeholderData shown when error; standalone Ideation stays hidden by default.
     expect(result.current.data).toEqual({
       activityPage: true,
       extensibilityPage: true,
+      ideationPage: false,
       battleMode: true,
       teamMode: false,
       atlassianOauth: false,

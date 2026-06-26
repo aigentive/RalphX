@@ -1615,6 +1615,9 @@ export const chatApi = {
   getAgentWorkspacePrReviewContext,
   getAgentWorkspaceReviewContext,
   startAgentWorkspaceReview,
+  listAgentConversationIssues,
+  updateAgentConversationIssueStatus,
+  convertAgentConversationIssueFollowup,
   submitAgentWorkspacePrReviewAction,
   skipAgentWorkspacePrReviewAction,
   getAgentRunStatus,
@@ -1760,6 +1763,8 @@ export interface StartAgentConversationInput {
   projectId: string;
   content: string;
   conversationId?: string | null;
+  parentConversationId?: string | null;
+  title?: string | null;
   providerHarness?: string | null;
   modelId?: string | null;
   logicalEffort?: string | null;
@@ -2961,18 +2966,18 @@ export async function getAgentWorkspacePrReviewContext(
 }
 
 export async function getAgentWorkspaceReviewContext(
-  conversationId: string
+  conversationId: string,
 ): Promise<AgentWorkspaceReviewContext> {
   const raw = await fetchAgentWorkspaceJson(
     `agent-workspaces/${encodeURIComponent(conversationId)}/workspace-review-context`,
-    AgentWorkspaceReviewContextResponseSchema
+    AgentWorkspaceReviewContextResponseSchema,
   );
   return transformAgentWorkspaceReviewContext(raw);
 }
 
 export async function startAgentWorkspaceReview(
   conversationId: string,
-  options: { force?: boolean } = {}
+  options: { force?: boolean } = {},
 ): Promise<StartAgentWorkspaceReviewResult> {
   const raw = await fetchAgentWorkspaceJson(
     `agent-workspaces/${encodeURIComponent(conversationId)}/workspace-review-runs`,
@@ -2981,9 +2986,155 @@ export async function startAgentWorkspaceReview(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ force: options.force ?? false }),
-    }
+    },
   );
   return transformStartAgentWorkspaceReviewResponse(raw);
+}
+
+const AgentConversationIssueResponseSchema = z.object({
+  id: z.string(),
+  project_id: z.string(),
+  conversation_id: z.string(),
+  source_task_id: z.string().nullable(),
+  source_context_type: z.string().nullable(),
+  source_context_id: z.string().nullable(),
+  source_agent_name: z.string().nullable(),
+  issue_kind: z.string(),
+  severity: z.string(),
+  status: z.string(),
+  blocking_scope: z.string(),
+  title: z.string(),
+  summary: z.string(),
+  evidence: z.string().nullable(),
+  recommendation: z.string().nullable(),
+  blocker_fingerprint: z.string().nullable(),
+  followup_title: z.string().nullable(),
+  followup_prompt: z.string().nullable(),
+  auto_followup_eligible: z.boolean(),
+  linked_followup_conversation_id: z.string().nullable(),
+  created_at: z.string(),
+  updated_at: z.string(),
+  resolved_at: z.string().nullable(),
+});
+
+const AgentConversationIssueListResponseSchema = z.object({
+  issues: z.array(AgentConversationIssueResponseSchema),
+});
+
+const AgentConversationIssueMutationResponseSchema = z.object({
+  issue: AgentConversationIssueResponseSchema,
+});
+
+type RawAgentConversationIssue = z.infer<
+  typeof AgentConversationIssueResponseSchema
+>;
+
+export interface AgentConversationIssue {
+  id: string;
+  projectId: string;
+  conversationId: string;
+  sourceTaskId: string | null;
+  sourceContextType: string | null;
+  sourceContextId: string | null;
+  sourceAgentName: string | null;
+  issueKind: string;
+  severity: string;
+  status: string;
+  blockingScope: string;
+  title: string;
+  summary: string;
+  evidence: string | null;
+  recommendation: string | null;
+  blockerFingerprint: string | null;
+  followupTitle: string | null;
+  followupPrompt: string | null;
+  autoFollowupEligible: boolean;
+  linkedFollowupConversationId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  resolvedAt: string | null;
+}
+
+function transformAgentConversationIssue(
+  raw: RawAgentConversationIssue,
+): AgentConversationIssue {
+  return {
+    id: raw.id,
+    projectId: raw.project_id,
+    conversationId: raw.conversation_id,
+    sourceTaskId: raw.source_task_id,
+    sourceContextType: raw.source_context_type,
+    sourceContextId: raw.source_context_id,
+    sourceAgentName: raw.source_agent_name,
+    issueKind: raw.issue_kind,
+    severity: raw.severity,
+    status: raw.status,
+    blockingScope: raw.blocking_scope,
+    title: raw.title,
+    summary: raw.summary,
+    evidence: raw.evidence,
+    recommendation: raw.recommendation,
+    blockerFingerprint: raw.blocker_fingerprint,
+    followupTitle: raw.followup_title,
+    followupPrompt: raw.followup_prompt,
+    autoFollowupEligible: raw.auto_followup_eligible,
+    linkedFollowupConversationId: raw.linked_followup_conversation_id,
+    createdAt: raw.created_at,
+    updatedAt: raw.updated_at,
+    resolvedAt: raw.resolved_at,
+  };
+}
+
+export async function listAgentConversationIssues(
+  conversationId: string,
+  options: { includeResolved?: boolean } = {},
+): Promise<AgentConversationIssue[]> {
+  const raw = await fetchAgentWorkspaceJson(
+    "agent_conversation_issues/list",
+    AgentConversationIssueListResponseSchema,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        conversation_id: conversationId,
+        include_resolved: options.includeResolved ?? false,
+      }),
+    },
+  );
+  return raw.issues.map(transformAgentConversationIssue);
+}
+
+export async function updateAgentConversationIssueStatus(
+  issueId: string,
+  status: "open" | "resolved" | "dismissed",
+): Promise<AgentConversationIssue> {
+  const raw = await fetchAgentWorkspaceJson(
+    "agent_conversation_issues/status",
+    AgentConversationIssueMutationResponseSchema,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ issue_id: issueId, status }),
+    },
+  );
+  return transformAgentConversationIssue(raw.issue);
+}
+
+export async function convertAgentConversationIssueFollowup(
+  issueId: string,
+): Promise<AgentConversationIssue> {
+  const raw = await fetchAgentWorkspaceJson(
+    "agent_conversation_issues/convert_followup",
+    AgentConversationIssueMutationResponseSchema.extend({
+      followup: z.unknown(),
+    }),
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ issue_id: issueId }),
+    },
+  );
+  return transformAgentConversationIssue(raw.issue);
 }
 
 export async function submitAgentWorkspacePrReviewAction(

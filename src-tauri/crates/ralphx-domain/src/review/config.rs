@@ -3,6 +3,10 @@
 
 use serde::{Deserialize, Serialize};
 
+fn default_auto_create_followup_agent_conversation() -> bool {
+    true
+}
+
 /// Global review settings stored in project settings
 ///
 /// Controls how the review system behaves including:
@@ -37,6 +41,11 @@ pub struct ReviewSettings {
     /// Maximum revision cycles (review → changes requested → re-execution) before failing
     /// Default: 5
     pub max_revision_cycles: u32,
+
+    /// Automatically create visible follow-up Agent conversations for eligible drift/issues
+    /// Default: true
+    #[serde(default = "default_auto_create_followup_agent_conversation")]
+    pub auto_create_followup_agent_conversation: bool,
 }
 
 impl Default for ReviewSettings {
@@ -48,6 +57,7 @@ impl Default for ReviewSettings {
             require_human_review: false,
             max_fix_attempts: 3,
             max_revision_cycles: 5,
+            auto_create_followup_agent_conversation: true,
         }
     }
 }

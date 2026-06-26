@@ -3,7 +3,14 @@ import { useUiStore } from "./uiStore";
 import type { AskUserQuestionPayload } from "@/types/ask-user-question";
 import type { FeatureFlags } from "@/types/feature-flags";
 
-const ALL_ENABLED: FeatureFlags = { activityPage: true, extensibilityPage: true, battleMode: true, atlassianOauth: false };
+const ALL_ENABLED: FeatureFlags = {
+  activityPage: true,
+  extensibilityPage: true,
+  ideationPage: true,
+  battleMode: true,
+  teamMode: false,
+  atlassianOauth: false,
+};
 
 // ============================================================================
 // Mocks for per-project route persistence (cross-store reads)
@@ -1075,7 +1082,7 @@ describe("uiStore", () => {
     describe("setCurrentView", () => {
       it("redirects to agents when activity page is disabled", () => {
         useUiStore.setState({
-          featureFlags: { activityPage: false, extensibilityPage: true },
+          featureFlags: { ...ALL_ENABLED, activityPage: false },
         });
 
         useUiStore.getState().setCurrentView("activity");
@@ -1085,10 +1092,20 @@ describe("uiStore", () => {
 
       it("redirects to agents when extensibility page is disabled", () => {
         useUiStore.setState({
-          featureFlags: { activityPage: true, extensibilityPage: false, battleMode: true },
+          featureFlags: { ...ALL_ENABLED, extensibilityPage: false },
         });
 
         useUiStore.getState().setCurrentView("extensibility");
+
+        expect(useUiStore.getState().currentView).toBe("agents");
+      });
+
+      it("redirects to agents when standalone ideation page is disabled", () => {
+        useUiStore.setState({
+          featureFlags: { ...ALL_ENABLED, ideationPage: false },
+        });
+
+        useUiStore.getState().setCurrentView("ideation");
 
         expect(useUiStore.getState().currentView).toBe("agents");
       });
@@ -1114,7 +1131,10 @@ describe("uiStore", () => {
           featureFlags: {
             activityPage: true,
             extensibilityPage: true,
+            ideationPage: false,
             battleMode: true,
+            teamMode: false,
+            atlassianOauth: false,
             ticketingDashboard: false,
           },
         });
@@ -1129,7 +1149,10 @@ describe("uiStore", () => {
           featureFlags: {
             activityPage: true,
             extensibilityPage: true,
+            ideationPage: false,
             battleMode: true,
+            teamMode: false,
+            atlassianOauth: false,
             ticketingDashboard: true,
           },
         });
@@ -1139,9 +1162,17 @@ describe("uiStore", () => {
         expect(useUiStore.getState().currentView).toBe("ticketing");
       });
 
+      it("allows standalone ideation when ideation page is enabled", () => {
+        useUiStore.setState({ featureFlags: ALL_ENABLED });
+
+        useUiStore.getState().setCurrentView("ideation");
+
+        expect(useUiStore.getState().currentView).toBe("ideation");
+      });
+
       it("always allows kanban (not a feature-flagged view)", () => {
         useUiStore.setState({
-          featureFlags: { activityPage: false, extensibilityPage: false },
+          featureFlags: { ...ALL_ENABLED, activityPage: false, extensibilityPage: false },
           currentView: "activity",
         });
 
@@ -1152,7 +1183,7 @@ describe("uiStore", () => {
 
       it("always allows graph (not a feature-flagged view)", () => {
         useUiStore.setState({
-          featureFlags: { activityPage: false, extensibilityPage: false },
+          featureFlags: { ...ALL_ENABLED, activityPage: false, extensibilityPage: false },
         });
 
         useUiStore.getState().setCurrentView("graph");
@@ -1163,7 +1194,7 @@ describe("uiStore", () => {
       it("does not persist disabled view to viewByProject", () => {
         mockProjectGetState.mockReturnValue({ activeProjectId: "proj-a" });
         useUiStore.setState({
-          featureFlags: { activityPage: false, extensibilityPage: true },
+          featureFlags: { ...ALL_ENABLED, activityPage: false },
           viewByProject: {},
         });
 
@@ -1174,13 +1205,31 @@ describe("uiStore", () => {
       });
     });
 
+    describe("setFeatureFlags", () => {
+      it("moves the active project back to agents when the current view becomes disabled", () => {
+        mockProjectGetState.mockReturnValue({ activeProjectId: "proj-a" });
+        useUiStore.setState({
+          currentView: "ideation",
+          viewByProject: { "proj-a": "ideation" },
+        });
+
+        useUiStore.getState().setFeatureFlags({ ...ALL_ENABLED, ideationPage: false });
+
+        expect(useUiStore.getState().currentView).toBe("agents");
+        expect(useUiStore.getState().viewByProject["proj-a"]).toBe("agents");
+        expect(JSON.parse(localStorage.getItem("ralphx-views-by-project") ?? "{}")).toEqual({
+          "proj-a": "agents",
+        });
+      });
+    });
+
     describe("switchToProject", () => {
       const PROJECT_A = "proj-a";
       const PROJECT_B = "proj-b";
 
       it("redirects to agents when restoring a disabled activity view", () => {
         useUiStore.setState({
-          featureFlags: { activityPage: false, extensibilityPage: true },
+          featureFlags: { ...ALL_ENABLED, activityPage: false },
           viewByProject: { [PROJECT_B]: "activity" },
         });
 
@@ -1191,8 +1240,19 @@ describe("uiStore", () => {
 
       it("redirects to agents when restoring a disabled extensibility view", () => {
         useUiStore.setState({
-          featureFlags: { activityPage: true, extensibilityPage: false, battleMode: true },
+          featureFlags: { ...ALL_ENABLED, extensibilityPage: false },
           viewByProject: { [PROJECT_B]: "extensibility" },
+        });
+
+        useUiStore.getState().switchToProject(PROJECT_A, PROJECT_B);
+
+        expect(useUiStore.getState().currentView).toBe("agents");
+      });
+
+      it("redirects to agents when restoring a disabled standalone ideation view", () => {
+        useUiStore.setState({
+          featureFlags: { ...ALL_ENABLED, ideationPage: false },
+          viewByProject: { [PROJECT_B]: "ideation" },
         });
 
         useUiStore.getState().switchToProject(PROJECT_A, PROJECT_B);
@@ -1213,7 +1273,7 @@ describe("uiStore", () => {
 
       it("redirects on initial load (null oldProjectId) with disabled persisted view", () => {
         useUiStore.setState({
-          featureFlags: { activityPage: false, extensibilityPage: true },
+          featureFlags: { ...ALL_ENABLED, activityPage: false },
           viewByProject: { [PROJECT_B]: "activity" },
         });
 
@@ -1224,7 +1284,7 @@ describe("uiStore", () => {
 
       it("both flags disabled — persisted activity falls back to agents", () => {
         useUiStore.setState({
-          featureFlags: { activityPage: false, extensibilityPage: false },
+          featureFlags: { ...ALL_ENABLED, activityPage: false, extensibilityPage: false },
           viewByProject: { [PROJECT_B]: "activity" },
         });
 

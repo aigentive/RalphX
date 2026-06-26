@@ -42,7 +42,9 @@ impl AgentLaneSettingsRepository for MockAgentLaneSettingsRepository {
             .cloned())
     }
 
-    async fn list_global(&self) -> Result<Vec<StoredAgentLaneSettings>, Box<dyn std::error::Error>> {
+    async fn list_global(
+        &self,
+    ) -> Result<Vec<StoredAgentLaneSettings>, Box<dyn std::error::Error>> {
         Ok(self
             .rows
             .iter()

@@ -43,6 +43,7 @@ import {
 import { useIdeationStore } from "@/stores/ideationStore";
 import { useCreateIdeationSession } from "@/hooks/useIdeation";
 import { useConfirmation } from "@/hooks/useConfirmation";
+import { navigateToIdeationSession } from "@/lib/navigation";
 import { logger } from "@/lib/logger";
 import { toast } from "sonner";
 import { AuditTrailDialog } from "@/components/tasks/AuditTrailDialog";
@@ -283,7 +284,6 @@ export function TaskDetailOverlay({
   const setGlobalSelectedTaskId = useUiStore((s) => s.setSelectedTaskId);
   const selectedTaskId =
     selectedTaskIdOverride === undefined ? globalSelectedTaskId : selectedTaskIdOverride;
-  const setCurrentView = useUiStore((s) => s.setCurrentView);
   // History state from store - shared with IntegratedChatPanel
   const historyState = useUiStore((s) => s.taskHistoryState);
   const setHistoryState = useUiStore((s) => s.setTaskHistoryState);
@@ -448,9 +448,9 @@ export function TaskDetailOverlay({
       // Add session to store and set as active
       addSession(session);
       setActiveSession(session.id);
-      // Close overlay and navigate to ideation view
+      // Close overlay and navigate to the linked plan surface.
       handleClose();
-      setCurrentView("ideation");
+      navigateToIdeationSession(session.id);
     } catch (error) {
       console.error("Failed to start ideation:", error);
       toast.error("Failed to start ideation session");
