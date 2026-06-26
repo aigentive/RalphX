@@ -45,6 +45,7 @@ const {
   closeWorkspacePrMock,
   sendAgentMessageMock,
   switchAgentConversationModeMock,
+  listAgentConversationIssuesMock,
   loadBranchBaseOptionsMock,
   getArtifactMock,
   getSessionPlanMock,
@@ -97,6 +98,7 @@ const {
   closeWorkspacePrMock: vi.fn(),
   sendAgentMessageMock: vi.fn(),
   switchAgentConversationModeMock: vi.fn(),
+  listAgentConversationIssuesMock: vi.fn(),
   loadBranchBaseOptionsMock: vi.fn(),
   getArtifactMock: vi.fn(),
   getSessionPlanMock: vi.fn(),
@@ -156,6 +158,8 @@ vi.mock("@/api/chat", async (importOriginal) => {
         sendAgentMessageMock(...args),
       switchAgentConversationMode: (...args: unknown[]) =>
         switchAgentConversationModeMock(...args),
+      listAgentConversationIssues: (...args: unknown[]) =>
+        listAgentConversationIssuesMock(...args),
     },
   };
 });
@@ -830,6 +834,7 @@ describe("AgentsArtifactPane", () => {
         linkedIdeationSessionId: "session-1",
       }),
     });
+    listAgentConversationIssuesMock.mockResolvedValue([]);
     getArtifactMock.mockResolvedValue(null);
     getSessionPlanMock.mockResolvedValue(null);
     approvePlanArtifactMock.mockResolvedValue(null);
@@ -879,6 +884,25 @@ describe("AgentsArtifactPane", () => {
     toastMessageMock.mockClear();
     toastSuccessMock.mockClear();
     useUiStore.setState({ activeModal: null, modalContext: undefined });
+  });
+
+  it("hides the Issues tab when a project conversation has no open issues", async () => {
+    listAgentConversationIssuesMock.mockResolvedValue([]);
+
+    renderPane("publish", workspace({ mode: "edit" }), vi.fn(), false, conversation());
+
+    await waitFor(() =>
+      expect(listAgentConversationIssuesMock).toHaveBeenCalledWith("conversation-1"),
+    );
+    expect(screen.queryByTestId("agents-artifact-tab-issues")).not.toBeInTheDocument();
+  });
+
+  it("shows the Issues tab when a project conversation has open issues", async () => {
+    listAgentConversationIssuesMock.mockResolvedValue([{ id: "issue-1" }]);
+
+    renderPane("publish", workspace({ mode: "edit" }), vi.fn(), false, conversation());
+
+    expect(await screen.findByTestId("agents-artifact-tab-issues")).toBeInTheDocument();
   });
 
   it("hydrates plan artifacts for an ideation conversation without a workspace link", async () => {

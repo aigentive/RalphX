@@ -67,6 +67,10 @@ import {
   prReviewContextForConversation,
 } from "./agentWorkspaceQueries";
 import {
+  hasOpenAgentConversationIssues,
+  useAgentConversationIssues,
+} from "./agentConversationIssueQueries";
+import {
   buildPlanActionHint,
   isPlanRecommendationCheckPending,
   PLAN_IMPLEMENT_DIRECTLY_REQUEST,
@@ -426,6 +430,12 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     workspace?.mode ??
     conversation?.agentMode ??
     (conversation?.contextType === "ideation" ? "ideation" : null);
+  const issueConversationId =
+    conversation?.contextType === "project" ? conversation.id : null;
+  const conversationIssuesQuery = useAgentConversationIssues(issueConversationId);
+  const hasConversationIssues = hasOpenAgentConversationIssues(
+    conversationIssuesQuery.data,
+  );
   const availableIdeationTabIds = useMemo(
     () =>
       getVisibleIdeationArtifactTabs({
@@ -451,7 +461,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   );
   const availableArtifactTabIds = useMemo<IdeationArtifactTab[]>(() => {
     const tabs =
-      conversation?.contextType === "project"
+      conversation?.contextType === "project" && hasConversationIssues
         ? (["issues", ...availableIdeationTabIds] as IdeationArtifactTab[])
         : availableIdeationTabIds;
     const shouldShowReviewTab =
@@ -463,6 +473,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   }, [
     availableIdeationTabIds,
     conversation?.contextType,
+    hasConversationIssues,
     reviewArtifactId,
     workspaceReviewContext?.shouldShowTab,
   ]);
