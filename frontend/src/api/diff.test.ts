@@ -33,6 +33,15 @@ const rawFileDiff = {
   is_binary: false,
 };
 
+const rawConflictDiff = {
+  filePath: "src/conflict.rs",
+  baseContent: "base\n",
+  oursContent: "ours\n",
+  theirsContent: "theirs\n",
+  mergedWithMarkers: "<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> branch\n",
+  language: "rust",
+};
+
 const expectedFileChanges = [
   { path: "src/lib.rs", status: "modified", additions: 4, deletions: 1, isGenerated: false },
 ];
@@ -58,6 +67,15 @@ const expectedFileDiff = {
   oldTotalLines: 3,
   newTotalLines: 3,
   isBinary: false,
+};
+
+const expectedConflictDiff = {
+  filePath: "src/conflict.rs",
+  baseContent: "base\n",
+  oursContent: "ours\n",
+  theirsContent: "theirs\n",
+  mergedWithMarkers: "<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> branch\n",
+  language: "rust",
 };
 
 describe("diff api", () => {
@@ -271,6 +289,19 @@ describe("diff api", () => {
         { conversationId: "conv-1", filePath: "src/lib.rs" },
       );
       expect(unstaged).toEqual(expectedFileDiff);
+    });
+
+    it("calls repair conflict file diff command", async () => {
+      mockInvoke.mockResolvedValue(rawConflictDiff);
+      const conflict = await diffApi.getAgentConversationWorkspaceRepairConflictFileDiff(
+        "conv-1",
+        "src/conflict.rs",
+      );
+      expect(mockInvoke).toHaveBeenCalledWith(
+        "get_agent_conversation_workspace_repair_conflict_file_diff",
+        { conversationId: "conv-1", filePath: "src/conflict.rs" },
+      );
+      expect(conflict).toEqual(expectedConflictDiff);
     });
 
     it("calls get_agent_conversation_workspace_unstaged_file_diff", async () => {

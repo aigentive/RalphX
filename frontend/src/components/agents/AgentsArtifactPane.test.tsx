@@ -27,6 +27,7 @@ const {
   getWorkspaceRepairSummaryMock,
   getWorkspaceRepairStagedChangesMock,
   getWorkspaceRepairUnstagedChangesMock,
+  getWorkspaceRepairConflictDiffMock,
   getWorkspaceRepairStagedDiffMock,
   getWorkspaceRepairUnstagedDiffMock,
   getWorkspacePrAnnotationsMock,
@@ -78,6 +79,7 @@ const {
   getWorkspaceRepairSummaryMock: vi.fn(),
   getWorkspaceRepairStagedChangesMock: vi.fn(),
   getWorkspaceRepairUnstagedChangesMock: vi.fn(),
+  getWorkspaceRepairConflictDiffMock: vi.fn(),
   getWorkspaceRepairStagedDiffMock: vi.fn(),
   getWorkspaceRepairUnstagedDiffMock: vi.fn(),
   getWorkspacePrAnnotationsMock: vi.fn(),
@@ -177,6 +179,8 @@ vi.mock("@/api/diff", () => ({
       getWorkspaceRepairStagedChangesMock(...args),
     getAgentConversationWorkspaceRepairUnstagedFileChanges: (...args: unknown[]) =>
       getWorkspaceRepairUnstagedChangesMock(...args),
+    getAgentConversationWorkspaceRepairConflictFileDiff: (...args: unknown[]) =>
+      getWorkspaceRepairConflictDiffMock(...args),
     getAgentConversationWorkspaceRepairStagedFileDiff: (...args: unknown[]) =>
       getWorkspaceRepairStagedDiffMock(...args),
     getAgentConversationWorkspaceRepairUnstagedFileDiff: (...args: unknown[]) =>
@@ -563,6 +567,14 @@ describe("AgentsArtifactPane", () => {
         isGenerated: false,
       },
     ]);
+    getWorkspaceRepairConflictDiffMock.mockResolvedValue({
+      filePath: "frontend/src/App.tsx",
+      baseContent: "base\n",
+      oursContent: "ours\n",
+      theirsContent: "theirs\n",
+      mergedWithMarkers: "<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> branch\n",
+      language: "typescript",
+    });
     getWorkspaceRepairStagedDiffMock.mockResolvedValue({
       filePath: "frontend/src/Staged.tsx",
       language: "typescript",
