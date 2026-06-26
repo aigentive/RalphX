@@ -208,17 +208,27 @@ export function AgentPublishPanel({
   const [commitFiles, setCommitFiles] = useState<DiffViewerFileChange[]>([]);
   const [isLoadingCommitFiles, setIsLoadingCommitFiles] = useState(false);
   const [rebaseDialogOpen, setRebaseDialogOpen] = useState(false);
-  const [publishDialogOpen, setPublishDialogOpen] = useState(false);
-  const [publishDialogPhase, setPublishDialogPhase] =
-    useState<PublishWorkspaceDialogPhase>("confirm");
-  const [localPublishInFlight, setLocalPublishInFlight] = useState(false);
-  const [localPublishStartedAtMs, setLocalPublishStartedAtMs] = useState<number | null>(
-    null,
-  );
+  const [publishDialogState, setPublishDialogState] = useState<{
+    conversationId: string;
+    open: boolean;
+    phase: PublishWorkspaceDialogPhase;
+  } | null>(null);
+  const [localPublishState, setLocalPublishState] = useState<{
+    conversationId: string;
+    startedAtMs: number;
+  } | null>(null);
   const prDescriptionPrecomputeKeysRef = useRef<Set<string>>(new Set());
   const [selectedRebaseBaseKey, setSelectedRebaseBaseKey] = useState("");
   const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
   const conversationId = workspace?.conversationId ?? null;
+  const currentLocalPublishState =
+    localPublishState?.conversationId === conversationId ? localPublishState : null;
+  const localPublishInFlight = currentLocalPublishState !== null;
+  const localPublishStartedAtMs = currentLocalPublishState?.startedAtMs ?? null;
+  const currentPublishDialogState =
+    publishDialogState?.conversationId === conversationId ? publishDialogState : null;
+  const publishDialogOpen = currentPublishDialogState?.open ?? false;
+  const publishDialogPhase = currentPublishDialogState?.phase ?? "confirm";
   const toastConversationTitle = conversationTitle?.trim() || null;
   const { isUpdatingFromBase, runUpdateFromBase } = useAgentWorkspaceBaseUpdate({
     conversationTitle,
@@ -749,17 +759,27 @@ export function AgentPublishPanel({
     if (!onPublishWorkspace || publishDisabled) {
       return;
     }
-    setPublishDialogPhase("confirm");
-    setPublishDialogOpen(true);
+    setPublishDialogState({
+      conversationId: workspace.conversationId,
+      open: true,
+      phase: "confirm",
+    });
   };
   const handleConfirmPublishWorkspace = () => {
-    setPublishDialogPhase("publishing");
-    setLocalPublishStartedAtMs(Date.now());
-    setLocalPublishInFlight(true);
-    void Promise.resolve(onPublishWorkspace!(workspace.conversationId))
+    const publishConversationId = workspace.conversationId;
+    setPublishDialogState({
+      conversationId: publishConversationId,
+      open: true,
+      phase: "publishing",
+    });
+    setLocalPublishState({
+      conversationId: publishConversationId,
+      startedAtMs: Date.now(),
+    });
+    void Promise.resolve(onPublishWorkspace!(publishConversationId))
       .catch((error) => {
         const publishToastId = agentWorkspaceOperationToastId(
-          workspace.conversationId,
+          publishConversationId,
           "publish",
         );
         const description = agentWorkspaceOperationToastDescription(
@@ -779,17 +799,38 @@ export function AgentPublishPanel({
         );
       })
       .finally(() => {
-        setLocalPublishInFlight(false);
-        setLocalPublishStartedAtMs(null);
-        setPublishDialogOpen(false);
-        setPublishDialogPhase("confirm");
+        setLocalPublishState((current) =>
+          current?.conversationId === publishConversationId ? null : current,
+        );
+        setPublishDialogState((current) =>
+          current?.conversationId === publishConversationId ? null : current,
+        );
       });
   };
   const handlePublishDialogOpenChange = (open: boolean) => {
-    setPublishDialogOpen(open);
-    if (!open && !isPublishingThisWorkspace) {
-      setPublishDialogPhase("confirm");
-    }
+    const dialogConversationId = workspace.conversationId;
+    setPublishDialogState((current) => {
+      if (open) {
+        return {
+          conversationId: dialogConversationId,
+          open: true,
+          phase:
+            current?.conversationId === dialogConversationId
+              ? current.phase
+              : "confirm",
+        };
+      }
+      if (current?.conversationId !== dialogConversationId) {
+        return current;
+      }
+      if (!isPublishingThisWorkspace) {
+        return null;
+      }
+      return {
+        ...current,
+        open: false,
+      };
+    });
   };
   const primaryActionClassName = "h-9 gap-2 px-3 text-xs";
 
