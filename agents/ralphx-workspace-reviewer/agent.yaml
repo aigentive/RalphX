@@ -10,25 +10,20 @@ capabilities:
     - get_workspace_review_context
     - write_workspace_review_artifact
     - complete_workspace_review_run
-    - get_agent_task
-    - list_agent_tasks
-    - search_memories
-    - get_memory
-    - get_memories_for_paths
 harnesses:
   claude:
     model: sonnet
     tools:
       extends: readonly_tools
-      include:
-        - Bash
     disallowed_tools:
       - Write
       - Edit
       - NotebookEdit
-    preapproved_cli_tools:
       - Bash
+    preapproved_cli_tools: []
   codex:
+    runtime_features:
+      shell_tool: false
     mcp_tools:
       - fs_read_file
       - fs_list_dir
@@ -37,8 +32,3 @@ harnesses:
       - get_workspace_review_context
       - write_workspace_review_artifact
       - complete_workspace_review_run
-      - get_agent_task
-      - list_agent_tasks
-      - search_memories
-      - get_memory
-      - get_memories_for_paths

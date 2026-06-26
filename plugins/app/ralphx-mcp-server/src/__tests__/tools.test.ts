@@ -1179,12 +1179,19 @@ describe('getAllowedToolNames - CLI arg priority chain', () => {
     }
   });
 
-  it('workspace reviewer allowlist mirrors canonical Review artifact tools', () => {
+  it('workspace reviewer allowlist mirrors canonical bounded Review artifact tools', () => {
     const tools = toolsByAgent()[WORKSPACE_REVIEWER];
     expect(tools).toEqual(loadCanonicalMcpTools(WORKSPACE_REVIEWER));
+    expect(tools).toContain('fs_read_file');
+    expect(tools).toContain('fs_list_dir');
+    expect(tools).toContain('fs_grep');
+    expect(tools).toContain('fs_glob');
     expect(tools).toContain('get_workspace_review_context');
     expect(tools).toContain('write_workspace_review_artifact');
     expect(tools).toContain('complete_workspace_review_run');
+    expect(tools).not.toContain('get_agent_task');
+    expect(tools).not.toContain('list_agent_tasks');
+    expect(tools).not.toContain('search_memories');
   });
 });
 
@@ -1723,7 +1730,7 @@ describe('agent workspace publish tool transport', () => {
     ).resolves.toEqual({ success: true });
 
     expect(callTauriGet).toHaveBeenCalledWith(
-      'agent-workspaces/conversation-from-runtime/workspace-review-context'
+      'agent-workspaces/conversation-from-runtime/workspace-review-context?include_review_packet=true'
     );
   });
 
@@ -1959,7 +1966,7 @@ describe('agent workspace publish tool transport', () => {
       'agent-workspaces/conversation-from-runtime/pr-review-context'
     );
     expect(callTauriGet).toHaveBeenCalledWith(
-      'agent-workspaces/conversation-from-runtime/workspace-review-context'
+      'agent-workspaces/conversation-from-runtime/workspace-review-context?include_review_packet=true'
     );
     expect(callTauri).toHaveBeenCalledWith(
       'agent-workspaces/conversation-from-runtime/pr-review-actions',
@@ -2080,7 +2087,7 @@ describe('agent workspace publish tool transport', () => {
     [
       'get_workspace_review_context',
       'get',
-      'agent-workspaces/conversation-1/workspace-review-context',
+      'agent-workspaces/conversation-1/workspace-review-context?include_review_packet=true',
       undefined,
     ],
     [

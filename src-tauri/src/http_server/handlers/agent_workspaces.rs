@@ -3,7 +3,7 @@
 use std::{str::FromStr, sync::Arc, time::Instant};
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     Json,
 };
@@ -343,12 +343,74 @@ pub struct AgentWorkspaceReviewTargetResponse {
     pub head_sha: Option<String>,
     pub diff_fingerprint: String,
     pub source_pull_request_number: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub review_packet: Option<AgentWorkspaceReviewPacketResponse>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct AgentWorkspaceReviewPacketResponse {
+    pub summary: AgentWorkspaceReviewDiffSummaryResponse,
+    pub changed_files: Vec<AgentWorkspaceReviewChangedFileResponse>,
+    pub patch_excerpt: String,
+    pub patch_excerpt_truncated: bool,
+    pub notes: Vec<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct AgentWorkspaceReviewDiffSummaryResponse {
+    pub files_changed: u32,
+    pub insertions: u32,
+    pub deletions: u32,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct AgentWorkspaceReviewChangedFileResponse {
+    pub path: String,
+    pub status: String,
+    pub sources: Vec<String>,
+}
+
+impl From<crate::application::agent_workspace_review::AgentWorkspaceReviewPacket>
+    for AgentWorkspaceReviewPacketResponse
+{
+    fn from(value: crate::application::agent_workspace_review::AgentWorkspaceReviewPacket) -> Self {
+        Self {
+            summary: AgentWorkspaceReviewDiffSummaryResponse {
+                files_changed: value.summary.files_changed,
+                insertions: value.summary.insertions,
+                deletions: value.summary.deletions,
+            },
+            changed_files: value
+                .changed_files
+                .into_iter()
+                .map(|file| AgentWorkspaceReviewChangedFileResponse {
+                    path: file.path,
+                    status: file.status,
+                    sources: file.sources,
+                })
+                .collect(),
+            patch_excerpt: value.patch_excerpt,
+            patch_excerpt_truncated: value.patch_excerpt_truncated,
+            notes: value.notes,
+        }
+    }
 }
 
 impl From<crate::application::agent_workspace_review::AgentWorkspaceReviewTarget>
     for AgentWorkspaceReviewTargetResponse
 {
     fn from(value: crate::application::agent_workspace_review::AgentWorkspaceReviewTarget) -> Self {
+        Self::from_target(value, false)
+    }
+}
+
+impl AgentWorkspaceReviewTargetResponse {
+    fn from_target(
+        value: crate::application::agent_workspace_review::AgentWorkspaceReviewTarget,
+        include_review_packet: bool,
+    ) -> Self {
+        let review_packet = include_review_packet
+            .then(|| AgentWorkspaceReviewPacketResponse::from(value.review_packet));
         Self {
             scope: value.scope.to_string(),
             base_ref: value.base_ref,
@@ -357,6 +419,7 @@ impl From<crate::application::agent_workspace_review::AgentWorkspaceReviewTarget
             head_sha: value.head_sha,
             diff_fingerprint: value.diff_fingerprint,
             source_pull_request_number: value.source_pull_request_number,
+            review_packet,
         }
     }
 }
@@ -438,6 +501,11 @@ pub struct AgentWorkspaceReviewContextResponse {
     pub is_current: bool,
     pub is_outdated: bool,
     pub should_show_tab: bool,
+}
+
+#[derive(Debug, serde::Deserialize, Default)]
+pub struct AgentWorkspaceReviewContextQuery {
+    pub include_review_packet: Option<bool>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -929,6 +997,7 @@ pub async fn get_agent_workspace_pr_review_context(
 pub async fn get_agent_workspace_review_context(
     State(state): State<HttpServerState>,
     Path(conversation_id): Path<String>,
+    Query(query): Query<AgentWorkspaceReviewContextQuery>,
 ) -> Result<Json<AgentWorkspaceReviewContextResponse>, JsonError> {
     let started = Instant::now();
     let conversation_id = ChatConversationId::from_string(conversation_id);
@@ -970,7 +1039,12 @@ pub async fn get_agent_workspace_review_context(
         success: true,
         workspace: workspace_response,
         events,
-        target: context.target.map(AgentWorkspaceReviewTargetResponse::from),
+        target: context.target.map(|target| {
+            AgentWorkspaceReviewTargetResponse::from_target(
+                target,
+                query.include_review_packet.unwrap_or(false),
+            )
+        }),
         monitor: AgentWorkspaceReviewMonitorResponse::from(context.monitor),
         is_current: context.is_current,
         is_outdated: context.is_outdated,
@@ -3574,12 +3648,16 @@ mod tests {
     use std::sync::Arc;
 
     use crate::application::agent_conversation_workspace::resolve_agent_conversation_workspace_path;
+    use crate::application::agent_workspace_review::{
+        AgentWorkspaceReviewChangedFile, AgentWorkspaceReviewDiffSummary,
+        AgentWorkspaceReviewPacket,
+    };
     use crate::application::{AppState, TeamService, TeamStateTracker};
     use crate::commands::ExecutionState;
     use crate::domain::entities::{
         AgentConversationWorkspace, AgentConversationWorkspaceMode,
-        AgentWorkspacePrCommentEvidenceUpsert, ArtifactId, ChatContextType, ChatConversation,
-        AgentWorkspaceSourcePullRequest, IdeationAnalysisBaseRefKind, Project, ProjectId,
+        AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspaceSourcePullRequest, ArtifactId,
+        ChatContextType, ChatConversation, IdeationAnalysisBaseRefKind, Project, ProjectId,
     };
     use crate::domain::services::github_service::{
         GithubServiceTrait, PrHealth, PrIssueCommentSummary, PrReviewSubmissionEvent, PrStatus,
@@ -3627,6 +3705,7 @@ mod tests {
                 diff_fingerprint: "fingerprint".to_string(),
                 working_directory: PathBuf::from("/tmp/worktree"),
                 source_pull_request_number: Some(347),
+                review_packet: AgentWorkspaceReviewPacket::default(),
             };
         assert_eq!(
             default_workspace_review_artifact_title(
@@ -3646,6 +3725,7 @@ mod tests {
                 diff_fingerprint: "fingerprint".to_string(),
                 working_directory: PathBuf::from("/tmp/worktree"),
                 source_pull_request_number: None,
+                review_packet: AgentWorkspaceReviewPacket::default(),
             };
         assert_eq!(
             default_workspace_review_artifact_title(
@@ -3665,6 +3745,48 @@ mod tests {
     }
 
     #[test]
+    fn workspace_review_target_response_includes_packet_only_when_requested() {
+        let target = crate::application::agent_workspace_review::AgentWorkspaceReviewTarget {
+            scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+            base_ref: "main".to_string(),
+            base_sha: Some("base".to_string()),
+            head_ref: "HEAD".to_string(),
+            head_sha: Some("head".to_string()),
+            diff_fingerprint: "fingerprint".to_string(),
+            working_directory: PathBuf::from("/tmp/worktree"),
+            source_pull_request_number: None,
+            review_packet: AgentWorkspaceReviewPacket {
+                summary: AgentWorkspaceReviewDiffSummary {
+                    files_changed: 1,
+                    insertions: 2,
+                    deletions: 0,
+                },
+                changed_files: vec![AgentWorkspaceReviewChangedFile {
+                    path: "src/lib.rs".to_string(),
+                    status: "modified".to_string(),
+                    sources: vec!["committed".to_string()],
+                }],
+                patch_excerpt: "diff --git a/src/lib.rs b/src/lib.rs".to_string(),
+                patch_excerpt_truncated: false,
+                notes: vec![],
+            },
+        };
+
+        let default_response = AgentWorkspaceReviewTargetResponse::from(target.clone());
+        assert!(default_response.review_packet.is_none());
+
+        let packet_response = AgentWorkspaceReviewTargetResponse::from_target(target, true)
+            .review_packet
+            .expect("packet should be included when requested");
+        assert_eq!(packet_response.summary.files_changed, 1);
+        assert_eq!(packet_response.changed_files[0].path, "src/lib.rs");
+        assert_eq!(
+            packet_response.patch_excerpt,
+            "diff --git a/src/lib.rs b/src/lib.rs"
+        );
+    }
+
+    #[test]
     fn workspace_review_artifact_title_replaces_legacy_or_stale_titles() {
         let selected_pr_target =
             crate::application::agent_workspace_review::AgentWorkspaceReviewTarget {
@@ -3676,6 +3798,7 @@ mod tests {
                 diff_fingerprint: "fingerprint".to_string(),
                 working_directory: PathBuf::from("/tmp/worktree"),
                 source_pull_request_number: Some(347),
+                review_packet: AgentWorkspaceReviewPacket::default(),
             };
 
         assert_eq!(
