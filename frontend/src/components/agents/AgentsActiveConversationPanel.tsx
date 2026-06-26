@@ -2017,7 +2017,8 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                             // inherit and display it read-only.
                             disabled:
                               isFocusedChildChat ||
-                              composerProps.agentStatus !== "idle" ||
+                              composerProps.isSending ||
+                              composerProps.agentStatus === "generating" ||
                               switchingConversationModeId ===
                                 selectedConversationId,
                           },

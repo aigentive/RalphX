@@ -27,6 +27,7 @@ const {
   getVerificationSpecialistsMock,
   confirmVerificationMock,
   composerQuestionModeRef,
+  composerAgentStatusRef,
   eventSubscribers,
   openUrlMock,
 } = vi.hoisted(() => ({
@@ -40,6 +41,7 @@ const {
   getVerificationSpecialistsMock: vi.fn(),
   confirmVerificationMock: vi.fn(),
   composerQuestionModeRef: { current: undefined as unknown },
+  composerAgentStatusRef: { current: "idle" },
   eventSubscribers: new Map<string, Set<(payload: unknown) => void>>(),
   openUrlMock: vi.fn(),
 }));
@@ -183,7 +185,7 @@ vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
       {renderComposer({
         onSend: vi.fn(),
         onStop: vi.fn(),
-        agentStatus: "idle",
+        agentStatus: composerAgentStatusRef.current,
         isSending: false,
         isReadOnly: false,
         autoFocus: false,
@@ -713,6 +715,7 @@ describe("AgentsActiveConversationPanel", () => {
     vi.clearAllMocks();
     eventSubscribers.clear();
     composerQuestionModeRef.current = undefined;
+    composerAgentStatusRef.current = "idle";
     getSessionPlanMock.mockResolvedValue(null);
     getPlanComplexityAssessmentMock.mockResolvedValue(null);
     approvePlanArtifactMock.mockResolvedValue(null);
@@ -1025,6 +1028,52 @@ describe("AgentsActiveConversationPanel", () => {
 
     expect(onActiveConversationModeMenuOpen).toHaveBeenCalledTimes(1);
     expect(onActiveConversationModeChange).toHaveBeenCalledWith("edit");
+  });
+
+  it("keeps the mode picker enabled while the agent is waiting for input", async () => {
+    const user = userEvent.setup();
+    const onActiveConversationModeChange = vi.fn();
+    composerAgentStatusRef.current = "waiting_for_input";
+
+    renderPanel({
+      activeConversation: { ...projectConversation(), agentMode: "edit" },
+      activeConversationMode: "edit",
+      activeConversationModeLocked: false,
+      activeWorkspace: {
+        ...workspace(),
+        mode: "edit",
+        modeSwitchLocked: false,
+      },
+      onActiveConversationModeChange,
+    });
+
+    const modeChip = screen.getByTestId("agent-composer-mode-chip");
+    expect(modeChip).not.toBeDisabled();
+
+    await user.click(modeChip);
+    const planOption = screen.getByTestId("agent-mode-option-plan");
+    expect(planOption).not.toBeDisabled();
+
+    await user.click(planOption);
+
+    expect(onActiveConversationModeChange).toHaveBeenCalledWith("plan");
+  });
+
+  it("keeps the mode picker disabled while the agent is generating", async () => {
+    composerAgentStatusRef.current = "generating";
+
+    renderPanel({
+      activeConversation: { ...projectConversation(), agentMode: "edit" },
+      activeConversationMode: "edit",
+      activeConversationModeLocked: false,
+      activeWorkspace: {
+        ...workspace(),
+        mode: "edit",
+        modeSwitchLocked: false,
+      },
+    });
+
+    expect(screen.getByTestId("agent-composer-mode-chip")).toBeDisabled();
   });
 
   it("disables Agent mode in the composer while ideation execution owns the workspace", async () => {
