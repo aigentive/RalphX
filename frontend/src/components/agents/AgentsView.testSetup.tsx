@@ -45,6 +45,7 @@ const agentsViewTestMocks = vi.hoisted(() => ({
   precomputePrDescriptionMock: vi.fn(),
   switchAgentConversationModeMock: vi.fn(),
   sendAgentMessageMock: vi.fn(),
+  listAgentConversationIssuesMock: vi.fn(),
   createConversationMock: vi.fn(),
   spawnConversationSessionNamerMock: vi.fn(),
   updateConversationTitleMock: vi.fn(),
@@ -167,6 +168,7 @@ const {
   precomputePrDescriptionMock,
   switchAgentConversationModeMock,
   sendAgentMessageMock,
+  listAgentConversationIssuesMock,
   createConversationMock,
   spawnConversationSessionNamerMock,
   updateConversationTitleMock,
@@ -694,6 +696,8 @@ vi.mock("@/api/chat", () => ({
     switchAgentConversationMode: (...args: unknown[]) =>
       switchAgentConversationModeMock(...args),
     sendAgentMessage: (...args: unknown[]) => sendAgentMessageMock(...args),
+    listAgentConversationIssues: (...args: unknown[]) =>
+      listAgentConversationIssuesMock(...args),
     createConversation: (...args: unknown[]) => createConversationMock(...args),
     spawnConversationSessionNamer: (...args: unknown[]) =>
       spawnConversationSessionNamerMock(...args),
@@ -1272,6 +1276,7 @@ export function setupAgentsViewTest() {
   setAgentConversationWorkspacePrSupervisionMock.mockReset();
   switchAgentConversationModeMock.mockReset();
   sendAgentMessageMock.mockReset();
+  listAgentConversationIssuesMock.mockReset();
   createConversationMock.mockReset();
   spawnConversationSessionNamerMock.mockReset();
   updateConversationTitleMock.mockReset();
@@ -1333,6 +1338,7 @@ export function setupAgentsViewTest() {
     queuedAsPending: false,
     queuedMessageId: null,
   });
+  listAgentConversationIssuesMock.mockResolvedValue([]);
   getAgentConversationWorkspaceMock.mockResolvedValue(null);
   getAgentConversationWorkspaceFreshnessMock.mockResolvedValue({
     conversationId: "conversation-1",

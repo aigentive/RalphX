@@ -45,6 +45,11 @@ import {
   preflightAgentWorkspaceFreshness,
   prReviewContextForConversation,
 } from "./agentWorkspaceQueries";
+import {
+  agentConversationIssueKeys,
+  hasOpenAgentConversationIssues,
+  useAgentConversationIssues,
+} from "./agentConversationIssueQueries";
 import type { IdeationArtifactTab } from "./agentArtifactTabs";
 import {
   getAgentConversationStoreKey,
@@ -83,6 +88,11 @@ type PrReviewArtifactEventPayload = {
   artifact?: {
     id?: string;
   } | null;
+};
+
+type AgentConversationLifecyclePayload = {
+  conversationId?: string;
+  conversation_id?: string;
 };
 
 export function useAgentsViewController({
@@ -383,6 +393,13 @@ export function useAgentsViewController({
     invalidateProjectConversations,
     selectedConversationMessages,
   });
+  const activeProjectConversationId =
+    activeConversation?.contextType === "project" ? activeConversation.id : null;
+  const activeConversationIssuesQuery =
+    useAgentConversationIssues(activeProjectConversationId);
+  const hasActiveConversationIssues = hasOpenAgentConversationIssues(
+    activeConversationIssuesQuery.data,
+  );
   const prReviewConversationId =
     activeConversation?.contextType === "project" &&
     activeConversationMode === "review_pr" &&
@@ -405,6 +422,7 @@ export function useAgentsViewController({
   const availableArtifactTabsWithReview = useMemo<IdeationArtifactTab[]>(() => {
     const tabs =
       activeConversation?.contextType === "project" &&
+      hasActiveConversationIssues &&
       !availableArtifactTabs.includes("issues")
         ? (["issues", ...availableArtifactTabs] as IdeationArtifactTab[])
         : availableArtifactTabs;
@@ -412,7 +430,12 @@ export function useAgentsViewController({
       return tabs;
     }
     return ["review", ...tabs];
-  }, [activeConversation?.contextType, availableArtifactTabs, reviewArtifactId]);
+  }, [
+    activeConversation?.contextType,
+    availableArtifactTabs,
+    hasActiveConversationIssues,
+    reviewArtifactId,
+  ]);
   const hasAutoOpenArtifactsWithReview =
     hasAutoOpenArtifacts || Boolean(reviewArtifactId);
   const knownFocusIdeationSessionId =
@@ -620,6 +643,36 @@ export function useAgentsViewController({
       unsubscribeWorkspaceUpdated();
     };
   }, [eventBus, openArtifactTab, queryClient, selectedConversationId]);
+
+  useEffect(() => {
+    const invalidateConversationIssues = (
+      payload: AgentConversationLifecyclePayload,
+    ) => {
+      const conversationId = payload.conversationId ?? payload.conversation_id;
+      if (!conversationId) {
+        return;
+      }
+      void queryClient.invalidateQueries({
+        queryKey: agentConversationIssueKeys.list(conversationId),
+      });
+    };
+
+    const unsubscribeRunCompleted =
+      eventBus.subscribe<AgentConversationLifecyclePayload>(
+        "agent:run_completed",
+        invalidateConversationIssues,
+      );
+    const unsubscribeTurnCompleted =
+      eventBus.subscribe<AgentConversationLifecyclePayload>(
+        "agent:turn_completed",
+        invalidateConversationIssues,
+      );
+
+    return () => {
+      unsubscribeRunCompleted();
+      unsubscribeTurnCompleted();
+    };
+  }, [eventBus, queryClient]);
 
   useEffect(() => {
     const unsubscribeCreated = eventBus.subscribe<unknown>(

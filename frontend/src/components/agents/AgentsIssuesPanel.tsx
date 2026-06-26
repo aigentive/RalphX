@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   AlertCircle,
   CheckCircle2,
@@ -17,16 +17,15 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 import { EmptyArtifactState } from "./AgentsArtifactEmptyState";
+import {
+  agentConversationIssueKeys,
+  useAgentConversationIssues,
+} from "./agentConversationIssueQueries";
 
 interface AgentsIssuesPanelProps {
   conversationId: string | null;
   projectId: string | null;
 }
-
-const agentConversationIssueKeys = {
-  list: (conversationId: string | null) =>
-    ["agents", "conversation-issues", conversationId, "open"] as const,
-};
 
 const severityTone: Record<string, string> = {
   critical: "var(--status-error)",
@@ -41,12 +40,7 @@ export function AgentsIssuesPanel({
   projectId: _projectId,
 }: AgentsIssuesPanelProps) {
   const queryClient = useQueryClient();
-  const issuesQuery = useQuery({
-    queryKey: agentConversationIssueKeys.list(conversationId),
-    queryFn: () => chatApi.listAgentConversationIssues(conversationId!),
-    enabled: Boolean(conversationId),
-    staleTime: 5_000,
-  });
+  const issuesQuery = useAgentConversationIssues(conversationId);
   const issues = issuesQuery.data ?? [];
   const issueCountLabel = useMemo(() => {
     if (issues.length === 0) return "No open issues";
