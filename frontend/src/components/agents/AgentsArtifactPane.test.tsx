@@ -5149,6 +5149,37 @@ describe("AgentsArtifactPane", () => {
     );
   });
 
+  it("does not precompute the PR description when the workspace is behind base", async () => {
+    getWorkspaceFreshnessMock.mockResolvedValue({
+      conversationId: "conversation-1",
+      freshnessScope: "full",
+      baseRef: "main",
+      baseDisplayName: "Project default (main)",
+      targetRef: "origin/main",
+      capturedBaseCommit: "old-base-sha",
+      targetBaseCommit: "new-base-sha",
+      isBaseAhead: true,
+      hasUncommittedChanges: false,
+      unpublishedCommitCount: null,
+      remoteRefreshed: true,
+      worktreeStatusChecked: true,
+      baseStatus: "valid",
+      effectiveBaseRef: "main",
+      effectiveBaseDisplayName: "Project default (main)",
+      baseBlockReason: null,
+    });
+    renderPane("publish", workspace({ mode: "edit" }));
+
+    await screen.findByTestId("agents-base-stale");
+    fireEvent.click(await screen.findByTestId("agents-review-changes"));
+
+    await waitFor(() =>
+      expect(getWorkspaceReviewMock).toHaveBeenCalledWith("conversation-1"),
+    );
+    await screen.findByText("frontend/src/App.tsx");
+    expect(precomputePrDescriptionMock).not.toHaveBeenCalled();
+  });
+
   it("shows workspace branch commits in the review dialog history tab", async () => {
     const user = userEvent.setup();
     getWorkspaceReviewMock.mockResolvedValue({

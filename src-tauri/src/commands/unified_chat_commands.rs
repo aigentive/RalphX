@@ -42,7 +42,8 @@ use crate::application::agent_conversation_workspace::{
     AgentConversationWorkspacePrAutomationDefaults, AgentConversationWorkspaceSetupMode,
 };
 use crate::application::agent_conversation_workspace_base::{
-    apply_workspace_base_resolution, resolve_workspace_base, BaseResolutionResult, BaseStatus,
+    apply_workspace_base_resolution, resolve_workspace_base,
+    resolve_workspace_base_from_local_snapshot, BaseResolutionResult, BaseStatus,
 };
 use crate::application::agent_planning_session_titles::{
     hydrate_agent_conversation_planning_session_title,
@@ -5372,6 +5373,109 @@ pub async fn precompute_agent_conversation_workspace_pr_description_for_app_stat
     .await
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AgentWorkspacePrDescriptionReviewBaseResolution {
+    Ready(String),
+    Skip(&'static str),
+}
+
+async fn resolve_agent_workspace_pr_description_review_base(
+    project: &Project,
+    workspace: &AgentConversationWorkspace,
+    worktree_path: &Path,
+) -> Result<AgentWorkspacePrDescriptionReviewBaseResolution, String> {
+    let captured_review_base =
+        review_base_for_publish(workspace.base_commit.as_deref(), &workspace.base_ref)?
+            .to_string();
+
+    let base_resolution = match resolve_workspace_base(project, workspace).await {
+        Ok(resolution) => Some(resolution),
+        Err(fresh_error) => {
+            tracing::debug!(
+                target: "ralphx_lib::commands::agent_workspace_publish",
+                conversation_id = %workspace.conversation_id,
+                project_id = %workspace.project_id,
+                branch = %workspace.branch_name,
+                error = %fresh_error,
+                "Fresh base resolution failed while preparing PR description; falling back to local snapshot"
+            );
+            match resolve_workspace_base_from_local_snapshot(project, workspace).await {
+                Ok(resolution) => Some(resolution),
+                Err(local_error) => {
+                    tracing::debug!(
+                        target: "ralphx_lib::commands::agent_workspace_publish",
+                        conversation_id = %workspace.conversation_id,
+                        project_id = %workspace.project_id,
+                        branch = %workspace.branch_name,
+                        error = %local_error,
+                        "Local base resolution failed while preparing PR description; using captured review base"
+                    );
+                    None
+                }
+            }
+        }
+    };
+
+    let Some(base_resolution) = base_resolution else {
+        return Ok(AgentWorkspacePrDescriptionReviewBaseResolution::Ready(
+            captured_review_base,
+        ));
+    };
+    if base_resolution.status == BaseStatus::Blocked {
+        return Ok(AgentWorkspacePrDescriptionReviewBaseResolution::Ready(
+            captured_review_base,
+        ));
+    }
+
+    let checkout_ref = match base_resolution.effective_checkout_ref() {
+        Ok(checkout_ref) => checkout_ref.to_string(),
+        Err(_) => {
+            return Ok(AgentWorkspacePrDescriptionReviewBaseResolution::Ready(
+                captured_review_base,
+            ));
+        }
+    };
+    let freshness = match inspect_publish_branch_freshness_for_source_after_fetch(
+        worktree_path,
+        &checkout_ref,
+        &workspace.branch_name,
+        Some(&captured_review_base),
+    )
+    .await
+    {
+        Ok(freshness) => freshness,
+        Err(error) => {
+            tracing::debug!(
+                target: "ralphx_lib::commands::agent_workspace_publish",
+                conversation_id = %workspace.conversation_id,
+                project_id = %workspace.project_id,
+                branch = %workspace.branch_name,
+                checkout_ref,
+                error = %error,
+                "Branch freshness check failed while preparing PR description; using captured review base"
+            );
+            return Ok(AgentWorkspacePrDescriptionReviewBaseResolution::Ready(
+                captured_review_base,
+            ));
+        }
+    };
+
+    if freshness.is_base_ahead {
+        return Ok(AgentWorkspacePrDescriptionReviewBaseResolution::Skip(
+            "base_ahead",
+        ));
+    }
+
+    let review_base = freshness
+        .captured_base_commit
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or(captured_review_base);
+    Ok(AgentWorkspacePrDescriptionReviewBaseResolution::Ready(
+        review_base,
+    ))
+}
+
 async fn precompute_agent_conversation_workspace_pr_description_inner(
     state: &AppState,
     conversation_id: ChatConversationId,
@@ -5403,12 +5507,6 @@ async fn precompute_agent_conversation_workspace_pr_description_inner(
             return Ok(skip("execution_owned_workspace"));
         }
 
-        let review_base =
-            match review_base_for_publish(workspace.base_commit.as_deref(), &workspace.base_ref) {
-                Ok(review_base) => review_base.to_string(),
-                Err(_) => return Ok(skip("missing_review_base")),
-            };
-
         let conversation = state
             .chat_conversation_repo
             .get_by_id(&conversation_id)
@@ -5431,6 +5529,20 @@ async fn precompute_agent_conversation_workspace_pr_description_inner(
         {
             return Ok(skip("uncommitted_changes"));
         }
+
+        let review_base = match resolve_agent_workspace_pr_description_review_base(
+            &project,
+            &workspace,
+            &worktree_path,
+        )
+        .await
+        {
+            Ok(AgentWorkspacePrDescriptionReviewBaseResolution::Ready(review_base)) => review_base,
+            Ok(AgentWorkspacePrDescriptionReviewBaseResolution::Skip(reason)) => {
+                return Ok(skip(reason));
+            }
+            Err(_) => return Ok(skip("missing_review_base")),
+        };
 
         let reviewable_commit_count =
             count_publish_reviewable_commits(&worktree_path, &workspace.branch_name, &review_base)
@@ -10709,12 +10821,36 @@ mod tests {
         repo: Arc<dyn AgentConversationWorkspaceRepository>,
         conversation_id: ChatConversationId,
         spawned: tokio::sync::Mutex<usize>,
+        spawned_configs: tokio::sync::Mutex<Vec<AgentConfig>>,
+    }
+
+    impl SubmittingPrDescriptionClient {
+        fn new(
+            repo: Arc<dyn AgentConversationWorkspaceRepository>,
+            conversation_id: ChatConversationId,
+        ) -> Self {
+            Self {
+                repo,
+                conversation_id,
+                spawned: tokio::sync::Mutex::new(0),
+                spawned_configs: tokio::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        async fn spawned_count(&self) -> usize {
+            *self.spawned.lock().await
+        }
+
+        async fn spawned_configs(&self) -> Vec<AgentConfig> {
+            self.spawned_configs.lock().await.clone()
+        }
     }
 
     #[async_trait]
     impl AgenticClient for SubmittingPrDescriptionClient {
         async fn spawn_agent(&self, config: AgentConfig) -> AgentResult<AgentHandle> {
             *self.spawned.lock().await += 1;
+            self.spawned_configs.lock().await.push(config.clone());
             Ok(AgentHandle::mock(config.role))
         }
 
@@ -10840,6 +10976,51 @@ mod tests {
             .expect("workspace should be persisted");
 
         (temp, state, conversation_id, github)
+    }
+
+    async fn published_workspace_and_project(
+        state: &AppState,
+        conversation_id: &ChatConversationId,
+    ) -> (AgentConversationWorkspace, Project) {
+        let workspace = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        let project = state
+            .project_repo
+            .get_by_id(&workspace.project_id)
+            .await
+            .expect("project lookup should succeed")
+            .expect("project should exist");
+        (workspace, project)
+    }
+
+    async fn use_main_as_publish_base(
+        state: &AppState,
+        conversation_id: &ChatConversationId,
+    ) -> AgentConversationWorkspace {
+        let (mut workspace, _project) = published_workspace_and_project(state, conversation_id).await;
+        workspace.base_ref = "main".to_string();
+        workspace.base_display_name = Some("Project default (main)".to_string());
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace.clone())
+            .await
+            .expect("workspace base should update");
+        workspace
+    }
+
+    fn commit_file(repo: &Path, relative_path: &str, contents: &str, message: &str) -> String {
+        let path = repo.join(relative_path);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("parent directory should be created");
+        }
+        std::fs::write(&path, contents).expect("fixture file should be written");
+        git(repo, &["add", relative_path]);
+        git(repo, &["commit", "-m", message]);
+        git(repo, &["rev-parse", "HEAD"])
     }
 
     async fn setup_linked_plan_publish_command_state(
@@ -11069,6 +11250,139 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn precompute_pr_description_skips_when_base_is_ahead() {
+        let (_temp, state, conversation_id, _github) = setup_publish_command_state(
+            "precompute-base-ahead",
+            true,
+            None,
+            Arc::new(MockGithubService::new()),
+        )
+        .await;
+        let workspace = use_main_as_publish_base(&state, &conversation_id).await;
+        let project = state
+            .project_repo
+            .get_by_id(&workspace.project_id)
+            .await
+            .expect("project lookup should succeed")
+            .expect("project should exist");
+        let worktree_path = PathBuf::from(&workspace.worktree_path);
+        commit_file(
+            &worktree_path,
+            "feature-only.txt",
+            "feature\n",
+            "Add feature-only change",
+        );
+
+        let repo_path = PathBuf::from(&project.working_directory);
+        git(&repo_path, &["checkout", "main"]);
+        commit_file(
+            &repo_path,
+            "base-only.txt",
+            "base\n",
+            "Advance base branch",
+        );
+
+        let client = Arc::new(SubmittingPrDescriptionClient::new(
+            Arc::clone(&state.agent_conversation_workspace_repo),
+            conversation_id.clone(),
+        ));
+        let state = state.with_agent_client(client.clone());
+
+        let response = precompute_agent_conversation_workspace_pr_description_for_app_state(
+            &state,
+            conversation_id,
+        )
+        .await
+        .expect("precompute should skip behind-base workspace without error");
+
+        assert_eq!(response.status, "skipped");
+        assert_eq!(response.reason.as_deref(), Some("base_ahead"));
+        assert!(response.cache_status.is_none());
+        assert_eq!(client.spawned_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn precompute_pr_description_uses_current_base_when_branch_contains_target_base() {
+        let (_temp, state, conversation_id, _github) = setup_publish_command_state(
+            "precompute-stale-base-contained",
+            true,
+            None,
+            Arc::new(MockGithubService::new()),
+        )
+        .await;
+        let workspace = use_main_as_publish_base(&state, &conversation_id).await;
+        let project = state
+            .project_repo
+            .get_by_id(&workspace.project_id)
+            .await
+            .expect("project lookup should succeed")
+            .expect("project should exist");
+        let worktree_path = PathBuf::from(&workspace.worktree_path);
+        commit_file(
+            &worktree_path,
+            "feature-only.txt",
+            "feature\n",
+            "Add feature-only change",
+        );
+
+        let repo_path = PathBuf::from(&project.working_directory);
+        git(&repo_path, &["checkout", "main"]);
+        let current_base = commit_file(
+            &repo_path,
+            "base-only.txt",
+            "base\n",
+            "Advance base branch",
+        );
+        git(&worktree_path, &["merge", "--no-edit", "main"]);
+
+        let stored = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        assert_ne!(
+            stored.base_commit.as_deref(),
+            Some(current_base.as_str()),
+            "fixture should keep the stored base commit stale"
+        );
+
+        let client = Arc::new(SubmittingPrDescriptionClient::new(
+            Arc::clone(&state.agent_conversation_workspace_repo),
+            conversation_id.clone(),
+        ));
+        let state = state.with_agent_client(client.clone());
+
+        let response = precompute_agent_conversation_workspace_pr_description_for_app_state(
+            &state,
+            conversation_id,
+        )
+        .await
+        .expect("precompute should draft from the effective current base");
+
+        assert_eq!(response.status, "ready");
+        assert_eq!(response.cache_status.as_deref(), Some("miss"));
+        assert_eq!(client.spawned_count().await, 1);
+        let configs = client.spawned_configs().await;
+        let prompt = &configs
+            .first()
+            .expect("describer should have been spawned")
+            .prompt;
+        assert!(
+            prompt.contains(&format!("<review_base>{current_base}</review_base>")),
+            "prompt should use the current target base as the review base"
+        );
+        assert!(
+            prompt.contains("feature-only.txt"),
+            "feature file should remain in the PR diff context"
+        );
+        assert!(
+            !prompt.contains("base-only.txt"),
+            "base-only file must not appear in the PR diff context"
+        );
+    }
+
+    #[tokio::test]
     async fn precompute_pr_description_caches_ready_workspace_description() {
         let (_temp, state, conversation_id, _github) = setup_publish_command_state(
             "precompute-ready",
@@ -11092,11 +11406,10 @@ mod tests {
             &["commit", "-m", "Add publish ready fixture"],
         );
 
-        let client = Arc::new(SubmittingPrDescriptionClient {
-            repo: Arc::clone(&state.agent_conversation_workspace_repo),
-            conversation_id: conversation_id.clone(),
-            spawned: tokio::sync::Mutex::new(0),
-        });
+        let client = Arc::new(SubmittingPrDescriptionClient::new(
+            Arc::clone(&state.agent_conversation_workspace_repo),
+            conversation_id.clone(),
+        ));
         let state = state.with_agent_client(client.clone());
 
         let first = precompute_agent_conversation_workspace_pr_description_for_app_state(
@@ -11117,7 +11430,7 @@ mod tests {
         .expect("precompute should reuse cached description");
         assert_eq!(second.status, "ready");
         assert_eq!(second.cache_status.as_deref(), Some("hit"));
-        assert_eq!(*client.spawned.lock().await, 1);
+        assert_eq!(client.spawned_count().await, 1);
     }
 
     #[test]
@@ -12763,11 +13076,10 @@ mod tests {
             issue_comments: Vec::new(),
             auto_merge_request: None,
         }));
-        let client = Arc::new(SubmittingPrDescriptionClient {
-            repo: Arc::clone(&state.agent_conversation_workspace_repo),
-            conversation_id: conversation_id.clone(),
-            spawned: tokio::sync::Mutex::new(0),
-        });
+        let client = Arc::new(SubmittingPrDescriptionClient::new(
+            Arc::clone(&state.agent_conversation_workspace_repo),
+            conversation_id.clone(),
+        ));
         let state = state.with_agent_client(client);
         let execution_state = Arc::new(ExecutionState::new());
 
@@ -12841,11 +13153,10 @@ mod tests {
         github.state().fetch_pr_health_result = Some(Err(AppError::Infrastructure(
             "GitHub health unavailable".to_string(),
         )));
-        let client = Arc::new(SubmittingPrDescriptionClient {
-            repo: Arc::clone(&state.agent_conversation_workspace_repo),
-            conversation_id: conversation_id.clone(),
-            spawned: tokio::sync::Mutex::new(0),
-        });
+        let client = Arc::new(SubmittingPrDescriptionClient::new(
+            Arc::clone(&state.agent_conversation_workspace_repo),
+            conversation_id.clone(),
+        ));
         let state = state.with_agent_client(client);
         let execution_state = Arc::new(ExecutionState::new());
 
