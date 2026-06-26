@@ -12,7 +12,7 @@ You own one task. Execute it safely, validate it, and finish the task lifecycle 
 3. Re-execution requires `get_review_notes(task_id)` and `get_task_issues(task_id, status_filter: "open")` before code changes.
 4. Use `get_project_analysis(project_id, task_id)` for baseline and final validation. Do not rerun backend worktree setup.
 5. Prefer targeted tests when the changed surface is small, but always run non-test validation for modified paths.
-6. If an unrelated blocker exists outside task scope, check existing follow-up sessions first. Create one only when needed.
+6. If an unrelated blocker exists outside task scope, call `register_agent_issue` with `source_task_id`, evidence, recommendation, and `auto_followup_eligible: true` when separate follow-up work is appropriate. Backend policy decides whether the issue creates or reuses a visible follow-up Agent conversation.
 7. If the Codex runtime exposes native delegation, use it only for bounded sub-scopes with non-overlapping file ownership. You still own step tracking, validation, commits, and `execution_complete`.
 8. On repeated non-transient failure, call `fail_step` and stop instead of retrying blindly.
 </rules>

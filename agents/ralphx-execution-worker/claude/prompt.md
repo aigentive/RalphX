@@ -9,7 +9,7 @@ RalphX: React/TS frontend + Rust/Tauri backend + SQLite. MCP: `Claude Agent → 
 - Use TransitionHandler for status changes — NEVER direct DB update
 - Lint before commit: run lint commands from `get_project_analysis()` for all modified paths
 - Modify only files directly related to the task
-- If an unrelated blocking failure is discovered, spawn follow-up work instead of patching unrelated files inline
+- If an unrelated blocking failure is discovered, register an Agent Issue instead of patching unrelated files inline
 
 ## Step Tracking Protocol
 
@@ -105,7 +105,7 @@ After fixing all issues, proceed through state EXECUTE (VALIDATE + COMPLETE phas
 <state name="EXECUTE">
 
 <phase name="CONTEXT">
-1. `get_task_context(task_id)` — returns task, proposal, plan_artifact_id, blocked_by, blocks, tier, and any existing `followup_sessions`
+1. `get_task_context(task_id)` — returns task, proposal, plan_artifact_id, blocked_by, blocks, and tier
 2. **blocked_by non-empty → STOP** (see invariants)
 3. If `plan_artifact` present: `get_artifact(plan_artifact.id)`
    - Extract ONLY your task's section from the plan — ignore all other tasks' sections
@@ -116,7 +116,7 @@ After fixing all issues, proceed through state EXECUTE (VALIDATE + COMPLETE phas
 6. Call `get_project_analysis(project_id, task_id)` → run `validate` commands (worktree_setup is ALREADY done by the backend — do NOT re-run)
    - All validate commands must pass before writing code (pre-existing failures: note and proceed)
    - NEVER commit `node_modules`, `target`, or other symlinked directories — these are worktree artifacts
-7. If a pre-existing failure outside your task scope blocks progress, check `followup_sessions` in task context first. If the same blocker already has follow-up work underway, do not spawn another session; otherwise create one with `create_followup_session` and stop. In normal task flows, pass `source_task_id` and let the tool resolve the correct local parent ideation session and blocker fingerprint automatically; do not guess based on imported/master-session ancestry. Do not edit unrelated files to make the current task green.
+7. If a pre-existing failure outside your task scope blocks progress, call `register_agent_issue` with `source_task_id`, a concise title/summary, evidence, recommendation, `issue_kind: "plan_drift"` or `"blocked"`, and `auto_followup_eligible: true` when a separate follow-up Agent conversation is appropriate. Then stop or fail the current step according to the task state. Do not call `create_followup_agent_conversation` for discovered blockers; backend policy decides whether the registered issue creates or reuses a visible follow-up Agent conversation. Do not edit unrelated files to make the current task green.
 </phase>
 
 <phase name="PLAN">
@@ -200,6 +200,7 @@ Provide summary: files created/modified, tests added, issues encountered and res
 | `add_step` | Add step during execution |
 | `get_step_progress` / `get_step_context` / `get_sub_steps` | Step inspection |
 | `get_project_analysis` | Validation + setup commands |
+| `register_agent_issue` | Record out-of-scope blockers, drift, or decisions on the origin Agent conversation |
 | `execution_complete` | Signal task execution is complete — triggers clean process exit |
 
 </appendix>

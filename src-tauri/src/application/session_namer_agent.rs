@@ -11,7 +11,7 @@ use crate::domain::agents::{
 };
 use crate::domain::entities::{
     AgentConversationWorkspaceMode, AgentWorkspaceSourcePullRequest, ChatContextType,
-    ChatConversation, ChatConversationId, DelegatedSessionId, IdeationSession,
+    ChatConversation, ChatConversationId, ChatMessage, DelegatedSessionId, IdeationSession,
     IdeationSessionFlow, IdeationSessionId, ProjectId, TaskId,
 };
 use crate::domain::repositories::{
@@ -24,6 +24,8 @@ use tauri::Emitter;
 const AUTO_TITLE_SOURCE: &str = "auto";
 const USER_TITLE_SOURCE: &str = "user";
 const AGENT_CONVERSATION_SOURCE_CONTEXT: &str = "agent_conversation";
+const CONVERSATION_CONTEXT_MESSAGE_LIMIT: u32 = 6;
+const CONVERSATION_CONTEXT_MESSAGE_CHARS: usize = 600;
 
 #[derive(Debug, Clone)]
 pub(crate) enum SessionNamerTarget {
@@ -107,7 +109,10 @@ pub(crate) async fn build_session_namer_agent_spawn(
 ) -> AppResult<SessionNamerAgentSpawn> {
     let target_label = target.target_label();
     let resolved = resolve_target_context(state, &target).await?;
-    let prompt = target.prompt(resolved.review_pull_request.as_ref());
+    let prompt = target.prompt(
+        resolved.review_pull_request.as_ref(),
+        resolved.conversation_context.as_deref(),
+    );
     let working_directory =
         resolve_project_working_directory(state, resolved.project_id.as_deref()).await?;
 
@@ -152,6 +157,7 @@ struct ResolvedSessionNamerTarget {
     project_id: Option<String>,
     harness_for_log: Option<AgentHarnessKind>,
     review_pull_request: Option<AgentWorkspaceSourcePullRequest>,
+    conversation_context: Option<String>,
 }
 
 async fn resolve_target_context(
@@ -174,6 +180,7 @@ async fn resolve_target_context(
                 project_id,
                 harness_for_log,
                 review_pull_request: None,
+                conversation_context: None,
             })
         }
         SessionNamerTarget::ConversationInitial {
@@ -191,6 +198,7 @@ async fn resolve_target_context(
             let project_id = resolve_conversation_project_id(state, &conversation).await?;
             let review_pull_request =
                 resolve_review_pull_request_context(state, &conversation.id).await?;
+            let conversation_context = format_conversation_context(state, &conversation).await?;
             let runtime = state
                 .resolve_session_namer_runtime_for_conversation_with_requested_harness(
                     &conversation,
@@ -206,9 +214,76 @@ async fn resolve_target_context(
                 project_id,
                 harness_for_log,
                 review_pull_request,
+                conversation_context,
             })
         }
     }
+}
+
+async fn format_conversation_context(
+    state: &AppState,
+    conversation: &ChatConversation,
+) -> AppResult<Option<String>> {
+    let messages = state
+        .chat_message_repo
+        .get_recent_by_conversation_paginated(
+            &conversation.id,
+            CONVERSATION_CONTEXT_MESSAGE_LIMIT,
+            0,
+        )
+        .await?;
+    if conversation.parent_conversation_id.is_none() && messages.is_empty() {
+        return Ok(None);
+    }
+
+    let mut context = String::from("\n<conversation_context>");
+    append_optional_xml_tag(
+        &mut context,
+        "parent_conversation_id",
+        conversation.parent_conversation_id.as_deref(),
+    );
+    append_optional_xml_tag(&mut context, "current_title", conversation.title.as_deref());
+    append_recent_messages_context(&mut context, messages);
+    context.push_str("\n</conversation_context>");
+    Ok(Some(context))
+}
+
+fn append_recent_messages_context(context: &mut String, messages: Vec<ChatMessage>) {
+    let mut wrote_messages = false;
+    for message in messages {
+        let content = compact_context_text(&message.content, CONVERSATION_CONTEXT_MESSAGE_CHARS);
+        if content.is_empty() {
+            continue;
+        }
+        if !wrote_messages {
+            context.push_str("\n<recent_messages>");
+            wrote_messages = true;
+        }
+        let role = message.role.to_string();
+        context.push_str("\n<message>");
+        append_optional_xml_tag(context, "role", Some(role.as_str()));
+        append_optional_xml_tag(context, "content", Some(content.as_str()));
+        context.push_str("\n</message>");
+    }
+    if wrote_messages {
+        context.push_str("\n</recent_messages>");
+    }
+}
+
+fn compact_context_text(value: &str, max_chars: usize) -> String {
+    let compact = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.chars().count() <= max_chars {
+        return compact;
+    }
+
+    let mut truncated = compact.chars().take(max_chars).collect::<String>();
+    if let Some((prefix, _)) = truncated.rsplit_once(char::is_whitespace) {
+        if !prefix.trim().is_empty() {
+            truncated = prefix.trim_end().to_string();
+        }
+    }
+    truncated.push_str("...");
+    truncated
 }
 
 async fn resolve_review_pull_request_context(
@@ -324,7 +399,11 @@ impl SessionNamerTarget {
         }
     }
 
-    fn prompt(&self, review_pull_request: Option<&AgentWorkspaceSourcePullRequest>) -> String {
+    fn prompt(
+        &self,
+        review_pull_request: Option<&AgentWorkspaceSourcePullRequest>,
+        conversation_context: Option<&str>,
+    ) -> String {
         match self {
             Self::SessionInitial {
                 session_id,
@@ -340,8 +419,9 @@ impl SessionNamerTarget {
                 let review_pull_request_context = review_pull_request
                     .map(format_review_pull_request_context)
                     .unwrap_or_default();
+                let conversation_context = conversation_context.unwrap_or_default();
                 build_session_namer_prompt(&format!(
-                    "<conversation_id>{conversation_id}</conversation_id>\n<user_message>{user_message}</user_message>{review_pull_request_context}"
+                    "<conversation_id>{conversation_id}</conversation_id>\n<user_message>{user_message}</user_message>{conversation_context}{review_pull_request_context}"
                 ))
             }
             Self::AcceptedSession {

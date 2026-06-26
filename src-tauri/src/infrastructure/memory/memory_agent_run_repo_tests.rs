@@ -22,7 +22,10 @@ async fn test_create_and_get() {
     let retrieved = repo.get_by_id(&id).await.unwrap().unwrap();
     assert_eq!(retrieved.id, id);
     assert_eq!(retrieved.harness, Some(AgentHarnessKind::Codex));
-    assert_eq!(retrieved.provider_session_id, Some("session-123".to_string()));
+    assert_eq!(
+        retrieved.provider_session_id,
+        Some("session-123".to_string())
+    );
     assert_eq!(retrieved.logical_effort, Some(LogicalEffort::Medium));
     assert_eq!(retrieved.input_tokens, Some(123));
     assert_eq!(retrieved.output_tokens, Some(45));

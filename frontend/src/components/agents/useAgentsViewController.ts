@@ -402,11 +402,16 @@ export function useAgentsViewController({
   const reviewArtifactId =
     prReviewContext?.monitor?.reviewArtifactId ?? null;
   const availableArtifactTabsWithReview = useMemo<IdeationArtifactTab[]>(() => {
-    if (!reviewArtifactId || availableArtifactTabs.includes("review")) {
-      return availableArtifactTabs;
+    const tabs =
+      activeConversation?.contextType === "project" &&
+      !availableArtifactTabs.includes("issues")
+        ? (["issues", ...availableArtifactTabs] as IdeationArtifactTab[])
+        : availableArtifactTabs;
+    if (!reviewArtifactId || tabs.includes("review")) {
+      return tabs;
     }
-    return ["review", ...availableArtifactTabs];
-  }, [availableArtifactTabs, reviewArtifactId]);
+    return ["review", ...tabs];
+  }, [activeConversation?.contextType, availableArtifactTabs, reviewArtifactId]);
   const hasAutoOpenArtifactsWithReview =
     hasAutoOpenArtifacts || Boolean(reviewArtifactId);
   const knownFocusIdeationSessionId =

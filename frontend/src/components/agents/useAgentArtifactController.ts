@@ -207,6 +207,7 @@ export function useAgentArtifactController({
         "2": "verification",
         "3": "proposal",
         "4": "tasks",
+        "5": "issues",
       };
       const tab = tabByKey[event.key];
       if (tab) {

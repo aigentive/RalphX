@@ -124,10 +124,7 @@ impl IdeationSessionRepository for MockIdeationSessionRepository {
             .sessions
             .iter()
             .filter(|s| {
-                s.inherited_plan_artifact_id
-                    .as_ref()
-                    .map(|id| id.as_str())
-                    == Some(artifact_id)
+                s.inherited_plan_artifact_id.as_ref().map(|id| id.as_str()) == Some(artifact_id)
             })
             .cloned()
             .collect())
@@ -320,10 +317,7 @@ impl IdeationSessionRepository for MockIdeationSessionRepository {
         unimplemented!()
     }
 
-    async fn count_active_proposals(
-        &self,
-        _session_id: &IdeationSessionId,
-    ) -> AppResult<usize> {
+    async fn count_active_proposals(&self, _session_id: &IdeationSessionId) -> AppResult<usize> {
         Ok(0)
     }
 
@@ -394,11 +388,7 @@ impl IdeationSessionRepository for MockIdeationSessionRepository {
         Ok(())
     }
 
-    async fn update_last_effective_model(
-        &self,
-        _session_id: &str,
-        _model: &str,
-    ) -> AppResult<()> {
+    async fn update_last_effective_model(&self, _session_id: &str, _model: &str) -> AppResult<()> {
         Ok(())
     }
 
@@ -433,10 +423,7 @@ impl IdeationSessionRepository for MockIdeationSessionRepository {
         Ok(Vec::new())
     }
 
-    async fn count_pending_sessions_for_project(
-        &self,
-        _project_id: &ProjectId,
-    ) -> AppResult<u32> {
+    async fn count_pending_sessions_for_project(&self, _project_id: &ProjectId) -> AppResult<u32> {
         Ok(0)
     }
 

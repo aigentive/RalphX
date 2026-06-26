@@ -12,6 +12,16 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { useUiStore } from "@/stores/uiStore";
 import { useChatStore } from "@/stores/chatStore";
 import { useIdeationStore } from "@/stores/ideationStore";
+import type { FeatureFlags } from "@/types/feature-flags";
+
+const ALL_ENABLED: FeatureFlags = {
+  activityPage: true,
+  extensibilityPage: true,
+  ideationPage: true,
+  battleMode: true,
+  teamMode: false,
+  atlassianOauth: false,
+};
 
 // ============================================================================
 // Test Setup
@@ -34,6 +44,7 @@ function resetStores() {
     viewByProject: {},
     sessionByProject: {},
     selectedTaskByProject: {},
+    featureFlags: ALL_ENABLED,
     executionStatus: {
       isPaused: false,
       runningCount: 0,

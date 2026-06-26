@@ -159,39 +159,16 @@ async fn resolve_project_queue_context(
     key: &QueueKey,
     app_state: &AppState,
 ) -> Result<Option<(String, Option<ChatConversationId>)>, String> {
-    if key.context_type != ChatContextType::Project {
-        return Ok(Some((key.context_id.clone(), None)));
-    }
-
-    let project_id = ProjectId::from_string(key.context_id.clone());
-    if app_state
-        .project_repo
-        .get_by_id(&project_id)
-        .await
-        .map_err(|e| e.to_string())?
-        .is_some()
-    {
-        return Ok(Some((key.context_id.clone(), None)));
-    }
-
-    let conversation_id = ChatConversationId::from_string(key.context_id.clone());
-    let Some(conversation) = app_state
-        .chat_conversation_repo
-        .get_by_id(&conversation_id)
-        .await
-        .map_err(|e| e.to_string())?
-    else {
-        return Ok(None);
-    };
-
-    if conversation.context_type != ChatContextType::Project {
-        return Ok(None);
-    }
-
-    Ok(Some((
-        conversation.context_id.clone(),
-        Some(conversation.id),
-    )))
+    crate::application::workspace_capacity::resolve_project_queue_context(
+        key,
+        &app_state.project_repo,
+        &app_state.chat_conversation_repo,
+    )
+    .await
+    .map(|resolved| {
+        resolved
+            .map(|(project_id, conversation_id)| (project_id.as_str().to_string(), conversation_id))
+    })
 }
 
 pub(super) async fn queue_key_matches_project(
@@ -312,6 +289,58 @@ pub(super) async fn count_slot_consuming_queued_messages(
         count += queued_messages_for_key(app_state, &key).await?.len() as u32;
     }
     Ok(count)
+}
+
+pub(super) async fn count_queued_messages_for_context_types(
+    context_types: &[ChatContextType],
+    project_filter: Option<&ProjectId>,
+    app_state: &AppState,
+) -> Result<u32, String> {
+    let mut count = 0u32;
+    for key in queued_keys(app_state).await? {
+        if !context_types
+            .iter()
+            .any(|context_type| *context_type == key.context_type)
+        {
+            continue;
+        }
+        if !queue_key_matches_project(&key, project_filter, app_state).await? {
+            continue;
+        }
+        count += app_state.message_queue.get_queued_with_key(&key).len() as u32;
+    }
+    Ok(count)
+}
+
+#[doc(hidden)]
+pub async fn count_active_workspace_sessions(
+    app_state: &AppState,
+    project_filter: Option<&ProjectId>,
+) -> Result<u32, String> {
+    crate::application::workspace_capacity::count_active_workspace_sessions(
+        &app_state.running_agent_registry,
+        &app_state.project_repo,
+        &app_state.chat_conversation_repo,
+        project_filter,
+    )
+    .await
+}
+
+pub(super) async fn workspace_has_capacity_for_state(
+    app_state: &AppState,
+    execution_state: &Arc<ExecutionState>,
+) -> Result<bool, String> {
+    let active_workspaces = count_active_workspace_sessions(app_state, None).await?;
+    Ok(
+        crate::application::workspace_capacity::workspace_capacity_available(
+            active_workspaces,
+            execution_state.workspace_max_concurrent(),
+            execution_state.running_count(),
+            execution_state.global_max_concurrent(),
+            execution_state.is_paused(),
+            execution_state.is_provider_blocked(),
+        ),
+    )
 }
 
 #[doc(hidden)]
@@ -478,25 +507,28 @@ pub(super) async fn has_runnable_execution_waiting(
     }
 
     for key in queued_keys(app_state).await? {
-        if !matches!(
-            key.context_type,
-            ChatContextType::TaskExecution | ChatContextType::Review | ChatContextType::Merge
-        ) {
-            continue;
-        }
+        match key.context_type {
+            ChatContextType::Project => {
+                if queue_key_matches_project(&key, project_filter, app_state).await? {
+                    return Ok(true);
+                }
+            }
+            ChatContextType::TaskExecution | ChatContextType::Review | ChatContextType::Merge => {
+                let task_id = TaskId::from_string(key.context_id.clone());
+                let Some(task) = app_state
+                    .task_repo
+                    .get_by_id(&task_id)
+                    .await
+                    .map_err(|e| e.to_string())?
+                else {
+                    continue;
+                };
 
-        let task_id = TaskId::from_string(key.context_id.clone());
-        let Some(task) = app_state
-            .task_repo
-            .get_by_id(&task_id)
-            .await
-            .map_err(|e| e.to_string())?
-        else {
-            continue;
-        };
-
-        if project_filter.is_none_or(|project_id| task.project_id == *project_id) {
-            return Ok(true);
+                if project_filter.is_none_or(|project_id| task.project_id == *project_id) {
+                    return Ok(true);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -628,6 +660,81 @@ where
     Ok(resumed)
 }
 
+pub(super) async fn resume_paused_workspace_queues_with_chat_service<F>(
+    project_filter: Option<&ProjectId>,
+    app_state: &AppState,
+    execution_state: &Arc<ExecutionState>,
+    build_chat_service: F,
+) -> Result<u32, String>
+where
+    F: Fn() -> Arc<dyn ChatService>,
+{
+    let mut resumed = 0u32;
+    let mut workspace_keys = Vec::new();
+
+    for key in queued_keys(app_state).await? {
+        if key.context_type != ChatContextType::Project {
+            continue;
+        }
+        if !queue_key_matches_project(&key, project_filter, app_state).await? {
+            continue;
+        }
+        let project_sort_key = resolve_project_queue_context(&key, app_state)
+            .await?
+            .map(|(context_id, _)| context_id)
+            .unwrap_or_default();
+        workspace_keys.push((project_sort_key, key.context_id.clone(), key));
+    }
+
+    workspace_keys.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+
+    for (_, _, key) in workspace_keys {
+        if !workspace_has_capacity_for_state(app_state, execution_state).await? {
+            break;
+        }
+
+        let Some((send_context_id, conversation_id)) =
+            resolve_project_queue_context(&key, app_state).await?
+        else {
+            continue;
+        };
+
+        let Some(queued) = pop_queued_key(app_state, &key).await? else {
+            continue;
+        };
+
+        let mut options = queued_message_to_send_options(&queued);
+        options.conversation_id_override = conversation_id;
+        options.caller_context = SendCallerContext::DrainService;
+
+        let send_result = build_chat_service()
+            .send_message(
+                ChatContextType::Project,
+                &send_context_id,
+                &queued.content,
+                options,
+            )
+            .await;
+
+        match send_result {
+            Ok(result) if result.was_queued => {}
+            Ok(_) => resumed += 1,
+            Err(error) => {
+                tracing::warn!(
+                    context_type = %key.context_type,
+                    context_id = key.context_id,
+                    error = %error,
+                    "Failed to relaunch paused workspace queued message"
+                );
+                restore_queued_front(app_state, &key, queued).await?;
+                break;
+            }
+        }
+    }
+
+    Ok(resumed)
+}
+
 pub(super) async fn resume_paused_non_slot_chat_queues_with_chat_service<F>(
     project_filter: Option<&ProjectId>,
     app_state: &AppState,
@@ -640,32 +747,20 @@ where
     let mut chat_keys = Vec::new();
 
     for key in queued_keys(app_state).await? {
-        if !matches!(
-            key.context_type,
-            ChatContextType::Task | ChatContextType::Project
-        ) {
+        if key.context_type != ChatContextType::Task {
             continue;
         }
         if !queue_key_matches_project(&key, project_filter, app_state).await? {
             continue;
         }
-        let project_sort_key = match key.context_type {
-            ChatContextType::Task => {
-                let task_id = TaskId::from_string(key.context_id.clone());
-                app_state
-                    .task_repo
-                    .get_by_id(&task_id)
-                    .await
-                    .map_err(|e| e.to_string())?
-                    .map(|task| task.project_id.as_str().to_string())
-                    .unwrap_or_default()
-            }
-            ChatContextType::Project => resolve_project_queue_context(&key, app_state)
-                .await?
-                .map(|(context_id, _)| context_id)
-                .unwrap_or_default(),
-            _ => String::new(),
-        };
+        let task_id = TaskId::from_string(key.context_id.clone());
+        let project_sort_key = app_state
+            .task_repo
+            .get_by_id(&task_id)
+            .await
+            .map_err(|e| e.to_string())?
+            .map(|task| task.project_id.as_str().to_string())
+            .unwrap_or_default();
         chat_keys.push((
             project_sort_key,
             key.context_type.to_string(),
@@ -681,22 +776,10 @@ where
             continue;
         };
 
-        let mut options = queued_message_to_send_options(&queued);
-        let send_context_id = if key.context_type == ChatContextType::Project {
-            let Some((context_id, conversation_id)) =
-                resolve_project_queue_context(&key, app_state).await?
-            else {
-                restore_queued_front(app_state, &key, queued).await?;
-                continue;
-            };
-            options.conversation_id_override = conversation_id;
-            context_id
-        } else {
-            key.context_id.clone()
-        };
+        let options = queued_message_to_send_options(&queued);
 
         let send_result = build_chat_service()
-            .send_message(key.context_type, &send_context_id, &queued.content, options)
+            .send_message(key.context_type, &key.context_id, &queued.content, options)
             .await;
 
         match send_result {

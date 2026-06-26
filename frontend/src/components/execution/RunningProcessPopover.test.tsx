@@ -5,7 +5,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { RunningProcessPopover } from "./RunningProcessPopover";
-import type { RunningProcess, RunningIdeationSession } from "@/api/running-processes";
+import type {
+  ExecutionCapacitySummary,
+  ExecutionLaneUsage,
+  RunningProcess,
+  RunningIdeationSession,
+  RunningWorkspaceSession,
+} from "@/api/running-processes";
 import { useUiStore } from "@/stores/uiStore";
 
 vi.mock("@/stores/uiStore", () => ({
@@ -66,6 +72,56 @@ function createMockIdeationSession(
     ...overrides,
   };
 }
+
+function createMockWorkspaceSession(
+  overrides?: Partial<RunningWorkspaceSession>
+): RunningWorkspaceSession {
+  return {
+    conversationId: "workspace-1",
+    projectId: "project-1",
+    title: "Workspace Agent",
+    elapsedSeconds: 90,
+    model: "gpt-5.5",
+    ...overrides,
+  };
+}
+
+const mockLanes: ExecutionLaneUsage[] = [
+  {
+    lane: "workspaces",
+    active: 1,
+    idle: 0,
+    waiting: 0,
+    max: 10,
+    borrowed: 0,
+    priorityRank: 1,
+  },
+  {
+    lane: "tasks",
+    active: 2,
+    idle: 0,
+    waiting: 1,
+    max: 8,
+    borrowed: 0,
+    priorityRank: 2,
+  },
+  {
+    lane: "ideation",
+    active: 1,
+    idle: 1,
+    waiting: 2,
+    max: 5,
+    borrowed: 0,
+    priorityRank: 3,
+  },
+];
+
+const mockCapacity: ExecutionCapacitySummary = {
+  totalActive: 4,
+  globalMaxConcurrent: 20,
+  borrowingEnabled: true,
+  priority: ["workspaces", "tasks", "ideation"],
+};
 
 describe("RunningProcessPopover", () => {
   beforeEach(() => {
@@ -391,6 +447,93 @@ describe("RunningProcessPopover", () => {
       expect(screen.queryByRole("tablist")).not.toBeInTheDocument();
     });
 
+    it("renders running, workspace, tasks, and ideation tabs when lane usage is present", () => {
+      render(
+        <RunningProcessPopover
+          processes={[createMockProcess({ taskId: "task-1" }), createMockProcess({ taskId: "task-2" })]}
+          ideationSessions={[createMockIdeationSession()]}
+          workspaceSessions={[createMockWorkspaceSession()]}
+          lanes={mockLanes}
+          capacity={mockCapacity}
+          maxConcurrent={8}
+          open={true}
+          onOpenChange={vi.fn()}
+          onPauseProcess={vi.fn()}
+          onStopProcess={vi.fn()}
+          onOpenSettings={vi.fn()}
+          showIdeation={true}
+          ideationMax={5}
+          initialTab="running"
+        >
+          <button>Trigger</button>
+        </RunningProcessPopover>
+      );
+
+      expect(screen.getByRole("tab", { name: /Running/ })).toBeInTheDocument();
+      expect(screen.getByRole("tab", { name: /Workspaces/ })).toBeInTheDocument();
+      expect(screen.getByRole("tab", { name: /Tasks/ })).toBeInTheDocument();
+      expect(screen.getByRole("tab", { name: /Ideation/ })).toBeInTheDocument();
+      expect(screen.getByTestId("capacity-lane-workspaces")).toHaveTextContent("1/10");
+    });
+
+    it("clicking Workspaces tab shows workspace sessions", () => {
+      render(
+        <RunningProcessPopover
+          processes={[]}
+          workspaceSessions={[createMockWorkspaceSession({ title: "Main workspace" })]}
+          lanes={mockLanes}
+          capacity={mockCapacity}
+          maxConcurrent={8}
+          open={true}
+          onOpenChange={vi.fn()}
+          onPauseProcess={vi.fn()}
+          onStopProcess={vi.fn()}
+          onOpenSettings={vi.fn()}
+          initialTab="running"
+        >
+          <button>Trigger</button>
+        </RunningProcessPopover>
+      );
+
+      fireEvent.click(screen.getByRole("tab", { name: /Workspaces/ }));
+      expect(screen.getByText("Main workspace")).toBeInTheDocument();
+      expect(screen.getByText("gpt-5.5")).toBeInTheDocument();
+    });
+
+    it("clicking lane summaries in Running switches to the corresponding tab", () => {
+      render(
+        <RunningProcessPopover
+          processes={[createMockProcess({ taskId: "task-lane", title: "Lane Task" })]}
+          ideationSessions={[createMockIdeationSession({ title: "Lane Ideation" })]}
+          workspaceSessions={[createMockWorkspaceSession({ title: "Lane Workspace" })]}
+          lanes={mockLanes}
+          capacity={mockCapacity}
+          maxConcurrent={8}
+          open={true}
+          onOpenChange={vi.fn()}
+          onPauseProcess={vi.fn()}
+          onStopProcess={vi.fn()}
+          onOpenSettings={vi.fn()}
+          showIdeation={true}
+          ideationMax={5}
+          initialTab="running"
+        >
+          <button>Trigger</button>
+        </RunningProcessPopover>
+      );
+
+      fireEvent.click(screen.getByTestId("capacity-lane-workspaces"));
+      expect(screen.getByText("Lane Workspace")).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("tab", { name: /Running/ }));
+      fireEvent.click(screen.getByTestId("capacity-lane-tasks"));
+      expect(screen.getByTestId("process-card-task-lane")).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("tab", { name: /Running/ }));
+      fireEvent.click(screen.getByTestId("capacity-lane-ideation"));
+      expect(screen.getByText("Lane Ideation")).toBeInTheDocument();
+    });
+
     it("clicking Ideation tab shows ideation content", () => {
       const session = createMockIdeationSession({ title: "My Ideation Session" });
       render(
@@ -485,6 +628,39 @@ describe("RunningProcessPopover", () => {
 
       expect(onOpenChange).toHaveBeenCalledWith(false);
       expect(mockNavigateToTask).toHaveBeenCalledWith("task-nav-1");
+    });
+
+    it("clicking a workspace row closes the popover and navigates to the agent conversation", () => {
+      const onOpenChange = vi.fn();
+      const onNavigateToWorkspace = vi.fn();
+      const workspace = createMockWorkspaceSession({
+        conversationId: "conversation-123",
+        projectId: "project-456",
+        title: "Clickable Workspace",
+      });
+      render(
+        <RunningProcessPopover
+          processes={[]}
+          workspaceSessions={[workspace]}
+          lanes={mockLanes}
+          capacity={mockCapacity}
+          maxConcurrent={8}
+          open={true}
+          onOpenChange={onOpenChange}
+          onPauseProcess={vi.fn()}
+          onStopProcess={vi.fn()}
+          onOpenSettings={vi.fn()}
+          onNavigateToWorkspace={onNavigateToWorkspace}
+          initialTab="workspaces"
+        >
+          <button>Trigger</button>
+        </RunningProcessPopover>
+      );
+
+      fireEvent.click(screen.getByTestId("workspace-card-conversation-123"));
+
+      expect(onOpenChange).toHaveBeenCalledWith(false);
+      expect(onNavigateToWorkspace).toHaveBeenCalledWith("project-456", "conversation-123");
     });
   });
 

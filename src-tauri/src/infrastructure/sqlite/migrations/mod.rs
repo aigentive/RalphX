@@ -296,6 +296,9 @@ mod v20260523145711_plan_complexity_assessments_tests;
 mod v20260523152748_agent_task_list_slices;
 #[cfg(test)]
 mod v20260523152748_agent_task_list_slices_tests;
+mod v20260524170000_execution_workspace_capacity;
+#[cfg(test)]
+mod v20260524170000_execution_workspace_capacity_tests;
 mod v20260527033000_agent_workspace_auto_publish;
 #[cfg(test)]
 mod v20260527033000_agent_workspace_auto_publish_tests;
@@ -350,12 +353,18 @@ mod v20260621201947_ticket_canonical_branches_tests;
 mod v20260622103000_agent_workspace_reviews;
 #[cfg(test)]
 mod v20260622103000_agent_workspace_reviews_tests;
+mod v20260622162352_agent_workspace_followup_provenance;
+#[cfg(test)]
+mod v20260622162352_agent_workspace_followup_provenance_tests;
 mod v20260623074101_clickup_integration_settings;
 #[cfg(test)]
 mod v20260623074101_clickup_integration_settings_tests;
 mod v20260625115000_custom_provider_binary;
 #[cfg(test)]
 mod v20260625115000_custom_provider_binary_tests;
+mod v20260625153000_agent_conversation_issues;
+#[cfg(test)]
+mod v20260625153000_agent_conversation_issues_tests;
 mod v20260626092500_custom_provider_env_file;
 #[cfg(test)]
 mod v20260626092500_custom_provider_env_file_tests;
@@ -1145,6 +1154,11 @@ const MIGRATIONS: &[Migration] = &[
         migrate: v20260523152748_agent_task_list_slices::migrate,
     },
     Migration {
+        version: 20260524170000,
+        name: "execution_workspace_capacity",
+        migrate: v20260524170000_execution_workspace_capacity::migrate,
+    },
+    Migration {
         version: 20260527033000,
         name: "agent_workspace_auto_publish",
         migrate: v20260527033000_agent_workspace_auto_publish::migrate,
@@ -1235,6 +1249,11 @@ const MIGRATIONS: &[Migration] = &[
         migrate: v20260622103000_agent_workspace_reviews::migrate,
     },
     Migration {
+        version: 20260622162352,
+        name: "agent_workspace_followup_provenance",
+        migrate: v20260622162352_agent_workspace_followup_provenance::migrate,
+    },
+    Migration {
         version: 20260623074101,
         name: "clickup_integration_settings",
         migrate: v20260623074101_clickup_integration_settings::migrate,
@@ -1243,6 +1262,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260625115000,
         name: "custom_provider_binary",
         migrate: v20260625115000_custom_provider_binary::migrate,
+    },
+    Migration {
+        version: 20260625153000,
+        name: "agent_conversation_issues",
+        migrate: v20260625153000_agent_conversation_issues::migrate,
     },
     Migration {
         version: 20260626092500,

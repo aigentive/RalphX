@@ -107,23 +107,27 @@ async fn test_global_execution_settings() {
     // Get default global settings
     let settings = repo.get_settings().await.unwrap();
     assert_eq!(settings.global_max_concurrent, 20);
+    assert_eq!(settings.workspace_max_concurrent, 10);
     assert_eq!(settings.global_ideation_max, 10);
     assert!(!settings.allow_ideation_borrow_idle_execution);
 
     // Update global settings
     let new_settings = GlobalExecutionSettings {
         global_max_concurrent: 30,
+        workspace_max_concurrent: 8,
         global_ideation_max: 6,
         allow_ideation_borrow_idle_execution: true,
     };
     let updated = repo.update_settings(&new_settings).await.unwrap();
     assert_eq!(updated.global_max_concurrent, 30);
+    assert_eq!(updated.workspace_max_concurrent, 8);
     assert_eq!(updated.global_ideation_max, 6);
     assert!(updated.allow_ideation_borrow_idle_execution);
 
     // Verify persistence
     let retrieved = repo.get_settings().await.unwrap();
     assert_eq!(retrieved.global_max_concurrent, 30);
+    assert_eq!(retrieved.workspace_max_concurrent, 8);
     assert_eq!(retrieved.global_ideation_max, 6);
     assert!(retrieved.allow_ideation_borrow_idle_execution);
 }
@@ -135,6 +139,7 @@ async fn test_global_max_concurrent_capped_at_50() {
     // Try to set above max
     let new_settings = GlobalExecutionSettings {
         global_max_concurrent: 100,
+        workspace_max_concurrent: 100,
         global_ideation_max: 100,
         allow_ideation_borrow_idle_execution: false,
     };
@@ -142,11 +147,13 @@ async fn test_global_max_concurrent_capped_at_50() {
 
     // Should be clamped to 50
     assert_eq!(updated.global_max_concurrent, 50);
+    assert_eq!(updated.workspace_max_concurrent, 50);
     assert_eq!(updated.global_ideation_max, 50);
 
     // Verify persistence
     let retrieved = repo.get_settings().await.unwrap();
     assert_eq!(retrieved.global_max_concurrent, 50);
+    assert_eq!(retrieved.workspace_max_concurrent, 50);
     assert_eq!(retrieved.global_ideation_max, 50);
     assert!(!retrieved.allow_ideation_borrow_idle_execution);
 }

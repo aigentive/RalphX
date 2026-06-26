@@ -55,6 +55,7 @@ const mockReviewSettings = {
   ai_review_enabled: true,
   ai_review_auto_fix: true,
   require_fix_approval: false,
+  auto_create_followup_agent_conversation: true,
 };
 
 const mockExternalMcpConfig = {
@@ -899,14 +900,18 @@ const commandHandlers: Record<
     updated: [],
     skipped: mockManagedProviderCliStatuses.providers,
   }),
-  get_ui_feature_flags: async () => ({
-    activityPage: true,
-    extensibilityPage: true,
-    battleMode: true,
-    teamMode: false,
-    atlassianOauth: false,
-    ticketingDashboard: false,
-  }),
+  get_ui_feature_flags: async () => {
+    const overrides = typeof window !== "undefined" ? window.__mockUiFeatureFlags : undefined;
+    return {
+      activityPage: true,
+      extensibilityPage: true,
+      battleMode: true,
+      teamMode: false,
+      atlassianOauth: false,
+      ticketingDashboard: false,
+      ...overrides,
+    };
+  },
   get_atlassian_integration_settings: async () =>
     mockAtlassianIntegrationSettings,
   save_atlassian_integration_settings: async (args) => {
@@ -2324,6 +2329,7 @@ const commandHandlers: Record<
     // Transform to snake_case as backend would return
     return {
       global_max_concurrent: settings.globalMaxConcurrent,
+      workspace_max_concurrent: settings.workspaceMaxConcurrent,
       global_ideation_max: settings.globalIdeationMax,
       allow_ideation_borrow_idle_execution:
         settings.allowIdeationBorrowIdleExecution,
@@ -2332,17 +2338,20 @@ const commandHandlers: Record<
   update_global_execution_settings: async (args) => {
     const input = args.input as {
       global_max_concurrent: number;
+      workspace_max_concurrent: number;
       global_ideation_max: number;
       allow_ideation_borrow_idle_execution: boolean;
     };
     const settings = await mockExecutionApi.updateGlobalSettings({
       globalMaxConcurrent: input.global_max_concurrent,
+      workspaceMaxConcurrent: input.workspace_max_concurrent,
       globalIdeationMax: input.global_ideation_max,
       allowIdeationBorrowIdleExecution:
         input.allow_ideation_borrow_idle_execution,
     });
     return {
       global_max_concurrent: settings.globalMaxConcurrent,
+      workspace_max_concurrent: settings.workspaceMaxConcurrent,
       global_ideation_max: settings.globalIdeationMax,
       allow_ideation_borrow_idle_execution:
         settings.allowIdeationBorrowIdleExecution,
@@ -2354,6 +2363,7 @@ const commandHandlers: Record<
       requireHumanReview?: boolean;
       maxFixAttempts?: number;
       maxRevisionCycles?: number;
+      autoCreateFollowupAgentConversation?: boolean;
     };
     if (input.requireHumanReview !== undefined) {
       mockReviewSettings.require_human_review = input.requireHumanReview;
@@ -2363,6 +2373,10 @@ const commandHandlers: Record<
     }
     if (input.maxRevisionCycles !== undefined) {
       mockReviewSettings.max_revision_cycles = input.maxRevisionCycles;
+    }
+    if (input.autoCreateFollowupAgentConversation !== undefined) {
+      mockReviewSettings.auto_create_followup_agent_conversation =
+        input.autoCreateFollowupAgentConversation;
     }
     return { ...mockReviewSettings };
   },

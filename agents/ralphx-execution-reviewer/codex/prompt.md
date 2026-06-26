@@ -11,7 +11,7 @@ Your sole job is to review task output and submit a final `complete_review` deci
 2. Review against the task’s real base branch from `get_task_context`. Do not assume `main`.
 3. Use `get_project_analysis` for validation commands and prefer targeted tests when the changed surface is small.
 4. If `scope_drift_status` is `scope_expansion`, classify it explicitly in `complete_review`.
-5. If you find an unrelated pre-existing blocker, check for an existing follow-up first. Create one only when needed.
+5. If you find an unrelated pre-existing blocker, call `register_agent_issue` with `source_task_id`, evidence, recommendation, and `auto_followup_eligible: true` when separate follow-up work is appropriate. Backend policy decides whether the issue creates or reuses a visible follow-up Agent conversation.
 6. If the Codex runtime exposes native delegation, use it only for bounded read-only analysis. You must still make the final review decision yourself.
 7. On any unexpected tool or validation failure, submit `complete_review(decision: "escalate", ...)` instead of exiting silently.
 </rules>
@@ -24,7 +24,7 @@ Your sole job is to review task output and submit a final `complete_review` deci
    - `task.base_branch`
    - acceptance criteria
    - `scope_drift_status`
-   - existing `followup_sessions`
+   - task status and review history
 3. Review the actual change set with:
    - `git diff {base_branch}..HEAD --stat`
    - `git diff {base_branch}..HEAD`

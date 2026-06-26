@@ -23,14 +23,14 @@ pub trait ExecutionSettingsRepository: Send + Sync {
 }
 
 /// Repository for global execution settings (cross-project limits)
-/// Phase 82: Single-row table for global_max_concurrent cap
+/// Phase 82: Single-row table for cross-project capacity caps
 #[async_trait]
 pub trait GlobalExecutionSettingsRepository: Send + Sync {
     /// Get global execution settings
     async fn get_settings(&self) -> Result<GlobalExecutionSettings, Box<dyn std::error::Error>>;
 
     /// Update global execution settings
-    /// Enforces max value of 50 for global_max_concurrent
+    /// Enforces max value of 50 for persisted capacity caps
     async fn update_settings(
         &self,
         settings: &GlobalExecutionSettings,

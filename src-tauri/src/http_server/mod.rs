@@ -273,6 +273,23 @@ pub async fn start_http_server(
             "/api/append_task_to_ideation_plan",
             post(append_ideation_plan_task_http),
         )
+        .route(
+            "/api/create_followup_agent_conversation",
+            post(create_followup_agent_conversation),
+        )
+        .route("/api/register_agent_issue", post(register_agent_issue))
+        .route(
+            "/api/agent_conversation_issues/list",
+            post(list_agent_conversation_issues),
+        )
+        .route(
+            "/api/agent_conversation_issues/status",
+            post(update_agent_conversation_issue_status),
+        )
+        .route(
+            "/api/agent_conversation_issues/convert_followup",
+            post(convert_agent_conversation_issue_followup),
+        )
         // Review tools (reviewer agent)
         .route("/api/complete_review", post(complete_review))
         .route("/api/review_notes/:task_id", get(get_review_notes))

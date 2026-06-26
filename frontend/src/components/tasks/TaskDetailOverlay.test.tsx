@@ -350,7 +350,7 @@ describe("TaskDetailOverlay", () => {
     expect(restoreMutate).not.toHaveBeenCalled();
   });
 
-  it("starts ideation: creates session, switches view, closes overlay", async () => {
+  it("starts ideation: creates session, routes to Agents, closes overlay", async () => {
     const user = userEvent.setup();
     createIdeationMutateAsync.mockResolvedValueOnce({
       id: "session-1",
@@ -362,7 +362,7 @@ describe("TaskDetailOverlay", () => {
     await user.click(screen.getByTestId("task-overlay-ideation-button"));
 
     await waitFor(() => expect(createIdeationMutateAsync).toHaveBeenCalled());
-    await waitFor(() => expect(useUiStore.getState().currentView).toBe("ideation"));
+    await waitFor(() => expect(useUiStore.getState().currentView).toBe("agents"));
     expect(useIdeationStore.getState().sessions["session-1"]).toBeDefined();
     expect(useIdeationStore.getState().activeSessionId).toBe("session-1");
   });

@@ -4,15 +4,19 @@ pub mod running_views;
 pub mod status_counting;
 
 pub use status_response::{
-    ExecutionCommandResponse, ExecutionStatusInput, ExecutionStatusResponse,
-    build_execution_status_response,
+    build_execution_status_response, ExecutionCommandResponse, ExecutionStatusInput,
+    ExecutionStatusResponse,
 };
+
 pub use running_views::{
-    RunningIdeationSession, RunningProcess, RunningProcessesResponse,
-    build_running_ideation_session, build_running_process, elapsed_seconds_for_status,
+    build_running_ideation_session, build_running_process, build_running_workspace_session,
+    elapsed_seconds_for_status, ExecutionCapacitySummary, ExecutionLaneUsage,
+    RunningIdeationSession, RunningProcess, RunningProcessesResponse, RunningWorkspaceSession,
 };
-pub use settings::{ExecutionSettings, GlobalExecutionSettings};
+pub use settings::{
+    ExecutionSettings, GlobalExecutionSettings, DEFAULT_WORKSPACE_MAX_CONCURRENT,
+};
 pub use status_counting::{
-    ExecutionStatusCounts, ScopedExecutionSubject, context_matches_running_status,
-    count_execution_status,
+    context_matches_running_status, count_execution_status, ExecutionStatusCounts,
+    ScopedExecutionSubject,
 };

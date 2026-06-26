@@ -130,7 +130,12 @@ fn workspace_state_history_triggers_capture_future_events_and_snapshot_updates()
     .unwrap();
 
     assert_eq!(
-        history_count(&conn, "publication_push_status", "pushed", "publication_event"),
+        history_count(
+            &conn,
+            "publication_push_status",
+            "pushed",
+            "publication_event"
+        ),
         1
     );
     assert_eq!(

@@ -18,6 +18,23 @@ use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::agent_names;
 
 const WORKSPACE_REVIEWER_TIMEOUT_SECS: u64 = 900;
+const WORKSPACE_REVIEW_LOG_TARGET: &str = "ralphx_lib::application::agent_workspace_review";
+
+fn compact_log_fingerprint(value: Option<&str>) -> String {
+    value
+        .map(|value| value.chars().take(12).collect())
+        .unwrap_or_else(|| "none".to_string())
+}
+
+fn target_scope_label(target: Option<&AgentWorkspaceReviewTarget>) -> String {
+    target
+        .map(|target| target.scope.to_string())
+        .unwrap_or_else(|| "none".to_string())
+}
+
+fn target_fingerprint_label(target: Option<&AgentWorkspaceReviewTarget>) -> String {
+    compact_log_fingerprint(target.map(|target| target.diff_fingerprint.as_str()))
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentWorkspaceReviewTarget {
@@ -52,6 +69,7 @@ pub async fn load_agent_workspace_review_context(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
 ) -> AppResult<AgentWorkspaceReviewContext> {
+    let started = Instant::now();
     let project = state
         .project_repo
         .get_by_id(&workspace.project_id)
@@ -67,7 +85,26 @@ pub async fn load_agent_workspace_review_context(
         .agent_conversation_workspace_repo
         .upsert_workspace_review_monitor(monitor)
         .await?;
-    Ok(build_context(workspace, monitor, target))
+    let context = build_context(workspace, monitor, target);
+    let scope = target_scope_label(context.target.as_ref());
+    let fingerprint = target_fingerprint_label(context.target.as_ref());
+    info!(
+        target: WORKSPACE_REVIEW_LOG_TARGET,
+        operation = "context",
+        conversation_id = %workspace.conversation_id,
+        project_id = %workspace.project_id,
+        branch = %workspace.branch_name,
+        elapsed_ms = started.elapsed().as_millis(),
+        monitor_status = %context.monitor.status,
+        target_scope = %scope,
+        diff_fingerprint = %fingerprint,
+        is_current = context.is_current,
+        is_outdated = context.is_outdated,
+        should_show_tab = context.should_show_tab,
+        has_artifact = context.monitor.review_artifact_id.is_some(),
+        "Loaded workspace Review context"
+    );
+    Ok(context)
 }
 
 pub async fn start_agent_workspace_review(
@@ -75,6 +112,16 @@ pub async fn start_agent_workspace_review(
     workspace: &AgentConversationWorkspace,
     force: bool,
 ) -> AppResult<AgentWorkspaceReviewStart> {
+    let request_started = Instant::now();
+    info!(
+        target: WORKSPACE_REVIEW_LOG_TARGET,
+        operation = "start_request",
+        conversation_id = %workspace.conversation_id,
+        project_id = %workspace.project_id,
+        branch = %workspace.branch_name,
+        force,
+        "Received workspace Review start request"
+    );
     let project = state
         .project_repo
         .get_by_id(&workspace.project_id)
@@ -83,6 +130,21 @@ pub async fn start_agent_workspace_review(
     let target = resolve_review_target(workspace, &project).await?;
     let mut monitor = load_or_create_monitor(&state, workspace).await?;
     apply_current_target_to_monitor(&mut monitor, target.as_ref());
+    let target_scope = target_scope_label(target.as_ref());
+    let target_fingerprint = target_fingerprint_label(target.as_ref());
+    info!(
+        target: WORKSPACE_REVIEW_LOG_TARGET,
+        operation = "start_target_resolved",
+        conversation_id = %workspace.conversation_id,
+        project_id = %workspace.project_id,
+        branch = %workspace.branch_name,
+        elapsed_ms = request_started.elapsed().as_millis(),
+        monitor_status = %monitor.status,
+        target_scope = %target_scope,
+        diff_fingerprint = %target_fingerprint,
+        has_artifact = monitor.review_artifact_id.is_some(),
+        "Resolved workspace Review start target"
+    );
 
     let Some(target) = target else {
         monitor.status = AgentWorkspaceReviewMonitorStatus::Idle;
@@ -91,6 +153,17 @@ pub async fn start_agent_workspace_review(
             .agent_conversation_workspace_repo
             .upsert_workspace_review_monitor(monitor)
             .await?;
+        info!(
+            target: WORKSPACE_REVIEW_LOG_TARGET,
+            operation = "start_skipped",
+            conversation_id = %workspace.conversation_id,
+            project_id = %workspace.project_id,
+            branch = %workspace.branch_name,
+            skip_reason = "no_reviewable_changes",
+            elapsed_ms = request_started.elapsed().as_millis(),
+            monitor_status = %monitor.status,
+            "Skipped workspace Review start"
+        );
         return Ok(AgentWorkspaceReviewStart {
             context: build_context(workspace, monitor, None),
             started: false,
@@ -112,6 +185,20 @@ pub async fn start_agent_workspace_review(
             .agent_conversation_workspace_repo
             .upsert_workspace_review_monitor(monitor)
             .await?;
+        info!(
+            target: WORKSPACE_REVIEW_LOG_TARGET,
+            operation = "start_skipped",
+            conversation_id = %workspace.conversation_id,
+            project_id = %workspace.project_id,
+            branch = %workspace.branch_name,
+            skip_reason = "current",
+            elapsed_ms = request_started.elapsed().as_millis(),
+            monitor_status = %monitor.status,
+            target_scope = %target.scope,
+            diff_fingerprint = %compact_log_fingerprint(Some(&target.diff_fingerprint)),
+            artifact_id = %monitor.review_artifact_id.as_ref().map(|id| id.as_str()).unwrap_or("none"),
+            "Skipped workspace Review start"
+        );
         return Ok(AgentWorkspaceReviewStart {
             context: build_context(workspace, monitor, Some(target)),
             started: false,
@@ -129,6 +216,20 @@ pub async fn start_agent_workspace_review(
             .agent_conversation_workspace_repo
             .upsert_workspace_review_monitor(monitor)
             .await?;
+        info!(
+            target: WORKSPACE_REVIEW_LOG_TARGET,
+            operation = "start_skipped",
+            conversation_id = %workspace.conversation_id,
+            project_id = %workspace.project_id,
+            branch = %workspace.branch_name,
+            skip_reason = "already_reviewing",
+            elapsed_ms = request_started.elapsed().as_millis(),
+            monitor_status = %monitor.status,
+            target_scope = %target.scope,
+            diff_fingerprint = %compact_log_fingerprint(Some(&target.diff_fingerprint)),
+            helper_id = %monitor.last_run_id.as_deref().unwrap_or("none"),
+            "Skipped workspace Review start"
+        );
         return Ok(AgentWorkspaceReviewStart {
             context: build_context(workspace, monitor, Some(target)),
             started: false,
@@ -150,12 +251,57 @@ pub async fn start_agent_workspace_review(
     let runtime = state
         .resolve_workspace_reviewer_runtime(&conversation, latest_run.as_ref())
         .await?;
+    let runtime_model = runtime
+        .model
+        .clone()
+        .unwrap_or_else(|| "default".to_string());
+    let runtime_effort = runtime
+        .logical_effort
+        .map(|effort| effort.to_string())
+        .unwrap_or_else(|| "default".to_string());
+    let runtime_approval_policy = runtime
+        .approval_policy
+        .clone()
+        .unwrap_or_else(|| "default".to_string());
+    let runtime_sandbox_mode = runtime
+        .sandbox_mode
+        .clone()
+        .unwrap_or_else(|| "default".to_string());
     let agent_client = Arc::clone(&runtime.client);
     let helper_harness = runtime.harness.unwrap_or(DEFAULT_AGENT_HARNESS);
     let bootstrap = resolve_harness_agent_bootstrap(
         helper_harness,
         agent_names::AGENT_WORKSPACE_REVIEWER,
         target.working_directory.clone(),
+    );
+    let latest_run_id = latest_run
+        .as_ref()
+        .map(|run| run.id.to_string())
+        .unwrap_or_else(|| "none".to_string());
+    let latest_run_harness = latest_run
+        .as_ref()
+        .and_then(|run| run.harness)
+        .map(|harness| harness.to_string())
+        .unwrap_or_else(|| "none".to_string());
+    info!(
+        target: WORKSPACE_REVIEW_LOG_TARGET,
+        operation = "sidecar_runtime_resolved",
+        conversation_id = %workspace.conversation_id,
+        project_id = %workspace.project_id,
+        branch = %workspace.branch_name,
+        elapsed_ms = request_started.elapsed().as_millis(),
+        target_scope = %target.scope,
+        diff_fingerprint = %compact_log_fingerprint(Some(&target.diff_fingerprint)),
+        latest_run_id = %latest_run_id,
+        latest_run_harness = %latest_run_harness,
+        helper_harness = %helper_harness,
+        model = %runtime_model,
+        logical_effort = %runtime_effort,
+        approval_policy = %runtime_approval_policy,
+        sandbox_mode = %runtime_sandbox_mode,
+        has_cli_override = runtime.cli_path_override.is_some(),
+        working_directory = %bootstrap.working_directory.display(),
+        "Resolved workspace Review sidecar runtime"
     );
     let env = runtime.env_with_overrides(bootstrap.env);
     let spawn_started = Instant::now();
@@ -181,13 +327,19 @@ pub async fn start_agent_workspace_review(
             AppError::Infrastructure(format!("failed to spawn workspace reviewer agent: {error}"))
         })?;
     info!(
-        target: "ralphx_lib::application::agent_workspace_review",
+        target: WORKSPACE_REVIEW_LOG_TARGET,
+        operation = "sidecar_spawned",
         conversation_id = %workspace.conversation_id,
         project_id = %workspace.project_id,
         branch = %workspace.branch_name,
         harness = %helper_harness,
+        model = %runtime_model,
+        logical_effort = %runtime_effort,
         helper_id = %handle.id,
         elapsed_ms = spawn_started.elapsed().as_millis(),
+        total_elapsed_ms = request_started.elapsed().as_millis(),
+        target_scope = %target.scope,
+        diff_fingerprint = %compact_log_fingerprint(Some(&target.diff_fingerprint)),
         "Spawned agent workspace Review sidecar"
     );
 
@@ -198,6 +350,19 @@ pub async fn start_agent_workspace_review(
         .agent_conversation_workspace_repo
         .upsert_workspace_review_monitor(monitor)
         .await?;
+    info!(
+        target: WORKSPACE_REVIEW_LOG_TARGET,
+        operation = "monitor_reviewing",
+        conversation_id = %workspace.conversation_id,
+        project_id = %workspace.project_id,
+        branch = %workspace.branch_name,
+        helper_id = %handle.id,
+        monitor_status = %monitor.status,
+        elapsed_ms = request_started.elapsed().as_millis(),
+        target_scope = %target.scope,
+        diff_fingerprint = %compact_log_fingerprint(Some(&target.diff_fingerprint)),
+        "Marked workspace Review monitor as reviewing"
+    );
     state
         .agent_conversation_workspace_repo
         .append_publication_event(
@@ -240,16 +405,43 @@ fn spawn_workspace_review_waiter(
 ) {
     tokio::spawn(async move {
         let wait_started = Instant::now();
+        info!(
+            target: WORKSPACE_REVIEW_LOG_TARGET,
+            operation = "sidecar_wait_started",
+            conversation_id = %workspace.conversation_id,
+            project_id = %workspace.project_id,
+            branch = %workspace.branch_name,
+            harness = %helper_harness,
+            helper_id = %handle.id,
+            timeout_secs = WORKSPACE_REVIEWER_TIMEOUT_SECS,
+            target_scope = %target.scope,
+            diff_fingerprint = %compact_log_fingerprint(Some(&target.diff_fingerprint)),
+            "Waiting for workspace Review sidecar completion"
+        );
         let output = match agent_client.wait_for_completion(&handle).await {
             Ok(output) => output,
             Err(error) => {
                 let error = format!("workspace reviewer agent failed: {error}");
+                warn!(
+                    target: WORKSPACE_REVIEW_LOG_TARGET,
+                    operation = "sidecar_wait_failed",
+                    conversation_id = %workspace.conversation_id,
+                    project_id = %workspace.project_id,
+                    branch = %workspace.branch_name,
+                    harness = %helper_harness,
+                    helper_id = %handle.id,
+                    elapsed_ms = wait_started.elapsed().as_millis(),
+                    target_scope = %target.scope,
+                    diff_fingerprint = %compact_log_fingerprint(Some(&target.diff_fingerprint)),
+                    "Workspace Review sidecar wait failed"
+                );
                 mark_workspace_review_blocked(&state, &workspace, &target, &handle.id, error).await;
                 return;
             }
         };
         info!(
-            target: "ralphx_lib::application::agent_workspace_review",
+            target: WORKSPACE_REVIEW_LOG_TARGET,
+            operation = "sidecar_completed",
             conversation_id = %workspace.conversation_id,
             project_id = %workspace.project_id,
             branch = %workspace.branch_name,
@@ -257,6 +449,9 @@ fn spawn_workspace_review_waiter(
             helper_id = %handle.id,
             elapsed_ms = wait_started.elapsed().as_millis(),
             success = output.success,
+            output_bytes = output.content.len(),
+            target_scope = %target.scope,
+            diff_fingerprint = %compact_log_fingerprint(Some(&target.diff_fingerprint)),
             "Agent workspace Review sidecar completed"
         );
         if !output.success {
@@ -278,12 +473,36 @@ fn spawn_workspace_review_waiter(
                     target.scope,
                     target.head_sha.as_deref(),
                     &target.diff_fingerprint,
-                ) && monitor.review_artifact_id.is_some() => {}
+                ) && monitor.review_artifact_id.is_some() =>
+            {
+                info!(
+                    target: WORKSPACE_REVIEW_LOG_TARGET,
+                    operation = "sidecar_artifact_verified",
+                    conversation_id = %workspace.conversation_id,
+                    project_id = %workspace.project_id,
+                    branch = %workspace.branch_name,
+                    harness = %helper_harness,
+                    helper_id = %handle.id,
+                    elapsed_ms = wait_started.elapsed().as_millis(),
+                    monitor_status = %monitor.status,
+                    artifact_id = %monitor.review_artifact_id.as_ref().map(|id| id.as_str()).unwrap_or("none"),
+                    artifact_version = monitor.review_artifact_version.unwrap_or_default(),
+                    target_scope = %target.scope,
+                    diff_fingerprint = %compact_log_fingerprint(Some(&target.diff_fingerprint)),
+                    "Verified workspace Review artifact after sidecar completion"
+                );
+            }
             Ok(_) => {
                 warn!(
-                    target: "ralphx_lib::application::agent_workspace_review",
+                    target: WORKSPACE_REVIEW_LOG_TARGET,
+                    operation = "sidecar_missing_artifact",
                     conversation_id = %workspace.conversation_id,
+                    project_id = %workspace.project_id,
+                    branch = %workspace.branch_name,
                     helper_id = %handle.id,
+                    elapsed_ms = wait_started.elapsed().as_millis(),
+                    target_scope = %target.scope,
+                    diff_fingerprint = %compact_log_fingerprint(Some(&target.diff_fingerprint)),
                     "Workspace reviewer sidecar completed without writing a current Review artifact"
                 );
                 mark_workspace_review_blocked(
@@ -298,10 +517,16 @@ fn spawn_workspace_review_waiter(
             }
             Err(error) => {
                 error!(
-                    target: "ralphx_lib::application::agent_workspace_review",
+                    target: WORKSPACE_REVIEW_LOG_TARGET,
+                    operation = "sidecar_verify_failed",
                     conversation_id = %workspace.conversation_id,
+                    project_id = %workspace.project_id,
+                    branch = %workspace.branch_name,
                     helper_id = %handle.id,
                     error = %error,
+                    elapsed_ms = wait_started.elapsed().as_millis(),
+                    target_scope = %target.scope,
+                    diff_fingerprint = %compact_log_fingerprint(Some(&target.diff_fingerprint)),
                     "Failed to verify workspace reviewer sidecar completion"
                 );
             }
@@ -317,10 +542,14 @@ async fn mark_workspace_review_blocked(
     error: String,
 ) {
     error!(
-        target: "ralphx_lib::application::agent_workspace_review",
+        target: WORKSPACE_REVIEW_LOG_TARGET,
+        operation = "sidecar_blocked",
         conversation_id = %workspace.conversation_id,
         project_id = %workspace.project_id,
+        branch = %workspace.branch_name,
         helper_id,
+        target_scope = %target.scope,
+        diff_fingerprint = %compact_log_fingerprint(Some(&target.diff_fingerprint)),
         error = %error,
         "Workspace Review sidecar failed"
     );
@@ -336,7 +565,8 @@ async fn mark_workspace_review_blocked(
                 .await
             {
                 warn!(
-                    target: "ralphx_lib::application::agent_workspace_review",
+                    target: WORKSPACE_REVIEW_LOG_TARGET,
+                    operation = "sidecar_blocked_persist_failed",
                     conversation_id = %workspace.conversation_id,
                     helper_id,
                     error = %error,
@@ -346,7 +576,8 @@ async fn mark_workspace_review_blocked(
         }
         Err(load_error) => {
             warn!(
-                target: "ralphx_lib::application::agent_workspace_review",
+                target: WORKSPACE_REVIEW_LOG_TARGET,
+                operation = "sidecar_blocked_monitor_load_failed",
                 conversation_id = %workspace.conversation_id,
                 helper_id,
                 error = %load_error,
@@ -363,6 +594,14 @@ pub async fn complete_agent_workspace_review_run(
     blocker: Option<String>,
     created_by_run_id: Option<String>,
 ) -> AppResult<AgentWorkspaceReviewMonitor> {
+    let started = Instant::now();
+    let has_outcome = outcome
+        .as_ref()
+        .is_some_and(|value| !value.trim().is_empty());
+    let has_blocker = blocker
+        .as_ref()
+        .is_some_and(|value| !value.trim().is_empty());
+    let created_by_run_id_label = created_by_run_id.as_deref().unwrap_or("none").to_string();
     let target = resolve_review_target(
         workspace,
         &state
@@ -392,6 +631,27 @@ pub async fn complete_agent_workspace_review_run(
         .agent_conversation_workspace_repo
         .upsert_workspace_review_monitor(monitor)
         .await
+        .inspect(|monitor| {
+            let scope = target_scope_label(target.as_ref());
+            let fingerprint = target_fingerprint_label(target.as_ref());
+            info!(
+                target: WORKSPACE_REVIEW_LOG_TARGET,
+                operation = "complete_tool",
+                conversation_id = %workspace.conversation_id,
+                project_id = %workspace.project_id,
+                branch = %workspace.branch_name,
+                elapsed_ms = started.elapsed().as_millis(),
+                monitor_status = %monitor.status,
+                target_scope = %scope,
+                diff_fingerprint = %fingerprint,
+                has_artifact = monitor.review_artifact_id.is_some(),
+                artifact_id = %monitor.review_artifact_id.as_ref().map(|id| id.as_str()).unwrap_or("none"),
+                created_by_run_id = %created_by_run_id_label,
+                has_outcome,
+                has_blocker,
+                "Completed workspace Review run"
+            );
+        })
 }
 
 pub async fn load_or_create_monitor(

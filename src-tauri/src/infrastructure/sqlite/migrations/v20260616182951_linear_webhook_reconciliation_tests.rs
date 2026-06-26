@@ -2,9 +2,7 @@
 
 use rusqlite::Connection;
 
-use super::{
-    v20260616182441_external_issue_links, v20260616182951_linear_webhook_reconciliation,
-};
+use super::{v20260616182441_external_issue_links, v20260616182951_linear_webhook_reconciliation};
 
 fn setup_test_db() -> Connection {
     Connection::open_in_memory().expect("Failed to create in-memory database")

@@ -5,9 +5,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use tokio::sync::RwLock;
 
-use crate::domain::agents::{
-    AgentLane, AgentLaneSettings, StoredAgentLaneSettings,
-};
+use crate::domain::agents::{AgentLane, AgentLaneSettings, StoredAgentLaneSettings};
 use crate::domain::repositories::AgentLaneSettingsRepository;
 
 pub struct MemoryAgentLaneSettingsRepository {
