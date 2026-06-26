@@ -12,6 +12,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
+use crate::application::git_service::GitService;
 use crate::application::question_state::QuestionState;
 use crate::application::runtime_factory::{
     build_task_scheduler_with_fallback, build_transition_service_with_fallback, RuntimeFactoryDeps,
@@ -27,7 +28,8 @@ use crate::domain::entities::{
     ChatConversationId, ChatMessageId, IdeationSessionId, InternalStatus, MergeFailureSource,
     MergeRecoveryEvent, MergeRecoveryEventKind, MergeRecoveryMetadata, MergeRecoveryReasonCode,
     MergeRecoverySource, MergeRecoveryState, ReviewNote, ReviewOutcome, ReviewerType,
-    SessionPurpose, TaskId, TaskStepStatus, VerificationGap, VerificationStatus,
+    SessionPurpose, Task, TaskId, TaskStepStatus, ValidationCacheMetadata, VerificationGap,
+    VerificationStatus,
 };
 use crate::domain::repositories::{
     ActivityEventRepository, AgentRunRepository, ArtifactRepository, ChatAttachmentRepository,
@@ -189,6 +191,91 @@ pub(crate) async fn all_steps_completed(
     }
 }
 
+/// Returns true if the task has at least one tracked step.
+///
+/// This is distinct from "a step repo exists": every production run has a repo,
+/// but a task may legitimately have zero steps (e.g. a worker that validates and
+/// calls `execution_complete` without registering per-step bookkeeping). The
+/// completion gate must treat such a task as "no step tracking" and fall back to
+/// `has_output`, rather than failing it for having no completed steps.
+///
+/// Safe-fallback: returns false if the repo is None or the query errors.
+pub(crate) async fn has_tracked_steps(
+    task_step_repo: &Option<Arc<dyn TaskStepRepository>>,
+    task_id: &TaskId,
+) -> bool {
+    let Some(ref repo) = task_step_repo else {
+        return false;
+    };
+    match repo.get_by_task(task_id).await {
+        Ok(steps) => !steps.is_empty(),
+        Err(e) => {
+            tracing::warn!(
+                task_id = task_id.as_str(),
+                error = %e,
+                "Failed to query steps for tracked-steps check"
+            );
+            false
+        }
+    }
+}
+
+/// Pure predicate: does a HEAD-matched validation cache prove the run's work is
+/// validated-complete?
+///
+/// Requires the cache's commit SHA to match current HEAD **and** tests to have
+/// actually run and passed. A cache with `tests_ran=false` (e.g. a self-blocked
+/// no-op that claimed success without running tests) deliberately does NOT count —
+/// this prevents rescuing a task that never did real work. No git calls, no side
+/// effects — fully unit-testable.
+pub(crate) fn validation_cache_proves_completion(
+    cache: &ValidationCacheMetadata,
+    current_head_sha: &str,
+) -> bool {
+    cache.commit_sha == current_head_sha && cache.tests_ran && cache.tests_passed
+}
+
+/// Async wrapper around [`validation_cache_proves_completion`]: parses the task's
+/// `validation_cache` metadata, resolves the worktree HEAD SHA, and reports whether
+/// the cache proves completion for the current commit.
+///
+/// Used to override a would-be `Failed` transition when `execution_complete` already
+/// captured a green, HEAD-matched validation cache — the case where a lingering
+/// terminal `failed` step (which cannot be cleared) would otherwise trap a fully
+/// validated task in `Failed` and drive an endless auto-retry loop.
+///
+/// Safe-fallback: returns false if there is no cache, no worktree path, or the HEAD
+/// SHA cannot be resolved.
+async fn validated_completion_override(task: &Task) -> bool {
+    let cache = match ValidationCacheMetadata::from_task_metadata(task.metadata.as_deref()) {
+        Ok(Some(cache)) => cache,
+        Ok(None) => return false,
+        Err(e) => {
+            tracing::warn!(
+                task_id = task.id.as_str(),
+                error = %e,
+                "Failed to parse validation_cache for completion override"
+            );
+            return false;
+        }
+    };
+    let Some(worktree_path) = task.worktree_path.as_deref() else {
+        return false;
+    };
+    let current_head_sha = match GitService::get_head_sha(Path::new(worktree_path)).await {
+        Ok(sha) => sha,
+        Err(e) => {
+            tracing::warn!(
+                task_id = task.id.as_str(),
+                error = %e,
+                "Failed to resolve HEAD SHA for completion override"
+            );
+            return false;
+        }
+    };
+    validation_cache_proves_completion(&cache, &current_head_sha)
+}
+
 /// Parse an ISO 8601 retry_after string and set the global provider rate limit gate
 /// on ExecutionState. Called from all agent error contexts (TaskExecution, Merge, Review)
 /// so a single rate limit detection blocks ALL subsequent spawns.
@@ -237,8 +324,14 @@ fn execution_completion_action(
     has_output: bool,
     steps_tracked: bool,
     all_steps_done: bool,
+    validation_complete: bool,
 ) -> ExecutionCompletionAction {
-    if should_transition_task_execution_to_pending_review(has_output, steps_tracked, all_steps_done)
+    if validation_complete
+        || should_transition_task_execution_to_pending_review(
+            has_output,
+            steps_tracked,
+            all_steps_done,
+        )
     {
         ExecutionCompletionAction::PendingReview
     } else {
@@ -749,6 +842,8 @@ async fn finalize_assistant_message_with_terminal_tool_state<R: Runtime>(
 ///
 /// For TaskExecution context:
 /// - If all task steps are completed → transition to PendingReview
+/// - If no steps are tracked but output exists → transition to PendingReview
+/// - If a HEAD-matched green validation cache exists → transition to PendingReview
 /// - Otherwise → transition to Failed (text output alone is not sufficient)
 ///
 /// For Merge context:
@@ -913,10 +1008,13 @@ pub(super) async fn handle_stream_success<R: Runtime>(
                         transition_service
                     };
                     let all_steps_done = all_steps_completed(task_step_repo, &task_id).await;
+                    let steps_tracked = has_tracked_steps(task_step_repo, &task_id).await;
+                    let validation_complete = validated_completion_override(&task).await;
                     let completion_action = execution_completion_action(
                         has_output,
-                        task_step_repo.is_some(),
+                        steps_tracked,
                         all_steps_done,
+                        validation_complete,
                     );
 
                     if completion_action == ExecutionCompletionAction::PendingReview
@@ -937,6 +1035,17 @@ pub(super) async fn handle_stream_success<R: Runtime>(
                             );
                         }
                     } else if completion_action == ExecutionCompletionAction::PendingReview {
+                        if validation_complete {
+                            tracing::info!(
+                                task_id = task_id.as_str(),
+                                "Worker run ended without all steps completed but a HEAD-matched green validation cache proves completion; transitioning to PendingReview"
+                            );
+                        } else {
+                            tracing::info!(
+                                task_id = task_id.as_str(),
+                                "Worker run produced output with no tracked steps; transitioning to PendingReview"
+                            );
+                        }
                         if let Err(e) = transition_service
                             .transition_task(&task_id, InternalStatus::PendingReview)
                             .await
@@ -2330,17 +2439,25 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                         }
                     }
 
-                    // AgentExit with all steps completed → agent called execution_complete
-                    // successfully but exited with signal (code=None). Override to PendingReview.
+                    // AgentExit where the work is actually complete → agent called
+                    // execution_complete successfully but exited with signal (code=None).
+                    // Override to PendingReview when either all steps are completed OR a
+                    // HEAD-matched green validation cache proves completion (the latter rescues
+                    // a fully validated task that a lingering terminal `failed` step would
+                    // otherwise trap in Failed).
                     let target_status = if target_status == InternalStatus::Failed
                         && matches!(stream_error, Some(StreamError::AgentExit { .. }))
                     {
                         let all_steps_done = all_steps_completed(task_step_repo, &task_id).await;
+                        let validation_complete =
+                            validated_completion_override(&current_task).await;
 
-                        if all_steps_done {
+                        if all_steps_done || validation_complete {
                             tracing::info!(
                                 task_id = task_id.as_str(),
-                                "AgentExit with all steps completed — overriding Failed → PendingReview"
+                                all_steps_done,
+                                validation_complete,
+                                "AgentExit with completed work — overriding Failed → PendingReview"
                             );
                             InternalStatus::PendingReview
                         } else {
