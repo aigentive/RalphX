@@ -3501,6 +3501,75 @@ describe("AgentsArtifactPane", () => {
     });
   });
 
+  it("scopes active publish progress to the conversation that started publishing", async () => {
+    const queryClient = createTestQueryClient();
+    const publishDeferred = deferred<void>();
+    const publish = vi.fn(() => publishDeferred.promise);
+    const pane = (conversationId: string, isPublishingWorkspace: boolean) => (
+      <QueryClientProvider client={queryClient}>
+        <TooltipProvider delayDuration={0}>
+          <div className="h-[480px]">
+            <AgentsArtifactPane
+              conversation={{
+                ...conversation(),
+                id: conversationId,
+                title:
+                  conversationId === "conversation-1"
+                    ? "Publishing conversation"
+                    : "Other conversation",
+              }}
+              workspace={workspace({
+                conversationId,
+                mode: "edit",
+                branchName: `ralphx/demo/agent-${conversationId}`,
+                worktreePath: `/tmp/ralphx/${conversationId}`,
+              })}
+              activeTab="publish"
+              taskMode="graph"
+              onTabChange={() => {}}
+              onTaskModeChange={() => {}}
+              onPublishWorkspace={publish}
+              isPublishingWorkspace={isPublishingWorkspace}
+              onClose={() => {}}
+            />
+          </div>
+        </TooltipProvider>
+      </QueryClientProvider>
+    );
+
+    const { rerender } = render(pane("conversation-1", false));
+
+    fireEvent.click(screen.getByTestId("agents-publish-confirm"));
+    fireEvent.click(
+      within(await screen.findByRole("dialog")).getByRole("button", {
+        name: "Commit & Publish",
+      }),
+    );
+
+    expect(await screen.findByRole("dialog", { name: "Publishing workspace" }))
+      .toBeInTheDocument();
+    expect(screen.getByTestId("agents-publish-pipeline")).toBeInTheDocument();
+
+    rerender(pane("conversation-2", false));
+
+    expect(
+      screen.queryByRole("dialog", { name: "Publishing workspace" }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByTestId("agents-publish-pipeline")).not.toBeInTheDocument();
+    expect(screen.getByTestId("agents-publish-confirm")).toBeEnabled();
+
+    rerender(pane("conversation-1", true));
+
+    expect(await screen.findByRole("dialog", { name: "Publishing workspace" }))
+      .toBeInTheDocument();
+    expect(screen.getByTestId("agents-publish-pipeline")).toBeInTheDocument();
+
+    await act(async () => {
+      publishDeferred.resolve();
+      await publishDeferred.promise;
+    });
+  });
+
   it("keeps commit publish available while freshness is loading", async () => {
     const publish = vi.fn().mockResolvedValue(undefined);
     const freshnessDeferred = deferred<unknown>();
