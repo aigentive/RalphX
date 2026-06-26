@@ -859,29 +859,21 @@ export function AgentPublishPanel({
       });
   };
   const handlePublishDialogOpenChange = (open: boolean) => {
-    const dialogConversationId = workspace.conversationId;
-    setPublishDialogState((current) => {
-      if (open) {
+    if (!open) {
+      const dialogConversationId = workspace.conversationId;
+      setPublishDialogState((current) => {
+        if (current?.conversationId !== dialogConversationId) {
+          return current;
+        }
+        if (!isPublishingThisWorkspace) {
+          return null;
+        }
         return {
-          conversationId: dialogConversationId,
-          open: true,
-          phase:
-            current?.conversationId === dialogConversationId
-              ? current.phase
-              : "confirm",
+          ...current,
+          open: false,
         };
-      }
-      if (current?.conversationId !== dialogConversationId) {
-        return current;
-      }
-      if (!isPublishingThisWorkspace) {
-        return null;
-      }
-      return {
-        ...current,
-        open: false,
-      };
-    });
+      });
+    }
   };
   const primaryActionClassName = "h-9 gap-2 px-3 text-xs";
 
