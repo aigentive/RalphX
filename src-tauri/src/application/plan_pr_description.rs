@@ -189,6 +189,7 @@ async fn draft_plan_pr_description_inner(
         agent_names::AGENT_PR_DESCRIBER,
         PathBuf::from(&project.working_directory),
     );
+    let env = runtime.env_with_overrides(bootstrap.env);
 
     info!(
         target: "ralphx_lib::application::plan_pr_description",
@@ -214,7 +215,7 @@ async fn draft_plan_pr_description_inner(
             sandbox_mode: runtime.sandbox_mode,
             max_tokens: None,
             timeout_secs: Some(120),
-            env: bootstrap.env,
+            env,
         })
         .await
         .map_err(|error| {
@@ -279,6 +280,9 @@ async fn resolve_plan_pr_describer_runtime(
             &provider_settings,
             purpose,
         )?;
+    let provider_env =
+        crate::application::provider_env_file::load_provider_custom_env_file(&provider_settings)
+            .map_err(AppError::Infrastructure)?;
 
     let client = if harness == agent_clients.default_harness {
         Arc::clone(&agent_clients.default_client)
@@ -309,6 +313,7 @@ async fn resolve_plan_pr_describer_runtime(
         sandbox_mode: provider_settings
             .sandbox_mode
             .or_else(|| default_sandbox_mode_for_harness(harness).map(str::to_string)),
+        env: provider_env,
     };
 
     Ok(crate::application::app_state::AppState::lock_utility_agent_runtime_model(runtime))

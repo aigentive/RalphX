@@ -383,6 +383,21 @@ impl ClaudeCodeClient {
     }
 }
 
+fn command_log_program(cmd: &tokio::process::Command) -> String {
+    cmd.as_std().get_program().to_string_lossy().into_owned()
+}
+
+fn command_log_arg_count(cmd: &tokio::process::Command) -> usize {
+    cmd.as_std().get_args().count()
+}
+
+fn command_log_env_keys(cmd: &tokio::process::Command) -> Vec<String> {
+    cmd.as_std()
+        .get_envs()
+        .filter_map(|(key, value)| value.map(|_| key.to_string_lossy().into_owned()))
+        .collect()
+}
+
 impl Default for ClaudeCodeClient {
     fn default() -> Self {
         Self::new()
@@ -785,7 +800,12 @@ impl ClaudeCodeClient {
         }
 
         // Spawn the process
-        tracing::info!(cmd = ?cmd, "Spawning CLI agent (streaming)");
+        tracing::info!(
+            program = %command_log_program(&cmd),
+            arg_count = command_log_arg_count(&cmd),
+            env_keys = ?command_log_env_keys(&cmd),
+            "Spawning CLI agent (streaming)"
+        );
         let mut child = cmd
             .kill_on_drop(true)
             .spawn()
@@ -863,7 +883,12 @@ impl ClaudeCodeClient {
             cmd.env(key, value);
         }
 
-        tracing::info!(cmd = ?cmd, "Spawning CLI agent (interactive, no -p)");
+        tracing::info!(
+            program = %command_log_program(&cmd),
+            arg_count = command_log_arg_count(&cmd),
+            env_keys = ?command_log_env_keys(&cmd),
+            "Spawning CLI agent (interactive, no -p)"
+        );
         let mut child = cmd
             .kill_on_drop(true)
             .spawn()
@@ -1129,7 +1154,9 @@ impl ClaudeCodeClient {
 
         // Spawn the process
         tracing::info!(
-            cmd = ?cmd,
+            program = %command_log_program(&cmd),
+            arg_count = command_log_arg_count(&cmd),
+            env_keys = ?command_log_env_keys(&cmd),
             teammate = %config.name,
             team = %config.team_name,
             model = %config.model,

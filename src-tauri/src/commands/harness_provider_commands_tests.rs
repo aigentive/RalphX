@@ -31,6 +31,8 @@ fn input(provider: &str) -> UpdateAgentProviderSettingsInput {
         auto_update_enabled: None,
         custom_binary_enabled: None,
         custom_binary_path: None,
+        custom_env_file_enabled: None,
+        custom_env_file_path: None,
         reset_to_defaults: false,
         apply_to_all_lanes: false,
     }
@@ -275,6 +277,45 @@ fn merge_switching_to_rx_managed_disables_custom_binary_but_keeps_path() {
 }
 
 #[test]
+fn merge_accepts_custom_env_file_without_cli_mode_side_effects() {
+    let mut settings = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Codex);
+    settings.cli_management_mode = AgentProviderCliManagementMode::RxManaged;
+    settings.auto_update_enabled = true;
+    let next = UpdateAgentProviderSettingsInput {
+        custom_env_file_enabled: Some(true),
+        custom_env_file_path: Some(Some(" /Users/example/.codex.env ".to_string())),
+        ..input("codex")
+    };
+
+    let merged = merge_input(settings, next, true).expect("merge settings");
+
+    assert!(merged.custom_env_file_enabled);
+    assert_eq!(
+        merged.custom_env_file_path.as_deref(),
+        Some("/Users/example/.codex.env")
+    );
+    assert_eq!(
+        merged.cli_management_mode,
+        AgentProviderCliManagementMode::RxManaged
+    );
+    assert!(merged.auto_update_enabled);
+}
+
+#[test]
+fn merge_rejects_custom_env_file_enable_without_path() {
+    let settings = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Claude);
+    let next = UpdateAgentProviderSettingsInput {
+        custom_env_file_enabled: Some(true),
+        custom_env_file_path: Some(Some(" ".to_string())),
+        ..input("claude")
+    };
+
+    let err = merge_input(settings, next, true).expect_err("path should be required");
+
+    assert!(err.contains("Custom claude env file path is required"));
+}
+
+#[test]
 fn merge_rejects_invalid_cli_management_mode() {
     let settings = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Codex);
     let next = UpdateAgentProviderSettingsInput {
@@ -300,6 +341,8 @@ fn merge_reset_to_defaults_preserves_enabled_and_default_state() {
     settings.auto_update_enabled = true;
     settings.custom_binary_enabled = true;
     settings.custom_binary_path = Some("/opt/tools/claude-wrapper".to_string());
+    settings.custom_env_file_enabled = true;
+    settings.custom_env_file_path = Some("/Users/example/.claude.env".to_string());
     let next = UpdateAgentProviderSettingsInput {
         reset_to_defaults: true,
         ..input("claude")
@@ -323,6 +366,8 @@ fn merge_reset_to_defaults_preserves_enabled_and_default_state() {
     assert!(!merged.auto_update_enabled);
     assert!(!merged.custom_binary_enabled);
     assert_eq!(merged.custom_binary_path, None);
+    assert!(!merged.custom_env_file_enabled);
+    assert_eq!(merged.custom_env_file_path, None);
 }
 
 #[test]
@@ -421,6 +466,8 @@ fn response_maps_settings_and_probe_fields() {
     settings.cli_management_mode = AgentProviderCliManagementMode::RxManaged;
     settings.auto_update_enabled = true;
     settings.custom_binary_path = Some("/opt/tools/codex-wrapper".to_string());
+    settings.custom_env_file_enabled = true;
+    settings.custom_env_file_path = Some("/Users/example/.codex.env".to_string());
     let response = to_response(
         settings,
         HarnessRuntimeProbe {
@@ -449,6 +496,11 @@ fn response_maps_settings_and_probe_fields() {
     assert_eq!(
         response.custom_binary_path.as_deref(),
         Some("/opt/tools/codex-wrapper")
+    );
+    assert!(response.custom_env_file_enabled);
+    assert_eq!(
+        response.custom_env_file_path.as_deref(),
+        Some("/Users/example/.codex.env")
     );
     assert!(response.available);
     assert!(response.binary_found);
@@ -695,6 +747,60 @@ async fn update_settings_rejects_invalid_custom_binary_candidate_before_save() {
     assert!(error.contains("absolute path"));
     assert!(!stored.custom_binary_enabled);
     assert_eq!(stored.custom_binary_path, None);
+}
+
+#[tokio::test]
+async fn update_settings_validates_custom_env_file_candidate_before_save() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let env_path = temp_dir.path().join("codex.env");
+    std::fs::write(&env_path, "ANTHROPIC_AUTH_TOKEN=secret\n").expect("write env file");
+    let state = AppState::new_test();
+    let probes = HashMap::from([(AgentHarnessKind::Codex, ready_probe("/usr/bin/codex"))]);
+    let next = UpdateAgentProviderSettingsInput {
+        custom_env_file_enabled: Some(true),
+        custom_env_file_path: Some(Some(env_path.to_string_lossy().into_owned())),
+        ..input("codex")
+    };
+
+    let response = update_provider_settings_with_probes(next, &state, &probes)
+        .await
+        .expect("update provider settings");
+
+    let codex = response
+        .providers
+        .iter()
+        .find(|provider| provider.provider == "codex")
+        .expect("codex provider");
+    assert!(codex.custom_env_file_enabled);
+    assert_eq!(
+        codex.custom_env_file_path.as_deref(),
+        Some(env_path.to_string_lossy().as_ref())
+    );
+}
+
+#[tokio::test]
+async fn update_settings_rejects_invalid_custom_env_file_candidate_before_save() {
+    let state = AppState::new_test();
+    let probes = HashMap::from([(AgentHarnessKind::Codex, ready_probe("/usr/bin/codex"))]);
+    let next = UpdateAgentProviderSettingsInput {
+        custom_env_file_enabled: Some(true),
+        custom_env_file_path: Some(Some("relative.env".to_string())),
+        ..input("codex")
+    };
+
+    let error = update_provider_settings_with_probes(next, &state, &probes)
+        .await
+        .expect_err("relative env path should fail");
+    let stored = state
+        .agent_provider_settings_repo
+        .get(AgentHarnessKind::Codex)
+        .await
+        .expect("read provider settings")
+        .expect("seeded provider settings");
+
+    assert!(error.contains("absolute"));
+    assert!(!stored.custom_env_file_enabled);
+    assert_eq!(stored.custom_env_file_path, None);
 }
 
 #[tokio::test]

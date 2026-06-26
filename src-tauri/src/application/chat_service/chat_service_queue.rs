@@ -3,6 +3,7 @@
 // Handles queued messages that were sent while an agent was running.
 // These messages are automatically processed via --resume after the initial run completes.
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
@@ -70,6 +71,21 @@ async fn durable_queue_len(
             }),
         None => 0,
     }
+}
+
+async fn provider_env_for_harness<R: Runtime>(
+    app_handle: Option<&AppHandle<R>>,
+    harness: AgentHarnessKind,
+) -> Result<HashMap<String, String>, String> {
+    let Some(handle) = app_handle else {
+        return Ok(HashMap::new());
+    };
+    let app_state = handle.state::<AppState>();
+    crate::application::provider_env_file::load_provider_custom_env_file_for_harness(
+        Some(&app_state.agent_provider_settings_repo),
+        harness,
+    )
+    .await
 }
 
 async fn queue_count(
@@ -1247,6 +1263,32 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                     };
                 }
             };
+            let provider_env = match provider_env_for_harness(app_handle.as_ref(), harness).await {
+                Ok(provider_env) => provider_env,
+                Err(err) => {
+                    tracing::warn!(
+                        error = %err,
+                        %context_type,
+                        context_id,
+                        harness = %harness,
+                        "queue spawn blocked by provider env file"
+                    );
+                    fail_queued_agent_run(
+                        agent_run_repo,
+                        running_agent_registry,
+                        &queue_registry_key,
+                        &queued_run_id,
+                        &err,
+                    )
+                    .await;
+                    return QueueProcessingOutcome {
+                        total_processed,
+                        last_run_id,
+                    };
+                }
+            };
+            let mut provider_spawnable = provider_spawnable;
+            provider_spawnable.apply_provider_env(&provider_env);
             let spawnable = provider_spawnable.spawnable;
 
             tracing::info!(cmd = ?spawnable, "Spawning CLI agent (queue resume)");

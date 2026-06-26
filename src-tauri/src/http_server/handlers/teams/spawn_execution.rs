@@ -154,6 +154,11 @@ pub(super) async fn execute_team_spawn(
             .with_effort(resolve_effort(Some(mcp_type)))
             .with_working_dir(working_dir.clone())
             .with_plugin_dir(resolve_teammate_plugin_dir(&working_dir));
+        let spawn_config = load_claude_provider_env_for_teammate_spawn(
+            &state.app_state.agent_provider_settings_repo,
+            spawn_config,
+        )
+        .await?;
 
         let client = ClaudeCodeClient::new();
         match client.spawn_teammate_interactive(spawn_config).await {

@@ -302,6 +302,7 @@ pub async fn draft_agent_workspace_pr_description(
         PathBuf::from(&project.working_directory),
     );
     ensure_pr_describer_submit_tool_available(helper_harness, &bootstrap.plugin_dir)?;
+    let env = runtime.env_with_overrides(bootstrap.env);
 
     let spawn_started = Instant::now();
     let output = agent_client
@@ -319,7 +320,7 @@ pub async fn draft_agent_workspace_pr_description(
             sandbox_mode: runtime.sandbox_mode,
             max_tokens: None,
             timeout_secs: Some(120),
-            env: bootstrap.env,
+            env,
         })
         .await
         .map_err(|error| {
