@@ -4895,9 +4895,8 @@ describe("AgentsArtifactPane", () => {
     await waitFor(() =>
       expect(getWorkspaceRepairSummaryMock).toHaveBeenCalledWith("conversation-1"),
     );
-    await waitFor(() =>
-      expect(getWorkspaceRepairUnstagedChangesMock).toHaveBeenCalledWith("conversation-1"),
-    );
+    expect(getWorkspaceRepairConflictDiffMock).not.toHaveBeenCalled();
+    expect(getWorkspaceRepairUnstagedChangesMock).not.toHaveBeenCalled();
   });
 
   it("labels merge-paused repair state", async () => {
