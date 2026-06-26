@@ -127,7 +127,7 @@ export const AGENT_WORKSPACE_TOOLS: Tool[] = [
   {
     name: "get_workspace_review_context",
     description:
-      "Read the current general workspace Review context, including the selected review target, diff fingerprint, prior Review artifact version, and freshness state. " +
+      "Read the current general workspace Review context, including the selected review target, compact review packet, diff fingerprint, prior Review artifact version, and freshness state. " +
       "Call this first when running as the workspace Review artifact writer.",
     inputSchema: {
       type: "object",
@@ -144,7 +144,7 @@ export const AGENT_WORKSPACE_TOOLS: Tool[] = [
     name: "write_workspace_review_artifact",
     description:
       "Create a new version of the durable Markdown Review artifact for the current agent workspace review target. " +
-      "Call this after inspecting the selected_source or workspace_delta target.",
+      "Call this after reviewing the selected_source or workspace_delta review packet and any targeted read-only follow-up.",
     inputSchema: {
       type: "object",
       properties: {
@@ -614,7 +614,9 @@ export async function callGetWorkspaceReviewContextTool(
     args,
     runtimeContext
   );
-  return callTauriGet(`agent-workspaces/${conversation_id}/workspace-review-context`);
+  return callTauriGet(
+    `agent-workspaces/${conversation_id}/workspace-review-context?include_review_packet=true`
+  );
 }
 
 export async function callWriteWorkspaceReviewArtifactTool(
