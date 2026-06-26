@@ -321,7 +321,7 @@ const CANONICAL_CLAUDE_DISALLOWED_TOOL_OWNED_AGENTS: &[(&str, &[&str])] = &[
     ("ralphx-pr-reviewer", &["Write", "Edit", "NotebookEdit"]),
     (
         "ralphx-workspace-reviewer",
-        &["Write", "Edit", "NotebookEdit"],
+        &["Write", "Edit", "NotebookEdit", "Bash"],
     ),
     ("ralphx-qa-prep", &["Write", "Edit", "Bash", "NotebookEdit"]),
     (
@@ -493,12 +493,7 @@ const CANONICAL_CLAUDE_TOOL_SPEC_OWNED_AGENTS: &[(&str, &str, &[&str], bool)] = 
         false,
     ),
     ("ralphx-pr-reviewer", "readonly_tools", &["Bash"], false),
-    (
-        "ralphx-workspace-reviewer",
-        "readonly_tools",
-        &["Bash"],
-        false,
-    ),
+    ("ralphx-workspace-reviewer", "readonly_tools", &[], false),
     ("ralphx-chat-task", "base_tools", &["Task"], false),
     ("ralphx-chat-project", "readonly_tools", &[], false),
     ("ralphx-review-chat", "base_tools", &["Task"], false),
@@ -689,6 +684,13 @@ fn codex_runtime_features_load_from_harness_metadata() {
         session_namer.runtime_features.get("shell_tool"),
         Some(&false),
         "session namer should disable Codex shell_tool declaratively"
+    );
+
+    let workspace_reviewer = load_canonical_codex_metadata(&root, "ralphx-workspace-reviewer");
+    assert_eq!(
+        workspace_reviewer.runtime_features.get("shell_tool"),
+        Some(&false),
+        "workspace reviewer should disable Codex shell_tool declaratively"
     );
 }
 
@@ -1354,6 +1356,10 @@ fn workspace_reviewer_codex_surface_uses_shared_prompt_and_review_tools() {
     let metadata = load_canonical_codex_metadata(&root, "ralphx-workspace-reviewer");
 
     for required_tool in [
+        "fs_read_file",
+        "fs_list_dir",
+        "fs_grep",
+        "fs_glob",
         "get_workspace_review_context",
         "write_workspace_review_artifact",
         "complete_workspace_review_run",
@@ -1380,10 +1386,30 @@ fn workspace_reviewer_codex_surface_uses_shared_prompt_and_review_tools() {
         !prompt.contains("mcp__ralphx__"),
         "Codex workspace reviewer prompt should not use Claude-style MCP names"
     );
-    assert_ne!(
+    for removed_tool in [
+        "get_agent_task",
+        "list_agent_tasks",
+        "search_memories",
+        "get_memory",
+        "get_memories_for_paths",
+    ] {
+        assert!(
+            !definition
+                .capabilities
+                .mcp_tools
+                .iter()
+                .any(|tool| tool == removed_tool),
+            "workspace reviewer should not retain unrelated MCP tool {removed_tool}"
+        );
+        assert!(
+            !metadata.mcp_tools.iter().any(|tool| tool == removed_tool),
+            "workspace reviewer Codex surface should not retain unrelated MCP tool {removed_tool}"
+        );
+    }
+    assert_eq!(
         metadata.runtime_features.get("shell_tool"),
         Some(&false),
-        "workspace reviewer needs Codex shell access for git diff inspection"
+        "workspace reviewer should use review_packet and bounded filesystem tools instead of Codex shell"
     );
 }
 

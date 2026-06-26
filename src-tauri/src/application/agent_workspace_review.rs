@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
@@ -19,6 +20,8 @@ use crate::infrastructure::agents::claude::agent_names;
 
 const WORKSPACE_REVIEWER_TIMEOUT_SECS: u64 = 900;
 const WORKSPACE_REVIEW_LOG_TARGET: &str = "ralphx_lib::application::agent_workspace_review";
+const WORKSPACE_REVIEW_PATCH_EXCERPT_CHARS: usize = 42_000;
+const WORKSPACE_REVIEW_MAX_CHANGED_FILES: usize = 120;
 
 fn compact_log_fingerprint(value: Option<&str>) -> String {
     value
@@ -46,6 +49,30 @@ pub struct AgentWorkspaceReviewTarget {
     pub diff_fingerprint: String,
     pub working_directory: PathBuf,
     pub source_pull_request_number: Option<i64>,
+    pub review_packet: AgentWorkspaceReviewPacket,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AgentWorkspaceReviewPacket {
+    pub summary: AgentWorkspaceReviewDiffSummary,
+    pub changed_files: Vec<AgentWorkspaceReviewChangedFile>,
+    pub patch_excerpt: String,
+    pub patch_excerpt_truncated: bool,
+    pub notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AgentWorkspaceReviewDiffSummary {
+    pub files_changed: u32,
+    pub insertions: u32,
+    pub deletions: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AgentWorkspaceReviewChangedFile {
+    pub path: String,
+    pub status: String,
+    pub sources: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -756,6 +783,256 @@ fn apply_current_target_to_monitor(
     }
 }
 
+#[derive(Debug, Default)]
+struct ChangedFileAccumulator {
+    status: String,
+    sources: BTreeSet<String>,
+}
+
+fn build_selected_source_review_packet(diff: &str) -> AgentWorkspaceReviewPacket {
+    build_review_packet(
+        &[("selected_source diff", diff)],
+        None,
+        &[("selected_source", diff)],
+    )
+}
+
+fn build_workspace_delta_review_packet(
+    committed_diff: &str,
+    staged_diff: &str,
+    unstaged_diff: &str,
+    status: &str,
+) -> AgentWorkspaceReviewPacket {
+    build_review_packet(
+        &[
+            ("committed diff", committed_diff),
+            ("staged diff", staged_diff),
+            ("unstaged diff", unstaged_diff),
+        ],
+        Some(status),
+        &[
+            ("committed", committed_diff),
+            ("staged", staged_diff),
+            ("unstaged", unstaged_diff),
+        ],
+    )
+}
+
+fn build_review_packet(
+    patch_sections: &[(&str, &str)],
+    status: Option<&str>,
+    diff_sources: &[(&str, &str)],
+) -> AgentWorkspaceReviewPacket {
+    let mut files = BTreeMap::<String, ChangedFileAccumulator>::new();
+    let mut insertions = 0u32;
+    let mut deletions = 0u32;
+
+    for (source, diff) in diff_sources {
+        let (added, removed) = diff_line_counts(diff);
+        insertions = insertions.saturating_add(added);
+        deletions = deletions.saturating_add(removed);
+        collect_diff_changed_files(diff, source, &mut files);
+    }
+    if let Some(status) = status {
+        collect_status_changed_files(status, &mut files);
+    }
+
+    let files_count = files.len();
+    let mut notes = Vec::new();
+    if files.values().any(|entry| entry.status == "untracked") {
+        notes.push(
+            "Untracked files are listed from git status; read them with fs_read_file when they are relevant because they are not present in git diff output."
+                .to_string(),
+        );
+    }
+    if files_count > WORKSPACE_REVIEW_MAX_CHANGED_FILES {
+        notes.push(format!(
+            "Changed file list is limited to the first {WORKSPACE_REVIEW_MAX_CHANGED_FILES} paths."
+        ));
+    }
+
+    let changed_files = files
+        .into_iter()
+        .take(WORKSPACE_REVIEW_MAX_CHANGED_FILES)
+        .map(|(path, entry)| AgentWorkspaceReviewChangedFile {
+            path,
+            status: entry.status,
+            sources: entry.sources.into_iter().collect(),
+        })
+        .collect::<Vec<_>>();
+    let (patch_excerpt, patch_excerpt_truncated) = build_patch_excerpt(patch_sections, status);
+    if patch_excerpt_truncated {
+        notes.push(format!(
+            "Patch excerpt is limited to {WORKSPACE_REVIEW_PATCH_EXCERPT_CHARS} characters; inspect listed files with read-only filesystem tools only when needed."
+        ));
+    }
+
+    AgentWorkspaceReviewPacket {
+        summary: AgentWorkspaceReviewDiffSummary {
+            files_changed: files_count as u32,
+            insertions,
+            deletions,
+        },
+        changed_files,
+        patch_excerpt,
+        patch_excerpt_truncated,
+        notes,
+    }
+}
+
+fn collect_diff_changed_files(
+    diff: &str,
+    source: &str,
+    files: &mut BTreeMap<String, ChangedFileAccumulator>,
+) {
+    let mut current_path: Option<String> = None;
+    for line in diff.lines() {
+        if let Some(path) = parse_diff_git_new_path(line) {
+            add_changed_file(files, &path, "modified", source);
+            current_path = Some(path);
+            continue;
+        }
+        let Some(path) = current_path.as_deref() else {
+            continue;
+        };
+        if line.starts_with("new file mode ") {
+            add_changed_file(files, path, "added", source);
+        } else if line.starts_with("deleted file mode ") {
+            add_changed_file(files, path, "deleted", source);
+        } else if let Some(renamed_to) = line.strip_prefix("rename to ") {
+            let renamed_to = clean_git_path(renamed_to);
+            add_changed_file(files, &renamed_to, "renamed", source);
+            current_path = Some(renamed_to);
+        }
+    }
+}
+
+fn collect_status_changed_files(
+    status: &str,
+    files: &mut BTreeMap<String, ChangedFileAccumulator>,
+) {
+    for line in status.lines() {
+        let Some((code, path)) = parse_status_line(line) else {
+            continue;
+        };
+        let status = if code == "??" {
+            "untracked"
+        } else if code.contains('D') {
+            "deleted"
+        } else if code.contains('A') {
+            "added"
+        } else if code.contains('R') {
+            "renamed"
+        } else {
+            "modified"
+        };
+        add_changed_file(files, &path, status, "status");
+    }
+}
+
+fn add_changed_file(
+    files: &mut BTreeMap<String, ChangedFileAccumulator>,
+    path: &str,
+    status: &str,
+    source: &str,
+) {
+    if path.trim().is_empty() || path == "/dev/null" {
+        return;
+    }
+    let entry = files
+        .entry(path.to_string())
+        .or_insert_with(|| ChangedFileAccumulator {
+            status: status.to_string(),
+            sources: BTreeSet::new(),
+        });
+    if status_rank(status) > status_rank(&entry.status) {
+        entry.status = status.to_string();
+    }
+    entry.sources.insert(source.to_string());
+}
+
+fn status_rank(status: &str) -> u8 {
+    match status {
+        "untracked" => 5,
+        "deleted" => 4,
+        "added" => 3,
+        "renamed" => 2,
+        "modified" => 1,
+        _ => 0,
+    }
+}
+
+fn parse_diff_git_new_path(line: &str) -> Option<String> {
+    let rest = line.strip_prefix("diff --git ")?;
+    let marker = " b/";
+    let marker_index = rest.rfind(marker)?;
+    Some(clean_git_path(&rest[marker_index + marker.len()..]))
+}
+
+fn parse_status_line(line: &str) -> Option<(&str, String)> {
+    if line.len() < 4 {
+        return None;
+    }
+    let code = line.get(0..2)?;
+    let raw_path = line.get(3..)?.trim();
+    let path = raw_path
+        .rsplit_once(" -> ")
+        .map(|(_, new_path)| new_path)
+        .unwrap_or(raw_path);
+    Some((code, clean_git_path(path)))
+}
+
+fn clean_git_path(path: &str) -> String {
+    path.trim().trim_matches('"').to_string()
+}
+
+fn diff_line_counts(diff: &str) -> (u32, u32) {
+    let mut insertions = 0u32;
+    let mut deletions = 0u32;
+    for line in diff.lines() {
+        if line.starts_with("+++") || line.starts_with("---") {
+            continue;
+        }
+        if line.starts_with('+') {
+            insertions = insertions.saturating_add(1);
+        } else if line.starts_with('-') {
+            deletions = deletions.saturating_add(1);
+        }
+    }
+    (insertions, deletions)
+}
+
+fn build_patch_excerpt(patch_sections: &[(&str, &str)], status: Option<&str>) -> (String, bool) {
+    let mut packet = String::new();
+    for (label, diff) in patch_sections {
+        if diff.trim().is_empty() {
+            continue;
+        }
+        packet.push_str("### ");
+        packet.push_str(label);
+        packet.push('\n');
+        packet.push_str(diff.trim_end());
+        packet.push_str("\n\n");
+    }
+    if let Some(status) = status.filter(|value| !value.trim().is_empty()) {
+        packet.push_str("### git status --porcelain=v1 -uall\n");
+        packet.push_str(status.trim_end());
+        packet.push('\n');
+    }
+    let truncated = packet.chars().count() > WORKSPACE_REVIEW_PATCH_EXCERPT_CHARS;
+    if truncated {
+        (
+            packet
+                .chars()
+                .take(WORKSPACE_REVIEW_PATCH_EXCERPT_CHARS)
+                .collect(),
+            true,
+        )
+    } else {
+        (packet, false)
+    }
+}
+
 async fn resolve_review_target(
     workspace: &AgentConversationWorkspace,
     project: &Project,
@@ -816,6 +1093,8 @@ async fn resolve_workspace_delta_target(
         &unstaged_diff,
         &status,
     ]);
+    let review_packet =
+        build_workspace_delta_review_packet(&committed_diff, &staged_diff, &unstaged_diff, &status);
 
     Ok(Some(AgentWorkspaceReviewTarget {
         scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,
@@ -826,6 +1105,7 @@ async fn resolve_workspace_delta_target(
         diff_fingerprint: fingerprint,
         working_directory: worktree_path,
         source_pull_request_number: None,
+        review_packet,
     }))
 }
 
@@ -929,6 +1209,7 @@ async fn resolve_selected_source_target(
         head_sha.as_deref().unwrap_or(""),
         &diff,
     ]);
+    let review_packet = build_selected_source_review_packet(&diff);
 
     Ok(Some(AgentWorkspaceReviewTarget {
         scope: AgentWorkspaceReviewTargetScope::SelectedSource,
@@ -939,6 +1220,7 @@ async fn resolve_selected_source_target(
         diff_fingerprint: fingerprint,
         working_directory: repo_path,
         source_pull_request_number: pr_number,
+        review_packet,
     }))
 }
 
@@ -1042,16 +1324,22 @@ fn build_review_request_message(
          - Base: {base_ref} ({base_sha})\n\
          - Head: {head_ref} ({head_sha})\n\
          - Diff fingerprint: {fingerprint}\n\
+         - Review packet: {files_changed} files changed, {insertions} insertions, {deletions} deletions\n\
          {pr_line}\
          - Workspace conversation: {conversation_id}\n\n\
          This is a background sidecar run, so pass conversation_id `{conversation_id}` explicitly to every workspace Review tool call. \
-         Inspect the target diff, write a concise reviewer-focused Markdown Review artifact with the `write_workspace_review_artifact` tool, then call `complete_workspace_review_run`. Do not modify files.",
+         Use the `target.review_packet` returned by `get_workspace_review_context` as the primary diff input, then inspect only targeted files with read-only filesystem tools if needed. \
+         Do not run shell commands, tests, linters, or validation suites. \
+         Write a concise reviewer-focused Markdown Review artifact with the `write_workspace_review_artifact` tool, then call `complete_workspace_review_run`. Do not modify files.",
         scope = target.scope,
         base_ref = target.base_ref,
         base_sha = target.base_sha.as_deref().unwrap_or("unknown"),
         head_ref = target.head_ref,
         head_sha = target.head_sha.as_deref().unwrap_or("unknown"),
         fingerprint = target.diff_fingerprint,
+        files_changed = target.review_packet.summary.files_changed,
+        insertions = target.review_packet.summary.insertions,
+        deletions = target.review_packet.summary.deletions,
         conversation_id = workspace.conversation_id.as_str(),
     )
 }
@@ -1202,6 +1490,32 @@ mod tests {
         assert!(target.head_sha.is_some());
         assert!(!target.diff_fingerprint.is_empty());
         assert_eq!(target.working_directory, repo);
+        assert_eq!(target.review_packet.summary.files_changed, 3);
+        assert_eq!(target.review_packet.summary.insertions, 2);
+        assert_eq!(target.review_packet.summary.deletions, 0);
+        assert!(target.review_packet.changed_files.iter().any(|file| {
+            file.path == "committed.rs" && file.sources.contains(&"committed".to_string())
+        }));
+        assert!(target.review_packet.changed_files.iter().any(|file| {
+            file.path == "staged.rs" && file.sources.contains(&"staged".to_string())
+        }));
+        assert!(target
+            .review_packet
+            .changed_files
+            .iter()
+            .any(|file| file.path == "unstaged.rs" && file.status == "untracked"));
+        assert!(target
+            .review_packet
+            .patch_excerpt
+            .contains("### committed diff"));
+        assert!(target
+            .review_packet
+            .patch_excerpt
+            .contains("### staged diff"));
+        assert!(target
+            .review_packet
+            .patch_excerpt
+            .contains("### git status --porcelain=v1 -uall"));
         assert!(!context.is_current);
         assert!(!context.is_outdated);
         assert!(context.should_show_tab);
@@ -1248,6 +1562,15 @@ mod tests {
         assert_eq!(target.head_ref, "feature/source");
         assert_eq!(target.head_sha.as_deref(), Some(feature_head.as_str()));
         assert_eq!(target.source_pull_request_number, None);
+        assert_eq!(target.review_packet.summary.files_changed, 1);
+        assert_eq!(target.review_packet.summary.insertions, 1);
+        assert!(target.review_packet.changed_files.iter().any(|file| {
+            file.path == "feature.rs" && file.sources.contains(&"selected_source".to_string())
+        }));
+        assert!(target
+            .review_packet
+            .patch_excerpt
+            .contains("### selected_source diff"));
         assert_eq!(
             context.monitor.selected_source_head_ref.as_deref(),
             Some("feature/source")
@@ -1700,11 +2023,17 @@ mod tests {
             diff_fingerprint: "fingerprint".to_string(),
             working_directory: PathBuf::from("/tmp/worktree"),
             source_pull_request_number: Some(483),
+            review_packet: AgentWorkspaceReviewPacket::default(),
         };
         let message = build_review_request_message(&workspace, &selected);
         assert!(message.contains("Create or refresh the Review artifact"));
         assert!(message.contains("- Scope: selected_source"));
         assert!(message.contains("- Source pull request: #483"));
+        assert!(message.contains("- Review packet: 0 files changed"));
+        assert!(message.contains("target.review_packet"));
+        assert!(
+            message.contains("Do not run shell commands, tests, linters, or validation suites.")
+        );
         assert!(message.contains(&workspace.conversation_id.as_str()));
         assert_eq!(
             review_started_summary(&selected),
