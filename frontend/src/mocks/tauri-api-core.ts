@@ -896,14 +896,18 @@ const commandHandlers: Record<
     updated: [],
     skipped: mockManagedProviderCliStatuses.providers,
   }),
-  get_ui_feature_flags: async () => ({
-    activityPage: true,
-    extensibilityPage: true,
-    battleMode: true,
-    teamMode: false,
-    atlassianOauth: false,
-    ticketingDashboard: false,
-  }),
+  get_ui_feature_flags: async () => {
+    const overrides = typeof window !== "undefined" ? window.__mockUiFeatureFlags : undefined;
+    return {
+      activityPage: true,
+      extensibilityPage: true,
+      battleMode: true,
+      teamMode: false,
+      atlassianOauth: false,
+      ticketingDashboard: false,
+      ...overrides,
+    };
+  },
   get_atlassian_integration_settings: async () =>
     mockAtlassianIntegrationSettings,
   save_atlassian_integration_settings: async (args) => {

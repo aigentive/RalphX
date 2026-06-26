@@ -1,5 +1,5 @@
 import { expect, Page } from "@playwright/test";
-import { setupApp } from "./setup.fixtures";
+import { setupApp, setupIdeation } from "./setup.fixtures";
 import {
   IDEATION_REPLAY_CONTEXTS,
   TASK_REPLAY_CONTEXTS,
@@ -20,6 +20,12 @@ type IdeationChatScenarioName = Extract<
   "ideation_db_widget_mix" | "ideation_widget_matrix"
 >;
 type TaskChatScenarioName = Exclude<ChatScenarioName, IdeationChatScenarioName>;
+
+const ASK_USER_SHELL_CONTEXT = {
+  contextType: "ideation",
+  contextId: "session-mock-1",
+  conversationId: "conv-ideation-ask-user-shell",
+} as const;
 
 export async function seedChatScenario(page: Page, scenario: ChatScenarioName) {
   await page.evaluate(({ scenarioName }) => {
@@ -73,9 +79,7 @@ export async function setupIdeationChatScenario(
   }
 ) {
   const replayContext = IDEATION_REPLAY_CONTEXTS[scenario];
-  await setupApp(page);
-  await page.click('[data-testid="nav-ideation"]');
-  await page.waitForSelector('[data-testid="ideation-view"]', { timeout: 10000 });
+  await setupIdeation(page);
   await page.waitForTimeout(250);
   await seedChatScenario(page, scenario);
   await seedChildSessionOverrides(page, options?.childSessionOverrides);
@@ -160,6 +164,135 @@ export async function setupIdeationChatScenario(
     };
 
     await seedConversationCache(conversations, conversation);
+
+    chatStore?.getState().setActiveConversation(`session:${contextId}`, conversationId);
+  }, replayContext);
+  await page.waitForFunction((replayContext) => {
+    const chatStore = (window as Window).__chatStore;
+    return (
+      chatStore?.getState().activeConversationIds?.[`session:${replayContext.contextId}`] ===
+      replayContext.conversationId
+    );
+  }, replayContext);
+  await expect(page.locator('[data-testid="conversation-panel"]')).toBeVisible();
+  await expect(page.locator('[data-testid="integrated-chat-messages"]')).toBeVisible();
+  await expect(page.locator('[data-testid="chat-session-chips"]')).toBeVisible();
+}
+
+export async function setupIdeationChatShell(page: Page) {
+  const replayContext = ASK_USER_SHELL_CONTEXT;
+  await setupIdeation(page);
+  await page.waitForTimeout(250);
+  await page.evaluate(async (replayContext) => {
+    const chatStore = (window as Window).__chatStore;
+    const ideationStore = (window as Window).__ideationStore;
+    const mockChatApi = (window as Window).__mockChatApi;
+    const queryClient = (window as Window).__queryClient;
+    const { conversationId, contextType, contextId } = replayContext;
+    const now = "2026-03-11T21:51:34.589194Z";
+
+    if (!ideationStore) {
+      throw new Error("Ideation store not available");
+    }
+    if (!mockChatApi) {
+      throw new Error("Mock chat API not available");
+    }
+    if (!queryClient) {
+      throw new Error("Query client not available");
+    }
+
+    ideationStore.getState().selectSession({
+      id: contextId,
+      projectId: "project-mock-1",
+      title: "Demo Ideation Session",
+      titleSource: null,
+      status: "active",
+      planArtifactId: null,
+      seedTaskId: null,
+      parentSessionId: null,
+      teamMode: null,
+      teamConfig: null,
+      createdAt: now,
+      updatedAt: now,
+      archivedAt: null,
+      convertedAt: null,
+      verificationStatus: "unverified",
+      verificationInProgress: false,
+      gapScore: null,
+      sessionPurpose: "general",
+      acceptanceStatus: null,
+    });
+
+    mockChatApi.reset();
+    mockChatApi.seedConversation(
+      {
+        id: conversationId,
+        contextType,
+        contextId,
+        claudeSessionId: "ask-user-shell-claude-session",
+        providerSessionId: "ask-user-shell-claude-session",
+        providerHarness: "claude",
+        title: "Ask user question shell",
+        messageCount: 1,
+        lastMessageAt: now,
+        createdAt: now,
+        updatedAt: now,
+        archivedAt: null,
+      },
+      [
+        {
+          id: "msg-ask-user-shell-assistant-1",
+          sessionId: contextId,
+          projectId: "project-mock-1",
+          taskId: null,
+          role: "assistant",
+          content: "Ready for follow-up questions.",
+          metadata: null,
+          parentMessageId: null,
+          conversationId,
+          toolCalls: null,
+          contentBlocks: null,
+          sender: "lead",
+          createdAt: now,
+        },
+      ],
+    );
+
+    const conversations = await mockChatApi.listConversations(contextType, contextId);
+    const conversation = await mockChatApi.getConversation(conversationId);
+    queryClient.setQueryData(
+      ["chat", "conversations", contextType, contextId],
+      conversations,
+    );
+    queryClient.setQueryData(
+      ["chat", "conversations", conversationId],
+      conversation,
+    );
+    queryClient.setQueryData(
+      ["chat", "conversations", conversationId, "history"],
+      {
+        pages: [
+          {
+            conversation: conversation.conversation,
+            messages: conversation.messages,
+            limit: 40,
+            offset: 0,
+            totalMessageCount: conversation.messages.length,
+            hasOlder: false,
+          },
+        ],
+        pageParams: [0],
+      },
+    );
+    queryClient.setQueryData(
+      ["chat", "conversations", conversationId, "timeline"],
+      {
+        pages: [
+          await mockChatApi.getConversationTimelinePage(conversationId, 500, null),
+        ],
+        pageParams: [null],
+      },
+    );
 
     chatStore?.getState().setActiveConversation(`session:${contextId}`, conversationId);
   }, replayContext);

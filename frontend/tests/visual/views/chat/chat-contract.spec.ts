@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { setupApp } from "../../../fixtures/setup.fixtures";
+import { setupIdeation } from "../../../fixtures/setup.fixtures";
 
 const contextId = "session-chat-contract";
 const conversationId = "conv-chat-contract";
@@ -133,9 +133,7 @@ async function seedIdeationConversation(
   page: Page,
   messages: Array<typeof userMessage | typeof liveProviderMessage>
 ) {
-  await setupApp(page);
-  await page.click('[data-testid="nav-ideation"]');
-  await page.waitForSelector('[data-testid="ideation-view"]', { timeout: 10000 });
+  await setupIdeation(page);
 
   await page.evaluate(async ({ conversation, seededMessages, sessionId }) => {
     const mockChatApi = window.__mockChatApi;
