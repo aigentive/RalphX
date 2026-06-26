@@ -1,5 +1,7 @@
 use chrono::{Duration, Utc};
-use serde_json::{Map, Value, json};
+use serde_json::{json, Map, Value};
+
+use super::execution::is_deterministic_agent_command_error;
 
 /// Replicates the staleness check logic from `recover_timeout_failures`.
 ///
@@ -280,4 +282,17 @@ fn test_structural_git_error_empty_message_not_structural() {
         !is_structural_git_error_test(""),
         "Empty message should not be classified as structural git error"
     );
+}
+
+#[test]
+fn deterministic_agent_command_error_detects_invalid_ignored_mode() {
+    assert!(is_deterministic_agent_command_error(
+        "Agent failed: fatal: Invalid ignored mode '.artifacts/specs/p8-regression-gate/tracker.md'"
+    ));
+}
+
+#[test]
+fn deterministic_agent_command_error_does_not_match_normal_agent_exit() {
+    let ordinary_agent_error = "Agent failed: tests failed in frontend/src/App.test.tsx";
+    assert!(!is_deterministic_agent_command_error(ordinary_agent_error));
 }

@@ -48,6 +48,7 @@ Primary project docs:
 - Legacy harness compatibility (NON-NEGOTIABLE): provider-neutral changes stay additive/derivable from legacy Claude-only persisted data until an explicit migration removes that requirement.
 - Minimal diffs: avoid formatter churn and opportunistic refactors.
 - Context-preservation trackers (NON-NEGOTIABLE): for multi-step investigations or fixes, create and keep updating a local tracker under `.artifacts/specs/<topic>/tracker.md` so findings and decisions survive context compaction.
+- Tracker Git probes (NON-NEGOTIABLE): `.artifacts/specs/**/tracker.md` is ignored local state; create parent dirs/files as needed, and never pass tracker paths as `--ignored=<path>`. Use `git status --short -- <path>` for status, `git check-ignore -v -- <path> || true` for ignore diagnostics, or `git status --short --ignored=matching -- <path>` when ignored status output is required.
 - Agent tool alignment: keep prompt frontmatter, canonical agent metadata, `config/ralphx.yaml`, and MCP allowlists aligned. Source: `.claude/rules/agent-mcp-tools.md`.
 - Prompts are not migration diaries (NON-NEGOTIABLE): prompts are clean contracts for the live tool surface and role; migration notes, forbidden legacy paths, and compatibility ballast belong in backend validation, tests, or docs, not prompt prose.
 - Surface-local descriptions only (NON-NEGOTIABLE): tool schemas, recovery hints, and prompt prose must not mention tools that are not on the caller agent’s live tool surface.

@@ -10,6 +10,7 @@ RalphX: React/TS frontend + Rust/Tauri backend + SQLite. MCP: `Claude Agent → 
 - No fragile string comparisons — use enum variants or error codes
 - USE TransitionHandler for status changes — NEVER direct DB update
 - Lint before commit: run lint commands from `get_project_analysis()` for all modified paths
+- `.artifacts/specs/**/tracker.md` is ignored local task-worktree state; missing/ignored tracker files are not blockers. Use `git status --short -- <path>`, `git check-ignore -v -- <path> || true`, or `git status --short --ignored=matching -- <path>`; never pass tracker paths as `--ignored=<path>`.
 
 ## Environment Setup (call before writing code)
 
