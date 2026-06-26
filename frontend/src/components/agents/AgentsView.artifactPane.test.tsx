@@ -165,6 +165,43 @@ describe("AgentsView artifact pane", () => {
     expect(screen.getByTestId("agents-artifact-resizable-pane")).toBeInTheDocument();
   });
 
+  it("keeps the current tab when a workspace Review artifact is created", async () => {
+    mockAgentViewData(conversation({ agentMode: "edit" }));
+    getAgentConversationWorkspaceMock.mockResolvedValue(conversationWorkspace({ mode: "edit" }));
+    resetAgentSessionState({
+      selectedProjectId: "project-1",
+      selectedConversationId: "conversation-1",
+      artifactByConversationId: {
+        "conversation-1": {
+          isOpen: true,
+          activeTab: "publish",
+          taskMode: "graph",
+        },
+      },
+    });
+
+    renderAgentsView();
+
+    const pane = await screen.findByTestId("agents-artifact-pane");
+    expect(pane).toHaveAttribute("data-active-tab", "publish");
+
+    act(() => {
+      fireAgentViewEvent("workspace_review_artifact:created", {
+        conversationId: "conversation-1",
+        artifact: {
+          id: "review-artifact-1",
+          name: "Workspace Review",
+          version: 1,
+        },
+      });
+    });
+
+    expect(screen.getByTestId("agents-artifact-pane")).toHaveAttribute(
+      "data-active-tab",
+      "publish",
+    );
+  });
+
   it("still allows manually opening the artifact pane when the conversation has nothing to show", async () => {
     mockAgentViewData(
       conversation({

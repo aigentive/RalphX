@@ -605,13 +605,7 @@ export function useAgentsViewController({
     const unsubscribeWorkspaceCreated =
       eventBus.subscribe<PrReviewArtifactEventPayload>(
         "workspace_review_artifact:created",
-        (payload) => {
-          invalidateReviewArtifact(payload);
-          const conversationId = payload.conversationId ?? payload.conversation_id;
-          if (conversationId && conversationId === selectedConversationId) {
-            openArtifactTab(conversationId, "review");
-          }
-        },
+        invalidateReviewArtifact,
       );
     const unsubscribeWorkspaceUpdated =
       eventBus.subscribe<PrReviewArtifactEventPayload>(
