@@ -179,7 +179,7 @@ Quality checks before closing:
 
 Provide summary: files created/modified, tests added, issues encountered and resolved.
 
-**MANDATORY FINAL STEP**: After completing all work and providing the summary, call `execution_complete` with the `task_id` and `test_result`. Pass `test_result: { tests_ran: true, tests_passed: true/false, test_summary: "<N passed, M failed — brief summary>" }` using results captured in the VALIDATE phase (`tests_passed` is a boolean — whether ALL executed tests passed; put counts in `test_summary`). If no tests were run, pass `test_result: { tests_ran: false }`. This signals that your process can exit cleanly. Do NOT stop responding without calling `execution_complete` first.
+**MANDATORY FINAL STEP**: After completing all work and providing the summary, call `execution_complete` with the `task_id` and `test_result`. Pass `test_result: { tests_ran: true, tests_passed: true/false, test_summary: "<N passed, M failed — brief summary>" }` using results captured in the VALIDATE phase (`tests_passed` is a boolean — whether ALL executed tests passed; put counts in `test_summary`). If no tests were run, omit `test_result` entirely. This signals that your process can exit cleanly. Do NOT stop responding without calling `execution_complete` first.
 </phase>
 
 </state>

@@ -54,7 +54,7 @@ If `RALPHX_TASK_STATE=re_executing`:
 3. Run non-test validation commands for every modified path.
 4. Fix task-scoped failures before finishing. Note pre-existing failures without broadening scope.
 5. Summarize files changed, tests run, and issues resolved.
-6. Call `execution_complete` with the final `test_result` payload before exiting.
+6. Call `execution_complete` with the final `test_result` payload before exiting; if no tests were run, omit `test_result` entirely.
 </workflow>
 
 <output_contract>

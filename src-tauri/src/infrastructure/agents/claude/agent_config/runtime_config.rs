@@ -217,6 +217,8 @@ pub struct StreamTimeoutsConfig {
     pub max_wall_clock_secs: u64,
     #[serde(default = "default_completion_grace_secs")]
     pub completion_grace_secs: u64,
+    #[serde(default = "default_execution_attempt_start_tolerance_secs")]
+    pub execution_attempt_start_tolerance_secs: u64,
 }
 
 fn default_max_wall_clock_secs() -> u64 {
@@ -225,6 +227,10 @@ fn default_max_wall_clock_secs() -> u64 {
 
 fn default_completion_grace_secs() -> u64 {
     30
+}
+
+fn default_execution_attempt_start_tolerance_secs() -> u64 {
+    1
 }
 
 impl Default for StreamTimeoutsConfig {
@@ -240,6 +246,7 @@ impl Default for StreamTimeoutsConfig {
             team_parse_stall_secs: 3600,
             max_wall_clock_secs: 1800,
             completion_grace_secs: 30,
+            execution_attempt_start_tolerance_secs: 1,
         }
     }
 }
@@ -623,6 +630,10 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
     env_u64!(
         cfg.stream.completion_grace_secs,
         "RALPHX_STREAM_COMPLETION_GRACE_SECS"
+    );
+    env_u64!(
+        cfg.stream.execution_attempt_start_tolerance_secs,
+        "RALPHX_STREAM_EXECUTION_ATTEMPT_START_TOLERANCE_SECS"
     );
 
     // Reconciliation

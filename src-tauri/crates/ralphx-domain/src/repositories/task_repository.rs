@@ -178,6 +178,16 @@ pub trait TaskRepository: Send + Sync {
         status: InternalStatus,
     ) -> AppResult<Option<DateTime<Utc>>>;
 
+    /// Get the latest timestamp when a task entered a specific status.
+    ///
+    /// Used for execution attempt guards where re-enterable statuses must be
+    /// scoped to the current execution episode, not the first historical entry.
+    async fn get_status_last_entered_at(
+        &self,
+        task_id: &TaskId,
+        status: InternalStatus,
+    ) -> AppResult<Option<DateTime<Utc>>>;
+
     // ═══════════════════════════════════════════════════════════════════════
     // Query Operations
     // ═══════════════════════════════════════════════════════════════════════
