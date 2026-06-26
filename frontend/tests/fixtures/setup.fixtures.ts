@@ -14,7 +14,7 @@ const PROVIDER_CLI_DISMISSED_UPDATES_STORAGE_KEY =
   "ralphx-provider-cli-dismissed-updates";
 const MOCK_PROVIDER_CLI_UPDATE_KEYS = ["claude:2.1.175", "codex:0.137.0"];
 
-async function installStableStartupState(page: Page) {
+export async function dismissProviderCliUpdateToasts(page: Page) {
   await page.addInitScript(
     ({ storageKey, dismissedKeys }) => {
       window.localStorage.setItem(storageKey, JSON.stringify(dismissedKeys));
@@ -33,7 +33,6 @@ async function installStandaloneIdeationFeatureFlag(page: Page) {
 }
 
 export async function setupApp(page: Page) {
-  await installStableStartupState(page);
   const appHeader = page.locator('[data-testid="app-header"]');
 
   const gotoApp = () => page.goto("/", { waitUntil: "commit", timeout: 7000 });

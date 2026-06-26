@@ -1,5 +1,9 @@
 import { expect, Page } from "@playwright/test";
-import { setupApp, setupIdeation } from "./setup.fixtures";
+import {
+  dismissProviderCliUpdateToasts,
+  setupApp,
+  setupIdeation,
+} from "./setup.fixtures";
 import {
   IDEATION_REPLAY_CONTEXTS,
   TASK_REPLAY_CONTEXTS,
@@ -79,6 +83,7 @@ export async function setupIdeationChatScenario(
   }
 ) {
   const replayContext = IDEATION_REPLAY_CONTEXTS[scenario];
+  await dismissProviderCliUpdateToasts(page);
   await setupIdeation(page);
   await page.waitForTimeout(250);
   await seedChatScenario(page, scenario);
@@ -181,6 +186,7 @@ export async function setupIdeationChatScenario(
 
 export async function setupIdeationChatShell(page: Page) {
   const replayContext = ASK_USER_SHELL_CONTEXT;
+  await dismissProviderCliUpdateToasts(page);
   await setupIdeation(page);
   await page.waitForTimeout(250);
   await page.evaluate(async (replayContext) => {
