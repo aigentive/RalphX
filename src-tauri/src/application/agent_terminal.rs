@@ -946,6 +946,27 @@ mod tests {
         );
     }
 
+    #[test]
+    fn terminal_publication_workspace_reason_matches_terminal_pr_statuses() {
+        let mut workspace = test_workspace(AgentConversationWorkspaceMode::Edit);
+        assert_eq!(terminal_publication_workspace_reason(&workspace), None);
+
+        workspace.publication_pr_status = Some("open".to_string());
+        assert_eq!(terminal_publication_workspace_reason(&workspace), None);
+
+        workspace.publication_pr_status = Some("merged".to_string());
+        assert_eq!(
+            terminal_publication_workspace_reason(&workspace),
+            Some(TERMINAL_MERGED_WORKSPACE_REASON)
+        );
+
+        workspace.publication_pr_status = Some("closed".to_string());
+        assert_eq!(
+            terminal_publication_workspace_reason(&workspace),
+            Some(TERMINAL_CLOSED_WORKSPACE_REASON)
+        );
+    }
+
     fn test_workspace(mode: AgentConversationWorkspaceMode) -> AgentConversationWorkspace {
         AgentConversationWorkspace::new(
             ChatConversationId::from_string("00000000-0000-0000-0000-000000000001"),
