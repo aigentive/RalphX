@@ -1205,7 +1205,7 @@ async fn push_pr_branch_to_remote(
     pb: &PlanBranch,
     github: &Arc<dyn GithubServiceTrait>,
     plan_branch_repo: &Arc<dyn PlanBranchRepository>,
-) -> bool {
+) -> AppResult<()> {
     let repo_path = Path::new(&project.working_directory);
     tracing::info!(
         branch = %pb.branch_name,
@@ -1221,7 +1221,7 @@ async fn push_pr_branch_to_remote(
             {
                 tracing::warn!(error = %e, "Failed to update pr_push_status=pushed");
             }
-            true
+            Ok(())
         }
         Err(e) => {
             tracing::warn!(
@@ -1232,7 +1232,7 @@ async fn push_pr_branch_to_remote(
             let _ = plan_branch_repo
                 .update_pr_push_status(&pb.id, PrPushStatus::Failed)
                 .await;
-            false
+            Err(e)
         }
     }
 }
@@ -1295,20 +1295,20 @@ pub(crate) async fn sync_plan_branch_pr_after_regular_task_merge(
     task: &Task,
     project: &Project,
     services: &PlanBranchPrSyncServices,
-) {
+) -> AppResult<()> {
     if task.category == TaskCategory::PlanMerge {
-        return;
+        return Ok(());
     }
 
     let Some(plan_branch_repo) = services.plan_branch_repo.as_ref() else {
-        return;
+        return Ok(());
     };
     let Some(plan_branch) = resolve_task_plan_branch_record(task, plan_branch_repo).await else {
-        return;
+        return Ok(());
     };
 
     if !plan_branch.pr_eligible || plan_branch.status != PlanBranchStatus::Active {
-        return;
+        return Ok(());
     }
 
     if plan_branch.pr_number.is_some() {
@@ -1318,7 +1318,13 @@ pub(crate) async fn sync_plan_branch_pr_after_regular_task_merge(
     }
 
     let Some(github_service) = services.github_service.as_ref() else {
-        return;
+        if plan_branch.pr_number.is_some() {
+            return Err(AppError::GitOperation(format!(
+                "Cannot publish plan PR branch {}: GitHub service unavailable",
+                plan_branch.branch_name
+            )));
+        }
+        return Ok(());
     };
 
     let ready_for_review =
@@ -1327,49 +1333,47 @@ pub(crate) async fn sync_plan_branch_pr_after_regular_task_merge(
     if plan_branch.pr_number.is_some() {
         let mut refreshed_plan_branch = plan_branch.clone();
         refreshed_plan_branch.pr_push_status = PrPushStatus::Pending;
-        let pushed = push_pr_branch_to_remote(
+        push_pr_branch_to_remote(
             project,
             &refreshed_plan_branch,
             github_service,
             plan_branch_repo,
         )
-        .await;
-        if pushed {
-            let review_state = if ready_for_review {
-                PrReviewState::Ready
-            } else {
-                PrReviewState::Draft
-            };
-            if let Err(e) = sync_existing_plan_branch_pr_details(
-                task,
-                project,
-                &refreshed_plan_branch,
-                github_service,
-                services.ideation_session_repo.as_ref(),
-                services.artifact_repo.as_ref(),
-                review_state,
-            )
-            .await
-            {
-                tracing::warn!(
-                    task_id = task.id.as_str(),
-                    error = %e,
-                    "PR mode: failed to refresh PR details after plan branch push"
-                );
-            }
-            if ready_for_review {
-                if let Some(pr_number) = refreshed_plan_branch.pr_number {
-                    if let Err(e) = github_service
-                        .mark_pr_ready(Path::new(&project.working_directory), pr_number)
-                        .await
-                    {
-                        tracing::warn!(
-                            task_id = task.id.as_str(),
-                            pr_number,
-                            error = %e,
-                            "PR mode: failed to mark PR ready after final plan task merge"
-                        );
-                    }
+        .await?;
+        let review_state = if ready_for_review {
+            PrReviewState::Ready
+        } else {
+            PrReviewState::Draft
+        };
+        if let Err(e) = sync_existing_plan_branch_pr_details(
+            task,
+            project,
+            &refreshed_plan_branch,
+            github_service,
+            services.ideation_session_repo.as_ref(),
+            services.artifact_repo.as_ref(),
+            review_state,
+        )
+        .await
+        {
+            tracing::warn!(
+                task_id = task.id.as_str(),
+                error = %e,
+                "PR mode: failed to refresh PR details after plan branch push"
+            );
+        }
+        if ready_for_review {
+            if let Some(pr_number) = refreshed_plan_branch.pr_number {
+                if let Err(e) = github_service
+                    .mark_pr_ready(Path::new(&project.working_directory), pr_number)
+                    .await
+                {
+                    tracing::warn!(
+                        task_id = task.id.as_str(),
+                        pr_number,
+                        error = %e,
+                        "PR mode: failed to mark PR ready after final plan task merge"
+                    );
                 }
             }
         }
@@ -1430,6 +1434,7 @@ pub(crate) async fn sync_plan_branch_pr_after_regular_task_merge(
             }
         }
     }
+    Ok(())
 }
 
 pub(crate) fn resolve_plan_branch_pr_base(project: &Project, pb: &PlanBranch) -> String {

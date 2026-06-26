@@ -1,10 +1,9 @@
 use super::*;
 use crate::application::publish_resilience::push_publish_branch;
+use crate::domain::entities::plan_branch::PrPushStatus;
 use crate::domain::services::{PlanPrPublisher, PrReviewState};
+use crate::domain::state_machine::transition_handler::{resolve_plan_branch_pr_base, TaskCore};
 use crate::domain::state_machine::{State, TransitionHandler};
-use crate::domain::state_machine::transition_handler::{
-    resolve_plan_branch_pr_base, TaskCore,
-};
 
 impl<'a> TransitionHandler<'a> {
     /// PR-mode PendingMerge path (AD17).
@@ -50,7 +49,15 @@ impl<'a> TransitionHandler<'a> {
         let pb_repo_opt: Option<Arc<dyn PlanBranchRepository>> = Some(Arc::clone(plan_branch_repo));
         let target_branch = resolve_plan_branch_pr_base(project, &plan_branch);
         if matches!(
-            self.run_concurrent_merge_guard(task, task_id_str, &target_branch, project, task_repo, &pb_repo_opt).await,
+            self.run_concurrent_merge_guard(
+                task,
+                task_id_str,
+                &target_branch,
+                project,
+                task_repo,
+                &pb_repo_opt
+            )
+            .await,
             ConcurrentGuardResult::Deferred
         ) {
             return;
@@ -71,7 +78,10 @@ impl<'a> TransitionHandler<'a> {
 
         // 4. Set pr_polling_active = true in DB
         // update_last_polled_at also sets pr_polling_active = 1 in the same SQL statement
-        if let Err(e) = plan_branch_repo.update_last_polled_at(&plan_branch.id, chrono::Utc::now()).await {
+        if let Err(e) = plan_branch_repo
+            .update_last_polled_at(&plan_branch.id, chrono::Utc::now())
+            .await
+        {
             tracing::warn!(task_id = task_id_str, error = %e, "PR-mode: failed to set pr_polling_active (non-fatal)");
         }
 
@@ -80,48 +90,63 @@ impl<'a> TransitionHandler<'a> {
         let branch_name = plan_branch.branch_name.clone();
 
         // 5.5. Draft PR description via describer agent (best-effort)
-        let pr_description_override: Option<String> = if let Some(ref drafter) =
-            self.machine.context.services.plan_pr_description_drafter
-        {
-            let review_base = resolve_plan_branch_pr_base(project, &plan_branch);
-            drafter
-                .draft_plan_description(project, &plan_branch, &review_base)
-                .await
-        } else {
-            None
-        };
+        let pr_description_override: Option<String> =
+            if let Some(ref drafter) = self.machine.context.services.plan_pr_description_drafter {
+                let review_base = resolve_plan_branch_pr_base(project, &plan_branch);
+                drafter
+                    .draft_plan_description(project, &plan_branch, &review_base)
+                    .await
+            } else {
+                None
+            };
 
         // 6. Perform PR operation: push branch and mark PR ready (or create PR if missing)
-        let pr_op_result: Result<i64, crate::error::AppError> = if let Some(existing_pr_number) = plan_branch.pr_number {
+        let pr_op_result: Result<i64, crate::error::AppError> = if let Some(existing_pr_number) =
+            plan_branch.pr_number
+        {
             // Has PR: push latest commits then mark ready
-            tracing::info!(task_id = task_id_str, pr_number = existing_pr_number, "PR-mode: pushing branch and marking PR ready");
-            if let Err(e) = push_publish_branch(github_service, &working_dir, &branch_name).await {
-                tracing::warn!(task_id = task_id_str, error = %e, "PR-mode: push failed (proceeding to mark_pr_ready anyway)");
-            }
-            let mut publisher = PlanPrPublisher::new(
-                github_service,
-                self.machine.context.services.ideation_session_repo.as_ref(),
-                self.machine.context.services.artifact_repo.as_ref(),
+            tracing::info!(
+                task_id = task_id_str,
+                pr_number = existing_pr_number,
+                "PR-mode: pushing branch and marking PR ready"
             );
-            if let Some(ref body) = pr_description_override {
-                publisher = publisher.with_description(body.clone());
+            match push_publish_branch(github_service, &working_dir, &branch_name).await {
+                Err(e) => Err(e),
+                Ok(()) => {
+                    let _ = plan_branch_repo
+                        .update_pr_push_status(&plan_branch.id, PrPushStatus::Pushed)
+                        .await;
+                    let mut publisher = PlanPrPublisher::new(
+                        github_service,
+                        self.machine.context.services.ideation_session_repo.as_ref(),
+                        self.machine.context.services.artifact_repo.as_ref(),
+                    );
+                    if let Some(ref body) = pr_description_override {
+                        publisher = publisher.with_description(body.clone());
+                    }
+                    if let Err(e) = publisher
+                        .sync_existing_pr(task, project, &plan_branch, PrReviewState::Ready)
+                        .await
+                    {
+                        tracing::warn!(
+                            task_id = task_id_str,
+                            pr_number = existing_pr_number,
+                            error = %e,
+                            "PR-mode: failed to refresh PR details before marking ready"
+                        );
+                    }
+                    github_service
+                        .mark_pr_ready(&working_dir, existing_pr_number)
+                        .await
+                        .map(|_| existing_pr_number)
+                }
             }
-            if let Err(e) = publisher
-                .sync_existing_pr(task, project, &plan_branch, PrReviewState::Ready)
-                .await
-            {
-                tracing::warn!(
-                    task_id = task_id_str,
-                    pr_number = existing_pr_number,
-                    error = %e,
-                    "PR-mode: failed to refresh PR details before marking ready"
-                );
-            }
-            github_service.mark_pr_ready(&working_dir, existing_pr_number).await
-                .map(|_| existing_pr_number)
         } else {
             // No PR yet: wait for CAS guard to clear (AD15), re-read, then create if still missing
-            tracing::info!(task_id = task_id_str, "PR-mode: no pr_number, waiting for CAS guard (AD15)");
+            tracing::info!(
+                task_id = task_id_str,
+                "PR-mode: no pr_number, waiting for CAS guard (AD15)"
+            );
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
             while std::time::Instant::now() < deadline {
                 if let Some(ref registry) = self.machine.context.services.pr_poller_registry {
@@ -144,34 +169,55 @@ impl<'a> TransitionHandler<'a> {
 
             if let Some(new_pr_number) = refreshed_pr_number {
                 // Concurrent creation succeeded: push + mark ready
-                tracing::info!(task_id = task_id_str, pr_number = new_pr_number, "PR-mode: found PR from concurrent creation");
-                let _ = push_publish_branch(github_service, &working_dir, &branch_name).await;
-                let mut refreshed_plan_branch = plan_branch.clone();
-                refreshed_plan_branch.pr_number = Some(new_pr_number);
-                let mut publisher = PlanPrPublisher::new(
-                    github_service,
-                    self.machine.context.services.ideation_session_repo.as_ref(),
-                    self.machine.context.services.artifact_repo.as_ref(),
+                tracing::info!(
+                    task_id = task_id_str,
+                    pr_number = new_pr_number,
+                    "PR-mode: found PR from concurrent creation"
                 );
-                if let Some(ref body) = pr_description_override {
-                    publisher = publisher.with_description(body.clone());
+                match push_publish_branch(github_service, &working_dir, &branch_name).await {
+                    Err(e) => Err(e),
+                    Ok(()) => {
+                        let _ = plan_branch_repo
+                            .update_pr_push_status(&plan_branch.id, PrPushStatus::Pushed)
+                            .await;
+                        let mut refreshed_plan_branch = plan_branch.clone();
+                        refreshed_plan_branch.pr_number = Some(new_pr_number);
+                        let mut publisher = PlanPrPublisher::new(
+                            github_service,
+                            self.machine.context.services.ideation_session_repo.as_ref(),
+                            self.machine.context.services.artifact_repo.as_ref(),
+                        );
+                        if let Some(ref body) = pr_description_override {
+                            publisher = publisher.with_description(body.clone());
+                        }
+                        if let Err(e) = publisher
+                            .sync_existing_pr(
+                                task,
+                                project,
+                                &refreshed_plan_branch,
+                                PrReviewState::Ready,
+                            )
+                            .await
+                        {
+                            tracing::warn!(
+                                task_id = task_id_str,
+                                pr_number = new_pr_number,
+                                error = %e,
+                                "PR-mode: failed to refresh concurrently-created PR details before marking ready"
+                            );
+                        }
+                        github_service
+                            .mark_pr_ready(&working_dir, new_pr_number)
+                            .await
+                            .map(|_| new_pr_number)
+                    }
                 }
-                if let Err(e) = publisher
-                    .sync_existing_pr(task, project, &refreshed_plan_branch, PrReviewState::Ready)
-                    .await
-                {
-                    tracing::warn!(
-                        task_id = task_id_str,
-                        pr_number = new_pr_number,
-                        error = %e,
-                        "PR-mode: failed to refresh concurrently-created PR details before marking ready"
-                    );
-                }
-                github_service.mark_pr_ready(&working_dir, new_pr_number).await
-                    .map(|_| new_pr_number)
             } else {
                 // Still no PR: push + create non-draft PR directly
-                tracing::info!(task_id = task_id_str, "PR-mode: creating non-draft PR directly");
+                tracing::info!(
+                    task_id = task_id_str,
+                    "PR-mode: creating non-draft PR directly"
+                );
                 match push_publish_branch(github_service, &working_dir, &branch_name).await {
                     Err(e) => Err(e),
                     Ok(()) => {
@@ -186,18 +232,25 @@ impl<'a> TransitionHandler<'a> {
                         match publisher.create_draft_pr(task, project, &plan_branch).await {
                             Err(e) => Err(e),
                             Ok((new_pr_number, pr_url)) => {
-                                let _ = plan_branch_repo.update_pr_info(
-                                    &plan_branch.id,
-                                    new_pr_number,
-                                    pr_url,
-                                    crate::domain::entities::plan_branch::PrStatus::Open,
-                                    true,
-                                ).await;
+                                let _ = plan_branch_repo
+                                    .update_pr_info(
+                                        &plan_branch.id,
+                                        new_pr_number,
+                                        pr_url,
+                                        crate::domain::entities::plan_branch::PrStatus::Open,
+                                        true,
+                                    )
+                                    .await;
 
                                 let mut ready_plan_branch = plan_branch.clone();
                                 ready_plan_branch.pr_number = Some(new_pr_number);
                                 if let Err(e) = publisher
-                                    .sync_existing_pr(task, project, &ready_plan_branch, PrReviewState::Ready)
+                                    .sync_existing_pr(
+                                        task,
+                                        project,
+                                        &ready_plan_branch,
+                                        PrReviewState::Ready,
+                                    )
                                     .await
                                 {
                                     tracing::warn!(
@@ -207,7 +260,9 @@ impl<'a> TransitionHandler<'a> {
                                         "PR-mode: failed to refresh newly-created PR details before marking ready"
                                     );
                                 }
-                                github_service.mark_pr_ready(&working_dir, new_pr_number).await
+                                github_service
+                                    .mark_pr_ready(&working_dir, new_pr_number)
+                                    .await
                                     .map(|_| new_pr_number)
                             }
                         }
@@ -220,13 +275,25 @@ impl<'a> TransitionHandler<'a> {
         match pr_op_result {
             Ok(_pr_number) => {
                 // Success: transition PendingMerge → WaitingOnPr.
-                tracing::info!(task_id = task_id_str, "PR-mode: success, transitioning to WaitingOnPr");
+                tracing::info!(
+                    task_id = task_id_str,
+                    "PR-mode: success, transitioning to WaitingOnPr"
+                );
                 task.internal_status = InternalStatus::WaitingOnPr;
-                if self.persist_merge_transition(
-                    TaskCore { task: &mut *task, task_id: &task_id, task_id_str, task_repo },
-                    InternalStatus::PendingMerge, InternalStatus::WaitingOnPr,
-                    "pr_mode_mark_ready",
-                ).await {
+                if self
+                    .persist_merge_transition(
+                        TaskCore {
+                            task: &mut *task,
+                            task_id: &task_id,
+                            task_id_str,
+                            task_repo,
+                        },
+                        InternalStatus::PendingMerge,
+                        InternalStatus::WaitingOnPr,
+                        "pr_mode_mark_ready",
+                    )
+                    .await
+                {
                     // Trigger on_enter(WaitingOnPr) to start the PR poller.
                     if let Err(e) = Box::pin(self.on_enter_dispatch(&State::WaitingOnPr)).await {
                         tracing::error!(task_id = task_id_str, error = %e, "on_enter(WaitingOnPr) failed in PR mode");
@@ -236,15 +303,27 @@ impl<'a> TransitionHandler<'a> {
             Err(e) => {
                 // Failure: clear pr_polling_active, transition to MergeIncomplete
                 tracing::warn!(task_id = task_id_str, error = %e, "PR-mode: operation failed, transitioning to MergeIncomplete");
-                let _ = plan_branch_repo.clear_polling_active_by_task(&task_id).await;
+                let _ = plan_branch_repo
+                    .clear_polling_active_by_task(&task_id)
+                    .await;
+                let _ = plan_branch_repo
+                    .update_pr_push_status(&plan_branch.id, PrPushStatus::Failed)
+                    .await;
                 let metadata = serde_json::json!({
                     "error": format!("PR operation failed: {}", e),
                     "error_code": "pr_operation_failed",
                 });
                 self.transition_to_merge_incomplete(
-                    TaskCore { task: &mut *task, task_id: &task_id, task_id_str, task_repo },
-                    metadata, true,
-                ).await;
+                    TaskCore {
+                        task: &mut *task,
+                        task_id: &task_id,
+                        task_id_str,
+                        task_repo,
+                    },
+                    metadata,
+                    true,
+                )
+                .await;
             }
         }
     }
