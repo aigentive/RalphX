@@ -223,6 +223,20 @@ impl AgentRunningState {
     }
 }
 
+pub(crate) fn running_state_from_run_status_and_idle(
+    run_status: Option<AgentRunStatus>,
+    is_interactive_idle: bool,
+) -> AgentRunningState {
+    if is_interactive_idle {
+        return AgentRunningState::waiting_for_input();
+    }
+
+    match run_status {
+        Some(AgentRunStatus::Running) | None => AgentRunningState::generating(),
+        Some(_) => AgentRunningState::waiting_for_input(),
+    }
+}
+
 fn registry_entry_blocks_send_but_is_stale(
     info: &RunningAgentInfo,
     now: chrono::DateTime<chrono::Utc>,
@@ -1621,10 +1635,10 @@ impl<R: Runtime> AppChatService<R> {
                 continue;
             }
 
-            let state = match run_status {
-                Some(AgentRunStatus::Running) | None => AgentRunningState::generating(),
-                Some(_) => AgentRunningState::waiting_for_input(),
-            };
+            let is_interactive_idle = self.execution_state.as_ref().is_some_and(|exec| {
+                exec.is_interactive_idle(&format!("{ideation_context}/{session_id}"))
+            });
+            let state = running_state_from_run_status_and_idle(run_status, is_interactive_idle);
             Self::merge_running_state(states, &conversation_id, state);
         }
     }
@@ -5523,10 +5537,10 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             let state = if cleaned_inactive {
                 AgentRunningState::idle()
             } else {
-                match run_status {
-                    Some(AgentRunStatus::Running) | None => AgentRunningState::generating(),
-                    Some(_) => AgentRunningState::waiting_for_input(),
-                }
+                let is_interactive_idle = self.execution_state.as_ref().is_some_and(|exec| {
+                    exec.is_interactive_idle(&format!("{context_type}/{context_id}"))
+                });
+                running_state_from_run_status_and_idle(run_status, is_interactive_idle)
             };
 
             states.insert(context_id, state);
@@ -6793,6 +6807,74 @@ mod bulk_running_state_tests {
             .await;
 
         let state = states.get("conv-waiting").expect("state for requested id");
+        assert!(state.is_running);
+        assert_eq!(state.agent_status, AgentRuntimeStatus::WaitingForInput);
+    }
+
+    #[tokio::test]
+    async fn app_service_bulk_running_states_prefers_interactive_idle_when_run_id_missing() {
+        let registry = Arc::new(MemoryRunningAgentRegistry::new());
+        registry
+            .register(
+                RunningAgentKey::new("project", "conv-idle-missing-run"),
+                std::process::id(),
+                "conv-idle-missing-run".to_string(),
+                String::new(),
+                None,
+                None,
+            )
+            .await;
+        let app_state = AppState::new_sqlite_test_with_registry(Arc::clone(&registry));
+        let execution_state = Arc::new(ExecutionState::new());
+        execution_state.mark_interactive_idle("project/conv-idle-missing-run");
+        let service = app_state.build_chat_service_with_execution_state(execution_state);
+
+        let states = service
+            .get_agent_running_states(
+                ChatContextType::Project,
+                &["conv-idle-missing-run".to_string()],
+            )
+            .await;
+
+        let state = states
+            .get("conv-idle-missing-run")
+            .expect("state for requested id");
+        assert!(state.is_running);
+        assert_eq!(state.agent_status, AgentRuntimeStatus::WaitingForInput);
+    }
+
+    #[tokio::test]
+    async fn app_service_bulk_running_states_prefers_interactive_idle_over_running_run_status() {
+        let registry = Arc::new(MemoryRunningAgentRegistry::new());
+        let app_state = AppState::new_sqlite_test_with_registry(Arc::clone(&registry));
+        let conversation_id = ChatConversationId::from_string("conv-idle-running-run");
+        let run = AgentRun::new(conversation_id);
+        let run_id = run.id;
+        app_state.agent_run_repo.create(run).await.unwrap();
+        registry
+            .register(
+                RunningAgentKey::new("project", "conv-idle-running-run"),
+                std::process::id(),
+                "conv-idle-running-run".to_string(),
+                run_id.as_str().to_string(),
+                None,
+                None,
+            )
+            .await;
+        let execution_state = Arc::new(ExecutionState::new());
+        execution_state.mark_interactive_idle("project/conv-idle-running-run");
+        let service = app_state.build_chat_service_with_execution_state(execution_state);
+
+        let states = service
+            .get_agent_running_states(
+                ChatContextType::Project,
+                &["conv-idle-running-run".to_string()],
+            )
+            .await;
+
+        let state = states
+            .get("conv-idle-running-run")
+            .expect("state for requested id");
         assert!(state.is_running);
         assert_eq!(state.agent_status, AgentRuntimeStatus::WaitingForInput);
     }
