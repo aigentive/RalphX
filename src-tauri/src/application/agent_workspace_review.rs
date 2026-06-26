@@ -1459,6 +1459,124 @@ mod tests {
             .expect("conversation should persist");
     }
 
+    #[test]
+    fn review_packet_handles_status_edges_limits_and_truncation() {
+        let diff = "\
+metadata before first file
+diff --git a/modified.rs b/modified.rs
+--- a/modified.rs
++++ b/modified.rs
+@@
+-old
++new
+diff --git a/added.rs b/added.rs
+new file mode 100644
+--- /dev/null
++++ b/added.rs
+@@
++added
+diff --git a/deleted.rs b/deleted.rs
+deleted file mode 100644
+--- a/deleted.rs
++++ /dev/null
+@@
+-deleted
+diff --git a/old_name.rs b/old_name.rs
+similarity index 100%
+rename from old_name.rs
+rename to \"renamed file.rs\"
+diff --git a/status_added.rs b/status_added.rs
+--- a/status_added.rs
++++ b/status_added.rs
+@@
++status added
+";
+        let large_diff = format!(
+            "diff --git a/large.rs b/large.rs\n--- a/large.rs\n+++ b/large.rs\n@@\n+{}\n",
+            "x".repeat(WORKSPACE_REVIEW_PATCH_EXCERPT_CHARS + 64)
+        );
+        let mut status = String::from(
+            "\
+A  status_added.rs
+ D status_deleted.rs
+R  old_status.rs -> status_renamed.rs
+ M status_modified.rs
+?? untracked.rs
+?? /dev/null
+x
+",
+        );
+        status.push_str("??    \n");
+        for index in 0..=WORKSPACE_REVIEW_MAX_CHANGED_FILES {
+            status.push_str(&format!("?? zz-overflow-{index:03}.rs\n"));
+        }
+
+        let packet = build_review_packet(
+            &[
+                ("edge diff", diff),
+                ("empty diff", "   "),
+                ("large diff", &large_diff),
+            ],
+            Some(&status),
+            &[("edge", diff), ("large", &large_diff)],
+        );
+
+        assert_eq!(
+            packet.changed_files.len(),
+            WORKSPACE_REVIEW_MAX_CHANGED_FILES
+        );
+        assert!(packet.summary.files_changed > WORKSPACE_REVIEW_MAX_CHANGED_FILES as u32);
+        assert_eq!(packet.summary.deletions, 2);
+        assert!(packet.summary.insertions >= 4);
+        assert!(packet.patch_excerpt_truncated);
+        assert_eq!(
+            packet.patch_excerpt.chars().count(),
+            WORKSPACE_REVIEW_PATCH_EXCERPT_CHARS
+        );
+        assert!(packet
+            .notes
+            .iter()
+            .any(|note| note.contains("Untracked files are listed")));
+        assert!(packet
+            .notes
+            .iter()
+            .any(|note| note.contains("Changed file list is limited")));
+        assert!(packet
+            .notes
+            .iter()
+            .any(|note| note.contains("Patch excerpt is limited")));
+        assert!(!packet.patch_excerpt.contains("### empty diff"));
+
+        let file = |path: &str| {
+            packet
+                .changed_files
+                .iter()
+                .find(|file| file.path == path)
+                .expect("changed file should be listed")
+        };
+        assert_eq!(file("added.rs").status, "added");
+        assert_eq!(file("deleted.rs").status, "deleted");
+        assert_eq!(file("renamed file.rs").status, "renamed");
+        assert_eq!(file("status_added.rs").status, "added");
+        assert!(file("status_added.rs")
+            .sources
+            .contains(&"status".to_string()));
+        assert!(!packet
+            .changed_files
+            .iter()
+            .any(|file| file.path == "/dev/null" || file.path.is_empty()));
+
+        let mut ranked_files = BTreeMap::<String, ChangedFileAccumulator>::new();
+        add_changed_file(&mut ranked_files, "ranked.rs", "modified", "low");
+        add_changed_file(&mut ranked_files, "ranked.rs", "unknown", "ignored");
+        add_changed_file(&mut ranked_files, "ranked.rs", "untracked", "high");
+        let ranked = ranked_files
+            .get("ranked.rs")
+            .expect("ranked file should be tracked");
+        assert_eq!(ranked.status, "untracked");
+        assert!(ranked.sources.contains("ignored"));
+    }
+
     #[tokio::test]
     async fn load_context_resolves_workspace_delta_and_monitor_fields() {
         let (_temp, repo, base_sha) = init_repo();
