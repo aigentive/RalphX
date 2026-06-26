@@ -1369,6 +1369,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                     context_type,
                     &context_id,
                     effective_has_output,
+                    outcome.completion_tool_called,
                     execution_slot_held,
                     &execution_state,
                     &task_repo,

@@ -1281,12 +1281,7 @@ impl std::fmt::Debug for DebugCommandView<'_> {
         let envs = std_cmd
             .get_envs()
             .filter_map(|(key, value)| {
-                value.map(|val| {
-                    (
-                        key.to_string_lossy().into_owned(),
-                        val.to_string_lossy().into_owned(),
-                    )
-                })
+                value.map(|_| (key.to_string_lossy().into_owned(), "<redacted>".to_string()))
             })
             .collect::<Vec<_>>();
 
@@ -2334,6 +2329,19 @@ mod tests {
     fn test_spawnable_command_debug_impl() {
         fn assert_debug<T: std::fmt::Debug>() {}
         assert_debug::<SpawnableCommand>();
+    }
+
+    #[test]
+    fn spawnable_command_debug_redacts_env_values() {
+        let mut command = Command::new("/fake/claude");
+        command.env("ANTHROPIC_AUTH_TOKEN", "secret-token");
+        let spawnable = SpawnableCommand::new(command, None);
+
+        let debug = format!("{spawnable:?}");
+
+        assert!(debug.contains("ANTHROPIC_AUTH_TOKEN"));
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains("secret-token"));
     }
 
     #[test]

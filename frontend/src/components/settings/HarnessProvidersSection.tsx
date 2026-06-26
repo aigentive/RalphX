@@ -288,6 +288,12 @@ export function HarnessProvidersSection() {
   const [customBinaryEditors, setCustomBinaryEditors] = useState<
     Record<string, boolean>
   >({});
+  const [customEnvFileDrafts, setCustomEnvFileDrafts] = useState<
+    Record<string, string>
+  >({});
+  const [customEnvFileEditors, setCustomEnvFileEditors] = useState<
+    Record<string, boolean>
+  >({});
 
   const displayedError =
     (isError && error instanceof Error ? error.message : null) ??
@@ -334,6 +340,12 @@ export function HarnessProvidersSection() {
     }
     if (changes.customBinaryPath !== undefined) {
       input.customBinaryPath = changes.customBinaryPath;
+    }
+    if (changes.customEnvFileEnabled !== undefined) {
+      input.customEnvFileEnabled = changes.customEnvFileEnabled;
+    }
+    if (changes.customEnvFilePath !== undefined) {
+      input.customEnvFilePath = changes.customEnvFilePath;
     }
     if (changes.resetToDefaults !== undefined) {
       input.resetToDefaults = changes.resetToDefaults;
@@ -476,6 +488,68 @@ export function HarnessProvidersSection() {
     await saveCustomBinaryPath(provider, selectedPath);
   };
 
+  const customEnvFileDraft = (provider: AgentProviderSettingsResponse) =>
+    customEnvFileDrafts[provider.provider] ?? provider.customEnvFilePath ?? "";
+
+  const showCustomEnvFileEditor = (provider: AgentProviderSettingsResponse) =>
+    Boolean(
+      provider.customEnvFileEnabled ||
+        provider.customEnvFilePath ||
+        customEnvFileEditors[provider.provider],
+    );
+
+  const setCustomEnvFileDraft = (provider: string, value: string) => {
+    setCustomEnvFileDrafts((current) => ({ ...current, [provider]: value }));
+  };
+
+  const setCustomEnvFileEditor = (provider: string, visible: boolean) => {
+    setCustomEnvFileEditors((current) => ({ ...current, [provider]: visible }));
+  };
+
+  const saveCustomEnvFilePath = async (
+    provider: AgentProviderSettingsResponse,
+    path: string,
+  ) => {
+    const trimmedPath = path.trim();
+    if (!trimmedPath) {
+      setCustomEnvFileEditor(provider.provider, true);
+      return;
+    }
+    setCustomEnvFileDraft(provider.provider, trimmedPath);
+    await updateProvider(provider, {
+      customEnvFileEnabled: true,
+      customEnvFilePath: trimmedPath,
+    });
+  };
+
+  const toggleCustomEnvFile = async (
+    provider: AgentProviderSettingsResponse,
+    checked: boolean,
+  ) => {
+    if (!checked) {
+      await updateProvider(provider, { customEnvFileEnabled: false });
+      return;
+    }
+    setCustomEnvFileEditor(provider.provider, true);
+    const path = customEnvFileDraft(provider);
+    if (path.trim()) {
+      await saveCustomEnvFilePath(provider, path);
+    }
+  };
+
+  const browseCustomEnvFile = async (
+    provider: AgentProviderSettingsResponse,
+  ) => {
+    const selected = await openDialog({
+      directory: false,
+      multiple: false,
+      title: `Select ${providerLabel(provider.provider)} env file`,
+    });
+    const selectedPath = Array.isArray(selected) ? selected[0] : selected;
+    if (typeof selectedPath !== "string" || selectedPath.trim() === "") return;
+    await saveCustomEnvFilePath(provider, selectedPath);
+  };
+
   return (
     <SectionCard
       icon={<ShieldCheck className="h-5 w-5" />}
@@ -552,6 +626,8 @@ export function HarnessProvidersSection() {
               const managedCliStatus = statusByProvider.get(provider.provider);
               const showCustomEditor = showCustomBinaryEditor(provider);
               const customPath = customBinaryDraft(provider);
+              const showEnvFileEditor = showCustomEnvFileEditor(provider);
+              const customEnvFilePath = customEnvFileDraft(provider);
 
               return (
                 <div
@@ -600,7 +676,7 @@ export function HarnessProvidersSection() {
                   </div>
 
                   <div
-                    className={`grid gap-3 border-t border-[var(--border-subtle)] px-4 py-3 md:grid-cols-3 ${
+                    className={`grid gap-3 border-t border-[var(--border-subtle)] px-4 py-3 md:grid-cols-4 ${
                       provider.enabled
                         ? "border-b border-[var(--border-subtle)]"
                         : ""
@@ -660,6 +736,29 @@ export function HarnessProvidersSection() {
                       />
                     </div>
 
+                    <div className="flex items-start justify-between gap-3 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-3 py-2">
+                      <div className="space-y-1">
+                        <Label
+                          htmlFor={`provider-custom-env-file-${provider.provider}`}
+                          className="text-xs text-[var(--text-primary)]"
+                        >
+                          Use custom env file
+                        </Label>
+                        <p className="text-[0.6875rem] leading-relaxed text-[var(--text-muted)]">
+                          Read provider credential and transport variables at
+                          launch. RX still controls model selection.
+                        </p>
+                      </div>
+                      <Switch
+                        id={`provider-custom-env-file-${provider.provider}`}
+                        checked={Boolean(provider.customEnvFileEnabled)}
+                        disabled={isUpdating}
+                        onCheckedChange={(checked) =>
+                          void toggleCustomEnvFile(provider, checked)
+                        }
+                      />
+                    </div>
+
                     <div
                       className={`flex items-start justify-between gap-3 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-3 py-2 ${
                         isRxManagedCli ? "" : "opacity-75"
@@ -692,7 +791,7 @@ export function HarnessProvidersSection() {
                     </div>
 
                     {showCustomEditor && (
-                      <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-3 py-2 md:col-span-3">
+                      <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-3 py-2 md:col-span-4">
                         <div className="flex flex-col gap-2 md:flex-row md:items-end">
                           <div className="min-w-0 flex-1 space-y-1">
                             <Label
@@ -732,6 +831,62 @@ export function HarnessProvidersSection() {
                               disabled={isUpdating || customPath.trim() === ""}
                               onClick={() =>
                                 void saveCustomBinaryPath(provider, customPath)
+                              }
+                            >
+                              <Check className="mr-2 h-4 w-4" />
+                              Use path
+                            </Button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {showEnvFileEditor && (
+                      <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-3 py-2 md:col-span-4">
+                        <div className="flex flex-col gap-2 md:flex-row md:items-end">
+                          <div className="min-w-0 flex-1 space-y-1">
+                            <Label
+                              htmlFor={`provider-custom-env-file-path-${provider.provider}`}
+                              className="text-xs text-[var(--text-primary)]"
+                            >
+                              Env file path
+                            </Label>
+                            <Input
+                              id={`provider-custom-env-file-path-${provider.provider}`}
+                              value={customEnvFilePath}
+                              disabled={isUpdating}
+                              placeholder="/path/to/.env"
+                              onChange={(event) =>
+                                setCustomEnvFileDraft(
+                                  provider.provider,
+                                  event.target.value,
+                                )
+                              }
+                            />
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              disabled={isUpdating}
+                              onClick={() => void browseCustomEnvFile(provider)}
+                            >
+                              <FolderOpen className="mr-2 h-4 w-4" />
+                              Browse
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              disabled={
+                                isUpdating || customEnvFilePath.trim() === ""
+                              }
+                              onClick={() =>
+                                void saveCustomEnvFilePath(
+                                  provider,
+                                  customEnvFilePath,
+                                )
                               }
                             >
                               <Check className="mr-2 h-4 w-4" />

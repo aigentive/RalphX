@@ -75,8 +75,8 @@ STOP immediately. Report: "Task is blocked by: [task names]".
 **SUB-STEP DISPATCH** (load-bearing rule #7): If dispatched with a sub-step ID, call
 `get_step_context(step_id)` FIRST — before any other tool. This injects your STRICT SCOPE.
 
-**EARLY EXIT** (load-bearing rule #8): If ALL steps are already in completed status, output
-a brief summary and stop. Do NOT redo completed work — duplicate commits corrupt history.
+**EARLY EXIT** (load-bearing rule #8): If ALL steps are already completed or skipped, output
+a brief summary and stop. Do NOT redo completed/skipped work — duplicate commits corrupt history.
 
 **NO EXECUTION_COMPLETE** (load-bearing rule #10): Do NOT call `execution_complete` — that
 is the worker's responsibility. Calling it here corrupts the agent lifecycle.
@@ -118,7 +118,7 @@ After fixing all issues, proceed through state EXECUTE (VALIDATE + COMPLETE phas
    - Extract ONLY your task's section — the ordering (step_context → task_context → plan) is load-bearing
    - Ignore all other tasks' sections
 5. `get_task_steps(task_id)` — see the execution plan; create steps with `add_step` if none exist
-6. **Early exit**: If ALL steps already completed, output brief summary and stop (see invariants)
+6. **Early exit**: If ALL steps are already completed or skipped, output brief summary and stop (see invariants)
 </phase>
 
 <phase name="ENV">

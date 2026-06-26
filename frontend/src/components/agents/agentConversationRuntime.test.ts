@@ -5,6 +5,7 @@ import type { AgentConversationWorkspace } from "@/api/chat";
 import type { AgentConversation } from "./agentConversations";
 import { DEFAULT_AGENT_RUNTIME } from "./agentOptions";
 import {
+  getAgentTerminalArchivedReason,
   getAgentTerminalUnavailableReason,
   runtimeFromConversation,
 } from "./agentConversationRuntime";
@@ -102,6 +103,57 @@ describe("getAgentTerminalUnavailableReason", () => {
         }),
       ),
     ).toBe(
+      "Terminal disabled while ideation or execution owns this workspace",
+    );
+  });
+});
+
+describe("getAgentTerminalArchivedReason", () => {
+  it("returns merge and close continuation copy for terminal-published workspaces", () => {
+    expect(
+      getAgentTerminalArchivedReason(
+        projectConversation(),
+        agentWorkspace({ publicationPrStatus: "merged" }),
+      ),
+    ).toBe(
+      "Workspace archived after PR merge. Send a follow-up to continue in a fresh workspace.",
+    );
+    expect(
+      getAgentTerminalArchivedReason(
+        projectConversation(),
+        agentWorkspace({ publicationPrStatus: " CLOSED " }),
+      ),
+    ).toBe(
+      "Workspace archived after PR close. Send a follow-up to continue in a fresh workspace.",
+    );
+  });
+
+  it("treats missing workspaces as an archived terminal shell state", () => {
+    expect(
+      getAgentTerminalUnavailableReason(
+        projectConversation(),
+        agentWorkspace({ status: "missing" }),
+      ),
+    ).toBeNull();
+    expect(
+      getAgentTerminalArchivedReason(
+        projectConversation(),
+        agentWorkspace({ status: "missing" }),
+      ),
+    ).toBe(
+      "Workspace missing. Send a follow-up to continue in a fresh workspace.",
+    );
+  });
+
+  it("does not archive plan-owned workspaces because they stay disabled", () => {
+    const workspace = agentWorkspace({
+      mode: "plan",
+      linkedIdeationSessionId: "ideation-session-1",
+      publicationPrStatus: "merged",
+    });
+
+    expect(getAgentTerminalArchivedReason(projectConversation(), workspace)).toBeNull();
+    expect(getAgentTerminalUnavailableReason(projectConversation(), workspace)).toBe(
       "Terminal disabled while ideation or execution owns this workspace",
     );
   });

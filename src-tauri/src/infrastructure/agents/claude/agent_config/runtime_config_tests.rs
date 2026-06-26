@@ -16,6 +16,7 @@ fn test_all_defaults_are_sensible() {
     };
     assert_eq!(cfg.stream.merge_line_read_secs, 600);
     assert_eq!(cfg.stream.completion_grace_secs, 30);
+    assert_eq!(cfg.stream.execution_attempt_start_tolerance_secs, 1);
     assert_eq!(cfg.reconciliation.merger_timeout_secs, 1200);
     assert_eq!(cfg.reconciliation.validation_deadline_secs, 1200);
     assert_eq!(cfg.reconciliation.branch_freshness_timeout_secs, 60);
@@ -288,6 +289,7 @@ team_parse_stall_secs: 3600
     assert_eq!(cfg.merge_line_read_secs, 900);
     assert_eq!(cfg.merge_parse_stall_secs, 180);
     assert_eq!(cfg.completion_grace_secs, 30);
+    assert_eq!(cfg.execution_attempt_start_tolerance_secs, 1);
 }
 
 #[test]

@@ -1,6 +1,7 @@
 use super::*;
 use crate::application::harness_runtime_registry::resolve_default_harness_plugin_dir;
 use crate::domain::entities::ChatContextType;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Context types where context_id is a task ID (worktree resolution applies).
@@ -139,6 +140,37 @@ pub(super) fn resolve_teammate_plugin_dir(working_dir: &std::path::Path) -> Path
     resolve_default_harness_plugin_dir(working_dir)
 }
 
+pub(super) async fn load_claude_provider_env_for_teammate_spawn(
+    provider_repo: &Arc<dyn crate::domain::repositories::AgentProviderSettingsRepository>,
+    spawn_config: TeammateSpawnConfig,
+) -> Result<TeammateSpawnConfig, (StatusCode, String)> {
+    let provider_env =
+        crate::application::provider_env_file::load_provider_custom_env_file_for_harness(
+            Some(provider_repo),
+            crate::domain::agents::AgentHarnessKind::Claude,
+        )
+        .await
+        .map_err(|error| {
+            warn!(error = %error, "Failed to load Claude provider env file for teammate spawn");
+            (StatusCode::BAD_REQUEST, error)
+        })?;
+
+    Ok(apply_provider_env_to_teammate_spawn_config(
+        spawn_config,
+        provider_env,
+    ))
+}
+
+fn apply_provider_env_to_teammate_spawn_config(
+    mut spawn_config: TeammateSpawnConfig,
+    provider_env: HashMap<String, String>,
+) -> TeammateSpawnConfig {
+    for (key, value) in provider_env {
+        spawn_config = spawn_config.with_env(key, value);
+    }
+    spawn_config
+}
+
 /// Fallback working directory (same as TeammateSpawnConfig::new default).
 fn default_working_dir() -> PathBuf {
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
@@ -273,5 +305,68 @@ pub fn resolve_mcp_agent_type(process: &str, preset: Option<&str>) -> String {
         "worker-team-member".to_string()
     } else {
         "ideation-team-member".to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::agents::{AgentHarnessKind, AgentProviderSettings};
+    use crate::domain::repositories::AgentProviderSettingsRepository;
+    use crate::infrastructure::memory::MemoryAgentProviderSettingsRepository;
+
+    #[test]
+    fn apply_provider_env_to_teammate_spawn_config_merges_values() {
+        let spawn_config = TeammateSpawnConfig::new("researcher", "team-a", "inspect");
+        let provider_env = HashMap::from([(
+            "CUSTOM_PROVIDER_TOKEN".to_string(),
+            "from-provider-env".to_string(),
+        )]);
+
+        let spawn_config = apply_provider_env_to_teammate_spawn_config(spawn_config, provider_env);
+
+        assert_eq!(
+            spawn_config
+                .env
+                .get("CUSTOM_PROVIDER_TOKEN")
+                .map(String::as_str),
+            Some("from-provider-env")
+        );
+    }
+
+    #[tokio::test]
+    async fn load_claude_provider_env_for_teammate_spawn_reads_repo_settings() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let env_path = temp_dir.path().join("claude.env");
+        std::fs::write(
+            &env_path,
+            "CUSTOM_PROVIDER_TOKEN=from-provider-env\nCLAUDE_MODEL=spoofed\n",
+        )
+        .expect("write env file");
+        let provider_repo = Arc::new(MemoryAgentProviderSettingsRepository::new());
+        let mut settings = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Claude);
+        settings.custom_env_file_enabled = true;
+        settings.custom_env_file_path = Some(env_path.to_string_lossy().into_owned());
+        provider_repo
+            .upsert(&settings)
+            .await
+            .expect("save settings");
+        let provider_repo: Arc<dyn AgentProviderSettingsRepository> = provider_repo;
+
+        let spawn_config = load_claude_provider_env_for_teammate_spawn(
+            &provider_repo,
+            TeammateSpawnConfig::new("researcher", "team-a", "inspect"),
+        )
+        .await
+        .expect("load provider env");
+
+        assert_eq!(
+            spawn_config
+                .env
+                .get("CUSTOM_PROVIDER_TOKEN")
+                .map(String::as_str),
+            Some("from-provider-env")
+        );
+        assert!(!spawn_config.env.contains_key("CLAUDE_MODEL"));
     }
 }

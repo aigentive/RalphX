@@ -129,6 +129,13 @@ When `scope_drift_status = "scope_expansion"`, explicitly decide whether the exp
 - [ ] Tauri invoke uses camelCase field names (`contextId` not `context_id`)
 - [ ] No fragile string comparisons — enum variants or error codes used
 - [ ] TransitionHandler used for status changes (never direct DB update)
+
+**Stateful workflow changes** — for completion/cache/retry/recovery/state-machine/prompt-contract diffs, run a false-success review:
+- [ ] current-run/attempt evidence is required for forward progress
+- [ ] repo/query/cache errors fail closed
+- [ ] completion events/webhooks/auto-commit happen after final backend authority
+- [ ] prompt tool payloads match live MCP/backend schemas
+- [ ] tests cover stale attempts, stale cache, duplicate calls, re-entry, and production entry paths
 </section>
 
 <appendix name="complete-review-ref">

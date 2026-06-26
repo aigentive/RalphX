@@ -54,6 +54,7 @@ interface AgentsConversationMainRegionProps {
   selectedTaskArtifactId: ActiveConversationPanelProps["selectedTaskArtifactId"];
   setTerminalChatDockElement: ActiveConversationPanelProps["setTerminalChatDockElement"];
   switchingConversationModeId: ActiveConversationPanelProps["switchingConversationModeId"];
+  terminalArchivedReason: ActiveConversationPanelProps["terminalArchivedReason"];
   terminalUnavailableReason: ActiveConversationPanelProps["terminalUnavailableReason"];
 }
 
@@ -105,6 +106,7 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
   selectedTaskArtifactId,
   setTerminalChatDockElement,
   switchingConversationModeId,
+  terminalArchivedReason,
   terminalUnavailableReason,
 }: AgentsConversationMainRegionProps) {
   if (activeProjectId && selectedConversationId && activeConversation) {
@@ -149,6 +151,7 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
         selectedTaskArtifactId={selectedTaskArtifactId}
         setTerminalChatDockElement={setTerminalChatDockElement}
         switchingConversationModeId={switchingConversationModeId}
+        terminalArchivedReason={terminalArchivedReason}
         terminalUnavailableReason={terminalUnavailableReason}
       />
     );

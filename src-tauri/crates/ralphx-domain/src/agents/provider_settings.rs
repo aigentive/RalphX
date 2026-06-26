@@ -61,6 +61,10 @@ pub struct AgentProviderSettings {
     pub custom_binary_enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom_binary_path: Option<String>,
+    #[serde(default)]
+    pub custom_env_file_enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_env_file_path: Option<String>,
     pub updated_at: DateTime<Utc>,
 }
 
@@ -87,6 +91,8 @@ impl AgentProviderSettings {
             auto_update_enabled: false,
             custom_binary_enabled: false,
             custom_binary_path: None,
+            custom_env_file_enabled: false,
+            custom_env_file_path: None,
             updated_at: Utc::now(),
         }
     }

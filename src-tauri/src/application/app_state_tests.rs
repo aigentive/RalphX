@@ -471,6 +471,7 @@ fi
 async fn test_resolve_background_agent_runtime_uses_custom_codex_override() {
     let temp = tempfile::tempdir().expect("temp dir");
     let custom_codex_path = temp.path().join("codex-wrapper");
+    let env_path = temp.path().join("codex.env");
     write_executable(
         &custom_codex_path,
         r#"#!/bin/sh
@@ -486,6 +487,11 @@ else
 fi
 "#,
     );
+    fs::write(
+        &env_path,
+        "CUSTOM_PROVIDER_TOKEN=from-env-file\nANTHROPIC_MODEL=spoofed\n",
+    )
+    .expect("write provider env file");
     let default_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
     let unavailable_codex: Arc<dyn AgenticClient> = Arc::new(UnavailableCodexAgentClient::new());
     let state = AppState::new_test()
@@ -496,6 +502,8 @@ fi
     codex_provider.enabled = true;
     codex_provider.custom_binary_enabled = true;
     codex_provider.custom_binary_path = Some(custom_codex_path.to_string_lossy().into_owned());
+    codex_provider.custom_env_file_enabled = true;
+    codex_provider.custom_env_file_path = Some(env_path.to_string_lossy().into_owned());
     state
         .agent_provider_settings_repo
         .upsert(&codex_provider)
@@ -513,6 +521,11 @@ fi
     assert!(Arc::ptr_eq(&runtime.client, &unavailable_codex));
     assert_eq!(runtime.harness, Some(AgentHarnessKind::Codex));
     assert_eq!(runtime.cli_path_override, Some(custom_codex_path));
+    assert_eq!(
+        runtime.env.get("CUSTOM_PROVIDER_TOKEN").map(String::as_str),
+        Some("from-env-file")
+    );
+    assert!(!runtime.env.contains_key("ANTHROPIC_MODEL"));
 }
 
 #[tokio::test]
