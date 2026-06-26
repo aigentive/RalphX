@@ -359,6 +359,60 @@ async fn test_get_status_entered_at_returns_earliest_when_entered_multiple_times
 }
 
 #[tokio::test]
+async fn test_get_status_last_entered_at_returns_latest_when_entered_multiple_times() {
+    let repo = MemoryTaskRepository::new();
+    let project_id = ProjectId::new();
+    let task = Task::new(project_id, "Re-enter status".to_string());
+    repo.create(task.clone()).await.unwrap();
+
+    repo.persist_status_change(
+        &task.id,
+        InternalStatus::Executing,
+        InternalStatus::PendingMerge,
+        "agent",
+    )
+    .await
+    .unwrap();
+
+    tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+
+    repo.persist_status_change(
+        &task.id,
+        InternalStatus::PendingMerge,
+        InternalStatus::MergeIncomplete,
+        "system",
+    )
+    .await
+    .unwrap();
+
+    tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+
+    repo.persist_status_change(
+        &task.id,
+        InternalStatus::Executing,
+        InternalStatus::PendingMerge,
+        "agent",
+    )
+    .await
+    .unwrap();
+
+    let timestamp = repo
+        .get_status_last_entered_at(&task.id, InternalStatus::PendingMerge)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let history = repo.get_status_history(&task.id).await.unwrap();
+    let latest_pending_merge = history
+        .iter()
+        .rev()
+        .find(|t| t.to == InternalStatus::PendingMerge)
+        .unwrap();
+
+    assert_eq!(timestamp, latest_pending_merge.timestamp);
+}
+
+#[tokio::test]
 async fn test_get_status_entered_at_returns_none_for_nonexistent_task() {
     let repo = MemoryTaskRepository::new();
     let task_id = TaskId::new();
