@@ -1887,7 +1887,10 @@ function PublicationStateGroup({
         isActiveRuntime,
         agentStatus
       );
-      const showRuntimeState = runtimeState === "running" || runtimeState === "waiting";
+      const showRuntimeState = shouldShowSessionRuntimeLabel(
+        runtimeState,
+        row.publicationLabel
+      );
       const sessionActionsOpen = openSessionActionsId === conversation.id;
 
       return (
@@ -2546,7 +2549,10 @@ function ProjectSessionGroup({
         isActiveRuntime,
         agentStatus
       );
-      const showRuntimeState = runtimeState === "running" || runtimeState === "waiting";
+      const showRuntimeState = shouldShowSessionRuntimeLabel(
+        runtimeState,
+        row.publicationLabel
+      );
       const sessionActionsOpen = openSessionActionsId === conversation.id;
 
       return (
@@ -2991,6 +2997,12 @@ function StaticRecentRuns() {
 }
 
 type SessionRuntimeState = "running" | "waiting" | "queued" | "done" | "blocked" | "archived";
+const PUBLICATION_LABELS_WITH_OWN_RUNTIME = new Set([
+  "auto-merge",
+  "blocked",
+  "fixing",
+  "waiting",
+]);
 
 function getSessionRuntimeState(
   conversation: AgentConversation,
@@ -3018,6 +3030,21 @@ function getSessionRuntimeState(
   }
 
   return "running";
+}
+
+function shouldShowSessionRuntimeLabel(
+  state: SessionRuntimeState,
+  publicationLabel: string | null
+) {
+  if (state !== "running" && state !== "waiting") {
+    return false;
+  }
+
+  const normalizedPublicationLabel = publicationLabel?.trim().toLowerCase() ?? null;
+  return (
+    !normalizedPublicationLabel ||
+    !PUBLICATION_LABELS_WITH_OWN_RUNTIME.has(normalizedPublicationLabel)
+  );
 }
 
 function SessionRuntimeLabel({ state }: { state: SessionRuntimeState }) {

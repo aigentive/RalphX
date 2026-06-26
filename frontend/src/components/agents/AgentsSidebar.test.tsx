@@ -408,6 +408,37 @@ vi.mock("./useAgentSidebarPublicationGroup", () => {
       if (prStatus === "draft") return "draft";
       return "active";
     };
+    const getPublicationLabel = (
+      workspace: AgentConversationWorkspace | null,
+      state: string
+    ): string | null => {
+      const supervisionStatus = workspace?.prSupervisionStatus?.trim().toLowerCase();
+      if (
+        state === "active" ||
+        state === "uncommitted" ||
+        state === "unpushed"
+      ) {
+        if (supervisionStatus === "fixing" || supervisionStatus === "publishing") {
+          return "fixing";
+        }
+        if (supervisionStatus === "blocked") {
+          return "blocked";
+        }
+        if (
+          supervisionStatus === "waiting" ||
+          supervisionStatus === "waiting_for_checks"
+        ) {
+          return "waiting";
+        }
+        if (
+          supervisionStatus === "monitoring" &&
+          workspace?.prAutoMergeCurrent === true
+        ) {
+          return "auto-merge";
+        }
+      }
+      return state === "active" ? null : state;
+    };
     const normalizedSearch = search.trim().toLowerCase();
     const pinnedIds = new Set(pinnedConversationIds);
     const priorityIds = new Set(priorityConversationIds);
@@ -442,7 +473,7 @@ vi.mock("./useAgentSidebarPublicationGroup", () => {
               ? `PR #${workspace.publicationPrNumber}`
               : workspace?.baseRef ?? "master",
           publicationState: state,
-          publicationLabel: state === "active" ? null : state,
+          publicationLabel: getPublicationLabel(workspace, state),
         };
       })
       .filter((row) => publicationStates.includes(row.publicationState))
@@ -955,6 +986,39 @@ describe("AgentsSidebar", () => {
     expect(screen.queryByText("queued")).not.toBeInTheDocument();
     expect(screen.queryByText("done")).not.toBeInTheDocument();
     expect(screen.queryByText("blocked")).not.toBeInTheDocument();
+  });
+
+  it("uses fixing publication label instead of generic running text", () => {
+    const fixingConversation = conversation({
+      id: "conversation-fixing",
+      title: "Repair workspace",
+    });
+    const fixingStoreKey = getAgentConversationStoreKey(fixingConversation);
+    conversationsByProject.set("project-1", {
+      data: [fixingConversation],
+      total: 1,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+    workspacesByProject.set("project-1", [
+      workspace({
+        conversationId: fixingConversation.id,
+        publicationPushStatus: "needs_agent",
+        prSupervisionStatus: "fixing",
+      }),
+    ]);
+    useChatStore.setState({
+      activeConversationIds: { [fixingStoreKey]: fixingConversation.id },
+      agentStatus: { [fixingStoreKey]: "running" },
+    });
+
+    renderSidebar();
+
+    const row = screen.getByTestId("agents-session-conversation-fixing");
+    expect(row).toHaveTextContent("fixing");
+    expect(within(row).queryByText("running")).not.toBeInTheDocument();
   });
 
   it("bounds project session lists to eight visible rows and virtualizes overflow", () => {
