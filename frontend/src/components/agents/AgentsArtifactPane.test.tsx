@@ -14,6 +14,7 @@ import type { AgentArtifactTab } from "@/stores/agentSessionStore";
 import { useUiStore } from "@/stores/uiStore";
 import { createTestQueryClient } from "@/test/store-utils";
 import { AgentsArtifactPane } from "./AgentsArtifactPane";
+import { agentWorkspaceKeys } from "./agentWorkspaceQueries";
 
 const deferredHydrationTimeout = { timeout: 3_000 };
 
@@ -4747,6 +4748,16 @@ describe("AgentsArtifactPane", () => {
     getWorkspaceReviewMock.mockRejectedValue(
       new Error("Agent conversation workspace is checked out at 'HEAD' instead of branch"),
     );
+    const queryClient = createTestQueryClient();
+    queryClient.setQueryData(
+      agentWorkspaceKeys.scopedFreshness("conversation-1", "full"),
+      workspaceFreshness({
+        freshnessScope: "full",
+        capturedBaseCommit: "old-base",
+        targetBaseCommit: "new-base",
+        isBaseAhead: true,
+      }),
+    );
 
     renderPane(
       "publish",
@@ -4756,14 +4767,33 @@ describe("AgentsArtifactPane", () => {
         baseDisplayName: "Current branch (feature/agent-screen)",
         publicationPushStatus: "needs_agent",
       }),
+      vi.fn(),
+      false,
+      null,
+      {},
+      queryClient,
     );
 
     const repairState = await screen.findByTestId("agents-publish-repair-state");
+    const actionbar = screen.getByTestId("agents-publish-actionbar");
+    const metadataStrip = screen.getByTestId("agents-publish-metadata-strip");
     expect(repairState).toBeInTheDocument();
-    expect(within(repairState).getByText("Repairing workspace")).toBeInTheDocument();
     expect(
-      within(repairState).getByText(/RalphX routed this workspace to the agent/),
+      within(actionbar).getByText(/RalphX routed this workspace to the agent/),
     ).toBeInTheDocument();
+    expect(
+      within(repairState).queryByText("Repairing workspace"),
+    ).not.toBeInTheDocument();
+    expect(
+      within(repairState).queryByText(/RalphX routed this workspace to the agent/),
+    ).not.toBeInTheDocument();
+    expect(screen.getAllByText(/RalphX routed this workspace to the agent/)).toHaveLength(
+      1,
+    );
+    expect(screen.queryByTestId("agents-base-stale")).not.toBeInTheDocument();
+    expect(
+      within(metadataStrip).getByTestId("agents-publish-push-status-pill"),
+    ).toHaveTextContent("Repair pending");
     await waitFor(() =>
       expect(screen.getByTestId("agents-publish-repair-bucket-conflicted")).toHaveTextContent(
         "Conflicted: 1",
