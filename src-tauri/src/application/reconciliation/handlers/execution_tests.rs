@@ -2,6 +2,7 @@ use chrono::{Duration, Utc};
 use serde_json::{json, Map, Value};
 use std::sync::Arc;
 
+use super::execution::is_deterministic_agent_command_error;
 use crate::application::{AppState, ReconciliationRunner, TaskTransitionService};
 use crate::commands::ExecutionState;
 use crate::domain::entities::{
@@ -9,7 +10,6 @@ use crate::domain::entities::{
     ExecutionRecoveryEventKind, ExecutionRecoveryMetadata, ExecutionRecoveryReasonCode,
     ExecutionRecoverySource, ExecutionRecoveryState, InternalStatus, Project, Task,
 };
-use super::execution::is_deterministic_agent_command_error;
 
 fn build_reconciler_for_execution_tests(
     app_state: &AppState,
