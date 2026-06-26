@@ -6,7 +6,6 @@ import {
   LayoutGrid,
   Network,
   ClipboardList,
-  RefreshCw,
   Ticket,
   X,
 } from "lucide-react";
@@ -25,6 +24,7 @@ import {
   type AgentConversationWorkspace,
   type AgentConversationWorkspaceFreshness,
   type AgentWorkspaceReviewContext,
+  type StartAgentWorkspaceReviewResult,
 } from "@/api/chat";
 import { Button } from "@/components/ui/button";
 import {
@@ -49,6 +49,7 @@ import type {
   DependencyGraphResponse,
 } from "@/api/ideation.types";
 import type { AgentConversation } from "./agentConversations";
+import { AgentReviewPanel } from "./AgentReviewPanel";
 import {
   getVisibleIdeationArtifactTabs,
   type IdeationArtifactTab,
@@ -359,17 +360,8 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
           queryKey: ["agents", "artifact", artifactId],
         });
       }
-      if (result.started) {
-        toast.info("Review started");
-      } else if (result.skippedReason === "conversation_active") {
-        toast.message("Review will be available after the current agent run");
-      }
-    },
-    onError: (error) => {
-      toast.error(error instanceof Error ? error.message : "Failed to start review");
     },
   });
-  const [autoReviewAttemptKey, setAutoReviewAttemptKey] = useState<string | null>(null);
   const [taskArtifactSelectedId, setTaskArtifactSelectedIdState] =
     useState<string | null>(() => readSelectedTaskForConversation(conversationId));
   useEffect(() => {
@@ -499,35 +491,24 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     visibleTabs.some((tab) => tab.id === activeTab)
       ? activeTab
       : fallbackActiveTab;
-  const workspaceReviewAutoStartKey =
-    conversationId && workspaceReviewContext?.target
-      ? `${conversationId}:${workspaceReviewContext.target.scope}:${workspaceReviewContext.target.diffFingerprint}`
-      : null;
-  useEffect(() => {
-    if (
-      effectiveActiveTab !== "review" ||
-      !conversationId ||
-      !workspaceReviewContext?.target ||
-      workspaceReviewContext.isCurrent ||
-      workspaceReviewContext.monitor.status === "reviewing" ||
-      startWorkspaceReviewMutation.isPending ||
-      !workspaceReviewAutoStartKey ||
-      autoReviewAttemptKey === workspaceReviewAutoStartKey
-    ) {
-      return;
-    }
-    setAutoReviewAttemptKey(workspaceReviewAutoStartKey);
-    startWorkspaceReviewMutation.mutate({ force: false });
-  }, [
-    autoReviewAttemptKey,
-    conversationId,
-    effectiveActiveTab,
-    startWorkspaceReviewMutation,
-    workspaceReviewAutoStartKey,
-    workspaceReviewContext?.isCurrent,
-    workspaceReviewContext?.monitor.status,
-    workspaceReviewContext?.target,
-  ]);
+  const reviewDisplayContext = startWorkspaceReviewMutation.data ?? workspaceReviewContext;
+  const isWorkspaceReviewRunning =
+    startWorkspaceReviewMutation.isPending ||
+    reviewDisplayContext?.monitor.status === "reviewing";
+  const workspaceReviewBlocked =
+    Boolean(startWorkspaceReviewMutation.error) ||
+    reviewDisplayContext?.monitor.status === "blocked";
+  const reviewTabStatusColor = isWorkspaceReviewRunning
+    ? "var(--accent-primary)"
+    : workspaceReviewBlocked
+      ? "var(--status-error)"
+      : reviewDisplayContext?.isOutdated
+        ? "var(--status-warning)"
+        : reviewDisplayContext?.isCurrent
+          ? "var(--status-success)"
+          : reviewDisplayContext?.target
+            ? "var(--text-muted)"
+            : null;
   const shouldLoadVerificationData =
     shouldLoadIdeationData && effectiveActiveTab === "verification";
   const shouldLoadDependencyGraph =
@@ -595,12 +576,11 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     },
     [attachedSessionId, queryClient],
   );
-  const handleRefreshReview = useCallback(() => {
+  const handleStartReview = useCallback((force: boolean) => {
     if (!conversationId || startWorkspaceReviewMutation.isPending) {
       return;
     }
-    setAutoReviewAttemptKey(null);
-    startWorkspaceReviewMutation.mutate({ force: true });
+    startWorkspaceReviewMutation.mutate({ force });
   }, [conversationId, startWorkspaceReviewMutation]);
 
   return (
@@ -629,6 +609,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
 
             let iconColor: string | undefined;
             let iconPulse = false;
+            let tabStatusColor: string | null = null;
             if (id === "verification") {
               if (verificationInProgress) {
                 iconColor = "var(--accent-primary)";
@@ -641,6 +622,10 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
               } else if (verificationState === "needs_revision") {
                 iconColor = "var(--status-warning)";
               }
+            } else if (id === "review") {
+              iconColor = reviewTabStatusColor ?? undefined;
+              iconPulse = isWorkspaceReviewRunning;
+              tabStatusColor = reviewTabStatusColor;
             }
 
             return (
@@ -675,6 +660,13 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
                   style={iconColor ? { color: iconColor } : undefined}
                 />
                 <span>{label}</span>
+                {tabStatusColor && (
+                  <span
+                    aria-hidden="true"
+                    className="h-1.5 w-1.5 rounded-full"
+                    style={{ backgroundColor: tabStatusColor }}
+                  />
+                )}
                 {count > 0 && (
                   <span
                     className="text-[0.625rem] font-semibold px-1.5 py-0.5 rounded-full"
@@ -794,16 +786,15 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
           taskMode={taskMode}
           reviewArtifact={reviewArtifact}
           reviewContext={workspaceReviewContext}
+          reviewStartResult={startWorkspaceReviewMutation.data ?? null}
+          reviewStartError={startWorkspaceReviewMutation.error}
           isReviewLoading={
             Boolean(reviewArtifactId) &&
             !reviewArtifact &&
             reviewArtifactQuery.isFetching
           }
-          isReviewRefreshing={
-            workspaceReviewContextQuery.isFetching ||
-            startWorkspaceReviewMutation.isPending
-          }
-          onRefreshReview={handleRefreshReview}
+          isReviewActionPending={startWorkspaceReviewMutation.isPending}
+          onStartReview={handleStartReview}
           planArtifact={planArtifact}
           isPlanLoading={isPlanHydrating}
           onPlanUpdated={handlePlanUpdated}
@@ -840,9 +831,11 @@ type ArtifactContentProps = {
   taskMode: AgentTaskArtifactMode;
   reviewArtifact: Artifact | null;
   reviewContext: AgentWorkspaceReviewContext | null;
+  reviewStartResult: StartAgentWorkspaceReviewResult | null;
+  reviewStartError: Error | null;
   isReviewLoading: boolean;
-  isReviewRefreshing: boolean;
-  onRefreshReview: () => void;
+  isReviewActionPending: boolean;
+  onStartReview: (force: boolean) => void;
   planArtifact: Artifact | null;
   isPlanLoading: boolean;
   onPlanUpdated: (updatedPlan: Artifact) => void;
@@ -878,9 +871,11 @@ function ArtifactContent({
   taskMode,
   reviewArtifact,
   reviewContext,
+  reviewStartResult,
+  reviewStartError,
   isReviewLoading,
-  isReviewRefreshing,
-  onRefreshReview,
+  isReviewActionPending,
+  onStartReview,
   planArtifact,
   isPlanLoading,
   onPlanUpdated,
@@ -984,9 +979,11 @@ function ArtifactContent({
       <AgentReviewPanel
         reviewArtifact={reviewArtifact}
         reviewContext={reviewContext}
+        reviewStartResult={reviewStartResult}
+        reviewStartError={reviewStartError}
         isReviewLoading={isReviewLoading}
-        isReviewRefreshing={isReviewRefreshing}
-        onRefreshReview={onRefreshReview}
+        isReviewActionPending={isReviewActionPending}
+        onStartReview={onStartReview}
       />
     );
   }
@@ -1089,131 +1086,6 @@ function ArtifactContent({
       selectedTaskId={taskArtifactSelectedId}
       onSelectedTaskIdChange={onTaskArtifactSelectedIdChange}
     />
-  );
-}
-
-function AgentReviewPanel({
-  reviewArtifact,
-  reviewContext,
-  isReviewLoading,
-  isReviewRefreshing,
-  onRefreshReview,
-}: {
-  reviewArtifact: Artifact | null;
-  reviewContext: AgentWorkspaceReviewContext | null;
-  isReviewLoading: boolean;
-  isReviewRefreshing: boolean;
-  onRefreshReview: () => void;
-}) {
-  const [isReviewExpanded, setIsReviewExpanded] = useState(true);
-
-  useEffect(() => {
-    setIsReviewExpanded(true);
-  }, [reviewArtifact?.id, reviewArtifact?.metadata.version]);
-
-  if (isReviewLoading) {
-    return <EmptyArtifactState title="Loading review..." />;
-  }
-
-  const statusText = reviewContext?.monitor.status === "reviewing"
-    ? "Reviewing changes..."
-    : reviewContext?.isOutdated
-      ? "Review is outdated"
-      : reviewContext?.isCurrent
-        ? "Review is current"
-        : reviewContext?.target
-          ? "Review pending"
-          : null;
-
-  if (!reviewArtifact) {
-    return (
-      <div className="min-h-full px-4 pb-4 pt-4">
-        <div className="mb-3 flex items-center justify-between gap-3">
-          <div className="min-w-0">
-            {statusText && (
-              <p className="truncate text-xs" style={{ color: "var(--text-muted)" }}>
-                {statusText}
-              </p>
-            )}
-          </div>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                onClick={onRefreshReview}
-                disabled={isReviewRefreshing}
-                className="h-8 w-8 p-0"
-                aria-label="Refresh review"
-              >
-                <RefreshCw className={cn("w-4 h-4", isReviewRefreshing ? "animate-spin" : "")} />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom" className="text-xs">
-              Refresh review
-            </TooltipContent>
-          </Tooltip>
-        </div>
-        <EmptyArtifactState
-          title={
-            reviewContext?.monitor.status === "reviewing"
-              ? "Preparing review..."
-              : "No review yet"
-          }
-          detail={
-            reviewContext?.target
-              ? "A Review artifact will appear here when the background review finishes."
-              : "No reviewable changes were found."
-          }
-        />
-      </div>
-    );
-  }
-
-  return (
-    <div className="min-h-full px-4 pb-4 pt-4">
-      <div className="mb-3 flex items-center justify-between gap-3">
-        <div className="min-w-0">
-          {statusText && (
-            <p className="truncate text-xs" style={{ color: "var(--text-muted)" }}>
-              {statusText}
-              {reviewContext?.monitor.reviewArtifactVersion
-                ? ` · v${reviewContext.monitor.reviewArtifactVersion}`
-                : ""}
-            </p>
-          )}
-        </div>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={onRefreshReview}
-              disabled={isReviewRefreshing}
-              className="h-8 w-8 p-0"
-              aria-label="Refresh review"
-            >
-              <RefreshCw className={cn("w-4 h-4", isReviewRefreshing ? "animate-spin" : "")} />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent side="bottom" className="text-xs">
-            Refresh review
-          </TooltipContent>
-        </Tooltip>
-      </div>
-      <Suspense fallback={<EmptyArtifactState title="Loading review..." />}>
-        <LazyPlanDisplay
-          plan={reviewArtifact}
-          artifactLabel="Review"
-          linkedProposalsCount={0}
-          isExpanded={isReviewExpanded}
-          onExpandedChange={setIsReviewExpanded}
-          chromeless
-        />
-      </Suspense>
-    </div>
   );
 }
 
