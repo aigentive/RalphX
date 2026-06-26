@@ -485,6 +485,7 @@ export function AgentPublishPanel({
       reviewQuery.data.changes.length === 0 ||
       isAgentWorkspacePublishCurrent(workspace, freshness) ||
       (freshness?.baseStatus ?? "valid") === "blocked" ||
+      Boolean(freshness?.isBaseAhead) ||
       isPipelineOwnedAgentWorkspace(workspace) ||
       Boolean(getAgentWorkspaceTerminalPublicationStatus(workspace)) ||
       workspace.status === "missing"
