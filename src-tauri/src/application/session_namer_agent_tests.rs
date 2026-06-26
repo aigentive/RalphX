@@ -19,9 +19,9 @@ use crate::domain::agents::{
     ResponseChunk,
 };
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode, ChatConversation, DelegatedSession,
-    AgentWorkspaceSourcePullRequest, IdeationAnalysisBaseRefKind, IdeationSession,
-    IdeationSessionFlow, IdeationSessionId, Project, Task,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, ChatConversation, ChatMessage,
+    DelegatedSession, AgentWorkspaceSourcePullRequest, IdeationAnalysisBaseRefKind, IdeationSession,
+    IdeationSessionFlow, IdeationSessionId, MessageRole, Project, Task,
 };
 use crate::infrastructure::agents::claude::agent_names;
 use crate::infrastructure::{MockAgenticClient, MockCallType};
@@ -447,6 +447,121 @@ async fn session_namer_conversation_spawn_includes_review_pr_context() {
             .contains("<head_ref_name>feature/pr-review-title</head_ref_name>")
     );
     assert!(spawn.config.prompt.contains("<base_ref_name>main</base_ref_name>"));
+}
+
+#[tokio::test]
+async fn session_namer_conversation_spawn_includes_existing_context_for_forked_conversation() {
+    let default_client: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
+    let state = AppState::new_test().with_agent_client(default_client);
+
+    let project_dir = tempfile::tempdir().unwrap();
+    let project = Project::new(
+        "Forked Conversation Context Project".to_string(),
+        project_dir.path().display().to_string(),
+    );
+    state.project_repo.create(project.clone()).await.unwrap();
+
+    let mut conversation = ChatConversation::new_project(project.id.clone());
+    conversation.parent_conversation_id = Some("parent-conversation-1".to_string());
+    conversation.set_title("[Fork] Stabilize workspace publish".to_string());
+    let conversation = state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .unwrap();
+
+    let mut user = ChatMessage::user_in_project(
+        project.id.clone(),
+        "The merged run still has stale PR status in the sidebar.",
+    );
+    user.conversation_id = Some(conversation.id.clone());
+    state.chat_message_repo.create(user).await.unwrap();
+
+    let mut assistant = ChatMessage::user_in_project(
+        project.id.clone(),
+        "The prior fix updated publication polling but did not rename the fork.",
+    );
+    assistant.role = MessageRole::Orchestrator;
+    assistant.conversation_id = Some(conversation.id.clone());
+    state.chat_message_repo.create(assistant).await.unwrap();
+
+    let spawn = build_session_namer_agent_spawn(
+        &state,
+        conversation_initial(
+            conversation.id.as_str(),
+            "Please continue from the merged run and fix the naming fallback.",
+        ),
+    )
+    .await
+    .unwrap();
+
+    assert!(spawn.config.prompt.contains("<conversation_context>"));
+    assert!(
+        spawn
+            .config
+            .prompt
+            .contains("<parent_conversation_id>parent-conversation-1</parent_conversation_id>")
+    );
+    assert!(
+        spawn
+            .config
+            .prompt
+            .contains("<current_title>[Fork] Stabilize workspace publish</current_title>")
+    );
+    assert!(
+        spawn.config.prompt.contains(
+            "<content>The merged run still has stale PR status in the sidebar.</content>"
+        )
+    );
+    assert!(spawn.config.prompt.contains(
+        "<content>The prior fix updated publication polling but did not rename the fork.</content>"
+    ));
+    assert!(spawn.config.prompt.contains(
+        "<user_message>Please continue from the merged run and fix the naming fallback.</user_message>"
+    ));
+}
+
+#[tokio::test]
+async fn session_namer_conversation_context_skips_empty_and_truncates_long_messages() {
+    let default_client: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
+    let state = AppState::new_test().with_agent_client(default_client);
+
+    let project_dir = tempfile::tempdir().unwrap();
+    let project = Project::new(
+        "Forked Conversation Long Context Project".to_string(),
+        project_dir.path().display().to_string(),
+    );
+    state.project_repo.create(project.clone()).await.unwrap();
+
+    let mut conversation = ChatConversation::new_project(project.id.clone());
+    conversation.parent_conversation_id = Some("parent-conversation-long".to_string());
+    let conversation = state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .unwrap();
+
+    let mut empty = ChatMessage::user_in_project(project.id.clone(), " \n\t ");
+    empty.conversation_id = Some(conversation.id.clone());
+    state.chat_message_repo.create(empty).await.unwrap();
+
+    let long_content = format!("{} tail-marker", "alpha ".repeat(160));
+    let mut long_message = ChatMessage::user_in_project(project.id.clone(), long_content);
+    long_message.conversation_id = Some(conversation.id.clone());
+    state.chat_message_repo.create(long_message).await.unwrap();
+
+    let spawn = build_session_namer_agent_spawn(
+        &state,
+        conversation_initial(conversation.id.as_str(), "Name the fork after a follow-up"),
+    )
+    .await
+    .unwrap();
+
+    assert!(spawn.config.prompt.contains("<recent_messages>"));
+    assert!(!spawn.config.prompt.contains("<content></content>"));
+    assert!(spawn.config.prompt.contains("alpha alpha alpha"));
+    assert!(spawn.config.prompt.contains("...</content>"));
+    assert!(!spawn.config.prompt.contains("tail-marker"));
 }
 
 #[tokio::test]
