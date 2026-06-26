@@ -159,6 +159,28 @@ export function isAgentWorkspacePublishCurrent(
   );
 }
 
+export function shouldAutoRefreshCleanAgentWorkspaceFromBase(
+  workspace: AgentConversationWorkspace | null,
+  freshness: AgentConversationWorkspaceFreshness | undefined
+): boolean {
+  const freshnessScope = freshness?.freshnessScope ?? "full";
+  const remoteRefreshed = freshness?.remoteRefreshed ?? false;
+  const worktreeStatusChecked = freshness?.worktreeStatusChecked ?? false;
+  const baseStatus = freshness?.baseStatus ?? "valid";
+  return (
+    workspace?.mode === "edit" &&
+    workspace.status !== "missing" &&
+    freshness !== undefined &&
+    freshnessScope === "full" &&
+    remoteRefreshed &&
+    worktreeStatusChecked &&
+    baseStatus !== "blocked" &&
+    freshness.isBaseAhead &&
+    !freshness.hasUncommittedChanges &&
+    freshness.unpublishedCommitCount === 0
+  );
+}
+
 export function getAgentWorkspaceEffectiveBaseLabel(
   workspace: AgentConversationWorkspace | null,
   freshness: AgentConversationWorkspaceFreshness | undefined
