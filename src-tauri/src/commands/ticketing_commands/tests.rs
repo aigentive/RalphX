@@ -6,7 +6,9 @@ use std::{
 };
 
 use async_trait::async_trait;
-use crate::application::clickup_integration_service::ClickUpAttachment;
+use crate::application::clickup_integration_service::{
+    ClickUpAttachment, ClickUpFolder, ClickUpList,
+};
 use crate::application::linear_integration_service::LinearAttachment;
 use crate::application::{
     AtlassianApiClient, AtlassianAuthContext, AtlassianConnectivity, AtlassianIntegrationService,
@@ -193,6 +195,107 @@ fn clickup_space_maps_to_project_container() {
     assert_eq!(container.name, "Platform");
     assert_eq!(container.kind, "space");
     assert!(container.parent_id.is_none());
+}
+
+#[test]
+fn clickup_folder_and_list_map_to_hierarchical_containers() {
+    let folder = clickup_folder_to_container(
+        ClickUpFolder {
+            id: "folder-1".to_string(),
+            name: "Delivery".to_string(),
+            space_id: Some("space-1".to_string()),
+        },
+        "fallback-space",
+    );
+    assert_eq!(folder.id, "folder:folder-1");
+    assert_eq!(folder.key.as_deref(), Some("Folder"));
+    assert_eq!(folder.kind, "folder");
+    assert_eq!(folder.parent_id.as_deref(), Some("space:space-1"));
+
+    let folder_fallback = clickup_folder_to_container(
+        ClickUpFolder {
+            id: "folder-2".to_string(),
+            name: "Fallback".to_string(),
+            space_id: None,
+        },
+        "fallback-space",
+    );
+    assert_eq!(
+        folder_fallback.parent_id.as_deref(),
+        Some("space:fallback-space")
+    );
+
+    let folder_list = clickup_list_to_container(
+        ClickUpList {
+            id: "list-1".to_string(),
+            name: "Current Sprint".to_string(),
+            folder_id: Some("folder-1".to_string()),
+            space_id: Some("space-1".to_string()),
+        },
+        "space:fallback-space",
+    );
+    assert_eq!(folder_list.id, "list:list-1");
+    assert_eq!(folder_list.key.as_deref(), Some("List"));
+    assert_eq!(folder_list.kind, "list");
+    assert_eq!(folder_list.parent_id.as_deref(), Some("folder:folder-1"));
+
+    let space_list = clickup_list_to_container(
+        ClickUpList {
+            id: "list-2".to_string(),
+            name: "Backlog".to_string(),
+            folder_id: None,
+            space_id: Some("space-1".to_string()),
+        },
+        "space:fallback-space",
+    );
+    assert_eq!(space_list.parent_id.as_deref(), Some("space:space-1"));
+
+    let fallback_list = clickup_list_to_container(
+        ClickUpList {
+            id: "list-3".to_string(),
+            name: "Fallback".to_string(),
+            folder_id: None,
+            space_id: None,
+        },
+        "space:fallback-space",
+    );
+    assert_eq!(
+        fallback_list.parent_id.as_deref(),
+        Some("space:fallback-space")
+    );
+}
+
+#[test]
+fn clickup_container_scope_parses_space_folder_list_and_legacy_space_ids() {
+    assert_eq!(
+        clickup_container_scope(None),
+        ClickUpContainerScope::Workspace
+    );
+    assert_eq!(
+        clickup_container_scope(Some("space:space-1")),
+        ClickUpContainerScope::Space("space-1".to_string())
+    );
+    assert_eq!(
+        clickup_container_scope(Some("folder:folder-1")),
+        ClickUpContainerScope::Folder("folder-1".to_string())
+    );
+    assert_eq!(
+        clickup_container_scope(Some("list:list-1")),
+        ClickUpContainerScope::List("list-1".to_string())
+    );
+    assert_eq!(
+        clickup_container_scope(Some("legacy-space")),
+        ClickUpContainerScope::Space("legacy-space".to_string())
+    );
+    assert_eq!(
+        clickup_selected_space_id(Some("space:space-1")),
+        Some("space-1")
+    );
+    assert_eq!(clickup_selected_space_id(Some("folder:folder-1")), None);
+    assert_eq!(
+        clickup_selected_space_id(Some("legacy-space")),
+        Some("legacy-space")
+    );
 }
 
 #[test]

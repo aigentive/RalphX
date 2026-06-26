@@ -723,6 +723,133 @@ describe("TicketingDashboardView", () => {
     });
   });
 
+  it("loads ClickUp child locations and renders the location rail for the selected space", async () => {
+    useTicketingStore.getState().setProvider("clickup");
+    useTicketingStore.getState().setContainerId("space-sprints");
+    vi.mocked(ticketingHooks.useTicketingProviders).mockReturnValue({
+      data: [
+        {
+          provider: "clickup",
+          label: "ClickUp",
+          enabled: true,
+          connectionStatus: "connected",
+          capabilities: writableCapabilities,
+          fetchedAt: "2026-06-19T22:00:00.000Z",
+        },
+      ],
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof ticketingHooks.useTicketingProviders>);
+    vi.mocked(ticketingHooks.useTicketingContainers).mockImplementation((input) => ({
+      data: input?.parentContainerId
+        ? [
+            {
+              provider: "clickup",
+              id: "folder:delivery",
+              key: "Folder",
+              name: "Delivery",
+              kind: "folder",
+              parentId: "space-sprints",
+            },
+            {
+              provider: "clickup",
+              id: "list:sprint-42",
+              key: "List",
+              name: "Sprint 42",
+              kind: "list",
+              parentId: "folder:delivery",
+            },
+          ]
+        : [
+            {
+              provider: "clickup",
+              id: "space-sprints",
+              key: "Space",
+              name: "Sprints",
+              kind: "space",
+            },
+          ],
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof ticketingHooks.useTicketingContainers>));
+    vi.mocked(ticketingHooks.useTickets).mockReturnValue({
+      data: { pages: [{ items: [], nextCursor: null, total: 0 }], pageParams: [null] },
+      isLoading: false,
+      isFetching: false,
+      isError: false,
+      error: null,
+      hasNextPage: false,
+      fetchNextPage: vi.fn(),
+      isFetchingNextPage: false,
+    } as unknown as ReturnType<typeof ticketingHooks.useTickets>);
+
+    renderDashboard();
+
+    expect(ticketingHooks.useTicketingContainers).toHaveBeenCalledWith(
+      { provider: "clickup", projectId: "project-1", parentContainerId: "space-sprints" },
+      { enabled: true },
+    );
+    expect(screen.getByRole("button", { name: "All in Sprints" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Delivery" })).toBeInTheDocument();
+    expect(ticketingHooks.useTicketingColumns).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        provider: "clickup",
+        containerId: "space-sprints",
+      }),
+      { enabled: true },
+    );
+    expect(ticketingHooks.useTickets).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        provider: "clickup",
+        containerId: "space-sprints",
+      }),
+      { enabled: true },
+    );
+    fireEvent.click(screen.getByRole("button", { name: "All in Sprints" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delivery" }));
+  });
+
+  it("clears stale ClickUp child selections when the parent space cannot be resolved", () => {
+    useTicketingStore.getState().setProvider("clickup");
+    useTicketingStore.getState().setContainerId("folder:orphan");
+    vi.mocked(ticketingHooks.useTicketingProviders).mockReturnValue({
+      data: [
+        {
+          provider: "clickup",
+          label: "ClickUp",
+          enabled: true,
+          connectionStatus: "connected",
+          capabilities: writableCapabilities,
+          fetchedAt: "2026-06-19T22:00:00.000Z",
+        },
+      ],
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof ticketingHooks.useTicketingProviders>);
+    vi.mocked(ticketingHooks.useTicketingContainers).mockReturnValue({
+      data: [
+        {
+          provider: "clickup",
+          id: "folder:orphan",
+          key: "Folder",
+          name: "Orphaned folder",
+          kind: "folder",
+          parentId: "space:missing",
+        },
+      ],
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof ticketingHooks.useTicketingContainers>);
+
+    renderDashboard();
+
+    expect(screen.getByRole("combobox", { name: "Space" })).toHaveTextContent("Select space");
+  });
+
   it("surfaces stale provider freshness without hiding ticket content", () => {
     mockConnectedDashboard();
     vi.mocked(ticketingHooks.useTicketingProviders).mockReturnValue({

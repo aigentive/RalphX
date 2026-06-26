@@ -5,9 +5,10 @@ use async_trait::async_trait;
 use tokio::sync::{Mutex, RwLock};
 
 use crate::application::clickup_integration_service::{
-    ClickUpApiClient, ClickUpAuthContext, ClickUpComment, ClickUpIntegrationService, ClickUpSpace,
-    ClickUpStatus, ClickUpTaskContent, ClickUpTaskListOptions, ClickUpTaskSummary, ClickUpUser,
-    ClickUpWorkspace, EmptyClickUpApiClient, UnavailableClickUpApiClient,
+    ClickUpApiClient, ClickUpAuthContext, ClickUpComment, ClickUpFolder, ClickUpIntegrationService,
+    ClickUpList, ClickUpSpace, ClickUpStatus, ClickUpTaskContent, ClickUpTaskListOptions,
+    ClickUpTaskSummary, ClickUpUser, ClickUpWorkspace, EmptyClickUpApiClient,
+    UnavailableClickUpApiClient,
 };
 use crate::domain::integrations::{
     ClickUpIntegrationSettingsRepository, IntegrationValidationStatus,
@@ -97,7 +98,11 @@ struct TestClickUpClient {
     validate_error: Option<String>,
     seen_tokens: Mutex<Vec<String>>,
     list_tasks_calls: Mutex<Vec<(String, Vec<String>)>>,
+    list_task_list_calls: Mutex<Vec<String>>,
     list_spaces_calls: Mutex<Vec<String>>,
+    list_folders_calls: Mutex<Vec<String>>,
+    list_folder_lists_calls: Mutex<Vec<String>>,
+    list_folderless_lists_calls: Mutex<Vec<String>>,
     fetch_task_calls: Mutex<Vec<String>>,
     fetch_task_failures: Mutex<Vec<String>>,
     custom_task_calls: Mutex<Vec<(String, String)>>,
@@ -139,8 +144,24 @@ impl TestClickUpClient {
         self.list_tasks_calls.lock().await.clone()
     }
 
+    async fn list_task_list_calls(&self) -> Vec<String> {
+        self.list_task_list_calls.lock().await.clone()
+    }
+
     async fn list_spaces_calls(&self) -> Vec<String> {
         self.list_spaces_calls.lock().await.clone()
+    }
+
+    async fn list_folders_calls(&self) -> Vec<String> {
+        self.list_folders_calls.lock().await.clone()
+    }
+
+    async fn list_folder_lists_calls(&self) -> Vec<String> {
+        self.list_folder_lists_calls.lock().await.clone()
+    }
+
+    async fn list_folderless_lists_calls(&self) -> Vec<String> {
+        self.list_folderless_lists_calls.lock().await.clone()
     }
 
     async fn fetch_task_calls(&self) -> Vec<String> {
@@ -208,6 +229,59 @@ impl ClickUpApiClient for TestClickUpClient {
         }])
     }
 
+    async fn list_folders(
+        &self,
+        auth: &ClickUpAuthContext,
+        space_id: &str,
+    ) -> Result<Vec<ClickUpFolder>, String> {
+        self.seen_tokens.lock().await.push(auth.api_token.clone());
+        self.list_folders_calls
+            .lock()
+            .await
+            .push(space_id.to_string());
+        Ok(vec![ClickUpFolder {
+            id: "folder-1".to_string(),
+            name: "Delivery".to_string(),
+            space_id: Some(space_id.to_string()),
+        }])
+    }
+
+    async fn list_folder_lists(
+        &self,
+        auth: &ClickUpAuthContext,
+        folder_id: &str,
+    ) -> Result<Vec<ClickUpList>, String> {
+        self.seen_tokens.lock().await.push(auth.api_token.clone());
+        self.list_folder_lists_calls
+            .lock()
+            .await
+            .push(folder_id.to_string());
+        Ok(vec![ClickUpList {
+            id: "list-1".to_string(),
+            name: "Current Sprint".to_string(),
+            folder_id: Some(folder_id.to_string()),
+            space_id: None,
+        }])
+    }
+
+    async fn list_folderless_lists(
+        &self,
+        auth: &ClickUpAuthContext,
+        space_id: &str,
+    ) -> Result<Vec<ClickUpList>, String> {
+        self.seen_tokens.lock().await.push(auth.api_token.clone());
+        self.list_folderless_lists_calls
+            .lock()
+            .await
+            .push(space_id.to_string());
+        Ok(vec![ClickUpList {
+            id: "list-folderless".to_string(),
+            name: "Backlog".to_string(),
+            folder_id: None,
+            space_id: Some(space_id.to_string()),
+        }])
+    }
+
     async fn list_tasks(
         &self,
         auth: &ClickUpAuthContext,
@@ -241,6 +315,42 @@ impl ClickUpApiClient for TestClickUpClient {
             folder_id: None,
             list_id: None,
             list_name: Some("Sprint".to_string()),
+            updated_at: Some("1700000000000".to_string()),
+        }])
+    }
+
+    async fn list_tasks_for_list(
+        &self,
+        auth: &ClickUpAuthContext,
+        list_id: &str,
+        _options: ClickUpTaskListOptions,
+    ) -> Result<Vec<ClickUpTaskSummary>, String> {
+        self.seen_tokens.lock().await.push(auth.api_token.clone());
+        self.list_task_list_calls
+            .lock()
+            .await
+            .push(list_id.to_string());
+        Ok(vec![ClickUpTaskSummary {
+            id: "list-task-1".to_string(),
+            custom_id: None,
+            name: "Fix list scope".to_string(),
+            url: Some("https://app.clickup.com/t/list-task-1".to_string()),
+            status_name: Some("in progress".to_string()),
+            status_type: Some("custom".to_string()),
+            status_category: Some("in_progress".to_string()),
+            status_color: Some("#abc".to_string()),
+            assignees: vec!["dev".to_string()],
+            assignee_ids: vec![42],
+            watchers: Vec::new(),
+            tags: vec!["bug".to_string()],
+            sprint_names: vec!["Current Sprint".to_string()],
+            location_ids: vec![list_id.to_string()],
+            location_folder_ids: Vec::new(),
+            location_space_ids: Vec::new(),
+            space_id: Some("space-1".to_string()),
+            folder_id: None,
+            list_id: Some(list_id.to_string()),
+            list_name: Some("Current Sprint".to_string()),
             updated_at: Some("1700000000000".to_string()),
         }])
     }
@@ -742,6 +852,51 @@ async fn list_spaces_and_tasks_succeed_when_enabled_with_workspace() {
     assert_eq!(
         client.list_tasks_calls().await,
         vec![("9000".to_string(), vec!["space-1".to_string()])]
+    );
+}
+
+#[tokio::test]
+async fn list_hierarchy_and_list_tasks_succeed_when_enabled_with_workspace() {
+    let client = Arc::new(TestClickUpClient::default());
+    let (service, _repo, _secret) = build_service(client.clone());
+
+    service
+        .save_settings(Some("pk_token".to_string()), Some("9000".to_string()))
+        .await
+        .unwrap();
+    service.validate_and_enable().await.unwrap();
+
+    let folders = service.list_folders("space-1").await.unwrap();
+    assert_eq!(folders[0].id, "folder-1");
+    assert_eq!(folders[0].space_id.as_deref(), Some("space-1"));
+    assert_eq!(
+        client.list_folders_calls().await,
+        vec!["space-1".to_string()]
+    );
+
+    let folder_lists = service.list_folder_lists("folder-1").await.unwrap();
+    assert_eq!(folder_lists[0].id, "list-1");
+    assert_eq!(
+        client.list_folder_lists_calls().await,
+        vec!["folder-1".to_string()]
+    );
+
+    let folderless_lists = service.list_folderless_lists("space-1").await.unwrap();
+    assert_eq!(folderless_lists[0].id, "list-folderless");
+    assert_eq!(
+        client.list_folderless_lists_calls().await,
+        vec!["space-1".to_string()]
+    );
+
+    let tasks = service
+        .list_tasks_for_list("list-1", ClickUpTaskListOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(tasks[0].id, "list-task-1");
+    assert_eq!(tasks[0].list_id.as_deref(), Some("list-1"));
+    assert_eq!(
+        client.list_task_list_calls().await,
+        vec!["list-1".to_string()]
     );
 }
 

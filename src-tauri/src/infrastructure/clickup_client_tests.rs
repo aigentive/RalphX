@@ -10,8 +10,9 @@ use crate::application::{ClickUpApiClient, ClickUpAuthContext};
 
 use super::clickup_client::{
     apply_task_tags, assign_task_to_user, clear_task_assignees, clickup_authorization_header,
-    create_task_comment, fetch_current_user, fetch_filtered_tasks, fetch_list_tasks,
-    fetch_space_statuses, fetch_spaces, fetch_task_detail, fetch_task_detail_by_custom_id, fetch_workspaces,
+    create_task_comment, fetch_current_user, fetch_filtered_tasks, fetch_folder_lists,
+    fetch_folderless_lists, fetch_list_tasks, fetch_space_folders, fetch_space_statuses,
+    fetch_spaces, fetch_task_detail, fetch_task_detail_by_custom_id, fetch_workspaces,
     map_status_type_to_category, put_task_status, validate_token, ClickUpJsonRequester,
     HyperClickUpApiClient,
 };
@@ -269,6 +270,68 @@ async fn spaces_map_from_team_spaces() {
     assert!(!spaces[0].private);
     assert!(spaces[1].private);
     assert!(fake.requests()[0].url.contains("/team/9000/space"));
+}
+
+#[tokio::test]
+async fn folders_map_from_space_folders_with_fallback_space() {
+    let fake = FakeClickUpRequester::new(vec![Ok(json!({
+        "folders": [
+            { "id": "folder-1", "name": "Delivery", "space": { "id": "space-from-body" } },
+            { "id": "folder-2", "name": "Backlog" }
+        ]
+    }))]);
+
+    let folders = fetch_space_folders(&fake, "tok", "space/1").await.unwrap();
+
+    assert_eq!(folders.len(), 2);
+    assert_eq!(folders[0].id, "folder-1");
+    assert_eq!(folders[0].space_id.as_deref(), Some("space-from-body"));
+    assert_eq!(folders[1].space_id.as_deref(), Some("space/1"));
+    let request = &fake.requests()[0];
+    assert!(request.url.contains("/space/space%2F1/folder"));
+    assert!(request.url.contains("archived=false"));
+}
+
+#[tokio::test]
+async fn folder_lists_map_with_fallback_folder() {
+    let fake = FakeClickUpRequester::new(vec![Ok(json!({
+        "lists": [
+            { "id": "list-1", "name": "Current Sprint", "folder": { "id": "folder-from-body" } },
+            { "id": "list-2", "name": "Next Sprint" }
+        ]
+    }))]);
+
+    let lists = fetch_folder_lists(&fake, "tok", "folder/1").await.unwrap();
+
+    assert_eq!(lists.len(), 2);
+    assert_eq!(lists[0].folder_id.as_deref(), Some("folder-from-body"));
+    assert_eq!(lists[1].folder_id.as_deref(), Some("folder/1"));
+    assert_eq!(lists[1].space_id, None);
+    let request = &fake.requests()[0];
+    assert!(request.url.contains("/folder/folder%2F1/list"));
+    assert!(request.url.contains("archived=false"));
+}
+
+#[tokio::test]
+async fn folderless_lists_map_with_fallback_space() {
+    let fake = FakeClickUpRequester::new(vec![Ok(json!({
+        "lists": [
+            { "id": "list-1", "name": "Backlog", "space": { "id": "space-from-body" } },
+            { "id": "list-2", "name": "Triage" }
+        ]
+    }))]);
+
+    let lists = fetch_folderless_lists(&fake, "tok", "space/1")
+        .await
+        .unwrap();
+
+    assert_eq!(lists.len(), 2);
+    assert_eq!(lists[0].space_id.as_deref(), Some("space-from-body"));
+    assert_eq!(lists[1].space_id.as_deref(), Some("space/1"));
+    assert_eq!(lists[1].folder_id, None);
+    let request = &fake.requests()[0];
+    assert!(request.url.contains("/space/space%2F1/list"));
+    assert!(request.url.contains("archived=false"));
 }
 
 #[tokio::test]
