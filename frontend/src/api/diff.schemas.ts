@@ -41,6 +41,15 @@ export const FileDiffSchema = z.object({
   is_binary: z.boolean(),
 });
 
+export const ConflictDiffSchema = z.object({
+  filePath: z.string(),
+  baseContent: z.string(),
+  oursContent: z.string(),
+  theirsContent: z.string(),
+  mergedWithMarkers: z.string(),
+  language: z.string(),
+});
+
 export const DiffPageRowSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("hunk_header"),

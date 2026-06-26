@@ -317,6 +317,43 @@ impl DiffService {
         })
     }
 
+    /// Get 3-way conflict data from Git's unmerged index stages.
+    ///
+    /// Stage 1 = merge base, stage 2 = ours, stage 3 = theirs. This is the
+    /// most reliable source while a worktree is paused mid-merge or mid-rebase,
+    /// because branch names may be detached or no longer point at the exact
+    /// commits involved in the conflict.
+    pub fn get_index_conflict_diff(
+        &self,
+        file_path: &str,
+        project_path: &str,
+    ) -> AppResult<ConflictDiff> {
+        validate_diff_file_path(file_path)?;
+
+        let base_content = self
+            .get_file_content_at_index_stage(project_path, file_path, 1)
+            .unwrap_or_default();
+        let ours_content = self
+            .get_file_content_at_index_stage(project_path, file_path, 2)
+            .unwrap_or_default();
+        let theirs_content = self
+            .get_file_content_at_index_stage(project_path, file_path, 3)
+            .unwrap_or_default();
+        let full_path = Path::new(project_path).join(file_path);
+        let merged_with_markers =
+            crate::utils::path_safety::checked_read_to_string(&full_path, "conflict file")
+                .unwrap_or_default();
+
+        Ok(ConflictDiff {
+            file_path: file_path.to_string(),
+            base_content,
+            ours_content,
+            theirs_content,
+            merged_with_markers,
+            language: get_language_from_path(file_path),
+        })
+    }
+
     /// Read a file's content from the git index (staging area).
     ///
     /// Uses `git show :<file>` where the leading `:` refers to the index.
@@ -328,6 +365,25 @@ impl DiffService {
     ) -> Option<String> {
         let output = Command::new(resolve_git_cli_path())
             .args(["show", &format!(":{}", file_path)])
+            .current_dir(project_path)
+            .output()
+            .ok()?;
+        if output.status.success() {
+            Some(String::from_utf8_lossy(&output.stdout).to_string())
+        } else {
+            None
+        }
+    }
+
+    /// Read a file's content from a specific git index stage.
+    fn get_file_content_at_index_stage(
+        &self,
+        project_path: &str,
+        file_path: &str,
+        stage: u8,
+    ) -> Option<String> {
+        let output = Command::new(resolve_git_cli_path())
+            .args(["show", &format!(":{stage}:{file_path}")])
             .current_dir(project_path)
             .output()
             .ok()?;
