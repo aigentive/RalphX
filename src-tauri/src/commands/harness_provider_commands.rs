@@ -37,6 +37,8 @@ pub struct AgentProviderSettingsResponse {
     pub auto_update_enabled: bool,
     pub custom_binary_enabled: bool,
     pub custom_binary_path: Option<String>,
+    pub custom_env_file_enabled: bool,
+    pub custom_env_file_path: Option<String>,
     pub available: bool,
     pub binary_found: bool,
     pub binary_path: Option<String>,
@@ -83,6 +85,10 @@ pub struct UpdateAgentProviderSettingsInput {
     pub custom_binary_enabled: Option<bool>,
     #[serde(default)]
     pub custom_binary_path: Option<Option<String>>,
+    #[serde(default)]
+    pub custom_env_file_enabled: Option<bool>,
+    #[serde(default)]
+    pub custom_env_file_path: Option<Option<String>>,
     #[serde(default)]
     pub reset_to_defaults: bool,
     #[serde(default)]
@@ -135,6 +141,8 @@ fn reset_configurable_defaults(settings: &mut AgentProviderSettings) {
     settings.auto_update_enabled = defaults.auto_update_enabled;
     settings.custom_binary_enabled = defaults.custom_binary_enabled;
     settings.custom_binary_path = defaults.custom_binary_path;
+    settings.custom_env_file_enabled = defaults.custom_env_file_enabled;
+    settings.custom_env_file_path = defaults.custom_env_file_path;
 }
 
 fn enforce_provider_constraints(settings: &mut AgentProviderSettings) {
@@ -145,6 +153,14 @@ fn enforce_provider_constraints(settings: &mut AgentProviderSettings) {
 }
 
 fn normalize_custom_binary_path(path: Option<String>) -> Option<String> {
+    normalize_optional_path(path)
+}
+
+fn normalize_custom_env_file_path(path: Option<String>) -> Option<String> {
+    normalize_optional_path(path)
+}
+
+fn normalize_optional_path(path: Option<String>) -> Option<String> {
     path.and_then(|value| {
         let trimmed = value.trim();
         if trimmed.is_empty() {
@@ -219,6 +235,12 @@ fn merge_input(
     if let Some(custom_binary_enabled) = input.custom_binary_enabled {
         settings.custom_binary_enabled = custom_binary_enabled;
     }
+    if let Some(custom_env_file_path) = input.custom_env_file_path {
+        settings.custom_env_file_path = normalize_custom_env_file_path(custom_env_file_path);
+    }
+    if let Some(custom_env_file_enabled) = input.custom_env_file_enabled {
+        settings.custom_env_file_enabled = custom_env_file_enabled;
+    }
     if settings.custom_binary_enabled {
         if settings
             .custom_binary_path
@@ -234,6 +256,19 @@ fn merge_input(
         }
         settings.cli_management_mode = AgentProviderCliManagementMode::UserManaged;
         settings.auto_update_enabled = false;
+    }
+    if settings.custom_env_file_enabled
+        && settings
+            .custom_env_file_path
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or_default()
+            .is_empty()
+    {
+        return Err(format!(
+            "Custom {} env file path is required before enabling custom env file mode",
+            settings.provider
+        ));
     }
     if settings.cli_management_mode != AgentProviderCliManagementMode::RxManaged {
         settings.auto_update_enabled = false;
@@ -327,6 +362,8 @@ fn to_response(
         auto_update_enabled: settings.auto_update_enabled,
         custom_binary_enabled: settings.custom_binary_enabled,
         custom_binary_path: settings.custom_binary_path,
+        custom_env_file_enabled: settings.custom_env_file_enabled,
+        custom_env_file_path: settings.custom_env_file_path,
         available: probe.available,
         binary_found: probe.binary_found,
         binary_path: probe.binary_path,
@@ -569,6 +606,7 @@ async fn update_provider_settings_with_probes(
             .error
             .unwrap_or_else(|| format!("Custom {provider} binary is not available and ready")));
     }
+    crate::application::provider_env_file::validate_provider_custom_env_file_settings(&candidate)?;
     if input.enabled == Some(true) && !effective_probe.available {
         return Err(effective_probe.error.unwrap_or_else(|| {
             format!("{provider} cannot be enabled until its CLI is available and ready")

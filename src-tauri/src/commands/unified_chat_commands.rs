@@ -70,7 +70,7 @@ use crate::application::chat_service::tool_result_preview::{
 };
 use crate::application::chat_service::{
     message_metadata_hidden_from_ui, AgentConversationCreatedPayload, AgentRunningState,
-    AgentRuntimeStatus, SendMessageOptions,
+    AgentRuntimeStatus, SendMessageOptions, running_state_from_run_status_and_idle,
 };
 use crate::application::git_service::{
     git_cmd::{self, GitCommandLane},
@@ -8061,6 +8061,13 @@ fn runtime_source_priority(source: AgentConversationRuntimeSource) -> u8 {
 fn summary_label_for_runtime_items(items: &[AgentConversationRuntimeItem]) -> String {
     if items
         .iter()
+        .all(|item| item.agent_status == AgentRuntimeStatus::WaitingForInput)
+    {
+        return "Awaiting input".to_string();
+    }
+
+    if items
+        .iter()
         .any(|item| item.source == AgentConversationRuntimeSource::Verification)
     {
         return "Verifying".to_string();
@@ -8122,21 +8129,9 @@ fn idle_agent_running_state() -> AgentRunningState {
     }
 }
 
-fn agent_running_state_from_run_status(run_status: Option<AgentRunStatus>) -> AgentRunningState {
-    match run_status {
-        Some(AgentRunStatus::Running) | None => AgentRunningState {
-            is_running: true,
-            agent_status: AgentRuntimeStatus::Generating,
-        },
-        Some(_) => AgentRunningState {
-            is_running: true,
-            agent_status: AgentRuntimeStatus::WaitingForInput,
-        },
-    }
-}
-
 async fn direct_agent_running_state_for_context(
     state: &AppState,
+    execution_state: &ExecutionState,
     context_type: ChatContextType,
     context_id: &str,
 ) -> Result<Option<AgentRunningState>, String> {
@@ -8156,7 +8151,10 @@ async fn direct_agent_running_state_for_context(
             .map(|run| run.status)
     };
 
-    Ok(Some(agent_running_state_from_run_status(run_status)))
+    Ok(Some(running_state_from_run_status_and_idle(
+        run_status,
+        execution_state.is_interactive_idle(&format!("{context_type}/{context_id}")),
+    )))
 }
 
 fn ideation_generating_flag(execution_state: &ExecutionState, session_id: &str) -> bool {
@@ -8382,12 +8380,17 @@ async fn add_task_runtime_items(
 
 async fn add_workspace_runtime_item(
     state: &AppState,
+    execution_state: &ExecutionState,
     runtime: &mut AgentConversationRuntimeStatus,
     conversation_id: &str,
 ) -> Result<(), String> {
-    let Some(running_state) =
-        direct_agent_running_state_for_context(state, ChatContextType::Project, conversation_id)
-            .await?
+    let Some(running_state) = direct_agent_running_state_for_context(
+        state,
+        execution_state,
+        ChatContextType::Project,
+        conversation_id,
+    )
+    .await?
     else {
         return Ok(());
     };
@@ -8490,7 +8493,7 @@ pub async fn get_agent_conversation_runtime_statuses_for_app_state(
 
     for conversation_id in requested {
         let mut runtime = AgentConversationRuntimeStatus::idle(conversation_id.clone());
-        add_workspace_runtime_item(state, &mut runtime, &conversation_id).await?;
+        add_workspace_runtime_item(state, &execution_state, &mut runtime, &conversation_id).await?;
 
         let workspace_id = ChatConversationId::from_string(conversation_id.clone());
         if let Some(workspace) = state
@@ -8699,7 +8702,8 @@ mod tests {
     use crate::application::git_service::GitService;
     use crate::application::publish_resilience::PublishBranchFreshnessStatus;
     use crate::application::{
-        chat_service::MockChatService, AppState, TeamService, TeamStateTracker,
+        chat_service::{AgentRuntimeStatus, MockChatService}, AppState, TeamService,
+        TeamStateTracker,
     };
     use crate::commands::ExecutionState;
     use crate::domain::agents::{
@@ -8925,6 +8929,50 @@ mod tests {
         assert_eq!(item.task_id.as_deref(), Some(owned_task.id.as_str()));
         assert_ne!(item.task_id.as_deref(), Some(unrelated_task.id.as_str()));
         assert_eq!(item.context_type, "task_execution");
+    }
+
+    #[tokio::test]
+    async fn agent_conversation_runtime_status_reports_idle_workspace_ipr_as_waiting() {
+        let state = AppState::new_sqlite_test();
+        let execution_state = Arc::new(ExecutionState::new());
+        let conversation_id = ChatConversationId::new();
+        let run = AgentRun::new(conversation_id);
+        let run_id = run.id;
+        state.agent_run_repo.create(run).await.unwrap();
+        state
+            .running_agent_registry
+            .register(
+                RunningAgentKey::new(
+                    ChatContextType::Project.to_string(),
+                    conversation_id.as_str(),
+                ),
+                std::process::id(),
+                conversation_id.as_str(),
+                run_id.as_str().to_string(),
+                None,
+                None,
+            )
+            .await;
+        execution_state.mark_interactive_idle(&agent_workspace_interactive_slot_key(
+            &conversation_id,
+        ));
+
+        let statuses = get_agent_conversation_runtime_statuses_for_app_state(
+            &state,
+            execution_state,
+            vec![conversation_id.as_str().to_string()],
+        )
+        .await
+        .unwrap();
+        let runtime = statuses.get(&conversation_id.as_str()).unwrap();
+
+        assert!(runtime.is_running);
+        assert_eq!(runtime.agent_status, AgentRuntimeStatus::WaitingForInput);
+        assert_eq!(runtime.summary_label.as_deref(), Some("Awaiting input"));
+        assert_eq!(runtime.items.len(), 1);
+        let item = &runtime.items[0];
+        assert_eq!(item.source, AgentConversationRuntimeSource::Workspace);
+        assert_eq!(item.agent_status, AgentRuntimeStatus::WaitingForInput);
     }
 
     fn build_send_now_command_app(state: AppState) -> tauri::App<tauri::test::MockRuntime> {

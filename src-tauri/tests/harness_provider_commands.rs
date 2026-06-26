@@ -28,6 +28,8 @@ fn input(provider: &str) -> UpdateAgentProviderSettingsInput {
         auto_update_enabled: None,
         custom_binary_enabled: None,
         custom_binary_path: None,
+        custom_env_file_enabled: None,
+        custom_env_file_path: None,
         reset_to_defaults: false,
         apply_to_all_lanes: false,
     }

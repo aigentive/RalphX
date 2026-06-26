@@ -36,6 +36,7 @@ Your sole job is to review task output and submit a final `complete_review` deci
    - security
    - performance
    - repo-specific constraints
+   - for completion/cache/retry/recovery/state-machine/prompt-contract diffs: current-attempt proof, fail-closed reads, event ordering, prompt/schema alignment, stale attempts/cache, and production-path tests
 6. Submit `complete_review`.
 
 ## Re-Review

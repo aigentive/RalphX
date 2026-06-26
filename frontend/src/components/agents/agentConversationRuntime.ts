@@ -6,6 +6,7 @@ import type {
 
 import type { AgentConversation } from "./agentConversations";
 import { DEFAULT_AGENT_RUNTIME } from "./agentOptions";
+import { getAgentWorkspaceTerminalPublicationStatus } from "./agentWorkspacePublishState";
 
 const AGENT_EFFORTS = new Set<AgentEffort>([
   "low",
@@ -28,16 +29,42 @@ export function getAgentTerminalUnavailableReason(
   if (!workspace) {
     return "Terminal requires a workspace-backed conversation";
   }
-  if (workspace.status === "missing") {
-    return "Terminal unavailable because the workspace is missing";
-  }
-  const hasExternalWorkspaceOwner =
-    Boolean(workspace.linkedPlanBranchId) ||
-    workspaceIsLinkedNonEditWorkspace(workspace);
-  if (hasExternalWorkspaceOwner) {
+  if (workspaceHasExternalOwner(workspace)) {
     return "Terminal disabled while ideation or execution owns this workspace";
   }
   return null;
+}
+
+export function getAgentTerminalArchivedReason(
+  conversation: AgentConversation | null,
+  workspace: AgentConversationWorkspace | null,
+): string | null {
+  if (!conversation || conversation.contextType !== "project" || !workspace) {
+    return null;
+  }
+  if (workspaceHasExternalOwner(workspace)) {
+    return null;
+  }
+
+  const terminalPublicationStatus =
+    getAgentWorkspaceTerminalPublicationStatus(workspace);
+  if (terminalPublicationStatus === "merged") {
+    return "Workspace archived after PR merge. Send a follow-up to continue in a fresh workspace.";
+  }
+  if (terminalPublicationStatus === "closed") {
+    return "Workspace archived after PR close. Send a follow-up to continue in a fresh workspace.";
+  }
+  if (workspace.status === "missing") {
+    return "Workspace missing. Send a follow-up to continue in a fresh workspace.";
+  }
+  return null;
+}
+
+function workspaceHasExternalOwner(workspace: AgentConversationWorkspace): boolean {
+  return (
+    Boolean(workspace.linkedPlanBranchId) ||
+    workspaceIsLinkedNonEditWorkspace(workspace)
+  );
 }
 
 function workspaceIsLinkedNonEditWorkspace(

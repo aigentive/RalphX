@@ -75,6 +75,7 @@ struct ResolvedSpawnerHarness {
     approval_policy: Option<String>,
     sandbox_mode: Option<String>,
     cli_path_override: Option<PathBuf>,
+    env: HashMap<String, String>,
 }
 
 impl fmt::Debug for ResolvedSpawnerHarness {
@@ -86,6 +87,7 @@ impl fmt::Debug for ResolvedSpawnerHarness {
             .field("approval_policy", &self.approval_policy)
             .field("sandbox_mode", &self.sandbox_mode)
             .field("cli_path_override", &self.cli_path_override)
+            .field("env_keys", &self.env.keys().collect::<Vec<_>>())
             .finish_non_exhaustive()
     }
 }
@@ -410,11 +412,11 @@ impl AgenticClientSpawner {
         .map(|name| crate::infrastructure::agents::claude::qualify_agent_name(&name))
     }
 
-    async fn resolve_client_and_cli_path_override(
+    async fn resolve_client_and_launch_env(
         &self,
         harness: AgentHarnessKind,
         agent_type: &str,
-    ) -> Result<(Arc<dyn AgenticClient>, Option<PathBuf>), String> {
+    ) -> Result<(Arc<dyn AgenticClient>, Option<PathBuf>, HashMap<String, String>), String> {
         let client = self.resolve_client_for_harness(harness).ok_or_else(|| {
             format!(
                 "Configured execution harness {} is not registered in the runtime",
@@ -422,19 +424,22 @@ impl AgenticClientSpawner {
             )
         })?;
 
+        let mut provider_env = HashMap::new();
         if let Some(provider_repo) = self.agent_provider_settings_repo.as_ref() {
             let settings = provider_repo
                 .get(harness)
                 .await
                 .map_err(|error| format!("Failed to read provider settings: {error}"))?;
             if let Some(settings) = settings.as_ref() {
+                provider_env =
+                    crate::application::provider_env_file::load_provider_custom_env_file(settings)?;
                 if let Some(launch_path) =
                     crate::application::managed_provider_cli::checked_managed_provider_cli_launch_path(
                         settings,
                         "state-machine agent spawn",
                     )
                 {
-                    return Ok((client, Some(launch_path?)));
+                    return Ok((client, Some(launch_path?), provider_env));
                 }
             }
         }
@@ -447,7 +452,7 @@ impl AgenticClientSpawner {
             ));
         }
 
-        Ok((client, None))
+        Ok((client, None, provider_env))
     }
 
     async fn resolve_spawn_harness(
@@ -465,8 +470,8 @@ impl AgenticClientSpawner {
                 )
                 .await?;
             }
-            let (client, cli_path_override) = self
-                .resolve_client_and_cli_path_override(self.default_harness, agent_type)
+            let (client, cli_path_override, env) = self
+                .resolve_client_and_launch_env(self.default_harness, agent_type)
                 .await?;
             return Ok(ResolvedSpawnerHarness {
                 client,
@@ -476,6 +481,7 @@ impl AgenticClientSpawner {
                 approval_policy: None,
                 sandbox_mode: None,
                 cli_path_override,
+                env,
             });
         };
         let Some(agent_name) = Self::resolve_process_agent_name(agent_type) else {
@@ -487,8 +493,8 @@ impl AgenticClientSpawner {
                 )
                 .await?;
             }
-            let (client, cli_path_override) = self
-                .resolve_client_and_cli_path_override(self.default_harness, agent_type)
+            let (client, cli_path_override, env) = self
+                .resolve_client_and_launch_env(self.default_harness, agent_type)
                 .await?;
             return Ok(ResolvedSpawnerHarness {
                 client,
@@ -498,6 +504,7 @@ impl AgenticClientSpawner {
                 approval_policy: None,
                 sandbox_mode: None,
                 cli_path_override,
+                env,
             });
         };
         let entity_status = self.resolve_task_status(task_id).await;
@@ -522,8 +529,8 @@ impl AgenticClientSpawner {
             )
             .await?;
         }
-        let (client, cli_path_override) = self
-            .resolve_client_and_cli_path_override(harness, agent_type)
+        let (client, cli_path_override, env) = self
+            .resolve_client_and_launch_env(harness, agent_type)
             .await?;
 
         Ok(ResolvedSpawnerHarness {
@@ -534,6 +541,7 @@ impl AgenticClientSpawner {
             approval_policy: resolved.approval_policy,
             sandbox_mode: resolved.sandbox_mode,
             cli_path_override,
+            env,
         })
     }
 
@@ -551,8 +559,9 @@ impl AgenticClientSpawner {
         approval_policy: Option<String>,
         sandbox_mode: Option<String>,
         cli_path_override: Option<PathBuf>,
+        provider_env: HashMap<String, String>,
     ) -> AgentConfig {
-        let mut env = std::collections::HashMap::new();
+        let mut env = provider_env;
         if let Some(pid) = project_id {
             env.insert("RALPHX_PROJECT_ID".to_string(), pid.clone());
         }
@@ -720,6 +729,7 @@ impl AgentSpawner for AgenticClientSpawner {
             resolved_harness.approval_policy,
             resolved_harness.sandbox_mode,
             resolved_harness.cli_path_override,
+            resolved_harness.env,
         );
 
         // Spawn and handle errors

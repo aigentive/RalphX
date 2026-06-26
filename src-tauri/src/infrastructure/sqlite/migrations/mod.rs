@@ -365,6 +365,9 @@ mod v20260625115000_custom_provider_binary_tests;
 mod v20260625153000_agent_conversation_issues;
 #[cfg(test)]
 mod v20260625153000_agent_conversation_issues_tests;
+mod v20260626092500_custom_provider_env_file;
+#[cfg(test)]
+mod v20260626092500_custom_provider_env_file_tests;
 #[cfg(test)]
 mod v20_merge_validation_mode_tests;
 #[cfg(test)]
@@ -455,7 +458,7 @@ mod v8_task_git_fields_tests;
 mod v9_project_git_fields_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260625153000;
+pub const SCHEMA_VERSION: i64 = 20260626092500;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -1264,6 +1267,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260625153000,
         name: "agent_conversation_issues",
         migrate: v20260625153000_agent_conversation_issues::migrate,
+    },
+    Migration {
+        version: 20260626092500,
+        name: "custom_provider_env_file",
+        migrate: v20260626092500_custom_provider_env_file::migrate,
     },
 ];
 

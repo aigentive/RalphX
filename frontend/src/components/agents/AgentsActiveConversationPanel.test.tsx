@@ -694,6 +694,7 @@ function renderPanel(
     selectedTaskArtifactId: null,
     setTerminalChatDockElement: vi.fn(),
     switchingConversationModeId: null,
+    terminalArchivedReason: null,
     terminalUnavailableReason: null,
     ...overrides,
   };

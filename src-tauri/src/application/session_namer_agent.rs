@@ -121,6 +121,7 @@ pub(crate) async fn build_session_namer_agent_spawn(
         agent_names::AGENT_SESSION_NAMER,
         working_directory,
     );
+    let env = resolved.runtime.env_with_overrides(bootstrap.env);
 
     let config = AgentConfig {
         role: AgentRole::Custom(bootstrap.agent_role.clone()),
@@ -136,7 +137,7 @@ pub(crate) async fn build_session_namer_agent_spawn(
         sandbox_mode: resolved.runtime.sandbox_mode,
         max_tokens: None,
         timeout_secs: Some(60),
-        env: bootstrap.env,
+        env,
     };
 
     Ok(SessionNamerAgentSpawn {
