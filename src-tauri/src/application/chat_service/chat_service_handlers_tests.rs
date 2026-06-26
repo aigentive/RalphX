@@ -11,6 +11,7 @@ use crate::application::{
     chat_service::{ProviderErrorCategory, ProviderErrorMetadata},
     AppState, InteractiveProcessRegistry,
 };
+use crate::domain::agents::{AgentHarnessKind, AgentProviderSettings};
 use crate::domain::entities::{
     app_state::ExecutionHaltMode, ChatConversation, ExecutionFailureSource,
     ExecutionRecoveryMetadata, ExecutionRecoveryReasonCode, ExecutionRecoveryState,
@@ -24,6 +25,48 @@ use crate::infrastructure::agents::claude::{ContentBlockItem, ToolCall};
 struct StubTaskRepo {
     task: Option<Task>,
     status_entered_at: Option<DateTime<Utc>>,
+}
+
+#[tokio::test]
+async fn provider_env_for_harness_reads_app_state_provider_settings() {
+    let empty = provider_env_for_harness::<MockRuntime>(&None, AgentHarnessKind::Claude)
+        .await
+        .expect("missing app handle");
+    assert!(empty.is_empty());
+
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let env_path = temp_dir.path().join("claude.env");
+    std::fs::write(
+        &env_path,
+        "CUSTOM_PROVIDER_TOKEN=from-handler\nCLAUDE_MODEL=spoofed\n",
+    )
+    .expect("write env file");
+    let app_state = AppState::new_test();
+    let mut settings = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Claude);
+    settings.custom_env_file_enabled = true;
+    settings.custom_env_file_path = Some(env_path.to_string_lossy().into_owned());
+    app_state
+        .agent_provider_settings_repo
+        .upsert(&settings)
+        .await
+        .expect("save provider settings");
+    let app = mock_builder()
+        .manage(app_state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let handle = Some(app.handle().clone());
+
+    let provider_env = provider_env_for_harness(&handle, AgentHarnessKind::Claude)
+        .await
+        .expect("load provider env");
+
+    assert_eq!(
+        provider_env
+            .get("CUSTOM_PROVIDER_TOKEN")
+            .map(String::as_str),
+        Some("from-handler")
+    );
+    assert!(!provider_env.contains_key("CLAUDE_MODEL"));
 }
 
 #[async_trait]

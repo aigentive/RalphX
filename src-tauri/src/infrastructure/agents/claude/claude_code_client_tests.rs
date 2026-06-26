@@ -955,6 +955,20 @@ fn test_build_teammate_env_vars_includes_custom_env() {
 }
 
 #[test]
+fn test_command_log_helpers_describe_program_args_and_env_keys() {
+    let mut command = tokio::process::Command::new("claude");
+    command.arg("--version");
+    command.env("CUSTOM_PROVIDER_TOKEN", "secret");
+
+    assert_eq!(command_log_program(&command), "claude");
+    assert_eq!(command_log_arg_count(&command), 1);
+    assert_eq!(
+        command_log_env_keys(&command),
+        vec!["CUSTOM_PROVIDER_TOKEN".to_string()]
+    );
+}
+
+#[test]
 fn test_build_teammate_env_vars_propagates_context() {
     let ctx = TeammateContext {
         context_id: "ctx-abc".to_string(),

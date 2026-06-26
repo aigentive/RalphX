@@ -973,6 +973,12 @@ pub struct AppChatService<R: Runtime = tauri::Wry> {
         Arc<verification_child_process_registry::VerificationChildProcessRegistry>,
 }
 
+#[derive(Debug)]
+struct ResolvedProviderLaunchSettings {
+    cli_path: PathBuf,
+    provider_env: HashMap<String, String>,
+}
+
 /// Compatibility alias for older callsites/tests that still use the legacy concrete name.
 pub type ClaudeChatService<R = tauri::Wry> = AppChatService<R>;
 
@@ -2711,7 +2717,7 @@ impl<R: Runtime> AppChatService<R> {
         session_messages: &[crate::domain::entities::ChatMessage],
         total_available: usize,
     ) -> Result<crate::infrastructure::agents::claude::SpawnableCommand, ChatServiceError> {
-        chat_service_context::build_command(
+        let mut spawnable = chat_service_context::build_command(
             &self.cli_path,
             &self.plugin_dir,
             conversation,
@@ -2733,34 +2739,57 @@ impl<R: Runtime> AppChatService<R> {
             None, // attachment_context_override
         )
         .await
-        .map_err(ChatServiceError::SpawnFailed)
+        .map_err(ChatServiceError::SpawnFailed)?;
+        let provider_env =
+            crate::application::provider_env_file::load_provider_custom_env_file_for_harness(
+                self.agent_provider_settings_repo.as_ref(),
+                DEFAULT_AGENT_HARNESS,
+            )
+            .await
+            .map_err(ChatServiceError::SpawnFailed)?;
+        chat_service_context::apply_provider_env_vars(&mut spawnable, &provider_env);
+        Ok(spawnable)
     }
 
-    async fn resolve_launch_cli_path_for_harness(
+    async fn resolve_launch_settings_for_harness(
         &self,
         effective_harness: AgentHarnessKind,
-    ) -> Result<PathBuf, ChatServiceError> {
+    ) -> Result<ResolvedProviderLaunchSettings, ChatServiceError> {
+        let mut provider_env = HashMap::new();
         if let Some(provider_repo) = self.agent_provider_settings_repo.as_ref() {
             let settings = provider_repo
                 .get(effective_harness)
                 .await
                 .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?;
             if let Some(settings) = settings.as_ref() {
+                provider_env = crate::application::provider_env_file::load_provider_custom_env_file(
+                    settings,
+                )
+                .map_err(ChatServiceError::SpawnFailed)?;
                 if let Some(path) =
                     crate::application::managed_provider_cli::checked_managed_provider_cli_launch_path(
                         settings,
                         "chat runtime",
                     )
                 {
-                    return path.map_err(ChatServiceError::SpawnFailed);
+                    return path
+                        .map(|cli_path| ResolvedProviderLaunchSettings {
+                            cli_path,
+                            provider_env,
+                        })
+                        .map_err(ChatServiceError::SpawnFailed);
                 }
             }
         }
 
-        Ok(if effective_harness == DEFAULT_AGENT_HARNESS {
+        let cli_path = if effective_harness == DEFAULT_AGENT_HARNESS {
             self.cli_path.clone()
         } else {
             resolve_chat_service_bootstrap(effective_harness).cli_path
+        };
+        Ok(ResolvedProviderLaunchSettings {
+            cli_path,
+            provider_env,
         })
     }
 
@@ -2796,9 +2825,11 @@ impl<R: Runtime> AppChatService<R> {
         let effective_harness = resolved_spawn_settings.effective_harness;
         let bootstrap_started = Instant::now();
         let cli_resolve_started = Instant::now();
-        let cli_path = self
-            .resolve_launch_cli_path_for_harness(effective_harness)
+        let launch_settings = self
+            .resolve_launch_settings_for_harness(effective_harness)
             .await?;
+        let cli_path = launch_settings.cli_path;
+        let provider_env = launch_settings.provider_env;
         tracing::info!(
             %context_type,
             context_id,
@@ -2846,7 +2877,7 @@ impl<R: Runtime> AppChatService<R> {
         )
         .await;
         let build_plan_started = Instant::now();
-        let launch_plan = chat_service_context::build_launch_plan_for_harness(
+        let mut launch_plan = chat_service_context::build_launch_plan_for_harness(
             effective_harness,
             &cli_path,
             &plugin_dir,
@@ -2884,6 +2915,7 @@ impl<R: Runtime> AppChatService<R> {
             );
             ChatServiceError::SpawnFailed(error)
         })?;
+        launch_plan.apply_provider_env(&provider_env);
         tracing::info!(
             %context_type,
             context_id,
@@ -5883,9 +5915,10 @@ mod managed_provider_launch_path_tests {
         let service = app_state.build_chat_service();
 
         let path = service
-            .resolve_launch_cli_path_for_harness(AgentHarnessKind::Codex)
+            .resolve_launch_settings_for_harness(AgentHarnessKind::Codex)
             .await
-            .expect("launch path");
+            .expect("launch settings")
+            .cli_path;
 
         assert_eq!(path, managed_codex_path);
     }
@@ -5908,11 +5941,49 @@ mod managed_provider_launch_path_tests {
         let service = app_state.build_chat_service();
 
         let path = service
-            .resolve_launch_cli_path_for_harness(AgentHarnessKind::Codex)
+            .resolve_launch_settings_for_harness(AgentHarnessKind::Codex)
             .await
-            .expect("launch path");
+            .expect("launch settings")
+            .cli_path;
 
         assert_eq!(path, custom_codex_path);
+    }
+
+    #[tokio::test]
+    async fn custom_provider_env_file_resolves_chat_launch_env() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let env_path = temp_dir.path().join("codex.env");
+        std::fs::write(
+            &env_path,
+            "CUSTOM_PROVIDER_TOKEN=from-env-file\nRALPHX_CONTEXT_ID=spoofed\nCODEX_MODEL=spoofed\n",
+        )
+        .expect("write provider env file");
+        let app_state = AppState::new_sqlite_test();
+        let mut settings = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Codex);
+        settings.enabled = true;
+        settings.custom_env_file_enabled = true;
+        settings.custom_env_file_path = Some(env_path.to_string_lossy().into_owned());
+        app_state
+            .agent_provider_settings_repo
+            .upsert(&settings)
+            .await
+            .expect("save provider settings");
+        let service = app_state.build_chat_service();
+
+        let launch_settings = service
+            .resolve_launch_settings_for_harness(AgentHarnessKind::Codex)
+            .await
+            .expect("launch settings");
+
+        assert_eq!(
+            launch_settings
+                .provider_env
+                .get("CUSTOM_PROVIDER_TOKEN")
+                .map(String::as_str),
+            Some("from-env-file")
+        );
+        assert!(!launch_settings.provider_env.contains_key("RALPHX_CONTEXT_ID"));
+        assert!(!launch_settings.provider_env.contains_key("CODEX_MODEL"));
     }
 
     #[tokio::test]
@@ -5939,7 +6010,7 @@ mod managed_provider_launch_path_tests {
         let service = app_state.build_chat_service();
 
         let error = service
-            .resolve_launch_cli_path_for_harness(AgentHarnessKind::Codex)
+            .resolve_launch_settings_for_harness(AgentHarnessKind::Codex)
             .await
             .expect_err("missing managed Codex should block launch");
 

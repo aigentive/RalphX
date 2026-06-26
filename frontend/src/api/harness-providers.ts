@@ -23,6 +23,8 @@ export const AgentProviderSettingsResponseSchema = z.object({
   autoUpdateEnabled: z.boolean().optional(),
   customBinaryEnabled: z.boolean().optional(),
   customBinaryPath: z.string().nullable().optional(),
+  customEnvFileEnabled: z.boolean().optional(),
+  customEnvFilePath: z.string().nullable().optional(),
   available: z.boolean(),
   binaryFound: z.boolean(),
   binaryPath: z.string().nullable().optional(),
@@ -64,6 +66,8 @@ export interface UpdateAgentProviderSettingsInput {
   autoUpdateEnabled?: boolean;
   customBinaryEnabled?: boolean;
   customBinaryPath?: string | null;
+  customEnvFileEnabled?: boolean;
+  customEnvFilePath?: string | null;
   resetToDefaults?: boolean;
   applyToAllLanes?: boolean;
 }

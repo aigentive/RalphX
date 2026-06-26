@@ -78,6 +78,8 @@ const settings: AgentProvidersSettingsResponse = {
       autoUpdateEnabled: true,
       customBinaryEnabled: false,
       customBinaryPath: null,
+      customEnvFileEnabled: false,
+      customEnvFilePath: null,
       available: true,
       binaryFound: true,
       binaryPath: "/opt/homebrew/bin/codex",
@@ -101,6 +103,8 @@ const settings: AgentProvidersSettingsResponse = {
       autoUpdateEnabled: false,
       customBinaryEnabled: false,
       customBinaryPath: null,
+      customEnvFileEnabled: false,
+      customEnvFilePath: null,
       available: false,
       binaryFound: false,
       binaryPath: null,
@@ -120,6 +124,8 @@ const managedCliStatuses = {
       autoUpdateEnabled: true,
       customBinaryEnabled: false,
       customBinaryPath: null,
+      customEnvFileEnabled: false,
+      customEnvFilePath: null,
       supported: true,
       installed: true,
       binaryPath: "/mock/ralphx/managed-cli/codex/bin/codex",
@@ -136,6 +142,8 @@ const managedCliStatuses = {
       autoUpdateEnabled: false,
       customBinaryEnabled: false,
       customBinaryPath: null,
+      customEnvFileEnabled: false,
+      customEnvFilePath: null,
       supported: true,
       installed: true,
       binaryPath: "/Users/example/.local/bin/claude",
@@ -477,6 +485,94 @@ describe("HarnessProvidersSection", () => {
       title: "Select Codex binary",
     });
     expect(updateProviderAsync).not.toHaveBeenCalled();
+  });
+
+  it("reveals and saves a manually entered custom env file path", async () => {
+    const user = userEvent.setup();
+    render(<HarnessProvidersSection />);
+
+    const codexCard = screen.getByTestId("provider-card-codex");
+    await user.click(within(codexCard).getByLabelText("Use custom env file"));
+
+    const pathInput = within(codexCard).getByLabelText("Env file path");
+    await user.type(pathInput, "/Users/example/.codex.env");
+    await user.click(within(codexCard).getByRole("button", { name: "Use path" }));
+
+    expect(updateProviderAsync).toHaveBeenCalledWith({
+      provider: "codex",
+      customEnvFileEnabled: true,
+      customEnvFilePath: "/Users/example/.codex.env",
+    });
+    expect(refetchStatus).not.toHaveBeenCalled();
+  });
+
+  it("saves a browsed custom env file path", async () => {
+    const user = userEvent.setup();
+    dialogMocks.open.mockResolvedValueOnce("/Users/example/.codex.env");
+    render(<HarnessProvidersSection />);
+
+    const codexCard = screen.getByTestId("provider-card-codex");
+    await user.click(within(codexCard).getByLabelText("Use custom env file"));
+    await user.click(within(codexCard).getByRole("button", { name: "Browse" }));
+
+    expect(dialogMocks.open).toHaveBeenCalledWith({
+      directory: false,
+      multiple: false,
+      title: "Select Codex env file",
+    });
+    expect(updateProviderAsync).toHaveBeenCalledWith({
+      provider: "codex",
+      customEnvFileEnabled: true,
+      customEnvFilePath: "/Users/example/.codex.env",
+    });
+  });
+
+  it("does not save a custom env file path when browsing is cancelled", async () => {
+    const user = userEvent.setup();
+    dialogMocks.open.mockResolvedValueOnce(null);
+    render(<HarnessProvidersSection />);
+
+    const codexCard = screen.getByTestId("provider-card-codex");
+    await user.click(within(codexCard).getByLabelText("Use custom env file"));
+    await user.click(within(codexCard).getByRole("button", { name: "Browse" }));
+
+    expect(dialogMocks.open).toHaveBeenCalledWith({
+      directory: false,
+      multiple: false,
+      title: "Select Codex env file",
+    });
+    expect(updateProviderAsync).not.toHaveBeenCalled();
+  });
+
+  it("renders saved custom env file paths and can disable them", async () => {
+    const user = userEvent.setup();
+    const customSettings: AgentProvidersSettingsResponse = {
+      ...settings,
+      providers: settings.providers.map((provider) =>
+        provider.provider === "codex"
+          ? {
+              ...provider,
+              customEnvFileEnabled: true,
+              customEnvFilePath: "/Users/example/.codex.env",
+            }
+          : provider,
+      ),
+    };
+    mockProviders(customSettings);
+
+    render(<HarnessProvidersSection />);
+
+    const codexCard = screen.getByTestId("provider-card-codex");
+    expect(within(codexCard).getByLabelText("Use custom env file")).toBeChecked();
+    expect(within(codexCard).getByLabelText("Env file path")).toHaveValue(
+      "/Users/example/.codex.env",
+    );
+
+    await user.click(within(codexCard).getByLabelText("Use custom env file"));
+    expect(updateProviderAsync).toHaveBeenCalledWith({
+      provider: "codex",
+      customEnvFileEnabled: false,
+    });
   });
 
   it("disables managed controls and hides update actions for active custom binaries", () => {

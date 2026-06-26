@@ -60,6 +60,8 @@ describe("harnessProvidersApi", () => {
       provider: "codex",
       enabled: true,
       isDefault: true,
+      customEnvFileEnabled: true,
+      customEnvFilePath: "/Users/example/.codex.env",
     });
 
     expect(typedInvoke).toHaveBeenCalledWith(
@@ -69,6 +71,8 @@ describe("harnessProvidersApi", () => {
           provider: "codex",
           enabled: true,
           isDefault: true,
+          customEnvFileEnabled: true,
+          customEnvFilePath: "/Users/example/.codex.env",
         },
       },
       expect.any(Object),
