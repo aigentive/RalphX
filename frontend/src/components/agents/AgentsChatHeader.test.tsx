@@ -1260,6 +1260,38 @@ describe("AgentsChatHeader", () => {
     expect(preloadTerminal).toHaveBeenCalledTimes(2);
   });
 
+  it("keeps archived terminal action enabled without preloading terminal code", () => {
+    const toggleTerminal = vi.fn();
+    const preloadTerminal = vi.fn();
+    renderWithProviders(
+      <AgentsChatHeader
+        conversation={conversation()}
+        workspace={conversationWorkspace({ publicationPrStatus: "merged" })}
+        artifactOpen={false}
+        activeArtifactTab="plan"
+        terminalOpen={false}
+        terminalUnavailableReason={null}
+        terminalArchivedReason="Workspace archived after PR merge. Send a follow-up to continue in a fresh workspace."
+        onRenameConversation={vi.fn().mockResolvedValue(undefined)}
+        onToggleTerminal={toggleTerminal}
+        onPreloadTerminal={preloadTerminal}
+        onToggleArtifacts={vi.fn()}
+        onSelectArtifact={vi.fn()}
+      />
+    );
+
+    const toggle = screen.getByTestId("agents-terminal-toggle");
+    expect(toggle).not.toBeDisabled();
+    expect(toggle).toHaveAccessibleName("Show archived terminal");
+
+    fireEvent.pointerEnter(toggle);
+    fireEvent.focus(toggle);
+    fireEvent.click(toggle);
+
+    expect(preloadTerminal).not.toHaveBeenCalled();
+    expect(toggleTerminal).toHaveBeenCalledTimes(1);
+  });
+
   it("disables the terminal header action for branchless conversations", () => {
     renderWithProviders(
       <AgentsChatHeader

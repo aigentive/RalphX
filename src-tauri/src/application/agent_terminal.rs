@@ -31,6 +31,10 @@ const MAX_WRITE_BYTES: usize = 64 * 1024;
 const MAX_HISTORY_BYTES: usize = 200 * 1024;
 const TERMINAL_EXTERNAL_OWNER_REASON: &str =
     "Terminal unavailable because ideation or execution owns this workspace";
+pub(crate) const TERMINAL_MERGED_WORKSPACE_REASON: &str =
+    "Terminal unavailable because this conversation workspace was archived after its PR was merged";
+pub(crate) const TERMINAL_CLOSED_WORKSPACE_REASON: &str =
+    "Terminal unavailable because this conversation workspace was archived after its PR was closed";
 
 #[derive(Debug, Clone)]
 pub struct AgentTerminalOpenRequest {
@@ -671,13 +675,16 @@ async fn resolve_terminal_launch(
                 "Terminal unavailable for branchless chat conversations".to_string(),
             )
         })?;
+    if let Some(reason) = terminal_external_workspace_owner_reason(&workspace) {
+        return Err(AppError::Validation(reason.to_string()));
+    }
+    if let Some(reason) = terminal_publication_workspace_reason(&workspace) {
+        return Err(AppError::Validation(reason.to_string()));
+    }
     if workspace.status == AgentConversationWorkspaceStatus::Missing {
         return Err(AppError::Validation(
             "Terminal unavailable because the conversation workspace is missing".to_string(),
         ));
-    }
-    if let Some(reason) = terminal_external_workspace_owner_reason(&workspace) {
-        return Err(AppError::Validation(reason.to_string()));
     }
 
     let project_id = ProjectId::from_string(conversation.context_id.clone());
@@ -701,6 +708,20 @@ fn terminal_external_workspace_owner_reason(
         Some(TERMINAL_EXTERNAL_OWNER_REASON)
     } else {
         None
+    }
+}
+
+fn terminal_publication_workspace_reason(
+    workspace: &AgentConversationWorkspace,
+) -> Option<&'static str> {
+    if !workspace.has_terminal_publication_pr_status() {
+        return None;
+    }
+
+    match workspace.publication_pr_status.as_deref() {
+        Some("merged") => Some(TERMINAL_MERGED_WORKSPACE_REASON),
+        Some("closed") => Some(TERMINAL_CLOSED_WORKSPACE_REASON),
+        _ => None,
     }
 }
 

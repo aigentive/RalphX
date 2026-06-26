@@ -34,6 +34,7 @@ interface AgentsConversationSideRegionsProps {
   setArtifactTaskMode: (conversationId: string, mode: AgentTaskArtifactMode) => void;
   setTerminalPanelDockElement: (element: HTMLDivElement | null) => void;
   taskArtifactFocusRequest: AgentTaskArtifactFocusRequest | null;
+  terminalArchivedReason: string | null;
   terminalUnavailableReason: string | null;
   onFocusVerificationSession: (parentSessionId: string, childSessionId: string) => void;
   onPublishWorkspace: (conversationId: string) => Promise<void>;
@@ -62,6 +63,7 @@ export function AgentsConversationSideRegions({
   setArtifactTaskMode,
   setTerminalPanelDockElement,
   taskArtifactFocusRequest,
+  terminalArchivedReason,
   terminalUnavailableReason,
   onFocusVerificationSession,
   onPublishWorkspace,
@@ -96,6 +98,7 @@ export function AgentsConversationSideRegions({
           onFocusVerificationSession={onFocusVerificationSession}
           onTaskArtifactSelectionChange={onTaskArtifactSelectionChange}
           onClose={() => setArtifactPaneVisibility(selectedConversationId, false)}
+          terminalArchivedReason={terminalArchivedReason}
           terminalUnavailableReason={terminalUnavailableReason}
           setTerminalPanelDockElement={setTerminalPanelDockElement}
         />
@@ -103,6 +106,7 @@ export function AgentsConversationSideRegions({
       <AgentsTerminalRegion
         conversationId={selectedConversationId}
         workspace={activeWorkspace}
+        terminalArchivedReason={terminalArchivedReason}
         terminalUnavailableReason={terminalUnavailableReason}
         hasAutoOpenArtifacts={hasAutoOpenArtifacts}
         chatDockElement={chatDockElement}

@@ -46,6 +46,7 @@ export function AgentsChatHeaderController({
   conversation,
   workspace,
   hasAutoOpenArtifacts,
+  terminalArchivedReason = null,
   terminalUnavailableReason = null,
   onToggleArtifacts,
   ...props
@@ -137,7 +138,7 @@ export function AgentsChatHeaderController({
     }
     const nextOpen = !terminalOpen;
     toggleTerminalOpen(conversation.id);
-    if (nextOpen) {
+    if (nextOpen && !terminalArchivedReason) {
       scheduleTerminalPreload();
     } else {
       cancelTerminalPreloadJob();
@@ -146,6 +147,7 @@ export function AgentsChatHeaderController({
     cancelTerminalPreloadJob,
     conversation,
     scheduleTerminalPreload,
+    terminalArchivedReason,
     terminalOpen,
     terminalUnavailableReason,
     toggleTerminalOpen,
@@ -174,6 +176,7 @@ export function AgentsChatHeaderController({
       artifactOpen={artifactPaneOpen}
       activeArtifactTab={artifactState.activeTab}
       terminalOpen={terminalOpen}
+      terminalArchivedReason={terminalArchivedReason}
       terminalUnavailableReason={terminalUnavailableReason}
       onToggleTerminal={handleToggleTerminal}
       onPreloadTerminal={handlePreloadTerminal}
