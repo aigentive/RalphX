@@ -576,6 +576,7 @@ export function AgentPublishPanel({
   const isClosingPr = closePrMutation.isPending;
   const shouldShowPrSupervisionControls =
     !isRepairPending && (workspace.mode === "edit" || isPipelinePrAutomationWorkspace);
+  const shouldShowPublishNotices = !isRepairPending;
   const canConfigurePrSupervision =
     shouldShowPrSupervisionControls &&
     workspace.status !== "missing" &&
@@ -1042,7 +1043,7 @@ export function AgentPublishPanel({
               )}
             </div>
           )}
-          {hasPrConflict && (
+          {shouldShowPublishNotices && hasPrConflict && (
             <div
               className="mt-3 flex items-start gap-2 rounded-md border px-3 py-2 text-xs leading-relaxed"
               style={{
@@ -1062,7 +1063,7 @@ export function AgentPublishPanel({
               <span>{prConflictSummary}</span>
             </div>
           )}
-          {isBranchUpdateNeeded && (
+          {shouldShowPublishNotices && isBranchUpdateNeeded && (
             <div
               className="mt-3 flex items-start gap-2 rounded-md border px-3 py-2 text-xs leading-relaxed"
               style={{
@@ -1083,7 +1084,7 @@ export function AgentPublishPanel({
               </span>
             </div>
           )}
-          {baseRetargeted && (
+          {shouldShowPublishNotices && baseRetargeted && (
             <div
               className="mt-3 flex items-start gap-2 rounded-md border px-3 py-2 text-xs leading-relaxed"
               style={{
@@ -1101,7 +1102,7 @@ export function AgentPublishPanel({
               <span>Base branch retargeted to {base}.</span>
             </div>
           )}
-          {baseBlocked && (
+          {shouldShowPublishNotices && baseBlocked && (
             <div
               className="mt-3 flex items-start gap-2 rounded-md border px-3 py-2 text-xs leading-relaxed"
               style={{
@@ -1188,11 +1189,13 @@ export function AgentPublishPanel({
               }}
             >
               {terminalPublicationLabel ??
-                (hasPrConflict
-                  ? "Conflicting"
-                  : isBranchUpdateNeeded
-                    ? "Behind base"
-                    : workspace.publicationPushStatus ?? workspace.status)}
+                (isRepairPending
+                  ? "Repair pending"
+                  : hasPrConflict
+                    ? "Conflicting"
+                    : isBranchUpdateNeeded
+                      ? "Behind base"
+                      : workspace.publicationPushStatus ?? workspace.status)}
             </span>
           </div>
 
@@ -1233,8 +1236,7 @@ export function AgentPublishPanel({
         {/* Inline diff view — below the action row, all files expanded by default */}
         {isRepairPending && inlineDiffsCandidate ? (
           <AgentsPublishRepairState
-            workspace={workspace}
-            base={base}
+            conversationId={workspace.conversationId}
             canHydratePublishFacts={canHydratePublishFacts}
             focusRequest={publishFocusRequest}
           />
