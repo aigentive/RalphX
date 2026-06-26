@@ -65,6 +65,7 @@ pub(crate) mod plan_complexity_assessment;
 pub mod plan_ranking;
 pub mod priority_service;
 pub(crate) mod provider_onboarding_gate;
+pub(crate) mod provider_env_file;
 pub mod provider_session_fork;
 pub mod pr_startup_recovery;
 pub mod prune_engine;
@@ -273,6 +274,8 @@ mod prune_engine_tests;
 mod publish_resilience_tests;
 #[cfg(test)]
 mod plan_complexity_assessment_tests;
+#[cfg(test)]
+mod provider_env_file_tests;
 #[cfg(test)]
 mod project_pr_template_tests;
 #[cfg(test)]

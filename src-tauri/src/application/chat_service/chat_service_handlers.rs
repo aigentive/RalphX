@@ -7,6 +7,7 @@
 // - handle_stream_error: error classification, stale session recovery retry,
 //   agent run failure recording, message finalization, and fallback task transitions
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -60,6 +61,21 @@ fn should_requeue_after_provider_pause(context_type: ChatContextType) -> bool {
 }
 
 const VERIFICATION_AUTO_CONTINUE_METADATA: &str = r#"{"resume_in_place":true}"#;
+
+async fn provider_env_for_harness<R: Runtime>(
+    app_handle: &Option<AppHandle<R>>,
+    harness: AgentHarnessKind,
+) -> Result<HashMap<String, String>, String> {
+    let Some(handle) = app_handle.as_ref() else {
+        return Ok(HashMap::new());
+    };
+    let app_state = handle.state::<AppState>();
+    crate::application::provider_env_file::load_provider_custom_env_file_for_harness(
+        Some(&app_state.agent_provider_settings_repo),
+        harness,
+    )
+    .await
+}
 
 fn queue_verification_auto_continue(
     message_queue: &Arc<MessageQueue>,
@@ -1760,7 +1776,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                             Arc::clone(&app_state.delegated_session_repo)
                         });
 
-                        let retry_spawnable =
+                        let retry_provider_spawnable =
                             chat_service_context::build_resume_command_for_harness(
                                 recovery_harness,
                                 cli_path,
@@ -1799,10 +1815,35 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                                 false,
                                 None,
                             )
-                            .await
-                            .map(|provider_spawnable| provider_spawnable.spawnable);
+                            .await;
+                        let retry_spawnable = match retry_provider_spawnable {
+                            Ok(mut provider_spawnable) => {
+                                match provider_env_for_harness(app_handle, recovery_harness).await {
+                                    Ok(provider_env) => {
+                                        provider_spawnable.apply_provider_env(&provider_env);
+                                        Some(provider_spawnable.spawnable)
+                                    }
+                                    Err(error) => {
+                                        tracing::error!(
+                                            error = %error,
+                                            harness = %recovery_harness,
+                                            "Failed to load provider env file for recovery retry"
+                                        );
+                                        None
+                                    }
+                                }
+                            }
+                            Err(error) => {
+                                tracing::error!(
+                                    error = %error,
+                                    harness = %recovery_harness,
+                                    "Failed to build recovery retry spawnable"
+                                );
+                                None
+                            }
+                        };
 
-                        if let Ok(spawnable) = retry_spawnable {
+                        if let Some(spawnable) = retry_spawnable {
                             if let Ok(retry_child) = spawnable.spawn().await {
                                 super::chat_service_send_background::spawn_send_message_background(
                                     build_recovery_retry_background_context(

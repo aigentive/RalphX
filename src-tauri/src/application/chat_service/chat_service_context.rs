@@ -5,6 +5,7 @@
 // - Initial prompt building for different contexts
 // - Claude CLI command building
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
@@ -69,6 +70,12 @@ pub fn context_type_supports_history_injection(context_type: ChatContextType) ->
 
 pub struct ProviderSpawnableCommand {
     pub spawnable: SpawnableCommand,
+}
+
+impl ProviderSpawnableCommand {
+    pub fn apply_provider_env(&mut self, provider_env: &HashMap<String, String>) {
+        apply_provider_env_vars(&mut self.spawnable, provider_env);
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -278,6 +285,14 @@ impl ResolvedChatHarnessLaunch {
         match self {
             Self::Interactive { .. } => ResolvedChatHarnessLaunchMode::Interactive,
             Self::Background { .. } => ResolvedChatHarnessLaunchMode::Background,
+        }
+    }
+
+    pub fn apply_provider_env(&mut self, provider_env: &HashMap<String, String>) {
+        match self {
+            Self::Interactive { spawnable, .. } | Self::Background { spawnable, .. } => {
+                apply_provider_env_vars(spawnable, provider_env);
+            }
         }
     }
 
@@ -1938,6 +1953,15 @@ fn apply_ralphx_env_vars(
     }
     if let Some(model_cap) = subagent_model_cap {
         cmd.env("CLAUDE_CODE_SUBAGENT_MODEL", model_cap);
+    }
+}
+
+pub(crate) fn apply_provider_env_vars(
+    cmd: &mut SpawnableCommand,
+    provider_env: &HashMap<String, String>,
+) {
+    for (key, value) in provider_env {
+        cmd.env(key, value);
     }
 }
 

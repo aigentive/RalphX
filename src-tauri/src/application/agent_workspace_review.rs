@@ -157,6 +157,7 @@ pub async fn start_agent_workspace_review(
         agent_names::AGENT_WORKSPACE_REVIEWER,
         target.working_directory.clone(),
     );
+    let env = runtime.env_with_overrides(bootstrap.env);
     let spawn_started = Instant::now();
     let handle = agent_client
         .spawn_agent(AgentConfig {
@@ -173,7 +174,7 @@ pub async fn start_agent_workspace_review(
             sandbox_mode: runtime.sandbox_mode,
             max_tokens: None,
             timeout_secs: Some(WORKSPACE_REVIEWER_TIMEOUT_SECS),
-            env: bootstrap.env,
+            env,
         })
         .await
         .map_err(|error| {

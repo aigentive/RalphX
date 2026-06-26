@@ -1,7 +1,7 @@
 // Application state container for dependency injection
 // Holds repository trait objects that can be swapped for testing
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -135,6 +135,18 @@ pub(crate) struct ResolvedBackgroundAgentRuntime {
     pub logical_effort: Option<LogicalEffort>,
     pub approval_policy: Option<String>,
     pub sandbox_mode: Option<String>,
+    pub env: HashMap<String, String>,
+}
+
+impl ResolvedBackgroundAgentRuntime {
+    pub(crate) fn env_with_overrides(
+        &self,
+        overrides: HashMap<String, String>,
+    ) -> HashMap<String, String> {
+        let mut env = self.env.clone();
+        env.extend(overrides);
+        env
+    }
 }
 
 /// Application state container for dependency injection
@@ -433,6 +445,7 @@ impl AppState {
         logical_effort: Option<LogicalEffort>,
         approval_policy: Option<String>,
         sandbox_mode: Option<String>,
+        env: HashMap<String, String>,
     ) -> ResolvedBackgroundAgentRuntime {
         ResolvedBackgroundAgentRuntime {
             client,
@@ -444,6 +457,7 @@ impl AppState {
                 .or_else(|| default_approval_policy_for_harness(harness).map(str::to_string)),
             sandbox_mode: sandbox_mode
                 .or_else(|| default_sandbox_mode_for_harness(harness).map(str::to_string)),
+            env,
         }
     }
 
@@ -534,6 +548,9 @@ impl AppState {
                 &provider_settings,
             )
             .await?;
+        let provider_env =
+            crate::application::provider_env_file::load_provider_custom_env_file(&provider_settings)
+                .map_err(AppError::Infrastructure)?;
 
         Ok(self.background_agent_runtime_for_harness(
             client,
@@ -543,6 +560,7 @@ impl AppState {
             provider_settings.effort,
             provider_settings.approval_policy,
             provider_settings.sandbox_mode,
+            provider_env,
         ))
     }
 
@@ -673,6 +691,9 @@ impl AppState {
         let use_resolved_lane_settings = resolved.effective_harness
             != self.agent_clients.default_harness
             || resolved.effective_harness == AgentHarnessKind::Codex;
+        let provider_env =
+            crate::application::provider_env_file::load_provider_custom_env_file(&provider_settings)
+                .map_err(AppError::Infrastructure)?;
         let (model, logical_effort, approval_policy, sandbox_mode) = if use_resolved_lane_settings {
             (
                 Some(resolved.model),
@@ -697,6 +718,7 @@ impl AppState {
             logical_effort,
             approval_policy,
             sandbox_mode,
+            provider_env,
         ))
     }
 
