@@ -934,6 +934,9 @@ impl<R: Runtime> ReconciliationRunner<R> {
                 ExecutionRecoveryReasonCode::WallClockExceeded
             }
             ExecutionFailureSource::GitIsolation => ExecutionRecoveryReasonCode::GitIsolationFailed,
+            ExecutionFailureSource::AgentIncomplete => {
+                ExecutionRecoveryReasonCode::IncompleteSteps
+            }
             ExecutionFailureSource::Unknown => ExecutionRecoveryReasonCode::Unknown,
         }
     }
