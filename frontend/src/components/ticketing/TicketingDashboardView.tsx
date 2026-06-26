@@ -50,6 +50,13 @@ import { useTicketingStore } from "@/stores/ticketingStore";
 import { useChatStore } from "@/stores/chatStore";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
 import { useUiStore } from "@/stores/uiStore";
+import { pullRequestShellFromTicket, type PullRequestShell } from "@/components/pr/PullRequestDetailBody";
+import {
+  PullRequestDetailSheet,
+} from "@/components/pr/PullRequestDetailSheet";
+import {
+  pullRequestSelectorFromShell,
+} from "@/components/pr/PullRequestDetailPanel";
 import { formatRelativeTime } from "@/lib/formatters";
 import { markdownComponents } from "@/components/Chat/MessageItem.markdown";
 import { invalidateAgentConversationGranolaNote } from "@/components/agents/agentGranolaNoteQueries";
@@ -997,6 +1004,8 @@ export function TicketingDashboardView({
   const setFocusedAgentProject = useAgentSessionStore((s) => s.setFocusedProject);
   const setStartConversationDraft = useAgentSessionStore((s) => s.setStartConversationDraft);
   const [startWorkDialogOpen, setStartWorkDialogOpen] = useState(false);
+  const [selectedPullRequestShell, setSelectedPullRequestShell] =
+    useState<PullRequestShell | null>(null);
   const [seenBaseline, setSeenBaseline] = useState<string | null>(null);
   const [activeSurface, setActiveSurface] = useState<DashboardSurface>("tickets");
   const [startWorkSelection, setStartWorkSelection] = useState<StartWorkSelection>({
@@ -1170,6 +1179,8 @@ export function TicketingDashboardView({
   const selectedSummary = selectedTicketRef
     ? tickets.find((ticket) => ticketRefsIdentifySameTicket(ticket.ref, selectedTicketRef)) ?? null
     : null;
+  const selectedPullRequestSelector =
+    pullRequestSelectorFromShell(selectedPullRequestShell);
   const shouldHydrateKanban = useAfterPaint(viewMode === "kanban");
   const shouldHydrateDetail = useAfterPaint(selectedTicketRef !== null);
   const detailInput = selectedTicketRef && activeProvider && shouldHydrateDetail
@@ -1353,6 +1364,21 @@ export function TicketingDashboardView({
     setSeenBaseline(lastOpenedAt[key] ?? null);
     setSelectedTicketRef(ticket.ref);
     markTicketOpened(key);
+  }
+
+  function handleOpenPullRequestDetail(ticket: TicketSummary) {
+    if (ticket.openPrNumber == null) {
+      return;
+    }
+    setSelectedPullRequestShell(
+      pullRequestShellFromTicket({
+        projectId,
+        prNumber: ticket.openPrNumber,
+        prUrl: ticket.openPrUrl,
+        prStatus: ticket.openPrStatus,
+        title: ticket.title,
+      }),
+    );
   }
 
   function handleRefresh() {
@@ -1624,6 +1650,7 @@ export function TicketingDashboardView({
         isUnread={isTicketUnread}
         canQuickAssign={Boolean(selectedProvider?.capabilities.assignmentWrite)}
         onQuickAssign={handleQuickAssign}
+        onOpenPullRequestDetail={handleOpenPullRequestDetail}
       />
     ) : (
       <TicketKanbanShell columns={statusColumns} />
@@ -1642,6 +1669,7 @@ export function TicketingDashboardView({
         onQuickAssign={handleQuickAssign}
         canMoveTickets={Boolean(selectedProvider?.capabilities.kanbanWrite)}
         onMoveTicket={handleMoveTicket}
+        onOpenPullRequestDetail={handleOpenPullRequestDetail}
       />
     );
   }
@@ -1775,6 +1803,13 @@ export function TicketingDashboardView({
         onNavigate={onNavigateToAssociation}
         onStartWork={selectedTicket ? handleStartWorkFromTicket : undefined}
         onClose={() => setSelectedTicketRef(null)}
+      />
+
+      <PullRequestDetailSheet
+        open={selectedPullRequestShell !== null}
+        selector={selectedPullRequestSelector}
+        shell={selectedPullRequestShell}
+        onClose={() => setSelectedPullRequestShell(null)}
       />
 
       <StartWorkDialog

@@ -197,6 +197,7 @@ export function RalphxAssociationPanel({
   isLoading,
   isStartWorkPending = false,
   startWorkError,
+  showStartWork = true,
   showConversationBinding = true,
   bindableConversations,
   onBindConversation,
@@ -210,6 +211,7 @@ export function RalphxAssociationPanel({
   isLoading: boolean;
   isStartWorkPending?: boolean | undefined;
   startWorkError?: string | null | undefined;
+  showStartWork?: boolean | undefined;
   showConversationBinding?: boolean | undefined;
   bindableConversations?: { id: string; title: string | null }[] | undefined;
   onBindConversation?: ((conversationId: string) => void) | undefined;
@@ -254,19 +256,21 @@ export function RalphxAssociationPanel({
           </span>
         )}
       </div>
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        className="mt-3 w-full justify-center"
-        disabled={!onStartWork || isStartWorkPending}
-        onClick={onStartWork}
-      >
-        {isStartWorkPending
-          ? "Starting..."
-          : "Start conversation"}
-      </Button>
-      {startWorkError && (
+      {showStartWork && (
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="mt-3 w-full justify-center"
+          disabled={!onStartWork || isStartWorkPending}
+          onClick={onStartWork}
+        >
+          {isStartWorkPending
+            ? "Starting..."
+            : "Start conversation"}
+        </Button>
+      )}
+      {showStartWork && startWorkError && (
         <p className="mt-2 text-xs text-[var(--status-error)]" role="alert">
           {startWorkError}
         </p>

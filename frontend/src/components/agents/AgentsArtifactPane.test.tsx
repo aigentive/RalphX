@@ -256,6 +256,18 @@ vi.mock("@/components/agents/task-details/AgentsTaskDetailOverlay", () => ({
     ) : null,
 }));
 
+vi.mock("@/components/pr/PullRequestDetailPanel", () => ({
+  PullRequestDetailPanel: ({
+    workspace,
+  }: {
+    workspace: AgentConversationWorkspace | null;
+  }) => (
+    <div data-testid="mock-pr-detail-panel">
+      PR #{workspace?.publicationPrNumber ?? workspace?.sourcePullRequest?.number ?? "none"}
+    </div>
+  ),
+}));
+
 vi.mock("@/api/artifact", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/api/artifact")>();
   return {
@@ -1155,6 +1167,21 @@ describe("AgentsArtifactPane", () => {
     expect(screen.queryByTestId("agents-artifact-tab-verification")).not.toBeInTheDocument();
     expect(screen.queryByTestId("agents-artifact-tab-proposal")).not.toBeInTheDocument();
     expect(screen.queryByTestId("agents-artifact-tab-tasks")).not.toBeInTheDocument();
+  });
+
+  it("shows the PR artifact tab for DB-backed workspace pull requests", async () => {
+    renderPane(
+      "pr",
+      workspace({
+        mode: "edit",
+        publicationPrNumber: 42,
+        publicationPrUrl: "https://github.com/acme/app/pull/42",
+        publicationPrStatus: "open",
+      }),
+    );
+
+    expect(screen.getByTestId("agents-artifact-tab-pr")).toBeInTheDocument();
+    expect(await screen.findByTestId("mock-pr-detail-panel")).toHaveTextContent("PR #42");
   });
 
   it("renders the Review tab immediately before Commit & Publish for merged edit workspaces with reviewable PR changes", async () => {

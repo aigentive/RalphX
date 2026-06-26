@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import type { TicketSummary } from "@/api/ticketing";
@@ -8,10 +8,6 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { resolveTicketKanbanMove } from "./ticketing-kanban-utils";
 import { formatTicketDate } from "./ticketing-utils";
 import { TicketKanbanView, TicketListView } from "./TicketViews";
-
-const { openUrlMock } = vi.hoisted(() => ({ openUrlMock: vi.fn() }));
-
-vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: openUrlMock }));
 
 const tickets: TicketSummary[] = [
   {
@@ -145,8 +141,8 @@ describe("TicketListView", () => {
     expect(screen.queryByRole("img", { name: /open pull request/i })).not.toBeInTheDocument();
   });
 
-  it("renders an interactive PR control opening the PR url when the ticket has a representative open PR", async () => {
-    openUrlMock.mockClear();
+  it("renders an interactive PR detail control when the ticket has a representative open PR", () => {
+    const onOpenPullRequestDetail = vi.fn();
     render(
       <TooltipProvider>
         <TicketListView
@@ -168,17 +164,19 @@ describe("TicketListView", () => {
           isFetchingNextPage={false}
           onLoadMore={vi.fn()}
           onSelectTicket={vi.fn()}
+          onOpenPullRequestDetail={onOpenPullRequestDetail}
         />
       </TooltipProvider>,
     );
 
-    const prButton = screen.getByRole("button", { name: /open pull request #42 in browser/i });
+    const prButton = screen.getByRole("button", { name: /open pull request #42/i });
     expect(prButton).toHaveTextContent("#42");
 
     fireEvent.click(prButton);
-    await waitFor(() => {
-      expect(openUrlMock).toHaveBeenCalledWith("https://github.com/x/y/pull/42");
-    });
+    expect(onOpenPullRequestDetail).toHaveBeenCalledTimes(1);
+    expect(onOpenPullRequestDetail).toHaveBeenCalledWith(
+      expect.objectContaining({ openPrNumber: 42, openPrUrl: "https://github.com/x/y/pull/42" }),
+    );
   });
 
   it("does not render the PR control when the ticket has no representative open PR", () => {
@@ -203,19 +201,20 @@ describe("TicketListView", () => {
           isFetchingNextPage={false}
           onLoadMore={vi.fn()}
           onSelectTicket={vi.fn()}
+          onOpenPullRequestDetail={vi.fn()}
         />
       </TooltipProvider>,
     );
 
     expect(
-      screen.queryByRole("button", { name: /open pull request .* in browser/i }),
+      screen.queryByRole("button", { name: /open pull request/i }),
     ).not.toBeInTheDocument();
     // The RX badge conversation count still renders.
     expect(screen.getByRole("img", { name: /1 RalphX conversation/i })).toBeInTheDocument();
   });
 
-  it("renders a muted PR control naming the status for a closed representative PR and opens its url", async () => {
-    openUrlMock.mockClear();
+  it("renders a muted PR control naming the status for a closed representative PR", () => {
+    const onOpenPullRequestDetail = vi.fn();
     render(
       <TooltipProvider>
         <TicketListView
@@ -240,6 +239,7 @@ describe("TicketListView", () => {
           isFetchingNextPage={false}
           onLoadMore={vi.fn()}
           onSelectTicket={vi.fn()}
+          onOpenPullRequestDetail={onOpenPullRequestDetail}
         />
       </TooltipProvider>,
     );
@@ -250,12 +250,14 @@ describe("TicketListView", () => {
     expect(prButton).toHaveStyle({ color: "var(--text-muted)" });
 
     fireEvent.click(prButton);
-    await waitFor(() => {
-      expect(openUrlMock).toHaveBeenCalledWith("https://github.com/x/y/pull/381");
-    });
+    expect(onOpenPullRequestDetail).toHaveBeenCalledTimes(1);
+    expect(onOpenPullRequestDetail).toHaveBeenCalledWith(
+      expect.objectContaining({ openPrNumber: 381, openPrStatus: "closed" }),
+    );
   });
 
   it("colors an open representative PR green", () => {
+    const onOpenPullRequestDetail = vi.fn();
     render(
       <TooltipProvider>
         <TicketListView
@@ -278,15 +280,17 @@ describe("TicketListView", () => {
           isFetchingNextPage={false}
           onLoadMore={vi.fn()}
           onSelectTicket={vi.fn()}
+          onOpenPullRequestDetail={onOpenPullRequestDetail}
         />
       </TooltipProvider>,
     );
 
-    const prButton = screen.getByRole("button", { name: /open pull request #99 in browser/i });
+    const prButton = screen.getByRole("button", { name: /open pull request #99/i });
     expect(prButton).toHaveStyle({ color: "var(--status-success)" });
   });
 
   it("places the PR control after the RX/suitcase badge in the row", () => {
+    const onOpenPullRequestDetail = vi.fn();
     render(
       <TooltipProvider>
         <TicketListView
@@ -309,12 +313,13 @@ describe("TicketListView", () => {
           isFetchingNextPage={false}
           onLoadMore={vi.fn()}
           onSelectTicket={vi.fn()}
+          onOpenPullRequestDetail={onOpenPullRequestDetail}
         />
       </TooltipProvider>,
     );
 
     const rxBadge = screen.getByRole("img", { name: /2 RalphX conversations/i });
-    const prButton = screen.getByRole("button", { name: /open pull request #42 in browser/i });
+    const prButton = screen.getByRole("button", { name: /open pull request #42/i });
     // The PR column sits to the RIGHT of the RX (suitcase) column, so the PR
     // control appears after the RX badge in document order.
     expect(
@@ -393,9 +398,9 @@ describe("TicketListView", () => {
     ).toBeGreaterThanOrEqual(1);
   });
 
-  it("opening the PR control does not also select the ticket row", async () => {
-    openUrlMock.mockClear();
+  it("opening the PR control does not also select the ticket row", () => {
     const onSelectTicket = vi.fn();
+    const onOpenPullRequestDetail = vi.fn();
     render(
       <TooltipProvider>
         <TicketListView
@@ -417,14 +422,13 @@ describe("TicketListView", () => {
           isFetchingNextPage={false}
           onLoadMore={vi.fn()}
           onSelectTicket={onSelectTicket}
+          onOpenPullRequestDetail={onOpenPullRequestDetail}
         />
       </TooltipProvider>,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /open pull request #42 in browser/i }));
-    await waitFor(() => {
-      expect(openUrlMock).toHaveBeenCalledTimes(1);
-    });
+    fireEvent.click(screen.getByRole("button", { name: /open pull request #42/i }));
+    expect(onOpenPullRequestDetail).toHaveBeenCalledTimes(1);
     expect(onSelectTicket).not.toHaveBeenCalled();
   });
 

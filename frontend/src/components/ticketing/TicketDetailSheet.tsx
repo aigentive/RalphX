@@ -100,7 +100,7 @@ function ControlTooltip({
  * would otherwise show a broken-image icon. On load failure we fall back to a
  * button that opens the image in the browser, where the user's session can fetch it.
  */
-function TicketMarkdownImage({ src, alt }: ComponentProps<"img">) {
+export function TicketMarkdownImage({ src, alt }: ComponentProps<"img">) {
   const [failed, setFailed] = useState(false);
   const url = typeof src === "string" ? src : undefined;
   if (!url) {

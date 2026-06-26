@@ -146,6 +146,11 @@ const LazyAgentsIssuesPanel = lazy(() =>
     default: module.AgentsIssuesPanel,
   })),
 );
+const LazyPullRequestDetailPanel = lazy(() =>
+  import("@/components/pr/PullRequestDetailPanel").then((module) => ({
+    default: module.PullRequestDetailPanel,
+  })),
+);
 
 const ARTIFACT_TABS: Array<{
   id: IdeationArtifactTab;
@@ -189,7 +194,19 @@ const GRANOLA_TAB = {
   icon: ScrollText,
 };
 
+const PR_TAB = {
+  id: "pr" as const,
+  label: "PR",
+  icon: GitPullRequestArrow,
+};
+
 const SELECTED_TASK_STORAGE_PREFIX = "agents:artifact:selected-task:";
+
+function workspaceHasPullRequest(
+  workspace: AgentConversationWorkspace | null | undefined,
+): boolean {
+  return Boolean(workspace?.publicationPrNumber != null || workspace?.sourcePullRequest);
+}
 
 function readSelectedTaskForConversation(
   conversationId: string | null,
@@ -270,6 +287,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       workspace?.linkedPlanBranchId,
   );
   const showPublishTab = shouldShowAgentWorkspacePublishSurface(workspace);
+  const showPullRequestTab = workspaceHasPullRequest(workspace);
   const shouldLoadIdeationData = canHydrateIdeationArtifacts;
   const conversationQuery = useConversationHistoryWindow(conversation?.id ?? null, {
     enabled: shouldLoadIdeationData && !focusedIdeationSessionId && !!conversation?.id,
@@ -514,6 +532,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   const visibleTabs = useMemo(
     () => [
       ...ARTIFACT_TABS.filter((tab) => availableArtifactTabIds.includes(tab.id)),
+      ...(showPullRequestTab ? [PR_TAB] : []),
       ...(showJiraTab ? [JIRA_TAB] : []),
       ...(showLinearTab ? [LINEAR_TAB] : []),
       ...(showGranolaTab ? [GRANOLA_TAB] : []),
@@ -526,22 +545,27 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       showJiraTab,
       showLinearTab,
       showPublishTab,
+      showPullRequestTab,
     ],
   );
   const fallbackActiveTab =
-    showJiraTab
-      ? "jira"
-      : showLinearTab
-        ? "linear"
-        : showGranolaTab
-          ? "granola"
-          : visibleTabs.some((tab) => tab.id === "plan")
-            ? "plan"
-            : visibleTabs.some((tab) => tab.id === "issues")
-              ? "issues"
-              : visibleTabs.some((tab) => tab.id === "review")
-                ? "review"
-                : "plan";
+    workspaceReviewContext?.shouldShowTab || reviewArtifactId
+      ? "review"
+      : showPullRequestTab
+        ? "pr"
+        : showJiraTab
+          ? "jira"
+          : showLinearTab
+            ? "linear"
+            : showGranolaTab
+              ? "granola"
+              : visibleTabs.some((tab) => tab.id === "plan")
+                ? "plan"
+                : visibleTabs.some((tab) => tab.id === "issues")
+                  ? "issues"
+                  : visibleTabs.some((tab) => tab.id === "review")
+                    ? "review"
+                    : "plan";
   const effectiveActiveTab =
     visibleTabs.some((tab) => tab.id === activeTab)
       ? activeTab
@@ -1036,6 +1060,14 @@ function ArtifactContent({
           conversationId={conversationId}
           projectId={projectId}
         />
+      </Suspense>
+    );
+  }
+
+  if (activeTab === "pr") {
+    return (
+      <Suspense fallback={<EmptyArtifactState title="Loading pull request..." />}>
+        <LazyPullRequestDetailPanel workspace={workspace} />
       </Suspense>
     );
   }
