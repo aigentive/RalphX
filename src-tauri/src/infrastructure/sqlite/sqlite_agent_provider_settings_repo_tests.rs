@@ -29,6 +29,8 @@ async fn upsert_and_get_provider_settings() {
     settings.auto_update_enabled = true;
     settings.custom_binary_enabled = true;
     settings.custom_binary_path = Some("/opt/tools/codex-wrapper".to_string());
+    settings.custom_env_file_enabled = true;
+    settings.custom_env_file_path = Some("/Users/example/.codex.env".to_string());
 
     repo.upsert(&settings).await.unwrap();
     let row = repo
@@ -50,6 +52,11 @@ async fn upsert_and_get_provider_settings() {
     assert_eq!(
         row.custom_binary_path.as_deref(),
         Some("/opt/tools/codex-wrapper")
+    );
+    assert!(row.custom_env_file_enabled);
+    assert_eq!(
+        row.custom_env_file_path.as_deref(),
+        Some("/Users/example/.codex.env")
     );
 }
 
@@ -195,6 +202,8 @@ fn low_level_fetch_helpers_map_rows_and_missing_rows() {
     assert!(selected.auto_update_enabled);
     assert!(!selected.custom_binary_enabled);
     assert_eq!(selected.custom_binary_path, None);
+    assert!(!selected.custom_env_file_enabled);
+    assert_eq!(selected.custom_env_file_path, None);
     assert!(missing.is_none());
     assert_eq!(rows.len(), 1);
 }

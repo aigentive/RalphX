@@ -502,6 +502,7 @@ interface AgentsActiveConversationPanelProps {
   selectedTaskArtifactId: string | null;
   setTerminalChatDockElement: (element: HTMLDivElement | null) => void;
   switchingConversationModeId: string | null;
+  terminalArchivedReason: string | null;
   terminalUnavailableReason: string | null;
 }
 
@@ -545,6 +546,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   selectedTaskArtifactId,
   setTerminalChatDockElement,
   switchingConversationModeId,
+  terminalArchivedReason,
   terminalUnavailableReason,
 }: AgentsActiveConversationPanelProps) {
   const queryClient = useQueryClient();
@@ -2196,6 +2198,9 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                   label: normalizedActiveRuntime.modelId,
                 }}
                 hasAutoOpenArtifacts={hasAutoOpenArtifacts}
+                terminalArchivedReason={
+                  isFocusedChildChat ? null : terminalArchivedReason
+                }
                 terminalUnavailableReason={terminalUnavailableReason}
                 onRenameConversation={onRenameConversation}
                 onPublishWorkspace={onPublishWorkspace}
@@ -2217,6 +2222,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
         dock="chat"
         conversationId={selectedConversationId}
         workspace={activeWorkspace}
+        terminalArchivedReason={terminalArchivedReason}
         terminalUnavailableReason={terminalUnavailableReason}
         hasAutoOpenArtifacts={hasAutoOpenArtifacts}
         setDockElement={setTerminalChatDockElement}

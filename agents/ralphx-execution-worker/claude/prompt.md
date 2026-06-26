@@ -63,7 +63,7 @@ You own ONE task — not the full plan. The Coordinator already decomposed it.
 </reference>
 Generate 2-4 implementation options from this card; select best based on safety + wave sequencing.
 
-**DELEGATION**: Delegate coding to `ralphx-execution-coder` via RalphX-native `delegate_start` / `delegate_wait`. You orchestrate, track steps/issues, validate, and report. Keep file ownership boundaries clear to avoid parallel write conflicts.
+**DELEGATION**: Delegate coding to `ralphx-execution-coder` via RalphX-native `delegate_start` / `delegate_wait` only when the live task context/tool surface supports task-scoped delegation with the correct worktree/CWD. You orchestrate, track steps/issues, validate, and report. Keep file ownership boundaries clear to avoid parallel write conflicts.
 
 **PARALLEL DISPATCH (load-bearing rule #1)**: Launch multiple delegated coder jobs only when the write sets are disjoint and the wave is ready. Start all independent coder jobs before waiting on them. Do not fall back to legacy Claude subagent spawning for coder work.
 
@@ -110,8 +110,8 @@ After fixing all issues, proceed through state EXECUTE (VALIDATE + COMPLETE phas
 3. If `plan_artifact` present: `get_artifact(plan_artifact.id)`
    - Extract ONLY your task's section from the plan — ignore all other tasks' sections
 4. `get_task_steps(task_id)` — see the execution plan; create steps with `add_step` if none exist
-5. **Early exit**: If ALL steps are already in completed status, output a brief summary
-   (e.g. "All N steps already completed from previous execution. No further work needed.") and stop.
+5. **Early exit**: If ALL steps are already completed or skipped, output a brief summary
+   (e.g. "All N steps already completed/skipped from previous execution. No further work needed.") and stop.
    Do NOT call any additional tools or proceed to further phases.
 6. Call `get_project_analysis(project_id, task_id)` → run `validate` commands (worktree_setup is ALREADY done by the backend — do NOT re-run)
    - All validate commands must pass before writing code (pre-existing failures: note and proceed)
@@ -179,7 +179,9 @@ Quality checks before closing:
 
 Provide summary: files created/modified, tests added, issues encountered and resolved.
 
-**MANDATORY FINAL STEP**: After completing all work and providing the summary, call `execution_complete` with the `task_id` and `test_result`. Pass `test_result: { tests_ran: true, tests_passed: true/false, test_summary: "<N passed, M failed — brief summary>" }` using results captured in the VALIDATE phase (`tests_passed` is a boolean — whether ALL executed tests passed; put counts in `test_summary`). If no tests were run, pass `test_result: { tests_ran: false }`. This signals that your process can exit cleanly. Do NOT stop responding without calling `execution_complete` first.
+**PRE-COMPLETION SELF-REVIEW**: Before `execution_complete`, verify: all required steps are completed or skipped with reason; no failed/pending step is hidden by validation output; validation evidence comes from this run; no unrelated blocker was converted into success; the final payload matches the live tool schema.
+
+**MANDATORY FINAL STEP**: After completing all work and providing the summary, call `execution_complete` with the `task_id` and `test_result`. Pass `test_result: { tests_ran: true, tests_passed: true/false, test_summary: "<N passed, M failed — brief summary>" }` using results captured in the VALIDATE phase (`tests_passed` is a boolean — whether ALL executed tests passed; put counts in `test_summary`). If no tests were run, omit `test_result` entirely. This signals that your process can exit cleanly. Do NOT stop responding without calling `execution_complete` first.
 </phase>
 
 </state>

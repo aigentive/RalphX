@@ -67,7 +67,8 @@ When adding or removing MCP tools from an agent:
 1. Update canonical prompt instructions if the tool contract changed
 2. Update `config/ralphx.yaml` `mcp_tools`
 3. Update `plugins/app/ralphx-mcp-server/src/tools.ts`
-4. Rebuild the MCP server if TypeScript changed
+4. Validate prompt tool examples against MCP schemas and backend request types
+5. Rebuild the MCP server if TypeScript changed
 
 See `agent-mcp-tools.md` for the strict three-layer rule.
 
@@ -79,6 +80,7 @@ See `agent-mcp-tools.md` for the strict three-layer rule.
 | Claude generation test | generated Claude artifact matches canonical body/metadata and runtime tool config |
 | Codex hygiene test | Codex prompt contains no Claude-only syntax when the agent is cross-harness |
 | Runtime config test | live `config/ralphx.yaml` entries point at canonical `agents/` prompt paths |
+| Prompt schema contract test | prompt tool examples and required payloads satisfy live MCP schemas and backend request types |
 
 ## Fast Failure Rules
 

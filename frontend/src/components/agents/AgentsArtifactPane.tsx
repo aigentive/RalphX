@@ -363,8 +363,6 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
         toast.info("Review started");
       } else if (result.skippedReason === "conversation_active") {
         toast.message("Review will be available after the current agent run");
-      } else if (result.skippedReason === "current") {
-        toast.message("Review is current");
       }
     },
     onError: (error) => {

@@ -10,6 +10,7 @@ import {
   resolveConversationAgentMode,
 } from "./agentConversationMode";
 import {
+  getAgentTerminalArchivedReason,
   getAgentTerminalUnavailableReason,
   runtimeFromConversation,
 } from "./agentConversationRuntime";
@@ -104,6 +105,10 @@ export function useAgentsWorkspaceModel({
     activeConversation,
     activeWorkspace,
   );
+  const terminalArchivedReason = getAgentTerminalArchivedReason(
+    activeConversation,
+    activeWorkspace,
+  );
   return {
     activeConversationMode,
     activeConversationModeLocked,
@@ -111,6 +116,7 @@ export function useAgentsWorkspaceModel({
     activeWorkspaceFreshness,
     normalizedActiveRuntime,
     publishShortcutLabel,
+    terminalArchivedReason,
     terminalUnavailableReason,
   };
 }

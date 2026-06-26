@@ -55,3 +55,33 @@ fn test_execution_complete_request_mixed_case() {
     assert!(!tr.tests_passed);
     assert!(tr.test_summary.is_none());
 }
+
+#[test]
+fn test_execution_complete_request_rejects_partial_no_tests_payload() {
+    let json = r#"{
+        "summary": "No tests available",
+        "test_result": {
+            "tests_ran": false
+        }
+    }"#;
+
+    let result = serde_json::from_str::<ExecutionCompleteRequest>(json);
+
+    assert!(
+        result.is_err(),
+        "tests_passed is required whenever test_result is present"
+    );
+}
+
+#[test]
+fn test_execution_complete_request_accepts_missing_test_result() {
+    let json = r#"{
+        "summary": "No tests available"
+    }"#;
+
+    let req: ExecutionCompleteRequest =
+        serde_json::from_str(json).expect("missing test_result should parse");
+
+    assert_eq!(req.summary.as_deref(), Some("No tests available"));
+    assert!(req.test_result.is_none());
+}

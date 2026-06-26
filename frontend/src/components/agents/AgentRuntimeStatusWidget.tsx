@@ -121,6 +121,12 @@ export function AgentRuntimeStatusWidget({
   const itemRowRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const items = status?.items ?? EMPTY_RUNTIME_ITEMS;
   const [singleItem] = items;
+  const hasGeneratingItem = items.some(
+    (item) => item.agentStatus === "generating",
+  );
+  const allItemsWaiting =
+    items.length > 0 &&
+    items.every((item) => item.agentStatus === "waiting_for_input");
   const shouldRender = Boolean(
     status?.isRunning &&
       items.length > 0 &&
@@ -165,6 +171,17 @@ export function AgentRuntimeStatusWidget({
     return null;
   }
 
+  const HeaderIcon = hasGeneratingItem ? Loader2 : MessageSquare;
+  const headerLabel = allItemsWaiting
+    ? "Awaiting input"
+    : (status?.summaryLabel ?? "Agent running");
+  const headerDetail =
+    items.length === 1
+      ? items[0]?.title
+      : allItemsWaiting
+        ? `${items.length} waiting runtimes`
+        : `${items.length} active runtimes`;
+
   const handleItemClick = (item: AgentConversationRuntimeItem) => {
     if (item.source === "ideation") {
       onViewIdeation(item.contextId);
@@ -203,25 +220,28 @@ export function AgentRuntimeStatusWidget({
       data-testid="agents-runtime-status-widget"
     >
       <div className="flex items-center gap-2">
-        <Loader2
-          className="h-4 w-4 shrink-0 animate-spin"
-          style={{ color: "var(--accent-primary)" }}
+        <HeaderIcon
+          className={`h-4 w-4 shrink-0${hasGeneratingItem ? " animate-spin" : ""}`}
+          style={{
+            color: hasGeneratingItem
+              ? "var(--accent-primary)"
+              : "var(--text-muted)",
+          }}
           aria-hidden="true"
+          data-testid="agents-runtime-status-icon"
         />
         <div className="min-w-0 flex-1">
           <p
             className="truncate text-xs font-semibold"
             style={{ color: "var(--text-primary)" }}
           >
-            {status?.summaryLabel ?? "Agent running"}
+            {headerLabel}
           </p>
           <p
             className="truncate text-[0.6875rem]"
             style={{ color: "var(--text-muted)" }}
           >
-            {items.length === 1
-              ? items[0]?.title
-              : `${items.length} active runtimes`}
+            {headerDetail}
           </p>
         </div>
       </div>
@@ -266,6 +286,21 @@ export function AgentRuntimeStatusWidget({
                   {item.title}
                 </p>
               </div>
+              <span
+                className="shrink-0 rounded px-1.5 py-0.5 text-[0.625rem] font-medium"
+                style={{
+                  backgroundColor:
+                    item.agentStatus === "generating"
+                      ? "var(--bg-elevated)"
+                      : "var(--bg-surface)",
+                  color:
+                    item.agentStatus === "generating"
+                      ? "var(--accent-primary)"
+                      : "var(--text-muted)",
+                }}
+              >
+                {item.agentStatus === "generating" ? "Running" : "Waiting"}
+              </span>
               {isCurrentFocus ? (
                 <span
                   className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded border"

@@ -62,6 +62,7 @@ interface AgentsArtifactPaneRegionProps {
   onFocusVerificationSession: (parentSessionId: string, childSessionId: string) => void;
   onTaskArtifactSelectionChange: (taskId: string | null) => void;
   onClose: () => void;
+  terminalArchivedReason: string | null;
   terminalUnavailableReason: string | null;
   setTerminalPanelDockElement: (element: HTMLDivElement | null) => void;
 }
@@ -87,6 +88,7 @@ export function AgentsArtifactPaneRegion({
   onFocusVerificationSession,
   onTaskArtifactSelectionChange,
   onClose,
+  terminalArchivedReason,
   terminalUnavailableReason,
   setTerminalPanelDockElement,
 }: AgentsArtifactPaneRegionProps) {
@@ -160,6 +162,7 @@ export function AgentsArtifactPaneRegion({
             dock="panel"
             conversationId={conversationId}
             workspace={workspace}
+            terminalArchivedReason={terminalArchivedReason}
             terminalUnavailableReason={terminalUnavailableReason}
             hasAutoOpenArtifacts={hasAutoOpenArtifacts}
             setDockElement={setTerminalPanelDockElement}
