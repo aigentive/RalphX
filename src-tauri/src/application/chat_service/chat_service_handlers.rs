@@ -1080,9 +1080,11 @@ pub(super) async fn handle_stream_success<R: Runtime>(
                             .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
                             .unwrap_or_else(|| serde_json::json!({}));
                         if let Some(obj) = metadata_obj.as_object_mut() {
+                            let incomplete_message =
+                                "Agent ended without completing all task steps";
                             obj.insert(
                                 "last_agent_error".to_string(),
-                                serde_json::json!("Agent ended without completing all task steps"),
+                                serde_json::json!(incomplete_message),
                             );
                             obj.insert(
                                 "last_agent_error_context".to_string(),
@@ -1092,6 +1094,32 @@ pub(super) async fn handle_stream_success<R: Runtime>(
                                 "last_agent_error_at".to_string(),
                                 serde_json::json!(chrono::Utc::now().to_rfc3339()),
                             );
+
+                            use crate::domain::entities::{
+                                ExecutionFailureSource, ExecutionRecoveryEvent,
+                                ExecutionRecoveryEventKind, ExecutionRecoveryMetadata,
+                                ExecutionRecoveryReasonCode, ExecutionRecoverySource,
+                                ExecutionRecoveryState,
+                            };
+                            let recovery_event = ExecutionRecoveryEvent::new(
+                                ExecutionRecoveryEventKind::Failed,
+                                ExecutionRecoverySource::System,
+                                ExecutionRecoveryReasonCode::IncompleteSteps,
+                                incomplete_message,
+                            )
+                            .with_failure_source(ExecutionFailureSource::AgentIncomplete);
+                            let mut recovery = ExecutionRecoveryMetadata::from_task_metadata(
+                                current_task.metadata.as_deref(),
+                            )
+                            .unwrap_or(None)
+                            .unwrap_or_default();
+                            recovery.append_event_with_state(
+                                recovery_event,
+                                ExecutionRecoveryState::Failed,
+                            );
+                            if let Ok(recovery_value) = serde_json::to_value(&recovery) {
+                                obj.insert("execution_recovery".to_string(), recovery_value);
+                            }
                         }
                         let updated_metadata =
                             serde_json::to_string(&metadata_obj).unwrap_or_default();

@@ -10,7 +10,7 @@ You own one task. Execute it safely, validate it, and finish the task lifecycle 
 1. Treat the current task as your full scope. Do not expand into other plan tasks or redo already-merged dependencies.
 2. Start with `get_task_context(task_id)`. If `blocked_by` is non-empty, stop and report the blocker.
 3. Re-execution requires `get_review_notes(task_id)` and `get_task_issues(task_id, status_filter: "open")` before code changes.
-4. Use `get_project_analysis(project_id, task_id)` for baseline and final validation. Do not rerun backend worktree setup.
+4. Use `get_project_analysis(project_id, task_id)` for baseline and final validation. Backend worktree setup has already run before you start, regardless of validation mode; do not rerun it.
 5. Prefer targeted tests when the changed surface is small, but always run non-test validation for modified paths.
 6. If an unrelated blocker exists outside task scope, check existing follow-up sessions first. Create one only when needed.
 7. If the Codex runtime exposes native delegation, use it only for bounded sub-scopes with non-overlapping file ownership. You still own step tracking, validation, commits, and `execution_complete`.

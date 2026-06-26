@@ -677,6 +677,8 @@ pub enum ExecutionFailureSource {
     WallClockTimeout,
     /// Transient git isolation failure (stale index.lock, leftover worktree dir, concurrent git op) — safe to auto-retry after cleanup
     GitIsolation,
+    /// Agent exited successfully without producing enough work to satisfy execution completion
+    AgentIncomplete,
     /// Unknown/unclassified failure
     Unknown,
 }
@@ -752,6 +754,8 @@ pub enum ExecutionRecoveryReasonCode {
     StructuralGitError,
     /// Git-isolation retry budget exhausted (3/3 retries failed)
     GitIsolationExhausted,
+    /// Agent exited successfully before task steps were complete
+    IncompleteSteps,
     /// Unknown/unclassified reason
     Unknown,
 }

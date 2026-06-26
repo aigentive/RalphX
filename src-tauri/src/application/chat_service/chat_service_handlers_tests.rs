@@ -12,8 +12,9 @@ use crate::application::{
     AppState, InteractiveProcessRegistry,
 };
 use crate::domain::entities::{
-    app_state::ExecutionHaltMode, ChatConversation, IdeationSessionId, InternalStatus, Project,
-    ProjectId, Task, VerificationStatus,
+    app_state::ExecutionHaltMode, ChatConversation, ExecutionFailureSource,
+    ExecutionRecoveryMetadata, ExecutionRecoveryReasonCode, ExecutionRecoveryState,
+    IdeationSessionId, InternalStatus, Project, ProjectId, Task, VerificationStatus,
 };
 use crate::domain::repositories::{StateHistoryMetadata, StatusTransition};
 use crate::error::AppResult;
@@ -1036,6 +1037,77 @@ fn test_agent_exit_no_steps_stays_failed() {
     );
 }
 
+#[test]
+fn test_has_tracked_steps_true_when_steps_exist() {
+    let task_id = TaskId::new();
+    let steps = vec![make_step(&task_id, TaskStepStatus::Pending)];
+    let step_repo: Option<Arc<dyn TaskStepRepository>> = Some(Arc::new(StubTaskStepRepo { steps }));
+    assert!(run(has_tracked_steps(&step_repo, &task_id)));
+}
+
+#[test]
+fn test_has_tracked_steps_false_when_no_steps() {
+    let task_id = TaskId::new();
+    let step_repo: Option<Arc<dyn TaskStepRepository>> =
+        Some(Arc::new(StubTaskStepRepo { steps: vec![] }));
+    assert!(!run(has_tracked_steps(&step_repo, &task_id)));
+}
+
+#[test]
+fn test_has_tracked_steps_false_when_repo_missing() {
+    let task_id = TaskId::new();
+    let step_repo: Option<Arc<dyn TaskStepRepository>> = None;
+    assert!(!run(has_tracked_steps(&step_repo, &task_id)));
+}
+
+#[test]
+fn test_has_tracked_steps_false_on_repo_error() {
+    let task_id = TaskId::new();
+    let step_repo: Option<Arc<dyn TaskStepRepository>> = Some(Arc::new(StubErrorTaskStepRepo));
+    assert!(!run(has_tracked_steps(&step_repo, &task_id)));
+}
+
+#[test]
+fn test_validated_completion_override_false_when_no_metadata() {
+    let task = Task::new(ProjectId::new(), "no metadata".into());
+    assert!(!run(validated_completion_override(&task)));
+}
+
+#[test]
+fn test_validated_completion_override_false_when_no_validation_cache_key() {
+    let mut task = Task::new(ProjectId::new(), "other metadata".into());
+    task.metadata = Some(r#"{"some_other_key": true}"#.to_string());
+    assert!(!run(validated_completion_override(&task)));
+}
+
+#[test]
+fn test_validated_completion_override_false_on_malformed_validation_cache() {
+    let mut task = Task::new(ProjectId::new(), "malformed cache".into());
+    // validation_cache present but not a valid ValidationCacheMetadata shape → parse error path.
+    task.metadata = Some(r#"{"validation_cache": {"version": "not-a-number"}}"#.to_string());
+    assert!(!run(validated_completion_override(&task)));
+}
+
+#[test]
+fn test_validated_completion_override_false_when_worktree_path_missing() {
+    let mut task = Task::new(ProjectId::new(), "no worktree".into());
+    let cache = validation_cache_fixture("abc123", true, true);
+    task.metadata = Some(cache.update_task_metadata(task.metadata.as_deref()).unwrap());
+    task.worktree_path = None;
+    assert!(!run(validated_completion_override(&task)));
+}
+
+#[test]
+fn test_validated_completion_override_false_when_head_sha_unresolvable() {
+    let mut task = Task::new(ProjectId::new(), "non-git worktree".into());
+    let cache = validation_cache_fixture("abc123", true, true);
+    task.metadata = Some(cache.update_task_metadata(task.metadata.as_deref()).unwrap());
+    // A temp dir that is not a git repo → get_head_sha errors → fail-safe false.
+    let tmp = tempfile::tempdir().unwrap();
+    task.worktree_path = Some(tmp.path().to_string_lossy().to_string());
+    assert!(!run(validated_completion_override(&task)));
+}
+
 /// Non-AgentExit errors should not trigger the override, even with complete steps.
 #[test]
 fn test_timeout_error_does_not_override_even_with_complete_steps() {
@@ -1270,6 +1342,94 @@ async fn test_incomplete_execution_success_finalizer_fails_current_attempt_with_
             .get("last_agent_error")
             .and_then(|value| value.as_str()),
         Some("Agent ended without completing all task steps")
+    );
+    let recovery: ExecutionRecoveryMetadata =
+        serde_json::from_value(metadata["execution_recovery"].clone())
+            .expect("incomplete finalizer should store recovery metadata");
+    assert_eq!(recovery.last_state, ExecutionRecoveryState::Failed);
+    let event = recovery
+        .events
+        .last()
+        .expect("incomplete finalizer should record recovery event");
+    assert_eq!(
+        event.reason_code,
+        ExecutionRecoveryReasonCode::IncompleteSteps
+    );
+    assert_eq!(
+        event.failure_source,
+        Some(ExecutionFailureSource::AgentIncomplete)
+    );
+    assert!(
+        !event.failure_source.unwrap().is_transient(),
+        "successful-but-incomplete exits should not look like transient crashes"
+    );
+}
+
+/// Zero-step worker run that produced output should leave Executing (not be marked
+/// Failed with "Agent ended without completing all task steps"). Directly reproduces
+/// the 801e1660 class: a task with no tracked steps must fall back to has_output.
+#[tokio::test]
+async fn test_zero_step_run_with_output_transitions_out_of_executing() {
+    let state = AppState::new_test();
+    let exec = Arc::new(ExecutionState::new());
+    let execution_state = Some(Arc::clone(&exec));
+
+    let project = Project::new("Zero Step Output".into(), "/tmp/zero-step-output".into());
+    state.project_repo.create(project.clone()).await.unwrap();
+
+    let mut task = Task::new(project.id.clone(), "Zero-step output run".into());
+    task.internal_status = InternalStatus::Executing;
+    let task_id = task.id.clone();
+    state.task_repo.create(task).await.unwrap();
+
+    handle_stream_success::<MockRuntime>(
+        "run-id-zero-step-output",
+        ChatContextType::TaskExecution,
+        task_id.as_str(),
+        true, // has_output
+        false,
+        &execution_state,
+        &state.task_repo,
+        &state.task_dependency_repo,
+        &state.project_repo,
+        &state.artifact_repo,
+        &state.chat_message_repo,
+        &state.chat_attachment_repo,
+        &state.chat_conversation_repo,
+        &state.agent_run_repo,
+        &state.ideation_session_repo,
+        &state.activity_event_repo,
+        &state.message_queue,
+        &state.running_agent_registry,
+        &state.memory_event_repo,
+        &None,
+        &None,
+        &None,
+        &None::<tauri::AppHandle<MockRuntime>>,
+        &None,
+        &None,
+        &None,
+    )
+    .await;
+
+    let updated = state
+        .task_repo
+        .get_by_id(&task_id)
+        .await
+        .unwrap()
+        .expect("task should still exist");
+    assert_ne!(
+        updated.internal_status,
+        InternalStatus::Failed,
+        "zero-step run with output must not be marked Failed"
+    );
+    assert!(
+        matches!(
+            updated.internal_status,
+            InternalStatus::PendingReview | InternalStatus::Reviewing
+        ),
+        "zero-step run with output should transition to PendingReview (auto-advances to Reviewing), got {:?}",
+        updated.internal_status
     );
 }
 
