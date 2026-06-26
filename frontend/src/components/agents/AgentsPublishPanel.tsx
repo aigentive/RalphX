@@ -83,6 +83,7 @@ import {
   hasPublishedWorkspacePr,
   isPipelineOwnedAgentWorkspace,
   isAgentWorkspacePublishCurrent,
+  shouldAutoRefreshCleanAgentWorkspaceFromBase,
 } from "./agentWorkspacePublishState";
 import {
   AGENT_WORKSPACE_FRESHNESS_STALE_MS,
@@ -208,17 +209,28 @@ export function AgentPublishPanel({
   const [commitFiles, setCommitFiles] = useState<DiffViewerFileChange[]>([]);
   const [isLoadingCommitFiles, setIsLoadingCommitFiles] = useState(false);
   const [rebaseDialogOpen, setRebaseDialogOpen] = useState(false);
-  const [publishDialogOpen, setPublishDialogOpen] = useState(false);
-  const [publishDialogPhase, setPublishDialogPhase] =
-    useState<PublishWorkspaceDialogPhase>("confirm");
-  const [localPublishInFlight, setLocalPublishInFlight] = useState(false);
-  const [localPublishStartedAtMs, setLocalPublishStartedAtMs] = useState<number | null>(
-    null,
-  );
+  const [publishDialogState, setPublishDialogState] = useState<{
+    conversationId: string;
+    open: boolean;
+    phase: PublishWorkspaceDialogPhase;
+  } | null>(null);
+  const [localPublishState, setLocalPublishState] = useState<{
+    conversationId: string;
+    startedAtMs: number;
+  } | null>(null);
   const prDescriptionPrecomputeKeysRef = useRef<Set<string>>(new Set());
+  const autoRefreshFromBaseKeysRef = useRef<Set<string>>(new Set());
   const [selectedRebaseBaseKey, setSelectedRebaseBaseKey] = useState("");
   const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
   const conversationId = workspace?.conversationId ?? null;
+  const currentLocalPublishState =
+    localPublishState?.conversationId === conversationId ? localPublishState : null;
+  const localPublishInFlight = currentLocalPublishState !== null;
+  const localPublishStartedAtMs = currentLocalPublishState?.startedAtMs ?? null;
+  const currentPublishDialogState =
+    publishDialogState?.conversationId === conversationId ? publishDialogState : null;
+  const publishDialogOpen = currentPublishDialogState?.open ?? false;
+  const publishDialogPhase = currentPublishDialogState?.phase ?? "confirm";
   const toastConversationTitle = conversationTitle?.trim() || null;
   const { isUpdatingFromBase, runUpdateFromBase } = useAgentWorkspaceBaseUpdate({
     conversationTitle,
@@ -280,6 +292,10 @@ export function AgentPublishPanel({
     staleTime: AGENT_WORKSPACE_FRESHNESS_STALE_MS,
   });
   const freshness = freshnessQuery.data;
+  const shouldAutoRefreshFromBase = shouldAutoRefreshCleanAgentWorkspaceFromBase(
+    workspace,
+    freshness,
+  );
   const baseStatus = freshness?.baseStatus ?? "valid";
   const baseBlocked = baseStatus === "blocked";
   const fallbackRebaseOptions = useMemo(
@@ -337,6 +353,50 @@ export function AgentPublishPanel({
       setSelectedRebaseBaseKey(rebaseBaseOptionsQuery.data.selectedKey);
     }
   }, [rebaseBaseOptionsQuery.data]);
+  useEffect(() => {
+    autoRefreshFromBaseKeysRef.current.clear();
+  }, [conversationId]);
+  useEffect(() => {
+    if (
+      !workspace ||
+      !conversationId ||
+      !shouldAutoRefreshFromBase ||
+      isRepairPending ||
+      isPublishingWorkspace ||
+      localPublishInFlight ||
+      isUpdatingFromBase
+    ) {
+      return;
+    }
+
+    const refreshKey = [
+      conversationId,
+      freshness?.targetRef ?? workspace.baseRef,
+      freshness?.targetBaseCommit ?? "",
+    ].join(":");
+    if (autoRefreshFromBaseKeysRef.current.has(refreshKey)) {
+      return;
+    }
+    autoRefreshFromBaseKeysRef.current.add(refreshKey);
+
+    runUpdateFromBase({
+      conversationId,
+      detail: `From ${getAgentWorkspaceEffectiveBaseLabel(workspace, freshness)}`,
+      kind: "update-from-base",
+      title: "Refreshing branch",
+      workspace,
+    });
+  }, [
+    conversationId,
+    freshness,
+    isPublishingWorkspace,
+    isRepairPending,
+    isUpdatingFromBase,
+    localPublishInFlight,
+    runUpdateFromBase,
+    shouldAutoRefreshFromBase,
+    workspace,
+  ]);
   const closePrMutation = useMutation<AgentConversationWorkspace, Error>({
     mutationFn: () => chatApi.closeAgentWorkspacePr(conversationId!),
     onSuccess: async (updatedWorkspace) => {
@@ -576,6 +636,7 @@ export function AgentPublishPanel({
   const isClosingPr = closePrMutation.isPending;
   const shouldShowPrSupervisionControls =
     !isRepairPending && (workspace.mode === "edit" || isPipelinePrAutomationWorkspace);
+  const shouldShowPublishNotices = !isRepairPending;
   const canConfigurePrSupervision =
     shouldShowPrSupervisionControls &&
     workspace.status !== "missing" &&
@@ -749,17 +810,27 @@ export function AgentPublishPanel({
     if (!onPublishWorkspace || publishDisabled) {
       return;
     }
-    setPublishDialogPhase("confirm");
-    setPublishDialogOpen(true);
+    setPublishDialogState({
+      conversationId: workspace.conversationId,
+      open: true,
+      phase: "confirm",
+    });
   };
   const handleConfirmPublishWorkspace = () => {
-    setPublishDialogPhase("publishing");
-    setLocalPublishStartedAtMs(Date.now());
-    setLocalPublishInFlight(true);
-    void Promise.resolve(onPublishWorkspace!(workspace.conversationId))
+    const publishConversationId = workspace.conversationId;
+    setPublishDialogState({
+      conversationId: publishConversationId,
+      open: true,
+      phase: "publishing",
+    });
+    setLocalPublishState({
+      conversationId: publishConversationId,
+      startedAtMs: Date.now(),
+    });
+    void Promise.resolve(onPublishWorkspace!(publishConversationId))
       .catch((error) => {
         const publishToastId = agentWorkspaceOperationToastId(
-          workspace.conversationId,
+          publishConversationId,
           "publish",
         );
         const description = agentWorkspaceOperationToastDescription(
@@ -779,16 +850,29 @@ export function AgentPublishPanel({
         );
       })
       .finally(() => {
-        setLocalPublishInFlight(false);
-        setLocalPublishStartedAtMs(null);
-        setPublishDialogOpen(false);
-        setPublishDialogPhase("confirm");
+        setLocalPublishState((current) =>
+          current?.conversationId === publishConversationId ? null : current,
+        );
+        setPublishDialogState((current) =>
+          current?.conversationId === publishConversationId ? null : current,
+        );
       });
   };
   const handlePublishDialogOpenChange = (open: boolean) => {
-    setPublishDialogOpen(open);
-    if (!open && !isPublishingThisWorkspace) {
-      setPublishDialogPhase("confirm");
+    if (!open) {
+      const dialogConversationId = workspace.conversationId;
+      setPublishDialogState((current) => {
+        if (current?.conversationId !== dialogConversationId) {
+          return current;
+        }
+        if (!isPublishingThisWorkspace) {
+          return null;
+        }
+        return {
+          ...current,
+          open: false,
+        };
+      });
     }
   };
   const primaryActionClassName = "h-9 gap-2 px-3 text-xs";
@@ -1042,7 +1126,7 @@ export function AgentPublishPanel({
               )}
             </div>
           )}
-          {hasPrConflict && (
+          {shouldShowPublishNotices && hasPrConflict && (
             <div
               className="mt-3 flex items-start gap-2 rounded-md border px-3 py-2 text-xs leading-relaxed"
               style={{
@@ -1062,7 +1146,7 @@ export function AgentPublishPanel({
               <span>{prConflictSummary}</span>
             </div>
           )}
-          {isBranchUpdateNeeded && (
+          {shouldShowPublishNotices && isBranchUpdateNeeded && (
             <div
               className="mt-3 flex items-start gap-2 rounded-md border px-3 py-2 text-xs leading-relaxed"
               style={{
@@ -1083,7 +1167,7 @@ export function AgentPublishPanel({
               </span>
             </div>
           )}
-          {baseRetargeted && (
+          {shouldShowPublishNotices && baseRetargeted && (
             <div
               className="mt-3 flex items-start gap-2 rounded-md border px-3 py-2 text-xs leading-relaxed"
               style={{
@@ -1101,7 +1185,7 @@ export function AgentPublishPanel({
               <span>Base branch retargeted to {base}.</span>
             </div>
           )}
-          {baseBlocked && (
+          {shouldShowPublishNotices && baseBlocked && (
             <div
               className="mt-3 flex items-start gap-2 rounded-md border px-3 py-2 text-xs leading-relaxed"
               style={{
@@ -1188,11 +1272,13 @@ export function AgentPublishPanel({
               }}
             >
               {terminalPublicationLabel ??
-                (hasPrConflict
-                  ? "Conflicting"
-                  : isBranchUpdateNeeded
-                    ? "Behind base"
-                    : workspace.publicationPushStatus ?? workspace.status)}
+                (isRepairPending
+                  ? "Repair pending"
+                  : hasPrConflict
+                    ? "Conflicting"
+                    : isBranchUpdateNeeded
+                      ? "Behind base"
+                      : workspace.publicationPushStatus ?? workspace.status)}
             </span>
           </div>
 
@@ -1233,8 +1319,7 @@ export function AgentPublishPanel({
         {/* Inline diff view — below the action row, all files expanded by default */}
         {isRepairPending && inlineDiffsCandidate ? (
           <AgentsPublishRepairState
-            workspace={workspace}
-            base={base}
+            conversationId={workspace.conversationId}
             canHydratePublishFacts={canHydratePublishFacts}
             focusRequest={publishFocusRequest}
           />

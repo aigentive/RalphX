@@ -14,6 +14,7 @@ import type { AgentArtifactTab } from "@/stores/agentSessionStore";
 import { useUiStore } from "@/stores/uiStore";
 import { createTestQueryClient } from "@/test/store-utils";
 import { AgentsArtifactPane } from "./AgentsArtifactPane";
+import { agentWorkspaceKeys } from "./agentWorkspaceQueries";
 
 const deferredHydrationTimeout = { timeout: 3_000 };
 
@@ -3512,6 +3513,75 @@ describe("AgentsArtifactPane", () => {
     });
   });
 
+  it("scopes active publish progress to the conversation that started publishing", async () => {
+    const queryClient = createTestQueryClient();
+    const publishDeferred = deferred<void>();
+    const publish = vi.fn(() => publishDeferred.promise);
+    const pane = (conversationId: string, isPublishingWorkspace: boolean) => (
+      <QueryClientProvider client={queryClient}>
+        <TooltipProvider delayDuration={0}>
+          <div className="h-[480px]">
+            <AgentsArtifactPane
+              conversation={{
+                ...conversation(),
+                id: conversationId,
+                title:
+                  conversationId === "conversation-1"
+                    ? "Publishing conversation"
+                    : "Other conversation",
+              }}
+              workspace={workspace({
+                conversationId,
+                mode: "edit",
+                branchName: `ralphx/demo/agent-${conversationId}`,
+                worktreePath: `/tmp/ralphx/${conversationId}`,
+              })}
+              activeTab="publish"
+              taskMode="graph"
+              onTabChange={() => {}}
+              onTaskModeChange={() => {}}
+              onPublishWorkspace={publish}
+              isPublishingWorkspace={isPublishingWorkspace}
+              onClose={() => {}}
+            />
+          </div>
+        </TooltipProvider>
+      </QueryClientProvider>
+    );
+
+    const { rerender } = render(pane("conversation-1", false));
+
+    fireEvent.click(screen.getByTestId("agents-publish-confirm"));
+    fireEvent.click(
+      within(await screen.findByRole("dialog")).getByRole("button", {
+        name: "Commit & Publish",
+      }),
+    );
+
+    expect(await screen.findByRole("dialog", { name: "Publishing workspace" }))
+      .toBeInTheDocument();
+    expect(screen.getByTestId("agents-publish-pipeline")).toBeInTheDocument();
+
+    rerender(pane("conversation-2", false));
+
+    expect(
+      screen.queryByRole("dialog", { name: "Publishing workspace" }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByTestId("agents-publish-pipeline")).not.toBeInTheDocument();
+    expect(screen.getByTestId("agents-publish-confirm")).toBeEnabled();
+
+    rerender(pane("conversation-1", true));
+
+    expect(await screen.findByRole("dialog", { name: "Publishing workspace" }))
+      .toBeInTheDocument();
+    expect(screen.getByTestId("agents-publish-pipeline")).toBeInTheDocument();
+
+    await act(async () => {
+      publishDeferred.resolve();
+      await publishDeferred.promise;
+    });
+  });
+
   it("keeps commit publish available while freshness is loading", async () => {
     const publish = vi.fn().mockResolvedValue(undefined);
     const freshnessDeferred = deferred<unknown>();
@@ -4089,6 +4159,70 @@ describe("AgentsArtifactPane", () => {
 
     await waitFor(() =>
       expect(updateWorkspaceFromBaseMock).toHaveBeenCalledWith("conversation-1")
+    );
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it("automatically updates a clean workspace from its configured base", async () => {
+    const publish = vi.fn().mockResolvedValue(undefined);
+    getWorkspaceFreshnessMock.mockResolvedValue(
+      workspaceFreshness({
+        freshnessScope: "full",
+        baseRef: "release/1.2",
+        baseDisplayName: "release/1.2",
+        targetRef: "origin/release/1.2",
+        capturedBaseCommit: "old-release-base",
+        targetBaseCommit: "new-release-base",
+        isBaseAhead: true,
+        hasUncommittedChanges: false,
+        unpublishedCommitCount: 0,
+        remoteRefreshed: true,
+        worktreeStatusChecked: true,
+        baseStatus: "valid",
+        effectiveBaseRef: "release/1.2",
+        effectiveBaseDisplayName: "release/1.2",
+      }),
+    );
+    updateWorkspaceFromBaseMock.mockResolvedValue({
+      workspace: workspace({
+        mode: "edit",
+        baseRefKind: "local_branch",
+        baseRef: "release/1.2",
+        baseDisplayName: "release/1.2",
+        baseCommit: "new-release-base",
+      }),
+      updated: true,
+      targetRef: "origin/release/1.2",
+      baseCommit: "new-release-base",
+      baseStatus: "valid",
+      effectiveBaseDisplayName: "release/1.2",
+    });
+
+    renderPane(
+      "publish",
+      workspace({
+        mode: "edit",
+        baseRefKind: "local_branch",
+        baseRef: "release/1.2",
+        baseDisplayName: "release/1.2",
+        baseCommit: "old-release-base",
+      }),
+      publish,
+      false,
+      conversation(),
+    );
+
+    await waitFor(() =>
+      expect(updateWorkspaceFromBaseMock).toHaveBeenCalledWith("conversation-1"),
+    );
+    expect(updateWorkspaceFromBaseMock.mock.calls[0]).toHaveLength(1);
+    expect(updateWorkspaceFromBaseMock).toHaveBeenCalledTimes(1);
+    expect(toastLoadingMock).toHaveBeenCalledWith(
+      "Refreshing branch",
+      expect.objectContaining({
+        description: "Agent conversation • From release/1.2 • 0s",
+        id: "agent-workspace-operation:conversation-1:update-from-base",
+      }),
     );
     expect(publish).not.toHaveBeenCalled();
   });
@@ -4695,6 +4829,16 @@ describe("AgentsArtifactPane", () => {
     getWorkspaceReviewMock.mockRejectedValue(
       new Error("Agent conversation workspace is checked out at 'HEAD' instead of branch"),
     );
+    const queryClient = createTestQueryClient();
+    queryClient.setQueryData(
+      agentWorkspaceKeys.scopedFreshness("conversation-1", "full"),
+      workspaceFreshness({
+        freshnessScope: "full",
+        capturedBaseCommit: "old-base",
+        targetBaseCommit: "new-base",
+        isBaseAhead: true,
+      }),
+    );
 
     renderPane(
       "publish",
@@ -4704,14 +4848,33 @@ describe("AgentsArtifactPane", () => {
         baseDisplayName: "Current branch (feature/agent-screen)",
         publicationPushStatus: "needs_agent",
       }),
+      vi.fn(),
+      false,
+      null,
+      {},
+      queryClient,
     );
 
     const repairState = await screen.findByTestId("agents-publish-repair-state");
+    const actionbar = screen.getByTestId("agents-publish-actionbar");
+    const metadataStrip = screen.getByTestId("agents-publish-metadata-strip");
     expect(repairState).toBeInTheDocument();
-    expect(within(repairState).getByText("Repairing workspace")).toBeInTheDocument();
     expect(
-      within(repairState).getByText(/RalphX routed this workspace to the agent/),
+      within(actionbar).getByText(/RalphX routed this workspace to the agent/),
     ).toBeInTheDocument();
+    expect(
+      within(repairState).queryByText("Repairing workspace"),
+    ).not.toBeInTheDocument();
+    expect(
+      within(repairState).queryByText(/RalphX routed this workspace to the agent/),
+    ).not.toBeInTheDocument();
+    expect(screen.getAllByText(/RalphX routed this workspace to the agent/)).toHaveLength(
+      1,
+    );
+    expect(screen.queryByTestId("agents-base-stale")).not.toBeInTheDocument();
+    expect(
+      within(metadataStrip).getByTestId("agents-publish-push-status-pill"),
+    ).toHaveTextContent("Repair pending");
     await waitFor(() =>
       expect(screen.getByTestId("agents-publish-repair-bucket-conflicted")).toHaveTextContent(
         "Conflicted: 1",
