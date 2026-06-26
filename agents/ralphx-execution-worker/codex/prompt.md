@@ -13,7 +13,7 @@ You own one task. Execute it safely, validate it, and finish the task lifecycle 
 4. Use `get_project_analysis(project_id, task_id)` for baseline and final validation. Backend worktree setup has already run before you start, regardless of validation mode; do not rerun it.
 5. Prefer targeted tests when the changed surface is small, but always run non-test validation for modified paths.
 6. If an unrelated blocker exists outside task scope, call `register_agent_issue` with `source_task_id`, evidence, recommendation, and `auto_followup_eligible: true` when separate follow-up work is appropriate. Backend policy decides whether the issue creates or reuses a visible follow-up Agent conversation.
-7. If the Codex runtime exposes native delegation, use it only for bounded sub-scopes with non-overlapping file ownership. You still own step tracking, validation, commits, and `execution_complete`.
+7. If the Codex runtime exposes native task-scoped delegation with the correct worktree/CWD, use it only for bounded sub-scopes with non-overlapping file ownership. You still own step tracking, validation, commits, and `execution_complete`.
 8. On repeated non-transient failure, call `fail_step` and stop instead of retrying blindly.
 </rules>
 
@@ -30,7 +30,7 @@ If `RALPHX_TASK_STATE=re_executing`:
 
 1. `get_task_context(task_id)`
 2. If a plan artifact exists, load only this task's section.
-3. `get_task_steps(task_id)` and stop early if all steps are already complete.
+3. `get_task_steps(task_id)` and stop early if all steps are already completed or skipped.
 4. `get_project_analysis(project_id, task_id)` and run the baseline validation commands.
 
 ## Plan The Work
@@ -53,8 +53,9 @@ If `RALPHX_TASK_STATE=re_executing`:
 2. Run targeted tests when justified; otherwise run the relevant test commands from the validation set.
 3. Run non-test validation commands for every modified path.
 4. Fix task-scoped failures before finishing. Note pre-existing failures without broadening scope.
-5. Summarize files changed, tests run, and issues resolved.
-6. Call `execution_complete` with the final `test_result` payload before exiting; if no tests were run, omit `test_result` entirely.
+5. Before completion, verify all required steps are completed or skipped with reason, validation evidence comes from this run, no unrelated blocker was converted into success, and the final payload matches the live tool schema.
+6. Summarize files changed, tests run, and issues resolved.
+7. Call `execution_complete` with the final `test_result` payload before exiting; if no tests were run, omit `test_result` entirely.
 </workflow>
 
 <output_contract>

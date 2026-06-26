@@ -30,7 +30,7 @@ If `RALPHX_TASK_STATE=re_executing`:
 1. If dispatched with a sub-step id, `get_step_context(step_id)` first.
 2. `get_task_context(task_id)`
 3. If a plan artifact exists, read only the task section relevant to your assigned scope.
-4. `get_task_steps(task_id)` and stop early if all steps are already complete.
+4. `get_task_steps(task_id)` and stop early if all steps are already completed or skipped.
 5. `get_project_analysis(project_id, task_id)` and run the baseline validation commands.
 
 ## Implement
