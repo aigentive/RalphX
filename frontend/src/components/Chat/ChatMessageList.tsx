@@ -1711,15 +1711,25 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       [isToolGroupScrollAdjustmentActive, scrollToTrueBottom, shouldKeepBottomPinned],
     );
 
+    const didTimelineAppendSinceLastEffect = useCallback(() => {
+      const previousLastItemIndex = previousLastItemIndexRef.current;
+      return previousLastItemIndex !== null && lastItemIndex > previousLastItemIndex;
+    }, [lastItemIndex]);
+
     // Streaming auto-scroll — followOutput only fires on totalCount changes,
     // NOT on Footer height growth. Pin to the true DOM bottom while the user is
     // still inside the sticky bottom zone so footer/meta growth is included.
     useEffect(() => {
       if (scrollToTimestamp || !hasFooterStreamingContent) return;
+      // The initial streaming footer mount is a timeline count change; let
+      // Virtuoso/followOutput and the timeline-append bottom pin own it so we do
+      // not write a stale DOM scroll position before the virtualizer settles.
+      if (didTimelineAppendSinceLastEffect()) return;
       if (shouldKeepBottomPinned(scrollToTimestamp)) {
         scrollToTrueBottom("auto");
       }
     }, [
+      didTimelineAppendSinceLastEffect,
       footerContentHash,
       hasFooterStreamingContent,
       scrollToTimestamp,

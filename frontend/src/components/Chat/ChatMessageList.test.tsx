@@ -4089,6 +4089,74 @@ describe("ChatMessageList - Scroll Behavior", () => {
       mockIsAtBottomRef.current = true;
     });
 
+    it("defers the first streaming footer bottom pin when the user send already appended timeline items", async () => {
+      const queuedRafs: FrameRequestCallback[] = [];
+      const rafSpy = vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
+        queuedRafs.push(cb);
+        return queuedRafs.length;
+      });
+      const cancelSpy = vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
+
+      try {
+        const initialMessages = createMessages(2);
+        const { rerender } = render(
+          <ChatMessageList
+            {...defaultProps}
+            messages={initialMessages}
+            isAgentRunning={false}
+          />
+        );
+
+        const scroller = await screen.findByTestId("mock-virtuoso");
+        setMockScrollerGeometry(scroller, {
+          clientHeight: 500,
+          scrollHeight: 1000,
+          scrollTop: 500,
+        });
+        queuedRafs.length = 0;
+        scrollToMock.mockClear();
+
+        setMockScrollerGeometry(scroller, {
+          clientHeight: 500,
+          scrollHeight: 1060,
+          scrollTop: 500,
+        });
+        act(() => {
+          rerender(
+            <ChatMessageList
+              {...defaultProps}
+              messages={[
+                ...initialMessages,
+                {
+                  id: "msg-follow-up-user",
+                  role: "user",
+                  content: "Follow-up question",
+                  createdAt: new Date(2026, 0, 1, 12, 30).toISOString(),
+                  toolCalls: null,
+                  contentBlocks: null,
+                },
+              ]}
+              isAgentRunning={true}
+            />
+          );
+        });
+
+        expect(scrollToMock).not.toHaveBeenCalled();
+        expect(queuedRafs.length).toBeGreaterThan(0);
+
+        act(() => {
+          while (queuedRafs.length > 0) {
+            queuedRafs.shift()?.(0);
+          }
+        });
+
+        expect(scrollToMock).toHaveBeenCalledWith({ top: 560, behavior: "smooth" });
+      } finally {
+        rafSpy.mockRestore();
+        cancelSpy.mockRestore();
+      }
+    });
+
     it("pins to true bottom when a parent tool result arrives while near bottom", async () => {
       const rafSpy = vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
         cb(0);
