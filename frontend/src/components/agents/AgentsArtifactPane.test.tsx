@@ -66,6 +66,7 @@ const {
   toastErrorMock,
   toastInfoMock,
   toastLoadingMock,
+  toastMessageMock,
   toastSuccessMock,
 } = vi.hoisted(() => ({
   getWorkspaceChangesMock: vi.fn(),
@@ -116,6 +117,7 @@ const {
   toastErrorMock: vi.fn(),
   toastInfoMock: vi.fn(),
   toastLoadingMock: vi.fn(),
+  toastMessageMock: vi.fn(),
   toastSuccessMock: vi.fn(),
 }));
 
@@ -316,6 +318,7 @@ vi.mock("sonner", () => ({
     error: (...args: unknown[]) => toastErrorMock(...args),
     info: (...args: unknown[]) => toastInfoMock(...args),
     loading: (...args: unknown[]) => toastLoadingMock(...args),
+    message: (...args: unknown[]) => toastMessageMock(...args),
     success: (...args: unknown[]) => toastSuccessMock(...args),
   },
 }));
@@ -786,6 +789,7 @@ describe("AgentsArtifactPane", () => {
     toastErrorMock.mockClear();
     toastInfoMock.mockClear();
     toastLoadingMock.mockClear();
+    toastMessageMock.mockClear();
     toastSuccessMock.mockClear();
     useUiStore.setState({ activeModal: null, modalContext: undefined });
   });
@@ -1105,6 +1109,68 @@ describe("AgentsArtifactPane", () => {
 
     expect(await within(content).findByText("Preparing review...")).toBeInTheDocument();
     expect(within(content).queryByRole("heading", { name: "Review" })).not.toBeInTheDocument();
+  });
+
+  it("does not toast when a manual Review refresh is already current", async () => {
+    getWorkspaceReviewContextMock.mockResolvedValue({
+      success: true,
+      workspace: workspace({ mode: "edit" }),
+      events: [],
+      target: {
+        scope: "selected_source",
+        baseRef: "base-sha",
+        baseSha: "base-sha",
+        headRef: "refs/ralphx/pr-heads/351",
+        headSha: "head-sha",
+        diffFingerprint: "fingerprint-351",
+        sourcePullRequestNumber: 351,
+      },
+      monitor: {
+        status: "idle",
+        reviewArtifactId: null,
+        reviewArtifactVersion: null,
+      },
+      isCurrent: true,
+      isOutdated: false,
+      shouldShowTab: true,
+    });
+    startWorkspaceReviewMock.mockResolvedValue({
+      success: true,
+      target: {
+        scope: "selected_source",
+        baseRef: "base-sha",
+        baseSha: "base-sha",
+        headRef: "refs/ralphx/pr-heads/351",
+        headSha: "head-sha",
+        diffFingerprint: "fingerprint-351",
+        sourcePullRequestNumber: 351,
+      },
+      monitor: {
+        status: "idle",
+        reviewArtifactId: null,
+        reviewArtifactVersion: null,
+      },
+      isCurrent: true,
+      isOutdated: false,
+      shouldShowTab: true,
+      started: false,
+      skippedReason: "current",
+      wasQueued: false,
+    });
+
+    renderPane("review", workspace({ mode: "edit" }), vi.fn(), false, conversation());
+
+    expect(await screen.findByText("Review is current")).toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("Refresh review"));
+
+    await waitFor(() =>
+      expect(startWorkspaceReviewMock).toHaveBeenCalledWith("conversation-1", {
+        force: true,
+      }),
+    );
+    expect(toastMessageMock).not.toHaveBeenCalled();
+    expect(toastInfoMock).not.toHaveBeenCalled();
+    expect(toastSuccessMock).not.toHaveBeenCalled();
   });
 
   it("polls the Review context while the background review is preparing", async () => {
