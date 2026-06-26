@@ -172,6 +172,98 @@ describe("AgentRuntimeStatusWidget", () => {
     expect(onViewTaskRuntime).toHaveBeenCalledWith("task-1", "task_execution");
   });
 
+  it("renders all waiting runtimes without active spinner presentation", () => {
+    render(
+      <AgentRuntimeStatusWidget
+        status={runtimeStatus({
+          agentStatus: "waiting_for_input",
+          primarySource: "workspace",
+          summaryLabel: "Runtime waiting",
+          items: [
+            runtimeItem({
+              source: "workspace",
+              contextType: "project",
+              contextId: "conversation-1",
+              label: "Agent running",
+              title: "Workspace chat",
+              agentStatus: "waiting_for_input",
+              taskId: null,
+              internalStatus: null,
+              conversationId: "conversation-1",
+            }),
+            runtimeItem({
+              source: "review",
+              contextType: "review",
+              contextId: "task-2",
+              label: "Reviewing",
+              title: "Review task",
+              agentStatus: "waiting_for_input",
+              taskId: "task-2",
+              internalStatus: "reviewing",
+            }),
+          ],
+        })}
+        onViewWorkspace={vi.fn()}
+        onViewIdeation={vi.fn()}
+        onViewVerification={vi.fn()}
+        onViewTaskRuntime={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("Awaiting input")).toBeInTheDocument();
+    expect(screen.getByText("2 waiting runtimes")).toBeInTheDocument();
+    expect(screen.getAllByText("Waiting")).toHaveLength(2);
+    expect(screen.getByTestId("agents-runtime-status-icon")).not.toHaveClass(
+      "animate-spin",
+    );
+  });
+
+  it("renders mixed waiting and generating rows with active presentation", () => {
+    render(
+      <AgentRuntimeStatusWidget
+        status={runtimeStatus({
+          primarySource: "task_execution",
+          summaryLabel: "Runtime activity",
+          items: [
+            runtimeItem({
+              source: "workspace",
+              contextType: "project",
+              contextId: "conversation-1",
+              label: "Agent running",
+              title: "Workspace chat",
+              agentStatus: "waiting_for_input",
+              taskId: null,
+              internalStatus: null,
+              conversationId: "conversation-1",
+            }),
+            runtimeItem({
+              source: "task_execution",
+              contextType: "task_execution",
+              contextId: "task-1",
+              label: "Executing",
+              title: "Runtime task",
+              agentStatus: "generating",
+              taskId: "task-1",
+              internalStatus: "executing",
+            }),
+          ],
+        })}
+        onViewWorkspace={vi.fn()}
+        onViewIdeation={vi.fn()}
+        onViewVerification={vi.fn()}
+        onViewTaskRuntime={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("Runtime activity")).toBeInTheDocument();
+    expect(screen.getByText("2 active runtimes")).toBeInTheDocument();
+    expect(screen.getByText("Running")).toBeInTheDocument();
+    expect(screen.getByText("Waiting")).toBeInTheDocument();
+    expect(screen.getByTestId("agents-runtime-status-icon")).toHaveClass(
+      "animate-spin",
+    );
+  });
+
   it("matches composer tray width and caps the runtime list to three scrollable rows", async () => {
     render(
       <AgentRuntimeStatusWidget
