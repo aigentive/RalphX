@@ -6,6 +6,7 @@ import type {
   AgentWorkspaceReviewResponseSchema,
   FileChangeSchema,
   FileDiffSchema,
+  ConflictDiffSchema,
   FileDiffPageSchema,
   DiffPageRowSchema,
   DiffLineSchema,
@@ -22,6 +23,7 @@ import type {
   AgentWorkspaceReview,
   FileChange,
   FileDiff,
+  ConflictDiff,
   FileDiffPage,
   DiffPageRow,
   DiffLine,
@@ -35,6 +37,7 @@ import type {
 
 type RawFileChange = z.infer<typeof FileChangeSchema>;
 type RawFileDiff = z.infer<typeof FileDiffSchema>;
+type RawConflictDiff = z.infer<typeof ConflictDiffSchema>;
 type RawFileDiffPage = z.infer<typeof FileDiffPageSchema>;
 type RawDiffPageRow = z.infer<typeof DiffPageRowSchema>;
 type RawDiffLine = z.infer<typeof DiffLineSchema>;
@@ -87,6 +90,17 @@ export function transformFileDiff(raw: RawFileDiff): FileDiff {
     oldTotalLines: raw.old_total_lines,
     newTotalLines: raw.new_total_lines,
     isBinary: raw.is_binary,
+  };
+}
+
+export function transformConflictDiff(raw: RawConflictDiff): ConflictDiff {
+  return {
+    filePath: raw.filePath,
+    baseContent: raw.baseContent,
+    oursContent: raw.oursContent,
+    theirsContent: raw.theirsContent,
+    mergedWithMarkers: raw.mergedWithMarkers,
+    language: raw.language,
   };
 }
 

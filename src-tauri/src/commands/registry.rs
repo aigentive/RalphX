@@ -381,6 +381,7 @@ macro_rules! register_tauri_commands {
             commands::diff_commands::get_agent_conversation_workspace_repair_unstaged_file_changes,
             commands::diff_commands::get_agent_conversation_workspace_repair_staged_file_diff,
             commands::diff_commands::get_agent_conversation_workspace_repair_unstaged_file_diff,
+            commands::diff_commands::get_agent_conversation_workspace_repair_conflict_file_diff,
             commands::diff_commands::get_agent_conversation_workspace_cumulative_file_changes,
             commands::diff_commands::get_agent_conversation_workspace_cumulative_file_diff,
             commands::diff_commands::get_agent_conversation_workspace_file_diff_page,

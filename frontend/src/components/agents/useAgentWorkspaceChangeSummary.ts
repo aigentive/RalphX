@@ -25,6 +25,7 @@ export interface AgentWorkspaceChangeSummaryState {
   currentFiles: FileChange[];
   currentFilesError: unknown;
   isCurrentFilesLoading: boolean;
+  isConflictedMode: boolean;
   isCommitMode: boolean;
   isStagedMode: boolean;
   isUnstagedMode: boolean;
@@ -33,6 +34,7 @@ export interface AgentWorkspaceChangeSummaryState {
   supportsWorktreeModes: boolean;
   workspaceChangeCount: number;
   currentFileCount: number;
+  conflictedCount: number | undefined;
   stagedCount: number | undefined;
   unstagedCount: number | undefined;
   totalAdditions: number;
@@ -80,10 +82,17 @@ export function useAgentWorkspaceChangeSummary({
   const hasLiveWorktreeSummary = liveSummary != null && supportsWorktreeModes;
   const liveStagedCount = liveSummary?.staged.fileCount;
   const liveUnstagedCount = liveSummary?.unstaged.fileCount;
+  const liveConflictedCount = liveSummary?.conflicted?.fileCount;
   const setMode = useCallback((nextMode: DiffFilterMode) => {
     setSelectedMode(nextMode);
     setHasUserSelectedMode(true);
   }, []);
+  const shouldAutoPreferConflicted =
+    repairMode &&
+    !hasUserSelectedMode &&
+    selectedMode === "uncommitted" &&
+    liveConflictedCount !== undefined &&
+    liveConflictedCount > 0;
 
   useEffect(() => {
     const conversationChanged = previousConversationIdRef.current !== conversationId;
@@ -113,7 +122,8 @@ export function useAgentWorkspaceChangeSummary({
       canQueryWorktreeFiles &&
       (!hasLiveWorktreeSummary ||
         selectedMode === "staged" ||
-        (!hasUserSelectedMode &&
+        (!shouldAutoPreferConflicted &&
+          !hasUserSelectedMode &&
           liveUnstagedCount === 0 &&
           liveStagedCount !== undefined &&
           liveStagedCount > 0)),
@@ -133,16 +143,22 @@ export function useAgentWorkspaceChangeSummary({
       canQueryWorktreeFiles &&
       (!hasLiveWorktreeSummary ||
         selectedMode === "unstaged" ||
-        (!hasUserSelectedMode &&
+        (!shouldAutoPreferConflicted &&
+          !hasUserSelectedMode &&
           liveUnstagedCount !== undefined &&
           liveUnstagedCount > 0)),
     staleTime: AGENT_WORKSPACE_STALE_MS,
   });
   const stagedCount = liveSummary?.staged.fileCount ?? stagedFilesQuery.data?.length;
   const unstagedCount = liveSummary?.unstaged.fileCount ?? unstagedFilesQuery.data?.length;
+  const conflictedCount = liveSummary?.conflicted?.fileCount;
+  const conflictedFilePaths = liveSummary?.conflicted?.files;
   const preferredMode = useMemo<DiffFilterMode>(() => {
     if (!supportsWorktreeModes || hasUserSelectedMode || selectedMode !== "uncommitted") {
       return selectedMode;
+    }
+    if (shouldAutoPreferConflicted) {
+      return "conflicted";
     }
     if (unstagedCount !== undefined && unstagedCount > 0) {
       return "unstaged";
@@ -159,6 +175,7 @@ export function useAgentWorkspaceChangeSummary({
   }, [
     hasUserSelectedMode,
     selectedMode,
+    shouldAutoPreferConflicted,
     stagedCount,
     stagedFilesQuery.isError,
     supportsWorktreeModes,
@@ -167,14 +184,18 @@ export function useAgentWorkspaceChangeSummary({
   ]);
   const effectiveMode =
     !supportsWorktreeModes &&
-    (preferredMode === "uncommitted" || preferredMode === "staged" || preferredMode === "unstaged")
+    (preferredMode === "uncommitted" ||
+      preferredMode === "staged" ||
+      preferredMode === "unstaged")
       ? "cumulative"
       : preferredMode;
   const isStagedMode = effectiveMode === "staged";
   const isUnstagedMode = effectiveMode === "unstaged";
+  const isConflictedMode = effectiveMode === "conflicted";
   const isCumulativeMode = effectiveMode === "cumulative";
   const isCommitMode =
     effectiveMode !== "uncommitted" &&
+    !isConflictedMode &&
     !isStagedMode &&
     !isUnstagedMode &&
     !isCumulativeMode;
@@ -207,8 +228,22 @@ export function useAgentWorkspaceChangeSummary({
     staleTime: AGENT_WORKSPACE_STALE_MS,
   });
 
+  const conflictedFiles = useMemo<FileChange[]>(() => {
+    if (!repairMode || !conflictedFilePaths) {
+      return [];
+    }
+    return conflictedFilePaths.map((path) => ({
+      path,
+      status: "modified",
+      additions: 0,
+      deletions: 0,
+      isGenerated: false,
+    }));
+  }, [conflictedFilePaths, repairMode]);
+
   const currentFiles = useMemo<FileChange[]>(() => {
     if (isCommitMode) return commitFilesQuery.data ?? [];
+    if (isConflictedMode) return conflictedFiles;
     if (isStagedMode && supportsWorktreeModes) return stagedFilesQuery.data ?? [];
     if (isUnstagedMode && supportsWorktreeModes) return unstagedFilesQuery.data ?? [];
     if (isCumulativeMode) return cumulativeFilesQuery.data ?? review?.changes ?? [];
@@ -216,7 +251,9 @@ export function useAgentWorkspaceChangeSummary({
   }, [
     commitFilesQuery.data,
     cumulativeFilesQuery.data,
+    conflictedFiles,
     isCommitMode,
+    isConflictedMode,
     isCumulativeMode,
     isStagedMode,
     isUnstagedMode,
@@ -228,22 +265,26 @@ export function useAgentWorkspaceChangeSummary({
 
   const currentFilesError = isCommitMode
     ? commitFilesQuery.error
-    : isStagedMode
-      ? stagedFilesQuery.error
-      : isUnstagedMode
-        ? unstagedFilesQuery.error
-        : isCumulativeMode
-          ? cumulativeFilesQuery.error
-          : null;
+    : isConflictedMode
+      ? null
+      : isStagedMode
+        ? stagedFilesQuery.error
+        : isUnstagedMode
+          ? unstagedFilesQuery.error
+          : isCumulativeMode
+            ? cumulativeFilesQuery.error
+            : null;
   const isCurrentFilesLoading = isCommitMode
     ? commitFilesQuery.isLoading
-    : isStagedMode
-      ? stagedFilesQuery.isLoading
-      : isUnstagedMode
-        ? unstagedFilesQuery.isLoading
-        : isCumulativeMode
-          ? (cumulativeFilesQuery.isPending && !cumulativeFilesQuery.isError)
-          : false;
+    : isConflictedMode
+      ? false
+      : isStagedMode
+        ? stagedFilesQuery.isLoading
+        : isUnstagedMode
+          ? unstagedFilesQuery.isLoading
+          : isCumulativeMode
+            ? (cumulativeFilesQuery.isPending && !cumulativeFilesQuery.isError)
+            : false;
 
   const currentLiveBucket = useMemo<AgentWorkspaceChangeBucketSummary | null>(() => {
     if (!liveSummary || !supportsWorktreeModes) return null;
@@ -267,6 +308,7 @@ export function useAgentWorkspaceChangeSummary({
     currentFiles,
     currentFilesError,
     isCurrentFilesLoading,
+    isConflictedMode,
     isCommitMode,
     isStagedMode,
     isUnstagedMode,
@@ -275,9 +317,12 @@ export function useAgentWorkspaceChangeSummary({
     supportsWorktreeModes,
     workspaceChangeCount:
       liveSummary != null
-        ? liveSummary.staged.fileCount + liveSummary.unstaged.fileCount
+        ? liveSummary.staged.fileCount +
+          liveSummary.unstaged.fileCount +
+          (liveSummary.conflicted?.fileCount ?? 0)
         : review?.changes.length ?? 0,
     currentFileCount,
+    conflictedCount,
     stagedCount,
     unstagedCount,
     totalAdditions,

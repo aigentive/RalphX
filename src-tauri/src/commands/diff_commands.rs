@@ -1838,6 +1838,23 @@ pub async fn get_agent_conversation_workspace_repair_unstaged_file_diff_for_stat
 }
 
 #[doc(hidden)]
+pub async fn get_agent_conversation_workspace_repair_conflict_file_diff_for_state(
+    app_state: &AppState,
+    conversation_id: &ChatConversationId,
+    file_path: String,
+) -> AppResult<ConflictDiff> {
+    let (ctx, _) = get_agent_workspace_repair_context_cached(app_state, conversation_id).await?;
+    let working_path = ctx.working_path.to_string_lossy().to_string();
+    tokio::task::spawn_blocking(move || {
+        DiffService::new().get_index_conflict_diff(&file_path, &working_path)
+    })
+    .await
+    .map_err(|e| {
+        AppError::Infrastructure(format!("repair conflict file diff task failed: {e}"))
+    })?
+}
+
+#[doc(hidden)]
 pub async fn get_agent_conversation_workspace_cumulative_file_changes_for_state(
     app_state: &AppState,
     conversation_id: &ChatConversationId,
@@ -2284,6 +2301,41 @@ pub async fn get_agent_conversation_workspace_repair_unstaged_file_diff(
             elapsed_ms = started.elapsed().as_millis(),
             error = %error,
             "Failed to load repair-aware agent workspace unstaged file diff"
+        ),
+    }
+    result
+}
+
+#[tauri::command]
+pub async fn get_agent_conversation_workspace_repair_conflict_file_diff(
+    app_state: State<'_, AppState>,
+    conversation_id: String,
+    file_path: String,
+) -> AppResult<ConflictDiff> {
+    let started = Instant::now();
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    let result = get_agent_conversation_workspace_repair_conflict_file_diff_for_state(
+        app_state.inner(),
+        &conversation_id,
+        file_path,
+    )
+    .await;
+    match &result {
+        Ok(diff) => info!(
+            target: "ralphx_lib::commands::agent_workspace_diff",
+            operation = "repair_conflict_file_diff",
+            conversation_id = %conversation_id,
+            elapsed_ms = started.elapsed().as_millis(),
+            file_path = diff.file_path.as_str(),
+            "Loaded repair conflict file diff"
+        ),
+        Err(error) => warn!(
+            target: "ralphx_lib::commands::agent_workspace_diff",
+            operation = "repair_conflict_file_diff",
+            conversation_id = %conversation_id,
+            elapsed_ms = started.elapsed().as_millis(),
+            error = %error,
+            "Failed to load repair conflict file diff"
         ),
     }
     result
@@ -3717,6 +3769,28 @@ new file mode 100644
         workspace
     }
 
+    fn create_agent_workspace_merge_conflict(temp_dir: &TempDir, worktree_path: &Path) {
+        let repo = temp_dir.path().join("repo");
+
+        std::fs::write(worktree_path.join("base.txt"), "base\nours\n").unwrap();
+        run_git(worktree_path, &["add", "base.txt"]);
+        run_git(worktree_path, &["commit", "-m", "Update workspace side"]);
+
+        std::fs::write(repo.join("base.txt"), "base\ntheirs\n").unwrap();
+        run_git(&repo, &["add", "base.txt"]);
+        run_git(&repo, &["commit", "-m", "Update base side"]);
+
+        let output = Command::new("git")
+            .args(["merge", "main"])
+            .current_dir(worktree_path)
+            .output()
+            .expect("git merge should run");
+        assert!(
+            !output.status.success(),
+            "merge should leave base.txt conflicted"
+        );
+    }
+
     #[tokio::test]
     async fn repair_change_summary_allows_needs_agent_detached_rebase_state() {
         let (_tmp, state, conversation_id, worktree_path) =
@@ -3783,6 +3857,51 @@ new file mode 100644
                 .any(|line| line.content.contains("unstaged")),
             "repair unstaged diff should include disk-only content"
         );
+
+        invalidate_agent_workspace_diff_caches(&conversation_id);
+    }
+
+    #[tokio::test]
+    async fn repair_conflict_file_diff_command_reads_unmerged_index_stages() {
+        let (tmp, state, conversation_id, worktree_path) =
+            create_staged_unstaged_workspace_state().await;
+        invalidate_agent_workspace_diff_caches(&conversation_id);
+        mark_workspace_needs_agent(&state, &conversation_id).await;
+        create_agent_workspace_merge_conflict(&tmp, &worktree_path);
+
+        let summary = get_agent_conversation_workspace_repair_change_summary_for_state(
+            &state,
+            &conversation_id,
+        )
+        .await
+        .expect("repair summary should load");
+        assert_eq!(
+            summary
+                .conflicted
+                .as_ref()
+                .expect("conflict summary should be present")
+                .files,
+            vec!["base.txt".to_string()]
+        );
+
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app");
+
+        let conflict_diff = get_agent_conversation_workspace_repair_conflict_file_diff(
+            app.state(),
+            conversation_id.as_str(),
+            "base.txt".to_string(),
+        )
+        .await
+        .expect("repair conflict diff command should load");
+
+        assert_eq!(conflict_diff.file_path, "base.txt");
+        assert_eq!(conflict_diff.base_content, "base\n");
+        assert_eq!(conflict_diff.ours_content, "base\nours\n");
+        assert_eq!(conflict_diff.theirs_content, "base\ntheirs\n");
+        assert!(conflict_diff.merged_with_markers.contains("<<<<<<<"));
 
         invalidate_agent_workspace_diff_caches(&conversation_id);
     }
