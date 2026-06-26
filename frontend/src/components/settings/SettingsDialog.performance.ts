@@ -20,6 +20,7 @@ export const sectionModuleLoaders: Record<SettingsSectionId, () => Promise<unkno
   "ideation-workflow": () => import("./IdeationSettingsPanel"),
   "ideation-harnesses": () => import("./IdeationHarnessSection"),
   integrations: () => import("./AtlassianIntegrationSettingsPanel"),
+  github: () => import("./GitHubIntegrationSettingsPanel"),
   linear: () => import("./LinearIntegrationSettingsPanel"),
   clickup: () => import("./ClickUpIntegrationSettingsPanel"),
   granola: () => import("./GranolaIntegrationSettingsPanel"),

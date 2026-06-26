@@ -1602,6 +1602,12 @@ const commandHandlers: Record<
     return updated;
   },
   check_gh_auth: async () => window.__mockGhAuthStatus ?? true,
+  get_github_connection_status: async () => ({
+    ghInstalled: true,
+    authenticated: window.__mockGhAuthStatus ?? true,
+    host: "github.com",
+    account: "mock-octocat",
+  }),
   login_gh_with_browser: async () => {
     window.__mockGhAuthStatus = true;
     return true;
