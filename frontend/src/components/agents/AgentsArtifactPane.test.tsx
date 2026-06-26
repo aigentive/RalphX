@@ -4081,6 +4081,70 @@ describe("AgentsArtifactPane", () => {
     expect(publish).not.toHaveBeenCalled();
   });
 
+  it("automatically updates a clean workspace from its configured base", async () => {
+    const publish = vi.fn().mockResolvedValue(undefined);
+    getWorkspaceFreshnessMock.mockResolvedValue(
+      workspaceFreshness({
+        freshnessScope: "full",
+        baseRef: "release/1.2",
+        baseDisplayName: "release/1.2",
+        targetRef: "origin/release/1.2",
+        capturedBaseCommit: "old-release-base",
+        targetBaseCommit: "new-release-base",
+        isBaseAhead: true,
+        hasUncommittedChanges: false,
+        unpublishedCommitCount: 0,
+        remoteRefreshed: true,
+        worktreeStatusChecked: true,
+        baseStatus: "valid",
+        effectiveBaseRef: "release/1.2",
+        effectiveBaseDisplayName: "release/1.2",
+      }),
+    );
+    updateWorkspaceFromBaseMock.mockResolvedValue({
+      workspace: workspace({
+        mode: "edit",
+        baseRefKind: "local_branch",
+        baseRef: "release/1.2",
+        baseDisplayName: "release/1.2",
+        baseCommit: "new-release-base",
+      }),
+      updated: true,
+      targetRef: "origin/release/1.2",
+      baseCommit: "new-release-base",
+      baseStatus: "valid",
+      effectiveBaseDisplayName: "release/1.2",
+    });
+
+    renderPane(
+      "publish",
+      workspace({
+        mode: "edit",
+        baseRefKind: "local_branch",
+        baseRef: "release/1.2",
+        baseDisplayName: "release/1.2",
+        baseCommit: "old-release-base",
+      }),
+      publish,
+      false,
+      conversation(),
+    );
+
+    await waitFor(() =>
+      expect(updateWorkspaceFromBaseMock).toHaveBeenCalledWith("conversation-1"),
+    );
+    expect(updateWorkspaceFromBaseMock.mock.calls[0]).toHaveLength(1);
+    expect(updateWorkspaceFromBaseMock).toHaveBeenCalledTimes(1);
+    expect(toastLoadingMock).toHaveBeenCalledWith(
+      "Refreshing branch",
+      expect.objectContaining({
+        description: "Agent conversation • From release/1.2 • 0s",
+        id: "agent-workspace-operation:conversation-1:update-from-base",
+      }),
+    );
+    expect(publish).not.toHaveBeenCalled();
+  });
+
   it("cancels Update from base without starting the operation toast", async () => {
     getWorkspaceFreshnessMock.mockResolvedValue({
       conversationId: "conversation-1",
