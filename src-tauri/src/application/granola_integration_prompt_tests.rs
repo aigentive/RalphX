@@ -304,6 +304,22 @@ async fn expand_note_references_reports_not_found_and_rate_limit_as_redacted_ski
         expansion.skipped_references[0].reason,
         SkippedIntegrationReferenceReason::RateLimited
     );
+
+    *client.fetch_error.lock().await = Some(GranolaApiError::ApiError(
+        "upstream error with grn_prompt_token".to_string(),
+    ));
+    let expansion = svc
+        .expand_note_references_for_prompt(BASE_PROMPT, &[note_reference(None)])
+        .await;
+    assert_eq!(
+        expansion.skipped_references[0].reason,
+        SkippedIntegrationReferenceReason::ApiError
+    );
+    assert_eq!(
+        expansion.skipped_references[0].message,
+        "Granola API request failed"
+    );
+    assert!(!expansion.skipped_references[0].message.contains("grn_"));
 }
 
 #[tokio::test]
