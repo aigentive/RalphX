@@ -1,6 +1,9 @@
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use tokio::sync::Mutex;
+use tokio::time::{sleep, Duration, Instant};
 
 use crate::domain::integrations::{
     GranolaIntegrationSettings, GranolaIntegrationSettingsRepository, IntegrationValidationStatus,
@@ -47,6 +50,113 @@ pub enum GranolaApiError {
     NotFound,
     RateLimited,
     ApiError(String),
+}
+
+#[async_trait]
+pub(crate) trait GranolaRequestLimiter: Send + Sync {
+    async fn wait_for_request(&self);
+}
+
+pub(crate) struct GranolaRateLimiter {
+    sustained_limit: usize,
+    sustained_window: Duration,
+    burst_limit: usize,
+    burst_window: Duration,
+    state: Mutex<GranolaRateLimiterState>,
+}
+
+#[derive(Default)]
+struct GranolaRateLimiterState {
+    sustained: VecDeque<Instant>,
+    burst: VecDeque<Instant>,
+}
+
+impl GranolaRateLimiter {
+    pub(crate) fn new() -> Self {
+        Self::with_limits(5, Duration::from_secs(1), 25, Duration::from_secs(5))
+    }
+
+    fn with_limits(
+        sustained_limit: usize,
+        sustained_window: Duration,
+        burst_limit: usize,
+        burst_window: Duration,
+    ) -> Self {
+        Self {
+            sustained_limit,
+            sustained_window,
+            burst_limit,
+            burst_window,
+            state: Mutex::new(GranolaRateLimiterState::default()),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_limits_for_tests(
+        sustained_limit: usize,
+        sustained_window: Duration,
+        burst_limit: usize,
+        burst_window: Duration,
+    ) -> Self {
+        Self::with_limits(sustained_limit, sustained_window, burst_limit, burst_window)
+    }
+}
+
+impl Default for GranolaRateLimiter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl GranolaRequestLimiter for GranolaRateLimiter {
+    async fn wait_for_request(&self) {
+        loop {
+            let wait = {
+                let mut state = self.state.lock().await;
+                let now = Instant::now();
+                prune_window(&mut state.sustained, now, self.sustained_window);
+                prune_window(&mut state.burst, now, self.burst_window);
+
+                let sustained_ready_at = next_ready_at(
+                    &state.sustained,
+                    self.sustained_limit,
+                    self.sustained_window,
+                );
+                let burst_ready_at =
+                    next_ready_at(&state.burst, self.burst_limit, self.burst_window);
+                if let Some(ready_at) = [sustained_ready_at, burst_ready_at]
+                    .into_iter()
+                    .flatten()
+                    .max()
+                {
+                    ready_at.saturating_duration_since(now)
+                } else {
+                    state.sustained.push_back(now);
+                    state.burst.push_back(now);
+                    return;
+                }
+            };
+            sleep(wait).await;
+        }
+    }
+}
+
+fn prune_window(entries: &mut VecDeque<Instant>, now: Instant, window: Duration) {
+    while entries
+        .front()
+        .is_some_and(|recorded_at| *recorded_at + window <= now)
+    {
+        entries.pop_front();
+    }
+}
+
+fn next_ready_at(entries: &VecDeque<Instant>, limit: usize, window: Duration) -> Option<Instant> {
+    if limit == 0 || entries.len() < limit {
+        None
+    } else {
+        entries.front().map(|recorded_at| *recorded_at + window)
+    }
 }
 
 /// Boundary to the Granola public API.
@@ -130,6 +240,7 @@ pub struct GranolaIntegrationService {
     settings_repo: Arc<dyn GranolaIntegrationSettingsRepository>,
     secret_store: Arc<dyn SecretStore>,
     client: Arc<dyn GranolaApiClient>,
+    rate_limiter: Arc<dyn GranolaRequestLimiter>,
 }
 
 impl GranolaIntegrationService {
@@ -138,10 +249,25 @@ impl GranolaIntegrationService {
         secret_store: Arc<dyn SecretStore>,
         client: Arc<dyn GranolaApiClient>,
     ) -> Self {
+        Self::new_with_rate_limiter(
+            settings_repo,
+            secret_store,
+            client,
+            Arc::new(GranolaRateLimiter::default()),
+        )
+    }
+
+    pub(crate) fn new_with_rate_limiter(
+        settings_repo: Arc<dyn GranolaIntegrationSettingsRepository>,
+        secret_store: Arc<dyn SecretStore>,
+        client: Arc<dyn GranolaApiClient>,
+        rate_limiter: Arc<dyn GranolaRequestLimiter>,
+    ) -> Self {
         Self {
             settings_repo,
             secret_store,
             client,
+            rate_limiter,
         }
     }
 
@@ -189,7 +315,7 @@ impl GranolaIntegrationService {
     pub async fn validate_and_enable(&self) -> Result<GranolaIntegrationSettings, String> {
         let mut settings = self.get_settings().await?;
         let auth = self.auth_context(&settings).await?;
-        match self.client.validate(&auth).await {
+        match self.validate_with_rate_limit(&auth).await {
             Ok(()) => {
                 settings.enabled = true;
                 settings.validation_status = IntegrationValidationStatus::Valid;
@@ -209,10 +335,7 @@ impl GranolaIntegrationService {
             .map_err(|error| error.to_string())
     }
 
-    async fn clear_token(
-        &self,
-        settings: &mut GranolaIntegrationSettings,
-    ) -> Result<(), String> {
+    async fn clear_token(&self, settings: &mut GranolaIntegrationSettings) -> Result<(), String> {
         if let Some(secret_ref) = settings.token_secret_ref.as_ref() {
             self.secret_store
                 .delete_secret(secret_ref)
@@ -273,6 +396,23 @@ impl GranolaIntegrationService {
             .map_err(|error| error.to_string())?
             .ok_or_else(|| "Granola API token is missing from secure storage".to_string())?;
         Ok(GranolaAuthContext { api_token })
+    }
+
+    async fn validate_with_rate_limit(&self, auth: &GranolaAuthContext) -> Result<(), String> {
+        self.rate_limiter.wait_for_request().await;
+        self.client.validate(auth).await
+    }
+
+    async fn fetch_note_detail_with_rate_limit(
+        &self,
+        auth: &GranolaAuthContext,
+        note_id: &str,
+        include_transcript: bool,
+    ) -> Result<GranolaNoteDetail, GranolaApiError> {
+        self.rate_limiter.wait_for_request().await;
+        self.client
+            .fetch_note_detail(auth, note_id, include_transcript)
+            .await
     }
 }
 

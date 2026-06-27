@@ -142,6 +142,35 @@ async fn fetch_note_detail_builds_transcript_request_and_maps_response() {
 }
 
 #[tokio::test]
+async fn fetch_note_detail_preserves_nested_speaker_metadata() {
+    let fake = FakeGranolaRequester::new(vec![Ok(json!({
+        "id": "not_1234567890ABCD",
+        "title": "Weekly planning",
+        "transcript": [
+            {
+                "speaker": {
+                    "source": "person",
+                    "diarization_label": "SPEAKER_1"
+                },
+                "text": "Nested speaker line",
+                "start_ms": 1000,
+                "end_ms": 2500
+            }
+        ]
+    }))]);
+    let client: &dyn GranolaApiClient = &fake;
+
+    let note = client
+        .fetch_note_detail(&auth(), "not_1234567890ABCD", true)
+        .await
+        .expect("fetch note detail");
+
+    let transcript = note.transcript.expect("transcript");
+    assert_eq!(transcript[0].speaker.as_deref(), Some("SPEAKER_1 (person)"));
+    assert_eq!(transcript[0].text, "Nested speaker line");
+}
+
+#[tokio::test]
 async fn fetch_note_detail_maps_not_found_rate_limit_and_invalid_id_without_token_leaks() {
     let not_found = FakeGranolaRequester::new(vec![Err(GranolaRequestError::HttpStatus(404))]);
     let client: &dyn GranolaApiClient = &not_found;

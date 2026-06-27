@@ -161,8 +161,7 @@ impl GranolaIntegrationService {
             }
             let include_transcript = reference.include_transcript.unwrap_or(false);
             match self
-                .client
-                .fetch_note_detail(&auth, &reference.id, include_transcript)
+                .fetch_note_detail_with_rate_limit(&auth, &reference.id, include_transcript)
                 .await
             {
                 Ok(note) => {

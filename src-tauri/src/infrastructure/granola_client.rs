@@ -230,10 +230,7 @@ fn transcript_from_value(value: &Value) -> Option<Vec<GranolaTranscriptEntry>> {
             .filter_map(|entry| {
                 let text = string_field(entry, &["text", "content"])?;
                 Some(GranolaTranscriptEntry {
-                    speaker: string_field(
-                        entry,
-                        &["speaker", "speaker_name", "source", "diarization_label"],
-                    ),
+                    speaker: transcript_speaker_from_value(entry),
                     text,
                     start_ms: u64_field(entry, &["start_ms", "startMs", "start_time_ms"]),
                     end_ms: u64_field(entry, &["end_ms", "endMs", "end_time_ms"]),
@@ -241,6 +238,27 @@ fn transcript_from_value(value: &Value) -> Option<Vec<GranolaTranscriptEntry>> {
             })
             .collect(),
     )
+}
+
+fn transcript_speaker_from_value(entry: &Value) -> Option<String> {
+    string_field(entry, &["speaker", "speaker_name"])
+        .or_else(|| speaker_metadata_from_value(entry))
+        .or_else(|| entry.get("speaker").and_then(speaker_metadata_from_value))
+}
+
+fn speaker_metadata_from_value(value: &Value) -> Option<String> {
+    let label = string_field(
+        value,
+        &["diarization_label", "diarizationLabel", "label", "name"],
+    );
+    let source = string_field(value, &["source"]);
+    match (label, source) {
+        (Some(label), Some(source)) if label == source => Some(label),
+        (Some(label), Some(source)) => Some(format!("{label} ({source})")),
+        (Some(label), None) => Some(label),
+        (None, Some(source)) => Some(source),
+        (None, None) => None,
+    }
 }
 
 fn u64_field(value: &Value, names: &[&str]) -> Option<u64> {
