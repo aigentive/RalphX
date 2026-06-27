@@ -340,9 +340,14 @@ describe("IntegratedChatPanel", () => {
 
     it("observes the input container so composer chrome height changes can update transcript layout", async () => {
       const observedTargets: Element[] = [];
+      const resizeCallbacks: ResizeObserverCallback[] = [];
       const originalResizeObserver = globalThis.ResizeObserver;
 
       class MockResizeObserver implements ResizeObserver {
+        constructor(callback: ResizeObserverCallback) {
+          resizeCallbacks.push(callback);
+        }
+
         disconnect = vi.fn();
         observe = vi.fn((target: Element) => {
           observedTargets.push(target);
@@ -370,6 +375,14 @@ describe("IntegratedChatPanel", () => {
 
         const inputContainer = screen.getByTestId("chat-input-container");
         await waitFor(() => expect(observedTargets).toContain(inputContainer));
+        expect(resizeCallbacks).toHaveLength(1);
+
+        act(() => {
+          resizeCallbacks[0]?.(
+            [{ contentRect: { height: 0 } as DOMRectReadOnly } as ResizeObserverEntry],
+            {} as ResizeObserver,
+          );
+        });
       } finally {
         if (originalResizeObserver === undefined) {
           Reflect.deleteProperty(globalThis, "ResizeObserver");
@@ -864,24 +877,31 @@ describe("IntegratedChatPanel", () => {
       expect(screen.getByTestId("chat-input")).toBeInTheDocument();
     });
 
-    it("renders a custom composer when provided", () => {
+    it("renders a custom composer when provided", async () => {
       mockChatPanelContext.activeConversationId = "conv-1";
+      const renderComposer = vi.fn(({ enableAttachments, onLayoutChange }) => (
+        <button type="button" data-testid="custom-composer" onClick={onLayoutChange}>
+          {enableAttachments ? "attachments-enabled" : "attachments-disabled"}
+          {typeof onLayoutChange === "function" ? "-layout-callback" : ""}
+        </button>
+      ));
 
       render(
         <TestWrapper>
           <IntegratedChatPanel
             projectId="project-1"
-            renderComposer={({ enableAttachments }) => (
-              <div data-testid="custom-composer">
-                {enableAttachments ? "attachments-enabled" : "attachments-disabled"}
-              </div>
-            )}
+            renderComposer={renderComposer}
           />
         </TestWrapper>
       );
 
-      expect(screen.getByTestId("custom-composer")).toHaveTextContent("attachments-enabled");
+      expect(screen.getByTestId("custom-composer")).toHaveTextContent("attachments-enabled-layout-callback");
       expect(screen.queryByTestId("chat-input")).not.toBeInTheDocument();
+
+      const renderCount = renderComposer.mock.calls.length;
+      fireEvent.click(screen.getByTestId("custom-composer"));
+
+      await waitFor(() => expect(renderComposer).toHaveBeenCalledTimes(renderCount + 1));
     });
 
     it("mounts the scrollable transcript instead of blocking on placeholder hydration", async () => {

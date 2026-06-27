@@ -2039,6 +2039,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                         markComposerActivity();
                       }
                     }}
+                    onLayoutChange={composerProps.onLayoutChange}
                     sendDisabledReason={
                       !isFocusedChildChat ? workspaceProviderStatusMessage : null
                     }
