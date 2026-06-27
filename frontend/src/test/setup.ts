@@ -38,12 +38,23 @@ Object.defineProperty(window, "matchMedia", {
 });
 
 // Node 25 ships an experimental global `localStorage`/`sessionStorage` that can
-// shadow jsdom's Storage and lacks its methods, crashing any test that touches
-// storage (e.g. `window.localStorage.clear()`). Install a standard in-memory
-// Storage only when the environment's implementation is missing/unusable, so
-// CI (Node 20 + jsdom) is unaffected while local Node 25 runs stay green.
+// shadow jsdom's Storage and emits warnings when its getter is touched without a
+// configured storage file. Inspect only data descriptors before installing a
+// standard in-memory Storage so local Node 25 runs stay warning-free.
+function readStorageDataProperty(
+  target: object,
+  prop: "localStorage" | "sessionStorage",
+): Storage | undefined {
+  const descriptor = Object.getOwnPropertyDescriptor(target, prop);
+  if (!descriptor || !("value" in descriptor)) {
+    return undefined;
+  }
+  return descriptor.value as Storage | undefined;
+}
+
 function installMemoryStorage(prop: "localStorage" | "sessionStorage") {
-  const existing = (window as unknown as Record<string, Storage | undefined>)[prop];
+  const existing =
+    readStorageDataProperty(window, prop) ?? readStorageDataProperty(globalThis, prop);
   if (existing && typeof existing.clear === "function") {
     return;
   }
