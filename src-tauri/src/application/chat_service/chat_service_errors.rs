@@ -323,7 +323,7 @@ impl std::fmt::Display for StreamError {
                         exit_code
                     )
                 } else {
-                    write!(f, "Agent failed: {}", stderr.trim())
+                    write!(f, "Agent failed: {}", summarize_agent_exit_stderr(stderr))
                 }
             }
             Self::SessionNotFound { session_id } => {
@@ -609,6 +609,125 @@ pub fn classify_codex_stream_failure(
     }
 }
 
+#[doc(hidden)]
+pub fn summarize_agent_exit_stderr(stderr: &str) -> String {
+    let trimmed = stderr.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    let lines = normalized_error_lines(trimmed);
+    if trimmed.len() <= 500 && lines.len() <= 8 {
+        return trimmed.to_string();
+    }
+
+    let mut ranked = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| {
+            let score = agent_exit_line_score(line);
+            (score > 0).then_some((index, score))
+        })
+        .collect::<Vec<_>>();
+
+    if ranked.is_empty() {
+        return truncate_agent_error(trimmed);
+    }
+
+    ranked.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| right.0.cmp(&left.0)));
+
+    let mut selected = ranked
+        .into_iter()
+        .take(6)
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    selected.sort_unstable();
+
+    let summary = selected
+        .into_iter()
+        .map(|index| lines[index].as_str())
+        .collect::<Vec<_>>()
+        .join("; ");
+
+    truncate_agent_error(&summary)
+}
+
+fn normalized_error_lines(stderr: &str) -> Vec<String> {
+    stderr
+        .split(['\n', '\r'])
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .filter(|line| !is_agent_progress_noise(line))
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn is_agent_progress_noise(line: &str) -> bool {
+    let lower = line.to_lowercase();
+    lower.starts_with("compiling ")
+        || lower.starts_with("building [")
+        || lower.starts_with("finished `")
+        || lower.starts_with("running ")
+        || lower.starts_with("pass [")
+        || lower.starts_with("start at ")
+        || lower.starts_with("duration ")
+        || lower.starts_with("run  v")
+        || lower.starts_with("note: run with `rust_backtrace")
+}
+
+fn agent_exit_line_score(line: &str) -> i32 {
+    let lower = line.to_lowercase();
+
+    if lower.contains("no space left on device") {
+        return 120;
+    }
+    if lower.contains("permission denied")
+        || lower.contains("invalid ignored mode")
+        || lower.contains("no such file or directory")
+    {
+        return 110;
+    }
+    if lower.starts_with("caused by:") || lower.contains("failed to write") {
+        return 100;
+    }
+    if lower.contains("test files") && lower.contains("failed") {
+        return 95;
+    }
+    if lower.contains("tests") && lower.contains("failed") {
+        return 90;
+    }
+    if lower.starts_with("fail ")
+        || lower.starts_with("failures:")
+        || lower.contains("test result: failed")
+    {
+        return 85;
+    }
+    if lower.contains("assertion `left == right` failed") || lower.contains("panicked at") {
+        return 80;
+    }
+    if lower.starts_with("error:")
+        || lower.starts_with("fatal:")
+        || lower.contains("assertionerror")
+        || lower.contains("failed:")
+    {
+        return 70;
+    }
+    if lower.contains("received:") || lower.contains("expected") {
+        return 40;
+    }
+
+    0
+}
+
+fn truncate_agent_error(message: &str) -> String {
+    const MAX_AGENT_ERROR_BYTES: usize = 1_200;
+    if message.len() > MAX_AGENT_ERROR_BYTES {
+        format!("{}...", truncate_str(message, MAX_AGENT_ERROR_BYTES))
+    } else {
+        message.to_string()
+    }
+}
+
 /// Return true when stderr indicates the agent terminated because the user
 /// cancelled an MCP tool call rather than because the assistant produced a
 /// user-visible failure that should be serialized into the transcript.
@@ -800,6 +919,29 @@ mod tests {
             matches!(result, StreamError::AgentExit { .. }),
             "local MCP failures must not become provider backpressure"
         );
+    }
+
+    #[test]
+    fn agent_exit_summary_prefers_terminal_cause_over_progress() {
+        let stderr = "\
+   Compiling proc-macro2 v1.0.106
+    Building [                           ] 0/108: proc-macro2(build.rs)
+   Compiling unicode-ident v1.0.22
+error: failed to write `/tmp/target/debug/.fingerprint/test-lib`
+
+Caused by:
+  No space left on device (os error 28)
+";
+
+        let err = StreamError::AgentExit {
+            exit_code: Some(1),
+            stderr: stderr.to_string(),
+        }
+        .to_string();
+
+        assert!(err.contains("No space left on device"));
+        assert!(err.contains("failed to write"));
+        assert!(!err.contains("Compiling proc-macro2"));
     }
 
     #[test]
