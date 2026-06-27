@@ -6,7 +6,7 @@ use tokio::sync::{Mutex, RwLock};
 
 use crate::application::granola_integration_service::{
     GranolaApiClient, GranolaApiError, GranolaAuthContext, GranolaIntegrationService,
-    GranolaNoteDetail, GranolaTranscriptEntry,
+    GranolaNoteDetail, GranolaRequestLimiter, GranolaTranscriptEntry,
 };
 use crate::application::integration_reference_expansion::SkippedIntegrationReferenceReason;
 use crate::domain::services::{ComposerIntegrationReference, SecretStore, SecretStoreError};
@@ -51,6 +51,28 @@ struct TestGranolaClient {
 impl TestGranolaClient {
     async fn fetches(&self) -> Vec<(String, bool)> {
         self.fetches.lock().await.clone()
+    }
+}
+
+#[derive(Default)]
+struct CountingRateLimiter {
+    waits: Mutex<usize>,
+}
+
+impl CountingRateLimiter {
+    async fn clear(&self) {
+        *self.waits.lock().await = 0;
+    }
+
+    async fn wait_count(&self) -> usize {
+        *self.waits.lock().await
+    }
+}
+
+#[async_trait]
+impl GranolaRequestLimiter for CountingRateLimiter {
+    async fn wait_for_request(&self) {
+        *self.waits.lock().await += 1;
     }
 }
 
@@ -105,6 +127,19 @@ fn service(
         Arc::new(MemoryGranolaIntegrationSettingsRepository::new()),
         secret_store,
         client,
+    )
+}
+
+fn service_with_rate_limiter(
+    secret_store: Arc<dyn SecretStore>,
+    client: Arc<dyn GranolaApiClient>,
+    rate_limiter: Arc<dyn GranolaRequestLimiter>,
+) -> GranolaIntegrationService {
+    GranolaIntegrationService::new_with_rate_limiter(
+        Arc::new(MemoryGranolaIntegrationSettingsRepository::new()),
+        secret_store,
+        client,
+        rate_limiter,
     )
 }
 
@@ -190,6 +225,37 @@ async fn expand_note_references_includes_transcript_only_when_requested() {
         client.fetches().await,
         vec![("not_1234567890ABCD".to_string(), true)]
     );
+}
+
+#[tokio::test]
+async fn expand_note_references_waits_for_rate_limit_before_each_fetch() {
+    let client = Arc::new(TestGranolaClient::default());
+    let limiter = Arc::new(CountingRateLimiter::default());
+    let svc = service_with_rate_limiter(
+        Arc::new(RecordingSecretStore::default()),
+        client.clone(),
+        limiter.clone(),
+    );
+    svc.save_settings(Some("grn_prompt_token".to_string()))
+        .await
+        .expect("save Granola token");
+    svc.validate_and_enable()
+        .await
+        .expect("validate Granola settings");
+    limiter.clear().await;
+
+    let references = vec![
+        note_reference_with_id("not_00000000000001".to_string()),
+        note_reference_with_id("not_00000000000002".to_string()),
+        note_reference_with_id("not_00000000000003".to_string()),
+    ];
+    let expansion = svc
+        .expand_note_references_for_prompt(BASE_PROMPT, &references)
+        .await;
+
+    assert!(expansion.skipped_references.is_empty());
+    assert_eq!(client.fetches().await.len(), 3);
+    assert_eq!(limiter.wait_count().await, 3);
 }
 
 #[tokio::test]

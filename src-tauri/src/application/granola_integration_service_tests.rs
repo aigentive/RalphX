@@ -6,7 +6,7 @@ use tokio::sync::{Mutex, RwLock};
 
 use crate::application::granola_integration_service::{
     EmptyGranolaApiClient, GranolaApiClient, GranolaAuthContext, GranolaIntegrationService,
-    UnavailableGranolaApiClient,
+    GranolaRateLimiter, GranolaRequestLimiter, UnavailableGranolaApiClient,
 };
 use crate::domain::integrations::IntegrationValidationStatus;
 use crate::domain::services::{SecretStore, SecretStoreError};
@@ -119,6 +119,24 @@ impl GranolaApiClient for TestGranolaClient {
     }
 }
 
+#[derive(Default)]
+struct CountingRateLimiter {
+    waits: Mutex<usize>,
+}
+
+impl CountingRateLimiter {
+    async fn wait_count(&self) -> usize {
+        *self.waits.lock().await
+    }
+}
+
+#[async_trait]
+impl GranolaRequestLimiter for CountingRateLimiter {
+    async fn wait_for_request(&self) {
+        *self.waits.lock().await += 1;
+    }
+}
+
 fn service(
     secret_store: Arc<dyn SecretStore>,
     client: Arc<dyn GranolaApiClient>,
@@ -127,6 +145,19 @@ fn service(
         Arc::new(MemoryGranolaIntegrationSettingsRepository::new()),
         secret_store,
         client,
+    )
+}
+
+fn service_with_rate_limiter(
+    secret_store: Arc<dyn SecretStore>,
+    client: Arc<dyn GranolaApiClient>,
+    rate_limiter: Arc<dyn GranolaRequestLimiter>,
+) -> GranolaIntegrationService {
+    GranolaIntegrationService::new_with_rate_limiter(
+        Arc::new(MemoryGranolaIntegrationSettingsRepository::new()),
+        secret_store,
+        client,
+        rate_limiter,
     )
 }
 
@@ -161,7 +192,10 @@ async fn save_settings_stores_token_under_fixed_ref_and_returns_pending() {
         !saved.enabled,
         "saving a token returns a pending, not-enabled state"
     );
-    assert_eq!(saved.validation_status, IntegrationValidationStatus::Pending);
+    assert_eq!(
+        saved.validation_status,
+        IntegrationValidationStatus::Pending
+    );
     assert_eq!(saved.token_secret_ref.as_deref(), Some(TOKEN_REF));
     assert!(saved.last_validated_at.is_none());
     assert!(saved.last_error.is_none());
@@ -212,7 +246,10 @@ async fn save_settings_blank_token_deletes_secret_and_resets_to_not_configured()
     );
     assert!(cleared.last_error.is_none());
     assert!(cleared.last_validated_at.is_none());
-    assert!(secrets.deleted_keys().await.contains(&TOKEN_REF.to_string()));
+    assert!(secrets
+        .deleted_keys()
+        .await
+        .contains(&TOKEN_REF.to_string()));
     assert_eq!(secrets.stored_count().await, 0);
 }
 
@@ -235,6 +272,22 @@ async fn validate_and_enable_feeds_keychain_token_to_client_and_enables() {
     assert!(validated.last_error.is_none());
     assert!(validated.last_validated_at.is_some());
     // The client received the raw token resolved from the keychain by ref.
+    assert_eq!(client.seen_tokens().await, vec!["grn_secret".to_string()]);
+}
+
+#[tokio::test]
+async fn validate_and_enable_waits_for_rate_limit_before_client_request() {
+    let secrets = Arc::new(RecordingSecretStore::default());
+    let client = Arc::new(TestGranolaClient::default());
+    let limiter = Arc::new(CountingRateLimiter::default());
+    let svc = service_with_rate_limiter(secrets, client.clone(), limiter.clone());
+    svc.save_settings(Some("grn_secret".to_string()))
+        .await
+        .unwrap();
+
+    svc.validate_and_enable().await.unwrap();
+
+    assert_eq!(limiter.wait_count().await, 1);
     assert_eq!(client.seen_tokens().await, vec!["grn_secret".to_string()]);
 }
 
@@ -346,5 +399,42 @@ async fn save_settings_errors_when_secure_storage_read_back_mismatches() {
         "unexpected error: {error}"
     );
     // The just-written ref is cleaned up to avoid a dangling secret.
-    assert!(secrets.deleted_keys().await.contains(&TOKEN_REF.to_string()));
+    assert!(secrets
+        .deleted_keys()
+        .await
+        .contains(&TOKEN_REF.to_string()));
+}
+
+#[tokio::test(start_paused = true)]
+async fn granola_rate_limiter_enforces_sustained_window_without_real_sleep() {
+    let limiter = Arc::new(GranolaRateLimiter::with_limits_for_tests(
+        2,
+        tokio::time::Duration::from_secs(1),
+        10,
+        tokio::time::Duration::from_secs(5),
+    ));
+    limiter.wait_for_request().await;
+    limiter.wait_for_request().await;
+
+    let third_wait = tokio::spawn({
+        let limiter = Arc::clone(&limiter);
+        async move {
+            limiter.wait_for_request().await;
+        }
+    });
+    tokio::task::yield_now().await;
+    assert!(
+        !third_wait.is_finished(),
+        "third request should wait for the sustained window"
+    );
+
+    tokio::time::advance(tokio::time::Duration::from_millis(999)).await;
+    tokio::task::yield_now().await;
+    assert!(
+        !third_wait.is_finished(),
+        "request should remain throttled until the full window elapses"
+    );
+
+    tokio::time::advance(tokio::time::Duration::from_millis(1)).await;
+    third_wait.await.expect("rate-limited request completes");
 }
