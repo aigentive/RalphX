@@ -261,6 +261,8 @@ mod clickup_integration_service_tests;
 #[cfg(test)]
 mod granola_integration_service_tests;
 #[cfg(test)]
+mod granola_integration_prompt_edge_tests;
+#[cfg(test)]
 mod granola_integration_prompt_tests;
 #[cfg(test)]
 mod integration_reference_expansion_tests;
