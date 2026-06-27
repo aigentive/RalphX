@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Loader2, Search, ScrollText } from "lucide-react";
+import { Check, Copy, Loader2, Search, ScrollText } from "lucide-react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 import { atlassianApi } from "@/api/atlassian";
 import {
@@ -49,6 +51,8 @@ import { useChatStore } from "@/stores/chatStore";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
 import { useUiStore } from "@/stores/uiStore";
 import { formatRelativeTime } from "@/lib/formatters";
+import { markdownComponents } from "@/components/Chat/MessageItem.markdown";
+import { invalidateAgentConversationGranolaNote } from "@/components/agents/agentGranolaNoteQueries";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -383,15 +387,224 @@ function TicketingStatusStrip({ notices }: { notices: TicketingStatusNotice[] })
   );
 }
 
+function granolaNoteTimestamp(note: GranolaNoteSummary | GranolaNoteDetail): string | null {
+  if ("updatedAt" in note && note.updatedAt) {
+    return note.updatedAt;
+  }
+  if ("createdAt" in note && note.createdAt) {
+    return note.createdAt;
+  }
+  return null;
+}
+
+function parseGranolaDate(value: string | null | undefined): Date | null {
+  if (!value) {
+    return null;
+  }
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function formatGranolaNoteDate(value: string | null | undefined): string | null {
+  const date = parseGranolaDate(value);
+  if (!date) {
+    return null;
+  }
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    ...(date.getFullYear() === new Date().getFullYear() ? {} : { year: "numeric" }),
+  }).format(date);
+}
+
+function formatGranolaNoteTime(value: string | null | undefined): string | null {
+  const date = parseGranolaDate(value);
+  if (!date) {
+    return null;
+  }
+  return new Intl.DateTimeFormat(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(date);
+}
+
+function GranolaMarkdownBlock({ markdown }: { markdown: string }) {
+  return (
+    <div className="prose prose-sm max-w-none text-sm leading-6 dark:prose-invert">
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+        {markdown}
+      </ReactMarkdown>
+    </div>
+  );
+}
+
+function granolaTranscriptText(note: GranolaNoteDetail | GranolaNoteSummary | null): string {
+  if (!note || !("transcript" in note)) {
+    return "";
+  }
+  return note.transcript
+    .map((entry) => {
+      const text = entry.text.trim();
+      if (!text) {
+        return "";
+      }
+      const speaker = entry.speaker?.trim();
+      return speaker ? `${speaker}: ${text}` : text;
+    })
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+interface GranolaContextDialogProps {
+  open: boolean;
+  note: GranolaNoteDetail | GranolaNoteSummary | null;
+  projects: Project[];
+  selectedProjectId: string;
+  conversations: { id: string; title: string | null }[];
+  selectedConversationId: string;
+  isConversationsLoading: boolean;
+  isBindPending: boolean;
+  bindError: string | null;
+  onProjectChange: (projectId: string) => void;
+  onConversationChange: (conversationId: string) => void;
+  onStartNew: () => void;
+  onBindExisting: () => void;
+  onClose: () => void;
+}
+
+function GranolaContextDialog({
+  open,
+  note,
+  projects,
+  selectedProjectId,
+  conversations,
+  selectedConversationId,
+  isConversationsLoading,
+  isBindPending,
+  bindError,
+  onProjectChange,
+  onConversationChange,
+  onStartNew,
+  onBindExisting,
+  onClose,
+}: GranolaContextDialogProps) {
+  return (
+    <Dialog open={open} onOpenChange={(nextOpen) => !nextOpen && onClose()}>
+      <DialogContent className="sm:max-w-[520px]">
+        <DialogHeader className="block space-y-1.5 px-6 py-5 pr-14">
+          <DialogTitle className="text-lg leading-6">Add Granola Context</DialogTitle>
+          <DialogDescription className="max-w-[34rem] leading-5">
+            {note?.title ?? note?.id ?? "Granola note"}
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="grid gap-5 px-6 py-5">
+          <label className="grid gap-1.5 text-sm">
+            <span className="font-medium text-[var(--text-primary)]">Project</span>
+            <TicketSearchableSelect
+              ariaLabel="Project"
+              size="md"
+              value={selectedProjectId}
+              onValueChange={onProjectChange}
+              placeholder={projects.length === 0 ? "No projects" : "Select project"}
+              searchPlaceholder="Search projects..."
+              emptyLabel="No projects found"
+              options={projects.map((project) => ({
+                value: project.id,
+                label: project.name,
+                description: project.workingDirectory ?? undefined,
+              }))}
+            />
+          </label>
+
+          <div className="grid gap-2">
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-[var(--text-primary)]">
+                  New conversation
+                </p>
+                <p className="truncate text-xs text-[var(--text-muted)]">
+                  {note?.title ?? note?.id ?? "Granola note"}
+                </p>
+              </div>
+              <Button
+                type="button"
+                onClick={onStartNew}
+                disabled={!note || !selectedProjectId || projects.length === 0}
+              >
+                Open composer
+              </Button>
+            </div>
+          </div>
+
+          <div className="grid gap-2">
+            <label className="grid gap-1.5 text-sm">
+              <span className="font-medium text-[var(--text-primary)]">
+                Existing conversation
+              </span>
+              <TicketSearchableSelect
+                ariaLabel="Existing conversation"
+                size="md"
+                value={selectedConversationId}
+                onValueChange={onConversationChange}
+                placeholder={
+                  isConversationsLoading
+                    ? "Loading conversations"
+                    : conversations.length === 0
+                      ? "No conversations"
+                      : "Select conversation"
+                }
+                searchPlaceholder="Search conversations..."
+                emptyLabel="No conversations found"
+                disabled={isConversationsLoading || conversations.length === 0}
+                options={conversations.map((conversation) => ({
+                  value: conversation.id,
+                  label: conversation.title ?? "Untitled conversation",
+                }))}
+              />
+            </label>
+            {bindError ? (
+              <p className="text-xs text-[var(--status-error)]">{bindError}</p>
+            ) : null}
+            <div className="flex justify-end">
+              <Button
+                type="button"
+                variant="outline"
+                disabled={!note || !selectedConversationId || isBindPending}
+                onClick={onBindExisting}
+              >
+                {isBindPending ? "Binding..." : "Bind existing conversation"}
+              </Button>
+            </div>
+          </div>
+        </div>
+
+        <DialogFooter className="px-6 py-4">
+          <Button type="button" variant="ghost" onClick={onClose}>
+            Close
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function TicketingGranolaNotesView({
   projectId,
+  projects,
   onStartConversation,
 }: {
   projectId: string;
-  onStartConversation: (note: GranolaNoteDetail | GranolaNoteSummary) => void;
+  projects: Project[];
+  onStartConversation: (note: GranolaNoteDetail | GranolaNoteSummary, projectId: string) => void;
 }) {
   const [query, setQuery] = useState("");
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
+  const [copiedAction, setCopiedAction] = useState<"summary" | "transcript" | null>(null);
+  const [contextDialogOpen, setContextDialogOpen] = useState(false);
+  const [contextProjectId, setContextProjectId] = useState(projectId);
+  const [selectedConversationId, setSelectedConversationId] = useState("");
+  const queryClient = useQueryClient();
   const settingsQuery = useQuery({
     queryKey: ["ticketing", "granola", "settings"] as const,
     queryFn: () => granolaApi.getSettings(),
@@ -433,6 +646,79 @@ function TicketingGranolaNotesView({
     staleTime: 20_000,
   });
   const selectedNote = detailQuery.data ?? selectedSummary;
+  const transcriptText = granolaTranscriptText(selectedNote);
+  const conversationsQuery = useConversations({
+    view: "ticketing",
+    projectId: contextProjectId || projectId,
+  });
+  const bindableConversations = useMemo(
+    () =>
+      (conversationsQuery.data ?? []).map((conversation) => ({
+        id: conversation.id,
+        title: conversation.title,
+      })),
+    [conversationsQuery.data],
+  );
+  const bindGranolaConversation = useMutation({
+    mutationFn: async () => {
+      if (!selectedNote || !selectedConversationId) {
+        throw new Error("Select a Granola note and conversation.");
+      }
+      return granolaApi.assignAgentConversationGranolaNote({
+        conversationId: selectedConversationId,
+        projectId: contextProjectId,
+        noteId: selectedNote.id,
+        title: selectedNote.title ?? null,
+        noteUrl: selectedNote.url ?? null,
+        summary: selectedNote.summary ?? null,
+        includeTranscript: true,
+        refresh: true,
+      });
+    },
+    onSuccess: () => {
+      void invalidateAgentConversationGranolaNote(queryClient, selectedConversationId);
+      setContextDialogOpen(false);
+      setSelectedConversationId("");
+    },
+  });
+  const bindError =
+    bindGranolaConversation.error instanceof Error
+      ? bindGranolaConversation.error.message
+      : bindGranolaConversation.error
+        ? "Conversation could not be bound."
+        : null;
+
+  useEffect(() => {
+    if (!contextDialogOpen) {
+      return;
+    }
+    setContextProjectId(projectId);
+    setSelectedConversationId("");
+  }, [contextDialogOpen, projectId]);
+
+  async function copyGranolaText(kind: "summary" | "transcript", text: string) {
+    const trimmed = text.trim();
+    if (!trimmed) {
+      return;
+    }
+    try {
+      await navigator.clipboard?.writeText(trimmed);
+      setCopiedAction(kind);
+      window.setTimeout(() => {
+        setCopiedAction((current) => (current === kind ? null : current));
+      }, 1600);
+    } catch {
+      setCopiedAction(null);
+    }
+  }
+
+  function handleStartContext() {
+    if (!selectedNote || !contextProjectId) {
+      return;
+    }
+    onStartConversation(selectedNote, contextProjectId);
+    setContextDialogOpen(false);
+  }
 
   if (settingsQuery.isLoading) {
     return (
@@ -503,6 +789,9 @@ function TicketingGranolaNotesView({
             <div className="space-y-1">
               {filteredNotes.map((note) => {
                 const selected = note.id === selectedNoteId;
+                const timestamp = granolaNoteTimestamp(note);
+                const dateLabel = formatGranolaNoteDate(timestamp);
+                const timeLabel = formatGranolaNoteTime(timestamp);
                 return (
                   <button
                     key={note.id}
@@ -514,8 +803,22 @@ function TicketingGranolaNotesView({
                     }}
                     onClick={() => setSelectedNoteId(note.id)}
                   >
-                    <span className="block truncate text-sm font-medium">
-                      {note.title ?? note.id}
+                    <span className="flex min-w-0 items-start gap-3">
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-sm font-medium">
+                          {note.title ?? note.id}
+                        </span>
+                        {dateLabel ? (
+                          <span className="mt-1 block text-xs text-[var(--text-muted)]">
+                            {dateLabel}
+                          </span>
+                        ) : null}
+                      </span>
+                      {timeLabel ? (
+                        <span className="shrink-0 pt-0.5 text-xs text-[var(--text-muted)]">
+                          {timeLabel}
+                        </span>
+                      ) : null}
                     </span>
                     {note.summary ? (
                       <span className="mt-1 block line-clamp-2 text-xs text-[var(--text-muted)]">
@@ -546,10 +849,54 @@ function TicketingGranolaNotesView({
                 <h2 className="mt-1 text-xl font-semibold text-[var(--text-primary)]">
                   {selectedNote.title ?? selectedNote.id}
                 </h2>
+                {granolaNoteTimestamp(selectedNote) ? (
+                  <p className="mt-1 text-xs text-[var(--text-muted)]">
+                    {[
+                      formatGranolaNoteDate(granolaNoteTimestamp(selectedNote)),
+                      formatGranolaNoteTime(granolaNoteTimestamp(selectedNote)),
+                    ]
+                      .filter(Boolean)
+                      .join(" at ")}
+                  </p>
+                ) : null}
               </div>
-              <Button type="button" size="sm" onClick={() => onStartConversation(selectedNote)}>
-                Start conversation
-              </Button>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => setContextDialogOpen(true)}
+                >
+                  Add as context
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={!selectedNote.summary?.trim()}
+                  onClick={() => void copyGranolaText("summary", selectedNote.summary ?? "")}
+                >
+                  {copiedAction === "summary" ? (
+                    <Check className="mr-2 h-3.5 w-3.5" aria-hidden="true" />
+                  ) : (
+                    <Copy className="mr-2 h-3.5 w-3.5" aria-hidden="true" />
+                  )}
+                  {copiedAction === "summary" ? "Copied" : "Copy summary"}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={!transcriptText}
+                  onClick={() => void copyGranolaText("transcript", transcriptText)}
+                >
+                  {copiedAction === "transcript" ? (
+                    <Check className="mr-2 h-3.5 w-3.5" aria-hidden="true" />
+                  ) : (
+                    <Copy className="mr-2 h-3.5 w-3.5" aria-hidden="true" />
+                  )}
+                  {copiedAction === "transcript" ? "Copied" : "Copy full transcript"}
+                </Button>
+              </div>
             </div>
 
             {detailQuery.isFetching ? (
@@ -561,7 +908,7 @@ function TicketingGranolaNotesView({
 
             {selectedNote.summary ? (
               <div
-                className="rounded-md border p-4 text-sm leading-6"
+                className="rounded-md border p-4"
                 style={{
                   backgroundColor: "var(--bg-surface)",
                   borderColor: "var(--border-subtle)",
@@ -569,7 +916,7 @@ function TicketingGranolaNotesView({
                   borderWidth: 1,
                 }}
               >
-                {selectedNote.summary}
+                <GranolaMarkdownBlock markdown={selectedNote.summary} />
               </div>
             ) : null}
 
@@ -602,6 +949,25 @@ function TicketingGranolaNotesView({
           </div>
         )}
       </section>
+      <GranolaContextDialog
+        open={contextDialogOpen}
+        note={selectedNote}
+        projects={projects}
+        selectedProjectId={contextProjectId}
+        conversations={bindableConversations}
+        selectedConversationId={selectedConversationId}
+        isConversationsLoading={conversationsQuery.isLoading}
+        isBindPending={bindGranolaConversation.isPending}
+        bindError={bindError}
+        onProjectChange={(nextProjectId) => {
+          setContextProjectId(nextProjectId);
+          setSelectedConversationId("");
+        }}
+        onConversationChange={setSelectedConversationId}
+        onStartNew={handleStartContext}
+        onBindExisting={() => bindGranolaConversation.mutate()}
+        onClose={() => setContextDialogOpen(false)}
+      />
     </div>
   );
 }
@@ -1120,16 +1486,19 @@ export function TicketingDashboardView({
     setCurrentView("agents");
   }
 
-  function handleStartWorkFromGranolaNote(note: GranolaNoteDetail | GranolaNoteSummary) {
+  function handleStartWorkFromGranolaNote(
+    note: GranolaNoteDetail | GranolaNoteSummary,
+    targetProjectId: string,
+  ) {
     setStartConversationDraft({
-      projectId,
+      projectId: targetProjectId,
       content: "",
       mode: "edit",
       composerIntegrationReferences: [granolaComposerReference(note)],
     });
-    setFocusedAgentProject(projectId);
+    setFocusedAgentProject(targetProjectId);
     clearAgentSelection();
-    setActiveConversation(`project:${projectId}`, null);
+    setActiveConversation(`project:${targetProjectId}`, null);
     setCurrentView("agents");
   }
 
@@ -1139,6 +1508,7 @@ export function TicketingDashboardView({
     content = (
       <TicketingGranolaNotesView
         projectId={projectId}
+        projects={projectsQuery.data ?? []}
         onStartConversation={handleStartWorkFromGranolaNote}
       />
     );
