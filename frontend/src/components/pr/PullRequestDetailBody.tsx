@@ -81,7 +81,7 @@ export function PullRequestDetailBody({
         <div className="flex min-w-0 items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
-              <PrStatusBadge status={status} />
+              {status ? <PrStatusBadge status={status} /> : null}
               {meta.map((item) => (
                 <span key={item} className="text-xs text-[var(--text-muted)]">
                   {item}

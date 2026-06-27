@@ -24,7 +24,7 @@
 
 pub mod types;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use crate::application::services::pr_merge_poller::import_agent_workspace_pr_comment_evidence;
@@ -39,6 +39,7 @@ use crate::domain::services::github_service::{
     PrIssueCommentSummary, PrReviewFeedback, PrReviewThreadComment, PrStatus,
 };
 use crate::error::AppError;
+use crate::utils::path_safety::validate_absolute_non_root_path;
 
 use types::{
     PullRequestCheck, PullRequestDescription, PullRequestDetail, PullRequestDetailState,
@@ -103,7 +104,13 @@ pub async fn load_pull_request_detail(
     if project.working_directory.trim().is_empty() {
         return PullRequestDetail::empty(PullRequestDetailState::RepoUnresolvable);
     }
-    let working_dir = PathBuf::from(&project.working_directory);
+    let working_dir = match validate_absolute_non_root_path(
+        Path::new(&project.working_directory),
+        "project working directory",
+    ) {
+        Ok(path) => path,
+        Err(_) => return PullRequestDetail::empty(PullRequestDetailState::RepoUnresolvable),
+    };
 
     // 2. GitHub service must be present (guarded `Option<Arc<dyn>>`).
     let Some(github) = deps.github_service.clone() else {

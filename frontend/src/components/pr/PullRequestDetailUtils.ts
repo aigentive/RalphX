@@ -3,11 +3,14 @@ export type PullRequestDisplayStatus = "Draft" | "Open" | "Merged" | "Closed";
 export function normalizePrStatus(
   status: string | null | undefined,
   isDraft?: boolean,
-): PullRequestDisplayStatus {
+): PullRequestDisplayStatus | null {
   if (isDraft) {
     return "Draft";
   }
   const normalized = status?.trim().toLowerCase();
+  if (normalized === "open") {
+    return "Open";
+  }
   if (normalized === "merged") {
     return "Merged";
   }
@@ -17,7 +20,7 @@ export function normalizePrStatus(
   if (normalized === "draft") {
     return "Draft";
   }
-  return "Open";
+  return null;
 }
 
 export function formatPrDate(value: string | null | undefined): string | null {

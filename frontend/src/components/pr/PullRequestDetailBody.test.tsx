@@ -87,7 +87,10 @@ function loadedDetail(overrides: Partial<PullRequestDetail> = {}): PullRequestDe
   };
 }
 
-function renderBody(detail: PullRequestDetail | null = null) {
+function renderBody(
+  detail: PullRequestDetail | null = null,
+  shellOverrides: Partial<NonNullable<Parameters<typeof PullRequestDetailBody>[0]["shell"]>> = {},
+) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
@@ -116,6 +119,7 @@ function renderBody(detail: PullRequestDetail | null = null) {
         status: "open",
         branch: "feat/pr-detail",
         conversationId: "conversation-1",
+        ...shellOverrides,
       }}
     />,
     { wrapper },
@@ -165,6 +169,13 @@ describe("PullRequestDetailBody", () => {
     expect(screen.getByText("Inline note")).toBeInTheDocument();
     expect(await screen.findByTestId("rx-chat-panel")).toHaveTextContent("conversation-1");
     expect(screen.getByText("ci")).toBeInTheDocument();
+  });
+
+  it("does not claim an unknown shell-only pull request is open", () => {
+    renderBody(null, { status: null });
+
+    expect(screen.queryByText("Open")).not.toBeInTheDocument();
+    expect(screen.getByText("PR #42")).toBeInTheDocument();
   });
 
   it("loads annotations only after the checks section is expanded", async () => {
