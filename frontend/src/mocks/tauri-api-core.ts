@@ -153,6 +153,15 @@ const mockClickUpIntegrationSettings = {
   updatedAt: new Date(0).toISOString(),
 };
 
+const mockGranolaIntegrationSettings = {
+  enabled: false,
+  hasApiToken: false,
+  validationStatus: "not_configured",
+  lastValidatedAt: null as string | null,
+  lastError: null as string | null,
+  updatedAt: new Date(0).toISOString(),
+};
+
 const mockClickUpWorkspaces = [
   { id: "team-1", name: "Acme Workspace", color: "#ff6b35" },
   { id: "team-2", name: "Globex Workspace", color: null as string | null },
@@ -1138,6 +1147,34 @@ const commandHandlers: Record<
   },
   list_clickup_workspaces: async () => ({ workspaces: mockClickUpWorkspaces }),
   search_clickup_tasks: async () => ({ tasks: [] }),
+  get_granola_integration_settings: async () => mockGranolaIntegrationSettings,
+  save_granola_integration_settings: async (args) => {
+    const input = args.input as { apiToken?: string | null };
+    if (input.apiToken !== undefined) {
+      mockGranolaIntegrationSettings.hasApiToken = Boolean(
+        input.apiToken?.trim(),
+      );
+      mockGranolaIntegrationSettings.enabled = false;
+      mockGranolaIntegrationSettings.validationStatus =
+        mockGranolaIntegrationSettings.hasApiToken
+          ? "pending"
+          : "not_configured";
+    }
+    mockGranolaIntegrationSettings.lastError = null;
+    mockGranolaIntegrationSettings.updatedAt = new Date(0).toISOString();
+    return mockGranolaIntegrationSettings;
+  },
+  validate_granola_integration_settings: async () => {
+    Object.assign(mockGranolaIntegrationSettings, {
+      enabled: true,
+      hasApiToken: true,
+      validationStatus: "valid",
+      lastValidatedAt: new Date(0).toISOString(),
+      lastError: null,
+      updatedAt: new Date(0).toISOString(),
+    });
+    return mockGranolaIntegrationSettings;
+  },
   get_agent_conversation_linear_issue: async (args) => {
     const input = args.input as { conversationId: string };
     return {

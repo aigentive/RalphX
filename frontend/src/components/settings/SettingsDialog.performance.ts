@@ -22,6 +22,7 @@ export const sectionModuleLoaders: Record<SettingsSectionId, () => Promise<unkno
   integrations: () => import("./AtlassianIntegrationSettingsPanel"),
   linear: () => import("./LinearIntegrationSettingsPanel"),
   clickup: () => import("./ClickUpIntegrationSettingsPanel"),
+  granola: () => import("./GranolaIntegrationSettingsPanel"),
   "api-keys": () => import("./ApiKeysSection"),
   "external-mcp": () => import("./ExternalMcpSettingsPanel"),
   accessibility: () => import("./AccessibilitySection"),

@@ -14,6 +14,7 @@ export type SettingsSectionId =
   | "integrations"
   | "linear"
   | "clickup"
+  | "granola"
   | "external-mcp"
   | "accessibility";
 
@@ -59,6 +60,7 @@ export const SETTINGS_SECTIONS: SettingsSectionMeta[] = [
   { id: "integrations", groupId: "integrations", label: "Atlassian" },
   { id: "linear", groupId: "integrations", label: "Linear" },
   { id: "clickup", groupId: "integrations", label: "ClickUp" },
+  { id: "granola", groupId: "integrations", label: "Granola" },
   { id: "api-keys", groupId: "access", label: "API Keys" },
   { id: "external-mcp", groupId: "access", label: "External MCP" },
   { id: "accessibility", groupId: "preferences", label: "Accessibility" },
