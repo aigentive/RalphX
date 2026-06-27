@@ -6,16 +6,7 @@ use std::sync::Arc;
 use tauri::{Emitter, Runtime};
 use tracing::{error, info, warn};
 
-use crate::application::chat_service::{reconcile_merge_auto_complete, MergeAutoCompleteContext};
-use crate::application::harness_runtime_registry::{
-    default_reconciliation_executing_max_retries,
-    default_reconciliation_executing_max_wall_clock_minutes,
-    default_reconciliation_execution_failed_max_retries,
-    default_reconciliation_git_isolation_max_retries, default_reconciliation_qa_max_retries,
-    default_reconciliation_qa_max_wall_clock_minutes, default_reconciliation_qa_stale_minutes,
-    default_reconciliation_recovery_staleness_secs, default_reconciliation_reviewing_max_retries,
-    default_reconciliation_reviewing_max_wall_clock_minutes,
-};
+use crate::application::chat_service::{MergeAutoCompleteContext, reconcile_merge_auto_complete};
 use crate::application::interactive_process_registry::InteractiveProcessKey;
 use crate::application::GitService;
 use crate::commands::execution_commands::context_matches_running_status_for_gc;
@@ -29,6 +20,18 @@ use crate::domain::entities::{
 use crate::domain::services::RunningAgentKey;
 use crate::domain::state_machine::transition_handler::metadata_builder::MetadataUpdate;
 use crate::domain::state_machine::transition_handler::set_trigger_origin;
+use crate::application::harness_runtime_registry::{
+    default_reconciliation_executing_max_retries,
+    default_reconciliation_executing_max_wall_clock_minutes,
+    default_reconciliation_execution_failed_max_retries,
+    default_reconciliation_git_isolation_max_retries,
+    default_reconciliation_qa_max_retries,
+    default_reconciliation_qa_max_wall_clock_minutes,
+    default_reconciliation_qa_stale_minutes,
+    default_reconciliation_recovery_staleness_secs,
+    default_reconciliation_reviewing_max_retries,
+    default_reconciliation_reviewing_max_wall_clock_minutes,
+};
 
 use super::super::policy::{
     RecoveryActionKind, RecoveryContext, RecoveryDecision, RecoveryEvidence, UserRecoveryAction,
@@ -68,8 +71,7 @@ impl<R: Runtime> ReconciliationRunner<R> {
             if key.context_type == "ideation" || key.context_type == "session" {
                 let session_id =
                     crate::domain::entities::IdeationSessionId::from_string(key.context_id.clone());
-                let Ok(Some(session)) = self.ideation_session_repo.get_by_id(&session_id).await
-                else {
+                let Ok(Some(session)) = self.ideation_session_repo.get_by_id(&session_id).await else {
                     continue;
                 };
 
@@ -229,11 +231,12 @@ impl<R: Runtime> ReconciliationRunner<R> {
                                 .map(|s| s.to_string())
                         })
                     {
-                        if let Ok(failed_at) = chrono::DateTime::parse_from_rfc3339(&failed_at_str)
+                        if let Ok(failed_at) =
+                            chrono::DateTime::parse_from_rfc3339(&failed_at_str)
                         {
-                            let age_secs = (chrono::Utc::now()
-                                - failed_at.with_timezone(&chrono::Utc))
-                            .num_seconds();
+                            let age_secs =
+                                (chrono::Utc::now() - failed_at.with_timezone(&chrono::Utc))
+                                    .num_seconds();
                             if age_secs > staleness_threshold as i64 {
                                 warn!(
                                     task_id = %task.id,
@@ -249,13 +252,11 @@ impl<R: Runtime> ReconciliationRunner<R> {
                 }
 
                 // Detect failure source from last recovery event (for per-source routing).
-                let startup_failure_source = new_recovery
-                    .as_ref()
-                    .and_then(|r| r.events.last().and_then(|e| e.failure_source));
-                let is_git_isolation_startup = matches!(
-                    startup_failure_source,
-                    Some(ExecutionFailureSource::GitIsolation)
-                );
+                let startup_failure_source = new_recovery.as_ref().and_then(|r| {
+                    r.events.last().and_then(|e| e.failure_source)
+                });
+                let is_git_isolation_startup =
+                    matches!(startup_failure_source, Some(ExecutionFailureSource::GitIsolation));
 
                 // Determine current attempt count and max retries per-source.
                 let (attempt_count, task_max_retries) = if is_git_isolation_startup {
@@ -269,7 +270,8 @@ impl<R: Runtime> ReconciliationRunner<R> {
                     let count = Self::execution_failed_auto_retry_count(&task);
                     (count, max_retries)
                 } else {
-                    let count = Self::auto_retry_count_for_status(&task, InternalStatus::Executing);
+                    let count =
+                        Self::auto_retry_count_for_status(&task, InternalStatus::Executing);
                     (count, max_retries)
                 };
 
@@ -350,7 +352,8 @@ impl<R: Runtime> ReconciliationRunner<R> {
                     // Need project data for cleanup
                     match self.project_repo.get_by_id(&task.project_id).await {
                         Ok(Some(project_data)) => {
-                            let repo_path = std::path::Path::new(&project_data.working_directory);
+                            let repo_path =
+                                std::path::Path::new(&project_data.working_directory);
                             if let Err(e) = GitService::cleanup_stale_worktree_artifacts(
                                 repo_path,
                                 task.worktree_path.as_deref().map(std::path::Path::new),
@@ -658,7 +661,8 @@ impl<R: Runtime> ReconciliationRunner<R> {
 
         // C5: Wall-clock timeout for long-running executions
         if let Some(age) = self.latest_status_transition_age(task, status).await {
-            let max_minutes = default_reconciliation_executing_max_wall_clock_minutes() as i64;
+            let max_minutes =
+                default_reconciliation_executing_max_wall_clock_minutes() as i64;
             if age >= chrono::Duration::minutes(max_minutes) {
                 warn!(
                     task_id = task.id.as_str(),
@@ -911,25 +915,25 @@ impl<R: Runtime> ReconciliationRunner<R> {
         }
 
         // Parse execution recovery metadata — skip if absent (legacy tasks, not opted in)
-        let recovery = match ExecutionRecoveryMetadata::from_task_metadata(task.metadata.as_deref())
-        {
-            Ok(Some(r)) => r,
-            Ok(None) => {
-                tracing::debug!(
+        let recovery =
+            match ExecutionRecoveryMetadata::from_task_metadata(task.metadata.as_deref()) {
+                Ok(Some(r)) => r,
+                Ok(None) => {
+                    tracing::debug!(
                         task_id = task.id.as_str(),
                         "Skipping failed execution reconciliation: no execution_recovery metadata (legacy)"
                     );
-                return false;
-            }
-            Err(e) => {
-                warn!(
-                    task_id = task.id.as_str(),
-                    error = %e,
-                    "Failed to parse execution recovery metadata"
-                );
-                return false;
-            }
-        };
+                    return false;
+                }
+                Err(e) => {
+                    warn!(
+                        task_id = task.id.as_str(),
+                        error = %e,
+                        "Failed to parse execution recovery metadata"
+                    );
+                    return false;
+                }
+            };
 
         // Skip if user or system halted retries
         if recovery.stop_retrying {
@@ -996,10 +1000,7 @@ impl<R: Runtime> ReconciliationRunner<R> {
                 "Structural git error detected — setting stop_retrying=true (StructuralGitError)"
             );
             if let Err(e) = self
-                .set_execution_stop_retrying_with_reason(
-                    &task,
-                    StopRetryingReason::StructuralGitError,
-                )
+                .set_execution_stop_retrying_with_reason(&task, StopRetryingReason::StructuralGitError)
                 .await
             {
                 warn!(
@@ -1064,10 +1065,7 @@ impl<R: Runtime> ReconciliationRunner<R> {
 
         // Extract failure source from last recovery event — used for per-source retry budgets
         // and backoff calculation. Must be extracted BEFORE max-retries check.
-        let is_git_isolation = matches!(
-            last_failure_source,
-            Some(ExecutionFailureSource::GitIsolation)
-        );
+        let is_git_isolation = matches!(last_failure_source, Some(ExecutionFailureSource::GitIsolation));
 
         // Compute retry_count and max_retries for use in activity messages below.
         // For git isolation, count only git-isolation events; for others, use global count.
@@ -1314,12 +1312,7 @@ impl<R: Runtime> ReconciliationRunner<R> {
             .and_then(|e| e.failure_source)
             .unwrap_or(ExecutionFailureSource::Unknown);
         if let Err(e) = self
-            .record_execution_auto_retry_event(
-                &task,
-                attempt_num,
-                failure_source,
-                &activity_message,
-            )
+            .record_execution_auto_retry_event(&task, attempt_num, failure_source, &activity_message)
             .await
         {
             warn!(
@@ -1387,7 +1380,8 @@ impl<R: Runtime> ReconciliationRunner<R> {
 
         // C5: Wall-clock timeout for long-running reviews
         if let Some(age) = self.latest_status_transition_age(task, status).await {
-            let max_minutes = default_reconciliation_reviewing_max_wall_clock_minutes() as i64;
+            let max_minutes =
+                default_reconciliation_reviewing_max_wall_clock_minutes() as i64;
             if age >= chrono::Duration::minutes(max_minutes) {
                 warn!(
                     task_id = task.id.as_str(),
@@ -1452,14 +1446,10 @@ impl<R: Runtime> ReconciliationRunner<R> {
 
         // Pre-check: if reviewer spawn failure count has exhausted the retry budget, escalate immediately
         if decision.action == RecoveryActionKind::ExecuteEntryActions {
-            let spawn_failure_count = task
-                .metadata
+            let spawn_failure_count = task.metadata
                 .as_deref()
                 .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
-                .and_then(|v| {
-                    v.get("reviewer_spawn_failure_count")
-                        .and_then(|c| c.as_u64())
-                })
+                .and_then(|v| v.get("reviewer_spawn_failure_count").and_then(|c| c.as_u64()))
                 .unwrap_or(0) as u32;
             if spawn_failure_count >= default_reconciliation_reviewing_max_retries() {
                 warn!(
@@ -2106,7 +2096,8 @@ impl<R: Runtime> ReconciliationRunner<R> {
 
                         // (2) Delete branch — log warn and continue if fails (GAP M9)
                         if let Some(branch) = task.task_branch.as_deref() {
-                            if let Err(e) = GitService::delete_branch(repo_path, branch, true).await
+                            if let Err(e) =
+                                GitService::delete_branch(repo_path, branch, true).await
                             {
                                 warn!(
                                     task_id = task.id.as_str(),
@@ -2215,10 +2206,7 @@ impl<R: Runtime> ReconciliationRunner<R> {
                 }
 
                 // Transition Failed → Ready
-                info!(
-                    task_id = task.id.as_str(),
-                    "User manually restarting failed execution task"
-                );
+                info!(task_id = task.id.as_str(), "User manually restarting failed execution task");
                 if let Err(e) = self
                     .transition_service
                     .transition_task(&task.id, InternalStatus::Ready)
@@ -2397,9 +2385,10 @@ impl<R: Runtime> ReconciliationRunner<R> {
     async fn auto_recover_task(&self, task: &Task, recovery_count: u32) -> Result<(), String> {
         // 1. Clear stale git references and reset execution recovery metadata.
         //    Build the updated metadata first (before touching task fields).
-        let mut recovery = ExecutionRecoveryMetadata::from_task_metadata(task.metadata.as_deref())
-            .unwrap_or(None)
-            .unwrap_or_default();
+        let mut recovery =
+            ExecutionRecoveryMetadata::from_task_metadata(task.metadata.as_deref())
+                .unwrap_or(None)
+                .unwrap_or_default();
 
         // Clear event history (fresh execution, not a retry of the failed one).
         recovery.events.clear();
@@ -2437,8 +2426,11 @@ impl<R: Runtime> ReconciliationRunner<R> {
             recovery_count + 1,
             MAX_AUTO_RECOVERIES
         );
-        let activity_event =
-            ActivityEvent::new_task_event(task.id.clone(), ActivityEventType::System, &message);
+        let activity_event = ActivityEvent::new_task_event(
+            task.id.clone(),
+            ActivityEventType::System,
+            &message,
+        );
         if let Err(e) = self.activity_event_repo.save(activity_event).await {
             tracing::warn!(
                 task_id = task.id.as_str(),
