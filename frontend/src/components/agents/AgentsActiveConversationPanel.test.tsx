@@ -1724,6 +1724,7 @@ describe("AgentsActiveConversationPanel", () => {
         providerHarness: "codex",
         modelId: "gpt-5.5",
         logicalEffort: "high",
+        codexFastMode: false,
         suppressUserMessage: true,
       },
     );
@@ -1818,6 +1819,7 @@ describe("AgentsActiveConversationPanel", () => {
           providerHarness: "codex",
           modelId: "gpt-5.5",
           logicalEffort: "high",
+          codexFastMode: false,
         },
       ),
     );

@@ -314,6 +314,9 @@ export function HarnessProvidersSection() {
     if (changes.isDefault !== undefined) input.isDefault = changes.isDefault;
     if (changes.model !== undefined) input.model = changes.model;
     if (changes.effort !== undefined) input.effort = changes.effort;
+    if (changes.serviceTier !== undefined) {
+      input.serviceTier = changes.serviceTier;
+    }
     if (changes.approvalPolicy !== undefined) {
       input.approvalPolicy = changes.approvalPolicy;
     }
@@ -1042,6 +1045,30 @@ export function HarnessProvidersSection() {
 
                         {provider.provider === "codex" && (
                           <>
+                            <div className="flex items-start justify-between gap-3 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-3 py-2 md:col-span-2">
+                              <div className="space-y-1">
+                                <Label
+                                  htmlFor="codex-fast-mode"
+                                  className="text-xs text-[var(--text-primary)]"
+                                >
+                                  Fast mode
+                                </Label>
+                                <p className="text-[0.6875rem] leading-relaxed text-[var(--text-muted)]">
+                                  Use Codex priority service tier by default.
+                                </p>
+                              </div>
+                              <Switch
+                                id="codex-fast-mode"
+                                data-testid="codex-provider-fast-mode"
+                                checked={provider.serviceTier === "fast"}
+                                disabled={isUpdating}
+                                onCheckedChange={(checked) =>
+                                  void updateProvider(provider, {
+                                    serviceTier: checked ? "fast" : null,
+                                  })
+                                }
+                              />
+                            </div>
                             <ProviderPermissionDisclosure
                               provider={provider.provider}
                               expanded={

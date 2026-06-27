@@ -24,6 +24,7 @@ fn input(provider: &str) -> UpdateAgentProviderSettingsInput {
         effort: None,
         approval_policy: None,
         sandbox_mode: None,
+        service_tier: None,
         claude_permission_mode: None,
         claude_dangerously_skip_permissions: None,
         claude_allow_dangerously_skip_permissions: None,
@@ -91,6 +92,25 @@ fn merge_accepts_enabled_default_provider() {
 
     assert!(merged.enabled);
     assert!(merged.is_default);
+}
+
+#[test]
+fn merge_sets_and_clears_service_tier() {
+    let settings = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Codex);
+    let next = UpdateAgentProviderSettingsInput {
+        service_tier: Some(Some(" FAST ".to_string())),
+        ..input("codex")
+    };
+
+    let merged = merge_input(settings, next, true).expect("merge service tier");
+    assert_eq!(merged.service_tier.as_deref(), Some("fast"));
+
+    let next = UpdateAgentProviderSettingsInput {
+        service_tier: Some(None),
+        ..input("codex")
+    };
+    let merged = merge_input(merged, next, true).expect("clear service tier");
+    assert_eq!(merged.service_tier, None);
 }
 
 #[test]
@@ -463,6 +483,7 @@ fn response_maps_settings_and_probe_fields() {
     settings.is_default = true;
     settings.approval_policy = Some("never".to_string());
     settings.sandbox_mode = Some("danger-full-access".to_string());
+    settings.service_tier = Some("fast".to_string());
     settings.cli_management_mode = AgentProviderCliManagementMode::RxManaged;
     settings.auto_update_enabled = true;
     settings.custom_binary_path = Some("/opt/tools/codex-wrapper".to_string());
@@ -490,6 +511,7 @@ fn response_maps_settings_and_probe_fields() {
     assert_eq!(response.effort.as_deref(), Some("xhigh"));
     assert_eq!(response.approval_policy.as_deref(), Some("never"));
     assert_eq!(response.sandbox_mode.as_deref(), Some("danger-full-access"));
+    assert_eq!(response.service_tier.as_deref(), Some("fast"));
     assert_eq!(response.cli_management_mode, "rx_managed");
     assert!(response.auto_update_enabled);
     assert!(!response.custom_binary_enabled);

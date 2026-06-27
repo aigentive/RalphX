@@ -90,6 +90,7 @@ interface AgentsStartComposerProps {
     mode: AgentConversationWorkspaceMode;
     base: AgentConversationBaseSelection | null;
     files: File[];
+    codexFastMode?: boolean | null;
     composerArtifactReferences?: ComposerArtifactReference[] | undefined;
     composerProjectReferences?: ComposerProjectReference[] | undefined;
     composerIntegrationReferences?: ComposerIntegrationReference[] | undefined;
@@ -177,6 +178,9 @@ export function AgentsStartComposer({
   const [draftArtifactReferences, setDraftArtifactReferences] = useState<
     ComposerArtifactReference[]
   >([]);
+  const [codexFastModeOverride, setCodexFastModeOverride] = useState<
+    boolean | null
+  >(null);
   const [error, setError] = useState<string | null>(null);
   const startFromRequestRef = useRef(0);
   const pullRequestStartFromRequestRef = useRef(0);
@@ -260,6 +264,12 @@ export function AgentsStartComposer({
     providerOptions,
     isReady: providerSettingsReady,
   });
+  const codexProviderFastMode =
+    configuredProviders
+      .find((entry) => entry.provider === "codex")
+      ?.serviceTier?.trim()
+      .toLowerCase() === "fast";
+  const codexFastMode = codexFastModeOverride ?? codexProviderFastMode;
   const hasSelectableProvider = providerOptions.some((option) => !option.disabled);
   const openProviderSettings = useCallback(() => {
     openModal("settings", { section: "providers" });
@@ -775,6 +785,7 @@ export function AgentsStartComposer({
         mode,
         base: selectedStartFrom?.selection ?? fallbackStartFrom,
         files: attachments.map((attachment) => attachment.file),
+        codexFastMode: provider === "codex" ? codexFastMode : null,
         ...(options?.projectReferences?.length
           ? { composerProjectReferences: options.projectReferences }
           : {}),
@@ -959,6 +970,13 @@ export function AgentsStartComposer({
               onValueChange: handleModelChange,
               options: modelOptions,
               disabled: Boolean(providerStatusMessage),
+              fastMode: {
+                visible: provider === "codex",
+                value: codexFastMode,
+                onValueChange: setCodexFastModeOverride,
+                disabled: !providerSettingsReady,
+                testId: "agents-start-codex-fast-mode",
+              },
               onOpenModelSettings: () => openModal("settings", { section: "models" }),
               testId: "agents-start-model",
               className: "max-w-[188px] flex-none",

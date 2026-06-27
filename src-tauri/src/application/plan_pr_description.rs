@@ -213,6 +213,7 @@ async fn draft_plan_pr_description_inner(
             logical_effort: runtime.logical_effort,
             approval_policy: runtime.approval_policy,
             sandbox_mode: runtime.sandbox_mode,
+            service_tier: runtime.service_tier,
             max_tokens: None,
             timeout_secs: Some(120),
             env,
@@ -313,6 +314,7 @@ async fn resolve_plan_pr_describer_runtime(
         sandbox_mode: provider_settings
             .sandbox_mode
             .or_else(|| default_sandbox_mode_for_harness(harness).map(str::to_string)),
+        service_tier: provider_settings.service_tier,
         env: provider_env,
     };
 

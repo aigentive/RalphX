@@ -63,6 +63,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { Switch } from "@/components/ui/switch";
 import { withAlpha } from "@/lib/theme-colors";
 import { extractErrorMessage } from "@/lib/errors";
 import { cn } from "@/lib/utils";
@@ -174,6 +175,13 @@ interface ModelFieldConfig {
   allowCustomValue?: boolean;
   customPlaceholder?: string | undefined;
   onOpenModelSettings?: () => void;
+  fastMode?: {
+    visible: boolean;
+    value: boolean;
+    onValueChange: (value: boolean) => void;
+    disabled?: boolean;
+    testId?: string;
+  };
   testId?: string;
   className?: string;
 }
@@ -2619,6 +2627,7 @@ function ComposerRuntimePill({
     providerLabel,
     modelLabel,
     effortLabel ? `${effortLabel} effort` : "",
+    model.fastMode?.visible && model.fastMode.value ? "Fast" : "",
   ]
     .filter(Boolean)
     .join(" · ");
@@ -2846,6 +2855,17 @@ function ComposerRuntimePill({
                     setOpen(false);
                   }}
                 />
+                {model.fastMode?.visible && (
+                  <ComposerRuntimeFastModeControl
+                    value={model.fastMode.value}
+                    disabled={model.fastMode.disabled ?? false}
+                    testId={
+                      model.fastMode.testId ??
+                      "agent-composer-runtime-codex-fast-mode"
+                    }
+                    onValueChange={model.fastMode.onValueChange}
+                  />
+                )}
                 {model.onOpenModelSettings && (
                   <button
                     type="button"
@@ -2886,6 +2906,45 @@ function ComposerRuntimePill({
         </div>
       </PopoverContent>
     </Popover>
+  );
+}
+
+function ComposerRuntimeFastModeControl({
+  value,
+  disabled,
+  testId,
+  onValueChange,
+}: {
+  value: boolean;
+  disabled: boolean;
+  testId: string;
+  onValueChange: (value: boolean) => void;
+}) {
+  return (
+    <div
+      className="mt-1 flex items-center justify-between gap-3 rounded-md px-2 py-1.5"
+      style={{
+        backgroundColor:
+          "color-mix(in srgb, var(--bg-base) 24%, var(--bg-elevated) 76%)",
+      }}
+    >
+      <div className="min-w-0">
+        <div className="text-[0.75rem] font-medium text-[var(--text-primary)]">
+          Fast mode
+        </div>
+        <div className="text-[0.6875rem] leading-snug text-[var(--text-muted)]">
+          Use Codex priority service tier
+        </div>
+      </div>
+      <Switch
+        checked={value}
+        disabled={disabled}
+        onCheckedChange={onValueChange}
+        aria-label="Codex Fast mode"
+        data-testid={testId}
+        className="data-[state=checked]:bg-[var(--accent-primary)]"
+      />
+    </div>
   );
 }
 

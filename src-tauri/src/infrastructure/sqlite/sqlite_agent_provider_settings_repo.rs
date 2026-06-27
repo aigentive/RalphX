@@ -81,6 +81,9 @@ fn parse_row(row: &rusqlite::Row<'_>) -> AppResult<AgentProviderSettings> {
         sandbox_mode: row
             .get("sandbox_mode")
             .map_err(|e| AppError::Database(e.to_string()))?,
+        service_tier: row
+            .get("service_tier")
+            .map_err(|e| AppError::Database(e.to_string()))?,
         claude_permission_mode: row
             .get("claude_permission_mode")
             .map_err(|e| AppError::Database(e.to_string()))?,
@@ -116,7 +119,7 @@ fn parse_row(row: &rusqlite::Row<'_>) -> AppResult<AgentProviderSettings> {
 }
 
 fn select_columns() -> &'static str {
-    "provider, enabled, is_default, model, effort, approval_policy, sandbox_mode,
+    "provider, enabled, is_default, model, effort, approval_policy, sandbox_mode, service_tier,
      claude_permission_mode, claude_dangerously_skip_permissions,
      claude_allow_dangerously_skip_permissions, cli_management_mode,
      auto_update_enabled, custom_binary_enabled, custom_binary_path,
@@ -236,12 +239,12 @@ impl AgentProviderSettingsRepository for SqliteAgentProviderSettingsRepository {
                 conn.execute(
                     "INSERT INTO agent_provider_settings (
                         provider, enabled, is_default, model, effort, approval_policy,
-                        sandbox_mode, claude_permission_mode,
+                        sandbox_mode, service_tier, claude_permission_mode,
                         claude_dangerously_skip_permissions,
                         claude_allow_dangerously_skip_permissions, cli_management_mode,
                         auto_update_enabled, custom_binary_enabled, custom_binary_path,
                         custom_env_file_enabled, custom_env_file_path, updated_at
-                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
                         strftime('%Y-%m-%dT%H:%M:%S+00:00', 'now'))
                      ON CONFLICT(provider) DO UPDATE SET
                         enabled = excluded.enabled,
@@ -250,6 +253,7 @@ impl AgentProviderSettingsRepository for SqliteAgentProviderSettingsRepository {
                         effort = excluded.effort,
                         approval_policy = excluded.approval_policy,
                         sandbox_mode = excluded.sandbox_mode,
+                        service_tier = excluded.service_tier,
                         claude_permission_mode = excluded.claude_permission_mode,
                         claude_dangerously_skip_permissions =
                             excluded.claude_dangerously_skip_permissions,
@@ -270,6 +274,7 @@ impl AgentProviderSettingsRepository for SqliteAgentProviderSettingsRepository {
                         settings.effort.map(|value| value.to_string()),
                         settings.approval_policy,
                         settings.sandbox_mode,
+                        settings.service_tier,
                         settings.claude_permission_mode,
                         settings.claude_dangerously_skip_permissions as i64,
                         settings.claude_allow_dangerously_skip_permissions as i64,

@@ -914,6 +914,7 @@ fn test_build_agent_config_for_mock_client_omits_claude_plugin_wiring() {
         None,
         None,
         None,
+        None,
         std::collections::HashMap::new(),
     );
 
@@ -946,6 +947,7 @@ fn test_build_agent_config_for_claude_client_sets_plugin_and_agent() {
         "qa-refiner",
         "task-456",
         PathBuf::from("/tmp/task-456"),
+        None,
         None,
         None,
         None,
@@ -985,6 +987,7 @@ fn test_build_agent_config_for_codex_client_uses_process_mapping() {
         Some(crate::domain::agents::LogicalEffort::XHigh),
         Some("on-request".to_string()),
         Some("workspace-write".to_string()),
+        None,
         None,
         std::collections::HashMap::new(),
     );

@@ -352,6 +352,25 @@ fn build_codex_exec_args_defaults_to_mcp_safe_approval_and_sandbox() {
 }
 
 #[test]
+fn build_codex_exec_args_enables_fast_service_tier() {
+    let args = build_codex_exec_args(
+        &full_codex_capabilities(),
+        &CodexExecCliConfig {
+            service_tier: Some("fast".to_string()),
+            ..CodexExecCliConfig::default()
+        },
+    )
+    .expect("build codex exec args");
+
+    assert!(args
+        .windows(2)
+        .any(|pair| pair[0] == "-c" && pair[1] == "service_tier=\"fast\""));
+    assert!(args
+        .windows(2)
+        .any(|pair| pair[0] == "-c" && pair[1] == "features.fast_mode=true"));
+}
+
+#[test]
 fn build_codex_exec_resume_args_defaults_to_mcp_safe_approval_and_sandbox() {
     let args = build_codex_exec_resume_args(
         &full_codex_capabilities(),
@@ -366,6 +385,26 @@ fn build_codex_exec_resume_args_defaults_to_mcp_safe_approval_and_sandbox() {
     assert!(args
         .windows(2)
         .any(|pair| pair[0] == "-c" && pair[1] == "sandbox_mode=\"danger-full-access\""));
+}
+
+#[test]
+fn build_codex_exec_resume_args_enables_fast_service_tier() {
+    let args = build_codex_exec_resume_args(
+        &full_codex_capabilities(),
+        "session-123",
+        &CodexExecCliConfig {
+            service_tier: Some("fast".to_string()),
+            ..CodexExecCliConfig::default()
+        },
+    )
+    .expect("build codex resume args");
+
+    assert!(args
+        .windows(2)
+        .any(|pair| pair[0] == "-c" && pair[1] == "service_tier=\"fast\""));
+    assert!(args
+        .windows(2)
+        .any(|pair| pair[0] == "-c" && pair[1] == "features.fast_mode=true"));
 }
 
 #[test]
@@ -946,11 +985,8 @@ fn compose_codex_prompt_includes_runtime_profile_context_for_profile() {
     assert!(prompt.contains("<profile_slug>plan</profile_slug>"));
     assert!(prompt.contains("<profile_role>plan_chat</profile_role>"));
 
-    let default_prompt = compose_codex_prompt(
-        "Create a plan",
-        Some(&plugin_dir),
-        Some("ralphx-ideation"),
-    );
+    let default_prompt =
+        compose_codex_prompt("Create a plan", Some(&plugin_dir), Some("ralphx-ideation"));
     assert!(!default_prompt.contains("<agent_name>ralphx-ideation</agent_name>"));
     assert!(!default_prompt.contains("<profile_role>plan_chat</profile_role>"));
 }

@@ -60,6 +60,7 @@ describe("harnessProvidersApi", () => {
       provider: "codex",
       enabled: true,
       isDefault: true,
+      serviceTier: "fast",
       customEnvFileEnabled: true,
       customEnvFilePath: "/Users/example/.codex.env",
     });
@@ -71,6 +72,7 @@ describe("harnessProvidersApi", () => {
           provider: "codex",
           enabled: true,
           isDefault: true,
+          serviceTier: "fast",
           customEnvFileEnabled: true,
           customEnvFilePath: "/Users/example/.codex.env",
         },

@@ -31,6 +31,7 @@ async fn upsert_and_get_provider_settings() {
     settings.custom_binary_path = Some("/opt/tools/codex-wrapper".to_string());
     settings.custom_env_file_enabled = true;
     settings.custom_env_file_path = Some("/Users/example/.codex.env".to_string());
+    settings.service_tier = Some("fast".to_string());
 
     repo.upsert(&settings).await.unwrap();
     let row = repo
@@ -43,6 +44,7 @@ async fn upsert_and_get_provider_settings() {
     assert!(row.is_default);
     assert_eq!(row.model.as_deref(), Some("gpt-5.5"));
     assert_eq!(row.sandbox_mode.as_deref(), Some("danger-full-access"));
+    assert_eq!(row.service_tier.as_deref(), Some("fast"));
     assert_eq!(
         row.cli_management_mode,
         AgentProviderCliManagementMode::RxManaged

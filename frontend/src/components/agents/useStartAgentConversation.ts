@@ -117,6 +117,7 @@ export function useStartAgentConversation({
       mode,
       base,
       files,
+      codexFastMode,
       composerArtifactReferences,
       composerIntegrationReferences,
       composerProjectReferences,
@@ -127,6 +128,7 @@ export function useStartAgentConversation({
       mode: AgentConversationWorkspaceMode;
       base: AgentConversationBaseSelection | null;
       files: File[];
+      codexFastMode?: boolean | null;
       composerArtifactReferences?: ComposerArtifactReference[] | undefined;
       composerIntegrationReferences?: ComposerIntegrationReference[] | undefined;
       composerProjectReferences?: ComposerProjectReference[] | undefined;
@@ -328,6 +330,12 @@ export function useStartAgentConversation({
           providerHarness: normalizedRuntime.provider,
           modelId: normalizedRuntime.modelId,
           logicalEffort: normalizedRuntime.effort,
+          ...(codexFastMode !== undefined
+            ? {
+                codexFastMode:
+                  normalizedRuntime.provider === "codex" ? codexFastMode : null,
+              }
+            : {}),
           mode,
           ...(composerProjectReferences?.length
             ? { composerProjectReferences }

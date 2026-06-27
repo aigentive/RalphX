@@ -85,6 +85,7 @@ pub struct CodexExecCliConfig {
     pub reasoning_effort: Option<LogicalEffort>,
     pub approval_policy: Option<String>,
     pub sandbox_mode: Option<String>,
+    pub service_tier: Option<String>,
     pub config_overrides: Vec<String>,
     pub cwd: Option<PathBuf>,
     pub add_dirs: Vec<PathBuf>,
@@ -100,6 +101,7 @@ impl Default for CodexExecCliConfig {
             reasoning_effort: None,
             approval_policy: Some(CODEX_DEFAULT_APPROVAL_POLICY.to_string()),
             sandbox_mode: Some(CODEX_DEFAULT_SANDBOX_MODE.to_string()),
+            service_tier: None,
             config_overrides: Vec::new(),
             cwd: None,
             add_dirs: Vec::new(),
@@ -118,6 +120,27 @@ fn effective_codex_approval_policy(_config: &CodexExecCliConfig) -> &str {
 
 fn effective_codex_sandbox_mode(_config: &CodexExecCliConfig) -> &str {
     CODEX_DEFAULT_SANDBOX_MODE
+}
+
+fn codex_service_tier_overrides(config: &CodexExecCliConfig) -> Result<Vec<String>, String> {
+    let Some(service_tier) = config.service_tier.as_deref().map(str::trim) else {
+        return Ok(Vec::new());
+    };
+    if service_tier.is_empty() {
+        return Ok(Vec::new());
+    }
+    if service_tier.eq_ignore_ascii_case("standard") {
+        return Ok(Vec::new());
+    }
+
+    let mut overrides = vec![format!(
+        "service_tier={}",
+        encode_codex_string_literal(service_tier)?
+    )];
+    if service_tier.eq_ignore_ascii_case("fast") {
+        overrides.push("features.fast_mode=true".to_string());
+    }
+    Ok(overrides)
 }
 
 fn encode_codex_string_literal(value: &str) -> Result<String, String> {
@@ -574,6 +597,12 @@ pub fn build_codex_exec_args(
         args.push(override_value.clone());
     }
 
+    for override_value in codex_service_tier_overrides(config)? {
+        require_capability(capabilities.supports_config_override, "config_override")?;
+        args.push("-c".to_string());
+        args.push(override_value);
+    }
+
     if let Some(reasoning_effort) = config.reasoning_effort {
         require_capability(capabilities.supports_config_override, "config_override")?;
         args.push("-c".to_string());
@@ -624,6 +653,12 @@ pub fn build_codex_exec_resume_args(
         require_capability(capabilities.supports_config_override, "config_override")?;
         args.push("-c".to_string());
         args.push(override_value.clone());
+    }
+
+    for override_value in codex_service_tier_overrides(config)? {
+        require_capability(capabilities.supports_config_override, "config_override")?;
+        args.push("-c".to_string());
+        args.push(override_value);
     }
 
     if let Some(reasoning_effort) = config.reasoning_effort {

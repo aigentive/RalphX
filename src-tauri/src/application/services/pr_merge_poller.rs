@@ -1469,6 +1469,7 @@ async fn route_agent_workspace_pr_conflict_repair_if_needed(
                         .or_else(|| run.effective_model_id.clone())
                 }),
                 logical_effort_override: latest_run.as_ref().and_then(|run| run.logical_effort),
+                service_tier_override: latest_run.as_ref().and_then(|run| run.service_tier.clone()),
                 working_directory_override: Some(PathBuf::from(&workspace.worktree_path)),
                 force_new_provider_session: true,
                 preserve_conversation_provider_session_ref: true,

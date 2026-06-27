@@ -141,6 +141,7 @@ pub(crate) struct ResolvedBackgroundAgentRuntime {
     pub logical_effort: Option<LogicalEffort>,
     pub approval_policy: Option<String>,
     pub sandbox_mode: Option<String>,
+    pub service_tier: Option<String>,
     pub env: HashMap<String, String>,
 }
 
@@ -490,6 +491,7 @@ impl AppState {
         logical_effort: Option<LogicalEffort>,
         approval_policy: Option<String>,
         sandbox_mode: Option<String>,
+        service_tier: Option<String>,
         env: HashMap<String, String>,
     ) -> ResolvedBackgroundAgentRuntime {
         ResolvedBackgroundAgentRuntime {
@@ -502,6 +504,7 @@ impl AppState {
                 .or_else(|| default_approval_policy_for_harness(harness).map(str::to_string)),
             sandbox_mode: sandbox_mode
                 .or_else(|| default_sandbox_mode_for_harness(harness).map(str::to_string)),
+            service_tier,
             env,
         }
     }
@@ -515,6 +518,28 @@ impl AppState {
             logical_effort: Some(LogicalEffort::Medium),
             ..runtime
         }
+    }
+
+    fn with_runtime_service_tier(
+        mut runtime: ResolvedBackgroundAgentRuntime,
+        service_tier: Option<String>,
+    ) -> ResolvedBackgroundAgentRuntime {
+        if service_tier.is_some() {
+            runtime.service_tier = service_tier;
+        }
+        runtime
+    }
+
+    async fn latest_conversation_service_tier(
+        &self,
+        conversation: &ChatConversation,
+    ) -> AppResult<Option<String>> {
+        Ok(self
+            .agent_run_repo
+            .get_latest_for_conversation(&conversation.id)
+            .await
+            .map_err(|error| AppError::Infrastructure(error.to_string()))?
+            .and_then(|run| run.service_tier))
     }
 
     pub(crate) fn managed_cli_path_override_for_provider(
@@ -606,6 +631,7 @@ impl AppState {
             provider_settings.effort,
             provider_settings.approval_policy,
             provider_settings.sandbox_mode,
+            provider_settings.service_tier,
             provider_env,
         ))
     }
@@ -765,6 +791,7 @@ impl AppState {
             logical_effort,
             approval_policy,
             sandbox_mode,
+            provider_settings.service_tier,
             provider_env,
         ))
     }
@@ -840,13 +867,16 @@ impl AppState {
         }
 
         if let Some(harness) = conversation.provider_harness {
+            let service_tier = self.latest_conversation_service_tier(conversation).await?;
             let runtime = self
                 .resolve_background_agent_runtime_for_harness(
                     harness,
                     "session namer owning conversation",
                 )
                 .await?;
-            return Ok(Self::lock_utility_agent_runtime_model(runtime));
+            return Ok(Self::lock_utility_agent_runtime_model(
+                Self::with_runtime_service_tier(runtime, service_tier),
+            ));
         }
 
         self.resolve_session_namer_runtime_for_project(project_id)
@@ -858,13 +888,16 @@ impl AppState {
         conversation: &ChatConversation,
     ) -> AppResult<ResolvedBackgroundAgentRuntime> {
         if let Some(harness) = conversation.provider_harness {
+            let service_tier = self.latest_conversation_service_tier(conversation).await?;
             let runtime = self
                 .resolve_background_agent_runtime_for_harness(
                     harness,
                     "PR describer owning conversation",
                 )
                 .await?;
-            return Ok(Self::lock_utility_agent_runtime_model(runtime));
+            return Ok(Self::lock_utility_agent_runtime_model(
+                Self::with_runtime_service_tier(runtime, service_tier),
+            ));
         }
 
         let default_provider = crate::application::resolve_enabled_default_provider(
@@ -911,7 +944,12 @@ impl AppState {
             .await?
         };
 
-        Ok(Self::lock_utility_agent_runtime_model(runtime))
+        Ok(Self::lock_utility_agent_runtime_model(
+            Self::with_runtime_service_tier(
+                runtime,
+                latest_run.and_then(|run| run.service_tier.clone()),
+            ),
+        ))
     }
 
     pub(crate) async fn resolve_plan_complexity_runtime_for_session(

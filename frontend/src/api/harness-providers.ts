@@ -14,6 +14,7 @@ export const AgentProviderSettingsResponseSchema = z.object({
   isDefault: z.boolean(),
   model: z.string().nullable().optional(),
   effort: z.string().nullable().optional(),
+  serviceTier: z.string().nullable().optional(),
   approvalPolicy: z.string().nullable().optional(),
   sandboxMode: z.string().nullable().optional(),
   claudePermissionMode: z.string().nullable().optional(),
@@ -57,6 +58,7 @@ export interface UpdateAgentProviderSettingsInput {
   isDefault?: boolean;
   model?: string | null;
   effort?: string | null;
+  serviceTier?: string | null;
   approvalPolicy?: string | null;
   sandboxMode?: string | null;
   claudePermissionMode?: string | null;

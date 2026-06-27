@@ -724,6 +724,38 @@ fn apply_send_message_overrides(
         resolved.configured_sandbox_mode = Some(sandbox_mode_override.clone());
         resolved.sandbox_mode = Some(sandbox_mode_override.clone());
     }
+
+    if let Some(service_tier_override) = options.service_tier_override.as_ref() {
+        let service_tier = normalize_service_tier_override(service_tier_override);
+        resolved.configured_service_tier = service_tier.clone();
+        resolved.service_tier = service_tier;
+    }
+}
+
+fn normalize_service_tier_override(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("standard") {
+        return Some("standard".to_string());
+    }
+    Some(trimmed.to_ascii_lowercase())
+}
+
+fn normalize_provider_service_tier(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("standard") {
+        return None;
+    }
+    Some(trimmed.to_ascii_lowercase())
+}
+
+pub(crate) fn codex_fast_mode_service_tier_override(enabled: Option<bool>) -> Option<String> {
+    enabled.map(|value| {
+        if value {
+            "fast".to_string()
+        } else {
+            "standard".to_string()
+        }
+    })
 }
 
 // ============================================================================
@@ -756,6 +788,9 @@ pub struct SendMessageOptions {
     pub approval_policy_override: Option<String>,
     /// Optional explicit sandbox-mode override for this send.
     pub sandbox_mode_override: Option<String>,
+    /// Optional provider service-tier override for this send. An empty string forces
+    /// the provider default tier even when the provider has a global fast tier set.
+    pub service_tier_override: Option<String>,
     /// Structured composer project references for runtime-only prompt expansion.
     pub composer_project_references: Vec<ComposerProjectReference>,
     /// Structured composer integration references for runtime-only prompt expansion.
@@ -1293,6 +1328,7 @@ impl<R: Runtime> AppChatService<R> {
                 options.harness_override,
                 options.model_override.clone(),
                 options.logical_effort_override,
+                options.service_tier_override.clone(),
                 options.force_new_provider_session,
                 options.composer_project_references.clone(),
                 options.composer_integration_references.clone(),
@@ -4710,7 +4746,8 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             spawn_settings_started,
         );
         let provider_spawn_check_started = Instant::now();
-        if let Some(provider_repo) = self.agent_provider_settings_repo.as_ref() {
+        let provider_settings_for_spawn =
+            if let Some(provider_repo) = self.agent_provider_settings_repo.as_ref() {
             if let Err(error) = crate::application::ensure_provider_spawn_enabled(
                 provider_repo,
                 resolved_spawn_settings.effective_harness,
@@ -4719,6 +4756,27 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             .await
             {
                 cleanup_and_err!(ChatServiceError::SpawnFailed(error));
+            }
+            match provider_repo
+                .get(resolved_spawn_settings.effective_harness)
+                .await
+                .map_err(|error| error.to_string())
+            {
+                Ok(settings) => settings,
+                Err(error) => cleanup_and_err!(ChatServiceError::RepositoryError(error)),
+            }
+        } else {
+            None
+        };
+        if options.service_tier_override.is_none() && resolved_spawn_settings.service_tier.is_none()
+        {
+            if let Some(service_tier) = provider_settings_for_spawn
+                .as_ref()
+                .and_then(|settings| settings.service_tier.as_deref())
+                .and_then(normalize_provider_service_tier)
+            {
+                resolved_spawn_settings.configured_service_tier = Some(service_tier.clone());
+                resolved_spawn_settings.service_tier = Some(service_tier);
             }
         }
         log_send_message_spawn_prep_phase(
@@ -4797,6 +4855,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         agent_run.effective_model_id = Some(effective_model_id.clone());
         agent_run.logical_effort = resolved_spawn_settings.configured_logical_effort;
         agent_run.effective_effort = Some(effective_effort.clone());
+        agent_run.service_tier = resolved_spawn_settings.service_tier.clone();
         agent_run.approval_policy = resolved_spawn_settings.approval_policy.clone();
         agent_run.sandbox_mode = resolved_spawn_settings.sandbox_mode.clone();
 
@@ -4839,18 +4898,22 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         // 3. Emit run started event (deferred from step 3 to include effective model info)
         self.emit_event(
             "agent:run_started",
-            AgentRunStartedPayload::with_provider_session(
-                agent_run_id.clone(),
-                conversation_id.as_str().to_string(),
-                context_type.to_string(),
-                context_id.to_string(),
-                run_chain_id.clone(),
-                None,
-                Some(effective_model_id.clone()),
-                effective_model_label,
-                Some(resolved_spawn_settings.effective_harness),
-                stored_session_id.clone(),
-            ),
+            {
+                let mut payload = AgentRunStartedPayload::with_provider_session(
+                    agent_run_id.clone(),
+                    conversation_id.as_str().to_string(),
+                    context_type.to_string(),
+                    context_id.to_string(),
+                    run_chain_id.clone(),
+                    None,
+                    Some(effective_model_id.clone()),
+                    effective_model_label,
+                    Some(resolved_spawn_settings.effective_harness),
+                    stored_session_id.clone(),
+                );
+                payload.service_tier = resolved_spawn_settings.service_tier.clone();
+                payload
+            },
         );
 
         // Fetch recent session messages when spawning a new process. The agent has no prior
@@ -5399,6 +5462,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             harness_override: queued_msg.harness_override,
             model_override: queued_msg.model_override.clone(),
             logical_effort_override: queued_msg.logical_effort_override,
+            service_tier_override: queued_msg.service_tier_override.clone(),
             force_new_provider_session: queued_msg.force_new_provider_session,
             conversation_id_override,
             composer_project_references: queued_msg.composer_project_references.clone(),

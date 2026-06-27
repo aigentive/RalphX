@@ -166,6 +166,7 @@ interface IntegratedChatPanelProps {
     providerHarness?: string | null;
     modelId?: string | null;
     logicalEffort?: string | null;
+    codexFastMode?: boolean | null;
   };
   /** Optional host-owned child session navigation. Falls back to transcript modal. */
   onChildSessionNavigate?: (sessionId: string) => void | Promise<void>;

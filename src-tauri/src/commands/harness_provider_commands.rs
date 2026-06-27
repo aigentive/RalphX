@@ -30,6 +30,7 @@ pub struct AgentProviderSettingsResponse {
     pub effort: Option<String>,
     pub approval_policy: Option<String>,
     pub sandbox_mode: Option<String>,
+    pub service_tier: Option<String>,
     pub claude_permission_mode: Option<String>,
     pub claude_dangerously_skip_permissions: bool,
     pub claude_allow_dangerously_skip_permissions: bool,
@@ -76,6 +77,8 @@ pub struct UpdateAgentProviderSettingsInput {
     pub effort: Option<String>,
     pub approval_policy: Option<String>,
     pub sandbox_mode: Option<String>,
+    #[serde(default)]
+    pub service_tier: Option<Option<String>>,
     pub claude_permission_mode: Option<String>,
     pub claude_dangerously_skip_permissions: Option<bool>,
     pub claude_allow_dangerously_skip_permissions: Option<bool>,
@@ -133,6 +136,7 @@ fn reset_configurable_defaults(settings: &mut AgentProviderSettings) {
     settings.effort = defaults.effort;
     settings.approval_policy = defaults.approval_policy;
     settings.sandbox_mode = defaults.sandbox_mode;
+    settings.service_tier = defaults.service_tier;
     settings.claude_permission_mode = defaults.claude_permission_mode;
     settings.claude_dangerously_skip_permissions = defaults.claude_dangerously_skip_permissions;
     settings.claude_allow_dangerously_skip_permissions =
@@ -158,6 +162,17 @@ fn normalize_custom_binary_path(path: Option<String>) -> Option<String> {
 
 fn normalize_custom_env_file_path(path: Option<String>) -> Option<String> {
     normalize_optional_path(path)
+}
+
+fn normalize_service_tier(value: Option<String>) -> Option<String> {
+    value.and_then(|tier| {
+        let trimmed = tier.trim();
+        if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("standard") {
+            None
+        } else {
+            Some(trimmed.to_ascii_lowercase())
+        }
+    })
 }
 
 fn normalize_optional_path(path: Option<String>) -> Option<String> {
@@ -202,6 +217,9 @@ fn merge_input(
         } else {
             Some(sandbox_mode)
         };
+    }
+    if let Some(service_tier) = input.service_tier {
+        settings.service_tier = normalize_service_tier(service_tier);
     }
     if let Some(permission_mode) = input.claude_permission_mode {
         settings.claude_permission_mode = if permission_mode.trim().is_empty() {
@@ -354,6 +372,7 @@ fn to_response(
         effort: settings.effort.map(|value| value.to_string()),
         approval_policy: settings.approval_policy,
         sandbox_mode: settings.sandbox_mode,
+        service_tier: settings.service_tier,
         claude_permission_mode: settings.claude_permission_mode,
         claude_dangerously_skip_permissions: settings.claude_dangerously_skip_permissions,
         claude_allow_dangerously_skip_permissions: settings
