@@ -1380,18 +1380,23 @@ describe("AgentComposerSurface", () => {
     });
 
     it("expands when the textarea is focused even with no text", () => {
-      renderComposer({ dataTestId: "agent-composer", collapsible: true });
+      const onLayoutChange = vi.fn();
+      renderComposer({ dataTestId: "agent-composer", collapsible: true, onLayoutChange });
       const surface = screen.getByTestId("agent-composer");
       const textarea = screen.getByLabelText(
         "Message input",
       ) as HTMLTextAreaElement;
 
+      onLayoutChange.mockClear();
       fireEvent.focus(textarea);
       expect(surface).toHaveAttribute("data-collapsed", "false");
+      expect(onLayoutChange).toHaveBeenCalled();
 
       // Blur with no text returns to the minimal resting state.
+      onLayoutChange.mockClear();
       fireEvent.blur(textarea);
       expect(surface).toHaveAttribute("data-collapsed", "true");
+      expect(onLayoutChange).toHaveBeenCalled();
     });
 
     it("stays minimal when a popover opens on an unfocused composer (no flicker)", () => {

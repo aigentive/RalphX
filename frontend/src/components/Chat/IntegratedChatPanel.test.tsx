@@ -871,16 +871,17 @@ describe("IntegratedChatPanel", () => {
         <TestWrapper>
           <IntegratedChatPanel
             projectId="project-1"
-            renderComposer={({ enableAttachments }) => (
+            renderComposer={({ enableAttachments, onLayoutChange }) => (
               <div data-testid="custom-composer">
                 {enableAttachments ? "attachments-enabled" : "attachments-disabled"}
+                {typeof onLayoutChange === "function" ? "-layout-callback" : ""}
               </div>
             )}
           />
         </TestWrapper>
       );
 
-      expect(screen.getByTestId("custom-composer")).toHaveTextContent("attachments-enabled");
+      expect(screen.getByTestId("custom-composer")).toHaveTextContent("attachments-enabled-layout-callback");
       expect(screen.queryByTestId("chat-input")).not.toBeInTheDocument();
     });
 
