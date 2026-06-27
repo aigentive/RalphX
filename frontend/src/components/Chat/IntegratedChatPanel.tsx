@@ -210,6 +210,8 @@ export interface IntegratedChatComposerRenderProps {
   effectiveModel?: { id: string; label: string } | undefined;
   /** Provider harness label (e.g. "claude", "codex") for this chat context. */
   providerHarness?: string | null | undefined;
+  /** Notify the transcript that composer chrome is resizing outside ResizeObserver timing. */
+  onLayoutChange: () => void;
 }
 
 export function IntegratedChatPanel({
@@ -753,25 +755,29 @@ export function IntegratedChatPanel({
   const inputContainerHeightRef = useRef<number | null>(null);
   const [inputLayoutVersion, setInputLayoutVersion] = useState(0);
 
+  const updateInputLayoutHeight = useCallback((height: number, { force = false } = {}) => {
+    const nextHeight = Math.round(height);
+    if (!force && inputContainerHeightRef.current === nextHeight) {
+      return;
+    }
+    inputContainerHeightRef.current = nextHeight;
+    setInputLayoutVersion((version) => version + 1);
+  }, []);
+
+  const notifyInputLayoutChanged = useCallback(() => {
+    setInputLayoutVersion((version) => version + 1);
+  }, []);
+
   useLayoutEffect(() => {
     const container = inputContainerRef.current;
     if (!container || typeof ResizeObserver === "undefined") {
       return undefined;
     }
 
-    const updateInputHeight = (height: number) => {
-      const nextHeight = Math.round(height);
-      if (inputContainerHeightRef.current === nextHeight) {
-        return;
-      }
-      inputContainerHeightRef.current = nextHeight;
-      setInputLayoutVersion((version) => version + 1);
-    };
-
-    updateInputHeight(container.getBoundingClientRect().height);
+    updateInputLayoutHeight(container.getBoundingClientRect().height);
 
     const observer = new ResizeObserver((entries) => {
-      updateInputHeight(
+      updateInputLayoutHeight(
         entries[0]?.contentRect.height ?? container.getBoundingClientRect().height,
       );
     });
@@ -780,7 +786,7 @@ export function IntegratedChatPanel({
     return () => {
       observer.disconnect();
     };
-  }, []);
+  }, [updateInputLayoutHeight]);
 
   // File attachments - use activeConversationId for attachment association
   // Only enable attachments when there's an active conversation (not in history mode)
@@ -1501,6 +1507,7 @@ export function IntegratedChatPanel({
                       activeConversationMeta?.providerHarness ??
                       fallbackProviderHarness ??
                       null,
+                    onLayoutChange: notifyInputLayoutChanged,
                     ...(activeQuestion
                       ? {
                           value: questionInputValue,
