@@ -10,10 +10,10 @@ import {
   Lightbulb,
 } from "lucide-react";
 import { BranchBadge, BranchFlow } from "@/components/shared/BranchBadge";
+import { PrStatusBadge } from "@/components/shared/PrStatusBadge";
 import type { InternalStatus } from "@/types/task";
 import { DescriptionBlock } from "./DescriptionBlock";
 import { DetailCard } from "./DetailCard";
-import { PrStatusBadge } from "./PrStatusBadge";
 import { SectionTitle } from "./SectionTitle";
 import { TaskDetailPlanDialog } from "./TaskDetailPlanDialog";
 import { TaskDetailProposalDialog } from "./TaskDetailProposalDialog";
