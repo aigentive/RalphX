@@ -6,6 +6,7 @@ import {
   Lightbulb,
   Loader2,
   MessageSquare,
+  PanelRightOpen,
   Play,
   ShieldCheck,
   type LucideIcon,
@@ -75,6 +76,7 @@ import { useAgentConversationRuntimeStatus } from "./useAgentConversationRuntime
 import { AgentsComposerWorkspaceChangesCard } from "./AgentsComposerWorkspaceChangesCard";
 import { AgentsChatHeaderController } from "./AgentsChatHeaderController";
 import { AgentWorkspaceFileLinkProvider } from "./AgentWorkspaceFileLinkProvider";
+import { useResolvedAgentArtifactState } from "./agentArtifactState";
 import { AGENT_CONVERSATION_MODE_OPTIONS } from "./agentConversationMode";
 import type { DiffFilterMode } from "./AgentsPublishDiffFilter";
 import {
@@ -218,6 +220,13 @@ interface PlanComposerCtaAction {
   onClick: () => void;
 }
 
+interface PlanComposerViewPlanAction {
+  available: boolean;
+  conversationId: string;
+  hasAutoOpenArtifacts: boolean;
+  onClick: () => void;
+}
+
 function getPlanComposerCompactHint(
   hint: string,
   actions: PlanComposerCtaAction[],
@@ -262,14 +271,42 @@ function getPlanComposerHintDetails(hint: string, compactHint: string): string |
 function PlanComposerCtaRow({
   hint,
   actions,
+  viewPlanAction,
 }: {
   hint: string;
   actions: PlanComposerCtaAction[];
+  viewPlanAction?: PlanComposerViewPlanAction | undefined;
 }) {
-  if (actions.length === 0) {
+  const { artifactState } = useResolvedAgentArtifactState(
+    viewPlanAction?.conversationId ?? null,
+    viewPlanAction?.hasAutoOpenArtifacts ?? false,
+  );
+  const resolvedActions = useMemo<PlanComposerCtaAction[]>(() => {
+    if (
+      !viewPlanAction?.available ||
+      (artifactState.isOpen && artifactState.activeTab === "plan")
+    ) {
+      return actions;
+    }
+
+    return [
+      {
+        id: "view-plan",
+        label: "View Plan",
+        icon: PanelRightOpen,
+        isPrimary: false,
+        isPending: false,
+        disabled: false,
+        onClick: viewPlanAction.onClick,
+      },
+      ...actions,
+    ];
+  }, [actions, artifactState.activeTab, artifactState.isOpen, viewPlanAction]);
+
+  if (resolvedActions.length === 0) {
     return null;
   }
-  const compactHint = getPlanComposerCompactHint(hint, actions);
+  const compactHint = getPlanComposerCompactHint(hint, resolvedActions);
   const hintDetails = getPlanComposerHintDetails(hint, compactHint);
   const isRecommendation = compactHint.startsWith("Recommended:");
   const isRecommendationCheckPending = compactHint.startsWith(
@@ -324,7 +361,7 @@ function PlanComposerCtaRow({
     );
   };
 
-  const isSingleAction = actions.length === 1;
+  const isSingleAction = resolvedActions.length === 1;
 
   return (
     <div
@@ -376,7 +413,7 @@ function PlanComposerCtaRow({
             aria-label="Plan actions"
             data-testid="agents-plan-composer-cta-actions"
           >
-            {renderActionButton(actions[0]!)}
+            {renderActionButton(resolvedActions[0]!)}
           </div>
         </div>
       ) : (
@@ -427,7 +464,7 @@ function PlanComposerCtaRow({
             aria-label="Plan actions"
             data-testid="agents-plan-composer-cta-actions"
           >
-            {actions.map(renderActionButton)}
+            {resolvedActions.map(renderActionButton)}
           </div>
         </>
       )}
@@ -488,6 +525,7 @@ interface AgentsActiveConversationPanelProps {
   onForkConversation: (
     conversationId: string
   ) => Promise<ForkAgentConversationResult>;
+  onOpenPlanArtifact: () => void;
   onOpenPublishPane: () => void;
   onOpenPublishFile: (filePath: string, mode: DiffFilterMode) => void;
   onPreloadArtifacts: () => void;
@@ -532,6 +570,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   onFocusTaskRuntime,
   onOpenTaskArtifact,
   onForkConversation,
+  onOpenPlanArtifact,
   onOpenPublishPane,
   onOpenPublishFile,
   onPreloadArtifacts,
@@ -1510,6 +1549,25 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     planComplexityQuery.data?.recommendedAction,
     planVerificationInProgress,
   ]);
+  const planComposerViewPlanAction = useMemo<
+    PlanComposerViewPlanAction | undefined
+  >(() => {
+    if (!canApproveComposerPlan || !availableArtifactTabs.includes("plan")) {
+      return undefined;
+    }
+    return {
+      available: true,
+      conversationId: selectedConversationId,
+      hasAutoOpenArtifacts,
+      onClick: onOpenPlanArtifact,
+    };
+  }, [
+    availableArtifactTabs,
+    canApproveComposerPlan,
+    hasAutoOpenArtifacts,
+    onOpenPlanArtifact,
+    selectedConversationId,
+  ]);
   const planApprovalAction = useMemo(() => {
     if (!canApproveComposerPlan) {
       return undefined;
@@ -1951,6 +2009,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                     <PlanComposerCtaRow
                       hint={planComposerHint}
                       actions={planComposerCtaActions}
+                      viewPlanAction={planComposerViewPlanAction}
                     />
                   )}
                   <AgentComposerSurface

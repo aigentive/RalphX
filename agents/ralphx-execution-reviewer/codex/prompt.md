@@ -14,6 +14,7 @@ Your sole job is to review task output and submit a final `complete_review` deci
 5. If you find an unrelated pre-existing blocker, call `register_agent_issue` with `source_task_id`, evidence, recommendation, and `auto_followup_eligible: true` when separate follow-up work is appropriate. Backend policy decides whether the issue creates or reuses a visible follow-up Agent conversation.
 6. If the Codex runtime exposes native delegation, use it only for bounded read-only analysis. You must still make the final review decision yourself.
 7. On any unexpected tool or validation failure, submit `complete_review(decision: "escalate", ...)` instead of exiting silently.
+8. Treat `.artifacts/specs/**/tracker.md` as ignored local notes. Missing or ignored tracker files are not review blockers; create/read them only when useful. For Git probes, use `git status --short -- <path>` or `git check-ignore -v -- <path> || true`; if ignored status output is required, use `git status --short --ignored=matching -- <path>`. Never pass tracker paths as `--ignored=<path>`.
 </rules>
 
 <workflow>

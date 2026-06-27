@@ -1012,6 +1012,33 @@ impl<R: Runtime> ReconciliationRunner<R> {
             return false;
         }
 
+        let last_failure_source = recovery.events.last().and_then(|e| e.failure_source);
+        if matches!(
+            last_failure_source,
+            Some(ExecutionFailureSource::AgentCrash)
+        ) && is_deterministic_agent_command_error(last_error_message)
+        {
+            warn!(
+                task_id = task.id.as_str(),
+                error = %last_error_message,
+                "Deterministic agent command error detected — setting stop_retrying=true (AgentCommandInvalid)"
+            );
+            if let Err(e) = self
+                .set_execution_stop_retrying_with_reason(
+                    &task,
+                    StopRetryingReason::AgentCommandInvalid,
+                )
+                .await
+            {
+                warn!(
+                    task_id = task.id.as_str(),
+                    error = %e,
+                    "Failed to set stop_retrying for deterministic agent command error"
+                );
+            }
+            return false;
+        }
+
         // Skip if recovery has reached permanent failure state
         if recovery.last_state == ExecutionRecoveryState::Failed {
             tracing::debug!(
@@ -1038,7 +1065,6 @@ impl<R: Runtime> ReconciliationRunner<R> {
 
         // Extract failure source from last recovery event — used for per-source retry budgets
         // and backoff calculation. Must be extracted BEFORE max-retries check.
-        let last_failure_source = recovery.events.last().and_then(|e| e.failure_source);
         let is_git_isolation = matches!(last_failure_source, Some(ExecutionFailureSource::GitIsolation));
 
         // Compute retry_count and max_retries for use in activity messages below.
@@ -2463,4 +2489,13 @@ fn is_structural_git_error(msg: &str) -> bool {
         return true;
     }
     msg.contains("does not exist") && msg.contains("invalid reference")
+}
+
+/// Returns true for deterministic local command usage errors emitted by the agent.
+///
+/// These are not provider stalls or transient crashes. Retrying the same prompt/worktree tends to
+/// repeat the same shell mistake, so reconciliation should stop and surface the failure.
+pub(crate) fn is_deterministic_agent_command_error(msg: &str) -> bool {
+    msg.to_ascii_lowercase()
+        .contains("fatal: invalid ignored mode")
 }

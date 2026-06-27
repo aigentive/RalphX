@@ -1128,11 +1128,11 @@ async fn seed_current_execution_attempt(state: &AppState, task_id: &TaskId) -> S
     run_id
 }
 
-/// AgentExit with all steps completed should override target_status to PendingReview.
-/// This covers the scenario where execution_complete was called (marking steps done)
-/// but the agent exited with signal code=None (IPR removal → EOF → signal).
+/// Completed/skipped steps are necessary task context, but do not prove that an AgentExit
+/// completed successfully. The production rescue path also requires a current green
+/// validation cache before transitioning to PendingReview.
 #[test]
-fn test_agent_exit_all_steps_complete_overrides_to_pending_review() {
+fn test_all_steps_completed_classifies_completed_and_skipped_steps() {
     let task_id = TaskId::new();
     let steps = vec![
         make_step(&task_id, TaskStepStatus::Completed),
@@ -1143,6 +1143,31 @@ fn test_agent_exit_all_steps_complete_overrides_to_pending_review() {
 
     let result = run(all_steps_completed(&step_repo, &task_id));
     assert!(result, "All Completed+Skipped steps → should return true");
+}
+
+#[test]
+fn test_agent_exit_all_steps_complete_without_validation_cache_stays_failed() {
+    let stream_error = StreamError::AgentExit {
+        exit_code: None,
+        stderr: "agent exited after failed validation".to_string(),
+    };
+    let validation_complete = false;
+    let initial_target = InternalStatus::Failed;
+
+    let target_status = if initial_target == InternalStatus::Failed
+        && matches!(&stream_error, StreamError::AgentExit { .. })
+        && validation_complete
+    {
+        InternalStatus::PendingReview
+    } else {
+        initial_target
+    };
+
+    assert_eq!(
+        target_status,
+        InternalStatus::Failed,
+        "Completed steps alone must not rescue AgentExit without a current green validation cache"
+    );
 }
 
 /// AgentExit with incomplete steps should remain Failed.

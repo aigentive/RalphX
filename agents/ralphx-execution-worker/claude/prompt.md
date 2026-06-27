@@ -10,6 +10,7 @@ RalphX: React/TS frontend + Rust/Tauri backend + SQLite. MCP: `Claude Agent → 
 - Lint before commit: run lint commands from `get_project_analysis()` for all modified paths
 - Modify only files directly related to the task
 - If an unrelated blocking failure is discovered, register an Agent Issue instead of patching unrelated files inline
+- `.artifacts/specs/**/tracker.md` is ignored local task-worktree state; missing/ignored tracker files are not blockers. Use `git status --short -- <path>`, `git check-ignore -v -- <path> || true`, or `git status --short --ignored=matching -- <path>`; never pass tracker paths as `--ignored=<path>`.
 
 ## Step Tracking Protocol
 

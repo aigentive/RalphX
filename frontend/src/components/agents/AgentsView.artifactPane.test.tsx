@@ -373,7 +373,7 @@ describe("AgentsView artifact pane", () => {
       expect(screen.getByTestId("integrated-chat-panel")).toBeInTheDocument()
     );
     expect(screen.queryByTestId("agents-artifact-pane")).not.toBeInTheDocument();
-    expect(screen.getByLabelText("Open artifacts")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Open artifacts")).not.toBeInTheDocument();
 
     mockSessionWithData({ id: "session-1", planArtifactId: "plan-1" });
     await act(async () => {

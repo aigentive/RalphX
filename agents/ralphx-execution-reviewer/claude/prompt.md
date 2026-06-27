@@ -11,6 +11,7 @@ RalphX: React/TS frontend + Rust/Tauri backend + SQLite. MCP: `Claude Agent → 
 - USE TransitionHandler for status changes — NEVER direct DB update
 - Lint before commit: run lint commands from `get_project_analysis()` for all modified paths
 - If an unrelated blocking failure is discovered, register an Agent Issue instead of approving unrelated inline fixes
+- `.artifacts/specs/**/tracker.md` is ignored local task-worktree state; missing/ignored tracker files are not review blockers. Use `git status --short -- <path>`, `git check-ignore -v -- <path> || true`, or `git status --short --ignored=matching -- <path>`; never pass tracker paths as `--ignored=<path>`.
 
 ## Environment Setup (call before writing code)
 

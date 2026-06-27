@@ -2598,14 +2598,13 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
 
                     // AgentExit where the work is actually complete → agent called
                     // execution_complete successfully but exited with signal (code=None).
-                    // Override to PendingReview when either all steps are completed OR a
-                    // HEAD-matched green validation cache proves completion (the latter rescues
-                    // a fully validated task that a lingering terminal `failed` step would
-                    // otherwise trap in Failed).
+                    // Override to PendingReview only when a current-attempt, HEAD-matched green
+                    // validation cache proves completion. Completed steps alone are not enough:
+                    // a failed agent can mark steps done before leaving uncommitted or invalid
+                    // working-tree changes behind.
                     let target_status = if target_status == InternalStatus::Failed
                         && matches!(stream_error, Some(StreamError::AgentExit { .. }))
                     {
-                        let all_steps_done = all_steps_completed(task_step_repo, &task_id).await;
                         let validation_complete = if let Some(episode_entered_at) =
                             episode_entered_at
                         {
@@ -2614,12 +2613,14 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                             false
                         };
 
-                        if all_steps_done || validation_complete {
+                        if validation_complete {
+                            let all_steps_done =
+                                all_steps_completed(task_step_repo, &task_id).await;
                             tracing::info!(
                                 task_id = task_id.as_str(),
                                 all_steps_done,
                                 validation_complete,
-                                "AgentExit with completed work — overriding Failed → PendingReview"
+                                "AgentExit with current green validation cache — overriding Failed → PendingReview"
                             );
                             InternalStatus::PendingReview
                         } else {
