@@ -6,7 +6,8 @@ use std::{
 };
 
 use crate::application::clickup_integration_service::{
-    ClickUpAttachment, ClickUpFolder, ClickUpList,
+    ClickUpApiClient, ClickUpAttachment, ClickUpAuthContext, ClickUpFolder,
+    ClickUpIntegrationService, ClickUpList, ClickUpTaskListOptions, ClickUpWorkspace,
 };
 use crate::application::linear_integration_service::LinearAttachment;
 use crate::application::{
@@ -28,13 +29,13 @@ use crate::domain::entities::{
 };
 use crate::domain::integrations::{
     AtlassianAuthMethod, AtlassianIntegrationSettings, AtlassianIntegrationSettingsRepository,
-    ClickUpIntegrationSettings, IntegrationValidationStatus, ProviderTicketOperation,
-    ProviderTicketOperationKind, ProviderTicketOperationStatus,
+    ClickUpIntegrationSettings, ClickUpIntegrationSettingsRepository, IntegrationValidationStatus,
+    ProviderTicketOperation, ProviderTicketOperationKind, ProviderTicketOperationStatus,
 };
 use crate::domain::services::{ComposerIntegrationReference, SecretStore};
 use crate::infrastructure::memory::{
-    MemoryAtlassianIntegrationSettingsRepository, MemoryLinearIntegrationSettingsRepository,
-    MemorySecretStore,
+    MemoryAtlassianIntegrationSettingsRepository, MemoryClickUpIntegrationSettingsRepository,
+    MemoryLinearIntegrationSettingsRepository, MemorySecretStore,
 };
 use crate::tests::mock_github_service::MockGithubService;
 use async_trait::async_trait;
@@ -915,6 +916,197 @@ impl AtlassianApiClient for FakeAtlassianTicketingClient {
     }
 }
 
+#[derive(Default)]
+struct FakeClickUpTicketingClient {
+    list_spaces_calls: Mutex<Vec<String>>,
+    list_folders_calls: Mutex<Vec<String>>,
+    list_folder_lists_calls: Mutex<Vec<String>>,
+    list_folderless_lists_calls: Mutex<Vec<String>>,
+    list_tasks_calls: Mutex<Vec<Vec<String>>>,
+    list_tasks_for_list_calls: Mutex<Vec<(String, Vec<i64>)>>,
+}
+
+impl FakeClickUpTicketingClient {
+    fn folder_task() -> ClickUpTaskSummary {
+        ClickUpTaskSummary {
+            id: "folder-task".to_string(),
+            custom_id: Some("CU-1".to_string()),
+            name: "Folder scoped task".to_string(),
+            url: None,
+            status_name: Some("In Progress".to_string()),
+            status_type: Some("custom".to_string()),
+            status_category: Some("in_progress".to_string()),
+            status_color: None,
+            assignees: vec!["Alex Developer".to_string()],
+            assignee_ids: vec![42],
+            watchers: vec![ClickUpUser {
+                id: 42,
+                username: Some("Alex Developer".to_string()),
+                email: Some("alex@example.com".to_string()),
+            }],
+            tags: Vec::new(),
+            sprint_names: vec!["Current Sprint".to_string()],
+            location_ids: vec!["list-folder".to_string()],
+            location_folder_ids: vec!["folder-1".to_string()],
+            location_space_ids: vec!["space-1".to_string()],
+            space_id: Some("space-1".to_string()),
+            folder_id: Some("folder-1".to_string()),
+            list_id: Some("list-folder".to_string()),
+            list_name: Some("Current Sprint".to_string()),
+            updated_at: None,
+        }
+    }
+
+    fn other_task() -> ClickUpTaskSummary {
+        ClickUpTaskSummary {
+            id: "other-task".to_string(),
+            custom_id: Some("CU-2".to_string()),
+            name: "Other task".to_string(),
+            url: None,
+            status_name: Some("Todo".to_string()),
+            status_type: Some("open".to_string()),
+            status_category: Some("todo".to_string()),
+            status_color: None,
+            assignees: Vec::new(),
+            assignee_ids: Vec::new(),
+            watchers: Vec::new(),
+            tags: Vec::new(),
+            sprint_names: Vec::new(),
+            location_ids: vec!["other-list".to_string()],
+            location_folder_ids: vec!["other-folder".to_string()],
+            location_space_ids: vec!["other-space".to_string()],
+            space_id: Some("other-space".to_string()),
+            folder_id: Some("other-folder".to_string()),
+            list_id: Some("other-list".to_string()),
+            list_name: Some("Backlog".to_string()),
+            updated_at: None,
+        }
+    }
+}
+
+#[async_trait]
+impl ClickUpApiClient for FakeClickUpTicketingClient {
+    async fn validate(&self, _auth: &ClickUpAuthContext) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn list_workspaces(
+        &self,
+        _auth: &ClickUpAuthContext,
+    ) -> Result<Vec<ClickUpWorkspace>, String> {
+        Ok(vec![ClickUpWorkspace {
+            id: "workspace-1".to_string(),
+            name: "Workspace".to_string(),
+            color: None,
+        }])
+    }
+
+    async fn list_spaces(
+        &self,
+        _auth: &ClickUpAuthContext,
+        team_id: &str,
+    ) -> Result<Vec<ClickUpSpace>, String> {
+        self.list_spaces_calls
+            .lock()
+            .unwrap()
+            .push(team_id.to_string());
+        Ok(vec![ClickUpSpace {
+            id: "space-1".to_string(),
+            name: "Engineering".to_string(),
+            private: false,
+        }])
+    }
+
+    async fn list_folders(
+        &self,
+        _auth: &ClickUpAuthContext,
+        space_id: &str,
+    ) -> Result<Vec<ClickUpFolder>, String> {
+        self.list_folders_calls
+            .lock()
+            .unwrap()
+            .push(space_id.to_string());
+        Ok(vec![ClickUpFolder {
+            id: "folder-1".to_string(),
+            name: "Delivery".to_string(),
+            space_id: Some(space_id.to_string()),
+        }])
+    }
+
+    async fn list_folder_lists(
+        &self,
+        _auth: &ClickUpAuthContext,
+        folder_id: &str,
+    ) -> Result<Vec<ClickUpList>, String> {
+        self.list_folder_lists_calls
+            .lock()
+            .unwrap()
+            .push(folder_id.to_string());
+        Ok(vec![ClickUpList {
+            id: "list-folder".to_string(),
+            name: "Folder List".to_string(),
+            folder_id: Some(folder_id.to_string()),
+            space_id: None,
+        }])
+    }
+
+    async fn list_folderless_lists(
+        &self,
+        _auth: &ClickUpAuthContext,
+        space_id: &str,
+    ) -> Result<Vec<ClickUpList>, String> {
+        self.list_folderless_lists_calls
+            .lock()
+            .unwrap()
+            .push(space_id.to_string());
+        Ok(vec![ClickUpList {
+            id: "list-space".to_string(),
+            name: "Space List".to_string(),
+            folder_id: None,
+            space_id: Some(space_id.to_string()),
+        }])
+    }
+
+    async fn list_tasks(
+        &self,
+        _auth: &ClickUpAuthContext,
+        _team_id: &str,
+        space_ids: &[String],
+        _options: ClickUpTaskListOptions,
+    ) -> Result<Vec<ClickUpTaskSummary>, String> {
+        self.list_tasks_calls
+            .lock()
+            .unwrap()
+            .push(space_ids.to_vec());
+        Ok(vec![Self::folder_task(), Self::other_task()])
+    }
+
+    async fn list_tasks_for_list(
+        &self,
+        _auth: &ClickUpAuthContext,
+        list_id: &str,
+        options: ClickUpTaskListOptions,
+    ) -> Result<Vec<ClickUpTaskSummary>, String> {
+        self.list_tasks_for_list_calls
+            .lock()
+            .unwrap()
+            .push((list_id.to_string(), options.assignee_ids));
+        let mut task = Self::folder_task();
+        task.id = "list-task".to_string();
+        task.list_id = Some(list_id.to_string());
+        task.location_ids = vec![list_id.to_string()];
+        Ok(vec![task])
+    }
+
+    async fn current_user(&self, _auth: &ClickUpAuthContext) -> Result<ClickUpUser, String> {
+        Ok(ClickUpUser {
+            id: 42,
+            username: Some("Alex Developer".to_string()),
+            email: Some("alex@example.com".to_string()),
+        })
+    }
+}
+
 async fn valid_linear_service(
     client: Arc<FakeLinearTicketingClient>,
 ) -> Arc<LinearIntegrationService> {
@@ -959,6 +1151,28 @@ async fn valid_atlassian_service(
     .await
     .unwrap();
     AtlassianIntegrationService::new(repo, secret_store, client).into()
+}
+
+async fn valid_clickup_service(
+    client: Arc<FakeClickUpTicketingClient>,
+) -> Arc<ClickUpIntegrationService> {
+    let repo = Arc::new(MemoryClickUpIntegrationSettingsRepository::new());
+    let secret_store = Arc::new(MemorySecretStore::new());
+    secret_store
+        .put_secret("clickup-token", "pk_test")
+        .await
+        .unwrap();
+    repo.upsert(&ClickUpIntegrationSettings {
+        enabled: true,
+        token_secret_ref: Some("clickup-token".to_string()),
+        workspace_id: Some("workspace-1".to_string()),
+        validation_status: IntegrationValidationStatus::Valid,
+        task_search_available: true,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    ClickUpIntegrationService::new(repo, secret_store, client).into()
 }
 
 fn linear_issue_summary(
@@ -1027,6 +1241,73 @@ async fn list_ticketing_containers_uses_expanded_provider_limits() {
     assert_eq!(
         linear_client.list_projects_first.lock().unwrap().as_slice(),
         &[TICKETING_CONTAINER_LIMIT]
+    );
+}
+
+#[tokio::test]
+async fn list_ticketing_containers_loads_clickup_space_children() {
+    let clickup_client = Arc::new(FakeClickUpTicketingClient::default());
+    let mut state = AppState::new_test();
+    state.clickup_integration_service = valid_clickup_service(Arc::clone(&clickup_client)).await;
+    let app = build_ticketing_start_app(state, Arc::new(ExecutionState::new()));
+
+    let spaces = list_ticketing_containers("clickup".to_string(), None, None, app.state())
+        .await
+        .expect("clickup spaces should load");
+    assert_eq!(spaces.len(), 1);
+    assert_eq!(spaces[0].id, "space:space-1");
+    assert_eq!(spaces[0].kind, "space");
+
+    let locations = list_ticketing_containers(
+        "clickup".to_string(),
+        None,
+        Some("space:space-1".to_string()),
+        app.state(),
+    )
+    .await
+    .expect("clickup child containers should load");
+
+    assert_eq!(
+        locations
+            .iter()
+            .map(|container| container.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["folder:folder-1", "list:list-folder", "list:list-space"]
+    );
+    assert_eq!(
+        locations
+            .iter()
+            .map(|container| container.parent_id.as_deref())
+            .collect::<Vec<_>>(),
+        vec![
+            Some("space:space-1"),
+            Some("folder:folder-1"),
+            Some("space:space-1")
+        ]
+    );
+    assert_eq!(
+        clickup_client.list_spaces_calls.lock().unwrap().as_slice(),
+        &["workspace-1"]
+    );
+    assert_eq!(
+        clickup_client.list_folders_calls.lock().unwrap().as_slice(),
+        &["space-1"]
+    );
+    assert_eq!(
+        clickup_client
+            .list_folder_lists_calls
+            .lock()
+            .unwrap()
+            .as_slice(),
+        &["folder-1"]
+    );
+    assert_eq!(
+        clickup_client
+            .list_folderless_lists_calls
+            .lock()
+            .unwrap()
+            .as_slice(),
+        &["space-1"]
     );
 }
 
@@ -2290,6 +2571,79 @@ async fn load_ticket_summaries_routes_clickup_space_scope_before_disabled_error(
         .expect_err("disabled ClickUp integration should fail");
 
     assert!(!error.trim().is_empty());
+}
+
+#[tokio::test]
+async fn load_ticket_summaries_routes_clickup_space_list_and_folder_scopes() {
+    let clickup_client = Arc::new(FakeClickUpTicketingClient::default());
+    let mut state = AppState::new_test();
+    state.clickup_integration_service = valid_clickup_service(Arc::clone(&clickup_client)).await;
+
+    let space_items = load_ticket_summaries(
+        &state,
+        PROVIDER_CLICKUP,
+        Some("space:space-1"),
+        "Folder",
+        10,
+        None,
+    )
+    .await
+    .expect("space-scoped clickup tasks should load");
+    assert_eq!(
+        space_items
+            .iter()
+            .map(|ticket| ticket.ref_.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["folder-task", "other-task"]
+    );
+    assert!(space_items[0].current_user_assigned);
+    assert!(space_items[0].current_user_watching);
+
+    let folder_items = load_ticket_summaries(
+        &state,
+        PROVIDER_CLICKUP,
+        Some("folder:folder-1"),
+        "",
+        10,
+        None,
+    )
+    .await
+    .expect("folder-scoped clickup tasks should load");
+    assert_eq!(folder_items.len(), 1);
+    assert_eq!(folder_items[0].ref_.id, "folder-task");
+
+    let list_filter = TicketFiltersInput {
+        text: None,
+        assignee: Some("Alex Developer".to_string()),
+        watcher_me: None,
+        state_ids: None,
+        labels: None,
+        sprint: Some("Current Sprint".to_string()),
+    };
+    let list_items = load_ticket_summaries(
+        &state,
+        PROVIDER_CLICKUP,
+        Some("list:list-folder"),
+        "",
+        10,
+        Some(&list_filter),
+    )
+    .await
+    .expect("list-scoped clickup tasks should load");
+    assert_eq!(list_items.len(), 1);
+    assert_eq!(list_items[0].ref_.id, "list-task");
+    assert_eq!(
+        clickup_client.list_tasks_calls.lock().unwrap().as_slice(),
+        &[vec!["space-1".to_string()], Vec::<String>::new()]
+    );
+    assert_eq!(
+        clickup_client
+            .list_tasks_for_list_calls
+            .lock()
+            .unwrap()
+            .as_slice(),
+        &[("list-folder".to_string(), vec![42])]
+    );
 }
 
 #[test]
