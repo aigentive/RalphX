@@ -30,6 +30,7 @@ import {
   type FailureSource,
   TRANSIENT_FAILURE_SOURCES,
 } from "@/types/task";
+import type { InternalStatus } from "@/types/status";
 import { stopExecutionRetry } from "@/lib/task-actions/task-actions";
 import {
   FRESHNESS_BLOCKED_PREFIX,
@@ -77,6 +78,7 @@ type ExecutionMode = "solo" | "team";
 
 // Task statuses that can be restarted
 const RESTARTABLE_STATUSES = new Set(["failed", "stopped", "cancelled", "paused"]);
+const SUCCESSFUL_TERMINAL_STATUSES = new Set<InternalStatus>(["approved", "merged"]);
 
 // Human-readable labels for failure source codes
 const FAILURE_SOURCE_LABELS: Record<string, string> = {
@@ -875,8 +877,10 @@ export function BasicTaskDetail({ task, isHistorical = false }: BasicTaskDetailP
     ? parseFreshnessBlockedReason(task.blockedReason!)
     : null;
 
-  // Parse last_agent_error from metadata for any status
+  // Parse current agent errors, but do not surface stale failures after successful terminal states.
+  const shouldShowAgentError = !SUCCESSFUL_TERMINAL_STATUSES.has(task.internalStatus);
   const agentError = useMemo(() => {
+    if (!shouldShowAgentError) return null;
     if (!task.metadata) return null;
     try {
       const metadata = JSON.parse(task.metadata);
@@ -895,7 +899,7 @@ export function BasicTaskDetail({ task, isHistorical = false }: BasicTaskDetailP
     } catch {
       return null;
     }
-  }, [task.metadata]);
+  }, [shouldShowAgentError, task.metadata]);
 
   return (
     <TwoColumnLayout

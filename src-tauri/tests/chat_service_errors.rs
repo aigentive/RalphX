@@ -295,6 +295,30 @@ fn test_stream_error_display() {
     assert!(provider_err.to_string().contains("Usage limit reached"));
 }
 
+#[test]
+fn test_agent_exit_summary_ignores_cargo_progress_noise() {
+    let stderr = "\
+   Compiling proc-macro2 v1.0.106
+    Building [                           ] 0/108: proc-macro2(build.rs)
+   Compiling unicode-ident v1.0.22
+error: failed to write `/tmp/target/debug/.fingerprint/test-lib`
+
+Caused by:
+  No space left on device (os error 28)
+";
+
+    let summary = StreamError::AgentExit {
+        exit_code: Some(1),
+        stderr: stderr.to_string(),
+    }
+    .to_string();
+
+    assert!(summary.contains("failed to write"));
+    assert!(summary.contains("No space left on device"));
+    assert!(!summary.contains("Compiling proc-macro2"));
+    assert!(!summary.contains("Building ["));
+}
+
 // =========================================================================
 // ProviderError classification tests
 // =========================================================================

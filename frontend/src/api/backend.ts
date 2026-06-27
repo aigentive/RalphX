@@ -11,9 +11,11 @@ function defaultBackendBaseUrl(): string {
 }
 
 export function backendBaseUrl(): string {
-  return (
-    import.meta.env.VITE_RALPHX_BACKEND_URL || defaultBackendBaseUrl()
-  ).replace(/\/+$/, "");
+  const configuredUrl =
+    import.meta.env.MODE === "test"
+      ? undefined
+      : import.meta.env.VITE_RALPHX_BACKEND_URL;
+  return (configuredUrl || defaultBackendBaseUrl()).replace(/\/+$/, "");
 }
 
 export function backendApiUrl(endpoint: string): string {
