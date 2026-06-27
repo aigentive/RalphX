@@ -111,8 +111,7 @@ async fn register_issue_error(
 ) -> JsonError {
     register_agent_issue(State(state), Json(req))
         .await
-        .err()
-        .expect("expected issue registration error")
+        .expect_err("expected issue registration error")
 }
 
 #[test]
@@ -247,8 +246,10 @@ async fn register_issue_validates_required_fields_and_origin_context() {
 #[tokio::test]
 async fn register_issue_resolves_origin_from_source_task_workspace() {
     let app_state = Arc::new(AppState::new_test());
-    let mut settings = ReviewSettings::default();
-    settings.auto_create_followup_agent_conversation = false;
+    let settings = ReviewSettings {
+        auto_create_followup_agent_conversation: false,
+        ..ReviewSettings::default()
+    };
     app_state
         .review_settings_repo
         .update_settings(&settings)
@@ -337,8 +338,10 @@ async fn register_issue_rejects_invalid_source_task_origins() {
 #[tokio::test]
 async fn register_issue_saves_and_refreshes_existing_when_auto_followup_disabled() {
     let app_state = Arc::new(AppState::new_test());
-    let mut settings = ReviewSettings::default();
-    settings.auto_create_followup_agent_conversation = false;
+    let settings = ReviewSettings {
+        auto_create_followup_agent_conversation: false,
+        ..ReviewSettings::default()
+    };
     app_state
         .review_settings_repo
         .update_settings(&settings)
@@ -496,8 +499,7 @@ async fn list_and_status_update_filter_resolved_and_dismissed_issues() {
         }),
     )
     .await
-    .err()
-    .expect("invalid status should be rejected");
+    .expect_err("invalid status should be rejected");
     assert_eq!(invalid.0, StatusCode::BAD_REQUEST);
 
     let missing = update_agent_conversation_issue_status(
@@ -508,8 +510,7 @@ async fn list_and_status_update_filter_resolved_and_dismissed_issues() {
         }),
     )
     .await
-    .err()
-    .expect("missing issue should be rejected");
+    .expect_err("missing issue should be rejected");
     assert_eq!(missing.0, StatusCode::NOT_FOUND);
 }
 

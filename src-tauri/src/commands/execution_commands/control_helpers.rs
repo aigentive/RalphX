@@ -298,10 +298,7 @@ pub(super) async fn count_queued_messages_for_context_types(
 ) -> Result<u32, String> {
     let mut count = 0u32;
     for key in queued_keys(app_state).await? {
-        if !context_types
-            .iter()
-            .any(|context_type| *context_type == key.context_type)
-        {
+        if !context_types.contains(&key.context_type) {
             continue;
         }
         if !queue_key_matches_project(&key, project_filter, app_state).await? {

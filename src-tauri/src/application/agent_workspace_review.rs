@@ -103,7 +103,7 @@ pub async fn load_agent_workspace_review_context(
         .await?
         .ok_or_else(|| AppError::NotFound("Project not found".to_string()))?;
     let target = resolve_review_target(workspace, &project).await?;
-    let mut monitor = load_or_create_monitor(&state, workspace).await?;
+    let mut monitor = load_or_create_monitor(state, workspace).await?;
     apply_current_target_to_monitor(&mut monitor, target.as_ref());
     if target.is_none() && monitor.status != AgentWorkspaceReviewMonitorStatus::Reviewing {
         monitor.status = AgentWorkspaceReviewMonitorStatus::Idle;

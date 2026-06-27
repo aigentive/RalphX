@@ -219,8 +219,7 @@ async fn create_followup_validates_origin_before_spawning_new_branch() {
         req
     })
     .await
-    .err()
-    .expect("missing context should be rejected");
+    .expect_err("missing context should be rejected");
     assert_eq!(missing_context.0, StatusCode::BAD_REQUEST);
 
     let task_conversation = ChatConversation::new_task(TaskId::new());
@@ -235,8 +234,7 @@ async fn create_followup_validates_origin_before_spawning_new_branch() {
         req
     })
     .await
-    .err()
-    .expect("task conversation should be rejected as origin");
+    .expect_err("task conversation should be rejected as origin");
     assert_eq!(wrong_context.0, StatusCode::BAD_REQUEST);
 
     let (_project_id, origin) = seed_project_conversation(&app_state).await;
@@ -249,8 +247,7 @@ async fn create_followup_validates_origin_before_spawning_new_branch() {
         }),
     )
     .await
-    .err()
-    .expect("new branch creation needs an initialized app handle");
+    .expect_err("new branch creation needs an initialized app handle");
     assert_eq!(unavailable.0, StatusCode::SERVICE_UNAVAILABLE);
 }
 
@@ -275,8 +272,7 @@ async fn create_followup_resolves_origin_from_source_task_workspace() {
         req
     })
     .await
-    .err()
-    .expect("resolved source-task origin still needs an initialized app handle");
+    .expect_err("resolved source-task origin still needs an initialized app handle");
 
     assert_eq!(unavailable.0, StatusCode::SERVICE_UNAVAILABLE);
 }
@@ -294,8 +290,7 @@ async fn create_followup_rejects_invalid_source_task_origins() {
         req
     })
     .await
-    .err()
-    .expect("source task without ideation session should be rejected");
+    .expect_err("source task without ideation session should be rejected");
     assert_eq!(no_session.0, StatusCode::BAD_REQUEST);
 
     let session_id = IdeationSessionId::from_string("session-without-workspace");
@@ -307,8 +302,7 @@ async fn create_followup_rejects_invalid_source_task_origins() {
         req
     })
     .await
-    .err()
-    .expect("source task without linked Agent workspace should be rejected");
+    .expect_err("source task without linked Agent workspace should be rejected");
     assert_eq!(no_workspace.0, StatusCode::BAD_REQUEST);
 
     let orphan_session_id = IdeationSessionId::from_string("session-orphan-workspace");
@@ -328,8 +322,7 @@ async fn create_followup_rejects_invalid_source_task_origins() {
         req
     })
     .await
-    .err()
-    .expect("linked workspace without conversation should be rejected");
+    .expect_err("linked workspace without conversation should be rejected");
     assert_eq!(missing_conversation.0, StatusCode::NOT_FOUND);
 
     let other_project_id = ProjectId::new();
@@ -340,7 +333,6 @@ async fn create_followup_rejects_invalid_source_task_origins() {
         req
     })
     .await
-    .err()
-    .expect("source task from another project should be rejected");
+    .expect_err("source task from another project should be rejected");
     assert_eq!(project_mismatch.0, StatusCode::BAD_REQUEST);
 }
