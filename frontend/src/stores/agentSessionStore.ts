@@ -27,6 +27,7 @@ export type AgentArtifactTab =
   | "tasks"
   | "jira"
   | "linear"
+  | "granola"
   | "publish";
 export type AgentTaskArtifactMode = "graph" | "kanban";
 export type AgentProjectSort = "latest" | "az" | "za";

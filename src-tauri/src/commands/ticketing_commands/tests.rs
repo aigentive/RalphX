@@ -2379,6 +2379,8 @@ async fn start_agent_conversation_with_ticket_default_base_uses_canonical_branch
             key: Some("RX-77".to_string()),
             title: Some("Ticket with default base".to_string()),
             url: None,
+        summary_excerpt: None,
+        include_transcript: None,
         }],
         composer_artifact_references: Vec::new(),
     })

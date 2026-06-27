@@ -91,6 +91,8 @@ fn linear_ref(id: &str, key: Option<&str>) -> ComposerIntegrationReference {
         key: key.map(str::to_string),
         title: Some(format!("{} title", key.unwrap_or(id))),
         url: key.map(|value| format!("https://linear.app/acme/issue/{value}/example")),
+        summary_excerpt: None,
+        include_transcript: None,
     }
 }
 
@@ -102,6 +104,8 @@ fn jira_ref(key: &str) -> ComposerIntegrationReference {
         key: Some(key.to_string()),
         title: Some(format!("{key} title")),
         url: Some(format!("https://jira.test/browse/{key}")),
+        summary_excerpt: None,
+        include_transcript: None,
     }
 }
 

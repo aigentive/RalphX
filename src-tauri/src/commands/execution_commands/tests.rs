@@ -85,6 +85,8 @@ fn test_queued_message_to_send_options_preserves_references_and_attachments() {
         key: Some("RX-42".to_string()),
         title: Some("Fix queued replay".to_string()),
         url: Some("https://example.atlassian.net/browse/RX-42".to_string()),
+        summary_excerpt: None,
+        include_transcript: None,
     };
     let attachment_id = crate::domain::entities::ChatAttachmentId::new();
 

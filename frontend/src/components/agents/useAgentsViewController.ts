@@ -32,6 +32,7 @@ import { useAgentUserMessageAutoTitle } from "./useAgentUserMessageAutoTitle";
 import { useAgentUserMessageJiraInvalidation } from "./useAgentUserMessageJiraInvalidation";
 import { hasJiraIntegrationReference } from "./agentJiraIssueQueries";
 import { hasLinearIntegrationReference } from "./agentLinearIssueQueries";
+import { hasGranolaIntegrationReference } from "./agentGranolaNoteQueries";
 import { useAgentsSessionBindings } from "./useAgentsSessionBindings";
 import { useSyncedAgentProjectFocus } from "./useSyncedAgentProjectFocus";
 import { useAgentsOptimisticState } from "./useAgentsOptimisticState";
@@ -597,6 +598,12 @@ export function useAgentsViewController({
     },
     [openArtifactTab],
   );
+  const openGranolaTabForConversation = useCallback(
+    (conversationId: string) => {
+      openArtifactTab(conversationId, "granola");
+    },
+    [openArtifactTab],
+  );
   useEffect(() => {
     const invalidateReviewArtifact = (payload: PrReviewArtifactEventPayload) => {
       const conversationId = payload.conversationId ?? payload.conversation_id;
@@ -725,6 +732,7 @@ export function useAgentsViewController({
     setRuntimeForConversation,
     onJiraLinked: openJiraTabForConversation,
     onLinearLinked: openLinearTabForConversation,
+    onGranolaLinked: openGranolaTabForConversation,
   });
 
   const {
@@ -882,12 +890,15 @@ export function useAgentsViewController({
         openJiraTabForConversation(event.result.conversationId);
       } else if (hasLinearIntegrationReference(event.composerIntegrationReferences)) {
         openLinearTabForConversation(event.result.conversationId);
+      } else if (hasGranolaIntegrationReference(event.composerIntegrationReferences)) {
+        openGranolaTabForConversation(event.result.conversationId);
       }
     },
     [
       handleAgentUserMessageAutoTitle,
       invalidateAgentUserMessageJira,
       openJiraTabForConversation,
+      openGranolaTabForConversation,
       openLinearTabForConversation,
     ],
   );

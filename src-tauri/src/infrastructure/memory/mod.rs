@@ -3,6 +3,7 @@
 
 pub mod memory_active_plan_repo;
 pub mod memory_activity_event_repo;
+pub mod memory_agent_conversation_granola_note_repo;
 pub mod memory_agent_conversation_issue_repo;
 pub mod memory_agent_conversation_jira_issue_repo;
 pub mod memory_agent_conversation_linear_issue_repo;
@@ -29,6 +30,7 @@ pub mod memory_execution_plan_repo;
 pub mod memory_execution_settings_repo;
 pub mod memory_external_events_repo;
 pub mod memory_external_issue_link_repo;
+pub mod memory_granola_integration_settings_repo;
 pub mod memory_ideation_effort_settings_repo;
 pub mod memory_ideation_model_settings_repo;
 pub mod memory_ideation_session_repo;
@@ -66,6 +68,7 @@ pub mod memory_workflow_repo;
 // Re-exports for convenience
 pub use memory_active_plan_repo::MemoryActivePlanRepository;
 pub use memory_activity_event_repo::MemoryActivityEventRepository;
+pub use memory_agent_conversation_granola_note_repo::MemoryAgentConversationGranolaNoteRepository;
 pub use memory_agent_conversation_issue_repo::MemoryAgentConversationIssueRepository;
 pub use memory_agent_conversation_jira_issue_repo::MemoryAgentConversationJiraIssueRepository;
 pub use memory_agent_conversation_linear_issue_repo::MemoryAgentConversationLinearIssueRepository;
@@ -94,6 +97,7 @@ pub use memory_execution_settings_repo::{
 };
 pub use memory_external_events_repo::MemoryExternalEventsRepository;
 pub use memory_external_issue_link_repo::MemoryExternalIssueLinkRepository;
+pub use memory_granola_integration_settings_repo::MemoryGranolaIntegrationSettingsRepository;
 pub use memory_ideation_effort_settings_repo::MemoryIdeationEffortSettingsRepository;
 pub use memory_ideation_model_settings_repo::MemoryIdeationModelSettingsRepository;
 pub use memory_ideation_session_repo::MemoryIdeationSessionRepository;

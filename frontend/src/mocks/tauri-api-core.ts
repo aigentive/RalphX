@@ -88,6 +88,7 @@ const mockAtlassianIntegrationSettings = {
 
 const mockAgentConversationJiraIssues = new Map<string, unknown>();
 const mockAgentConversationLinearIssues = new Map<string, unknown>();
+const mockAgentConversationGranolaNotes = new Map<string, unknown>();
 
 function mockJiraIssue(input: {
   conversationId: string;
@@ -153,6 +154,34 @@ const mockClickUpIntegrationSettings = {
   updatedAt: new Date(0).toISOString(),
 };
 
+const mockGranolaIntegrationSettings = {
+  enabled: false,
+  hasApiToken: false,
+  validationStatus: "not_configured",
+  lastValidatedAt: null as string | null,
+  lastError: null as string | null,
+  updatedAt: new Date(0).toISOString(),
+};
+
+const mockGranolaNotes = [
+  {
+    id: "not_1234567890ABCD",
+    title: "Planning sync",
+    url: "https://granola.ai/notes/not_1234567890ABCD",
+    summary: "Mock Granola note summary for the planning sync.",
+    createdAt: new Date(0).toISOString(),
+    updatedAt: new Date(0).toISOString(),
+  },
+  {
+    id: "not_ABCDEFGHIJKLMN",
+    title: "Review follow-up",
+    url: "https://granola.ai/notes/not_ABCDEFGHIJKLMN",
+    summary: "Mock Granola note summary for a follow-up review.",
+    createdAt: new Date(0).toISOString(),
+    updatedAt: new Date(0).toISOString(),
+  },
+];
+
 const mockClickUpWorkspaces = [
   { id: "team-1", name: "Acme Workspace", color: "#ff6b35" },
   { id: "team-2", name: "Globex Workspace", color: null as string | null },
@@ -187,6 +216,38 @@ function mockLinearIssue(input: {
     descriptionText: "Mock Linear description.",
     comments: [],
     attachments: [],
+    lastRefreshedAt: now,
+    refreshStatus: "loaded",
+    refreshError: null,
+    assignedAt: now,
+    assignedFromMessageId: null,
+    manuallyAssigned: true,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+function mockGranolaNote(input: {
+  conversationId: string;
+  projectId?: string | null;
+  noteId: string;
+  title?: string | null;
+  noteUrl?: string | null;
+  summary?: string | null;
+  includeTranscript?: boolean;
+}) {
+  const now = new Date(0).toISOString();
+  const note = mockGranolaNotes.find((item) => item.id === input.noteId);
+  return {
+    conversationId: input.conversationId,
+    projectId: input.projectId ?? "mock-project",
+    provider: "granola",
+    noteId: input.noteId,
+    noteUrl: input.noteUrl ?? note?.url ?? null,
+    title: input.title ?? note?.title ?? "Mock Granola note",
+    summaryMarkdown: input.summary ?? note?.summary ?? null,
+    transcript: [{ speaker: "Alex", text: "Mock transcript line." }],
+    includeTranscript: input.includeTranscript ?? true,
     lastRefreshedAt: now,
     refreshStatus: "loaded",
     refreshError: null,
@@ -1138,6 +1199,82 @@ const commandHandlers: Record<
   },
   list_clickup_workspaces: async () => ({ workspaces: mockClickUpWorkspaces }),
   search_clickup_tasks: async () => ({ tasks: [] }),
+  get_granola_integration_settings: async () => mockGranolaIntegrationSettings,
+  save_granola_integration_settings: async (args) => {
+    const input = args.input as { apiToken?: string | null };
+    if (input.apiToken !== undefined) {
+      mockGranolaIntegrationSettings.hasApiToken = Boolean(
+        input.apiToken?.trim(),
+      );
+      mockGranolaIntegrationSettings.enabled = false;
+      mockGranolaIntegrationSettings.validationStatus =
+        mockGranolaIntegrationSettings.hasApiToken
+          ? "pending"
+          : "not_configured";
+    }
+    mockGranolaIntegrationSettings.lastError = null;
+    mockGranolaIntegrationSettings.updatedAt = new Date(0).toISOString();
+    return mockGranolaIntegrationSettings;
+  },
+  validate_granola_integration_settings: async () => {
+    Object.assign(mockGranolaIntegrationSettings, {
+      enabled: true,
+      hasApiToken: true,
+      validationStatus: "valid",
+      lastValidatedAt: new Date(0).toISOString(),
+      lastError: null,
+      updatedAt: new Date(0).toISOString(),
+    });
+    return mockGranolaIntegrationSettings;
+  },
+  list_granola_notes: async () => ({
+    notes: mockGranolaNotes,
+    hasMore: false,
+    cursor: null,
+  }),
+  get_granola_note_detail: async (args) => {
+    const input = args.input as { noteId: string };
+    const note =
+      mockGranolaNotes.find((item) => item.id === input.noteId) ??
+      mockGranolaNotes[0];
+    return {
+      ...note,
+      transcript: [{ speaker: "Alex", text: "Mock transcript line." }],
+    };
+  },
+  get_agent_conversation_granola_note: async (args) => {
+    const input = args.input as { conversationId: string };
+    return {
+      note: mockAgentConversationGranolaNotes.get(input.conversationId) ?? null,
+    };
+  },
+  assign_agent_conversation_granola_note: async (args) => {
+    const input = args.input as {
+      conversationId: string;
+      projectId?: string | null;
+      noteId: string;
+      title?: string | null;
+      noteUrl?: string | null;
+      summary?: string | null;
+      includeTranscript?: boolean;
+    };
+    const note = mockGranolaNote(input);
+    mockAgentConversationGranolaNotes.set(input.conversationId, note);
+    return { note };
+  },
+  refresh_agent_conversation_granola_note: async (args) => {
+    const input = args.input as { conversationId: string };
+    const existing = mockAgentConversationGranolaNotes.get(input.conversationId);
+    if (!existing) {
+      return { note: null };
+    }
+    return { note: existing };
+  },
+  clear_agent_conversation_granola_note: async (args) => {
+    const input = args.input as { conversationId: string };
+    mockAgentConversationGranolaNotes.delete(input.conversationId);
+    return { note: null };
+  },
   get_agent_conversation_linear_issue: async (args) => {
     const input = args.input as { conversationId: string };
     return {

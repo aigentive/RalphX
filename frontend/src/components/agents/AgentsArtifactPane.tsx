@@ -6,6 +6,7 @@ import {
   LayoutGrid,
   Network,
   ClipboardList,
+  ScrollText,
   Ticket,
   X,
 } from "lucide-react";
@@ -16,6 +17,7 @@ import { toast } from "sonner";
 
 import { artifactApi } from "@/api/artifact";
 import { atlassianApi } from "@/api/atlassian";
+import { granolaApi } from "@/api/granola";
 import { linearApi } from "@/api/linear";
 import { ideationApi, toTaskProposal } from "@/api/ideation";
 import { verificationApi } from "@/api/verification";
@@ -133,6 +135,11 @@ const LazyAgentsLinearIssuePanel = lazy(() =>
     default: module.AgentsLinearIssuePanel,
   })),
 );
+const LazyAgentsGranolaNotePanel = lazy(() =>
+  import("@/components/agents/AgentsGranolaNotePanel").then((module) => ({
+    default: module.AgentsGranolaNotePanel,
+  })),
+);
 const LazyAgentsIssuesPanel = lazy(() =>
   import("@/components/agents/AgentsIssuesPanel").then((module) => ({
     default: module.AgentsIssuesPanel,
@@ -168,6 +175,12 @@ const LINEAR_TAB = {
   id: "linear" as const,
   label: "Linear",
   icon: Ticket,
+};
+
+const GRANOLA_TAB = {
+  id: "granola" as const,
+  label: "Granola",
+  icon: ScrollText,
 };
 
 const SELECTED_TASK_STORAGE_PREFIX = "agents:artifact:selected-task:";
@@ -301,6 +314,15 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   const showLinearTab = Boolean(
     linearSettingsQuery.data?.enabled &&
       linearSettingsQuery.data?.issueSearchAvailable,
+  );
+  const granolaSettingsQuery = useQuery({
+    queryKey: ["granola", "settings"],
+    queryFn: () => granolaApi.getSettings(),
+    staleTime: 30_000,
+  });
+  const showGranolaTab = Boolean(
+    granolaSettingsQuery.data?.enabled &&
+      granolaSettingsQuery.data?.validationStatus === "valid",
   );
   const [displayedVerificationStatus, setDisplayedVerificationStatus] = useState<{
     status: VerificationStatus;
@@ -482,9 +504,16 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       ...ARTIFACT_TABS.filter((tab) => availableArtifactTabIds.includes(tab.id)),
       ...(showJiraTab ? [JIRA_TAB] : []),
       ...(showLinearTab ? [LINEAR_TAB] : []),
+      ...(showGranolaTab ? [GRANOLA_TAB] : []),
       ...(showPublishTab ? [PUBLISH_TAB] : []),
     ],
-    [availableArtifactTabIds, showJiraTab, showLinearTab, showPublishTab],
+    [
+      availableArtifactTabIds,
+      showGranolaTab,
+      showJiraTab,
+      showLinearTab,
+      showPublishTab,
+    ],
   );
   const fallbackActiveTab =
     workspaceReviewContext?.shouldShowTab || reviewArtifactId
@@ -493,11 +522,13 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
         ? "jira"
         : showLinearTab
           ? "linear"
-          : visibleTabs.some((tab) => tab.id === "plan")
-            ? "plan"
-            : visibleTabs.some((tab) => tab.id === "issues")
-              ? "issues"
-              : "plan";
+          : showGranolaTab
+            ? "granola"
+            : visibleTabs.some((tab) => tab.id === "plan")
+              ? "plan"
+              : visibleTabs.some((tab) => tab.id === "issues")
+                ? "issues"
+                : "plan";
   const effectiveActiveTab =
     visibleTabs.some((tab) => tab.id === activeTab)
       ? activeTab
@@ -967,6 +998,17 @@ function ArtifactContent({
     return (
       <Suspense fallback={<EmptyArtifactState title="Loading Linear..." />}>
         <LazyAgentsLinearIssuePanel
+          conversationId={conversationId}
+          projectId={projectId}
+        />
+      </Suspense>
+    );
+  }
+
+  if (activeTab === "granola") {
+    return (
+      <Suspense fallback={<EmptyArtifactState title="Loading Granola..." />}>
+        <LazyAgentsGranolaNotePanel
           conversationId={conversationId}
           projectId={projectId}
         />
