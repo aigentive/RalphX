@@ -6,7 +6,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { atlassianApi } from "@/api/atlassian";
 import { granolaApi } from "@/api/granola";
 import { linearApi } from "@/api/linear";
+import { getGitCurrentBranch } from "@/api/projects";
 import * as chatHooks from "@/hooks/useChat";
+import { usePullRequestDetail } from "@/hooks/usePullRequestDetail";
 import * as ticketingHooks from "@/hooks/useTicketing";
 import * as projectHooks from "@/hooks/useProjects";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -35,6 +37,24 @@ vi.mock("@/api/granola", () => ({
     getNoteDetail: vi.fn(),
     assignAgentConversationGranolaNote: vi.fn(),
   },
+}));
+
+vi.mock("@/api/projects", () => ({
+  getGitCurrentBranch: vi.fn(),
+}));
+
+vi.mock("@/hooks/usePullRequestDetail", () => ({
+  prKeys: {
+    all: ["github-pr"],
+    detail: (selector: { projectId: string; prNumber?: number; branch?: string }) => [
+      "github-pr",
+      "detail",
+      selector.projectId,
+      selector.prNumber ?? null,
+      selector.branch ?? null,
+    ],
+  },
+  usePullRequestDetail: vi.fn(),
 }));
 
 vi.mock("@/hooks/useChat", () => ({
@@ -302,6 +322,14 @@ describe("TicketingDashboardView", () => {
     useAgentSessionStore.getState().clearSelection();
     useAgentSessionStore.setState({ startConversationDraft: null });
     useChatStore.setState({ activeConversationIds: {} });
+    vi.mocked(getGitCurrentBranch).mockResolvedValue("feature/current");
+    vi.mocked(usePullRequestDetail).mockReturnValue({
+      data: null,
+      isLoading: false,
+      isError: false,
+      error: null,
+      fetchStatus: "idle",
+    } as unknown as ReturnType<typeof usePullRequestDetail>);
     vi.mocked(projectHooks.useProjects).mockReturnValue({
       data: [
         {
@@ -620,6 +648,26 @@ describe("TicketingDashboardView", () => {
         "Ada: We should finish the Granola ticketing tab.",
       );
     });
+  });
+
+  it("renders the current branch GitHub surface as a dashboard tab", async () => {
+    mockConnectedDashboard();
+
+    renderDashboard();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Current Branch" }));
+
+    expect(await screen.findByTestId("ticketing-current-branch-pr")).toBeInTheDocument();
+    expect(await screen.findByText("Current branch (feature/current)")).toBeInTheDocument();
+    expect(screen.getByText("feature/current")).toBeInTheDocument();
+    expect(getGitCurrentBranch).toHaveBeenCalledWith("/repo/current");
+    expect(usePullRequestDetail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: "project-1",
+        branch: "feature/current",
+      }),
+      expect.objectContaining({ enabled: expect.any(Boolean) }),
+    );
   });
 
   it("adds a Granola note as new conversation context or binds it to an existing conversation", async () => {

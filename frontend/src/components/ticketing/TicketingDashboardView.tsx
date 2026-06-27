@@ -11,6 +11,7 @@ import {
   type GranolaNoteSummary,
 } from "@/api/granola";
 import { linearApi } from "@/api/linear";
+import { getGitCurrentBranch } from "@/api/projects";
 import type { ComposerIntegrationReference } from "@/api/chat";
 import type {
   ListTicketFilterOptionsInput,
@@ -52,6 +53,7 @@ import { useTicketingStore } from "@/stores/ticketingStore";
 import { useChatStore } from "@/stores/chatStore";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
 import { useUiStore } from "@/stores/uiStore";
+import { PullRequestDetailBody } from "@/components/pr/PullRequestDetailBody";
 import { PullRequestDetailSheet } from "@/components/pr/PullRequestDetailSheet";
 import {
   pullRequestSelectorFromShell,
@@ -91,7 +93,7 @@ import {
 import { providerLabel, ticketKey } from "./ticketing-utils";
 import { useAfterPaint } from "./useAfterPaint";
 
-type DashboardSurface = "tickets" | "granola";
+type DashboardSurface = "tickets" | "current_branch" | "granola";
 
 interface TicketingDashboardViewProps {
   projectId: string;
@@ -391,6 +393,7 @@ function DashboardSurfaceSwitcher({
 }) {
   const surfaces: Array<{ id: DashboardSurface; label: string }> = [
     { id: "tickets", label: "Tickets" },
+    { id: "current_branch", label: "Current Branch" },
     { id: "granola", label: "Granola" },
   ];
   return (
@@ -688,6 +691,83 @@ function GranolaContextDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+function TicketingCurrentBranchPullRequestView({
+  projectId,
+  project,
+}: {
+  projectId: string;
+  project: Project | null;
+}) {
+  const currentBranchQuery = useQuery({
+    queryKey: ["ticketing", "github", "current-branch", project?.workingDirectory ?? null],
+    queryFn: () => getGitCurrentBranch(project!.workingDirectory),
+    enabled: Boolean(project?.workingDirectory),
+    staleTime: 15_000,
+  });
+  const currentBranch = currentBranchQuery.data?.trim() || null;
+  const shell: PullRequestShell | null = currentBranch
+    ? {
+        projectId,
+        branch: currentBranch,
+        title: `Current branch (${currentBranch})`,
+      }
+    : null;
+  const selector = pullRequestSelectorFromShell(shell);
+
+  if (!project) {
+    return (
+      <TicketingStatePanel
+        state="empty"
+        title="Project unavailable"
+        description="Select a project to inspect its current branch."
+      />
+    );
+  }
+
+  if (currentBranchQuery.isLoading) {
+    return (
+      <TicketingStatePanel
+        state="loading"
+        title="Loading current branch"
+        description="Reading the active repository branch."
+      />
+    );
+  }
+
+  if (currentBranchQuery.isError) {
+    return (
+      <TicketingStatePanel
+        state="error"
+        title="Current branch failed to load"
+        description={
+          currentBranchQuery.error instanceof Error
+            ? currentBranchQuery.error.message
+            : "RalphX could not read the current git branch."
+        }
+      />
+    );
+  }
+
+  if (!selector || !shell) {
+    return (
+      <TicketingStatePanel
+        state="empty"
+        title="No current branch"
+        description="The active project repository did not report a branch."
+      />
+    );
+  }
+
+  return (
+    <div
+      data-testid="ticketing-current-branch-pr"
+      className="h-full min-h-0 overflow-y-auto"
+    >
+      <PullRequestDetailBody selector={selector} shell={shell} className="min-h-full" />
+    </div>
   );
 }
 
@@ -1110,6 +1190,10 @@ export function TicketingDashboardView({
 
   const queryClient = useQueryClient();
   const projectsQuery = useProjects();
+  const activeProject = useMemo(
+    () => projectsQuery.data?.find((project) => project.id === projectId) ?? null,
+    [projectId, projectsQuery.data],
+  );
   const providersQuery = useTicketingProviders(projectId, { enabled: Boolean(projectId) });
   const providers = useMemo(() => providersQuery.data ?? [], [providersQuery.data]);
   const validProviders = useMemo(
@@ -1680,7 +1764,14 @@ export function TicketingDashboardView({
 
   let content: React.ReactNode;
 
-  if (!showingTickets) {
+  if (activeSurface === "current_branch") {
+    content = (
+      <TicketingCurrentBranchPullRequestView
+        projectId={projectId}
+        project={activeProject}
+      />
+    );
+  } else if (!showingTickets) {
     content = (
       <TicketingGranolaNotesView
         projectId={projectId}
@@ -1927,7 +2018,7 @@ export function TicketingDashboardView({
       ) : null}
 
       <div className="flex min-h-0 flex-1 overflow-hidden">
-        {activeProvider === "clickup" && selectedClickUpSpace && !filters.sprint ? (
+        {showingTickets && activeProvider === "clickup" && selectedClickUpSpace && !filters.sprint ? (
           <ClickUpLocationRail
             space={selectedClickUpSpace}
             locations={clickupLocationChildren}
