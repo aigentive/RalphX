@@ -38,6 +38,23 @@ pub struct GranolaNoteDetail {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GranolaNoteSummary {
+    pub id: String,
+    pub title: Option<String>,
+    pub url: Option<String>,
+    pub summary: Option<String>,
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GranolaNoteListPage {
+    pub notes: Vec<GranolaNoteSummary>,
+    pub has_more: bool,
+    pub cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GranolaTranscriptEntry {
     pub speaker: Option<String>,
     pub text: String,
@@ -181,6 +198,17 @@ pub trait GranolaApiClient: Send + Sync {
             "Granola note detail fetch is unavailable".to_string(),
         ))
     }
+
+    async fn list_notes(
+        &self,
+        _auth: &GranolaAuthContext,
+        _page_size: usize,
+        _cursor: Option<&str>,
+    ) -> Result<GranolaNoteListPage, GranolaApiError> {
+        Err(GranolaApiError::ApiError(
+            "Granola note listing is unavailable".to_string(),
+        ))
+    }
 }
 
 pub(crate) fn is_valid_granola_note_id(note_id: &str) -> bool {
@@ -232,6 +260,15 @@ impl GranolaApiClient for UnavailableGranolaApiClient {
         _note_id: &str,
         _include_transcript: bool,
     ) -> Result<GranolaNoteDetail, GranolaApiError> {
+        Err(GranolaApiError::ApiError(self.reason.clone()))
+    }
+
+    async fn list_notes(
+        &self,
+        _auth: &GranolaAuthContext,
+        _page_size: usize,
+        _cursor: Option<&str>,
+    ) -> Result<GranolaNoteListPage, GranolaApiError> {
         Err(GranolaApiError::ApiError(self.reason.clone()))
     }
 }
@@ -335,6 +372,36 @@ impl GranolaIntegrationService {
             .map_err(|error| error.to_string())
     }
 
+    pub async fn list_notes(
+        &self,
+        page_size: usize,
+        cursor: Option<&str>,
+    ) -> Result<GranolaNoteListPage, String> {
+        let settings = self.get_settings().await?;
+        let auth = self.enabled_auth_context(&settings).await?;
+        let page_size = page_size.clamp(1, 30);
+        self.rate_limiter.wait_for_request().await;
+        self.client
+            .list_notes(&auth, page_size, cursor)
+            .await
+            .map_err(granola_api_error_message)
+    }
+
+    pub async fn fetch_note_detail_for_user(
+        &self,
+        note_id: &str,
+        include_transcript: bool,
+    ) -> Result<GranolaNoteDetail, String> {
+        if !is_valid_granola_note_id(note_id) {
+            return Err("Granola note id is invalid".to_string());
+        }
+        let settings = self.get_settings().await?;
+        let auth = self.enabled_auth_context(&settings).await?;
+        self.fetch_note_detail_with_rate_limit(&auth, note_id, include_transcript)
+            .await
+            .map_err(granola_api_error_message)
+    }
+
     async fn clear_token(&self, settings: &mut GranolaIntegrationSettings) -> Result<(), String> {
         if let Some(secret_ref) = settings.token_secret_ref.as_ref() {
             self.secret_store
@@ -398,6 +465,19 @@ impl GranolaIntegrationService {
         Ok(GranolaAuthContext { api_token })
     }
 
+    async fn enabled_auth_context(
+        &self,
+        settings: &GranolaIntegrationSettings,
+    ) -> Result<GranolaAuthContext, String> {
+        if settings.token_secret_ref.is_none() {
+            return Err("Granola API token is not configured".to_string());
+        }
+        if !settings.enabled || settings.validation_status != IntegrationValidationStatus::Valid {
+            return Err("Granola integration is not enabled".to_string());
+        }
+        self.auth_context(settings).await
+    }
+
     async fn validate_with_rate_limit(&self, auth: &GranolaAuthContext) -> Result<(), String> {
         self.rate_limiter.wait_for_request().await;
         self.client.validate(auth).await
@@ -423,5 +503,13 @@ fn pending_status_for_settings(
         IntegrationValidationStatus::Pending
     } else {
         IntegrationValidationStatus::NotConfigured
+    }
+}
+
+fn granola_api_error_message(error: GranolaApiError) -> String {
+    match error {
+        GranolaApiError::NotFound => "Granola note was not found".to_string(),
+        GranolaApiError::RateLimited => "Granola API rate limit was reached".to_string(),
+        GranolaApiError::ApiError(message) => message,
     }
 }

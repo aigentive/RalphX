@@ -601,6 +601,24 @@ export function AgentComposerSurface({
         map.set(`integration:linear:${resource.id}`, reference);
         continue;
       }
+      if (integrationKind === "granola") {
+        if (!("title" in resource)) {
+          continue;
+        }
+        const reference: AgentComposerIntegrationReference = {
+          provider: "granola",
+          kind: "note",
+          id: resource.id,
+          ...(resource.title ? { title: resource.title } : {}),
+          ...(resource.url ? { url: resource.url } : {}),
+          ...("summary" in resource && resource.summary
+            ? { summaryExcerpt: resource.summary }
+            : {}),
+          includeTranscript: true,
+        };
+        map.set(`integration:granola:${resource.id}`, reference);
+        continue;
+      }
       if (!("kind" in resource)) {
         continue;
       }
@@ -910,18 +928,22 @@ export function AgentComposerSurface({
               ? `integration:clickup:${resource.id}`
               : integrationKind === "linear"
                 ? `integration:linear:${resource.id}`
-                : "kind" in resource
-                  ? `integration:${resource.kind}:${resource.id}`
-                  : `integration:unknown:${resource.id}`,
+                : integrationKind === "granola"
+                  ? `integration:granola:${resource.id}`
+                  : "kind" in resource
+                    ? `integration:${resource.kind}:${resource.id}`
+                    : `integration:unknown:${resource.id}`,
           kind: "integration",
           label:
             integrationKind === "clickup"
               ? `@clickup:${"customId" in resource && resource.customId ? resource.customId : resource.id}`
               : integrationKind === "linear"
                 ? `@linear:${"key" in resource ? (resource.key ?? resource.id) : resource.id}`
-                : "kind" in resource && resource.kind === "jira"
-                  ? `@jira:${resource.key ?? resource.id}`
-                  : `@confluence:${resource.id}`,
+                : integrationKind === "granola"
+                  ? `@granola:${resource.id}`
+                  : "kind" in resource && resource.kind === "jira"
+                    ? `@jira:${resource.key ?? resource.id}`
+                    : `@confluence:${resource.id}`,
           detail:
             integrationKind === "clickup"
               ? "statusName" in resource
@@ -931,17 +953,21 @@ export function AgentComposerSurface({
                 ? "stateName" in resource
                   ? (resource.stateName ?? "linear")
                   : "linear"
-                : "kind" in resource
-                  ? resource.kind
-                  : "integration",
+                : integrationKind === "granola"
+                  ? "Granola"
+                  : "kind" in resource
+                    ? resource.kind
+                    : "integration",
           sourceLabel:
             integrationKind === "clickup"
               ? "ClickUp"
               : integrationKind === "linear"
                 ? "Linear"
-                : "kind" in resource && resource.kind === "jira"
-                  ? "Jira"
-                  : "Confluence",
+                : integrationKind === "granola"
+                  ? "Granola"
+                  : "kind" in resource && resource.kind === "jira"
+                    ? "Jira"
+                    : "Confluence",
         };
         if (description) {
           item.description = description;
@@ -983,6 +1009,8 @@ export function AgentComposerSurface({
         ? "ClickUp"
         : integrationKind === "linear"
           ? "Linear"
+          : integrationKind === "granola"
+            ? "Granola"
           : integrationKind === "confluence"
             ? "Confluence"
             : "Jira";
@@ -1002,7 +1030,7 @@ export function AgentComposerSurface({
     integrationSearchErrorLabel ??
     (integrationQuery.trim()
       ? "No matching integration items"
-      : "Type to search Jira, Linear, ClickUp, or Confluence");
+      : "Type to search Jira, Linear, ClickUp, Granola, or Confluence");
   const menuEmptyLabel =
     activeTrigger?.kind === "path"
       ? "No matching files or folders"
@@ -1987,6 +2015,14 @@ function ComposerActionMenu({
               <Search className="h-4 w-4" />
               ClickUp
             </button>
+            <button
+              type="button"
+              className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-[0.8125rem] transition-colors hover:bg-[var(--bg-hover)]"
+              onClick={() => onInsertIntegrationTrigger("granola")}
+            >
+              <Search className="h-4 w-4" />
+              Granola
+            </button>
           </div>
         </div>
       </PopoverContent>
@@ -2044,24 +2080,31 @@ function ComposerReferencePills({
         const isJira = reference.kind === "jira";
         const isLinear = reference.kind === "linear";
         const isClickUp = reference.kind === "clickup";
+        const isGranola = reference.provider === "granola" && reference.kind === "note";
         const label =
           isJira || isLinear || isClickUp
             ? (reference.key ?? reference.id)
             : (reference.title ?? reference.id);
         const description =
-          isJira || isLinear || isClickUp ? reference.title : reference.id;
+          isJira || isLinear || isClickUp
+            ? reference.title
+            : isGranola
+              ? reference.summaryExcerpt
+              : reference.id;
         const typeLabel = isClickUp
           ? "ClickUp"
           : isLinear
             ? "Linear"
             : isJira
               ? "Jira"
-              : "Confluence";
+              : isGranola
+                ? "Granola"
+                : "Confluence";
         return (
           <ComposerReferencePill
             key={`integration:${reference.provider}:${reference.kind}:${reference.id}`}
             testId={`agent-composer-reference-pill-integration:${reference.kind}:${reference.id}`}
-            icon={isJira || isLinear || isClickUp ? Ticket : BookOpen}
+            icon={isJira || isLinear || isClickUp ? Ticket : isGranola ? ScrollText : BookOpen}
             typeLabel={typeLabel}
             label={label}
             removeLabel={`Remove ${typeLabel} reference ${label}`}
@@ -2166,8 +2209,10 @@ function insertIntegrationTrigger(
       ? "@jira:"
       : kind === "linear"
         ? "@linear:"
-        : kind === "clickup"
-          ? "@clickup:"
+      : kind === "clickup"
+        ? "@clickup:"
+        : kind === "granola"
+          ? "@granola:"
           : "@confluence:";
   const before = value.slice(0, start);
   const after = value.slice(end);

@@ -21,16 +21,16 @@ use crate::application::{
 };
 use crate::commands::{ActiveProjectState, ExecutionState};
 use crate::domain::repositories::{
-    ActivityEventRepository, AgentConversationJiraIssueRepository,
-    AgentConversationLinearIssueRepository, AgentConversationWorkspaceRepository,
-    AgentLaneSettingsRepository, AgentProviderSettingsRepository, AgentRunRepository,
-    AppStateRepository, ArtifactRepository, ChatAttachmentRepository, ChatConversationRepository,
-    ChatMessageRepository, ExecutionPlanRepository, ExecutionSettingsRepository,
-    ExternalEventsRepository, IdeationEffortSettingsRepository, IdeationModelSettingsRepository,
-    IdeationSessionRepository, MemoryArchiveRepository, MemoryEntryRepository,
-    MemoryEventRepository, OrphanWorktreeCleanupMarkerRepository, PlanBranchRepository,
-    ProjectRepository, ReviewRepository, TaskDependencyRepository, TaskRepository,
-    TaskStepRepository,
+    ActivityEventRepository, AgentConversationGranolaNoteRepository,
+    AgentConversationJiraIssueRepository, AgentConversationLinearIssueRepository,
+    AgentConversationWorkspaceRepository, AgentLaneSettingsRepository,
+    AgentProviderSettingsRepository, AgentRunRepository, AppStateRepository, ArtifactRepository,
+    ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,
+    ExecutionPlanRepository, ExecutionSettingsRepository, ExternalEventsRepository,
+    IdeationEffortSettingsRepository, IdeationModelSettingsRepository, IdeationSessionRepository,
+    MemoryArchiveRepository, MemoryEntryRepository, MemoryEventRepository,
+    OrphanWorktreeCleanupMarkerRepository, PlanBranchRepository, ProjectRepository,
+    ReviewRepository, TaskDependencyRepository, TaskRepository, TaskStepRepository,
 };
 use crate::domain::services::{
     running_agent_registry::kill_orphaned_mcp_servers, MessageQueue, RunningAgentRegistry,
@@ -62,6 +62,7 @@ pub(crate) struct StartupPipelineDeps {
     pub agent_conversation_workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     pub agent_conversation_jira_issue_repo: Arc<dyn AgentConversationJiraIssueRepository>,
     pub agent_conversation_linear_issue_repo: Arc<dyn AgentConversationLinearIssueRepository>,
+    pub agent_conversation_granola_note_repo: Arc<dyn AgentConversationGranolaNoteRepository>,
     pub orphan_worktree_cleanup_marker_repo: Arc<dyn OrphanWorktreeCleanupMarkerRepository>,
     pub agent_run_repo: Arc<dyn AgentRunRepository>,
     pub ideation_session_repo: Arc<dyn IdeationSessionRepository>,
@@ -173,6 +174,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         agent_conversation_workspace_repo,
         agent_conversation_jira_issue_repo,
         agent_conversation_linear_issue_repo,
+        agent_conversation_granola_note_repo,
         orphan_worktree_cleanup_marker_repo,
         agent_run_repo,
         ideation_session_repo,
@@ -379,6 +381,9 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
     .with_agent_conversation_jira_issue_repo(Some(Arc::clone(&agent_conversation_jira_issue_repo)))
     .with_agent_conversation_linear_issue_repo(Some(Arc::clone(
         &agent_conversation_linear_issue_repo,
+    )))
+    .with_agent_conversation_granola_note_repo(Some(Arc::clone(
+        &agent_conversation_granola_note_repo,
     )))
     .with_runtime_support(
         Some(Arc::clone(&execution_settings_repo)),

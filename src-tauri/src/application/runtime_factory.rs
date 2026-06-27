@@ -11,15 +11,16 @@ use crate::application::{
 };
 use crate::commands::ExecutionState;
 use crate::domain::repositories::{
-    ActivityEventRepository, AgentConversationJiraIssueRepository,
-    AgentConversationLinearIssueRepository, AgentConversationWorkspaceRepository,
-    AgentLaneSettingsRepository, AgentProviderSettingsRepository, AgentRunRepository,
-    ArtifactRepository, ChatAttachmentRepository, ChatConversationRepository,
-    ChatMessageRepository, ChatTimelineRepository, DelegatedSessionRepository,
-    ExecutionPlanRepository, ExecutionSettingsRepository, IdeationEffortSettingsRepository,
-    IdeationModelSettingsRepository, IdeationSessionRepository, MemoryEventRepository,
-    PlanBranchRepository, ProjectRepository, QueuedMessageRepository, ReviewRepository,
-    TaskDependencyRepository, TaskProposalRepository, TaskRepository, TaskStepRepository,
+    ActivityEventRepository, AgentConversationGranolaNoteRepository,
+    AgentConversationJiraIssueRepository, AgentConversationLinearIssueRepository,
+    AgentConversationWorkspaceRepository, AgentLaneSettingsRepository,
+    AgentProviderSettingsRepository, AgentRunRepository, ArtifactRepository,
+    ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,
+    ChatTimelineRepository, DelegatedSessionRepository, ExecutionPlanRepository,
+    ExecutionSettingsRepository, IdeationEffortSettingsRepository, IdeationModelSettingsRepository,
+    IdeationSessionRepository, MemoryEventRepository, PlanBranchRepository, ProjectRepository,
+    QueuedMessageRepository, ReviewRepository, TaskDependencyRepository, TaskProposalRepository,
+    TaskRepository, TaskStepRepository,
 };
 use crate::domain::services::{GithubServiceTrait, MessageQueue, RunningAgentRegistry};
 use crate::infrastructure::memory::MemoryDelegatedSessionRepository;
@@ -205,6 +206,8 @@ pub(crate) struct ChatRuntimeFactoryDeps {
     pub agent_conversation_jira_issue_repo: Option<Arc<dyn AgentConversationJiraIssueRepository>>,
     pub agent_conversation_linear_issue_repo:
         Option<Arc<dyn AgentConversationLinearIssueRepository>>,
+    pub agent_conversation_granola_note_repo:
+        Option<Arc<dyn AgentConversationGranolaNoteRepository>>,
     pub plan_branch_repo: Option<Arc<dyn PlanBranchRepository>>,
     pub task_proposal_repo: Option<Arc<dyn TaskProposalRepository>>,
     pub task_step_repo: Option<Arc<dyn TaskStepRepository>>,
@@ -258,6 +261,7 @@ impl ChatRuntimeFactoryDeps {
             agent_conversation_workspace_repo: None,
             agent_conversation_jira_issue_repo: None,
             agent_conversation_linear_issue_repo: None,
+            agent_conversation_granola_note_repo: None,
             plan_branch_repo: None,
             task_proposal_repo: None,
             task_step_repo: None,
@@ -344,6 +348,14 @@ impl ChatRuntimeFactoryDeps {
         repo: Option<Arc<dyn AgentConversationLinearIssueRepository>>,
     ) -> Self {
         self.agent_conversation_linear_issue_repo = repo;
+        self
+    }
+
+    pub(crate) fn with_agent_conversation_granola_note_repo(
+        mut self,
+        repo: Option<Arc<dyn AgentConversationGranolaNoteRepository>>,
+    ) -> Self {
+        self.agent_conversation_granola_note_repo = repo;
         self
     }
 
@@ -513,6 +525,9 @@ impl ChatRuntimeFactoryDeps {
         .with_agent_conversation_linear_issue_repo(Some(Arc::clone(
             &state.agent_conversation_linear_issue_repo,
         )))
+        .with_agent_conversation_granola_note_repo(Some(Arc::clone(
+            &state.agent_conversation_granola_note_repo,
+        )))
         .with_chat_context_support(
             Some(Arc::clone(&state.task_proposal_repo)),
             Some(Arc::clone(&state.task_step_repo)),
@@ -585,6 +600,9 @@ pub(crate) fn build_chat_service_from_deps<R: Runtime>(
     }
     if let Some(repo) = deps.agent_conversation_linear_issue_repo.as_ref() {
         service = service.with_agent_conversation_linear_issue_repo(Arc::clone(repo));
+    }
+    if let Some(repo) = deps.agent_conversation_granola_note_repo.as_ref() {
+        service = service.with_agent_conversation_granola_note_repo(Arc::clone(repo));
     }
     if let Some(repo) = deps.plan_branch_repo.as_ref() {
         service = service.with_plan_branch_repo(Arc::clone(repo));

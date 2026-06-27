@@ -119,6 +119,51 @@ async fn validate_maps_request_errors_without_token_leaks() {
 }
 
 #[tokio::test]
+async fn list_notes_requests_capped_page_and_parses_summaries() {
+    let fake = FakeGranolaRequester::new(vec![Ok(json!({
+        "notes": [
+            {
+                "id": "not_1234567890ABCD",
+                "title": "Planning sync",
+                "web_url": "https://granola.ai/notes/not_1234567890ABCD",
+                "summary": { "markdown": "Discussed the PR plan" },
+                "created_at": "2026-06-20T12:00:00Z",
+                "updated_at": "2026-06-20T13:00:00Z"
+            },
+            {
+                "id": "bad-note",
+                "title": "ignored"
+            }
+        ],
+        "has_more": true,
+        "next_cursor": "next/page"
+    }))]);
+    let client: &dyn GranolaApiClient = &fake;
+
+    let page = client
+        .list_notes(&auth(), 99, Some("cursor/value"))
+        .await
+        .expect("list notes");
+
+    assert_eq!(page.notes.len(), 1);
+    assert_eq!(page.notes[0].id, "not_1234567890ABCD");
+    assert_eq!(page.notes[0].title.as_deref(), Some("Planning sync"));
+    assert_eq!(
+        page.notes[0].summary.as_deref(),
+        Some("Discussed the PR plan")
+    );
+    assert!(page.has_more);
+    assert_eq!(page.cursor.as_deref(), Some("next/page"));
+
+    let requests = fake.requests();
+    assert_eq!(requests[0].method, Method::GET);
+    assert_eq!(
+        requests[0].url,
+        "https://public-api.granola.ai/v1/notes?page_size=30&cursor=cursor%2Fvalue"
+    );
+}
+
+#[tokio::test]
 async fn fetch_note_detail_builds_transcript_request_and_maps_response() {
     let fake = FakeGranolaRequester::new(vec![Ok(json!({
         "id": "not_1234567890ABCD",

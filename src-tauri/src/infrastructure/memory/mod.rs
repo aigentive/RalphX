@@ -3,6 +3,7 @@
 
 pub mod memory_active_plan_repo;
 pub mod memory_activity_event_repo;
+pub mod memory_agent_conversation_granola_note_repo;
 pub mod memory_agent_conversation_issue_repo;
 pub mod memory_agent_conversation_jira_issue_repo;
 pub mod memory_agent_conversation_linear_issue_repo;
@@ -67,6 +68,7 @@ pub mod memory_workflow_repo;
 // Re-exports for convenience
 pub use memory_active_plan_repo::MemoryActivePlanRepository;
 pub use memory_activity_event_repo::MemoryActivityEventRepository;
+pub use memory_agent_conversation_granola_note_repo::MemoryAgentConversationGranolaNoteRepository;
 pub use memory_agent_conversation_issue_repo::MemoryAgentConversationIssueRepository;
 pub use memory_agent_conversation_jira_issue_repo::MemoryAgentConversationJiraIssueRepository;
 pub use memory_agent_conversation_linear_issue_repo::MemoryAgentConversationLinearIssueRepository;

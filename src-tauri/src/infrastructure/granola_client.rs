@@ -11,8 +11,8 @@ use tokio_util::bytes::Bytes;
 
 use crate::application::granola_integration_service::is_valid_granola_note_id;
 use crate::application::{
-    GranolaApiClient, GranolaApiError, GranolaAuthContext, GranolaNoteDetail,
-    GranolaTranscriptEntry,
+    GranolaApiClient, GranolaApiError, GranolaAuthContext, GranolaNoteDetail, GranolaNoteListPage,
+    GranolaNoteSummary, GranolaTranscriptEntry,
 };
 
 const GRANOLA_API_BASE: &str = "https://public-api.granola.ai";
@@ -174,6 +174,26 @@ where
         granola_note_detail_from_value(&value, note_id)
             .map_err(|error| GranolaApiError::ApiError(error.to_string()))
     }
+
+    async fn list_notes(
+        &self,
+        auth: &GranolaAuthContext,
+        page_size: usize,
+        cursor: Option<&str>,
+    ) -> Result<GranolaNoteListPage, GranolaApiError> {
+        let page_size = page_size.clamp(1, 30);
+        let mut url = format!("{GRANOLA_API_BASE}/v1/notes?page_size={page_size}");
+        if let Some(cursor) = cursor.map(str::trim).filter(|value| !value.is_empty()) {
+            url.push_str("&cursor=");
+            url.push_str(&encode_query_value(cursor));
+        }
+        let value = self
+            .request_json(Method::GET, url, &auth.api_token)
+            .await
+            .map_err(granola_api_error_from_request_error)?;
+        granola_note_list_page_from_value(&value)
+            .map_err(|error| GranolaApiError::ApiError(error.to_string()))
+    }
 }
 
 fn granola_api_error_from_request_error(error: GranolaRequestError) -> GranolaApiError {
@@ -197,6 +217,40 @@ fn granola_note_detail_from_value(
         url: string_field(value, &["web_url", "url"]),
         summary: summary_from_value(value),
         transcript: transcript_from_value(value),
+    })
+}
+
+fn granola_note_list_page_from_value(value: &Value) -> Result<GranolaNoteListPage, &'static str> {
+    let notes = value
+        .get("notes")
+        .and_then(Value::as_array)
+        .ok_or("Granola notes response did not include a notes array")?;
+    Ok(GranolaNoteListPage {
+        notes: notes
+            .iter()
+            .filter_map(granola_note_summary_from_value)
+            .collect(),
+        has_more: value
+            .get("hasMore")
+            .or_else(|| value.get("has_more"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        cursor: string_field(value, &["cursor", "next_cursor", "nextCursor"]),
+    })
+}
+
+fn granola_note_summary_from_value(value: &Value) -> Option<GranolaNoteSummary> {
+    let id = string_field(value, &["id"])?;
+    if !is_valid_granola_note_id(&id) {
+        return None;
+    }
+    Some(GranolaNoteSummary {
+        id,
+        title: string_field(value, &["title"]),
+        url: string_field(value, &["web_url", "url"]),
+        summary: summary_from_value(value),
+        created_at: string_field(value, &["created_at", "createdAt"]),
+        updated_at: string_field(value, &["updated_at", "updatedAt"]),
     })
 }
 
@@ -265,4 +319,17 @@ fn u64_field(value: &Value, names: &[&str]) -> Option<u64> {
     names
         .iter()
         .find_map(|name| value.get(name).and_then(Value::as_u64))
+}
+
+fn encode_query_value(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                encoded.push(byte as char)
+            }
+            _ => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    encoded
 }

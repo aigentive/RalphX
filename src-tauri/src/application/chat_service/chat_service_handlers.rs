@@ -598,6 +598,10 @@ fn build_recovery_retry_background_context<R: Runtime>(
                 .as_ref()
                 .and_then(|handle| handle.try_state::<crate::application::AppState>())
                 .map(|app_state| Arc::clone(&app_state.agent_conversation_linear_issue_repo)),
+            agent_conversation_granola_note_repo: app_handle
+                .as_ref()
+                .and_then(|handle| handle.try_state::<crate::application::AppState>())
+                .map(|app_state| Arc::clone(&app_state.agent_conversation_granola_note_repo)),
             task_proposal_repo: task_proposal_repo.clone(),
             activity_event_repo: Arc::clone(activity_event_repo),
             memory_event_repo: Arc::clone(memory_event_repo),

@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Loader2, Search, ScrollText } from "lucide-react";
 
 import { atlassianApi } from "@/api/atlassian";
+import {
+  granolaApi,
+  type GranolaNoteDetail,
+  type GranolaNoteSummary,
+} from "@/api/granola";
 import { linearApi } from "@/api/linear";
 import type { ComposerIntegrationReference } from "@/api/chat";
 import type {
@@ -45,6 +51,7 @@ import { useUiStore } from "@/stores/uiStore";
 import { formatRelativeTime } from "@/lib/formatters";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   Dialog,
   DialogContent,
@@ -71,6 +78,8 @@ import {
 } from "./ticketing-read-state";
 import { providerLabel, ticketKey } from "./ticketing-utils";
 import { useAfterPaint } from "./useAfterPaint";
+
+type DashboardSurface = "tickets" | "granola";
 
 interface TicketingDashboardViewProps {
   projectId: string;
@@ -253,6 +262,66 @@ function ticketComposerReference(ticket: TicketSummary): ComposerIntegrationRefe
   };
 }
 
+function granolaComposerReference(
+  note: GranolaNoteDetail | GranolaNoteSummary,
+): ComposerIntegrationReference {
+  return {
+    provider: "granola",
+    kind: "note",
+    id: note.id,
+    title: note.title ?? note.id,
+    ...(note.url ? { url: note.url } : {}),
+    ...(note.summary ? { summaryExcerpt: note.summary } : {}),
+    includeTranscript: true,
+  };
+}
+
+function DashboardSurfaceSwitcher({
+  activeSurface,
+  onSurfaceChange,
+}: {
+  activeSurface: DashboardSurface;
+  onSurfaceChange: (surface: DashboardSurface) => void;
+}) {
+  const surfaces: Array<{ id: DashboardSurface; label: string }> = [
+    { id: "tickets", label: "Tickets" },
+    { id: "granola", label: "Granola" },
+  ];
+  return (
+    <div
+      className="inline-flex h-8 items-center rounded-md p-0.5"
+      role="tablist"
+      aria-label="Ticketing content"
+      style={{
+        backgroundColor: "var(--bg-sunken)",
+        borderColor: "var(--border-subtle)",
+        borderStyle: "solid",
+        borderWidth: "1px",
+      }}
+    >
+      {surfaces.map((surface) => {
+        const isActive = surface.id === activeSurface;
+        return (
+          <button
+            key={surface.id}
+            type="button"
+            role="tab"
+            aria-selected={isActive}
+            className="h-7 rounded px-3 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
+            style={{
+              backgroundColor: isActive ? "var(--bg-elevated)" : "transparent",
+              color: isActive ? "var(--text-primary)" : "var(--text-muted)",
+            }}
+            onClick={() => onSurfaceChange(surface.id)}
+          >
+            {surface.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function ticketRefsIdentifySameTicket(left: TicketRef, right: TicketRef): boolean {
   if (left.provider !== right.provider) {
     return false;
@@ -314,6 +383,229 @@ function TicketingStatusStrip({ notices }: { notices: TicketingStatusNotice[] })
   );
 }
 
+function TicketingGranolaNotesView({
+  projectId,
+  onStartConversation,
+}: {
+  projectId: string;
+  onStartConversation: (note: GranolaNoteDetail | GranolaNoteSummary) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
+  const settingsQuery = useQuery({
+    queryKey: ["ticketing", "granola", "settings"] as const,
+    queryFn: () => granolaApi.getSettings(),
+    staleTime: 30_000,
+  });
+  const granolaSettings = settingsQuery.data;
+  const granolaReady =
+    granolaSettings?.enabled === true
+    && granolaSettings.validationStatus === "valid";
+  const notesQuery = useQuery({
+    queryKey: ["ticketing", "granola", "notes"] as const,
+    queryFn: () => granolaApi.listNotes({ pageSize: 30 }),
+    enabled: granolaReady,
+    staleTime: 20_000,
+  });
+  const notes = useMemo(() => notesQuery.data?.notes ?? [], [notesQuery.data?.notes]);
+  const filteredNotes = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    if (!needle) {
+      return notes;
+    }
+    return notes.filter((note) =>
+      [note.title, note.summary, note.id]
+        .filter(Boolean)
+        .some((value) => value!.toLowerCase().includes(needle)),
+    );
+  }, [notes, query]);
+  const selectedSummary = selectedNoteId
+    ? notes.find((note) => note.id === selectedNoteId) ?? null
+    : null;
+  const detailQuery = useQuery({
+    queryKey: ["ticketing", "granola", "note-detail", selectedNoteId] as const,
+    queryFn: () =>
+      granolaApi.getNoteDetail({
+        noteId: selectedNoteId!,
+        includeTranscript: true,
+      }),
+    enabled: granolaReady && Boolean(selectedNoteId),
+    staleTime: 20_000,
+  });
+  const selectedNote = detailQuery.data ?? selectedSummary;
+
+  if (settingsQuery.isLoading) {
+    return (
+      <TicketingStatePanel
+        state="loading"
+        title="Loading Granola"
+        description="Checking the Granola connection."
+      />
+    );
+  }
+
+  if (!granolaReady) {
+    return (
+      <TicketingStatePanel
+        state="disconnected"
+        title="Granola is not connected"
+        description={
+          granolaSettings?.lastError
+            ?? "Connect and validate Granola from Settings to browse notes."
+        }
+      />
+    );
+  }
+
+  return (
+    <div
+      className="grid min-h-0 flex-1 grid-cols-[minmax(260px,380px)_minmax(0,1fr)] overflow-hidden max-lg:grid-cols-1"
+      data-testid="ticketing-granola-notes"
+      data-project-id={projectId}
+    >
+      <aside
+        className="flex min-h-0 flex-col border-r max-lg:border-r-0 max-lg:border-b"
+        style={{
+          backgroundColor: "var(--bg-surface)",
+          borderColor: "var(--border-subtle)",
+          borderStyle: "solid",
+          borderTopWidth: 0,
+          borderBottomWidth: 0,
+          borderLeftWidth: 0,
+          borderRightWidth: 1,
+        }}
+      >
+        <div className="border-b p-3" style={{ borderColor: "var(--border-subtle)" }}>
+          <div className="relative">
+            <Search
+              className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2"
+              style={{ color: "var(--text-muted)" }}
+            />
+            <Input
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Search Granola notes"
+              className="pl-9"
+            />
+          </div>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto p-2">
+          {notesQuery.isLoading ? (
+            <div className="flex items-center gap-2 px-3 py-2 text-sm text-[var(--text-muted)]">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Loading notes
+            </div>
+          ) : filteredNotes.length === 0 ? (
+            <div className="px-3 py-6 text-sm text-[var(--text-muted)]">
+              No Granola notes found.
+            </div>
+          ) : (
+            <div className="space-y-1">
+              {filteredNotes.map((note) => {
+                const selected = note.id === selectedNoteId;
+                return (
+                  <button
+                    key={note.id}
+                    type="button"
+                    className="w-full rounded-md px-3 py-2 text-left transition-colors focus-visible:outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
+                    style={{
+                      backgroundColor: selected ? "var(--bg-hover)" : "transparent",
+                      color: "var(--text-primary)",
+                    }}
+                    onClick={() => setSelectedNoteId(note.id)}
+                  >
+                    <span className="block truncate text-sm font-medium">
+                      {note.title ?? note.id}
+                    </span>
+                    {note.summary ? (
+                      <span className="mt-1 block line-clamp-2 text-xs text-[var(--text-muted)]">
+                        {note.summary}
+                      </span>
+                    ) : null}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </aside>
+
+      <section className="min-h-0 overflow-y-auto p-5">
+        {!selectedNote ? (
+          <div className="flex h-full min-h-[220px] items-center justify-center text-sm text-[var(--text-muted)]">
+            Select a Granola note to inspect its details.
+          </div>
+        ) : (
+          <div className="mx-auto flex max-w-3xl flex-col gap-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 text-xs font-medium uppercase text-[var(--text-muted)]">
+                  <ScrollText className="h-4 w-4" />
+                  Granola note
+                </div>
+                <h2 className="mt-1 text-xl font-semibold text-[var(--text-primary)]">
+                  {selectedNote.title ?? selectedNote.id}
+                </h2>
+              </div>
+              <Button type="button" size="sm" onClick={() => onStartConversation(selectedNote)}>
+                Start conversation
+              </Button>
+            </div>
+
+            {detailQuery.isFetching ? (
+              <div className="flex items-center gap-2 text-sm text-[var(--text-muted)]">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Loading details
+              </div>
+            ) : null}
+
+            {selectedNote.summary ? (
+              <div
+                className="rounded-md border p-4 text-sm leading-6"
+                style={{
+                  backgroundColor: "var(--bg-surface)",
+                  borderColor: "var(--border-subtle)",
+                  borderStyle: "solid",
+                  borderWidth: 1,
+                }}
+              >
+                {selectedNote.summary}
+              </div>
+            ) : null}
+
+            {"transcript" in selectedNote && selectedNote.transcript.length > 0 ? (
+              <div className="space-y-2">
+                <h3 className="text-sm font-semibold text-[var(--text-primary)]">Transcript</h3>
+                <div className="space-y-2">
+                  {selectedNote.transcript.map((entry, index) => (
+                    <div
+                      key={`${entry.startMs ?? index}:${index}`}
+                      className="rounded-md border p-3 text-sm"
+                      style={{
+                        backgroundColor: "var(--bg-surface)",
+                        borderColor: "var(--border-subtle)",
+                        borderStyle: "solid",
+                        borderWidth: 1,
+                      }}
+                    >
+                      {entry.speaker ? (
+                        <div className="mb-1 text-xs font-medium text-[var(--text-muted)]">
+                          {entry.speaker}
+                        </div>
+                      ) : null}
+                      <p className="leading-6 text-[var(--text-primary)]">{entry.text}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
 export function TicketingDashboardView({
   projectId,
   onNavigateToAssociation,
@@ -340,9 +632,11 @@ export function TicketingDashboardView({
   const setStartConversationDraft = useAgentSessionStore((s) => s.setStartConversationDraft);
   const [startWorkDialogOpen, setStartWorkDialogOpen] = useState(false);
   const [seenBaseline, setSeenBaseline] = useState<string | null>(null);
+  const [activeSurface, setActiveSurface] = useState<DashboardSurface>("tickets");
   const [startWorkSelection, setStartWorkSelection] = useState<StartWorkSelection>({
     projectId,
   });
+  const showingTickets = activeSurface === "tickets";
 
   const queryClient = useQueryClient();
   const projectsQuery = useProjects();
@@ -826,9 +1120,29 @@ export function TicketingDashboardView({
     setCurrentView("agents");
   }
 
+  function handleStartWorkFromGranolaNote(note: GranolaNoteDetail | GranolaNoteSummary) {
+    setStartConversationDraft({
+      projectId,
+      content: "",
+      mode: "edit",
+      composerIntegrationReferences: [granolaComposerReference(note)],
+    });
+    setFocusedAgentProject(projectId);
+    clearAgentSelection();
+    setActiveConversation(`project:${projectId}`, null);
+    setCurrentView("agents");
+  }
+
   let content: React.ReactNode;
 
-  if (providersQuery.isLoading) {
+  if (!showingTickets) {
+    content = (
+      <TicketingGranolaNotesView
+        projectId={projectId}
+        onStartConversation={handleStartWorkFromGranolaNote}
+      />
+    );
+  } else if (providersQuery.isLoading) {
     content = (
       <TicketingStatePanel
         state="loading"
@@ -987,70 +1301,82 @@ export function TicketingDashboardView({
             className="flex min-w-0 items-center gap-2 text-lg font-semibold text-[var(--text-primary)]"
           >
             <span>Ticketing</span>
-            <Badge
-              data-testid="ticketing-visible-count"
-              aria-label={`${displayedTickets.length} visible ${displayedTickets.length === 1 ? "ticket" : "tickets"}`}
-              variant="outline"
-              className="h-5 rounded-full border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-2 text-xs font-medium leading-none text-[var(--text-muted)]"
-            >
-              {displayedTickets.length}
-            </Badge>
+            {showingTickets ? (
+              <Badge
+                data-testid="ticketing-visible-count"
+                aria-label={`${displayedTickets.length} visible ${displayedTickets.length === 1 ? "ticket" : "tickets"}`}
+                variant="outline"
+                className="h-5 rounded-full border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-2 text-xs font-medium leading-none text-[var(--text-muted)]"
+              >
+                {displayedTickets.length}
+              </Badge>
+            ) : null}
           </h1>
           <p className="mt-0.5 text-xs text-[var(--text-muted)]">
             Browse provider tickets and inspect RalphX associations.
           </p>
         </div>
-        {validProviders.length > 1 && (
-          <ProviderSwitcher
-            providers={validProviders}
-            activeProvider={activeProvider}
-            onProviderChange={setProvider}
+        <div className="flex flex-wrap items-center gap-2">
+          <DashboardSurfaceSwitcher
+            activeSurface={activeSurface}
+            onSurfaceChange={setActiveSurface}
           />
-        )}
+          {showingTickets && validProviders.length > 1 && (
+            <ProviderSwitcher
+              providers={validProviders}
+              activeProvider={activeProvider}
+              onProviderChange={setProvider}
+            />
+          )}
+        </div>
       </header>
 
-      <TicketFilterBar
-        containers={containers}
-        columns={filterColumns}
-        assigneeOptions={assigneeOptions}
-        sprintOptions={sprintOptions}
-        showWatcherFilter={
-          activeProvider === "clickup" && (hasWatcherMetadata || filters.watcherMe)
-        }
-        containerLabel={containerLabels.containerLabel}
-        allContainersLabel={containerLabels.allContainersLabel}
-        activeContainerId={activeContainerId}
-        containerSelectionNeeded={containerSelectionNeeded}
-        filters={filters}
-        viewMode={viewMode}
-        isRefreshing={refreshTickets.isPending || ticketsQuery.isFetching}
-        onContainerChange={setContainerId}
-        onFiltersChange={setFilters}
-        onResetFilters={resetFilters}
-        onViewModeChange={setViewMode}
-        onRefresh={handleRefresh}
-      />
+      {showingTickets ? (
+        <>
+          <TicketFilterBar
+            containers={containers}
+            columns={filterColumns}
+            assigneeOptions={assigneeOptions}
+            sprintOptions={sprintOptions}
+            showWatcherFilter={
+              activeProvider === "clickup" && (hasWatcherMetadata || filters.watcherMe)
+            }
+            containerLabel={containerLabels.containerLabel}
+            allContainersLabel={containerLabels.allContainersLabel}
+            activeContainerId={activeContainerId}
+            containerSelectionNeeded={containerSelectionNeeded}
+            filters={filters}
+            viewMode={viewMode}
+            isRefreshing={refreshTickets.isPending || ticketsQuery.isFetching}
+            onContainerChange={setContainerId}
+            onFiltersChange={setFilters}
+            onResetFilters={resetFilters}
+            onViewModeChange={setViewMode}
+            onRefresh={handleRefresh}
+          />
 
-      <TicketingStatusStrip notices={statusNotices} />
+          <TicketingStatusStrip notices={statusNotices} />
 
-      {selectedProvider?.connectionStatus === "permission_limited" && (
-        <div
-          className="px-4 py-2 text-xs text-[var(--status-warning)]"
-          style={{
-            backgroundColor: "var(--bg-surface)",
-            borderBottomColor: "var(--border-subtle)",
-            borderBottomStyle: "solid",
-            borderBottomWidth: "1px",
-          }}
-        >
-          {statusMessage ?? `${providerName} has limited permissions. Read-only data may be partial.`}
-        </div>
-      )}
+          {selectedProvider?.connectionStatus === "permission_limited" && (
+            <div
+              className="px-4 py-2 text-xs text-[var(--status-warning)]"
+              style={{
+                backgroundColor: "var(--bg-surface)",
+                borderBottomColor: "var(--border-subtle)",
+                borderBottomStyle: "solid",
+                borderBottomWidth: "1px",
+              }}
+            >
+              {statusMessage ?? `${providerName} has limited permissions. Read-only data may be partial.`}
+            </div>
+          )}
+        </>
+      ) : null}
 
       <div className="flex min-h-0 flex-1 overflow-hidden">{content}</div>
 
       <TicketDetailSheet
-        open={selectedTicketRef !== null}
+        open={showingTickets && selectedTicketRef !== null}
         ticket={selectedTicket}
         capabilities={selectedProvider?.capabilities ?? null}
         transitions={transitions}

@@ -257,7 +257,13 @@ macro_rules! register_tauri_commands {
             commands::clickup_commands::list_clickup_workspaces,
             commands::clickup_commands::search_clickup_tasks,
             // Granola integration commands
+            commands::granola_commands::assign_agent_conversation_granola_note,
+            commands::granola_commands::clear_agent_conversation_granola_note,
+            commands::granola_commands::get_agent_conversation_granola_note,
             commands::granola_commands::get_granola_integration_settings,
+            commands::granola_commands::get_granola_note_detail,
+            commands::granola_commands::list_granola_notes,
+            commands::granola_commands::refresh_agent_conversation_granola_note,
             commands::granola_commands::save_granola_integration_settings,
             commands::granola_commands::validate_granola_integration_settings,
             // Artifact commands

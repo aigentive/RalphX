@@ -30,6 +30,8 @@ fn build_startup_pipeline_deps(
         Arc::clone(&app_state.agent_conversation_jira_issue_repo);
     let startup_agent_conversation_linear_issue_repo =
         Arc::clone(&app_state.agent_conversation_linear_issue_repo);
+    let startup_agent_conversation_granola_note_repo =
+        Arc::clone(&app_state.agent_conversation_granola_note_repo);
     let startup_orphan_worktree_cleanup_marker_repo =
         Arc::clone(&app_state.orphan_worktree_cleanup_marker_repo);
     let startup_agent_run_repo = Arc::clone(&app_state.agent_run_repo);
@@ -73,6 +75,7 @@ fn build_startup_pipeline_deps(
         agent_conversation_workspace_repo: startup_agent_conversation_workspace_repo,
         agent_conversation_jira_issue_repo: startup_agent_conversation_jira_issue_repo,
         agent_conversation_linear_issue_repo: startup_agent_conversation_linear_issue_repo,
+        agent_conversation_granola_note_repo: startup_agent_conversation_granola_note_repo,
         orphan_worktree_cleanup_marker_repo: startup_orphan_worktree_cleanup_marker_repo,
         agent_run_repo: startup_agent_run_repo,
         ideation_session_repo: startup_ideation_session_repo,

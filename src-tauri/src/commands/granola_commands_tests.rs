@@ -1,8 +1,11 @@
 use tauri::Manager;
 
 use super::granola_commands::{
-    get_granola_integration_settings, save_granola_integration_settings,
-    validate_granola_integration_settings, GranolaIntegrationSettingsResponse,
+    assign_agent_conversation_granola_note, clear_agent_conversation_granola_note,
+    get_agent_conversation_granola_note, get_granola_integration_settings,
+    save_granola_integration_settings, validate_granola_integration_settings,
+    AssignAgentConversationGranolaNoteInput, ClearAgentConversationGranolaNoteInput,
+    GetAgentConversationGranolaNoteInput, GranolaIntegrationSettingsResponse,
     SaveGranolaIntegrationSettingsInput,
 };
 use crate::application::AppState;
@@ -142,4 +145,58 @@ async fn save_then_validate_enables_then_blank_token_resets() {
     assert!(!cleared.enabled);
     assert!(!cleared.has_api_token);
     assert_eq!(cleared.validation_status, "not_configured");
+}
+
+#[tokio::test]
+async fn agent_conversation_granola_note_commands_assign_get_and_clear_without_refresh() {
+    let app = test_app();
+    let conversation_id = "123e4567-e89b-12d3-a456-426614174000".to_string();
+
+    let assigned = assign_agent_conversation_granola_note(
+        AssignAgentConversationGranolaNoteInput {
+            conversation_id: conversation_id.clone(),
+            project_id: Some("project-1".to_string()),
+            note_id: "not_1234567890ABCD".to_string(),
+            title: Some("Planning sync".to_string()),
+            note_url: Some("https://granola.ai/notes/not_1234567890ABCD".to_string()),
+            summary: Some("Discussed the plan".to_string()),
+            include_transcript: Some(true),
+            refresh: Some(false),
+        },
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("assign granola note");
+    let assigned_note = assigned.note.expect("assigned note");
+    assert_eq!(assigned_note.conversation_id, conversation_id);
+    assert_eq!(assigned_note.project_id, "project-1");
+    assert_eq!(assigned_note.note_id, "not_1234567890ABCD");
+    assert_eq!(assigned_note.title.as_deref(), Some("Planning sync"));
+    assert_eq!(
+        assigned_note.summary_markdown.as_deref(),
+        Some("Discussed the plan")
+    );
+    assert_eq!(assigned_note.refresh_status, "not_loaded");
+    assert!(assigned_note.manually_assigned);
+
+    let loaded = get_agent_conversation_granola_note(
+        GetAgentConversationGranolaNoteInput {
+            conversation_id: conversation_id.clone(),
+        },
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("get assigned note");
+    assert_eq!(
+        loaded.note.expect("loaded note").note_id,
+        "not_1234567890ABCD"
+    );
+
+    let cleared = clear_agent_conversation_granola_note(
+        ClearAgentConversationGranolaNoteInput { conversation_id },
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("clear assigned note");
+    assert!(cleared.note.is_none());
 }
