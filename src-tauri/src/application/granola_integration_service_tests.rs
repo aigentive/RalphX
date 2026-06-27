@@ -5,8 +5,9 @@ use async_trait::async_trait;
 use tokio::sync::{Mutex, RwLock};
 
 use crate::application::granola_integration_service::{
-    EmptyGranolaApiClient, GranolaApiClient, GranolaAuthContext, GranolaIntegrationService,
-    GranolaRateLimiter, GranolaRequestLimiter, UnavailableGranolaApiClient,
+    EmptyGranolaApiClient, GranolaApiClient, GranolaApiError, GranolaAuthContext,
+    GranolaIntegrationService, GranolaNoteDetail, GranolaNoteListPage, GranolaNoteSummary,
+    GranolaRateLimiter, GranolaRequestLimiter, GranolaTranscriptEntry, UnavailableGranolaApiClient,
 };
 use crate::domain::integrations::IntegrationValidationStatus;
 use crate::domain::services::{SecretStore, SecretStoreError};
@@ -87,12 +88,33 @@ impl SecretStore for MismatchingSecretStore {
     }
 }
 
+struct WriteOnlySecretStore;
+
+#[async_trait]
+impl SecretStore for WriteOnlySecretStore {
+    async fn put_secret(&self, _key: &str, _value: &str) -> Result<(), SecretStoreError> {
+        Ok(())
+    }
+
+    async fn get_secret(&self, _key: &str) -> Result<Option<String>, SecretStoreError> {
+        Ok(None)
+    }
+
+    async fn delete_secret(&self, _key: &str) -> Result<(), SecretStoreError> {
+        Ok(())
+    }
+}
+
 /// Fake `GranolaApiClient` recording the auth token it observed, so tests can
 /// prove the keychain round-trip feeds the client, plus a configurable error.
 #[derive(Default)]
 struct TestGranolaClient {
     validate_error: Option<String>,
+    list_response: Option<Result<GranolaNoteListPage, GranolaApiError>>,
+    detail_response: Option<Result<GranolaNoteDetail, GranolaApiError>>,
     seen_tokens: Mutex<Vec<String>>,
+    seen_list_requests: Mutex<Vec<(String, usize, Option<String>)>>,
+    seen_detail_requests: Mutex<Vec<(String, String, bool)>>,
 }
 
 impl TestGranolaClient {
@@ -103,8 +125,30 @@ impl TestGranolaClient {
         }
     }
 
+    fn with_list_response(response: Result<GranolaNoteListPage, GranolaApiError>) -> Self {
+        Self {
+            list_response: Some(response),
+            ..Default::default()
+        }
+    }
+
+    fn with_detail_response(response: Result<GranolaNoteDetail, GranolaApiError>) -> Self {
+        Self {
+            detail_response: Some(response),
+            ..Default::default()
+        }
+    }
+
     async fn seen_tokens(&self) -> Vec<String> {
         self.seen_tokens.lock().await.clone()
+    }
+
+    async fn seen_list_requests(&self) -> Vec<(String, usize, Option<String>)> {
+        self.seen_list_requests.lock().await.clone()
+    }
+
+    async fn seen_detail_requests(&self) -> Vec<(String, String, bool)> {
+        self.seen_detail_requests.lock().await.clone()
     }
 }
 
@@ -116,6 +160,42 @@ impl GranolaApiClient for TestGranolaClient {
             Some(error) => Err(error.clone()),
             None => Ok(()),
         }
+    }
+
+    async fn list_notes(
+        &self,
+        auth: &GranolaAuthContext,
+        page_size: usize,
+        cursor: Option<&str>,
+    ) -> Result<GranolaNoteListPage, GranolaApiError> {
+        self.seen_list_requests.lock().await.push((
+            auth.api_token.clone(),
+            page_size,
+            cursor.map(ToOwned::to_owned),
+        ));
+        self.list_response.clone().unwrap_or_else(|| {
+            Err(GranolaApiError::ApiError(
+                "unexpected list request".to_string(),
+            ))
+        })
+    }
+
+    async fn fetch_note_detail(
+        &self,
+        auth: &GranolaAuthContext,
+        note_id: &str,
+        include_transcript: bool,
+    ) -> Result<GranolaNoteDetail, GranolaApiError> {
+        self.seen_detail_requests.lock().await.push((
+            auth.api_token.clone(),
+            note_id.to_string(),
+            include_transcript,
+        ));
+        self.detail_response.clone().unwrap_or_else(|| {
+            Err(GranolaApiError::ApiError(
+                "unexpected detail request".to_string(),
+            ))
+        })
     }
 }
 
@@ -159,6 +239,45 @@ fn service_with_rate_limiter(
         client,
         rate_limiter,
     )
+}
+
+fn note_page() -> GranolaNoteListPage {
+    GranolaNoteListPage {
+        notes: vec![GranolaNoteSummary {
+            id: "not_1234567890ABCD".to_string(),
+            title: Some("Planning sync".to_string()),
+            url: Some("https://granola.ai/notes/not_1234567890ABCD".to_string()),
+            summary: Some("Discussed launch timing".to_string()),
+            created_at: Some("2026-06-20T12:00:00Z".to_string()),
+            updated_at: Some("2026-06-20T13:00:00Z".to_string()),
+        }],
+        has_more: true,
+        cursor: Some("next-cursor".to_string()),
+    }
+}
+
+fn note_detail() -> GranolaNoteDetail {
+    GranolaNoteDetail {
+        id: "not_1234567890ABCD".to_string(),
+        title: Some("Planning sync".to_string()),
+        url: Some("https://granola.ai/notes/not_1234567890ABCD".to_string()),
+        summary: Some("Fresh summary".to_string()),
+        transcript: Some(vec![GranolaTranscriptEntry {
+            speaker: Some("Alex".to_string()),
+            text: "Ship it".to_string(),
+            start_ms: Some(100),
+            end_ms: Some(250),
+        }]),
+    }
+}
+
+async fn enable_service(svc: &GranolaIntegrationService, token: &str) {
+    svc.save_settings(Some(token.to_string()))
+        .await
+        .expect("save Granola token");
+    svc.validate_and_enable()
+        .await
+        .expect("validate Granola token");
 }
 
 #[tokio::test]
@@ -403,6 +522,178 @@ async fn save_settings_errors_when_secure_storage_read_back_mismatches() {
         .deleted_keys()
         .await
         .contains(&TOKEN_REF.to_string()));
+}
+
+#[tokio::test]
+async fn save_settings_errors_when_secure_storage_read_back_is_missing() {
+    let svc = service(
+        Arc::new(WriteOnlySecretStore),
+        Arc::new(EmptyGranolaApiClient),
+    );
+
+    let error = svc
+        .save_settings(Some("grn_token".to_string()))
+        .await
+        .expect_err("missing read-back should fail the save");
+
+    assert!(
+        error.contains("secure storage returned no value"),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn default_and_unavailable_clients_return_note_list_and_detail_errors() {
+    let auth = GranolaAuthContext {
+        api_token: "grn_token".to_string(),
+    };
+    let empty = EmptyGranolaApiClient;
+
+    let empty_detail = empty
+        .fetch_note_detail(&auth, "not_1234567890ABCD", true)
+        .await
+        .expect_err("empty client detail should be unavailable");
+    assert!(matches!(empty_detail, GranolaApiError::ApiError(_)));
+    if let GranolaApiError::ApiError(message) = empty_detail {
+        assert!(message.contains("note detail fetch is unavailable"));
+    }
+    let empty_list = empty
+        .list_notes(&auth, 5, Some("cursor"))
+        .await
+        .expect_err("empty client list should be unavailable");
+    assert!(matches!(empty_list, GranolaApiError::ApiError(_)));
+
+    let unavailable = UnavailableGranolaApiClient::new("Granola HTTP client unavailable");
+    assert!(unavailable.is_unavailable_for_tests());
+    let unavailable_detail = unavailable
+        .fetch_note_detail(&auth, "not_1234567890ABCD", false)
+        .await
+        .expect_err("unavailable detail should fail");
+    assert_eq!(
+        unavailable_detail,
+        GranolaApiError::ApiError("Granola HTTP client unavailable".to_string())
+    );
+    let unavailable_list = unavailable
+        .list_notes(&auth, 10, None)
+        .await
+        .expect_err("unavailable list should fail");
+    assert_eq!(
+        unavailable_list,
+        GranolaApiError::ApiError("Granola HTTP client unavailable".to_string())
+    );
+}
+
+#[tokio::test]
+async fn list_notes_requires_configured_and_enabled_settings() {
+    let secrets = Arc::new(RecordingSecretStore::default());
+    let svc = service(
+        secrets,
+        Arc::new(TestGranolaClient::with_list_response(Ok(note_page()))),
+    );
+
+    let unconfigured = svc
+        .list_notes(10, None)
+        .await
+        .expect_err("unconfigured integration should fail");
+    assert!(unconfigured.contains("not configured"));
+
+    svc.save_settings(Some("grn_token".to_string()))
+        .await
+        .expect("save Granola token");
+    let disabled = svc
+        .list_notes(10, None)
+        .await
+        .expect_err("pending integration should fail");
+    assert!(disabled.contains("not enabled"));
+}
+
+#[tokio::test]
+async fn list_notes_clamps_page_uses_token_and_waits_for_rate_limit() {
+    let secrets = Arc::new(RecordingSecretStore::default());
+    let client = Arc::new(TestGranolaClient::with_list_response(Ok(note_page())));
+    let limiter = Arc::new(CountingRateLimiter::default());
+    let svc = service_with_rate_limiter(secrets, client.clone(), limiter.clone());
+    enable_service(&svc, "grn_secret").await;
+
+    let page = svc
+        .list_notes(99, Some("cursor/value"))
+        .await
+        .expect("list Granola notes");
+
+    assert_eq!(page.notes.len(), 1);
+    assert_eq!(page.notes[0].id, "not_1234567890ABCD");
+    assert!(page.has_more);
+    assert_eq!(page.cursor.as_deref(), Some("next-cursor"));
+    assert_eq!(limiter.wait_count().await, 2);
+    assert_eq!(
+        client.seen_list_requests().await,
+        vec![(
+            "grn_secret".to_string(),
+            30,
+            Some("cursor/value".to_string())
+        )]
+    );
+}
+
+#[tokio::test]
+async fn fetch_note_detail_for_user_validates_id_uses_token_and_waits() {
+    let secrets = Arc::new(RecordingSecretStore::default());
+    let client = Arc::new(TestGranolaClient::with_detail_response(Ok(note_detail())));
+    let limiter = Arc::new(CountingRateLimiter::default());
+    let svc = service_with_rate_limiter(secrets, client.clone(), limiter.clone());
+
+    let invalid = svc
+        .fetch_note_detail_for_user("bad-note-id", true)
+        .await
+        .expect_err("invalid note id should fail before auth");
+    assert!(invalid.contains("Granola note id is invalid"));
+    assert!(client.seen_detail_requests().await.is_empty());
+
+    enable_service(&svc, "grn_secret").await;
+    let detail = svc
+        .fetch_note_detail_for_user("not_1234567890ABCD", true)
+        .await
+        .expect("fetch Granola note detail");
+
+    assert_eq!(detail.summary.as_deref(), Some("Fresh summary"));
+    assert_eq!(detail.transcript.expect("transcript")[0].text, "Ship it");
+    assert_eq!(limiter.wait_count().await, 2);
+    assert_eq!(
+        client.seen_detail_requests().await,
+        vec![(
+            "grn_secret".to_string(),
+            "not_1234567890ABCD".to_string(),
+            true
+        )]
+    );
+}
+
+#[tokio::test]
+async fn fetch_note_detail_for_user_maps_granola_api_errors() {
+    let rate_limited = Arc::new(TestGranolaClient::with_detail_response(Err(
+        GranolaApiError::RateLimited,
+    )));
+    let svc = service(
+        Arc::new(RecordingSecretStore::default()),
+        rate_limited.clone(),
+    );
+    enable_service(&svc, "grn_secret").await;
+    let error = svc
+        .fetch_note_detail_for_user("not_1234567890ABCD", false)
+        .await
+        .expect_err("rate-limited request should fail");
+    assert!(error.contains("rate limit"));
+
+    let api_error = Arc::new(TestGranolaClient::with_detail_response(Err(
+        GranolaApiError::ApiError("Granola failed".to_string()),
+    )));
+    let svc = service(Arc::new(RecordingSecretStore::default()), api_error);
+    enable_service(&svc, "grn_secret").await;
+    let error = svc
+        .fetch_note_detail_for_user("not_1234567890ABCD", false)
+        .await
+        .expect_err("API error should be surfaced");
+    assert_eq!(error, "Granola failed");
 }
 
 #[tokio::test(start_paused = true)]
