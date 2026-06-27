@@ -616,8 +616,13 @@ pub fn summarize_agent_exit_stderr(stderr: &str) -> String {
         return String::new();
     }
 
+    let raw_line_count = trimmed
+        .split(['\n', '\r'])
+        .filter(|line| !line.trim().is_empty())
+        .count();
     let lines = normalized_error_lines(trimmed);
-    if trimmed.len() <= 500 && lines.len() <= 8 {
+    let removed_progress_noise = raw_line_count > lines.len();
+    if !removed_progress_noise && trimmed.len() <= 500 && lines.len() <= 8 {
         return trimmed.to_string();
     }
 
