@@ -377,6 +377,27 @@ describe("BasicTaskDetail", () => {
       ).not.toBeInTheDocument();
     });
 
+    it("does not show stale agent error banner after task merged successfully", () => {
+      const metadata = JSON.stringify({
+        last_agent_error:
+          "Agent failed: sed: frontend/src/components/pr/PrDetailPanel.tsx: No such file or directory",
+        last_agent_error_context: "execution",
+        last_agent_error_at: "2026-06-27T08:19:07+00:00",
+      });
+      const task = createTestTask({
+        internalStatus: "merged",
+        metadata,
+        completedAt: "2026-06-27T08:20:00+00:00",
+      });
+
+      render(<BasicTaskDetail task={task} isHistorical />, {
+        wrapper: TestWrapper,
+      });
+
+      expect(screen.queryByTestId("agent-error-section")).not.toBeInTheDocument();
+      expect(screen.queryByText(/PrDetailPanel\.tsx/)).not.toBeInTheDocument();
+    });
+
     it("displays blockedReason when failed with null metadata but blockedReason exists", () => {
       const task = createTestTask({
         internalStatus: "failed",
