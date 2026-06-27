@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { KeyRound, Loader2 } from "lucide-react";
+import { ExternalLink, KeyRound, Loader2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -172,6 +172,26 @@ export function GranolaIntegrationSettingsPanel() {
           <p className="text-xs leading-relaxed text-[var(--text-muted)]">
             Used for @granola note references and prompt context.
           </p>
+        </div>
+
+        <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3 py-2 text-xs leading-relaxed text-[var(--text-secondary)]">
+          <div className="font-medium text-[var(--text-primary)]">
+            Get a Granola API key
+          </div>
+          <div className="mt-1">
+            {
+              "Open the Granola desktop app, go to Settings -> Connectors -> API keys, create a new key, choose the note scopes, then paste it here."
+            }
+          </div>
+          <a
+            href="https://docs.granola.ai/introduction"
+            target="_blank"
+            rel="noreferrer"
+            className="mt-1 inline-flex items-center gap-1 text-[var(--accent-primary)] hover:underline"
+          >
+            Granola API docs
+            <ExternalLink className="h-3 w-3" aria-hidden="true" />
+          </a>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">

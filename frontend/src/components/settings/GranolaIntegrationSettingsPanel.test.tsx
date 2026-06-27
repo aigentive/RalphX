@@ -103,6 +103,12 @@ describe("GranolaIntegrationSettingsPanel", () => {
 
     expect(screen.getByText("Granola")).toBeInTheDocument();
     expect(screen.getByText("Note references not ready")).toBeInTheDocument();
+    expect(screen.getByText("Get a Granola API key")).toBeInTheDocument();
+    expect(screen.getByText(/Settings -> Connectors -> API keys/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Granola API docs/ })).toHaveAttribute(
+      "href",
+      "https://docs.granola.ai/introduction",
+    );
   });
 
   it("saves and validates the API token", async () => {
