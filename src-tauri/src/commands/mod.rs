@@ -30,6 +30,8 @@ pub mod granola_commands;
 #[cfg(test)]
 mod granola_commands_tests;
 pub mod github_commands;
+#[cfg(test)]
+mod github_commands_tests;
 pub mod harness_provider_commands;
 pub mod health;
 pub mod ideation_commands;
