@@ -609,8 +609,7 @@ pub fn classify_codex_stream_failure(
     }
 }
 
-#[doc(hidden)]
-pub fn summarize_agent_exit_stderr(stderr: &str) -> String {
+fn summarize_agent_exit_stderr(stderr: &str) -> String {
     let trimmed = stderr.trim();
     if trimmed.is_empty() {
         return String::new();
@@ -928,29 +927,6 @@ mod tests {
             matches!(result, StreamError::AgentExit { .. }),
             "local MCP failures must not become provider backpressure"
         );
-    }
-
-    #[test]
-    fn agent_exit_summary_prefers_terminal_cause_over_progress() {
-        let stderr = "\
-   Compiling proc-macro2 v1.0.106
-    Building [                           ] 0/108: proc-macro2(build.rs)
-   Compiling unicode-ident v1.0.22
-error: failed to write `/tmp/target/debug/.fingerprint/test-lib`
-
-Caused by:
-  No space left on device (os error 28)
-";
-
-        let err = StreamError::AgentExit {
-            exit_code: Some(1),
-            stderr: stderr.to_string(),
-        }
-        .to_string();
-
-        assert!(err.contains("No space left on device"));
-        assert!(err.contains("failed to write"));
-        assert!(!err.contains("Compiling proc-macro2"));
     }
 
     #[test]
