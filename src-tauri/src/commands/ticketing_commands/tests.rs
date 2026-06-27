@@ -5,7 +5,9 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use crate::application::clickup_integration_service::ClickUpAttachment;
+use crate::application::clickup_integration_service::{
+    ClickUpAttachment, ClickUpFolder, ClickUpList,
+};
 use crate::application::linear_integration_service::LinearAttachment;
 use crate::application::{
     AppState, AtlassianApiClient, AtlassianAuthContext, AtlassianConnectivity,
@@ -1977,7 +1979,11 @@ fn clickup_sprint_filter_uses_workspace_scope_over_selected_space() {
     };
 
     assert_eq!(
-        ticket_provider_container_scope(PROVIDER_CLICKUP, Some("selected-space"), Some(&sprint_filter)),
+        ticket_provider_container_scope(
+            PROVIDER_CLICKUP,
+            Some("selected-space"),
+            Some(&sprint_filter)
+        ),
         None
     );
     assert_eq!(
@@ -1989,13 +1995,56 @@ fn clickup_sprint_filter_uses_workspace_scope_over_selected_space() {
         Some("list:current-sprint")
     );
     assert_eq!(
-        ticket_provider_container_scope(PROVIDER_CLICKUP, Some("selected-space"), Some(&assignee_filter)),
+        ticket_provider_container_scope(
+            PROVIDER_CLICKUP,
+            Some("selected-space"),
+            Some(&assignee_filter)
+        ),
         Some("selected-space")
     );
     assert_eq!(
-        ticket_provider_container_scope(PROVIDER_LINEAR, Some("selected-project"), Some(&sprint_filter)),
+        ticket_provider_container_scope(
+            PROVIDER_LINEAR,
+            Some("selected-project"),
+            Some(&sprint_filter)
+        ),
         Some("selected-project")
     );
+}
+
+#[test]
+fn clickup_container_scope_parses_workspace_space_folder_and_list() {
+    assert_eq!(
+        clickup_container_scope(None),
+        ClickUpContainerScope::Workspace
+    );
+    assert_eq!(
+        clickup_container_scope(Some("space:space-1")),
+        ClickUpContainerScope::Space("space-1".to_string())
+    );
+    assert_eq!(
+        clickup_container_scope(Some("folder:folder-1")),
+        ClickUpContainerScope::Folder("folder-1".to_string())
+    );
+    assert_eq!(
+        clickup_container_scope(Some("list:list-1")),
+        ClickUpContainerScope::List("list-1".to_string())
+    );
+    assert_eq!(
+        clickup_container_scope(Some("legacy-space")),
+        ClickUpContainerScope::Space("legacy-space".to_string())
+    );
+
+    assert_eq!(
+        clickup_selected_space_id(Some("space:space-1")),
+        Some("space-1")
+    );
+    assert_eq!(
+        clickup_selected_space_id(Some("legacy-space")),
+        Some("legacy-space")
+    );
+    assert_eq!(clickup_selected_space_id(Some("folder:folder-1")), None);
+    assert_eq!(clickup_selected_space_id(Some("list:list-1")), None);
 }
 
 #[test]
@@ -2018,12 +2067,145 @@ fn clickup_current_user_assignee_filter_maps_to_provider_assignee_id() {
         clickup_provider_assignee_ids(Some(&filter), Some(&user)),
         vec![424242]
     );
+    assert!(clickup_provider_assignee_ids(Some(&filter), None).is_empty());
 
     let other_filter = TicketFiltersInput {
         assignee: Some("Someone Else".to_string()),
         ..filter
     };
     assert!(clickup_provider_assignee_ids(Some(&other_filter), Some(&user)).is_empty());
+
+    let empty_filter = TicketFiltersInput {
+        text: None,
+        assignee: Some("   ".to_string()),
+        watcher_me: None,
+        state_ids: None,
+        labels: None,
+        sprint: None,
+    };
+    assert!(clickup_provider_assignee_ids(Some(&empty_filter), Some(&user)).is_empty());
+}
+
+#[test]
+fn clickup_folder_and_list_containers_preserve_parent_fallbacks() {
+    let folder_with_space = clickup_folder_to_container(
+        ClickUpFolder {
+            id: "folder-1".to_string(),
+            name: "Folder".to_string(),
+            space_id: Some("space-1".to_string()),
+        },
+        "fallback-space",
+    );
+    assert_eq!(folder_with_space.id, "folder:folder-1");
+    assert_eq!(
+        folder_with_space.parent_id.as_deref(),
+        Some("space:space-1")
+    );
+
+    let folder_with_fallback = clickup_folder_to_container(
+        ClickUpFolder {
+            id: "folder-2".to_string(),
+            name: "Fallback Folder".to_string(),
+            space_id: None,
+        },
+        "fallback-space",
+    );
+    assert_eq!(
+        folder_with_fallback.parent_id.as_deref(),
+        Some("space:fallback-space")
+    );
+
+    let list_with_folder = clickup_list_to_container(
+        ClickUpList {
+            id: "list-1".to_string(),
+            name: "Folder List".to_string(),
+            folder_id: Some("folder-1".to_string()),
+            space_id: Some("space-1".to_string()),
+        },
+        "fallback-space",
+    );
+    assert_eq!(list_with_folder.id, "list:list-1");
+    assert_eq!(
+        list_with_folder.parent_id.as_deref(),
+        Some("folder:folder-1")
+    );
+
+    let list_with_space = clickup_list_to_container(
+        ClickUpList {
+            id: "list-2".to_string(),
+            name: "Space List".to_string(),
+            folder_id: None,
+            space_id: Some("space-1".to_string()),
+        },
+        "fallback-space",
+    );
+    assert_eq!(list_with_space.parent_id.as_deref(), Some("space:space-1"));
+
+    let list_with_fallback = clickup_list_to_container(
+        ClickUpList {
+            id: "list-3".to_string(),
+            name: "Fallback List".to_string(),
+            folder_id: None,
+            space_id: None,
+        },
+        "space:fallback-space",
+    );
+    assert_eq!(
+        list_with_fallback.parent_id.as_deref(),
+        Some("space:fallback-space")
+    );
+}
+
+#[test]
+fn ticket_and_clickup_sprint_names_fall_back_to_project_or_list() {
+    let mut ticket = ticket_summary_fixture("RX-1", "Ticket", "Todo", None, &[]);
+    ticket.project = Some("Current Sprint".to_string());
+    assert_eq!(
+        ticket_sprint_names(&ticket),
+        vec!["Current Sprint".to_string()]
+    );
+    ticket.sprints = vec!["Explicit Sprint".to_string()];
+    assert_eq!(
+        ticket_sprint_names(&ticket),
+        vec!["Explicit Sprint".to_string()]
+    );
+
+    let summary = ClickUpTaskSummary {
+        id: "task-1".to_string(),
+        custom_id: None,
+        name: "Fallback sprint task".to_string(),
+        url: None,
+        status_name: None,
+        status_type: None,
+        status_category: None,
+        status_color: None,
+        assignees: Vec::new(),
+        assignee_ids: Vec::new(),
+        watchers: Vec::new(),
+        tags: Vec::new(),
+        sprint_names: Vec::new(),
+        location_ids: Vec::new(),
+        location_folder_ids: Vec::new(),
+        location_space_ids: Vec::new(),
+        space_id: Some("space-1".to_string()),
+        folder_id: None,
+        list_id: Some("list-1".to_string()),
+        list_name: Some("Sprint 42".to_string()),
+        updated_at: None,
+    };
+    assert_eq!(
+        clickup_sprint_names(&summary),
+        vec!["Sprint 42".to_string()]
+    );
+
+    let explicit = ClickUpTaskSummary {
+        sprint_names: vec!["Explicit".to_string()],
+        ..summary
+    };
+    assert_eq!(
+        clickup_sprint_names(&explicit),
+        vec!["Explicit".to_string()]
+    );
 }
 
 #[test]
@@ -2103,14 +2285,7 @@ async fn load_ticket_summaries_routes_linear_before_disabled_error() {
 async fn load_ticket_summaries_routes_clickup_space_scope_before_disabled_error() {
     let state = AppState::new_test();
 
-    let error = load_ticket_summaries(
-        &state,
-        PROVIDER_CLICKUP,
-        Some("space-1"),
-        "merge",
-        10,
-        None,
-    )
+    let error = load_ticket_summaries(&state, PROVIDER_CLICKUP, Some("space-1"), "merge", 10, None)
         .await
         .expect_err("disabled ClickUp integration should fail");
 
@@ -2457,7 +2632,7 @@ fn ticket_start_input(
             codex_fast_mode: None,
             mode: Some("chat".to_string()),
             base_ref_kind: None,
-                base_branch_mode: None,
+            base_branch_mode: None,
             base_ref: None,
             base_display_name: None,
             base_source_pull_request: None,
@@ -2613,7 +2788,7 @@ async fn start_agent_conversation_with_ticket_default_base_uses_canonical_branch
         codex_fast_mode: None,
         mode: Some("edit".to_string()),
         base_ref_kind: Some("project_default".to_string()),
-                base_branch_mode: None,
+        base_branch_mode: None,
         base_ref: Some("main".to_string()),
         base_display_name: Some("Project default (main)".to_string()),
         base_source_pull_request: None,
@@ -2625,8 +2800,8 @@ async fn start_agent_conversation_with_ticket_default_base_uses_canonical_branch
             key: Some("RX-77".to_string()),
             title: Some("Ticket with default base".to_string()),
             url: None,
-        summary_excerpt: None,
-        include_transcript: None,
+            summary_excerpt: None,
+            include_transcript: None,
         }],
         composer_artifact_references: Vec::new(),
     })
@@ -3038,7 +3213,7 @@ fn base_test_start_input() -> StartAgentConversationInput {
         codex_fast_mode: None,
         mode: Some("edit".to_string()),
         base_ref_kind: Some("project_default".to_string()),
-                base_branch_mode: None,
+        base_branch_mode: None,
         base_ref: Some("client-supplied-branch".to_string()),
         base_display_name: Some("Client base".to_string()),
         base_source_pull_request: None,
