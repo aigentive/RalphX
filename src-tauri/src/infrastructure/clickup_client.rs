@@ -12,7 +12,9 @@ use serde_json::{json, Value};
 use tokio::time::Duration;
 use tokio_util::bytes::Bytes;
 
-use crate::application::clickup_integration_service::{ClickUpAttachment, ClickUpTaskListOptions};
+use crate::application::clickup_integration_service::{
+    ClickUpAttachment, ClickUpFolder, ClickUpList, ClickUpTaskListOptions,
+};
 use crate::application::{
     ClickUpApiClient, ClickUpAuthContext, ClickUpComment, ClickUpSpace, ClickUpStatus,
     ClickUpTaskContent, ClickUpTaskSummary, ClickUpUser, ClickUpWorkspace,
@@ -152,6 +154,30 @@ where
         fetch_spaces(self, &auth.api_token, team_id).await
     }
 
+    async fn list_folders(
+        &self,
+        auth: &ClickUpAuthContext,
+        space_id: &str,
+    ) -> Result<Vec<ClickUpFolder>, String> {
+        fetch_space_folders(self, &auth.api_token, space_id).await
+    }
+
+    async fn list_folder_lists(
+        &self,
+        auth: &ClickUpAuthContext,
+        folder_id: &str,
+    ) -> Result<Vec<ClickUpList>, String> {
+        fetch_folder_lists(self, &auth.api_token, folder_id).await
+    }
+
+    async fn list_folderless_lists(
+        &self,
+        auth: &ClickUpAuthContext,
+        space_id: &str,
+    ) -> Result<Vec<ClickUpList>, String> {
+        fetch_folderless_lists(self, &auth.api_token, space_id).await
+    }
+
     async fn list_tasks(
         &self,
         auth: &ClickUpAuthContext,
@@ -160,6 +186,15 @@ where
         options: ClickUpTaskListOptions,
     ) -> Result<Vec<ClickUpTaskSummary>, String> {
         fetch_filtered_tasks(self, &auth.api_token, team_id, space_ids, options).await
+    }
+
+    async fn list_tasks_for_list(
+        &self,
+        auth: &ClickUpAuthContext,
+        list_id: &str,
+        options: ClickUpTaskListOptions,
+    ) -> Result<Vec<ClickUpTaskSummary>, String> {
+        fetch_list_tasks(self, &auth.api_token, list_id, options).await
     }
 
     async fn fetch_task(
@@ -312,6 +347,63 @@ pub(crate) async fn fetch_spaces<C: ClickUpJsonRequester + ?Sized>(
         .collect())
 }
 
+pub(crate) async fn fetch_space_folders<C: ClickUpJsonRequester + ?Sized>(
+    client: &C,
+    token: &str,
+    space_id: &str,
+) -> Result<Vec<ClickUpFolder>, String> {
+    let url = format!(
+        "{CLICKUP_API_BASE}/space/{}/folder?archived=false",
+        percent_encode_path_segment(space_id)
+    );
+    let value = client.request_json(Method::GET, url, token, None).await?;
+    Ok(value
+        .get("folders")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|folder| folder_from_value(folder, Some(space_id)))
+        .collect())
+}
+
+pub(crate) async fn fetch_folder_lists<C: ClickUpJsonRequester + ?Sized>(
+    client: &C,
+    token: &str,
+    folder_id: &str,
+) -> Result<Vec<ClickUpList>, String> {
+    let url = format!(
+        "{CLICKUP_API_BASE}/folder/{}/list?archived=false",
+        percent_encode_path_segment(folder_id)
+    );
+    let value = client.request_json(Method::GET, url, token, None).await?;
+    Ok(value
+        .get("lists")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|list| list_from_value(list, Some(folder_id), None))
+        .collect())
+}
+
+pub(crate) async fn fetch_folderless_lists<C: ClickUpJsonRequester + ?Sized>(
+    client: &C,
+    token: &str,
+    space_id: &str,
+) -> Result<Vec<ClickUpList>, String> {
+    let url = format!(
+        "{CLICKUP_API_BASE}/space/{}/list?archived=false",
+        percent_encode_path_segment(space_id)
+    );
+    let value = client.request_json(Method::GET, url, token, None).await?;
+    Ok(value
+        .get("lists")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|list| list_from_value(list, None, Some(space_id)))
+        .collect())
+}
+
 /// Loads workspace-scoped filtered tasks, walking `?page=N` until ClickUp
 /// reports `last_page` (or returns an empty page).
 pub(crate) async fn fetch_filtered_tasks<C: ClickUpJsonRequester + ?Sized>(
@@ -321,6 +413,34 @@ pub(crate) async fn fetch_filtered_tasks<C: ClickUpJsonRequester + ?Sized>(
     space_ids: &[String],
     options: ClickUpTaskListOptions,
 ) -> Result<Vec<ClickUpTaskSummary>, String> {
+    fetch_tasks_by_page(client, token, options, |page, assignee_ids| {
+        filtered_tasks_url(team_id, space_ids, assignee_ids, page)
+    })
+    .await
+}
+
+pub(crate) async fn fetch_list_tasks<C: ClickUpJsonRequester + ?Sized>(
+    client: &C,
+    token: &str,
+    list_id: &str,
+    options: ClickUpTaskListOptions,
+) -> Result<Vec<ClickUpTaskSummary>, String> {
+    fetch_tasks_by_page(client, token, options, |page, assignee_ids| {
+        list_tasks_url(list_id, assignee_ids, page)
+    })
+    .await
+}
+
+async fn fetch_tasks_by_page<C, F>(
+    client: &C,
+    token: &str,
+    options: ClickUpTaskListOptions,
+    url_for_page: F,
+) -> Result<Vec<ClickUpTaskSummary>, String>
+where
+    C: ClickUpJsonRequester + ?Sized,
+    F: Fn(usize, &[i64]) -> String,
+{
     let query = options
         .query
         .as_deref()
@@ -331,7 +451,7 @@ pub(crate) async fn fetch_filtered_tasks<C: ClickUpJsonRequester + ?Sized>(
     let mut tasks = Vec::new();
     let mut page = 0usize;
     loop {
-        let url = filtered_tasks_url(team_id, space_ids, page);
+        let url = url_for_page(page, &options.assignee_ids);
         let value = client.request_json(Method::GET, url, token, None).await?;
         let page_tasks = value.get("tasks").and_then(Value::as_array);
         let count = page_tasks.map(Vec::len).unwrap_or(0);
@@ -638,15 +758,34 @@ pub(crate) async fn apply_task_tags<C: ClickUpJsonRequester + ?Sized>(
 // Value mapping helpers
 // ---------------------------------------------------------------------------
 
-fn filtered_tasks_url(team_id: &str, space_ids: &[String], page: usize) -> String {
+fn filtered_tasks_url(
+    team_id: &str,
+    space_ids: &[String],
+    assignee_ids: &[i64],
+    page: usize,
+) -> String {
     let mut url = format!(
-        "{CLICKUP_API_BASE}/team/{}/task?page={page}&include_closed=true",
+        "{CLICKUP_API_BASE}/team/{}/task?page={page}&order_by=updated&reverse=true&include_closed=true&subtasks=true",
         percent_encode_path_segment(team_id)
     );
     for space_id in space_ids {
         // ClickUp expects repeated `space_ids[]=` params; encode the brackets so
         // the query parses as a valid URI.
         url.push_str(&format!("&space_ids%5B%5D={}", percent_encode(space_id)));
+    }
+    for assignee_id in assignee_ids {
+        url.push_str(&format!("&assignees%5B%5D={assignee_id}"));
+    }
+    url
+}
+
+fn list_tasks_url(list_id: &str, assignee_ids: &[i64], page: usize) -> String {
+    let mut url = format!(
+        "{CLICKUP_API_BASE}/list/{}/task?page={page}&order_by=updated&reverse=true&include_closed=true&subtasks=true",
+        percent_encode_path_segment(list_id)
+    );
+    for assignee_id in assignee_ids {
+        url.push_str(&format!("&assignees%5B%5D={assignee_id}"));
     }
     url
 }
@@ -682,6 +821,39 @@ fn space_from_value(value: &Value) -> Option<ClickUpSpace> {
     })
 }
 
+fn folder_from_value(value: &Value, fallback_space_id: Option<&str>) -> Option<ClickUpFolder> {
+    Some(ClickUpFolder {
+        id: opt_str(value, "id")?,
+        name: opt_str(value, "name").unwrap_or_default(),
+        space_id: value
+            .get("space")
+            .and_then(|space| opt_str(space, "id"))
+            .or_else(|| opt_str(value, "space_id"))
+            .or_else(|| fallback_space_id.map(str::to_string)),
+    })
+}
+
+fn list_from_value(
+    value: &Value,
+    fallback_folder_id: Option<&str>,
+    fallback_space_id: Option<&str>,
+) -> Option<ClickUpList> {
+    Some(ClickUpList {
+        id: opt_str(value, "id")?,
+        name: opt_str(value, "name").unwrap_or_default(),
+        folder_id: value
+            .get("folder")
+            .and_then(|folder| opt_str(folder, "id"))
+            .or_else(|| opt_str(value, "folder_id"))
+            .or_else(|| fallback_folder_id.map(str::to_string)),
+        space_id: value
+            .get("space")
+            .and_then(|space| opt_str(space, "id"))
+            .or_else(|| opt_str(value, "space_id"))
+            .or_else(|| fallback_space_id.map(str::to_string)),
+    })
+}
+
 fn status_from_value(value: &Value) -> Option<ClickUpStatus> {
     let status = opt_str(value, "status")?;
     let status_type = opt_str(value, "type").unwrap_or_default();
@@ -713,7 +885,13 @@ fn task_summary_from_value(task: &Value) -> Option<ClickUpTaskSummary> {
         assignee_ids: collect_assignee_ids(task),
         watchers: collect_clickup_users_from_fields(task, &["watchers", "followers"]),
         tags: collect_tag_names(task),
+        sprint_names: collect_location_names(task),
+        location_ids: collect_location_ids(task),
+        location_folder_ids: collect_location_folder_ids(task),
+        location_space_ids: collect_location_space_ids(task),
         space_id: task.get("space").and_then(|value| opt_str(value, "id")),
+        folder_id: task.get("folder").and_then(|value| opt_str(value, "id")),
+        list_id: task.get("list").and_then(|value| opt_str(value, "id")),
         list_name: task.get("list").and_then(|value| opt_str(value, "name")),
         updated_at: task
             .get("date_updated")
@@ -939,6 +1117,52 @@ fn collect_tag_names(task: &Value) -> Vec<String> {
         .into_iter()
         .flatten()
         .filter_map(|tag| opt_str(tag, "name"))
+        .collect()
+}
+
+fn collect_location_names(task: &Value) -> Vec<String> {
+    task.get("locations")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|location| opt_str(location, "name"))
+        .collect()
+}
+
+fn collect_location_ids(task: &Value) -> Vec<String> {
+    task.get("locations")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|location| opt_str(location, "id"))
+        .collect()
+}
+
+fn collect_location_folder_ids(task: &Value) -> Vec<String> {
+    task.get("locations")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|location| {
+            location
+                .get("folder")
+                .and_then(|folder| opt_str(folder, "id"))
+                .or_else(|| opt_str(location, "folder_id"))
+        })
+        .collect()
+}
+
+fn collect_location_space_ids(task: &Value) -> Vec<String> {
+    task.get("locations")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|location| {
+            location
+                .get("space")
+                .and_then(|space| opt_str(space, "id"))
+                .or_else(|| opt_str(location, "space_id"))
+        })
         .collect()
 }
 

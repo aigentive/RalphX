@@ -83,12 +83,12 @@ describe("TicketDetailSheet assignee control", () => {
 
   it("shows the assignee and hides 'Assign to me' when assigned", () => {
     renderSheet({
-      ticket: { ...baseTicket, assignee: { name: "Adrian Demian" } },
+      ticket: { ...baseTicket, assignee: { name: "Alex Developer" } },
     });
 
     expect(screen.getByText("Assignee")).toBeInTheDocument();
-    expect(screen.getByLabelText("Adrian Demian")).toHaveAttribute("title", "Adrian Demian");
-    expect(screen.queryByText("Adrian Demian")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Alex Developer")).toHaveAttribute("title", "Alex Developer");
+    expect(screen.queryByText("Alex Developer")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /assign to me/i })).not.toBeInTheDocument();
     // Clear assignee stays available because assignment write-back is enabled.
     expect(screen.getByRole("button", { name: /clear assignee/i })).toBeInTheDocument();
@@ -96,12 +96,12 @@ describe("TicketDetailSheet assignee control", () => {
 
   it("shows the assignee read-only when assignment write-back is unavailable", () => {
     renderSheet({
-      ticket: { ...baseTicket, assignee: { name: "Adrian Demian" } },
+      ticket: { ...baseTicket, assignee: { name: "Alex Developer" } },
       capabilities: { ...baseCapabilities, assignmentWrite: false },
     });
 
-    expect(screen.getByLabelText("Adrian Demian")).toHaveAttribute("title", "Adrian Demian");
-    expect(screen.queryByText("Adrian Demian")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Alex Developer")).toHaveAttribute("title", "Alex Developer");
+    expect(screen.queryByText("Alex Developer")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /assign to me/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /clear assignee/i })).not.toBeInTheDocument();
   });

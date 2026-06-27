@@ -9,6 +9,7 @@ use crate::domain::entities::{
     ExecutionRecoveryEventKind, ExecutionRecoveryMetadata, ExecutionRecoveryReasonCode,
     ExecutionRecoverySource, ExecutionRecoveryState, InternalStatus, Project, Task,
 };
+
 use super::execution::is_deterministic_agent_command_error;
 
 fn build_reconciler_for_execution_tests(
@@ -351,8 +352,15 @@ async fn failed_execution_with_invalid_ignored_mode_stops_retrying() {
     let execution_state = Arc::new(ExecutionState::new());
     let reconciler = build_reconciler_for_execution_tests(&app_state, &execution_state);
 
-    let project = Project::new("Coverage project".to_string(), "/tmp/coverage-project".to_string());
-    app_state.project_repo.create(project.clone()).await.unwrap();
+    let project = Project::new(
+        "Coverage project".to_string(),
+        "/tmp/coverage-project".to_string(),
+    );
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
 
     let mut recovery = ExecutionRecoveryMetadata::new();
     let failure_message =
@@ -381,7 +389,12 @@ async fn failed_execution_with_invalid_ignored_mode_stops_retrying() {
         "deterministic command failures should stop retries instead of re-queueing"
     );
 
-    let updated_task = app_state.task_repo.get_by_id(&task_id).await.unwrap().unwrap();
+    let updated_task = app_state
+        .task_repo
+        .get_by_id(&task_id)
+        .await
+        .unwrap()
+        .unwrap();
     let updated_recovery =
         ExecutionRecoveryMetadata::from_task_metadata(updated_task.metadata.as_deref())
             .unwrap()

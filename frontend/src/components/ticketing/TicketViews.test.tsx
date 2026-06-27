@@ -14,7 +14,7 @@ const tickets: TicketSummary[] = [
     ref: { provider: "jira", id: "10001", key: "RX-1" },
     title: "First ticket",
     state: { id: "todo", name: "To Do", category: "todo" },
-    assignee: { name: "Adrian Demian" },
+    assignee: { name: "Alex Developer" },
     labels: [],
     updatedAt: "2026-06-19T22:00:00.000Z",
     url: null,
@@ -45,8 +45,8 @@ describe("TicketListView", () => {
       />,
     );
 
-    expect(screen.getByLabelText("Adrian Demian")).toBeInTheDocument();
-    expect(screen.queryByText("Adrian Demian")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Alex Developer")).toBeInTheDocument();
+    expect(screen.queryByText("Alex Developer")).not.toBeInTheDocument();
     expect(screen.getByText("Unassigned")).toBeInTheDocument();
   });
 

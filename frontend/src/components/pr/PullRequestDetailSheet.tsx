@@ -14,8 +14,8 @@ import {
 
 import {
   PullRequestDetailBody,
-  type PullRequestShell,
 } from "./PullRequestDetailBody";
+import type { PullRequestShell } from "./PullRequestDetailShell";
 
 const EMPTY_ASSOCIATIONS: TicketAssociations = {
   tasks: [],

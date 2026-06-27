@@ -36,7 +36,7 @@ Need coverage for:
 Required fixtures:
 
 - Claude raw stream fixtures from current RalphX behavior
-- Codex raw JSONL fixtures derived from Reefagent samples
+- Codex raw JSONL fixtures derived from generic samples
 
 Assertions:
 

@@ -147,6 +147,7 @@ pub async fn search_clickup_tasks(
             ClickUpTaskListOptions {
                 query: input.query,
                 limit: Some(limit),
+                assignee_ids: Vec::new(),
             },
         )
         .await?;

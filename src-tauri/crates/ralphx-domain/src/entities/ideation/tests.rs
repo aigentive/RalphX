@@ -1096,6 +1096,7 @@ fn setup_proposal_test_db() -> Connection {
                 created_task_id TEXT,
                 plan_artifact_id TEXT,
                 plan_version_at_creation INTEGER,
+                affected_paths TEXT,
                 sort_order INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,

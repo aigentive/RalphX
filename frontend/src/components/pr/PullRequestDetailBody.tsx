@@ -22,27 +22,18 @@ import { useAfterPaint } from "@/components/ticketing/useAfterPaint";
 
 import {
   DetailSkeleton,
-  normalizePrStatus,
   PrMarkdown,
   PrSection,
   PrStateNotice,
 } from "./PullRequestDetailPrimitives";
+import type { PullRequestShell } from "./PullRequestDetailShell";
+import { normalizePrStatus } from "./PullRequestDetailUtils";
 import {
   PrChecksSection,
   PrCommentsSection,
   PrReviewThreadSection,
   PrRxConversationSection,
 } from "./PullRequestDetailSections";
-
-export interface PullRequestShell {
-  projectId: string;
-  prNumber?: number | null | undefined;
-  title?: string | null | undefined;
-  url?: string | null | undefined;
-  status?: string | null | undefined;
-  branch?: string | null | undefined;
-  conversationId?: string | null | undefined;
-}
 
 interface PullRequestDetailBodyProps {
   selector: PullRequestDetailSelector | null;
@@ -173,26 +164,6 @@ export function PullRequestDetailBody({
       ) : null}
     </div>
   );
-}
-
-export function pullRequestShellFromTicket(input: {
-  projectId: string;
-  prNumber: number;
-  prUrl?: string | null | undefined;
-  prStatus?: string | null | undefined;
-  title?: string | null | undefined;
-}): PullRequestShell {
-  return {
-    projectId: input.projectId,
-    prNumber: input.prNumber,
-    url: input.prUrl,
-    status: input.prStatus,
-    title: input.title ?? `PR #${input.prNumber}`,
-  };
-}
-
-export function hasPullRequestShell(shell: PullRequestShell | null): shell is PullRequestShell {
-  return Boolean(shell?.projectId && (shell.prNumber != null || shell.branch));
 }
 
 export function PullRequestShellIcon() {
