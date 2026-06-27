@@ -320,6 +320,57 @@ fn reference(provider: &str, kind: &str, id: &str) -> ComposerIntegrationReferen
     }
 }
 
+#[test]
+fn skipped_reason_strings_cover_all_public_log_values() {
+    let cases = [
+        (
+            SkippedIntegrationReferenceReason::ProviderUnavailable,
+            "provider_unavailable",
+        ),
+        (
+            SkippedIntegrationReferenceReason::IntegrationDisabled,
+            "integration_disabled",
+        ),
+        (
+            SkippedIntegrationReferenceReason::MissingCredentials,
+            "missing_credentials",
+        ),
+        (SkippedIntegrationReferenceReason::NotFound, "not_found"),
+        (SkippedIntegrationReferenceReason::RateLimited, "rate_limited"),
+        (SkippedIntegrationReferenceReason::ApiError, "api_error"),
+        (
+            SkippedIntegrationReferenceReason::UnsupportedReference,
+            "unsupported_reference",
+        ),
+        (
+            SkippedIntegrationReferenceReason::BudgetExceeded,
+            "budget_exceeded",
+        ),
+    ];
+
+    for (reason, expected) in cases {
+        assert_eq!(reason.as_str(), expected);
+    }
+}
+
+#[tokio::test]
+async fn dispatcher_leaves_atlassian_and_linear_references_unexpanded_when_services_are_absent() {
+    let expansion = expand_integration_references_for_prompt(
+        "Base prompt",
+        &[
+            reference("atlassian", "jira", "RX-42"),
+            reference("linear", "linear", "lin-42"),
+        ],
+        None,
+        None,
+        None,
+    )
+    .await;
+
+    assert_eq!(expansion.rewritten_prompt, "Base prompt");
+    assert!(expansion.skipped_references.is_empty());
+}
+
 #[tokio::test]
 async fn dispatcher_threads_existing_providers_and_granola_without_duplicate_base_prompt() {
     let mut granola_ref = reference("granola", "note", "not_1234567890ABCD");
