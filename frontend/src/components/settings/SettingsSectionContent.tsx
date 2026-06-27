@@ -69,6 +69,11 @@ const LazyClickUpIntegrationSettingsPanel = lazy(() =>
     default: module.ClickUpIntegrationSettingsPanel,
   })),
 );
+const LazyGranolaIntegrationSettingsPanel = lazy(() =>
+  import("./GranolaIntegrationSettingsPanel").then((module) => ({
+    default: module.GranolaIntegrationSettingsPanel,
+  })),
+);
 const LazyExternalMcpSettingsPanel = lazy(() =>
   import("./ExternalMcpSettingsPanel").then((module) => ({
     default: module.ExternalMcpSettingsPanel,
@@ -141,6 +146,7 @@ export function SettingsSectionContent({
       {section === "integrations" && <LazyAtlassianIntegrationSettingsPanel />}
       {section === "linear" && <LazyLinearIntegrationSettingsPanel />}
       {section === "clickup" && <LazyClickUpIntegrationSettingsPanel />}
+      {section === "granola" && <LazyGranolaIntegrationSettingsPanel />}
       {section === "api-keys" && <LazyApiKeysSection />}
       {section === "external-mcp" && <LazyExternalMcpSettingsPanel />}
       {section === "accessibility" && <LazyAccessibilitySection />}

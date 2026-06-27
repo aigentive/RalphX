@@ -1666,12 +1666,14 @@ export interface ComposerProjectReference {
 }
 
 export interface ComposerIntegrationReference {
-  provider: "atlassian" | "linear" | "clickup";
-  kind: "jira" | "confluence" | "linear" | "clickup";
+  provider: "atlassian" | "linear" | "clickup" | "granola";
+  kind: "jira" | "confluence" | "linear" | "clickup" | "note";
   id: string;
   key?: string;
   title?: string;
   url?: string;
+  summaryExcerpt?: string;
+  includeTranscript?: boolean;
 }
 
 export interface ComposerArtifactReference {

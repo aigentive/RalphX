@@ -13,6 +13,7 @@ import {
   type AtlassianResourceSummary,
 } from "@/api/atlassian";
 import { clickupApi, type ClickUpTaskSummary } from "@/api/clickup";
+import { granolaApi, type GranolaNoteSummary } from "@/api/granola";
 import { linearApi, type LinearIssueSummary } from "@/api/linear";
 import type { AgentComposerIntegrationKind } from "@/components/agents/composer/agentComposerCore";
 
@@ -180,7 +181,12 @@ export function useAgentComposerIntegrationResources({
   return useQuery({
     queryKey: agentComposerKeys.integrations(kind, effectiveQuery),
     queryFn: async (): Promise<
-      Array<AtlassianResourceSummary | LinearIssueSummary | ClickUpTaskSummary>
+      Array<
+        | AtlassianResourceSummary
+        | LinearIssueSummary
+        | ClickUpTaskSummary
+        | GranolaNoteSummary
+      >
     > => {
       if (kind === "linear") {
         return linearApi.searchIssues({
@@ -193,6 +199,18 @@ export function useAgentComposerIntegrationResources({
           query: effectiveQuery,
           limit: CLICKUP_TASK_SEARCH_LIMIT,
         });
+      }
+      if (kind === "granola") {
+        const page = await granolaApi.listNotes({ pageSize: 30 });
+        const query = effectiveQuery.toLowerCase();
+        if (!query) {
+          return page.notes;
+        }
+        return page.notes.filter((note) =>
+          [note.title, note.summary, note.id]
+            .filter(Boolean)
+            .some((value) => value!.toLowerCase().includes(query)),
+        );
       }
       return atlassianApi.searchResources({
         kind: (kind ?? "jira") as AtlassianResourceKind,

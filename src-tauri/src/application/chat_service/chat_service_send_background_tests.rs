@@ -1316,6 +1316,9 @@ async fn background_run_drains_queue_after_non_cancelled_silent_exit() {
         agent_conversation_linear_issue_repo: Some(Arc::clone(
             &state.agent_conversation_linear_issue_repo,
         )),
+        agent_conversation_granola_note_repo: Some(Arc::clone(
+            &state.agent_conversation_granola_note_repo,
+        )),
         task_proposal_repo: Some(Arc::clone(&state.task_proposal_repo)),
         activity_event_repo: Arc::clone(&state.activity_event_repo),
         memory_event_repo: Arc::clone(&state.memory_event_repo),

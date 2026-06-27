@@ -258,6 +258,8 @@ fn integration_ref(
         key: key.map(str::to_string),
         title: None,
         url: None,
+        summary_excerpt: None,
+        include_transcript: None,
     }
 }
 

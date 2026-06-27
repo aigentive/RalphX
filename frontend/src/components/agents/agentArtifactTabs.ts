@@ -1,6 +1,9 @@
 import type { AgentArtifactTab } from "@/stores/agentSessionStore";
 
-export type IdeationArtifactTab = Exclude<AgentArtifactTab, "publish" | "jira" | "linear">;
+export type IdeationArtifactTab = Exclude<
+  AgentArtifactTab,
+  "publish" | "jira" | "linear" | "granola"
+>;
 
 export interface IdeationArtifactAvailability {
   hasAttachedIdeationSession: boolean;

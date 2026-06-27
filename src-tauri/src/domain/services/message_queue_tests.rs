@@ -564,6 +564,8 @@ fn test_queue_with_overrides_preserves_composer_integration_references() {
         key: Some("RX-42".to_string()),
         title: Some("Fix composer search".to_string()),
         url: Some("https://example.atlassian.net/browse/RX-42".to_string()),
+        summary_excerpt: None,
+        include_transcript: None,
     }];
 
     let queued = queue.queue_with_overrides_and_project_references(
@@ -582,6 +584,43 @@ fn test_queue_with_overrides_preserves_composer_integration_references() {
     assert_eq!(queued.composer_integration_references, references);
     let popped = queue.pop(ChatContextType::Project, "project-1").unwrap();
     assert_eq!(popped.composer_integration_references, references);
+}
+
+#[test]
+fn composer_integration_reference_deserializes_legacy_atlassian_metadata_defaults() {
+    let reference: ComposerIntegrationReference = serde_json::from_str(
+        r#"{"provider":"atlassian","kind":"jira","id":"RX-42","key":"RX-42"}"#,
+    )
+    .expect("legacy Atlassian reference should deserialize");
+
+    assert_eq!(reference.provider, "atlassian");
+    assert_eq!(reference.kind, "jira");
+    assert_eq!(reference.key.as_deref(), Some("RX-42"));
+    assert_eq!(reference.summary_excerpt, None);
+    assert_eq!(reference.include_transcript, None);
+}
+
+#[test]
+fn composer_integration_reference_serializes_granola_prompt_metadata() {
+    let reference = ComposerIntegrationReference {
+        provider: "granola".to_string(),
+        kind: "note".to_string(),
+        id: "not_1234567890ABCD".to_string(),
+        key: None,
+        title: Some("Planning note".to_string()),
+        url: Some("https://granola.ai/notes/not_1234567890ABCD".to_string()),
+        summary_excerpt: Some("Decision summary".to_string()),
+        include_transcript: Some(true),
+    };
+
+    let value = serde_json::to_value(&reference).expect("serialize Granola reference");
+
+    assert_eq!(value["provider"], "granola");
+    assert_eq!(value["kind"], "note");
+    assert_eq!(value["summaryExcerpt"], "Decision summary");
+    assert_eq!(value["includeTranscript"], true);
+    assert!(value.get("summary_excerpt").is_none());
+    assert!(value.get("include_transcript").is_none());
 }
 
 #[test]

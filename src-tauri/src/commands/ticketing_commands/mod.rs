@@ -1858,6 +1858,8 @@ fn ticket_ref_to_composer_reference(
         key: ticket_ref.key.clone(),
         title: None,
         url: None,
+        summary_excerpt: None,
+        include_transcript: None,
     }
 }
 

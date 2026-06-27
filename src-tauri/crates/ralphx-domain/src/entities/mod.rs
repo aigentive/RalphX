@@ -1,4 +1,5 @@
 pub mod activity_event;
+pub mod agent_conversation_granola_note;
 pub mod agent_conversation_issue;
 pub mod agent_conversation_jira_issue;
 pub mod agent_conversation_linear_issue;
@@ -43,6 +44,9 @@ pub use activity_event::{
     ActivityEvent, ActivityEventId, ActivityEventRole, ActivityEventType,
     ParseActivityEventRoleError, ParseActivityEventTypeError,
 };
+pub use agent_conversation_granola_note::{
+    AgentConversationGranolaNoteLink, AgentConversationGranolaRefreshStatus,
+};
 pub use agent_conversation_issue::{
     AgentConversationIssue, AGENT_CONVERSATION_ISSUE_STATUS_DISMISSED,
     AGENT_CONVERSATION_ISSUE_STATUS_OPEN, AGENT_CONVERSATION_ISSUE_STATUS_RESOLVED,
@@ -55,8 +59,7 @@ pub use agent_conversation_linear_issue::{
 };
 pub use agent_conversation_workspace::{
     is_open_pr, is_pr_status_pollable_push_status, is_terminal_publication_pr_status,
-    pr_comment_body_excerpt,
-    AgentConversationWorkspace, AgentConversationWorkspaceMode,
+    pr_comment_body_excerpt, AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
     AgentWorkspaceFollowupProvenance, AgentWorkspacePrCommentEvidence,
     AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription,
