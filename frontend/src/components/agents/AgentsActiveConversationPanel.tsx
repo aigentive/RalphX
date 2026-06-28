@@ -105,6 +105,7 @@ import {
 import type { IdeationArtifactTab } from "./agentArtifactTabs";
 import {
   getFocusedChatSessionId,
+  getFocusedWorkspaceReviewConversationId,
   type AgentsChatFocus,
   type AgentsChatFocusSwitchOption,
   type AgentsChatFocusType,
@@ -517,6 +518,7 @@ interface AgentsActiveConversationPanelProps {
     workspace: AgentConversationWorkspace | null
   ) => void;
   onFocusIdeationSession: (sessionId: string) => void;
+  onFocusWorkspaceReview: (conversationId: string) => void;
   onFocusVerificationSession: (
     parentSessionId: string,
     childSessionId: string
@@ -570,6 +572,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   onAgentUserMessageSent,
   onConversationModeSwitched,
   onFocusIdeationSession,
+  onFocusWorkspaceReview,
   onFocusVerificationSession,
   onFocusTaskRuntime,
   onOpenTaskArtifact,
@@ -595,6 +598,8 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   const queryClient = useQueryClient();
   const bus = useEventBus();
   const focusedChatSessionId = getFocusedChatSessionId(chatFocus);
+  const focusedWorkspaceReviewConversationId =
+    getFocusedWorkspaceReviewConversationId(chatFocus);
   const { registry: modelRegistry } = useAgentModels();
   const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
   const openModal = useUiStore((s) => s.openModal);
@@ -763,6 +768,8 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   const panelTaskRuntimeContextType = taskRuntimeFocus?.contextType;
   const focusedPanelKey = taskRuntimeFocus
     ? `${taskRuntimeFocus.contextType}:${taskRuntimeFocus.taskId}`
+    : focusedWorkspaceReviewConversationId
+    ? `workspace_review:${focusedWorkspaceReviewConversationId}`
     : focusedChatSessionId ?? "workspace";
   const isFocusedChildChat = chatFocus.type !== "workspace";
   const runtimeStatusQuery = useAgentConversationRuntimeStatus(selectedConversationId, {
@@ -1012,15 +1019,35 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     if (taskRuntimeFocus) {
       return buildStoreKey(taskRuntimeFocus.contextType, taskRuntimeFocus.taskId);
     }
+    if (focusedWorkspaceReviewConversationId) {
+      return buildStoreKey("project", focusedWorkspaceReviewConversationId);
+    }
     if (focusedChatSessionId) {
       return buildStoreKey("ideation", focusedChatSessionId);
     }
     return getAgentConversationStoreKey(activeConversation);
-  }, [activeConversation, focusedChatSessionId, taskRuntimeFocus]);
+  }, [
+    activeConversation,
+    focusedChatSessionId,
+    focusedWorkspaceReviewConversationId,
+    taskRuntimeFocus,
+  ]);
   const queuedMessagesSelector = useMemo(
     () => selectQueuedMessages(panelStoreKeyOverride),
     [panelStoreKeyOverride]
   );
+  const panelConversationIdOverride =
+    focusedWorkspaceReviewConversationId ??
+    (!isFocusedChildChat ? selectedConversationId : null);
+  const panelAgentProcessContextIdOverride = taskRuntimeFocus
+    ? taskRuntimeFocus.taskId
+    : focusedWorkspaceReviewConversationId ??
+      (!isFocusedChildChat && activeConversation.contextType === "project"
+        ? selectedConversationId
+        : null);
+  const panelSendConversationId =
+    focusedWorkspaceReviewConversationId ??
+    (!isFocusedChildChat ? selectedConversationId : null);
   const queuedMessages = useChatStore(queuedMessagesSelector);
   const executionHaltState = useUiStore((s) =>
     getAgentQueueHaltState(s.executionStatus)
@@ -1097,6 +1124,12 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       onOpenTaskArtifact(taskId);
     },
     [onFocusTaskRuntime, onOpenTaskArtifact],
+  );
+  const handleViewRuntimeWorkspaceReview = useCallback(
+    (conversationId: string) => {
+      onFocusWorkspaceReview(conversationId);
+    },
+    [onFocusWorkspaceReview],
   );
   const workspaceModelOptions = useMemo(
     () =>
@@ -1908,7 +1941,13 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       <div className="min-h-0 flex-1">
         <AgentWorkspaceFileLinkProvider
           conversationId={selectedConversationId}
-          workspace={isFocusedChildChat ? null : activeWorkspace}
+          workspace={
+            chatFocus.type === "workspace_review"
+              ? activeWorkspace
+              : isFocusedChildChat
+                ? null
+                : activeWorkspace
+          }
         >
           <IntegratedChatPanel
             key={`${selectedConversationId}:${chatFocus.type}:${focusedPanelKey}`}
@@ -1916,23 +1955,24 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
             {...(panelIdeationSessionId
               ? { ideationSessionId: panelIdeationSessionId }
               : {})}
-            {...(!isFocusedChildChat
-              ? { conversationIdOverride: selectedConversationId }
+            {...(panelConversationIdOverride
+              ? { conversationIdOverride: panelConversationIdOverride }
               : {})}
             selectedTaskIdOverride={panelSelectedTaskId}
             {...(panelTaskRuntimeContextType
               ? { taskRuntimeContextTypeOverride: panelTaskRuntimeContextType }
               : {})}
             storeContextKeyOverride={panelStoreKeyOverride}
-            {...(taskRuntimeFocus
-              ? { agentProcessContextIdOverride: taskRuntimeFocus.taskId }
-              : !isFocusedChildChat && activeConversation.contextType === "project"
-              ? { agentProcessContextIdOverride: selectedConversationId }
+            {...(panelAgentProcessContextIdOverride
+              ? {
+                  agentProcessContextIdOverride:
+                    panelAgentProcessContextIdOverride,
+                }
               : {})}
-            {...(!isFocusedChildChat
+            {...(panelSendConversationId
               ? {
                   sendOptions: {
-                    conversationId: selectedConversationId,
+                    conversationId: panelSendConversationId,
                     providerHarness: normalizedActiveRuntime.provider,
                     modelId: normalizedActiveRuntime.modelId,
                     logicalEffort: normalizedActiveRuntime.effort,
@@ -2060,6 +2100,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                     onViewWorkspace={handleViewRuntimeWorkspace}
                     onViewIdeation={onFocusIdeationSession}
                     onViewVerification={onFocusVerificationSession}
+                    onViewWorkspaceReview={handleViewRuntimeWorkspaceReview}
                     onViewTaskRuntime={handleViewRuntimeTask}
                   />
                   {shouldShowPlanComposerCta && (

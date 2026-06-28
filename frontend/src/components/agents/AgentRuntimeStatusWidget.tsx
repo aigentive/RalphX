@@ -23,6 +23,7 @@ import {
 
 export type AgentRuntimeStatusCurrentFocus =
   | { type: "workspace" }
+  | { type: "workspace_review"; conversationId: string }
   | { type: "ideation"; sessionId: string }
   | { type: "verification"; parentSessionId: string; childSessionId: string }
   | {
@@ -42,6 +43,7 @@ const RUNTIME_STATUS_LIST_MAX_HEIGHT_PX =
 function iconForSource(source: AgentConversationRuntimeSource): LucideIcon {
   if (source === "ideation") return Lightbulb;
   if (source === "verification") return ShieldCheck;
+  if (source === "workspace_review") return ShieldCheck;
   if (source === "review") return ShieldCheck;
   if (source === "merge") return GitPullRequestArrow;
   if (source === "task_execution") return Play;
@@ -51,6 +53,7 @@ function iconForSource(source: AgentConversationRuntimeSource): LucideIcon {
 function ctaLabelForItem(item: AgentConversationRuntimeItem): string {
   if (item.source === "ideation") return "View Ideation";
   if (item.source === "verification") return "View Verification";
+  if (item.source === "workspace_review") return "View Review";
   if (
     item.source === "task_execution" ||
     item.source === "review" ||
@@ -87,6 +90,12 @@ function isCurrentRuntimeItem(
       (item.childSessionId ?? item.contextId) === currentFocus.childSessionId
     );
   }
+  if (currentFocus.type === "workspace_review") {
+    return (
+      item.source === "workspace_review" &&
+      (item.conversationId ?? item.contextId) === currentFocus.conversationId
+    );
+  }
   return (
     item.taskId === currentFocus.taskId &&
     item.contextType === currentFocus.contextType &&
@@ -101,6 +110,7 @@ interface AgentRuntimeStatusWidgetProps {
   selectedTaskId?: string | null;
   onViewWorkspace: () => void;
   onViewIdeation: (sessionId: string) => void;
+  onViewWorkspaceReview?: (conversationId: string) => void;
   onViewVerification: (parentSessionId: string, childSessionId: string) => void;
   onViewTaskRuntime: (
     taskId: string,
@@ -115,6 +125,7 @@ export function AgentRuntimeStatusWidget({
   selectedTaskId = null,
   onViewWorkspace,
   onViewIdeation,
+  onViewWorkspaceReview = () => undefined,
   onViewVerification,
   onViewTaskRuntime,
 }: AgentRuntimeStatusWidgetProps) {
@@ -193,6 +204,10 @@ export function AgentRuntimeStatusWidget({
       item.childSessionId
     ) {
       onViewVerification(item.parentSessionId, item.childSessionId);
+      return;
+    }
+    if (item.source === "workspace_review") {
+      onViewWorkspaceReview(item.conversationId ?? item.contextId);
       return;
     }
     if (
