@@ -7,7 +7,7 @@ use rusqlite::{Connection, OptionalExtension};
 use tokio::sync::Mutex;
 
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode,
+    AgentConversationWorkspace, AgentConversationWorkspaceBranchMode, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
     AgentWorkspaceFollowupProvenance, AgentWorkspacePrCommentEvidence,
     AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription,
@@ -38,6 +38,7 @@ mod tests;
 
 fn row_to_workspace(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentConversationWorkspace> {
     let mode: String = row.get("mode")?;
+    let branch_mode: Option<String> = row.get("branch_mode").ok();
     let base_ref_kind: String = row.get("base_ref_kind")?;
     let status: String = row.get("status")?;
     let created_at: String = row.get("created_at")?;
@@ -63,6 +64,10 @@ fn row_to_workspace(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentConversati
         project_id: ProjectId::from_string(row.get::<_, String>("project_id")?),
         mode: AgentConversationWorkspaceMode::from_str(&mode)
             .unwrap_or(AgentConversationWorkspaceMode::Edit),
+        branch_mode: branch_mode
+            .as_deref()
+            .and_then(|value| AgentConversationWorkspaceBranchMode::from_str(value).ok())
+            .unwrap_or_default(),
         base_ref_kind: IdeationAnalysisBaseRefKind::from_str(&base_ref_kind)
             .unwrap_or(IdeationAnalysisBaseRefKind::ProjectDefault),
         base_ref: row.get("base_ref")?,
@@ -292,6 +297,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
         let conversation_id = workspace.conversation_id.as_str().to_string();
         let project_id = workspace.project_id.as_str().to_string();
         let mode = workspace.mode.to_string();
+        let branch_mode = workspace.branch_mode.to_string();
         let base_ref_kind = workspace.base_ref_kind.to_string();
         let base_ref = workspace.base_ref.clone();
         let base_display_name = workspace.base_display_name.clone();
@@ -358,7 +364,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
             .run(move |conn| {
                 conn.execute(
                     "INSERT INTO agent_conversation_workspaces (
-                        conversation_id, project_id, mode, base_ref_kind, base_ref,
+                        conversation_id, project_id, mode, branch_mode, base_ref_kind, base_ref,
                         base_display_name, base_commit, branch_name, worktree_path,
                         linked_ideation_session_id, linked_plan_branch_id,
                         source_pr_number, source_pr_url, source_pr_title,
@@ -371,10 +377,11 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         pr_auto_merge_current, pr_supervision_status,
                         pr_supervision_summary, pr_supervision_updated_at, status,
                         created_at, updated_at
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35)
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36)
                     ON CONFLICT(conversation_id) DO UPDATE SET
                         project_id=excluded.project_id,
                         mode=excluded.mode,
+                        branch_mode=excluded.branch_mode,
                         base_ref_kind=excluded.base_ref_kind,
                         base_ref=excluded.base_ref,
                         base_display_name=excluded.base_display_name,
@@ -410,6 +417,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         conversation_id,
                         project_id,
                         mode,
+                        branch_mode,
                         base_ref_kind,
                         base_ref,
                         base_display_name,
@@ -488,6 +496,36 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                      ORDER BY created_at DESC",
                 )?;
                 let rows = stmt.query_map(rusqlite::params![project_id], row_to_workspace)?;
+                let mut workspaces = Vec::new();
+                for row in rows {
+                    workspaces.push(row?);
+                }
+                Ok(workspaces)
+            })
+            .await
+    }
+
+    async fn find_active_by_project_and_branch_name(
+        &self,
+        project_id: &ProjectId,
+        branch_name: &str,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        let project_id = project_id.as_str().to_string();
+        let branch_name = branch_name.trim().to_string();
+        if branch_name.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.db
+            .run(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT * FROM agent_conversation_workspaces
+                     WHERE project_id = ?1
+                       AND branch_name = ?2
+                       AND status = 'active'
+                     ORDER BY updated_at DESC",
+                )?;
+                let rows =
+                    stmt.query_map(rusqlite::params![project_id, branch_name], row_to_workspace)?;
                 let mut workspaces = Vec::new();
                 for row in rows {
                     workspaces.push(row?);

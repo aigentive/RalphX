@@ -1,5 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
-import { Check, ChevronDown, GitBranch, GitPullRequest, Loader2, Search } from "lucide-react";
+import {
+  Check,
+  ChevronDown,
+  GitBranch,
+  GitPullRequest,
+  Info,
+  Loader2,
+  Search,
+} from "lucide-react";
 
 import { Input } from "@/components/ui/input";
 import {
@@ -7,6 +15,13 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { Switch } from "@/components/ui/switch";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import type { BranchBaseOption } from "./branchBaseOptions";
 
@@ -30,6 +45,10 @@ interface BranchBasePickerProps {
   isLoadingPullRequests?: boolean;
   pullRequestMessage?: string | null;
   onPullRequestSearch?: (query: string) => void;
+  closeOnSelect?: boolean;
+  isolatedBranch?: boolean;
+  onIsolatedBranchChange?: (checked: boolean) => void;
+  isolatedBranchDisabled?: boolean;
 }
 
 type BranchBasePickerTab = "branches" | "pull_requests";
@@ -54,6 +73,10 @@ export function BranchBasePicker({
   isLoadingPullRequests = false,
   pullRequestMessage = null,
   onPullRequestSearch,
+  closeOnSelect = true,
+  isolatedBranch,
+  onIsolatedBranchChange,
+  isolatedBranchDisabled = false,
 }: BranchBasePickerProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<BranchBasePickerTab>("branches");
@@ -106,6 +129,12 @@ export function BranchBasePicker({
     activeTab === "pull_requests" ? "No pull requests found" : "No branches found";
   const loadingLabel =
     activeTab === "pull_requests" ? "Searching pull requests..." : "Refreshing branches...";
+  const isolatedBranchTooltip =
+    selectedOption?.selection.kind === "project_default"
+      ? "Default-branch starts always create a new RalphX branch."
+      : selectedOption?.selection.kind === "current_branch"
+        ? "Current-branch starts always create a new RalphX branch because the selected branch is already checked out in the project root."
+        : "Creates a new RalphX branch from the selected base and opens a new PR into it. Leave off to work directly on the selected branch or PR.";
 
   const handleOpenChange = (open: boolean) => {
     onOpenChange?.(open);
@@ -119,10 +148,12 @@ export function BranchBasePicker({
 
   const handleSelect = (option: BranchBaseOption) => {
     onValueChange(option.key);
-    setIsOpen(false);
-    setActiveTab("branches");
-    setBranchSearchQuery("");
-    setPullRequestSearchQuery("");
+    if (closeOnSelect) {
+      setIsOpen(false);
+      setActiveTab("branches");
+      setBranchSearchQuery("");
+      setPullRequestSearchQuery("");
+    }
   };
 
   const handleSearchChange = (query: string) => {
@@ -241,6 +272,44 @@ export function BranchBasePicker({
               autoFocus
             />
           </div>
+          {typeof isolatedBranch === "boolean" && onIsolatedBranchChange ? (
+            <div
+              className="mt-2 flex items-center justify-between gap-3 rounded-md border px-2.5 py-2"
+              style={{
+                backgroundColor: "var(--bg-surface)",
+                borderColor: "var(--border-subtle)",
+              }}
+            >
+              <div className="flex min-w-0 items-center gap-1.5">
+                <span className="min-w-0 text-xs font-medium text-[var(--text-primary)]">
+                  Isolated branch
+                </span>
+                <TooltipProvider delayDuration={250}>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        aria-label="About isolated branch"
+                        className="inline-flex h-5 w-5 shrink-0 cursor-help items-center justify-center rounded-full border-0 bg-transparent p-0 text-[var(--text-muted)] transition-colors hover:text-[var(--text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
+                      >
+                        <Info className="h-3.5 w-3.5" aria-hidden="true" />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent className="max-w-64 leading-snug">
+                      {isolatedBranchTooltip}
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              </div>
+              <Switch
+                checked={isolatedBranch}
+                disabled={isolatedBranchDisabled}
+                onCheckedChange={onIsolatedBranchChange}
+                aria-label="Use isolated branch"
+                className="data-[state=checked]:bg-[var(--accent-primary)] data-[state=unchecked]:bg-[var(--border-subtle)]"
+              />
+            </div>
+          ) : null}
         </div>
         <div className="max-h-72 overflow-y-auto overscroll-contain">
           <div className="p-1">

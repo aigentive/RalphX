@@ -1,5 +1,6 @@
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode,
+    AgentConversationWorkspace, AgentConversationWorkspaceBranchMode,
+    AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
     AgentWorkspaceFollowupProvenance, AgentWorkspacePrCommentEvidenceUpsert,
     AgentWorkspacePrDescription, AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
@@ -106,6 +107,71 @@ async fn source_pull_request_metadata_round_trips() {
             head_ref_oid: Some("abc123".to_string()),
         })
     );
+}
+
+#[tokio::test]
+async fn branch_mode_round_trips_and_defaults_to_isolated() {
+    let (db, repo, conversation_id) = setup_repo();
+    let workspace = make_workspace(conversation_id.clone());
+    repo.create_or_update(workspace).await.unwrap();
+    let loaded = repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("workspace should load");
+    assert_eq!(
+        loaded.branch_mode,
+        AgentConversationWorkspaceBranchMode::Isolated
+    );
+
+    let second_id = ChatConversationId::from_string("22222222-2222-2222-2222-222222222222");
+    seed_conversation(&db, &second_id);
+    let mut linked = make_workspace(second_id.clone());
+    linked.branch_mode = AgentConversationWorkspaceBranchMode::Linked;
+    linked.branch_name = "feature/existing-pr".to_string();
+    linked.worktree_path = "/tmp/ralphx/existing-pr".to_string();
+    repo.create_or_update(linked).await.unwrap();
+
+    let loaded = repo
+        .get_by_conversation_id(&second_id)
+        .await
+        .unwrap()
+        .expect("linked workspace should load");
+    assert_eq!(
+        loaded.branch_mode,
+        AgentConversationWorkspaceBranchMode::Linked
+    );
+}
+
+#[tokio::test]
+async fn active_branch_lookup_ignores_terminal_workspace_statuses() {
+    let (db, repo, first_id) = setup_repo();
+    let project_id = ProjectId::from_string("project-1".to_string());
+    let mut first = make_workspace(first_id);
+    first.branch_name = "feature/shared".to_string();
+    repo.create_or_update(first).await.unwrap();
+
+    let archived_id = ChatConversationId::from_string("22222222-2222-2222-2222-222222222222");
+    seed_conversation(&db, &archived_id);
+    let mut archived = make_workspace(archived_id.clone());
+    archived.branch_name = "feature/shared".to_string();
+    archived.worktree_path = "/tmp/ralphx/archived".to_string();
+    archived.status = AgentConversationWorkspaceStatus::Archived;
+    repo.create_or_update(archived).await.unwrap();
+
+    let found = repo
+        .find_active_by_project_and_branch_name(&project_id, "feature/shared")
+        .await
+        .unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].branch_name, "feature/shared");
+    assert_eq!(found[0].status, AgentConversationWorkspaceStatus::Active);
+
+    let missing = repo
+        .find_active_by_project_and_branch_name(&project_id, "   ")
+        .await
+        .unwrap();
+    assert!(missing.is_empty());
 }
 
 #[tokio::test]

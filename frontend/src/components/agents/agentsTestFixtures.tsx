@@ -59,6 +59,7 @@ export const conversationWorkspaceFixture = (
   conversationId: "conversation-1",
   projectId: "project-1",
   mode: "edit",
+  branchMode: "isolated",
   baseRefKind: "project_default",
   baseRef: "main",
   baseDisplayName: "Project default (main)",

@@ -727,6 +727,7 @@ pub async fn update_agent_workspace_from_base(
     let selection = AgentConversationWorkspaceBaseSelection {
         kind: parse_update_base_kind(req.base_ref_kind.as_deref())
             .map_err(|error| json_error(StatusCode::BAD_REQUEST, error, None))?,
+        branch_mode: None,
         base_ref: req.base_ref,
         display_name: req.base_display_name,
         source_pull_request: None,
@@ -4731,6 +4732,7 @@ mod tests {
             AgentConversationWorkspaceMode::Edit,
             AgentConversationWorkspaceBaseSelection {
                 kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+                branch_mode: None,
                 base_ref: Some("main".to_string()),
                 display_name: None,
                 source_pull_request: None,

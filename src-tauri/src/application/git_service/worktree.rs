@@ -351,6 +351,50 @@ impl GitService {
         Ok(())
     }
 
+    /// Create a worktree that checks out an existing branch without recovery cleanup.
+    ///
+    /// This is for user-selected branches where another active checkout may own
+    /// the branch. Callers must preflight known worktrees and should surface git
+    /// conflicts instead of deleting or moving another worktree.
+    pub async fn checkout_existing_branch_worktree_strict(
+        repo: &Path,
+        worktree: &Path,
+        branch: &str,
+    ) -> AppResult<()> {
+        debug!(
+            "Creating strict worktree at {:?} checking out existing branch '{}' in {:?}",
+            worktree, branch, repo
+        );
+
+        if let Some(parent) = worktree.parent() {
+            crate::utils::path_safety::validate_absolute_non_root_path(parent, "worktree parent")?;
+            // codeql[rust/path-injection]
+            std::fs::create_dir_all(parent).map_err(|e| {
+                AppError::GitOperation(format!(
+                    "Failed to create worktree parent directory {:?}: {}",
+                    parent, e
+                ))
+            })?;
+        }
+
+        let args = [
+            "worktree",
+            "add",
+            worktree.to_str().unwrap_or_default(),
+            branch,
+        ];
+        let output = git_cmd::run(&args, repo).await?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(AppError::GitOperation(format!(
+                "Failed to create worktree at {:?} for branch '{}' without recovery cleanup: {}",
+                worktree, branch, stderr
+            )));
+        }
+
+        Ok(())
+    }
+
     // =========================================================================
     // Worktree Query Operations
     // =========================================================================

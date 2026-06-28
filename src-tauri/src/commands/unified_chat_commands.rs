@@ -98,7 +98,7 @@ use crate::domain::agents::{
 use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
 use crate::domain::entities::task_step::StepProgressSummary;
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode,
+    AgentConversationWorkspace, AgentConversationWorkspaceBranchMode, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus, AgentRun,
     AgentRunId, AgentRunStatus, AgentWorkspaceSourcePullRequest, ArtifactContent, ChatAttachmentId,
     ChatContextType, ChatConversation, ChatConversationId, ChatMessage, ChatMessageId,
@@ -302,6 +302,7 @@ pub struct AgentConversationWorkspaceResponse {
     pub conversation_id: String,
     pub project_id: String,
     pub mode: String,
+    pub branch_mode: String,
     pub base_ref_kind: String,
     pub base_ref: String,
     pub base_display_name: Option<String>,
@@ -377,6 +378,7 @@ impl From<AgentConversationWorkspace> for AgentConversationWorkspaceResponse {
             conversation_id: workspace.conversation_id.as_str(),
             project_id: workspace.project_id.as_str().to_string(),
             mode: workspace.mode.to_string(),
+            branch_mode: workspace.branch_mode.to_string(),
             base_ref_kind: workspace.base_ref_kind.to_string(),
             base_ref: workspace.base_ref,
             base_display_name: workspace.base_display_name,
@@ -1038,6 +1040,8 @@ pub struct SwitchAgentConversationModeInput {
     pub mode: String,
     /// Optional base ref kind used when upgrading a branchless chat into edit/ideation mode.
     pub base_ref_kind: Option<String>,
+    /// Optional branch work policy: isolated creates a new RalphX branch; linked uses the selected branch.
+    pub base_branch_mode: Option<String>,
     /// Optional selected branch/ref name for the base.
     pub base_ref: Option<String>,
     /// Optional user-facing base ref label.
@@ -2527,6 +2531,16 @@ fn parse_agent_workspace_base_kind(
         .transpose()
 }
 
+fn parse_agent_workspace_branch_mode(
+    branch_mode: Option<&str>,
+) -> Result<Option<AgentConversationWorkspaceBranchMode>, String> {
+    branch_mode
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::parse::<AgentConversationWorkspaceBranchMode>)
+        .transpose()
+}
+
 fn trim_optional_input(value: Option<String>) -> Option<String> {
     value
         .map(|value| value.trim().to_string())
@@ -2587,6 +2601,92 @@ fn agent_mode_should_create_workspace(
 ) -> bool {
     agent_mode_requires_workspace(mode)
         || (mode == AgentConversationWorkspaceMode::Chat && source_pull_request.is_some())
+}
+
+async fn ensure_linked_branch_workspace_available(
+    state: &AppState,
+    project_id: &ProjectId,
+    current_conversation_id: Option<&ChatConversationId>,
+    branch_mode: Option<AgentConversationWorkspaceBranchMode>,
+    base_ref: Option<&str>,
+    source_pull_request: Option<&AgentWorkspaceSourcePullRequest>,
+) -> Result<(), String> {
+    if branch_mode != Some(AgentConversationWorkspaceBranchMode::Linked) {
+        return Ok(());
+    }
+    let branch_name = source_pull_request
+        .map(|pull_request| pull_request.head_ref_name.as_str())
+        .or(base_ref)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let Some(branch_name) = branch_name else {
+        return Ok(());
+    };
+    let active_workspaces = state
+        .agent_conversation_workspace_repo
+        .find_active_by_project_and_branch_name(project_id, branch_name)
+        .await
+        .map_err(|error| error.to_string())?;
+    if let Some(conflict) = active_workspaces
+        .into_iter()
+        .find(|workspace| current_conversation_id != Some(&workspace.conversation_id))
+    {
+        return Err(format!(
+            "Selected branch '{}' is already linked to active conversation {}; choose isolated branch mode or continue in that conversation",
+            branch_name, conflict.conversation_id
+        ));
+    }
+
+    Ok(())
+}
+
+async fn hydrate_linked_branch_source_pull_request(
+    state: &AppState,
+    project: &Project,
+    branch_mode: Option<AgentConversationWorkspaceBranchMode>,
+    base_ref: Option<&str>,
+    source_pull_request: Option<AgentWorkspaceSourcePullRequest>,
+) -> Result<Option<AgentWorkspaceSourcePullRequest>, String> {
+    if source_pull_request.is_some()
+        || branch_mode != Some(AgentConversationWorkspaceBranchMode::Linked)
+    {
+        return Ok(source_pull_request);
+    }
+    let Some(branch_name) = base_ref.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let Some(github) = state.github_service.as_ref() else {
+        return Ok(None);
+    };
+    let matches = match github
+        .search_pull_requests(Path::new(&project.working_directory), Some(branch_name), 20)
+        .await
+    {
+        Ok(matches) => matches,
+        Err(error) => {
+            tracing::warn!(
+                project_id = %project.id,
+                branch_name,
+                error = %error,
+                "Linked branch PR lookup failed during mode switch; continuing without PR linkage"
+            );
+            return Ok(None);
+        }
+    };
+
+    Ok(matches
+        .into_iter()
+        .find(|pull_request| {
+            !pull_request.is_cross_repository && pull_request.head_ref_name == branch_name
+        })
+        .map(|pull_request| AgentWorkspaceSourcePullRequest {
+            number: pull_request.number,
+            url: Some(pull_request.url),
+            title: Some(pull_request.title),
+            head_ref_name: pull_request.head_ref_name,
+            base_ref_name: Some(pull_request.base_ref_name),
+            head_ref_oid: pull_request.head_ref_oid,
+        }))
 }
 
 async fn agent_workspace_pr_automation_defaults_for_project(
@@ -2965,9 +3065,10 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
     let conversation_id = ChatConversationId::from_string(input.conversation_id.clone());
     let target_mode = parse_agent_workspace_mode(Some(input.mode.as_str()))?;
     let base_ref_kind = parse_agent_workspace_base_kind(input.base_ref_kind.as_deref())?;
+    let base_branch_mode = parse_agent_workspace_branch_mode(input.base_branch_mode.as_deref())?;
     let base_ref = trim_optional_input(input.base_ref);
     let base_display_name = trim_optional_input(input.base_display_name);
-    let source_pull_request = normalize_agent_workspace_source_pull_request(
+    let mut source_pull_request = normalize_agent_workspace_source_pull_request(
         input.base_source_pull_request,
         base_ref_kind,
         base_ref.as_deref(),
@@ -3097,6 +3198,23 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
                     .await
                     .map_err(|error| error.to_string())?
                     .ok_or_else(|| format!("Project not found: {}", conversation.context_id))?;
+                ensure_linked_branch_workspace_available(
+                    state,
+                    &project_id,
+                    Some(&conversation.id),
+                    base_branch_mode,
+                    base_ref.as_deref(),
+                    source_pull_request.as_ref(),
+                )
+                .await?;
+                source_pull_request = hydrate_linked_branch_source_pull_request(
+                    state,
+                    &project,
+                    base_branch_mode,
+                    base_ref.as_deref(),
+                    source_pull_request,
+                )
+                .await?;
                 let pr_automation_defaults =
                     agent_workspace_pr_automation_defaults_for_project(state, &project.id).await?;
                 let workspace = prepare_agent_conversation_workspace_with_setup_mode_and_defaults(
@@ -3105,6 +3223,7 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
                     target_mode,
                     AgentConversationWorkspaceBaseSelection {
                         kind: base_ref_kind,
+                        branch_mode: base_branch_mode,
                         base_ref,
                         display_name: base_display_name,
                         source_pull_request,
@@ -4956,6 +5075,7 @@ pub async fn update_agent_conversation_workspace_from_base(
     )?;
     let selection = AgentConversationWorkspaceBaseSelection {
         kind,
+        branch_mode: None,
         base_ref,
         display_name: base_display_name,
         source_pull_request,
@@ -9371,6 +9491,7 @@ mod tests {
             conversation_id: "conversation-1".to_string(),
             project_id: "project-1".to_string(),
             mode: AgentConversationWorkspaceMode::Ideation.to_string(),
+            branch_mode: "isolated".to_string(),
             base_ref_kind: "project_default".to_string(),
             base_ref: "main".to_string(),
             base_display_name: Some("Project default (main)".to_string()),
@@ -9437,6 +9558,7 @@ mod tests {
             conversation_id: "conversation-1".to_string(),
             project_id: "project-1".to_string(),
             mode: AgentConversationWorkspaceMode::Ideation.to_string(),
+            branch_mode: "isolated".to_string(),
             base_ref_kind: "project_default".to_string(),
             base_ref: "main".to_string(),
             base_display_name: Some("Project default (main)".to_string()),
@@ -10477,6 +10599,7 @@ mod tests {
         assert!(normalize_explicit_publish_base_selection(
             AgentConversationWorkspaceBaseSelection {
                 kind: None,
+                branch_mode: None,
                 base_ref: Some("  ".to_string()),
                 display_name: Some("ignored".to_string()),
                 source_pull_request: None,
@@ -10488,6 +10611,7 @@ mod tests {
         let local =
             normalize_explicit_publish_base_selection(AgentConversationWorkspaceBaseSelection {
                 kind: None,
+                branch_mode: None,
                 base_ref: Some("  release/0.8  ".to_string()),
                 display_name: None,
                 source_pull_request: None,
@@ -10501,6 +10625,7 @@ mod tests {
         let project =
             normalize_explicit_publish_base_selection(AgentConversationWorkspaceBaseSelection {
                 kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+                branch_mode: None,
                 base_ref: Some("main".to_string()),
                 display_name: Some("  ".to_string()),
                 source_pull_request: None,
@@ -10512,6 +10637,7 @@ mod tests {
         let current =
             normalize_explicit_publish_base_selection(AgentConversationWorkspaceBaseSelection {
                 kind: Some(IdeationAnalysisBaseRefKind::CurrentBranch),
+                branch_mode: None,
                 base_ref: Some("feature/base".to_string()),
                 display_name: None,
                 source_pull_request: None,
@@ -10531,6 +10657,7 @@ mod tests {
         let pr_base =
             normalize_explicit_publish_base_selection(AgentConversationWorkspaceBaseSelection {
                 kind: Some(IdeationAnalysisBaseRefKind::LocalBranch),
+                branch_mode: None,
                 base_ref: Some("feature/pr-base".to_string()),
                 display_name: Some("PR #42: Add PR base".to_string()),
                 source_pull_request: Some(source_pull_request.clone()),
@@ -10545,6 +10672,7 @@ mod tests {
         let error =
             normalize_explicit_publish_base_selection(AgentConversationWorkspaceBaseSelection {
                 kind: Some(IdeationAnalysisBaseRefKind::PullRequest),
+                branch_mode: None,
                 base_ref: Some("123".to_string()),
                 display_name: None,
                 source_pull_request: None,
@@ -10939,6 +11067,7 @@ mod tests {
             AgentConversationWorkspaceMode::Edit,
             AgentConversationWorkspaceBaseSelection {
                 kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+                branch_mode: None,
                 base_ref: Some("main".to_string()),
                 display_name: None,
                 source_pull_request: None,
@@ -12104,6 +12233,7 @@ mod tests {
             conversation_id.clone(),
             AgentConversationWorkspaceBaseSelection {
                 kind: Some(IdeationAnalysisBaseRefKind::LocalBranch),
+                branch_mode: None,
                 base_ref: Some("release/0.8".to_string()),
                 display_name: Some("release/0.8".to_string()),
                 source_pull_request: None,
@@ -12163,6 +12293,7 @@ mod tests {
             conversation_id.clone(),
             AgentConversationWorkspaceBaseSelection {
                 kind: None,
+                branch_mode: None,
                 base_ref: None,
                 display_name: None,
                 source_pull_request: None,
@@ -12219,6 +12350,7 @@ mod tests {
             conversation_id.clone(),
             AgentConversationWorkspaceBaseSelection {
                 kind: None,
+                branch_mode: None,
                 base_ref: None,
                 display_name: None,
                 source_pull_request: None,
@@ -12270,6 +12402,7 @@ mod tests {
             conversation_id.clone(),
             AgentConversationWorkspaceBaseSelection {
                 kind: None,
+                branch_mode: None,
                 base_ref: None,
                 display_name: None,
                 source_pull_request: None,
@@ -12316,6 +12449,7 @@ mod tests {
             conversation_id.clone(),
             AgentConversationWorkspaceBaseSelection {
                 kind: Some(IdeationAnalysisBaseRefKind::LocalBranch),
+                branch_mode: None,
                 base_ref: Some("feature/pr-base".to_string()),
                 display_name: Some("PR #42: Add PR base".to_string()),
                 source_pull_request: Some(source_pull_request.clone()),
@@ -12411,6 +12545,7 @@ mod tests {
             conversation_id.clone(),
             AgentConversationWorkspaceBaseSelection {
                 kind: Some(IdeationAnalysisBaseRefKind::LocalBranch),
+                branch_mode: None,
                 base_ref: Some("feature/pr-remote-only".to_string()),
                 display_name: Some("PR #43: Remote-only PR base".to_string()),
                 source_pull_request: Some(AgentWorkspaceSourcePullRequest {
@@ -12470,6 +12605,7 @@ mod tests {
             conversation_id.clone(),
             AgentConversationWorkspaceBaseSelection {
                 kind: None,
+                branch_mode: None,
                 base_ref: None,
                 display_name: None,
                 source_pull_request: None,
@@ -12578,6 +12714,7 @@ mod tests {
             conversation_id.clone(),
             AgentConversationWorkspaceBaseSelection {
                 kind: None,
+                branch_mode: None,
                 base_ref: None,
                 display_name: None,
                 source_pull_request: None,
@@ -12627,6 +12764,7 @@ mod tests {
             conversation_id.clone(),
             AgentConversationWorkspaceBaseSelection {
                 kind: None,
+                branch_mode: None,
                 base_ref: None,
                 display_name: None,
                 source_pull_request: None,
@@ -12672,6 +12810,7 @@ mod tests {
             conversation_id.clone(),
             AgentConversationWorkspaceBaseSelection {
                 kind: Some(IdeationAnalysisBaseRefKind::LocalBranch),
+                branch_mode: None,
                 base_ref: Some("release/0.8".to_string()),
                 display_name: Some("release/0.8".to_string()),
                 source_pull_request: None,
@@ -12716,6 +12855,7 @@ mod tests {
             conversation_id.clone(),
             AgentConversationWorkspaceBaseSelection {
                 kind: Some(IdeationAnalysisBaseRefKind::LocalBranch),
+                branch_mode: None,
                 base_ref: Some("release/missing".to_string()),
                 display_name: Some("release/missing".to_string()),
                 source_pull_request: None,
@@ -14131,6 +14271,7 @@ mod tests {
                 conversation_id: conversation_id.as_str(),
                 mode: "chat".to_string(),
                 base_ref_kind: None,
+                base_branch_mode: None,
                 base_ref: None,
                 base_display_name: None,
                 base_source_pull_request: None,
@@ -14192,6 +14333,7 @@ mod tests {
                 conversation_id: conversation_id.as_str(),
                 mode: "edit".to_string(),
                 base_ref_kind: None,
+                base_branch_mode: None,
                 base_ref: None,
                 base_display_name: None,
                 base_source_pull_request: None,
@@ -14252,6 +14394,7 @@ mod tests {
                 conversation_id: conversation_id.as_str(),
                 mode: "edit".to_string(),
                 base_ref_kind: Some("local_branch".to_string()),
+                base_branch_mode: None,
                 base_ref: Some("feature/source-pr".to_string()),
                 base_display_name: Some("PR #456: Source PR".to_string()),
                 base_source_pull_request: Some(AgentWorkspaceSourcePullRequestInput {
@@ -14347,6 +14490,7 @@ mod tests {
                 conversation_id: conversation_id.as_str(),
                 mode: "plan".to_string(),
                 base_ref_kind: None,
+                base_branch_mode: None,
                 base_ref: None,
                 base_display_name: None,
                 base_source_pull_request: None,
@@ -14364,6 +14508,7 @@ mod tests {
                 conversation_id: conversation_id.as_str(),
                 mode: "plan".to_string(),
                 base_ref_kind: None,
+                base_branch_mode: None,
                 base_ref: None,
                 base_display_name: None,
                 base_source_pull_request: None,
@@ -14480,6 +14625,7 @@ mod tests {
                 conversation_id: conversation_id.as_str(),
                 mode: "edit".to_string(),
                 base_ref_kind: None,
+                base_branch_mode: None,
                 base_ref: None,
                 base_display_name: None,
                 base_source_pull_request: None,
@@ -14553,6 +14699,7 @@ mod tests {
                 conversation_id: conversation_id.as_str(),
                 mode: "plan".to_string(),
                 base_ref_kind: Some("project_default".to_string()),
+                base_branch_mode: None,
                 base_ref: None,
                 base_display_name: None,
                 base_source_pull_request: None,
@@ -14624,6 +14771,7 @@ mod tests {
                 conversation_id: conversation_id.as_str(),
                 mode: "edit".to_string(),
                 base_ref_kind: None,
+                base_branch_mode: None,
                 base_ref: None,
                 base_display_name: None,
                 base_source_pull_request: None,
@@ -14686,6 +14834,7 @@ mod tests {
                 conversation_id: conversation_id.as_str(),
                 mode: "ideation".to_string(),
                 base_ref_kind: None,
+                base_branch_mode: None,
                 base_ref: None,
                 base_display_name: None,
                 base_source_pull_request: None,

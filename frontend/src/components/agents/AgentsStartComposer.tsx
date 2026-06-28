@@ -12,6 +12,7 @@ import {
 import { PauseCircle, Sparkles } from "lucide-react";
 
 import type {
+  AgentConversationBranchMode,
   AgentConversationBaseSelection,
   AgentConversationWorkspaceMode,
   ComposerArtifactReference,
@@ -156,6 +157,8 @@ export function AgentsStartComposer({
   const [ticketStartFromOption, setTicketStartFromOption] =
     useState<BranchBaseOption | null>(null);
   const [selectedStartFromKey, setSelectedStartFromKey] = useState("");
+  const [isStartFromIsolatedBranch, setIsStartFromIsolatedBranch] =
+    useState(false);
   const [isLoadingStartFrom, setIsLoadingStartFrom] = useState(false);
   const [isLoadingPullRequestStartFrom, setIsLoadingPullRequestStartFrom] = useState(false);
   const [pullRequestStartFromMessage, setPullRequestStartFromMessage] =
@@ -284,6 +287,7 @@ export function AgentsStartComposer({
     setDraftIntegrationReferences(draft.composerIntegrationReferences ?? []);
     setComposerIntegrationReferences(draft.composerIntegrationReferences ?? []);
     setDraftArtifactReferences(draft.composerArtifactReferences ?? []);
+    setIsStartFromIsolatedBranch(false);
     userSelectedStartFromRef.current = false;
   }, [consumeStartConversationDraft, startConversationDraft]);
 
@@ -356,6 +360,14 @@ export function AgentsStartComposer({
       displayName: `Project default (${ref})`,
     };
   }, [activeProject]);
+  const selectedStartFromSelection =
+    selectedStartFrom?.selection ?? fallbackStartFrom;
+  const startFromForcesIsolatedBranch =
+    selectedStartFromSelection
+      ? startSelectionForcesIsolatedBranch(selectedStartFromSelection)
+      : false;
+  const effectiveStartFromIsolatedBranch =
+    startFromForcesIsolatedBranch || isStartFromIsolatedBranch;
 
   const persistRuntimePreference = useCallback(
     (nextProjectId: string, runtime: AgentRuntimeSelection) => {
@@ -403,6 +415,7 @@ export function AgentsStartComposer({
   const handleProjectChange = useCallback(
     (nextProjectId: string) => {
       userSelectedStartFromRef.current = false;
+      setIsStartFromIsolatedBranch(false);
       setProjectId(nextProjectId);
       persistRuntimePreference(nextProjectId, { provider, modelId, effort });
     },
@@ -493,11 +506,17 @@ export function AgentsStartComposer({
     (nextKey: string) => {
       userSelectedStartFromRef.current = true;
       setSelectedStartFromKey(nextKey);
+      const nextSelection =
+        allStartFromOptions.find((option) => option.key === nextKey)?.selection ??
+        null;
+      setIsStartFromIsolatedBranch(
+        nextSelection ? startSelectionForcesIsolatedBranch(nextSelection) : false
+      );
       if (activeProjectId && !isTransientStartFromKey(nextKey)) {
         setLastBranchBaseSelectionForProject(activeProjectId, nextKey);
       }
     },
-    [activeProjectId, setLastBranchBaseSelectionForProject]
+    [activeProjectId, allStartFromOptions, setLastBranchBaseSelectionForProject]
   );
 
   const handleFilesSelected = (files: File[]) => {
@@ -538,6 +557,7 @@ export function AgentsStartComposer({
     setTicketStartFromOption(null);
     setPullRequestStartFromMessage(null);
     setIsLoadingPullRequestStartFrom(false);
+    setIsStartFromIsolatedBranch(false);
     userSelectedStartFromRef.current = false;
 
     if (!activeProjectId || !activeProjectWorkingDirectory) {
@@ -768,12 +788,21 @@ export function AgentsStartComposer({
 
     setError(null);
     try {
+      const base = selectedStartFromSelection
+        ? {
+            ...selectedStartFromSelection,
+            branchMode: branchModeForStartSelection(
+              selectedStartFromSelection,
+              effectiveStartFromIsolatedBranch
+            ),
+          }
+        : null;
       await onSubmit({
         projectId,
         content: message.trim(),
         runtime: { provider, modelId, effort },
         mode,
-        base: selectedStartFrom?.selection ?? fallbackStartFrom,
+        base,
         files: attachments.map((attachment) => attachment.file),
         ...(options?.projectReferences?.length
           ? { composerProjectReferences: options.projectReferences }
@@ -1032,6 +1061,10 @@ export function AgentsStartComposer({
                   ensureStartFromOptionsLoaded();
                 }
               }}
+              closeOnSelect={false}
+              isolatedBranch={effectiveStartFromIsolatedBranch}
+              isolatedBranchDisabled={startFromForcesIsolatedBranch}
+              onIsolatedBranchChange={setIsStartFromIsolatedBranch}
             />
           </div>
 
@@ -1089,6 +1122,25 @@ function resolveBranchSelectionKey(
     return null;
   }
   return options.some((option) => option.key === preferredKey) ? preferredKey : null;
+}
+
+function branchModeForStartSelection(
+  selection: AgentConversationBaseSelection,
+  isIsolated: boolean
+): AgentConversationBranchMode {
+  if (selection.kind === "project_default") {
+    return "isolated";
+  }
+  if (selection.kind === "current_branch") {
+    return "isolated";
+  }
+  return isIsolated ? "isolated" : "linked";
+}
+
+function startSelectionForcesIsolatedBranch(
+  selection: AgentConversationBaseSelection
+): boolean {
+  return selection.kind === "project_default" || selection.kind === "current_branch";
 }
 
 type TicketProvider = "jira" | "linear" | "clickup";

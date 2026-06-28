@@ -260,6 +260,40 @@ impl FromStr for AgentWorkspacePrReviewActionStatus {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentConversationWorkspaceBranchMode {
+    Isolated,
+    Linked,
+}
+
+impl Default for AgentConversationWorkspaceBranchMode {
+    fn default() -> Self {
+        Self::Isolated
+    }
+}
+
+impl std::fmt::Display for AgentConversationWorkspaceBranchMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AgentConversationWorkspaceBranchMode::Isolated => write!(f, "isolated"),
+            AgentConversationWorkspaceBranchMode::Linked => write!(f, "linked"),
+        }
+    }
+}
+
+impl FromStr for AgentConversationWorkspaceBranchMode {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "isolated" => Ok(Self::Isolated),
+            "linked" => Ok(Self::Linked),
+            _ => Err(format!("unknown agent workspace branch mode: '{value}'")),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentWorkspaceSourcePullRequest {
     pub number: i64,
@@ -463,6 +497,7 @@ pub struct AgentConversationWorkspace {
     pub conversation_id: ChatConversationId,
     pub project_id: ProjectId,
     pub mode: AgentConversationWorkspaceMode,
+    pub branch_mode: AgentConversationWorkspaceBranchMode,
     pub base_ref_kind: IdeationAnalysisBaseRefKind,
     pub base_ref: String,
     pub base_display_name: Option<String>,
@@ -509,6 +544,7 @@ impl AgentConversationWorkspace {
             conversation_id,
             project_id,
             mode,
+            branch_mode: AgentConversationWorkspaceBranchMode::Isolated,
             base_ref_kind,
             base_ref,
             base_display_name,
@@ -873,7 +909,8 @@ mod monitor_and_action_constructor_tests {
 #[cfg(test)]
 mod enum_roundtrip_tests {
     use super::{
-        AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus,
+        AgentConversationWorkspaceBranchMode, AgentConversationWorkspaceMode,
+        AgentConversationWorkspaceStatus,
         AgentWorkspacePrReviewActionKind, AgentWorkspacePrReviewActionStatus,
         AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewMonitorStatus,
         AgentWorkspaceReviewTargetScope,
@@ -906,6 +943,25 @@ mod enum_roundtrip_tests {
             assert_eq!(AgentConversationWorkspaceStatus::from_str(text).unwrap(), variant);
         }
         assert!(AgentConversationWorkspaceStatus::from_str("bogus").is_err());
+    }
+
+    #[test]
+    fn workspace_branch_mode_display_and_from_str_roundtrip() {
+        for (variant, text) in [
+            (AgentConversationWorkspaceBranchMode::Isolated, "isolated"),
+            (AgentConversationWorkspaceBranchMode::Linked, "linked"),
+        ] {
+            assert_eq!(variant.to_string(), text);
+            assert_eq!(
+                AgentConversationWorkspaceBranchMode::from_str(text).unwrap(),
+                variant
+            );
+        }
+        assert_eq!(
+            AgentConversationWorkspaceBranchMode::default(),
+            AgentConversationWorkspaceBranchMode::Isolated
+        );
+        assert!(AgentConversationWorkspaceBranchMode::from_str("bogus").is_err());
     }
 
     #[test]
