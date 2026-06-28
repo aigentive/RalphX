@@ -202,16 +202,42 @@ async fn get_github_branch_overview_lists_pr_rx_and_ticket_indicators() {
             is_cross_repository: false,
         },
     ]);
-    github.will_return_pull_request_branch_matches(vec![PrBranchMatch {
-        number: 11,
-        url: "https://github.com/aigentive/ralphx.app/pull/11".to_string(),
-        status: PrStatus::Merged {
-            merge_commit_sha: Some("abc123".to_string()),
+    github.will_return_pull_request_branch_matches(vec![
+        PrBranchMatch {
+            number: 7,
+            url: "https://github.com/aigentive/ralphx.app/pull/7".to_string(),
+            status: PrStatus::Closed,
+            is_draft: false,
+            head_ref_name: "feature/merged".to_string(),
+            updated_at: Some("2026-06-26T08:00:00Z".to_string()),
         },
-        is_draft: false,
-        head_ref_name: "feature/merged".to_string(),
-        updated_at: Some("2026-06-27T08:00:00Z".to_string()),
-    }]);
+        PrBranchMatch {
+            number: 11,
+            url: "https://github.com/aigentive/ralphx.app/pull/11".to_string(),
+            status: PrStatus::Merged {
+                merge_commit_sha: Some("abc123".to_string()),
+            },
+            is_draft: false,
+            head_ref_name: "feature/merged".to_string(),
+            updated_at: Some("2026-06-27T08:00:00Z".to_string()),
+        },
+        PrBranchMatch {
+            number: 12,
+            url: "https://github.com/aigentive/ralphx.app/pull/12".to_string(),
+            status: PrStatus::Open,
+            is_draft: false,
+            head_ref_name: "feature/not-local".to_string(),
+            updated_at: Some("2026-06-28T08:00:00Z".to_string()),
+        },
+        PrBranchMatch {
+            number: 13,
+            url: "https://github.com/aigentive/ralphx.app/pull/13".to_string(),
+            status: PrStatus::Open,
+            is_draft: false,
+            head_ref_name: "main".to_string(),
+            updated_at: Some("2026-06-28T09:00:00Z".to_string()),
+        },
+    ]);
 
     let mut state = AppState::new_test();
     state.github_service = Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>);
@@ -318,6 +344,14 @@ async fn get_github_branch_overview_lists_pr_rx_and_ticket_indicators() {
         .expect("merged local PR branch row should exist");
     assert_eq!(merged.pr_number, Some(11));
     assert_eq!(merged.pr_status.as_deref(), Some("merged"));
+    assert_eq!(
+        merged.pr_url.as_deref(),
+        Some("https://github.com/aigentive/ralphx.app/pull/11")
+    );
+    assert!(overview
+        .branches
+        .iter()
+        .all(|branch| branch.branch_name != "feature/not-local"));
 
     let main = overview
         .branches
@@ -325,6 +359,7 @@ async fn get_github_branch_overview_lists_pr_rx_and_ticket_indicators() {
         .find(|branch| branch.branch_name == "main")
         .expect("main branch row should exist");
     assert!(main.is_current);
+    assert_eq!(main.pr_number, None);
 
     let clickup = overview
         .branches
