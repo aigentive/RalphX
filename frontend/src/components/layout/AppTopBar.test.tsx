@@ -50,7 +50,7 @@ function renderTopBar(overrides: Partial<Parameters<typeof AppTopBar>[0]> = {}) 
   );
 }
 
-describe("AppTopBar (ticketing and GitHub views)", () => {
+describe("AppTopBar (ticketing, GitHub, and Granola views)", () => {
   beforeEach(() => {
     useProjectStore.setState({
       activeProjectId: "project-1",
@@ -81,6 +81,15 @@ describe("AppTopBar (ticketing and GitHub views)", () => {
     expect(breadcrumb).toHaveTextContent("GitHub");
   });
 
+  it("renders the Granola breadcrumb with the project name", () => {
+    renderTopBar({ currentView: "granola" });
+
+    const breadcrumb = screen.getByRole("navigation", { name: "Breadcrumb" });
+    expect(breadcrumb).toHaveTextContent("Workspace");
+    expect(breadcrumb).toHaveTextContent("RalphX");
+    expect(breadcrumb).toHaveTextContent("Granola");
+  });
+
   it("falls back to 'Project' in the ticketing breadcrumb when no project is active", () => {
     useProjectStore.setState({ activeProjectId: null, projects: {} } as never);
 
@@ -104,6 +113,16 @@ describe("AppTopBar (ticketing and GitHub views)", () => {
   it("shows the project selector on the GitHub view when enabled", () => {
     renderTopBar({
       currentView: "github",
+      showProjectSelector: true,
+      onNewProject: vi.fn(),
+    });
+
+    expect(screen.getByTestId("project-selector-stub")).toBeInTheDocument();
+  });
+
+  it("shows the project selector on the Granola view when enabled", () => {
+    renderTopBar({
+      currentView: "granola",
       showProjectSelector: true,
       onNewProject: vi.fn(),
     });

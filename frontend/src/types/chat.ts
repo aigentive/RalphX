@@ -17,6 +17,7 @@ export const VIEW_TYPE_VALUES = [
   "agents",
   "ticketing",
   "github",
+  "granola",
   "extensibility",
   "activity",
   "insights",
@@ -96,6 +97,13 @@ export function isGitHubContext(context: ChatContext): boolean {
 }
 
 /**
+ * Check if context is in Granola view
+ */
+export function isGranolaContext(context: ChatContext): boolean {
+  return context.view === "granola";
+}
+
+/**
  * Check if context has a selected task
  */
 export function hasSelectedTask(context: ChatContext): boolean {
@@ -160,7 +168,7 @@ export function createTaskDetailContext(
  */
 export function createProjectContext(
   projectId: string,
-  view: "activity" | "insights" | "agents" | "ticketing" | "github"
+  view: "activity" | "insights" | "agents" | "ticketing" | "github" | "granola"
 ): ChatContext {
   return {
     view,

@@ -90,6 +90,7 @@ describe("Navigation", () => {
 
     expect(screen.queryByTestId("nav-ticketing")).not.toBeInTheDocument();
     expect(screen.queryByTestId("nav-github")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("nav-granola")).not.toBeInTheDocument();
   });
 
   it("renders Agents first in the main navbar", () => {

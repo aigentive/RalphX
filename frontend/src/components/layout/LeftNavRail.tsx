@@ -120,10 +120,10 @@ export function LeftNavRail({
   const visibleItems = hideViews
     ? []
     : ALL_NAV_ITEMS.filter((item) => item.visible(featureFlags, taskCount));
-  const dashboardViews = new Set<ViewType>(["ticketing", "github"]);
+  const dashboardViews = new Set<ViewType>(["ticketing", "github", "granola"]);
   const primaryItems = visibleItems.filter((item) => !dashboardViews.has(item.view));
   const dashboardItems = visibleItems.filter((item) => {
-    if (item.view === "github") {
+    if (item.view === "github" || item.view === "granola") {
       return true;
     }
     if (item.view === "ticketing") {

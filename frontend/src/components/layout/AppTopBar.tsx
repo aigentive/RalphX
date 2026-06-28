@@ -34,6 +34,7 @@ const VIEW_LABELS: Partial<Record<ViewType, string>> = {
   kanban: "Kanban",
   ticketing: "Ticketing",
   github: "GitHub",
+  granola: "Granola",
   insights: "Insights",
   extensibility: "Extensibility",
   activity: "Activity",
@@ -52,6 +53,7 @@ const PROJECT_SELECTOR_VIEWS = new Set<ViewType>([
   "kanban",
   "ticketing",
   "github",
+  "granola",
 ]);
 
 function viewLabel(view: ViewType): string {
@@ -77,6 +79,10 @@ function breadcrumbItems(
 
   if (currentView === "github") {
     return ["Workspace", projectName ?? "Project", "GitHub"];
+  }
+
+  if (currentView === "granola") {
+    return ["Workspace", projectName ?? "Project", "Granola"];
   }
 
   return ["Workspace", viewLabel(currentView)];

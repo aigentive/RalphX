@@ -4,7 +4,6 @@ import { createElement, type ComponentProps, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { atlassianApi } from "@/api/atlassian";
-import { granolaApi } from "@/api/granola";
 import { linearApi } from "@/api/linear";
 import * as chatHooks from "@/hooks/useChat";
 import { usePullRequestDetail } from "@/hooks/usePullRequestDetail";
@@ -26,15 +25,6 @@ vi.mock("@/api/atlassian", () => ({
 vi.mock("@/api/linear", () => ({
   linearApi: {
     assignAgentConversationLinearIssue: vi.fn().mockResolvedValue(null),
-  },
-}));
-
-vi.mock("@/api/granola", () => ({
-  granolaApi: {
-    getSettings: vi.fn(),
-    listNotes: vi.fn(),
-    getNoteDetail: vi.fn(),
-    assignAgentConversationGranolaNote: vi.fn(),
   },
 }));
 
@@ -132,15 +122,6 @@ const ticket = {
   url: "https://example.atlassian.net/browse/RX-1",
   associationCount: 2,
   openPrCount: 0,
-};
-
-const granolaNote = {
-  id: "not_1234567890ABCD",
-  title: "Weekly planning",
-  url: "https://granola.ai/notes/not_1234567890ABCD",
-  summary: "Discussed release priorities.",
-  createdAt: "2026-06-19T21:00:00.000Z",
-  updatedAt: "2026-06-19T22:00:00.000Z",
 };
 
 function createWrapper() {
@@ -317,12 +298,6 @@ describe("TicketingDashboardView", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     window.HTMLElement.prototype.scrollIntoView = vi.fn();
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: {
-        writeText: vi.fn().mockResolvedValue(undefined),
-      },
-    });
     useTicketingStore.getState().reset();
     useAgentSessionStore.getState().clearSelection();
     useAgentSessionStore.setState({ startConversationDraft: null });
@@ -452,52 +427,6 @@ describe("TicketingDashboardView", () => {
       isError: false,
       error: null,
     } as unknown as ReturnType<typeof chatHooks.useConversations>);
-    vi.mocked(granolaApi.getSettings).mockResolvedValue({
-      enabled: true,
-      hasApiToken: true,
-      validationStatus: "valid",
-      lastValidatedAt: "2026-06-19T22:00:00.000Z",
-      lastError: null,
-      updatedAt: "2026-06-19T22:00:00.000Z",
-    });
-    vi.mocked(granolaApi.listNotes).mockResolvedValue({
-      notes: [granolaNote],
-      hasMore: false,
-      cursor: null,
-    });
-    vi.mocked(granolaApi.getNoteDetail).mockResolvedValue({
-      id: granolaNote.id,
-      title: granolaNote.title,
-      url: granolaNote.url,
-      summary: "### Release priorities\n\n- Ship Granola note browsing.",
-      transcript: [
-        {
-          speaker: "Ada",
-          text: "We should finish the Granola ticketing tab.",
-          startMs: 0,
-          endMs: 2400,
-        },
-      ],
-    });
-    vi.mocked(granolaApi.assignAgentConversationGranolaNote).mockResolvedValue({
-      conversationId: "conversation-1",
-      projectId: "project-1",
-      provider: "granola",
-      noteId: granolaNote.id,
-      noteUrl: granolaNote.url,
-      title: granolaNote.title,
-      summaryMarkdown: "### Release priorities\n\n- Ship Granola note browsing.",
-      transcript: [],
-      includeTranscript: true,
-      lastRefreshedAt: "2026-06-19T22:00:00.000Z",
-      refreshStatus: "loaded",
-      refreshError: null,
-      assignedAt: "2026-06-19T22:00:00.000Z",
-      assignedFromMessageId: null,
-      manuallyAssigned: true,
-      createdAt: "2026-06-19T22:00:00.000Z",
-      updatedAt: "2026-06-19T22:00:00.000Z",
-    });
   });
 
   it("renders a no-valid-integration state without blanking the shell", () => {
@@ -526,7 +455,7 @@ describe("TicketingDashboardView", () => {
     expect(screen.getByRole("heading", { name: "Ticketing" })).toBeInTheDocument();
     expect(screen.getByText("No valid ticketing integration")).toBeInTheDocument();
     expect(
-      screen.getByText("Connect a valid Jira or Linear integration from Settings to browse tickets."),
+      screen.getByText("Connect a valid Jira, Linear, or ClickUp integration from Settings to browse tickets."),
     ).toBeInTheDocument();
   });
 
@@ -616,111 +545,16 @@ describe("TicketingDashboardView", () => {
     expect(screen.getByText("Fix merge race in transition handler")).toBeInTheDocument();
   });
 
-  it("shows Granola notes from the ticketing dashboard and copies summary and full transcript", async () => {
+  it("keeps GitHub and Granola out of the ticketing dashboard", () => {
     mockConnectedDashboard();
 
     renderDashboard();
 
-    fireEvent.click(screen.getByRole("tab", { name: "Granola" }));
-
-    expect(await screen.findByTestId("ticketing-granola-notes")).toBeInTheDocument();
-    expect(await screen.findByRole("button", { name: /Weekly planning/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Weekly planning/ })).toHaveTextContent(/Jun (19|20)/);
-    expect(screen.getByRole("button", { name: /Weekly planning/ })).toHaveTextContent(/\d{1,2}:00/);
-
-    fireEvent.click(screen.getByRole("button", { name: /Weekly planning/ }));
-
-    expect(await screen.findByRole("heading", { name: "Release priorities" })).toBeInTheDocument();
-    expect(await screen.findByText("We should finish the Granola ticketing tab.")).toBeInTheDocument();
-    expect(granolaApi.getNoteDetail).toHaveBeenCalledWith({
-      noteId: granolaNote.id,
-      includeTranscript: true,
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: "Copy summary" }));
-
-    await waitFor(() => {
-      expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
-        "### Release priorities\n\n- Ship Granola note browsing.",
-      );
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: "Copy full transcript" }));
-
-    await waitFor(() => {
-      expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
-        "Ada: We should finish the Granola ticketing tab.",
-      );
-    });
-  });
-
-  it("keeps branches out of the ticketing dashboard tabs", () => {
-    mockConnectedDashboard();
-
-    renderDashboard();
-
-    expect(screen.getByRole("tab", { name: "Tickets" })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: "Granola" })).toBeInTheDocument();
-    expect(screen.queryByRole("tab", { name: "Branches" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tablist", { name: "Ticketing content" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Tickets" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Granola" })).not.toBeInTheDocument();
     expect(screen.queryByTestId("ticketing-github-branches")).not.toBeInTheDocument();
-  });
-
-  it("adds a Granola note as new conversation context or binds it to an existing conversation", async () => {
-    mockConnectedDashboard();
-    vi.mocked(chatHooks.useConversations).mockReturnValue({
-      data: [{ id: "conversation-1", title: "Existing agent conversation" }],
-      isLoading: false,
-      isError: false,
-      error: null,
-    } as unknown as ReturnType<typeof chatHooks.useConversations>);
-
-    renderDashboard();
-
-    fireEvent.click(screen.getByRole("tab", { name: "Granola" }));
-    fireEvent.click(await screen.findByRole("button", { name: /Weekly planning/ }));
-    await screen.findByText("We should finish the Granola ticketing tab.");
-
-    fireEvent.click(screen.getByRole("button", { name: "Add as context" }));
-
-    expect(screen.getByRole("dialog", { name: "Add Granola Context" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Open composer" }));
-
-    expect(useAgentSessionStore.getState().startConversationDraft).toMatchObject({
-      projectId: "project-1",
-      mode: "edit",
-      composerIntegrationReferences: [
-        {
-          provider: "granola",
-          kind: "note",
-          id: granolaNote.id,
-          title: granolaNote.title,
-          includeTranscript: true,
-        },
-      ],
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: "Add as context" }));
-    fireEvent.click(screen.getByRole("combobox", { name: "Existing conversation" }));
-    fireEvent.click(
-      within(screen.getByRole("listbox", { name: "Existing conversation" })).getByRole(
-        "option",
-        { name: "Existing agent conversation" },
-      ),
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Bind existing conversation" }));
-
-    await waitFor(() => {
-      expect(granolaApi.assignAgentConversationGranolaNote).toHaveBeenCalledWith({
-        conversationId: "conversation-1",
-        projectId: "project-1",
-        noteId: granolaNote.id,
-        title: granolaNote.title,
-        noteUrl: granolaNote.url,
-        summary: "### Release priorities\n\n- Ship Granola note browsing.",
-        includeTranscript: true,
-        refresh: true,
-      });
-    });
+    expect(screen.queryByTestId("granola-dashboard-view")).not.toBeInTheDocument();
   });
 
   it("auto-selects the only valid provider and hides provider tabs", async () => {

@@ -20,6 +20,11 @@ import type { ProposalDetailEnrichment } from "@/components/Ideation/ProposalDet
 import { ExtensibilityView } from "@/components/ExtensibilityView";
 import { ActivityView } from "@/components/activity";
 import { GitHubBranchesView, githubBranchOverviewKeys } from "@/components/github";
+import {
+  GranolaDashboardView,
+  granolaComposerReference,
+  granolaDashboardKeys,
+} from "@/components/granola";
 import { TicketingDashboardView } from "@/components/ticketing";
 import SettingsDialog from "@/components/settings/SettingsDialog";
 import { InsightsView } from "@/components/views/InsightsView";
@@ -70,6 +75,7 @@ import { readFreshPostUpdatePreparingMarker } from "@/lib/postUpdatePreparing";
 import { api, getGitBranches, getGitDefaultBranch } from "@/lib/tauri";
 import { executionApi } from "@/api/execution";
 import { githubApi } from "@/api/github";
+import { granolaApi, type GranolaNoteDetail, type GranolaNoteSummary } from "@/api/granola";
 import { tasksApi } from "@/api/tasks";
 import { ticketingApi, type TicketDeepLink } from "@/api/ticketing";
 import { ticketingKeys } from "@/hooks/useTicketing";
@@ -661,6 +667,16 @@ function AppContent() {
       }).catch(() => {
         // Warm-up failures are non-blocking; opening the view surfaces real state.
       });
+      return;
+    }
+    if (view === "granola") {
+      void queryClient.prefetchQuery({
+        queryKey: granolaDashboardKeys.settings(),
+        queryFn: () => granolaApi.getSettings(),
+        staleTime: 30_000,
+      }).catch(() => {
+        // Warm-up failures are non-blocking; opening the view surfaces real state.
+      });
     }
   }, [currentProjectId]);
 
@@ -682,6 +698,22 @@ function AppContent() {
     }
     setCurrentView(deepLink.view);
   }, [setCurrentView, setSelectedTaskId, setFocusedAgentProject]);
+
+  const handleStartConversationFromGranolaNote = useCallback((
+    note: GranolaNoteDetail | GranolaNoteSummary,
+    targetProjectId: string,
+  ) => {
+    useAgentSessionStore.getState().setStartConversationDraft({
+      projectId: targetProjectId,
+      content: "",
+      mode: "edit",
+      composerIntegrationReferences: [granolaComposerReference(note)],
+    });
+    setFocusedAgentProject(targetProjectId);
+    clearAgentSelection();
+    useChatStore.getState().setActiveConversation(`project:${targetProjectId}`, null);
+    setCurrentView("agents");
+  }, [clearAgentSelection, setCurrentView, setFocusedAgentProject]);
 
   useEffect(() => {
     if (
@@ -1191,6 +1223,14 @@ function AppContent() {
                   projectId={currentProjectId}
                   project={activeProject}
                   onNavigateToAssociation={handleNavigateFromTicketAssociation}
+                />
+              )}
+              {currentView === "granola" && (
+                <GranolaDashboardView
+                  projectId={currentProjectId}
+                  project={activeProject}
+                  projects={fetchedProjects ?? []}
+                  onStartConversation={handleStartConversationFromGranolaNote}
                 />
               )}
               {currentView === "insights" && <InsightsView />}
