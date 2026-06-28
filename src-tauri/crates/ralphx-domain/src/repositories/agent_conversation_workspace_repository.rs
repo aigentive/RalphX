@@ -35,6 +35,25 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         project_id: &ProjectId,
     ) -> AppResult<Vec<AgentConversationWorkspace>>;
 
+    async fn find_active_by_project_and_branch_name(
+        &self,
+        project_id: &ProjectId,
+        branch_name: &str,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        let branch_name = branch_name.trim();
+        if branch_name.is_empty() {
+            return Ok(Vec::new());
+        }
+        let workspaces = self.get_by_project_id(project_id).await?;
+        Ok(workspaces
+            .into_iter()
+            .filter(|workspace| {
+                workspace.status == AgentConversationWorkspaceStatus::Active
+                    && workspace.branch_name == branch_name
+            })
+            .collect())
+    }
+
     async fn save_followup_provenance(
         &self,
         _conversation_id: &ChatConversationId,

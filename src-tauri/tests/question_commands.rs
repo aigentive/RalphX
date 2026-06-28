@@ -202,6 +202,7 @@ async fn accepted_plan_mode_proposal_links_planning_session_before_hidden_contin
         AgentConversationWorkspaceMode::Edit,
         AgentConversationWorkspaceBaseSelection {
             kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+                branch_mode: None,
             base_ref: Some("main".to_string()),
             display_name: None,
             source_pull_request: None,

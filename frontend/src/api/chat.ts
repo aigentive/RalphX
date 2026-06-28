@@ -1704,9 +1704,11 @@ export type AgentConversationBaseRefKind =
   | "project_default"
   | "current_branch"
   | "local_branch";
+export type AgentConversationBranchMode = "isolated" | "linked";
 
 export interface AgentConversationBaseSelection {
   kind: AgentConversationBaseRefKind;
+  branchMode?: AgentConversationBranchMode;
   ref: string;
   displayName: string;
   sourcePullRequest?: AgentConversationSourcePullRequest | null;
@@ -1725,6 +1727,7 @@ export interface AgentConversationWorkspace {
   conversationId: string;
   projectId: string;
   mode: AgentConversationWorkspaceMode;
+  branchMode: AgentConversationBranchMode;
   baseRefKind: string;
   baseRef: string;
   baseDisplayName: string | null;
@@ -2063,6 +2066,7 @@ const AgentConversationWorkspaceResponseSchema = z.object({
   conversation_id: z.string(),
   project_id: z.string(),
   mode: z.string(),
+  branch_mode: z.enum(["isolated", "linked"]).optional().default("isolated"),
   base_ref_kind: z.string(),
   base_ref: z.string(),
   base_display_name: z.string().nullable(),
@@ -2432,6 +2436,7 @@ function transformAgentConversationWorkspace(
     conversationId: raw.conversation_id,
     projectId: raw.project_id,
     mode: raw.mode as AgentConversationWorkspaceMode,
+    branchMode: raw.branch_mode,
     baseRefKind: raw.base_ref_kind,
     baseRef: raw.base_ref,
     baseDisplayName: raw.base_display_name,
@@ -2553,6 +2558,9 @@ export function startAgentConversationInvokeInput(
     ...(input.base
       ? {
           baseRefKind: input.base.kind,
+          ...(input.base.branchMode
+            ? { baseBranchMode: input.base.branchMode }
+            : {}),
           baseRef: input.base.ref,
           baseDisplayName: input.base.displayName,
           ...(input.base.sourcePullRequest
@@ -3351,6 +3359,9 @@ export async function switchAgentConversationMode(
         ...(input.base
           ? {
               baseRefKind: input.base.kind,
+              ...(input.base.branchMode
+                ? { baseBranchMode: input.base.branchMode }
+                : {}),
               baseRef: input.base.ref,
               baseDisplayName: input.base.displayName,
               ...(input.base.sourcePullRequest

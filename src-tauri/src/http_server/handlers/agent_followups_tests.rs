@@ -2,7 +2,8 @@ use super::*;
 use crate::application::{AppState, TeamService, TeamStateTracker};
 use crate::commands::ExecutionState;
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentWorkspaceFollowupProvenance,
+    AgentConversationWorkspace, AgentConversationWorkspaceBranchMode,
+    AgentConversationWorkspaceMode, AgentWorkspaceFollowupProvenance,
     AgentWorkspaceSourcePullRequest, ChatConversation, IdeationAnalysisBaseRefKind,
     IdeationSessionId, ProjectId, Task, TaskId,
 };
@@ -150,6 +151,70 @@ fn followup_provenance_trims_optional_fields() {
     assert_eq!(
         provenance.blocker_fingerprint.as_deref(),
         Some("drift:task-1")
+    );
+}
+
+#[test]
+fn followup_base_branch_mode_preserves_parent_workspace_policy() {
+    let project_id = ProjectId::new();
+    let origin = ChatConversation::new_project(project_id.clone());
+    let mut workspace = test_workspace(&origin, &project_id);
+
+    assert_eq!(
+        followup_base_selection(Some(&workspace)).branch_mode,
+        Some(AgentConversationWorkspaceBranchMode::Isolated)
+    );
+
+    workspace.branch_mode = AgentConversationWorkspaceBranchMode::Linked;
+    assert_eq!(
+        followup_base_selection(Some(&workspace)).branch_mode,
+        Some(AgentConversationWorkspaceBranchMode::Linked)
+    );
+    assert_eq!(followup_base_selection(None).branch_mode, None);
+}
+
+#[test]
+fn followup_base_selection_uses_pr_head_for_pr_backed_linked_workspace() {
+    let project_id = ProjectId::new();
+    let origin = ChatConversation::new_project(project_id.clone());
+    let mut workspace = AgentConversationWorkspace::new(
+        origin.id.clone(),
+        project_id,
+        AgentConversationWorkspaceMode::Ideation,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("PR #42: Add linked PR".to_string()),
+        Some("base123".to_string()),
+        "feature/linked-pr".to_string(),
+        "/tmp/ralphx-followup-test".to_string(),
+    );
+    workspace.branch_mode = AgentConversationWorkspaceBranchMode::Linked;
+    workspace.source_pull_request = Some(AgentWorkspaceSourcePullRequest {
+        number: 42,
+        url: Some("https://github.test/pull/42".to_string()),
+        title: Some("Add linked PR".to_string()),
+        head_ref_name: "feature/linked-pr".to_string(),
+        base_ref_name: Some("main".to_string()),
+        head_ref_oid: Some("head123".to_string()),
+    });
+
+    let selection = followup_base_selection(Some(&workspace));
+
+    assert_eq!(
+        selection.kind,
+        Some(IdeationAnalysisBaseRefKind::LocalBranch)
+    );
+    assert_eq!(
+        selection.branch_mode,
+        Some(AgentConversationWorkspaceBranchMode::Linked)
+    );
+    assert_eq!(selection.base_ref.as_deref(), Some("feature/linked-pr"));
+    assert_eq!(
+        selection
+            .source_pull_request
+            .as_ref()
+            .and_then(|pull_request| pull_request.base_ref_name.as_deref()),
+        Some("main")
     );
 }
 
