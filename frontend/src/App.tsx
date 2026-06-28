@@ -19,6 +19,7 @@ import { ProposalDetailSheet } from "@/components/Ideation/ProposalDetailSheet";
 import type { ProposalDetailEnrichment } from "@/components/Ideation/ProposalDetailSheet";
 import { ExtensibilityView } from "@/components/ExtensibilityView";
 import { ActivityView } from "@/components/activity";
+import { GitHubBranchesView, githubBranchOverviewKeys } from "@/components/github";
 import { TicketingDashboardView } from "@/components/ticketing";
 import SettingsDialog from "@/components/settings/SettingsDialog";
 import { InsightsView } from "@/components/views/InsightsView";
@@ -68,6 +69,7 @@ import { resolveIdeationSession } from "@/lib/resolveIdeationSession";
 import { readFreshPostUpdatePreparingMarker } from "@/lib/postUpdatePreparing";
 import { api, getGitBranches, getGitDefaultBranch } from "@/lib/tauri";
 import { executionApi } from "@/api/execution";
+import { githubApi } from "@/api/github";
 import { tasksApi } from "@/api/tasks";
 import { ticketingApi, type TicketDeepLink } from "@/api/ticketing";
 import { ticketingKeys } from "@/hooks/useTicketing";
@@ -249,6 +251,10 @@ function AppContent() {
 
   // Fetch projects from backend
   const { data: fetchedProjects, isLoading: isLoadingProjects } = useProjects();
+  const activeProject = useMemo(
+    () => fetchedProjects?.find((project) => project.id === currentProjectId) ?? null,
+    [currentProjectId, fetchedProjects],
+  );
   const {
     settings: providerSettings,
     isLoading: isLoadingProviderSettings,
@@ -634,16 +640,28 @@ function AppContent() {
   }, [openModal]);
 
   const handleWarmView = useCallback((view: ViewType) => {
-    if (view !== "ticketing" || !currentProjectId) {
+    if (!currentProjectId) {
       return;
     }
-    void queryClient.prefetchQuery({
-      queryKey: ticketingKeys.providers(currentProjectId),
-      queryFn: () => ticketingApi.listProviders({ projectId: currentProjectId }),
-      staleTime: 60_000,
-    }).catch(() => {
-      // Warm-up failures are non-blocking; opening the view surfaces real state.
-    });
+    if (view === "ticketing") {
+      void queryClient.prefetchQuery({
+        queryKey: ticketingKeys.providers(currentProjectId),
+        queryFn: () => ticketingApi.listProviders({ projectId: currentProjectId }),
+        staleTime: 60_000,
+      }).catch(() => {
+        // Warm-up failures are non-blocking; opening the view surfaces real state.
+      });
+      return;
+    }
+    if (view === "github") {
+      void queryClient.prefetchQuery({
+        queryKey: githubBranchOverviewKeys.project(currentProjectId),
+        queryFn: () => githubApi.getBranchOverview({ projectId: currentProjectId }),
+        staleTime: 15_000,
+      }).catch(() => {
+        // Warm-up failures are non-blocking; opening the view surfaces real state.
+      });
+    }
   }, [currentProjectId]);
 
   const handleNavigateFromTicketAssociation = useCallback((deepLink: TicketDeepLink) => {
@@ -1165,6 +1183,13 @@ function AppContent() {
               {currentView === "ticketing" && (
                 <TicketingDashboardView
                   projectId={currentProjectId}
+                  onNavigateToAssociation={handleNavigateFromTicketAssociation}
+                />
+              )}
+              {currentView === "github" && (
+                <GitHubBranchesView
+                  projectId={currentProjectId}
+                  project={activeProject}
                   onNavigateToAssociation={handleNavigateFromTicketAssociation}
                 />
               )}

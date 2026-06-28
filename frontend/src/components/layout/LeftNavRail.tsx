@@ -120,10 +120,17 @@ export function LeftNavRail({
   const visibleItems = hideViews
     ? []
     : ALL_NAV_ITEMS.filter((item) => item.visible(featureFlags, taskCount));
-  const primaryItems = visibleItems.filter((item) => item.view !== "ticketing");
-  const dashboardItems = hasTicketingDashboardProvider
-    ? visibleItems.filter((item) => item.view === "ticketing")
-    : [];
+  const dashboardViews = new Set<ViewType>(["ticketing", "github"]);
+  const primaryItems = visibleItems.filter((item) => !dashboardViews.has(item.view));
+  const dashboardItems = visibleItems.filter((item) => {
+    if (item.view === "github") {
+      return true;
+    }
+    if (item.view === "ticketing") {
+      return hasTicketingDashboardProvider;
+    }
+    return false;
+  });
 
   return (
     <aside

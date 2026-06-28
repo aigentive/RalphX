@@ -88,10 +88,11 @@ export function Navigation({ currentView, onViewChange, onOpenSettings, hideView
   const { data: featureFlags } = useFeatureFlags();
 
   const taskCount = stats?.taskCount ?? 0;
+  const dashboardViews = new Set<ViewType>(["ticketing", "github"]);
   const visibleItems = hideViews
     ? []
     : ALL_NAV_ITEMS.filter(
-        (item) => item.view !== "ticketing" && item.visible(featureFlags, taskCount),
+        (item) => !dashboardViews.has(item.view) && item.visible(featureFlags, taskCount),
       );
 
   return (

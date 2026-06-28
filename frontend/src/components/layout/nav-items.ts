@@ -13,6 +13,7 @@ import {
   Ticket,
   TrendingUp,
 } from "lucide-react";
+import { GitHubMarkIcon } from "@/components/github/GitHubMarkIcon";
 import type { FeatureFlags } from "@/types/feature-flags";
 import type { ViewType } from "@/types/chat";
 
@@ -57,6 +58,12 @@ export const ALL_NAV_ITEMS: NavItemConfig[] = [
     view: "ticketing",
     label: "Ticketing",
     icon: Ticket,
+    visible: () => true,
+  },
+  {
+    view: "github",
+    label: "GitHub",
+    icon: GitHubMarkIcon,
     visible: () => true,
   },
   {

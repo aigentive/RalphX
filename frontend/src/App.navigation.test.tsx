@@ -98,7 +98,7 @@ describe("Navigation store state", () => {
     });
 
     it("supports all view types", () => {
-      const views = ["kanban", "ideation", "activity", "task_detail"] as const;
+      const views = ["kanban", "ideation", "activity", "github", "task_detail"] as const;
 
       for (const view of views) {
         useUiStore.getState().setCurrentView(view);
@@ -183,10 +183,11 @@ describe("View rendering logic", () => {
   });
 
   it("setCurrentView updates currentView correctly", () => {
-    const views: Array<"kanban" | "ideation" | "activity" | "task_detail"> = [
+    const views: Array<"kanban" | "ideation" | "activity" | "github" | "task_detail"> = [
       "ideation",
       "kanban",
       "activity",
+      "github",
       "task_detail",
     ];
 

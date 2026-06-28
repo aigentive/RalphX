@@ -85,6 +85,13 @@ describe("Navigation", () => {
     expect(screen.getByTestId("nav-activity")).toBeInTheDocument();
   });
 
+  it("omits dashboard rail items from the legacy top navigation", () => {
+    render(<Navigation {...defaultProps} />);
+
+    expect(screen.queryByTestId("nav-ticketing")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("nav-github")).not.toBeInTheDocument();
+  });
+
   it("renders Agents first in the main navbar", () => {
     render(<Navigation {...defaultProps} />);
 

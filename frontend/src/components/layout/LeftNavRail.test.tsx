@@ -70,18 +70,25 @@ describe("LeftNavRail", () => {
 
     const separator = screen.getByTestId("nav-dashboard-separator");
     const ticketingButton = screen.getByTestId("nav-ticketing");
+    const githubButton = screen.getByTestId("nav-github");
     expect(separator).toBeInTheDocument();
     expect(ticketingButton).toBeInTheDocument();
+    expect(githubButton).toBeInTheDocument();
     expect(separator.compareDocumentPosition(ticketingButton)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+    expect(ticketingButton.compareDocumentPosition(githubButton)).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING,
     );
 
     fireEvent.click(ticketingButton);
-
     expect(onViewChange).toHaveBeenCalledWith("ticketing");
+
+    fireEvent.click(githubButton);
+    expect(onViewChange).toHaveBeenCalledWith("github");
   });
 
-  it("hides the Ticketing entry when no ticketing provider is enabled", () => {
+  it("hides the Ticketing entry but keeps GitHub when no ticketing provider is enabled", () => {
     mockTicketingProviders = [
       { provider: "linear", enabled: false, connectionStatus: "disconnected" },
       { provider: "jira", enabled: false, connectionStatus: "disconnected" },
@@ -91,7 +98,8 @@ describe("LeftNavRail", () => {
     render(<LeftNavRail currentView="agents" onViewChange={vi.fn()} />);
 
     expect(screen.queryByTestId("nav-ticketing")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("nav-dashboard-separator")).not.toBeInTheDocument();
+    expect(screen.getByTestId("nav-github")).toBeInTheDocument();
+    expect(screen.getByTestId("nav-dashboard-separator")).toBeInTheDocument();
   });
 
   it("shows the Ticketing entry when the old dashboard feature flag is off but a provider is valid", () => {
@@ -115,7 +123,7 @@ describe("LeftNavRail", () => {
     expect(screen.getByTestId("nav-ticketing")).toBeInTheDocument();
   });
 
-  it("hides the Ticketing entry when providers are enabled but not connected", () => {
+  it("hides the Ticketing entry but keeps GitHub when providers are enabled but not connected", () => {
     mockTicketingProviders = [
       { provider: "linear", enabled: true, connectionStatus: "error" },
       { provider: "jira", enabled: true, connectionStatus: "permission_limited" },
@@ -124,10 +132,11 @@ describe("LeftNavRail", () => {
     render(<LeftNavRail currentView="agents" onViewChange={vi.fn()} />);
 
     expect(screen.queryByTestId("nav-ticketing")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("nav-dashboard-separator")).not.toBeInTheDocument();
+    expect(screen.getByTestId("nav-github")).toBeInTheDocument();
+    expect(screen.getByTestId("nav-dashboard-separator")).toBeInTheDocument();
   });
 
-  it("filters the ticketing item out of the primary nav section", () => {
+  it("filters dashboard items out of the primary nav section", () => {
     render(
       <LeftNavRail
         currentView="agents"
@@ -135,9 +144,10 @@ describe("LeftNavRail", () => {
       />,
     );
 
-    // The Dashboard group wraps the ticketing item; the primary <nav> should not.
+    // The Dashboard group wraps ticketing/GitHub items; the primary <nav> should not.
     const dashboardGroup = screen.getByRole("group", { name: "Dashboard" });
     expect(dashboardGroup).toContainElement(screen.getByTestId("nav-ticketing"));
+    expect(dashboardGroup).toContainElement(screen.getByTestId("nav-github"));
     // Primary views like Agents/Kanban are NOT inside the Dashboard group.
     expect(dashboardGroup).not.toContainElement(screen.getByTestId("nav-agents"));
     expect(dashboardGroup).not.toContainElement(screen.getByTestId("nav-kanban"));
@@ -149,6 +159,7 @@ describe("LeftNavRail", () => {
     const dashboardGroup = screen.getByRole("group", { name: "Dashboard" });
     expect(dashboardGroup).toBeInTheDocument();
     expect(dashboardGroup).toContainElement(screen.getByTestId("nav-ticketing"));
+    expect(dashboardGroup).toContainElement(screen.getByTestId("nav-github"));
   });
 
   it("warms up a primary view on pointer enter and focus", () => {
@@ -187,6 +198,15 @@ describe("LeftNavRail", () => {
     onViewWarmUp.mockClear();
     fireEvent.focus(ticketingButton);
     expect(onViewWarmUp).toHaveBeenCalledWith("ticketing");
+
+    onViewWarmUp.mockClear();
+    const githubButton = screen.getByTestId("nav-github");
+    fireEvent.pointerEnter(githubButton);
+    expect(onViewWarmUp).toHaveBeenCalledWith("github");
+
+    onViewWarmUp.mockClear();
+    fireEvent.focus(githubButton);
+    expect(onViewWarmUp).toHaveBeenCalledWith("github");
   });
 
   it("does not throw when onViewWarmUp is not provided", () => {

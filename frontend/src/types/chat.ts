@@ -16,6 +16,7 @@ export const VIEW_TYPE_VALUES = [
   "ideation",
   "agents",
   "ticketing",
+  "github",
   "extensibility",
   "activity",
   "insights",
@@ -88,6 +89,13 @@ export function isTicketingContext(context: ChatContext): boolean {
 }
 
 /**
+ * Check if context is in GitHub view
+ */
+export function isGitHubContext(context: ChatContext): boolean {
+  return context.view === "github";
+}
+
+/**
  * Check if context has a selected task
  */
 export function hasSelectedTask(context: ChatContext): boolean {
@@ -152,7 +160,7 @@ export function createTaskDetailContext(
  */
 export function createProjectContext(
   projectId: string,
-  view: "activity" | "insights" | "agents" | "ticketing"
+  view: "activity" | "insights" | "agents" | "ticketing" | "github"
 ): ChatContext {
   return {
     view,
