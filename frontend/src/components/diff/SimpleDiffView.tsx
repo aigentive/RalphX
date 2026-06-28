@@ -48,6 +48,8 @@ export interface SimpleDiffViewProps {
   showWrapToggle?: boolean | undefined;
   /** Show expandable unchanged-line gap rows between hunks. */
   showContextGaps?: boolean | undefined;
+  /** Disable per-row sticky line-number gutters for WebKit-sensitive embedded diffs. */
+  stickyGutter?: boolean | undefined;
 }
 
 type GapState = "loading" | "error" | RangeLine[];
@@ -94,7 +96,8 @@ function renderRangeLine(
   oldLineNum: number,
   wrapLines: boolean,
   variant: Variant,
-  annotations: PrDiffAnnotation[]
+  annotations: PrDiffAnnotation[],
+  stickyGutter: boolean,
 ) {
   const line: DiffLine = {
     kind: "context",
@@ -102,7 +105,9 @@ function renderRangeLine(
     oldLineNum,
     newLineNum: rl.lineNum,
   };
-  return renderDiffLine(line, rl.lineNum, wrapLines, variant, annotations);
+  return renderDiffLine(line, rl.lineNum, wrapLines, variant, annotations, {
+    stickyGutter,
+  });
 }
 
 function pushGapRows(
@@ -243,6 +248,7 @@ export function SimpleDiffView({
   defaultWrapLines = true,
   showWrapToggle = true,
   showContextGaps = true,
+  stickyGutter = true,
 }: SimpleDiffViewProps) {
   const [wrapLines, setWrapLines] = useState(defaultWrapLines);
   // gapCache state drives rendering; gapCacheRef mirrors it so callbacks
@@ -461,7 +467,8 @@ export function SimpleDiffView({
                   content: rl.content,
                   oldLineNum: fromOldLine + i,
                   newLineNum: rl.lineNum,
-                })
+                }),
+                stickyGutter,
               )
             )}
             <div
@@ -653,7 +660,8 @@ export function SimpleDiffView({
         _index,
         wrapLines,
         variant,
-        annotationsForLine(annotationIndex, row.line)
+        annotationsForLine(annotationIndex, row.line),
+        { stickyGutter },
       );
     }
     return renderVirtualGapRow(row);
@@ -775,7 +783,8 @@ export function SimpleDiffView({
                           lineIdx,
                           wrapLines,
                           variant,
-                          annotationsForLine(annotationIndex, line)
+                          annotationsForLine(annotationIndex, line),
+                          { stickyGutter },
                         )
                       )}
                     </div>
