@@ -7,7 +7,7 @@
  * - Context = shared between both
  */
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { DiffHunk, DiffLine } from "@/api/diff";
 import type { ConflictDiff } from "@/hooks/useConflictDiff";
 import { SimpleDiffView } from "./SimpleDiffView";
@@ -58,6 +58,7 @@ function diffLines(oldLines: string[], newLines: string[]): Edit[] {
 }
 
 const CONTEXT_LINES = 3;
+const LARGE_CONFLICT_DIFF_OPERATION_LIMIT = 250_000;
 
 /**
  * Build DiffHunk[] from two content strings (for client-side conflict diffs).
@@ -162,6 +163,12 @@ interface ConflictDiffViewerProps {
   conflictDiff: ConflictDiff;
 }
 
+type HydrationState = {
+  token: string;
+  ready: boolean;
+  manual: boolean;
+};
+
 /**
  * Get file extension for language badge display
  */
@@ -173,14 +180,88 @@ function getFileExtension(filePath: string): string {
   return "";
 }
 
+function lineCount(content: string | null | undefined): number {
+  if (!content) {
+    return 0;
+  }
+  let count = 1;
+  for (let index = 0; index < content.length; index += 1) {
+    if (content.charCodeAt(index) === 10) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+function contentFingerprint(content: string | null | undefined): string {
+  if (!content) {
+    return "0:0";
+  }
+  let hash = 2_166_136_261;
+  for (let index = 0; index < content.length; index += 1) {
+    hash ^= content.charCodeAt(index);
+    hash = Math.imul(hash, 16_777_619);
+  }
+  return `${content.length}:${hash >>> 0}`;
+}
+
 export function ConflictDiffViewer({ conflictDiff }: ConflictDiffViewerProps) {
   const { filePath, oursContent, theirsContent, language } = conflictDiff;
 
   const displayLanguage = language || getFileExtension(filePath);
-  const { hunks, oldTotalLines, newTotalLines } = useMemo(
-    () => buildHunksFromContent(oursContent ?? "", theirsContent ?? ""),
-    [oursContent, theirsContent]
+  const oldLineCount = lineCount(oursContent);
+  const newLineCount = lineCount(theirsContent);
+  const requiresManualHydration =
+    oldLineCount * newLineCount > LARGE_CONFLICT_DIFF_OPERATION_LIMIT;
+  const hydrationToken = useMemo(
+    () =>
+      [
+        filePath,
+        contentFingerprint(oursContent),
+        contentFingerprint(theirsContent),
+      ].join(":"),
+    [filePath, oursContent, theirsContent],
   );
+  const [hydration, setHydration] = useState<HydrationState>({
+    token: hydrationToken,
+    ready: false,
+    manual: false,
+  });
+  const isCurrentHydration = hydration.token === hydrationToken;
+  const isHydrationReady = isCurrentHydration && hydration.ready;
+  const isManualHydrationRequested = isCurrentHydration && hydration.manual;
+  const shouldRenderFullDiff =
+    isHydrationReady && (!requiresManualHydration || isManualHydrationRequested);
+
+  useEffect(() => {
+    setHydration({
+      token: hydrationToken,
+      ready: false,
+      manual: false,
+    });
+    const timer = window.setTimeout(() => {
+      setHydration((current) =>
+        current.token === hydrationToken ? { ...current, ready: true } : current,
+      );
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [hydrationToken]);
+
+  const { hunks, oldTotalLines, newTotalLines } = useMemo(
+    () =>
+      shouldRenderFullDiff
+        ? buildHunksFromContent(oursContent ?? "", theirsContent ?? "")
+        : { hunks: [], oldTotalLines: oldLineCount, newTotalLines: newLineCount },
+    [newLineCount, oldLineCount, oursContent, shouldRenderFullDiff, theirsContent]
+  );
+
+  const handleRenderFullDiff = () => {
+    setHydration({
+      token: hydrationToken,
+      ready: true,
+      manual: true,
+    });
+  };
 
   return (
     <div className="h-full flex flex-col">
@@ -239,15 +320,46 @@ export function ConflictDiffViewer({ conflictDiff }: ConflictDiffViewerProps) {
         </div>
       </div>
 
-      {/* Diff content via SimpleDiffView */}
       <div className="flex-1 min-h-0">
-        <SimpleDiffView
-          hunks={hunks}
-          oldTotalLines={oldTotalLines}
-          newTotalLines={newTotalLines}
-          language={displayLanguage}
-          variant="conflict"
-        />
+        {shouldRenderFullDiff ? (
+          <SimpleDiffView
+            hunks={hunks}
+            oldTotalLines={oldTotalLines}
+            newTotalLines={newTotalLines}
+            language={displayLanguage}
+            variant="conflict"
+            stickyGutter={false}
+          />
+        ) : (
+          <div
+            data-testid="conflict-diff-hydration-shell"
+            className="flex flex-col gap-2 px-3 py-4 text-xs"
+            style={{
+              backgroundColor: "var(--bg-base)",
+              color: "var(--text-muted)",
+            }}
+          >
+            <span>
+              {requiresManualHydration
+                ? `Large conflict diff: ${oldLineCount} ours lines, ${newLineCount} theirs lines.`
+                : "Preparing conflict diff"}
+            </span>
+            {requiresManualHydration && (
+              <button
+                type="button"
+                className="w-fit rounded border px-2 py-1 text-xs"
+                style={{
+                  backgroundColor: "var(--bg-surface)",
+                  borderColor: "var(--border-subtle)",
+                  color: "var(--text-secondary)",
+                }}
+                onClick={handleRenderFullDiff}
+              >
+                Render full conflict diff
+              </button>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
