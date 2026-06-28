@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { createElement, type ReactNode } from "react";
+import { createElement, type ComponentProps, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { atlassianApi } from "@/api/atlassian";
@@ -167,11 +167,21 @@ function createWrapper() {
   };
 }
 
-function renderDashboard() {
+function renderDashboard(props: {
+  onNavigateToAssociation?: ComponentProps<
+    typeof TicketingDashboardView
+  >["onNavigateToAssociation"];
+} = {}) {
   const Wrapper = createWrapper();
-  return render(<TicketingDashboardView projectId="project-1" />, {
-    wrapper: Wrapper,
-  });
+  return render(
+    <TicketingDashboardView
+      projectId="project-1"
+      onNavigateToAssociation={props.onNavigateToAssociation}
+    />,
+    {
+      wrapper: Wrapper,
+    },
+  );
 }
 
 function mockConnectedDashboard() {
@@ -814,6 +824,41 @@ describe("TicketingDashboardView", () => {
         "true",
       );
     });
+  });
+
+  it("opens branch RX links and shows ticket-only branch details", async () => {
+    mockConnectedDashboard();
+    const onNavigateToAssociation = vi.fn();
+
+    renderDashboard({ onNavigateToAssociation });
+
+    fireEvent.click(screen.getByRole("tab", { name: "Branches" }));
+
+    const currentBranchRow = await screen.findByTestId(
+      "ticketing-github-branch-feature/current",
+    );
+    fireEvent.click(
+      within(currentBranchRow).getByLabelText("1 RalphX conversations"),
+    );
+    expect(onNavigateToAssociation).toHaveBeenCalledWith({
+      view: "agents",
+      id: "conversation-1",
+      projectId: "project-1",
+    });
+
+    const clickupRow = screen.getByTestId(
+      "ticketing-github-branch-ralphx/ticket/clickup-cu-1",
+    );
+    fireEvent.click(
+      within(clickupRow).getByRole("button", {
+        name: /ralphx\/ticket\/clickup-cu-1/,
+      }),
+    );
+    fireEvent.click(screen.getByRole("tab", { name: "Tickets 1" }));
+
+    const ticketPanel = screen.getByRole("tabpanel");
+    expect(within(ticketPanel).getByText("ClickUp cu-1")).toBeInTheDocument();
+    expect(within(ticketPanel).getByText("ClickUp")).toBeInTheDocument();
   });
 
   it("adds a Granola note as new conversation context or binds it to an existing conversation", async () => {
