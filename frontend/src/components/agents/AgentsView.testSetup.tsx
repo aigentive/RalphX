@@ -123,6 +123,8 @@ const defaultProviderSettings: AgentProvidersSettingsResponse = {
       status: "Available codex detected.",
       error: null,
       missingCoreExecFeatures: [],
+      supportsFastMode: true,
+      fastModeSupportedModels: ["gpt-5.5", "gpt-5.4"],
       updatedAt: providerUpdatedAt,
     },
     {
@@ -142,6 +144,8 @@ const defaultProviderSettings: AgentProvidersSettingsResponse = {
       status: "Available claude detected.",
       error: null,
       missingCoreExecFeatures: [],
+      supportsFastMode: false,
+      fastModeSupportedModels: [],
       updatedAt: providerUpdatedAt,
     },
   ],

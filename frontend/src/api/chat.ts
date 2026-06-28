@@ -654,6 +654,7 @@ const ChatConversationResponseSchema = z.object({
   effective_model_id: z.string().nullable().optional(),
   logical_effort: z.string().nullable().optional(),
   effective_effort: z.string().nullable().optional(),
+  service_tier: z.string().nullable().optional(),
   agent_mode: AgentConversationModeSchema.nullable().optional(),
   parent_conversation_id: z.string().nullable().optional(),
   title: z.string().nullable(),
@@ -707,6 +708,7 @@ function transformConversation(raw: RawConversation): ChatConversation {
     effectiveModelId: raw.effective_model_id ?? null,
     logicalEffort: raw.logical_effort ?? null,
     effectiveEffort: raw.effective_effort ?? null,
+    serviceTier: raw.service_tier ?? null,
     agentMode: raw.agent_mode ?? null,
     parentConversationId: raw.parent_conversation_id ?? null,
     title: raw.title,
@@ -1690,6 +1692,7 @@ export interface SendAgentMessageOptions {
   providerHarness?: string | null;
   modelId?: string | null;
   logicalEffort?: string | null;
+  codexFastMode?: boolean | null;
   suppressUserMessage?: boolean;
   composerProjectReferences?: ComposerProjectReference[];
   composerIntegrationReferences?: ComposerIntegrationReference[];
@@ -1773,6 +1776,7 @@ export interface StartAgentConversationInput {
   providerHarness?: string | null;
   modelId?: string | null;
   logicalEffort?: string | null;
+  codexFastMode?: boolean | null;
   mode?: AgentConversationWorkspaceMode;
   base?: AgentConversationBaseSelection | null;
   composerProjectReferences?: ComposerProjectReference[];
@@ -2538,6 +2542,9 @@ export function startAgentConversationInvokeInput(
       : {}),
     ...(input.modelId ? { modelOverride: input.modelId } : {}),
     ...(input.logicalEffort ? { logicalEffort: input.logicalEffort } : {}),
+    ...(input.codexFastMode != null
+      ? { codexFastMode: input.codexFastMode }
+      : {}),
     ...(input.mode ? { mode: input.mode } : {}),
     ...(input.composerProjectReferences?.length
       ? { composerProjectReferences: input.composerProjectReferences }
@@ -3410,6 +3417,9 @@ export async function sendAgentMessage(
         ...(options?.modelId ? { modelOverride: options.modelId } : {}),
         ...(options?.logicalEffort
           ? { logicalEffort: options.logicalEffort }
+          : {}),
+        ...(options?.codexFastMode != null
+          ? { codexFastMode: options.codexFastMode }
           : {}),
         ...(options?.suppressUserMessage ? { suppressUserMessage: true } : {}),
         ...(options?.composerProjectReferences?.length

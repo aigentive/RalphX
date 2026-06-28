@@ -91,6 +91,8 @@ pub struct AgentConfig {
     pub approval_policy: Option<String>,
     /// Optional provider sandbox mode.
     pub sandbox_mode: Option<String>,
+    /// Optional provider service tier.
+    pub service_tier: Option<String>,
     /// Optional max tokens for response
     pub max_tokens: Option<u32>,
     /// Optional timeout in seconds
@@ -113,6 +115,7 @@ impl Default for AgentConfig {
             logical_effort: None,
             approval_policy: None,
             sandbox_mode: None,
+            service_tier: None,
             max_tokens: None,
             timeout_secs: None,
             env: HashMap::new(),
@@ -187,6 +190,12 @@ impl AgentConfig {
     /// Set the provider sandbox mode.
     pub fn with_sandbox_mode(mut self, sandbox_mode: impl Into<String>) -> Self {
         self.sandbox_mode = Some(sandbox_mode.into());
+        self
+    }
+
+    /// Set the provider service tier.
+    pub fn with_service_tier(mut self, service_tier: impl Into<String>) -> Self {
+        self.service_tier = Some(service_tier.into());
         self
     }
 

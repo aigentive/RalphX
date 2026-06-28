@@ -70,8 +70,8 @@ use crate::application::chat_service::tool_result_preview::{
     preview_tool_arguments_object, preview_tool_result_object, tool_detail_ref,
 };
 use crate::application::chat_service::{
-    message_metadata_hidden_from_ui, AgentConversationCreatedPayload, AgentRunningState,
-    AgentRuntimeStatus, SendMessageOptions, running_state_from_run_status_and_idle,
+    message_metadata_hidden_from_ui, running_state_from_run_status_and_idle,
+    AgentConversationCreatedPayload, AgentRunningState, AgentRuntimeStatus, SendMessageOptions,
 };
 use crate::application::git_service::{
     git_cmd::{self, GitCommandLane},
@@ -87,8 +87,8 @@ use crate::application::publish_resilience::{
     remote_tracking_ref_for_publish, review_base_for_publish, PublishBranchFreshnessOutcome,
     PublishBranchFreshnessStatus, PublishFailureClass,
 };
-use crate::application::session_namer_agent::{spawn_session_namer_agent, SessionNamerTarget};
 use crate::application::services::pr_merge_poller::sync_agent_workspace_auto_merge_preference_for_workspace;
+use crate::application::session_namer_agent::{spawn_session_namer_agent, SessionNamerTarget};
 use crate::application::{AppChatService, AppState, ChatService, ChatServiceError, SendResult};
 use crate::commands::agent_model_commands::load_agent_model_registry;
 use crate::commands::ExecutionState;
@@ -130,11 +130,7 @@ pub const AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE: &str =
     "Agent workspace publish is already in progress";
 
 fn agent_workspace_interactive_slot_key(conversation_id: &ChatConversationId) -> String {
-    format!(
-        "{}/{}",
-        ChatContextType::Project,
-        conversation_id.as_str()
-    )
+    format!("{}/{}", ChatContextType::Project, conversation_id.as_str())
 }
 
 // ============================================================================
@@ -157,6 +153,8 @@ pub struct SendAgentMessageInput {
     pub model_override: Option<String>,
     /// Optional provider-neutral reasoning effort override for the spawned agent.
     pub logical_effort: Option<LogicalEffort>,
+    /// Optional Codex Fast Mode override for this send.
+    pub codex_fast_mode: Option<bool>,
     /// Internal handoff messages should reach the runtime without rendering as user chat.
     #[serde(default)]
     pub suppress_user_message: bool,
@@ -1632,6 +1630,7 @@ pub struct AgentConversationResponse {
     pub effective_model_id: Option<String>,
     pub logical_effort: Option<String>,
     pub effective_effort: Option<String>,
+    pub service_tier: Option<String>,
     pub agent_mode: Option<String>,
     pub parent_conversation_id: Option<String>,
     pub title: Option<String>,
@@ -1660,6 +1659,7 @@ impl From<ChatConversation> for AgentConversationResponse {
             effective_model_id: None,
             logical_effort: None,
             effective_effort: None,
+            service_tier: None,
             agent_mode: c.agent_mode.map(|mode| mode.to_string()),
             parent_conversation_id: c.parent_conversation_id,
             title: c.title,
@@ -1678,6 +1678,7 @@ impl AgentConversationResponse {
         self.effective_model_id = attribution.effective_model_id;
         self.logical_effort = attribution.logical_effort.map(|value| value.to_string());
         self.effective_effort = attribution.effective_effort;
+        self.service_tier = attribution.service_tier;
     }
 }
 
@@ -1687,6 +1688,7 @@ struct ConversationRuntimeAttribution {
     effective_model_id: Option<String>,
     logical_effort: Option<LogicalEffort>,
     effective_effort: Option<String>,
+    service_tier: Option<String>,
 }
 
 impl ConversationRuntimeAttribution {
@@ -1695,6 +1697,7 @@ impl ConversationRuntimeAttribution {
             && self.effective_model_id.is_none()
             && self.logical_effort.is_none()
             && self.effective_effort.is_none()
+            && self.service_tier.is_none()
     }
 }
 
@@ -1704,6 +1707,7 @@ fn runtime_attribution_from_run(run: &AgentRun) -> Option<ConversationRuntimeAtt
         effective_model_id: run.effective_model_id.clone(),
         logical_effort: run.logical_effort,
         effective_effort: run.effective_effort.clone(),
+        service_tier: run.service_tier.clone(),
     };
     (!attribution.is_empty()).then_some(attribution)
 }
@@ -1716,6 +1720,7 @@ fn runtime_attribution_from_message(
         effective_model_id: message.effective_model_id.clone(),
         logical_effort: message.logical_effort,
         effective_effort: message.effective_effort.clone(),
+        service_tier: None,
     };
     (!attribution.is_empty()).then_some(attribution)
 }
@@ -3002,12 +3007,8 @@ pub async fn switch_agent_conversation_mode<R: Runtime + 'static>(
     app: tauri::AppHandle<R>,
 ) -> Result<SwitchAgentConversationModeResponse, String> {
     let service = create_chat_service(&state, app, &execution_state, None);
-    switch_agent_conversation_mode_for_state_stopping_running_agent(
-        input,
-        state.inner(),
-        &service,
-    )
-    .await
+    switch_agent_conversation_mode_for_state_stopping_running_agent(input, state.inner(), &service)
+        .await
 }
 
 #[doc(hidden)]
@@ -3289,6 +3290,7 @@ async fn fork_terminal_agent_conversation_for_send<R: Runtime>(
     conversation_id: Option<&ChatConversationId>,
     new_user_message: &str,
     requested_harness: Option<AgentHarnessKind>,
+    service_tier_override: Option<String>,
 ) -> Result<Option<ChatConversationId>, String> {
     let Some(parent_conversation_id) = conversation_id else {
         return Ok(None);
@@ -3311,14 +3313,14 @@ async fn fork_terminal_agent_conversation_for_send<R: Runtime>(
     let response = fork_agent_conversation_response_for_state(state, result).await?;
     emit_agent_conversation_fork_events(app, &response);
     invalidate_agent_workspace_pr_description_cache(parent_conversation_id);
-    let child_conversation_id =
-        ChatConversationId::from_string(response.conversation.id.clone());
+    let child_conversation_id = ChatConversationId::from_string(response.conversation.id.clone());
     invalidate_agent_workspace_pr_description_cache(&child_conversation_id);
     spawn_session_namer_for_continuity_fork(
         state,
         &child_conversation_id,
         new_user_message,
         requested_harness,
+        service_tier_override,
     )
     .await;
     Ok(Some(child_conversation_id))
@@ -3329,6 +3331,7 @@ async fn spawn_session_namer_for_continuity_fork(
     conversation_id: &ChatConversationId,
     new_user_message: &str,
     requested_harness: Option<AgentHarnessKind>,
+    service_tier_override: Option<String>,
 ) {
     let new_user_message = new_user_message.trim();
     if new_user_message.is_empty() {
@@ -3340,6 +3343,7 @@ async fn spawn_session_namer_for_continuity_fork(
         Some(conversation_id.as_str().to_string()),
         new_user_message.to_string(),
         requested_harness,
+        service_tier_override,
     ) {
         Ok(target) => target,
         Err(error) => {
@@ -3483,6 +3487,10 @@ pub async fn send_agent_message(
         input.logical_effort,
     )
     .await?;
+    let service_tier_override =
+        crate::application::chat_service::codex_fast_mode_service_tier_override(
+            input.codex_fast_mode,
+        );
     let mut conversation_id_override = input
         .conversation_id
         .as_deref()
@@ -3498,6 +3506,7 @@ pub async fn send_agent_message(
             parent_conversation_id.as_ref(),
             &input.content,
             harness_override,
+            service_tier_override.clone(),
         )
         .await?
         {
@@ -3545,6 +3554,7 @@ pub async fn send_agent_message(
                 harness_override,
                 model_override,
                 logical_effort_override,
+                service_tier_override,
                 conversation_id_override,
                 composer_project_references: input.composer_project_references,
                 composer_integration_references: input.composer_integration_references,
@@ -5505,8 +5515,7 @@ async fn resolve_agent_workspace_pr_description_review_base(
     worktree_path: &Path,
 ) -> Result<AgentWorkspacePrDescriptionReviewBaseResolution, String> {
     let captured_review_base =
-        review_base_for_publish(workspace.base_commit.as_deref(), &workspace.base_ref)?
-            .to_string();
+        review_base_for_publish(workspace.base_commit.as_deref(), &workspace.base_ref)?.to_string();
 
     let base_resolution = match resolve_workspace_base(project, workspace).await {
         Ok(resolution) => Some(resolution),
@@ -8934,8 +8943,8 @@ mod tests {
     use crate::application::git_service::GitService;
     use crate::application::publish_resilience::PublishBranchFreshnessStatus;
     use crate::application::{
-        chat_service::{AgentRuntimeStatus, MockChatService}, AppState, TeamService,
-        TeamStateTracker,
+        chat_service::{AgentRuntimeStatus, MockChatService},
+        AppState, TeamService, TeamStateTracker,
     };
     use crate::commands::ExecutionState;
     use crate::domain::agents::{
@@ -9186,9 +9195,8 @@ mod tests {
                 None,
             )
             .await;
-        execution_state.mark_interactive_idle(&agent_workspace_interactive_slot_key(
-            &conversation_id,
-        ));
+        execution_state
+            .mark_interactive_idle(&agent_workspace_interactive_slot_key(&conversation_id));
 
         let statuses = get_agent_conversation_runtime_statuses_for_app_state(
             &state,
@@ -11131,7 +11139,8 @@ mod tests {
         state: &AppState,
         conversation_id: &ChatConversationId,
     ) -> AgentConversationWorkspace {
-        let (mut workspace, _project) = published_workspace_and_project(state, conversation_id).await;
+        let (mut workspace, _project) =
+            published_workspace_and_project(state, conversation_id).await;
         workspace.base_ref = "main".to_string();
         workspace.base_display_name = Some("Project default (main)".to_string());
         state
@@ -11405,12 +11414,7 @@ mod tests {
 
         let repo_path = PathBuf::from(&project.working_directory);
         git(&repo_path, &["checkout", "main"]);
-        commit_file(
-            &repo_path,
-            "base-only.txt",
-            "base\n",
-            "Advance base branch",
-        );
+        commit_file(&repo_path, "base-only.txt", "base\n", "Advance base branch");
 
         let client = Arc::new(SubmittingPrDescriptionClient::new(
             Arc::clone(&state.agent_conversation_workspace_repo),
@@ -11457,12 +11461,8 @@ mod tests {
 
         let repo_path = PathBuf::from(&project.working_directory);
         git(&repo_path, &["checkout", "main"]);
-        let current_base = commit_file(
-            &repo_path,
-            "base-only.txt",
-            "base\n",
-            "Advance base branch",
-        );
+        let current_base =
+            commit_file(&repo_path, "base-only.txt", "base\n", "Advance base branch");
         git(&worktree_path, &["merge", "--no-edit", "main"]);
 
         let stored = state
@@ -13729,12 +13729,17 @@ mod tests {
         let app = mock_builder()
             .build(mock_context(noop_assets()))
             .expect("mock app should build");
-        assert!(
-            fork_terminal_agent_conversation_for_send(&state, app.handle(), None, "", None)
-                .await
-                .expect("missing conversation id should be ignored")
-                .is_none()
-        );
+        assert!(fork_terminal_agent_conversation_for_send(
+            &state,
+            app.handle(),
+            None,
+            "",
+            None,
+            None
+        )
+        .await
+        .expect("missing conversation id should be ignored")
+        .is_none());
 
         let project_id = ProjectId::from_string("project-terminal-fork-skip".to_string());
         let mut project = Project::new(
@@ -13757,6 +13762,7 @@ mod tests {
             app.handle(),
             Some(&conversation.id),
             "",
+            None,
             None
         )
         .await
@@ -13785,6 +13791,7 @@ mod tests {
             app.handle(),
             Some(&conversation.id),
             "",
+            None,
             None
         )
         .await
@@ -13838,6 +13845,7 @@ mod tests {
             app.handle(),
             Some(&parent.id),
             "",
+            None,
             None,
         )
         .await
@@ -13923,6 +13931,7 @@ mod tests {
             app.handle(),
             Some(&parent.id),
             "Please continue the closed run and fix the title fallback.",
+            None,
             None,
         )
         .await

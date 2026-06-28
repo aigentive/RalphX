@@ -67,7 +67,10 @@ fn test_take_removes_selected_message_without_reordering_remaining() {
 
     let remaining = queue.get_queued(ChatContextType::Task, "task-1");
     assert_eq!(
-        remaining.iter().map(|message| message.id.as_str()).collect::<Vec<_>>(),
+        remaining
+            .iter()
+            .map(|message| message.id.as_str())
+            .collect::<Vec<_>>(),
         vec![first.id.as_str(), third.id.as_str()],
         "taking a selected queued message must preserve the order of the rest"
     );
@@ -417,6 +420,7 @@ fn test_remove_stale_drops_old_messages() {
             harness_override: None,
             model_override: None,
             logical_effort_override: None,
+            service_tier_override: None,
             force_new_provider_session: false,
             composer_project_references: Vec::new(),
             composer_integration_references: Vec::new(),
@@ -433,6 +437,7 @@ fn test_remove_stale_drops_old_messages() {
             harness_override: None,
             model_override: None,
             logical_effort_override: None,
+            service_tier_override: None,
             force_new_provider_session: false,
             composer_project_references: Vec::new(),
             composer_integration_references: Vec::new(),
@@ -735,6 +740,7 @@ fn test_queue_with_runtime_overrides_preserves_selection() {
         Some(AgentHarnessKind::Codex),
         Some("gpt-5.5".to_string()),
         Some(LogicalEffort::XHigh),
+        Some("fast".to_string()),
         true,
         Vec::new(),
         Vec::new(),
@@ -745,6 +751,7 @@ fn test_queue_with_runtime_overrides_preserves_selection() {
     assert_eq!(queued.harness_override, Some(AgentHarnessKind::Codex));
     assert_eq!(queued.model_override.as_deref(), Some("gpt-5.5"));
     assert_eq!(queued.logical_effort_override, Some(LogicalEffort::XHigh));
+    assert_eq!(queued.service_tier_override.as_deref(), Some("fast"));
     assert!(queued.force_new_provider_session);
 
     let stored = queue.get_queued(ChatContextType::Project, "project-runtime");
@@ -770,6 +777,7 @@ fn test_remove_stale_unparseable_timestamp_retained() {
             harness_override: None,
             model_override: None,
             logical_effort_override: None,
+            service_tier_override: None,
             force_new_provider_session: false,
             composer_project_references: Vec::new(),
             composer_integration_references: Vec::new(),

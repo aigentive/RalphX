@@ -61,6 +61,8 @@ pub struct StartAgentConversationInput {
     pub model_override: Option<String>,
     /// Optional provider-neutral reasoning effort override for the spawned agent.
     pub logical_effort: Option<LogicalEffort>,
+    /// Optional Codex Fast Mode override for this initial send.
+    pub codex_fast_mode: Option<bool>,
     /// Agent mode: "chat" routes to a read-only explorer in the project root;
     /// edit/plan/ideation modes create a selected-base workspace for runtime CWD.
     pub mode: Option<String>,
@@ -488,6 +490,10 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             input.logical_effort,
         )
         .await?;
+        let service_tier_override =
+            crate::application::chat_service::codex_fast_mode_service_tier_override(
+                input.codex_fast_mode,
+            );
         log_start_agent_conversation_phase(
             &input.project_id,
             Some(&conversation.id),
@@ -513,6 +519,7 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
                     agent_name_override: Some(agent_name_for_workspace_mode(mode).to_string()),
                     model_override,
                     logical_effort_override,
+                    service_tier_override,
                     conversation_id_override: Some(conversation.id),
                     working_directory_override,
                     composer_project_references: input.composer_project_references.clone(),

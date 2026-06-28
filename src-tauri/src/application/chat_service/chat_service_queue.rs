@@ -313,6 +313,7 @@ fn provider_switch_send_options_for_queued_message(
         model_override: queued_msg.model_override.clone(),
         conversation_id_override: Some(conversation_id),
         logical_effort_override: queued_msg.logical_effort_override,
+        service_tier_override: queued_msg.service_tier_override.clone(),
         composer_project_references: queued_msg.composer_project_references.clone(),
         composer_integration_references: queued_msg.composer_integration_references.clone(),
         composer_artifact_references: queued_msg.composer_artifact_references.clone(),
@@ -1871,6 +1872,7 @@ mod tests {
             Some(AgentHarnessKind::Codex),
             Some("gpt-5.5".to_string()),
             Some(crate::domain::agents::LogicalEffort::High),
+            Some("fast".to_string()),
             true,
             Vec::new(),
             Vec::new(),
@@ -1920,6 +1922,7 @@ mod tests {
             queued[0].logical_effort_override,
             Some(crate::domain::agents::LogicalEffort::High)
         );
+        assert_eq!(queued[0].service_tier_override.as_deref(), Some("fast"));
         assert!(queued[0].force_new_provider_session);
     }
 

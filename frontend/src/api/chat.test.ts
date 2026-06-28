@@ -1930,6 +1930,7 @@ describe("chat api", () => {
       providerHarness: "codex",
       modelId: "gpt-5.5",
       logicalEffort: "xhigh",
+      codexFastMode: true,
       mode: "chat",
       base: {
         kind: "local_branch",
@@ -1953,6 +1954,7 @@ describe("chat api", () => {
         providerHarness: "codex",
         modelOverride: "gpt-5.5",
         logicalEffort: "xhigh",
+        codexFastMode: true,
         mode: "chat",
         baseRefKind: "local_branch",
         baseRef: "feature/agent-screen",
@@ -2271,6 +2273,7 @@ describe("chat api", () => {
       providerHarness: "codex",
       modelId: "gpt-5.4",
       logicalEffort: "high",
+      codexFastMode: true,
     });
 
     expect(mockInvoke).toHaveBeenCalledWith("send_agent_message", {
@@ -2282,6 +2285,7 @@ describe("chat api", () => {
         providerHarness: "codex",
         modelOverride: "gpt-5.4",
         logicalEffort: "high",
+        codexFastMode: true,
       },
     });
   });
@@ -3105,6 +3109,7 @@ describe("startAgentConversationInvokeInput", () => {
       providerHarness: "codex",
       modelId: "gpt-5.5",
       logicalEffort: "xhigh",
+      codexFastMode: true,
       mode: "chat",
       composerProjectReferences: [{ path: "src/main.ts", kind: "file" }],
       composerIntegrationReferences: [
@@ -3134,6 +3139,7 @@ describe("startAgentConversationInvokeInput", () => {
       providerHarness: "codex",
       modelOverride: "gpt-5.5",
       logicalEffort: "xhigh",
+      codexFastMode: true,
       mode: "chat",
       composerProjectReferences: [{ path: "src/main.ts", kind: "file" }],
       composerIntegrationReferences: [
@@ -3200,6 +3206,7 @@ describe("transformStartAgentConversationResponse", () => {
         claude_session_id: null,
         provider_session_id: null,
         provider_harness: "codex",
+        service_tier: "fast",
         agent_mode: "chat",
         title: "Chat",
         message_count: 1,
@@ -3248,6 +3255,7 @@ describe("transformStartAgentConversationResponse", () => {
 
     expect(result.conversation.id).toBe("conversation-chat");
     expect(result.conversation.agentMode).toBe("chat");
+    expect(result.conversation.serviceTier).toBe("fast");
     expect(result.workspace).toMatchObject({
       conversationId: "conversation-chat",
       mode: "chat",

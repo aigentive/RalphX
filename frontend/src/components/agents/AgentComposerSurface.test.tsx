@@ -245,6 +245,32 @@ describe("AgentComposerSurface", () => {
     expect(runtimePopover).not.toHaveClass("overflow-hidden");
   });
 
+  it("shows disabled Codex Fast mode reason in the runtime selector", () => {
+    renderComposer({
+      model: {
+        value: "gpt-5.4-mini",
+        onValueChange: vi.fn(),
+        options: [{ id: "gpt-5.4-mini", label: "gpt-5.4-mini" }],
+        fastMode: {
+          visible: true,
+          value: false,
+          disabled: true,
+          description: "Fast mode is not available for gpt-5.4-mini.",
+          onValueChange: vi.fn(),
+          testId: "composer-codex-fast-mode",
+        },
+      },
+    });
+
+    fireEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
+
+    expect(screen.getByText("Fast mode")).toBeInTheDocument();
+    expect(
+      screen.getByText("Fast mode is not available for gpt-5.4-mini."),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("composer-codex-fast-mode")).toBeDisabled();
+  });
+
   it("filters and selects projects from the compact project line", () => {
     const onValueChange = vi.fn();
     render(

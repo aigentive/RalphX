@@ -343,6 +343,7 @@ pub(crate) async fn create_followup_agent_conversation_for_request(
             provider_harness: req.provider_harness.clone(),
             model_override: req.model_override.clone(),
             logical_effort: req.logical_effort,
+            codex_fast_mode: None,
             mode: Some("ideation".to_string()),
             base_ref_kind: base_selection.kind.map(|kind| kind.to_string()),
             base_branch_mode: base_selection

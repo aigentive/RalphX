@@ -1974,6 +1974,7 @@ fn build_codex_cli_config(
         reasoning_effort: resolved_spawn_settings.logical_effort,
         approval_policy: resolved_spawn_settings.approval_policy.clone(),
         sandbox_mode: resolved_spawn_settings.sandbox_mode.clone(),
+        service_tier: resolved_spawn_settings.service_tier.clone(),
         config_overrides,
         cwd: Some(working_directory.to_path_buf()),
         add_dirs: Vec::new(),
