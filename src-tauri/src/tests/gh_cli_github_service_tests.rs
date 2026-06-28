@@ -8,13 +8,12 @@ use crate::error::AppError;
 use crate::infrastructure::services::gh_cli_github_service::{
     parse_check_run_annotations_output, parse_check_runs_output,
     parse_code_scanning_alert_annotations_output, parse_gh_auth_status_lines,
-    parse_issue_create_plain_output,
-    parse_pr_annotation_head_sha_output, parse_pr_create_output, parse_pr_create_plain_output,
-    parse_pr_detail_output, parse_pr_health_output, parse_pr_review_comment_annotations_output,
-    parse_pr_review_decision_output, parse_pr_review_feedback_output,
-    parse_pr_review_thread_output, parse_pr_search_output, parse_pr_status_output,
-    parse_pr_sync_state_output, parse_submit_pr_review_output, sanitize_stderr_line,
-    scrub_token_urls, CheckRunAnnotationSource,
+    parse_issue_create_plain_output, parse_pr_annotation_head_sha_output, parse_pr_create_output,
+    parse_pr_create_plain_output, parse_pr_detail_output, parse_pr_health_output,
+    parse_pr_review_comment_annotations_output, parse_pr_review_decision_output,
+    parse_pr_review_feedback_output, parse_pr_review_thread_output, parse_pr_search_output,
+    parse_pr_status_output, parse_pr_sync_state_output, parse_submit_pr_review_output,
+    sanitize_stderr_line, scrub_token_urls, CheckRunAnnotationSource,
 };
 
 // ── parse_pr_create_output ─────────────────────────────────────────────────
@@ -893,8 +892,7 @@ fn parse_gh_auth_status_picks_active_account_among_multiple() {
 
 #[test]
 fn parse_gh_auth_status_falls_back_to_first_without_active_marker() {
-    let lines =
-        vec!["  ✓ Logged in to github.example.com account solo (keyring)".to_string()];
+    let lines = vec!["  ✓ Logged in to github.example.com account solo (keyring)".to_string()];
     let (authenticated, host, account) = parse_gh_auth_status_lines(&lines);
     assert!(authenticated);
     assert_eq!(host.as_deref(), Some("github.example.com"));
@@ -1450,6 +1448,43 @@ mod mock_roundtrip {
                 "all",
                 "--limit",
                 "20",
+                "--json",
+                "number,url,state,isDraft,headRefName,updatedAt",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>()]
+        );
+    }
+
+    #[tokio::test]
+    async fn list_pull_request_branch_matches_uses_single_all_state_lookup() {
+        let runner = Arc::new(MockGhCliRunner::with_gh_results(vec![Ok(vec![
+            r#"[
+                {"number":42,"url":"https://github.com/owner/repo/pull/42","state":"MERGED","isDraft":false,"headRefName":"ralphx/demo/agent-1234","updatedAt":"2026-05-11T22:00:00Z"},
+                {"number":43,"url":"https://github.com/owner/repo/pull/43","state":"CLOSED","isDraft":false,"headRefName":"","updatedAt":"2026-05-12T22:00:00Z"}
+            ]"#
+            .to_string(),
+        ])]));
+        let service = GhCliGithubService::with_runner(runner.clone());
+
+        let matches = service
+            .list_pull_request_branch_matches(Path::new("/tmp"), 200)
+            .await
+            .unwrap();
+
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].number, 42);
+        assert_eq!(matches[0].publication_status(), "merged");
+        assert_eq!(
+            runner.gh_calls(),
+            vec![vec![
+                "pr",
+                "list",
+                "--state",
+                "all",
+                "--limit",
+                "200",
                 "--json",
                 "number,url,state,isDraft,headRefName,updatedAt",
             ]

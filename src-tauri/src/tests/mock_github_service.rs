@@ -44,6 +44,7 @@ pub struct MockGithubState {
     pub find_pr_by_head_branch_result: Option<AppResult<Option<(i64, String)>>>,
     pub search_pull_requests_result: Option<AppResult<Vec<PrSearchResult>>>,
     pub find_latest_pr_by_head_branch_result: Option<AppResult<Option<PrBranchMatch>>>,
+    pub list_pull_request_branch_matches_result: Option<AppResult<Vec<PrBranchMatch>>>,
     pub submit_pr_review_result: Option<AppResult<PrSubmittedReview>>,
 
     // --- Call tracking ---
@@ -72,6 +73,7 @@ pub struct MockGithubState {
     pub find_pr_by_head_branch_calls: u32,
     pub search_pull_requests_calls: u32,
     pub find_latest_pr_by_head_branch_calls: u32,
+    pub list_pull_request_branch_matches_calls: u32,
     pub submit_pr_review_calls: u32,
 
     // --- Last arguments recorded ---
@@ -103,6 +105,7 @@ pub struct MockGithubState {
     pub last_find_pr_by_head_branch_name: Option<String>,
     pub last_search_pull_requests_args: Option<(Option<String>, usize)>,
     pub last_find_latest_pr_by_head_branch_name: Option<String>,
+    pub last_list_pull_request_branch_matches_limit: Option<usize>,
     pub last_submit_pr_review_args: Option<(i64, PrReviewSubmissionEvent, String)>,
 }
 
@@ -243,6 +246,12 @@ impl MockGithubService {
         self.state().find_latest_pr_by_head_branch_result = Some(result);
     }
 
+    /// Shorthand: configure all-state PR branch matches to return the given results.
+    #[allow(dead_code)]
+    pub fn will_return_pull_request_branch_matches(&self, results: Vec<PrBranchMatch>) {
+        self.state().list_pull_request_branch_matches_result = Some(Ok(results));
+    }
+
     /// Shorthand: configure submit_pr_review to succeed with the given review id/url.
     #[allow(dead_code)]
     pub fn will_submit_pr_review(&self, id: impl Into<String>, url: Option<String>) {
@@ -252,8 +261,7 @@ impl MockGithubService {
     /// Shorthand: configure submit_pr_review to fail with the given message.
     #[allow(dead_code)]
     pub fn will_fail_submit_pr_review(&self, msg: impl Into<String>) {
-        self.state().submit_pr_review_result =
-            Some(Err(AppError::Infrastructure(msg.into())));
+        self.state().submit_pr_review_result = Some(Err(AppError::Infrastructure(msg.into())));
     }
 }
 
@@ -577,6 +585,19 @@ impl GithubServiceTrait for MockGithubService {
         s.find_latest_pr_by_head_branch_result
             .take()
             .unwrap_or(Ok(None))
+    }
+
+    async fn list_pull_request_branch_matches(
+        &self,
+        _working_dir: &Path,
+        limit: usize,
+    ) -> AppResult<Vec<PrBranchMatch>> {
+        let mut s = self.state.lock().expect("lock poisoned");
+        s.list_pull_request_branch_matches_calls += 1;
+        s.last_list_pull_request_branch_matches_limit = Some(limit);
+        s.list_pull_request_branch_matches_result
+            .take()
+            .unwrap_or_else(|| Ok(Vec::new()))
     }
 
     async fn submit_pr_review(

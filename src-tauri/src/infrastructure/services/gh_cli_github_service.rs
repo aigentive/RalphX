@@ -1160,6 +1160,28 @@ impl GithubServiceTrait for GhCliGithubService {
         parse_pr_branch_match_output(&json_str, head)
     }
 
+    async fn list_pull_request_branch_matches(
+        &self,
+        working_dir: &Path,
+        limit: usize,
+    ) -> AppResult<Vec<PrBranchMatch>> {
+        let limit = limit.clamp(1, 200);
+        let args = vec![
+            "pr".to_string(),
+            "list".to_string(),
+            "--state".to_string(),
+            "all".to_string(),
+            "--limit".to_string(),
+            limit.to_string(),
+            "--json".to_string(),
+            "number,url,state,isDraft,headRefName,updatedAt".to_string(),
+        ];
+        let stdout = self.runner.run_gh(working_dir, &args).await?;
+
+        let json_str = stdout.join("\n");
+        parse_pr_branch_matches_output(&json_str)
+    }
+
     async fn fetch_github_connection_status(&self) -> AppResult<GithubConnectionStatus> {
         let raw = self.runner.run_gh_auth_status().await;
         if !raw.gh_installed {
@@ -1359,6 +1381,30 @@ pub(crate) fn parse_pr_branch_match_output(
     });
 
     Ok(matches.into_iter().next())
+}
+
+pub(crate) fn parse_pr_branch_matches_output(json_str: &str) -> AppResult<Vec<PrBranchMatch>> {
+    let arr: Value = serde_json::from_str(json_str).map_err(|e| {
+        AppError::Infrastructure(format!(
+            "Failed to parse gh pr list branch JSON: {e}\nRaw: {json_str}"
+        ))
+    })?;
+
+    let items = arr.as_array().ok_or_else(|| {
+        AppError::Infrastructure(format!(
+            "gh pr list branch lookup: expected JSON array, got: {json_str}"
+        ))
+    })?;
+
+    items
+        .iter()
+        .filter(|item| {
+            item.get("headRefName")
+                .and_then(Value::as_str)
+                .is_some_and(|head| !head.trim().is_empty())
+        })
+        .map(parse_pr_branch_match_item)
+        .collect()
 }
 
 pub(crate) fn parse_pr_search_output(json_str: &str) -> AppResult<Vec<PrSearchResult>> {

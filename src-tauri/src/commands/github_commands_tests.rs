@@ -202,7 +202,7 @@ async fn get_github_branch_overview_lists_pr_rx_and_ticket_indicators() {
             is_cross_repository: false,
         },
     ]);
-    github.set_find_latest_pr_by_head_branch(Ok(Some(PrBranchMatch {
+    github.will_return_pull_request_branch_matches(vec![PrBranchMatch {
         number: 11,
         url: "https://github.com/aigentive/ralphx.app/pull/11".to_string(),
         status: PrStatus::Merged {
@@ -211,7 +211,7 @@ async fn get_github_branch_overview_lists_pr_rx_and_ticket_indicators() {
         is_draft: false,
         head_ref_name: "feature/merged".to_string(),
         updated_at: Some("2026-06-27T08:00:00Z".to_string()),
-    })));
+    }]);
 
     let mut state = AppState::new_test();
     state.github_service = Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>);
@@ -340,4 +340,10 @@ async fn get_github_branch_overview_lists_pr_rx_and_ticket_indicators() {
         github.state().last_search_pull_requests_args,
         Some((None, 50))
     );
+    assert_eq!(github.state().list_pull_request_branch_matches_calls, 1);
+    assert_eq!(
+        github.state().last_list_pull_request_branch_matches_limit,
+        Some(200)
+    );
+    assert_eq!(github.state().find_latest_pr_by_head_branch_calls, 0);
 }

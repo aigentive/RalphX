@@ -484,6 +484,15 @@ pub trait GithubServiceTrait: Send + Sync {
         Ok(None)
     }
 
+    /// List recent PR branch matches across all GitHub states.
+    async fn list_pull_request_branch_matches(
+        &self,
+        _working_dir: &Path,
+        _limit: usize,
+    ) -> AppResult<Vec<PrBranchMatch>> {
+        Ok(Vec::new())
+    }
+
     /// Reflect the locally-authenticated `gh` CLI via `gh auth status`.
     ///
     /// Returns a typed status (never an error) distinguishing gh not-installed,

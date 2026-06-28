@@ -5,9 +5,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 use tauri::State;
+use tracing::info;
 
 use crate::application::pull_request_detail::types::PullRequestDetail;
 use crate::application::pull_request_detail::{
@@ -140,6 +142,7 @@ pub async fn get_github_branch_overview(
     input: GetGithubBranchOverviewInput,
     state: State<'_, AppState>,
 ) -> Result<GithubBranchOverviewResponse, String> {
+    let started_at = Instant::now();
     let project_id = ProjectId::from_string(input.project_id);
     let working_dir = get_project_working_directory(&project_id, state.inner()).await?;
     let branch_names = GitService::list_branches(&working_dir)
@@ -157,31 +160,29 @@ pub async fn get_github_branch_overview(
     };
 
     let (pull_requests, latest_pr_matches) = match state.github_service.as_ref() {
-        Some(github_service) => match github_service
-            .search_pull_requests(&working_dir, None, 50)
-            .await
-        {
-            Ok(results) => {
-                let open_pr_branches: BTreeSet<String> = results
-                    .iter()
-                    .map(|pr| pr.head_ref_name.trim().to_string())
-                    .filter(|branch| !branch.is_empty())
-                    .collect();
-                let latest_matches = latest_pull_request_matches_for_branches(
-                    github_service.as_ref(),
-                    &working_dir,
-                    &branch_names,
-                    &open_pr_branches,
-                    &mut sources_unavailable,
-                )
-                .await;
-                (results, latest_matches)
-            }
-            Err(_) => {
-                sources_unavailable.push("githubPullRequests".to_string());
-                (Vec::new(), Vec::new())
-            }
-        },
+        Some(github_service) => {
+            let pull_requests = match github_service
+                .search_pull_requests(&working_dir, None, 50)
+                .await
+            {
+                Ok(results) => results,
+                Err(_) => {
+                    sources_unavailable.push("githubPullRequests".to_string());
+                    Vec::new()
+                }
+            };
+            let latest_pr_matches = match github_service
+                .list_pull_request_branch_matches(&working_dir, 200)
+                .await
+            {
+                Ok(matches) => latest_pull_request_matches_for_branches(matches, &branch_names),
+                Err(_) => {
+                    sources_unavailable.push("githubPullRequestStatus".to_string());
+                    Vec::new()
+                }
+            };
+            (pull_requests, latest_pr_matches)
+        }
         None => {
             sources_unavailable.push("githubPullRequests".to_string());
             (Vec::new(), Vec::new())
@@ -197,7 +198,7 @@ pub async fn get_github_branch_overview(
         branch_ticket_links(state.inner(), &project_id, &workspaces).await?;
     let conversation_titles_by_id = project_conversation_titles(state.inner(), &project_id).await?;
 
-    Ok(build_branch_overview_response(
+    let response = build_branch_overview_response(
         branch_names,
         current_branch,
         pull_requests,
@@ -206,7 +207,16 @@ pub async fn get_github_branch_overview(
         conversation_titles_by_id,
         ticket_links_by_branch,
         sources_unavailable,
-    ))
+    );
+    info!(
+        project_id = project_id.as_str(),
+        branch_count = response.branches.len(),
+        source_unavailable_count = response.sources_unavailable.len(),
+        elapsed_ms = started_at.elapsed().as_millis(),
+        "GitHub branch overview loaded"
+    );
+
+    Ok(response)
 }
 
 /// Tauri input for `get_pull_request_detail`. Provide either `prNumber` or
@@ -327,37 +337,32 @@ async fn branch_ticket_links(
     Ok(by_branch)
 }
 
-async fn latest_pull_request_matches_for_branches(
-    github_service: &dyn crate::domain::services::github_service::GithubServiceTrait,
-    working_dir: &Path,
+fn latest_pull_request_matches_for_branches(
+    matches: Vec<PrBranchMatch>,
     branch_names: &[String],
-    open_pr_branches: &BTreeSet<String>,
-    sources_unavailable: &mut Vec<String>,
 ) -> Vec<PrBranchMatch> {
-    let mut matches = Vec::new();
-    let mut status_lookup_failed = false;
-    for branch_name in branch_names
+    let local_branches: BTreeSet<String> = branch_names
         .iter()
         .map(|branch| branch.trim())
         .filter(|branch| !branch.is_empty())
         .filter(|branch| *branch != "main" && *branch != "master")
-        .filter(|branch| !open_pr_branches.contains(*branch))
-        .take(50)
-    {
-        match github_service
-            .find_latest_pr_by_head_branch(working_dir, branch_name)
-            .await
-        {
-            Ok(Some(pr_match)) if pr_match.head_ref_name == branch_name => matches.push(pr_match),
-            Ok(Some(_)) => {}
-            Ok(None) => {}
-            Err(_) => status_lookup_failed = true,
+        .map(str::to_string)
+        .collect();
+    let mut latest_by_branch: BTreeMap<String, PrBranchMatch> = BTreeMap::new();
+    for pr_match in matches {
+        if !local_branches.contains(pr_match.head_ref_name.trim()) {
+            continue;
+        }
+        let branch_name = pr_match.head_ref_name.clone();
+        let should_replace = latest_by_branch.get(&branch_name).is_none_or(|current| {
+            pr_match.updated_at > current.updated_at
+                || (pr_match.updated_at == current.updated_at && pr_match.number > current.number)
+        });
+        if should_replace {
+            latest_by_branch.insert(branch_name, pr_match);
         }
     }
-    if status_lookup_failed {
-        sources_unavailable.push("githubPullRequestStatus".to_string());
-    }
-    matches
+    latest_by_branch.into_values().collect()
 }
 
 fn insert_branch_ticket_link(
