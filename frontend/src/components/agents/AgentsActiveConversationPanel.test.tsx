@@ -1266,6 +1266,48 @@ describe("AgentsActiveConversationPanel", () => {
     );
   });
 
+  it("shows Verify Plan beside Approve Plan for draft Plan-mode sessions", async () => {
+    const user = userEvent.setup();
+    const onSelectArtifact = vi.fn();
+    getSessionPlanMock.mockResolvedValue(planArtifact("draft"));
+    getVerificationSpecialistsMock.mockResolvedValue({
+      specialists: [
+        { name: "risk", enabled_by_default: false },
+        { name: "scope", enabled_by_default: true },
+      ],
+    });
+
+    renderPanel({
+      activeConversation: { ...projectConversation(), agentMode: "plan" },
+      activeConversationMode: "plan",
+      activeWorkspace: {
+        ...workspace(),
+        mode: "plan",
+        linkedIdeationSessionId: "planning-session-1",
+      },
+      attachedIdeationSessionId: "planning-session-1",
+      onSelectArtifact,
+    });
+
+    const actions = within(
+      await screen.findByTestId("agents-plan-composer-cta-actions"),
+    );
+    expect(
+      actions.getByRole("button", { name: /Approve Plan/i }),
+    ).toBeInTheDocument();
+
+    await user.click(actions.getByRole("button", { name: /Verify Plan/i }));
+
+    await waitFor(() =>
+      expect(confirmVerificationMock).toHaveBeenCalledWith(
+        "planning-session-1",
+        ["risk"],
+      ),
+    );
+    expect(onSelectArtifact).toHaveBeenCalledWith("verification");
+    expect(approvePlanArtifactMock).not.toHaveBeenCalled();
+  });
+
   it("shows View Plan before Approve Plan when the plan tab is not visible", async () => {
     const user = userEvent.setup();
     const onOpenPlanArtifact = vi.fn();

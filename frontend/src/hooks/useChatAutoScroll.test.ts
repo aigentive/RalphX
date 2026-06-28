@@ -1,13 +1,12 @@
 /**
  * useChatAutoScroll hook tests
  *
- * Tests the unified chat auto-scroll hook behavior:
- * - Virtuoso followOutput is the ONLY auto-scroll mechanism (no DOM effects)
- * - followOutput + atBottomStateChange control all auto-scrolling
+ * Tests the shared bottom-state and Virtuoso callback primitives:
+ * - the hook itself has no message-count scroll effects
+ * - followOutput + atBottomStateChange expose Virtuoso bottom behavior
  * - scrollToBottom routes through Virtuoso scrollToIndex when ref provided
  * - DOM marker fallback for non-Virtuoso consumers only
  * - History mode (disabled) disables auto-scroll
- * - No isStreaming/streamingHash props — Virtuoso context handles streaming
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -256,7 +255,7 @@ describe("useChatAutoScroll", () => {
     });
   });
 
-  describe("single scroll path guarantee (no DOM-based auto-scroll)", () => {
+  describe("hook has no message-count side-effect scrolling", () => {
     it("should NOT trigger scrollIntoView when message count increases", () => {
       const mockScrollIntoView = vi.fn();
       const { result, rerender } = renderHook(
@@ -278,7 +277,7 @@ describe("useChatAutoScroll", () => {
       // Increase message count (simulates new messages during streaming)
       rerender({ messageCount: 6 });
 
-      // No DOM-based auto-scroll — Virtuoso followOutput handles this
+      // The hook exposes callbacks; host components own any scroll effects.
       expect(mockScrollIntoView).not.toHaveBeenCalled();
     });
 
@@ -297,7 +296,7 @@ describe("useChatAutoScroll", () => {
       rerender({ messageCount: 6 });
       rerender({ messageCount: 7 });
 
-      // No RAF — Virtuoso handles streaming scroll natively
+      // No RAF in this primitive hook; host components own any scheduling.
       expect(rafSpy).not.toHaveBeenCalled();
       rafSpy.mockRestore();
     });
@@ -325,7 +324,7 @@ describe("useChatAutoScroll", () => {
       rerender({ messageCount: 7 });
       rerender({ messageCount: 8 });
 
-      // Zero DOM scroll calls — Virtuoso handles all auto-scrolling
+      // Zero DOM scroll calls from the hook itself.
       expect(mockScrollIntoView).not.toHaveBeenCalled();
     });
 

@@ -584,7 +584,32 @@ describe("ExecutionControlBar", () => {
       expect(screen.queryByTestId("terminals-count")).not.toBeInTheDocument();
     });
 
-    it("shows open terminal sessions from the agent terminal store", () => {
+    it("hides explicitly closed terminal sessions even if the drawer state is expanded", () => {
+      useAgentTerminalStore.setState({
+        openByConversationId: {
+          "conversation-1": true,
+        },
+        statusByConversationId: {
+          "conversation-1": "closed",
+        },
+        metadataByConversationId: {
+          "conversation-1": {
+            conversationId: "conversation-1",
+            projectId: "project-1",
+            title: "Closed terminal",
+            branchName: "ralphx/app/closed",
+            worktreePath: "/tmp/closed",
+            updatedAt: "2026-06-25T00:00:00Z",
+          },
+        },
+      });
+
+      renderBar();
+
+      expect(screen.queryByTestId("terminals-count")).not.toBeInTheDocument();
+    });
+
+    it("keeps collapsed running terminal sessions visible", () => {
       useProjectStore.setState({
         projects: {
           "project-1": {
@@ -607,7 +632,7 @@ describe("ExecutionControlBar", () => {
       });
       useAgentTerminalStore.setState({
         openByConversationId: {
-          "conversation-1": true,
+          "conversation-1": false,
           "conversation-2": false,
         },
         statusByConversationId: {
@@ -672,6 +697,9 @@ describe("ExecutionControlBar", () => {
         openByConversationId: {
           "conversation-1": true,
         },
+        statusByConversationId: {
+          "conversation-1": "running",
+        },
         metadataByConversationId: {
           "conversation-1": {
             conversationId: "conversation-1",
@@ -720,6 +748,9 @@ describe("ExecutionControlBar", () => {
       useAgentTerminalStore.setState({
         openByConversationId: {
           "conversation-1": true,
+        },
+        statusByConversationId: {
+          "conversation-1": "running",
         },
         metadataByConversationId: {
           "conversation-1": {

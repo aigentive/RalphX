@@ -2927,6 +2927,101 @@ describe("AgentsArtifactPane", () => {
     expect(sendAgentMessageMock).not.toHaveBeenCalled();
   });
 
+  it("starts verification for a draft Plan-mode artifact beside approval", async () => {
+    const onTabChange = vi.fn();
+    getIdeationSessionMock.mockResolvedValue({
+      session: {
+        id: "session-1",
+        projectId: "project-1",
+        title: "Planning session",
+        titleSource: "auto",
+        status: "active",
+        planArtifactId: "artifact-1",
+        seedTaskId: null,
+        parentSessionId: null,
+        teamMode: null,
+        teamConfig: null,
+        createdAt: "2026-04-23T09:00:00Z",
+        updatedAt: "2026-04-23T09:00:00Z",
+        archivedAt: null,
+        convertedAt: null,
+        verificationStatus: "unverified",
+        verificationInProgress: false,
+        gapScore: null,
+        inheritedPlanArtifactId: null,
+        sessionPurpose: "general",
+        sessionFlow: "planning",
+        acceptanceStatus: null,
+      },
+      proposals: [],
+      messages: [],
+    });
+    getSessionPlanMock.mockResolvedValue({
+      id: "artifact-1",
+      type: "specification",
+      name: "Implementation Plan",
+      content: {
+        type: "inline",
+        text: "# Implementation Plan\n\nDo the work.",
+      },
+      metadata: {
+        createdAt: "2026-04-23T09:00:00Z",
+        createdBy: "orchestrator",
+        version: 1,
+      },
+      derivedFrom: [],
+      bucketId: "prd-library",
+      planApproval: {
+        status: "draft",
+      },
+    });
+    getVerificationSpecialistsMock.mockResolvedValue({
+      specialists: [
+        {
+          name: "security-review",
+          display_name: "Security Review",
+          description: null,
+          enabled_by_default: false,
+        },
+        {
+          name: "implementation-feasibility",
+          display_name: "Implementation Feasibility",
+          description: null,
+          enabled_by_default: true,
+        },
+      ],
+    });
+
+    renderPane(
+      "plan",
+      workspace({
+        mode: "plan",
+        linkedIdeationSessionId: "session-1",
+      }),
+      vi.fn(),
+      false,
+      conversation(),
+      { onTabChange },
+    );
+
+    expect(
+      await screen.findByRole("button", { name: /Approve Plan/i }),
+    ).toBeInTheDocument();
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: /Verify Plan/i }),
+    );
+
+    await waitFor(() =>
+      expect(confirmVerificationMock).toHaveBeenCalledWith("session-1", [
+        "security-review",
+      ]),
+    );
+    expect(onTabChange).toHaveBeenCalledWith("verification");
+    expect(toastSuccessMock).toHaveBeenCalledWith("Plan verification started");
+    expect(approvePlanArtifactMock).not.toHaveBeenCalled();
+  });
+
   it("starts verification for an approved Plan-mode artifact", async () => {
     const onTabChange = vi.fn();
     getIdeationSessionMock.mockResolvedValue({
