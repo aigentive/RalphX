@@ -2405,8 +2405,12 @@ mod ipc_contract {
         assert!(response.send_result.was_queued);
         let workspace = response.workspace.expect("workspace should be returned");
         assert_eq!(workspace.mode, "chat");
-        assert_eq!(workspace.base_ref_kind, "local_branch");
-        assert_eq!(workspace.base_ref, "feature/source-pr-chat");
+        assert_eq!(workspace.branch_mode, "linked");
+        assert_eq!(workspace.base_ref_kind, "project_default");
+        assert_eq!(workspace.base_ref, "main");
+        assert_eq!(workspace.branch_name, "feature/source-pr-chat");
+        assert_eq!(workspace.publication_pr_number, Some(42));
+        assert_eq!(workspace.publication_pr_status.as_deref(), Some("open"));
         assert_ne!(
             workspace.worktree_path.as_str(),
             repo_path.to_string_lossy().as_ref()
@@ -2416,6 +2420,7 @@ mod ipc_contract {
             .expect("source PR metadata should be returned");
         assert_eq!(source.number, 42);
         assert_eq!(source.head_ref_name, "feature/source-pr-chat");
+        assert_eq!(source.base_ref_name.as_deref(), Some("main"));
         assert_eq!(source.head_ref_oid.as_deref(), Some(source_sha.as_str()));
 
         let conversation_id = ChatConversationId::from_string(response.conversation.id.clone());
@@ -2431,13 +2436,23 @@ mod ipc_contract {
             AgentConversationWorkspaceMode::Chat
         );
         assert_eq!(
+            persisted_workspace.branch_mode,
+            AgentConversationWorkspaceBranchMode::Linked
+        );
+        assert_eq!(
+            persisted_workspace.base_ref_kind,
+            IdeationAnalysisBaseRefKind::ProjectDefault
+        );
+        assert_eq!(persisted_workspace.base_ref, "main");
+        assert_eq!(persisted_workspace.branch_name, "feature/source-pr-chat");
+        assert_eq!(
             persisted_workspace
                 .source_pull_request
                 .as_ref()
                 .map(|source| source.number),
             Some(42)
         );
-        assert!(persisted_workspace.publication_pr_number.is_none());
+        assert_eq!(persisted_workspace.publication_pr_number, Some(42));
 
         let switched = switch_agent_conversation_mode_for_state(
             SwitchAgentConversationModeInput {
@@ -2457,6 +2472,11 @@ mod ipc_contract {
             .workspace
             .expect("workspace should be returned after switch");
         assert_eq!(switched_workspace.mode, "edit");
+        assert_eq!(switched_workspace.branch_mode, "linked");
+        assert_eq!(switched_workspace.base_ref_kind, "project_default");
+        assert_eq!(switched_workspace.base_ref, "main");
+        assert_eq!(switched_workspace.branch_name, "feature/source-pr-chat");
+        assert_eq!(switched_workspace.publication_pr_number, Some(42));
         assert_eq!(
             switched_workspace
                 .source_pull_request
