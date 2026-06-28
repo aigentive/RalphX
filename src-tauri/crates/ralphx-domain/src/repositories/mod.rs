@@ -3,6 +3,8 @@
 
 pub mod active_plan_repository;
 pub mod activity_event_repository;
+pub mod agent_conversation_granola_note_repository;
+pub mod agent_conversation_issue_repository;
 pub mod agent_conversation_jira_issue_repository;
 pub mod agent_conversation_linear_issue_repository;
 pub mod agent_conversation_workspace_repository;
@@ -23,11 +25,11 @@ pub mod chat_message_repository;
 pub mod chat_timeline_repository;
 pub mod delegated_session_repository;
 pub mod execution_plan_repository;
-pub mod external_events_repository;
 pub mod execution_settings_repository;
-pub mod ideation_session_repository;
+pub mod external_events_repository;
 pub mod ideation_effort_settings_repository;
 pub mod ideation_model_settings_repository;
+pub mod ideation_session_repository;
 pub mod ideation_settings_repository;
 pub mod memory_archive_job_repository;
 pub mod memory_archive_repository;
@@ -58,6 +60,10 @@ pub use active_plan_repository::ActivePlanRepository;
 pub use activity_event_repository::{
     ActivityEventFilter, ActivityEventPage, ActivityEventRepository,
 };
+pub use agent_conversation_granola_note_repository::AgentConversationGranolaNoteRepository;
+pub use agent_conversation_issue_repository::{
+    is_open_issue_status, AgentConversationIssueRepository,
+};
 pub use agent_conversation_jira_issue_repository::AgentConversationJiraIssueRepository;
 pub use agent_conversation_linear_issue_repository::AgentConversationLinearIssueRepository;
 pub use agent_conversation_workspace_repository::AgentConversationWorkspaceRepository;
@@ -82,11 +88,11 @@ pub use execution_settings_repository::{
     ExecutionSettingsRepository, GlobalExecutionSettingsRepository,
 };
 pub use external_events_repository::{ExternalEventRecord, ExternalEventsRepository};
+pub use ideation_effort_settings_repository::IdeationEffortSettingsRepository;
+pub use ideation_model_settings_repository::IdeationModelSettingsRepository;
 pub use ideation_session_repository::{
     IdeationSessionRepository, IdeationSessionWithProgress, SessionGroupCounts, SessionProgress,
 };
-pub use ideation_effort_settings_repository::IdeationEffortSettingsRepository;
-pub use ideation_model_settings_repository::IdeationModelSettingsRepository;
 pub use ideation_settings_repository::IdeationSettingsRepository;
 pub use memory_archive_job_repository::MemoryArchiveJobRepository;
 pub use memory_archive_repository::MemoryArchiveRepository;

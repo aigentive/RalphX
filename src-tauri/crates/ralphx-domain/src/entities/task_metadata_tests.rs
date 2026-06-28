@@ -858,6 +858,10 @@ fn execution_recovery_reason_code_serialization() {
             "max_retries_exceeded",
         ),
         (ExecutionRecoveryReasonCode::UserStopped, "user_stopped"),
+        (
+            ExecutionRecoveryReasonCode::IncompleteSteps,
+            "incomplete_steps",
+        ),
         (ExecutionRecoveryReasonCode::Unknown, "unknown"),
     ];
 
@@ -895,6 +899,7 @@ fn execution_failure_source_serialization() {
             ExecutionFailureSource::WallClockTimeout,
             "wall_clock_timeout",
         ),
+        (ExecutionFailureSource::AgentIncomplete, "agent_incomplete"),
         (ExecutionFailureSource::Unknown, "unknown"),
     ];
 
@@ -915,6 +920,7 @@ fn execution_failure_source_is_transient_for_retryable_variants() {
 fn execution_failure_source_not_transient_for_non_retryable_variants() {
     assert!(!ExecutionFailureSource::ProviderError.is_transient());
     assert!(!ExecutionFailureSource::WallClockTimeout.is_transient());
+    assert!(!ExecutionFailureSource::AgentIncomplete.is_transient());
     assert!(!ExecutionFailureSource::Unknown.is_transient());
 }
 
@@ -1797,6 +1803,12 @@ fn stop_retrying_reason_serde_round_trip_new_variants() {
     assert_eq!(json, "\"git_isolation_exhausted\"");
     let parsed: StopRetryingReason = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed, StopRetryingReason::GitIsolationExhausted);
+
+    // AgentCommandInvalid round-trips
+    let json = serde_json::to_string(&StopRetryingReason::AgentCommandInvalid).unwrap();
+    assert_eq!(json, "\"agent_command_invalid\"");
+    let parsed: StopRetryingReason = serde_json::from_str(&json).unwrap();
+    assert_eq!(parsed, StopRetryingReason::AgentCommandInvalid);
 }
 
 #[test]

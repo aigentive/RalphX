@@ -118,6 +118,28 @@ fn codex_user_managed_stale_cli_reports_update_without_managed_action() {
 }
 
 #[test]
+fn custom_binary_status_never_reports_managed_update_action() {
+    let mut settings = codex_settings(AgentProviderCliManagementMode::UserManaged);
+    settings.custom_binary_enabled = true;
+    settings.custom_binary_path = Some("/opt/tools/codex-wrapper".to_string());
+    let status = managed_cli_status_response(
+        settings,
+        codex_observation(true, Some("0.136.0"), Some("0.137.0")),
+        false,
+    );
+
+    assert_eq!(status.action, "none");
+    assert!(!status.update_available);
+    assert!(status.custom_binary_enabled);
+    assert_eq!(
+        status.custom_binary_path.as_deref(),
+        Some("/opt/tools/codex-wrapper")
+    );
+    assert!(status.status.contains("Custom codex CLI 0.136.0"));
+    assert!(status.status.contains("will not install or update"));
+}
+
+#[test]
 fn codex_rx_managed_active_cli_suppresses_update_action() {
     let status = managed_cli_status_response(
         codex_settings(AgentProviderCliManagementMode::RxManaged),
@@ -543,6 +565,8 @@ async fn provider_observations_report_missing_and_probe_errors() {
                 supports_search_flag: true,
                 supports_resume_subcommand: true,
                 supports_mcp_subcommand: true,
+                supports_fast_mode_feature: false,
+                fast_mode_supported_models: Vec::new(),
             },
         },
         false,

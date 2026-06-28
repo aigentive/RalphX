@@ -7,14 +7,16 @@ use rusqlite::{Connection, OptionalExtension};
 use tokio::sync::Mutex;
 
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode,
-    AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
+    AgentConversationWorkspace, AgentConversationWorkspaceBranchMode,
+    AgentConversationWorkspaceMode, AgentConversationWorkspacePublicationEvent,
+    AgentConversationWorkspaceStatus, AgentWorkspaceFollowupProvenance,
     AgentWorkspacePrCommentEvidence, AgentWorkspacePrCommentEvidenceUpsert,
     AgentWorkspacePrDescription, AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
     AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
-    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceSourcePullRequest, ArtifactId,
-    ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId, ProjectId,
-    DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewMonitor,
+    AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewTargetScope,
+    AgentWorkspaceSourcePullRequest, ArtifactId, ChatConversationId, IdeationAnalysisBaseRefKind,
+    IdeationSessionId, PlanBranchId, ProjectId, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::repositories::AgentConversationWorkspaceRepository;
 use crate::error::{AppError, AppResult};
@@ -36,6 +38,7 @@ mod tests;
 
 fn row_to_workspace(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentConversationWorkspace> {
     let mode: String = row.get("mode")?;
+    let branch_mode: Option<String> = row.get("branch_mode").ok();
     let base_ref_kind: String = row.get("base_ref_kind")?;
     let status: String = row.get("status")?;
     let created_at: String = row.get("created_at")?;
@@ -61,6 +64,10 @@ fn row_to_workspace(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentConversati
         project_id: ProjectId::from_string(row.get::<_, String>("project_id")?),
         mode: AgentConversationWorkspaceMode::from_str(&mode)
             .unwrap_or(AgentConversationWorkspaceMode::Edit),
+        branch_mode: branch_mode
+            .as_deref()
+            .and_then(|value| AgentConversationWorkspaceBranchMode::from_str(value).ok())
+            .unwrap_or_default(),
         base_ref_kind: IdeationAnalysisBaseRefKind::from_str(&base_ref_kind)
             .unwrap_or(IdeationAnalysisBaseRefKind::ProjectDefault),
         base_ref: row.get("base_ref")?,
@@ -184,6 +191,59 @@ fn row_to_pr_review_monitor(
     })
 }
 
+fn row_to_workspace_review_monitor(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<AgentWorkspaceReviewMonitor> {
+    let status: String = row.get("status")?;
+    let current_target_scope = row
+        .get::<_, Option<String>>("current_target_scope")?
+        .and_then(|value| AgentWorkspaceReviewTargetScope::from_str(&value).ok());
+    let reviewed_target_scope = row
+        .get::<_, Option<String>>("reviewed_target_scope")?
+        .and_then(|value| AgentWorkspaceReviewTargetScope::from_str(&value).ok());
+    let created_at: String = row.get("created_at")?;
+    let updated_at: String = row.get("updated_at")?;
+    Ok(AgentWorkspaceReviewMonitor {
+        conversation_id: ChatConversationId::from_string(row.get::<_, String>("conversation_id")?),
+        project_id: ProjectId::from_string(row.get::<_, String>("project_id")?),
+        status: AgentWorkspaceReviewMonitorStatus::from_str(&status)
+            .unwrap_or(AgentWorkspaceReviewMonitorStatus::Idle),
+        current_target_scope,
+        reviewed_target_scope,
+        review_conversation_id: row
+            .get::<_, Option<String>>("review_conversation_id")?
+            .map(ChatConversationId::from_string),
+        review_artifact_id: row
+            .get::<_, Option<String>>("review_artifact_id")?
+            .map(ArtifactId::from_string),
+        review_artifact_version: row
+            .get::<_, Option<i64>>("review_artifact_version")?
+            .and_then(|value| u32::try_from(value).ok()),
+        review_artifact_updated_at: row
+            .get::<_, Option<String>>("review_artifact_updated_at")?
+            .map(|value| parse_datetime(&value)),
+        reviewed_head_sha: row.get("reviewed_head_sha")?,
+        reviewed_diff_fingerprint: row.get("reviewed_diff_fingerprint")?,
+        selected_source_base_ref: row.get("selected_source_base_ref")?,
+        selected_source_base_sha: row.get("selected_source_base_sha")?,
+        selected_source_head_ref: row.get("selected_source_head_ref")?,
+        selected_source_head_sha: row.get("selected_source_head_sha")?,
+        selected_source_pull_request_number: row.get("selected_source_pull_request_number")?,
+        workspace_base_ref: row.get("workspace_base_ref")?,
+        workspace_base_sha: row.get("workspace_base_sha")?,
+        workspace_head_ref: row.get("workspace_head_ref")?,
+        workspace_head_sha: row.get("workspace_head_sha")?,
+        current_diff_fingerprint: row.get("current_diff_fingerprint")?,
+        previous_version_id: row
+            .get::<_, Option<String>>("previous_version_id")?
+            .map(ArtifactId::from_string),
+        last_run_id: row.get("last_run_id")?,
+        last_error: row.get("last_error")?,
+        created_at: parse_datetime(&created_at),
+        updated_at: parse_datetime(&updated_at),
+    })
+}
+
 fn row_to_pr_review_action(
     row: &rusqlite::Row<'_>,
 ) -> rusqlite::Result<AgentWorkspacePrReviewAction> {
@@ -240,6 +300,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
         let conversation_id = workspace.conversation_id.as_str().to_string();
         let project_id = workspace.project_id.as_str().to_string();
         let mode = workspace.mode.to_string();
+        let branch_mode = workspace.branch_mode.to_string();
         let base_ref_kind = workspace.base_ref_kind.to_string();
         let base_ref = workspace.base_ref.clone();
         let base_display_name = workspace.base_display_name.clone();
@@ -306,7 +367,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
             .run(move |conn| {
                 conn.execute(
                     "INSERT INTO agent_conversation_workspaces (
-                        conversation_id, project_id, mode, base_ref_kind, base_ref,
+                        conversation_id, project_id, mode, branch_mode, base_ref_kind, base_ref,
                         base_display_name, base_commit, branch_name, worktree_path,
                         linked_ideation_session_id, linked_plan_branch_id,
                         source_pr_number, source_pr_url, source_pr_title,
@@ -319,10 +380,11 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         pr_auto_merge_current, pr_supervision_status,
                         pr_supervision_summary, pr_supervision_updated_at, status,
                         created_at, updated_at
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35)
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36)
                     ON CONFLICT(conversation_id) DO UPDATE SET
                         project_id=excluded.project_id,
                         mode=excluded.mode,
+                        branch_mode=excluded.branch_mode,
                         base_ref_kind=excluded.base_ref_kind,
                         base_ref=excluded.base_ref,
                         base_display_name=excluded.base_display_name,
@@ -358,6 +420,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         conversation_id,
                         project_id,
                         mode,
+                        branch_mode,
                         base_ref_kind,
                         base_ref,
                         base_display_name,
@@ -445,6 +508,63 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
             .await
     }
 
+    async fn find_active_by_project_and_branch_name(
+        &self,
+        project_id: &ProjectId,
+        branch_name: &str,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        let project_id = project_id.as_str().to_string();
+        let branch_name = branch_name.trim().to_string();
+        if branch_name.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.db
+            .run(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT * FROM agent_conversation_workspaces
+                     WHERE project_id = ?1
+                       AND branch_name = ?2
+                       AND status = 'active'
+                     ORDER BY updated_at DESC",
+                )?;
+                let rows =
+                    stmt.query_map(rusqlite::params![project_id, branch_name], row_to_workspace)?;
+                let mut workspaces = Vec::new();
+                for row in rows {
+                    workspaces.push(row?);
+                }
+                Ok(workspaces)
+            })
+            .await
+    }
+
+    async fn find_by_head_ref(
+        &self,
+        project_id: &ProjectId,
+        head_ref: &str,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        // Project-scoped: branch_name is global, so the project_id predicate is
+        // mandatory to avoid cross-project conversation mis-attachment.
+        let project_id = project_id.as_str().to_string();
+        let head_ref = head_ref.to_string();
+        self.db
+            .run(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT * FROM agent_conversation_workspaces
+                     WHERE project_id = ?1 AND branch_name = ?2
+                     ORDER BY created_at DESC",
+                )?;
+                let rows =
+                    stmt.query_map(rusqlite::params![project_id, head_ref], row_to_workspace)?;
+                let mut workspaces = Vec::new();
+                for row in rows {
+                    workspaces.push(row?);
+                }
+                Ok(workspaces)
+            })
+            .await
+    }
+
     async fn get_by_linked_ideation_session_id(
         &self,
         ideation_session_id: &IdeationSessionId,
@@ -464,6 +584,75 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                 } else {
                     Ok(None)
                 }
+            })
+            .await
+    }
+
+    async fn save_followup_provenance(
+        &self,
+        conversation_id: &ChatConversationId,
+        provenance: AgentWorkspaceFollowupProvenance,
+    ) -> AppResult<()> {
+        let conversation_id = conversation_id.as_str().to_string();
+        let origin_conversation_id = provenance.origin_conversation_id.as_str().to_string();
+        let source_task_id = provenance.source_task_id;
+        let source_context_type = provenance.source_context_type;
+        let source_context_id = provenance.source_context_id;
+        let source_agent_name = provenance.source_agent_name;
+        let spawn_reason = provenance.spawn_reason;
+        let blocker_fingerprint = provenance.blocker_fingerprint;
+        self.db
+            .run(move |conn| {
+                conn.execute(
+                    "UPDATE agent_conversation_workspaces
+                     SET followup_origin_conversation_id = ?1,
+                         followup_source_task_id = ?2,
+                         followup_source_context_type = ?3,
+                         followup_source_context_id = ?4,
+                         followup_source_agent_name = ?5,
+                         followup_spawn_reason = ?6,
+                         followup_blocker_fingerprint = ?7,
+                         updated_at = ?8
+                     WHERE conversation_id = ?9",
+                    rusqlite::params![
+                        origin_conversation_id,
+                        source_task_id,
+                        source_context_type,
+                        source_context_id,
+                        source_agent_name,
+                        spawn_reason,
+                        blocker_fingerprint,
+                        Utc::now().to_rfc3339(),
+                        conversation_id,
+                    ],
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
+    async fn find_active_followup_by_blocker(
+        &self,
+        origin_conversation_id: &ChatConversationId,
+        source_task_id: &str,
+        blocker_fingerprint: &str,
+    ) -> AppResult<Option<AgentConversationWorkspace>> {
+        let origin_conversation_id = origin_conversation_id.as_str().to_string();
+        let source_task_id = source_task_id.to_string();
+        let blocker_fingerprint = blocker_fingerprint.to_string();
+        self.db
+            .query_optional(move |conn| {
+                conn.query_row(
+                    "SELECT * FROM agent_conversation_workspaces
+                     WHERE followup_origin_conversation_id = ?1
+                       AND followup_source_task_id = ?2
+                       AND followup_blocker_fingerprint = ?3
+                       AND status = 'active'
+                     ORDER BY updated_at DESC
+                     LIMIT 1",
+                    rusqlite::params![origin_conversation_id, source_task_id, blocker_fingerprint],
+                    row_to_workspace,
+                )
             })
             .await
     }
@@ -631,8 +820,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
         &self,
         stale_older_than_secs: u64,
     ) -> AppResult<Vec<AgentConversationWorkspace>> {
-        let cutoff = (chrono::Utc::now()
-            - chrono::Duration::seconds(stale_older_than_secs as i64))
+        let cutoff = (chrono::Utc::now() - chrono::Duration::seconds(stale_older_than_secs as i64))
             .format("%Y-%m-%dT%H:%M:%S+00:00")
             .to_string();
         self.db
@@ -1400,6 +1588,153 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
             .await
     }
 
+    async fn upsert_workspace_review_monitor(
+        &self,
+        monitor: AgentWorkspaceReviewMonitor,
+    ) -> AppResult<AgentWorkspaceReviewMonitor> {
+        let conversation_id = monitor.conversation_id.as_str().to_string();
+        let project_id = monitor.project_id.as_str().to_string();
+        let status = monitor.status.to_string();
+        let current_target_scope = monitor.current_target_scope.map(|scope| scope.to_string());
+        let reviewed_target_scope = monitor.reviewed_target_scope.map(|scope| scope.to_string());
+        let review_conversation_id = monitor
+            .review_conversation_id
+            .as_ref()
+            .map(|id| id.as_str().to_string());
+        let review_artifact_id = monitor
+            .review_artifact_id
+            .as_ref()
+            .map(|id| id.as_str().to_string());
+        let review_artifact_version = monitor.review_artifact_version.map(i64::from);
+        let review_artifact_updated_at = monitor
+            .review_artifact_updated_at
+            .map(|value| value.to_rfc3339());
+        let reviewed_head_sha = monitor.reviewed_head_sha;
+        let reviewed_diff_fingerprint = monitor.reviewed_diff_fingerprint;
+        let selected_source_base_ref = monitor.selected_source_base_ref;
+        let selected_source_base_sha = monitor.selected_source_base_sha;
+        let selected_source_head_ref = monitor.selected_source_head_ref;
+        let selected_source_head_sha = monitor.selected_source_head_sha;
+        let selected_source_pull_request_number = monitor.selected_source_pull_request_number;
+        let workspace_base_ref = monitor.workspace_base_ref;
+        let workspace_base_sha = monitor.workspace_base_sha;
+        let workspace_head_ref = monitor.workspace_head_ref;
+        let workspace_head_sha = monitor.workspace_head_sha;
+        let current_diff_fingerprint = monitor.current_diff_fingerprint;
+        let previous_version_id = monitor
+            .previous_version_id
+            .as_ref()
+            .map(|id| id.as_str().to_string());
+        let last_run_id = monitor.last_run_id;
+        let last_error = monitor.last_error;
+        let created_at = monitor.created_at.to_rfc3339();
+        let updated_at = Utc::now().to_rfc3339();
+        let fetch_id = monitor.conversation_id;
+
+        self.db
+            .run(move |conn| {
+                conn.execute(
+                    "INSERT INTO agent_workspace_review_monitors (
+                        conversation_id, project_id, status, current_target_scope,
+                        reviewed_target_scope, review_conversation_id, review_artifact_id,
+                        review_artifact_version, review_artifact_updated_at,
+                        reviewed_head_sha, reviewed_diff_fingerprint,
+                        selected_source_base_ref, selected_source_base_sha,
+                        selected_source_head_ref, selected_source_head_sha,
+                        selected_source_pull_request_number, workspace_base_ref,
+                        workspace_base_sha, workspace_head_ref, workspace_head_sha,
+                        current_diff_fingerprint, previous_version_id, last_run_id,
+                        last_error, created_at, updated_at
+                    ) VALUES (
+                        ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+                        ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26
+                    )
+                    ON CONFLICT(conversation_id) DO UPDATE SET
+                        project_id = excluded.project_id,
+                        status = excluded.status,
+                        current_target_scope = excluded.current_target_scope,
+                        reviewed_target_scope = excluded.reviewed_target_scope,
+                        review_conversation_id = COALESCE(excluded.review_conversation_id, agent_workspace_review_monitors.review_conversation_id),
+                        review_artifact_id = COALESCE(excluded.review_artifact_id, agent_workspace_review_monitors.review_artifact_id),
+                        review_artifact_version = COALESCE(excluded.review_artifact_version, agent_workspace_review_monitors.review_artifact_version),
+                        review_artifact_updated_at = COALESCE(excluded.review_artifact_updated_at, agent_workspace_review_monitors.review_artifact_updated_at),
+                        reviewed_head_sha = excluded.reviewed_head_sha,
+                        reviewed_diff_fingerprint = excluded.reviewed_diff_fingerprint,
+                        selected_source_base_ref = excluded.selected_source_base_ref,
+                        selected_source_base_sha = excluded.selected_source_base_sha,
+                        selected_source_head_ref = excluded.selected_source_head_ref,
+                        selected_source_head_sha = excluded.selected_source_head_sha,
+                        selected_source_pull_request_number = excluded.selected_source_pull_request_number,
+                        workspace_base_ref = excluded.workspace_base_ref,
+                        workspace_base_sha = excluded.workspace_base_sha,
+                        workspace_head_ref = excluded.workspace_head_ref,
+                        workspace_head_sha = excluded.workspace_head_sha,
+                        current_diff_fingerprint = excluded.current_diff_fingerprint,
+                        previous_version_id = COALESCE(excluded.previous_version_id, agent_workspace_review_monitors.previous_version_id),
+                        last_run_id = excluded.last_run_id,
+                        last_error = excluded.last_error,
+                        updated_at = excluded.updated_at",
+                    rusqlite::params![
+                        conversation_id,
+                        project_id,
+                        status,
+                        current_target_scope,
+                        reviewed_target_scope,
+                        review_conversation_id,
+                        review_artifact_id,
+                        review_artifact_version,
+                        review_artifact_updated_at,
+                        reviewed_head_sha,
+                        reviewed_diff_fingerprint,
+                        selected_source_base_ref,
+                        selected_source_base_sha,
+                        selected_source_head_ref,
+                        selected_source_head_sha,
+                        selected_source_pull_request_number,
+                        workspace_base_ref,
+                        workspace_base_sha,
+                        workspace_head_ref,
+                        workspace_head_sha,
+                        current_diff_fingerprint,
+                        previous_version_id,
+                        last_run_id,
+                        last_error,
+                        created_at,
+                        updated_at,
+                    ],
+                )?;
+                Ok(())
+            })
+            .await?;
+
+        self.get_workspace_review_monitor(&fetch_id)
+            .await?
+            .ok_or_else(|| {
+                AppError::Database("Failed to load saved workspace review monitor".to_string())
+            })
+    }
+
+    async fn get_workspace_review_monitor(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<AgentWorkspaceReviewMonitor>> {
+        let conversation_id = conversation_id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT * FROM agent_workspace_review_monitors
+                     WHERE conversation_id = ?1",
+                )?;
+                let mut rows = stmt.query(rusqlite::params![conversation_id])?;
+                if let Some(row) = rows.next()? {
+                    Ok(Some(row_to_workspace_review_monitor(row)?))
+                } else {
+                    Ok(None)
+                }
+            })
+            .await
+    }
+
     async fn create_or_update_pr_review_action(
         &self,
         action: AgentWorkspacePrReviewAction,
@@ -1616,6 +1951,10 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                 )?;
                 conn.execute(
                     "DELETE FROM agent_workspace_pr_review_monitors WHERE conversation_id = ?1",
+                    rusqlite::params![conversation_id.as_str()],
+                )?;
+                conn.execute(
+                    "DELETE FROM agent_workspace_review_monitors WHERE conversation_id = ?1",
                     rusqlite::params![conversation_id.as_str()],
                 )?;
                 conn.execute(

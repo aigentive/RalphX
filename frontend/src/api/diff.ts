@@ -3,6 +3,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { z } from "zod";
 import {
+  ConflictDiffSchema,
   FileChangesResponseSchema,
   FileDiffSchema,
   FileDiffPageSchema,
@@ -13,6 +14,7 @@ import {
   RangeFetchResponseSchema,
 } from "./diff.schemas";
 import {
+  transformConflictDiff,
   transformFileChange,
   transformFileDiff,
   transformFileDiffPage,
@@ -25,6 +27,7 @@ import {
 import type {
   AgentWorkspaceChangeSummary,
   AgentWorkspaceReview,
+  ConflictDiff,
   FileChange,
   FileDiff,
   FileDiffPage,
@@ -39,7 +42,10 @@ import { backendApiUrl } from "./backend";
 export type {
   AgentWorkspaceChangeBucketSummary,
   AgentWorkspaceChangeSummary,
+  AgentWorkspaceConflictSummary,
+  AgentWorkspaceRepairState,
   AgentWorkspaceReview,
+  ConflictDiff,
   FileChange,
   FileDiff,
   FileDiffPage,
@@ -58,6 +64,7 @@ export type {
 
 // Re-export schemas for consumers that need validation
 export {
+  ConflictDiffSchema,
   FileChangeSchema,
   FileChangeStatusSchema,
   FileDiffSchema,
@@ -67,6 +74,8 @@ export {
   CommitInfoSchema,
   TaskCommitsResponseSchema,
   AgentWorkspaceChangeBucketSummarySchema,
+  AgentWorkspaceConflictSummarySchema,
+  AgentWorkspaceRepairStateSchema,
   AgentWorkspaceChangeSummaryResponseSchema,
   AgentWorkspaceReviewResponseSchema,
   DiffLineKindSchema,
@@ -84,6 +93,7 @@ export {
 export {
   transformAgentWorkspaceChangeSummary,
   transformAgentWorkspaceReview,
+  transformConflictDiff,
   transformFileChange,
   transformFileDiff,
   transformFileDiffPage,
@@ -223,6 +233,16 @@ export const diffApi = {
       transformAgentWorkspaceChangeSummary
     ),
 
+  getAgentConversationWorkspaceRepairChangeSummary: (
+    conversationId: string
+  ): Promise<AgentWorkspaceChangeSummary> =>
+    typedInvokeWithTransform(
+      "get_agent_conversation_workspace_repair_change_summary",
+      { conversationId },
+      AgentWorkspaceChangeSummaryResponseSchema,
+      transformAgentWorkspaceChangeSummary
+    ),
+
   getAgentConversationWorkspacePrAnnotations: (
     conversationId: string
   ): Promise<PrDiffAnnotationsResponse> =>
@@ -297,6 +317,26 @@ export const diffApi = {
       (changes) => changes.map(transformFileChange)
     ),
 
+  getAgentConversationWorkspaceRepairStagedFileChanges: (
+    conversationId: string
+  ): Promise<FileChange[]> =>
+    typedInvokeWithTransform(
+      "get_agent_conversation_workspace_repair_staged_file_changes",
+      { conversationId },
+      FileChangesResponseSchema,
+      (changes) => changes.map(transformFileChange)
+    ),
+
+  getAgentConversationWorkspaceRepairUnstagedFileChanges: (
+    conversationId: string
+  ): Promise<FileChange[]> =>
+    typedInvokeWithTransform(
+      "get_agent_conversation_workspace_repair_unstaged_file_changes",
+      { conversationId },
+      FileChangesResponseSchema,
+      (changes) => changes.map(transformFileChange)
+    ),
+
   getAgentConversationWorkspaceStagedFileDiff: (
     conversationId: string,
     filePath: string
@@ -317,6 +357,39 @@ export const diffApi = {
       { conversationId, filePath },
       FileDiffSchema,
       transformFileDiff
+    ),
+
+  getAgentConversationWorkspaceRepairStagedFileDiff: (
+    conversationId: string,
+    filePath: string
+  ): Promise<FileDiff> =>
+    typedInvokeWithTransform(
+      "get_agent_conversation_workspace_repair_staged_file_diff",
+      { conversationId, filePath },
+      FileDiffSchema,
+      transformFileDiff
+    ),
+
+  getAgentConversationWorkspaceRepairUnstagedFileDiff: (
+    conversationId: string,
+    filePath: string
+  ): Promise<FileDiff> =>
+    typedInvokeWithTransform(
+      "get_agent_conversation_workspace_repair_unstaged_file_diff",
+      { conversationId, filePath },
+      FileDiffSchema,
+      transformFileDiff
+    ),
+
+  getAgentConversationWorkspaceRepairConflictFileDiff: (
+    conversationId: string,
+    filePath: string
+  ): Promise<ConflictDiff> =>
+    typedInvokeWithTransform(
+      "get_agent_conversation_workspace_repair_conflict_file_diff",
+      { conversationId, filePath },
+      ConflictDiffSchema,
+      transformConflictDiff
     ),
 
   getAgentConversationWorkspaceCumulativeFileChanges: (

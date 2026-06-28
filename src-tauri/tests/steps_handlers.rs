@@ -6,8 +6,8 @@ use ralphx_lib::application::{
 };
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::{
-    IdeationSession, Priority, Project, ProjectId, ProposalCategory, ScopeDriftStatus, Task,
-    TaskProposal, TaskStep, ValidationCacheMetadata,
+    IdeationSession, InternalStatus, Priority, Project, ProjectId, ProposalCategory,
+    ScopeDriftStatus, Task, TaskProposal, TaskStep, ValidationCacheMetadata,
 };
 use ralphx_lib::http_server::handlers::*;
 use ralphx_lib::http_server::helpers::get_task_context_impl;
@@ -877,6 +877,17 @@ async fn test_execution_complete_stores_validation_cache_tests_passed() {
     let task_id = task.id.clone();
     task.worktree_path = Some(repo_path.clone());
     state.app_state.task_repo.create(task).await.unwrap();
+    state
+        .app_state
+        .task_repo
+        .persist_status_change(
+            &task_id,
+            InternalStatus::Ready,
+            InternalStatus::Executing,
+            "test",
+        )
+        .await
+        .unwrap();
 
     // Call execution_complete_http with test_result (tests passed)
     let req = ExecutionCompleteRequest {
@@ -952,6 +963,17 @@ async fn test_execution_complete_stores_validation_cache_no_tests_ran() {
     let task_id = task.id.clone();
     task.worktree_path = Some(repo_path.clone());
     state.app_state.task_repo.create(task).await.unwrap();
+    state
+        .app_state
+        .task_repo
+        .persist_status_change(
+            &task_id,
+            InternalStatus::Ready,
+            InternalStatus::Executing,
+            "test",
+        )
+        .await
+        .unwrap();
 
     // tests_ran=false — no tests in this task
     let req = ExecutionCompleteRequest {

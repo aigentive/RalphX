@@ -17,6 +17,7 @@ import { useProposalStore } from "@/stores/proposalStore";
 import { useProjectStore } from "@/stores/projectStore";
 import { useExecutionStatus } from "@/hooks/useExecutionControl";
 import { useExecutionEvents } from "@/hooks/useExecutionEvents";
+import { FEATURE_FLAGS_QUERY_KEY } from "@/hooks/useFeatureFlags";
 import { useRunningProcesses } from "@/hooks/useRunningProcesses";
 import { useMergePipeline } from "@/hooks/useMergePipeline";
 import { useIdeationSession, useIdeationSessions } from "@/hooks/useIdeation";
@@ -479,6 +480,19 @@ function buildCreatedProject(overrides: Partial<Project> = {}): Project {
   };
 }
 
+function enableStandaloneIdeationPage() {
+  const flags = {
+    activityPage: true,
+    extensibilityPage: true,
+    ideationPage: true,
+    battleMode: true,
+    teamMode: false,
+    atlassianOauth: false,
+  };
+  getQueryClient().setQueryData(FEATURE_FLAGS_QUERY_KEY, flags);
+  useUiStore.getState().setFeatureFlags(flags);
+}
+
 describe("App", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -750,6 +764,9 @@ describe("App", () => {
   it.each(["kanban", "graph", "ideation"] as const)(
     "shows the project selector in the %s topbar",
     (view) => {
+      if (view === "ideation") {
+        enableStandaloneIdeationPage();
+      }
       useUiStore.getState().setCurrentView(view);
 
       render(<App />);
@@ -1170,12 +1187,12 @@ describe("App", () => {
   });
 
   describe("View Navigation", () => {
-    it("should render all navigation buttons", () => {
+    it("should render default navigation buttons with standalone Ideation hidden", () => {
       render(<App />);
       expect(screen.getByTestId("nav-agents")).toBeInTheDocument();
       expect(screen.getByTestId("nav-kanban")).toBeInTheDocument();
       expect(screen.getByTestId("nav-graph")).toBeInTheDocument();
-      expect(screen.getByTestId("nav-ideation")).toBeInTheDocument();
+      expect(screen.queryByTestId("nav-ideation")).toBeNull();
       expect(screen.getByTestId("nav-extensibility")).toBeInTheDocument();
       expect(screen.getByTestId("nav-activity")).toBeInTheDocument();
       expect(screen.getByTestId("nav-settings")).toBeInTheDocument();
@@ -1189,7 +1206,6 @@ describe("App", () => {
         { testId: "nav-agents", label: /Agents/i },
         { testId: "nav-kanban", label: /Kanban/i },
         { testId: "nav-graph", label: /Graph/i },
-        { testId: "nav-ideation", label: /Ideation/i },
         { testId: "nav-extensibility", label: /Extensibility/i },
         { testId: "nav-activity", label: /Activity/i },
         { testId: "nav-settings", label: /Settings/i },
@@ -1223,6 +1239,7 @@ describe("App", () => {
 
     it("should switch to Ideation view when clicked", async () => {
       const user = userEvent.setup();
+      enableStandaloneIdeationPage();
       render(<App />);
 
       await user.click(screen.getByTestId("nav-ideation"));
@@ -1234,6 +1251,7 @@ describe("App", () => {
 
     it("should pass footer with ExecutionControlBar to Ideation view", async () => {
       const user = userEvent.setup();
+      enableStandaloneIdeationPage();
       render(<App />);
 
       await user.click(screen.getByTestId("nav-ideation"));
@@ -1432,6 +1450,7 @@ describe("App", () => {
     });
 
     it("should switch to Ideation with Cmd+2", () => {
+      enableStandaloneIdeationPage();
       useUiStore.setState({ viewByProject: { "demo-project-1": "activity" } });
       render(<App />);
 
@@ -1632,6 +1651,31 @@ describe("App", () => {
       );
       expect(vi.mocked(useMergePipeline)).toHaveBeenCalledWith(
         "test-project-123",
+        expect.objectContaining({ enabled: true })
+      );
+    });
+
+    it("scopes Agents footer execution data to the selected agent conversation project", () => {
+      useProjectStore.setState({ activeProjectId: "active-project" });
+      useAgentSessionStore.setState({
+        selectedConversationId: "conversation-2",
+        selectedProjectId: "agent-project-2",
+        focusedProjectId: "agent-project-2",
+      });
+
+      render(<App />);
+
+      expect(vi.mocked(useExecutionEvents)).toHaveBeenCalledWith("agent-project-2");
+      expect(vi.mocked(useExecutionStatus)).toHaveBeenCalledWith(
+        "agent-project-2",
+        expect.objectContaining({ enabled: true })
+      );
+      expect(vi.mocked(useRunningProcesses)).toHaveBeenCalledWith(
+        "agent-project-2",
+        expect.objectContaining({ enabled: true })
+      );
+      expect(vi.mocked(useMergePipeline)).toHaveBeenCalledWith(
+        "agent-project-2",
         expect.objectContaining({ enabled: true })
       );
     });

@@ -33,7 +33,12 @@ interface AgentsConversationMainRegionProps {
   onConversationModeSwitched: ActiveConversationPanelProps["onConversationModeSwitched"];
   onCreateProject: StartConversationPanelProps["onCreateProject"];
   onFocusIdeationSession: ActiveConversationPanelProps["onFocusIdeationSession"];
+  onFocusWorkspaceReview: ActiveConversationPanelProps["onFocusWorkspaceReview"];
+  onFocusVerificationSession: ActiveConversationPanelProps["onFocusVerificationSession"];
+  onFocusTaskRuntime: ActiveConversationPanelProps["onFocusTaskRuntime"];
+  onOpenTaskArtifact: ActiveConversationPanelProps["onOpenTaskArtifact"];
   onForkConversation: ActiveConversationPanelProps["onForkConversation"];
+  onOpenPlanArtifact: ActiveConversationPanelProps["onOpenPlanArtifact"];
   onOpenPublishPane: ActiveConversationPanelProps["onOpenPublishPane"];
   onOpenPublishFile: ActiveConversationPanelProps["onOpenPublishFile"];
   onPreloadArtifacts: ActiveConversationPanelProps["onPreloadArtifacts"];
@@ -48,8 +53,10 @@ interface AgentsConversationMainRegionProps {
   publishShortcutLabel: ActiveConversationPanelProps["publishShortcutLabel"];
   publishingConversationId: ActiveConversationPanelProps["publishingConversationId"];
   selectedConversationId: string | null;
+  selectedTaskArtifactId: ActiveConversationPanelProps["selectedTaskArtifactId"];
   setTerminalChatDockElement: ActiveConversationPanelProps["setTerminalChatDockElement"];
   switchingConversationModeId: ActiveConversationPanelProps["switchingConversationModeId"];
+  terminalArchivedReason: ActiveConversationPanelProps["terminalArchivedReason"];
   terminalUnavailableReason: ActiveConversationPanelProps["terminalUnavailableReason"];
 }
 
@@ -80,7 +87,12 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
   onConversationModeSwitched,
   onCreateProject,
   onFocusIdeationSession,
+  onFocusWorkspaceReview,
+  onFocusVerificationSession,
+  onFocusTaskRuntime,
+  onOpenTaskArtifact,
   onForkConversation,
+  onOpenPlanArtifact,
   onOpenPublishPane,
   onOpenPublishFile,
   onPreloadArtifacts,
@@ -95,8 +107,10 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
   publishShortcutLabel,
   publishingConversationId,
   selectedConversationId,
+  selectedTaskArtifactId,
   setTerminalChatDockElement,
   switchingConversationModeId,
+  terminalArchivedReason,
   terminalUnavailableReason,
 }: AgentsConversationMainRegionProps) {
   if (activeProjectId && selectedConversationId && activeConversation) {
@@ -123,7 +137,12 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
         onAgentUserMessageSent={onAgentUserMessageSent}
         onConversationModeSwitched={onConversationModeSwitched}
         onFocusIdeationSession={onFocusIdeationSession}
+        onFocusWorkspaceReview={onFocusWorkspaceReview}
+        onFocusVerificationSession={onFocusVerificationSession}
+        onFocusTaskRuntime={onFocusTaskRuntime}
+        onOpenTaskArtifact={onOpenTaskArtifact}
         onForkConversation={onForkConversation}
+        onOpenPlanArtifact={onOpenPlanArtifact}
         onOpenPublishPane={onOpenPublishPane}
         onOpenPublishFile={onOpenPublishFile}
         onPreloadArtifacts={onPreloadArtifacts}
@@ -135,8 +154,10 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
         publishShortcutLabel={publishShortcutLabel}
         publishingConversationId={publishingConversationId}
         selectedConversationId={selectedConversationId}
+        selectedTaskArtifactId={selectedTaskArtifactId}
         setTerminalChatDockElement={setTerminalChatDockElement}
         switchingConversationModeId={switchingConversationModeId}
+        terminalArchivedReason={terminalArchivedReason}
         terminalUnavailableReason={terminalUnavailableReason}
       />
     );

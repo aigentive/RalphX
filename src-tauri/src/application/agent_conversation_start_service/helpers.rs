@@ -1,4 +1,4 @@
-use std::time::Instant;
+use std::{path::Path, time::Instant};
 
 use serde::Serialize;
 use tauri::{Emitter, Runtime};
@@ -13,9 +13,9 @@ use crate::domain::agents::{
     AgentModelRegistrySnapshot, LogicalEffort,
 };
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentWorkspaceSourcePullRequest,
-    ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow, Project,
-    ProjectId,
+    AgentConversationWorkspace, AgentConversationWorkspaceBranchMode,
+    AgentConversationWorkspaceMode, AgentWorkspaceSourcePullRequest, ChatConversationId,
+    IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow, Project, ProjectId,
 };
 use crate::domain::services::ComposerIntegrationReference;
 
@@ -34,6 +34,16 @@ pub(crate) fn parse_agent_workspace_base_kind(
     kind.map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::parse::<IdeationAnalysisBaseRefKind>)
+        .transpose()
+}
+
+pub(crate) fn parse_agent_workspace_branch_mode(
+    branch_mode: Option<&str>,
+) -> Result<Option<AgentConversationWorkspaceBranchMode>, String> {
+    branch_mode
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::parse::<AgentConversationWorkspaceBranchMode>)
         .transpose()
 }
 
@@ -161,6 +171,93 @@ pub(crate) fn agent_mode_should_create_workspace(
 ) -> bool {
     agent_mode_requires_workspace(mode)
         || (mode == AgentConversationWorkspaceMode::Chat && source_pull_request.is_some())
+}
+
+pub(crate) async fn ensure_linked_branch_workspace_available(
+    state: &AppState,
+    project_id: &ProjectId,
+    current_conversation_id: Option<&ChatConversationId>,
+    branch_mode: Option<AgentConversationWorkspaceBranchMode>,
+    base_ref: Option<&str>,
+    source_pull_request: Option<&AgentWorkspaceSourcePullRequest>,
+) -> Result<(), String> {
+    if branch_mode != Some(AgentConversationWorkspaceBranchMode::Linked) {
+        return Ok(());
+    }
+    let branch_name = source_pull_request
+        .map(|pull_request| pull_request.head_ref_name.as_str())
+        .or(base_ref)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let Some(branch_name) = branch_name else {
+        return Ok(());
+    };
+
+    let active_workspaces = state
+        .agent_conversation_workspace_repo
+        .find_active_by_project_and_branch_name(project_id, branch_name)
+        .await
+        .map_err(|error| error.to_string())?;
+    if let Some(conflict) = active_workspaces.into_iter().find(|workspace| {
+        current_conversation_id != Some(&workspace.conversation_id)
+    }) {
+        return Err(format!(
+            "Selected branch '{}' is already linked to active conversation {}; choose isolated branch mode or continue in that conversation",
+            branch_name, conflict.conversation_id
+        ));
+    }
+
+    Ok(())
+}
+
+pub(crate) async fn hydrate_linked_branch_source_pull_request(
+    state: &AppState,
+    project: &Project,
+    branch_mode: Option<AgentConversationWorkspaceBranchMode>,
+    base_ref: Option<&str>,
+    source_pull_request: Option<AgentWorkspaceSourcePullRequest>,
+) -> Result<Option<AgentWorkspaceSourcePullRequest>, String> {
+    if source_pull_request.is_some()
+        || branch_mode != Some(AgentConversationWorkspaceBranchMode::Linked)
+    {
+        return Ok(source_pull_request);
+    }
+    let Some(branch_name) = base_ref.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let Some(github) = state.github_service.as_ref() else {
+        return Ok(None);
+    };
+
+    let matches = match github
+        .search_pull_requests(Path::new(&project.working_directory), Some(branch_name), 20)
+        .await
+    {
+        Ok(matches) => matches,
+        Err(error) => {
+            tracing::warn!(
+                project_id = %project.id,
+                branch_name,
+                error = %error,
+                "Linked branch PR lookup failed; continuing without PR linkage"
+            );
+            return Ok(None);
+        }
+    };
+
+    Ok(matches
+        .into_iter()
+        .find(|pull_request| {
+            !pull_request.is_cross_repository && pull_request.head_ref_name == branch_name
+        })
+        .map(|pull_request| AgentWorkspaceSourcePullRequest {
+            number: pull_request.number,
+            url: Some(pull_request.url),
+            title: Some(pull_request.title),
+            head_ref_name: pull_request.head_ref_name,
+            base_ref_name: Some(pull_request.base_ref_name),
+            head_ref_oid: pull_request.head_ref_oid,
+        }))
 }
 
 async fn linked_ideation_session_is_planning(

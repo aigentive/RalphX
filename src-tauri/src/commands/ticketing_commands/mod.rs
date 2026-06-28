@@ -1,10 +1,12 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use chrono::Utc;
 use tauri::{AppHandle, Runtime, State};
 
-use crate::application::clickup_integration_service::ClickUpTaskListOptions;
+use crate::application::clickup_integration_service::{
+    ClickUpFolder, ClickUpList, ClickUpTaskListOptions,
+};
 use crate::application::ticket_canonical_branch::ensure_ticket_canonical_branch;
 use crate::application::ticketing_pr_summary::{ticket_pr_branch_summary, TicketPrBranchSummary};
 use crate::application::{
@@ -46,6 +48,11 @@ pub use types::*;
 const PROVIDER_JIRA: &str = "jira";
 const PROVIDER_LINEAR: &str = "linear";
 const PROVIDER_CLICKUP: &str = "clickup";
+const TICKETING_CONTAINER_LIMIT: usize = 1000;
+const TICKET_PAGE_MAX_LIMIT: usize = 40;
+const TICKET_SELECTOR_OPTION_LIMIT: usize = 500;
+const CLICKUP_FILTERED_TASK_SCAN_LIMIT: usize = 5000;
+const TICKET_OFFSET_CURSOR_PREFIX: &str = "offset:";
 
 #[derive(Debug, Clone)]
 enum ProjectTicketLink {
@@ -79,6 +86,7 @@ pub async fn list_ticketing_providers(
 pub async fn list_ticketing_containers(
     provider: String,
     project_id: Option<String>,
+    parent_container_id: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<Vec<TicketingContainerResponse>, String> {
     validate_provider(&provider)?;
@@ -86,7 +94,7 @@ pub async fn list_ticketing_containers(
     match provider.as_str() {
         PROVIDER_JIRA => state
             .atlassian_integration_service
-            .list_jira_projects(100)
+            .list_jira_projects(TICKETING_CONTAINER_LIMIT)
             .await
             .map(|projects| {
                 projects
@@ -96,7 +104,7 @@ pub async fn list_ticketing_containers(
             }),
         PROVIDER_LINEAR => state
             .linear_integration_service
-            .list_projects(100)
+            .list_projects(TICKETING_CONTAINER_LIMIT)
             .await
             .map(|projects| {
                 projects
@@ -112,13 +120,19 @@ pub async fn list_ticketing_containers(
                     })
                     .collect()
             }),
-        // ClickUp containers are Spaces within the stored workspace; the workspace
-        // id is resolved server-side from the saved settings.
-        PROVIDER_CLICKUP => state
-            .clickup_integration_service
-            .list_spaces()
-            .await
-            .map(|spaces| spaces.into_iter().map(clickup_space_to_container).collect()),
+        // ClickUp loads Spaces first, then folders/lists lazily for a selected
+        // Space so the dashboard shell does not block on the full workspace tree.
+        PROVIDER_CLICKUP => {
+            match clickup_selected_space_id(parent_container_id.as_deref()) {
+                Some(space_id) => clickup_location_containers_for_space(state.inner(), space_id)
+                    .await,
+                None => state
+                    .clickup_integration_service
+                    .list_spaces()
+                    .await
+                    .map(|spaces| spaces.into_iter().map(clickup_space_to_container).collect()),
+            }
+        }
         _ => unreachable!("provider validated above"),
     }
 }
@@ -171,7 +185,7 @@ pub async fn list_ticketing_columns(
         // ClickUp statuses are Space-scoped, so columns only load meaningfully once
         // a Space (container) is selected, mirroring the Jira project gate. ClickUp
         // exposes an explicit `orderindex`, so sort by it for left-to-right columns.
-        PROVIDER_CLICKUP => match container_selected_key(container_id.as_deref()) {
+        PROVIDER_CLICKUP => match clickup_selected_space_id(container_id.as_deref()) {
             Some(space_id) => state
                 .clickup_integration_service
                 .list_statuses(space_id)
@@ -196,8 +210,9 @@ pub async fn list_tickets(
     state: State<'_, AppState>,
 ) -> Result<TicketPageResponse, String> {
     validate_provider(&query.provider)?;
-    let _ = (&query.project_id, &query.cursor, &query.sort);
-    let limit = query.limit.unwrap_or(25).clamp(1, 40);
+    let _ = (&query.project_id, &query.sort);
+    let offset = decode_ticket_offset_cursor(query.cursor.as_deref())?;
+    let limit = query.limit.unwrap_or(25).clamp(1, TICKET_PAGE_MAX_LIMIT);
     let text = query
         .filters
         .as_ref()
@@ -206,54 +221,362 @@ pub async fn list_tickets(
         .trim()
         .to_string();
     let fetched_at = now_string();
-    let items: Vec<TicketSummaryResponse> = match query.provider.as_str() {
+    let requested = ticket_provider_fetch_limit(
+        &query.provider,
+        query.container_id.as_deref(),
+        query.filters.as_ref(),
+        offset.saturating_add(limit).saturating_add(1),
+    );
+    let container_id = ticket_provider_container_scope(
+        &query.provider,
+        query.container_id.as_deref(),
+        query.filters.as_ref(),
+    );
+    let items = load_ticket_summaries(
+        state.inner(),
+        &query.provider,
+        container_id,
+        &text,
+        requested,
+        query.filters.as_ref(),
+    )
+    .await?;
+    let (page_items, next_cursor, total_loaded) =
+        ticket_page_from_loaded_summaries(items, query.filters.as_ref(), offset, limit);
+    let items = hydrate_ticket_association_counts(
+        state.inner(),
+        &query.provider,
+        query.project_id.as_deref(),
+        page_items,
+    )
+    .await?;
+    Ok(TicketPageResponse {
+        total: Some(total_loaded),
+        items,
+        next_cursor,
+        fetched_at: Some(fetched_at),
+    })
+}
+
+#[tauri::command]
+pub async fn list_ticket_filter_options(
+    query: ListTicketFilterOptionsQuery,
+    state: State<'_, AppState>,
+) -> Result<TicketFilterOptionsResponse, String> {
+    validate_provider(&query.provider)?;
+    let _ = &query.project_id;
+    let limit = query
+        .limit
+        .unwrap_or(TICKET_SELECTOR_OPTION_LIMIT)
+        .clamp(1, TICKET_SELECTOR_OPTION_LIMIT);
+    let text = query
+        .filters
+        .as_ref()
+        .and_then(|filters| filters.text.as_deref())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let requested = ticket_provider_fetch_limit(
+        &query.provider,
+        query.container_id.as_deref(),
+        query.filters.as_ref(),
+        limit.saturating_add(1),
+    );
+    let container_id = ticket_provider_container_scope(
+        &query.provider,
+        query.container_id.as_deref(),
+        query.filters.as_ref(),
+    );
+    let items = load_ticket_summaries(
+        state.inner(),
+        &query.provider,
+        container_id,
+        &text,
+        requested,
+        query.filters.as_ref(),
+    )
+    .await?;
+    let provider_truncated = items.len() > limit;
+    Ok(ticket_filter_options_from_loaded_summaries(
+        &query.provider,
+        items,
+        query.filters.as_ref(),
+        limit,
+        provider_truncated,
+    ))
+}
+
+fn ticket_page_from_loaded_summaries(
+    items: Vec<TicketSummaryResponse>,
+    filters: Option<&TicketFiltersInput>,
+    offset: usize,
+    limit: usize,
+) -> (Vec<TicketSummaryResponse>, Option<String>, usize) {
+    let items = filter_ticket_summaries(items, filters);
+    let total_loaded = items.len();
+    let page_items: Vec<TicketSummaryResponse> =
+        items.into_iter().skip(offset).take(limit).collect();
+    let next_cursor = if total_loaded > offset.saturating_add(page_items.len()) {
+        Some(encode_ticket_offset_cursor(offset.saturating_add(page_items.len())))
+    } else {
+        None
+    };
+    (page_items, next_cursor, total_loaded)
+}
+
+fn ticket_filter_options_from_loaded_summaries(
+    provider: &str,
+    items: Vec<TicketSummaryResponse>,
+    filters: Option<&TicketFiltersInput>,
+    limit: usize,
+    provider_truncated: bool,
+) -> TicketFilterOptionsResponse {
+    let items = filter_ticket_summaries(items, filters);
+    let truncated = provider_truncated || items.len() > limit;
+    let mut assignees = BTreeSet::new();
+    let mut sprints = BTreeSet::new();
+
+    for ticket in items.into_iter().take(limit) {
+        for person in ticket.assignees.iter().chain(ticket.assignee.iter()) {
+            let name = person.name.trim();
+            if !name.is_empty() {
+                assignees.insert(name.to_string());
+            }
+        }
+        if provider == PROVIDER_CLICKUP && ticket.current_user_assigned {
+            for sprint in ticket_sprint_names(&ticket) {
+                sprints.insert(sprint);
+            }
+        }
+    }
+
+    TicketFilterOptionsResponse {
+        assignees: assignees.into_iter().collect(),
+        sprints: sprints.into_iter().collect(),
+        complete: !truncated,
+        truncated,
+    }
+}
+
+fn ticket_provider_fetch_limit(
+    provider: &str,
+    container_id: Option<&str>,
+    filters: Option<&TicketFiltersInput>,
+    requested: usize,
+) -> usize {
+    if provider == PROVIDER_CLICKUP
+        && (ticket_filters_need_wide_clickup_scan(filters)
+            || container_selected_key(container_id).is_some())
+    {
+        return requested.max(CLICKUP_FILTERED_TASK_SCAN_LIMIT);
+    }
+    requested
+}
+
+fn ticket_filters_need_wide_clickup_scan(filters: Option<&TicketFiltersInput>) -> bool {
+    let Some(filters) = filters else {
+        return false;
+    };
+    filters
+        .assignee
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty())
+        || filters
+            .sprint
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|value| !value.is_empty())
+}
+
+fn clickup_provider_assignee_ids(
+    filters: Option<&TicketFiltersInput>,
+    current_user: Option<&ClickUpUser>,
+) -> Vec<i64> {
+    let Some(assignee) = filters
+        .and_then(|filters| filters.assignee.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_ascii_lowercase)
+    else {
+        return Vec::new();
+    };
+    let Some(current_user) = current_user else {
+        return Vec::new();
+    };
+    let haystacks = [
+        Some(current_user.id.to_string()),
+        current_user.username.clone(),
+        current_user.email.clone(),
+    ];
+    if haystacks.into_iter().flatten().any(|value| {
+        let value = value.to_ascii_lowercase();
+        value.contains(&assignee) || assignee.contains(&value)
+    }) {
+        return vec![current_user.id];
+    }
+    Vec::new()
+}
+
+fn ticket_provider_container_scope<'a>(
+    provider: &str,
+    container_id: Option<&'a str>,
+    filters: Option<&TicketFiltersInput>,
+) -> Option<&'a str> {
+    if provider == PROVIDER_CLICKUP
+        && filters
+            .and_then(|filters| filters.sprint.as_deref())
+            .map(str::trim)
+            .is_some_and(|value| !value.is_empty())
+    {
+        if container_selected_key(container_id).is_some_and(|container_id| {
+            container_id.strip_prefix("list:").is_some()
+        }) {
+            return container_id;
+        }
+        return None;
+    }
+    container_id
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ClickUpContainerScope {
+    Workspace,
+    Space(String),
+    Folder(String),
+    List(String),
+}
+
+fn clickup_container_scope(container_id: Option<&str>) -> ClickUpContainerScope {
+    let Some(container_id) = container_selected_key(container_id) else {
+        return ClickUpContainerScope::Workspace;
+    };
+    if let Some(id) = container_id.strip_prefix("space:") {
+        return ClickUpContainerScope::Space(id.to_string());
+    }
+    if let Some(id) = container_id.strip_prefix("folder:") {
+        return ClickUpContainerScope::Folder(id.to_string());
+    }
+    if let Some(id) = container_id.strip_prefix("list:") {
+        return ClickUpContainerScope::List(id.to_string());
+    }
+    ClickUpContainerScope::Space(container_id.to_string())
+}
+
+fn clickup_selected_space_id(container_id: Option<&str>) -> Option<&str> {
+    let container_id = container_selected_key(container_id)?;
+    if let Some(space_id) = container_id.strip_prefix("space:") {
+        return Some(space_id);
+    }
+    if container_id.contains(':') {
+        return None;
+    }
+    Some(container_id)
+}
+
+fn clickup_summary_matches_container(
+    summary: &ClickUpTaskSummary,
+    scope: &ClickUpContainerScope,
+) -> bool {
+    match scope {
+        ClickUpContainerScope::Workspace => true,
+        ClickUpContainerScope::Space(space_id) => {
+            summary.space_id.as_deref() == Some(space_id.as_str())
+                || summary
+                    .location_space_ids
+                    .iter()
+                    .any(|location_space_id| location_space_id == space_id)
+        }
+        ClickUpContainerScope::Folder(folder_id) => {
+            summary.folder_id.as_deref() == Some(folder_id.as_str())
+                || summary
+                    .location_folder_ids
+                    .iter()
+                    .any(|location_folder_id| location_folder_id == folder_id)
+        }
+        ClickUpContainerScope::List(list_id) => {
+            summary.list_id.as_deref() == Some(list_id.as_str())
+                || summary
+                    .location_ids
+                    .iter()
+                    .any(|location_id| location_id == list_id)
+        }
+    }
+}
+
+async fn load_ticket_summaries(
+    state: &AppState,
+    provider: &str,
+    container_id: Option<&str>,
+    text: &str,
+    limit: usize,
+    filters: Option<&TicketFiltersInput>,
+) -> Result<Vec<TicketSummaryResponse>, String> {
+    let limit = limit.max(1);
+    match provider {
         // With a selected project, fetch its issues (richer status/assignee/labels
         // needed for kanban columns). Without one, fall back to global text search
         // (the frontend force-select gate means this path is rarely hit, but keep
         // it functional).
-        PROVIDER_JIRA => match container_selected_key(query.container_id.as_deref()) {
-            Some(key) => state
+        PROVIDER_JIRA => match container_selected_key(container_id) {
+            Some(key) => Ok(state
                 .atlassian_integration_service
                 .list_jira_project_issues(key, limit)
                 .await?
                 .into_iter()
                 .map(jira_issue_detail_to_ticket)
-                .collect(),
-            None => state
+                .collect()),
+            None => Ok(state
                 .atlassian_integration_service
-                .search_resources(AtlassianResourceKind::Jira, &text, limit)
+                .search_resources(AtlassianResourceKind::Jira, text, limit)
                 .await?
                 .into_iter()
                 .map(jira_summary_to_ticket)
-                .collect(),
+                .collect()),
         },
-        PROVIDER_LINEAR => state
+        PROVIDER_LINEAR => Ok(state
             .linear_integration_service
-            .search_issues(&text, limit)
+            .search_issues(text, limit)
             .await?
             .into_iter()
             .map(linear_summary_to_ticket)
-            .collect(),
+            .collect()),
         // ClickUp tasks load via the workspace-scoped filtered-tasks endpoint
         // (Jira-like server-side scoping). A selected Space narrows the query; with
         // no Space selected the workspace returns all of its tasks. Text filtering
         // is applied provider-neutrally by `filter_ticket_summaries` below.
         PROVIDER_CLICKUP => {
-            let space_ids = container_selected_key(query.container_id.as_deref())
-                .map(|space_id| vec![space_id.to_string()])
-                .unwrap_or_default();
+            let clickup_scope = clickup_container_scope(container_id);
             let current_user = state.clickup_integration_service.current_user().await.ok();
-            state
-                .clickup_integration_service
-                .list_tasks(
-                    space_ids,
-                    ClickUpTaskListOptions {
-                        query: Some(text.clone()),
-                        limit: None,
-                    },
-                )
-                .await?
+            let assignee_ids = clickup_provider_assignee_ids(filters, current_user.as_ref());
+            let options = ClickUpTaskListOptions {
+                query: Some(text.to_string()),
+                limit: Some(limit),
+                assignee_ids,
+            };
+            let provider_scoped = matches!(
+                clickup_scope,
+                ClickUpContainerScope::Space(_) | ClickUpContainerScope::List(_)
+            );
+            let summaries = match &clickup_scope {
+                ClickUpContainerScope::Space(space_id) => state
+                    .clickup_integration_service
+                    .list_tasks(vec![space_id.clone()], options)
+                    .await?,
+                ClickUpContainerScope::List(list_id) => state
+                    .clickup_integration_service
+                    .list_tasks_for_list(list_id, options)
+                    .await?,
+                _ => state
+                    .clickup_integration_service
+                    .list_tasks(Vec::new(), options)
+                    .await?,
+            };
+            Ok(summaries
                 .into_iter()
+                .filter(|summary| {
+                    provider_scoped || clickup_summary_matches_container(summary, &clickup_scope)
+                })
                 .map(|summary| {
                     let current_user_assigned = current_user
                         .as_ref()
@@ -266,24 +589,26 @@ pub async fn list_tickets(
                     ticket.current_user_watching = current_user_watching;
                     ticket
                 })
-                .collect()
+                .collect())
         }
         _ => unreachable!("provider validated above"),
+    }
+}
+
+fn decode_ticket_offset_cursor(cursor: Option<&str>) -> Result<usize, String> {
+    let Some(cursor) = cursor.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(0);
     };
-    let items = filter_ticket_summaries(items, query.filters.as_ref());
-    let items = hydrate_ticket_association_counts(
-        state.inner(),
-        &query.provider,
-        query.project_id.as_deref(),
-        items,
-    )
-    .await?;
-    Ok(TicketPageResponse {
-        total: Some(items.len()),
-        items,
-        next_cursor: None,
-        fetched_at: Some(fetched_at),
-    })
+    let offset = cursor
+        .strip_prefix(TICKET_OFFSET_CURSOR_PREFIX)
+        .ok_or_else(|| "Unsupported ticket cursor".to_string())?;
+    offset
+        .parse::<usize>()
+        .map_err(|_| "Invalid ticket cursor".to_string())
+}
+
+fn encode_ticket_offset_cursor(offset: usize) -> String {
+    format!("{TICKET_OFFSET_CURSOR_PREFIX}{offset}")
 }
 
 #[tauri::command]
@@ -932,6 +1257,7 @@ fn jira_summary_to_ticket(summary: AtlassianResourceSummary) -> TicketSummaryRes
         watchers: Vec::new(),
         reporter: None,
         labels: Vec::new(),
+        sprints: Vec::new(),
         project: None,
         priority: None,
         updated_at: now_string(),
@@ -1028,6 +1354,7 @@ fn jira_issue_detail_to_ticket(issue: JiraIssueDetail) -> TicketSummaryResponse 
         watchers: Vec::new(),
         reporter: None,
         labels: issue.labels,
+        sprints: Vec::new(),
         project: None,
         priority: issue.priority,
         updated_at: issue.updated.unwrap_or_else(now_string),
@@ -1069,6 +1396,7 @@ fn linear_summary_to_ticket(summary: LinearIssueSummary) -> TicketSummaryRespons
         watchers: Vec::new(),
         reporter: None,
         labels: summary.labels,
+        sprints: Vec::new(),
         project: summary.project,
         priority: None,
         updated_at: summary.updated_at.unwrap_or_else(now_string),
@@ -1186,7 +1514,10 @@ fn filter_ticket_summaries(
     filters: Option<&TicketFiltersInput>,
 ) -> Vec<TicketSummaryResponse> {
     let Some(filters) = filters else {
-        return items;
+        return items
+            .into_iter()
+            .filter(|ticket| !ticket_has_terminal_state(ticket))
+            .collect();
     };
     items
         .into_iter()
@@ -1229,6 +1560,8 @@ fn ticket_matches_filters(ticket: &TicketSummaryResponse, filters: &TicketFilter
         {
             return false;
         }
+    } else if ticket_has_terminal_state(ticket) {
+        return false;
     }
 
     if let Some(assignee) = filters
@@ -1243,25 +1576,22 @@ fn ticket_matches_filters(ticket: &TicketSummaryResponse, filters: &TicketFilter
                 .assignees
                 .iter()
                 .chain(ticket.assignee.iter())
-                .any(|ticket_assignee| {
-                    ticket_assignee
-                        .name
-                        .to_ascii_lowercase()
-                        .contains(&assignee)
-                        || ticket_assignee
-                            .id
-                            .as_deref()
-                            .unwrap_or("")
-                            .to_ascii_lowercase()
-                            .contains(&assignee)
-                        || ticket_assignee
-                            .email
-                            .as_deref()
-                            .unwrap_or("")
-                            .to_ascii_lowercase()
-                            .contains(&assignee)
-                });
+                .any(|ticket_assignee| ticket_assignee_matches_filter(ticket_assignee, &assignee));
         if !matches_assignee {
+            return false;
+        }
+    }
+
+    if let Some(sprint) = filters
+        .sprint
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        if !ticket_sprint_names(ticket)
+            .iter()
+            .any(|ticket_sprint| ticket_sprint.eq_ignore_ascii_case(sprint))
+        {
             return false;
         }
     }
@@ -1284,6 +1614,46 @@ fn ticket_matches_filters(ticket: &TicketSummaryResponse, filters: &TicketFilter
     true
 }
 
+fn ticket_has_terminal_state(ticket: &TicketSummaryResponse) -> bool {
+    matches!(ticket.state.category.as_str(), "done" | "closed")
+}
+
+fn ticket_assignee_matches_filter(
+    ticket_assignee: &TicketingPersonResponse,
+    assignee: &str,
+) -> bool {
+    let haystacks = [
+        Some(ticket_assignee.name.as_str()),
+        ticket_assignee.id.as_deref(),
+        ticket_assignee.email.as_deref(),
+    ];
+    haystacks.into_iter().flatten().any(|value| {
+        let value = value.to_ascii_lowercase();
+        value.contains(assignee) || assignee.contains(&value)
+    })
+}
+
+fn ticket_sprint_names(ticket: &TicketSummaryResponse) -> Vec<String> {
+    let mut names = Vec::new();
+    for sprint in &ticket.sprints {
+        let sprint = sprint.trim();
+        if !sprint.is_empty() && !names.iter().any(|name: &String| name == sprint) {
+            names.push(sprint.to_string());
+        }
+    }
+    if names.is_empty() {
+        if let Some(project) = ticket
+            .project
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty() && value.to_ascii_lowercase().contains("sprint"))
+        {
+            names.push(project.to_string());
+        }
+    }
+    names
+}
+
 fn jira_content_to_detail(content: AtlassianResourceContent) -> TicketDetailResponse {
     let assignee = content.assignee.as_deref().map(named_person);
     let assignees = assignee.iter().cloned().collect();
@@ -1300,6 +1670,7 @@ fn jira_content_to_detail(content: AtlassianResourceContent) -> TicketDetailResp
         watchers: Vec::new(),
         reporter: content.reporter.as_deref().map(named_person),
         labels: Vec::new(),
+        sprints: Vec::new(),
         project: None,
         priority: None,
         updated_at: content.updated_at_remote.clone().unwrap_or_else(now_string),
@@ -1366,6 +1737,7 @@ fn linear_content_to_detail(content: LinearIssueContent) -> TicketDetailResponse
         watchers: Vec::new(),
         reporter: content.creator.as_deref().map(named_person),
         labels: content.labels.clone(),
+        sprints: Vec::new(),
         project: content.project.clone(),
         priority: None,
         updated_at: content.updated_at.clone().unwrap_or_else(now_string),
@@ -1404,19 +1776,100 @@ fn linear_content_to_detail(content: LinearIssueContent) -> TicketDetailResponse
     }
 }
 
-/// Map a ClickUp Space to a ticketing container. Spaces reuse the existing
-/// `project` container kind (no shared enum widening); the frontend supplies the
-/// "Space" label for the ClickUp provider.
+/// Map ClickUp hierarchy nodes to ticketing containers.
 fn clickup_space_to_container(space: ClickUpSpace) -> TicketingContainerResponse {
     TicketingContainerResponse {
         provider: PROVIDER_CLICKUP.to_string(),
-        id: space.id,
-        key: None,
+        id: clickup_space_container_id(&space.id),
+        key: Some("Space".to_string()),
         name: space.name,
-        kind: "project".to_string(),
+        kind: "space".to_string(),
         parent_id: None,
         ticket_count: None,
     }
+}
+
+async fn clickup_location_containers_for_space(
+    state: &AppState,
+    space_id: &str,
+) -> Result<Vec<TicketingContainerResponse>, String> {
+    let mut containers = Vec::new();
+    let folders = state.clickup_integration_service.list_folders(space_id).await?;
+    for folder in folders {
+        let folder_id = folder.id.clone();
+        containers.push(clickup_folder_to_container(folder, space_id));
+        for list in state
+            .clickup_integration_service
+            .list_folder_lists(&folder_id)
+            .await?
+        {
+            containers.push(clickup_list_to_container(
+                list,
+                &clickup_folder_container_id(&folder_id),
+            ));
+        }
+    }
+
+    for list in state
+        .clickup_integration_service
+        .list_folderless_lists(space_id)
+        .await?
+    {
+        containers.push(clickup_list_to_container(
+            list,
+            &clickup_space_container_id(space_id),
+        ));
+    }
+    Ok(containers)
+}
+
+fn clickup_folder_to_container(
+    folder: ClickUpFolder,
+    fallback_space_id: &str,
+) -> TicketingContainerResponse {
+    let parent_space_id = folder.space_id.as_deref().unwrap_or(fallback_space_id);
+    TicketingContainerResponse {
+        provider: PROVIDER_CLICKUP.to_string(),
+        id: clickup_folder_container_id(&folder.id),
+        key: Some("Folder".to_string()),
+        name: folder.name,
+        kind: "folder".to_string(),
+        parent_id: Some(clickup_space_container_id(parent_space_id)),
+        ticket_count: None,
+    }
+}
+
+fn clickup_list_to_container(
+    list: ClickUpList,
+    fallback_parent_id: &str,
+) -> TicketingContainerResponse {
+    let parent_id = list
+        .folder_id
+        .as_deref()
+        .map(clickup_folder_container_id)
+        .or_else(|| list.space_id.as_deref().map(clickup_space_container_id))
+        .unwrap_or_else(|| fallback_parent_id.to_string());
+    TicketingContainerResponse {
+        provider: PROVIDER_CLICKUP.to_string(),
+        id: clickup_list_container_id(&list.id),
+        key: Some("List".to_string()),
+        name: list.name,
+        kind: "list".to_string(),
+        parent_id: Some(parent_id),
+        ticket_count: None,
+    }
+}
+
+fn clickup_space_container_id(space_id: &str) -> String {
+    format!("space:{space_id}")
+}
+
+fn clickup_folder_container_id(folder_id: &str) -> String {
+    format!("folder:{folder_id}")
+}
+
+fn clickup_list_container_id(list_id: &str) -> String {
+    format!("list:{list_id}")
 }
 
 /// Map a ClickUp Space status into a kanban column. ClickUp tasks expose their
@@ -1441,6 +1894,7 @@ fn clickup_status_to_column(status: ClickUpStatus, order: usize) -> TicketingCol
 /// to labels; the full ClickUp assignee list is preserved while the legacy
 /// single-assignee slot keeps the first assignee for compatibility.
 fn clickup_summary_to_ticket(summary: ClickUpTaskSummary) -> TicketSummaryResponse {
+    let sprints = clickup_sprint_names(&summary);
     let state_name = summary
         .status_name
         .clone()
@@ -1478,6 +1932,7 @@ fn clickup_summary_to_ticket(summary: ClickUpTaskSummary) -> TicketSummaryRespon
         watchers,
         reporter: None,
         labels: summary.tags,
+        sprints,
         project: summary.list_name,
         priority: None,
         updated_at: summary.updated_at.unwrap_or_else(now_string),
@@ -1490,6 +1945,27 @@ fn clickup_summary_to_ticket(summary: ClickUpTaskSummary) -> TicketSummaryRespon
         current_user_assigned: false,
         current_user_watching: false,
     }
+}
+
+fn clickup_sprint_names(summary: &ClickUpTaskSummary) -> Vec<String> {
+    let mut names = Vec::new();
+    for sprint in &summary.sprint_names {
+        let sprint = sprint.trim();
+        if !sprint.is_empty() && !names.iter().any(|name: &String| name == sprint) {
+            names.push(sprint.to_string());
+        }
+    }
+    if names.is_empty() {
+        if let Some(list_name) = summary
+            .list_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty() && value.to_ascii_lowercase().contains("sprint"))
+        {
+            names.push(list_name.to_string());
+        }
+    }
+    names
 }
 
 fn clickup_summary_assigned_to_user(summary: &ClickUpTaskSummary, user: &ClickUpUser) -> bool {
@@ -1566,6 +2042,7 @@ fn clickup_content_to_detail(content: ClickUpTaskContent) -> TicketDetailRespons
         watchers,
         reporter: content.creator.as_deref().map(named_person),
         labels: content.tags.clone(),
+        sprints: Vec::new(),
         project: content.list_name.clone(),
         priority: None,
         updated_at: content.updated_at.clone().unwrap_or_else(now_string),
@@ -1723,6 +2200,8 @@ fn ticket_ref_to_composer_reference(
         key: ticket_ref.key.clone(),
         title: None,
         url: None,
+        summary_excerpt: None,
+        include_transcript: None,
     }
 }
 

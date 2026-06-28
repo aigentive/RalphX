@@ -20,6 +20,17 @@ const options: BranchBaseOption[] = [
     source: "local",
     selection: { kind: "local_branch", ref: "feature/x", displayName: "feature/x" },
   },
+  {
+    key: "current_branch::feature/current",
+    label: "Current branch (feature/current)",
+    detail: "Currently checked out in the project root",
+    source: "current",
+    selection: {
+      kind: "current_branch",
+      ref: "feature/current",
+      displayName: "Current branch (feature/current)",
+    },
+  },
 ];
 
 describe("BranchBasePicker", () => {
@@ -96,6 +107,106 @@ describe("BranchBasePicker", () => {
 
     expect(screen.getByText("Refreshing branches...")).toBeInTheDocument();
     expect(screen.getAllByText("feature/x").length).toBeGreaterThan(0);
+  });
+
+  it("renders the isolated branch switch and reports toggle changes", async () => {
+    const user = userEvent.setup();
+    const onIsolatedBranchChange = vi.fn();
+    render(
+      <BranchBasePicker
+        value="local_branch::feature/x"
+        onValueChange={vi.fn()}
+        options={options}
+        placeholder="Select base"
+        testId="picker"
+        isolatedBranch={false}
+        onIsolatedBranchChange={onIsolatedBranchChange}
+      />,
+    );
+
+    await user.click(screen.getByTestId("picker"));
+
+    expect(screen.getByText("Isolated branch")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /About isolated branch/i }),
+    ).toBeInTheDocument();
+    const isolatedSwitch = screen.getByRole("switch", {
+      name: /Use isolated branch/i,
+    });
+    expect(isolatedSwitch).toHaveAttribute("aria-checked", "false");
+
+    await user.click(isolatedSwitch);
+    expect(onIsolatedBranchChange).toHaveBeenCalledWith(true);
+  });
+
+  it("can keep the popover open after selecting an option", async () => {
+    const user = userEvent.setup();
+    render(
+      <BranchBasePicker
+        value=""
+        onValueChange={vi.fn()}
+        options={options}
+        placeholder="Select base"
+        testId="picker"
+        closeOnSelect={false}
+        isolatedBranch={false}
+        onIsolatedBranchChange={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByTestId("picker"));
+    await user.click(screen.getByText("feature/x"));
+
+    expect(screen.getByPlaceholderText(/Search branches/i)).toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: /Use isolated branch/i })).toBeInTheDocument();
+  });
+
+  it("disables the isolated branch switch for project default selections", async () => {
+    const user = userEvent.setup();
+    render(
+      <BranchBasePicker
+        value="project_default::main"
+        onValueChange={vi.fn()}
+        options={options}
+        placeholder="Select base"
+        testId="picker"
+        isolatedBranch
+        isolatedBranchDisabled
+        onIsolatedBranchChange={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByTestId("picker"));
+
+    const isolatedSwitch = screen.getByRole("switch", {
+      name: /Use isolated branch/i,
+    });
+    expect(isolatedSwitch).toBeDisabled();
+    expect(isolatedSwitch).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("disables the isolated branch switch for current branch selections", async () => {
+    const user = userEvent.setup();
+    render(
+      <BranchBasePicker
+        value="current_branch::feature/current"
+        onValueChange={vi.fn()}
+        options={options}
+        placeholder="Select base"
+        testId="picker"
+        isolatedBranch
+        isolatedBranchDisabled
+        onIsolatedBranchChange={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByTestId("picker"));
+
+    const isolatedSwitch = screen.getByRole("switch", {
+      name: /Use isolated branch/i,
+    });
+    expect(isolatedSwitch).toBeDisabled();
+    expect(isolatedSwitch).toHaveAttribute("aria-checked", "true");
   });
 
   it("switches to pull request results and selects a PR head branch option", async () => {

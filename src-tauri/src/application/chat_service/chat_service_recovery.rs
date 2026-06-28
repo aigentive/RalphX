@@ -3,6 +3,7 @@
 // Extracted from chat_service_send_background.rs to reduce file size.
 // Handles rebuilding conversation history and spawning fresh sessions.
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -26,6 +27,22 @@ use crate::domain::services::{
 };
 use crate::error::{AppError, AppResult};
 use tauri::{Manager, Runtime};
+
+async fn provider_env_for_harness<R: Runtime>(
+    app_handle: Option<&tauri::AppHandle<R>>,
+    harness: AgentHarnessKind,
+) -> Result<HashMap<String, String>, AppError> {
+    let Some(handle) = app_handle else {
+        return Ok(HashMap::new());
+    };
+    let app_state = handle.state::<AppState>();
+    crate::application::provider_env_file::load_provider_custom_env_file_for_harness(
+        Some(&app_state.agent_provider_settings_repo),
+        harness,
+    )
+    .await
+    .map_err(AppError::Infrastructure)
+}
 
 /// Attempt to recover from a stale provider session by rebuilding conversation history
 /// and spawning a fresh session.
@@ -197,6 +214,15 @@ pub(super) async fn attempt_session_recovery<R: Runtime>(
             return Err(err);
         }
     };
+    let provider_env = match provider_env_for_harness(app_handle, harness).await {
+        Ok(provider_env) => provider_env,
+        Err(error) => {
+            log_failure(&error);
+            return Err(error);
+        }
+    };
+    let mut provider_spawnable = provider_spawnable;
+    provider_spawnable.apply_provider_env(&provider_env);
     let spawnable = provider_spawnable.spawnable;
 
     let child = match spawnable.spawn().await {

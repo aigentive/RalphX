@@ -15,6 +15,7 @@ export interface ReviewSettings {
   ai_review_auto_fix: boolean;
   /** Stored-only; follow-up decision pending */
   require_fix_approval: boolean;
+  auto_create_followup_agent_conversation: boolean;
 }
 
 /** Only the primary policy fields are accepted for update. */
@@ -22,6 +23,7 @@ export interface UpdateReviewSettingsInput {
   requireHumanReview?: boolean;
   maxFixAttempts?: number;
   maxRevisionCycles?: number;
+  autoCreateFollowupAgentConversation?: boolean;
 }
 
 // ============================================================================

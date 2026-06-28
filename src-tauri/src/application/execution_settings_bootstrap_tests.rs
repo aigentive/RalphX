@@ -15,6 +15,7 @@ async fn test_load_or_seed_execution_settings_defaults_seeds_pristine_rows() {
     };
     let desired_global_defaults = GlobalExecutionSettings {
         global_max_concurrent: 24,
+        workspace_max_concurrent: 8,
         global_ideation_max: 6,
         allow_ideation_borrow_idle_execution: true,
     };
@@ -47,6 +48,7 @@ async fn test_load_or_seed_execution_settings_defaults_preserves_customized_rows
     };
     let stored_global_defaults = GlobalExecutionSettings {
         global_max_concurrent: 18,
+        workspace_max_concurrent: 4,
         global_ideation_max: 2,
         allow_ideation_borrow_idle_execution: false,
     };
@@ -60,6 +62,7 @@ async fn test_load_or_seed_execution_settings_defaults_preserves_customized_rows
     };
     let desired_global_defaults = GlobalExecutionSettings {
         global_max_concurrent: 24,
+        workspace_max_concurrent: 8,
         global_ideation_max: 6,
         allow_ideation_borrow_idle_execution: true,
     };
@@ -111,6 +114,7 @@ async fn test_load_or_seed_execution_settings_defaults_can_seed_only_global_row(
     };
     let desired_global_defaults = GlobalExecutionSettings {
         global_max_concurrent: 24,
+        workspace_max_concurrent: 8,
         global_ideation_max: 6,
         allow_ideation_borrow_idle_execution: true,
     };

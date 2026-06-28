@@ -53,6 +53,15 @@ export interface FileDiff {
   isBinary: boolean;
 }
 
+export interface ConflictDiff {
+  filePath: string;
+  baseContent: string;
+  oursContent: string;
+  theirsContent: string;
+  mergedWithMarkers: string;
+  language: string;
+}
+
 export type DiffPageRow =
   | { kind: "hunk_header"; header: string }
   | { kind: "line"; line: DiffLine };
@@ -128,8 +137,22 @@ export interface AgentWorkspaceChangeBucketSummary {
   deletions: number;
 }
 
+export interface AgentWorkspaceConflictSummary {
+  fileCount: number;
+  files: string[];
+}
+
+export interface AgentWorkspaceRepairState {
+  expectedBranch: string;
+  checkedOutBranch: string;
+  rebaseInProgress: boolean;
+  mergeInProgress: boolean;
+}
+
 export interface AgentWorkspaceChangeSummary {
   supportsWorktreeModes: boolean;
   staged: AgentWorkspaceChangeBucketSummary;
   unstaged: AgentWorkspaceChangeBucketSummary;
+  conflicted?: AgentWorkspaceConflictSummary;
+  repairState?: AgentWorkspaceRepairState;
 }

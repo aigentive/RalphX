@@ -22,6 +22,7 @@ import type {
   AgentSidebarConversationsInput,
   AgentSidebarPublicationState,
   AgentSidebarSort,
+  AgentConversationRuntimeStatus,
   PrecomputeAgentConversationWorkspacePrDescriptionResult,
   PublishAgentConversationWorkspaceResult,
   QueuedMessageResponse,
@@ -918,6 +919,7 @@ function createMockWorkspace(
     conversationId: conversation.id,
     projectId,
     mode,
+    branchMode: base?.branchMode ?? "isolated",
     baseRefKind: base?.kind ?? "project_default",
     baseRef: base?.ref ?? "main",
     baseDisplayName: base?.displayName ?? null,
@@ -1113,6 +1115,24 @@ export async function mockGetAgentRunningStates(
   );
 }
 
+export async function mockGetAgentConversationRuntimeStatuses(
+  conversationIds: string[],
+): Promise<Record<string, AgentConversationRuntimeStatus>> {
+  return Object.fromEntries(
+    conversationIds.map((conversationId) => [
+      conversationId,
+      {
+        conversationId,
+        isRunning: false,
+        agentStatus: "idle",
+        primarySource: null,
+        summaryLabel: null,
+        items: [],
+      },
+    ]),
+  );
+}
+
 export async function mockGetBulkWorkspacePublicationStates(
   conversationIds: string[]
 ): Promise<Record<string, { publication_state: string; publication_label: string | null }>> {
@@ -1164,5 +1184,6 @@ export const mockChatApi = {
   stopAgent: mockStopAgent,
   isAgentRunning: mockIsAgentRunning,
   getAgentRunningStates: mockGetAgentRunningStates,
+  getAgentConversationRuntimeStatuses: mockGetAgentConversationRuntimeStatuses,
   getBulkWorkspacePublicationStates: mockGetBulkWorkspacePublicationStates,
 } as const;

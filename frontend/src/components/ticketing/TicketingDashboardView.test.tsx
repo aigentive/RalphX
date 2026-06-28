@@ -1,11 +1,12 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { createElement, type ReactNode } from "react";
+import { createElement, type ComponentProps, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { atlassianApi } from "@/api/atlassian";
 import { linearApi } from "@/api/linear";
 import * as chatHooks from "@/hooks/useChat";
+import { usePullRequestDetail } from "@/hooks/usePullRequestDetail";
 import * as ticketingHooks from "@/hooks/useTicketing";
 import * as projectHooks from "@/hooks/useProjects";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -25,6 +26,20 @@ vi.mock("@/api/linear", () => ({
   linearApi: {
     assignAgentConversationLinearIssue: vi.fn().mockResolvedValue(null),
   },
+}));
+
+vi.mock("@/hooks/usePullRequestDetail", () => ({
+  prKeys: {
+    all: ["github-pr"],
+    detail: (selector: { projectId: string; prNumber?: number; branch?: string }) => [
+      "github-pr",
+      "detail",
+      selector.projectId,
+      selector.prNumber ?? null,
+      selector.branch ?? null,
+    ],
+  },
+  usePullRequestDetail: vi.fn(),
 }));
 
 vi.mock("@/hooks/useChat", () => ({
@@ -70,6 +85,7 @@ vi.mock("@/hooks/useTicketing", () => ({
   useTicketingColumns: vi.fn(),
   useTicketingContainers: vi.fn(),
   useTicketingProviders: vi.fn(),
+  useTicketFilterOptions: vi.fn(),
   useTicketLabelOptions: vi.fn(),
   useTicketTransitions: vi.fn(),
   useTickets: vi.fn(),
@@ -124,11 +140,21 @@ function createWrapper() {
   };
 }
 
-function renderDashboard() {
+function renderDashboard(props: {
+  onNavigateToAssociation?: ComponentProps<
+    typeof TicketingDashboardView
+  >["onNavigateToAssociation"];
+} = {}) {
   const Wrapper = createWrapper();
-  return render(<TicketingDashboardView projectId="project-1" />, {
-    wrapper: Wrapper,
-  });
+  return render(
+    <TicketingDashboardView
+      projectId="project-1"
+      onNavigateToAssociation={props.onNavigateToAssociation}
+    />,
+    {
+      wrapper: Wrapper,
+    },
+  );
 }
 
 function mockConnectedDashboard() {
@@ -178,6 +204,17 @@ function mockConnectedDashboard() {
     fetchNextPage: vi.fn(),
     isFetchingNextPage: false,
   } as unknown as ReturnType<typeof ticketingHooks.useTickets>);
+  vi.mocked(ticketingHooks.useTicketFilterOptions).mockReturnValue({
+    data: {
+      assignees: ["A. Dev"],
+      sprints: [],
+      complete: true,
+      truncated: false,
+    },
+    isLoading: false,
+    isError: false,
+    error: null,
+  } as ReturnType<typeof ticketingHooks.useTicketFilterOptions>);
   vi.mocked(ticketingHooks.useTicketDetail).mockReturnValue({
     data: {
       ...ticket,
@@ -265,6 +302,13 @@ describe("TicketingDashboardView", () => {
     useAgentSessionStore.getState().clearSelection();
     useAgentSessionStore.setState({ startConversationDraft: null });
     useChatStore.setState({ activeConversationIds: {} });
+    vi.mocked(usePullRequestDetail).mockReturnValue({
+      data: null,
+      isLoading: false,
+      isError: false,
+      error: null,
+      fetchStatus: "idle",
+    } as unknown as ReturnType<typeof usePullRequestDetail>);
     vi.mocked(projectHooks.useProjects).mockReturnValue({
       data: [
         {
@@ -326,6 +370,17 @@ describe("TicketingDashboardView", () => {
       fetchNextPage: vi.fn(),
       isFetchingNextPage: false,
     } as unknown as ReturnType<typeof ticketingHooks.useTickets>);
+    vi.mocked(ticketingHooks.useTicketFilterOptions).mockReturnValue({
+      data: {
+        assignees: [],
+        sprints: [],
+        complete: true,
+        truncated: false,
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof ticketingHooks.useTicketFilterOptions>);
     vi.mocked(ticketingHooks.useTicketDetail).mockReturnValue({
       data: undefined,
       isLoading: false,
@@ -400,7 +455,7 @@ describe("TicketingDashboardView", () => {
     expect(screen.getByRole("heading", { name: "Ticketing" })).toBeInTheDocument();
     expect(screen.getByText("No valid ticketing integration")).toBeInTheDocument();
     expect(
-      screen.getByText("Connect a valid Jira or Linear integration from Settings to browse tickets."),
+      screen.getByText("Connect a valid Jira, Linear, or ClickUp integration from Settings to browse tickets."),
     ).toBeInTheDocument();
   });
 
@@ -490,6 +545,18 @@ describe("TicketingDashboardView", () => {
     expect(screen.getByText("Fix merge race in transition handler")).toBeInTheDocument();
   });
 
+  it("keeps GitHub and Granola out of the ticketing dashboard", () => {
+    mockConnectedDashboard();
+
+    renderDashboard();
+
+    expect(screen.queryByRole("tablist", { name: "Ticketing content" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Tickets" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Granola" })).not.toBeInTheDocument();
+    expect(screen.queryByTestId("ticketing-github-branches")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("granola-dashboard-view")).not.toBeInTheDocument();
+  });
+
   it("auto-selects the only valid provider and hides provider tabs", async () => {
     useTicketingStore.getState().setProvider("jira");
     vi.mocked(ticketingHooks.useTicketingProviders).mockReturnValue({
@@ -569,7 +636,7 @@ describe("TicketingDashboardView", () => {
     expect(screen.queryByText("Select a project")).not.toBeInTheDocument();
   });
 
-  it("forces a Space selection before loading ClickUp tickets when Spaces exist", async () => {
+  it("forces a Space selection before loading ClickUp tickets when ClickUp locations exist", async () => {
     vi.mocked(ticketingHooks.useTicketingProviders).mockReturnValue({
       data: [
         {
@@ -600,7 +667,7 @@ describe("TicketingDashboardView", () => {
       error: null,
     } as ReturnType<typeof ticketingHooks.useTicketingProviders>);
     vi.mocked(ticketingHooks.useTicketingContainers).mockReturnValue({
-      data: [{ provider: "clickup", id: "space-1", key: null, name: "Engineering", kind: "project" }],
+      data: [{ provider: "clickup", id: "space-1", key: null, name: "Engineering", kind: "space" }],
       isLoading: false,
       isError: false,
       error: null,
@@ -613,13 +680,15 @@ describe("TicketingDashboardView", () => {
     expect(ticketingHooks.useTickets).toHaveBeenCalledWith(null, { enabled: false });
   });
 
-  it("filters ClickUp tickets by the selected sprint list", async () => {
+  it("forwards ClickUp sprint filters without changing the selected Space scope", async () => {
     useTicketingStore.getState().setProvider("clickup");
+    useTicketingStore.getState().setContainerId("space-sprints");
     const sprintTicket = {
       ...ticket,
       ref: { provider: "clickup" as const, id: "cu-current", key: "CU-42" },
       title: "Current sprint task",
-      project: "Sprint 42",
+      project: "Continuous Improvement",
+      sprints: ["Sprint 42"],
       currentUserAssigned: true,
     };
     const backlogTicket = {
@@ -627,6 +696,7 @@ describe("TicketingDashboardView", () => {
       ref: { provider: "clickup" as const, id: "cu-backlog", key: "CU-7" },
       title: "Backlog task",
       project: "Backlog",
+      sprints: ["Backlog Sprint"],
       currentUserAssigned: false,
     };
     vi.mocked(ticketingHooks.useTicketingProviders).mockReturnValue({
@@ -644,6 +714,14 @@ describe("TicketingDashboardView", () => {
       isError: false,
       error: null,
     } as ReturnType<typeof ticketingHooks.useTicketingProviders>);
+    vi.mocked(ticketingHooks.useTicketingContainers).mockImplementation((input) => ({
+      data: input?.parentContainerId
+        ? [{ provider: "clickup", id: "list:sprint-42", key: "List", name: "Sprint 42", kind: "list", parentId: "space-sprints" }]
+        : [{ provider: "clickup", id: "space-sprints", key: "Space", name: "Sprints", kind: "space" }],
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof ticketingHooks.useTicketingContainers>));
     vi.mocked(ticketingHooks.useTickets).mockReturnValue({
       data: { pages: [{ items: [sprintTicket, backlogTicket], nextCursor: null, total: 2 }], pageParams: [null] },
       isLoading: false,
@@ -654,6 +732,17 @@ describe("TicketingDashboardView", () => {
       fetchNextPage: vi.fn(),
       isFetchingNextPage: false,
     } as unknown as ReturnType<typeof ticketingHooks.useTickets>);
+    vi.mocked(ticketingHooks.useTicketFilterOptions).mockReturnValue({
+      data: {
+        assignees: [],
+        sprints: ["Sprint 42"],
+        complete: true,
+        truncated: false,
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof ticketingHooks.useTicketFilterOptions>);
 
     renderDashboard();
 
@@ -667,8 +756,15 @@ describe("TicketingDashboardView", () => {
 
     fireEvent.click(within(sprintListbox).getByRole("option", { name: "Sprint 42" }));
 
-    expect(screen.getByRole("button", { name: /Current sprint task/ })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Backlog task/ })).not.toBeInTheDocument();
+    await waitFor(() => {
+      expect(ticketingHooks.useTickets).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          containerId: "space-sprints",
+          filters: expect.objectContaining({ sprint: "Sprint 42" }),
+        }),
+        { enabled: true },
+      );
+    });
   });
 
   it("surfaces stale provider freshness without hiding ticket content", () => {
@@ -751,15 +847,9 @@ describe("TicketingDashboardView", () => {
           {
             items: [
               { ...ticket, assignee: { id: "ada", name: "Ada" } },
-              {
-                ...ticket,
-                ref: { provider: "jira" as const, id: "10002", key: "RX-2" },
-                title: "Unassigned backlog item",
-                assignee: null,
-              },
             ],
             nextCursor: null,
-            total: 2,
+            total: 1,
           },
         ],
         pageParams: [null],
@@ -948,15 +1038,20 @@ describe("TicketingDashboardView", () => {
     expect(list.queryByText("Unassigned")).not.toBeInTheDocument();
   });
 
-  it("filters the list client-side by the selected assignee", () => {
+  it("forwards the selected assignee to the ticket query", () => {
     mockConnectedDashboard();
     useTicketingStore.setState({
       filters: { text: "", assignee: "Someone Else", stateIds: [], labels: [], sprint: null, watcherMe: false },
     });
     renderDashboard();
 
-    // The only ticket (RX-1) is unassigned, so the named-assignee filter empties the list.
-    expect(screen.getByText("No tickets match these filters")).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Assignee" })).toHaveTextContent("Someone Else");
+    expect(ticketingHooks.useTickets).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        filters: expect.objectContaining({ assignee: "Someone Else" }),
+      }),
+      { enabled: true },
+    );
   });
 
   it("shows a non-filter empty state when there are no tickets and no active filters", () => {
@@ -999,6 +1094,145 @@ describe("TicketingDashboardView", () => {
     expect(
       screen.queryByText("When two agents transition the same task."),
     ).not.toBeInTheDocument();
+  });
+
+  it("accepts ClickUp detail when a custom-id selection resolves to an opaque task id", async () => {
+    const clickupTicket = {
+      ...ticket,
+      ref: { provider: "clickup" as const, id: "opaque-task-1", key: "TASK-123" },
+      title: "Demo task",
+      url: "https://app.clickup.com/t/workspace-1/TASK-123",
+    };
+    vi.mocked(ticketingHooks.useTicketingProviders).mockReturnValue({
+      data: [
+        {
+          provider: "clickup",
+          label: "ClickUp",
+          enabled: true,
+          connectionStatus: "connected",
+          capabilities: writableCapabilities,
+          fetchedAt: "2026-06-19T22:00:00.000Z",
+        },
+      ],
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof ticketingHooks.useTicketingProviders>);
+    vi.mocked(ticketingHooks.useTicketingContainers).mockReturnValue({
+      data: [{ provider: "clickup", id: "space-1", key: null, name: "Engineering", kind: "space" }],
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof ticketingHooks.useTicketingContainers>);
+    useTicketingStore.getState().setProvider("clickup");
+    useTicketingStore.getState().setContainerId("space-1");
+    useTicketingStore.getState().setSelectedTicketRef({
+      provider: "clickup",
+      id: "TASK-123",
+    });
+    vi.mocked(ticketingHooks.useTicketingColumns).mockReturnValue({
+      data: [{ id: "todo", name: "To Do", category: "todo", order: 0 }],
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof ticketingHooks.useTicketingColumns>);
+    vi.mocked(ticketingHooks.useTickets).mockReturnValue({
+      data: { pages: [{ items: [clickupTicket], nextCursor: null, total: 1 }], pageParams: [null] },
+      isLoading: false,
+      isFetching: false,
+      isError: false,
+      error: null,
+      hasNextPage: false,
+      fetchNextPage: vi.fn(),
+      isFetchingNextPage: false,
+    } as unknown as ReturnType<typeof ticketingHooks.useTickets>);
+    vi.mocked(ticketingHooks.useTicketDetail).mockReturnValue({
+      data: {
+        ...clickupTicket,
+        descriptionMarkdown: "Custom id detail body.",
+        comments: [],
+        attachments: [],
+        transitions: [],
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof ticketingHooks.useTicketDetail>);
+
+    renderDashboard();
+
+    expect(await screen.findByText("Custom id detail body.")).toBeInTheDocument();
+    expect(screen.queryByRole("status", { name: /loading ticket details/i })).not.toBeInTheDocument();
+  });
+
+  it("keeps waiting when loaded detail belongs to another provider", async () => {
+    const clickupTicket = {
+      ...ticket,
+      ref: { provider: "clickup" as const, id: "opaque-task-1", key: "TASK-123" },
+      title: "Demo task",
+      url: "https://app.clickup.com/t/workspace-1/TASK-123",
+    };
+    vi.mocked(ticketingHooks.useTicketingProviders).mockReturnValue({
+      data: [
+        {
+          provider: "clickup",
+          label: "ClickUp",
+          enabled: true,
+          connectionStatus: "connected",
+          capabilities: writableCapabilities,
+          fetchedAt: "2026-06-19T22:00:00.000Z",
+        },
+      ],
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof ticketingHooks.useTicketingProviders>);
+    vi.mocked(ticketingHooks.useTicketingContainers).mockReturnValue({
+      data: [{ provider: "clickup", id: "space-1", key: null, name: "Engineering", kind: "space" }],
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof ticketingHooks.useTicketingContainers>);
+    useTicketingStore.getState().setProvider("clickup");
+    useTicketingStore.getState().setContainerId("space-1");
+    useTicketingStore.getState().setSelectedTicketRef({
+      provider: "clickup",
+      id: "TASK-123",
+    });
+    vi.mocked(ticketingHooks.useTicketingColumns).mockReturnValue({
+      data: [{ id: "todo", name: "To Do", category: "todo", order: 0 }],
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof ticketingHooks.useTicketingColumns>);
+    vi.mocked(ticketingHooks.useTickets).mockReturnValue({
+      data: { pages: [{ items: [clickupTicket], nextCursor: null, total: 1 }], pageParams: [null] },
+      isLoading: false,
+      isFetching: false,
+      isError: false,
+      error: null,
+      hasNextPage: false,
+      fetchNextPage: vi.fn(),
+      isFetchingNextPage: false,
+    } as unknown as ReturnType<typeof ticketingHooks.useTickets>);
+    vi.mocked(ticketingHooks.useTicketDetail).mockReturnValue({
+      data: {
+        ...ticket,
+        descriptionMarkdown: "Wrong provider detail body.",
+        comments: [],
+        attachments: [],
+        transitions: [],
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof ticketingHooks.useTicketDetail>);
+
+    renderDashboard();
+
+    const skeletons = await screen.findAllByRole("status", { name: /loading ticket details/i });
+    expect(skeletons.length).toBeGreaterThan(0);
+    expect(screen.queryByText("Wrong provider detail body.")).not.toBeInTheDocument();
   });
 
   it("records a ticket as opened when its row is clicked", () => {
@@ -1645,7 +1879,7 @@ describe("TicketingDashboardView", () => {
     const clickupTicket = {
       ...ticket,
       ref: { provider: "clickup" as const, id: "cu-1001", key: "CU-1001" },
-      title: "Wire ClickUp tasks into the unified dashboard",
+      title: "Demo ClickUp dashboard task",
       url: "https://app.clickup.com/t/CU-1001",
     };
     vi.mocked(ticketingHooks.useTicketingProviders).mockReturnValue({
@@ -1682,7 +1916,7 @@ describe("TicketingDashboardView", () => {
     // ClickUp containers are Spaces; one is pre-selected so tasks load (ClickUp is
     // server-scoped like Jira, so the client container-name filter is skipped).
     vi.mocked(ticketingHooks.useTicketingContainers).mockReturnValue({
-      data: [{ provider: "clickup", id: "space-eng", key: null, name: "Engineering", kind: "project" }],
+      data: [{ provider: "clickup", id: "space-eng", key: null, name: "Engineering", kind: "space" }],
       isLoading: false,
       isError: false,
       error: null,
@@ -1728,9 +1962,9 @@ describe("TicketingDashboardView", () => {
         {
           provider: "clickup",
           kind: "clickup",
-          id: "CU-1001",
+          id: "cu-1001",
           key: "CU-1001",
-          title: "Wire ClickUp tasks into the unified dashboard",
+          title: "Demo ClickUp dashboard task",
           url: "https://app.clickup.com/t/CU-1001",
         },
       ],

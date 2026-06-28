@@ -20,6 +20,7 @@ Primary project docs:
 - `.claude/rules/multi-harness.md` for provider-neutral runtime/config/event rules and documentation sync requirements
 - `.claude/rules/agent-mcp-tools.md` for multi-layer agent MCP/tool alignment across prompt frontmatter, `config/ralphx.yaml`, and MCP allowlists
 - `.claude/rules/merge-recovery-consistency.md` for the coupled merge-failure behavior across merge outcome handling, manual retry, reconciliation, startup recovery, and MergeIncomplete UI
+- `.claude/rules/stateful-workflow-review.md` for false-success review of completion/cache/retry/recovery/state-machine changes
 - `.claude/rules/rust-test-execution.md` for selective Rust test commands, the standard Rust test stack, shared SQLite fixtures/builders, and the no-broad-`fmt` rule
 - `.claude/rules/wkwebview-css-vars.md` for Tauri (WKWebView) CSS custom-property inheritance rules — theme tokens for bg/text/border MUST be literals, not chained `var()` references
 - `.claude/rules/release-script-validation.md` for safe validation of release proposal/wrapper scripts without triggering real publish steps
@@ -37,6 +38,7 @@ Primary project docs:
 - When touching filesystem sinks or any path influenced by external/runtime state, read `.claude/rules/codeql-path-safety.md` first.
 - CodeQL path findings block PRs: tests are scanned too; use process-owned runtime roots, fixed entry lists, pure test builders, and suppress `rust/path-injection` only after containment validation.
 - When touching merge failure recovery, merge retry/resolve actions, merge reconciliation, or startup merge remediation, read `.claude/rules/merge-recovery-consistency.md` first.
+- When touching completion gates, validation caches, retries, recovery, state-machine transitions, or execution prompts, read `.claude/rules/stateful-workflow-review.md` first and run a false-success review before handoff.
 - When touching release automation, read `.claude/rules/release-script-validation.md` first.
 - Preserve user work: never revert unrelated edits; isolate your diffs in a dirty tree.
 - PR branch freshness (NON-NEGOTIABLE): before opening, updating, or handing off a PR, fetch the base branch, rebase onto the latest `origin/<base>`, and push the rebased branch so GitHub does not show it as behind.
@@ -46,6 +48,7 @@ Primary project docs:
 - Legacy harness compatibility (NON-NEGOTIABLE): provider-neutral changes stay additive/derivable from legacy Claude-only persisted data until an explicit migration removes that requirement.
 - Minimal diffs: avoid formatter churn and opportunistic refactors.
 - Context-preservation trackers (NON-NEGOTIABLE): for multi-step investigations or fixes, create and keep updating a local tracker under `.artifacts/specs/<topic>/tracker.md` so findings and decisions survive context compaction.
+- Tracker Git probes (NON-NEGOTIABLE): `.artifacts/specs/**/tracker.md` is ignored local state; create parent dirs/files as needed, and never pass tracker paths as `--ignored=<path>`. Use `git status --short -- <path>` for status, `git check-ignore -v -- <path> || true` for ignore diagnostics, or `git status --short --ignored=matching -- <path>` when ignored status output is required.
 - Agent tool alignment: keep prompt frontmatter, canonical agent metadata, `config/ralphx.yaml`, and MCP allowlists aligned. Source: `.claude/rules/agent-mcp-tools.md`.
 - Prompts are not migration diaries (NON-NEGOTIABLE): prompts are clean contracts for the live tool surface and role; migration notes, forbidden legacy paths, and compatibility ballast belong in backend validation, tests, or docs, not prompt prose.
 - Surface-local descriptions only (NON-NEGOTIABLE): tool schemas, recovery hints, and prompt prose must not mention tools that are not on the caller agent’s live tool surface.
@@ -53,6 +56,7 @@ Primary project docs:
 - Model chooses lenses, backend runs them (NON-NEGOTIABLE): optional specialist selection belongs to the model; backend owns dispatch, waits, settlement, parent resolution, and terminal state.
 - Kill transitional vocabulary: when typed findings replace artifact-prefix contracts, remove the old artifact/prefix language from live verifier surfaces instead of narrating both.
 - Verification regressions are TDD-first (NON-NEGOTIABLE): reproduce backend, prompt-contract, and UI failures with focused tests before patching production code.
+- Stateful workflow regressions are false-success-first (NON-NEGOTIABLE): tests and reviews must attack stale attempts, stale cache, fail-open reads, event ordering, prompt/schema drift, and path sinks before handoff.
 - Handler module split: oversized Rust HTTP handlers belong in directory-backed modules, not giant single files.
 - Mechanical extraction only (NON-NEGOTIABLE): large moves/splits must use real mechanical extraction (`mv`, `sed`, `awk`, scripts), not hand-copying.
 - `apply_patch` is fix-up only (NON-NEGOTIABLE): after a mechanical move, use it only for imports, visibility, wiring, and tests.
@@ -88,6 +92,7 @@ When working in `src-tauri/`, also follow:
 - `.claude/rules/code-quality-standards.md`
 - `.claude/rules/production-cli-resolution.md`
 - `.claude/rules/codeql-path-safety.md`
+- `.claude/rules/stateful-workflow-review.md`
 - `.claude/rules/agent-mcp-tools.md`
 
 ## Optimization Tracking

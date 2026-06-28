@@ -19,6 +19,8 @@ export interface AgentProviderAvailabilityOption {
   cliVersion?: string | null;
   supportedModelAliases?: readonly string[] | null;
   supportedEfforts?: readonly string[] | null;
+  supportsFastMode?: boolean;
+  fastModeSupportedModels?: readonly string[];
 }
 
 export function buildAgentProviderAvailabilityOptions({
@@ -46,6 +48,12 @@ export function buildAgentProviderAvailabilityOptions({
         : {}),
       ...(provider?.supportedEfforts !== undefined
         ? { supportedEfforts: provider.supportedEfforts }
+        : {}),
+      ...(provider?.supportsFastMode !== undefined
+        ? { supportsFastMode: provider.supportsFastMode }
+        : {}),
+      ...(provider?.fastModeSupportedModels !== undefined
+        ? { fastModeSupportedModels: provider.fastModeSupportedModels }
         : {}),
       ...(disabledReason ? { disabled: true, disabledReason } : {}),
     };

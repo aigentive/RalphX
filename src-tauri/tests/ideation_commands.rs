@@ -2762,6 +2762,7 @@ async fn test_apply_proposals_core_linked_agent_workspace_reuses_conversation_br
         AgentConversationWorkspaceMode::Ideation,
         AgentConversationWorkspaceBaseSelection {
             kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+                branch_mode: None,
             base_ref: Some("main".to_string()),
             display_name: Some("Project default (main)".to_string()),
             source_pull_request: None,

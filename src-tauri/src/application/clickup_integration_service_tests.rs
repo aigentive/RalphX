@@ -5,9 +5,10 @@ use async_trait::async_trait;
 use tokio::sync::{Mutex, RwLock};
 
 use crate::application::clickup_integration_service::{
-    ClickUpApiClient, ClickUpAuthContext, ClickUpComment, ClickUpIntegrationService, ClickUpSpace,
-    ClickUpStatus, ClickUpTaskContent, ClickUpTaskListOptions, ClickUpTaskSummary, ClickUpUser,
-    ClickUpWorkspace, EmptyClickUpApiClient, UnavailableClickUpApiClient,
+    ClickUpApiClient, ClickUpAuthContext, ClickUpComment, ClickUpFolder, ClickUpIntegrationService,
+    ClickUpList, ClickUpSpace, ClickUpStatus, ClickUpTaskContent, ClickUpTaskListOptions,
+    ClickUpTaskSummary, ClickUpUser, ClickUpWorkspace, EmptyClickUpApiClient,
+    UnavailableClickUpApiClient,
 };
 use crate::domain::integrations::{
     ClickUpIntegrationSettingsRepository, IntegrationValidationStatus,
@@ -98,6 +99,14 @@ struct TestClickUpClient {
     seen_tokens: Mutex<Vec<String>>,
     list_tasks_calls: Mutex<Vec<(String, Vec<String>)>>,
     list_spaces_calls: Mutex<Vec<String>>,
+    list_folders_calls: Mutex<Vec<String>>,
+    list_folder_lists_calls: Mutex<Vec<String>>,
+    list_folderless_lists_calls: Mutex<Vec<String>>,
+    list_tasks_for_list_calls: Mutex<Vec<(String, Vec<i64>)>>,
+    fetch_task_calls: Mutex<Vec<String>>,
+    fetch_task_failures: Mutex<Vec<String>>,
+    custom_task_calls: Mutex<Vec<(String, String)>>,
+    custom_task_failures: Mutex<Vec<String>>,
     status_updates: Mutex<Vec<(String, String)>>,
     assignments: Mutex<Vec<String>>,
     cleared_assignees: Mutex<Vec<String>>,
@@ -112,6 +121,21 @@ impl TestClickUpClient {
         }
     }
 
+    fn with_fetch_task_failure(task_id: &str) -> Self {
+        Self {
+            fetch_task_failures: Mutex::new(vec![task_id.to_string()]),
+            ..Default::default()
+        }
+    }
+
+    fn with_fetch_and_custom_task_failure(task_id: &str) -> Self {
+        Self {
+            fetch_task_failures: Mutex::new(vec![task_id.to_string()]),
+            custom_task_failures: Mutex::new(vec![task_id.to_string()]),
+            ..Default::default()
+        }
+    }
+
     async fn seen_tokens(&self) -> Vec<String> {
         self.seen_tokens.lock().await.clone()
     }
@@ -122,6 +146,30 @@ impl TestClickUpClient {
 
     async fn list_spaces_calls(&self) -> Vec<String> {
         self.list_spaces_calls.lock().await.clone()
+    }
+
+    async fn list_folders_calls(&self) -> Vec<String> {
+        self.list_folders_calls.lock().await.clone()
+    }
+
+    async fn list_folder_lists_calls(&self) -> Vec<String> {
+        self.list_folder_lists_calls.lock().await.clone()
+    }
+
+    async fn list_folderless_lists_calls(&self) -> Vec<String> {
+        self.list_folderless_lists_calls.lock().await.clone()
+    }
+
+    async fn list_tasks_for_list_calls(&self) -> Vec<(String, Vec<i64>)> {
+        self.list_tasks_for_list_calls.lock().await.clone()
+    }
+
+    async fn fetch_task_calls(&self) -> Vec<String> {
+        self.fetch_task_calls.lock().await.clone()
+    }
+
+    async fn custom_task_calls(&self) -> Vec<(String, String)> {
+        self.custom_task_calls.lock().await.clone()
     }
 
     async fn status_updates(&self) -> Vec<(String, String)> {
@@ -181,6 +229,59 @@ impl ClickUpApiClient for TestClickUpClient {
         }])
     }
 
+    async fn list_folders(
+        &self,
+        auth: &ClickUpAuthContext,
+        space_id: &str,
+    ) -> Result<Vec<ClickUpFolder>, String> {
+        self.seen_tokens.lock().await.push(auth.api_token.clone());
+        self.list_folders_calls
+            .lock()
+            .await
+            .push(space_id.to_string());
+        Ok(vec![ClickUpFolder {
+            id: "folder-1".to_string(),
+            name: "Folder".to_string(),
+            space_id: Some(space_id.to_string()),
+        }])
+    }
+
+    async fn list_folder_lists(
+        &self,
+        auth: &ClickUpAuthContext,
+        folder_id: &str,
+    ) -> Result<Vec<ClickUpList>, String> {
+        self.seen_tokens.lock().await.push(auth.api_token.clone());
+        self.list_folder_lists_calls
+            .lock()
+            .await
+            .push(folder_id.to_string());
+        Ok(vec![ClickUpList {
+            id: "list-folder".to_string(),
+            name: "Folder List".to_string(),
+            folder_id: Some(folder_id.to_string()),
+            space_id: Some("space-1".to_string()),
+        }])
+    }
+
+    async fn list_folderless_lists(
+        &self,
+        auth: &ClickUpAuthContext,
+        space_id: &str,
+    ) -> Result<Vec<ClickUpList>, String> {
+        self.seen_tokens.lock().await.push(auth.api_token.clone());
+        self.list_folderless_lists_calls
+            .lock()
+            .await
+            .push(space_id.to_string());
+        Ok(vec![ClickUpList {
+            id: "list-space".to_string(),
+            name: "Space List".to_string(),
+            folder_id: None,
+            space_id: Some(space_id.to_string()),
+        }])
+    }
+
     async fn list_tasks(
         &self,
         auth: &ClickUpAuthContext,
@@ -206,9 +307,51 @@ impl ClickUpApiClient for TestClickUpClient {
             assignee_ids: vec![42],
             watchers: Vec::new(),
             tags: vec!["bug".to_string()],
+            sprint_names: Vec::new(),
+            location_ids: Vec::new(),
+            location_folder_ids: Vec::new(),
+            location_space_ids: Vec::new(),
             space_id: Some("space-1".to_string()),
+            folder_id: None,
+            list_id: None,
             list_name: Some("Sprint".to_string()),
             updated_at: Some("1700000000000".to_string()),
+        }])
+    }
+
+    async fn list_tasks_for_list(
+        &self,
+        auth: &ClickUpAuthContext,
+        list_id: &str,
+        options: ClickUpTaskListOptions,
+    ) -> Result<Vec<ClickUpTaskSummary>, String> {
+        self.seen_tokens.lock().await.push(auth.api_token.clone());
+        self.list_tasks_for_list_calls
+            .lock()
+            .await
+            .push((list_id.to_string(), options.assignee_ids));
+        Ok(vec![ClickUpTaskSummary {
+            id: "list-task".to_string(),
+            custom_id: None,
+            name: "List scoped task".to_string(),
+            url: None,
+            status_name: Some("todo".to_string()),
+            status_type: Some("open".to_string()),
+            status_category: Some("todo".to_string()),
+            status_color: None,
+            assignees: Vec::new(),
+            assignee_ids: Vec::new(),
+            watchers: Vec::new(),
+            tags: Vec::new(),
+            sprint_names: Vec::new(),
+            location_ids: vec![list_id.to_string()],
+            location_folder_ids: Vec::new(),
+            location_space_ids: Vec::new(),
+            space_id: Some("space-1".to_string()),
+            folder_id: None,
+            list_id: Some(list_id.to_string()),
+            list_name: Some("Space List".to_string()),
+            updated_at: None,
         }])
     }
 
@@ -218,11 +361,62 @@ impl ClickUpApiClient for TestClickUpClient {
         task_id: &str,
     ) -> Result<ClickUpTaskContent, String> {
         self.seen_tokens.lock().await.push(auth.api_token.clone());
+        self.fetch_task_calls.lock().await.push(task_id.to_string());
+        if self
+            .fetch_task_failures
+            .lock()
+            .await
+            .iter()
+            .any(|value| value == task_id)
+        {
+            return Err("ClickUp returned HTTP 404".to_string());
+        }
         Ok(ClickUpTaskContent {
             id: task_id.to_string(),
             custom_id: None,
             name: "Fix login".to_string(),
             url: None,
+            description: "body".to_string(),
+            status_name: Some("in progress".to_string()),
+            status_type: Some("custom".to_string()),
+            status_category: Some("in_progress".to_string()),
+            creator: Some("dev".to_string()),
+            assignees: Vec::new(),
+            watchers: Vec::new(),
+            tags: Vec::new(),
+            comments: Vec::new(),
+            attachments: Vec::new(),
+            updated_at: None,
+            space_id: Some("space-1".to_string()),
+            list_name: Some("Sprint".to_string()),
+        })
+    }
+
+    async fn fetch_task_by_custom_id(
+        &self,
+        auth: &ClickUpAuthContext,
+        team_id: &str,
+        task_id: &str,
+    ) -> Result<ClickUpTaskContent, String> {
+        self.seen_tokens.lock().await.push(auth.api_token.clone());
+        self.custom_task_calls
+            .lock()
+            .await
+            .push((team_id.to_string(), task_id.to_string()));
+        if self
+            .custom_task_failures
+            .lock()
+            .await
+            .iter()
+            .any(|value| value == task_id)
+        {
+            return Err("ClickUp custom lookup returned HTTP 404".to_string());
+        }
+        Ok(ClickUpTaskContent {
+            id: "opaque-from-custom".to_string(),
+            custom_id: Some(task_id.to_string()),
+            name: "Fix login".to_string(),
+            url: Some(format!("https://app.clickup.com/t/{team_id}/{task_id}")),
             description: "body".to_string(),
             status_name: Some("in progress".to_string()),
             status_type: Some("custom".to_string()),
@@ -662,6 +856,54 @@ async fn list_spaces_and_tasks_succeed_when_enabled_with_workspace() {
 }
 
 #[tokio::test]
+async fn enabled_service_passes_through_clickup_hierarchy_and_list_tasks() {
+    let client = Arc::new(TestClickUpClient::default());
+    let (service, _repo, _secret) = build_service(client.clone());
+
+    service
+        .save_settings(Some("pk_token".to_string()), Some("9000".to_string()))
+        .await
+        .unwrap();
+    service.validate_and_enable().await.unwrap();
+
+    let folders = service.list_folders("space-1").await.unwrap();
+    let folder_lists = service.list_folder_lists("folder-1").await.unwrap();
+    let folderless_lists = service.list_folderless_lists("space-1").await.unwrap();
+    let list_tasks = service
+        .list_tasks_for_list(
+            "list-space",
+            ClickUpTaskListOptions {
+                query: Some("current".to_string()),
+                limit: Some(25),
+                assignee_ids: vec![42],
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(folders[0].id, "folder-1");
+    assert_eq!(folder_lists[0].folder_id.as_deref(), Some("folder-1"));
+    assert_eq!(folderless_lists[0].space_id.as_deref(), Some("space-1"));
+    assert_eq!(list_tasks[0].list_id.as_deref(), Some("list-space"));
+    assert_eq!(
+        client.list_folders_calls().await,
+        vec!["space-1".to_string()]
+    );
+    assert_eq!(
+        client.list_folder_lists_calls().await,
+        vec!["folder-1".to_string()]
+    );
+    assert_eq!(
+        client.list_folderless_lists_calls().await,
+        vec!["space-1".to_string()]
+    );
+    assert_eq!(
+        client.list_tasks_for_list_calls().await,
+        vec![("list-space".to_string(), vec![42])]
+    );
+}
+
+#[tokio::test]
 async fn create_comment_passes_through_when_enabled() {
     let client = Arc::new(TestClickUpClient::default());
     let (service, _repo, _secret) = build_service(client);
@@ -721,6 +963,98 @@ async fn enabled_service_passes_through_task_detail_user_status_assignment_and_t
             "abc123".to_string(),
             vec!["bug".to_string(), "backend".to_string()]
         )]
+    );
+}
+
+#[tokio::test]
+async fn fetch_task_retries_custom_id_lookup_with_selected_workspace() {
+    let client = Arc::new(TestClickUpClient::with_fetch_task_failure("TASK-123"));
+    let (service, _repo, _secret) = build_service(client.clone());
+
+    service
+        .save_settings(Some("pk_token".to_string()), Some("9000".to_string()))
+        .await
+        .unwrap();
+    service.validate_and_enable().await.unwrap();
+
+    let detail = service.fetch_task("TASK-123").await.unwrap();
+
+    assert_eq!(detail.id, "opaque-from-custom");
+    assert_eq!(detail.custom_id.as_deref(), Some("TASK-123"));
+    assert_eq!(
+        client.fetch_task_calls().await,
+        vec!["TASK-123".to_string()]
+    );
+    assert_eq!(
+        client.custom_task_calls().await,
+        vec![("9000".to_string(), "TASK-123".to_string())]
+    );
+}
+
+#[tokio::test]
+async fn fetch_task_skips_custom_id_lookup_without_selected_workspace() {
+    let client = Arc::new(TestClickUpClient::with_fetch_task_failure("TASK-123"));
+    let (service, _repo, _secret) = build_service(client.clone());
+
+    service
+        .save_settings(Some("pk_token".to_string()), None)
+        .await
+        .unwrap();
+    service.validate_and_enable().await.unwrap();
+
+    let error = service.fetch_task("TASK-123").await.unwrap_err();
+
+    assert_eq!(error, "ClickUp returned HTTP 404");
+    assert_eq!(
+        client.fetch_task_calls().await,
+        vec!["TASK-123".to_string()]
+    );
+    assert!(client.custom_task_calls().await.is_empty());
+}
+
+#[tokio::test]
+async fn fetch_task_skips_custom_id_lookup_for_opaque_ids() {
+    let client = Arc::new(TestClickUpClient::with_fetch_task_failure("123456789"));
+    let (service, _repo, _secret) = build_service(client.clone());
+
+    service
+        .save_settings(Some("pk_token".to_string()), Some("9000".to_string()))
+        .await
+        .unwrap();
+    service.validate_and_enable().await.unwrap();
+
+    let error = service.fetch_task("123456789").await.unwrap_err();
+
+    assert_eq!(error, "ClickUp returned HTTP 404");
+    assert_eq!(
+        client.fetch_task_calls().await,
+        vec!["123456789".to_string()]
+    );
+    assert!(client.custom_task_calls().await.is_empty());
+}
+
+#[tokio::test]
+async fn fetch_task_reports_custom_id_lookup_failure() {
+    let client = Arc::new(TestClickUpClient::with_fetch_and_custom_task_failure(
+        "TASK-404",
+    ));
+    let (service, _repo, _secret) = build_service(client.clone());
+
+    service
+        .save_settings(Some("pk_token".to_string()), Some("9000".to_string()))
+        .await
+        .unwrap();
+    service.validate_and_enable().await.unwrap();
+
+    let error = service.fetch_task("TASK-404").await.unwrap_err();
+
+    assert_eq!(
+        error,
+        "ClickUp returned HTTP 404; ClickUp custom task id lookup also failed: ClickUp custom lookup returned HTTP 404"
+    );
+    assert_eq!(
+        client.custom_task_calls().await,
+        vec![("9000".to_string(), "TASK-404".to_string())]
     );
 }
 

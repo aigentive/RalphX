@@ -92,6 +92,7 @@ vi.mock("./AgentsPublishDiffFilter", () => ({
     workspaceChangeLabel,
     stagedCount,
     unstagedCount,
+    conflictedCount,
     supportsWorktreeModes,
   }: {
     mode: string;
@@ -100,6 +101,7 @@ vi.mock("./AgentsPublishDiffFilter", () => ({
     workspaceChangeLabel?: string;
     stagedCount?: number;
     unstagedCount?: number;
+    conflictedCount?: number;
     commits: unknown[];
     supportsWorktreeModes?: boolean;
   }) => (
@@ -110,11 +112,13 @@ vi.mock("./AgentsPublishDiffFilter", () => ({
       data-label={workspaceChangeLabel ?? ""}
       data-staged-count={stagedCount ?? ""}
       data-unstaged-count={unstagedCount ?? ""}
+      data-conflicted-count={conflictedCount ?? ""}
       data-supports-worktree-modes={String(supportsWorktreeModes)}
     >
       <button onClick={() => onModeChange("uncommitted")}>
         {workspaceChangeLabel ?? "Workspace changes"}
       </button>
+      <button onClick={() => onModeChange("conflicted")}>Conflicted</button>
       <button onClick={() => onModeChange("sha-abc")}>Commit sha-abc</button>
       <button onClick={() => onModeChange("staged")}>Staged</button>
       <button onClick={() => onModeChange("unstaged")}>Unstaged</button>
@@ -134,6 +138,7 @@ vi.mock("./AgentsPublishFileDiff", () => ({
   AgentsPublishFileDiff: ({
     file,
     diff,
+    conflictDiff,
     isExpanded,
     onToggle,
     onCopyPath,
@@ -149,6 +154,7 @@ vi.mock("./AgentsPublishFileDiff", () => ({
   }: {
     file: { path: string };
     diff: unknown;
+    conflictDiff?: unknown;
     isExpanded: boolean;
     onToggle: () => void;
     onCopyPath: (p: string) => void;
@@ -167,6 +173,9 @@ vi.mock("./AgentsPublishFileDiff", () => ({
       data-testid={`mock-file-diff-${file.path.replace(/\//g, "-")}`}
       data-expanded={String(isExpanded)}
       data-diff-status={typeof diff === "string" ? diff : diff ? "loaded" : "undefined"}
+      data-conflict-diff-status={
+        typeof conflictDiff === "string" ? conflictDiff : conflictDiff ? "loaded" : "undefined"
+      }
       data-ref-kind={refKind?.kind}
       data-diff-page-ref-kind={diffPageRefKind?.kind}
       data-conversation-id={conversationId}
@@ -207,6 +216,11 @@ const mockGetCumulativeFiles = vi.fn();
 const mockGetStagedFileDiff = vi.fn();
 const mockGetUnstagedFileDiff = vi.fn();
 const mockGetCumulativeFileDiff = vi.fn();
+const mockGetRepairConflictFileDiff = vi.fn();
+const mockGetRepairStagedFiles = vi.fn();
+const mockGetRepairUnstagedFiles = vi.fn();
+const mockGetRepairStagedFileDiff = vi.fn();
+const mockGetRepairUnstagedFileDiff = vi.fn();
 
 vi.mock("@/api/diff", () => ({
   diffApi: {
@@ -220,14 +234,24 @@ vi.mock("@/api/diff", () => ({
       mockGetStagedFiles(...args),
     getAgentConversationWorkspaceUnstagedFileChanges: (...args: unknown[]) =>
       mockGetUnstagedFiles(...args),
+    getAgentConversationWorkspaceRepairStagedFileChanges: (...args: unknown[]) =>
+      mockGetRepairStagedFiles(...args),
+    getAgentConversationWorkspaceRepairUnstagedFileChanges: (...args: unknown[]) =>
+      mockGetRepairUnstagedFiles(...args),
     getAgentConversationWorkspaceCumulativeFileChanges: (...args: unknown[]) =>
       mockGetCumulativeFiles(...args),
     getAgentConversationWorkspaceStagedFileDiff: (...args: unknown[]) =>
       mockGetStagedFileDiff(...args),
     getAgentConversationWorkspaceUnstagedFileDiff: (...args: unknown[]) =>
       mockGetUnstagedFileDiff(...args),
+    getAgentConversationWorkspaceRepairStagedFileDiff: (...args: unknown[]) =>
+      mockGetRepairStagedFileDiff(...args),
+    getAgentConversationWorkspaceRepairUnstagedFileDiff: (...args: unknown[]) =>
+      mockGetRepairUnstagedFileDiff(...args),
     getAgentConversationWorkspaceCumulativeFileDiff: (...args: unknown[]) =>
       mockGetCumulativeFileDiff(...args),
+    getAgentConversationWorkspaceRepairConflictFileDiff: (...args: unknown[]) =>
+      mockGetRepairConflictFileDiff(...args),
   },
 }));
 
@@ -335,16 +359,29 @@ describe("AgentsPublishInlineDiffs", () => {
       newTotalLines: 1,
       isBinary: false,
     });
+    const makeConflictDiff = (filePath: string) => ({
+      filePath,
+      baseContent: "base\n",
+      oursContent: "ours\n",
+      theirsContent: "theirs\n",
+      mergedWithMarkers: "<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> branch\n",
+      language: "typescript",
+    });
 
     mockGetUncommittedDiff.mockResolvedValue(makeHunkDiff("src/Foo.tsx"));
     mockGetCommitDiff.mockResolvedValue(makeHunkDiff("src/Foo.tsx"));
     mockGetCommitFiles.mockResolvedValue([makeFileChange("src/CommitOnly.tsx")]);
     mockGetStagedFiles.mockResolvedValue([]);
     mockGetUnstagedFiles.mockResolvedValue([]);
+    mockGetRepairStagedFiles.mockResolvedValue([]);
+    mockGetRepairUnstagedFiles.mockResolvedValue([]);
     mockGetCumulativeFiles.mockResolvedValue([makeFileChange("src/CumulativeFile.tsx")]);
     mockGetStagedFileDiff.mockResolvedValue(makeHunkDiff("src/StagedFile.tsx"));
     mockGetUnstagedFileDiff.mockResolvedValue(makeHunkDiff("src/UnstagedFile.tsx"));
+    mockGetRepairStagedFileDiff.mockResolvedValue(makeHunkDiff("src/StagedFile.tsx"));
+    mockGetRepairUnstagedFileDiff.mockResolvedValue(makeHunkDiff("src/UnstagedFile.tsx"));
     mockGetCumulativeFileDiff.mockResolvedValue(makeHunkDiff("src/CumulativeFile.tsx"));
+    mockGetRepairConflictFileDiff.mockResolvedValue(makeConflictDiff("src/Conflict.tsx"));
   });
 
   describe("rendering", () => {
@@ -577,6 +614,172 @@ describe("AgentsPublishInlineDiffs", () => {
       expect(screen.getByTestId("mock-diff-filter")).toHaveAttribute("data-staged-count", "1");
       expect(screen.getByTestId("mock-file-diff-src-UnstagedFile.tsx")).toBeInTheDocument();
       expect(screen.queryByTestId("mock-file-diff-src-WorkspaceFile.tsx")).toBeNull();
+    });
+
+    it("auto-selects conflicted repair files before staged and unstaged changes", async () => {
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={null}
+            commits={[]}
+            isLoading={false}
+            repairMode
+            liveSummary={{
+              supportsWorktreeModes: true,
+              staged: { fileCount: 1, additions: 8, deletions: 2 },
+              unstaged: { fileCount: 1, additions: 3, deletions: 1 },
+              conflicted: { fileCount: 1, files: ["src/Conflict.tsx"] },
+            }}
+          />,
+        ),
+      );
+
+      await waitFor(() =>
+        expect(screen.getByTestId("mock-diff-filter")).toHaveAttribute(
+          "data-mode",
+          "conflicted",
+        ),
+      );
+      expect(screen.getByTestId("mock-diff-filter")).toHaveAttribute(
+        "data-conflicted-count",
+        "1",
+      );
+      expect(screen.getByTestId("mock-file-diff-src-Conflict.tsx")).toBeInTheDocument();
+      expect(screen.queryByTestId("mock-file-diff-src-UnstagedFile.tsx")).toBeNull();
+
+      fireVirtualRange(0, 0);
+      await waitFor(() =>
+        expect(mockGetRepairConflictFileDiff).toHaveBeenCalledWith(
+          "conv-1",
+          "src/Conflict.tsx",
+        ),
+      );
+      expect(screen.getByTestId("mock-file-diff-src-Conflict.tsx")).toHaveAttribute(
+        "data-conflict-diff-status",
+        "loaded",
+      );
+      expect(mockGetUnstagedFileDiff).not.toHaveBeenCalled();
+      expect(mockGetStagedFileDiff).not.toHaveBeenCalled();
+      expect(mockGetUnstagedFiles).not.toHaveBeenCalled();
+      expect(mockGetStagedFiles).not.toHaveBeenCalled();
+    });
+
+    it("uses paged staged loading for large repair staged diffs", async () => {
+      mockGetRepairStagedFiles.mockResolvedValue([
+        makeFileChange("src/HugeRepair.tsx", { additions: 3_307, deletions: 9 }),
+      ]);
+
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={null}
+            commits={[]}
+            isLoading={false}
+            repairMode
+            liveSummary={{
+              supportsWorktreeModes: true,
+              staged: { fileCount: 1, additions: 3_307, deletions: 9 },
+              unstaged: { fileCount: 0, additions: 0, deletions: 0 },
+              conflicted: { fileCount: 0, files: [] },
+            }}
+          />,
+        ),
+      );
+
+      await waitFor(() =>
+        expect(screen.getByTestId("mock-diff-filter")).toHaveAttribute("data-mode", "staged"),
+      );
+      await waitFor(() =>
+        expect(screen.getByTestId("mock-file-diff-src-HugeRepair.tsx")).toBeInTheDocument(),
+      );
+      fireVirtualRange(0, 0);
+
+      const card = screen.getByTestId("mock-file-diff-src-HugeRepair.tsx");
+      expect(card).toHaveAttribute("data-diff-page-ref-kind", "staged");
+      expect(mockGetRepairStagedFileDiff).not.toHaveBeenCalled();
+    });
+
+    it("keeps unchanged repair summary rerenders on the same diff and refetches after the repair signature changes", async () => {
+      const baseSummary = {
+        supportsWorktreeModes: true,
+        staged: { fileCount: 1, additions: 5, deletions: 2 },
+        unstaged: { fileCount: 0, additions: 0, deletions: 0 },
+        conflicted: { fileCount: 0, files: [] },
+      };
+      mockGetRepairStagedFiles.mockResolvedValue([makeFileChange("src/StagedFile.tsx")]);
+
+      const { rerender } = render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={null}
+            commits={[]}
+            isLoading={false}
+            repairMode
+            liveSummary={baseSummary}
+          />,
+        ),
+      );
+
+      await waitFor(() =>
+        expect(screen.getByTestId("mock-diff-filter")).toHaveAttribute("data-mode", "staged"),
+      );
+      await waitFor(() =>
+        expect(screen.getByTestId("mock-file-diff-src-StagedFile.tsx")).toBeInTheDocument(),
+      );
+      fireVirtualRange(0, 0);
+      await waitFor(() =>
+        expect(screen.getByTestId("mock-file-diff-src-StagedFile.tsx")).toHaveAttribute(
+          "data-should-hydrate",
+          "true",
+        ),
+      );
+      await waitFor(() =>
+        expect(mockGetRepairStagedFileDiff).toHaveBeenCalledTimes(1),
+      );
+
+      rerender(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={null}
+            commits={[]}
+            isLoading={false}
+            repairMode
+            liveSummary={{
+              supportsWorktreeModes: true,
+              staged: { fileCount: 1, additions: 5, deletions: 2 },
+              unstaged: { fileCount: 0, additions: 0, deletions: 0 },
+              conflicted: { fileCount: 0, files: [] },
+            }}
+          />,
+        ),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(mockGetRepairStagedFileDiff).toHaveBeenCalledTimes(1);
+
+      rerender(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={null}
+            commits={[]}
+            isLoading={false}
+            repairMode
+            liveSummary={{
+              supportsWorktreeModes: true,
+              staged: { fileCount: 1, additions: 6, deletions: 2 },
+              unstaged: { fileCount: 0, additions: 0, deletions: 0 },
+              conflicted: { fileCount: 0, files: [] },
+            }}
+          />,
+        ),
+      );
+      await waitFor(() =>
+        expect(mockGetRepairStagedFileDiff).toHaveBeenCalledTimes(2),
+      );
     });
 
     it("hydrates published workspace diffs after unstaged changes are published", async () => {

@@ -312,6 +312,45 @@ fn test_get_conflict_files_empty() {
 }
 
 #[test]
+fn index_conflict_diff_reads_unmerged_git_stages() {
+    let (_tmp, repo) = create_staged_unstaged_repo();
+    let repo_str = repo.to_string_lossy().to_string();
+
+    fs::write(repo.join("base.txt"), "base\nours\n").unwrap();
+    git_cmd(&repo, &["add", "base.txt"]);
+    git_cmd(&repo, &["commit", "-m", "Update ours"]);
+
+    git_cmd(&repo, &["checkout", "-b", "incoming", "HEAD~1"]);
+    fs::write(repo.join("base.txt"), "base\ntheirs\n").unwrap();
+    git_cmd(&repo, &["add", "base.txt"]);
+    git_cmd(&repo, &["commit", "-m", "Update theirs"]);
+
+    git_cmd(&repo, &["checkout", "main"]);
+    let output = std::process::Command::new("git")
+        .args(["merge", "incoming"])
+        .current_dir(&repo)
+        .output()
+        .expect("git merge should run");
+    assert!(
+        !output.status.success(),
+        "merge should leave base.txt conflicted"
+    );
+
+    let diff = DiffService::new()
+        .get_index_conflict_diff("base.txt", &repo_str)
+        .expect("conflict diff should read index stages");
+
+    assert_eq!(diff.file_path, "base.txt");
+    assert_eq!(diff.base_content, "base\n");
+    assert_eq!(diff.ours_content, "base\nours\n");
+    assert_eq!(diff.theirs_content, "base\ntheirs\n");
+    assert!(diff.merged_with_markers.contains("<<<<<<<"));
+    assert!(diff.merged_with_markers.contains("ours"));
+    assert!(diff.merged_with_markers.contains("theirs"));
+    assert_eq!(diff.language, "plaintext");
+}
+
+#[test]
 fn test_resolve_git_dir_regular_repo() {
     let (_temp_dir, repo_path) = create_git_repo();
 

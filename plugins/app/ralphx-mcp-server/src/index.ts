@@ -779,8 +779,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         inherit_context?: boolean;
         initial_prompt?: string;
         source_task_id?: string;
-        source_context_type: string;
-        source_context_id: string;
+        source_context_type?: string;
+        source_context_id?: string;
         spawn_reason: string;
         blocker_fingerprint?: string;
       };
@@ -812,6 +812,102 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         source_context_id,
         spawn_reason,
         blocker_fingerprint: resolvedBlockerFingerprint,
+      });
+    } else if (name === "create_followup_agent_conversation") {
+      // POST /api/create_followup_agent_conversation
+      const {
+        origin_conversation_id,
+        source_task_id,
+        source_context_type,
+        source_context_id,
+        source_agent_name,
+        title,
+        description,
+        initial_prompt,
+        spawn_reason,
+        blocker_fingerprint,
+        provider_harness,
+        model_override,
+        logical_effort,
+      } = args as {
+        origin_conversation_id?: string;
+        source_task_id?: string;
+        source_context_type?: string;
+        source_context_id?: string;
+        source_agent_name?: string;
+        title: string;
+        description?: string;
+        initial_prompt?: string;
+        spawn_reason: string;
+        blocker_fingerprint?: string;
+        provider_harness?: string;
+        model_override?: string;
+        logical_effort?: string;
+      };
+      const resolvedSourceTaskId = source_task_id ?? RALPHX_TASK_ID ?? undefined;
+      const resolvedSourceContextType = source_context_type ?? RALPHX_CONTEXT_TYPE ?? undefined;
+      const resolvedSourceContextId = source_context_id ?? resolvedSourceTaskId ?? RALPHX_CONTEXT_ID ?? undefined;
+      result = await callTauri("create_followup_agent_conversation", {
+        origin_conversation_id,
+        source_task_id: resolvedSourceTaskId,
+        source_context_type: resolvedSourceContextType,
+        source_context_id: resolvedSourceContextId,
+        source_agent_name: source_agent_name ?? AGENT_TYPE,
+        title,
+        description,
+        initial_prompt,
+        spawn_reason,
+        blocker_fingerprint,
+        provider_harness,
+        model_override,
+        logical_effort,
+      });
+    } else if (name === "register_agent_issue") {
+      const {
+        origin_conversation_id,
+        source_task_id,
+        source_context_type,
+        source_context_id,
+        source_agent_name,
+        issue_kind,
+        severity,
+        blocking_scope,
+        title,
+        summary,
+        evidence,
+        recommendation,
+        blocker_fingerprint,
+        followup_title,
+        followup_prompt,
+        auto_followup_eligible,
+        provider_harness,
+        model_override,
+        logical_effort,
+      } = args as Record<string, unknown>;
+      const resolvedSourceTaskId =
+        typeof source_task_id === "string" && source_task_id.trim().length > 0
+          ? source_task_id
+          : RALPHX_TASK_ID || undefined;
+      result = await callTauri("register_agent_issue", {
+        origin_conversation_id,
+        source_task_id: resolvedSourceTaskId,
+        source_context_type,
+        source_context_id,
+        source_agent_name: source_agent_name ?? AGENT_TYPE,
+        issue_kind,
+        severity,
+        blocking_scope,
+        title,
+        summary,
+        evidence,
+        recommendation,
+        blocker_fingerprint,
+        followup_title,
+        followup_prompt,
+        auto_followup_eligible: auto_followup_eligible ?? false,
+        provider_harness,
+        model_override,
+        logical_effort,
       });
     } else if (name === "get_parent_session_context") {
       // GET /api/parent_session_context/:session_id

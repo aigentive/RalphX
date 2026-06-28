@@ -245,6 +245,32 @@ describe("AgentComposerSurface", () => {
     expect(runtimePopover).not.toHaveClass("overflow-hidden");
   });
 
+  it("shows disabled Codex Fast mode reason in the runtime selector", () => {
+    renderComposer({
+      model: {
+        value: "gpt-5.4-mini",
+        onValueChange: vi.fn(),
+        options: [{ id: "gpt-5.4-mini", label: "gpt-5.4-mini" }],
+        fastMode: {
+          visible: true,
+          value: false,
+          disabled: true,
+          description: "Fast mode is not available for gpt-5.4-mini.",
+          onValueChange: vi.fn(),
+          testId: "composer-codex-fast-mode",
+        },
+      },
+    });
+
+    fireEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
+
+    expect(screen.getByText("Fast mode")).toBeInTheDocument();
+    expect(
+      screen.getByText("Fast mode is not available for gpt-5.4-mini."),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("composer-codex-fast-mode")).toBeDisabled();
+  });
+
   it("filters and selects projects from the compact project line", () => {
     const onValueChange = vi.fn();
     render(
@@ -790,28 +816,28 @@ describe("AgentComposerSurface", () => {
         {
           provider: "clickup",
           kind: "clickup",
-          id: "MBE-2857",
-          key: "MBE-2857",
-          title: "Inbox classifier",
-          url: "https://app.clickup.com/t/6925357/MBE-2857",
+          id: "TASK-123",
+          key: "TASK-123",
+          title: "Demo task",
+          url: "https://app.clickup.com/t/workspace-1/TASK-123",
         },
       ],
     });
 
     const pill = await screen.findByTestId(
-      "agent-composer-reference-pill-integration:clickup:MBE-2857",
+      "agent-composer-reference-pill-integration:clickup:TASK-123",
     );
     expect(pill).toHaveTextContent("ClickUp");
-    expect(pill).toHaveTextContent("Inbox classifier");
+    expect(pill).toHaveTextContent("Demo task");
 
     fireEvent.click(
       screen.getByRole("button", {
-        name: "Remove ClickUp reference MBE-2857",
+        name: "Remove ClickUp reference TASK-123",
       }),
     );
     expect(
       screen.queryByTestId(
-        "agent-composer-reference-pill-integration:clickup:MBE-2857",
+        "agent-composer-reference-pill-integration:clickup:TASK-123",
       ),
     ).not.toBeInTheDocument();
 
@@ -822,15 +848,15 @@ describe("AgentComposerSurface", () => {
         {
           provider: "clickup",
           kind: "clickup",
-          id: "MBE-2857",
-          key: "MBE-2857",
-          title: "Inbox classifier",
-          url: "https://app.clickup.com/t/6925357/MBE-2857",
+          id: "TASK-123",
+          key: "TASK-123",
+          title: "Demo task",
+          url: "https://app.clickup.com/t/workspace-1/TASK-123",
         },
       ],
     });
     await screen.findByTestId(
-      "agent-composer-reference-pill-integration:clickup:MBE-2857",
+      "agent-composer-reference-pill-integration:clickup:TASK-123",
     );
 
     fireEvent.click(screen.getByTestId("agent-composer-submit"));
@@ -846,10 +872,10 @@ describe("AgentComposerSurface", () => {
         {
           provider: "clickup",
           kind: "clickup",
-          id: "MBE-2857",
-          key: "MBE-2857",
-          title: "Inbox classifier",
-          url: "https://app.clickup.com/t/6925357/MBE-2857",
+          id: "TASK-123",
+          key: "TASK-123",
+          title: "Demo task",
+          url: "https://app.clickup.com/t/workspace-1/TASK-123",
         },
       ],
     });
@@ -1380,18 +1406,23 @@ describe("AgentComposerSurface", () => {
     });
 
     it("expands when the textarea is focused even with no text", () => {
-      renderComposer({ dataTestId: "agent-composer", collapsible: true });
+      const onLayoutChange = vi.fn();
+      renderComposer({ dataTestId: "agent-composer", collapsible: true, onLayoutChange });
       const surface = screen.getByTestId("agent-composer");
       const textarea = screen.getByLabelText(
         "Message input",
       ) as HTMLTextAreaElement;
 
+      onLayoutChange.mockClear();
       fireEvent.focus(textarea);
       expect(surface).toHaveAttribute("data-collapsed", "false");
+      expect(onLayoutChange).toHaveBeenCalled();
 
       // Blur with no text returns to the minimal resting state.
+      onLayoutChange.mockClear();
       fireEvent.blur(textarea);
       expect(surface).toHaveAttribute("data-collapsed", "true");
+      expect(onLayoutChange).toHaveBeenCalled();
     });
 
     it("stays minimal when a popover opens on an unfocused composer (no flicker)", () => {
@@ -1404,18 +1435,28 @@ describe("AgentComposerSurface", () => {
       expect(surface).toHaveAttribute("data-collapsed", "true");
     });
 
-    it("keeps the composer expanded while the agent is generating", () => {
+    it("returns to the minimal state after blur while the agent is generating", () => {
       renderComposer({
         dataTestId: "agent-composer",
         collapsible: true,
         agentStatus: "generating",
+        onStop: vi.fn(),
       });
 
-      // No focus, empty prompt — but live agent activity must keep it open.
-      expect(screen.getByTestId("agent-composer")).toHaveAttribute(
-        "data-collapsed",
-        "false",
-      );
+      const surface = screen.getByTestId("agent-composer");
+      const textarea = screen.getByLabelText(
+        "Message input",
+      ) as HTMLTextAreaElement;
+
+      expect(surface).toHaveAttribute("data-collapsed", "true");
+      fireEvent.focus(textarea);
+      expect(surface).toHaveAttribute("data-collapsed", "false");
+      fireEvent.blur(textarea);
+      expect(surface).toHaveAttribute("data-collapsed", "true");
+
+      const stopButton = screen.getByTestId("agent-composer-submit");
+      expect(stopButton).toHaveAccessibleName("Stop agent");
+      expect(stopButton).toBeEnabled();
     });
 
     it("still sends on Enter from the collapsible composer", () => {

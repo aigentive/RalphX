@@ -5,6 +5,8 @@ import type {
   AgentConversationWorkspace,
   AgentConversationWorkspaceFreshnessScope,
   AgentWorkspacePrReviewContext,
+  AgentWorkspaceReviewContext,
+  StartAgentWorkspaceReviewResult,
 } from "@/api/chat";
 
 import {
@@ -79,6 +81,11 @@ export const agentWorkspaceKeys = {
     "workspace-pr-review",
     conversationId,
   ] as const,
+  workspaceReview: (conversationId: string | null | undefined) => [
+    "agents",
+    "workspace-review-context",
+    conversationId,
+  ] as const,
   diff: (conversationId: string | null | undefined) => [
     "agents",
     "workspace-diff",
@@ -109,6 +116,30 @@ export function prReviewContextForConversation(
     return null;
   }
   if (context.recentActions.some((action) => action.conversationId !== conversationId)) {
+    return null;
+  }
+
+  return context;
+}
+
+type WorkspaceReviewContextLike =
+  | AgentWorkspaceReviewContext
+  | StartAgentWorkspaceReviewResult;
+
+export function workspaceReviewContextForConversation<
+  T extends WorkspaceReviewContextLike,
+>(
+  context: T | null | undefined,
+  conversationId: string | null | undefined,
+): T | null {
+  if (!context || !conversationId) {
+    return null;
+  }
+
+  if ("workspace" in context && context.workspace.conversationId !== conversationId) {
+    return null;
+  }
+  if (context.monitor.conversationId !== conversationId) {
     return null;
   }
 
@@ -197,6 +228,9 @@ export function invalidateWorkspaceQueries(
     }),
     queryClient.invalidateQueries({
       queryKey: agentWorkspaceKeys.prReview(conversationId),
+    }),
+    queryClient.invalidateQueries({
+      queryKey: agentWorkspaceKeys.workspaceReview(conversationId),
     }),
     queryClient.invalidateQueries({
       queryKey: agentWorkspaceKeys.diff(conversationId),

@@ -263,6 +263,8 @@ mod tests {
                 key: None,
                 title: None,
                 url: None,
+                summary_excerpt: None,
+                include_transcript: None,
             },
             ComposerIntegrationReference {
                 provider: "atlassian".to_string(),
@@ -271,6 +273,8 @@ mod tests {
                 key: Some("rx-42".to_string()),
                 title: Some(" Fix composer ".to_string()),
                 url: Some("https://jira.test/browse/RX-42".to_string()),
+                summary_excerpt: None,
+                include_transcript: None,
             },
         ];
 

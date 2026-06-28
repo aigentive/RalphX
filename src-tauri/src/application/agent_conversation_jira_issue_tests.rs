@@ -21,6 +21,8 @@ fn jira_ref(key: &str) -> ComposerIntegrationReference {
         key: Some(key.to_string()),
         title: Some(format!("{key} title")),
         url: Some(format!("https://jira.test/browse/{key}")),
+        summary_excerpt: None,
+        include_transcript: None,
     }
 }
 
@@ -32,6 +34,8 @@ fn confluence_ref(id: &str) -> ComposerIntegrationReference {
         key: None,
         title: Some("Confluence page".to_string()),
         url: Some(format!("https://jira.test/wiki/{id}")),
+        summary_excerpt: None,
+        include_transcript: None,
     }
 }
 

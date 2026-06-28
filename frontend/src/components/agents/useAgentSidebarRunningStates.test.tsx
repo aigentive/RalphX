@@ -9,13 +9,13 @@ import {
 } from "./agentConversations";
 import { useAgentSidebarRunningStates } from "./useAgentSidebarRunningStates";
 
-const { mockGetAgentRunningStates } = vi.hoisted(() => ({
-  mockGetAgentRunningStates: vi.fn(),
+const { mockGetAgentConversationRuntimeStatuses } = vi.hoisted(() => ({
+  mockGetAgentConversationRuntimeStatuses: vi.fn(),
 }));
 
 vi.mock("@/api/chat", () => ({
   chatApi: {
-    getAgentRunningStates: mockGetAgentRunningStates,
+    getAgentConversationRuntimeStatuses: mockGetAgentConversationRuntimeStatuses,
   },
 }));
 
@@ -45,8 +45,8 @@ function conversation(
 describe("useAgentSidebarRunningStates", () => {
   beforeEach(() => {
     vi.useFakeTimers();
-    mockGetAgentRunningStates.mockReset();
-    mockGetAgentRunningStates.mockResolvedValue({});
+    mockGetAgentConversationRuntimeStatuses.mockReset();
+    mockGetAgentConversationRuntimeStatuses.mockResolvedValue({});
     useChatStore.setState({
       activeConversationIds: {},
       activeAgentRunIds: {},
@@ -58,12 +58,26 @@ describe("useAgentSidebarRunningStates", () => {
     vi.useRealTimers();
   });
 
-  it("rehydrates idle sidebar rows from bulk running state", async () => {
+  it("rehydrates idle sidebar rows from runtime status", async () => {
     const runningConversation = conversation("conv-running");
     const idleConversation = conversation("conv-idle");
-    mockGetAgentRunningStates.mockResolvedValueOnce({
-      "conv-running": { isRunning: true, agentStatus: "generating" },
-      "conv-idle": { isRunning: false, agentStatus: "idle" },
+    mockGetAgentConversationRuntimeStatuses.mockResolvedValueOnce({
+      "conv-running": {
+        conversationId: "conv-running",
+        isRunning: true,
+        agentStatus: "generating",
+        primarySource: "workspace",
+        summaryLabel: "Agent running",
+        items: [],
+      },
+      "conv-idle": {
+        conversationId: "conv-idle",
+        isRunning: false,
+        agentStatus: "idle",
+        primarySource: null,
+        summaryLabel: null,
+        items: [],
+      },
     });
 
     renderHook(() =>
@@ -79,7 +93,7 @@ describe("useAgentSidebarRunningStates", () => {
     const idleStoreKey = getAgentConversationStoreKey(idleConversation);
     const state = useChatStore.getState();
 
-    expect(mockGetAgentRunningStates).toHaveBeenCalledWith("project", [
+    expect(mockGetAgentConversationRuntimeStatuses).toHaveBeenCalledWith([
       "conv-running",
       "conv-idle",
     ]);
@@ -90,8 +104,15 @@ describe("useAgentSidebarRunningStates", () => {
 
   it("rehydrates retained idle sidebar rows as waiting for input", async () => {
     const waitingConversation = conversation("conv-waiting");
-    mockGetAgentRunningStates.mockResolvedValueOnce({
-      "conv-waiting": { isRunning: true, agentStatus: "waiting_for_input" },
+    mockGetAgentConversationRuntimeStatuses.mockResolvedValueOnce({
+      "conv-waiting": {
+        conversationId: "conv-waiting",
+        isRunning: true,
+        agentStatus: "waiting_for_input",
+        primarySource: "ideation",
+        summaryLabel: "Ideation running",
+        items: [],
+      },
     });
 
     renderHook(() =>
@@ -106,10 +127,33 @@ describe("useAgentSidebarRunningStates", () => {
     expect(state.activeConversationIds[waitingStoreKey]).toBe("conv-waiting");
   });
 
-  it("keeps legacy boolean bulk states compatible", async () => {
-    const runningConversation = conversation("conv-legacy");
-    mockGetAgentRunningStates.mockResolvedValueOnce({
-      "conv-legacy": true,
+  it("rehydrates sidebar rows from associated verification runtime status", async () => {
+    const runningConversation = conversation("conv-verifying");
+    mockGetAgentConversationRuntimeStatuses.mockResolvedValueOnce({
+      "conv-verifying": {
+        conversationId: "conv-verifying",
+        isRunning: true,
+        agentStatus: "generating",
+        primarySource: "verification",
+        summaryLabel: "Verifying",
+        items: [
+          {
+            source: "verification",
+            contextType: "ideation",
+            contextId: "verification-session",
+            label: "Verifying",
+            title: "Verification run",
+            agentStatus: "generating",
+            taskId: null,
+            internalStatus: null,
+            runningProcess: null,
+            ideationSession: null,
+            parentSessionId: "plan-session",
+            childSessionId: "verification-session",
+            conversationId: null,
+          },
+        ],
+      },
     });
 
     renderHook(() =>
@@ -121,15 +165,22 @@ describe("useAgentSidebarRunningStates", () => {
     const runningStoreKey = getAgentConversationStoreKey(runningConversation);
     const state = useChatStore.getState();
     expect(state.agentStatus[runningStoreKey]).toBe("generating");
-    expect(state.activeConversationIds[runningStoreKey]).toBe("conv-legacy");
+    expect(state.activeConversationIds[runningStoreKey]).toBe("conv-verifying");
   });
 
-  it("clears stale sidebar status when bulk state says not running", async () => {
+  it("clears stale sidebar status when runtime status says not running", async () => {
     const staleConversation = conversation("conv-stale");
     const storeKey = getAgentConversationStoreKey(staleConversation);
     useChatStore.getState().setAgentRunning(storeKey, true);
-    mockGetAgentRunningStates.mockResolvedValueOnce({
-      "conv-stale": { isRunning: false, agentStatus: "idle" },
+    mockGetAgentConversationRuntimeStatuses.mockResolvedValueOnce({
+      "conv-stale": {
+        conversationId: "conv-stale",
+        isRunning: false,
+        agentStatus: "idle",
+        primarySource: null,
+        summaryLabel: null,
+        items: [],
+      },
     });
 
     renderHook(() =>
@@ -150,7 +201,7 @@ describe("useAgentSidebarRunningStates", () => {
       vi.advanceTimersByTime(10_000);
     });
 
-    expect(mockGetAgentRunningStates).not.toHaveBeenCalled();
+    expect(mockGetAgentConversationRuntimeStatuses).not.toHaveBeenCalled();
   });
 
   it("deduplicates project conversations and ignores non-project conversations", async () => {
@@ -171,16 +222,14 @@ describe("useAgentSidebarRunningStates", () => {
 
     await act(async () => {});
 
-    expect(mockGetAgentRunningStates).toHaveBeenCalledWith("project", [
+    expect(mockGetAgentConversationRuntimeStatuses).toHaveBeenCalledWith([
       "conv-project",
     ]);
   });
 
   it("does not start a second poll while a previous poll is in flight", async () => {
-    let resolvePoll!: (
-      states: Record<string, { isRunning: boolean; agentStatus: string }>
-    ) => void;
-    mockGetAgentRunningStates.mockImplementationOnce(
+    let resolvePoll!: (states: Record<string, unknown>) => void;
+    mockGetAgentConversationRuntimeStatuses.mockImplementationOnce(
       () =>
         new Promise((resolve) => {
           resolvePoll = resolve;
@@ -195,11 +244,18 @@ describe("useAgentSidebarRunningStates", () => {
       vi.advanceTimersByTime(5_000);
     });
 
-    expect(mockGetAgentRunningStates).toHaveBeenCalledTimes(1);
+    expect(mockGetAgentConversationRuntimeStatuses).toHaveBeenCalledTimes(1);
 
     await act(async () => {
       resolvePoll({
-        "conv-pending": { isRunning: false, agentStatus: "idle" },
+        "conv-pending": {
+          conversationId: "conv-pending",
+          isRunning: false,
+          agentStatus: "idle",
+          primarySource: null,
+          summaryLabel: null,
+          items: [],
+        },
       });
     });
 
@@ -207,11 +263,13 @@ describe("useAgentSidebarRunningStates", () => {
       vi.advanceTimersByTime(5_000);
     });
 
-    expect(mockGetAgentRunningStates).toHaveBeenCalledTimes(2);
+    expect(mockGetAgentConversationRuntimeStatuses).toHaveBeenCalledTimes(2);
   });
 
   it("ignores bulk polling errors", async () => {
-    mockGetAgentRunningStates.mockRejectedValueOnce(new Error("liveness failed"));
+    mockGetAgentConversationRuntimeStatuses.mockRejectedValueOnce(
+      new Error("liveness failed")
+    );
 
     renderHook(() =>
       useAgentSidebarRunningStates([conversation("conv-error")], true)

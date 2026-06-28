@@ -15,6 +15,8 @@ import { getStore } from "./store";
 // Mock Projects API
 // ============================================================================
 
+const mockPrTemplates = new Map<string, string | null>();
+
 export const mockProjectsApi = {
   list: async (): Promise<Project[]> => {
     const store = getStore();
@@ -62,6 +64,15 @@ export const mockProjectsApi = {
 
   delete: async (_projectId: string): Promise<boolean> => {
     return true;
+  },
+
+  readPrTemplate: async (projectId: string): Promise<string | null> => {
+    return mockPrTemplates.get(projectId) ?? null;
+  },
+
+  writePrTemplate: async (projectId: string, content: string): Promise<null> => {
+    mockPrTemplates.set(projectId, content);
+    return null;
   },
 
   updateCustomAnalysis: async (projectId: string, customAnalysis: string | null): Promise<Project> => {

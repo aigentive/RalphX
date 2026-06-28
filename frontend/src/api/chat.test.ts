@@ -13,6 +13,11 @@ import {
   getAgentTimelineItemToolCallDetail,
   getConversationStats,
   getAgentWorkspacePrReviewContext,
+  getAgentWorkspaceReviewContext,
+  startAgentWorkspaceReview,
+  listAgentConversationIssues,
+  updateAgentConversationIssueStatus,
+  convertAgentConversationIssueFollowup,
   submitAgentWorkspacePrReviewAction,
   skipAgentWorkspacePrReviewAction,
   createConversation,
@@ -45,11 +50,13 @@ import {
   stopAgent,
   isAgentRunning,
   getAgentRunningStates,
+  getAgentConversationRuntimeStatuses,
   chatApi,
   getConversationActiveState,
   getChildSessionStatus,
 } from "./chat";
 import type { ConversationActiveStateResponse } from "./chat";
+import { backendApiUrl } from "./backend";
 
 const mockInvoke = invoke as ReturnType<typeof vi.fn>;
 
@@ -1924,6 +1931,7 @@ describe("chat api", () => {
       providerHarness: "codex",
       modelId: "gpt-5.5",
       logicalEffort: "xhigh",
+      codexFastMode: true,
       mode: "chat",
       base: {
         kind: "local_branch",
@@ -1947,6 +1955,7 @@ describe("chat api", () => {
         providerHarness: "codex",
         modelOverride: "gpt-5.5",
         logicalEffort: "xhigh",
+        codexFastMode: true,
         mode: "chat",
         baseRefKind: "local_branch",
         baseRef: "feature/agent-screen",
@@ -2265,6 +2274,7 @@ describe("chat api", () => {
       providerHarness: "codex",
       modelId: "gpt-5.4",
       logicalEffort: "high",
+      codexFastMode: true,
     });
 
     expect(mockInvoke).toHaveBeenCalledWith("send_agent_message", {
@@ -2276,6 +2286,7 @@ describe("chat api", () => {
         providerHarness: "codex",
         modelOverride: "gpt-5.4",
         logicalEffort: "high",
+        codexFastMode: true,
       },
     });
   });
@@ -2422,6 +2433,82 @@ describe("chat api", () => {
     });
   });
 
+  it("loads conversation runtime statuses", async () => {
+    mockInvoke.mockResolvedValueOnce({
+      c1: {
+        conversationId: "c1",
+        isRunning: true,
+        agentStatus: "generating",
+        primarySource: "task_execution",
+        summaryLabel: "Executing",
+        items: [
+          {
+            source: "task_execution",
+            contextType: "task_execution",
+            contextId: "task-1",
+            label: "Executing",
+            title: "Runtime task",
+            agentStatus: "generating",
+            taskId: "task-1",
+            internalStatus: "executing",
+            runningProcess: {
+              task_id: "task-1",
+              title: "Runtime task",
+              internal_status: "executing",
+              step_progress: null,
+              elapsed_seconds: 12,
+              trigger_origin: null,
+              task_branch: "ralphx/project/task-1",
+            },
+            ideationSession: null,
+            parentSessionId: null,
+            childSessionId: null,
+            conversationId: null,
+          },
+        ],
+      },
+    });
+
+    await expect(getAgentConversationRuntimeStatuses(["c1"])).resolves.toEqual({
+      c1: {
+        conversationId: "c1",
+        isRunning: true,
+        agentStatus: "generating",
+        primarySource: "task_execution",
+        summaryLabel: "Executing",
+        items: [
+          {
+            source: "task_execution",
+            contextType: "task_execution",
+            contextId: "task-1",
+            label: "Executing",
+            title: "Runtime task",
+            agentStatus: "generating",
+            taskId: "task-1",
+            internalStatus: "executing",
+            runningProcess: {
+              taskId: "task-1",
+              title: "Runtime task",
+              internalStatus: "executing",
+              stepProgress: null,
+              elapsedSeconds: 12,
+              triggerOrigin: null,
+              taskBranch: "ralphx/project/task-1",
+            },
+            ideationSession: null,
+            parentSessionId: null,
+            childSessionId: null,
+            conversationId: null,
+          },
+        ],
+      },
+    });
+    expect(mockInvoke).toHaveBeenCalledWith(
+      "get_agent_conversation_runtime_statuses",
+      { conversationIds: ["c1"] },
+    );
+  });
+
   it("exports chatApi namespace", () => {
     expect(chatApi.sendAgentMessage).toBe(sendAgentMessage);
     expect(chatApi.listConversations).toBe(listConversations);
@@ -2433,6 +2520,9 @@ describe("chat api", () => {
     );
     expect(chatApi.listAgentConversationWorkspacePublicationEvents).toBe(
       listAgentConversationWorkspacePublicationEvents
+    );
+    expect(chatApi.getAgentConversationRuntimeStatuses).toBe(
+      getAgentConversationRuntimeStatuses
     );
     expect(chatApi.precomputeAgentConversationWorkspacePrDescription).toBe(
       precomputeAgentConversationWorkspacePrDescription
@@ -2446,6 +2536,10 @@ describe("chat api", () => {
     expect(chatApi.getAgentWorkspacePrReviewContext).toBe(
       getAgentWorkspacePrReviewContext
     );
+    expect(chatApi.getAgentWorkspaceReviewContext).toBe(
+      getAgentWorkspaceReviewContext
+    );
+    expect(chatApi.startAgentWorkspaceReview).toBe(startAgentWorkspaceReview);
     expect(chatApi.submitAgentWorkspacePrReviewAction).toBe(
       submitAgentWorkspacePrReviewAction
     );
@@ -2533,6 +2627,45 @@ describe("getConversationActiveState", () => {
     resolved_at: null,
     ...overrides,
   });
+  const rawWorkspaceReviewMonitor = (overrides: Record<string, unknown> = {}) => ({
+    conversation_id: "conversation-1",
+    project_id: "project-1",
+    status: "ready",
+    current_target_scope: "workspace_delta",
+    reviewed_target_scope: "workspace_delta",
+    review_conversation_id: "review-conversation-1",
+    review_artifact_id: "review-artifact-1",
+    review_artifact_version: 2,
+    review_artifact_updated_at: "2026-06-18T12:05:00Z",
+    reviewed_head_sha: "head-sha",
+    reviewed_diff_fingerprint: "fingerprint-1",
+    selected_source_base_ref: null,
+    selected_source_base_sha: null,
+    selected_source_head_ref: null,
+    selected_source_head_sha: null,
+    selected_source_pull_request_number: null,
+    workspace_base_ref: "main",
+    workspace_base_sha: "base-sha",
+    workspace_head_ref: "HEAD",
+    workspace_head_sha: "head-sha",
+    current_diff_fingerprint: "fingerprint-1",
+    previous_version_id: "review-artifact-0",
+    last_run_id: "run-1",
+    last_error: null,
+    created_at: "2026-06-18T12:00:00Z",
+    updated_at: "2026-06-18T12:05:00Z",
+    ...overrides,
+  });
+  const rawWorkspaceReviewTarget = (overrides: Record<string, unknown> = {}) => ({
+    scope: "workspace_delta",
+    base_ref: "main",
+    base_sha: "base-sha",
+    head_ref: "HEAD",
+    head_sha: "head-sha",
+    diff_fingerprint: "fingerprint-1",
+    source_pull_request_number: null,
+    ...overrides,
+  });
 
   beforeEach(() => {
     mockFetch = vi.fn();
@@ -2590,7 +2723,7 @@ describe("getConversationActiveState", () => {
     const result = await getConversationActiveState("conv-123");
 
     expect(mockFetch).toHaveBeenCalledWith(
-      "http://localhost:3847/api/conversations/conv-123/active-state"
+      backendApiUrl("conversations/conv-123/active-state")
     );
     expect(result.is_active).toBe(true);
     expect(result.streaming_tasks).toHaveLength(1);
@@ -2682,7 +2815,7 @@ describe("getConversationActiveState", () => {
     const result = await getAgentWorkspacePrReviewContext("conversation-1");
 
     expect(mockFetch).toHaveBeenCalledWith(
-      "http://localhost:3847/api/agent-workspaces/conversation-1/pr-review-context",
+      backendApiUrl("agent-workspaces/conversation-1/pr-review-context"),
       undefined
     );
     expect(result.workspace.conversationId).toBe("conversation-1");
@@ -2692,6 +2825,78 @@ describe("getConversationActiveState", () => {
     expect(result.pendingAction?.proposedAction).toBe("request_changes");
     expect(result.recentActions[0]?.status).toBe("skipped");
     expect(result.issueCommentEvidence).toEqual([{ comment_id: "comment-1" }]);
+  });
+
+  it("fetches and transforms general workspace review context", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          success: true,
+          workspace: rawWorkspace(),
+          events: [],
+          target: rawWorkspaceReviewTarget(),
+          monitor: rawWorkspaceReviewMonitor(),
+          is_current: true,
+          is_outdated: false,
+          should_show_tab: true,
+        }),
+    });
+
+    const result = await getAgentWorkspaceReviewContext("conversation-1");
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      backendApiUrl("agent-workspaces/conversation-1/workspace-review-context"),
+      undefined
+    );
+    expect(result.workspace.conversationId).toBe("conversation-1");
+    expect(result.target?.scope).toBe("workspace_delta");
+    expect(result.target?.diffFingerprint).toBe("fingerprint-1");
+    expect(result.monitor.reviewArtifactVersion).toBe(2);
+    expect(result.monitor.reviewConversationId).toBe("review-conversation-1");
+    expect(result.monitor.previousVersionId).toBe("review-artifact-0");
+    expect(result.isCurrent).toBe(true);
+  });
+
+  it("starts a general workspace review run through the encoded REST endpoint", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          success: true,
+          target: rawWorkspaceReviewTarget({
+            scope: "selected_source",
+            source_pull_request_number: 42,
+          }),
+          monitor: rawWorkspaceReviewMonitor({
+            status: "reviewing",
+            current_target_scope: "selected_source",
+          }),
+          is_current: false,
+          is_outdated: true,
+          should_show_tab: true,
+          started: true,
+          skipped_reason: null,
+          was_queued: false,
+        }),
+    });
+
+    const result = await startAgentWorkspaceReview("conversation/1", {
+      force: true,
+    });
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      backendApiUrl("agent-workspaces/conversation%2F1/workspace-review-runs"),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ force: true }),
+      }
+    );
+    expect(result.started).toBe(true);
+    expect(result.target?.scope).toBe("selected_source");
+    expect(result.target?.sourcePullRequestNumber).toBe(42);
+    expect(result.monitor.status).toBe("reviewing");
   });
 
   it("submits and skips agent workspace PR review actions through encoded REST endpoints", async () => {
@@ -2738,7 +2943,9 @@ describe("getConversationActiveState", () => {
 
     expect(mockFetch).toHaveBeenNthCalledWith(
       1,
-      "http://localhost:3847/api/agent-workspaces/conversation%2F1/pr-review-actions/action%2F1/submit",
+      backendApiUrl(
+        "agent-workspaces/conversation%2F1/pr-review-actions/action%2F1/submit",
+      ),
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -2747,7 +2954,9 @@ describe("getConversationActiveState", () => {
     );
     expect(mockFetch).toHaveBeenNthCalledWith(
       2,
-      "http://localhost:3847/api/agent-workspaces/conversation%2F1/pr-review-actions/action%2F1/skip",
+      backendApiUrl(
+        "agent-workspaces/conversation%2F1/pr-review-actions/action%2F1/skip",
+      ),
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -2757,6 +2966,103 @@ describe("getConversationActiveState", () => {
     expect(submitted.submittedReviewId).toBe("review-1");
     expect(submitted.action.status).toBe("submitted");
     expect(skipped.action.status).toBe("skipped");
+  });
+
+  it("lists and mutates agent conversation issues through REST endpoints", async () => {
+    const rawIssue = {
+      id: "issue-1",
+      project_id: "project-1",
+      conversation_id: "conversation-1",
+      source_task_id: "task-1",
+      source_context_type: "review",
+      source_context_id: "review-1",
+      source_agent_name: "ralphx-execution-reviewer",
+      issue_kind: "plan_drift",
+      severity: "high",
+      status: "open",
+      blocking_scope: "followup_only",
+      title: "Plan drift",
+      summary: "Reviewer found unrelated work.",
+      evidence: "src/unrelated.rs",
+      recommendation: "Create a follow-up.",
+      blocker_fingerprint: "scope:task-1",
+      followup_title: "Investigate drift",
+      followup_prompt: "Plan the unrelated work separately.",
+      auto_followup_eligible: true,
+      linked_followup_conversation_id: null,
+      created_at: "2026-06-25T12:00:00Z",
+      updated_at: "2026-06-25T12:01:00Z",
+      resolved_at: null,
+    };
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ issues: [rawIssue] }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            issue: { ...rawIssue, status: "resolved", resolved_at: "2026-06-25T12:02:00Z" },
+          }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            issue: {
+              ...rawIssue,
+              linked_followup_conversation_id: "followup-conversation-1",
+            },
+            followup: { reused_existing: false },
+          }),
+      });
+
+    const issues = await listAgentConversationIssues("conversation-1", {
+      includeResolved: true,
+    });
+    const resolved = await updateAgentConversationIssueStatus("issue-1", "resolved");
+    const converted = await convertAgentConversationIssueFollowup("issue-1");
+
+    expect(mockFetch).toHaveBeenNthCalledWith(
+      1,
+      backendApiUrl("agent_conversation_issues/list"),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          conversation_id: "conversation-1",
+          include_resolved: true,
+        }),
+      }
+    );
+    expect(mockFetch).toHaveBeenNthCalledWith(
+      2,
+      backendApiUrl("agent_conversation_issues/status"),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ issue_id: "issue-1", status: "resolved" }),
+      }
+    );
+    expect(mockFetch).toHaveBeenNthCalledWith(
+      3,
+      backendApiUrl("agent_conversation_issues/convert_followup"),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ issue_id: "issue-1" }),
+      }
+    );
+    expect(issues[0]).toMatchObject({
+      id: "issue-1",
+      sourceTaskId: "task-1",
+      blockerFingerprint: "scope:task-1",
+      autoFollowupEligible: true,
+    });
+    expect(resolved.status).toBe("resolved");
+    expect(resolved.resolvedAt).toBe("2026-06-25T12:02:00Z");
+    expect(converted.linkedFollowupConversationId).toBe("followup-conversation-1");
   });
 
   it("surfaces backend error detail for agent workspace PR review requests", async () => {
@@ -2810,6 +3116,7 @@ describe("startAgentConversationInvokeInput", () => {
       providerHarness: "codex",
       modelId: "gpt-5.5",
       logicalEffort: "xhigh",
+      codexFastMode: true,
       mode: "chat",
       composerProjectReferences: [{ path: "src/main.ts", kind: "file" }],
       composerIntegrationReferences: [
@@ -2818,6 +3125,7 @@ describe("startAgentConversationInvokeInput", () => {
       composerArtifactReferences: [{ artifactId: "artifact-1", kind: "plan" }],
       base: {
         kind: "local_branch",
+        branchMode: "linked",
         ref: "feature/x",
         displayName: "PR #7",
         sourcePullRequest: {
@@ -2838,6 +3146,7 @@ describe("startAgentConversationInvokeInput", () => {
       providerHarness: "codex",
       modelOverride: "gpt-5.5",
       logicalEffort: "xhigh",
+      codexFastMode: true,
       mode: "chat",
       composerProjectReferences: [{ path: "src/main.ts", kind: "file" }],
       composerIntegrationReferences: [
@@ -2845,6 +3154,7 @@ describe("startAgentConversationInvokeInput", () => {
       ],
       composerArtifactReferences: [{ artifactId: "artifact-1", kind: "plan" }],
       baseRefKind: "local_branch",
+      baseBranchMode: "linked",
       baseRef: "feature/x",
       baseDisplayName: "PR #7",
       baseSourcePullRequest: {
@@ -2903,6 +3213,7 @@ describe("transformStartAgentConversationResponse", () => {
         claude_session_id: null,
         provider_session_id: null,
         provider_harness: "codex",
+        service_tier: "fast",
         agent_mode: "chat",
         title: "Chat",
         message_count: 1,
@@ -2915,6 +3226,7 @@ describe("transformStartAgentConversationResponse", () => {
         conversation_id: "conversation-chat",
         project_id: "project-1",
         mode: "chat",
+        branch_mode: "linked",
         base_ref_kind: "local_branch",
         base_ref: "feature/agent-screen",
         base_display_name: "PR #42",
@@ -2950,9 +3262,11 @@ describe("transformStartAgentConversationResponse", () => {
 
     expect(result.conversation.id).toBe("conversation-chat");
     expect(result.conversation.agentMode).toBe("chat");
+    expect(result.conversation.serviceTier).toBe("fast");
     expect(result.workspace).toMatchObject({
       conversationId: "conversation-chat",
       mode: "chat",
+      branchMode: "linked",
       baseRef: "feature/agent-screen",
       sourcePullRequest: expect.objectContaining({
         number: 42,

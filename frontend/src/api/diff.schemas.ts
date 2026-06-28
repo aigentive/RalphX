@@ -41,6 +41,15 @@ export const FileDiffSchema = z.object({
   is_binary: z.boolean(),
 });
 
+export const ConflictDiffSchema = z.object({
+  filePath: z.string(),
+  baseContent: z.string(),
+  oursContent: z.string(),
+  theirsContent: z.string(),
+  mergedWithMarkers: z.string(),
+  language: z.string(),
+});
+
 export const DiffPageRowSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("hunk_header"),
@@ -149,8 +158,22 @@ export const AgentWorkspaceChangeBucketSummarySchema = z.object({
   deletions: z.number(),
 });
 
+export const AgentWorkspaceConflictSummarySchema = z.object({
+  file_count: z.number(),
+  files: z.array(z.string()),
+});
+
+export const AgentWorkspaceRepairStateSchema = z.object({
+  expected_branch: z.string(),
+  checked_out_branch: z.string(),
+  rebase_in_progress: z.boolean(),
+  merge_in_progress: z.boolean(),
+});
+
 export const AgentWorkspaceChangeSummaryResponseSchema = z.object({
   supports_worktree_modes: z.boolean().default(true),
   staged: AgentWorkspaceChangeBucketSummarySchema,
   unstaged: AgentWorkspaceChangeBucketSummarySchema,
+  conflicted: AgentWorkspaceConflictSummarySchema.optional(),
+  repair_state: AgentWorkspaceRepairStateSchema.optional(),
 });

@@ -20,13 +20,20 @@ import { ProjectDropdown } from "./ProjectDropdown";
 export interface ProjectSelectorProps {
   /** Callback when New Project is selected */
   onNewProject: () => void;
+  /** Called immediately before switching to another existing project. */
+  onBeforeProjectChange?: ((projectId: string) => void) | undefined;
   /** Optional className for custom styling */
   className?: string;
   /** Dropdown alignment - defaults to center */
   align?: "start" | "center" | "end";
 }
 
-export function ProjectSelector({ onNewProject, className = "", align = "center" }: ProjectSelectorProps) {
+export function ProjectSelector({
+  onNewProject,
+  onBeforeProjectChange,
+  className = "",
+  align = "center",
+}: ProjectSelectorProps) {
   // Store state (selection only)
   const activeProjectId = useProjectStore((s) => s.activeProjectId);
   const selectProject = useProjectStore((s) => s.selectProject);
@@ -59,9 +66,12 @@ export function ProjectSelector({ onNewProject, className = "", align = "center"
 
   const handleSelectProject = useCallback(
     (projectId: string) => {
+      if (projectId !== activeProjectId) {
+        onBeforeProjectChange?.(projectId);
+      }
       selectProject(projectId);
     },
-    [selectProject]
+    [activeProjectId, onBeforeProjectChange, selectProject]
   );
 
   return (

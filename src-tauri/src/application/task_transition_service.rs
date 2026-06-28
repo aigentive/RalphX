@@ -2232,27 +2232,28 @@ impl<R: Runtime> TaskTransitionService<R> {
             .await?
             .unwrap_or_else(|| plan_branch.clone());
 
-        let pr_description_override: Option<String> = if let Some(ref drafter) =
-            self.plan_pr_description_drafter
-        {
-            let review_base = crate::domain::state_machine::transition_handler::resolve_plan_branch_pr_base(project, &refreshed_plan_branch);
-            drafter
-                .draft_plan_description(project, &refreshed_plan_branch, &review_base)
-                .await
-        } else {
-            None
-        };
+        let pr_description =
+            crate::domain::state_machine::transition_handler::draft_plan_pr_description_for_write(
+                project,
+                &refreshed_plan_branch,
+                self.plan_pr_description_drafter.as_ref(),
+                PrReviewState::Ready,
+            )
+            .await?;
 
-        let mut publisher = PlanPrPublisher::new(
+        let publisher = PlanPrPublisher::new(
             github_service,
             self.ideation_session_repo.as_ref(),
             self.artifact_repo.as_ref(),
         );
-        if let Some(body) = pr_description_override {
-            publisher = publisher.with_description(body);
-        }
         publisher
-            .sync_existing_pr(task, project, &refreshed_plan_branch, PrReviewState::Ready)
+            .sync_existing_pr(
+                task,
+                project,
+                &refreshed_plan_branch,
+                PrReviewState::Ready,
+                &pr_description,
+            )
             .await
     }
 

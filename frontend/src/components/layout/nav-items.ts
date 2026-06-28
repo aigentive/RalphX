@@ -13,6 +13,8 @@ import {
   Ticket,
   TrendingUp,
 } from "lucide-react";
+import { GitHubMarkIcon } from "@/components/github/GitHubMarkIcon";
+import { GranolaIcon } from "@/components/granola/GranolaIcon";
 import type { FeatureFlags } from "@/types/feature-flags";
 import type { ViewType } from "@/types/chat";
 
@@ -37,7 +39,7 @@ export const ALL_NAV_ITEMS: NavItemConfig[] = [
     label: "Ideation",
     icon: Lightbulb,
     shortcut: "⌘2",
-    visible: () => true,
+    visible: (flags) => flags.ideationPage,
   },
   {
     view: "graph",
@@ -57,6 +59,18 @@ export const ALL_NAV_ITEMS: NavItemConfig[] = [
     view: "ticketing",
     label: "Ticketing",
     icon: Ticket,
+    visible: () => true,
+  },
+  {
+    view: "github",
+    label: "GitHub",
+    icon: GitHubMarkIcon,
+    visible: () => true,
+  },
+  {
+    view: "granola",
+    label: "Granola",
+    icon: GranolaIcon,
     visible: () => true,
   },
   {

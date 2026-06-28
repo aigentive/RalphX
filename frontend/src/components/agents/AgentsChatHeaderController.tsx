@@ -46,6 +46,7 @@ export function AgentsChatHeaderController({
   conversation,
   workspace,
   hasAutoOpenArtifacts,
+  terminalArchivedReason = null,
   terminalUnavailableReason = null,
   onToggleArtifacts,
   ...props
@@ -58,6 +59,9 @@ export function AgentsChatHeaderController({
     conversation?.id ? state.openByConversationId[conversation.id] ?? false : false,
   );
   const toggleTerminalOpen = useAgentTerminalStore((state) => state.toggleOpen);
+  const registerTerminalConversation = useAgentTerminalStore(
+    (state) => state.registerConversation,
+  );
   const terminalPreloadJobRef = useRef<DeferredFrameJob | null>(null);
   const workspaceOpenStartedAtRef = useRef(0);
   const workspaceOpenClearTimerRef = useRef<number | null>(null);
@@ -118,6 +122,25 @@ export function AgentsChatHeaderController({
     [cancelTerminalPreloadJob, clearWorkspaceOpenTimer],
   );
 
+  useEffect(() => {
+    if (!conversation || !workspace) {
+      return;
+    }
+
+    registerTerminalConversation({
+      conversationId: conversation.id,
+      projectId: workspace.projectId,
+      title: conversation.title ?? null,
+      branchName: workspace.branchName,
+      worktreePath: workspace.worktreePath,
+      updatedAt: workspace.updatedAt,
+    });
+  }, [
+    conversation,
+    registerTerminalConversation,
+    workspace,
+  ]);
+
   const handlePreloadTerminal = useCallback(() => {
     cancelTerminalPreloadJob();
     preloadAgentTerminalExperience();
@@ -137,7 +160,7 @@ export function AgentsChatHeaderController({
     }
     const nextOpen = !terminalOpen;
     toggleTerminalOpen(conversation.id);
-    if (nextOpen) {
+    if (nextOpen && !terminalArchivedReason) {
       scheduleTerminalPreload();
     } else {
       cancelTerminalPreloadJob();
@@ -146,6 +169,7 @@ export function AgentsChatHeaderController({
     cancelTerminalPreloadJob,
     conversation,
     scheduleTerminalPreload,
+    terminalArchivedReason,
     terminalOpen,
     terminalUnavailableReason,
     toggleTerminalOpen,
@@ -174,6 +198,7 @@ export function AgentsChatHeaderController({
       artifactOpen={artifactPaneOpen}
       activeArtifactTab={artifactState.activeTab}
       terminalOpen={terminalOpen}
+      terminalArchivedReason={terminalArchivedReason}
       terminalUnavailableReason={terminalUnavailableReason}
       onToggleTerminal={handleToggleTerminal}
       onPreloadTerminal={handlePreloadTerminal}

@@ -5,23 +5,15 @@
  */
 
 import { Page } from "@playwright/test";
+import { setupIdeation } from "../fixtures/setup.fixtures";
 
 /**
  * Opens TaskPickerDialog by navigating to ideation view and clicking trigger
  */
 export async function openTaskPickerDialog(page: Page): Promise<void> {
-  // Navigate to base URL first
-  await page.goto("http://localhost:5173/");
+  await setupIdeation(page);
 
-  // Wait for app to load
-  await page.waitForLoadState("networkidle");
-
-  // Click the main Ideation navigation button. The header also exposes an
-  // ideation-count trigger, so role/name selection is ambiguous here.
-  const ideationNav = page.getByTestId("nav-ideation");
-  await ideationNav.click();
-
-  // Wait for ideation view to appear - look for the "Seed from Draft Task" button
+  // Wait for ideation view to be ready - look for the "Seed from Draft Task" button
   await page.waitForSelector('button:has-text("Seed from Draft Task")', { timeout: 5000 });
 
   // Click "Seed from Draft Task" button to open TaskPickerDialog
@@ -36,10 +28,7 @@ export async function openTaskPickerDialog(page: Page): Promise<void> {
  * Opens TaskPickerDialog directly via window manipulation (for isolated testing)
  */
 export async function openTaskPickerDialogDirect(page: Page): Promise<void> {
-  await page.goto("http://localhost:5173/ideation");
-
-  // Wait for React to mount
-  await page.waitForTimeout(500);
+  await setupIdeation(page);
 
   // Trigger dialog via state manipulation (if exposed to window)
   await page.evaluate(() => {

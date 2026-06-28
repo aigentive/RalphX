@@ -31,11 +31,12 @@ file_logging: true
 
 # ── UI feature flags ───────────────────────────────────────────────────────
 # Controls which UI pages are visible in the app.
-# Env overrides: RALPHX_UI_ACTIVITY_PAGE=true|false, RALPHX_UI_EXTENSIBILITY_PAGE=true|false, RALPHX_UI_BATTLE_MODE=true|false, RALPHX_UI_ATLASSIAN_OAUTH=true|false, RALPHX_UI_TICKETING_DASHBOARD=true|false
+# Env overrides: RALPHX_UI_ACTIVITY_PAGE=true|false, RALPHX_UI_EXTENSIBILITY_PAGE=true|false, RALPHX_UI_IDEATION_PAGE=true|false, RALPHX_UI_BATTLE_MODE=true|false, RALPHX_UI_ATLASSIAN_OAUTH=true|false, RALPHX_UI_TICKETING_DASHBOARD=true|false
 ui:
   feature_flags:
     activity_page: false
     extensibility_page: false
+    ideation_page: false
     battle_mode: false
     team_mode: false
     atlassian_oauth: false
@@ -55,6 +56,7 @@ execution_defaults:
     agent_workspace_pr_auto_merge_default: false
   global:
     global_max_concurrent: 20
+    workspace_max_concurrent: 10
     global_ideation_max: 10
     allow_ideation_borrow_idle_execution: false
 
@@ -82,6 +84,8 @@ timeouts:
     team_parse_stall_secs: 3600 # Env: RALPHX_STREAM_TEAM_PARSE_STALL_SECS
     # chat_service_streaming.rs — max idle time (no meaningful activity) before killing agent stream
     max_wall_clock_secs: 1800 # Env: RALPHX_STREAM_MAX_WALL_CLOCK_SECS
+    # chat_service_handlers.rs — slack for agent run start recorded before execution status history
+    execution_attempt_start_tolerance_secs: 1 # Env: RALPHX_STREAM_EXECUTION_ATTEMPT_START_TOLERANCE_SECS
 
 reconciliation:
   # reconciliation.rs — overall deadline for merger agent; triggers MergeIncomplete + auto-retry if exceeded

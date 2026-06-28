@@ -1,14 +1,25 @@
 use super::*;
-use std::{path::Path, process::Command, sync::Arc};
+use std::{
+    path::Path,
+    process::Command,
+    sync::{Arc, Mutex},
+};
 
-use crate::application::clickup_integration_service::ClickUpAttachment;
+use crate::application::clickup_integration_service::{
+    ClickUpApiClient, ClickUpAttachment, ClickUpAuthContext, ClickUpFolder,
+    ClickUpIntegrationService, ClickUpList, ClickUpTaskListOptions, ClickUpWorkspace,
+};
 use crate::application::linear_integration_service::LinearAttachment;
 use crate::application::{
-    AppState, AtlassianJiraAttachment, AtlassianJiraComment, ClickUpComment, ClickUpSpace,
-    ClickUpStatus, ClickUpTaskContent, ClickUpTaskSummary, ClickUpUser, JiraIssueDetail,
-    JiraProjectSummary, JiraStatusSummary, LinearIntegrationSettings, TeamService,
-    TeamStateTracker, TicketingLabelResult, TicketingMutationResult, TicketingTicketIdentity,
-    TicketingTransitionOption,
+    AppState, AtlassianApiClient, AtlassianAuthContext, AtlassianConnectivity,
+    AtlassianIntegrationService, AtlassianJiraAttachment, AtlassianJiraComment,
+    AtlassianOAuthResource, AtlassianOAuthTokenResponse, AtlassianResourceContent,
+    AtlassianResourceKind, AtlassianResourceSummary, ClickUpComment, ClickUpSpace, ClickUpStatus,
+    ClickUpTaskContent, ClickUpTaskSummary, ClickUpUser, JiraIssueDetail, JiraProjectSummary,
+    JiraStatusSummary, LinearApiClient, LinearAuthContext, LinearIntegrationService,
+    LinearIntegrationSettings, LinearIntegrationSettingsRepository, LinearIssueContent,
+    LinearIssueSummary, LinearProject, TeamService, TeamStateTracker, TicketingLabelResult,
+    TicketingMutationResult, TicketingTicketIdentity, TicketingTransitionOption,
 };
 use crate::commands::unified_chat_commands::StartAgentConversationInput;
 use crate::commands::ExecutionState;
@@ -17,10 +28,17 @@ use crate::domain::entities::{
     ChatConversationId, IdeationAnalysisBaseRefKind, Project, ProjectId,
 };
 use crate::domain::integrations::{
-    AtlassianIntegrationSettings, ClickUpIntegrationSettings, IntegrationValidationStatus,
+    AtlassianAuthMethod, AtlassianIntegrationSettings, AtlassianIntegrationSettingsRepository,
+    ClickUpIntegrationSettings, ClickUpIntegrationSettingsRepository, IntegrationValidationStatus,
     ProviderTicketOperation, ProviderTicketOperationKind, ProviderTicketOperationStatus,
 };
+use crate::domain::services::{ComposerIntegrationReference, SecretStore};
+use crate::infrastructure::memory::{
+    MemoryAtlassianIntegrationSettingsRepository, MemoryClickUpIntegrationSettingsRepository,
+    MemoryLinearIntegrationSettingsRepository, MemorySecretStore,
+};
 use crate::tests::mock_github_service::MockGithubService;
+use async_trait::async_trait;
 use tauri::test::{mock_builder, mock_context, noop_assets};
 use tauri::Manager;
 
@@ -173,11 +191,10 @@ fn clickup_space_maps_to_project_container() {
     });
 
     assert_eq!(container.provider, "clickup");
-    assert_eq!(container.id, "space-1");
-    assert!(container.key.is_none());
+    assert_eq!(container.id, "space:space-1");
+    assert_eq!(container.key.as_deref(), Some("Space"));
     assert_eq!(container.name, "Platform");
-    // Spaces reuse the existing `project` kind (no shared enum widening).
-    assert_eq!(container.kind, "project");
+    assert_eq!(container.kind, "space");
     assert!(container.parent_id.is_none());
 }
 
@@ -215,7 +232,7 @@ fn clickup_summary_maps_status_assignee_tags_and_project() {
         status_type: Some("custom".to_string()),
         status_category: Some("in_progress".to_string()),
         status_color: Some("#112233".to_string()),
-        assignees: vec!["Reef Agent".to_string(), "Second Person".to_string()],
+        assignees: vec!["Test Agent".to_string(), "Second Person".to_string()],
         assignee_ids: vec![42, 7],
         watchers: vec![ClickUpUser {
             id: 99,
@@ -223,7 +240,13 @@ fn clickup_summary_maps_status_assignee_tags_and_project() {
             email: Some("watcher@example.com".to_string()),
         }],
         tags: vec!["backend".to_string(), "clickup".to_string()],
+        sprint_names: vec!["Current Sprint".to_string()],
+        location_ids: Vec::new(),
+        location_folder_ids: Vec::new(),
+        location_space_ids: Vec::new(),
         space_id: Some("space-1".to_string()),
+        folder_id: None,
+        list_id: None,
         list_name: Some("Sprint 1".to_string()),
         updated_at: Some("2026-06-20T12:00:00Z".to_string()),
     });
@@ -242,7 +265,7 @@ fn clickup_summary_maps_status_assignee_tags_and_project() {
     // The first assignee still fills the legacy single assignee slot.
     assert_eq!(
         ticket.assignee.as_ref().map(|person| person.name.as_str()),
-        Some("Reef Agent")
+        Some("Test Agent")
     );
     assert_eq!(
         ticket
@@ -250,7 +273,7 @@ fn clickup_summary_maps_status_assignee_tags_and_project() {
             .iter()
             .map(|person| person.name.as_str())
             .collect::<Vec<_>>(),
-        vec!["Reef Agent", "Second Person"]
+        vec!["Test Agent", "Second Person"]
     );
     assert_eq!(
         ticket
@@ -270,6 +293,7 @@ fn clickup_summary_maps_status_assignee_tags_and_project() {
         vec!["backend".to_string(), "clickup".to_string()]
     );
     assert_eq!(ticket.project.as_deref(), Some("Sprint 1"));
+    assert_eq!(ticket.sprints, vec!["Current Sprint".to_string()]);
     assert_eq!(ticket.updated_at, "2026-06-20T12:00:00Z");
     assert_eq!(
         ticket.url.as_deref(),
@@ -295,7 +319,13 @@ fn clickup_summary_detects_current_user_assignment_by_username_or_email() {
         assignee_ids: Vec::new(),
         watchers: Vec::new(),
         tags: Vec::new(),
+        sprint_names: Vec::new(),
+        location_ids: Vec::new(),
+        location_folder_ids: Vec::new(),
+        location_space_ids: Vec::new(),
         space_id: None,
+        folder_id: None,
+        list_id: None,
         list_name: Some("Sprint 42".to_string()),
         updated_at: None,
     };
@@ -352,7 +382,13 @@ fn clickup_summary_detects_current_user_watching_by_id_username_or_email() {
             email: None,
         }],
         tags: Vec::new(),
+        sprint_names: Vec::new(),
+        location_ids: Vec::new(),
+        location_folder_ids: Vec::new(),
+        location_space_ids: Vec::new(),
         space_id: None,
+        folder_id: None,
+        list_id: None,
         list_name: None,
         updated_at: None,
     };
@@ -384,7 +420,13 @@ fn clickup_summary_derives_state_when_status_fields_missing() {
         assignee_ids: Vec::new(),
         watchers: Vec::new(),
         tags: Vec::new(),
+        sprint_names: Vec::new(),
+        location_ids: Vec::new(),
+        location_folder_ids: Vec::new(),
+        location_space_ids: Vec::new(),
         space_id: None,
+        folder_id: None,
+        list_id: None,
         list_name: None,
         updated_at: None,
     });
@@ -411,7 +453,7 @@ fn clickup_content_maps_description_comments_and_creator() {
         status_type: Some("done".to_string()),
         status_category: Some("done".to_string()),
         creator: Some("Reporter Person".to_string()),
-        assignees: vec!["Reef Agent".to_string()],
+        assignees: vec!["Test Agent".to_string()],
         watchers: vec![ClickUpUser {
             id: 99,
             username: Some("Watcher Person".to_string()),
@@ -472,7 +514,7 @@ fn clickup_content_maps_description_comments_and_creator() {
             .assignee
             .as_ref()
             .map(|person| person.name.as_str()),
-        Some("Reef Agent")
+        Some("Test Agent")
     );
     assert_eq!(detail.summary.labels, vec!["backend".to_string()]);
     assert_eq!(
@@ -642,7 +684,13 @@ fn clickup_ticket_state_id_aligns_with_column_id_for_kanban() {
         assignee_ids: Vec::new(),
         watchers: Vec::new(),
         tags: Vec::new(),
+        sprint_names: Vec::new(),
+        location_ids: Vec::new(),
+        location_folder_ids: Vec::new(),
+        location_space_ids: Vec::new(),
         space_id: Some("space-1".to_string()),
+        folder_id: None,
+        list_id: None,
         list_name: None,
         updated_at: None,
     });
@@ -704,6 +752,641 @@ async fn clickup_conversation_associations_are_empty_pending_followup() {
         .expect("clickup associations resolve without a provider error");
 
     assert!(associations.is_empty());
+}
+
+#[derive(Default)]
+struct FakeLinearTicketingClient {
+    issues: Mutex<Vec<LinearIssueSummary>>,
+    projects: Mutex<Vec<LinearProject>>,
+    search_limits: Mutex<Vec<usize>>,
+    list_projects_first: Mutex<Vec<usize>>,
+}
+
+#[async_trait]
+impl LinearApiClient for FakeLinearTicketingClient {
+    async fn validate(&self, _auth: &LinearAuthContext) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn search_issues(
+        &self,
+        _auth: &LinearAuthContext,
+        _query: &str,
+        limit: usize,
+    ) -> Result<Vec<LinearIssueSummary>, String> {
+        self.search_limits.lock().unwrap().push(limit);
+        Ok(self.issues.lock().unwrap().clone())
+    }
+
+    async fn fetch_issue(
+        &self,
+        _auth: &LinearAuthContext,
+        reference: &ComposerIntegrationReference,
+    ) -> Result<LinearIssueContent, String> {
+        Ok(LinearIssueContent {
+            id: reference.id.clone(),
+            key: reference.key.clone(),
+            title: reference
+                .title
+                .clone()
+                .unwrap_or_else(|| reference.id.clone()),
+            url: reference.url.clone(),
+            body: String::new(),
+            state_name: None,
+            assignee: None,
+            creator: None,
+            updated_at: None,
+            comments: Vec::new(),
+            attachments: Vec::new(),
+            labels: Vec::new(),
+            project: None,
+        })
+    }
+
+    async fn list_projects(
+        &self,
+        _auth: &LinearAuthContext,
+        first: usize,
+    ) -> Result<Vec<LinearProject>, String> {
+        self.list_projects_first.lock().unwrap().push(first);
+        Ok(self.projects.lock().unwrap().clone())
+    }
+}
+
+#[derive(Default)]
+struct FakeAtlassianTicketingClient {
+    projects: Mutex<Vec<JiraProjectSummary>>,
+    list_project_limits: Mutex<Vec<usize>>,
+}
+
+#[async_trait]
+impl AtlassianApiClient for FakeAtlassianTicketingClient {
+    async fn validate(
+        &self,
+        _auth: &AtlassianAuthContext,
+    ) -> Result<AtlassianConnectivity, String> {
+        Ok(AtlassianConnectivity {
+            jira_available: true,
+            confluence_available: true,
+        })
+    }
+
+    async fn search(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _kind: AtlassianResourceKind,
+        _query: &str,
+        _limit: usize,
+    ) -> Result<Vec<AtlassianResourceSummary>, String> {
+        Ok(Vec::new())
+    }
+
+    async fn fetch(
+        &self,
+        _auth: &AtlassianAuthContext,
+        reference: &ComposerIntegrationReference,
+    ) -> Result<AtlassianResourceContent, String> {
+        Ok(AtlassianResourceContent {
+            kind: reference
+                .kind
+                .parse::<AtlassianResourceKind>()
+                .unwrap_or(AtlassianResourceKind::Jira),
+            id: reference.id.clone(),
+            key: reference.key.clone(),
+            title: reference
+                .title
+                .clone()
+                .unwrap_or_else(|| reference.id.clone()),
+            url: reference.url.clone(),
+            body: String::new(),
+            status: None,
+            assignee: None,
+            reporter: None,
+            updated_at_remote: None,
+            description_markdown: None,
+            description_text: None,
+            acceptance_criteria_markdown: None,
+            acceptance_criteria_text: None,
+            comments: Vec::new(),
+            attachments: Vec::new(),
+        })
+    }
+
+    async fn assign_jira_issue_to_current_user(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _issue_key: &str,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn list_jira_projects(
+        &self,
+        _auth: &AtlassianAuthContext,
+        limit: usize,
+    ) -> Result<Vec<JiraProjectSummary>, String> {
+        self.list_project_limits.lock().unwrap().push(limit);
+        Ok(self.projects.lock().unwrap().clone())
+    }
+
+    async fn exchange_oauth_code(
+        &self,
+        _client_id: &str,
+        _client_secret: &str,
+        _code: &str,
+        _redirect_uri: &str,
+    ) -> Result<AtlassianOAuthTokenResponse, String> {
+        Err("not used by ticketing command tests".to_string())
+    }
+
+    async fn refresh_oauth_token(
+        &self,
+        _client_id: &str,
+        _client_secret: &str,
+        _refresh_token: &str,
+    ) -> Result<AtlassianOAuthTokenResponse, String> {
+        Err("not used by ticketing command tests".to_string())
+    }
+
+    async fn oauth_accessible_resources(
+        &self,
+        _access_token: &str,
+    ) -> Result<Vec<AtlassianOAuthResource>, String> {
+        Ok(Vec::new())
+    }
+}
+
+#[derive(Default)]
+struct FakeClickUpTicketingClient {
+    list_spaces_calls: Mutex<Vec<String>>,
+    list_folders_calls: Mutex<Vec<String>>,
+    list_folder_lists_calls: Mutex<Vec<String>>,
+    list_folderless_lists_calls: Mutex<Vec<String>>,
+    list_tasks_calls: Mutex<Vec<Vec<String>>>,
+    list_tasks_for_list_calls: Mutex<Vec<(String, Vec<i64>)>>,
+}
+
+impl FakeClickUpTicketingClient {
+    fn folder_task() -> ClickUpTaskSummary {
+        ClickUpTaskSummary {
+            id: "folder-task".to_string(),
+            custom_id: Some("CU-1".to_string()),
+            name: "Folder scoped task".to_string(),
+            url: None,
+            status_name: Some("In Progress".to_string()),
+            status_type: Some("custom".to_string()),
+            status_category: Some("in_progress".to_string()),
+            status_color: None,
+            assignees: vec!["Alex Developer".to_string()],
+            assignee_ids: vec![42],
+            watchers: vec![ClickUpUser {
+                id: 42,
+                username: Some("Alex Developer".to_string()),
+                email: Some("alex@example.com".to_string()),
+            }],
+            tags: Vec::new(),
+            sprint_names: vec!["Current Sprint".to_string()],
+            location_ids: vec!["list-folder".to_string()],
+            location_folder_ids: vec!["folder-1".to_string()],
+            location_space_ids: vec!["space-1".to_string()],
+            space_id: Some("space-1".to_string()),
+            folder_id: Some("folder-1".to_string()),
+            list_id: Some("list-folder".to_string()),
+            list_name: Some("Current Sprint".to_string()),
+            updated_at: None,
+        }
+    }
+
+    fn other_task() -> ClickUpTaskSummary {
+        ClickUpTaskSummary {
+            id: "other-task".to_string(),
+            custom_id: Some("CU-2".to_string()),
+            name: "Other task".to_string(),
+            url: None,
+            status_name: Some("Todo".to_string()),
+            status_type: Some("open".to_string()),
+            status_category: Some("todo".to_string()),
+            status_color: None,
+            assignees: Vec::new(),
+            assignee_ids: Vec::new(),
+            watchers: Vec::new(),
+            tags: Vec::new(),
+            sprint_names: Vec::new(),
+            location_ids: vec!["other-list".to_string()],
+            location_folder_ids: vec!["other-folder".to_string()],
+            location_space_ids: vec!["other-space".to_string()],
+            space_id: Some("other-space".to_string()),
+            folder_id: Some("other-folder".to_string()),
+            list_id: Some("other-list".to_string()),
+            list_name: Some("Backlog".to_string()),
+            updated_at: None,
+        }
+    }
+}
+
+#[async_trait]
+impl ClickUpApiClient for FakeClickUpTicketingClient {
+    async fn validate(&self, _auth: &ClickUpAuthContext) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn list_workspaces(
+        &self,
+        _auth: &ClickUpAuthContext,
+    ) -> Result<Vec<ClickUpWorkspace>, String> {
+        Ok(vec![ClickUpWorkspace {
+            id: "workspace-1".to_string(),
+            name: "Workspace".to_string(),
+            color: None,
+        }])
+    }
+
+    async fn list_spaces(
+        &self,
+        _auth: &ClickUpAuthContext,
+        team_id: &str,
+    ) -> Result<Vec<ClickUpSpace>, String> {
+        self.list_spaces_calls
+            .lock()
+            .unwrap()
+            .push(team_id.to_string());
+        Ok(vec![ClickUpSpace {
+            id: "space-1".to_string(),
+            name: "Engineering".to_string(),
+            private: false,
+        }])
+    }
+
+    async fn list_folders(
+        &self,
+        _auth: &ClickUpAuthContext,
+        space_id: &str,
+    ) -> Result<Vec<ClickUpFolder>, String> {
+        self.list_folders_calls
+            .lock()
+            .unwrap()
+            .push(space_id.to_string());
+        Ok(vec![ClickUpFolder {
+            id: "folder-1".to_string(),
+            name: "Delivery".to_string(),
+            space_id: Some(space_id.to_string()),
+        }])
+    }
+
+    async fn list_folder_lists(
+        &self,
+        _auth: &ClickUpAuthContext,
+        folder_id: &str,
+    ) -> Result<Vec<ClickUpList>, String> {
+        self.list_folder_lists_calls
+            .lock()
+            .unwrap()
+            .push(folder_id.to_string());
+        Ok(vec![ClickUpList {
+            id: "list-folder".to_string(),
+            name: "Folder List".to_string(),
+            folder_id: Some(folder_id.to_string()),
+            space_id: None,
+        }])
+    }
+
+    async fn list_folderless_lists(
+        &self,
+        _auth: &ClickUpAuthContext,
+        space_id: &str,
+    ) -> Result<Vec<ClickUpList>, String> {
+        self.list_folderless_lists_calls
+            .lock()
+            .unwrap()
+            .push(space_id.to_string());
+        Ok(vec![ClickUpList {
+            id: "list-space".to_string(),
+            name: "Space List".to_string(),
+            folder_id: None,
+            space_id: Some(space_id.to_string()),
+        }])
+    }
+
+    async fn list_tasks(
+        &self,
+        _auth: &ClickUpAuthContext,
+        _team_id: &str,
+        space_ids: &[String],
+        _options: ClickUpTaskListOptions,
+    ) -> Result<Vec<ClickUpTaskSummary>, String> {
+        self.list_tasks_calls
+            .lock()
+            .unwrap()
+            .push(space_ids.to_vec());
+        Ok(vec![Self::folder_task(), Self::other_task()])
+    }
+
+    async fn list_tasks_for_list(
+        &self,
+        _auth: &ClickUpAuthContext,
+        list_id: &str,
+        options: ClickUpTaskListOptions,
+    ) -> Result<Vec<ClickUpTaskSummary>, String> {
+        self.list_tasks_for_list_calls
+            .lock()
+            .unwrap()
+            .push((list_id.to_string(), options.assignee_ids));
+        let mut task = Self::folder_task();
+        task.id = "list-task".to_string();
+        task.list_id = Some(list_id.to_string());
+        task.location_ids = vec![list_id.to_string()];
+        Ok(vec![task])
+    }
+
+    async fn current_user(&self, _auth: &ClickUpAuthContext) -> Result<ClickUpUser, String> {
+        Ok(ClickUpUser {
+            id: 42,
+            username: Some("Alex Developer".to_string()),
+            email: Some("alex@example.com".to_string()),
+        })
+    }
+}
+
+async fn valid_linear_service(
+    client: Arc<FakeLinearTicketingClient>,
+) -> Arc<LinearIntegrationService> {
+    let repo = Arc::new(MemoryLinearIntegrationSettingsRepository::new());
+    let secret_store = Arc::new(MemorySecretStore::new());
+    secret_store
+        .put_secret("linear-token", "token-value")
+        .await
+        .unwrap();
+    repo.upsert(&LinearIntegrationSettings {
+        enabled: true,
+        token_secret_ref: Some("linear-token".to_string()),
+        validation_status: IntegrationValidationStatus::Valid,
+        issue_search_available: true,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    LinearIntegrationService::new(repo, secret_store, client).into()
+}
+
+async fn valid_atlassian_service(
+    client: Arc<FakeAtlassianTicketingClient>,
+) -> Arc<AtlassianIntegrationService> {
+    let repo = Arc::new(MemoryAtlassianIntegrationSettingsRepository::new());
+    let secret_store = Arc::new(MemorySecretStore::new());
+    secret_store
+        .put_secret("atlassian-token", "token-value")
+        .await
+        .unwrap();
+    repo.upsert(&AtlassianIntegrationSettings {
+        enabled: true,
+        auth_method: AtlassianAuthMethod::ApiToken,
+        site_url: Some("https://example.atlassian.net".to_string()),
+        email: Some("agent@example.com".to_string()),
+        token_secret_ref: Some("atlassian-token".to_string()),
+        validation_status: IntegrationValidationStatus::Valid,
+        jira_available: true,
+        confluence_available: true,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    AtlassianIntegrationService::new(repo, secret_store, client).into()
+}
+
+async fn valid_clickup_service(
+    client: Arc<FakeClickUpTicketingClient>,
+) -> Arc<ClickUpIntegrationService> {
+    let repo = Arc::new(MemoryClickUpIntegrationSettingsRepository::new());
+    let secret_store = Arc::new(MemorySecretStore::new());
+    secret_store
+        .put_secret("clickup-token", "pk_test")
+        .await
+        .unwrap();
+    repo.upsert(&ClickUpIntegrationSettings {
+        enabled: true,
+        token_secret_ref: Some("clickup-token".to_string()),
+        workspace_id: Some("workspace-1".to_string()),
+        validation_status: IntegrationValidationStatus::Valid,
+        task_search_available: true,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    ClickUpIntegrationService::new(repo, secret_store, client).into()
+}
+
+fn linear_issue_summary(
+    id: &str,
+    title: &str,
+    assignee: Option<&str>,
+    labels: &[&str],
+) -> LinearIssueSummary {
+    LinearIssueSummary {
+        id: id.to_string(),
+        key: Some(id.to_string()),
+        title: title.to_string(),
+        url: None,
+        excerpt: None,
+        state_id: Some("state-todo".to_string()),
+        state_name: Some("Todo".to_string()),
+        state_category: Some("todo".to_string()),
+        state_color: None,
+        assignee: assignee.map(str::to_string),
+        updated_at: Some("2026-06-24T10:00:00Z".to_string()),
+        labels: labels.iter().map(|label| label.to_string()).collect(),
+        project: Some("Platform".to_string()),
+    }
+}
+
+#[tokio::test]
+async fn list_ticketing_containers_uses_expanded_provider_limits() {
+    let linear_client = Arc::new(FakeLinearTicketingClient::default());
+    linear_client.projects.lock().unwrap().push(LinearProject {
+        id: "linear-project-1".to_string(),
+        name: "Linear Project".to_string(),
+    });
+    let atlassian_client = Arc::new(FakeAtlassianTicketingClient::default());
+    atlassian_client
+        .projects
+        .lock()
+        .unwrap()
+        .push(JiraProjectSummary {
+            id: "10001".to_string(),
+            key: "RX".to_string(),
+            name: "RalphX".to_string(),
+        });
+    let mut state = AppState::new_test();
+    state.linear_integration_service = valid_linear_service(Arc::clone(&linear_client)).await;
+    state.atlassian_integration_service =
+        valid_atlassian_service(Arc::clone(&atlassian_client)).await;
+    let app = build_ticketing_start_app(state, Arc::new(ExecutionState::new()));
+
+    let jira = list_ticketing_containers("jira".to_string(), None, None, app.state())
+        .await
+        .expect("jira containers should load");
+    let linear = list_ticketing_containers("linear".to_string(), None, None, app.state())
+        .await
+        .expect("linear containers should load");
+
+    assert_eq!(jira[0].id, "RX");
+    assert_eq!(linear[0].id, "linear-project-1");
+    assert_eq!(
+        atlassian_client
+            .list_project_limits
+            .lock()
+            .unwrap()
+            .as_slice(),
+        &[TICKETING_CONTAINER_LIMIT]
+    );
+    assert_eq!(
+        linear_client.list_projects_first.lock().unwrap().as_slice(),
+        &[TICKETING_CONTAINER_LIMIT]
+    );
+}
+
+#[tokio::test]
+async fn list_ticketing_containers_loads_clickup_space_children() {
+    let clickup_client = Arc::new(FakeClickUpTicketingClient::default());
+    let mut state = AppState::new_test();
+    state.clickup_integration_service = valid_clickup_service(Arc::clone(&clickup_client)).await;
+    let app = build_ticketing_start_app(state, Arc::new(ExecutionState::new()));
+
+    let spaces = list_ticketing_containers("clickup".to_string(), None, None, app.state())
+        .await
+        .expect("clickup spaces should load");
+    assert_eq!(spaces.len(), 1);
+    assert_eq!(spaces[0].id, "space:space-1");
+    assert_eq!(spaces[0].kind, "space");
+
+    let locations = list_ticketing_containers(
+        "clickup".to_string(),
+        None,
+        Some("space:space-1".to_string()),
+        app.state(),
+    )
+    .await
+    .expect("clickup child containers should load");
+
+    assert_eq!(
+        locations
+            .iter()
+            .map(|container| container.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["folder:folder-1", "list:list-folder", "list:list-space"]
+    );
+    assert_eq!(
+        locations
+            .iter()
+            .map(|container| container.parent_id.as_deref())
+            .collect::<Vec<_>>(),
+        vec![
+            Some("space:space-1"),
+            Some("folder:folder-1"),
+            Some("space:space-1")
+        ]
+    );
+    assert_eq!(
+        clickup_client.list_spaces_calls.lock().unwrap().as_slice(),
+        &["workspace-1"]
+    );
+    assert_eq!(
+        clickup_client.list_folders_calls.lock().unwrap().as_slice(),
+        &["space-1"]
+    );
+    assert_eq!(
+        clickup_client
+            .list_folder_lists_calls
+            .lock()
+            .unwrap()
+            .as_slice(),
+        &["folder-1"]
+    );
+    assert_eq!(
+        clickup_client
+            .list_folderless_lists_calls
+            .lock()
+            .unwrap()
+            .as_slice(),
+        &["space-1"]
+    );
+}
+
+#[tokio::test]
+async fn list_tickets_builds_paged_response_from_provider_summaries() {
+    let linear_client = Arc::new(FakeLinearTicketingClient::default());
+    linear_client.issues.lock().unwrap().extend([
+        linear_issue_summary("LIN-1", "First ticket", Some("Ada"), &["backend"]),
+        linear_issue_summary("LIN-2", "Second ticket", Some("Grace"), &["backend"]),
+    ]);
+    let mut state = AppState::new_test();
+    state.linear_integration_service = valid_linear_service(Arc::clone(&linear_client)).await;
+    let app = build_ticketing_start_app(state, Arc::new(ExecutionState::new()));
+
+    let page = list_tickets(
+        ListTicketsQuery {
+            provider: PROVIDER_LINEAR.to_string(),
+            project_id: None,
+            container_id: None,
+            cursor: None,
+            limit: Some(1),
+            filters: Some(TicketFiltersInput {
+                text: Some("ticket".to_string()),
+                assignee: None,
+                state_ids: None,
+                labels: Some(vec!["backend".to_string()]),
+                watcher_me: None,
+                sprint: None,
+            }),
+            sort: Some("updated".to_string()),
+        },
+        app.state(),
+    )
+    .await
+    .expect("ticket page should load");
+
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.items[0].ref_.id, "LIN-1");
+    assert_eq!(page.total, Some(2));
+    assert_eq!(page.next_cursor.as_deref(), Some("offset:1"));
+    assert_eq!(linear_client.search_limits.lock().unwrap().as_slice(), &[2]);
+}
+
+#[tokio::test]
+async fn list_ticket_filter_options_builds_truncated_provider_response() {
+    let linear_client = Arc::new(FakeLinearTicketingClient::default());
+    linear_client.issues.lock().unwrap().extend([
+        linear_issue_summary("LIN-1", "First ticket", Some("Ada"), &[]),
+        linear_issue_summary("LIN-2", "Second ticket", Some("Grace"), &[]),
+    ]);
+    let mut state = AppState::new_test();
+    state.linear_integration_service = valid_linear_service(Arc::clone(&linear_client)).await;
+    let app = build_ticketing_start_app(state, Arc::new(ExecutionState::new()));
+
+    let options = list_ticket_filter_options(
+        ListTicketFilterOptionsQuery {
+            provider: PROVIDER_LINEAR.to_string(),
+            project_id: Some("project-1".to_string()),
+            container_id: None,
+            limit: Some(1),
+            filters: Some(TicketFiltersInput {
+                text: Some("ticket".to_string()),
+                assignee: None,
+                state_ids: None,
+                labels: None,
+                watcher_me: None,
+                sprint: None,
+            }),
+        },
+        app.state(),
+    )
+    .await
+    .expect("filter options should load");
+
+    assert_eq!(options.assignees, vec!["Ada"]);
+    assert!(options.sprints.is_empty());
+    assert!(options.truncated);
+    assert!(!options.complete);
+    assert_eq!(linear_client.search_limits.lock().unwrap().as_slice(), &[2]);
 }
 
 #[test]
@@ -834,7 +1517,7 @@ fn ticket_summary_filters_match_text_status_assignee_and_labels() {
             "LIN-1",
             "Fix filter updates",
             "In Progress",
-            Some("Reef Agent"),
+            Some("Test Agent"),
             &["backend", "linear"],
         ),
         ticket_summary_fixture("LIN-2", "Polish ticket cards", "Done", None, &["frontend"]),
@@ -844,10 +1527,11 @@ fn ticket_summary_filters_match_text_status_assignee_and_labels() {
         items,
         Some(&TicketFiltersInput {
             text: Some("filter".to_string()),
-            assignee: Some("reef".to_string()),
+            assignee: Some("agent".to_string()),
             watcher_me: None,
             state_ids: Some(vec!["in_progress".to_string()]),
             labels: Some(vec!["linear".to_string()]),
+            sprint: None,
         }),
     );
 
@@ -873,6 +1557,7 @@ fn ticket_summary_filters_remove_rows_without_requested_metadata() {
             watcher_me: None,
             state_ids: None,
             labels: Some(vec!["backend".to_string()]),
+            sprint: None,
         }),
     );
 
@@ -1000,7 +1685,7 @@ fn linear_summary_prefers_provider_state_fields_when_present() {
         state_name: Some("In Progress".to_string()),
         state_category: Some("started".to_string()),
         state_color: Some("#abcdef".to_string()),
-        assignee: Some("Reef Agent".to_string()),
+        assignee: Some("Test Agent".to_string()),
         updated_at: Some("2026-06-20T12:00:00Z".to_string()),
         labels: vec!["frontend".to_string(), "linear".to_string()],
         project: Some("Platform".to_string()),
@@ -1014,7 +1699,7 @@ fn linear_summary_prefers_provider_state_fields_when_present() {
     assert_eq!(summary.state.color.as_deref(), Some("#abcdef"));
     assert_eq!(
         summary.assignee.as_ref().map(|person| person.name.as_str()),
-        Some("Reef Agent")
+        Some("Test Agent")
     );
     assert_eq!(
         summary.labels,
@@ -1386,18 +2071,583 @@ fn container_selected_key_normalizes_presence_and_absence() {
 }
 
 #[test]
-fn filter_ticket_summaries_returns_all_when_no_filters() {
+fn filter_ticket_summaries_excludes_terminal_states_by_default() {
     let items = vec![
         ticket_summary_fixture("LIN-1", "First", "Todo", None, &[]),
         ticket_summary_fixture("LIN-2", "Second", "Done", None, &[]),
     ];
 
     let filtered = filter_ticket_summaries(items, None);
-    assert_eq!(filtered.len(), 2);
+    assert_eq!(filtered.len(), 1);
+    assert_eq!(filtered[0].ref_.key.as_deref(), Some("LIN-1"));
 }
 
 #[test]
-fn ticket_matches_filters_with_empty_filter_input_keeps_all() {
+fn ticket_page_from_loaded_summaries_applies_filters_offset_and_next_cursor() {
+    let items = vec![
+        ticket_summary_fixture("LIN-1", "First", "Todo", None, &["backend"]),
+        ticket_summary_fixture("LIN-2", "Second", "Done", None, &["frontend"]),
+        ticket_summary_fixture("LIN-3", "Third", "Todo", None, &["backend"]),
+    ];
+    let filters = TicketFiltersInput {
+        text: None,
+        assignee: None,
+        state_ids: None,
+        labels: Some(vec!["backend".to_string()]),
+        watcher_me: None,
+        sprint: None,
+    };
+
+    let (page_items, next_cursor, total_loaded) =
+        ticket_page_from_loaded_summaries(items, Some(&filters), 0, 1);
+
+    assert_eq!(total_loaded, 2);
+    assert_eq!(page_items.len(), 1);
+    assert_eq!(page_items[0].ref_.key.as_deref(), Some("LIN-1"));
+    assert_eq!(next_cursor.as_deref(), Some("offset:1"));
+}
+
+#[test]
+fn ticket_page_from_loaded_summaries_omits_next_cursor_at_end() {
+    let items = vec![
+        ticket_summary_fixture("LIN-1", "First", "Todo", None, &[]),
+        ticket_summary_fixture("LIN-2", "Second", "In Progress", None, &[]),
+    ];
+
+    let (page_items, next_cursor, total_loaded) =
+        ticket_page_from_loaded_summaries(items, None, 1, 40);
+
+    assert_eq!(total_loaded, 2);
+    assert_eq!(page_items.len(), 1);
+    assert_eq!(page_items[0].ref_.key.as_deref(), Some("LIN-2"));
+    assert!(next_cursor.is_none());
+}
+
+#[test]
+fn ticket_offset_cursor_round_trips_and_rejects_invalid_values() {
+    let encoded = encode_ticket_offset_cursor(42);
+
+    assert_eq!(encoded, "offset:42");
+    assert_eq!(decode_ticket_offset_cursor(Some(&encoded)).unwrap(), 42);
+    assert_eq!(decode_ticket_offset_cursor(Some("   ")).unwrap(), 0);
+    assert_eq!(
+        decode_ticket_offset_cursor(Some("cursor:42")).unwrap_err(),
+        "Unsupported ticket cursor"
+    );
+    assert_eq!(
+        decode_ticket_offset_cursor(Some("offset:not-a-number")).unwrap_err(),
+        "Invalid ticket cursor"
+    );
+}
+
+#[test]
+fn ticket_filter_options_collects_assignees_and_clickup_current_user_sprints() {
+    let mut current_sprint =
+        ticket_summary_fixture("CU-1", "Current sprint", "Todo", Some("Zed"), &["backend"]);
+    current_sprint.ref_.provider = "clickup".to_string();
+    current_sprint.assignees = vec![named_person("Ada"), named_person("Zed")];
+    current_sprint.project = Some("Continuous Improvement".to_string());
+    current_sprint.sprints = vec!["Sprint 42".to_string()];
+    current_sprint.current_user_assigned = true;
+
+    let mut other_assignee =
+        ticket_summary_fixture("CU-2", "Backlog", "Todo", Some("Grace"), &["backend"]);
+    other_assignee.ref_.provider = "clickup".to_string();
+    other_assignee.project = Some("Backlog".to_string());
+    other_assignee.sprints = vec!["Backlog Sprint".to_string()];
+    other_assignee.current_user_assigned = false;
+
+    let mut filtered_out =
+        ticket_summary_fixture("CU-3", "Unrelated", "Todo", Some("Hidden"), &["frontend"]);
+    filtered_out.ref_.provider = "clickup".to_string();
+    filtered_out.project = Some("Sprint Hidden".to_string());
+    filtered_out.sprints = vec!["Sprint Hidden".to_string()];
+    filtered_out.current_user_assigned = true;
+
+    let filters = TicketFiltersInput {
+        text: None,
+        assignee: None,
+        state_ids: None,
+        labels: Some(vec!["backend".to_string()]),
+        watcher_me: None,
+        sprint: None,
+    };
+
+    let options = ticket_filter_options_from_loaded_summaries(
+        PROVIDER_CLICKUP,
+        vec![current_sprint, other_assignee, filtered_out],
+        Some(&filters),
+        10,
+        false,
+    );
+
+    assert_eq!(options.assignees, vec!["Ada", "Grace", "Zed"]);
+    assert_eq!(options.sprints, vec!["Sprint 42"]);
+    assert!(options.complete);
+    assert!(!options.truncated);
+}
+
+#[test]
+fn ticket_filter_options_marks_truncation_from_provider_or_limit() {
+    let items = vec![
+        ticket_summary_fixture("LIN-1", "First", "Todo", Some("A"), &[]),
+        ticket_summary_fixture("LIN-2", "Second", "Todo", Some("B"), &[]),
+    ];
+
+    let options =
+        ticket_filter_options_from_loaded_summaries(PROVIDER_LINEAR, items, None, 1, true);
+
+    assert_eq!(options.assignees, vec!["A"]);
+    assert!(options.sprints.is_empty());
+    assert!(!options.complete);
+    assert!(options.truncated);
+}
+
+#[test]
+fn clickup_assignee_or_sprint_filters_request_wide_provider_scan() {
+    let assignee_filter = TicketFiltersInput {
+        text: None,
+        assignee: Some("Alex Developer".to_string()),
+        watcher_me: None,
+        state_ids: None,
+        labels: None,
+        sprint: None,
+    };
+    let sprint_filter = TicketFiltersInput {
+        text: None,
+        assignee: None,
+        watcher_me: None,
+        state_ids: None,
+        labels: None,
+        sprint: Some("Workflow 1 - Estimate Follow-up".to_string()),
+    };
+
+    assert_eq!(
+        ticket_provider_fetch_limit(PROVIDER_CLICKUP, None, Some(&assignee_filter), 41),
+        CLICKUP_FILTERED_TASK_SCAN_LIMIT
+    );
+    assert_eq!(
+        ticket_provider_fetch_limit(PROVIDER_CLICKUP, None, Some(&sprint_filter), 41),
+        CLICKUP_FILTERED_TASK_SCAN_LIMIT
+    );
+    assert_eq!(
+        ticket_provider_fetch_limit(PROVIDER_LINEAR, None, Some(&assignee_filter), 41),
+        41
+    );
+    assert_eq!(
+        ticket_provider_fetch_limit(PROVIDER_CLICKUP, Some("list:current-sprint"), None, 41),
+        CLICKUP_FILTERED_TASK_SCAN_LIMIT
+    );
+}
+
+#[test]
+fn clickup_sprint_filter_uses_workspace_scope_over_selected_space() {
+    let sprint_filter = TicketFiltersInput {
+        text: None,
+        assignee: Some("Alex Developer".to_string()),
+        watcher_me: None,
+        state_ids: None,
+        labels: None,
+        sprint: Some("Current Sprint".to_string()),
+    };
+    let assignee_filter = TicketFiltersInput {
+        text: None,
+        assignee: Some("Alex Developer".to_string()),
+        watcher_me: None,
+        state_ids: None,
+        labels: None,
+        sprint: None,
+    };
+
+    assert_eq!(
+        ticket_provider_container_scope(
+            PROVIDER_CLICKUP,
+            Some("selected-space"),
+            Some(&sprint_filter)
+        ),
+        None
+    );
+    assert_eq!(
+        ticket_provider_container_scope(
+            PROVIDER_CLICKUP,
+            Some("list:current-sprint"),
+            Some(&sprint_filter),
+        ),
+        Some("list:current-sprint")
+    );
+    assert_eq!(
+        ticket_provider_container_scope(
+            PROVIDER_CLICKUP,
+            Some("selected-space"),
+            Some(&assignee_filter)
+        ),
+        Some("selected-space")
+    );
+    assert_eq!(
+        ticket_provider_container_scope(
+            PROVIDER_LINEAR,
+            Some("selected-project"),
+            Some(&sprint_filter)
+        ),
+        Some("selected-project")
+    );
+}
+
+#[test]
+fn clickup_container_scope_parses_workspace_space_folder_and_list() {
+    assert_eq!(
+        clickup_container_scope(None),
+        ClickUpContainerScope::Workspace
+    );
+    assert_eq!(
+        clickup_container_scope(Some("space:space-1")),
+        ClickUpContainerScope::Space("space-1".to_string())
+    );
+    assert_eq!(
+        clickup_container_scope(Some("folder:folder-1")),
+        ClickUpContainerScope::Folder("folder-1".to_string())
+    );
+    assert_eq!(
+        clickup_container_scope(Some("list:list-1")),
+        ClickUpContainerScope::List("list-1".to_string())
+    );
+    assert_eq!(
+        clickup_container_scope(Some("legacy-space")),
+        ClickUpContainerScope::Space("legacy-space".to_string())
+    );
+
+    assert_eq!(
+        clickup_selected_space_id(Some("space:space-1")),
+        Some("space-1")
+    );
+    assert_eq!(
+        clickup_selected_space_id(Some("legacy-space")),
+        Some("legacy-space")
+    );
+    assert_eq!(clickup_selected_space_id(Some("folder:folder-1")), None);
+    assert_eq!(clickup_selected_space_id(Some("list:list-1")), None);
+}
+
+#[test]
+fn clickup_current_user_assignee_filter_maps_to_provider_assignee_id() {
+    let filter = TicketFiltersInput {
+        text: None,
+        assignee: Some("Alex Developer".to_string()),
+        watcher_me: None,
+        state_ids: None,
+        labels: None,
+        sprint: Some("Current Sprint".to_string()),
+    };
+    let user = ClickUpUser {
+        id: 424242,
+        username: Some("Alex".to_string()),
+        email: Some("alex@example.com".to_string()),
+    };
+
+    assert_eq!(
+        clickup_provider_assignee_ids(Some(&filter), Some(&user)),
+        vec![424242]
+    );
+    assert!(clickup_provider_assignee_ids(Some(&filter), None).is_empty());
+
+    let other_filter = TicketFiltersInput {
+        assignee: Some("Someone Else".to_string()),
+        ..filter
+    };
+    assert!(clickup_provider_assignee_ids(Some(&other_filter), Some(&user)).is_empty());
+
+    let empty_filter = TicketFiltersInput {
+        text: None,
+        assignee: Some("   ".to_string()),
+        watcher_me: None,
+        state_ids: None,
+        labels: None,
+        sprint: None,
+    };
+    assert!(clickup_provider_assignee_ids(Some(&empty_filter), Some(&user)).is_empty());
+}
+
+#[test]
+fn clickup_folder_and_list_containers_preserve_parent_fallbacks() {
+    let folder_with_space = clickup_folder_to_container(
+        ClickUpFolder {
+            id: "folder-1".to_string(),
+            name: "Folder".to_string(),
+            space_id: Some("space-1".to_string()),
+        },
+        "fallback-space",
+    );
+    assert_eq!(folder_with_space.id, "folder:folder-1");
+    assert_eq!(
+        folder_with_space.parent_id.as_deref(),
+        Some("space:space-1")
+    );
+
+    let folder_with_fallback = clickup_folder_to_container(
+        ClickUpFolder {
+            id: "folder-2".to_string(),
+            name: "Fallback Folder".to_string(),
+            space_id: None,
+        },
+        "fallback-space",
+    );
+    assert_eq!(
+        folder_with_fallback.parent_id.as_deref(),
+        Some("space:fallback-space")
+    );
+
+    let list_with_folder = clickup_list_to_container(
+        ClickUpList {
+            id: "list-1".to_string(),
+            name: "Folder List".to_string(),
+            folder_id: Some("folder-1".to_string()),
+            space_id: Some("space-1".to_string()),
+        },
+        "fallback-space",
+    );
+    assert_eq!(list_with_folder.id, "list:list-1");
+    assert_eq!(
+        list_with_folder.parent_id.as_deref(),
+        Some("folder:folder-1")
+    );
+
+    let list_with_space = clickup_list_to_container(
+        ClickUpList {
+            id: "list-2".to_string(),
+            name: "Space List".to_string(),
+            folder_id: None,
+            space_id: Some("space-1".to_string()),
+        },
+        "fallback-space",
+    );
+    assert_eq!(list_with_space.parent_id.as_deref(), Some("space:space-1"));
+
+    let list_with_fallback = clickup_list_to_container(
+        ClickUpList {
+            id: "list-3".to_string(),
+            name: "Fallback List".to_string(),
+            folder_id: None,
+            space_id: None,
+        },
+        "space:fallback-space",
+    );
+    assert_eq!(
+        list_with_fallback.parent_id.as_deref(),
+        Some("space:fallback-space")
+    );
+}
+
+#[test]
+fn ticket_and_clickup_sprint_names_fall_back_to_project_or_list() {
+    let mut ticket = ticket_summary_fixture("RX-1", "Ticket", "Todo", None, &[]);
+    ticket.project = Some("Current Sprint".to_string());
+    assert_eq!(
+        ticket_sprint_names(&ticket),
+        vec!["Current Sprint".to_string()]
+    );
+    ticket.sprints = vec!["Explicit Sprint".to_string()];
+    assert_eq!(
+        ticket_sprint_names(&ticket),
+        vec!["Explicit Sprint".to_string()]
+    );
+
+    let summary = ClickUpTaskSummary {
+        id: "task-1".to_string(),
+        custom_id: None,
+        name: "Fallback sprint task".to_string(),
+        url: None,
+        status_name: None,
+        status_type: None,
+        status_category: None,
+        status_color: None,
+        assignees: Vec::new(),
+        assignee_ids: Vec::new(),
+        watchers: Vec::new(),
+        tags: Vec::new(),
+        sprint_names: Vec::new(),
+        location_ids: Vec::new(),
+        location_folder_ids: Vec::new(),
+        location_space_ids: Vec::new(),
+        space_id: Some("space-1".to_string()),
+        folder_id: None,
+        list_id: Some("list-1".to_string()),
+        list_name: Some("Sprint 42".to_string()),
+        updated_at: None,
+    };
+    assert_eq!(
+        clickup_sprint_names(&summary),
+        vec!["Sprint 42".to_string()]
+    );
+
+    let explicit = ClickUpTaskSummary {
+        sprint_names: vec!["Explicit".to_string()],
+        ..summary
+    };
+    assert_eq!(
+        clickup_sprint_names(&explicit),
+        vec!["Explicit".to_string()]
+    );
+}
+
+#[test]
+fn clickup_list_container_matches_secondary_location_membership() {
+    let summary = ClickUpTaskSummary {
+        id: "86d3efp65".to_string(),
+        custom_id: Some("MBE-3136".to_string()),
+        name: "Workflow 1 - Estimate Follow-up".to_string(),
+        url: None,
+        status_name: Some("In Progress".to_string()),
+        status_type: Some("custom".to_string()),
+        status_category: Some("in_progress".to_string()),
+        status_color: None,
+        assignees: vec!["Alex".to_string()],
+        assignee_ids: vec![424242],
+        watchers: Vec::new(),
+        tags: Vec::new(),
+        sprint_names: vec!["Current Sprint".to_string()],
+        location_ids: vec!["901615202857".to_string()],
+        location_folder_ids: vec!["sprint-folder".to_string()],
+        location_space_ids: vec!["sprints-space".to_string()],
+        space_id: Some("fortidia-space".to_string()),
+        folder_id: Some("ps-sas-folder".to_string()),
+        list_id: Some("901613274069".to_string()),
+        list_name: Some("Continuous Improvement".to_string()),
+        updated_at: None,
+    };
+
+    assert!(clickup_summary_matches_container(
+        &summary,
+        &ClickUpContainerScope::List("901615202857".to_string())
+    ));
+    assert!(clickup_summary_matches_container(
+        &summary,
+        &ClickUpContainerScope::Space("sprints-space".to_string())
+    ));
+    assert!(!clickup_summary_matches_container(
+        &summary,
+        &ClickUpContainerScope::List("other-list".to_string())
+    ));
+}
+
+#[tokio::test]
+async fn load_ticket_summaries_routes_jira_project_scope_before_disabled_error() {
+    let state = AppState::new_test();
+
+    let error = load_ticket_summaries(&state, PROVIDER_JIRA, Some("RX"), "ignored", 10, None)
+        .await
+        .expect_err("disabled Jira integration should fail");
+
+    assert!(!error.trim().is_empty());
+}
+
+#[tokio::test]
+async fn load_ticket_summaries_routes_jira_global_search_before_disabled_error() {
+    let state = AppState::new_test();
+
+    let error = load_ticket_summaries(&state, PROVIDER_JIRA, None, "merge", 10, None)
+        .await
+        .expect_err("disabled Jira integration should fail");
+
+    assert!(!error.trim().is_empty());
+}
+
+#[tokio::test]
+async fn load_ticket_summaries_routes_linear_before_disabled_error() {
+    let state = AppState::new_test();
+
+    let error = load_ticket_summaries(&state, PROVIDER_LINEAR, None, "merge", 10, None)
+        .await
+        .expect_err("disabled Linear integration should fail");
+
+    assert!(!error.trim().is_empty());
+}
+
+#[tokio::test]
+async fn load_ticket_summaries_routes_clickup_space_scope_before_disabled_error() {
+    let state = AppState::new_test();
+
+    let error = load_ticket_summaries(&state, PROVIDER_CLICKUP, Some("space-1"), "merge", 10, None)
+        .await
+        .expect_err("disabled ClickUp integration should fail");
+
+    assert!(!error.trim().is_empty());
+}
+
+#[tokio::test]
+async fn load_ticket_summaries_routes_clickup_space_list_and_folder_scopes() {
+    let clickup_client = Arc::new(FakeClickUpTicketingClient::default());
+    let mut state = AppState::new_test();
+    state.clickup_integration_service = valid_clickup_service(Arc::clone(&clickup_client)).await;
+
+    let space_items = load_ticket_summaries(
+        &state,
+        PROVIDER_CLICKUP,
+        Some("space:space-1"),
+        "Folder",
+        10,
+        None,
+    )
+    .await
+    .expect("space-scoped clickup tasks should load");
+    assert_eq!(
+        space_items
+            .iter()
+            .map(|ticket| ticket.ref_.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["folder-task", "other-task"]
+    );
+    assert!(space_items[0].current_user_assigned);
+    assert!(space_items[0].current_user_watching);
+
+    let folder_items = load_ticket_summaries(
+        &state,
+        PROVIDER_CLICKUP,
+        Some("folder:folder-1"),
+        "",
+        10,
+        None,
+    )
+    .await
+    .expect("folder-scoped clickup tasks should load");
+    assert_eq!(folder_items.len(), 1);
+    assert_eq!(folder_items[0].ref_.id, "folder-task");
+
+    let list_filter = TicketFiltersInput {
+        text: None,
+        assignee: Some("Alex Developer".to_string()),
+        watcher_me: None,
+        state_ids: None,
+        labels: None,
+        sprint: Some("Current Sprint".to_string()),
+    };
+    let list_items = load_ticket_summaries(
+        &state,
+        PROVIDER_CLICKUP,
+        Some("list:list-folder"),
+        "",
+        10,
+        Some(&list_filter),
+    )
+    .await
+    .expect("list-scoped clickup tasks should load");
+    assert_eq!(list_items.len(), 1);
+    assert_eq!(list_items[0].ref_.id, "list-task");
+    assert_eq!(
+        clickup_client.list_tasks_calls.lock().unwrap().as_slice(),
+        &[vec!["space-1".to_string()], Vec::<String>::new()]
+    );
+    assert_eq!(
+        clickup_client
+            .list_tasks_for_list_calls
+            .lock()
+            .unwrap()
+            .as_slice(),
+        &[("list-folder".to_string(), vec![42])]
+    );
+}
+
+#[test]
+fn ticket_matches_filters_with_empty_filter_input_keeps_open_states() {
     let ticket = ticket_summary_fixture("LIN-1", "First", "Todo", None, &[]);
     let empty = TicketFiltersInput {
         text: None,
@@ -1405,8 +2655,27 @@ fn ticket_matches_filters_with_empty_filter_input_keeps_all() {
         watcher_me: None,
         state_ids: None,
         labels: None,
+        sprint: None,
     };
     assert!(ticket_matches_filters(&ticket, &empty));
+
+    let completed = ticket_summary_fixture("LIN-2", "Second", "Done", None, &[]);
+    assert!(!ticket_matches_filters(&completed, &empty));
+}
+
+#[test]
+fn ticket_matches_filters_explicit_completed_status_includes_completed() {
+    let completed = ticket_summary_fixture("LIN-2", "Second", "Done", None, &[]);
+    let filter = TicketFiltersInput {
+        text: None,
+        assignee: None,
+        watcher_me: None,
+        state_ids: Some(vec!["done".to_string()]),
+        labels: None,
+        sprint: None,
+    };
+
+    assert!(ticket_matches_filters(&completed, &filter));
 }
 
 #[test]
@@ -1418,6 +2687,7 @@ fn ticket_matches_filters_text_matches_provider_id_case_insensitively() {
         watcher_me: None,
         state_ids: None,
         labels: None,
+        sprint: None,
     };
     assert!(ticket_matches_filters(&ticket, &by_id));
 
@@ -1427,6 +2697,7 @@ fn ticket_matches_filters_text_matches_provider_id_case_insensitively() {
         watcher_me: None,
         state_ids: None,
         labels: None,
+        sprint: None,
     };
     assert!(ticket_matches_filters(&ticket, &by_title));
 
@@ -1436,6 +2707,7 @@ fn ticket_matches_filters_text_matches_provider_id_case_insensitively() {
         watcher_me: None,
         state_ids: None,
         labels: None,
+        sprint: None,
     };
     assert!(!ticket_matches_filters(&ticket, &miss));
 }
@@ -1450,6 +2722,7 @@ fn ticket_matches_filters_state_id_matches_category_alias() {
         watcher_me: None,
         state_ids: Some(vec!["in_progress".to_string()]),
         labels: None,
+        sprint: None,
     };
     assert!(ticket_matches_filters(&ticket, &by_category));
 
@@ -1459,6 +2732,7 @@ fn ticket_matches_filters_state_id_matches_category_alias() {
         watcher_me: None,
         state_ids: Some(vec!["in_progress".to_string(), "other".to_string()]),
         labels: None,
+        sprint: None,
     };
     assert!(ticket_matches_filters(&ticket, &by_state_id));
 
@@ -1468,6 +2742,7 @@ fn ticket_matches_filters_state_id_matches_category_alias() {
         watcher_me: None,
         state_ids: Some(vec!["done".to_string()]),
         labels: None,
+        sprint: None,
     };
     assert!(!ticket_matches_filters(&ticket, &miss));
 }
@@ -1483,6 +2758,7 @@ fn ticket_matches_filters_assignee_matches_any_assignee() {
         watcher_me: None,
         state_ids: None,
         labels: None,
+        sprint: None,
     };
     assert!(ticket_matches_filters(&ticket, &by_second_assignee));
 
@@ -1492,15 +2768,42 @@ fn ticket_matches_filters_assignee_matches_any_assignee() {
         watcher_me: None,
         state_ids: None,
         labels: None,
+        sprint: None,
     };
     assert!(!ticket_matches_filters(&ticket, &miss));
+}
+
+#[test]
+fn ticket_matches_filters_clickup_sprint_and_short_assignee_name() {
+    let mut ticket = ticket_summary_fixture(
+        "MBE-3136",
+        "Workflow 1 - Estimate Follow-up",
+        "Awaiting Approval",
+        None,
+        &[],
+    );
+    ticket.ref_.provider = PROVIDER_CLICKUP.to_string();
+    ticket.project = Some("Continuous Improvement".to_string());
+    ticket.sprints = vec!["Current Sprint".to_string()];
+    ticket.assignees = vec![named_person("Alex")];
+
+    let filter = TicketFiltersInput {
+        text: None,
+        assignee: Some("Alex Developer".to_string()),
+        watcher_me: None,
+        state_ids: None,
+        labels: None,
+        sprint: Some("Current Sprint".to_string()),
+    };
+
+    assert!(ticket_matches_filters(&ticket, &filter));
 }
 
 #[test]
 fn ticket_matches_filters_watcher_me_requires_current_user_watching() {
     let mut watched = ticket_summary_fixture("CU-1", "Watched task", "Todo", None, &[]);
     watched.current_user_watching = true;
-    watched.watchers = vec![named_person("Reef Agent")];
+    watched.watchers = vec![named_person("Test Agent")];
     let unwatched = ticket_summary_fixture("CU-2", "Unwatched task", "Todo", None, &[]);
     let filter = TicketFiltersInput {
         text: None,
@@ -1508,6 +2811,7 @@ fn ticket_matches_filters_watcher_me_requires_current_user_watching() {
         watcher_me: Some(true),
         state_ids: None,
         labels: None,
+        sprint: None,
     };
 
     assert!(ticket_matches_filters(&watched, &filter));
@@ -1523,6 +2827,7 @@ fn ticket_matches_filters_requires_all_labels_present() {
         watcher_me: None,
         state_ids: None,
         labels: Some(vec!["Backend".to_string(), "LINEAR".to_string()]),
+        sprint: None,
     };
     // Label matching is case-insensitive.
     assert!(ticket_matches_filters(&ticket, &all_present));
@@ -1533,6 +2838,7 @@ fn ticket_matches_filters_requires_all_labels_present() {
         watcher_me: None,
         state_ids: None,
         labels: Some(vec!["backend".to_string(), "frontend".to_string()]),
+        sprint: None,
     };
     assert!(!ticket_matches_filters(&ticket, &missing_one));
 }
@@ -1559,6 +2865,7 @@ fn ticket_summary_fixture(
         watchers: Vec::new(),
         reporter: None,
         labels: labels.iter().map(|label| label.to_string()).collect(),
+        sprints: Vec::new(),
         project: None,
         priority: None,
         updated_at: now_string(),
@@ -1671,11 +2978,15 @@ fn ticket_start_input(
             project_id: project_id.as_str().to_string(),
             content: "Start work from the ticket".to_string(),
             conversation_id: None,
+            parent_conversation_id: None,
+            title: None,
             provider_harness: None,
             model_override: None,
             logical_effort: None,
+            codex_fast_mode: None,
             mode: Some("chat".to_string()),
             base_ref_kind: None,
+            base_branch_mode: None,
             base_ref: None,
             base_display_name: None,
             base_source_pull_request: None,
@@ -1823,11 +3134,15 @@ async fn start_agent_conversation_with_ticket_default_base_uses_canonical_branch
         project_id: project_id.as_str().to_string(),
         content: "Start from attached ticket".to_string(),
         conversation_id: None,
+        parent_conversation_id: None,
+        title: None,
         provider_harness: None,
         model_override: None,
         logical_effort: None,
+        codex_fast_mode: None,
         mode: Some("edit".to_string()),
         base_ref_kind: Some("project_default".to_string()),
+        base_branch_mode: None,
         base_ref: Some("main".to_string()),
         base_display_name: Some("Project default (main)".to_string()),
         base_source_pull_request: None,
@@ -1839,6 +3154,8 @@ async fn start_agent_conversation_with_ticket_default_base_uses_canonical_branch
             key: Some("RX-77".to_string()),
             title: Some("Ticket with default base".to_string()),
             url: None,
+            summary_excerpt: None,
+            include_transcript: None,
         }],
         composer_artifact_references: Vec::new(),
     })
@@ -2046,6 +3363,7 @@ fn hydrate_input_summary(ticket_ref: TicketRefInput) -> TicketSummaryResponse {
         watchers: Vec::new(),
         reporter: None,
         labels: Vec::new(),
+        sprints: Vec::new(),
         project: None,
         priority: None,
         updated_at: now_string(),
@@ -2241,11 +3559,15 @@ fn base_test_start_input() -> StartAgentConversationInput {
         project_id: "project-1".to_string(),
         content: "Start work".to_string(),
         conversation_id: None,
+        parent_conversation_id: None,
+        title: None,
         provider_harness: None,
         model_override: None,
         logical_effort: None,
+        codex_fast_mode: None,
         mode: Some("edit".to_string()),
         base_ref_kind: Some("project_default".to_string()),
+        base_branch_mode: None,
         base_ref: Some("client-supplied-branch".to_string()),
         base_display_name: Some("Client base".to_string()),
         base_source_pull_request: None,

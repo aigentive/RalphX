@@ -10,6 +10,7 @@ import type {
 } from "../types/chat-conversation";
 import {
   AgentConversationModeSchema,
+  ContextTypeSchema,
   normalizeConversationProviderMetadata,
 } from "../types/chat-conversation";
 import type { ToolCall } from "../components/Chat/ToolCallIndicator";
@@ -19,6 +20,18 @@ import type { MessageAttachment } from "../components/Chat/MessageAttachments";
 import { isWebMode } from "@/lib/tauri-detection";
 import { backendApiUrl } from "@/api/backend";
 import { FileDiffSchema, transformFileDiff, type FileDiff } from "./diff";
+import {
+  RunningIdeationSessionSchema,
+  RunningProcessSchema,
+} from "./running-processes.schemas";
+import {
+  transformRunningIdeationSession,
+  transformRunningProcess,
+} from "./running-processes.transforms";
+import type {
+  RunningIdeationSession,
+  RunningProcess,
+} from "./running-processes.types";
 
 // ============================================================================
 // Typed Invoke Helper
@@ -641,6 +654,7 @@ const ChatConversationResponseSchema = z.object({
   effective_model_id: z.string().nullable().optional(),
   logical_effort: z.string().nullable().optional(),
   effective_effort: z.string().nullable().optional(),
+  service_tier: z.string().nullable().optional(),
   agent_mode: AgentConversationModeSchema.nullable().optional(),
   parent_conversation_id: z.string().nullable().optional(),
   title: z.string().nullable(),
@@ -694,6 +708,7 @@ function transformConversation(raw: RawConversation): ChatConversation {
     effectiveModelId: raw.effective_model_id ?? null,
     logicalEffort: raw.logical_effort ?? null,
     effectiveEffort: raw.effective_effort ?? null,
+    serviceTier: raw.service_tier ?? null,
     agentMode: raw.agent_mode ?? null,
     parentConversationId: raw.parent_conversation_id ?? null,
     title: raw.title,
@@ -1600,10 +1615,16 @@ export const chatApi = {
   setAgentConversationWorkspacePrSupervision,
   closeAgentWorkspacePr,
   getAgentWorkspacePrReviewContext,
+  getAgentWorkspaceReviewContext,
+  startAgentWorkspaceReview,
+  listAgentConversationIssues,
+  updateAgentConversationIssueStatus,
+  convertAgentConversationIssueFollowup,
   submitAgentWorkspacePrReviewAction,
   skipAgentWorkspacePrReviewAction,
   getAgentRunStatus,
   getAgentRunningStates,
+  getAgentConversationRuntimeStatuses,
   getBulkWorkspacePublicationStates,
   // Message sending & queue
   startAgentConversation,
@@ -1647,12 +1668,14 @@ export interface ComposerProjectReference {
 }
 
 export interface ComposerIntegrationReference {
-  provider: "atlassian" | "linear" | "clickup";
-  kind: "jira" | "confluence" | "linear" | "clickup";
+  provider: "atlassian" | "linear" | "clickup" | "granola";
+  kind: "jira" | "confluence" | "linear" | "clickup" | "note";
   id: string;
   key?: string;
   title?: string;
   url?: string;
+  summaryExcerpt?: string;
+  includeTranscript?: boolean;
 }
 
 export interface ComposerArtifactReference {
@@ -1669,6 +1692,7 @@ export interface SendAgentMessageOptions {
   providerHarness?: string | null;
   modelId?: string | null;
   logicalEffort?: string | null;
+  codexFastMode?: boolean | null;
   suppressUserMessage?: boolean;
   composerProjectReferences?: ComposerProjectReference[];
   composerIntegrationReferences?: ComposerIntegrationReference[];
@@ -1680,9 +1704,11 @@ export type AgentConversationBaseRefKind =
   | "project_default"
   | "current_branch"
   | "local_branch";
+export type AgentConversationBranchMode = "isolated" | "linked";
 
 export interface AgentConversationBaseSelection {
   kind: AgentConversationBaseRefKind;
+  branchMode?: AgentConversationBranchMode;
   ref: string;
   displayName: string;
   sourcePullRequest?: AgentConversationSourcePullRequest | null;
@@ -1701,6 +1727,7 @@ export interface AgentConversationWorkspace {
   conversationId: string;
   projectId: string;
   mode: AgentConversationWorkspaceMode;
+  branchMode: AgentConversationBranchMode;
   baseRefKind: string;
   baseRef: string;
   baseDisplayName: string | null;
@@ -1744,9 +1771,12 @@ export interface StartAgentConversationInput {
   projectId: string;
   content: string;
   conversationId?: string | null;
+  parentConversationId?: string | null;
+  title?: string | null;
   providerHarness?: string | null;
   modelId?: string | null;
   logicalEffort?: string | null;
+  codexFastMode?: boolean | null;
   mode?: AgentConversationWorkspaceMode;
   base?: AgentConversationBaseSelection | null;
   composerProjectReferences?: ComposerProjectReference[];
@@ -1859,6 +1889,16 @@ export type AgentWorkspacePrReviewMonitorStatus =
   | "blocked"
   | "terminal";
 
+export type AgentWorkspaceReviewMonitorStatus =
+  | "idle"
+  | "reviewing"
+  | "ready"
+  | "blocked";
+
+export type AgentWorkspaceReviewTargetScope =
+  | "selected_source"
+  | "workspace_delta";
+
 export type AgentWorkspacePrReviewActionKind =
   | "request_changes"
   | "approve"
@@ -1925,6 +1965,68 @@ export interface AgentWorkspacePrReviewContext {
   issueCommentEvidence: unknown[];
 }
 
+export interface AgentWorkspaceReviewTarget {
+  scope: AgentWorkspaceReviewTargetScope;
+  baseRef: string;
+  baseSha: string | null;
+  headRef: string;
+  headSha: string | null;
+  diffFingerprint: string;
+  sourcePullRequestNumber: number | null;
+}
+
+export interface AgentWorkspaceReviewMonitor {
+  conversationId: string;
+  projectId: string;
+  status: AgentWorkspaceReviewMonitorStatus;
+  currentTargetScope: AgentWorkspaceReviewTargetScope | null;
+  reviewedTargetScope: AgentWorkspaceReviewTargetScope | null;
+  reviewConversationId: string | null;
+  reviewArtifactId: string | null;
+  reviewArtifactVersion: number | null;
+  reviewArtifactUpdatedAt: string | null;
+  reviewedHeadSha: string | null;
+  reviewedDiffFingerprint: string | null;
+  selectedSourceBaseRef: string | null;
+  selectedSourceBaseSha: string | null;
+  selectedSourceHeadRef: string | null;
+  selectedSourceHeadSha: string | null;
+  selectedSourcePullRequestNumber: number | null;
+  workspaceBaseRef: string | null;
+  workspaceBaseSha: string | null;
+  workspaceHeadRef: string | null;
+  workspaceHeadSha: string | null;
+  currentDiffFingerprint: string | null;
+  previousVersionId: string | null;
+  lastRunId: string | null;
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AgentWorkspaceReviewContext {
+  success: boolean;
+  workspace: AgentConversationWorkspace;
+  events: AgentConversationWorkspacePublicationEvent[];
+  target: AgentWorkspaceReviewTarget | null;
+  monitor: AgentWorkspaceReviewMonitor;
+  isCurrent: boolean;
+  isOutdated: boolean;
+  shouldShowTab: boolean;
+}
+
+export interface StartAgentWorkspaceReviewResult {
+  success: boolean;
+  target: AgentWorkspaceReviewTarget | null;
+  monitor: AgentWorkspaceReviewMonitor;
+  isCurrent: boolean;
+  isOutdated: boolean;
+  shouldShowTab: boolean;
+  started: boolean;
+  skippedReason: string | null;
+  wasQueued: boolean;
+}
+
 export interface SubmitAgentWorkspacePrReviewActionResult {
   success: boolean;
   monitor: AgentWorkspacePrReviewMonitor;
@@ -1965,6 +2067,7 @@ const AgentConversationWorkspaceResponseSchema = z.object({
   conversation_id: z.string(),
   project_id: z.string(),
   mode: z.string(),
+  branch_mode: z.enum(["isolated", "linked"]).optional().default("isolated"),
   base_ref_kind: z.string(),
   base_ref: z.string(),
   base_display_name: z.string().nullable(),
@@ -2134,6 +2237,64 @@ const AgentWorkspacePrReviewContextResponseSchema = z.object({
   recent_actions: z.array(AgentWorkspacePrReviewActionResponseSchema),
   issue_comment_evidence: z.array(z.unknown()),
 });
+const AgentWorkspaceReviewTargetResponseSchema = z.object({
+  scope: z.enum(["selected_source", "workspace_delta"]),
+  base_ref: z.string(),
+  base_sha: z.string().nullable(),
+  head_ref: z.string(),
+  head_sha: z.string().nullable(),
+  diff_fingerprint: z.string(),
+  source_pull_request_number: z.number().nullable(),
+});
+const AgentWorkspaceReviewMonitorResponseSchema = z.object({
+  conversation_id: z.string(),
+  project_id: z.string(),
+  status: z.enum(["idle", "reviewing", "ready", "blocked"]),
+  current_target_scope: z.enum(["selected_source", "workspace_delta"]).nullable(),
+  reviewed_target_scope: z.enum(["selected_source", "workspace_delta"]).nullable(),
+  review_conversation_id: z.string().nullable().optional(),
+  review_artifact_id: z.string().nullable(),
+  review_artifact_version: z.number().nullable(),
+  review_artifact_updated_at: z.string().nullable(),
+  reviewed_head_sha: z.string().nullable(),
+  reviewed_diff_fingerprint: z.string().nullable(),
+  selected_source_base_ref: z.string().nullable(),
+  selected_source_base_sha: z.string().nullable(),
+  selected_source_head_ref: z.string().nullable(),
+  selected_source_head_sha: z.string().nullable(),
+  selected_source_pull_request_number: z.number().nullable(),
+  workspace_base_ref: z.string().nullable(),
+  workspace_base_sha: z.string().nullable(),
+  workspace_head_ref: z.string().nullable(),
+  workspace_head_sha: z.string().nullable(),
+  current_diff_fingerprint: z.string().nullable(),
+  previous_version_id: z.string().nullable(),
+  last_run_id: z.string().nullable(),
+  last_error: z.string().nullable(),
+  created_at: z.string(),
+  updated_at: z.string(),
+});
+const AgentWorkspaceReviewContextResponseSchema = z.object({
+  success: z.boolean(),
+  workspace: AgentConversationWorkspaceResponseSchema,
+  events: AgentConversationWorkspacePublicationEventListResponseSchema,
+  target: AgentWorkspaceReviewTargetResponseSchema.nullable(),
+  monitor: AgentWorkspaceReviewMonitorResponseSchema,
+  is_current: z.boolean(),
+  is_outdated: z.boolean(),
+  should_show_tab: z.boolean(),
+});
+const StartAgentWorkspaceReviewResponseSchema = z.object({
+  success: z.boolean(),
+  target: AgentWorkspaceReviewTargetResponseSchema.nullable(),
+  monitor: AgentWorkspaceReviewMonitorResponseSchema,
+  is_current: z.boolean(),
+  is_outdated: z.boolean(),
+  should_show_tab: z.boolean(),
+  started: z.boolean(),
+  skipped_reason: z.string().nullable(),
+  was_queued: z.boolean(),
+});
 const SubmitAgentWorkspacePrReviewActionResponseSchema = z.object({
   success: z.boolean(),
   monitor: AgentWorkspacePrReviewMonitorResponseSchema,
@@ -2238,6 +2399,18 @@ type RawAgentWorkspacePrReviewAction = z.infer<
 type RawAgentWorkspacePrReviewContext = z.infer<
   typeof AgentWorkspacePrReviewContextResponseSchema
 >;
+type RawAgentWorkspaceReviewTarget = z.infer<
+  typeof AgentWorkspaceReviewTargetResponseSchema
+>;
+type RawAgentWorkspaceReviewMonitor = z.infer<
+  typeof AgentWorkspaceReviewMonitorResponseSchema
+>;
+type RawAgentWorkspaceReviewContext = z.infer<
+  typeof AgentWorkspaceReviewContextResponseSchema
+>;
+type RawStartAgentWorkspaceReviewResponse = z.infer<
+  typeof StartAgentWorkspaceReviewResponseSchema
+>;
 type RawSubmitAgentWorkspacePrReviewActionResponse = z.infer<
   typeof SubmitAgentWorkspacePrReviewActionResponseSchema
 >;
@@ -2265,6 +2438,7 @@ function transformAgentConversationWorkspace(
     conversationId: raw.conversation_id,
     projectId: raw.project_id,
     mode: raw.mode as AgentConversationWorkspaceMode,
+    branchMode: raw.branch_mode,
     baseRefKind: raw.base_ref_kind,
     baseRef: raw.base_ref,
     baseDisplayName: raw.base_display_name,
@@ -2370,6 +2544,9 @@ export function startAgentConversationInvokeInput(
       : {}),
     ...(input.modelId ? { modelOverride: input.modelId } : {}),
     ...(input.logicalEffort ? { logicalEffort: input.logicalEffort } : {}),
+    ...(input.codexFastMode != null
+      ? { codexFastMode: input.codexFastMode }
+      : {}),
     ...(input.mode ? { mode: input.mode } : {}),
     ...(input.composerProjectReferences?.length
       ? { composerProjectReferences: input.composerProjectReferences }
@@ -2383,6 +2560,9 @@ export function startAgentConversationInvokeInput(
     ...(input.base
       ? {
           baseRefKind: input.base.kind,
+          ...(input.base.branchMode
+            ? { baseBranchMode: input.base.branchMode }
+            : {}),
           baseRef: input.base.ref,
           baseDisplayName: input.base.displayName,
           ...(input.base.sourcePullRequest
@@ -2552,6 +2732,84 @@ function transformAgentWorkspacePrReviewContext(
       transformAgentWorkspacePrReviewAction,
     ),
     issueCommentEvidence: raw.issue_comment_evidence,
+  };
+}
+
+function transformAgentWorkspaceReviewTarget(
+  raw: RawAgentWorkspaceReviewTarget
+): AgentWorkspaceReviewTarget {
+  return {
+    scope: raw.scope,
+    baseRef: raw.base_ref,
+    baseSha: raw.base_sha,
+    headRef: raw.head_ref,
+    headSha: raw.head_sha,
+    diffFingerprint: raw.diff_fingerprint,
+    sourcePullRequestNumber: raw.source_pull_request_number,
+  };
+}
+
+function transformAgentWorkspaceReviewMonitor(
+  raw: RawAgentWorkspaceReviewMonitor
+): AgentWorkspaceReviewMonitor {
+  return {
+    conversationId: raw.conversation_id,
+    projectId: raw.project_id,
+    status: raw.status,
+    currentTargetScope: raw.current_target_scope,
+    reviewedTargetScope: raw.reviewed_target_scope,
+    reviewConversationId: raw.review_conversation_id ?? null,
+    reviewArtifactId: raw.review_artifact_id,
+    reviewArtifactVersion: raw.review_artifact_version,
+    reviewArtifactUpdatedAt: raw.review_artifact_updated_at,
+    reviewedHeadSha: raw.reviewed_head_sha,
+    reviewedDiffFingerprint: raw.reviewed_diff_fingerprint,
+    selectedSourceBaseRef: raw.selected_source_base_ref,
+    selectedSourceBaseSha: raw.selected_source_base_sha,
+    selectedSourceHeadRef: raw.selected_source_head_ref,
+    selectedSourceHeadSha: raw.selected_source_head_sha,
+    selectedSourcePullRequestNumber: raw.selected_source_pull_request_number,
+    workspaceBaseRef: raw.workspace_base_ref,
+    workspaceBaseSha: raw.workspace_base_sha,
+    workspaceHeadRef: raw.workspace_head_ref,
+    workspaceHeadSha: raw.workspace_head_sha,
+    currentDiffFingerprint: raw.current_diff_fingerprint,
+    previousVersionId: raw.previous_version_id,
+    lastRunId: raw.last_run_id,
+    lastError: raw.last_error,
+    createdAt: raw.created_at,
+    updatedAt: raw.updated_at,
+  };
+}
+
+function transformAgentWorkspaceReviewContext(
+  raw: RawAgentWorkspaceReviewContext
+): AgentWorkspaceReviewContext {
+  return {
+    success: raw.success,
+    workspace: transformAgentConversationWorkspace(raw.workspace),
+    events: raw.events.map(transformAgentConversationWorkspacePublicationEvent),
+    target: raw.target ? transformAgentWorkspaceReviewTarget(raw.target) : null,
+    monitor: transformAgentWorkspaceReviewMonitor(raw.monitor),
+    isCurrent: raw.is_current,
+    isOutdated: raw.is_outdated,
+    shouldShowTab: raw.should_show_tab,
+  };
+}
+
+function transformStartAgentWorkspaceReviewResponse(
+  raw: RawStartAgentWorkspaceReviewResponse
+): StartAgentWorkspaceReviewResult {
+  return {
+    success: raw.success,
+    target: raw.target ? transformAgentWorkspaceReviewTarget(raw.target) : null,
+    monitor: transformAgentWorkspaceReviewMonitor(raw.monitor),
+    isCurrent: raw.is_current,
+    isOutdated: raw.is_outdated,
+    shouldShowTab: raw.should_show_tab,
+    started: raw.started,
+    skippedReason: raw.skipped_reason,
+    wasQueued: raw.was_queued,
   };
 }
 
@@ -2725,6 +2983,178 @@ export async function getAgentWorkspacePrReviewContext(
     AgentWorkspacePrReviewContextResponseSchema,
   );
   return transformAgentWorkspacePrReviewContext(raw);
+}
+
+export async function getAgentWorkspaceReviewContext(
+  conversationId: string,
+): Promise<AgentWorkspaceReviewContext> {
+  const raw = await fetchAgentWorkspaceJson(
+    `agent-workspaces/${encodeURIComponent(conversationId)}/workspace-review-context`,
+    AgentWorkspaceReviewContextResponseSchema,
+  );
+  return transformAgentWorkspaceReviewContext(raw);
+}
+
+export async function startAgentWorkspaceReview(
+  conversationId: string,
+  options: { force?: boolean } = {},
+): Promise<StartAgentWorkspaceReviewResult> {
+  const raw = await fetchAgentWorkspaceJson(
+    `agent-workspaces/${encodeURIComponent(conversationId)}/workspace-review-runs`,
+    StartAgentWorkspaceReviewResponseSchema,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ force: options.force ?? false }),
+    },
+  );
+  return transformStartAgentWorkspaceReviewResponse(raw);
+}
+
+const AgentConversationIssueResponseSchema = z.object({
+  id: z.string(),
+  project_id: z.string(),
+  conversation_id: z.string(),
+  source_task_id: z.string().nullable(),
+  source_context_type: z.string().nullable(),
+  source_context_id: z.string().nullable(),
+  source_agent_name: z.string().nullable(),
+  issue_kind: z.string(),
+  severity: z.string(),
+  status: z.string(),
+  blocking_scope: z.string(),
+  title: z.string(),
+  summary: z.string(),
+  evidence: z.string().nullable(),
+  recommendation: z.string().nullable(),
+  blocker_fingerprint: z.string().nullable(),
+  followup_title: z.string().nullable(),
+  followup_prompt: z.string().nullable(),
+  auto_followup_eligible: z.boolean(),
+  linked_followup_conversation_id: z.string().nullable(),
+  created_at: z.string(),
+  updated_at: z.string(),
+  resolved_at: z.string().nullable(),
+});
+
+const AgentConversationIssueListResponseSchema = z.object({
+  issues: z.array(AgentConversationIssueResponseSchema),
+});
+
+const AgentConversationIssueMutationResponseSchema = z.object({
+  issue: AgentConversationIssueResponseSchema,
+});
+
+type RawAgentConversationIssue = z.infer<
+  typeof AgentConversationIssueResponseSchema
+>;
+
+export interface AgentConversationIssue {
+  id: string;
+  projectId: string;
+  conversationId: string;
+  sourceTaskId: string | null;
+  sourceContextType: string | null;
+  sourceContextId: string | null;
+  sourceAgentName: string | null;
+  issueKind: string;
+  severity: string;
+  status: string;
+  blockingScope: string;
+  title: string;
+  summary: string;
+  evidence: string | null;
+  recommendation: string | null;
+  blockerFingerprint: string | null;
+  followupTitle: string | null;
+  followupPrompt: string | null;
+  autoFollowupEligible: boolean;
+  linkedFollowupConversationId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  resolvedAt: string | null;
+}
+
+function transformAgentConversationIssue(
+  raw: RawAgentConversationIssue,
+): AgentConversationIssue {
+  return {
+    id: raw.id,
+    projectId: raw.project_id,
+    conversationId: raw.conversation_id,
+    sourceTaskId: raw.source_task_id,
+    sourceContextType: raw.source_context_type,
+    sourceContextId: raw.source_context_id,
+    sourceAgentName: raw.source_agent_name,
+    issueKind: raw.issue_kind,
+    severity: raw.severity,
+    status: raw.status,
+    blockingScope: raw.blocking_scope,
+    title: raw.title,
+    summary: raw.summary,
+    evidence: raw.evidence,
+    recommendation: raw.recommendation,
+    blockerFingerprint: raw.blocker_fingerprint,
+    followupTitle: raw.followup_title,
+    followupPrompt: raw.followup_prompt,
+    autoFollowupEligible: raw.auto_followup_eligible,
+    linkedFollowupConversationId: raw.linked_followup_conversation_id,
+    createdAt: raw.created_at,
+    updatedAt: raw.updated_at,
+    resolvedAt: raw.resolved_at,
+  };
+}
+
+export async function listAgentConversationIssues(
+  conversationId: string,
+  options: { includeResolved?: boolean } = {},
+): Promise<AgentConversationIssue[]> {
+  const raw = await fetchAgentWorkspaceJson(
+    "agent_conversation_issues/list",
+    AgentConversationIssueListResponseSchema,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        conversation_id: conversationId,
+        include_resolved: options.includeResolved ?? false,
+      }),
+    },
+  );
+  return raw.issues.map(transformAgentConversationIssue);
+}
+
+export async function updateAgentConversationIssueStatus(
+  issueId: string,
+  status: "open" | "resolved" | "dismissed",
+): Promise<AgentConversationIssue> {
+  const raw = await fetchAgentWorkspaceJson(
+    "agent_conversation_issues/status",
+    AgentConversationIssueMutationResponseSchema,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ issue_id: issueId, status }),
+    },
+  );
+  return transformAgentConversationIssue(raw.issue);
+}
+
+export async function convertAgentConversationIssueFollowup(
+  issueId: string,
+): Promise<AgentConversationIssue> {
+  const raw = await fetchAgentWorkspaceJson(
+    "agent_conversation_issues/convert_followup",
+    AgentConversationIssueMutationResponseSchema.extend({
+      followup: z.unknown(),
+    }),
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ issue_id: issueId }),
+    },
+  );
+  return transformAgentConversationIssue(raw.issue);
 }
 
 export async function submitAgentWorkspacePrReviewAction(
@@ -2932,6 +3362,9 @@ export async function switchAgentConversationMode(
         ...(input.base
           ? {
               baseRefKind: input.base.kind,
+              ...(input.base.branchMode
+                ? { baseBranchMode: input.base.branchMode }
+                : {}),
               baseRef: input.base.ref,
               baseDisplayName: input.base.displayName,
               ...(input.base.sourcePullRequest
@@ -2987,6 +3420,9 @@ export async function sendAgentMessage(
         ...(options?.modelId ? { modelOverride: options.modelId } : {}),
         ...(options?.logicalEffort
           ? { logicalEffort: options.logicalEffort }
+          : {}),
+        ...(options?.codexFastMode != null
+          ? { codexFastMode: options.codexFastMode }
           : {}),
         ...(options?.suppressUserMessage ? { suppressUserMessage: true } : {}),
         ...(options?.composerProjectReferences?.length
@@ -3158,6 +3594,113 @@ export async function getAgentRunningStates(
     "get_agent_running_states",
     { contextType, contextIds },
     z.record(z.string(), AgentRunningStateSchema),
+  );
+}
+
+const AgentConversationRuntimeSourceSchema = z.enum([
+  "workspace",
+  "workspace_review",
+  "ideation",
+  "verification",
+  "task_execution",
+  "review",
+  "merge",
+]);
+
+export type AgentConversationRuntimeSource = z.infer<
+  typeof AgentConversationRuntimeSourceSchema
+>;
+
+export interface AgentConversationRuntimeItem {
+  source: AgentConversationRuntimeSource;
+  contextType: ContextType;
+  contextId: string;
+  label: string;
+  title: string;
+  agentStatus: AgentRuntimeStatus;
+  taskId: string | null;
+  internalStatus: string | null;
+  runningProcess: RunningProcess | null;
+  ideationSession: RunningIdeationSession | null;
+  parentSessionId: string | null;
+  childSessionId: string | null;
+  conversationId: string | null;
+}
+
+export interface AgentConversationRuntimeStatus {
+  conversationId: string;
+  isRunning: boolean;
+  agentStatus: AgentRuntimeStatus;
+  primarySource: AgentConversationRuntimeSource | null;
+  summaryLabel: string | null;
+  items: AgentConversationRuntimeItem[];
+}
+
+const AgentConversationRuntimeItemSchema = z
+  .object({
+    source: AgentConversationRuntimeSourceSchema,
+    contextType: ContextTypeSchema,
+    contextId: z.string(),
+    label: z.string(),
+    title: z.string(),
+    agentStatus: AgentRuntimeStatusSchema,
+    taskId: z.string().nullable(),
+    internalStatus: z.string().nullable(),
+    runningProcess: RunningProcessSchema.nullable(),
+    ideationSession: RunningIdeationSessionSchema.nullable(),
+    parentSessionId: z.string().nullable(),
+    childSessionId: z.string().nullable(),
+    conversationId: z.string().nullable(),
+  })
+  .transform(
+    (item): AgentConversationRuntimeItem => ({
+      source: item.source,
+      contextType: item.contextType,
+      contextId: item.contextId,
+      label: item.label,
+      title: item.title,
+      agentStatus: item.agentStatus,
+      taskId: item.taskId,
+      internalStatus: item.internalStatus,
+      runningProcess: item.runningProcess
+        ? transformRunningProcess(item.runningProcess)
+        : null,
+      ideationSession: item.ideationSession
+        ? transformRunningIdeationSession(item.ideationSession)
+        : null,
+      parentSessionId: item.parentSessionId,
+      childSessionId: item.childSessionId,
+      conversationId: item.conversationId,
+    }),
+  );
+
+const AgentConversationRuntimeStatusSchema = z
+  .object({
+    conversationId: z.string(),
+    isRunning: z.boolean(),
+    agentStatus: AgentRuntimeStatusSchema,
+    primarySource: AgentConversationRuntimeSourceSchema.nullable(),
+    summaryLabel: z.string().nullable(),
+    items: z.array(AgentConversationRuntimeItemSchema),
+  })
+  .transform(
+    (status): AgentConversationRuntimeStatus => ({
+      conversationId: status.conversationId,
+      isRunning: status.isRunning,
+      agentStatus: status.agentStatus,
+      primarySource: status.primarySource,
+      summaryLabel: status.summaryLabel,
+      items: status.items,
+    }),
+  );
+
+export async function getAgentConversationRuntimeStatuses(
+  conversationIds: string[],
+): Promise<Record<string, AgentConversationRuntimeStatus>> {
+  return typedInvoke(
+    "get_agent_conversation_runtime_statuses",
+    { conversationIds },
+    z.record(z.string(), AgentConversationRuntimeStatusSchema),
   );
 }
 

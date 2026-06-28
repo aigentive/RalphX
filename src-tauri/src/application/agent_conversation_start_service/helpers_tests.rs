@@ -5,6 +5,8 @@
 //! deterministic. The integration-only `start()` orchestration lives in the
 //! parent module and is covered by higher-level flows.
 
+use std::sync::Arc;
+
 use super::*;
 use crate::application::AppState;
 use crate::domain::agents::{AgentHarnessKind, LogicalEffort};
@@ -12,6 +14,8 @@ use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, ChatConversationId,
     IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow, Project,
 };
+use crate::domain::services::PrSearchResult;
+use crate::tests::mock_github_service::MockGithubService;
 
 // ── parse_agent_workspace_mode ───────────────────────────────────────────────
 
@@ -84,6 +88,35 @@ fn parse_base_kind_rejects_unknown_value() {
     assert!(
         error.contains("weird"),
         "error should name the bad value: {error}"
+    );
+}
+
+// ── parse_agent_workspace_branch_mode ───────────────────────────────────────
+
+#[test]
+fn parse_branch_mode_defaults_and_rejects_unknown_value() {
+    assert_eq!(
+        AgentConversationWorkspaceBranchMode::default(),
+        AgentConversationWorkspaceBranchMode::Isolated
+    );
+    assert_eq!(parse_agent_workspace_branch_mode(None).unwrap(), None);
+    assert_eq!(
+        parse_agent_workspace_branch_mode(Some("   ")).unwrap(),
+        None
+    );
+    assert_eq!(
+        parse_agent_workspace_branch_mode(Some(" linked ")).unwrap(),
+        Some(AgentConversationWorkspaceBranchMode::Linked)
+    );
+    assert_eq!(
+        parse_agent_workspace_branch_mode(Some("isolated")).unwrap(),
+        Some(AgentConversationWorkspaceBranchMode::Isolated)
+    );
+
+    let error = parse_agent_workspace_branch_mode(Some("shared")).unwrap_err();
+    assert!(
+        error.contains("unknown agent workspace branch mode"),
+        "got: {error}"
     );
 }
 
@@ -258,6 +291,8 @@ fn integration_ref(
         key: key.map(str::to_string),
         title: None,
         url: None,
+        summary_excerpt: None,
+        include_transcript: None,
     }
 }
 
@@ -392,6 +427,151 @@ fn should_create_workspace_covers_chat_with_source_pr() {
         head_ref_oid: None,
     };
     assert!(agent_mode_should_create_workspace(Chat, Some(&source)));
+}
+
+// ── linked branch availability / PR hydration ────────────────────────────────
+
+#[tokio::test]
+async fn linked_branch_availability_detects_conflicts_and_exempts_current_conversation() {
+    let state = AppState::new_test();
+    let project = Project::new("Demo".to_string(), "/tmp/demo".to_string());
+    let existing = workspace_for_mode(&project, AgentConversationWorkspaceMode::Edit);
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(existing.clone())
+        .await
+        .expect("seed existing linked workspace");
+
+    ensure_linked_branch_workspace_available(
+        &state,
+        &project.id,
+        None,
+        Some(AgentConversationWorkspaceBranchMode::Isolated),
+        Some("feature/branch"),
+        None,
+    )
+    .await
+    .expect("isolated mode does not reserve the selected branch");
+
+    ensure_linked_branch_workspace_available(
+        &state,
+        &project.id,
+        None,
+        Some(AgentConversationWorkspaceBranchMode::Linked),
+        Some("   "),
+        None,
+    )
+    .await
+    .expect("blank linked branch has nothing to reserve");
+
+    let conflict = ensure_linked_branch_workspace_available(
+        &state,
+        &project.id,
+        None,
+        Some(AgentConversationWorkspaceBranchMode::Linked),
+        Some(" feature/branch "),
+        None,
+    )
+    .await
+    .expect_err("another active workspace already owns this linked branch");
+    assert!(conflict.contains("feature/branch"), "got: {conflict}");
+    assert!(
+        conflict.contains(&existing.conversation_id.as_str()),
+        "got: {conflict}"
+    );
+
+    ensure_linked_branch_workspace_available(
+        &state,
+        &project.id,
+        Some(&existing.conversation_id),
+        Some(AgentConversationWorkspaceBranchMode::Linked),
+        Some("feature/branch"),
+        None,
+    )
+    .await
+    .expect("the current conversation can re-check its own linked branch");
+
+    let source = AgentWorkspaceSourcePullRequest {
+        number: 42,
+        url: None,
+        title: None,
+        head_ref_name: "feature/branch".to_string(),
+        base_ref_name: Some("main".to_string()),
+        head_ref_oid: None,
+    };
+    let conflict = ensure_linked_branch_workspace_available(
+        &state,
+        &project.id,
+        None,
+        Some(AgentConversationWorkspaceBranchMode::Linked),
+        Some("main"),
+        Some(&source),
+    )
+    .await
+    .expect_err("PR-backed linked workspaces reserve the PR head branch");
+    assert!(conflict.contains("feature/branch"), "got: {conflict}");
+}
+
+fn pr_search_result(
+    number: i64,
+    head_ref_name: &str,
+    base_ref_name: &str,
+    is_cross_repository: bool,
+) -> PrSearchResult {
+    PrSearchResult {
+        number,
+        title: format!("PR {number}"),
+        url: format!("https://github.com/acme/demo/pull/{number}"),
+        head_ref_name: head_ref_name.to_string(),
+        head_ref_oid: Some(format!("sha-{number}")),
+        base_ref_name: base_ref_name.to_string(),
+        is_draft: false,
+        updated_at: None,
+        author_login: Some("dev".to_string()),
+        is_cross_repository,
+    }
+}
+
+#[tokio::test]
+async fn linked_branch_pr_hydration_uses_matching_same_repo_pull_request() {
+    let github = Arc::new(MockGithubService::new());
+    github.will_return_pull_request_search(vec![
+        pr_search_result(7, "feature/shared", "main", true),
+        pr_search_result(8, "other", "main", false),
+        pr_search_result(9, "feature/shared", "release", false),
+    ]);
+
+    let mut state = AppState::new_test();
+    state.github_service = Some(github.clone());
+    let project = Project::new("Demo".to_string(), "/tmp/demo".to_string());
+
+    let hydrated = hydrate_linked_branch_source_pull_request(
+        &state,
+        &project,
+        Some(AgentConversationWorkspaceBranchMode::Linked),
+        Some(" feature/shared "),
+        None,
+    )
+    .await
+    .expect("PR hydration should not fail")
+    .expect("matching same-repository PR should be hydrated");
+
+    assert_eq!(hydrated.number, 9);
+    assert_eq!(hydrated.head_ref_name, "feature/shared");
+    assert_eq!(hydrated.base_ref_name.as_deref(), Some("release"));
+    assert_eq!(hydrated.head_ref_oid.as_deref(), Some("sha-9"));
+    assert_eq!(
+        hydrated.url.as_deref(),
+        Some("https://github.com/acme/demo/pull/9")
+    );
+    assert_eq!(hydrated.title.as_deref(), Some("PR 9"));
+
+    let state = github.state();
+    assert_eq!(state.search_pull_requests_calls, 1);
+    assert_eq!(
+        state.last_search_pull_requests_args,
+        Some((Some("feature/shared".to_string()), 20))
+    );
 }
 
 // ── normalized_effort_for_supported ──────────────────────────────────────────

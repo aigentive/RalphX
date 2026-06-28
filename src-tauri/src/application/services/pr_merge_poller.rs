@@ -1469,6 +1469,7 @@ async fn route_agent_workspace_pr_conflict_repair_if_needed(
                         .or_else(|| run.effective_model_id.clone())
                 }),
                 logical_effort_override: latest_run.as_ref().and_then(|run| run.logical_effort),
+                service_tier_override: latest_run.as_ref().and_then(|run| run.service_tier.clone()),
                 working_directory_override: Some(PathBuf::from(&workspace.worktree_path)),
                 force_new_provider_session: true,
                 preserve_conversation_provider_session_ref: true,
@@ -1772,11 +1773,26 @@ async fn agent_workspace_pr_autofix_repair_in_flight(
     if matches!(
         workspace.publication_push_status.as_deref(),
         Some("needs_agent")
-    ) || matches!(
+    ) {
+        return Ok(true);
+    }
+
+    if matches!(
         workspace.pr_supervision_status.as_deref(),
         Some("fixing" | "publishing")
     ) {
-        return Ok(true);
+        if workspace.publication_push_status.as_deref() != Some("pushed") {
+            return Ok(true);
+        }
+
+        let Some(agent_run_repo) = agent_run_repo else {
+            return Ok(true);
+        };
+
+        return Ok(agent_run_repo
+            .get_active_for_conversation(&workspace.conversation_id)
+            .await?
+            .is_some());
     }
 
     let Some(agent_run_repo) = agent_run_repo else {

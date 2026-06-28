@@ -132,6 +132,7 @@ async fn handle_accepted_plan_mode_proposal<R: Runtime + 'static>(
             conversation_id: conversation_id.as_str(),
             mode: "plan".to_string(),
             base_ref_kind: None,
+            base_branch_mode: None,
             base_ref: None,
             base_display_name: None,
             base_source_pull_request: None,

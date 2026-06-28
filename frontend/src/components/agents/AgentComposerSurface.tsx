@@ -63,6 +63,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { Switch } from "@/components/ui/switch";
 import { withAlpha } from "@/lib/theme-colors";
 import { extractErrorMessage } from "@/lib/errors";
 import { cn } from "@/lib/utils";
@@ -174,6 +175,14 @@ interface ModelFieldConfig {
   allowCustomValue?: boolean;
   customPlaceholder?: string | undefined;
   onOpenModelSettings?: () => void;
+  fastMode?: {
+    visible: boolean;
+    value: boolean;
+    onValueChange: (value: boolean) => void;
+    disabled?: boolean;
+    description?: string;
+    testId?: string;
+  };
   testId?: string;
   className?: string;
 }
@@ -252,12 +261,13 @@ export interface AgentComposerSurfaceProps {
   value?: string;
   onChange?: (value: string) => void;
   onFocusChange?: (focused: boolean) => void;
+  onLayoutChange?: () => void;
   isReadOnly?: boolean;
   autoFocus?: boolean;
   showHelperText?: boolean;
   /**
    * Collapse the composer into a minimal one-row resting state when it is idle
-   * (not focused, empty, no agent activity / attachments / references / queue).
+   * (not focused, empty, no attachments / references / queue).
    * Focusing — or any pending activity — expands it with a soft animation.
    * Defaults to false so the new-conversation / start composer keeps its
    * always-expanded layout.
@@ -299,6 +309,8 @@ const COMPOSER_COLLAPSED_MIN_HEIGHT = 38;
 const COMPOSER_EXPANDED_MIN_HEIGHT = 92;
 /** Textarea growth ceiling (px) before it scrolls internally. */
 const COMPOSER_MAX_HEIGHT = 220;
+/** Covers the 150ms composer transitions plus a small settle margin. */
+const COMPOSER_LAYOUT_SETTLE_MS = 180;
 const EMPTY_PROJECT_REFERENCES: AgentComposerProjectReference[] = [];
 const EMPTY_INTEGRATION_REFERENCES: AgentComposerIntegrationReference[] = [];
 const EMPTY_ARTIFACT_REFERENCES: AgentComposerArtifactReference[] = [];
@@ -316,6 +328,7 @@ export function AgentComposerSurface({
   value: controlledValue,
   onChange: onChangeProp,
   onFocusChange,
+  onLayoutChange,
   isReadOnly = false,
   autoFocus = false,
   showHelperText = true,
@@ -597,6 +610,24 @@ export function AgentComposerSurface({
         map.set(`integration:linear:${resource.id}`, reference);
         continue;
       }
+      if (integrationKind === "granola") {
+        if (!("title" in resource)) {
+          continue;
+        }
+        const reference: AgentComposerIntegrationReference = {
+          provider: "granola",
+          kind: "note",
+          id: resource.id,
+          ...(resource.title ? { title: resource.title } : {}),
+          ...(resource.url ? { url: resource.url } : {}),
+          ...("summary" in resource && resource.summary
+            ? { summaryExcerpt: resource.summary }
+            : {}),
+          includeTranscript: true,
+        };
+        map.set(`integration:granola:${resource.id}`, reference);
+        continue;
+      }
       if (!("kind" in resource)) {
         continue;
       }
@@ -707,13 +738,14 @@ export function AgentComposerSurface({
 
   // Collapsed (minimal) resting state. The composer expands when the textarea
   // is focused (cursor active, even with no text yet) or when there is real
-  // content to keep visible: text, a live agent, attachments, references,
-  // queued messages, a pending question, or read-only review. Transient
-  // popovers (+, mode, model) intentionally do NOT expand it on their own, so
-  // opening a menu on an unfocused composer never resizes the chat block.
+  // composer-local content to keep visible: text, attachments, references,
+  // queued messages, a pending question, or read-only review. A running agent
+  // alone does not keep the prompt expanded after blur; the Stop action remains
+  // available in the compact footer. Transient popovers (+, mode, model)
+  // intentionally do NOT expand it on their own, so opening a menu on an
+  // unfocused composer never resizes the chat block.
   const hasComposerActivity =
     value.trim().length > 0 ||
-    isAgentAlive ||
     attachments.length > 0 ||
     attachmentsUploading ||
     hasSelectedReferences ||
@@ -723,6 +755,7 @@ export function AgentComposerSurface({
   const isCollapsed = collapsible && !isFocused && !hasComposerActivity;
   const isExpanded = !isCollapsed;
   const compact = isCollapsed;
+  const previousCollapsedRef = useRef(isCollapsed);
 
   // Auto-resize the textarea to its content, floored at a min-height that
   // depends on the collapsed/expanded state and capped before it scrolls.
@@ -742,6 +775,26 @@ export function AgentComposerSurface({
     const nextHeight = Math.min(textarea.scrollHeight, COMPOSER_MAX_HEIGHT);
     textarea.style.height = `${Math.max(nextHeight, textareaMinHeight)}px`;
   }, [value, textareaMinHeight]);
+
+  useEffect(() => {
+    if (!collapsible || !onLayoutChange) {
+      return undefined;
+    }
+    if (previousCollapsedRef.current === isCollapsed) {
+      return undefined;
+    }
+    previousCollapsedRef.current = isCollapsed;
+
+    onLayoutChange();
+    const frameId = window.requestAnimationFrame(onLayoutChange);
+    const settleTimer = window.setTimeout(onLayoutChange, COMPOSER_LAYOUT_SETTLE_MS);
+
+    return () => {
+      window.cancelAnimationFrame(frameId);
+      window.clearTimeout(settleTimer);
+    };
+  }, [collapsible, isCollapsed, onLayoutChange]);
+
   const slashCommandItems = useMemo<AgentComposerMenuItem[]>(() => {
     const items: AgentComposerMenuItem[] = [];
     if (mode && !mode.disabled) {
@@ -884,18 +937,22 @@ export function AgentComposerSurface({
               ? `integration:clickup:${resource.id}`
               : integrationKind === "linear"
                 ? `integration:linear:${resource.id}`
-                : "kind" in resource
-                  ? `integration:${resource.kind}:${resource.id}`
-                  : `integration:unknown:${resource.id}`,
+                : integrationKind === "granola"
+                  ? `integration:granola:${resource.id}`
+                  : "kind" in resource
+                    ? `integration:${resource.kind}:${resource.id}`
+                    : `integration:unknown:${resource.id}`,
           kind: "integration",
           label:
             integrationKind === "clickup"
               ? `@clickup:${"customId" in resource && resource.customId ? resource.customId : resource.id}`
               : integrationKind === "linear"
                 ? `@linear:${"key" in resource ? (resource.key ?? resource.id) : resource.id}`
-                : "kind" in resource && resource.kind === "jira"
-                  ? `@jira:${resource.key ?? resource.id}`
-                  : `@confluence:${resource.id}`,
+                : integrationKind === "granola"
+                  ? `@granola:${resource.id}`
+                  : "kind" in resource && resource.kind === "jira"
+                    ? `@jira:${resource.key ?? resource.id}`
+                    : `@confluence:${resource.id}`,
           detail:
             integrationKind === "clickup"
               ? "statusName" in resource
@@ -905,17 +962,21 @@ export function AgentComposerSurface({
                 ? "stateName" in resource
                   ? (resource.stateName ?? "linear")
                   : "linear"
-                : "kind" in resource
-                  ? resource.kind
-                  : "integration",
+                : integrationKind === "granola"
+                  ? "Granola"
+                  : "kind" in resource
+                    ? resource.kind
+                    : "integration",
           sourceLabel:
             integrationKind === "clickup"
               ? "ClickUp"
               : integrationKind === "linear"
                 ? "Linear"
-                : "kind" in resource && resource.kind === "jira"
-                  ? "Jira"
-                  : "Confluence",
+                : integrationKind === "granola"
+                  ? "Granola"
+                  : "kind" in resource && resource.kind === "jira"
+                    ? "Jira"
+                    : "Confluence",
         };
         if (description) {
           item.description = description;
@@ -957,6 +1018,8 @@ export function AgentComposerSurface({
         ? "ClickUp"
         : integrationKind === "linear"
           ? "Linear"
+          : integrationKind === "granola"
+            ? "Granola"
           : integrationKind === "confluence"
             ? "Confluence"
             : "Jira";
@@ -976,7 +1039,7 @@ export function AgentComposerSurface({
     integrationSearchErrorLabel ??
     (integrationQuery.trim()
       ? "No matching integration items"
-      : "Type to search Jira, Linear, ClickUp, or Confluence");
+      : "Type to search Jira, Linear, ClickUp, Granola, or Confluence");
   const menuEmptyLabel =
     activeTrigger?.kind === "path"
       ? "No matching files or folders"
@@ -1961,6 +2024,14 @@ function ComposerActionMenu({
               <Search className="h-4 w-4" />
               ClickUp
             </button>
+            <button
+              type="button"
+              className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-[0.8125rem] transition-colors hover:bg-[var(--bg-hover)]"
+              onClick={() => onInsertIntegrationTrigger("granola")}
+            >
+              <Search className="h-4 w-4" />
+              Granola
+            </button>
           </div>
         </div>
       </PopoverContent>
@@ -2018,24 +2089,31 @@ function ComposerReferencePills({
         const isJira = reference.kind === "jira";
         const isLinear = reference.kind === "linear";
         const isClickUp = reference.kind === "clickup";
+        const isGranola = reference.provider === "granola" && reference.kind === "note";
         const label =
           isJira || isLinear || isClickUp
             ? (reference.key ?? reference.id)
             : (reference.title ?? reference.id);
         const description =
-          isJira || isLinear || isClickUp ? reference.title : reference.id;
+          isJira || isLinear || isClickUp
+            ? reference.title
+            : isGranola
+              ? reference.summaryExcerpt
+              : reference.id;
         const typeLabel = isClickUp
           ? "ClickUp"
           : isLinear
             ? "Linear"
             : isJira
               ? "Jira"
-              : "Confluence";
+              : isGranola
+                ? "Granola"
+                : "Confluence";
         return (
           <ComposerReferencePill
             key={`integration:${reference.provider}:${reference.kind}:${reference.id}`}
             testId={`agent-composer-reference-pill-integration:${reference.kind}:${reference.id}`}
-            icon={isJira || isLinear || isClickUp ? Ticket : BookOpen}
+            icon={isJira || isLinear || isClickUp ? Ticket : isGranola ? ScrollText : BookOpen}
             typeLabel={typeLabel}
             label={label}
             removeLabel={`Remove ${typeLabel} reference ${label}`}
@@ -2140,8 +2218,10 @@ function insertIntegrationTrigger(
       ? "@jira:"
       : kind === "linear"
         ? "@linear:"
-        : kind === "clickup"
-          ? "@clickup:"
+      : kind === "clickup"
+        ? "@clickup:"
+        : kind === "granola"
+          ? "@granola:"
           : "@confluence:";
   const before = value.slice(0, start);
   const after = value.slice(end);
@@ -2548,6 +2628,7 @@ function ComposerRuntimePill({
     providerLabel,
     modelLabel,
     effortLabel ? `${effortLabel} effort` : "",
+    model.fastMode?.visible && model.fastMode.value ? "Fast" : "",
   ]
     .filter(Boolean)
     .join(" · ");
@@ -2775,6 +2856,18 @@ function ComposerRuntimePill({
                     setOpen(false);
                   }}
                 />
+                {model.fastMode?.visible && (
+                  <ComposerRuntimeFastModeControl
+                    value={model.fastMode.value}
+                    disabled={model.fastMode.disabled ?? false}
+                    testId={
+                      model.fastMode.testId ??
+                      "agent-composer-runtime-codex-fast-mode"
+                    }
+                    description={model.fastMode.description}
+                    onValueChange={model.fastMode.onValueChange}
+                  />
+                )}
                 {model.onOpenModelSettings && (
                   <button
                     type="button"
@@ -2815,6 +2908,47 @@ function ComposerRuntimePill({
         </div>
       </PopoverContent>
     </Popover>
+  );
+}
+
+function ComposerRuntimeFastModeControl({
+  value,
+  disabled,
+  testId,
+  description,
+  onValueChange,
+}: {
+  value: boolean;
+  disabled: boolean;
+  testId: string;
+  description?: string | undefined;
+  onValueChange: (value: boolean) => void;
+}) {
+  return (
+    <div
+      className="mt-1 flex items-center justify-between gap-3 rounded-md px-2 py-1.5"
+      style={{
+        backgroundColor:
+          "color-mix(in srgb, var(--bg-base) 24%, var(--bg-elevated) 76%)",
+      }}
+    >
+      <div className="min-w-0">
+        <div className="text-[0.75rem] font-medium text-[var(--text-primary)]">
+          Fast mode
+        </div>
+        <div className="text-[0.6875rem] leading-snug text-[var(--text-muted)]">
+          {description ?? "Use Codex priority service tier"}
+        </div>
+      </div>
+      <Switch
+        checked={value}
+        disabled={disabled}
+        onCheckedChange={onValueChange}
+        aria-label="Codex Fast mode"
+        data-testid={testId}
+        className="data-[state=checked]:bg-[var(--accent-primary)]"
+      />
+    </div>
   );
 }
 

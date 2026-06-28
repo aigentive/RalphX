@@ -65,6 +65,7 @@ export interface UpdateExecutionSettingsInput {
  */
 export interface GlobalExecutionSettingsResponse {
   globalMaxConcurrent: number;
+  workspaceMaxConcurrent: number;
   globalIdeationMax: number;
   allowIdeationBorrowIdleExecution: boolean;
 }
@@ -74,6 +75,7 @@ export interface GlobalExecutionSettingsResponse {
  */
 export interface UpdateGlobalExecutionSettingsInput {
   globalMaxConcurrent: number;
+  workspaceMaxConcurrent: number;
   globalIdeationMax: number;
   allowIdeationBorrowIdleExecution: boolean;
 }

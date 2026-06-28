@@ -16,21 +16,31 @@
 import { useEffect, useRef } from "react";
 import { Copy, ChevronRight, Maximize2, RefreshCw } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { ConflictDiffViewer } from "@/components/diff/ConflictDiffViewer";
 import { PagedDiffView } from "@/components/diff/PagedDiffView";
 import { SimpleDiffView } from "@/components/diff/SimpleDiffView";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Skeleton } from "@/components/ui/skeleton";
-import type { FileChange, FileDiff, DiffRefKind, PrDiffAnnotation } from "@/api/diff";
+import type {
+  ConflictDiff,
+  FileChange,
+  FileDiff,
+  DiffRefKind,
+  PrDiffAnnotation,
+} from "@/api/diff";
 import {
   isLargeInlineDiff,
   requiresExplicitDiffHydration,
 } from "./inlineDiffGuards";
 
 export type DiffState = FileDiff | "loading" | "error" | undefined;
+export type ConflictDiffState = ConflictDiff | "loading" | "error" | undefined;
 
 export interface AgentsPublishFileDiffProps {
   file: FileChange;
   diff: DiffState;
+  conflictDiff?: ConflictDiffState;
+  isConflictMode?: boolean;
   isExpanded: boolean;
   onToggle: () => void;
   onCopyPath: (path: string) => void;
@@ -79,6 +89,8 @@ function statusColor(status: FileChange["status"]): string {
 export function AgentsPublishFileDiff({
   file,
   diff,
+  conflictDiff,
+  isConflictMode = false,
   isExpanded,
   onToggle,
   onCopyPath,
@@ -94,9 +106,12 @@ export function AgentsPublishFileDiff({
   isFocusTarget = false,
 }: AgentsPublishFileDiffProps) {
   const diffData = diff !== "loading" && diff !== "error" ? diff : undefined;
+  const conflictDiffData =
+    conflictDiff !== "loading" && conflictDiff !== "error" ? conflictDiff : undefined;
   const showExplicitPlaceholder =
-    requiresExplicitDiffHydration(file) && !isShowAnywayOverridden;
+    !isConflictMode && requiresExplicitDiffHydration(file) && !isShowAnywayOverridden;
   const usePagedDiff =
+    !isConflictMode &&
     isLargeInlineDiff(file) &&
     conversationId !== undefined &&
     diffPageRefKind !== undefined;
@@ -250,7 +265,41 @@ export function AgentsPublishFileDiff({
           className="flex min-h-0 flex-col"
           style={{ minHeight: "60px" }}
         >
-          {showExplicitPlaceholder ? (
+          {isConflictMode ? (
+            conflictDiff === "loading" ? (
+              <div className="px-3 py-3">
+                <Skeleton className="h-24 w-full" />
+              </div>
+            ) : conflictDiff === "error" ? (
+              <div
+                data-testid="file-diff-error"
+                className="flex items-center gap-2 px-3 py-4 text-xs"
+                style={{ color: "var(--status-error)" }}
+              >
+                <span>Failed to load conflict diff</span>
+                {onRetry && (
+                  <button
+                    type="button"
+                    onClick={onRetry}
+                    className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs"
+                    style={{
+                      backgroundColor: "var(--status-error-muted)",
+                      color: "var(--status-error)",
+                    }}
+                  >
+                    <RefreshCw className="h-3 w-3" aria-hidden="true" />
+                    Retry
+                  </button>
+                )}
+              </div>
+            ) : conflictDiffData ? (
+              <ConflictDiffViewer conflictDiff={conflictDiffData} />
+            ) : shouldHydrate ? (
+              <div className="px-3 py-3">
+                <Skeleton className="h-24 w-full" />
+              </div>
+            ) : null
+          ) : showExplicitPlaceholder ? (
             /* Generated-file placeholder — shown until user clicks "Show anyway" */
             <div
               data-testid="file-diff-generated-placeholder"

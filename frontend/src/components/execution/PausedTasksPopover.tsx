@@ -16,6 +16,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { PausedTaskCard, type PauseReason } from "./PausedTaskCard";
+import { shouldPreserveExecutionPopoverForTarget } from "./executionPopoverDismissal";
 import type { Task } from "@/types/task";
 import { useUiStore } from "@/stores/uiStore";
 import { api } from "@/lib/tauri";
@@ -27,6 +28,10 @@ interface PausedTasksPopoverProps {
   children: React.ReactNode;
   /** Optional horizontal alignment offset for popover content */
   alignOffset?: number;
+  /** Optional controlled open state */
+  open?: boolean;
+  /** Optional controlled open-state handler */
+  onOpenChange?: (open: boolean) => void;
 }
 
 /** Parse pause_reason from task.metadata JSON string, with legacy fallback */
@@ -85,8 +90,12 @@ export function PausedTasksPopover({
   pausedTasks,
   children,
   alignOffset = -24,
+  open,
+  onOpenChange,
 }: PausedTasksPopoverProps) {
-  const [open, setOpen] = useState(false);
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
+  const popoverOpen = open ?? uncontrolledOpen;
+  const handleOpenChange = onOpenChange ?? setUncontrolledOpen;
   const navigateToTask = useUiStore((s) => s.navigateToTask);
 
   const handleResume = async (taskId: string) => {
@@ -98,7 +107,7 @@ export function PausedTasksPopover({
   };
 
   const handleViewDetails = (taskId: string) => {
-    setOpen(false);
+    handleOpenChange(false);
     navigateToTask(taskId);
   };
 
@@ -118,7 +127,7 @@ export function PausedTasksPopover({
   const hasBothGroups = providerErrors.length > 0 && (userPaused.length > 0 || unparsed.length > 0);
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={popoverOpen} onOpenChange={handleOpenChange}>
       <PopoverTrigger asChild>{children}</PopoverTrigger>
       <PopoverContent
         side="top"
@@ -132,6 +141,11 @@ export function PausedTasksPopover({
           borderRadius: "10px",
           boxShadow:
             "0 4px 16px var(--overlay-scrim), 0 12px 32px var(--overlay-scrim)",
+        }}
+        onInteractOutside={(event) => {
+          if (shouldPreserveExecutionPopoverForTarget(event.target)) {
+            event.preventDefault();
+          }
         }}
       >
         {/* Header */}

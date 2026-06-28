@@ -34,16 +34,14 @@ async fn test_get_by_context() {
 async fn test_get_by_context_page_filtered_can_return_archived_only() {
     let repo = MemoryChatConversationRepository::new();
 
-    let mut active =
-        ChatConversation::new_project(crate::domain::entities::ProjectId::from_string(
-            "project-1".to_string(),
-        ));
+    let mut active = ChatConversation::new_project(
+        crate::domain::entities::ProjectId::from_string("project-1".to_string()),
+    );
     active.title = Some("Active agent".to_string());
 
-    let mut archived =
-        ChatConversation::new_project(crate::domain::entities::ProjectId::from_string(
-            "project-1".to_string(),
-        ));
+    let mut archived = ChatConversation::new_project(
+        crate::domain::entities::ProjectId::from_string("project-1".to_string()),
+    );
     archived.title = Some("Archived agent".to_string());
     archived.archived_at = Some(chrono::Utc::now());
 
@@ -92,7 +90,8 @@ async fn test_list_recent_resumable_by_context_type_filters_and_orders() {
     let missing_session =
         ChatConversation::new_project(ProjectId::from_string("project-3".to_string()));
 
-    let mut archived = ChatConversation::new_project(ProjectId::from_string("project-4".to_string()));
+    let mut archived =
+        ChatConversation::new_project(ProjectId::from_string("project-4".to_string()));
     archived.provider_session_id = Some("codex-archived".to_string());
     archived.provider_harness = Some(AgentHarnessKind::Codex);
     archived.archived_at = Some(now);
@@ -212,9 +211,11 @@ async fn test_get_attribution_backfill_summary_counts_legacy_states() {
     repo.create(pending).await.unwrap();
     repo.create(running).await.unwrap();
     repo.create(partial).await.unwrap();
-    repo.create(ChatConversation::new_project(crate::domain::entities::ProjectId::from_string("project-1".to_string())))
-        .await
-        .unwrap();
+    repo.create(ChatConversation::new_project(
+        crate::domain::entities::ProjectId::from_string("project-1".to_string()),
+    ))
+    .await
+    .unwrap();
 
     let summary = repo.get_attribution_backfill_summary().await.unwrap();
 

@@ -19,6 +19,9 @@ use crate::application::{
 };
 use crate::domain::services::ComposerIntegrationReference;
 
+const JIRA_PROJECT_SEARCH_PAGE_SIZE: usize = 100;
+const JIRA_ISSUE_SEARCH_PAGE_SIZE: usize = 100;
+
 pub struct HyperAtlassianApiClient {
     client: Client<HttpsConnector<HttpConnector>, Full<Bytes>>,
     timeout: Duration,
@@ -1031,33 +1034,74 @@ pub(crate) async fn add_jira_comment<C: AtlassianJsonRequester + ?Sized>(
     })
 }
 
-/// List Jira projects used as ticketing containers. Single page (`limit`) ordered
-/// by name — sufficient for v1, no offset pagination loop.
+/// List Jira projects used as ticketing containers, walking Jira's paged
+/// project-search response until `limit` is reached or the server reports the
+/// final page.
 pub(crate) async fn list_jira_projects<C: AtlassianJsonRequester + ?Sized>(
     client: &C,
     auth: &AtlassianAuthContext,
     limit: usize,
 ) -> Result<Vec<JiraProjectSummary>, String> {
-    let value = client
-        .request_json(
-            Method::GET,
-            HyperAtlassianApiClient::resource_url(
-                auth,
-                AtlassianResourceKind::Jira,
-                &format!("/rest/api/3/project/search?maxResults={limit}&orderBy=name"),
-            ),
-            request_auth(auth),
-            None,
-        )
-        .await?;
-    Ok(value
-        .get("values")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(jira_project_from_value)
-        .take(limit)
-        .collect())
+    let limit = limit.max(1);
+    let page_size = limit.clamp(1, JIRA_PROJECT_SEARCH_PAGE_SIZE);
+    let mut start_at = 0usize;
+    let mut projects = Vec::new();
+
+    while projects.len() < limit {
+        let value = client
+            .request_json(
+                Method::GET,
+                HyperAtlassianApiClient::resource_url(
+                    auth,
+                    AtlassianResourceKind::Jira,
+                    &format!(
+                        "/rest/api/3/project/search?startAt={start_at}&maxResults={page_size}&orderBy=name"
+                    ),
+                ),
+                request_auth(auth),
+                None,
+            )
+            .await?;
+
+        let values = value
+            .get("values")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let count = values.len();
+        projects.extend(values.iter().filter_map(jira_project_from_value));
+        if projects.len() >= limit {
+            projects.truncate(limit);
+            break;
+        }
+        if count == 0 {
+            break;
+        }
+        if count < page_size {
+            break;
+        }
+
+        let response_start = value
+            .get("startAt")
+            .and_then(Value::as_u64)
+            .map(|value| value as usize)
+            .unwrap_or(start_at);
+        let total_reached = value
+            .get("total")
+            .and_then(Value::as_u64)
+            .map(|total| response_start + count >= total as usize)
+            .unwrap_or(false);
+        let is_last = value
+            .get("isLast")
+            .and_then(Value::as_bool)
+            .unwrap_or(total_reached);
+        if is_last {
+            break;
+        }
+        start_at = response_start + count;
+    }
+
+    Ok(projects)
 }
 
 fn jira_project_from_value(project: &Value) -> Option<JiraProjectSummary> {
@@ -1167,31 +1211,63 @@ pub(crate) async fn search_jira_by_project<C: AtlassianJsonRequester + ?Sized>(
 ) -> Result<Vec<JiraIssueDetail>, String> {
     let project_key = required_trimmed(project_key, "Jira project key is required")?;
     let jql = build_jira_project_jql(project_key);
-    let value = client
-        .request_json(
-            Method::POST,
-            HyperAtlassianApiClient::resource_url(
-                auth,
-                AtlassianResourceKind::Jira,
-                "/rest/api/3/search/jql",
-            ),
-            request_auth(auth),
-            Some(serde_json::json!({
-                "jql": jql,
-                "fields": ["summary", "status", "assignee", "labels", "updated", "priority"],
-                "maxResults": limit,
-            })),
-        )
-        .await?;
     let site_url = &auth.site_url;
-    Ok(value
-        .get("issues")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|issue| jira_ticket_from_issue_value(issue, site_url))
-        .take(limit)
-        .collect())
+    let limit = limit.max(1);
+    let page_size = limit.clamp(1, JIRA_ISSUE_SEARCH_PAGE_SIZE);
+    let mut next_page_token: Option<String> = None;
+    let mut issues = Vec::new();
+
+    loop {
+        let mut body = serde_json::json!({
+            "jql": jql,
+            "fields": ["summary", "status", "assignee", "labels", "updated", "priority"],
+            "maxResults": page_size,
+        });
+        if let (Some(token), Value::Object(map)) = (next_page_token.as_ref(), &mut body) {
+            map.insert("nextPageToken".to_string(), Value::String(token.clone()));
+        }
+
+        let value = client
+            .request_json(
+                Method::POST,
+                HyperAtlassianApiClient::resource_url(
+                    auth,
+                    AtlassianResourceKind::Jira,
+                    "/rest/api/3/search/jql",
+                ),
+                request_auth(auth),
+                Some(body),
+            )
+            .await?;
+        let page_issues = value
+            .get("issues")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let count = page_issues.len();
+        issues.extend(
+            page_issues
+                .iter()
+                .filter_map(|issue| jira_ticket_from_issue_value(issue, site_url)),
+        );
+        if issues.len() >= limit {
+            issues.truncate(limit);
+            break;
+        }
+        if count == 0 {
+            break;
+        }
+
+        next_page_token = value
+            .get("nextPageToken")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        if next_page_token.is_none() {
+            break;
+        }
+    }
+
+    Ok(issues)
 }
 
 /// Parse a Jira issue payload into a [`JiraIssueDetail`], preserving the
@@ -1801,14 +1877,18 @@ mod tests {
     /// without performing any real network I/O.
     struct FakeRequester {
         recorded: Mutex<Vec<RecordedRequest>>,
-        response: Mutex<Result<Value, String>>,
+        responses: Mutex<Vec<Result<Value, String>>>,
     }
 
     impl FakeRequester {
         fn with_response(response: Value) -> Self {
+            Self::with_responses(vec![response])
+        }
+
+        fn with_responses(responses: Vec<Value>) -> Self {
             Self {
                 recorded: Mutex::new(Vec::new()),
-                response: Mutex::new(Ok(response)),
+                responses: Mutex::new(responses.into_iter().map(Ok).collect()),
             }
         }
 
@@ -1831,7 +1911,12 @@ mod tests {
                 url,
                 body,
             });
-            self.response.lock().unwrap().clone()
+            let mut responses = self.responses.lock().unwrap();
+            if responses.len() > 1 {
+                responses.remove(0)
+            } else {
+                responses.first().cloned().unwrap_or(Ok(Value::Null))
+            }
         }
     }
 
@@ -2297,6 +2382,83 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn list_jira_projects_walks_project_search_pagination() {
+        let first_page_values: Vec<Value> = (0..100)
+            .map(|index| {
+                serde_json::json!({
+                    "id": format!("10{index:03}"),
+                    "key": format!("P{index}"),
+                    "name": format!("Project {index}"),
+                })
+            })
+            .collect();
+        let requester = FakeRequester::with_responses(vec![
+            serde_json::json!({
+                "startAt": 0,
+                "maxResults": 100,
+                "total": 101,
+                "isLast": false,
+                "values": first_page_values,
+            }),
+            serde_json::json!({
+                "startAt": 100,
+                "maxResults": 100,
+                "total": 101,
+                "isLast": true,
+                "values": [
+                    { "id": "10100", "key": "TAIL", "name": "Tail Project" }
+                ],
+            }),
+        ]);
+
+        let projects = list_jira_projects(&requester, &api_token_auth(), 101)
+            .await
+            .expect("projects should parse across pages");
+
+        assert_eq!(projects.len(), 101);
+        assert_eq!(
+            projects.last().map(|project| project.key.as_str()),
+            Some("TAIL")
+        );
+        let recorded = requester.recorded();
+        assert_eq!(recorded.len(), 2);
+        assert!(recorded[0].url.contains("startAt=0"));
+        assert!(recorded[1].url.contains("startAt=100"));
+    }
+
+    #[tokio::test]
+    async fn list_jira_projects_stops_when_project_search_reports_last_page() {
+        let requester = FakeRequester::with_responses(vec![serde_json::json!({
+            "startAt": 0,
+            "maxResults": 2,
+            "total": 10,
+            "isLast": true,
+            "values": [
+                { "id": "10000", "key": "RX", "name": "RalphX" },
+                { "id": "10001", "key": "OPS", "name": "Operations" }
+            ],
+        })]);
+
+        let projects = list_jira_projects(&requester, &api_token_auth(), 5)
+            .await
+            .expect("projects should parse");
+
+        assert_eq!(projects.len(), 2);
+        assert_eq!(requester.recorded().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn list_jira_projects_treats_exhausted_fake_responses_as_empty() {
+        let requester = FakeRequester::with_responses(Vec::new());
+
+        let projects = list_jira_projects(&requester, &api_token_auth(), 5)
+            .await
+            .expect("null fake response is treated as empty");
+
+        assert!(projects.is_empty());
+    }
+
+    #[tokio::test]
     async fn list_jira_projects_returns_empty_when_values_absent() {
         let requester = FakeRequester::with_response(serde_json::json!({}));
         let projects = list_jira_projects(&requester, &api_token_auth(), 100)
@@ -2420,7 +2582,10 @@ mod tests {
         assert_eq!(issue.assignee_name.as_deref(), Some("A. Dev"));
         assert_eq!(issue.assignee_avatar.as_deref(), Some("https://avatar/48"));
         assert_eq!(issue.labels, vec!["backend", "urgent"]);
-        assert_eq!(issue.updated.as_deref(), Some("2026-06-20T10:00:00.000+0000"));
+        assert_eq!(
+            issue.updated.as_deref(),
+            Some("2026-06-20T10:00:00.000+0000")
+        );
         assert_eq!(issue.priority.as_deref(), Some("High"));
         assert_eq!(
             issue.url.as_deref(),
@@ -2437,6 +2602,60 @@ mod tests {
         let fields = body["fields"].as_array().expect("fields array");
         assert!(fields.iter().any(|field| field == "status"));
         assert!(fields.iter().any(|field| field == "assignee"));
+    }
+
+    #[tokio::test]
+    async fn search_jira_by_project_walks_next_page_tokens() {
+        let first_page_issues: Vec<Value> = (0..100)
+            .map(|index| serde_json::json!({ "key": format!("RX-{index}") }))
+            .collect();
+        let requester = FakeRequester::with_responses(vec![
+            serde_json::json!({
+                "issues": first_page_issues,
+                "nextPageToken": "token-2",
+            }),
+            serde_json::json!({
+                "issues": [
+                    { "key": "RX-100" }
+                ],
+            }),
+        ]);
+
+        let issues = search_jira_by_project(&requester, &api_token_auth(), "RX", 101)
+            .await
+            .expect("issues should parse across token pages");
+
+        assert_eq!(issues.len(), 101);
+        assert_eq!(
+            issues.last().map(|issue| issue.key.as_str()),
+            Some("RX-100")
+        );
+        let recorded = requester.recorded();
+        assert_eq!(recorded.len(), 2);
+        assert_eq!(recorded[0].method, Method::POST);
+        assert_eq!(
+            recorded[1]
+                .body
+                .as_ref()
+                .and_then(|body| body.get("nextPageToken"))
+                .and_then(Value::as_str),
+            Some("token-2"),
+        );
+    }
+
+    #[tokio::test]
+    async fn search_jira_by_project_stops_on_empty_issue_page() {
+        let requester = FakeRequester::with_responses(vec![serde_json::json!({
+            "issues": [],
+            "nextPageToken": "unused-token",
+        })]);
+
+        let issues = search_jira_by_project(&requester, &api_token_auth(), "RX", 5)
+            .await
+            .expect("empty page should parse");
+
+        assert!(issues.is_empty());
+        assert_eq!(requester.recorded().len(), 1);
     }
 
     #[tokio::test]

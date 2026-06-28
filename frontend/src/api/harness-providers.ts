@@ -14,6 +14,7 @@ export const AgentProviderSettingsResponseSchema = z.object({
   isDefault: z.boolean(),
   model: z.string().nullable().optional(),
   effort: z.string().nullable().optional(),
+  serviceTier: z.string().nullable().optional(),
   approvalPolicy: z.string().nullable().optional(),
   sandboxMode: z.string().nullable().optional(),
   claudePermissionMode: z.string().nullable().optional(),
@@ -21,6 +22,10 @@ export const AgentProviderSettingsResponseSchema = z.object({
   claudeAllowDangerouslySkipPermissions: z.boolean(),
   cliManagementMode: ProviderCliManagementModeSchema.optional(),
   autoUpdateEnabled: z.boolean().optional(),
+  customBinaryEnabled: z.boolean().optional(),
+  customBinaryPath: z.string().nullable().optional(),
+  customEnvFileEnabled: z.boolean().optional(),
+  customEnvFilePath: z.string().nullable().optional(),
   available: z.boolean(),
   binaryFound: z.boolean(),
   binaryPath: z.string().nullable().optional(),
@@ -30,6 +35,8 @@ export const AgentProviderSettingsResponseSchema = z.object({
   cliVersion: z.string().nullable().optional(),
   supportedModelAliases: z.array(z.string().min(1)).nullable().optional(),
   supportedEfforts: z.array(z.string().min(1)).nullable().optional(),
+  supportsFastMode: z.boolean().optional().default(false),
+  fastModeSupportedModels: z.array(z.string().min(1)).optional().default([]),
   updatedAt: z.string(),
 });
 
@@ -53,6 +60,7 @@ export interface UpdateAgentProviderSettingsInput {
   isDefault?: boolean;
   model?: string | null;
   effort?: string | null;
+  serviceTier?: string | null;
   approvalPolicy?: string | null;
   sandboxMode?: string | null;
   claudePermissionMode?: string | null;
@@ -60,6 +68,10 @@ export interface UpdateAgentProviderSettingsInput {
   claudeAllowDangerouslySkipPermissions?: boolean;
   cliManagementMode?: z.infer<typeof ProviderCliManagementModeSchema>;
   autoUpdateEnabled?: boolean;
+  customBinaryEnabled?: boolean;
+  customBinaryPath?: string | null;
+  customEnvFileEnabled?: boolean;
+  customEnvFilePath?: string | null;
   resetToDefaults?: boolean;
   applyToAllLanes?: boolean;
 }

@@ -1,9 +1,9 @@
 //! Agent workspace HTTP handlers.
 
-use std::{str::FromStr, sync::Arc};
+use std::{str::FromStr, sync::Arc, time::Instant};
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     Json,
 };
@@ -14,6 +14,10 @@ use crate::application::agent_conversation_workspace::{
     resolve_valid_agent_conversation_workspace_path, AgentConversationWorkspaceBaseSelection,
 };
 use crate::application::agent_workspace_pr_description::validate_agent_workspace_pr_description_body;
+use crate::application::agent_workspace_review::{
+    apply_review_artifact_to_monitor, load_agent_workspace_review_context,
+    start_agent_workspace_review, AgentWorkspaceReviewTarget,
+};
 use crate::application::publish_resilience::{
     inspect_publish_branch_freshness_for_source, push_publish_branch,
     verify_agent_workspace_repair_completion, AgentWorkspaceRepairCompletionCheck,
@@ -35,7 +39,8 @@ use crate::domain::entities::{
     AgentConversationWorkspacePublicationEvent, AgentWorkspacePrCommentEvidence,
     AgentWorkspacePrDescription, AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
     AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
-    AgentWorkspacePrReviewMonitorStatus, Artifact, ArtifactType, ChatConversationId,
+    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewMonitor,
+    AgentWorkspaceReviewTargetScope, Artifact, ArtifactType, ChatConversationId,
     IdeationAnalysisBaseRefKind,
 };
 use crate::domain::services::github_service::{
@@ -329,6 +334,234 @@ pub struct AgentWorkspacePrReviewContextResponse {
     pub issue_comment_evidence: Vec<AgentWorkspacePrCommentEvidenceResponse>,
 }
 
+#[derive(Debug, serde::Serialize)]
+pub struct AgentWorkspaceReviewTargetResponse {
+    pub scope: String,
+    pub base_ref: String,
+    pub base_sha: Option<String>,
+    pub head_ref: String,
+    pub head_sha: Option<String>,
+    pub diff_fingerprint: String,
+    pub source_pull_request_number: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub review_packet: Option<AgentWorkspaceReviewPacketResponse>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct AgentWorkspaceReviewPacketResponse {
+    pub summary: AgentWorkspaceReviewDiffSummaryResponse,
+    pub changed_files: Vec<AgentWorkspaceReviewChangedFileResponse>,
+    pub patch_excerpt: String,
+    pub patch_excerpt_truncated: bool,
+    pub notes: Vec<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct AgentWorkspaceReviewDiffSummaryResponse {
+    pub files_changed: u32,
+    pub insertions: u32,
+    pub deletions: u32,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct AgentWorkspaceReviewChangedFileResponse {
+    pub path: String,
+    pub status: String,
+    pub sources: Vec<String>,
+}
+
+impl From<crate::application::agent_workspace_review::AgentWorkspaceReviewPacket>
+    for AgentWorkspaceReviewPacketResponse
+{
+    fn from(value: crate::application::agent_workspace_review::AgentWorkspaceReviewPacket) -> Self {
+        Self {
+            summary: AgentWorkspaceReviewDiffSummaryResponse {
+                files_changed: value.summary.files_changed,
+                insertions: value.summary.insertions,
+                deletions: value.summary.deletions,
+            },
+            changed_files: value
+                .changed_files
+                .into_iter()
+                .map(|file| AgentWorkspaceReviewChangedFileResponse {
+                    path: file.path,
+                    status: file.status,
+                    sources: file.sources,
+                })
+                .collect(),
+            patch_excerpt: value.patch_excerpt,
+            patch_excerpt_truncated: value.patch_excerpt_truncated,
+            notes: value.notes,
+        }
+    }
+}
+
+impl From<crate::application::agent_workspace_review::AgentWorkspaceReviewTarget>
+    for AgentWorkspaceReviewTargetResponse
+{
+    fn from(value: crate::application::agent_workspace_review::AgentWorkspaceReviewTarget) -> Self {
+        Self::from_target(value, false)
+    }
+}
+
+impl AgentWorkspaceReviewTargetResponse {
+    fn from_target(
+        value: crate::application::agent_workspace_review::AgentWorkspaceReviewTarget,
+        include_review_packet: bool,
+    ) -> Self {
+        let review_packet = include_review_packet
+            .then(|| AgentWorkspaceReviewPacketResponse::from(value.review_packet));
+        Self {
+            scope: value.scope.to_string(),
+            base_ref: value.base_ref,
+            base_sha: value.base_sha,
+            head_ref: value.head_ref,
+            head_sha: value.head_sha,
+            diff_fingerprint: value.diff_fingerprint,
+            source_pull_request_number: value.source_pull_request_number,
+            review_packet,
+        }
+    }
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct AgentWorkspaceReviewMonitorResponse {
+    pub conversation_id: String,
+    pub project_id: String,
+    pub status: String,
+    pub current_target_scope: Option<String>,
+    pub reviewed_target_scope: Option<String>,
+    pub review_conversation_id: Option<String>,
+    pub review_artifact_id: Option<String>,
+    pub review_artifact_version: Option<u32>,
+    pub review_artifact_updated_at: Option<String>,
+    pub reviewed_head_sha: Option<String>,
+    pub reviewed_diff_fingerprint: Option<String>,
+    pub selected_source_base_ref: Option<String>,
+    pub selected_source_base_sha: Option<String>,
+    pub selected_source_head_ref: Option<String>,
+    pub selected_source_head_sha: Option<String>,
+    pub selected_source_pull_request_number: Option<i64>,
+    pub workspace_base_ref: Option<String>,
+    pub workspace_base_sha: Option<String>,
+    pub workspace_head_ref: Option<String>,
+    pub workspace_head_sha: Option<String>,
+    pub current_diff_fingerprint: Option<String>,
+    pub previous_version_id: Option<String>,
+    pub last_run_id: Option<String>,
+    pub last_error: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+impl From<AgentWorkspaceReviewMonitor> for AgentWorkspaceReviewMonitorResponse {
+    fn from(value: AgentWorkspaceReviewMonitor) -> Self {
+        Self {
+            conversation_id: value.conversation_id.as_str(),
+            project_id: value.project_id.as_str().to_string(),
+            status: value.status.to_string(),
+            current_target_scope: value.current_target_scope.map(|scope| scope.to_string()),
+            reviewed_target_scope: value.reviewed_target_scope.map(|scope| scope.to_string()),
+            review_conversation_id: value
+                .review_conversation_id
+                .map(|conversation_id| conversation_id.as_str()),
+            review_artifact_id: value
+                .review_artifact_id
+                .map(|artifact_id| artifact_id.as_str().to_string()),
+            review_artifact_version: value.review_artifact_version,
+            review_artifact_updated_at: value
+                .review_artifact_updated_at
+                .map(|value| value.to_rfc3339()),
+            reviewed_head_sha: value.reviewed_head_sha,
+            reviewed_diff_fingerprint: value.reviewed_diff_fingerprint,
+            selected_source_base_ref: value.selected_source_base_ref,
+            selected_source_base_sha: value.selected_source_base_sha,
+            selected_source_head_ref: value.selected_source_head_ref,
+            selected_source_head_sha: value.selected_source_head_sha,
+            selected_source_pull_request_number: value.selected_source_pull_request_number,
+            workspace_base_ref: value.workspace_base_ref,
+            workspace_base_sha: value.workspace_base_sha,
+            workspace_head_ref: value.workspace_head_ref,
+            workspace_head_sha: value.workspace_head_sha,
+            current_diff_fingerprint: value.current_diff_fingerprint,
+            previous_version_id: value
+                .previous_version_id
+                .map(|artifact_id| artifact_id.as_str().to_string()),
+            last_run_id: value.last_run_id,
+            last_error: value.last_error,
+            created_at: value.created_at.to_rfc3339(),
+            updated_at: value.updated_at.to_rfc3339(),
+        }
+    }
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct AgentWorkspaceReviewContextResponse {
+    pub success: bool,
+    pub workspace: AgentConversationWorkspaceResponse,
+    pub events: Vec<AgentConversationWorkspacePublicationEventResponse>,
+    pub target: Option<AgentWorkspaceReviewTargetResponse>,
+    pub monitor: AgentWorkspaceReviewMonitorResponse,
+    pub is_current: bool,
+    pub is_outdated: bool,
+    pub should_show_tab: bool,
+}
+
+#[derive(Debug, serde::Deserialize, Default)]
+pub struct AgentWorkspaceReviewContextQuery {
+    pub include_review_packet: Option<bool>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct StartAgentWorkspaceReviewRequest {
+    pub force: Option<bool>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct StartAgentWorkspaceReviewResponse {
+    pub success: bool,
+    pub target: Option<AgentWorkspaceReviewTargetResponse>,
+    pub monitor: AgentWorkspaceReviewMonitorResponse,
+    pub is_current: bool,
+    pub is_outdated: bool,
+    pub should_show_tab: bool,
+    pub started: bool,
+    pub skipped_reason: Option<String>,
+    pub was_queued: bool,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct WriteAgentWorkspaceReviewArtifactRequest {
+    pub title: Option<String>,
+    pub content: String,
+    pub target_scope: Option<String>,
+    pub head_sha: Option<String>,
+    pub diff_fingerprint: Option<String>,
+    pub created_by_run_id: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct WriteAgentWorkspaceReviewArtifactResponse {
+    pub success: bool,
+    pub monitor: AgentWorkspaceReviewMonitorResponse,
+    pub artifact: ArtifactResponse,
+    pub previous_artifact_id: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct CompleteAgentWorkspaceReviewRunRequest {
+    pub outcome: Option<String>,
+    pub summary: String,
+    pub blocker: Option<String>,
+    pub created_by_run_id: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct CompleteAgentWorkspaceReviewRunResponse {
+    pub success: bool,
+    pub monitor: AgentWorkspaceReviewMonitorResponse,
+}
+
 #[derive(Debug, serde::Deserialize)]
 pub struct ProposeAgentWorkspacePrReviewActionRequest {
     pub head_sha: String,
@@ -498,6 +731,7 @@ pub async fn update_agent_workspace_from_base(
     let selection = AgentConversationWorkspaceBaseSelection {
         kind: parse_update_base_kind(req.base_ref_kind.as_deref())
             .map_err(|error| json_error(StatusCode::BAD_REQUEST, error, None))?,
+        branch_mode: None,
         base_ref: req.base_ref,
         display_name: req.base_display_name,
         source_pull_request: None,
@@ -761,6 +995,377 @@ pub async fn get_agent_workspace_pr_review_context(
             .map(AgentWorkspacePrReviewActionResponse::from)
             .collect(),
         issue_comment_evidence,
+    }))
+}
+
+/// GET /api/agent-workspaces/{conversation_id}/workspace-review-context
+pub async fn get_agent_workspace_review_context(
+    State(state): State<HttpServerState>,
+    Path(conversation_id): Path<String>,
+    Query(query): Query<AgentWorkspaceReviewContextQuery>,
+) -> Result<Json<AgentWorkspaceReviewContextResponse>, JsonError> {
+    let started = Instant::now();
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    let workspace = load_agent_workspace_entity(state.app_state.as_ref(), &conversation_id).await?;
+    let workspace_response =
+        agent_workspace_response_for_state(state.app_state.as_ref(), workspace.clone())
+            .await
+            .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error, None))?;
+    let events =
+        load_agent_workspace_publication_events(state.app_state.as_ref(), &conversation_id).await?;
+    let context = load_agent_workspace_review_context(state.app_state.as_ref(), &workspace)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    let target_scope = workspace_review_target_scope_log(context.target.as_ref());
+    let diff_fingerprint = compact_workspace_review_log_fingerprint(
+        context
+            .target
+            .as_ref()
+            .map(|target| target.diff_fingerprint.as_str()),
+    );
+    tracing::info!(
+        target: "ralphx_lib::http_server::agent_workspaces",
+        operation = "workspace_review_context_http",
+        conversation_id = %conversation_id,
+        project_id = %workspace.project_id,
+        branch = %workspace.branch_name,
+        elapsed_ms = started.elapsed().as_millis(),
+        monitor_status = %context.monitor.status,
+        target_scope = %target_scope,
+        diff_fingerprint = %diff_fingerprint,
+        is_current = context.is_current,
+        is_outdated = context.is_outdated,
+        should_show_tab = context.should_show_tab,
+        has_artifact = context.monitor.review_artifact_id.is_some(),
+        "Served workspace Review context"
+    );
+
+    Ok(Json(AgentWorkspaceReviewContextResponse {
+        success: true,
+        workspace: workspace_response,
+        events,
+        target: context.target.map(|target| {
+            AgentWorkspaceReviewTargetResponse::from_target(
+                target,
+                query.include_review_packet.unwrap_or(false),
+            )
+        }),
+        monitor: AgentWorkspaceReviewMonitorResponse::from(context.monitor),
+        is_current: context.is_current,
+        is_outdated: context.is_outdated,
+        should_show_tab: context.should_show_tab,
+    }))
+}
+
+/// POST /api/agent-workspaces/{conversation_id}/workspace-review-runs
+pub async fn start_agent_workspace_review_run(
+    State(state): State<HttpServerState>,
+    Path(conversation_id): Path<String>,
+    Json(req): Json<StartAgentWorkspaceReviewRequest>,
+) -> Result<Json<StartAgentWorkspaceReviewResponse>, JsonError> {
+    let started = Instant::now();
+    let force = req.force.unwrap_or(false);
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    let workspace = load_agent_workspace_entity(state.app_state.as_ref(), &conversation_id).await?;
+    let start =
+        start_agent_workspace_review(std::sync::Arc::clone(&state.app_state), &workspace, force)
+            .await
+            .map_err(|error| {
+                json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
+            })?;
+    let target_scope = workspace_review_target_scope_log(start.context.target.as_ref());
+    let diff_fingerprint = compact_workspace_review_log_fingerprint(
+        start
+            .context
+            .target
+            .as_ref()
+            .map(|target| target.diff_fingerprint.as_str()),
+    );
+    let skipped_reason = start
+        .skipped_reason
+        .as_deref()
+        .unwrap_or("none")
+        .to_string();
+    tracing::info!(
+        target: "ralphx_lib::http_server::agent_workspaces",
+        operation = "workspace_review_start_http",
+        conversation_id = %conversation_id,
+        project_id = %workspace.project_id,
+        branch = %workspace.branch_name,
+        elapsed_ms = started.elapsed().as_millis(),
+        force,
+        started = start.started,
+        skipped_reason = %skipped_reason,
+        was_queued = start.was_queued,
+        monitor_status = %start.context.monitor.status,
+        target_scope = %target_scope,
+        diff_fingerprint = %diff_fingerprint,
+        is_current = start.context.is_current,
+        is_outdated = start.context.is_outdated,
+        has_artifact = start.context.monitor.review_artifact_id.is_some(),
+        "Handled workspace Review start request"
+    );
+    Ok(Json(StartAgentWorkspaceReviewResponse {
+        success: true,
+        target: start
+            .context
+            .target
+            .map(AgentWorkspaceReviewTargetResponse::from),
+        monitor: AgentWorkspaceReviewMonitorResponse::from(start.context.monitor),
+        is_current: start.context.is_current,
+        is_outdated: start.context.is_outdated,
+        should_show_tab: start.context.should_show_tab,
+        started: start.started,
+        skipped_reason: start.skipped_reason,
+        was_queued: start.was_queued,
+    }))
+}
+
+/// POST /api/agent-workspaces/{conversation_id}/workspace-review-artifact
+pub async fn write_agent_workspace_review_artifact(
+    State(state): State<HttpServerState>,
+    Path(conversation_id): Path<String>,
+    Json(req): Json<WriteAgentWorkspaceReviewArtifactRequest>,
+) -> Result<Json<WriteAgentWorkspaceReviewArtifactResponse>, JsonError> {
+    let started = Instant::now();
+    let requested_diff_fingerprint = req.diff_fingerprint.clone();
+    let created_by_run_id = req.created_by_run_id.clone();
+    let content = non_empty_string(
+        normalize_workspace_review_artifact_content(req.content),
+        "content",
+    )?;
+    let content_bytes = content.len();
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    let workspace = load_agent_workspace_entity(state.app_state.as_ref(), &conversation_id).await?;
+    let context = load_agent_workspace_review_context(state.app_state.as_ref(), &workspace)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    let mut monitor = context.monitor;
+    let target_scope = parse_workspace_review_target_scope(req.target_scope.as_deref())
+        .or_else(|| context.target.as_ref().map(|target| target.scope))
+        .or(monitor.current_target_scope)
+        .ok_or_else(|| {
+            json_error(
+                StatusCode::BAD_REQUEST,
+                "workspace review target scope is required",
+                None,
+            )
+        })?;
+    let target_head_sha = req.head_sha.or_else(|| {
+        context
+            .target
+            .as_ref()
+            .and_then(|target| target.head_sha.clone())
+    });
+    let target_diff_fingerprint = req
+        .diff_fingerprint
+        .or_else(|| {
+            context
+                .target
+                .as_ref()
+                .map(|target| target.diff_fingerprint.clone())
+        })
+        .or_else(|| monitor.current_diff_fingerprint.clone())
+        .ok_or_else(|| {
+            json_error(
+                StatusCode::BAD_REQUEST,
+                "workspace review diff_fingerprint is required",
+                None,
+            )
+        })?;
+
+    let previous_artifact = match monitor.review_artifact_id.clone() {
+        Some(artifact_id) => {
+            let latest_id = state
+                .app_state
+                .artifact_repo
+                .resolve_latest_artifact_id(&artifact_id)
+                .await
+                .map_err(|error| {
+                    json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
+                })?;
+            state
+                .app_state
+                .artifact_repo
+                .get_by_id(&latest_id)
+                .await
+                .map_err(|error| {
+                    json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
+                })?
+        }
+        None => None,
+    };
+
+    let title = workspace_review_artifact_title(
+        req.title,
+        previous_artifact
+            .as_ref()
+            .map(|artifact| artifact.name.as_str()),
+        monitor.reviewed_target_scope,
+        target_scope,
+        context.target.as_ref(),
+    );
+    let previous_artifact_id = previous_artifact
+        .as_ref()
+        .map(|artifact| artifact.id.as_str().to_string());
+    let previous_artifact_entity_id = previous_artifact
+        .as_ref()
+        .map(|artifact| artifact.id.clone());
+    let next_version = previous_artifact
+        .as_ref()
+        .map(|artifact| artifact.metadata.version.saturating_add(1))
+        .unwrap_or(1);
+    let mut artifact = Artifact::new_inline(
+        title,
+        ArtifactType::PrReview,
+        content,
+        "ralphx-workspace-reviewer",
+    );
+    artifact.metadata.version = next_version;
+
+    let created = if let Some(previous) = previous_artifact {
+        state
+            .app_state
+            .artifact_repo
+            .create_with_previous_version(artifact, previous.id)
+            .await
+            .map_err(|error| {
+                json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
+            })?
+    } else {
+        state
+            .app_state
+            .artifact_repo
+            .create(artifact)
+            .await
+            .map_err(|error| {
+                json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
+            })?
+    };
+
+    apply_review_artifact_to_monitor(
+        &mut monitor,
+        target_scope,
+        target_head_sha.clone(),
+        target_diff_fingerprint.clone(),
+        created_by_run_id.clone(),
+        created.id.clone(),
+        created.metadata.version,
+        created.metadata.created_at,
+        previous_artifact_entity_id,
+    );
+    let monitor = state
+        .app_state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+
+    let content_text = match &created.content {
+        crate::domain::entities::ArtifactContent::Inline { text } => text.clone(),
+        crate::domain::entities::ArtifactContent::File { path } => format!("[File: {}]", path),
+    };
+    let event_name = if previous_artifact_id.is_some() {
+        "workspace_review_artifact:updated"
+    } else {
+        "workspace_review_artifact:created"
+    };
+    if let Some(app_handle) = &state.app_state.app_handle {
+        let _ = app_handle.emit(
+            event_name,
+            serde_json::json!({
+                "conversationId": conversation_id.as_str(),
+                "targetScope": target_scope.to_string(),
+                "headSha": target_head_sha,
+                "diffFingerprint": target_diff_fingerprint,
+                "previousArtifactId": previous_artifact_id,
+                "artifact": {
+                    "id": created.id.as_str(),
+                    "name": created.name.clone(),
+                    "content": content_text,
+                    "version": created.metadata.version,
+                }
+            }),
+        );
+    }
+
+    let mut artifact_response = ArtifactResponse::from(created);
+    artifact_response.previous_artifact_id = previous_artifact_id.clone();
+    tracing::info!(
+        target: "ralphx_lib::http_server::agent_workspaces",
+        operation = "workspace_review_artifact_write_http",
+        conversation_id = %conversation_id,
+        project_id = %workspace.project_id,
+        branch = %workspace.branch_name,
+        elapsed_ms = started.elapsed().as_millis(),
+        target_scope = %target_scope,
+        diff_fingerprint = %compact_workspace_review_log_fingerprint(Some(&target_diff_fingerprint)),
+        requested_diff_fingerprint = %compact_workspace_review_log_fingerprint(requested_diff_fingerprint.as_deref()),
+        artifact_id = %artifact_response.id,
+        artifact_version = artifact_response.version,
+        previous_artifact_id = %previous_artifact_id.as_deref().unwrap_or("none"),
+        created_by_run_id = %created_by_run_id.as_deref().unwrap_or("none"),
+        content_bytes,
+        monitor_status = %monitor.status,
+        "Wrote workspace Review artifact"
+    );
+
+    Ok(Json(WriteAgentWorkspaceReviewArtifactResponse {
+        success: true,
+        monitor: AgentWorkspaceReviewMonitorResponse::from(monitor),
+        artifact: artifact_response,
+        previous_artifact_id,
+    }))
+}
+
+/// POST /api/agent-workspaces/{conversation_id}/complete-workspace-review-run
+pub async fn complete_agent_workspace_review_run(
+    State(state): State<HttpServerState>,
+    Path(conversation_id): Path<String>,
+    Json(req): Json<CompleteAgentWorkspaceReviewRunRequest>,
+) -> Result<Json<CompleteAgentWorkspaceReviewRunResponse>, JsonError> {
+    let started = Instant::now();
+    let summary = non_empty_string(req.summary, "summary")?;
+    let summary_bytes = summary.len();
+    let has_outcome = req
+        .outcome
+        .as_ref()
+        .is_some_and(|value| !value.trim().is_empty());
+    let has_blocker = req
+        .blocker
+        .as_ref()
+        .is_some_and(|value| !value.trim().is_empty());
+    let created_by_run_id = req.created_by_run_id.clone();
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    let workspace = load_agent_workspace_entity(state.app_state.as_ref(), &conversation_id).await?;
+    let monitor = crate::application::agent_workspace_review::complete_agent_workspace_review_run(
+        state.app_state.as_ref(),
+        &workspace,
+        req.outcome,
+        req.blocker,
+        req.created_by_run_id,
+    )
+    .await
+    .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    tracing::info!(
+        target: "ralphx_lib::http_server::agent_workspaces",
+        operation = "workspace_review_complete_http",
+        conversation_id = %conversation_id,
+        project_id = %workspace.project_id,
+        branch = %workspace.branch_name,
+        elapsed_ms = started.elapsed().as_millis(),
+        monitor_status = %monitor.status,
+        has_artifact = monitor.review_artifact_id.is_some(),
+        artifact_id = %monitor.review_artifact_id.as_ref().map(|id| id.as_str()).unwrap_or("none"),
+        created_by_run_id = %created_by_run_id.as_deref().unwrap_or("none"),
+        has_outcome,
+        has_blocker,
+        summary_bytes,
+        "Handled workspace Review completion"
+    );
+    Ok(Json(CompleteAgentWorkspaceReviewRunResponse {
+        success: true,
+        monitor: AgentWorkspaceReviewMonitorResponse::from(monitor),
     }))
 }
 
@@ -1954,9 +2559,106 @@ fn ensure_review_artifact_for_head(
 
     Err(json_error(
         StatusCode::CONFLICT,
-        "Write the Review artifact for the current PR head before proposing or submitting a PR review action",
+        "Write the Review for the current PR head before proposing or submitting a PR review action",
         None,
     ))
+}
+
+fn parse_workspace_review_target_scope(
+    value: Option<&str>,
+) -> Option<AgentWorkspaceReviewTargetScope> {
+    value.and_then(|value| AgentWorkspaceReviewTargetScope::from_str(value.trim()).ok())
+}
+
+fn compact_workspace_review_log_fingerprint(value: Option<&str>) -> String {
+    value
+        .map(|value| value.chars().take(12).collect())
+        .unwrap_or_else(|| "none".to_string())
+}
+
+fn workspace_review_target_scope_log(target: Option<&AgentWorkspaceReviewTarget>) -> String {
+    target
+        .map(|target| target.scope.to_string())
+        .unwrap_or_else(|| "none".to_string())
+}
+
+fn default_workspace_review_artifact_title(
+    target_scope: AgentWorkspaceReviewTargetScope,
+    target: Option<&AgentWorkspaceReviewTarget>,
+) -> String {
+    match target_scope {
+        AgentWorkspaceReviewTargetScope::SelectedSource => target
+            .and_then(|target| target.source_pull_request_number)
+            .map(|pr_number| format!("PR #{pr_number}"))
+            .or_else(|| {
+                target
+                    .map(|target| compact_workspace_review_ref_title(&target.head_ref))
+                    .filter(|title| !title.is_empty())
+            })
+            .unwrap_or_else(|| "Selected source".to_string()),
+        AgentWorkspaceReviewTargetScope::WorkspaceDelta => "Workspace changes".to_string(),
+    }
+}
+
+fn workspace_review_artifact_title(
+    requested_title: Option<String>,
+    previous_title: Option<&str>,
+    previous_target_scope: Option<AgentWorkspaceReviewTargetScope>,
+    target_scope: AgentWorkspaceReviewTargetScope,
+    target: Option<&AgentWorkspaceReviewTarget>,
+) -> String {
+    requested_title
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .filter(|value| !is_legacy_workspace_review_artifact_title(value))
+        .or_else(|| {
+            if previous_target_scope != Some(target_scope) {
+                return None;
+            }
+            previous_title
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .filter(|value| !is_legacy_workspace_review_artifact_title(value))
+        })
+        .unwrap_or_else(|| default_workspace_review_artifact_title(target_scope, target))
+}
+
+fn compact_workspace_review_ref_title(ref_name: &str) -> String {
+    let mut value = ref_name.trim();
+    for prefix in ["refs/heads/", "refs/remotes/", "origin/"] {
+        if let Some(stripped) = value.strip_prefix(prefix) {
+            value = stripped;
+            break;
+        }
+    }
+    value.trim().to_string()
+}
+
+fn normalize_workspace_review_artifact_content(content: String) -> String {
+    let content = content.trim().to_string();
+    let first_line_end = content.find('\n').unwrap_or(content.len());
+    let first_line = content[..first_line_end].trim_end_matches('\r').trim();
+    if !is_redundant_workspace_review_heading(first_line) {
+        return content;
+    }
+    content[first_line_end..]
+        .trim_start_matches(['\r', '\n'])
+        .trim()
+        .to_string()
+}
+
+fn is_redundant_workspace_review_heading(line: &str) -> bool {
+    let Some(title) = line.strip_prefix("# ") else {
+        return false;
+    };
+    is_legacy_workspace_review_artifact_title(title)
+}
+
+fn is_legacy_workspace_review_artifact_title(title: &str) -> bool {
+    matches!(
+        title.trim(),
+        "Review" | "Workspace Review" | "Selected Source Review"
+    )
 }
 
 fn pr_review_submission_event(
@@ -2946,17 +3648,21 @@ pub async fn get_agent_workspace_file_diff_page(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path as StdPath;
+    use std::path::{Path as StdPath, PathBuf};
     use std::process::Command;
     use std::sync::Arc;
 
     use crate::application::agent_conversation_workspace::resolve_agent_conversation_workspace_path;
+    use crate::application::agent_workspace_review::{
+        AgentWorkspaceReviewChangedFile, AgentWorkspaceReviewDiffSummary,
+        AgentWorkspaceReviewPacket,
+    };
     use crate::application::{AppState, TeamService, TeamStateTracker};
     use crate::commands::ExecutionState;
     use crate::domain::entities::{
         AgentConversationWorkspace, AgentConversationWorkspaceMode,
-        AgentWorkspacePrCommentEvidenceUpsert, ArtifactId, ChatContextType, ChatConversation,
-        AgentWorkspaceSourcePullRequest, IdeationAnalysisBaseRefKind, Project, ProjectId,
+        AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspaceSourcePullRequest, ArtifactId,
+        ChatContextType, ChatConversation, IdeationAnalysisBaseRefKind, Project, ProjectId,
     };
     use crate::domain::services::github_service::{
         GithubServiceTrait, PrHealth, PrIssueCommentSummary, PrReviewSubmissionEvent, PrStatus,
@@ -2990,6 +3696,174 @@ mod tests {
             team_service,
             delegation_service: Default::default(),
         }
+    }
+
+    #[test]
+    fn workspace_review_default_title_uses_target_identity() {
+        let selected_pr_target =
+            crate::application::agent_workspace_review::AgentWorkspaceReviewTarget {
+                scope: AgentWorkspaceReviewTargetScope::SelectedSource,
+                base_ref: "main".to_string(),
+                base_sha: Some("base".to_string()),
+                head_ref: "refs/ralphx/pr-heads/347".to_string(),
+                head_sha: Some("head".to_string()),
+                diff_fingerprint: "fingerprint".to_string(),
+                working_directory: PathBuf::from("/tmp/worktree"),
+                source_pull_request_number: Some(347),
+                review_packet: AgentWorkspaceReviewPacket::default(),
+            };
+        assert_eq!(
+            default_workspace_review_artifact_title(
+                AgentWorkspaceReviewTargetScope::SelectedSource,
+                Some(&selected_pr_target),
+            ),
+            "PR #347"
+        );
+
+        let selected_branch_target =
+            crate::application::agent_workspace_review::AgentWorkspaceReviewTarget {
+                scope: AgentWorkspaceReviewTargetScope::SelectedSource,
+                base_ref: "main".to_string(),
+                base_sha: Some("base".to_string()),
+                head_ref: "refs/heads/feature/review-sidecar".to_string(),
+                head_sha: Some("head".to_string()),
+                diff_fingerprint: "fingerprint".to_string(),
+                working_directory: PathBuf::from("/tmp/worktree"),
+                source_pull_request_number: None,
+                review_packet: AgentWorkspaceReviewPacket::default(),
+            };
+        assert_eq!(
+            default_workspace_review_artifact_title(
+                AgentWorkspaceReviewTargetScope::SelectedSource,
+                Some(&selected_branch_target),
+            ),
+            "feature/review-sidecar"
+        );
+
+        assert_eq!(
+            default_workspace_review_artifact_title(
+                AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+                Some(&selected_branch_target),
+            ),
+            "Workspace changes"
+        );
+    }
+
+    #[test]
+    fn workspace_review_target_response_includes_packet_only_when_requested() {
+        let target = crate::application::agent_workspace_review::AgentWorkspaceReviewTarget {
+            scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+            base_ref: "main".to_string(),
+            base_sha: Some("base".to_string()),
+            head_ref: "HEAD".to_string(),
+            head_sha: Some("head".to_string()),
+            diff_fingerprint: "fingerprint".to_string(),
+            working_directory: PathBuf::from("/tmp/worktree"),
+            source_pull_request_number: None,
+            review_packet: AgentWorkspaceReviewPacket {
+                summary: AgentWorkspaceReviewDiffSummary {
+                    files_changed: 1,
+                    insertions: 2,
+                    deletions: 0,
+                },
+                changed_files: vec![AgentWorkspaceReviewChangedFile {
+                    path: "src/lib.rs".to_string(),
+                    status: "modified".to_string(),
+                    sources: vec!["committed".to_string()],
+                }],
+                patch_excerpt: "diff --git a/src/lib.rs b/src/lib.rs".to_string(),
+                patch_excerpt_truncated: false,
+                notes: vec![],
+            },
+        };
+
+        let default_response = AgentWorkspaceReviewTargetResponse::from(target.clone());
+        assert!(default_response.review_packet.is_none());
+
+        let packet_response = AgentWorkspaceReviewTargetResponse::from_target(target, true)
+            .review_packet
+            .expect("packet should be included when requested");
+        assert_eq!(packet_response.summary.files_changed, 1);
+        assert_eq!(packet_response.changed_files[0].path, "src/lib.rs");
+        assert_eq!(
+            packet_response.patch_excerpt,
+            "diff --git a/src/lib.rs b/src/lib.rs"
+        );
+    }
+
+    #[test]
+    fn workspace_review_artifact_title_replaces_legacy_or_stale_titles() {
+        let selected_pr_target =
+            crate::application::agent_workspace_review::AgentWorkspaceReviewTarget {
+                scope: AgentWorkspaceReviewTargetScope::SelectedSource,
+                base_ref: "main".to_string(),
+                base_sha: Some("base".to_string()),
+                head_ref: "refs/ralphx/pr-heads/347".to_string(),
+                head_sha: Some("head".to_string()),
+                diff_fingerprint: "fingerprint".to_string(),
+                working_directory: PathBuf::from("/tmp/worktree"),
+                source_pull_request_number: Some(347),
+                review_packet: AgentWorkspaceReviewPacket::default(),
+            };
+
+        assert_eq!(
+            workspace_review_artifact_title(
+                Some("Selected Source Review".to_string()),
+                None,
+                None,
+                AgentWorkspaceReviewTargetScope::SelectedSource,
+                Some(&selected_pr_target),
+            ),
+            "PR #347"
+        );
+        assert_eq!(
+            workspace_review_artifact_title(
+                None,
+                Some("PR #123"),
+                Some(AgentWorkspaceReviewTargetScope::SelectedSource),
+                AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+                Some(&selected_pr_target),
+            ),
+            "Workspace changes"
+        );
+        assert_eq!(
+            workspace_review_artifact_title(
+                None,
+                Some("Custom review title"),
+                Some(AgentWorkspaceReviewTargetScope::SelectedSource),
+                AgentWorkspaceReviewTargetScope::SelectedSource,
+                Some(&selected_pr_target),
+            ),
+            "Custom review title"
+        );
+    }
+
+    #[test]
+    fn workspace_review_content_normalization_removes_redundant_h1() {
+        assert_eq!(
+            normalize_workspace_review_artifact_content(
+                "# Selected Source Review\n\n## Summary\n\nLooks good.".to_string(),
+            ),
+            "## Summary\n\nLooks good."
+        );
+        assert_eq!(
+            normalize_workspace_review_artifact_content(
+                "# Workspace Review\r\n\r\n## Summary\r\n\r\nLooks good.".to_string(),
+            ),
+            "## Summary\r\n\r\nLooks good."
+        );
+        assert_eq!(
+            normalize_workspace_review_artifact_content(
+                "# Review\n\n## Summary\n\nLooks good.".to_string(),
+            ),
+            "## Summary\n\nLooks good."
+        );
+        assert_eq!(
+            normalize_workspace_review_artifact_content(
+                "# Useful Architecture Context\n\n## Summary\n\nKeep this title.".to_string(),
+            ),
+            "# Useful Architecture Context\n\n## Summary\n\nKeep this title."
+        );
     }
 
     fn test_workspace(conversation_id: ChatConversationId) -> AgentConversationWorkspace {
@@ -3093,10 +3967,7 @@ mod tests {
         .unwrap_err();
 
         assert_eq!(status, StatusCode::CONFLICT);
-        assert!(body["error"]
-            .as_str()
-            .unwrap()
-            .contains("Write the Review artifact"));
+        assert!(body["error"].as_str().unwrap().contains("Write the Review"));
         let actions = app_state
             .agent_conversation_workspace_repo
             .list_pr_review_actions(&conversation_id, 10)
@@ -3862,6 +4733,7 @@ mod tests {
             AgentConversationWorkspaceMode::Edit,
             AgentConversationWorkspaceBaseSelection {
                 kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+                branch_mode: None,
                 base_ref: Some("main".to_string()),
                 display_name: None,
                 source_pull_request: None,

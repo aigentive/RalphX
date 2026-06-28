@@ -1,10 +1,10 @@
 use super::*;
 
-// ===== All 24 Variants Exist Tests =====
+// ===== All 25 Variants Exist Tests =====
 
 #[test]
-fn internal_status_has_24_variants() {
-    assert_eq!(InternalStatus::all_variants().len(), 24);
+fn internal_status_has_25_variants() {
+    assert_eq!(InternalStatus::all_variants().len(), 25);
 }
 
 #[test]
@@ -28,6 +28,7 @@ fn all_variants_returns_correct_statuses() {
         Approved,
         PendingMerge,
         Merging,
+        WaitingOnPr,
         MergeIncomplete,
         MergeConflict,
         Merged,
@@ -91,6 +92,7 @@ fn all_variants_serialize_correctly() {
         ("approved", InternalStatus::Approved),
         ("pending_merge", InternalStatus::PendingMerge),
         ("merging", InternalStatus::Merging),
+        ("waiting_on_pr", InternalStatus::WaitingOnPr),
         ("merge_incomplete", InternalStatus::MergeIncomplete),
         ("merge_conflict", InternalStatus::MergeConflict),
         ("merged", InternalStatus::Merged),
@@ -497,7 +499,15 @@ fn pending_merge_transitions() {
     let transitions = PendingMerge.valid_transitions();
     assert_eq!(
         transitions,
-        &[Merged, Merging, MergeIncomplete, Stopped, Paused, Cancelled]
+        &[
+            Merged,
+            Merging,
+            WaitingOnPr,
+            MergeIncomplete,
+            Stopped,
+            Paused,
+            Cancelled
+        ]
     );
 }
 
@@ -523,6 +533,7 @@ fn merging_transitions() {
         transitions,
         &[
             Merged,
+            WaitingOnPr,
             MergeConflict,
             MergeIncomplete,
             Stopped,
@@ -554,12 +565,37 @@ fn merging_to_merge_incomplete() {
 }
 
 #[test]
+fn waiting_on_pr_transitions() {
+    use InternalStatus::*;
+    let transitions = WaitingOnPr.valid_transitions();
+    assert_eq!(
+        transitions,
+        &[
+            Merged,
+            MergeIncomplete,
+            PendingMerge,
+            Stopped,
+            Paused,
+            Cancelled
+        ]
+    );
+}
+
+#[test]
 fn merge_incomplete_transitions() {
     use InternalStatus::*;
     let transitions = MergeIncomplete.valid_transitions();
     assert_eq!(
         transitions,
-        &[PendingMerge, Merging, Merged, Stopped, Paused, Cancelled]
+        &[
+            PendingMerge,
+            Merging,
+            WaitingOnPr,
+            Merged,
+            Stopped,
+            Paused,
+            Cancelled
+        ]
     );
 }
 
@@ -588,6 +624,19 @@ fn merge_incomplete_parses_correctly() {
     use InternalStatus::*;
     let parsed = InternalStatus::from_str("merge_incomplete").unwrap();
     assert_eq!(parsed, MergeIncomplete);
+}
+
+#[test]
+fn serializes_to_snake_case_waiting_on_pr() {
+    let json = serde_json::to_string(&InternalStatus::WaitingOnPr).unwrap();
+    assert_eq!(json, "\"waiting_on_pr\"");
+}
+
+#[test]
+fn waiting_on_pr_parses_correctly() {
+    use InternalStatus::*;
+    let parsed = InternalStatus::from_str("waiting_on_pr").unwrap();
+    assert_eq!(parsed, WaitingOnPr);
 }
 
 #[test]
@@ -754,7 +803,8 @@ fn paused_can_resume_to_agent_active_states() {
             QaRefining,
             QaTesting,
             Reviewing,
-            Merging
+            Merging,
+            WaitingOnPr
         ]
     );
 }
@@ -830,6 +880,7 @@ fn test_is_terminal_covers_all_variants() {
         Approved,
         PendingMerge,
         Merging,
+        WaitingOnPr,
         MergeConflict,
         Paused,
     ];
@@ -926,6 +977,7 @@ fn test_is_dependency_satisfied_covers_all_variants() {
         Approved,
         PendingMerge,
         Merging,
+        WaitingOnPr,
         MergeConflict,
         MergeIncomplete,
         Paused,

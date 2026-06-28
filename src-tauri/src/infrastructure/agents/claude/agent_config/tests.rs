@@ -12,7 +12,7 @@ use crate::infrastructure::agents::claude::agent_names::{
     SHORT_PLAN_CRITIC_COMPLETENESS, SHORT_PLAN_CRITIC_IMPLEMENTATION_FEASIBILITY,
     SHORT_PLAN_VERIFIER, SHORT_PROJECT_ANALYZER, SHORT_PR_DESCRIBER, SHORT_PR_REVIEWER,
     SHORT_QA_EXECUTOR, SHORT_QA_PREP, SHORT_REVIEWER, SHORT_REVIEW_CHAT, SHORT_REVIEW_HISTORY,
-    SHORT_SESSION_NAMER, SHORT_WORKER, SHORT_WORKER_TEAM,
+    SHORT_SESSION_NAMER, SHORT_WORKER, SHORT_WORKER_TEAM, SHORT_WORKSPACE_REVIEWER,
 };
 use crate::infrastructure::agents::harness_agent_catalog::{
     has_canonical_agent_definition, list_canonical_prompt_backed_agents, load_harness_agent_prompt,
@@ -277,6 +277,7 @@ fn test_all_agent_names_are_known() {
         SHORT_AGENT_WORKSPACE_REPAIR,
         SHORT_AGENT_WORKSPACE_PR_FIXER,
         SHORT_PR_REVIEWER,
+        SHORT_WORKSPACE_REVIEWER,
         SHORT_WORKER,
         SHORT_CODER,
         SHORT_REVIEWER,
@@ -696,6 +697,7 @@ execution_defaults:
     agent_workspace_pr_auto_merge_default: true
   global:
     global_max_concurrent: 28
+    workspace_max_concurrent: 9
     global_ideation_max: 5
     allow_ideation_borrow_idle_execution: true
 "#;
@@ -718,6 +720,7 @@ execution_defaults:
             .agent_workspace_pr_auto_merge_default
     );
     assert_eq!(parsed.execution_defaults.global.global_max_concurrent, 28);
+    assert_eq!(parsed.execution_defaults.global.workspace_max_concurrent, 9);
     assert_eq!(parsed.execution_defaults.global.global_ideation_max, 5);
     assert!(
         parsed
@@ -3246,12 +3249,16 @@ fn test_preapproved_tools_always_contains_permission_request() {
 // ── UI Feature Flags Config tests ─────────────────────────────────────────────
 
 #[test]
-fn test_ui_feature_flags_default_all_enabled() {
+fn test_ui_feature_flags_default_standalone_ideation_hidden() {
     let flags = UiFeatureFlagsConfig::default();
     assert!(flags.activity_page, "activity_page should default to true");
     assert!(
         flags.extensibility_page,
         "extensibility_page should default to true"
+    );
+    assert!(
+        !flags.ideation_page,
+        "ideation_page should default to false"
     );
     assert!(flags.battle_mode, "battle_mode should default to true");
     assert!(!flags.team_mode, "team_mode should default to false");
@@ -3282,6 +3289,7 @@ ui:
     activity_page: false
     extensibility_page: true
     ticketing_dashboard: true
+    ideation_page: true
 "#;
     let cfg = parse_config_no_env_overrides(yaml).expect("should parse yaml with ui section");
     assert!(
@@ -3293,6 +3301,10 @@ ui:
         "extensibility_page should be true"
     );
     assert!(
+        cfg.runtime.ui_feature_flags.ideation_page,
+        "ideation_page should be true from yaml"
+    );
+    assert!(
         cfg.runtime.ui_feature_flags.ticketing_dashboard,
         "ticketing_dashboard should be true from yaml"
     );
@@ -3300,7 +3312,7 @@ ui:
 
 #[test]
 fn test_yaml_parsing_without_ui_section_backward_compat() {
-    // YAML without ui section: defaults to all flags enabled
+    // YAML without ui section: legacy pages default visible, standalone Ideation stays hidden.
     let yaml = r#"
 claude:
   mcp_server_name: ralphx
@@ -3320,6 +3332,10 @@ agents: []
     assert!(
         cfg.runtime.ui_feature_flags.battle_mode,
         "should default to true when ui section absent"
+    );
+    assert!(
+        !cfg.runtime.ui_feature_flags.ideation_page,
+        "ideation_page should default to false when ui section absent"
     );
     assert!(
         !cfg.runtime.ui_feature_flags.team_mode,
@@ -3362,6 +3378,10 @@ fn test_env_override_activity_page_false() {
         cfg.ui_feature_flags.extensibility_page,
         "extensibility_page untouched"
     );
+    assert!(
+        !cfg.ui_feature_flags.ideation_page,
+        "ideation_page untouched"
+    );
 }
 
 #[test]
@@ -3379,6 +3399,7 @@ fn test_env_override_true_value_enables_flag() {
         ui_feature_flags: UiFeatureFlagsConfig {
             activity_page: false,
             extensibility_page: false,
+            ideation_page: false,
             battle_mode: false,
             team_mode: false,
             atlassian_oauth: false,
@@ -3397,6 +3418,19 @@ fn test_env_override_true_value_enables_flag() {
     assert!(
         cfg.ui_feature_flags.extensibility_page,
         "env '1' should enable extensibility_page"
+    );
+    assert!(
+        !cfg.ui_feature_flags.ideation_page,
+        "ideation_page untouched"
+    );
+
+    runtime_config::apply_env_overrides_with_lookup(&mut cfg, &|name| match name {
+        "RALPHX_UI_IDEATION_PAGE" => Some("true".to_string()),
+        _ => None,
+    });
+    assert!(
+        cfg.ui_feature_flags.ideation_page,
+        "env 'true' should enable ideation_page"
     );
     assert!(!cfg.ui_feature_flags.team_mode, "team_mode untouched");
     assert!(
@@ -3439,6 +3473,10 @@ fn test_env_override_battle_mode() {
     assert!(
         cfg.ui_feature_flags.extensibility_page,
         "extensibility_page untouched"
+    );
+    assert!(
+        !cfg.ui_feature_flags.ideation_page,
+        "ideation_page untouched"
     );
     assert!(!cfg.ui_feature_flags.team_mode, "team_mode untouched");
     assert!(
@@ -3571,6 +3609,7 @@ fn test_ui_feature_flags_config_accessor_returns_defaults() {
     // All fields should be bool (any value — loaded from yaml)
     let _ = flags.activity_page;
     let _ = flags.extensibility_page;
+    let _ = flags.ideation_page;
     let _ = flags.battle_mode;
     let _ = flags.team_mode;
     let _ = flags.atlassian_oauth;

@@ -113,6 +113,7 @@ import {
 import { useAgentSidebarPublicationPolling } from "./useAgentSidebarPublicationPolling";
 import { useAgentSidebarRunningStates } from "./useAgentSidebarRunningStates";
 import { useArchivedConversationCounts } from "./useArchivedConversationCounts";
+import { PrTemplateEditorDialog } from "./PrTemplateEditorDialog";
 
 const AGENTS_SEARCH_DEBOUNCE_MS = 180;
 const AGENTS_SIDEBAR_MAX_VISIBLE_SESSION_ROWS = 8;
@@ -282,6 +283,7 @@ function ScrollableAgentSessionList<T>({
   const [measuredRowHeight, setMeasuredRowHeight] = useState<number | null>(null);
   const underflowFetchKeyRef = useRef<string | null>(null);
   const nextPageRequestRowCountRef = useRef<number | null>(null);
+  const nextPageRequestIdRef = useRef(0);
   const rowCount = rows.length;
   const rowHeight =
     measuredRowHeight ?? AGENTS_SIDEBAR_FALLBACK_SESSION_ROW_PX;
@@ -417,12 +419,23 @@ function ScrollableAgentSessionList<T>({
     if (nextPageRequestRowCountRef.current === rowCount) {
       return;
     }
+    const requestId = nextPageRequestIdRef.current + 1;
+    nextPageRequestIdRef.current = requestId;
     nextPageRequestRowCountRef.current = rowCount;
-    void Promise.resolve(fetchNextPage()).catch(() => {
-      if (nextPageRequestRowCountRef.current === rowCount) {
+    const clearRequestIfStillCurrent = () => {
+      if (
+        nextPageRequestIdRef.current === requestId &&
+        nextPageRequestRowCountRef.current === rowCount &&
+        latestRowCountRef.current <= rowCount
+      ) {
         nextPageRequestRowCountRef.current = null;
       }
-    });
+    };
+    void Promise.resolve(fetchNextPage())
+      .catch(clearRequestIfStillCurrent)
+      .finally(() => {
+        afterSidebarControlPaint(clearRequestIfStillCurrent);
+      });
   }, [fetchNextPage, hasNextPage, isFetchingNextPage, rowCount]);
   const fetchNextPageFromScrollPosition = useCallback(() => {
     const scroller = scrollerRef.current;
@@ -445,9 +458,16 @@ function ScrollableAgentSessionList<T>({
       nextPageRequestRowCountRef.current !== null &&
       rowCount > nextPageRequestRowCountRef.current
     ) {
+      nextPageRequestIdRef.current += 1;
       nextPageRequestRowCountRef.current = null;
     }
   }, [rowCount]);
+
+  useEffect(() => {
+    nextPageRequestIdRef.current += 1;
+    nextPageRequestRowCountRef.current = null;
+    underflowFetchKeyRef.current = null;
+  }, [scrollKey]);
 
   const handleScrollerRef = useCallback((node: HTMLElement | Window | null) => {
     const element = node instanceof HTMLElement ? node : null;
@@ -1867,7 +1887,10 @@ function PublicationStateGroup({
         isActiveRuntime,
         agentStatus
       );
-      const showRuntimeState = runtimeState === "running" || runtimeState === "waiting";
+      const showRuntimeState = shouldShowSessionRuntimeLabel(
+        runtimeState,
+        row.publicationLabel
+      );
       const sessionActionsOpen = openSessionActionsId === conversation.id;
 
       return (
@@ -2362,6 +2385,7 @@ function ProjectSessionGroup({
   const sessionActionsTriggerRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const [projectActionsOpen, setProjectActionsOpen] = useState(false);
   const [archiveDialogOpen, setArchiveDialogOpen] = useState(false);
+  const [prTemplateDialogOpen, setPrTemplateDialogOpen] = useState(false);
   const [renameDialogConversation, setRenameDialogConversation] =
     useState<AgentConversation | null>(null);
   const [renameDraftTitle, setRenameDraftTitle] = useState("");
@@ -2525,7 +2549,10 @@ function ProjectSessionGroup({
         isActiveRuntime,
         agentStatus
       );
-      const showRuntimeState = runtimeState === "running" || runtimeState === "waiting";
+      const showRuntimeState = shouldShowSessionRuntimeLabel(
+        runtimeState,
+        row.publicationLabel
+      );
       const sessionActionsOpen = openSessionActionsId === conversation.id;
 
       return (
@@ -2704,6 +2731,14 @@ function ProjectSessionGroup({
                 >
                   <DropdownMenuItem
                     className="gap-2 text-xs"
+                    onClick={() => setPrTemplateDialogOpen(true)}
+                  >
+                    <Pencil className="w-3.5 h-3.5" />
+                    Edit PR Template
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    className="gap-2 text-xs"
                     onClick={() => setArchiveDialogOpen(true)}
                   >
                     <Archive className="w-3.5 h-3.5" />
@@ -2714,6 +2749,12 @@ function ProjectSessionGroup({
             </div>
           </div>
           )}
+
+          <PrTemplateEditorDialog
+            open={prTemplateDialogOpen}
+            onOpenChange={setPrTemplateDialogOpen}
+            project={project}
+          />
 
           <AlertDialog open={archiveDialogOpen} onOpenChange={setArchiveDialogOpen}>
             <AlertDialogContent>
@@ -2956,6 +2997,12 @@ function StaticRecentRuns() {
 }
 
 type SessionRuntimeState = "running" | "waiting" | "queued" | "done" | "blocked" | "archived";
+const PUBLICATION_LABELS_WITH_OWN_RUNTIME = new Set([
+  "auto-merge",
+  "blocked",
+  "fixing",
+  "waiting",
+]);
 
 function getSessionRuntimeState(
   conversation: AgentConversation,
@@ -2983,6 +3030,21 @@ function getSessionRuntimeState(
   }
 
   return "running";
+}
+
+function shouldShowSessionRuntimeLabel(
+  state: SessionRuntimeState,
+  publicationLabel: string | null
+) {
+  if (state !== "running" && state !== "waiting") {
+    return false;
+  }
+
+  const normalizedPublicationLabel = publicationLabel?.trim().toLowerCase() ?? null;
+  return (
+    !normalizedPublicationLabel ||
+    !PUBLICATION_LABELS_WITH_OWN_RUNTIME.has(normalizedPublicationLabel)
+  );
 }
 
 function SessionRuntimeLabel({ state }: { state: SessionRuntimeState }) {

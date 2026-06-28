@@ -1,4 +1,36 @@
 import { Page } from "@playwright/test";
+import type { FeatureFlags } from "@/types/feature-flags";
+
+const STANDALONE_IDEATION_FEATURE_FLAGS: FeatureFlags = {
+  activityPage: true,
+  extensibilityPage: true,
+  ideationPage: true,
+  battleMode: true,
+  teamMode: false,
+  atlassianOauth: false,
+  ticketingDashboard: false,
+};
+const PROVIDER_CLI_DISMISSED_UPDATES_STORAGE_KEY =
+  "ralphx-provider-cli-dismissed-updates";
+const MOCK_PROVIDER_CLI_UPDATE_KEYS = ["claude:2.1.175", "codex:0.137.0"];
+
+export async function dismissProviderCliUpdateToasts(page: Page) {
+  await page.addInitScript(
+    ({ storageKey, dismissedKeys }) => {
+      window.localStorage.setItem(storageKey, JSON.stringify(dismissedKeys));
+    },
+    {
+      storageKey: PROVIDER_CLI_DISMISSED_UPDATES_STORAGE_KEY,
+      dismissedKeys: MOCK_PROVIDER_CLI_UPDATE_KEYS,
+    },
+  );
+}
+
+async function installStandaloneIdeationFeatureFlag(page: Page) {
+  await page.addInitScript((flags) => {
+    window.__mockUiFeatureFlags = flags;
+  }, STANDALONE_IDEATION_FEATURE_FLAGS);
+}
 
 export async function setupApp(page: Page) {
   const appHeader = page.locator('[data-testid="app-header"]');
@@ -15,6 +47,34 @@ export async function setupApp(page: Page) {
   }
 
   await appHeader.waitFor({ state: "visible", timeout: 15000 });
+}
+
+export async function enableStandaloneIdeationPage(page: Page) {
+  await page.evaluate((flags) => {
+    const uiStore = (window as Window & {
+      __queryClient?: {
+        setQueryData(queryKey: unknown[], data: unknown): void;
+      };
+      __uiStore?: {
+        getState(): {
+          setFeatureFlags(flags: FeatureFlags): void;
+        };
+      };
+    }).__uiStore;
+    const queryClient = (window as Window & {
+      __queryClient?: {
+        setQueryData(queryKey: unknown[], data: unknown): void;
+      };
+    }).__queryClient;
+
+    if (!uiStore) {
+      throw new Error("UI store not available");
+    }
+
+    queryClient?.setQueryData(["featureFlags"], flags);
+    uiStore.getState().setFeatureFlags(flags);
+  }, STANDALONE_IDEATION_FEATURE_FLAGS);
+  await page.waitForSelector('[data-testid="nav-ideation"]', { timeout: 10000 });
 }
 
 export async function setupKanban(page: Page) {
@@ -35,7 +95,9 @@ export async function setupKanban(page: Page) {
 }
 
 export async function setupIdeation(page: Page) {
+  await installStandaloneIdeationFeatureFlag(page);
   await setupApp(page);
+  await enableStandaloneIdeationPage(page);
   // Navigate to ideation view
   await page.click('[data-testid="nav-ideation"]');
   // Wait for ideation view to load

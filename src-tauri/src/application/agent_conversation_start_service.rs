@@ -25,10 +25,12 @@ mod helpers;
 use self::helpers::{
     agent_mode_should_create_workspace, agent_workspace_pr_automation_defaults_for_project,
     apply_ticket_canonical_branch_base_selection, base_selection_allows_ticket_canonical_branch,
-    emit_start_agent_conversation_progress, ensure_plan_workspace_planning_session_link,
-    first_ticket_start_base_reference, log_start_agent_conversation_phase,
+    emit_start_agent_conversation_progress, ensure_linked_branch_workspace_available,
+    ensure_plan_workspace_planning_session_link, first_ticket_start_base_reference,
+    hydrate_linked_branch_source_pull_request, log_start_agent_conversation_phase,
     normalize_agent_runtime_selection, normalize_agent_workspace_source_pull_request,
-    parse_agent_workspace_base_kind, parse_agent_workspace_mode, trim_optional_input,
+    parse_agent_workspace_base_kind, parse_agent_workspace_branch_mode, parse_agent_workspace_mode,
+    trim_optional_input,
 };
 
 #[derive(Debug, Clone, Deserialize)]
@@ -49,17 +51,25 @@ pub struct StartAgentConversationInput {
     pub content: String,
     /// Optional draft conversation to use after uploading pending attachments.
     pub conversation_id: Option<String>,
+    /// Optional visible parent conversation for follow-up/branch conversations.
+    pub parent_conversation_id: Option<String>,
+    /// Optional initial title for a newly created conversation.
+    pub title: Option<String>,
     /// Optional provider harness selected for the initial conversation send.
     pub provider_harness: Option<String>,
     /// Optional explicit model override for the spawned agent.
     pub model_override: Option<String>,
     /// Optional provider-neutral reasoning effort override for the spawned agent.
     pub logical_effort: Option<LogicalEffort>,
+    /// Optional Codex Fast Mode override for this initial send.
+    pub codex_fast_mode: Option<bool>,
     /// Agent mode: "chat" routes to a read-only explorer in the project root;
     /// edit/plan/ideation modes create a selected-base workspace for runtime CWD.
     pub mode: Option<String>,
     /// Optional base ref kind using ideation naming: project_default, current_branch, local_branch.
     pub base_ref_kind: Option<String>,
+    /// Optional branch work policy: isolated creates a new RalphX branch; linked uses the selected branch.
+    pub base_branch_mode: Option<String>,
     /// Optional selected branch/ref name for the base.
     pub base_ref: Option<String>,
     /// Optional user-facing base ref label.
@@ -146,11 +156,20 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
         let parse_input_started = Instant::now();
         let mode = parse_agent_workspace_mode(input.mode.as_deref())?;
         let mut base_ref_kind = parse_agent_workspace_base_kind(input.base_ref_kind.as_deref())?;
+        let base_branch_mode = parse_agent_workspace_branch_mode(input.base_branch_mode.as_deref())?;
         let mut base_ref = trim_optional_input(input.base_ref);
         let mut base_display_name = trim_optional_input(input.base_display_name);
+        let parent_conversation_id = trim_optional_input(input.parent_conversation_id);
+        let conversation_title = trim_optional_input(input.title);
+        let draft_conversation_id = input
+            .conversation_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|conversation_id| !conversation_id.is_empty())
+            .map(ChatConversationId::from_string);
         let ticket_start_base_reference =
             first_ticket_start_base_reference(&input.composer_integration_references);
-        let source_pull_request = normalize_agent_workspace_source_pull_request(
+        let mut source_pull_request = normalize_agent_workspace_source_pull_request(
             input.base_source_pull_request,
             base_ref_kind,
             base_ref.as_deref(),
@@ -212,14 +231,27 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
                 );
             }
         }
+        if should_create_workspace {
+            ensure_linked_branch_workspace_available(
+                self.deps.state,
+                &project_id,
+                draft_conversation_id.as_ref(),
+                base_branch_mode,
+                base_ref.as_deref(),
+                source_pull_request.as_ref(),
+            )
+            .await?;
+        }
+        source_pull_request = hydrate_linked_branch_source_pull_request(
+            self.deps.state,
+            &project,
+            base_branch_mode,
+            base_ref.as_deref(),
+            source_pull_request,
+        )
+        .await?;
 
         let conversation_resolve_started = Instant::now();
-        let draft_conversation_id = input
-            .conversation_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|conversation_id| !conversation_id.is_empty())
-            .map(ChatConversationId::from_string);
         let mut conversation = if let Some(conversation_id) = draft_conversation_id {
             let conversation = self
                 .deps
@@ -242,6 +274,34 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             ChatConversation::new_project(project_id)
         };
         conversation.set_agent_mode(Some(mode));
+        let should_create_conversation = draft_conversation_id.is_none();
+        if let Some(parent_conversation_id) = parent_conversation_id.as_deref() {
+            if should_create_conversation {
+                let parent_id = ChatConversationId::from_string(parent_conversation_id.to_string());
+                let parent = self
+                    .deps
+                    .state
+                    .chat_conversation_repo
+                    .get_by_id(&parent_id)
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| format!("Parent conversation not found: {}", parent_id))?;
+                if parent.context_type != ChatContextType::Project
+                    || parent.context_id != input.project_id
+                {
+                    return Err(format!(
+                        "Parent conversation {} does not belong to project {}",
+                        parent.id, input.project_id
+                    ));
+                }
+                conversation.parent_conversation_id = Some(parent.id.as_str());
+            }
+        }
+        if should_create_conversation {
+            if let Some(title) = conversation_title {
+                conversation.set_title(title);
+            }
+        }
         log_start_agent_conversation_phase(
             &input.project_id,
             Some(&conversation.id),
@@ -249,7 +309,6 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             conversation_resolve_started,
         );
 
-        let should_create_conversation = draft_conversation_id.is_none();
         let workspace_prepare_started = Instant::now();
         if should_create_conversation {
             emit_start_agent_conversation_progress(
@@ -279,6 +338,7 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
                 mode,
                 AgentConversationWorkspaceBaseSelection {
                     kind: base_ref_kind,
+                    branch_mode: base_branch_mode,
                     base_ref,
                     display_name: base_display_name,
                     source_pull_request,
@@ -430,6 +490,10 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             input.logical_effort,
         )
         .await?;
+        let service_tier_override =
+            crate::application::chat_service::codex_fast_mode_service_tier_override(
+                input.codex_fast_mode,
+            );
         log_start_agent_conversation_phase(
             &input.project_id,
             Some(&conversation.id),
@@ -455,6 +519,7 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
                     agent_name_override: Some(agent_name_for_workspace_mode(mode).to_string()),
                     model_override,
                     logical_effort_override,
+                    service_tier_override,
                     conversation_id_override: Some(conversation.id),
                     working_directory_override,
                     composer_project_references: input.composer_project_references.clone(),

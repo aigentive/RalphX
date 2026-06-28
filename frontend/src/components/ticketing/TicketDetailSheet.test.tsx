@@ -1,9 +1,23 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { fireEvent, render as rtlRender, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import type { ReactElement, ReactNode } from "react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const { openUrlMock } = vi.hoisted(() => ({ openUrlMock: vi.fn() }));
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: openUrlMock }));
+
+vi.mock("@/api/granola", () => ({
+  granolaApi: {
+    getSettings: vi.fn(),
+    listNotes: vi.fn(),
+    assignAgentConversationGranolaNote: vi.fn(),
+  },
+}));
+
+vi.mock("@/components/agents/agentGranolaNoteQueries", () => ({
+  invalidateAgentConversationGranolaNote: vi.fn().mockResolvedValue(undefined),
+}));
 
 import type {
   TicketAssociations,
@@ -12,6 +26,7 @@ import type {
   TicketSummary,
   TicketTransitionOption,
 } from "@/api/ticketing";
+import { granolaApi } from "@/api/granola";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
 import { TicketDetailSheet } from "./TicketDetailSheet";
@@ -45,6 +60,26 @@ const writableTransition: TicketTransitionOption = {
   category: "done",
 };
 
+function createWrapper() {
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      queries: { retry: false, gcTime: 0 },
+    },
+  });
+
+  return function Wrapper({ children }: { children: ReactNode }) {
+    return (
+      <QueryClientProvider client={queryClient}>
+        <TooltipProvider>{children}</TooltipProvider>
+      </QueryClientProvider>
+    );
+  };
+}
+
+function render(ui: ReactElement, options?: Parameters<typeof rtlRender>[1]) {
+  return rtlRender(ui, { wrapper: createWrapper(), ...options });
+}
+
 function renderSheet(
   overrides: {
     ticket?: TicketSummary | TicketDetail;
@@ -53,25 +88,44 @@ function renderSheet(
     onStartWork?: () => void;
   } = {},
 ) {
+  const Wrapper = createWrapper();
   return render(
-    <TooltipProvider>
-      <TicketDetailSheet
-        open
-        ticket={overrides.ticket ?? baseTicket}
-        capabilities={overrides.capabilities ?? baseCapabilities}
-        transitions={[writableTransition]}
-        associations={overrides.associations}
-        isDetailLoading={false}
-        isAssociationsLoading={false}
-        isTransitionPending={false}
-        isAssignPending={false}
-        isCommentPending={false}
-        {...(overrides.onStartWork ? { onStartWork: overrides.onStartWork } : {})}
-        onClose={vi.fn()}
-      />
-    </TooltipProvider>,
+    <TicketDetailSheet
+      open
+      ticket={overrides.ticket ?? baseTicket}
+      capabilities={overrides.capabilities ?? baseCapabilities}
+      transitions={[writableTransition]}
+      associations={overrides.associations}
+      projectId="project-1"
+      isDetailLoading={false}
+      isAssociationsLoading={false}
+      isTransitionPending={false}
+      isAssignPending={false}
+      isCommentPending={false}
+      {...(overrides.onStartWork ? { onStartWork: overrides.onStartWork } : {})}
+      onClose={vi.fn()}
+    />,
+    { wrapper: Wrapper },
   );
 }
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(granolaApi.getSettings).mockResolvedValue({
+    enabled: false,
+    hasApiToken: false,
+    validationStatus: "not_configured",
+    lastValidatedAt: null,
+    lastError: null,
+    updatedAt: "2026-06-19T22:00:00.000Z",
+  });
+  vi.mocked(granolaApi.listNotes).mockResolvedValue({
+    notes: [],
+    hasMore: false,
+    cursor: null,
+  });
+  vi.mocked(granolaApi.assignAgentConversationGranolaNote).mockResolvedValue(null);
+});
 
 describe("TicketDetailSheet assignee control", () => {
   it("offers 'Assign to me' only when the ticket is unassigned", () => {
@@ -83,12 +137,12 @@ describe("TicketDetailSheet assignee control", () => {
 
   it("shows the assignee and hides 'Assign to me' when assigned", () => {
     renderSheet({
-      ticket: { ...baseTicket, assignee: { name: "Adrian Demian" } },
+      ticket: { ...baseTicket, assignee: { name: "Alex Developer" } },
     });
 
     expect(screen.getByText("Assignee")).toBeInTheDocument();
-    expect(screen.getByLabelText("Adrian Demian")).toHaveAttribute("title", "Adrian Demian");
-    expect(screen.queryByText("Adrian Demian")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Alex Developer")).toHaveAttribute("title", "Alex Developer");
+    expect(screen.queryByText("Alex Developer")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /assign to me/i })).not.toBeInTheDocument();
     // Clear assignee stays available because assignment write-back is enabled.
     expect(screen.getByRole("button", { name: /clear assignee/i })).toBeInTheDocument();
@@ -96,12 +150,12 @@ describe("TicketDetailSheet assignee control", () => {
 
   it("shows the assignee read-only when assignment write-back is unavailable", () => {
     renderSheet({
-      ticket: { ...baseTicket, assignee: { name: "Adrian Demian" } },
+      ticket: { ...baseTicket, assignee: { name: "Alex Developer" } },
       capabilities: { ...baseCapabilities, assignmentWrite: false },
     });
 
-    expect(screen.getByLabelText("Adrian Demian")).toHaveAttribute("title", "Adrian Demian");
-    expect(screen.queryByText("Adrian Demian")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Alex Developer")).toHaveAttribute("title", "Alex Developer");
+    expect(screen.queryByText("Alex Developer")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /assign to me/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /clear assignee/i })).not.toBeInTheDocument();
   });
@@ -176,6 +230,83 @@ describe("TicketDetailSheet ticket git metadata", () => {
 
     await waitFor(() => {
       expect(openUrlMock).toHaveBeenCalledWith("https://github.com/acme/app/pull/42");
+    });
+  });
+});
+
+describe("TicketDetailSheet Granola associations", () => {
+  it("binds an existing Granola note through a linked ticket conversation", async () => {
+    const user = userEvent.setup();
+    vi.mocked(granolaApi.getSettings).mockResolvedValue({
+      enabled: true,
+      hasApiToken: true,
+      validationStatus: "valid",
+      lastValidatedAt: "2026-06-19T22:00:00.000Z",
+      lastError: null,
+      updatedAt: "2026-06-19T22:00:00.000Z",
+    });
+    vi.mocked(granolaApi.listNotes).mockResolvedValue({
+      notes: [
+        {
+          id: "not_ticket",
+          title: "Planning notes",
+          url: "https://granola.ai/notes/not_ticket",
+          summary: "Ticket planning context",
+          createdAt: "2026-06-19T21:00:00.000Z",
+          updatedAt: "2026-06-19T22:00:00.000Z",
+          rxConversationCount: 0,
+          rxConversations: [],
+          ticketCount: 0,
+          ticketLinks: [],
+          prCount: 0,
+          pullRequests: [],
+        },
+      ],
+      hasMore: false,
+      cursor: null,
+    });
+    renderSheet({
+      associations: {
+        tasks: [],
+        proposals: [],
+        sessions: [],
+        conversations: [
+          {
+            id: "conversation-1",
+            title: "Ticket conversation",
+            subtitle: "conversation-1",
+            status: null,
+            active: true,
+            deepLink: { view: "agents", id: "conversation-1", projectId: "project-1" },
+          },
+        ],
+        pullRequests: [],
+        checks: [],
+        qa: [],
+        specs: [],
+        fetchedAt: null,
+      },
+    });
+
+    expect(await screen.findByText("Granola (0)")).toBeInTheDocument();
+    await user.click(await screen.findByRole("button", { name: "Add Granola" }));
+    await user.click(screen.getByRole("combobox", { name: "Granola note" }));
+    await user.click(
+      screen.getByRole("option", { name: /Planning notes/ }),
+    );
+    await user.click(screen.getByRole("button", { name: "Bind Granola note" }));
+
+    await waitFor(() => {
+      expect(granolaApi.assignAgentConversationGranolaNote).toHaveBeenCalledWith({
+        conversationId: "conversation-1",
+        projectId: "project-1",
+        noteId: "not_ticket",
+        title: "Planning notes",
+        noteUrl: "https://granola.ai/notes/not_ticket",
+        summary: "Ticket planning context",
+        includeTranscript: true,
+        refresh: true,
+      });
     });
   });
 });
@@ -1072,7 +1203,9 @@ describe("TicketDetailSheet comment optimistic flow", () => {
 
     await waitFor(() => expect(onAddComment).toHaveBeenCalledWith("Pushed a fix."));
     // Optimistic local comment is shown immediately.
-    expect(screen.getByText("Pushed a fix.")).toBeInTheDocument();
+    expect(
+      screen.getByText("Pushed a fix.", { selector: "p" }),
+    ).toBeInTheDocument();
 
     // The provider now returns the confirmed comment with the same body; the
     // local optimistic copy must be pruned so only one row remains.
@@ -1105,7 +1238,7 @@ describe("TicketDetailSheet comment optimistic flow", () => {
     );
 
     await waitFor(() => {
-      expect(screen.getAllByText("Pushed a fix.")).toHaveLength(1);
+      expect(screen.getAllByText("Pushed a fix.", { selector: "p" })).toHaveLength(1);
     });
   });
 

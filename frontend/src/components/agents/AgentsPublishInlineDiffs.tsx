@@ -28,13 +28,19 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { diffApi } from "@/api/diff";
-import type { AgentWorkspaceReview, FileChange, DiffRefKind, PrDiffAnnotation } from "@/api/diff";
+import type {
+  AgentWorkspaceChangeSummary,
+  AgentWorkspaceReview,
+  FileChange,
+  DiffRefKind,
+  PrDiffAnnotation,
+} from "@/api/diff";
 import type { Commit as DiffViewerCommit } from "@/components/diff";
 import { cn } from "@/lib/utils";
 import { AgentsPublishDiffFilter } from "./AgentsPublishDiffFilter";
 import type { DiffFilterMode } from "./AgentsPublishDiffFilter";
 import { AgentsPublishFileDiff } from "./AgentsPublishFileDiff";
-import type { DiffState } from "./AgentsPublishFileDiff";
+import type { ConflictDiffState, DiffState } from "./AgentsPublishFileDiff";
 import { isLargeInlineDiff } from "./inlineDiffGuards";
 import {
   AGENT_WORKSPACE_STALE_MS,
@@ -59,6 +65,8 @@ export interface AgentsPublishInlineDiffsProps {
   focusRequest?: AgentPublishFocusRequest | null | undefined;
   defaultMode?: DiffFilterMode | undefined;
   workspaceChangeLabel?: string | undefined;
+  liveSummary?: AgentWorkspaceChangeSummary | null | undefined;
+  repairMode?: boolean | undefined;
 }
 
 function getEmptyDiffStateCopy(
@@ -69,6 +77,12 @@ function getEmptyDiffStateCopy(
     return {
       title: "No unstaged files",
       detail: "No unstaged changes detected in this workspace.",
+    };
+  }
+  if (mode === "conflicted") {
+    return {
+      title: "No conflicted files",
+      detail: "No merge conflicts detected in this workspace.",
     };
   }
   if (mode === "staged") {
@@ -132,6 +146,8 @@ function findFirstRenderedAnnotationRow(
 interface AgentsPublishVirtualFileRowProps {
   file: FileChange;
   diff: DiffState;
+  conflictDiff?: ConflictDiffState | undefined;
+  isConflictMode: boolean;
   isExpanded: boolean;
   onTogglePath: (path: string) => void;
   onCopyPath: (path: string) => void;
@@ -149,6 +165,8 @@ interface AgentsPublishVirtualFileRowProps {
 const AgentsPublishVirtualFileRow = memo(function AgentsPublishVirtualFileRow({
   file,
   diff,
+  conflictDiff,
+  isConflictMode,
   isExpanded,
   onTogglePath,
   onCopyPath,
@@ -174,6 +192,8 @@ const AgentsPublishVirtualFileRow = memo(function AgentsPublishVirtualFileRow({
     <AgentsPublishFileDiff
       file={file}
       diff={diff}
+      conflictDiff={conflictDiff}
+      isConflictMode={isConflictMode}
       isExpanded={isExpanded}
       onToggle={handleToggle}
       onCopyPath={onCopyPath}
@@ -201,6 +221,8 @@ export function AgentsPublishInlineDiffs({
   focusRequest,
   defaultMode,
   workspaceChangeLabel,
+  liveSummary = null,
+  repairMode = false,
 }: AgentsPublishInlineDiffsProps) {
   // Set of collapsed file paths; empty = all expanded (default).
   const [collapsedPaths, setCollapsedPaths] = useState<Set<string>>(new Set());
@@ -225,15 +247,18 @@ export function AgentsPublishInlineDiffs({
   const autoScrolledAnnotationKeyRef = useRef<string | null>(null);
   const {
     commitSha,
+    conflictedCount,
     currentFiles,
     currentFilesError,
     effectiveMode,
+    isConflictedMode,
     isCommitMode,
     isCurrentFilesLoading,
     isCumulativeMode,
     isStagedMode,
     isUnstagedMode,
     refKind,
+    repairChangeSignature,
     setMode,
     stagedCount,
     supportsWorktreeModes,
@@ -241,12 +266,22 @@ export function AgentsPublishInlineDiffs({
     totalDeletions,
     workspaceChangeCount,
     unstagedCount,
-  } = useAgentWorkspaceChangeSummary({ conversationId, review, defaultMode });
+  } = useAgentWorkspaceChangeSummary({
+    conversationId,
+    review,
+    defaultMode,
+    liveSummary,
+    repairMode,
+  });
   const rangeRefKind =
     review?.headRef.startsWith(PATCH_BACKED_HEAD_REF_PREFIX) === true
       ? undefined
       : refKind;
-  const canRenderPrAnnotations = refKind.kind === "head" || refKind.kind === "cumulative_head";
+  const repairDiffQuerySignature = repairMode
+    ? (repairChangeSignature ?? "repair:none")
+    : undefined;
+  const canRenderPrAnnotations =
+    !isConflictedMode && (refKind.kind === "head" || refKind.kind === "cumulative_head");
   const annotationsByPath = useMemo(() => {
     const map = new Map<string, PrDiffAnnotation[]>();
     if (!canRenderPrAnnotations) {
@@ -401,9 +436,13 @@ export function AgentsPublishInlineDiffs({
 
   // ── Workspace-change diffs ─────────────────────────────────────────────
   const uncommittedDiffQueries = useQueries({
-    queries: (!isCommitMode && !isStagedMode && !isUnstagedMode && !isCumulativeMode
-      ? fetchableFiles
-      : []
+    queries: (!isCommitMode &&
+      !isConflictedMode &&
+      !isStagedMode &&
+      !isUnstagedMode &&
+      !isCumulativeMode
+        ? fetchableFiles
+        : []
     ).map((file) => ({
       queryKey: [...agentWorkspaceKeys.diff(conversationId), "uncommitted", file.path],
       queryFn: () => diffApi.getAgentConversationWorkspaceFileDiff(conversationId, file.path),
@@ -430,9 +469,22 @@ export function AgentsPublishInlineDiffs({
   // ── Staged diffs ──────────────────────────────────────────────────────
   const stagedDiffQueries = useQueries({
     queries: (supportsWorktreeModes && isStagedMode ? fetchableFiles : []).map((file) => ({
-      queryKey: [...agentWorkspaceKeys.diff(conversationId), "staged", file.path],
+      queryKey: [
+        ...agentWorkspaceKeys.diff(conversationId),
+        repairMode ? "repair-staged" : "staged",
+        ...(repairDiffQuerySignature !== undefined ? [repairDiffQuerySignature] : []),
+        file.path,
+      ],
       queryFn: () =>
-        diffApi.getAgentConversationWorkspaceStagedFileDiff(conversationId, file.path),
+        repairMode
+          ? diffApi.getAgentConversationWorkspaceRepairStagedFileDiff(
+              conversationId,
+              file.path,
+            )
+          : diffApi.getAgentConversationWorkspaceStagedFileDiff(
+              conversationId,
+              file.path,
+            ),
       staleTime: AGENT_WORKSPACE_STALE_MS,
     })),
   });
@@ -440,9 +492,40 @@ export function AgentsPublishInlineDiffs({
   // ── Unstaged diffs ────────────────────────────────────────────────────
   const unstagedDiffQueries = useQueries({
     queries: (supportsWorktreeModes && isUnstagedMode ? fetchableFiles : []).map((file) => ({
-      queryKey: [...agentWorkspaceKeys.diff(conversationId), "unstaged", file.path],
+      queryKey: [
+        ...agentWorkspaceKeys.diff(conversationId),
+        repairMode ? "repair-unstaged" : "unstaged",
+        ...(repairDiffQuerySignature !== undefined ? [repairDiffQuerySignature] : []),
+        file.path,
+      ],
       queryFn: () =>
-        diffApi.getAgentConversationWorkspaceUnstagedFileDiff(conversationId, file.path),
+        repairMode
+          ? diffApi.getAgentConversationWorkspaceRepairUnstagedFileDiff(
+              conversationId,
+              file.path,
+            )
+          : diffApi.getAgentConversationWorkspaceUnstagedFileDiff(
+              conversationId,
+              file.path,
+            ),
+      staleTime: AGENT_WORKSPACE_STALE_MS,
+    })),
+  });
+
+  // ── Conflict diffs ─────────────────────────────────────────────────────
+  const conflictDiffQueries = useQueries({
+    queries: (repairMode && isConflictedMode ? fetchableFiles : []).map((file) => ({
+      queryKey: [
+        ...agentWorkspaceKeys.diff(conversationId),
+        "repair-conflicted",
+        ...(repairDiffQuerySignature !== undefined ? [repairDiffQuerySignature] : []),
+        file.path,
+      ],
+      queryFn: () =>
+        diffApi.getAgentConversationWorkspaceRepairConflictFileDiff(
+          conversationId,
+          file.path,
+        ),
       staleTime: AGENT_WORKSPACE_STALE_MS,
     })),
   });
@@ -493,6 +576,25 @@ export function AgentsPublishInlineDiffs({
     cumulativeDiffQueries,
     fetchableFiles,
   ]);
+
+  const conflictDiffByPath = useMemo(() => {
+    const map = new Map<string, ConflictDiffState>();
+    if (!isConflictedMode) {
+      return map;
+    }
+    fetchableFiles.forEach((file, idx) => {
+      const q = conflictDiffQueries[idx];
+      if (!q) return;
+      if (q.isPending) {
+        map.set(file.path, "loading");
+      } else if (q.isError) {
+        map.set(file.path, "error");
+      } else if (q.data !== undefined) {
+        map.set(file.path, q.data);
+      }
+    });
+    return map;
+  }, [conflictDiffQueries, fetchableFiles, isConflictedMode]);
 
   // ── Jump-to-file filtered list ────────────────────────────────────────
   const filteredJumpFiles = useMemo(() => {
@@ -647,13 +749,17 @@ export function AgentsPublishInlineDiffs({
         <AgentsPublishVirtualFileRow
           file={fileChange}
           diff={diffByPath.get(fileChange.path)}
+          conflictDiff={conflictDiffByPath.get(fileChange.path)}
+          isConflictMode={isConflictedMode}
           isExpanded={!effectiveCollapsedPaths.has(fileChange.path)}
           onTogglePath={handleToggle}
           onCopyPath={handleCopyPath}
           onOpenFullscreenPath={handleOpenFullscreen}
           conversationId={conversationId}
-          refKind={rangeRefKind}
-          diffPageRefKind={refKind}
+          refKind={repairMode ? undefined : rangeRefKind}
+          diffPageRefKind={
+            !repairMode || isStagedMode || isUnstagedMode ? refKind : undefined
+          }
           shouldHydrate={hydratedPaths.has(fileChange.path)}
           annotations={annotationsByPath.get(fileChange.path) ?? EMPTY_PR_DIFF_ANNOTATIONS}
           isShowAnywayOverridden={userShowAnywayPaths.has(fileChange.path)}
@@ -666,6 +772,7 @@ export function AgentsPublishInlineDiffs({
       annotationsByPath,
       conversationId,
       currentFiles.length,
+      conflictDiffByPath,
       diffByPath,
       effectiveCollapsedPaths,
       handleCopyPath,
@@ -673,9 +780,13 @@ export function AgentsPublishInlineDiffs({
       handleShowAnyway,
       handleToggle,
       hydratedPaths,
+      isConflictedMode,
+      isStagedMode,
+      isUnstagedMode,
       focusTargetPath,
       refKind,
       rangeRefKind,
+      repairMode,
       userShowAnywayPaths,
     ],
   );
@@ -776,6 +887,7 @@ export function AgentsPublishInlineDiffs({
           mode={effectiveMode}
           workspaceChangeCount={workspaceChangeCount}
           {...(workspaceChangeLabel !== undefined && { workspaceChangeLabel })}
+          {...(conflictedCount !== undefined && { conflictedCount })}
           {...(stagedCount !== undefined && { stagedCount })}
           {...(unstagedCount !== undefined && { unstagedCount })}
           commits={commits}

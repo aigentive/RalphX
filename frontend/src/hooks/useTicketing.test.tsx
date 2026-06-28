@@ -25,6 +25,7 @@ import {
   useTicketingColumns,
   useTicketingContainers,
   useTicketingMutations,
+  useTicketFilterOptions,
   useTicketLabelOptions,
   useTicketTransitions,
   useStartWorkFromTicket,
@@ -42,6 +43,7 @@ vi.mock("@/api/ticketing", async (importActual) => {
       listContainers: vi.fn(),
       listColumns: vi.fn(),
       listTickets: vi.fn(),
+      listTicketFilterOptions: vi.fn(),
       getTicketDetail: vi.fn(),
       listTicketTransitions: vi.fn(),
       getTicketAssociations: vi.fn(),
@@ -166,6 +168,51 @@ describe("useTicketing hooks", () => {
       cursor: "cursor-2",
     });
     expect(flattenTicketPages(nextPageResult.data)).toHaveLength(2);
+  });
+
+  it("loads ticket filter options with provider scope and filters", async () => {
+    vi.mocked(ticketingApi.listTicketFilterOptions).mockResolvedValueOnce({
+      assignees: ["A. Dev"],
+      sprints: ["Sprint 1"],
+      complete: true,
+      truncated: false,
+    });
+
+    const query = {
+      provider: "clickup" as const,
+      projectId: "project-1",
+      containerId: "space-1",
+      limit: 500,
+      filters: { text: "merge", labels: ["backend"] },
+    };
+    const { result } = renderHook(() => useTicketFilterOptions(query, { enabled: true }), {
+      wrapper: createWrapper().wrapper,
+    });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(ticketingApi.listTicketFilterOptions).toHaveBeenCalledWith(query);
+    expect(result.current.data?.assignees).toEqual(["A. Dev"]);
+  });
+
+  it("does not load ticket filter options without an input", () => {
+    const { result } = renderHook(() => useTicketFilterOptions(null, { enabled: true }), {
+      wrapper: createWrapper().wrapper,
+    });
+
+    expect(result.current.fetchStatus).toBe("idle");
+    expect(ticketingApi.listTicketFilterOptions).not.toHaveBeenCalled();
+  });
+
+  it("reports an error if ticket filter options are manually refetched without input", async () => {
+    const { result } = renderHook(() => useTicketFilterOptions(null, { enabled: false }), {
+      wrapper: createWrapper().wrapper,
+    });
+
+    const response = await act(() => result.current.refetch());
+
+    expect(response.error).toEqual(new Error("Ticket filter options query is required"));
+    expect(ticketingApi.listTicketFilterOptions).not.toHaveBeenCalled();
   });
 
   it("generates clientOperationId and applies optimistic status transitions", async () => {
@@ -597,6 +644,7 @@ describe("useTicketing hooks", () => {
       "ticketing",
       "containers",
       "jira",
+      null,
       null,
     ]);
     expect(ticketingKeys.columns({ provider: "linear" })).toEqual([

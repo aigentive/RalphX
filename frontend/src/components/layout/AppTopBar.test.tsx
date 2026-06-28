@@ -50,7 +50,7 @@ function renderTopBar(overrides: Partial<Parameters<typeof AppTopBar>[0]> = {}) 
   );
 }
 
-describe("AppTopBar (ticketing view)", () => {
+describe("AppTopBar (ticketing, GitHub, and Granola views)", () => {
   beforeEach(() => {
     useProjectStore.setState({
       activeProjectId: "project-1",
@@ -70,6 +70,24 @@ describe("AppTopBar (ticketing view)", () => {
     expect(breadcrumb).toHaveTextContent("Workspace");
     expect(breadcrumb).toHaveTextContent("RalphX");
     expect(breadcrumb).toHaveTextContent("Ticketing");
+  });
+
+  it("renders the GitHub breadcrumb with the project name", () => {
+    renderTopBar({ currentView: "github" });
+
+    const breadcrumb = screen.getByRole("navigation", { name: "Breadcrumb" });
+    expect(breadcrumb).toHaveTextContent("Workspace");
+    expect(breadcrumb).toHaveTextContent("RalphX");
+    expect(breadcrumb).toHaveTextContent("GitHub");
+  });
+
+  it("renders the Granola breadcrumb with the project name", () => {
+    renderTopBar({ currentView: "granola" });
+
+    const breadcrumb = screen.getByRole("navigation", { name: "Breadcrumb" });
+    expect(breadcrumb).toHaveTextContent("Workspace");
+    expect(breadcrumb).toHaveTextContent("RalphX");
+    expect(breadcrumb).toHaveTextContent("Granola");
   });
 
   it("falls back to 'Project' in the ticketing breadcrumb when no project is active", () => {
@@ -92,6 +110,26 @@ describe("AppTopBar (ticketing view)", () => {
     expect(screen.getByTestId("project-selector-stub")).toBeInTheDocument();
   });
 
+  it("shows the project selector on the GitHub view when enabled", () => {
+    renderTopBar({
+      currentView: "github",
+      showProjectSelector: true,
+      onNewProject: vi.fn(),
+    });
+
+    expect(screen.getByTestId("project-selector-stub")).toBeInTheDocument();
+  });
+
+  it("shows the project selector on the Granola view when enabled", () => {
+    renderTopBar({
+      currentView: "granola",
+      showProjectSelector: true,
+      onNewProject: vi.fn(),
+    });
+
+    expect(screen.getByTestId("project-selector-stub")).toBeInTheDocument();
+  });
+
   it("hides the project selector on views outside the allowlist", () => {
     renderTopBar({
       currentView: "activity",
@@ -100,7 +138,7 @@ describe("AppTopBar (ticketing view)", () => {
     });
 
     expect(screen.queryByTestId("project-selector-stub")).not.toBeInTheDocument();
-    // Non-ticketing, non-kanban views fall back to the two-item workspace crumb.
+    // Non-project-scoped views fall back to the two-item workspace crumb.
     const breadcrumb = screen.getByRole("navigation", { name: "Breadcrumb" });
     expect(breadcrumb).toHaveTextContent("Activity");
     expect(breadcrumb).not.toHaveTextContent("Ticketing");

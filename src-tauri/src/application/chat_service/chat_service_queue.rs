@@ -3,6 +3,7 @@
 // Handles queued messages that were sent while an agent was running.
 // These messages are automatically processed via --resume after the initial run completes.
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
@@ -17,6 +18,9 @@ use super::chat_service_types::{
 };
 use super::has_meaningful_output;
 use super::{ChatService, SendMessageOptions};
+use crate::application::integration_reference_expansion::{
+    expand_integration_references_for_prompt, log_skipped_integration_references,
+};
 use crate::application::question_state::QuestionState;
 use crate::application::AppState;
 use crate::commands::ExecutionState;
@@ -70,6 +74,21 @@ async fn durable_queue_len(
             }),
         None => 0,
     }
+}
+
+async fn provider_env_for_harness<R: Runtime>(
+    app_handle: Option<&AppHandle<R>>,
+    harness: AgentHarnessKind,
+) -> Result<HashMap<String, String>, String> {
+    let Some(handle) = app_handle else {
+        return Ok(HashMap::new());
+    };
+    let app_state = handle.state::<AppState>();
+    crate::application::provider_env_file::load_provider_custom_env_file_for_harness(
+        Some(&app_state.agent_provider_settings_repo),
+        harness,
+    )
+    .await
 }
 
 async fn queue_count(
@@ -294,6 +313,7 @@ fn provider_switch_send_options_for_queued_message(
         model_override: queued_msg.model_override.clone(),
         conversation_id_override: Some(conversation_id),
         logical_effort_override: queued_msg.logical_effort_override,
+        service_tier_override: queued_msg.service_tier_override.clone(),
         composer_project_references: queued_msg.composer_project_references.clone(),
         composer_integration_references: queued_msg.composer_integration_references.clone(),
         composer_artifact_references: queued_msg.composer_artifact_references.clone(),
@@ -1011,6 +1031,26 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                                 "[QUEUE] failed to auto-assign primary Linear issue from composer references"
                             );
                         }
+                        let repo = Arc::clone(&app_state.agent_conversation_granola_note_repo);
+                        let granola_integration_service =
+                            Arc::clone(&app_state.granola_integration_service);
+                        let assignment_result = crate::application::agent_conversation_granola_note::assign_primary_granola_note_if_absent_and_refresh(
+                            &repo,
+                            Some(granola_integration_service.as_ref()),
+                            &conversation_id,
+                            &project_id,
+                            &queued_msg.composer_integration_references,
+                            Some(ChatMessageId::from_string(user_msg_id.clone())),
+                            user_msg.created_at,
+                        )
+                        .await;
+                        if let Err(error) = assignment_result {
+                            tracing::warn!(
+                                conversation_id = %conversation_id.as_str(),
+                                error = %error,
+                                "[QUEUE] failed to auto-assign primary Granola note from composer references"
+                            );
+                        }
                     }
                 }
 
@@ -1085,6 +1125,10 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 let app_state = handle.state::<AppState>();
                 Arc::clone(&app_state.linear_integration_service)
             });
+            let granola_integration_service = app_handle.as_ref().map(|handle| {
+                let app_state = handle.state::<AppState>();
+                Arc::clone(&app_state.granola_integration_service)
+            });
             let agent_conversation_jira_issue_repo = app_handle.as_ref().map(|handle| {
                 let app_state = handle.state::<AppState>();
                 Arc::clone(&app_state.agent_conversation_jira_issue_repo)
@@ -1092,6 +1136,10 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
             let agent_conversation_linear_issue_repo = app_handle.as_ref().map(|handle| {
                 let app_state = handle.state::<AppState>();
                 Arc::clone(&app_state.agent_conversation_linear_issue_repo)
+            });
+            let agent_conversation_granola_note_repo = app_handle.as_ref().map(|handle| {
+                let app_state = handle.state::<AppState>();
+                Arc::clone(&app_state.agent_conversation_granola_note_repo)
             });
             let assigned_jira_issue =
                 if let Some(repo) = agent_conversation_jira_issue_repo.as_ref() {
@@ -1127,15 +1175,37 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                 } else {
                     None
                 };
+            let assigned_granola_note =
+                if let Some(repo) = agent_conversation_granola_note_repo.as_ref() {
+                    repo.get_by_conversation_id(&conversation_id)
+                        .await
+                        .map_err(|error| {
+                            tracing::warn!(
+                                conversation_id = %conversation_id.as_str(),
+                                error = %error,
+                                "[QUEUE] failed to load agent conversation Granola note assignment"
+                            );
+                            error
+                        })
+                        .ok()
+                        .flatten()
+                } else {
+                    None
+                };
             let merged_jira_references =
                 crate::application::agent_conversation_jira_issue::merge_assigned_jira_reference(
                     assigned_jira_issue.as_ref(),
                     &queued_msg.composer_integration_references,
                 );
-            let merged_integration_references =
+            let merged_linear_references =
                 crate::application::agent_conversation_linear_issue::merge_assigned_linear_reference(
                     assigned_linear_issue.as_ref(),
                     &merged_jira_references,
+                );
+            let merged_integration_references =
+                crate::application::agent_conversation_granola_note::merge_assigned_granola_reference(
+                    assigned_granola_note.as_ref(),
+                    &merged_linear_references,
                 );
 
             let runtime_content =
@@ -1144,24 +1214,16 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                     &queued_msg.composer_project_references,
                     working_directory,
                 );
-            let runtime_content = if merged_integration_references.is_empty() {
-                runtime_content
-            } else if let Some(service) = atlassian_integration_service.as_ref() {
-                service
-                    .expand_references_for_prompt(&runtime_content, &merged_integration_references)
-                    .await
-            } else {
-                runtime_content
-            };
-            let runtime_content = if merged_integration_references.is_empty() {
-                runtime_content
-            } else if let Some(service) = linear_integration_service.as_ref() {
-                service
-                    .expand_references_for_prompt(&runtime_content, &merged_integration_references)
-                    .await
-            } else {
-                runtime_content
-            };
+            let integration_expansion = expand_integration_references_for_prompt(
+                &runtime_content,
+                &merged_integration_references,
+                atlassian_integration_service,
+                linear_integration_service,
+                granola_integration_service,
+            )
+            .await;
+            log_skipped_integration_references(&integration_expansion.skipped_references);
+            let runtime_content = integration_expansion.rewritten_prompt;
             let runtime_content =
                 super::chat_service_composer_references::append_artifact_references_for_prompt(
                     &runtime_content,
@@ -1247,6 +1309,32 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                     };
                 }
             };
+            let provider_env = match provider_env_for_harness(app_handle.as_ref(), harness).await {
+                Ok(provider_env) => provider_env,
+                Err(err) => {
+                    tracing::warn!(
+                        error = %err,
+                        %context_type,
+                        context_id,
+                        harness = %harness,
+                        "queue spawn blocked by provider env file"
+                    );
+                    fail_queued_agent_run(
+                        agent_run_repo,
+                        running_agent_registry,
+                        &queue_registry_key,
+                        &queued_run_id,
+                        &err,
+                    )
+                    .await;
+                    return QueueProcessingOutcome {
+                        total_processed,
+                        last_run_id,
+                    };
+                }
+            };
+            let mut provider_spawnable = provider_spawnable;
+            provider_spawnable.apply_provider_env(&provider_env);
             let spawnable = provider_spawnable.spawnable;
 
             tracing::info!(cmd = ?spawnable, "Spawning CLI agent (queue resume)");
@@ -1671,6 +1759,8 @@ mod tests {
             key: Some("RX-42".to_string()),
             title: Some("Fix queue replay".to_string()),
             url: None,
+            summary_excerpt: None,
+            include_transcript: None,
         }];
         message.composer_artifact_references = vec![ComposerArtifactReference {
             artifact_id: "artifact-1".to_string(),
@@ -1782,6 +1872,7 @@ mod tests {
             Some(AgentHarnessKind::Codex),
             Some("gpt-5.5".to_string()),
             Some(crate::domain::agents::LogicalEffort::High),
+            Some("fast".to_string()),
             true,
             Vec::new(),
             Vec::new(),
@@ -1831,6 +1922,7 @@ mod tests {
             queued[0].logical_effort_override,
             Some(crate::domain::agents::LogicalEffort::High)
         );
+        assert_eq!(queued[0].service_tier_override.as_deref(), Some("fast"));
         assert!(queued[0].force_new_provider_session);
     }
 

@@ -13,6 +13,9 @@ pub use ticketing::{
 mod clickup_settings;
 pub use clickup_settings::{ClickUpIntegrationSettings, ClickUpIntegrationSettingsRepository};
 
+mod granola_settings;
+pub use granola_settings::{GranolaIntegrationSettings, GranolaIntegrationSettingsRepository};
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IntegrationValidationStatus {

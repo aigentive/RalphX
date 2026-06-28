@@ -10,9 +10,11 @@ use crate::application::{ClickUpApiClient, ClickUpAuthContext};
 
 use super::clickup_client::{
     apply_task_tags, assign_task_to_user, clear_task_assignees, clickup_authorization_header,
-    create_task_comment, fetch_current_user, fetch_filtered_tasks, fetch_space_statuses,
-    fetch_spaces, fetch_task_detail, fetch_workspaces, map_status_type_to_category,
-    put_task_status, validate_token, ClickUpJsonRequester, HyperClickUpApiClient,
+    create_task_comment, fetch_current_user, fetch_filtered_tasks, fetch_folder_lists,
+    fetch_folderless_lists, fetch_list_tasks, fetch_space_folders, fetch_space_statuses,
+    fetch_spaces, fetch_task_detail, fetch_task_detail_by_custom_id, fetch_workspaces,
+    map_status_type_to_category, put_task_status, validate_token, ClickUpJsonRequester,
+    HyperClickUpApiClient,
 };
 
 #[derive(Clone, Debug)]
@@ -77,7 +79,21 @@ fn sample_task(id: &str, status_type: &str) -> Value {
         "assignees": [{ "id": 42, "username": "dev", "email": "dev@example.com" }],
         "followers": [{ "id": 99, "username": "watcher", "email": "watcher@example.com" }],
         "tags": [{ "name": "bug" }, { "name": "backend" }],
+        "locations": [
+            {
+                "id": "sprint-1",
+                "name": "Current Sprint",
+                "folder": { "id": "folder-1" },
+                "space": { "id": "space-location-1" }
+            },
+            {
+                "id": "sprint-2",
+                "folder_id": "folder-2",
+                "space_id": "space-location-2"
+            }
+        ],
         "space": { "id": "space-1" },
+        "folder": { "id": "folder-primary" },
         "list": { "id": "list-1", "name": "Sprint" },
         "date_updated": "1700000000000"
     })
@@ -125,6 +141,8 @@ async fn requester_trait_impl_delegates_clickup_api_client_methods() {
         Ok(json!({ "tasks": [sample_task("task-1", "custom")], "last_page": true })),
         Ok(sample_task("task-1", "done")),
         Ok(json!({ "comments": [] })),
+        Ok(sample_task("opaque-from-custom", "custom")),
+        Ok(json!({ "comments": [] })),
         Ok(json!({ "statuses": [{ "status": "done", "type": "done" }] })),
         Ok(json!({ "user": { "id": 42, "username": "dev" } })),
         Ok(json!({ "user": { "id": 42, "username": "dev" } })),
@@ -144,11 +162,7 @@ async fn requester_trait_impl_delegates_clickup_api_client_methods() {
     client.validate(&auth).await.unwrap();
     assert_eq!(client.list_workspaces(&auth).await.unwrap()[0].id, "9000");
     assert_eq!(
-        client
-            .list_spaces(&auth, "9000")
-            .await
-            .unwrap()[0]
-            .id,
+        client.list_spaces(&auth, "9000").await.unwrap()[0].id,
         "space-1"
     );
     assert_eq!(
@@ -164,13 +178,20 @@ async fn requester_trait_impl_delegates_clickup_api_client_methods() {
             .id,
         "task-1"
     );
-    assert_eq!(client.fetch_task(&auth, "task-1").await.unwrap().id, "task-1");
+    assert_eq!(
+        client.fetch_task(&auth, "task-1").await.unwrap().id,
+        "task-1"
+    );
     assert_eq!(
         client
-            .list_statuses(&auth, "space-1")
+            .fetch_task_by_custom_id(&auth, "9000", "TASK-123")
             .await
-            .unwrap()[0]
-            .category,
+            .unwrap()
+            .id,
+        "opaque-from-custom"
+    );
+    assert_eq!(
+        client.list_statuses(&auth, "space-1").await.unwrap()[0].category,
         "done"
     );
     assert_eq!(client.current_user(&auth).await.unwrap().id, 42);
@@ -197,7 +218,7 @@ async fn requester_trait_impl_delegates_clickup_api_client_methods() {
         .unwrap();
 
     let requests = fake.requests();
-    assert_eq!(requests.len(), 15);
+    assert_eq!(requests.len(), 17);
     assert!(requests.iter().all(|request| request.token == "tok"));
 }
 
@@ -308,7 +329,10 @@ async fn filtered_tasks_paginate_until_last_page() {
     let requests = fake.requests();
     assert_eq!(requests.len(), 2, "should fetch exactly two pages");
     assert!(requests[0].url.contains("page=0"));
+    assert!(requests[0].url.contains("order_by=updated"));
+    assert!(requests[0].url.contains("reverse=true"));
     assert!(requests[0].url.contains("include_closed=true"));
+    assert!(requests[0].url.contains("subtasks=true"));
     assert!(requests[0].url.contains("space-1"));
     assert!(requests[0].url.contains("/team/9000/task"));
     assert!(requests[1].url.contains("page=1"));
@@ -358,9 +382,9 @@ async fn filtered_tasks_searches_metadata_and_stops_at_limit() {
                 sample_task("skip-1", "open"),
                 {
                     "id": "match-title",
-                    "name": "Inbox classifier",
+                    "name": "Alpha demo task",
                     "status": { "status": "to do", "type": "open" },
-                    "assignees": [{ "username": "Adrian" }],
+                    "assignees": [{ "username": "Alex" }],
                     "tags": []
                 }
             ],
@@ -373,7 +397,7 @@ async fn filtered_tasks_searches_metadata_and_stops_at_limit() {
                     "name": "Other task",
                     "status": { "status": "to do", "type": "open" },
                     "assignees": [],
-                    "tags": [{ "name": "Inbox" }]
+                    "tags": [{ "name": "Alpha" }]
                 }
             ],
             "last_page": false
@@ -386,8 +410,9 @@ async fn filtered_tasks_searches_metadata_and_stops_at_limit() {
         "9000",
         &[],
         ClickUpTaskListOptions {
-            query: Some("inbox".to_string()),
+            query: Some("alpha".to_string()),
             limit: Some(2),
+            assignee_ids: Vec::new(),
         },
     )
     .await
@@ -413,10 +438,10 @@ async fn filtered_tasks_matches_key_status_list_and_assignee_metadata() {
         "tasks": [
             {
                 "id": "opaque-1",
-                "custom_id": "MBE-2857",
+                "custom_id": "TASK-123",
                 "name": "Different title",
                 "status": { "status": "Awaiting Staging", "type": "custom" },
-                "assignees": [{ "email": "adrian@example.com" }],
+                "assignees": [{ "email": "alex@example.com" }],
                 "tags": [],
                 "list": { "name": "Current Sprint" }
             },
@@ -424,7 +449,7 @@ async fn filtered_tasks_matches_key_status_list_and_assignee_metadata() {
                 "id": "opaque-2",
                 "name": "Another title",
                 "status": { "status": "to do", "type": "open" },
-                "assignees": [{ "username": "Adrian" }],
+                "assignees": [{ "username": "Alex" }],
                 "tags": [],
                 "list": { "name": "Backlog" }
             }
@@ -438,8 +463,9 @@ async fn filtered_tasks_matches_key_status_list_and_assignee_metadata() {
         "9000",
         &[],
         ClickUpTaskListOptions {
-            query: Some("mbe-2857".to_string()),
+            query: Some("task-123".to_string()),
             limit: Some(10),
+            assignee_ids: Vec::new(),
         },
     )
     .await
@@ -485,7 +511,7 @@ async fn filtered_tasks_matches_status_list_and_assignee_queries() {
                     "id": "assignee-match",
                     "name": "Unrelated title",
                     "status": { "status": "to do", "type": "open" },
-                    "assignees": [{ "email": "adrian@example.com" }],
+                    "assignees": [{ "email": "alex@example.com" }],
                     "tags": [],
                     "list": { "name": "Backlog" }
                 }
@@ -497,7 +523,7 @@ async fn filtered_tasks_matches_status_list_and_assignee_queries() {
     for (query, expected_id) in [
         ("awaiting staging", "status-match"),
         ("current sprint", "list-match"),
-        ("adrian@example.com", "assignee-match"),
+        ("alex@example.com", "assignee-match"),
     ] {
         let tasks = fetch_filtered_tasks(
             &fake,
@@ -507,6 +533,7 @@ async fn filtered_tasks_matches_status_list_and_assignee_queries() {
             ClickUpTaskListOptions {
                 query: Some(query.to_string()),
                 limit: Some(10),
+                assignee_ids: Vec::new(),
             },
         )
         .await
@@ -535,6 +562,7 @@ async fn filtered_tasks_stops_inside_page_when_limit_is_reached() {
         ClickUpTaskListOptions {
             query: Some("fix".to_string()),
             limit: Some(1),
+            assignee_ids: Vec::new(),
         },
     )
     .await
@@ -558,7 +586,10 @@ async fn filtered_tasks_encodes_workspace_and_space_ids() {
         "tok",
         "team/with space",
         &["space/one".to_string(), "space two".to_string()],
-        ClickUpTaskListOptions::default(),
+        ClickUpTaskListOptions {
+            assignee_ids: vec![42, 99],
+            ..ClickUpTaskListOptions::default()
+        },
     )
     .await
     .unwrap();
@@ -567,6 +598,134 @@ async fn filtered_tasks_encodes_workspace_and_space_ids() {
     assert!(url.contains("/team/team%2Fwith%20space/task"));
     assert!(url.contains("space_ids%5B%5D=space%2Fone"));
     assert!(url.contains("space_ids%5B%5D=space%20two"));
+    assert!(url.contains("assignees%5B%5D=42"));
+    assert!(url.contains("assignees%5B%5D=99"));
+}
+
+#[tokio::test]
+async fn list_tasks_uses_list_endpoint_and_assignee_filter() {
+    let fake = FakeClickUpRequester::new(vec![Ok(json!({ "tasks": [], "last_page": true }))]);
+
+    fetch_list_tasks(
+        &fake,
+        "tok",
+        "list/one",
+        ClickUpTaskListOptions {
+            assignee_ids: vec![42],
+            ..ClickUpTaskListOptions::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    let url = &fake.requests()[0].url;
+    assert!(url.contains("/list/list%2Fone/task"));
+    assert!(url.contains("order_by=updated"));
+    assert!(url.contains("reverse=true"));
+    assert!(url.contains("include_closed=true"));
+    assert!(url.contains("subtasks=true"));
+    assert!(url.contains("assignees%5B%5D=42"));
+}
+
+#[tokio::test]
+async fn folder_and_list_hierarchy_requests_map_parent_fallbacks() {
+    let fake = FakeClickUpRequester::new(vec![
+        Ok(json!({
+            "folders": [
+                { "id": "folder-1", "name": "Platform", "space": { "id": "space-body" } },
+                { "id": "folder-2", "name": "Fallback Space" },
+                { "name": "missing id" }
+            ]
+        })),
+        Ok(json!({
+            "lists": [
+                {
+                    "id": "list-1",
+                    "name": "Folder List",
+                    "folder": { "id": "folder-body" },
+                    "space": { "id": "space-1" }
+                },
+                { "id": "list-2", "name": "Fallback Folder" }
+            ]
+        })),
+        Ok(json!({
+            "lists": [
+                { "id": "list-3", "name": "Space List", "space_id": "space-flat" },
+                { "id": "list-4", "name": "Fallback Space" }
+            ]
+        })),
+    ]);
+
+    let folders = fetch_space_folders(&fake, "tok", "space/one")
+        .await
+        .unwrap();
+    let folder_lists = fetch_folder_lists(&fake, "tok", "folder/one")
+        .await
+        .unwrap();
+    let folderless_lists = fetch_folderless_lists(&fake, "tok", "space/one")
+        .await
+        .unwrap();
+
+    assert_eq!(folders.len(), 2);
+    assert_eq!(folders[0].id, "folder-1");
+    assert_eq!(folders[0].space_id.as_deref(), Some("space-body"));
+    assert_eq!(folders[1].space_id.as_deref(), Some("space/one"));
+    assert_eq!(folder_lists.len(), 2);
+    assert_eq!(folder_lists[0].folder_id.as_deref(), Some("folder-body"));
+    assert_eq!(folder_lists[1].folder_id.as_deref(), Some("folder/one"));
+    assert_eq!(folderless_lists.len(), 2);
+    assert_eq!(folderless_lists[0].space_id.as_deref(), Some("space-flat"));
+    assert_eq!(folderless_lists[1].space_id.as_deref(), Some("space/one"));
+
+    let requests = fake.requests();
+    assert!(requests[0]
+        .url
+        .ends_with("/space/space%2Fone/folder?archived=false"));
+    assert!(requests[1]
+        .url
+        .ends_with("/folder/folder%2Fone/list?archived=false"));
+    assert!(requests[2]
+        .url
+        .ends_with("/space/space%2Fone/list?archived=false"));
+}
+
+#[tokio::test]
+async fn requester_trait_impl_delegates_clickup_hierarchy_methods() {
+    let fake = FakeClickUpRequester::new(vec![
+        Ok(json!({ "folders": [{ "id": "folder-1", "name": "Platform" }] })),
+        Ok(json!({ "lists": [{ "id": "list-1", "name": "Folder List" }] })),
+        Ok(json!({ "lists": [{ "id": "list-2", "name": "Space List" }] })),
+        Ok(json!({ "tasks": [sample_task("list-task", "custom")], "last_page": true })),
+    ]);
+    let auth = ClickUpAuthContext {
+        api_token: "tok".to_string(),
+    };
+    let client: &dyn ClickUpApiClient = &fake;
+
+    assert_eq!(
+        client.list_folders(&auth, "space-1").await.unwrap()[0].id,
+        "folder-1"
+    );
+    assert_eq!(
+        client.list_folder_lists(&auth, "folder-1").await.unwrap()[0].id,
+        "list-1"
+    );
+    assert_eq!(
+        client
+            .list_folderless_lists(&auth, "space-1")
+            .await
+            .unwrap()[0]
+            .id,
+        "list-2"
+    );
+    assert_eq!(
+        client
+            .list_tasks_for_list(&auth, "list-1", ClickUpTaskListOptions::default())
+            .await
+            .unwrap()[0]
+            .id,
+        "list-task"
+    );
 }
 
 #[tokio::test]
@@ -596,9 +755,30 @@ async fn task_summary_maps_status_assignees_and_tags() {
     assert_eq!(task.watchers.len(), 1);
     assert_eq!(task.watchers[0].id, 99);
     assert_eq!(task.watchers[0].username.as_deref(), Some("watcher"));
-    assert_eq!(task.watchers[0].email.as_deref(), Some("watcher@example.com"));
+    assert_eq!(
+        task.watchers[0].email.as_deref(),
+        Some("watcher@example.com")
+    );
     assert_eq!(task.tags, vec!["bug".to_string(), "backend".to_string()]);
+    assert_eq!(task.sprint_names, vec!["Current Sprint".to_string()]);
+    assert_eq!(
+        task.location_ids,
+        vec!["sprint-1".to_string(), "sprint-2".to_string()]
+    );
+    assert_eq!(
+        task.location_folder_ids,
+        vec!["folder-1".to_string(), "folder-2".to_string()]
+    );
+    assert_eq!(
+        task.location_space_ids,
+        vec![
+            "space-location-1".to_string(),
+            "space-location-2".to_string()
+        ]
+    );
     assert_eq!(task.space_id.as_deref(), Some("space-1"));
+    assert_eq!(task.folder_id.as_deref(), Some("folder-primary"));
+    assert_eq!(task.list_id.as_deref(), Some("list-1"));
     assert_eq!(task.list_name.as_deref(), Some("Sprint"));
     assert_eq!(
         task.updated_at.as_deref(),
@@ -709,6 +889,38 @@ async fn fetch_task_detail_maps_fields() {
     assert!(fake.requests()[0].url.ends_with("/task/abc123"));
     assert!(fake.requests()[1].url.ends_with("/task/abc123/comment"));
     assert!(fake.requests()[2].url.ends_with("/comment/12345/reply"));
+}
+
+#[tokio::test]
+async fn fetch_task_detail_by_custom_id_adds_team_query_to_task_and_comments() {
+    let mut task = sample_task("opaque-1", "custom");
+    task["custom_id"] = json!("TASK-123");
+    let fake = FakeClickUpRequester::new(vec![
+        Ok(task),
+        Ok(json!({
+            "comments": [
+                {
+                    "id": "comment-1",
+                    "comment_text": "Custom id comment",
+                    "user": { "username": "Reviewer" }
+                }
+            ]
+        })),
+    ]);
+
+    let content = fetch_task_detail_by_custom_id(&fake, "tok", "workspace-1", "TASK-123")
+        .await
+        .unwrap();
+
+    assert_eq!(content.id, "opaque-1");
+    assert_eq!(content.custom_id.as_deref(), Some("TASK-123"));
+    assert_eq!(content.comments[0].body, "Custom id comment");
+    assert!(fake.requests()[0]
+        .url
+        .ends_with("/task/TASK-123?custom_task_ids=true&team_id=workspace-1"));
+    assert!(fake.requests()[1]
+        .url
+        .ends_with("/task/TASK-123/comment?custom_task_ids=true&team_id=workspace-1"));
 }
 
 #[tokio::test]

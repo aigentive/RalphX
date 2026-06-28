@@ -33,6 +33,15 @@ const rawFileDiff = {
   is_binary: false,
 };
 
+const rawConflictDiff = {
+  filePath: "src/conflict.rs",
+  baseContent: "base\n",
+  oursContent: "ours\n",
+  theirsContent: "theirs\n",
+  mergedWithMarkers: "<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> branch\n",
+  language: "rust",
+};
+
 const expectedFileChanges = [
   { path: "src/lib.rs", status: "modified", additions: 4, deletions: 1, isGenerated: false },
 ];
@@ -58,6 +67,15 @@ const expectedFileDiff = {
   oldTotalLines: 3,
   newTotalLines: 3,
   isBinary: false,
+};
+
+const expectedConflictDiff = {
+  filePath: "src/conflict.rs",
+  baseContent: "base\n",
+  oursContent: "ours\n",
+  theirsContent: "theirs\n",
+  mergedWithMarkers: "<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> branch\n",
+  language: "rust",
 };
 
 describe("diff api", () => {
@@ -214,6 +232,27 @@ describe("diff api", () => {
       expect(result).toEqual(expectedFileChanges);
     });
 
+    it("calls repair staged and unstaged file change commands", async () => {
+      mockInvoke.mockResolvedValue(rawFileChanges);
+      const staged =
+        await diffApi.getAgentConversationWorkspaceRepairStagedFileChanges("conv-1");
+      expect(mockInvoke).toHaveBeenCalledWith(
+        "get_agent_conversation_workspace_repair_staged_file_changes",
+        { conversationId: "conv-1" },
+      );
+      expect(staged).toEqual(expectedFileChanges);
+
+      mockInvoke.mockClear();
+      mockInvoke.mockResolvedValue(rawFileChanges);
+      const unstaged =
+        await diffApi.getAgentConversationWorkspaceRepairUnstagedFileChanges("conv-1");
+      expect(mockInvoke).toHaveBeenCalledWith(
+        "get_agent_conversation_workspace_repair_unstaged_file_changes",
+        { conversationId: "conv-1" },
+      );
+      expect(unstaged).toEqual(expectedFileChanges);
+    });
+
     it("calls get_agent_conversation_workspace_staged_file_diff", async () => {
       mockInvoke.mockResolvedValue(rawFileDiff);
       const result = await diffApi.getAgentConversationWorkspaceStagedFileDiff(
@@ -225,6 +264,44 @@ describe("diff api", () => {
         { conversationId: "conv-1", filePath: "src/lib.rs" },
       );
       expect(result).toEqual(expectedFileDiff);
+    });
+
+    it("calls repair staged and unstaged file diff commands", async () => {
+      mockInvoke.mockResolvedValue(rawFileDiff);
+      const staged = await diffApi.getAgentConversationWorkspaceRepairStagedFileDiff(
+        "conv-1",
+        "src/lib.rs",
+      );
+      expect(mockInvoke).toHaveBeenCalledWith(
+        "get_agent_conversation_workspace_repair_staged_file_diff",
+        { conversationId: "conv-1", filePath: "src/lib.rs" },
+      );
+      expect(staged).toEqual(expectedFileDiff);
+
+      mockInvoke.mockClear();
+      mockInvoke.mockResolvedValue(rawFileDiff);
+      const unstaged = await diffApi.getAgentConversationWorkspaceRepairUnstagedFileDiff(
+        "conv-1",
+        "src/lib.rs",
+      );
+      expect(mockInvoke).toHaveBeenCalledWith(
+        "get_agent_conversation_workspace_repair_unstaged_file_diff",
+        { conversationId: "conv-1", filePath: "src/lib.rs" },
+      );
+      expect(unstaged).toEqual(expectedFileDiff);
+    });
+
+    it("calls repair conflict file diff command", async () => {
+      mockInvoke.mockResolvedValue(rawConflictDiff);
+      const conflict = await diffApi.getAgentConversationWorkspaceRepairConflictFileDiff(
+        "conv-1",
+        "src/conflict.rs",
+      );
+      expect(mockInvoke).toHaveBeenCalledWith(
+        "get_agent_conversation_workspace_repair_conflict_file_diff",
+        { conversationId: "conv-1", filePath: "src/conflict.rs" },
+      );
+      expect(conflict).toEqual(expectedConflictDiff);
     });
 
     it("calls get_agent_conversation_workspace_unstaged_file_diff", async () => {
@@ -474,6 +551,41 @@ describe("diff api", () => {
       supportsWorktreeModes: true,
       staged: { fileCount: 1, additions: 7, deletions: 2 },
       unstaged: { fileCount: 2, additions: 12, deletions: 3 },
+    });
+  });
+
+  it("loads and transforms the repair-aware agent workspace change summary", async () => {
+    mockInvoke.mockResolvedValue({
+      supports_worktree_modes: true,
+      staged: { file_count: 1, additions: 7, deletions: 2 },
+      unstaged: { file_count: 2, additions: 12, deletions: 3 },
+      conflicted: { file_count: 1, files: ["src/lib.rs"] },
+      repair_state: {
+        expected_branch: "ralphx/demo/agent-conversation-1",
+        checked_out_branch: "HEAD",
+        rebase_in_progress: true,
+        merge_in_progress: false,
+      },
+    });
+
+    const summary =
+      await diffApi.getAgentConversationWorkspaceRepairChangeSummary("conversation-1");
+
+    expect(mockInvoke).toHaveBeenCalledWith(
+      "get_agent_conversation_workspace_repair_change_summary",
+      { conversationId: "conversation-1" },
+    );
+    expect(summary).toEqual({
+      supportsWorktreeModes: true,
+      staged: { fileCount: 1, additions: 7, deletions: 2 },
+      unstaged: { fileCount: 2, additions: 12, deletions: 3 },
+      conflicted: { fileCount: 1, files: ["src/lib.rs"] },
+      repairState: {
+        expectedBranch: "ralphx/demo/agent-conversation-1",
+        checkedOutBranch: "HEAD",
+        rebaseInProgress: true,
+        mergeInProgress: false,
+      },
     });
   });
 

@@ -61,6 +61,7 @@ export const UpdateExecutionSettingsInputSchema = z.object({
  */
 export const GlobalExecutionSettingsResponseSchema = z.object({
   global_max_concurrent: z.number().int().positive(),
+  workspace_max_concurrent: z.number().int().positive().default(10),
   global_ideation_max: z.number().int().positive(),
   allow_ideation_borrow_idle_execution: z.boolean(),
 });
@@ -70,6 +71,7 @@ export const GlobalExecutionSettingsResponseSchema = z.object({
  */
 export const UpdateGlobalExecutionSettingsInputSchema = z.object({
   global_max_concurrent: z.number().int().positive(),
+  workspace_max_concurrent: z.number().int().positive(),
   global_ideation_max: z.number().int().positive(),
   allow_ideation_borrow_idle_execution: z.boolean(),
 });

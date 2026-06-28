@@ -13,6 +13,7 @@ import {
   type AddTicketCommentInput,
   type AssignTicketInput,
   type GetTicketAssociationsInput,
+  type ListTicketFilterOptionsInput,
   type ListTicketingColumnsInput,
   type ListTicketingContainersInput,
   type ListTicketsInput,
@@ -22,6 +23,7 @@ import {
   type TicketAssociations,
   type TicketComment,
   type TicketDetail,
+  type TicketFilterOptions,
   type TicketingColumn,
   type TicketingPerson,
   type TicketLabelOption,
@@ -43,7 +45,7 @@ export const ticketingKeys = {
   providers: (projectId?: string) =>
     [...ticketingKeys.all, "providers", projectId ?? null] as const,
   containers: (input: ListTicketingContainersInput) =>
-    [...ticketingKeys.all, "containers", input.provider, input.projectId ?? null] as const,
+    [...ticketingKeys.all, "containers", input.provider, input.projectId ?? null, input.parentContainerId ?? null] as const,
   columns: (input: ListTicketingColumnsInput) =>
     [...ticketingKeys.all, "columns", input.provider, input.containerId ?? null] as const,
   tickets: (input: ListTicketsInput) =>
@@ -58,6 +60,16 @@ export const ticketingKeys = {
       input.limit ?? null,
     ] as const,
   ticketLists: () => [...ticketingKeys.all, "tickets"] as const,
+  filterOptions: (input: ListTicketFilterOptionsInput) =>
+    [
+      ...ticketingKeys.all,
+      "filter-options",
+      input.provider,
+      input.projectId ?? null,
+      input.containerId ?? null,
+      input.filters ?? null,
+      input.limit ?? null,
+    ] as const,
   detail: (input: TicketRefInput) =>
     [...ticketingKeys.all, "detail", input.provider, input.ticketRef.id, input.ticketRef.key ?? null] as const,
   transitions: (input: TicketRefInput) =>
@@ -363,6 +375,23 @@ export function useTickets(input: ListTicketsInput | null, options: QueryOptions
     },
     getNextPageParam: (lastPage: TicketPage) => lastPage.nextCursor ?? undefined,
     initialPageParam: input?.cursor ?? null,
+    enabled: (options.enabled ?? true) && Boolean(input?.provider),
+    staleTime: 30_000,
+  });
+}
+
+export function useTicketFilterOptions(
+  input: ListTicketFilterOptionsInput | null,
+  options: QueryOptions = {},
+) {
+  return useQuery<TicketFilterOptions>({
+    queryKey: input ? ticketingKeys.filterOptions(input) : [...ticketingKeys.all, "filter-options", null],
+    queryFn: () => {
+      if (!input) {
+        throw new Error("Ticket filter options query is required");
+      }
+      return ticketingApi.listTicketFilterOptions(input);
+    },
     enabled: (options.enabled ?? true) && Boolean(input?.provider),
     staleTime: 30_000,
   });

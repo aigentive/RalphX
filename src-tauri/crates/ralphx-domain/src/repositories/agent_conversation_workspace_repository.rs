@@ -3,10 +3,11 @@ use chrono::{DateTime, Utc};
 
 use crate::entities::{
     AgentConversationWorkspace, AgentConversationWorkspacePublicationEvent,
-    AgentConversationWorkspaceStatus, AgentWorkspacePrCommentEvidence,
-    AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription,
-    AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionStatus,
-    AgentWorkspacePrReviewMonitor, ChatConversationId, IdeationSessionId, PlanBranchId, ProjectId,
+    AgentConversationWorkspaceStatus, AgentWorkspaceFollowupProvenance,
+    AgentWorkspacePrCommentEvidence, AgentWorkspacePrCommentEvidenceUpsert,
+    AgentWorkspacePrDescription, AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionStatus,
+    AgentWorkspacePrReviewMonitor, AgentWorkspaceReviewMonitor, ChatConversationId,
+    IdeationSessionId, PlanBranchId, ProjectId,
 };
 use crate::error::AppResult;
 
@@ -33,6 +34,62 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         &self,
         project_id: &ProjectId,
     ) -> AppResult<Vec<AgentConversationWorkspace>>;
+
+    async fn find_active_by_project_and_branch_name(
+        &self,
+        project_id: &ProjectId,
+        branch_name: &str,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        let branch_name = branch_name.trim();
+        if branch_name.is_empty() {
+            return Ok(Vec::new());
+        }
+        let workspaces = self.get_by_project_id(project_id).await?;
+        Ok(workspaces
+            .into_iter()
+            .filter(|workspace| {
+                workspace.status == AgentConversationWorkspaceStatus::Active
+                    && workspace.branch_name == branch_name
+            })
+            .collect())
+    }
+
+    async fn save_followup_provenance(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _provenance: AgentWorkspaceFollowupProvenance,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn find_active_followup_by_blocker(
+        &self,
+        _origin_conversation_id: &ChatConversationId,
+        _source_task_id: &str,
+        _blocker_fingerprint: &str,
+    ) -> AppResult<Option<AgentConversationWorkspace>> {
+        Ok(None)
+    }
+
+    /// Project-scoped lookup of workspaces whose branch matches `head_ref`.
+    ///
+    /// Powers the PR-detail "attached RalphX conversations" rollup: workspaces
+    /// where `project_id == project_id` AND `branch_name == head_ref` (each may
+    /// also carry a `linked_ideation_session_id`). Project scope is MANDATORY —
+    /// `branch_name` is not globally unique, so an unscoped lookup would
+    /// cross-attach conversations from unrelated projects. The default filters
+    /// the project's workspaces in memory; SQLite overrides with a scoped query.
+    async fn find_by_head_ref(
+        &self,
+        project_id: &ProjectId,
+        head_ref: &str,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        let workspaces = self.get_by_project_id(project_id).await?;
+        Ok(workspaces
+            .into_iter()
+            .filter(|workspace| workspace.branch_name == head_ref)
+            .collect())
+    }
 
     async fn get_terminal_local_cleanup_candidates_by_project_id(
         &self,
@@ -244,6 +301,20 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         &self,
     ) -> AppResult<Vec<AgentWorkspacePrReviewMonitor>> {
         Ok(Vec::new())
+    }
+
+    async fn upsert_workspace_review_monitor(
+        &self,
+        monitor: AgentWorkspaceReviewMonitor,
+    ) -> AppResult<AgentWorkspaceReviewMonitor> {
+        Ok(monitor)
+    }
+
+    async fn get_workspace_review_monitor(
+        &self,
+        _conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<AgentWorkspaceReviewMonitor>> {
+        Ok(None)
     }
 
     async fn create_or_update_pr_review_action(

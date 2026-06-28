@@ -40,6 +40,11 @@ const PILOT_AGENTS: &[(&str, &str, &str)] = &[
         "plan_complexity_assessor",
         "ralphx-utility-plan-complexity",
     ),
+    (
+        "ralphx-workspace-reviewer",
+        "workspace_reviewer",
+        "ralphx-workspace-reviewer",
+    ),
 ];
 
 const CODEX_PILOT_AGENTS: &[&str] = &[
@@ -47,6 +52,7 @@ const CODEX_PILOT_AGENTS: &[&str] = &[
     "ralphx-utility-session-namer",
     "ralphx-utility-pr-describer",
     "ralphx-utility-plan-complexity",
+    "ralphx-workspace-reviewer",
 ];
 const CODEX_DELEGATION_GUIDE_AGENTS: &[&str] = &[
     "ralphx-chat-task",
@@ -232,6 +238,7 @@ const CANONICAL_MCP_TOOL_OWNED_AGENTS: &[&str] = &[
     "ralphx-agent-workspace-repair",
     "ralphx-agent-workspace-pr-fixer",
     "ralphx-pr-reviewer",
+    "ralphx-workspace-reviewer",
     "ralphx-ideation",
     "ralphx-ideation-readonly",
     "ralphx-execution-worker",
@@ -312,6 +319,10 @@ const CANONICAL_CLAUDE_DISALLOWED_TOOL_OWNED_AGENTS: &[(&str, &[&str])] = &[
         &["Write", "Edit", "NotebookEdit", "Bash"],
     ),
     ("ralphx-pr-reviewer", &["Write", "Edit", "NotebookEdit"]),
+    (
+        "ralphx-workspace-reviewer",
+        &["Write", "Edit", "NotebookEdit", "Bash"],
+    ),
     ("ralphx-qa-prep", &["Write", "Edit", "Bash", "NotebookEdit"]),
     (
         "ralphx-ideation-specialist-backend",
@@ -365,6 +376,7 @@ const CANONICAL_CLAUDE_HARNESS_OWNED_AGENTS: &[&str] = &[
     "ralphx-agent-workspace-repair",
     "ralphx-agent-workspace-pr-fixer",
     "ralphx-pr-reviewer",
+    "ralphx-workspace-reviewer",
     "ralphx-execution-worker",
     "ralphx-execution-coder",
     "ralphx-execution-merger",
@@ -420,6 +432,7 @@ const CANONICAL_CLAUDE_MODEL_OWNED_AGENTS: &[(&str, &str)] = &[
     ("ralphx-agent-workspace-repair", "opus"),
     ("ralphx-agent-workspace-pr-fixer", "opus"),
     ("ralphx-pr-reviewer", "sonnet"),
+    ("ralphx-workspace-reviewer", "sonnet"),
     ("ralphx-utility-session-namer", "haiku"),
     ("ralphx-utility-plan-complexity", "haiku"),
     ("ralphx-chat-task", "sonnet"),
@@ -480,6 +493,7 @@ const CANONICAL_CLAUDE_TOOL_SPEC_OWNED_AGENTS: &[(&str, &str, &[&str], bool)] = 
         false,
     ),
     ("ralphx-pr-reviewer", "readonly_tools", &["Bash"], false),
+    ("ralphx-workspace-reviewer", "readonly_tools", &[], false),
     ("ralphx-chat-task", "base_tools", &["Task"], false),
     ("ralphx-chat-project", "readonly_tools", &[], false),
     ("ralphx-review-chat", "base_tools", &["Task"], false),
@@ -671,6 +685,13 @@ fn codex_runtime_features_load_from_harness_metadata() {
         Some(&false),
         "session namer should disable Codex shell_tool declaratively"
     );
+
+    let workspace_reviewer = load_canonical_codex_metadata(&root, "ralphx-workspace-reviewer");
+    assert_eq!(
+        workspace_reviewer.runtime_features.get("shell_tool"),
+        Some(&false),
+        "workspace reviewer should disable Codex shell_tool declaratively"
+    );
 }
 
 #[test]
@@ -723,7 +744,10 @@ fn project_chat_codex_surface_mixes_external_flow_tools_with_internal_agent_task
 
     assert_eq!(metadata.mcp_transport.as_deref(), Some("external"));
     assert!(
-        metadata.mcp_tools.iter().all(|tool| !tool.ends_with("_agent_task")),
+        metadata
+            .mcp_tools
+            .iter()
+            .all(|tool| !tool.ends_with("_agent_task")),
         "agent-task tools should not be exposed through the external project-chat surface"
     );
     assert!(
@@ -771,7 +795,10 @@ fn project_chat_claude_surface_mixes_external_flow_tools_with_internal_agent_tas
 
     assert_eq!(metadata.mcp_transport.as_deref(), Some("external"));
     assert!(
-        metadata.mcp_tools.iter().all(|tool| !tool.ends_with("_agent_task")),
+        metadata
+            .mcp_tools
+            .iter()
+            .all(|tool| !tool.ends_with("_agent_task")),
         "agent-task tools should not be exposed through the external project-chat surface"
     );
     assert!(
@@ -812,12 +839,11 @@ fn project_chat_claude_surface_can_append_to_open_ideation_plans() {
 #[test]
 fn plan_mode_uses_orchestrator_prompt_with_constrained_plan_tools() {
     let root = project_root();
-    let definition = load_canonical_agent_definition_for_profile(
-        &root,
-        "ralphx-ideation",
-        Some("plan"),
-    )
-    .expect("missing plan profile for ralphx-ideation");
+    let base_definition = load_canonical_agent_definition(&root, "ralphx-ideation")
+        .expect("missing base definition for ralphx-ideation");
+    let definition =
+        load_canonical_agent_definition_for_profile(&root, "ralphx-ideation", Some("plan"))
+            .expect("missing plan profile for ralphx-ideation");
     let runtime_config = get_agent_config_for_profile("ralphx-ideation", Some("plan"))
         .expect("missing runtime plan profile for ralphx-ideation");
     let preapproved_tools = get_preapproved_tools_for_profile("ralphx-ideation", Some("plan"))
@@ -858,13 +884,24 @@ fn plan_mode_uses_orchestrator_prompt_with_constrained_plan_tools() {
         !preapproved_tools.contains("Task(Plan)"),
         "Plan profile should clear the base ideation Task preapproval"
     );
-    assert_eq!(codex_metadata.runtime_features.get("shell_tool"), Some(&false));
+    assert_eq!(
+        codex_metadata.runtime_features.get("shell_tool"),
+        Some(&false)
+    );
     assert!(runtime_profile_context.contains("<agent_runtime_profile>"));
     assert!(runtime_profile_context.contains("<profile_slug>plan</profile_slug>"));
     assert!(runtime_profile_context.contains("<profile_role>plan_chat</profile_role>"));
     assert!(
         render_agent_runtime_profile_context(&root, "ralphx-ideation", None).is_none(),
         "default launches should not receive profile context"
+    );
+    assert!(
+        base_definition
+            .capabilities
+            .mcp_tools
+            .iter()
+            .any(|tool| tool == "create_child_session"),
+        "Standalone ralphx-ideation should keep child sessions for the opt-in Ideation UI"
     );
 
     for required_tool in [
@@ -873,8 +910,8 @@ fn plan_mode_uses_orchestrator_prompt_with_constrained_plan_tools() {
         "update_plan_artifact",
         "edit_plan_artifact",
         "get_session_plan",
-        "create_child_session",
         "get_plan_verification",
+        "stop_verification",
     ] {
         assert!(
             definition
@@ -898,6 +935,9 @@ fn plan_mode_uses_orchestrator_prompt_with_constrained_plan_tools() {
         "finalize_proposals",
         "migrate_proposals",
         "v1_start_ideation",
+        "create_child_session",
+        "create_followup_session",
+        "create_followup_agent_conversation",
     ] {
         assert!(
             !definition
@@ -940,6 +980,18 @@ fn plan_mode_uses_orchestrator_prompt_with_constrained_plan_tools() {
         assert!(prompt.contains("do not park blocking user-owned decisions there"));
         assert!(prompt.contains("Do not create task proposals"));
         assert!(prompt.contains("`Implement Plan` action"));
+        assert!(
+            !prompt.contains("create_child_session"),
+            "Plan profile prompt must not mention off-surface child-session tools"
+        );
+        assert!(
+            !prompt.contains("create_followup_session"),
+            "Plan profile prompt must not mention off-surface follow-up tools"
+        );
+        assert!(
+            !prompt.contains("create_followup_agent_conversation"),
+            "Plan profile prompt must not mention off-surface Agent-conversation follow-up tools"
+        );
         assert!(!prompt.contains("<agent_task_ledger_contract>"));
         assert!(!prompt.contains("## RalphX Delegation Policy"));
     }
@@ -1344,6 +1396,77 @@ fn pr_describer_codex_surface_uses_shared_prompt_and_submit_tool() {
 }
 
 #[test]
+fn workspace_reviewer_codex_surface_uses_shared_prompt_and_review_tools() {
+    let root = project_root();
+    let definition = load_canonical_agent_definition(&root, "ralphx-workspace-reviewer")
+        .expect("expected canonical workspace reviewer definition");
+    let prompt = load_harness_agent_prompt(
+        &root,
+        "ralphx-workspace-reviewer",
+        AgentPromptHarness::Codex,
+    )
+    .expect("expected workspace reviewer Codex prompt");
+    let metadata = load_canonical_codex_metadata(&root, "ralphx-workspace-reviewer");
+
+    for required_tool in [
+        "fs_read_file",
+        "fs_list_dir",
+        "fs_grep",
+        "fs_glob",
+        "get_workspace_review_context",
+        "write_workspace_review_artifact",
+        "complete_workspace_review_run",
+    ] {
+        assert!(
+            definition
+                .capabilities
+                .mcp_tools
+                .iter()
+                .any(|tool| tool == required_tool),
+            "workspace reviewer canonical surface should include {required_tool}"
+        );
+        assert!(
+            metadata.mcp_tools.iter().any(|tool| tool == required_tool),
+            "workspace reviewer Codex surface should include {required_tool}"
+        );
+        assert!(
+            prompt.contains(required_tool),
+            "workspace reviewer Codex prompt should mention {required_tool}"
+        );
+    }
+
+    assert!(
+        !prompt.contains("mcp__ralphx__"),
+        "Codex workspace reviewer prompt should not use Claude-style MCP names"
+    );
+    for removed_tool in [
+        "get_agent_task",
+        "list_agent_tasks",
+        "search_memories",
+        "get_memory",
+        "get_memories_for_paths",
+    ] {
+        assert!(
+            !definition
+                .capabilities
+                .mcp_tools
+                .iter()
+                .any(|tool| tool == removed_tool),
+            "workspace reviewer should not retain unrelated MCP tool {removed_tool}"
+        );
+        assert!(
+            !metadata.mcp_tools.iter().any(|tool| tool == removed_tool),
+            "workspace reviewer Codex surface should not retain unrelated MCP tool {removed_tool}"
+        );
+    }
+    assert_eq!(
+        metadata.runtime_features.get("shell_tool"),
+        Some(&false),
+        "workspace reviewer should use review_packet and bounded filesystem tools instead of Codex shell"
+    );
+}
+
+#[test]
 fn plan_complexity_codex_surface_uses_shared_prompt_and_submit_tool() {
     let root = project_root();
     let definition = load_canonical_agent_definition(&root, "ralphx-utility-plan-complexity")
@@ -1522,6 +1645,7 @@ fn pilot_agent_prompt_paths_exist_for_both_harnesses() {
             "ralphx-utility-session-namer"
                 | "ralphx-utility-pr-describer"
                 | "ralphx-utility-plan-complexity"
+                | "ralphx-workspace-reviewer"
         ) {
             assert!(
                 claude_path.as_ref().is_some_and(
@@ -1996,13 +2120,13 @@ fn canonical_agent_task_appendix_is_injected_only_for_agent_task_agents() {
             "prompt for {agent_name} should include explicit breakdown rules"
         );
         assert!(
-            prompt.contains(
-                "For user-provided numbered audit, check, or investigation lists"
-            ),
+            prompt.contains("For user-provided numbered audit, check, or investigation lists"),
             "prompt for {agent_name} should require task splitting for numbered audits"
         );
         assert!(
-            prompt.contains("A single umbrella task is acceptable only for a single-question investigation"),
+            prompt.contains(
+                "A single umbrella task is acceptable only for a single-question investigation"
+            ),
             "prompt for {agent_name} should restrict umbrella tasks to non-independent work"
         );
         assert!(
@@ -2026,7 +2150,9 @@ fn canonical_agent_task_appendix_is_injected_only_for_agent_task_agents() {
             "prompt for {agent_name} should forbid umbrella tasks for independent work"
         );
         assert!(
-            prompt.contains("For two or more requested fixes, checks, audit items, or investigation streams"),
+            prompt.contains(
+                "For two or more requested fixes, checks, audit items, or investigation streams"
+            ),
             "prompt for {agent_name} should require one task per independent requested fix"
         );
         assert!(
@@ -2059,7 +2185,9 @@ fn canonical_agent_task_appendix_is_injected_only_for_agent_task_agents() {
         "Claude prompt should include the XML-style agent task contract"
     );
     assert!(
-        claude_general_worker.contains("For two or more requested fixes, checks, audit items, or investigation streams"),
+        claude_general_worker.contains(
+            "For two or more requested fixes, checks, audit items, or investigation streams"
+        ),
         "Claude prompt should include the concrete multi-fix breakdown rule"
     );
 

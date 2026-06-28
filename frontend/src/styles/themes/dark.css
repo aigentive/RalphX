@@ -27,6 +27,7 @@ html[data-theme="dark"] main {
   --text-subtle: #6A6A72;
   --text-inverse: #1A0E07;
   --text-on-accent: #1A0E07;
+  --text-on-scrim: #FFFFFF;
   --accent-primary: #FF6A35;
   --accent-secondary: #FF8050;
   --accent-hover: #E0521E;

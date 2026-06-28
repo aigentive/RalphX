@@ -6,6 +6,7 @@ import {
   Lightbulb,
   Loader2,
   MessageSquare,
+  PanelRightOpen,
   Play,
   ShieldCheck,
   type LucideIcon,
@@ -41,6 +42,10 @@ import {
   type BranchBaseOption,
 } from "@/components/shared/branchBaseOptions";
 import { buildStoreKey } from "@/lib/chat-context-registry";
+import {
+  CODEX_FAST_MODE_DESCRIPTION,
+  codexFastModeAvailabilityForProvider,
+} from "@/lib/codex-fast-mode";
 import { formatQueuedMessageExcerpt } from "@/lib/queuedMessageExcerpt";
 import { useAgentModels } from "@/hooks/useAgentModels";
 import { useConfirmation } from "@/hooks/useConfirmation";
@@ -70,9 +75,12 @@ import {
 import { AgentConversationBaseLine } from "./AgentConversationBaseLine";
 import { AgentConversationWorkspaceLine } from "./AgentConversationWorkspaceLine";
 import { AgentWorkspacePrReviewCard } from "./AgentWorkspacePrReviewCard";
+import { AgentRuntimeStatusWidget } from "./AgentRuntimeStatusWidget";
+import { useAgentConversationRuntimeStatus } from "./useAgentConversationRuntimeStatus";
 import { AgentsComposerWorkspaceChangesCard } from "./AgentsComposerWorkspaceChangesCard";
 import { AgentsChatHeaderController } from "./AgentsChatHeaderController";
 import { AgentWorkspaceFileLinkProvider } from "./AgentWorkspaceFileLinkProvider";
+import { useResolvedAgentArtifactState } from "./agentArtifactState";
 import { AGENT_CONVERSATION_MODE_OPTIONS } from "./agentConversationMode";
 import type { DiffFilterMode } from "./AgentsPublishDiffFilter";
 import {
@@ -97,10 +105,15 @@ import {
 import type { IdeationArtifactTab } from "./agentArtifactTabs";
 import {
   getFocusedChatSessionId,
+  getFocusedWorkspaceReviewConversationId,
   type AgentsChatFocus,
   type AgentsChatFocusSwitchOption,
   type AgentsChatFocusType,
 } from "./agentChatFocus";
+import {
+  isTaskRuntimeContextType,
+  type AgentTaskRuntimeContextType,
+} from "./agentTaskRuntimeContext";
 import {
   buildPlanActionHint,
   isPlanRecommendationCheckPending,
@@ -212,6 +225,13 @@ interface PlanComposerCtaAction {
   onClick: () => void;
 }
 
+interface PlanComposerViewPlanAction {
+  available: boolean;
+  conversationId: string;
+  hasAutoOpenArtifacts: boolean;
+  onClick: () => void;
+}
+
 function getPlanComposerCompactHint(
   hint: string,
   actions: PlanComposerCtaAction[],
@@ -256,14 +276,42 @@ function getPlanComposerHintDetails(hint: string, compactHint: string): string |
 function PlanComposerCtaRow({
   hint,
   actions,
+  viewPlanAction,
 }: {
   hint: string;
   actions: PlanComposerCtaAction[];
+  viewPlanAction?: PlanComposerViewPlanAction | undefined;
 }) {
-  if (actions.length === 0) {
+  const { artifactState } = useResolvedAgentArtifactState(
+    viewPlanAction?.conversationId ?? null,
+    viewPlanAction?.hasAutoOpenArtifacts ?? false,
+  );
+  const resolvedActions = useMemo<PlanComposerCtaAction[]>(() => {
+    if (
+      !viewPlanAction?.available ||
+      (artifactState.isOpen && artifactState.activeTab === "plan")
+    ) {
+      return actions;
+    }
+
+    return [
+      {
+        id: "view-plan",
+        label: "View Plan",
+        icon: PanelRightOpen,
+        isPrimary: false,
+        isPending: false,
+        disabled: false,
+        onClick: viewPlanAction.onClick,
+      },
+      ...actions,
+    ];
+  }, [actions, artifactState.activeTab, artifactState.isOpen, viewPlanAction]);
+
+  if (resolvedActions.length === 0) {
     return null;
   }
-  const compactHint = getPlanComposerCompactHint(hint, actions);
+  const compactHint = getPlanComposerCompactHint(hint, resolvedActions);
   const hintDetails = getPlanComposerHintDetails(hint, compactHint);
   const isRecommendation = compactHint.startsWith("Recommended:");
   const isRecommendationCheckPending = compactHint.startsWith(
@@ -318,7 +366,7 @@ function PlanComposerCtaRow({
     );
   };
 
-  const isSingleAction = actions.length === 1;
+  const isSingleAction = resolvedActions.length === 1;
 
   return (
     <div
@@ -370,7 +418,7 @@ function PlanComposerCtaRow({
             aria-label="Plan actions"
             data-testid="agents-plan-composer-cta-actions"
           >
-            {renderActionButton(actions[0]!)}
+            {renderActionButton(resolvedActions[0]!)}
           </div>
         </div>
       ) : (
@@ -421,7 +469,7 @@ function PlanComposerCtaRow({
             aria-label="Plan actions"
             data-testid="agents-plan-composer-cta-actions"
           >
-            {actions.map(renderActionButton)}
+            {resolvedActions.map(renderActionButton)}
           </div>
         </>
       )}
@@ -470,9 +518,20 @@ interface AgentsActiveConversationPanelProps {
     workspace: AgentConversationWorkspace | null
   ) => void;
   onFocusIdeationSession: (sessionId: string) => void;
+  onFocusWorkspaceReview: (conversationId: string) => void;
+  onFocusVerificationSession: (
+    parentSessionId: string,
+    childSessionId: string
+  ) => void;
+  onFocusTaskRuntime: (
+    taskId: string,
+    contextType: AgentTaskRuntimeContextType
+  ) => void;
+  onOpenTaskArtifact: (taskId: string) => void;
   onForkConversation: (
     conversationId: string
   ) => Promise<ForkAgentConversationResult>;
+  onOpenPlanArtifact: () => void;
   onOpenPublishPane: () => void;
   onOpenPublishFile: (filePath: string, mode: DiffFilterMode) => void;
   onPreloadArtifacts: () => void;
@@ -484,8 +543,10 @@ interface AgentsActiveConversationPanelProps {
   publishShortcutLabel: string;
   publishingConversationId: string | null;
   selectedConversationId: string;
+  selectedTaskArtifactId: string | null;
   setTerminalChatDockElement: (element: HTMLDivElement | null) => void;
   switchingConversationModeId: string | null;
+  terminalArchivedReason: string | null;
   terminalUnavailableReason: string | null;
 }
 
@@ -511,7 +572,12 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   onAgentUserMessageSent,
   onConversationModeSwitched,
   onFocusIdeationSession,
+  onFocusWorkspaceReview,
+  onFocusVerificationSession,
+  onFocusTaskRuntime,
+  onOpenTaskArtifact,
   onForkConversation,
+  onOpenPlanArtifact,
   onOpenPublishPane,
   onOpenPublishFile,
   onPreloadArtifacts,
@@ -523,13 +589,17 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   publishShortcutLabel,
   publishingConversationId,
   selectedConversationId,
+  selectedTaskArtifactId,
   setTerminalChatDockElement,
   switchingConversationModeId,
+  terminalArchivedReason,
   terminalUnavailableReason,
 }: AgentsActiveConversationPanelProps) {
   const queryClient = useQueryClient();
   const bus = useEventBus();
   const focusedChatSessionId = getFocusedChatSessionId(chatFocus);
+  const focusedWorkspaceReviewConversationId =
+    getFocusedWorkspaceReviewConversationId(chatFocus);
   const { registry: modelRegistry } = useAgentModels();
   const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
   const openModal = useUiStore((s) => s.openModal);
@@ -555,6 +625,8 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   const [isCreatingPlanProposals, setIsCreatingPlanProposals] = useState(false);
   const [isImplementingPlanDirectly, setIsImplementingPlanDirectly] = useState(false);
   const [isStartingPlanVerification, setIsStartingPlanVerification] = useState(false);
+  const [codexFastModeByConversationId, setCodexFastModeByConversationId] =
+    useState<Record<string, boolean>>({});
   const [
     shouldLoadWorkspaceBaseOptions,
     setShouldLoadWorkspaceBaseOptions,
@@ -613,6 +685,32 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     providerOptions,
     isReady: providerSettingsReady,
   });
+  const codexProviderSettings = configuredProviders.find(
+    (entry) => entry.provider === "codex",
+  );
+  const codexProviderFastMode =
+    codexProviderSettings?.serviceTier?.trim().toLowerCase() === "fast";
+  const conversationServiceTier = activeConversation.serviceTier
+    ?.trim()
+    .toLowerCase();
+  const conversationFastMode =
+    conversationServiceTier === "fast"
+      ? true
+      : conversationServiceTier === "standard"
+        ? false
+        : codexProviderFastMode;
+  const activeCodexFastMode =
+    codexFastModeByConversationId[selectedConversationId] ??
+    conversationFastMode;
+  const handleActiveCodexFastModeChange = useCallback(
+    (value: boolean) => {
+      setCodexFastModeByConversationId((current) => ({
+        ...current,
+        [selectedConversationId]: value,
+      }));
+    },
+    [selectedConversationId],
+  );
   const workspaceProviderSupportedEfforts = useMemo(
     () =>
       supportedEffortsForProvider(
@@ -644,13 +742,71 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       workspaceProviderSupportedModelAliases,
     ]
   );
+  const codexFastModeAvailability = codexFastModeAvailabilityForProvider({
+    provider: codexProviderSettings,
+    modelId: selectableWorkspaceRuntime.modelId,
+    isReady: providerSettingsReady,
+  });
+  const activeCodexFastModeOption =
+    normalizedActiveRuntime.provider === "codex" &&
+    codexFastModeAvailability.supported
+      ? activeCodexFastMode
+      : null;
+  const selectableCodexFastMode =
+    normalizedActiveRuntime.provider === "codex" &&
+    codexFastModeAvailability.supported
+      ? activeCodexFastMode
+      : false;
   const openProviderSettings = useCallback(() => {
     openModal("settings", { section: "providers" });
   }, [openModal]);
   const panelIdeationSessionId =
     focusedChatSessionId ??
     (activeConversation.contextType === "ideation" ? activeConversation.contextId : undefined);
+  const taskRuntimeFocus = chatFocus.type === "task_runtime" ? chatFocus : null;
+  const panelSelectedTaskId = taskRuntimeFocus?.taskId ?? null;
+  const panelTaskRuntimeContextType = taskRuntimeFocus?.contextType;
+  const focusedPanelKey = taskRuntimeFocus
+    ? `${taskRuntimeFocus.contextType}:${taskRuntimeFocus.taskId}`
+    : focusedWorkspaceReviewConversationId
+    ? `workspace_review:${focusedWorkspaceReviewConversationId}`
+    : focusedChatSessionId ?? "workspace";
   const isFocusedChildChat = chatFocus.type !== "workspace";
+  const runtimeStatusQuery = useAgentConversationRuntimeStatus(selectedConversationId, {
+    enabled: activeConversation.contextType === "project",
+  });
+  const hasLinkedChatFocusTargets = chatFocusOptions.some(
+    (option) => option.type !== "workspace",
+  );
+  useEffect(() => {
+    if (!selectedTaskArtifactId) {
+      return;
+    }
+    const matchingTaskRuntime = runtimeStatusQuery.data?.items.find(
+      (item) =>
+        item.taskId === selectedTaskArtifactId &&
+        isTaskRuntimeContextType(item.contextType),
+    );
+    if (
+      !matchingTaskRuntime?.taskId ||
+      !isTaskRuntimeContextType(matchingTaskRuntime.contextType)
+    ) {
+      return;
+    }
+    if (
+      chatFocus.type === "task_runtime" &&
+      chatFocus.taskId === matchingTaskRuntime.taskId &&
+      chatFocus.contextType === matchingTaskRuntime.contextType
+    ) {
+      return;
+    }
+    onFocusTaskRuntime(matchingTaskRuntime.taskId, matchingTaskRuntime.contextType);
+  }, [
+    chatFocus,
+    onFocusTaskRuntime,
+    runtimeStatusQuery.data?.items,
+    selectedTaskArtifactId,
+  ]);
   const activeConversationStoreKey = useMemo(
     () => getAgentConversationStoreKey(activeConversation),
     [activeConversation],
@@ -860,15 +1016,38 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     />
   ) : null;
   const panelStoreKeyOverride = useMemo(() => {
+    if (taskRuntimeFocus) {
+      return buildStoreKey(taskRuntimeFocus.contextType, taskRuntimeFocus.taskId);
+    }
+    if (focusedWorkspaceReviewConversationId) {
+      return buildStoreKey("project", focusedWorkspaceReviewConversationId);
+    }
     if (focusedChatSessionId) {
       return buildStoreKey("ideation", focusedChatSessionId);
     }
     return getAgentConversationStoreKey(activeConversation);
-  }, [activeConversation, focusedChatSessionId]);
+  }, [
+    activeConversation,
+    focusedChatSessionId,
+    focusedWorkspaceReviewConversationId,
+    taskRuntimeFocus,
+  ]);
   const queuedMessagesSelector = useMemo(
     () => selectQueuedMessages(panelStoreKeyOverride),
     [panelStoreKeyOverride]
   );
+  const panelConversationIdOverride =
+    focusedWorkspaceReviewConversationId ??
+    (!isFocusedChildChat ? selectedConversationId : null);
+  const panelAgentProcessContextIdOverride = taskRuntimeFocus
+    ? taskRuntimeFocus.taskId
+    : focusedWorkspaceReviewConversationId ??
+      (!isFocusedChildChat && activeConversation.contextType === "project"
+        ? selectedConversationId
+        : null);
+  const panelSendConversationId =
+    focusedWorkspaceReviewConversationId ??
+    (!isFocusedChildChat ? selectedConversationId : null);
   const queuedMessages = useChatStore(queuedMessagesSelector);
   const executionHaltState = useUiStore((s) =>
     getAgentQueueHaltState(s.executionStatus)
@@ -912,6 +1091,8 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
         const icon =
           option.type === "workspace"
             ? MessageSquare
+            : option.type === "task_runtime"
+            ? Play
             : option.tone === "accent"
             ? Lightbulb
             : option.tone === "warning"
@@ -934,6 +1115,22 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       testId: "agents-composer-chat-focus",
     };
   }, [chatFocus.type, chatFocusOptions, onSelectChatFocus]);
+  const handleViewRuntimeWorkspace = useCallback(() => {
+    onSelectChatFocus("workspace");
+  }, [onSelectChatFocus]);
+  const handleViewRuntimeTask = useCallback(
+    (taskId: string, contextType: AgentTaskRuntimeContextType) => {
+      onFocusTaskRuntime(taskId, contextType);
+      onOpenTaskArtifact(taskId);
+    },
+    [onFocusTaskRuntime, onOpenTaskArtifact],
+  );
+  const handleViewRuntimeWorkspaceReview = useCallback(
+    (conversationId: string) => {
+      onFocusWorkspaceReview(conversationId);
+    },
+    [onFocusWorkspaceReview],
+  );
   const workspaceModelOptions = useMemo(
     () =>
       agentModelOptions(
@@ -1076,7 +1273,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     approvedAt: planApprovalArtifact?.planApproval?.approvedAt,
   });
   const planVerificationQuery = useVerificationStatus(
-    planApprovalSessionId && isPlanApproved ? planApprovalSessionId : undefined,
+    planApprovalSessionId && planApprovalArtifact ? planApprovalSessionId : undefined,
   );
   const planVerificationState = planVerificationQuery.data?.status ?? null;
   const planVerificationInProgress =
@@ -1089,7 +1286,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     planVerificationState === "imported_verified";
   const canVerifyComposerPlan = Boolean(
     planApprovalSessionId &&
-      isPlanApproved &&
+      planApprovalArtifact &&
       !isPlanVerificationLoading &&
       !isPlanVerificationSatisfied,
   );
@@ -1238,6 +1435,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
           providerHarness: normalizedActiveRuntime.provider,
           modelId: normalizedActiveRuntime.modelId,
           logicalEffort: normalizedActiveRuntime.effort,
+          codexFastMode: activeCodexFastModeOption,
           suppressUserMessage: true,
         },
       );
@@ -1251,6 +1449,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   }, [
     activeProjectId,
     activeWorkspace,
+    activeCodexFastModeOption,
     canImplementPlanDirectly,
     normalizedActiveRuntime.effort,
     normalizedActiveRuntime.modelId,
@@ -1308,7 +1507,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   ]);
   const planComposerHint = useMemo(() => {
     if (canApproveComposerPlan) {
-      return "Approve the draft plan when it matches the intended scope. You can still keep chatting to refine it.";
+      return "Approve the draft plan when it matches the intended scope, or verify it first for adversarial review.";
     }
     return buildPlanActionHint({
       assessment: planComplexityQuery.data,
@@ -1327,6 +1526,21 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       return [];
     }
 
+    const verifyAction: PlanComposerCtaAction | null = canVerifyComposerPlan
+      ? {
+          id: "verify",
+          label: "Verify Plan",
+          icon: ShieldCheck,
+          isPrimary: false,
+          isPending:
+            isStartingPlanVerification || planVerificationInProgress,
+          disabled: isPlanRecommendationPending,
+          onClick: () => {
+            void handleVerifyPlanFromComposer();
+          },
+        }
+      : null;
+
     if (canApproveComposerPlan) {
       return [
         {
@@ -1340,7 +1554,8 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
             void handleApprovePlanFromQuestion();
           },
         },
-      ];
+        verifyAction,
+      ].filter((action): action is PlanComposerCtaAction => action !== null);
     }
 
     if (!isPlanApproved) {
@@ -1388,21 +1603,6 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
           },
         }
       : null;
-    const verifyAction: PlanComposerCtaAction | null = canVerifyComposerPlan
-      ? {
-          id: "verify",
-          label: "Verify Plan",
-          icon: ShieldCheck,
-          isPrimary: false,
-          isPending:
-            isStartingPlanVerification || planVerificationInProgress,
-          disabled: isPlanRecommendationPending,
-          onClick: () => {
-            void handleVerifyPlanFromComposer();
-          },
-        }
-      : null;
-
     const mainActions =
       isPlanRecommendationPending ||
       planComplexityQuery.data?.recommendedAction === "create_proposals"
@@ -1431,6 +1631,25 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     planApprovalSessionId,
     planComplexityQuery.data?.recommendedAction,
     planVerificationInProgress,
+  ]);
+  const planComposerViewPlanAction = useMemo<
+    PlanComposerViewPlanAction | undefined
+  >(() => {
+    if (!canApproveComposerPlan || !availableArtifactTabs.includes("plan")) {
+      return undefined;
+    }
+    return {
+      available: true,
+      conversationId: selectedConversationId,
+      hasAutoOpenArtifacts,
+      onClick: onOpenPlanArtifact,
+    };
+  }, [
+    availableArtifactTabs,
+    canApproveComposerPlan,
+    hasAutoOpenArtifacts,
+    onOpenPlanArtifact,
+    selectedConversationId,
   ]);
   const planApprovalAction = useMemo(() => {
     if (!canApproveComposerPlan) {
@@ -1472,6 +1691,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
             providerHarness: normalizedActiveRuntime.provider,
             modelId: normalizedActiveRuntime.modelId,
             logicalEffort: normalizedActiveRuntime.effort,
+            codexFastMode: activeCodexFastModeOption,
           },
         );
         onAgentUserMessageSent({
@@ -1489,7 +1709,12 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
         return false;
       }
     },
-    [activeProjectId, normalizedActiveRuntime, onAgentUserMessageSent],
+    [
+      activeCodexFastModeOption,
+      activeProjectId,
+      normalizedActiveRuntime,
+      onAgentUserMessageSent,
+    ],
   );
 
   const switchConversationToPlanMode = useCallback(
@@ -1717,29 +1942,42 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       <div className="min-h-0 flex-1">
         <AgentWorkspaceFileLinkProvider
           conversationId={selectedConversationId}
-          workspace={isFocusedChildChat ? null : activeWorkspace}
+          workspace={
+            chatFocus.type === "workspace_review"
+              ? activeWorkspace
+              : isFocusedChildChat
+                ? null
+                : activeWorkspace
+          }
         >
           <IntegratedChatPanel
-            key={`${selectedConversationId}:${chatFocus.type}:${focusedChatSessionId ?? "workspace"}`}
+            key={`${selectedConversationId}:${chatFocus.type}:${focusedPanelKey}`}
             projectId={activeProjectId}
             {...(panelIdeationSessionId
               ? { ideationSessionId: panelIdeationSessionId }
               : {})}
-            {...(!isFocusedChildChat
-              ? { conversationIdOverride: selectedConversationId }
+            {...(panelConversationIdOverride
+              ? { conversationIdOverride: panelConversationIdOverride }
               : {})}
-            selectedTaskIdOverride={null}
+            selectedTaskIdOverride={panelSelectedTaskId}
+            {...(panelTaskRuntimeContextType
+              ? { taskRuntimeContextTypeOverride: panelTaskRuntimeContextType }
+              : {})}
             storeContextKeyOverride={panelStoreKeyOverride}
-            {...(!isFocusedChildChat && activeConversation.contextType === "project"
-              ? { agentProcessContextIdOverride: selectedConversationId }
+            {...(panelAgentProcessContextIdOverride
+              ? {
+                  agentProcessContextIdOverride:
+                    panelAgentProcessContextIdOverride,
+                }
               : {})}
-            {...(!isFocusedChildChat
+            {...(panelSendConversationId
               ? {
                   sendOptions: {
-                    conversationId: selectedConversationId,
+                    conversationId: panelSendConversationId,
                     providerHarness: normalizedActiveRuntime.provider,
                     modelId: normalizedActiveRuntime.modelId,
                     logicalEffort: normalizedActiveRuntime.effort,
+                    codexFastMode: activeCodexFastModeOption,
                   },
                 }
               : {})}
@@ -1783,6 +2021,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                         providerHarness: normalizedActiveRuntime.provider,
                         modelId: normalizedActiveRuntime.modelId,
                         logicalEffort: normalizedActiveRuntime.effort,
+                        codexFastMode: activeCodexFastModeOption,
                         ...(options?.projectReferences?.length
                           ? { composerProjectReferences: options.projectReferences }
                           : {}),
@@ -1851,10 +2090,25 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                     onOpenFile={onOpenPublishFile}
                     onPreloadPublishPane={onPreloadArtifacts}
                   />
+                  <AgentRuntimeStatusWidget
+                    status={runtimeStatusQuery.data}
+                    showSingleWorkspaceRuntime={
+                      activeWorkspace?.mode === "ideation" &&
+                      hasLinkedChatFocusTargets
+                    }
+                    currentFocus={chatFocus}
+                    selectedTaskId={selectedTaskArtifactId}
+                    onViewWorkspace={handleViewRuntimeWorkspace}
+                    onViewIdeation={onFocusIdeationSession}
+                    onViewVerification={onFocusVerificationSession}
+                    onViewWorkspaceReview={handleViewRuntimeWorkspaceReview}
+                    onViewTaskRuntime={handleViewRuntimeTask}
+                  />
                   {shouldShowPlanComposerCta && (
                     <PlanComposerCtaRow
                       hint={planComposerHint}
                       actions={planComposerCtaActions}
+                      viewPlanAction={planComposerViewPlanAction}
                     />
                   )}
                   <AgentComposerSurface
@@ -1884,6 +2138,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                         markComposerActivity();
                       }
                     }}
+                    onLayoutChange={composerProps.onLayoutChange}
                     sendDisabledReason={
                       !isFocusedChildChat ? workspaceProviderStatusMessage : null
                     }
@@ -1921,7 +2176,8 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                             // inherit and display it read-only.
                             disabled:
                               isFocusedChildChat ||
-                              composerProps.agentStatus !== "idle" ||
+                              composerProps.isSending ||
+                              composerProps.agentStatus === "generating" ||
                               switchingConversationModeId ===
                                 selectedConversationId,
                           },
@@ -1990,6 +2246,19 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                               ),
                             options: workspaceModelOptions,
                             disabled: Boolean(workspaceProviderStatusMessage),
+                            fastMode: {
+                              visible:
+                                normalizedActiveRuntime.provider === "codex",
+                              value: selectableCodexFastMode,
+                              onValueChange: handleActiveCodexFastModeChange,
+                              disabled:
+                                !providerSettingsReady ||
+                                !codexFastModeAvailability.supported,
+                              description:
+                                codexFastModeAvailability.reason ??
+                                CODEX_FAST_MODE_DESCRIPTION,
+                              testId: "agents-conversation-codex-fast-mode",
+                            },
                             onOpenModelSettings: () =>
                               openModal("settings", { section: "models" }),
                           },
@@ -2102,6 +2371,9 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                   label: normalizedActiveRuntime.modelId,
                 }}
                 hasAutoOpenArtifacts={hasAutoOpenArtifacts}
+                terminalArchivedReason={
+                  isFocusedChildChat ? null : terminalArchivedReason
+                }
                 terminalUnavailableReason={terminalUnavailableReason}
                 onRenameConversation={onRenameConversation}
                 onPublishWorkspace={onPublishWorkspace}
@@ -2123,6 +2395,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
         dock="chat"
         conversationId={selectedConversationId}
         workspace={activeWorkspace}
+        terminalArchivedReason={terminalArchivedReason}
         terminalUnavailableReason={terminalUnavailableReason}
         hasAutoOpenArtifacts={hasAutoOpenArtifacts}
         setDockElement={setTerminalChatDockElement}

@@ -13,10 +13,16 @@ const SETTINGS_SECTION_VISUALS = [
   { id: "review", heading: "Review Policy" },
   { id: "ideation-workflow", heading: "Planning & Verification" },
   { id: "ideation-harnesses", heading: "Ideation Agents" },
+  { id: "github", heading: "GitHub" },
   { id: "api-keys", heading: "API Keys" },
   { id: "external-mcp", heading: "External MCP" },
   { id: "accessibility", heading: "Accessibility" },
 ] as const;
+
+const EXPANDED_HARNESS_SECTION_IDS = new Set([
+  "execution-harnesses",
+  "ideation-harnesses",
+]);
 
 test.describe("Settings Dialog", () => {
   let settingsPage: SettingsPage;
@@ -129,6 +135,19 @@ test.describe("Settings Dialog", () => {
       settingsPage = new SettingsPage(page);
       await settingsPage.openViaStore(section.id);
       await settingsPage.waitForSection(section.id, section.heading);
+      if (EXPANDED_HARNESS_SECTION_IDS.has(section.id)) {
+        const expandAllButton = settingsPage.settingsDialog.getByRole("button", {
+          name: "Expand all",
+        });
+        if (await expandAllButton.isVisible()) {
+          await expandAllButton.click();
+          await expect(
+            settingsPage.settingsDialog.getByRole("button", {
+              name: "Collapse all",
+            }),
+          ).toBeVisible();
+        }
+      }
       await settingsPage.waitForAnimations();
 
       await expect(settingsPage.settingsDialog).toHaveScreenshot(

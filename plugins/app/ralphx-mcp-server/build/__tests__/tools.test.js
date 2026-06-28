@@ -8,8 +8,8 @@ import { canonicalAgentName, loadCanonicalMcpTools } from '../canonical-agent-me
 import { setLegacyToolAllowlistEntryForTest } from '../tool-authorization.js';
 import { PLAN_TOOLS } from '../plan-tools.js';
 import { buildAppendTaskToIdeationPlanPayload } from '../append-task-payload.js';
-import { callAgentWorkspaceTool, callCheckAgentWorkspacePublishReadinessTool, callCompleteAgentWorkspacePrFixTool, callCompletePrReviewRunTool, callCompleteAgentWorkspaceRepairTool, callGetAgentWorkspacePrFixContextTool, callGetPrReviewContextTool, callGetAgentWorkspacePublishStatusTool, callPublishAgentWorkspaceTool, callProposePrReviewActionTool, callReadAgentWorkspacePrCommentTool, callSubmitAgentWorkspacePrDescriptionTool, callUpdateAgentWorkspaceFromBaseTool, callWritePrReviewArtifactTool, isAgentWorkspaceToolName, } from '../agent-workspace-tools.js';
-import { IDEATION_TEAM_LEAD, IDEATION_TEAM_MEMBER, WORKER_TEAM_LEAD, WORKER_TEAM_MEMBER, ORCHESTRATOR_IDEATION, ORCHESTRATOR_IDEATION_READONLY, IDEATION_SPECIALIST_BACKEND, IDEATION_SPECIALIST_FRONTEND, IDEATION_SPECIALIST_INFRA, IDEATION_SPECIALIST_CODE_QUALITY, IDEATION_SPECIALIST_UX, IDEATION_SPECIALIST_PROMPT_QUALITY, IDEATION_SPECIALIST_INTENT, IDEATION_SPECIALIST_PIPELINE_SAFETY, IDEATION_SPECIALIST_STATE_MACHINE, IDEATION_CRITIC, IDEATION_ADVOCATE, PLAN_VERIFIER, PLAN_CRITIC_COMPLETENESS, PLAN_CRITIC_IMPLEMENTATION_FEASIBILITY, REVIEWER, GENERAL_EXPLORER, GENERAL_WORKER, AGENT_WORKSPACE_PR_FIXER, PLAN_COMPLEXITY_ASSESSOR, WORKER, MERGER, CHAT_PROJECT, } from '../agentNames.js';
+import { callAgentWorkspaceTool, callCheckAgentWorkspacePublishReadinessTool, callCompleteAgentWorkspacePrFixTool, callCompleteWorkspaceReviewRunTool, callCompletePrReviewRunTool, callCompleteAgentWorkspaceRepairTool, callGetAgentWorkspacePrFixContextTool, callGetPrReviewContextTool, callGetWorkspaceReviewContextTool, callGetAgentWorkspacePublishStatusTool, callPublishAgentWorkspaceTool, callProposePrReviewActionTool, callReadAgentWorkspacePrCommentTool, callSubmitAgentWorkspacePrDescriptionTool, callUpdateAgentWorkspaceFromBaseTool, callWriteWorkspaceReviewArtifactTool, callWritePrReviewArtifactTool, isAgentWorkspaceToolName, } from '../agent-workspace-tools.js';
+import { IDEATION_TEAM_LEAD, IDEATION_TEAM_MEMBER, WORKER_TEAM_LEAD, WORKER_TEAM_MEMBER, ORCHESTRATOR_IDEATION, ORCHESTRATOR_IDEATION_READONLY, IDEATION_SPECIALIST_BACKEND, IDEATION_SPECIALIST_FRONTEND, IDEATION_SPECIALIST_INFRA, IDEATION_SPECIALIST_CODE_QUALITY, IDEATION_SPECIALIST_UX, IDEATION_SPECIALIST_PROMPT_QUALITY, IDEATION_SPECIALIST_INTENT, IDEATION_SPECIALIST_PIPELINE_SAFETY, IDEATION_SPECIALIST_STATE_MACHINE, IDEATION_CRITIC, IDEATION_ADVOCATE, PLAN_VERIFIER, PLAN_CRITIC_COMPLETENESS, PLAN_CRITIC_IMPLEMENTATION_FEASIBILITY, REVIEWER, GENERAL_EXPLORER, GENERAL_WORKER, AGENT_WORKSPACE_PR_FIXER, PLAN_COMPLEXITY_ASSESSOR, WORKSPACE_REVIEWER, WORKER, MERGER, CHAT_PROJECT, } from '../agentNames.js';
 function toolsByAgent() {
     return getToolsByAgent();
 }
@@ -354,10 +354,34 @@ describe('getFilteredTools', () => {
         expect(toolNames).toContain('list_tasks');
         expect(toolNames).toContain('propose_plan_mode');
         expect(toolNames).toContain('append_task_to_ideation_plan');
+        expect(toolNames).toContain('create_followup_agent_conversation');
+        expect(toolNames).toContain('register_agent_issue');
         expect(toolNames).not.toContain('start_ideation_session');
         expect(toolNames).not.toContain('create_child_session');
+        expect(toolNames).not.toContain('create_followup_session');
         expect(toolNames).not.toContain('create_task_proposal');
         expect(toolNames).not.toContain('update_plan_artifact');
+    });
+    it.each([WORKER, REVIEWER])('%s should create visible follow-up Agent conversations', (agent) => {
+        setAgentType(agent);
+        const toolNames = getFilteredTools().map((tool) => tool.name);
+        expect(toolNames).toContain('create_followup_agent_conversation');
+        expect(toolNames).toContain('register_agent_issue');
+        expect(toolNames).not.toContain('create_followup_session');
+    });
+    it('register_agent_issue should expose issue and follow-up policy fields', () => {
+        const properties = inputSchemaProperties('register_agent_issue');
+        expect(properties).toHaveProperty('issue_kind');
+        expect(properties).toHaveProperty('blocking_scope');
+        expect(properties).toHaveProperty('auto_followup_eligible');
+        expect(properties).toHaveProperty('followup_prompt');
+    });
+    it('create_followup_agent_conversation should expose Agent conversation provenance fields', () => {
+        const properties = inputSchemaProperties('create_followup_agent_conversation');
+        expect(properties).toHaveProperty('origin_conversation_id');
+        expect(properties).toHaveProperty('source_task_id');
+        expect(properties).toHaveProperty('source_agent_name');
+        expect(properties).toHaveProperty('blocker_fingerprint');
     });
     it('should let the general chat explorer propose a Plan-mode handoff without edit or ideation tools', () => {
         setAgentType(GENERAL_EXPLORER);
@@ -915,6 +939,20 @@ describe('getAllowedToolNames - CLI arg priority chain', () => {
             consoleSpy.mockRestore();
         }
     });
+    it('workspace reviewer allowlist mirrors canonical bounded Review artifact tools', () => {
+        const tools = toolsByAgent()[WORKSPACE_REVIEWER];
+        expect(tools).toEqual(loadCanonicalMcpTools(WORKSPACE_REVIEWER));
+        expect(tools).toContain('fs_read_file');
+        expect(tools).toContain('fs_list_dir');
+        expect(tools).toContain('fs_grep');
+        expect(tools).toContain('fs_glob');
+        expect(tools).toContain('get_workspace_review_context');
+        expect(tools).toContain('write_workspace_review_artifact');
+        expect(tools).toContain('complete_workspace_review_run');
+        expect(tools).not.toContain('get_agent_task');
+        expect(tools).not.toContain('list_agent_tasks');
+        expect(tools).not.toContain('search_memories');
+    });
 });
 // ===========================================================================
 // delete_task_proposal MCP tool — alias for archive_task_proposal
@@ -1272,6 +1310,44 @@ describe('agent workspace publish tool transport', () => {
         await expect(callGetPrReviewContextTool(callTauriGet, {}, { parentConversationId: 'conversation-from-runtime' })).resolves.toEqual({ success: true });
         expect(callTauriGet).toHaveBeenCalledWith('agent-workspaces/conversation-from-runtime/pr-review-context');
     });
+    it('routes workspace Review context reads to the current runtime workspace conversation', async () => {
+        const callTauriGet = vi.fn().mockResolvedValue({ success: true });
+        await expect(callGetWorkspaceReviewContextTool(callTauriGet, {}, { parentConversationId: 'conversation-from-runtime' })).resolves.toEqual({ success: true });
+        expect(callTauriGet).toHaveBeenCalledWith('agent-workspaces/conversation-from-runtime/workspace-review-context?include_review_packet=true');
+    });
+    it('routes workspace Review artifact writes to the runtime workspace conversation', async () => {
+        const callTauri = vi.fn().mockResolvedValue({ success: true });
+        await expect(callWriteWorkspaceReviewArtifactTool(callTauri, {
+            content: '## Summary\n\nLooks good.',
+            target_scope: 'workspace_delta',
+            head_sha: 'abc123',
+            diff_fingerprint: 'fingerprint-1',
+            created_by_run_id: 'run-1',
+        }, { parentConversationId: 'conversation-from-runtime' })).resolves.toEqual({ success: true });
+        expect(callTauri).toHaveBeenCalledWith('agent-workspaces/conversation-from-runtime/workspace-review-artifact', {
+            title: undefined,
+            content: '## Summary\n\nLooks good.',
+            target_scope: 'workspace_delta',
+            head_sha: 'abc123',
+            diff_fingerprint: 'fingerprint-1',
+            created_by_run_id: 'run-1',
+        });
+    });
+    it('routes workspace Review run completion to the runtime workspace conversation', async () => {
+        const callTauri = vi.fn().mockResolvedValue({ success: true });
+        await expect(callCompleteWorkspaceReviewRunTool(callTauri, {
+            outcome: 'reviewed',
+            summary: 'Review completed',
+            blocker: undefined,
+            created_by_run_id: 'run-1',
+        }, { parentConversationId: 'conversation-from-runtime' })).resolves.toEqual({ success: true });
+        expect(callTauri).toHaveBeenCalledWith('agent-workspaces/conversation-from-runtime/complete-workspace-review-run', {
+            outcome: 'reviewed',
+            summary: 'Review completed',
+            blocker: undefined,
+            created_by_run_id: 'run-1',
+        });
+    });
     it('routes proposed Review PR actions to the agent workspace endpoint', async () => {
         const callTauri = vi.fn().mockResolvedValue({ success: true });
         await expect(callProposePrReviewActionTool(callTauri, {
@@ -1339,7 +1415,11 @@ describe('agent workspace publish tool transport', () => {
         await expect(callAgentWorkspaceTool('propose_pr_review_action', callTauri, callTauriGet, { summary: 'Ready to submit' }, { parentConversationId: 'conversation-from-runtime' })).resolves.toEqual({ success: true });
         await expect(callAgentWorkspaceTool('complete_pr_review_run', callTauri, callTauriGet, { outcome: 'approved' }, { parentConversationId: 'conversation-from-runtime' })).resolves.toEqual({ success: true });
         await expect(callAgentWorkspaceTool('write_pr_review_artifact', callTauri, callTauriGet, { content: '## Review' }, { parentConversationId: 'conversation-from-runtime' })).resolves.toEqual({ success: true });
+        await expect(callAgentWorkspaceTool('get_workspace_review_context', callTauri, callTauriGet, {}, { parentConversationId: 'conversation-from-runtime' })).resolves.toEqual({ success: true });
+        await expect(callAgentWorkspaceTool('write_workspace_review_artifact', callTauri, callTauriGet, { content: '## Summary', target_scope: 'selected_source' }, { parentConversationId: 'conversation-from-runtime' })).resolves.toEqual({ success: true });
+        await expect(callAgentWorkspaceTool('complete_workspace_review_run', callTauri, callTauriGet, { summary: 'Done', outcome: 'reviewed' }, { parentConversationId: 'conversation-from-runtime' })).resolves.toEqual({ success: true });
         expect(callTauriGet).toHaveBeenCalledWith('agent-workspaces/conversation-from-runtime/pr-review-context');
+        expect(callTauriGet).toHaveBeenCalledWith('agent-workspaces/conversation-from-runtime/workspace-review-context?include_review_packet=true');
         expect(callTauri).toHaveBeenCalledWith('agent-workspaces/conversation-from-runtime/pr-review-actions', {
             head_sha: undefined,
             proposed_action: undefined,
@@ -1359,6 +1439,20 @@ describe('agent workspace publish tool transport', () => {
             title: undefined,
             content: '## Review',
             head_sha: undefined,
+            created_by_run_id: undefined,
+        });
+        expect(callTauri).toHaveBeenCalledWith('agent-workspaces/conversation-from-runtime/workspace-review-artifact', {
+            title: undefined,
+            content: '## Summary',
+            target_scope: 'selected_source',
+            head_sha: undefined,
+            diff_fingerprint: undefined,
+            created_by_run_id: undefined,
+        });
+        expect(callTauri).toHaveBeenCalledWith('agent-workspaces/conversation-from-runtime/complete-workspace-review-run', {
+            outcome: 'reviewed',
+            summary: 'Done',
+            blocker: undefined,
             created_by_run_id: undefined,
         });
     });
@@ -1416,8 +1510,38 @@ describe('agent workspace publish tool transport', () => {
             'agent-workspaces/conversation-1/pr-review-artifact',
             {
                 title: 'Generated title',
-                content: '## Review\n\nGenerated body',
+                content: '## Summary\n\nGenerated body',
                 head_sha: 'head-sha',
+                created_by_run_id: 'run-1',
+            },
+        ],
+        [
+            'get_workspace_review_context',
+            'get',
+            'agent-workspaces/conversation-1/workspace-review-context?include_review_packet=true',
+            undefined,
+        ],
+        [
+            'write_workspace_review_artifact',
+            'post',
+            'agent-workspaces/conversation-1/workspace-review-artifact',
+            {
+                title: 'Generated title',
+                content: '## Summary\n\nGenerated body',
+                target_scope: 'workspace_delta',
+                head_sha: 'head-sha',
+                diff_fingerprint: 'fingerprint-1',
+                created_by_run_id: 'run-1',
+            },
+        ],
+        [
+            'complete_workspace_review_run',
+            'post',
+            'agent-workspaces/conversation-1/complete-workspace-review-run',
+            {
+                outcome: 'reviewed',
+                summary: 'Resolved conflicts',
+                blocker: 'Needs maintainer decision',
                 created_by_run_id: 'run-1',
             },
         ],
@@ -1466,8 +1590,11 @@ describe('agent workspace publish tool transport', () => {
             blocker: 'Needs maintainer decision',
             title: 'Generated title',
             body_markdown: '## Summary\n\nGenerated body',
-            content: '## Review\n\nGenerated body',
+            content: '## Summary\n\nGenerated body',
+            target_scope: 'workspace_delta',
             head_sha: 'head-sha',
+            diff_fingerprint: 'fingerprint-1',
+            outcome: 'reviewed',
             created_by_run_id: 'run-1',
         };
         await expect(callAgentWorkspaceTool(toolName, callTauri, callTauriGet, args)).resolves.toEqual({ ok: method });

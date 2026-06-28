@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/popover";
 import { QueuedTaskRow } from "./QueuedTaskRow";
 import { useQueuedTasks } from "@/hooks/useQueuedTasks";
+import { shouldPreserveExecutionPopoverForTarget } from "./executionPopoverDismissal";
 
 interface QueuedTasksPopoverProps {
   /** The project ID */
@@ -21,6 +22,10 @@ interface QueuedTasksPopoverProps {
   children: React.ReactNode;
   /** Optional horizontal alignment offset for popover content */
   alignOffset?: number;
+  /** Optional controlled open state */
+  open?: boolean;
+  /** Optional controlled open-state handler */
+  onOpenChange?: (open: boolean) => void;
 }
 
 export function QueuedTasksPopover({
@@ -28,11 +33,20 @@ export function QueuedTasksPopover({
   queuedCount,
   children,
   alignOffset = -24,
+  open,
+  onOpenChange,
 }: QueuedTasksPopoverProps) {
   const { data: queuedTasks, isLoading } = useQueuedTasks(projectId);
+  const controlledProps =
+    open !== undefined
+      ? {
+          open,
+          ...(onOpenChange !== undefined && { onOpenChange }),
+        }
+      : {};
 
   return (
-    <Popover>
+    <Popover {...controlledProps}>
       <PopoverTrigger asChild>{children}</PopoverTrigger>
       <PopoverContent
         side="top"
@@ -46,6 +60,11 @@ export function QueuedTasksPopover({
           borderRadius: "10px",
           boxShadow:
             "0 4px 16px var(--overlay-scrim), 0 12px 32px var(--overlay-scrim)",
+        }}
+        onInteractOutside={(event) => {
+          if (shouldPreserveExecutionPopoverForTarget(event.target)) {
+            event.preventDefault();
+          }
         }}
       >
         {/* Header */}

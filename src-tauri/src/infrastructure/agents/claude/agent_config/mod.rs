@@ -1166,7 +1166,7 @@ fn resolve_loaded_config_with_lookup(
              this field."
         );
     }
-    runtime_config::apply_env_overrides(&mut runtime);
+    runtime_config::apply_env_overrides_with_lookup(&mut runtime, lookup);
     let mut agent_harness_defaults = parsed
         .agent_harness_defaults
         .into_iter()

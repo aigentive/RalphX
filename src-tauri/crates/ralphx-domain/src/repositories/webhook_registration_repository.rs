@@ -1,6 +1,6 @@
+use crate::error::AppResult;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use crate::error::AppResult;
 
 /// A registered webhook endpoint
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -34,7 +34,11 @@ pub trait WebhookRegistrationRepository: Send + Sync {
     async fn get_by_id(&self, id: &str) -> AppResult<Option<WebhookRegistration>>;
 
     /// Get by url + api_key_id (for idempotency check)
-    async fn get_by_url_and_key(&self, url: &str, api_key_id: &str) -> AppResult<Option<WebhookRegistration>>;
+    async fn get_by_url_and_key(
+        &self,
+        url: &str,
+        api_key_id: &str,
+    ) -> AppResult<Option<WebhookRegistration>>;
 
     /// List all registrations for an API key
     async fn list_by_api_key(&self, api_key_id: &str) -> AppResult<Vec<WebhookRegistration>>;
@@ -51,5 +55,8 @@ pub trait WebhookRegistrationRepository: Send + Sync {
     /// List all active webhook registrations for a given project.
     /// Returns webhooks where `active = true` AND the project_ids JSON array
     /// contains the given project_id string.
-    async fn list_active_for_project(&self, project_id: &str) -> AppResult<Vec<WebhookRegistration>>;
+    async fn list_active_for_project(
+        &self,
+        project_id: &str,
+    ) -> AppResult<Vec<WebhookRegistration>>;
 }

@@ -1,12 +1,12 @@
 import { test, expect } from "@playwright/test";
-import { setupIdeationChatScenario } from "../../../fixtures/chat.fixtures";
+import { setupIdeationChatShell } from "../../../fixtures/chat.fixtures";
 
 /**
  * Minimal test to verify AskUserQuestionModal can be triggered
  */
 
 test("can trigger ask user question banner via event bus", async ({ page }) => {
-  await setupIdeationChatScenario(page, "ideation_db_widget_mix");
+  await setupIdeationChatShell(page);
 
   await page.evaluate(() => {
     const payload = {

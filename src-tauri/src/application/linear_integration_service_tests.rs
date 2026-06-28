@@ -322,7 +322,7 @@ async fn save_validate_and_search_issues_with_api_token() {
     assert_eq!(results[0].key.as_deref(), Some("LIN-123"));
     assert_eq!(
         client.searches.lock().await.as_slice(),
-        &[("bug".to_string(), 25)]
+        &[("bug".to_string(), 50)]
     );
 }
 
@@ -344,7 +344,7 @@ async fn blank_search_uses_enabled_provider_for_default_ticket_list() {
     assert_eq!(results[0].key.as_deref(), Some("LIN-123"));
     assert_eq!(
         client.searches.lock().await.as_slice(),
-        &[("  ".to_string(), 25)]
+        &[("  ".to_string(), 50)]
     );
 }
 
@@ -527,6 +527,8 @@ async fn expands_linear_issue_references_for_prompt() {
                 key: Some("LIN-123".to_string()),
                 title: Some("Example".to_string()),
                 url: Some("https://linear.app/acme/issue/LIN-123/example".to_string()),
+                summary_excerpt: None,
+                include_transcript: None,
             }],
         )
         .await;
@@ -560,6 +562,8 @@ async fn expand_references_skips_non_linear_and_reports_fetch_errors() {
                     key: Some("RX-1".to_string()),
                     title: Some("Ignored Jira issue".to_string()),
                     url: None,
+                    summary_excerpt: None,
+                    include_transcript: None,
                 },
                 ComposerIntegrationReference {
                     provider: "linear".to_string(),
@@ -568,6 +572,8 @@ async fn expand_references_skips_non_linear_and_reports_fetch_errors() {
                     key: Some("LIN-123".to_string()),
                     title: Some("Example".to_string()),
                     url: None,
+                    summary_excerpt: None,
+                    include_transcript: None,
                 },
             ],
         )
@@ -670,17 +676,17 @@ async fn enabled_service(
 }
 
 #[tokio::test]
-async fn list_projects_clamps_first_into_one_to_hundred_range() {
+async fn list_projects_clamps_first_into_one_to_thousand_range() {
     let client = Arc::new(TestLinearClient::default());
     let service = enabled_service(client.clone()).await;
 
     service.list_projects(0).await.unwrap();
-    service.list_projects(500).await.unwrap();
+    service.list_projects(1500).await.unwrap();
     service.list_projects(50).await.unwrap();
 
     assert_eq!(
         client.list_projects_first.lock().await.as_slice(),
-        &[1, 100, 50]
+        &[1, 1000, 50]
     );
 }
 
@@ -854,6 +860,8 @@ async fn fetch_issue_content_routes_to_client_when_enabled() {
             key: Some("LIN-9".to_string()),
             title: Some("Title".to_string()),
             url: None,
+            summary_excerpt: None,
+            include_transcript: None,
         })
         .await
         .unwrap();
@@ -878,6 +886,8 @@ async fn fetch_issue_content_requires_enabled_settings() {
             key: None,
             title: None,
             url: None,
+            summary_excerpt: None,
+            include_transcript: None,
         })
         .await
         .unwrap_err();
@@ -950,6 +960,8 @@ async fn expand_references_returns_message_when_not_enabled() {
                 key: None,
                 title: None,
                 url: None,
+                summary_excerpt: None,
+                include_transcript: None,
             }],
         )
         .await;
@@ -973,6 +985,8 @@ async fn expand_references_returns_message_when_only_non_linear_references() {
                 key: None,
                 title: None,
                 url: None,
+                summary_excerpt: None,
+                include_transcript: None,
             }],
         )
         .await;
@@ -996,6 +1010,8 @@ async fn expand_references_truncates_large_issue_body() {
                 key: Some("LIN-1".to_string()),
                 title: Some("Big".to_string()),
                 url: None,
+                summary_excerpt: None,
+                include_transcript: None,
             }],
         )
         .await;
@@ -1020,6 +1036,8 @@ async fn expand_references_marks_extra_references_as_budget_exhausted() {
         key: Some(id.to_string()),
         title: Some("T".to_string()),
         url: None,
+        summary_excerpt: None,
+        include_transcript: None,
     };
 
     let expanded = service
@@ -1085,6 +1103,8 @@ async fn empty_client_returns_happy_path_stubs() {
                 key: Some("LIN-1".to_string()),
                 title: None,
                 url: None,
+                summary_excerpt: None,
+                include_transcript: None,
             },
         )
         .await
@@ -1119,6 +1139,8 @@ async fn unavailable_client_propagates_reason_across_methods() {
         key: None,
         title: None,
         url: None,
+        summary_excerpt: None,
+        include_transcript: None,
     };
 
     assert_eq!(client.validate(&auth).await.unwrap_err(), "Linear is down");

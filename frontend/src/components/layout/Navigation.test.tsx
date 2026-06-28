@@ -40,8 +40,17 @@ vi.mock("@/hooks/useProjectStats", () => ({
   })),
 }));
 
-// Feature flags mock — default all enabled
-let mockFeatureFlags: FeatureFlags = { activityPage: true, extensibilityPage: true };
+const allNavFlags: FeatureFlags = {
+  activityPage: true,
+  extensibilityPage: true,
+  ideationPage: true,
+  battleMode: true,
+  teamMode: false,
+  atlassianOauth: false,
+};
+
+// Feature flags mock — default all enabled for legacy nav ordering tests
+let mockFeatureFlags: FeatureFlags = allNavFlags;
 
 vi.mock("@/hooks/useFeatureFlags", () => ({
   useFeatureFlags: vi.fn(() => ({ data: mockFeatureFlags })),
@@ -62,7 +71,7 @@ describe("Navigation", () => {
 
   beforeEach(() => {
     mockState = { activeTeams: {} };
-    mockFeatureFlags = { activityPage: true, extensibilityPage: true };
+    mockFeatureFlags = allNavFlags;
     mockTaskCount = 0;
   });
 
@@ -74,6 +83,14 @@ describe("Navigation", () => {
     expect(screen.getByTestId("nav-kanban")).toBeInTheDocument();
     expect(screen.getByTestId("nav-graph")).toBeInTheDocument();
     expect(screen.getByTestId("nav-activity")).toBeInTheDocument();
+  });
+
+  it("omits dashboard rail items from the legacy top navigation", () => {
+    render(<Navigation {...defaultProps} />);
+
+    expect(screen.queryByTestId("nav-ticketing")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("nav-github")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("nav-granola")).not.toBeInTheDocument();
   });
 
   it("renders Agents first in the main navbar", () => {
@@ -160,12 +177,12 @@ describe("Navigation — feature flag filtering", () => {
 
   beforeEach(() => {
     mockState = { activeTeams: {} };
-    mockFeatureFlags = { activityPage: true, extensibilityPage: true };
+    mockFeatureFlags = allNavFlags;
     mockTaskCount = 0;
   });
 
   it("renders activity and extensibility nav items when flags are enabled", () => {
-    mockFeatureFlags = { activityPage: true, extensibilityPage: true };
+    mockFeatureFlags = allNavFlags;
 
     render(<Navigation {...defaultProps} />);
 
@@ -174,7 +191,7 @@ describe("Navigation — feature flag filtering", () => {
   });
 
   it("hides activity nav item when activityPage flag is false", () => {
-    mockFeatureFlags = { activityPage: false, extensibilityPage: true };
+    mockFeatureFlags = { ...allNavFlags, activityPage: false };
 
     render(<Navigation {...defaultProps} />);
 
@@ -183,7 +200,7 @@ describe("Navigation — feature flag filtering", () => {
   });
 
   it("hides extensibility nav item when extensibilityPage flag is false", () => {
-    mockFeatureFlags = { activityPage: true, extensibilityPage: false };
+    mockFeatureFlags = { ...allNavFlags, extensibilityPage: false };
 
     render(<Navigation {...defaultProps} />);
 
@@ -192,7 +209,7 @@ describe("Navigation — feature flag filtering", () => {
   });
 
   it("hides both activity and extensibility when both flags are false", () => {
-    mockFeatureFlags = { activityPage: false, extensibilityPage: false };
+    mockFeatureFlags = { ...allNavFlags, activityPage: false, extensibilityPage: false };
 
     render(<Navigation {...defaultProps} />);
 
@@ -200,13 +217,20 @@ describe("Navigation — feature flag filtering", () => {
     expect(screen.queryByTestId("nav-extensibility")).toBeNull();
   });
 
-  it("always renders core nav items regardless of flags", () => {
-    mockFeatureFlags = { activityPage: false, extensibilityPage: false };
+  it("hides standalone Ideation when ideationPage flag is false", () => {
+    mockFeatureFlags = { ...allNavFlags, ideationPage: false };
+
+    render(<Navigation {...defaultProps} />);
+
+    expect(screen.queryByTestId("nav-ideation")).toBeNull();
+  });
+
+  it("always renders unflagged core nav items regardless of optional-page flags", () => {
+    mockFeatureFlags = { ...allNavFlags, activityPage: false, extensibilityPage: false, ideationPage: false };
 
     render(<Navigation {...defaultProps} />);
 
     expect(screen.getByTestId("nav-agents")).toBeInTheDocument();
-    expect(screen.getByTestId("nav-ideation")).toBeInTheDocument();
     expect(screen.getByTestId("nav-graph")).toBeInTheDocument();
     expect(screen.getByTestId("nav-kanban")).toBeInTheDocument();
     expect(screen.getByTestId("nav-settings")).toBeInTheDocument();
@@ -222,7 +246,7 @@ describe("Navigation — hideViews (welcome mode)", () => {
 
   beforeEach(() => {
     mockState = { activeTeams: {} };
-    mockFeatureFlags = { activityPage: true, extensibilityPage: true };
+    mockFeatureFlags = allNavFlags;
     mockTaskCount = 10;
   });
 

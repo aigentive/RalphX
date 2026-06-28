@@ -1,7 +1,7 @@
 // Application state container for dependency injection
 // Holds repository trait objects that can be swapped for testing
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -22,8 +22,10 @@ use crate::application::AtlassianIntegrationService;
 use crate::application::ClickUpIntegrationService;
 use crate::application::EmptyAtlassianApiClient;
 use crate::application::EmptyClickUpApiClient;
+use crate::application::EmptyGranolaApiClient;
 use crate::application::EmptyLinearApiClient;
 use crate::application::ExternalIssueLinkService;
+use crate::application::GranolaIntegrationService;
 use crate::application::LinearIntegrationService;
 use crate::application::PermissionState;
 use crate::application::QuestionState;
@@ -32,6 +34,7 @@ use crate::application::TaskSchedulerService;
 use crate::application::TaskTransitionService;
 use crate::application::UnavailableAtlassianApiClient;
 use crate::application::UnavailableClickUpApiClient;
+use crate::application::UnavailableGranolaApiClient;
 use crate::application::UnavailableLinearApiClient;
 use crate::commands::ExecutionState;
 use crate::domain::agents::{
@@ -39,10 +42,11 @@ use crate::domain::agents::{
     lightweight_model_for_provider, AgentHarnessKind, AgentProviderCliManagementMode,
     AgentProviderSettings, AgenticClient, LogicalEffort, DEFAULT_AGENT_HARNESS,
 };
-use crate::domain::entities::{ChatContextType, ChatConversation, IdeationSession};
+use crate::domain::entities::{AgentRun, ChatContextType, ChatConversation, IdeationSession};
 use crate::domain::qa::QASettings;
 use crate::domain::repositories::{
-    ActivePlanRepository, ActivityEventRepository, AgentConversationJiraIssueRepository,
+    ActivePlanRepository, ActivityEventRepository, AgentConversationGranolaNoteRepository,
+    AgentConversationIssueRepository, AgentConversationJiraIssueRepository,
     AgentConversationLinearIssueRepository, AgentConversationWorkspaceRepository,
     AgentLaneSettingsRepository, AgentModelRegistryRepository, AgentProfileRepository,
     AgentProviderSettingsRepository, AgentRunRepository, AgentTaskRepository, ApiKeyRepository,
@@ -66,7 +70,8 @@ use crate::domain::services::{
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::memory::{
     InMemoryMemoryEntryRepository, InMemoryMemoryEventRepository, MemoryActivePlanRepository,
-    MemoryActivityEventRepository, MemoryAgentConversationJiraIssueRepository,
+    MemoryActivityEventRepository, MemoryAgentConversationGranolaNoteRepository,
+    MemoryAgentConversationIssueRepository, MemoryAgentConversationJiraIssueRepository,
     MemoryAgentConversationLinearIssueRepository, MemoryAgentConversationWorkspaceRepository,
     MemoryAgentLaneSettingsRepository, MemoryAgentModelRegistryRepository,
     MemoryAgentProfileRepository, MemoryAgentProviderSettingsRepository, MemoryAgentRunRepository,
@@ -74,12 +79,12 @@ use crate::infrastructure::memory::{
     MemoryArtifactBucketRepository, MemoryArtifactFlowRepository, MemoryArtifactRepository,
     MemoryAtlassianIntegrationSettingsRepository, MemoryChatAttachmentRepository,
     MemoryChatConversationRepository, MemoryChatMessageRepository, MemoryChatTimelineRepository,
-    MemoryDelegatedSessionRepository, MemoryExecutionPlanRepository,
-    MemoryExecutionSettingsRepository, MemoryExternalEventsRepository,
-    MemoryExternalIssueLinkRepository, MemoryGlobalExecutionSettingsRepository,
+    MemoryClickUpIntegrationSettingsRepository, MemoryDelegatedSessionRepository,
+    MemoryExecutionPlanRepository, MemoryExecutionSettingsRepository,
+    MemoryExternalEventsRepository, MemoryExternalIssueLinkRepository,
+    MemoryGlobalExecutionSettingsRepository, MemoryGranolaIntegrationSettingsRepository,
     MemoryIdeationEffortSettingsRepository, MemoryIdeationModelSettingsRepository,
     MemoryIdeationSessionRepository, MemoryIdeationSettingsRepository,
-    MemoryClickUpIntegrationSettingsRepository,
     MemoryLinearIntegrationSettingsRepository, MemoryMethodologyRepository,
     MemoryOrphanWorktreeCleanupMarkerRepository, MemoryPermissionRepository,
     MemoryPlanBranchRepository, MemoryPlanSelectionStatsRepository, MemoryProcessRepository,
@@ -96,6 +101,7 @@ use crate::infrastructure::sqlite::ReviewIssueRepository;
 use crate::infrastructure::sqlite::{
     get_app_data_db_path, get_default_db_path, open_connection, run_migrations,
     SqliteActivePlanRepository, SqliteActivityEventRepository,
+    SqliteAgentConversationGranolaNoteRepository, SqliteAgentConversationIssueRepository,
     SqliteAgentConversationJiraIssueRepository, SqliteAgentConversationLinearIssueRepository,
     SqliteAgentConversationWorkspaceRepository, SqliteAgentLaneSettingsRepository,
     SqliteAgentModelRegistryRepository, SqliteAgentProfileRepository,
@@ -104,12 +110,12 @@ use crate::infrastructure::sqlite::{
     SqliteArtifactFlowRepository, SqliteArtifactRepository,
     SqliteAtlassianIntegrationSettingsRepository, SqliteChatAttachmentRepository,
     SqliteChatConversationRepository, SqliteChatMessageRepository, SqliteChatTimelineRepository,
-    SqliteDelegatedSessionRepository, SqliteExecutionPlanRepository,
-    SqliteExecutionSettingsRepository, SqliteExternalEventsRepository,
-    SqliteExternalIssueLinkRepository, SqliteGlobalExecutionSettingsRepository,
+    SqliteClickUpIntegrationSettingsRepository, SqliteDelegatedSessionRepository,
+    SqliteExecutionPlanRepository, SqliteExecutionSettingsRepository,
+    SqliteExternalEventsRepository, SqliteExternalIssueLinkRepository,
+    SqliteGlobalExecutionSettingsRepository, SqliteGranolaIntegrationSettingsRepository,
     SqliteIdeationEffortSettingsRepository, SqliteIdeationModelSettingsRepository,
     SqliteIdeationSessionRepository, SqliteIdeationSettingsRepository,
-    SqliteClickUpIntegrationSettingsRepository,
     SqliteLinearIntegrationSettingsRepository, SqliteMemoryArchiveRepository,
     SqliteMemoryEntryRepository, SqliteMemoryEventRepository, SqliteMethodologyRepository,
     SqliteOrphanWorktreeCleanupMarkerRepository, SqlitePermissionRepository,
@@ -122,10 +128,10 @@ use crate::infrastructure::sqlite::{
     SqliteTeamSessionRepository, SqliteTicketCanonicalBranchRepository,
     SqliteWebhookRegistrationRepository, SqliteWorkflowRepository,
 };
-use crate::infrastructure::GhCliGithubService;
 use crate::infrastructure::HyperAtlassianApiClient;
 use crate::infrastructure::HyperClickUpApiClient;
 use crate::infrastructure::HyperLinearApiClient;
+use crate::infrastructure::{GhCliGithubService, HyperGranolaApiClient};
 
 pub(crate) struct ResolvedBackgroundAgentRuntime {
     pub client: Arc<dyn AgenticClient>,
@@ -135,6 +141,19 @@ pub(crate) struct ResolvedBackgroundAgentRuntime {
     pub logical_effort: Option<LogicalEffort>,
     pub approval_policy: Option<String>,
     pub sandbox_mode: Option<String>,
+    pub service_tier: Option<String>,
+    pub env: HashMap<String, String>,
+}
+
+impl ResolvedBackgroundAgentRuntime {
+    pub(crate) fn env_with_overrides(
+        &self,
+        overrides: HashMap<String, String>,
+    ) -> HashMap<String, String> {
+        let mut env = self.env.clone();
+        env.extend(overrides);
+        env
+    }
 }
 
 /// Application state container for dependency injection
@@ -154,6 +173,8 @@ pub struct AppState {
     pub linear_integration_service: Arc<LinearIntegrationService>,
     /// Native ClickUp integration service.
     pub clickup_integration_service: Arc<ClickUpIntegrationService>,
+    /// Native Granola integration service.
+    pub granola_integration_service: Arc<GranolaIntegrationService>,
     /// Provider-neutral external issue link and sync service.
     pub external_issue_link_service: Arc<ExternalIssueLinkService>,
     /// Agent profile repository (SQLite in production)
@@ -183,6 +204,8 @@ pub struct AppState {
     pub delegated_session_repo: Arc<dyn DelegatedSessionRepository>,
     /// Lightweight agent task repository for todo/dependency tracking
     pub agent_task_repo: Arc<dyn AgentTaskRepository>,
+    /// Durable Agent conversation issues surfaced in the Agents UI.
+    pub agent_conversation_issue_repo: Arc<dyn AgentConversationIssueRepository>,
     /// Ideation effort settings repository (global and per-project effort overrides)
     pub ideation_effort_settings_repo: Arc<dyn IdeationEffortSettingsRepository>,
     /// Ideation model settings repository (global and per-project model overrides)
@@ -211,6 +234,8 @@ pub struct AppState {
     pub agent_conversation_jira_issue_repo: Arc<dyn AgentConversationJiraIssueRepository>,
     /// Conversation-owned primary Linear assignment/cache repository
     pub agent_conversation_linear_issue_repo: Arc<dyn AgentConversationLinearIssueRepository>,
+    /// Conversation-owned primary Granola note assignment/cache repository
+    pub agent_conversation_granola_note_repo: Arc<dyn AgentConversationGranolaNoteRepository>,
     /// Per-ticket canonical branch that all conversations for a ticket base off of
     pub ticket_canonical_branch_repo: Arc<dyn TicketCanonicalBranchRepository>,
     /// Startup orphan agent-worktree cleanup backoff markers
@@ -378,17 +403,17 @@ impl AppState {
     fn production_clickup_integration_service(
         shared_conn: &Arc<Mutex<rusqlite::Connection>>,
     ) -> Arc<ClickUpIntegrationService> {
-        let client: Arc<dyn crate::application::ClickUpApiClient> =
-            match HyperClickUpApiClient::new() {
-                Ok(client) => Arc::new(client),
-                Err(error) => {
-                    tracing::warn!(
-                        error = %error,
-                        "ClickUp HTTP client unavailable; integration validation will fail until TLS roots are available"
-                    );
-                    Arc::new(UnavailableClickUpApiClient::new(error))
-                }
-            };
+        let client: Arc<dyn crate::application::ClickUpApiClient> = match HyperClickUpApiClient::new(
+        ) {
+            Ok(client) => Arc::new(client),
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "ClickUp HTTP client unavailable; integration validation will fail until TLS roots are available"
+                );
+                Arc::new(UnavailableClickUpApiClient::new(error))
+            }
+        };
         Arc::new(ClickUpIntegrationService::new(
             Arc::new(SqliteClickUpIntegrationSettingsRepository::from_shared(
                 Arc::clone(shared_conn),
@@ -403,6 +428,39 @@ impl AppState {
             Arc::new(MemoryClickUpIntegrationSettingsRepository::new()),
             Arc::new(MemorySecretStore::new()),
             Arc::new(EmptyClickUpApiClient),
+        ))
+    }
+
+    fn production_granola_integration_service(
+        shared_conn: &Arc<Mutex<rusqlite::Connection>>,
+    ) -> Arc<GranolaIntegrationService> {
+        Arc::new(GranolaIntegrationService::new(
+            Arc::new(SqliteGranolaIntegrationSettingsRepository::from_shared(
+                Arc::clone(shared_conn),
+            )),
+            Arc::new(MacosKeychainSecretStore::new()),
+            Self::production_granola_api_client(),
+        ))
+    }
+
+    fn production_granola_api_client() -> Arc<dyn crate::application::GranolaApiClient> {
+        match HyperGranolaApiClient::new() {
+            Ok(client) => Arc::new(client),
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "Granola HTTP client unavailable; integration validation will fail until TLS roots are available"
+                );
+                Arc::new(UnavailableGranolaApiClient::new(error))
+            }
+        }
+    }
+
+    fn memory_granola_integration_service() -> Arc<GranolaIntegrationService> {
+        Arc::new(GranolaIntegrationService::new(
+            Arc::new(MemoryGranolaIntegrationSettingsRepository::new()),
+            Arc::new(MemorySecretStore::new()),
+            Arc::new(EmptyGranolaApiClient),
         ))
     }
 
@@ -433,6 +491,8 @@ impl AppState {
         logical_effort: Option<LogicalEffort>,
         approval_policy: Option<String>,
         sandbox_mode: Option<String>,
+        service_tier: Option<String>,
+        env: HashMap<String, String>,
     ) -> ResolvedBackgroundAgentRuntime {
         ResolvedBackgroundAgentRuntime {
             client,
@@ -444,6 +504,8 @@ impl AppState {
                 .or_else(|| default_approval_policy_for_harness(harness).map(str::to_string)),
             sandbox_mode: sandbox_mode
                 .or_else(|| default_sandbox_mode_for_harness(harness).map(str::to_string)),
+            service_tier,
+            env,
         }
     }
 
@@ -456,6 +518,28 @@ impl AppState {
             logical_effort: Some(LogicalEffort::Medium),
             ..runtime
         }
+    }
+
+    fn with_runtime_service_tier(
+        mut runtime: ResolvedBackgroundAgentRuntime,
+        service_tier: Option<String>,
+    ) -> ResolvedBackgroundAgentRuntime {
+        if service_tier.is_some() {
+            runtime.service_tier = service_tier;
+        }
+        runtime
+    }
+
+    async fn latest_conversation_service_tier(
+        &self,
+        conversation: &ChatConversation,
+    ) -> AppResult<Option<String>> {
+        Ok(self
+            .agent_run_repo
+            .get_latest_for_conversation(&conversation.id)
+            .await
+            .map_err(|error| AppError::Infrastructure(error.to_string()))?
+            .and_then(|run| run.service_tier))
     }
 
     pub(crate) fn managed_cli_path_override_for_provider(
@@ -534,6 +618,10 @@ impl AppState {
                 &provider_settings,
             )
             .await?;
+        let provider_env = crate::application::provider_env_file::load_provider_custom_env_file(
+            &provider_settings,
+        )
+        .map_err(AppError::Infrastructure)?;
 
         Ok(self.background_agent_runtime_for_harness(
             client,
@@ -543,6 +631,8 @@ impl AppState {
             provider_settings.effort,
             provider_settings.approval_policy,
             provider_settings.sandbox_mode,
+            provider_settings.service_tier,
+            provider_env,
         ))
     }
 
@@ -593,13 +683,12 @@ impl AppState {
             "AppState transition service built"
         );
 
-        let drafter = Arc::new(
-            crate::application::plan_pr_description::AppStatePlanPrDescriptionDrafter::new(
+        let drafter =
+            crate::application::plan_pr_description::build_app_state_plan_pr_description_drafter(
                 Arc::clone(&self.agent_conversation_workspace_repo),
                 Arc::clone(&self.agent_provider_settings_repo),
                 self.agent_clients.clone(),
-            ),
-        );
+            );
         service = service.with_plan_pr_description_drafter(drafter);
 
         service
@@ -647,8 +736,9 @@ impl AppState {
                     resolved.effective_harness,
                 )
             });
-        let preserve_resolution_error =
-            provider_settings.cli_management_mode == AgentProviderCliManagementMode::RxManaged;
+        let preserve_resolution_error = provider_settings.cli_management_mode
+            == AgentProviderCliManagementMode::RxManaged
+            || provider_settings.custom_binary_enabled;
         let (client, cli_path_override) = self
             .resolve_background_agent_client_and_cli_path_override(
                 resolved.effective_harness,
@@ -672,6 +762,10 @@ impl AppState {
         let use_resolved_lane_settings = resolved.effective_harness
             != self.agent_clients.default_harness
             || resolved.effective_harness == AgentHarnessKind::Codex;
+        let provider_env = crate::application::provider_env_file::load_provider_custom_env_file(
+            &provider_settings,
+        )
+        .map_err(AppError::Infrastructure)?;
         let (model, logical_effort, approval_policy, sandbox_mode) = if use_resolved_lane_settings {
             (
                 Some(resolved.model),
@@ -696,6 +790,8 @@ impl AppState {
             logical_effort,
             approval_policy,
             sandbox_mode,
+            provider_settings.service_tier,
+            provider_env,
         ))
     }
 
@@ -770,13 +866,16 @@ impl AppState {
         }
 
         if let Some(harness) = conversation.provider_harness {
+            let service_tier = self.latest_conversation_service_tier(conversation).await?;
             let runtime = self
                 .resolve_background_agent_runtime_for_harness(
                     harness,
                     "session namer owning conversation",
                 )
                 .await?;
-            return Ok(Self::lock_utility_agent_runtime_model(runtime));
+            return Ok(Self::lock_utility_agent_runtime_model(
+                Self::with_runtime_service_tier(runtime, service_tier),
+            ));
         }
 
         self.resolve_session_namer_runtime_for_project(project_id)
@@ -788,13 +887,16 @@ impl AppState {
         conversation: &ChatConversation,
     ) -> AppResult<ResolvedBackgroundAgentRuntime> {
         if let Some(harness) = conversation.provider_harness {
+            let service_tier = self.latest_conversation_service_tier(conversation).await?;
             let runtime = self
                 .resolve_background_agent_runtime_for_harness(
                     harness,
                     "PR describer owning conversation",
                 )
                 .await?;
-            return Ok(Self::lock_utility_agent_runtime_model(runtime));
+            return Ok(Self::lock_utility_agent_runtime_model(
+                Self::with_runtime_service_tier(runtime, service_tier),
+            ));
         }
 
         let default_provider = crate::application::resolve_enabled_default_provider(
@@ -810,6 +912,43 @@ impl AppState {
             )
             .await?;
         Ok(Self::lock_utility_agent_runtime_model(runtime))
+    }
+
+    pub(crate) async fn resolve_workspace_reviewer_runtime(
+        &self,
+        conversation: &ChatConversation,
+        latest_run: Option<&AgentRun>,
+    ) -> AppResult<ResolvedBackgroundAgentRuntime> {
+        let requested_harness = latest_run
+            .and_then(|run| run.harness)
+            .or(conversation.provider_harness);
+
+        let runtime = if let Some(harness) = requested_harness {
+            self.resolve_background_agent_runtime_for_harness(
+                harness,
+                "workspace reviewer owning conversation",
+            )
+            .await?
+        } else {
+            let default_provider = crate::application::resolve_enabled_default_provider(
+                &self.agent_provider_settings_repo,
+                "workspace reviewer default provider",
+            )
+            .await
+            .map_err(AppError::Infrastructure)?;
+            self.resolve_background_agent_runtime_for_harness(
+                default_provider.provider,
+                "workspace reviewer default provider",
+            )
+            .await?
+        };
+
+        Ok(Self::lock_utility_agent_runtime_model(
+            Self::with_runtime_service_tier(
+                runtime,
+                latest_run.and_then(|run| run.service_tier.clone()),
+            ),
+        ))
     }
 
     pub(crate) async fn resolve_plan_complexity_runtime_for_session(
@@ -897,6 +1036,7 @@ impl AppState {
             ),
             linear_integration_service: Self::production_linear_integration_service(&shared_conn),
             clickup_integration_service: Self::production_clickup_integration_service(&shared_conn),
+            granola_integration_service: Self::production_granola_integration_service(&shared_conn),
             external_issue_link_service: Self::production_external_issue_link_service(&shared_conn),
             agent_profile_repo: Arc::new(SqliteAgentProfileRepository::from_shared(Arc::clone(
                 &shared_conn,
@@ -930,6 +1070,9 @@ impl AppState {
             agent_task_repo: Arc::new(SqliteAgentTaskRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
+            agent_conversation_issue_repo: Arc::new(
+                SqliteAgentConversationIssueRepository::from_shared(Arc::clone(&shared_conn)),
+            ),
             ideation_settings_repo: Arc::new(SqliteIdeationSettingsRepository::from_shared(
                 Arc::clone(&shared_conn),
             )),
@@ -972,6 +1115,9 @@ impl AppState {
             ),
             agent_conversation_linear_issue_repo: Arc::new(
                 SqliteAgentConversationLinearIssueRepository::from_shared(Arc::clone(&shared_conn)),
+            ),
+            agent_conversation_granola_note_repo: Arc::new(
+                SqliteAgentConversationGranolaNoteRepository::from_shared(Arc::clone(&shared_conn)),
             ),
             ticket_canonical_branch_repo: Arc::new(
                 SqliteTicketCanonicalBranchRepository::from_shared(Arc::clone(&shared_conn)),
@@ -1129,6 +1275,7 @@ impl AppState {
             atlassian_integration_service: Self::memory_atlassian_integration_service(),
             linear_integration_service: Self::memory_linear_integration_service(),
             clickup_integration_service: Self::memory_clickup_integration_service(),
+            granola_integration_service: Self::memory_granola_integration_service(),
             external_issue_link_service: Self::production_external_issue_link_service(&shared_conn),
             agent_profile_repo: Arc::new(MemoryAgentProfileRepository::new()),
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
@@ -1148,6 +1295,9 @@ impl AppState {
             agent_task_repo: Arc::new(SqliteAgentTaskRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
+            agent_conversation_issue_repo: Arc::new(
+                SqliteAgentConversationIssueRepository::from_shared(Arc::clone(&shared_conn)),
+            ),
             ideation_settings_repo: Arc::new(MemoryIdeationSettingsRepository::new()),
             ideation_effort_settings_repo: Arc::new(MemoryIdeationEffortSettingsRepository::new()),
             ideation_model_settings_repo: Arc::new(MemoryIdeationModelSettingsRepository::new()),
@@ -1175,9 +1325,10 @@ impl AppState {
             agent_conversation_linear_issue_repo: Arc::new(
                 MemoryAgentConversationLinearIssueRepository::new(),
             ),
-            ticket_canonical_branch_repo: Arc::new(
-                MemoryTicketCanonicalBranchRepository::new(),
+            agent_conversation_granola_note_repo: Arc::new(
+                MemoryAgentConversationGranolaNoteRepository::new(),
             ),
+            ticket_canonical_branch_repo: Arc::new(MemoryTicketCanonicalBranchRepository::new()),
             orphan_worktree_cleanup_marker_repo: Arc::new(
                 MemoryOrphanWorktreeCleanupMarkerRepository::new(),
             ),
@@ -1267,6 +1418,7 @@ impl AppState {
             atlassian_integration_service: Self::memory_atlassian_integration_service(),
             linear_integration_service: Self::memory_linear_integration_service(),
             clickup_integration_service: Self::memory_clickup_integration_service(),
+            granola_integration_service: Self::memory_granola_integration_service(),
             external_issue_link_service: Self::production_external_issue_link_service(&shared_conn),
             agent_profile_repo: Arc::new(MemoryAgentProfileRepository::new()),
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
@@ -1286,6 +1438,9 @@ impl AppState {
             agent_task_repo: Arc::new(SqliteAgentTaskRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
+            agent_conversation_issue_repo: Arc::new(
+                SqliteAgentConversationIssueRepository::from_shared(Arc::clone(&shared_conn)),
+            ),
             ideation_settings_repo: Arc::new(MemoryIdeationSettingsRepository::new()),
             ideation_effort_settings_repo: Arc::new(MemoryIdeationEffortSettingsRepository::new()),
             ideation_model_settings_repo: Arc::new(MemoryIdeationModelSettingsRepository::new()),
@@ -1313,9 +1468,10 @@ impl AppState {
             agent_conversation_linear_issue_repo: Arc::new(
                 MemoryAgentConversationLinearIssueRepository::new(),
             ),
-            ticket_canonical_branch_repo: Arc::new(
-                MemoryTicketCanonicalBranchRepository::new(),
+            agent_conversation_granola_note_repo: Arc::new(
+                MemoryAgentConversationGranolaNoteRepository::new(),
             ),
+            ticket_canonical_branch_repo: Arc::new(MemoryTicketCanonicalBranchRepository::new()),
             orphan_worktree_cleanup_marker_repo: Arc::new(
                 MemoryOrphanWorktreeCleanupMarkerRepository::new(),
             ),
@@ -1415,6 +1571,7 @@ impl AppState {
             atlassian_integration_service: Self::memory_atlassian_integration_service(),
             linear_integration_service: Self::memory_linear_integration_service(),
             clickup_integration_service: Self::memory_clickup_integration_service(),
+            granola_integration_service: Self::memory_granola_integration_service(),
             external_issue_link_service: Self::production_external_issue_link_service(&shared_conn),
             agent_profile_repo: Arc::new(MemoryAgentProfileRepository::new()),
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
@@ -1434,6 +1591,9 @@ impl AppState {
             agent_task_repo: Arc::new(SqliteAgentTaskRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
+            agent_conversation_issue_repo: Arc::new(
+                SqliteAgentConversationIssueRepository::from_shared(Arc::clone(&shared_conn)),
+            ),
             ideation_settings_repo: Arc::new(MemoryIdeationSettingsRepository::new()),
             ideation_effort_settings_repo: Arc::new(MemoryIdeationEffortSettingsRepository::new()),
             ideation_model_settings_repo: Arc::new(MemoryIdeationModelSettingsRepository::new()),
@@ -1462,6 +1622,9 @@ impl AppState {
             ),
             agent_conversation_linear_issue_repo: Arc::new(
                 SqliteAgentConversationLinearIssueRepository::from_shared(Arc::clone(&shared_conn)),
+            ),
+            agent_conversation_granola_note_repo: Arc::new(
+                SqliteAgentConversationGranolaNoteRepository::from_shared(Arc::clone(&shared_conn)),
             ),
             ticket_canonical_branch_repo: Arc::new(
                 SqliteTicketCanonicalBranchRepository::from_shared(Arc::clone(&shared_conn)),
@@ -1557,6 +1720,7 @@ impl AppState {
             atlassian_integration_service: Self::memory_atlassian_integration_service(),
             linear_integration_service: Self::memory_linear_integration_service(),
             clickup_integration_service: Self::memory_clickup_integration_service(),
+            granola_integration_service: Self::memory_granola_integration_service(),
             external_issue_link_service: Self::memory_external_issue_link_service(),
             agent_profile_repo: Arc::new(MemoryAgentProfileRepository::new()),
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
@@ -1570,6 +1734,7 @@ impl AppState {
             ideation_session_repo: Arc::new(MemoryIdeationSessionRepository::new()),
             delegated_session_repo: Arc::new(MemoryDelegatedSessionRepository::new()),
             agent_task_repo: Arc::new(MemoryAgentTaskRepository::new()),
+            agent_conversation_issue_repo: Arc::new(MemoryAgentConversationIssueRepository::new()),
             ideation_settings_repo: Arc::new(MemoryIdeationSettingsRepository::new()),
             ideation_effort_settings_repo: Arc::new(MemoryIdeationEffortSettingsRepository::new()),
             ideation_model_settings_repo: Arc::new(MemoryIdeationModelSettingsRepository::new()),
@@ -1595,9 +1760,10 @@ impl AppState {
             agent_conversation_linear_issue_repo: Arc::new(
                 MemoryAgentConversationLinearIssueRepository::new(),
             ),
-            ticket_canonical_branch_repo: Arc::new(
-                MemoryTicketCanonicalBranchRepository::new(),
+            agent_conversation_granola_note_repo: Arc::new(
+                MemoryAgentConversationGranolaNoteRepository::new(),
             ),
+            ticket_canonical_branch_repo: Arc::new(MemoryTicketCanonicalBranchRepository::new()),
             orphan_worktree_cleanup_marker_repo: Arc::new(
                 MemoryOrphanWorktreeCleanupMarkerRepository::new(),
             ),

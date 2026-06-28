@@ -94,6 +94,8 @@ function agentProviderSettings(
         status: "Available codex detected.",
         error: null,
         missingCoreExecFeatures: [],
+        supportsFastMode: true,
+        fastModeSupportedModels: ["gpt-5.5", "gpt-5.4"],
         updatedAt: providerUpdatedAt,
       },
       {
@@ -113,6 +115,8 @@ function agentProviderSettings(
         status: "Available claude detected.",
         error: null,
         missingCoreExecFeatures: [],
+        supportsFastMode: false,
+        fastModeSupportedModels: [],
         updatedAt: providerUpdatedAt,
       },
     ],
@@ -156,9 +160,9 @@ describe("AgentsView start conversation", () => {
         {
           provider: "clickup",
           kind: "clickup",
-          id: "MBE-2857",
-          key: "MBE-2857",
-          title: "Inbox classifier",
+          id: "TASK-123",
+          key: "TASK-123",
+          title: "Demo task",
         },
       ],
     });
@@ -172,8 +176,8 @@ describe("AgentsView start conversation", () => {
     );
     expect(screen.getByTestId("agents-start-mode-chip")).toHaveTextContent("Agent");
     expect(
-      screen.getByTestId("agent-composer-reference-pill-integration:clickup:MBE-2857")
-    ).toHaveTextContent("Inbox classifier");
+      screen.getByTestId("agent-composer-reference-pill-integration:clickup:TASK-123")
+    ).toHaveTextContent("Demo task");
     expect(useAgentSessionStore.getState().startConversationDraft).toBeNull();
   });
 
@@ -310,6 +314,7 @@ describe("AgentsView start conversation", () => {
           base: expect.objectContaining({
             kind: "project_default",
             ref: "main",
+            branchMode: "isolated",
           }),
         })
       )
@@ -380,6 +385,9 @@ describe("AgentsView start conversation", () => {
     await waitFor(() =>
       expect(screen.getByTestId("agents-start-base")).toHaveTextContent("#42 Add PR picker")
     );
+    expect(
+      screen.getByRole("switch", { name: /Use isolated branch/i })
+    ).toHaveAttribute("aria-checked", "false");
     fireEvent.change(screen.getByTestId("agents-start-textarea"), {
       target: { value: "review this PR" },
     });
@@ -392,6 +400,7 @@ describe("AgentsView start conversation", () => {
           content: "review this PR",
           base: expect.objectContaining({
             kind: "local_branch",
+            branchMode: "linked",
             ref: "feature/pr-picker",
             displayName: "PR #42: Add PR picker",
             sourcePullRequest: expect.objectContaining({
@@ -400,6 +409,126 @@ describe("AgentsView start conversation", () => {
               baseRefName: "main",
               headRefOid: "abc123",
             }),
+          }),
+        })
+      )
+    );
+  });
+
+  it("starts a selected pull request in isolated branch mode when enabled", async () => {
+    const user = userEvent.setup();
+    mockAgentViewData();
+    loadPullRequestBaseOptionsMock.mockResolvedValue([prPickerBranchOption()]);
+
+    renderAgentsView();
+
+    await user.click(await screen.findByTestId("agents-start-base"));
+    await user.click(screen.getByRole("tab", { name: /PRs/i }));
+    const prOption = await screen.findByText("#42 Add PR picker");
+    await user.click(prOption.closest("button") as HTMLButtonElement);
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-start-base")).toHaveTextContent("#42 Add PR picker")
+    );
+
+    const isolatedSwitch = screen.getByRole("switch", {
+      name: /Use isolated branch/i,
+    });
+    expect(isolatedSwitch).toHaveAttribute("aria-checked", "false");
+    await user.click(isolatedSwitch);
+
+    fireEvent.change(screen.getByTestId("agents-start-textarea"), {
+      target: { value: "review this PR separately" },
+    });
+    fireEvent.click(screen.getByTestId("agents-start-submit"));
+
+    await waitFor(() =>
+      expect(startAgentConversationMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: "review this PR separately",
+          base: expect.objectContaining({
+            kind: "local_branch",
+            branchMode: "isolated",
+            ref: "feature/pr-picker",
+            sourcePullRequest: expect.objectContaining({
+              number: 42,
+              headRefName: "feature/pr-picker",
+            }),
+          }),
+        })
+      )
+    );
+  });
+
+  it("forces isolated branch mode when starting from the current project branch", async () => {
+    mockAgentViewData();
+    const currentBranchOptions: BranchBaseOption[] = [
+      {
+        key: "project_default:main",
+        label: "Project default (main)",
+        detail: "Configured project base branch",
+        source: "project",
+        selection: {
+          kind: "project_default",
+          ref: "main",
+          displayName: "Project default (main)",
+        },
+      },
+      {
+        key: "current_branch:feature/current",
+        label: "Current branch (feature/current)",
+        detail: "Currently checked out in the project root",
+        source: "current",
+        selection: {
+          kind: "current_branch",
+          ref: "feature/current",
+          displayName: "Current branch (feature/current)",
+        },
+      },
+    ];
+    loadBranchBaseOptionsMock.mockResolvedValue({
+      options: currentBranchOptions,
+      selectedKey: "project_default:main",
+    });
+    resetAgentSessionState({
+      branchBaseCacheByProjectId: {
+        "project-1": {
+          options: currentBranchOptions,
+          selectedKey: "current_branch:feature/current",
+          loadedAt: "2026-05-08T00:00:00.000Z",
+        },
+      },
+      lastBranchBaseSelectionByProjectId: {
+        "project-1": "current_branch:feature/current",
+      },
+    });
+
+    renderAgentsView();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-start-base")).toHaveTextContent(
+        "Current branch (feature/current)"
+      )
+    );
+    await userEvent.click(screen.getByTestId("agents-start-base"));
+    const isolatedSwitch = screen.getByRole("switch", {
+      name: /Use isolated branch/i,
+    });
+    expect(isolatedSwitch).toBeDisabled();
+    expect(isolatedSwitch).toHaveAttribute("aria-checked", "true");
+
+    fireEvent.change(screen.getByTestId("agents-start-textarea"), {
+      target: { value: "start from current branch" },
+    });
+    fireEvent.click(screen.getByTestId("agents-start-submit"));
+
+    await waitFor(() =>
+      expect(startAgentConversationMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: "start from current branch",
+          base: expect.objectContaining({
+            kind: "current_branch",
+            branchMode: "isolated",
+            ref: "feature/current",
           }),
         })
       )
@@ -472,6 +601,7 @@ describe("AgentsView start conversation", () => {
           content: "continue the ticket work",
           base: expect.objectContaining({
             kind: "local_branch",
+            branchMode: "linked",
             ref: "feature/ticket-pr",
             displayName: "PR #88",
             sourcePullRequest: expect.objectContaining({
@@ -535,6 +665,7 @@ describe("AgentsView start conversation", () => {
           mode: "plan",
           base: expect.objectContaining({
             kind: "local_branch",
+            branchMode: "linked",
             ref: "ralphx/ticket/linear-eng-99",
             displayName: "Ticket ENG-99 (ralphx/ticket/linear-eng-99)",
           }),
@@ -563,8 +694,7 @@ describe("AgentsView start conversation", () => {
       expect(screen.getByTestId("agents-start-base")).toHaveTextContent("#42 Add PR picker")
     );
 
-    await user.click(screen.getByTestId("agents-start-base"));
-    await user.click(screen.getByRole("tab", { name: /PRs/i }));
+    await user.type(screen.getByPlaceholderText(/Search pull requests/i), "missing");
 
     await waitFor(() => expect(pullRequestSearches).toBe(2));
     expect(screen.getAllByText("#42 Add PR picker").length).toBeGreaterThan(1);

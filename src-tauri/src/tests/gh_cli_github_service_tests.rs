@@ -7,10 +7,11 @@ use crate::domain::services::github_service::{PrMergeStateStatus, PrMergeableSta
 use crate::error::AppError;
 use crate::infrastructure::services::gh_cli_github_service::{
     parse_check_run_annotations_output, parse_check_runs_output,
-    parse_code_scanning_alert_annotations_output, parse_issue_create_plain_output,
-    parse_pr_annotation_head_sha_output, parse_pr_create_output, parse_pr_create_plain_output,
-    parse_pr_health_output, parse_pr_review_comment_annotations_output,
-    parse_pr_review_decision_output, parse_pr_review_feedback_output, parse_pr_search_output,
+    parse_code_scanning_alert_annotations_output, parse_gh_auth_status_lines,
+    parse_issue_create_plain_output, parse_pr_annotation_head_sha_output, parse_pr_create_output,
+    parse_pr_create_plain_output, parse_pr_detail_output, parse_pr_health_output,
+    parse_pr_review_comment_annotations_output, parse_pr_review_decision_output,
+    parse_pr_review_feedback_output, parse_pr_review_thread_output, parse_pr_search_output,
     parse_pr_status_output, parse_pr_sync_state_output, parse_submit_pr_review_output,
     sanitize_stderr_line, scrub_token_urls, CheckRunAnnotationSource,
 };
@@ -175,6 +176,136 @@ fn parse_pr_status_unknown_state_errors() {
 fn parse_pr_status_missing_state_errors() {
     let json = r#"{"mergedAt": null}"#;
     let err = parse_pr_status_output(json).unwrap_err();
+    assert!(matches!(err, AppError::Infrastructure(_)));
+}
+
+// ── parse_pr_detail_output ─────────────────────────────────────────────────
+
+#[test]
+fn parse_pr_detail_extracts_description_fields() {
+    let json = r#"{
+        "number": 77,
+        "title": "Add GitHub PR visibility",
+        "body": "Surfaces PRs and attached RX conversations.",
+        "author": {"login": "adriandemian"},
+        "createdAt": "2026-06-24T08:00:00Z",
+        "url": "https://github.com/owner/repo/pull/77",
+        "state": "OPEN",
+        "isDraft": true,
+        "headRefName": "ralphx/feature",
+        "baseRefName": "main",
+        "mergeCommit": null
+    }"#;
+
+    let detail = parse_pr_detail_output(77, json).unwrap();
+
+    assert_eq!(detail.number, 77);
+    assert_eq!(detail.title, "Add GitHub PR visibility");
+    assert_eq!(
+        detail.body.as_deref(),
+        Some("Surfaces PRs and attached RX conversations.")
+    );
+    assert_eq!(detail.author.as_deref(), Some("adriandemian"));
+    assert_eq!(detail.created_at.as_deref(), Some("2026-06-24T08:00:00Z"));
+    assert_eq!(detail.state, PrStatus::Open);
+    assert!(detail.is_draft);
+    assert_eq!(detail.head_ref_name, "ralphx/feature");
+    assert_eq!(detail.base_ref_name, "main");
+}
+
+#[test]
+fn parse_pr_detail_maps_merged_state_with_commit() {
+    let json = r#"{
+        "number": 5,
+        "title": "Merged work",
+        "body": "",
+        "author": null,
+        "createdAt": null,
+        "url": null,
+        "state": "MERGED",
+        "isDraft": false,
+        "headRefName": "feature",
+        "baseRefName": "main",
+        "mergeCommit": {"oid": "abc123"}
+    }"#;
+
+    let detail = parse_pr_detail_output(5, json).unwrap();
+
+    assert_eq!(
+        detail.state,
+        PrStatus::Merged {
+            merge_commit_sha: Some("abc123".to_string())
+        }
+    );
+    // Empty body collapses to None; absent author stays None (never panics).
+    assert_eq!(detail.body, None);
+    assert_eq!(detail.author, None);
+}
+
+#[test]
+fn parse_pr_detail_missing_head_ref_errors() {
+    let json = r#"{"state": "OPEN", "baseRefName": "main"}"#;
+    let err = parse_pr_detail_output(1, json).unwrap_err();
+    assert!(matches!(err, AppError::Infrastructure(_)));
+}
+
+// ── parse_pr_review_thread_output ──────────────────────────────────────────
+
+#[test]
+fn parse_pr_review_thread_preserves_conversation_shape() {
+    let json = r#"[[
+        {
+            "id": 1001,
+            "user": {"login": "reviewer"},
+            "body": "Please rename this.",
+            "path": "src/lib.rs",
+            "side": "RIGHT",
+            "line": 42,
+            "html_url": "https://github.com/owner/repo/pull/7#discussion_r1001",
+            "created_at": "2026-06-24T09:00:00Z"
+        },
+        {
+            "id": 1002,
+            "user": {"login": "author"},
+            "body": "Done.",
+            "path": "src/lib.rs",
+            "original_line": 42,
+            "in_reply_to_id": 1001,
+            "created_at": "2026-06-24T09:05:00Z"
+        }
+    ]]"#;
+
+    let thread = parse_pr_review_thread_output(7, json).unwrap();
+
+    assert_eq!(thread.pr_number, 7);
+    assert_eq!(thread.comments.len(), 2);
+
+    let first = &thread.comments[0];
+    assert_eq!(first.id, "1001");
+    assert_eq!(first.author.as_deref(), Some("reviewer"));
+    assert_eq!(first.body, "Please rename this.");
+    assert_eq!(first.side.as_deref(), Some("right"));
+    assert_eq!(first.line, Some(42));
+    assert!(!first.is_outdated);
+    assert_eq!(first.in_reply_to_id, None);
+
+    let reply = &thread.comments[1];
+    assert_eq!(reply.in_reply_to_id.as_deref(), Some("1001"));
+    // Anchored only via original_line → outdated.
+    assert!(reply.is_outdated);
+    assert_eq!(reply.line, Some(42));
+}
+
+#[test]
+fn parse_pr_review_thread_empty_pages_yield_no_comments() {
+    let thread = parse_pr_review_thread_output(9, "[[]]").unwrap();
+    assert_eq!(thread.pr_number, 9);
+    assert!(thread.comments.is_empty());
+}
+
+#[test]
+fn parse_pr_review_thread_invalid_json_errors() {
+    let err = parse_pr_review_thread_output(9, "not json").unwrap_err();
     assert!(matches!(err, AppError::Infrastructure(_)));
 }
 
@@ -741,6 +872,52 @@ fn scrub_token_urls_no_mutation_on_plain_text() {
     assert_eq!(result, s);
 }
 
+// ── parse_gh_auth_status_lines ─────────────────────────────────────────────
+
+#[test]
+fn parse_gh_auth_status_picks_active_account_among_multiple() {
+    let lines = vec![
+        "github.com".to_string(),
+        "  ✓ Logged in to github.com account first (keyring)".to_string(),
+        "  - Active account: false".to_string(),
+        "  - Token: gho_************".to_string(),
+        "  ✓ Logged in to github.com account second (keyring)".to_string(),
+        "  - Active account: true".to_string(),
+    ];
+    let (authenticated, host, account) = parse_gh_auth_status_lines(&lines);
+    assert!(authenticated);
+    assert_eq!(host.as_deref(), Some("github.com"));
+    assert_eq!(account.as_deref(), Some("second"));
+}
+
+#[test]
+fn parse_gh_auth_status_falls_back_to_first_without_active_marker() {
+    let lines = vec!["  ✓ Logged in to github.example.com account solo (keyring)".to_string()];
+    let (authenticated, host, account) = parse_gh_auth_status_lines(&lines);
+    assert!(authenticated);
+    assert_eq!(host.as_deref(), Some("github.example.com"));
+    assert_eq!(account.as_deref(), Some("solo"));
+}
+
+#[test]
+fn parse_gh_auth_status_unauthenticated_returns_none() {
+    let lines = vec![
+        "You are not logged into any GitHub hosts. Run gh auth login to authenticate.".to_string(),
+    ];
+    let (authenticated, host, account) = parse_gh_auth_status_lines(&lines);
+    assert!(!authenticated);
+    assert!(host.is_none());
+    assert!(account.is_none());
+}
+
+#[test]
+fn parse_gh_auth_status_empty_returns_none() {
+    let (authenticated, host, account) = parse_gh_auth_status_lines(&[]);
+    assert!(!authenticated);
+    assert!(host.is_none());
+    assert!(account.is_none());
+}
+
 // ── MockGithubService round-trip ───────────────────────────────────────────
 
 mod mock_roundtrip {
@@ -750,11 +927,12 @@ mod mock_roundtrip {
     use async_trait::async_trait;
 
     use crate::domain::services::github_service::{
-        GithubServiceTrait, PrMergeStateStatus, PrMergeableState, PrReviewSubmissionEvent, PrStatus,
+        GithubConnectionStatus, GithubServiceTrait, PrMergeStateStatus, PrMergeableState,
+        PrReviewSubmissionEvent, PrStatus,
     };
     use crate::error::AppError;
     use crate::infrastructure::services::gh_cli_github_service::{
-        GhCliCommandRunner, GhCliGithubService,
+        GhAuthStatusRaw, GhCliCommandRunner, GhCliGithubService,
     };
     use crate::tests::mock_github_service::MockGithubService;
     use crate::AppResult;
@@ -764,14 +942,22 @@ mod mock_roundtrip {
         gh_results: Mutex<Vec<AppResult<Vec<String>>>>,
         gh_calls: Mutex<Vec<Vec<String>>>,
         git_calls: Mutex<Vec<Vec<String>>>,
+        auth_status: Mutex<Option<GhAuthStatusRaw>>,
+        auth_status_calls: Mutex<u32>,
     }
 
     impl MockGhCliRunner {
         fn with_gh_results(results: Vec<AppResult<Vec<String>>>) -> Self {
             Self {
                 gh_results: Mutex::new(results),
-                gh_calls: Mutex::new(Vec::new()),
-                git_calls: Mutex::new(Vec::new()),
+                ..Default::default()
+            }
+        }
+
+        fn with_auth_status(raw: GhAuthStatusRaw) -> Self {
+            Self {
+                auth_status: Mutex::new(Some(raw)),
+                ..Default::default()
             }
         }
 
@@ -797,6 +983,148 @@ mod mock_roundtrip {
             self.git_calls.lock().unwrap().push(args.to_vec());
             Ok(())
         }
+
+        async fn run_gh_auth_status(&self) -> GhAuthStatusRaw {
+            *self.auth_status_calls.lock().unwrap() += 1;
+            self.auth_status.lock().unwrap().clone().unwrap_or_default()
+        }
+    }
+
+    #[tokio::test]
+    async fn fetch_github_connection_status_installed_authenticated() {
+        let runner = Arc::new(MockGhCliRunner::with_auth_status(GhAuthStatusRaw {
+            gh_installed: true,
+            output_lines: vec![
+                "github.com".to_string(),
+                "  ✓ Logged in to github.com account adriandemian (keyring)".to_string(),
+                "  - Active account: true".to_string(),
+                "  - Token: gho_************".to_string(),
+                "  ✓ Logged in to github.com account otheruser (keyring)".to_string(),
+                "  - Active account: false".to_string(),
+            ],
+        }));
+        let service = GhCliGithubService::with_runner(runner.clone());
+
+        let status = service.fetch_github_connection_status().await.unwrap();
+
+        assert_eq!(
+            status,
+            GithubConnectionStatus {
+                gh_installed: true,
+                authenticated: true,
+                host: Some("github.com".to_string()),
+                account: Some("adriandemian".to_string()),
+            }
+        );
+        assert_eq!(*runner.auth_status_calls.lock().unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn fetch_github_connection_status_installed_unauthenticated() {
+        let runner = Arc::new(MockGhCliRunner::with_auth_status(GhAuthStatusRaw {
+            gh_installed: true,
+            output_lines: vec![
+                "You are not logged into any GitHub hosts. Run gh auth login to authenticate."
+                    .to_string(),
+            ],
+        }));
+        let service = GhCliGithubService::with_runner(runner.clone());
+
+        let status = service.fetch_github_connection_status().await.unwrap();
+
+        assert_eq!(
+            status,
+            GithubConnectionStatus {
+                gh_installed: true,
+                authenticated: false,
+                host: None,
+                account: None,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_github_connection_status_missing_binary() {
+        let runner = Arc::new(MockGhCliRunner::with_auth_status(GhAuthStatusRaw {
+            gh_installed: false,
+            output_lines: Vec::new(),
+        }));
+        let service = GhCliGithubService::with_runner(runner.clone());
+
+        let status = service.fetch_github_connection_status().await.unwrap();
+
+        assert_eq!(status, GithubConnectionStatus::unavailable());
+        assert!(!status.gh_installed);
+    }
+
+    #[tokio::test]
+    async fn fetch_pr_detail_issues_single_pr_view_and_parses_payload() {
+        let json = r#"{
+            "number": 77,
+            "title": "Add GitHub PR visibility",
+            "body": "Body text",
+            "author": {"login": "adriandemian"},
+            "createdAt": "2026-06-24T08:00:00Z",
+            "url": "https://github.com/owner/repo/pull/77",
+            "state": "OPEN",
+            "isDraft": false,
+            "headRefName": "ralphx/feature",
+            "baseRefName": "main",
+            "mergeCommit": null
+        }"#;
+        let runner = Arc::new(MockGhCliRunner::with_gh_results(vec![Ok(vec![
+            json.to_string()
+        ])]));
+        let service = GhCliGithubService::with_runner(runner.clone());
+
+        let detail = service
+            .fetch_pr_detail(Path::new("/tmp"), 77)
+            .await
+            .unwrap();
+
+        assert_eq!(detail.number, 77);
+        assert_eq!(detail.title, "Add GitHub PR visibility");
+        assert_eq!(detail.head_ref_name, "ralphx/feature");
+        assert_eq!(detail.base_ref_name, "main");
+
+        // Exactly one `gh pr view <n> --json …` call; no extra fan-out.
+        let calls = runner.gh_calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(&calls[0][0..3], &["pr", "view", "77"]);
+    }
+
+    #[tokio::test]
+    async fn fetch_pr_review_thread_issues_single_comments_call() {
+        let json = r#"[[
+            {
+                "id": 1001,
+                "user": {"login": "reviewer"},
+                "body": "Nit.",
+                "path": "src/lib.rs",
+                "side": "RIGHT",
+                "line": 10,
+                "html_url": "https://github.com/owner/repo/pull/7#discussion_r1001",
+                "created_at": "2026-06-24T09:00:00Z"
+            }
+        ]]"#;
+        let runner = Arc::new(MockGhCliRunner::with_gh_results(vec![Ok(vec![
+            json.to_string()
+        ])]));
+        let service = GhCliGithubService::with_runner(runner.clone());
+
+        let thread = service
+            .fetch_pr_review_thread(Path::new("/tmp"), 7)
+            .await
+            .unwrap();
+
+        assert_eq!(thread.pr_number, 7);
+        assert_eq!(thread.comments.len(), 1);
+        assert_eq!(thread.comments[0].author.as_deref(), Some("reviewer"));
+
+        // Only the review-comments API is hit — no check-run/code-scanning fan-out.
+        let calls = runner.gh_calls();
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].iter().any(|arg| arg.contains("/comments")));
     }
 
     #[tokio::test]
@@ -1120,6 +1448,43 @@ mod mock_roundtrip {
                 "all",
                 "--limit",
                 "20",
+                "--json",
+                "number,url,state,isDraft,headRefName,updatedAt",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>()]
+        );
+    }
+
+    #[tokio::test]
+    async fn list_pull_request_branch_matches_uses_single_all_state_lookup() {
+        let runner = Arc::new(MockGhCliRunner::with_gh_results(vec![Ok(vec![
+            r#"[
+                {"number":42,"url":"https://github.com/owner/repo/pull/42","state":"MERGED","isDraft":false,"headRefName":"ralphx/demo/agent-1234","updatedAt":"2026-05-11T22:00:00Z"},
+                {"number":43,"url":"https://github.com/owner/repo/pull/43","state":"CLOSED","isDraft":false,"headRefName":"","updatedAt":"2026-05-12T22:00:00Z"}
+            ]"#
+            .to_string(),
+        ])]));
+        let service = GhCliGithubService::with_runner(runner.clone());
+
+        let matches = service
+            .list_pull_request_branch_matches(Path::new("/tmp"), 200)
+            .await
+            .unwrap();
+
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].number, 42);
+        assert_eq!(matches[0].publication_status(), "merged");
+        assert_eq!(
+            runner.gh_calls(),
+            vec![vec![
+                "pr",
+                "list",
+                "--state",
+                "all",
+                "--limit",
+                "200",
                 "--json",
                 "number,url,state,isDraft,headRefName,updatedAt",
             ]

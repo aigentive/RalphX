@@ -1,9 +1,12 @@
 import type { AgentConversationWorkspaceMode } from "@/api/chat";
+import type { AgentTaskRuntimeContextType } from "./agentTaskRuntimeContext";
 
 export type AgentsChatFocus =
   | { type: "workspace" }
+  | { type: "workspace_review"; conversationId: string }
   | { type: "ideation"; sessionId: string }
-  | { type: "verification"; parentSessionId: string; childSessionId: string };
+  | { type: "verification"; parentSessionId: string; childSessionId: string }
+  | { type: "task_runtime"; taskId: string; contextType: AgentTaskRuntimeContextType };
 
 export type AgentsChatFocusType = AgentsChatFocus["type"];
 export type AgentsChatFocusTone = "accent" | "warning";
@@ -26,11 +29,15 @@ export function getAgentChatFocusSwitchOptions({
   mode,
   focusSwitcherIdeationSessionId,
   verificationFocusTarget,
+  taskRuntimeFocusTarget,
+  workspaceReviewFocusTarget,
   hasPlanArtifact,
 }: {
   mode: AgentConversationWorkspaceMode | null;
   focusSwitcherIdeationSessionId: string | null;
   verificationFocusTarget: Extract<AgentsChatFocus, { type: "verification" }> | null;
+  taskRuntimeFocusTarget: Extract<AgentsChatFocus, { type: "task_runtime" }> | null;
+  workspaceReviewFocusTarget: Extract<AgentsChatFocus, { type: "workspace_review" }> | null;
   hasPlanArtifact: boolean;
 }): AgentsChatFocusSwitchOption[] {
   const options: AgentsChatFocusSwitchOption[] = [
@@ -60,6 +67,24 @@ export function getAgentChatFocusSwitchOptions({
       label: "Verification",
       description: "Show the verification agent chat",
       tone: "warning",
+    });
+  }
+
+  if (workspaceReviewFocusTarget) {
+    options.push({
+      type: "workspace_review",
+      label: "Review",
+      description: "Show the Review chat",
+      tone: "warning",
+    });
+  }
+
+  if (taskRuntimeFocusTarget) {
+    options.push({
+      type: "task_runtime",
+      label: "Task",
+      description: "Show the task agent chat",
+      tone: "accent",
     });
   }
 
@@ -122,6 +147,24 @@ export function getAgentsChatFocusDisplay(
     };
   }
 
+  if (chatFocus.type === "task_runtime") {
+    return {
+      type: "task_runtime",
+      label: "Task",
+      description: "Focused on a task agent run",
+      tone: "accent",
+    };
+  }
+
+  if (chatFocus.type === "workspace_review") {
+    return {
+      type: "workspace_review",
+      label: "Review",
+      description: "Focused on a Review run",
+      tone: "warning",
+    };
+  }
+
   return null;
 }
 
@@ -131,6 +174,15 @@ export function getFocusedChatSessionId(chatFocus: AgentsChatFocus): string | nu
   }
   if (chatFocus.type === "verification") {
     return chatFocus.childSessionId;
+  }
+  return null;
+}
+
+export function getFocusedWorkspaceReviewConversationId(
+  chatFocus: AgentsChatFocus,
+): string | null {
+  if (chatFocus.type === "workspace_review") {
+    return chatFocus.conversationId;
   }
   return null;
 }

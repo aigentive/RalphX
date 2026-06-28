@@ -14,7 +14,7 @@
 // - agent:startup_progress - Project agent startup phase label for chat typing indicator
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::{Arc, OnceLock},
     time::{Duration, Instant},
@@ -42,7 +42,8 @@ use crate::application::agent_conversation_workspace::{
     AgentConversationWorkspacePrAutomationDefaults, AgentConversationWorkspaceSetupMode,
 };
 use crate::application::agent_conversation_workspace_base::{
-    apply_workspace_base_resolution, resolve_workspace_base, BaseResolutionResult, BaseStatus,
+    apply_workspace_base_resolution, resolve_workspace_base,
+    resolve_workspace_base_from_local_snapshot, BaseResolutionResult, BaseStatus,
 };
 use crate::application::agent_planning_session_titles::{
     hydrate_agent_conversation_planning_session_title,
@@ -69,8 +70,8 @@ use crate::application::chat_service::tool_result_preview::{
     preview_tool_arguments_object, preview_tool_result_object, tool_detail_ref,
 };
 use crate::application::chat_service::{
-    message_metadata_hidden_from_ui, AgentConversationCreatedPayload, AgentRunningState,
-    SendMessageOptions,
+    message_metadata_hidden_from_ui, running_state_from_run_status_and_idle,
+    AgentConversationCreatedPayload, AgentRunningState, AgentRuntimeStatus, SendMessageOptions,
 };
 use crate::application::git_service::{
     git_cmd::{self, GitCommandLane},
@@ -87,6 +88,7 @@ use crate::application::publish_resilience::{
     PublishBranchFreshnessStatus, PublishFailureClass,
 };
 use crate::application::services::pr_merge_poller::sync_agent_workspace_auto_merge_preference_for_workspace;
+use crate::application::session_namer_agent::{spawn_session_namer_agent, SessionNamerTarget};
 use crate::application::{AppChatService, AppState, ChatService, ChatServiceError, SendResult};
 use crate::commands::agent_model_commands::load_agent_model_registry;
 use crate::commands::ExecutionState;
@@ -94,20 +96,27 @@ use crate::domain::agents::{
     default_effort_for_provider, default_efforts_for_provider, AgentHarnessKind, LogicalEffort,
 };
 use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
+use crate::domain::entities::task_step::StepProgressSummary;
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode,
+    AgentConversationWorkspace, AgentConversationWorkspaceBranchMode, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus, AgentRun,
-    AgentRunId, AgentRunStatus, AgentWorkspaceSourcePullRequest, ArtifactContent, ChatAttachmentId,
-    ChatContextType, ChatConversation, ChatConversationId, ChatMessage, ChatMessageId,
-    ChatTimelineItem, DelegatedSessionId, ExecutionPlanStatus, IdeationAnalysisBaseRefKind,
-    IdeationSession, IdeationSessionFlow, IdeationSessionId, PlanBranch, PlanBranchStatus, Project,
-    ProjectId, TaskCategory, TaskId, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+    AgentRunId, AgentRunStatus, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceSourcePullRequest,
+    ArtifactContent, ChatAttachmentId, ChatContextType, ChatConversation, ChatConversationId,
+    ChatMessage, ChatMessageId, ChatTimelineItem, DelegatedSessionId, ExecutionPlanStatus,
+    IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow, IdeationSessionId,
+    InternalStatus, PlanBranch, PlanBranchStatus, Project, ProjectId, Task, TaskCategory, TaskId,
+    DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+};
+use crate::domain::execution::{
+    build_running_ideation_session, build_running_process, context_matches_running_status,
+    elapsed_seconds_for_status, RunningIdeationSession, RunningProcess,
 };
 use crate::domain::services::{
     normalize_title_with_jira_key, primary_jira_key_from_composer_metadata,
     AgentWorkspacePrPublisher, ComposerArtifactReference, ComposerIntegrationReference,
     ComposerProjectReference, QueuedMessage, RunningAgentKey, RunningAgentRegistry,
 };
+use crate::domain::state_machine::transition_handler::get_trigger_origin;
 use crate::infrastructure::agents::claude::agent_names::AGENT_WORKSPACE_REPAIR;
 use crate::infrastructure::agents::claude::git_runtime_config;
 
@@ -121,11 +130,7 @@ pub const AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE: &str =
     "Agent workspace publish is already in progress";
 
 fn agent_workspace_interactive_slot_key(conversation_id: &ChatConversationId) -> String {
-    format!(
-        "{}/{}",
-        ChatContextType::Project,
-        conversation_id.as_str()
-    )
+    format!("{}/{}", ChatContextType::Project, conversation_id.as_str())
 }
 
 // ============================================================================
@@ -148,6 +153,8 @@ pub struct SendAgentMessageInput {
     pub model_override: Option<String>,
     /// Optional provider-neutral reasoning effort override for the spawned agent.
     pub logical_effort: Option<LogicalEffort>,
+    /// Optional Codex Fast Mode override for this send.
+    pub codex_fast_mode: Option<bool>,
     /// Internal handoff messages should reach the runtime without rendering as user chat.
     #[serde(default)]
     pub suppress_user_message: bool,
@@ -293,6 +300,7 @@ pub struct AgentConversationWorkspaceResponse {
     pub conversation_id: String,
     pub project_id: String,
     pub mode: String,
+    pub branch_mode: String,
     pub base_ref_kind: String,
     pub base_ref: String,
     pub base_display_name: Option<String>,
@@ -368,6 +376,7 @@ impl From<AgentConversationWorkspace> for AgentConversationWorkspaceResponse {
             conversation_id: workspace.conversation_id.as_str(),
             project_id: workspace.project_id.as_str().to_string(),
             mode: workspace.mode.to_string(),
+            branch_mode: workspace.branch_mode.to_string(),
             base_ref_kind: workspace.base_ref_kind.to_string(),
             base_ref: workspace.base_ref,
             base_display_name: workspace.base_display_name,
@@ -1029,6 +1038,8 @@ pub struct SwitchAgentConversationModeInput {
     pub mode: String,
     /// Optional base ref kind used when upgrading a branchless chat into edit/ideation mode.
     pub base_ref_kind: Option<String>,
+    /// Optional branch work policy: isolated creates a new RalphX branch; linked uses the selected branch.
+    pub base_branch_mode: Option<String>,
     /// Optional selected branch/ref name for the base.
     pub base_ref: Option<String>,
     /// Optional user-facing base ref label.
@@ -1619,6 +1630,7 @@ pub struct AgentConversationResponse {
     pub effective_model_id: Option<String>,
     pub logical_effort: Option<String>,
     pub effective_effort: Option<String>,
+    pub service_tier: Option<String>,
     pub agent_mode: Option<String>,
     pub parent_conversation_id: Option<String>,
     pub title: Option<String>,
@@ -1647,6 +1659,7 @@ impl From<ChatConversation> for AgentConversationResponse {
             effective_model_id: None,
             logical_effort: None,
             effective_effort: None,
+            service_tier: None,
             agent_mode: c.agent_mode.map(|mode| mode.to_string()),
             parent_conversation_id: c.parent_conversation_id,
             title: c.title,
@@ -1665,6 +1678,7 @@ impl AgentConversationResponse {
         self.effective_model_id = attribution.effective_model_id;
         self.logical_effort = attribution.logical_effort.map(|value| value.to_string());
         self.effective_effort = attribution.effective_effort;
+        self.service_tier = attribution.service_tier;
     }
 }
 
@@ -1674,6 +1688,7 @@ struct ConversationRuntimeAttribution {
     effective_model_id: Option<String>,
     logical_effort: Option<LogicalEffort>,
     effective_effort: Option<String>,
+    service_tier: Option<String>,
 }
 
 impl ConversationRuntimeAttribution {
@@ -1682,6 +1697,7 @@ impl ConversationRuntimeAttribution {
             && self.effective_model_id.is_none()
             && self.logical_effort.is_none()
             && self.effective_effort.is_none()
+            && self.service_tier.is_none()
     }
 }
 
@@ -1691,6 +1707,7 @@ fn runtime_attribution_from_run(run: &AgentRun) -> Option<ConversationRuntimeAtt
         effective_model_id: run.effective_model_id.clone(),
         logical_effort: run.logical_effort,
         effective_effort: run.effective_effort.clone(),
+        service_tier: run.service_tier.clone(),
     };
     (!attribution.is_empty()).then_some(attribution)
 }
@@ -1703,6 +1720,7 @@ fn runtime_attribution_from_message(
         effective_model_id: message.effective_model_id.clone(),
         logical_effort: message.logical_effort,
         effective_effort: message.effective_effort.clone(),
+        service_tier: None,
     };
     (!attribution.is_empty()).then_some(attribution)
 }
@@ -2518,6 +2536,16 @@ fn parse_agent_workspace_base_kind(
         .transpose()
 }
 
+fn parse_agent_workspace_branch_mode(
+    branch_mode: Option<&str>,
+) -> Result<Option<AgentConversationWorkspaceBranchMode>, String> {
+    branch_mode
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::parse::<AgentConversationWorkspaceBranchMode>)
+        .transpose()
+}
+
 fn trim_optional_input(value: Option<String>) -> Option<String> {
     value
         .map(|value| value.trim().to_string())
@@ -2578,6 +2606,92 @@ fn agent_mode_should_create_workspace(
 ) -> bool {
     agent_mode_requires_workspace(mode)
         || (mode == AgentConversationWorkspaceMode::Chat && source_pull_request.is_some())
+}
+
+async fn ensure_linked_branch_workspace_available(
+    state: &AppState,
+    project_id: &ProjectId,
+    current_conversation_id: Option<&ChatConversationId>,
+    branch_mode: Option<AgentConversationWorkspaceBranchMode>,
+    base_ref: Option<&str>,
+    source_pull_request: Option<&AgentWorkspaceSourcePullRequest>,
+) -> Result<(), String> {
+    if branch_mode != Some(AgentConversationWorkspaceBranchMode::Linked) {
+        return Ok(());
+    }
+    let branch_name = source_pull_request
+        .map(|pull_request| pull_request.head_ref_name.as_str())
+        .or(base_ref)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let Some(branch_name) = branch_name else {
+        return Ok(());
+    };
+    let active_workspaces = state
+        .agent_conversation_workspace_repo
+        .find_active_by_project_and_branch_name(project_id, branch_name)
+        .await
+        .map_err(|error| error.to_string())?;
+    if let Some(conflict) = active_workspaces
+        .into_iter()
+        .find(|workspace| current_conversation_id != Some(&workspace.conversation_id))
+    {
+        return Err(format!(
+            "Selected branch '{}' is already linked to active conversation {}; choose isolated branch mode or continue in that conversation",
+            branch_name, conflict.conversation_id
+        ));
+    }
+
+    Ok(())
+}
+
+async fn hydrate_linked_branch_source_pull_request(
+    state: &AppState,
+    project: &Project,
+    branch_mode: Option<AgentConversationWorkspaceBranchMode>,
+    base_ref: Option<&str>,
+    source_pull_request: Option<AgentWorkspaceSourcePullRequest>,
+) -> Result<Option<AgentWorkspaceSourcePullRequest>, String> {
+    if source_pull_request.is_some()
+        || branch_mode != Some(AgentConversationWorkspaceBranchMode::Linked)
+    {
+        return Ok(source_pull_request);
+    }
+    let Some(branch_name) = base_ref.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let Some(github) = state.github_service.as_ref() else {
+        return Ok(None);
+    };
+    let matches = match github
+        .search_pull_requests(Path::new(&project.working_directory), Some(branch_name), 20)
+        .await
+    {
+        Ok(matches) => matches,
+        Err(error) => {
+            tracing::warn!(
+                project_id = %project.id,
+                branch_name,
+                error = %error,
+                "Linked branch PR lookup failed during mode switch; continuing without PR linkage"
+            );
+            return Ok(None);
+        }
+    };
+
+    Ok(matches
+        .into_iter()
+        .find(|pull_request| {
+            !pull_request.is_cross_repository && pull_request.head_ref_name == branch_name
+        })
+        .map(|pull_request| AgentWorkspaceSourcePullRequest {
+            number: pull_request.number,
+            url: Some(pull_request.url),
+            title: Some(pull_request.title),
+            head_ref_name: pull_request.head_ref_name,
+            base_ref_name: Some(pull_request.base_ref_name),
+            head_ref_oid: pull_request.head_ref_oid,
+        }))
 }
 
 async fn agent_workspace_pr_automation_defaults_for_project(
@@ -2825,25 +2939,40 @@ pub async fn start_agent_conversation<R: Runtime + 'static>(
     team_service: State<'_, std::sync::Arc<crate::application::TeamService>>,
     app: tauri::AppHandle<R>,
 ) -> Result<StartAgentConversationResponse, String> {
+    start_agent_conversation_for_state(
+        input,
+        state.inner(),
+        execution_state.inner(),
+        team_service.inner().clone(),
+        app,
+    )
+    .await
+}
+
+#[doc(hidden)]
+pub(crate) async fn start_agent_conversation_for_state<R: Runtime + 'static>(
+    input: StartAgentConversationInput,
+    state: &AppState,
+    execution_state: &Arc<ExecutionState>,
+    team_service: std::sync::Arc<crate::application::TeamService>,
+    app: tauri::AppHandle<R>,
+) -> Result<StartAgentConversationResponse, String> {
     let result = AgentConversationStartService::new(AgentConversationStartDeps {
-        state: state.inner(),
-        execution_state: execution_state.inner(),
-        team_service: Some(team_service.inner().clone()),
+        state,
+        execution_state,
+        team_service: Some(team_service),
         app_handle: app,
     })
     .start(input)
     .await?;
 
     let workspace_response = match result.workspace {
-        Some(workspace) => {
-            Some(agent_workspace_response_for_state(state.inner(), workspace).await?)
-        }
+        Some(workspace) => Some(agent_workspace_response_for_state(state, workspace).await?),
         None => None,
     };
 
     Ok(StartAgentConversationResponse {
-        conversation: agent_conversation_response_for_state(state.inner(), result.conversation)
-            .await?,
+        conversation: agent_conversation_response_for_state(state, result.conversation).await?,
         workspace: workspace_response,
         send_result: SendAgentMessageResponse::from(result.send_result),
     })
@@ -2878,12 +3007,8 @@ pub async fn switch_agent_conversation_mode<R: Runtime + 'static>(
     app: tauri::AppHandle<R>,
 ) -> Result<SwitchAgentConversationModeResponse, String> {
     let service = create_chat_service(&state, app, &execution_state, None);
-    switch_agent_conversation_mode_for_state_stopping_running_agent(
-        input,
-        state.inner(),
-        &service,
-    )
-    .await
+    switch_agent_conversation_mode_for_state_stopping_running_agent(input, state.inner(), &service)
+        .await
 }
 
 #[doc(hidden)]
@@ -2941,9 +3066,10 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
     let conversation_id = ChatConversationId::from_string(input.conversation_id.clone());
     let target_mode = parse_agent_workspace_mode(Some(input.mode.as_str()))?;
     let base_ref_kind = parse_agent_workspace_base_kind(input.base_ref_kind.as_deref())?;
+    let base_branch_mode = parse_agent_workspace_branch_mode(input.base_branch_mode.as_deref())?;
     let base_ref = trim_optional_input(input.base_ref);
     let base_display_name = trim_optional_input(input.base_display_name);
-    let source_pull_request = normalize_agent_workspace_source_pull_request(
+    let mut source_pull_request = normalize_agent_workspace_source_pull_request(
         input.base_source_pull_request,
         base_ref_kind,
         base_ref.as_deref(),
@@ -3073,6 +3199,23 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
                     .await
                     .map_err(|error| error.to_string())?
                     .ok_or_else(|| format!("Project not found: {}", conversation.context_id))?;
+                ensure_linked_branch_workspace_available(
+                    state,
+                    &project_id,
+                    Some(&conversation.id),
+                    base_branch_mode,
+                    base_ref.as_deref(),
+                    source_pull_request.as_ref(),
+                )
+                .await?;
+                source_pull_request = hydrate_linked_branch_source_pull_request(
+                    state,
+                    &project,
+                    base_branch_mode,
+                    base_ref.as_deref(),
+                    source_pull_request,
+                )
+                .await?;
                 let pr_automation_defaults =
                     agent_workspace_pr_automation_defaults_for_project(state, &project.id).await?;
                 let workspace = prepare_agent_conversation_workspace_with_setup_mode_and_defaults(
@@ -3081,6 +3224,7 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
                     target_mode,
                     AgentConversationWorkspaceBaseSelection {
                         kind: base_ref_kind,
+                        branch_mode: base_branch_mode,
                         base_ref,
                         display_name: base_display_name,
                         source_pull_request,
@@ -3144,6 +3288,9 @@ async fn fork_terminal_agent_conversation_for_send<R: Runtime>(
     state: &AppState,
     app: &tauri::AppHandle<R>,
     conversation_id: Option<&ChatConversationId>,
+    new_user_message: &str,
+    requested_harness: Option<AgentHarnessKind>,
+    service_tier_override: Option<String>,
 ) -> Result<Option<ChatConversationId>, String> {
     let Some(parent_conversation_id) = conversation_id else {
         return Ok(None);
@@ -3168,7 +3315,54 @@ async fn fork_terminal_agent_conversation_for_send<R: Runtime>(
     invalidate_agent_workspace_pr_description_cache(parent_conversation_id);
     let child_conversation_id = ChatConversationId::from_string(response.conversation.id.clone());
     invalidate_agent_workspace_pr_description_cache(&child_conversation_id);
+    spawn_session_namer_for_continuity_fork(
+        state,
+        &child_conversation_id,
+        new_user_message,
+        requested_harness,
+        service_tier_override,
+    )
+    .await;
     Ok(Some(child_conversation_id))
+}
+
+async fn spawn_session_namer_for_continuity_fork(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    new_user_message: &str,
+    requested_harness: Option<AgentHarnessKind>,
+    service_tier_override: Option<String>,
+) {
+    let new_user_message = new_user_message.trim();
+    if new_user_message.is_empty() {
+        return;
+    }
+
+    let target = match SessionNamerTarget::from_initial_request(
+        None,
+        Some(conversation_id.as_str().to_string()),
+        new_user_message.to_string(),
+        requested_harness,
+        service_tier_override,
+    ) {
+        Ok(target) => target,
+        Err(error) => {
+            tracing::warn!(
+                conversation_id = %conversation_id,
+                error,
+                "Failed to build continuity fork session namer target"
+            );
+            return;
+        }
+    };
+
+    if let Err(error) = spawn_session_namer_agent(state, target).await {
+        tracing::warn!(
+            conversation_id = %conversation_id,
+            error = %error,
+            "Failed to spawn continuity fork session namer"
+        );
+    }
 }
 
 #[tauri::command]
@@ -3293,6 +3487,10 @@ pub async fn send_agent_message(
         input.logical_effort,
     )
     .await?;
+    let service_tier_override =
+        crate::application::chat_service::codex_fast_mode_service_tier_override(
+            input.codex_fast_mode,
+        );
     let mut conversation_id_override = input
         .conversation_id
         .as_deref()
@@ -3306,6 +3504,9 @@ pub async fn send_agent_message(
             state.inner(),
             &app,
             parent_conversation_id.as_ref(),
+            &input.content,
+            harness_override,
+            service_tier_override.clone(),
         )
         .await?
         {
@@ -3353,6 +3554,7 @@ pub async fn send_agent_message(
                 harness_override,
                 model_override,
                 logical_effort_override,
+                service_tier_override,
                 conversation_id_override,
                 composer_project_references: input.composer_project_references,
                 composer_integration_references: input.composer_integration_references,
@@ -4883,6 +5085,7 @@ pub async fn update_agent_conversation_workspace_from_base(
     )?;
     let selection = AgentConversationWorkspaceBaseSelection {
         kind,
+        branch_mode: None,
         base_ref,
         display_name: base_display_name,
         source_pull_request,
@@ -5300,6 +5503,108 @@ pub async fn precompute_agent_conversation_workspace_pr_description_for_app_stat
     .await
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AgentWorkspacePrDescriptionReviewBaseResolution {
+    Ready(String),
+    Skip(&'static str),
+}
+
+async fn resolve_agent_workspace_pr_description_review_base(
+    project: &Project,
+    workspace: &AgentConversationWorkspace,
+    worktree_path: &Path,
+) -> Result<AgentWorkspacePrDescriptionReviewBaseResolution, String> {
+    let captured_review_base =
+        review_base_for_publish(workspace.base_commit.as_deref(), &workspace.base_ref)?.to_string();
+
+    let base_resolution = match resolve_workspace_base(project, workspace).await {
+        Ok(resolution) => Some(resolution),
+        Err(fresh_error) => {
+            tracing::debug!(
+                target: "ralphx_lib::commands::agent_workspace_publish",
+                conversation_id = %workspace.conversation_id,
+                project_id = %workspace.project_id,
+                branch = %workspace.branch_name,
+                error = %fresh_error,
+                "Fresh base resolution failed while preparing PR description; falling back to local snapshot"
+            );
+            match resolve_workspace_base_from_local_snapshot(project, workspace).await {
+                Ok(resolution) => Some(resolution),
+                Err(local_error) => {
+                    tracing::debug!(
+                        target: "ralphx_lib::commands::agent_workspace_publish",
+                        conversation_id = %workspace.conversation_id,
+                        project_id = %workspace.project_id,
+                        branch = %workspace.branch_name,
+                        error = %local_error,
+                        "Local base resolution failed while preparing PR description; using captured review base"
+                    );
+                    None
+                }
+            }
+        }
+    };
+
+    let Some(base_resolution) = base_resolution else {
+        return Ok(AgentWorkspacePrDescriptionReviewBaseResolution::Ready(
+            captured_review_base,
+        ));
+    };
+    if base_resolution.status == BaseStatus::Blocked {
+        return Ok(AgentWorkspacePrDescriptionReviewBaseResolution::Ready(
+            captured_review_base,
+        ));
+    }
+
+    let checkout_ref = match base_resolution.effective_checkout_ref() {
+        Ok(checkout_ref) => checkout_ref.to_string(),
+        Err(_) => {
+            return Ok(AgentWorkspacePrDescriptionReviewBaseResolution::Ready(
+                captured_review_base,
+            ));
+        }
+    };
+    let freshness = match inspect_publish_branch_freshness_for_source_after_fetch(
+        worktree_path,
+        &checkout_ref,
+        &workspace.branch_name,
+        Some(&captured_review_base),
+    )
+    .await
+    {
+        Ok(freshness) => freshness,
+        Err(error) => {
+            tracing::debug!(
+                target: "ralphx_lib::commands::agent_workspace_publish",
+                conversation_id = %workspace.conversation_id,
+                project_id = %workspace.project_id,
+                branch = %workspace.branch_name,
+                checkout_ref,
+                error = %error,
+                "Branch freshness check failed while preparing PR description; using captured review base"
+            );
+            return Ok(AgentWorkspacePrDescriptionReviewBaseResolution::Ready(
+                captured_review_base,
+            ));
+        }
+    };
+
+    if freshness.is_base_ahead {
+        return Ok(AgentWorkspacePrDescriptionReviewBaseResolution::Skip(
+            "base_ahead",
+        ));
+    }
+
+    let review_base = freshness
+        .captured_base_commit
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or(captured_review_base);
+    Ok(AgentWorkspacePrDescriptionReviewBaseResolution::Ready(
+        review_base,
+    ))
+}
+
 async fn precompute_agent_conversation_workspace_pr_description_inner(
     state: &AppState,
     conversation_id: ChatConversationId,
@@ -5331,12 +5636,6 @@ async fn precompute_agent_conversation_workspace_pr_description_inner(
             return Ok(skip("execution_owned_workspace"));
         }
 
-        let review_base =
-            match review_base_for_publish(workspace.base_commit.as_deref(), &workspace.base_ref) {
-                Ok(review_base) => review_base.to_string(),
-                Err(_) => return Ok(skip("missing_review_base")),
-            };
-
         let conversation = state
             .chat_conversation_repo
             .get_by_id(&conversation_id)
@@ -5359,6 +5658,20 @@ async fn precompute_agent_conversation_workspace_pr_description_inner(
         {
             return Ok(skip("uncommitted_changes"));
         }
+
+        let review_base = match resolve_agent_workspace_pr_description_review_base(
+            &project,
+            &workspace,
+            &worktree_path,
+        )
+        .await
+        {
+            Ok(AgentWorkspacePrDescriptionReviewBaseResolution::Ready(review_base)) => review_base,
+            Ok(AgentWorkspacePrDescriptionReviewBaseResolution::Skip(reason)) => {
+                return Ok(skip(reason));
+            }
+            Err(_) => return Ok(skip("missing_review_base")),
+        };
 
         let reviewable_commit_count =
             count_publish_reviewable_commits(&worktree_path, &workspace.branch_name, &review_base)
@@ -7894,6 +8207,646 @@ pub async fn get_agent_running_states_for_service(
         .await)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentConversationRuntimeSource {
+    Workspace,
+    WorkspaceReview,
+    Ideation,
+    Verification,
+    TaskExecution,
+    Review,
+    Merge,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentConversationRuntimeItem {
+    pub source: AgentConversationRuntimeSource,
+    pub context_type: String,
+    pub context_id: String,
+    pub label: String,
+    pub title: String,
+    pub agent_status: AgentRuntimeStatus,
+    pub task_id: Option<String>,
+    pub internal_status: Option<String>,
+    pub running_process: Option<RunningProcess>,
+    pub ideation_session: Option<RunningIdeationSession>,
+    pub parent_session_id: Option<String>,
+    pub child_session_id: Option<String>,
+    pub conversation_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentConversationRuntimeStatus {
+    pub conversation_id: String,
+    pub is_running: bool,
+    pub agent_status: AgentRuntimeStatus,
+    pub primary_source: Option<AgentConversationRuntimeSource>,
+    pub summary_label: Option<String>,
+    pub items: Vec<AgentConversationRuntimeItem>,
+}
+
+impl AgentConversationRuntimeStatus {
+    fn idle(conversation_id: String) -> Self {
+        Self {
+            conversation_id,
+            is_running: false,
+            agent_status: AgentRuntimeStatus::Idle,
+            primary_source: None,
+            summary_label: None,
+            items: Vec::new(),
+        }
+    }
+
+    fn finalize(&mut self) {
+        if self.items.is_empty() {
+            self.is_running = false;
+            self.agent_status = AgentRuntimeStatus::Idle;
+            self.primary_source = None;
+            self.summary_label = None;
+            return;
+        }
+
+        self.is_running = true;
+        self.agent_status = if self
+            .items
+            .iter()
+            .any(|item| item.agent_status == AgentRuntimeStatus::Generating)
+        {
+            AgentRuntimeStatus::Generating
+        } else {
+            AgentRuntimeStatus::WaitingForInput
+        };
+
+        self.primary_source = self
+            .items
+            .iter()
+            .max_by_key(|item| runtime_source_priority(item.source))
+            .map(|item| item.source);
+        self.summary_label = Some(summary_label_for_runtime_items(&self.items));
+    }
+}
+
+fn runtime_source_priority(source: AgentConversationRuntimeSource) -> u8 {
+    match source {
+        AgentConversationRuntimeSource::Verification => 50,
+        AgentConversationRuntimeSource::WorkspaceReview => 46,
+        AgentConversationRuntimeSource::Merge => 45,
+        AgentConversationRuntimeSource::Review => 44,
+        AgentConversationRuntimeSource::TaskExecution => 43,
+        AgentConversationRuntimeSource::Ideation => 30,
+        AgentConversationRuntimeSource::Workspace => 20,
+    }
+}
+
+fn summary_label_for_runtime_items(items: &[AgentConversationRuntimeItem]) -> String {
+    if items
+        .iter()
+        .all(|item| item.agent_status == AgentRuntimeStatus::WaitingForInput)
+    {
+        return "Awaiting input".to_string();
+    }
+
+    if items
+        .iter()
+        .any(|item| item.source == AgentConversationRuntimeSource::Verification)
+    {
+        return "Verifying".to_string();
+    }
+
+    if items
+        .iter()
+        .any(|item| item.source == AgentConversationRuntimeSource::WorkspaceReview)
+    {
+        return "Reviewing".to_string();
+    }
+
+    let task_items = items
+        .iter()
+        .filter(|item| {
+            matches!(
+                item.source,
+                AgentConversationRuntimeSource::TaskExecution
+                    | AgentConversationRuntimeSource::Review
+                    | AgentConversationRuntimeSource::Merge
+            )
+        })
+        .count();
+    if task_items > 0 {
+        if items
+            .iter()
+            .any(|item| item.source == AgentConversationRuntimeSource::Merge)
+        {
+            return if task_items > 1 {
+                "Merging tasks".to_string()
+            } else {
+                "Merging".to_string()
+            };
+        }
+        if items
+            .iter()
+            .any(|item| item.source == AgentConversationRuntimeSource::Review)
+        {
+            return if task_items > 1 {
+                "Reviewing tasks".to_string()
+            } else {
+                "Reviewing".to_string()
+            };
+        }
+        return if task_items > 1 {
+            "Executing tasks".to_string()
+        } else {
+            "Executing".to_string()
+        };
+    }
+
+    if items
+        .iter()
+        .any(|item| item.source == AgentConversationRuntimeSource::Ideation)
+    {
+        return "Ideation running".to_string();
+    }
+
+    "Agent running".to_string()
+}
+
+fn idle_agent_running_state() -> AgentRunningState {
+    AgentRunningState {
+        is_running: false,
+        agent_status: AgentRuntimeStatus::Idle,
+    }
+}
+
+async fn direct_agent_running_state_for_context(
+    state: &AppState,
+    execution_state: &ExecutionState,
+    context_type: ChatContextType,
+    context_id: &str,
+) -> Result<Option<AgentRunningState>, String> {
+    let key = RunningAgentKey::new(context_type.to_string(), context_id.to_string());
+    let Some(info) = state.running_agent_registry.get(&key).await else {
+        return Ok(None);
+    };
+
+    let run_status = if info.agent_run_id.is_empty() {
+        None
+    } else {
+        state
+            .agent_run_repo
+            .get_by_id(&AgentRunId::from_string(info.agent_run_id))
+            .await
+            .map_err(|error| error.to_string())?
+            .map(|run| run.status)
+    };
+
+    Ok(Some(running_state_from_run_status_and_idle(
+        run_status,
+        execution_state.is_interactive_idle(&format!("{context_type}/{context_id}")),
+    )))
+}
+
+fn ideation_generating_flag(execution_state: &ExecutionState, session_id: &str) -> bool {
+    !execution_state.is_interactive_idle(&format!("ideation/{session_id}"))
+}
+
+async fn add_ideation_runtime_item(
+    state: &AppState,
+    execution_state: &ExecutionState,
+    service: &dyn ChatService,
+    runtime: &mut AgentConversationRuntimeStatus,
+    session_id: &IdeationSessionId,
+    source: AgentConversationRuntimeSource,
+    parent_session_id: Option<&IdeationSessionId>,
+) -> Result<(), String> {
+    let session_id_str = session_id.as_str().to_string();
+    let states = service
+        .get_agent_running_states(
+            ChatContextType::Ideation,
+            std::slice::from_ref(&session_id_str),
+        )
+        .await;
+    let running_state = states
+        .get(&session_id_str)
+        .copied()
+        .unwrap_or_else(idle_agent_running_state);
+    if !running_state.is_running {
+        return Ok(());
+    }
+
+    let Some(session) = state
+        .ideation_session_repo
+        .get_by_id(session_id)
+        .await
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(());
+    };
+
+    let now = chrono::Utc::now();
+    let ideation_session = build_running_ideation_session(
+        session_id_str.clone(),
+        &session,
+        ideation_generating_flag(execution_state, &session_id_str),
+        now,
+    );
+    let label = match source {
+        AgentConversationRuntimeSource::Verification => "Verifying",
+        AgentConversationRuntimeSource::Ideation => "Ideation running",
+        _ => "Agent running",
+    };
+
+    runtime.items.push(AgentConversationRuntimeItem {
+        source,
+        context_type: ChatContextType::Ideation.to_string(),
+        context_id: session_id_str.clone(),
+        label: label.to_string(),
+        title: ideation_session.title.clone(),
+        agent_status: running_state.agent_status,
+        task_id: None,
+        internal_status: None,
+        running_process: None,
+        ideation_session: Some(ideation_session),
+        parent_session_id: parent_session_id.map(|id| id.as_str().to_string()),
+        child_session_id: (source == AgentConversationRuntimeSource::Verification)
+            .then_some(session_id_str),
+        conversation_id: None,
+    });
+
+    Ok(())
+}
+
+async fn build_task_runtime_process(
+    state: &AppState,
+    task: &Task,
+) -> Result<RunningProcess, String> {
+    let task_id = task.id.clone();
+    let steps = state
+        .task_step_repo
+        .get_by_task(&task_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let step_progress = if steps.is_empty() {
+        None
+    } else {
+        Some(StepProgressSummary::from_steps(&task_id, &steps))
+    };
+    let history = state
+        .task_repo
+        .get_status_history(&task_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let elapsed_seconds =
+        elapsed_seconds_for_status(&history, task.internal_status, chrono::Utc::now());
+    let trigger_origin = get_trigger_origin(task);
+
+    Ok(build_running_process(
+        task,
+        step_progress,
+        elapsed_seconds,
+        trigger_origin,
+    ))
+}
+
+fn task_runtime_label(source: AgentConversationRuntimeSource, status: InternalStatus) -> String {
+    match source {
+        AgentConversationRuntimeSource::TaskExecution if status == InternalStatus::ReExecuting => {
+            "Re-executing".to_string()
+        }
+        AgentConversationRuntimeSource::TaskExecution => "Executing".to_string(),
+        AgentConversationRuntimeSource::Review => "Reviewing".to_string(),
+        AgentConversationRuntimeSource::Merge => "Merging".to_string(),
+        _ => "Agent running".to_string(),
+    }
+}
+
+async fn add_task_runtime_items(
+    state: &AppState,
+    service: &dyn ChatService,
+    runtime: &mut AgentConversationRuntimeStatus,
+    workspace: &AgentConversationWorkspace,
+) -> Result<(), String> {
+    let Some(plan_branch_id) = workspace.linked_plan_branch_id.as_ref() else {
+        return Ok(());
+    };
+    let Some(plan_branch) = state
+        .plan_branch_repo
+        .get_by_id(plan_branch_id)
+        .await
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(());
+    };
+    let Some(execution_plan_id) = plan_branch.execution_plan_id.as_ref() else {
+        return Ok(());
+    };
+
+    let tasks = state
+        .task_repo
+        .list_paginated(
+            &workspace.project_id,
+            None,
+            0,
+            1000,
+            false,
+            None,
+            Some(execution_plan_id.as_str()),
+            None,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    if tasks.is_empty() {
+        return Ok(());
+    }
+
+    let task_id_strings = tasks
+        .iter()
+        .map(|task| task.id.as_str().to_string())
+        .collect::<Vec<_>>();
+    let execution_states = service
+        .get_agent_running_states(ChatContextType::TaskExecution, &task_id_strings)
+        .await;
+    let review_states = service
+        .get_agent_running_states(ChatContextType::Review, &task_id_strings)
+        .await;
+    let merge_states = service
+        .get_agent_running_states(ChatContextType::Merge, &task_id_strings)
+        .await;
+
+    for task in tasks {
+        let candidates = [
+            (
+                AgentConversationRuntimeSource::Merge,
+                ChatContextType::Merge,
+                &merge_states,
+            ),
+            (
+                AgentConversationRuntimeSource::Review,
+                ChatContextType::Review,
+                &review_states,
+            ),
+            (
+                AgentConversationRuntimeSource::TaskExecution,
+                ChatContextType::TaskExecution,
+                &execution_states,
+            ),
+        ];
+        let task_id = task.id.as_str().to_string();
+        for (source, context_type, states) in candidates {
+            if !context_matches_running_status(context_type, task.internal_status) {
+                continue;
+            }
+            let running_state = states
+                .get(&task_id)
+                .copied()
+                .unwrap_or_else(idle_agent_running_state);
+            if !running_state.is_running {
+                continue;
+            }
+
+            let running_process = build_task_runtime_process(state, &task).await?;
+            runtime.items.push(AgentConversationRuntimeItem {
+                source,
+                context_type: context_type.to_string(),
+                context_id: task_id.clone(),
+                label: task_runtime_label(source, task.internal_status),
+                title: task.title.clone(),
+                agent_status: running_state.agent_status,
+                task_id: Some(task_id.clone()),
+                internal_status: Some(task.internal_status.as_str().to_string()),
+                running_process: Some(running_process),
+                ideation_session: None,
+                parent_session_id: None,
+                child_session_id: None,
+                conversation_id: None,
+            });
+            break;
+        }
+    }
+
+    Ok(())
+}
+
+async fn add_workspace_runtime_item(
+    state: &AppState,
+    execution_state: &ExecutionState,
+    runtime: &mut AgentConversationRuntimeStatus,
+    conversation_id: &str,
+) -> Result<(), String> {
+    let Some(running_state) = direct_agent_running_state_for_context(
+        state,
+        execution_state,
+        ChatContextType::Project,
+        conversation_id,
+    )
+    .await?
+    else {
+        return Ok(());
+    };
+    if !running_state.is_running {
+        return Ok(());
+    }
+
+    runtime.items.push(AgentConversationRuntimeItem {
+        source: AgentConversationRuntimeSource::Workspace,
+        context_type: ChatContextType::Project.to_string(),
+        context_id: conversation_id.to_string(),
+        label: "Agent running".to_string(),
+        title: "Workspace chat".to_string(),
+        agent_status: running_state.agent_status,
+        task_id: None,
+        internal_status: None,
+        running_process: None,
+        ideation_session: None,
+        parent_session_id: None,
+        child_session_id: None,
+        conversation_id: Some(conversation_id.to_string()),
+    });
+
+    Ok(())
+}
+
+async fn add_workspace_review_runtime_item(
+    state: &AppState,
+    execution_state: &ExecutionState,
+    runtime: &mut AgentConversationRuntimeStatus,
+    workspace: &AgentConversationWorkspace,
+) -> Result<(), String> {
+    let Some(monitor) = state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&workspace.conversation_id)
+        .await
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(());
+    };
+    if monitor.status != AgentWorkspaceReviewMonitorStatus::Reviewing {
+        return Ok(());
+    }
+
+    let Some(review_conversation_id) = monitor.review_conversation_id.as_ref() else {
+        return Ok(());
+    };
+    let review_conversation_id = review_conversation_id.as_str();
+    let running_state = match direct_agent_running_state_for_context(
+        state,
+        execution_state,
+        ChatContextType::Project,
+        &review_conversation_id,
+    )
+    .await?
+    {
+        Some(state) if state.is_running => Some(state),
+        _ => match monitor.last_run_id.as_deref() {
+            Some(run_id) => state
+                .agent_run_repo
+                .get_by_id(&AgentRunId::from_string(run_id))
+                .await
+                .map_err(|error| error.to_string())?
+                .map(|run| running_state_from_run_status_and_idle(Some(run.status), false))
+                .filter(|state| state.is_running),
+            None => None,
+        },
+    };
+
+    let Some(running_state) = running_state else {
+        return Ok(());
+    };
+
+    let title = state
+        .chat_conversation_repo
+        .get_by_id(&ChatConversationId::from_string(
+            review_conversation_id.clone(),
+        ))
+        .await
+        .map_err(|error| error.to_string())?
+        .and_then(|conversation| conversation.title)
+        .filter(|title| !title.trim().is_empty())
+        .unwrap_or_else(|| "Review".to_string());
+
+    runtime.items.push(AgentConversationRuntimeItem {
+        source: AgentConversationRuntimeSource::WorkspaceReview,
+        context_type: ChatContextType::Project.to_string(),
+        context_id: review_conversation_id.clone(),
+        label: "Reviewing".to_string(),
+        title,
+        agent_status: running_state.agent_status,
+        task_id: None,
+        internal_status: Some(monitor.status.to_string()),
+        running_process: None,
+        ideation_session: None,
+        parent_session_id: None,
+        child_session_id: None,
+        conversation_id: Some(review_conversation_id),
+    });
+
+    Ok(())
+}
+
+async fn add_associated_runtime_items(
+    state: &AppState,
+    execution_state: &ExecutionState,
+    service: &dyn ChatService,
+    runtime: &mut AgentConversationRuntimeStatus,
+    workspace: &AgentConversationWorkspace,
+) -> Result<(), String> {
+    if let Some(session_id) = workspace.linked_ideation_session_id.as_ref() {
+        add_ideation_runtime_item(
+            state,
+            execution_state,
+            service,
+            runtime,
+            session_id,
+            AgentConversationRuntimeSource::Ideation,
+            None,
+        )
+        .await?;
+
+        let verification_children = state
+            .ideation_session_repo
+            .get_verification_children(session_id)
+            .await
+            .map_err(|error| error.to_string())?;
+        for child in verification_children {
+            add_ideation_runtime_item(
+                state,
+                execution_state,
+                service,
+                runtime,
+                &child.id,
+                AgentConversationRuntimeSource::Verification,
+                Some(session_id),
+            )
+            .await?;
+        }
+    }
+
+    add_workspace_review_runtime_item(state, execution_state, runtime, workspace).await?;
+    add_task_runtime_items(state, service, runtime, workspace).await
+}
+
+#[tauri::command]
+pub async fn get_agent_conversation_runtime_statuses(
+    conversation_ids: Vec<String>,
+    state: State<'_, AppState>,
+    execution_state: State<'_, Arc<ExecutionState>>,
+) -> Result<HashMap<String, AgentConversationRuntimeStatus>, String> {
+    get_agent_conversation_runtime_statuses_for_app_state(
+        &state,
+        Arc::clone(execution_state.inner()),
+        conversation_ids,
+    )
+    .await
+}
+
+#[doc(hidden)]
+pub async fn get_agent_conversation_runtime_statuses_for_app_state(
+    state: &AppState,
+    execution_state: Arc<ExecutionState>,
+    conversation_ids: Vec<String>,
+) -> Result<HashMap<String, AgentConversationRuntimeStatus>, String> {
+    let mut requested = Vec::new();
+    let mut seen = HashSet::new();
+    for conversation_id in conversation_ids {
+        let conversation_id = conversation_id.trim().to_string();
+        if conversation_id.is_empty() || !seen.insert(conversation_id.clone()) {
+            continue;
+        }
+        requested.push(conversation_id);
+    }
+
+    let service = state.build_chat_service_with_execution_state(Arc::clone(&execution_state));
+    let mut response = HashMap::new();
+
+    for conversation_id in requested {
+        let mut runtime = AgentConversationRuntimeStatus::idle(conversation_id.clone());
+        add_workspace_runtime_item(state, &execution_state, &mut runtime, &conversation_id).await?;
+
+        let workspace_id = ChatConversationId::from_string(conversation_id.clone());
+        if let Some(workspace) = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&workspace_id)
+            .await
+            .map_err(|error| error.to_string())?
+        {
+            add_associated_runtime_items(
+                state,
+                &execution_state,
+                &service,
+                &mut runtime,
+                &workspace,
+            )
+            .await?;
+        }
+
+        runtime.finalize();
+        response.insert(conversation_id, runtime);
+    }
+
+    Ok(response)
+}
+
 /// Input for create_agent_conversation command
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -8024,7 +8977,9 @@ mod tests {
         create_agent_conversation, emit_agent_conversation_fork_events,
         ensure_plan_workspace_planning_session_link_for_send, existing_pr_retarget_block_reason,
         fork_agent_conversation, fork_agent_conversation_response_for_state,
-        fork_terminal_agent_conversation_for_send, get_agent_conversation_summary_for_app_state,
+        fork_terminal_agent_conversation_for_send,
+        get_agent_conversation_runtime_statuses_for_app_state,
+        get_agent_conversation_summary_for_app_state,
         get_agent_conversation_timeline_page_for_app_state,
         get_agent_conversation_workspace_freshness,
         get_agent_timeline_item_tool_call_detail_for_app_state, hidden_user_message_metadata,
@@ -8052,17 +9007,17 @@ mod tests {
         try_acquire_agent_workspace_publish_guard,
         update_agent_conversation_workspace_from_base_for_app_state,
         validate_explicit_publish_base_ref, AgentConversationResponse,
-        AgentConversationWorkspaceAutoPublishInput, AgentConversationWorkspaceFreshnessResponse,
-        AgentConversationWorkspacePrSupervisionInput, AgentConversationWorkspacePublishTarget,
-        AgentConversationWorkspaceRepairTarget, AgentConversationWorkspaceResponse,
-        AgentTimelineItemResponse, AgentWorkspaceExternalPrReconciliationTrigger,
-        AgentWorkspaceFreshnessCacheEntry, AgentWorkspaceFreshnessCacheStatus,
-        AgentWorkspaceFreshnessInvalidationGuard, AgentWorkspaceFreshnessScope,
-        AgentWorkspacePostRepairAction, AgentWorkspacePrDescriptionInvalidationGuard,
-        AgentWorkspaceRepairRuntimeOverrides, AgentWorkspaceSourcePullRequestInput,
-        CreateAgentConversationInput, DelegatedToolRuntimeSnapshot, ForkAgentConversationInput,
-        ForkAgentConversationResponse, SwitchAgentConversationModeInput,
-        AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE,
+        AgentConversationRuntimeSource, AgentConversationWorkspaceAutoPublishInput,
+        AgentConversationWorkspaceFreshnessResponse, AgentConversationWorkspacePrSupervisionInput,
+        AgentConversationWorkspacePublishTarget, AgentConversationWorkspaceRepairTarget,
+        AgentConversationWorkspaceResponse, AgentTimelineItemResponse,
+        AgentWorkspaceExternalPrReconciliationTrigger, AgentWorkspaceFreshnessCacheEntry,
+        AgentWorkspaceFreshnessCacheStatus, AgentWorkspaceFreshnessInvalidationGuard,
+        AgentWorkspaceFreshnessScope, AgentWorkspacePostRepairAction,
+        AgentWorkspacePrDescriptionInvalidationGuard, AgentWorkspaceRepairRuntimeOverrides,
+        AgentWorkspaceSourcePullRequestInput, CreateAgentConversationInput,
+        DelegatedToolRuntimeSnapshot, ForkAgentConversationInput, ForkAgentConversationResponse,
+        SwitchAgentConversationModeInput, AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE,
     };
     use crate::application::agent_conversation_workspace::{
         ensure_linked_plan_branch_agent_worktree, prepare_agent_conversation_workspace,
@@ -8075,7 +9030,8 @@ mod tests {
     use crate::application::git_service::GitService;
     use crate::application::publish_resilience::PublishBranchFreshnessStatus;
     use crate::application::{
-        chat_service::MockChatService, AppState, TeamService, TeamStateTracker,
+        chat_service::{AgentRuntimeStatus, MockChatService},
+        AppState, TeamService, TeamStateTracker,
     };
     use crate::commands::ExecutionState;
     use crate::domain::agents::{
@@ -8085,14 +9041,16 @@ mod tests {
     };
     use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
     use crate::domain::entities::{
-        AgentConversationWorkspace, AgentConversationWorkspaceMode,
-        AgentConversationWorkspacePublicationEvent, AgentRun, AgentWorkspacePrDescription,
-        AgentWorkspaceSourcePullRequest, ArtifactId, ChatContextType, ChatConversation,
-        ChatConversationId, ChatMessage, ChatMessageId, ChatTimelineItem, ChatTimelineItemId,
-        ChatTimelineItemKind, ChatTimelineItemStatus, ExecutionPlan, ExecutionPlanStatus,
-        IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow, IdeationSessionId,
-        InternalStatus, MessageRole, PlanBranch, PlanBranchId, PlanBranchStatus, Project,
-        ProjectId, Task, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+        AgentConversationWorkspace, AgentConversationWorkspaceBranchMode,
+        AgentConversationWorkspaceMode, AgentConversationWorkspacePublicationEvent, AgentRun,
+        AgentWorkspacePrDescription, AgentWorkspaceReviewMonitor,
+        AgentWorkspaceReviewMonitorStatus, AgentWorkspaceSourcePullRequest, ArtifactId,
+        ChatContextType, ChatConversation, ChatConversationId, ChatMessage, ChatMessageId,
+        ChatTimelineItem, ChatTimelineItemId, ChatTimelineItemKind, ChatTimelineItemStatus,
+        ExecutionPlan, ExecutionPlanId, ExecutionPlanStatus, IdeationAnalysisBaseRefKind,
+        IdeationSession, IdeationSessionFlow, IdeationSessionId, InternalStatus, MessageRole,
+        PlanBranch, PlanBranchId, PlanBranchStatus, Project, ProjectId, SessionPurpose, Task,
+        DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
     };
     use crate::domain::execution::ExecutionSettings;
     use crate::domain::repositories::AgentConversationWorkspaceRepository;
@@ -8103,6 +9061,7 @@ mod tests {
         RunningAgentRegistry,
     };
     use crate::error::AppError;
+    use crate::infrastructure::{MockAgenticClient, MockCallType};
     use crate::tests::mock_github_service::MockGithubService;
     use async_trait::async_trait;
     use futures::{stream, Stream};
@@ -8126,6 +9085,307 @@ mod tests {
         assert_eq!(metadata["persist_hidden_marker"], true);
         assert_eq!(metadata["hidden_from_ui"], true);
         assert_eq!(metadata["recovery_context"], true);
+    }
+
+    fn workspace_for_runtime_test(
+        conversation_id: &ChatConversationId,
+        project_id: &ProjectId,
+    ) -> AgentConversationWorkspace {
+        AgentConversationWorkspace::new(
+            conversation_id.clone(),
+            project_id.clone(),
+            AgentConversationWorkspaceMode::Edit,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main".to_string(),
+            Some("main".to_string()),
+            None,
+            "ralphx/test".to_string(),
+            "/tmp/ralphx-test-worktree".to_string(),
+        )
+    }
+
+    async fn register_runtime_context(
+        state: &AppState,
+        context_type: ChatContextType,
+        context_id: &str,
+    ) {
+        state
+            .running_agent_registry
+            .register(
+                RunningAgentKey::new(context_type.to_string(), context_id.to_string()),
+                0,
+                format!("{context_type}-{context_id}-conversation"),
+                String::new(),
+                None,
+                None,
+            )
+            .await;
+    }
+
+    #[tokio::test]
+    async fn agent_conversation_runtime_status_includes_linked_ideation_and_verification() {
+        let state = AppState::new_sqlite_test();
+        let execution_state = Arc::new(ExecutionState::new());
+        let project_id = ProjectId::from_string("project-runtime-status".to_string());
+        let conversation_id = ChatConversationId::new();
+
+        let parent = IdeationSession::new_with_title(project_id.clone(), "Plan draft");
+        let parent_id = parent.id.clone();
+        state.ideation_session_repo.create(parent).await.unwrap();
+
+        let mut child = IdeationSession::new_with_title(project_id.clone(), "Verification run");
+        child.parent_session_id = Some(parent_id.clone());
+        child.session_purpose = SessionPurpose::Verification;
+        let child_id = child.id.clone();
+        state.ideation_session_repo.create(child).await.unwrap();
+
+        let mut workspace = workspace_for_runtime_test(&conversation_id, &project_id);
+        workspace.linked_ideation_session_id = Some(parent_id.clone());
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .unwrap();
+
+        register_runtime_context(&state, ChatContextType::Ideation, parent_id.as_str()).await;
+        register_runtime_context(&state, ChatContextType::Ideation, child_id.as_str()).await;
+
+        let statuses = get_agent_conversation_runtime_statuses_for_app_state(
+            &state,
+            execution_state,
+            vec![conversation_id.as_str().to_string()],
+        )
+        .await
+        .unwrap();
+        let conversation_key = conversation_id.as_str();
+        let runtime = statuses.get(&conversation_key).unwrap();
+
+        assert!(runtime.is_running);
+        assert_eq!(runtime.summary_label.as_deref(), Some("Verifying"));
+        assert_eq!(
+            runtime.primary_source,
+            Some(AgentConversationRuntimeSource::Verification)
+        );
+        assert!(runtime.items.iter().any(|item| item.source
+            == AgentConversationRuntimeSource::Ideation
+            && item.context_id == parent_id.as_str()));
+        let verification = runtime
+            .items
+            .iter()
+            .find(|item| item.source == AgentConversationRuntimeSource::Verification)
+            .expect("verification child item");
+        assert_eq!(verification.context_id, child_id.as_str());
+        assert_eq!(
+            verification.parent_session_id.as_deref(),
+            Some(parent_id.as_str())
+        );
+        assert_eq!(
+            verification.child_session_id.as_deref(),
+            Some(child_id.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_conversation_runtime_status_includes_workspace_review_child_chat() {
+        let state = AppState::new_sqlite_test();
+        let execution_state = Arc::new(ExecutionState::new());
+        let project_id = ProjectId::from_string("project-workspace-review-runtime".to_string());
+        let conversation_id = ChatConversationId::new();
+        let review_conversation_id = ChatConversationId::new();
+
+        let workspace = workspace_for_runtime_test(&conversation_id, &project_id);
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .unwrap();
+
+        let mut review_conversation = ChatConversation::new_project(project_id.clone());
+        review_conversation.id = review_conversation_id.clone();
+        review_conversation.parent_conversation_id = Some(conversation_id.as_str());
+        review_conversation.title = Some("Review workspace changes".to_string());
+        state
+            .chat_conversation_repo
+            .create(review_conversation)
+            .await
+            .unwrap();
+
+        let review_run = AgentRun::new(review_conversation_id.clone());
+        let review_run_id = review_run.id;
+        state.agent_run_repo.create(review_run).await.unwrap();
+        state
+            .running_agent_registry
+            .register(
+                RunningAgentKey::new(
+                    ChatContextType::Project.to_string(),
+                    review_conversation_id.as_str(),
+                ),
+                0,
+                review_conversation_id.as_str(),
+                review_run_id.as_str().to_string(),
+                None,
+                None,
+            )
+            .await;
+
+        let mut monitor =
+            AgentWorkspaceReviewMonitor::new(conversation_id.clone(), project_id.clone());
+        monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
+        monitor.review_conversation_id = Some(review_conversation_id.clone());
+        monitor.last_run_id = Some(review_run_id.as_str().to_string());
+        state
+            .agent_conversation_workspace_repo
+            .upsert_workspace_review_monitor(monitor)
+            .await
+            .unwrap();
+
+        let statuses = get_agent_conversation_runtime_statuses_for_app_state(
+            &state,
+            execution_state,
+            vec![conversation_id.as_str().to_string()],
+        )
+        .await
+        .unwrap();
+        let conversation_key = conversation_id.as_str();
+        let review_conversation_key = review_conversation_id.as_str();
+        let runtime = statuses.get(&conversation_key).unwrap();
+
+        assert!(runtime.is_running);
+        assert_eq!(runtime.summary_label.as_deref(), Some("Reviewing"));
+        assert_eq!(
+            runtime.primary_source,
+            Some(AgentConversationRuntimeSource::WorkspaceReview)
+        );
+        assert_eq!(runtime.items.len(), 1);
+        let item = &runtime.items[0];
+        assert_eq!(item.source, AgentConversationRuntimeSource::WorkspaceReview);
+        assert_eq!(item.context_type, "project");
+        assert_eq!(item.context_id, review_conversation_key);
+        assert_eq!(
+            item.conversation_id.as_deref(),
+            Some(review_conversation_key.as_str())
+        );
+        assert_eq!(item.title, "Review workspace changes");
+        assert!(item.task_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn agent_conversation_runtime_status_filters_task_runs_to_linked_plan_branch() {
+        let state = AppState::new_sqlite_test();
+        let execution_state = Arc::new(ExecutionState::new());
+        let project_id = ProjectId::from_string("project-task-runtime-status".to_string());
+        let conversation_id = ChatConversationId::new();
+        let plan_branch_id = PlanBranchId::from_string("plan-branch-runtime-status");
+        let execution_plan_id = ExecutionPlanId::from_string("execution-plan-runtime-status");
+        let other_execution_plan_id = ExecutionPlanId::from_string("execution-plan-other");
+
+        let mut plan_branch = PlanBranch::new(
+            ArtifactId::from_string("artifact-runtime-status"),
+            IdeationSessionId::from_string("session-runtime-status"),
+            project_id.clone(),
+            "ralphx/test-plan".to_string(),
+            "main".to_string(),
+        );
+        plan_branch.id = plan_branch_id.clone();
+        plan_branch.execution_plan_id = Some(execution_plan_id.clone());
+        state.plan_branch_repo.create(plan_branch).await.unwrap();
+
+        let mut workspace = workspace_for_runtime_test(&conversation_id, &project_id);
+        workspace.linked_plan_branch_id = Some(plan_branch_id);
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .unwrap();
+
+        let mut owned_task = Task::new(project_id.clone(), "Owned execution task".to_string());
+        owned_task.internal_status = InternalStatus::Executing;
+        owned_task.execution_plan_id = Some(execution_plan_id);
+        let owned_task = state.task_repo.create(owned_task).await.unwrap();
+
+        let mut unrelated_task = Task::new(project_id.clone(), "Other execution task".to_string());
+        unrelated_task.internal_status = InternalStatus::Executing;
+        unrelated_task.execution_plan_id = Some(other_execution_plan_id);
+        let unrelated_task = state.task_repo.create(unrelated_task).await.unwrap();
+
+        register_runtime_context(
+            &state,
+            ChatContextType::TaskExecution,
+            owned_task.id.as_str(),
+        )
+        .await;
+        register_runtime_context(
+            &state,
+            ChatContextType::TaskExecution,
+            unrelated_task.id.as_str(),
+        )
+        .await;
+
+        let statuses = get_agent_conversation_runtime_statuses_for_app_state(
+            &state,
+            execution_state,
+            vec![conversation_id.as_str().to_string()],
+        )
+        .await
+        .unwrap();
+        let conversation_key = conversation_id.as_str();
+        let runtime = statuses.get(&conversation_key).unwrap();
+
+        assert!(runtime.is_running);
+        assert_eq!(runtime.summary_label.as_deref(), Some("Executing"));
+        assert_eq!(
+            runtime.primary_source,
+            Some(AgentConversationRuntimeSource::TaskExecution)
+        );
+        assert_eq!(runtime.items.len(), 1);
+        let item = &runtime.items[0];
+        assert_eq!(item.source, AgentConversationRuntimeSource::TaskExecution);
+        assert_eq!(item.task_id.as_deref(), Some(owned_task.id.as_str()));
+        assert_ne!(item.task_id.as_deref(), Some(unrelated_task.id.as_str()));
+        assert_eq!(item.context_type, "task_execution");
+    }
+
+    #[tokio::test]
+    async fn agent_conversation_runtime_status_reports_idle_workspace_ipr_as_waiting() {
+        let state = AppState::new_sqlite_test();
+        let execution_state = Arc::new(ExecutionState::new());
+        let conversation_id = ChatConversationId::new();
+        let run = AgentRun::new(conversation_id);
+        let run_id = run.id;
+        state.agent_run_repo.create(run).await.unwrap();
+        state
+            .running_agent_registry
+            .register(
+                RunningAgentKey::new(
+                    ChatContextType::Project.to_string(),
+                    conversation_id.as_str(),
+                ),
+                std::process::id(),
+                conversation_id.as_str(),
+                run_id.as_str().to_string(),
+                None,
+                None,
+            )
+            .await;
+        execution_state
+            .mark_interactive_idle(&agent_workspace_interactive_slot_key(&conversation_id));
+
+        let statuses = get_agent_conversation_runtime_statuses_for_app_state(
+            &state,
+            execution_state,
+            vec![conversation_id.as_str().to_string()],
+        )
+        .await
+        .unwrap();
+        let runtime = statuses.get(&conversation_id.as_str()).unwrap();
+
+        assert!(runtime.is_running);
+        assert_eq!(runtime.agent_status, AgentRuntimeStatus::WaitingForInput);
+        assert_eq!(runtime.summary_label.as_deref(), Some("Awaiting input"));
+        assert_eq!(runtime.items.len(), 1);
+        let item = &runtime.items[0];
+        assert_eq!(item.source, AgentConversationRuntimeSource::Workspace);
+        assert_eq!(item.agent_status, AgentRuntimeStatus::WaitingForInput);
     }
 
     fn build_send_now_command_app(state: AppState) -> tauri::App<tauri::test::MockRuntime> {
@@ -8412,6 +9672,7 @@ mod tests {
             conversation_id: "conversation-1".to_string(),
             project_id: "project-1".to_string(),
             mode: AgentConversationWorkspaceMode::Ideation.to_string(),
+            branch_mode: "isolated".to_string(),
             base_ref_kind: "project_default".to_string(),
             base_ref: "main".to_string(),
             base_display_name: Some("Project default (main)".to_string()),
@@ -8478,6 +9739,7 @@ mod tests {
             conversation_id: "conversation-1".to_string(),
             project_id: "project-1".to_string(),
             mode: AgentConversationWorkspaceMode::Ideation.to_string(),
+            branch_mode: "isolated".to_string(),
             base_ref_kind: "project_default".to_string(),
             base_ref: "main".to_string(),
             base_display_name: Some("Project default (main)".to_string()),
@@ -9518,6 +10780,7 @@ mod tests {
         assert!(normalize_explicit_publish_base_selection(
             AgentConversationWorkspaceBaseSelection {
                 kind: None,
+                branch_mode: None,
                 base_ref: Some("  ".to_string()),
                 display_name: Some("ignored".to_string()),
                 source_pull_request: None,
@@ -9529,6 +10792,7 @@ mod tests {
         let local =
             normalize_explicit_publish_base_selection(AgentConversationWorkspaceBaseSelection {
                 kind: None,
+                branch_mode: None,
                 base_ref: Some("  release/0.8  ".to_string()),
                 display_name: None,
                 source_pull_request: None,
@@ -9542,6 +10806,7 @@ mod tests {
         let project =
             normalize_explicit_publish_base_selection(AgentConversationWorkspaceBaseSelection {
                 kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+                branch_mode: None,
                 base_ref: Some("main".to_string()),
                 display_name: Some("  ".to_string()),
                 source_pull_request: None,
@@ -9553,6 +10818,7 @@ mod tests {
         let current =
             normalize_explicit_publish_base_selection(AgentConversationWorkspaceBaseSelection {
                 kind: Some(IdeationAnalysisBaseRefKind::CurrentBranch),
+                branch_mode: None,
                 base_ref: Some("feature/base".to_string()),
                 display_name: None,
                 source_pull_request: None,
@@ -9572,6 +10838,7 @@ mod tests {
         let pr_base =
             normalize_explicit_publish_base_selection(AgentConversationWorkspaceBaseSelection {
                 kind: Some(IdeationAnalysisBaseRefKind::LocalBranch),
+                branch_mode: None,
                 base_ref: Some("feature/pr-base".to_string()),
                 display_name: Some("PR #42: Add PR base".to_string()),
                 source_pull_request: Some(source_pull_request.clone()),
@@ -9586,6 +10853,7 @@ mod tests {
         let error =
             normalize_explicit_publish_base_selection(AgentConversationWorkspaceBaseSelection {
                 kind: Some(IdeationAnalysisBaseRefKind::PullRequest),
+                branch_mode: None,
                 base_ref: Some("123".to_string()),
                 display_name: None,
                 source_pull_request: None,
@@ -9862,12 +11130,36 @@ mod tests {
         repo: Arc<dyn AgentConversationWorkspaceRepository>,
         conversation_id: ChatConversationId,
         spawned: tokio::sync::Mutex<usize>,
+        spawned_configs: tokio::sync::Mutex<Vec<AgentConfig>>,
+    }
+
+    impl SubmittingPrDescriptionClient {
+        fn new(
+            repo: Arc<dyn AgentConversationWorkspaceRepository>,
+            conversation_id: ChatConversationId,
+        ) -> Self {
+            Self {
+                repo,
+                conversation_id,
+                spawned: tokio::sync::Mutex::new(0),
+                spawned_configs: tokio::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        async fn spawned_count(&self) -> usize {
+            *self.spawned.lock().await
+        }
+
+        async fn spawned_configs(&self) -> Vec<AgentConfig> {
+            self.spawned_configs.lock().await.clone()
+        }
     }
 
     #[async_trait]
     impl AgenticClient for SubmittingPrDescriptionClient {
         async fn spawn_agent(&self, config: AgentConfig) -> AgentResult<AgentHandle> {
             *self.spawned.lock().await += 1;
+            self.spawned_configs.lock().await.push(config.clone());
             Ok(AgentHandle::mock(config.role))
         }
 
@@ -9956,6 +11248,7 @@ mod tests {
             AgentConversationWorkspaceMode::Edit,
             AgentConversationWorkspaceBaseSelection {
                 kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+                branch_mode: None,
                 base_ref: Some("main".to_string()),
                 display_name: None,
                 source_pull_request: None,
@@ -9993,6 +11286,52 @@ mod tests {
             .expect("workspace should be persisted");
 
         (temp, state, conversation_id, github)
+    }
+
+    async fn published_workspace_and_project(
+        state: &AppState,
+        conversation_id: &ChatConversationId,
+    ) -> (AgentConversationWorkspace, Project) {
+        let workspace = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        let project = state
+            .project_repo
+            .get_by_id(&workspace.project_id)
+            .await
+            .expect("project lookup should succeed")
+            .expect("project should exist");
+        (workspace, project)
+    }
+
+    async fn use_main_as_publish_base(
+        state: &AppState,
+        conversation_id: &ChatConversationId,
+    ) -> AgentConversationWorkspace {
+        let (mut workspace, _project) =
+            published_workspace_and_project(state, conversation_id).await;
+        workspace.base_ref = "main".to_string();
+        workspace.base_display_name = Some("Project default (main)".to_string());
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace.clone())
+            .await
+            .expect("workspace base should update");
+        workspace
+    }
+
+    fn commit_file(repo: &Path, relative_path: &str, contents: &str, message: &str) -> String {
+        let path = repo.join(relative_path);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("parent directory should be created");
+        }
+        std::fs::write(&path, contents).expect("fixture file should be written");
+        git(repo, &["add", relative_path]);
+        git(repo, &["commit", "-m", message]);
+        git(repo, &["rev-parse", "HEAD"])
     }
 
     async fn setup_linked_plan_publish_command_state(
@@ -10222,6 +11561,130 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn precompute_pr_description_skips_when_base_is_ahead() {
+        let (_temp, state, conversation_id, _github) = setup_publish_command_state(
+            "precompute-base-ahead",
+            true,
+            None,
+            Arc::new(MockGithubService::new()),
+        )
+        .await;
+        let workspace = use_main_as_publish_base(&state, &conversation_id).await;
+        let project = state
+            .project_repo
+            .get_by_id(&workspace.project_id)
+            .await
+            .expect("project lookup should succeed")
+            .expect("project should exist");
+        let worktree_path = PathBuf::from(&workspace.worktree_path);
+        commit_file(
+            &worktree_path,
+            "feature-only.txt",
+            "feature\n",
+            "Add feature-only change",
+        );
+
+        let repo_path = PathBuf::from(&project.working_directory);
+        git(&repo_path, &["checkout", "main"]);
+        commit_file(&repo_path, "base-only.txt", "base\n", "Advance base branch");
+
+        let client = Arc::new(SubmittingPrDescriptionClient::new(
+            Arc::clone(&state.agent_conversation_workspace_repo),
+            conversation_id.clone(),
+        ));
+        let state = state.with_agent_client(client.clone());
+
+        let response = precompute_agent_conversation_workspace_pr_description_for_app_state(
+            &state,
+            conversation_id,
+        )
+        .await
+        .expect("precompute should skip behind-base workspace without error");
+
+        assert_eq!(response.status, "skipped");
+        assert_eq!(response.reason.as_deref(), Some("base_ahead"));
+        assert!(response.cache_status.is_none());
+        assert_eq!(client.spawned_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn precompute_pr_description_uses_current_base_when_branch_contains_target_base() {
+        let (_temp, state, conversation_id, _github) = setup_publish_command_state(
+            "precompute-stale-base-contained",
+            true,
+            None,
+            Arc::new(MockGithubService::new()),
+        )
+        .await;
+        let workspace = use_main_as_publish_base(&state, &conversation_id).await;
+        let project = state
+            .project_repo
+            .get_by_id(&workspace.project_id)
+            .await
+            .expect("project lookup should succeed")
+            .expect("project should exist");
+        let worktree_path = PathBuf::from(&workspace.worktree_path);
+        commit_file(
+            &worktree_path,
+            "feature-only.txt",
+            "feature\n",
+            "Add feature-only change",
+        );
+
+        let repo_path = PathBuf::from(&project.working_directory);
+        git(&repo_path, &["checkout", "main"]);
+        let current_base =
+            commit_file(&repo_path, "base-only.txt", "base\n", "Advance base branch");
+        git(&worktree_path, &["merge", "--no-edit", "main"]);
+
+        let stored = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        assert_ne!(
+            stored.base_commit.as_deref(),
+            Some(current_base.as_str()),
+            "fixture should keep the stored base commit stale"
+        );
+
+        let client = Arc::new(SubmittingPrDescriptionClient::new(
+            Arc::clone(&state.agent_conversation_workspace_repo),
+            conversation_id.clone(),
+        ));
+        let state = state.with_agent_client(client.clone());
+
+        let response = precompute_agent_conversation_workspace_pr_description_for_app_state(
+            &state,
+            conversation_id,
+        )
+        .await
+        .expect("precompute should draft from the effective current base");
+
+        assert_eq!(response.status, "ready");
+        assert_eq!(response.cache_status.as_deref(), Some("miss"));
+        assert_eq!(client.spawned_count().await, 1);
+        let configs = client.spawned_configs().await;
+        let prompt = &configs
+            .first()
+            .expect("describer should have been spawned")
+            .prompt;
+        assert!(
+            prompt.contains(&format!("<review_base>{current_base}</review_base>")),
+            "prompt should use the current target base as the review base"
+        );
+        assert!(
+            prompt.contains("feature-only.txt"),
+            "feature file should remain in the PR diff context"
+        );
+        assert!(
+            !prompt.contains("base-only.txt"),
+            "base-only file must not appear in the PR diff context"
+        );
+    }
+
+    #[tokio::test]
     async fn precompute_pr_description_caches_ready_workspace_description() {
         let (_temp, state, conversation_id, _github) = setup_publish_command_state(
             "precompute-ready",
@@ -10245,11 +11708,10 @@ mod tests {
             &["commit", "-m", "Add publish ready fixture"],
         );
 
-        let client = Arc::new(SubmittingPrDescriptionClient {
-            repo: Arc::clone(&state.agent_conversation_workspace_repo),
-            conversation_id: conversation_id.clone(),
-            spawned: tokio::sync::Mutex::new(0),
-        });
+        let client = Arc::new(SubmittingPrDescriptionClient::new(
+            Arc::clone(&state.agent_conversation_workspace_repo),
+            conversation_id.clone(),
+        ));
         let state = state.with_agent_client(client.clone());
 
         let first = precompute_agent_conversation_workspace_pr_description_for_app_state(
@@ -10270,7 +11732,7 @@ mod tests {
         .expect("precompute should reuse cached description");
         assert_eq!(second.status, "ready");
         assert_eq!(second.cache_status.as_deref(), Some("hit"));
-        assert_eq!(*client.spawned.lock().await, 1);
+        assert_eq!(client.spawned_count().await, 1);
     }
 
     #[test]
@@ -10944,6 +12406,7 @@ mod tests {
             conversation_id.clone(),
             AgentConversationWorkspaceBaseSelection {
                 kind: Some(IdeationAnalysisBaseRefKind::LocalBranch),
+                branch_mode: None,
                 base_ref: Some("release/0.8".to_string()),
                 display_name: Some("release/0.8".to_string()),
                 source_pull_request: None,
@@ -11003,6 +12466,7 @@ mod tests {
             conversation_id.clone(),
             AgentConversationWorkspaceBaseSelection {
                 kind: None,
+                branch_mode: None,
                 base_ref: None,
                 display_name: None,
                 source_pull_request: None,
@@ -11059,6 +12523,7 @@ mod tests {
             conversation_id.clone(),
             AgentConversationWorkspaceBaseSelection {
                 kind: None,
+                branch_mode: None,
                 base_ref: None,
                 display_name: None,
                 source_pull_request: None,
@@ -11110,6 +12575,7 @@ mod tests {
             conversation_id.clone(),
             AgentConversationWorkspaceBaseSelection {
                 kind: None,
+                branch_mode: None,
                 base_ref: None,
                 display_name: None,
                 source_pull_request: None,
@@ -11156,6 +12622,7 @@ mod tests {
             conversation_id.clone(),
             AgentConversationWorkspaceBaseSelection {
                 kind: Some(IdeationAnalysisBaseRefKind::LocalBranch),
+                branch_mode: None,
                 base_ref: Some("feature/pr-base".to_string()),
                 display_name: Some("PR #42: Add PR base".to_string()),
                 source_pull_request: Some(source_pull_request.clone()),
@@ -11251,6 +12718,7 @@ mod tests {
             conversation_id.clone(),
             AgentConversationWorkspaceBaseSelection {
                 kind: Some(IdeationAnalysisBaseRefKind::LocalBranch),
+                branch_mode: None,
                 base_ref: Some("feature/pr-remote-only".to_string()),
                 display_name: Some("PR #43: Remote-only PR base".to_string()),
                 source_pull_request: Some(AgentWorkspaceSourcePullRequest {
@@ -11310,6 +12778,7 @@ mod tests {
             conversation_id.clone(),
             AgentConversationWorkspaceBaseSelection {
                 kind: None,
+                branch_mode: None,
                 base_ref: None,
                 display_name: None,
                 source_pull_request: None,
@@ -11418,6 +12887,7 @@ mod tests {
             conversation_id.clone(),
             AgentConversationWorkspaceBaseSelection {
                 kind: None,
+                branch_mode: None,
                 base_ref: None,
                 display_name: None,
                 source_pull_request: None,
@@ -11467,6 +12937,7 @@ mod tests {
             conversation_id.clone(),
             AgentConversationWorkspaceBaseSelection {
                 kind: None,
+                branch_mode: None,
                 base_ref: None,
                 display_name: None,
                 source_pull_request: None,
@@ -11512,6 +12983,7 @@ mod tests {
             conversation_id.clone(),
             AgentConversationWorkspaceBaseSelection {
                 kind: Some(IdeationAnalysisBaseRefKind::LocalBranch),
+                branch_mode: None,
                 base_ref: Some("release/0.8".to_string()),
                 display_name: Some("release/0.8".to_string()),
                 source_pull_request: None,
@@ -11556,6 +13028,7 @@ mod tests {
             conversation_id.clone(),
             AgentConversationWorkspaceBaseSelection {
                 kind: Some(IdeationAnalysisBaseRefKind::LocalBranch),
+                branch_mode: None,
                 base_ref: Some("release/missing".to_string()),
                 display_name: Some("release/missing".to_string()),
                 source_pull_request: None,
@@ -11916,11 +13389,10 @@ mod tests {
             issue_comments: Vec::new(),
             auto_merge_request: None,
         }));
-        let client = Arc::new(SubmittingPrDescriptionClient {
-            repo: Arc::clone(&state.agent_conversation_workspace_repo),
-            conversation_id: conversation_id.clone(),
-            spawned: tokio::sync::Mutex::new(0),
-        });
+        let client = Arc::new(SubmittingPrDescriptionClient::new(
+            Arc::clone(&state.agent_conversation_workspace_repo),
+            conversation_id.clone(),
+        ));
         let state = state.with_agent_client(client);
         let execution_state = Arc::new(ExecutionState::new());
 
@@ -11994,11 +13466,10 @@ mod tests {
         github.state().fetch_pr_health_result = Some(Err(AppError::Infrastructure(
             "GitHub health unavailable".to_string(),
         )));
-        let client = Arc::new(SubmittingPrDescriptionClient {
-            repo: Arc::clone(&state.agent_conversation_workspace_repo),
-            conversation_id: conversation_id.clone(),
-            spawned: tokio::sync::Mutex::new(0),
-        });
+        let client = Arc::new(SubmittingPrDescriptionClient::new(
+            Arc::clone(&state.agent_conversation_workspace_repo),
+            conversation_id.clone(),
+        ));
         let state = state.with_agent_client(client);
         let execution_state = Arc::new(ExecutionState::new());
 
@@ -12430,12 +13901,17 @@ mod tests {
         let app = mock_builder()
             .build(mock_context(noop_assets()))
             .expect("mock app should build");
-        assert!(
-            fork_terminal_agent_conversation_for_send(&state, app.handle(), None)
-                .await
-                .expect("missing conversation id should be ignored")
-                .is_none()
-        );
+        assert!(fork_terminal_agent_conversation_for_send(
+            &state,
+            app.handle(),
+            None,
+            "",
+            None,
+            None
+        )
+        .await
+        .expect("missing conversation id should be ignored")
+        .is_none());
 
         let project_id = ProjectId::from_string("project-terminal-fork-skip".to_string());
         let mut project = Project::new(
@@ -12456,7 +13932,10 @@ mod tests {
         assert!(fork_terminal_agent_conversation_for_send(
             &state,
             app.handle(),
-            Some(&conversation.id)
+            Some(&conversation.id),
+            "",
+            None,
+            None
         )
         .await
         .expect("missing workspace should be ignored")
@@ -12482,7 +13961,10 @@ mod tests {
         assert!(fork_terminal_agent_conversation_for_send(
             &state,
             app.handle(),
-            Some(&conversation.id)
+            Some(&conversation.id),
+            "",
+            None,
+            None
         )
         .await
         .expect("non-terminal workspace should be ignored")
@@ -12530,11 +14012,17 @@ mod tests {
             .await
             .expect("workspace should be created");
 
-        let child_id =
-            fork_terminal_agent_conversation_for_send(&state, app.handle(), Some(&parent.id))
-                .await
-                .expect("terminal workspace should fork")
-                .expect("forked conversation id should be returned");
+        let child_id = fork_terminal_agent_conversation_for_send(
+            &state,
+            app.handle(),
+            Some(&parent.id),
+            "",
+            None,
+            None,
+        )
+        .await
+        .expect("terminal workspace should fork")
+        .expect("forked conversation id should be returned");
         let child = state
             .chat_conversation_repo
             .get_by_id(&child_id)
@@ -12553,6 +14041,100 @@ mod tests {
             .await
             .expect("workspace lookup should succeed")
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn fork_terminal_agent_conversation_for_send_spawns_session_namer_with_new_message() {
+        let concrete_client = Arc::new(MockAgenticClient::new());
+        let agent_client: Arc<dyn AgenticClient> = concrete_client.clone();
+        let state = AppState::new_test().with_agent_client(agent_client);
+        let app = mock_builder()
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+        let project_id = ProjectId::from_string("project-terminal-fork-namer".to_string());
+        let mut project = Project::new(
+            "Terminal Fork Namer".to_string(),
+            "/tmp/terminal-fork-namer".to_string(),
+        );
+        project.id = project_id.clone();
+        state
+            .project_repo
+            .create(project)
+            .await
+            .expect("project should be created");
+        let mut parent = ChatConversation::new_project(project_id.clone());
+        parent.set_title("Stabilize publication recovery");
+        let parent = state
+            .chat_conversation_repo
+            .create(parent)
+            .await
+            .expect("parent conversation should be created");
+        let mut prior_message = ChatMessage::user_in_project(
+            project_id.clone(),
+            "The merged workspace still reopens with stale publication state.",
+        );
+        prior_message.conversation_id = Some(parent.id.clone());
+        state
+            .chat_message_repo
+            .create(prior_message)
+            .await
+            .expect("prior message should be created");
+
+        let mut workspace = AgentConversationWorkspace::new(
+            parent.id.clone(),
+            project_id,
+            AgentConversationWorkspaceMode::Chat,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main".to_string(),
+            Some("Project default (main)".to_string()),
+            Some("base-sha".to_string()),
+            "ralphx/test/terminal-namer".to_string(),
+            "/tmp/terminal-namer".to_string(),
+        );
+        workspace.publication_pr_status = Some("merged".to_string());
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace should be created");
+
+        let child_id = fork_terminal_agent_conversation_for_send(
+            &state,
+            app.handle(),
+            Some(&parent.id),
+            "Please continue the closed run and fix the title fallback.",
+            None,
+            None,
+        )
+        .await
+        .expect("terminal workspace should fork")
+        .expect("forked conversation id should be returned");
+
+        for _ in 0..20 {
+            if !concrete_client.get_spawn_calls().await.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let spawn_calls = concrete_client.get_spawn_calls().await;
+        let prompt = spawn_calls
+            .iter()
+            .find_map(|call| match &call.call_type {
+                MockCallType::Spawn { prompt, .. } => Some(prompt.as_str()),
+                _ => None,
+            })
+            .expect("session namer should be spawned");
+
+        assert!(prompt.contains(&format!(
+            "<conversation_id>{}</conversation_id>",
+            child_id.as_str()
+        )));
+        assert!(prompt.contains(
+            "<user_message>Please continue the closed run and fix the title fallback.</user_message>"
+        ));
+        assert!(prompt.contains(
+            "<content>The merged workspace still reopens with stale publication state.</content>"
+        ));
     }
 
     #[tokio::test]
@@ -12871,6 +14453,7 @@ mod tests {
                 conversation_id: conversation_id.as_str(),
                 mode: "chat".to_string(),
                 base_ref_kind: None,
+                base_branch_mode: None,
                 base_ref: None,
                 base_display_name: None,
                 base_source_pull_request: None,
@@ -12932,6 +14515,7 @@ mod tests {
                 conversation_id: conversation_id.as_str(),
                 mode: "edit".to_string(),
                 base_ref_kind: None,
+                base_branch_mode: None,
                 base_ref: None,
                 base_display_name: None,
                 base_source_pull_request: None,
@@ -12992,6 +14576,7 @@ mod tests {
                 conversation_id: conversation_id.as_str(),
                 mode: "edit".to_string(),
                 base_ref_kind: Some("local_branch".to_string()),
+                base_branch_mode: None,
                 base_ref: Some("feature/source-pr".to_string()),
                 base_display_name: Some("PR #456: Source PR".to_string()),
                 base_source_pull_request: Some(AgentWorkspaceSourcePullRequestInput {
@@ -13010,12 +14595,18 @@ mod tests {
 
         let workspace = response.workspace.expect("workspace should be returned");
         assert_eq!(workspace.mode, "edit");
-        assert_eq!(workspace.base_ref, "feature/source-pr");
+        assert_eq!(workspace.branch_mode, "linked");
+        assert_eq!(workspace.base_ref_kind, "project_default");
+        assert_eq!(workspace.base_ref, "main");
+        assert_eq!(workspace.branch_name, "feature/source-pr");
+        assert_eq!(workspace.publication_pr_number, Some(456));
+        assert_eq!(workspace.publication_pr_status.as_deref(), Some("open"));
         let source = workspace
             .source_pull_request
             .expect("source PR metadata should be returned");
         assert_eq!(source.number, 456);
         assert_eq!(source.head_ref_name, "feature/source-pr");
+        assert_eq!(source.base_ref_name.as_deref(), Some("main"));
         assert_eq!(source.head_ref_oid.as_deref(), Some(source_sha.as_str()));
 
         let persisted = state
@@ -13025,13 +14616,35 @@ mod tests {
             .expect("workspace lookup succeeds")
             .expect("workspace should persist");
         assert_eq!(
+            persisted.branch_mode,
+            AgentConversationWorkspaceBranchMode::Linked
+        );
+        assert_eq!(
+            persisted.base_ref_kind,
+            IdeationAnalysisBaseRefKind::ProjectDefault
+        );
+        assert_eq!(persisted.base_ref, "main");
+        assert_eq!(persisted.branch_name, "feature/source-pr");
+        assert_eq!(persisted.publication_pr_number, Some(456));
+        assert_eq!(
+            persisted.publication_pr_url.as_deref(),
+            Some("https://github.com/owner/repo/pull/456")
+        );
+        assert_eq!(persisted.publication_pr_status.as_deref(), Some("open"));
+        assert_eq!(
             persisted
                 .source_pull_request
                 .as_ref()
                 .map(|source| source.number),
             Some(456)
         );
-        assert!(persisted.publication_pr_number.is_none());
+        assert_eq!(
+            persisted
+                .source_pull_request
+                .as_ref()
+                .and_then(|source| source.base_ref_name.as_deref()),
+            Some("main")
+        );
     }
 
     #[tokio::test]
@@ -13087,6 +14700,7 @@ mod tests {
                 conversation_id: conversation_id.as_str(),
                 mode: "plan".to_string(),
                 base_ref_kind: None,
+                base_branch_mode: None,
                 base_ref: None,
                 base_display_name: None,
                 base_source_pull_request: None,
@@ -13104,6 +14718,7 @@ mod tests {
                 conversation_id: conversation_id.as_str(),
                 mode: "plan".to_string(),
                 base_ref_kind: None,
+                base_branch_mode: None,
                 base_ref: None,
                 base_display_name: None,
                 base_source_pull_request: None,
@@ -13220,6 +14835,7 @@ mod tests {
                 conversation_id: conversation_id.as_str(),
                 mode: "edit".to_string(),
                 base_ref_kind: None,
+                base_branch_mode: None,
                 base_ref: None,
                 base_display_name: None,
                 base_source_pull_request: None,
@@ -13293,6 +14909,7 @@ mod tests {
                 conversation_id: conversation_id.as_str(),
                 mode: "plan".to_string(),
                 base_ref_kind: Some("project_default".to_string()),
+                base_branch_mode: None,
                 base_ref: None,
                 base_display_name: None,
                 base_source_pull_request: None,
@@ -13364,6 +14981,7 @@ mod tests {
                 conversation_id: conversation_id.as_str(),
                 mode: "edit".to_string(),
                 base_ref_kind: None,
+                base_branch_mode: None,
                 base_ref: None,
                 base_display_name: None,
                 base_source_pull_request: None,
@@ -13426,6 +15044,7 @@ mod tests {
                 conversation_id: conversation_id.as_str(),
                 mode: "ideation".to_string(),
                 base_ref_kind: None,
+                base_branch_mode: None,
                 base_ref: None,
                 base_display_name: None,
                 base_source_pull_request: None,

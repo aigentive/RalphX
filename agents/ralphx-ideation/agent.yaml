@@ -80,7 +80,6 @@ profiles:
         - get_artifact
         - get_session_plan
         - ask_user_question
-        - create_child_session
         - get_plan_verification
         - stop_verification
         - search_memories

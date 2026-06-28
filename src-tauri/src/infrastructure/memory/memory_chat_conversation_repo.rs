@@ -8,7 +8,8 @@ use tokio::sync::RwLock;
 use crate::domain::agents::ProviderSessionRef;
 use crate::domain::entities::{
     AgentConversationWorkspaceMode, AttributionBackfillStatus, ChatContextType, ChatConversation,
-    ChatConversationId, ConversationAttributionBackfillState, ConversationAttributionBackfillSummary,
+    ChatConversationId, ConversationAttributionBackfillState,
+    ConversationAttributionBackfillSummary,
 };
 use crate::domain::repositories::{ChatConversationPage, ChatConversationRepository};
 use crate::error::AppResult;
@@ -54,9 +55,7 @@ impl ChatConversationRepository for MemoryChatConversationRepository {
         let filtered: Vec<ChatConversation> = convos
             .values()
             .filter(|c| {
-                c.context_type == context_type
-                    && c.context_id == context_id
-                    && !c.is_archived()
+                c.context_type == context_type && c.context_id == context_id && !c.is_archived()
             })
             .cloned()
             .collect();
@@ -146,9 +145,7 @@ impl ChatConversationRepository for MemoryChatConversationRepository {
         Ok(convos
             .values()
             .filter(|c| {
-                c.context_type == context_type
-                    && c.context_id == context_id
-                    && !c.is_archived()
+                c.context_type == context_type && c.context_id == context_id && !c.is_archived()
             })
             .max_by_key(|c| c.created_at)
             .cloned())
@@ -279,8 +276,7 @@ impl ChatConversationRepository for MemoryChatConversationRepository {
                 conversation.claude_session_id.is_some()
                     && matches!(
                         conversation.attribution_backfill_status,
-                        None
-                            | Some(crate::domain::entities::AttributionBackfillStatus::Pending)
+                        None | Some(crate::domain::entities::AttributionBackfillStatus::Pending)
                     )
             })
             .cloned()

@@ -27,6 +27,11 @@ async fn upsert_and_get_provider_settings() {
     settings.is_default = true;
     settings.cli_management_mode = AgentProviderCliManagementMode::RxManaged;
     settings.auto_update_enabled = true;
+    settings.custom_binary_enabled = true;
+    settings.custom_binary_path = Some("/opt/tools/codex-wrapper".to_string());
+    settings.custom_env_file_enabled = true;
+    settings.custom_env_file_path = Some("/Users/example/.codex.env".to_string());
+    settings.service_tier = Some("fast".to_string());
 
     repo.upsert(&settings).await.unwrap();
     let row = repo
@@ -39,11 +44,22 @@ async fn upsert_and_get_provider_settings() {
     assert!(row.is_default);
     assert_eq!(row.model.as_deref(), Some("gpt-5.5"));
     assert_eq!(row.sandbox_mode.as_deref(), Some("danger-full-access"));
+    assert_eq!(row.service_tier.as_deref(), Some("fast"));
     assert_eq!(
         row.cli_management_mode,
         AgentProviderCliManagementMode::RxManaged
     );
     assert!(row.auto_update_enabled);
+    assert!(row.custom_binary_enabled);
+    assert_eq!(
+        row.custom_binary_path.as_deref(),
+        Some("/opt/tools/codex-wrapper")
+    );
+    assert!(row.custom_env_file_enabled);
+    assert_eq!(
+        row.custom_env_file_path.as_deref(),
+        Some("/Users/example/.codex.env")
+    );
 }
 
 #[tokio::test]
@@ -186,6 +202,10 @@ fn low_level_fetch_helpers_map_rows_and_missing_rows() {
         AgentProviderCliManagementMode::RxManaged
     );
     assert!(selected.auto_update_enabled);
+    assert!(!selected.custom_binary_enabled);
+    assert_eq!(selected.custom_binary_path, None);
+    assert!(!selected.custom_env_file_enabled);
+    assert_eq!(selected.custom_env_file_path, None);
     assert!(missing.is_none());
     assert_eq!(rows.len(), 1);
 }

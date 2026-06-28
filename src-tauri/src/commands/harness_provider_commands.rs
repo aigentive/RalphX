@@ -5,7 +5,8 @@ use tauri::State;
 
 use crate::application::{
     harness_runtime_registry::{
-        refresh_harness_runtime_probe, refresh_supported_harnesses, HarnessRuntimeProbe,
+        clear_harness_runtime_caches_for_harness, refresh_harness_runtime_probe,
+        refresh_supported_harnesses, HarnessRuntimeProbe,
     },
     AppState, AGENT_LANES,
 };
@@ -29,11 +30,16 @@ pub struct AgentProviderSettingsResponse {
     pub effort: Option<String>,
     pub approval_policy: Option<String>,
     pub sandbox_mode: Option<String>,
+    pub service_tier: Option<String>,
     pub claude_permission_mode: Option<String>,
     pub claude_dangerously_skip_permissions: bool,
     pub claude_allow_dangerously_skip_permissions: bool,
     pub cli_management_mode: String,
     pub auto_update_enabled: bool,
+    pub custom_binary_enabled: bool,
+    pub custom_binary_path: Option<String>,
+    pub custom_env_file_enabled: bool,
+    pub custom_env_file_path: Option<String>,
     pub available: bool,
     pub binary_found: bool,
     pub binary_path: Option<String>,
@@ -43,6 +49,8 @@ pub struct AgentProviderSettingsResponse {
     pub cli_version: Option<String>,
     pub supported_model_aliases: Option<Vec<String>>,
     pub supported_efforts: Option<Vec<String>>,
+    pub supports_fast_mode: bool,
+    pub fast_mode_supported_models: Vec<String>,
     pub updated_at: String,
 }
 
@@ -71,11 +79,21 @@ pub struct UpdateAgentProviderSettingsInput {
     pub effort: Option<String>,
     pub approval_policy: Option<String>,
     pub sandbox_mode: Option<String>,
+    #[serde(default)]
+    pub service_tier: Option<Option<String>>,
     pub claude_permission_mode: Option<String>,
     pub claude_dangerously_skip_permissions: Option<bool>,
     pub claude_allow_dangerously_skip_permissions: Option<bool>,
     pub cli_management_mode: Option<String>,
     pub auto_update_enabled: Option<bool>,
+    #[serde(default)]
+    pub custom_binary_enabled: Option<bool>,
+    #[serde(default)]
+    pub custom_binary_path: Option<Option<String>>,
+    #[serde(default)]
+    pub custom_env_file_enabled: Option<bool>,
+    #[serde(default)]
+    pub custom_env_file_path: Option<Option<String>>,
     #[serde(default)]
     pub reset_to_defaults: bool,
     #[serde(default)]
@@ -120,12 +138,17 @@ fn reset_configurable_defaults(settings: &mut AgentProviderSettings) {
     settings.effort = defaults.effort;
     settings.approval_policy = defaults.approval_policy;
     settings.sandbox_mode = defaults.sandbox_mode;
+    settings.service_tier = defaults.service_tier;
     settings.claude_permission_mode = defaults.claude_permission_mode;
     settings.claude_dangerously_skip_permissions = defaults.claude_dangerously_skip_permissions;
     settings.claude_allow_dangerously_skip_permissions =
         defaults.claude_allow_dangerously_skip_permissions;
     settings.cli_management_mode = defaults.cli_management_mode;
     settings.auto_update_enabled = defaults.auto_update_enabled;
+    settings.custom_binary_enabled = defaults.custom_binary_enabled;
+    settings.custom_binary_path = defaults.custom_binary_path;
+    settings.custom_env_file_enabled = defaults.custom_env_file_enabled;
+    settings.custom_env_file_path = defaults.custom_env_file_path;
 }
 
 fn enforce_provider_constraints(settings: &mut AgentProviderSettings) {
@@ -133,6 +156,70 @@ fn enforce_provider_constraints(settings: &mut AgentProviderSettings) {
         settings.approval_policy = Some(CODEX_DEFAULT_APPROVAL_POLICY.to_string());
         settings.sandbox_mode = Some(CODEX_DEFAULT_SANDBOX_MODE.to_string());
     }
+}
+
+fn normalize_custom_binary_path(path: Option<String>) -> Option<String> {
+    normalize_optional_path(path)
+}
+
+fn normalize_custom_env_file_path(path: Option<String>) -> Option<String> {
+    normalize_optional_path(path)
+}
+
+fn normalize_service_tier(value: Option<String>) -> Option<String> {
+    value.and_then(|tier| {
+        let trimmed = tier.trim();
+        if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("standard") {
+            None
+        } else {
+            Some(trimmed.to_ascii_lowercase())
+        }
+    })
+}
+
+fn validate_codex_fast_mode_selection(
+    settings: &AgentProviderSettings,
+    probe: &HarnessRuntimeProbe,
+) -> Result<(), String> {
+    if settings.provider != AgentHarnessKind::Codex
+        || settings.service_tier.as_deref() != Some("fast")
+    {
+        return Ok(());
+    }
+
+    if !probe.supports_fast_mode {
+        return Err(
+            "Codex Fast mode is not supported by the selected Codex CLI or model catalog."
+                .to_string(),
+        );
+    }
+
+    let Some(model) = settings.model.as_deref() else {
+        return Ok(());
+    };
+    if !probe.fast_mode_supported_models.is_empty()
+        && !probe
+            .fast_mode_supported_models
+            .iter()
+            .any(|supported_model| supported_model == model)
+    {
+        return Err(format!(
+            "Codex Fast mode is not available for model {model}."
+        ));
+    }
+
+    Ok(())
+}
+
+fn normalize_optional_path(path: Option<String>) -> Option<String> {
+    path.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
 }
 
 fn merge_input(
@@ -167,6 +254,9 @@ fn merge_input(
             Some(sandbox_mode)
         };
     }
+    if let Some(service_tier) = input.service_tier {
+        settings.service_tier = normalize_service_tier(service_tier);
+    }
     if let Some(permission_mode) = input.claude_permission_mode {
         settings.claude_permission_mode = if permission_mode.trim().is_empty() {
             None
@@ -181,11 +271,58 @@ fn merge_input(
         settings.claude_allow_dangerously_skip_permissions = allow;
     }
     if input.cli_management_mode.is_some() {
-        settings.cli_management_mode = parse_cli_management_mode(input.cli_management_mode)?
+        let mode = parse_cli_management_mode(input.cli_management_mode)?
             .unwrap_or(AgentProviderCliManagementMode::UserManaged);
+        settings.cli_management_mode = mode;
+        if mode == AgentProviderCliManagementMode::RxManaged
+            && input.custom_binary_enabled != Some(true)
+        {
+            settings.custom_binary_enabled = false;
+        }
     }
     if let Some(auto_update_enabled) = input.auto_update_enabled {
         settings.auto_update_enabled = auto_update_enabled;
+    }
+    if let Some(custom_binary_path) = input.custom_binary_path {
+        settings.custom_binary_path = normalize_custom_binary_path(custom_binary_path);
+    }
+    if let Some(custom_binary_enabled) = input.custom_binary_enabled {
+        settings.custom_binary_enabled = custom_binary_enabled;
+    }
+    if let Some(custom_env_file_path) = input.custom_env_file_path {
+        settings.custom_env_file_path = normalize_custom_env_file_path(custom_env_file_path);
+    }
+    if let Some(custom_env_file_enabled) = input.custom_env_file_enabled {
+        settings.custom_env_file_enabled = custom_env_file_enabled;
+    }
+    if settings.custom_binary_enabled {
+        if settings
+            .custom_binary_path
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or_default()
+            .is_empty()
+        {
+            return Err(format!(
+                "Custom {} binary path is required before enabling custom binary mode",
+                settings.provider
+            ));
+        }
+        settings.cli_management_mode = AgentProviderCliManagementMode::UserManaged;
+        settings.auto_update_enabled = false;
+    }
+    if settings.custom_env_file_enabled
+        && settings
+            .custom_env_file_path
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or_default()
+            .is_empty()
+    {
+        return Err(format!(
+            "Custom {} env file path is required before enabling custom env file mode",
+            settings.provider
+        ));
     }
     if settings.cli_management_mode != AgentProviderCliManagementMode::RxManaged {
         settings.auto_update_enabled = false;
@@ -271,12 +408,17 @@ fn to_response(
         effort: settings.effort.map(|value| value.to_string()),
         approval_policy: settings.approval_policy,
         sandbox_mode: settings.sandbox_mode,
+        service_tier: settings.service_tier,
         claude_permission_mode: settings.claude_permission_mode,
         claude_dangerously_skip_permissions: settings.claude_dangerously_skip_permissions,
         claude_allow_dangerously_skip_permissions: settings
             .claude_allow_dangerously_skip_permissions,
         cli_management_mode: settings.cli_management_mode.to_string(),
         auto_update_enabled: settings.auto_update_enabled,
+        custom_binary_enabled: settings.custom_binary_enabled,
+        custom_binary_path: settings.custom_binary_path,
+        custom_env_file_enabled: settings.custom_env_file_enabled,
+        custom_env_file_path: settings.custom_env_file_path,
         available: probe.available,
         binary_found: probe.binary_found,
         binary_path: probe.binary_path,
@@ -286,6 +428,8 @@ fn to_response(
         cli_version: probe.cli_version,
         supported_model_aliases: probe.supported_model_aliases,
         supported_efforts: probe.supported_efforts,
+        supports_fast_mode: probe.supports_fast_mode,
+        fast_mode_supported_models: probe.fast_mode_supported_models,
         updated_at: settings.updated_at.to_rfc3339(),
     }
 }
@@ -303,6 +447,8 @@ pub(crate) fn provider_settings_snapshot_probe(
             cli_version: None,
             supported_model_aliases: None,
             supported_efforts: None,
+            supports_fast_mode: false,
+            fast_mode_supported_models: Vec::new(),
             error: None,
         };
     }
@@ -316,6 +462,8 @@ pub(crate) fn provider_settings_snapshot_probe(
         cli_version: None,
         supported_model_aliases: None,
         supported_efforts: None,
+        supports_fast_mode: false,
+        fast_mode_supported_models: Vec::new(),
         error: Some(format!(
             "{} is disabled. Enable and validate it in Settings before use.",
             settings.provider
@@ -376,7 +524,7 @@ fn overlay_managed_provider_runtime_probes(
 ) {
     for settings in stored {
         if let Some(probe) =
-            crate::application::managed_provider_cli::managed_provider_runtime_probe(settings)
+            crate::application::managed_provider_cli::provider_runtime_probe(settings)
         {
             probes.insert(settings.provider, probe);
         }
@@ -423,6 +571,8 @@ async fn read_provider_settings_with_stored_and_probes(
                     cli_version: None,
                     supported_model_aliases: None,
                     supported_efforts: None,
+                    supports_fast_mode: false,
+                    fast_mode_supported_models: Vec::new(),
                     error: Some(format!("{provider} probe unavailable")),
                 });
             to_response(settings, probe)
@@ -471,14 +621,17 @@ pub async fn update_agent_provider_settings(
         .await
         .map_err(|err| err.to_string())?;
     let mut probes = snapshot_probes_from_provider_settings(&stored);
-    if input.enabled == Some(true) {
+    let should_refresh_runtime_probe = input.enabled == Some(true)
+        || (provider == AgentHarnessKind::Codex
+            && (input.service_tier.is_some() || input.model.is_some()));
+    if should_refresh_runtime_probe {
         let existing = stored
             .iter()
             .find(|row| row.provider == provider)
             .cloned()
             .unwrap_or_else(|| AgentProviderSettings::disabled_defaults(provider));
         let probe = if let Some(probe) =
-            crate::application::managed_provider_cli::managed_provider_runtime_probe(&existing)
+            crate::application::managed_provider_cli::provider_runtime_probe(&existing)
         {
             probe
         } else {
@@ -495,9 +648,6 @@ async fn update_provider_settings_with_probes(
     probes: &HashMap<AgentHarnessKind, HarnessRuntimeProbe>,
 ) -> Result<AgentProvidersSettingsResponse, String> {
     let provider = parse_provider(&input.provider)?;
-    let probe = probes
-        .get(&provider)
-        .ok_or_else(|| format!("{provider} probe unavailable"))?;
     let stored = state
         .agent_provider_settings_repo
         .list()
@@ -511,7 +661,32 @@ async fn update_provider_settings_with_probes(
     let first_enabled_provider =
         input.enabled == Some(true) && stored.iter().all(|row| !row.enabled);
     let apply_to_all_lanes = input.apply_to_all_lanes || first_enabled_provider;
-    let mut settings = merge_input(existing, input, probe.available)?;
+    let base_probe = probes.get(&provider).cloned();
+    let candidate = merge_input(existing.clone(), input.clone(), true)?;
+    let effective_probe =
+        crate::application::managed_provider_cli::provider_runtime_probe(&candidate)
+            .or(base_probe)
+            .ok_or_else(|| format!("{provider} probe unavailable"))?;
+    if candidate.custom_binary_enabled && !effective_probe.available {
+        return Err(effective_probe
+            .error
+            .unwrap_or_else(|| format!("Custom {provider} binary is not available and ready")));
+    }
+    if provider == AgentHarnessKind::Codex
+        && (input.service_tier.is_some() || input.model.is_some())
+    {
+        validate_codex_fast_mode_selection(&candidate, &effective_probe)?;
+    }
+    crate::application::provider_env_file::validate_provider_custom_env_file_settings(&candidate)?;
+    if input.enabled == Some(true) && !effective_probe.available {
+        return Err(effective_probe.error.unwrap_or_else(|| {
+            format!("{provider} cannot be enabled until its CLI is available and ready")
+        }));
+    }
+    let cli_source_changed = existing.cli_management_mode != candidate.cli_management_mode
+        || existing.custom_binary_enabled != candidate.custom_binary_enabled
+        || existing.custom_binary_path != candidate.custom_binary_path;
+    let mut settings = merge_input(existing, input, effective_probe.available)?;
     if first_enabled_provider {
         settings.is_default = true;
     }
@@ -520,6 +695,10 @@ async fn update_provider_settings_with_probes(
         .upsert(&settings)
         .await
         .map_err(|err| err.to_string())?;
+
+    if cli_source_changed {
+        clear_harness_runtime_caches_for_harness(saved.provider);
+    }
 
     if saved.provider == AgentHarnessKind::Claude {
         apply_claude_provider_permission_settings(&saved);
@@ -530,9 +709,7 @@ async fn update_provider_settings_with_probes(
     }
 
     let mut response_probes = probes.clone();
-    if let Some(probe) =
-        crate::application::managed_provider_cli::managed_provider_runtime_probe(&saved)
-    {
+    if let Some(probe) = crate::application::managed_provider_cli::provider_runtime_probe(&saved) {
         response_probes.insert(saved.provider, probe);
     }
 

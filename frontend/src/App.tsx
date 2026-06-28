@@ -19,6 +19,12 @@ import { ProposalDetailSheet } from "@/components/Ideation/ProposalDetailSheet";
 import type { ProposalDetailEnrichment } from "@/components/Ideation/ProposalDetailSheet";
 import { ExtensibilityView } from "@/components/ExtensibilityView";
 import { ActivityView } from "@/components/activity";
+import { GitHubBranchesView, githubBranchOverviewKeys } from "@/components/github";
+import {
+  GranolaDashboardView,
+  granolaComposerReference,
+  granolaDashboardKeys,
+} from "@/components/granola";
 import { TicketingDashboardView } from "@/components/ticketing";
 import SettingsDialog from "@/components/settings/SettingsDialog";
 import { InsightsView } from "@/components/views/InsightsView";
@@ -38,7 +44,9 @@ import { useIdeationStore, selectActiveSession } from "@/stores/ideationStore";
 import { useProposalStore } from "@/stores/proposalStore";
 import { useProjectStore } from "@/stores/projectStore";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
+import { useIntegrationDashboardStore } from "@/stores/integrationDashboardStore";
 import { DEFAULT_PROJECT_VIEW, type ViewType } from "@/types/chat";
+import { useTicketingStore } from "@/stores/ticketingStore";
 import type { ApplyProposalsInput } from "@/api/ideation.types";
 import type { UpdateProposalInput } from "@/api/ideation";
 import { toTaskProposal, ideationApi } from "@/api/ideation";
@@ -68,6 +76,8 @@ import { resolveIdeationSession } from "@/lib/resolveIdeationSession";
 import { readFreshPostUpdatePreparingMarker } from "@/lib/postUpdatePreparing";
 import { api, getGitBranches, getGitDefaultBranch } from "@/lib/tauri";
 import { executionApi } from "@/api/execution";
+import { githubApi } from "@/api/github";
+import { granolaApi, type GranolaNoteDetail, type GranolaNoteSummary } from "@/api/granola";
 import { tasksApi } from "@/api/tasks";
 import { ticketingApi, type TicketDeepLink } from "@/api/ticketing";
 import { ticketingKeys } from "@/hooks/useTicketing";
@@ -205,6 +215,9 @@ function AppContent() {
   const clearMessages = useChatStore((s) => s.clearMessages);
 
   const switchToProject = useUiStore((s) => s.switchToProject);
+  const preserveCurrentViewOnNextProjectSwitch = useUiStore(
+    (s) => s.preserveCurrentViewOnNextProjectSwitch,
+  );
 
   // Project state
   const activeProjectId = useProjectStore((s) => s.activeProjectId);
@@ -216,10 +229,12 @@ function AppContent() {
   const {
     selectedAgentProjectId,
     selectedAgentConversationId,
+    focusedAgentProjectId,
   } = useAgentSessionStore(
     useShallow((s) => ({
       selectedAgentProjectId: s.selectedProjectId,
       selectedAgentConversationId: s.selectedConversationId,
+      focusedAgentProjectId: s.focusedProjectId,
     }))
   );
 
@@ -228,17 +243,29 @@ function AppContent() {
   const showsExecutionFooter =
     currentView === "kanban" ||
     currentView === "graph" ||
-    currentView === "ideation" ||
+    (currentView === "ideation" && isViewEnabled("ideation", featureFlags)) ||
     currentView === "agents";
   const shouldHydrateAgentHaltState = currentView === "agents";
   const shouldHydrateExecutionStatus =
     showsExecutionFooter || shouldHydrateAgentHaltState;
-  const shouldPollExecutionStatus = showsExecutionFooter && Boolean(activeProjectId);
-  const shouldHydrateIdeationView = currentView === "ideation";
+  const currentProjectId = activeProjectId ?? "";
+  const agentFooterProjectId = selectedAgentConversationId
+    ? selectedAgentProjectId ?? focusedAgentProjectId ?? currentProjectId
+    : focusedAgentProjectId ?? selectedAgentProjectId ?? currentProjectId;
+  const executionProjectId =
+    currentView === "agents" ? agentFooterProjectId : currentProjectId;
+  const executionProjectParam = executionProjectId || undefined;
+  const shouldPollExecutionStatus = showsExecutionFooter && Boolean(executionProjectParam);
+  const shouldHydrateIdeationView =
+    currentView === "ideation" && isViewEnabled("ideation", featureFlags);
   const shouldHydrateExecutionSettings = activeModal === "settings";
 
   // Fetch projects from backend
   const { data: fetchedProjects, isLoading: isLoadingProjects } = useProjects();
+  const activeProject = useMemo(
+    () => fetchedProjects?.find((project) => project.id === currentProjectId) ?? null,
+    [currentProjectId, fetchedProjects],
+  );
   const {
     settings: providerSettings,
     isLoading: isLoadingProviderSettings,
@@ -288,8 +315,8 @@ function AppContent() {
   const [executionSettings, setExecutionSettings] = useState<ProjectSettings | null>(null);
 
   // Running processes data for popover
-  const { data: runningProcessesData } = useRunningProcesses(activeProjectId ?? undefined, {
-    enabled: showsExecutionFooter && Boolean(activeProjectId),
+  const { data: runningProcessesData } = useRunningProcesses(executionProjectParam, {
+    enabled: showsExecutionFooter && Boolean(executionProjectParam),
   });
   const [isLoadingSettings, setIsLoadingSettings] = useState(false);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
@@ -337,18 +364,15 @@ function AppContent() {
     readFreshPostUpdatePreparingMarker() !== null,
   );
 
-  // Use active project ID (queries are disabled when null)
-  const currentProjectId = activeProjectId ?? "";
-
   const { totalCount: pendingReviewCount } = useTasksAwaitingReview(currentProjectId);
 
   // Real-time execution status updates via Tauri events
-  useExecutionEvents();
+  useExecutionEvents(executionProjectParam);
   useTicketingCacheEvents();
   // Fetch initial execution status and poll every 30s as fallback
-  // Pass currentProjectId for per-project execution status scoping
-  useExecutionStatus(currentProjectId || undefined, {
-    enabled: shouldHydrateExecutionStatus && Boolean(currentProjectId),
+  // Scope the Agents footer to the selected/focused agent project instead of the app's active project.
+  useExecutionStatus(executionProjectParam, {
+    enabled: shouldHydrateExecutionStatus && Boolean(executionProjectParam),
     refetchInterval: shouldPollExecutionStatus ? 30000 : false,
     refetchOnWindowFocus: shouldPollExecutionStatus,
     staleTime: shouldHydrateAgentHaltState ? 30_000 : 0,
@@ -356,8 +380,8 @@ function AppContent() {
   const { isApproving, isRequestingChanges } = useReviewMutations();
 
   // Merge pipeline data
-  const { data: mergePipelineData } = useMergePipeline(activeProjectId ?? undefined, {
-    enabled: showsExecutionFooter && Boolean(activeProjectId),
+  const { data: mergePipelineData } = useMergePipeline(executionProjectParam, {
+    enabled: showsExecutionFooter && Boolean(executionProjectParam),
   });
   const mergingCount = useMemo(() => {
     if (!mergePipelineData) return 0;
@@ -558,8 +582,8 @@ function AppContent() {
     setIsExecutionLoading(true);
     try {
       const response = executionStatus.isPaused || isStopped
-        ? await api.execution.resume(currentProjectId || undefined)
-        : await api.execution.pause(currentProjectId || undefined);
+        ? await api.execution.resume(executionProjectParam)
+        : await api.execution.pause(executionProjectParam);
       setExecutionStatus(response.status);
     } catch {
       toast.error(
@@ -577,7 +601,7 @@ function AppContent() {
   const handleStop = async () => {
     setIsExecutionLoading(true);
     try {
-      const response = await api.execution.stop(currentProjectId || undefined);
+      const response = await api.execution.stop(executionProjectParam);
       setExecutionStatus(response.status);
     } catch {
       toast.error("Failed to stop execution");
@@ -627,22 +651,78 @@ function AppContent() {
   }, [openModal]);
 
   const handleWarmView = useCallback((view: ViewType) => {
-    if (view !== "ticketing" || !currentProjectId) {
+    if (!currentProjectId) {
       return;
     }
-    void queryClient.prefetchQuery({
-      queryKey: ticketingKeys.providers(currentProjectId),
-      queryFn: () => ticketingApi.listProviders({ projectId: currentProjectId }),
-      staleTime: 60_000,
-    }).catch(() => {
-      // Warm-up failures are non-blocking; opening the view surfaces real state.
-    });
+    if (view === "ticketing") {
+      void queryClient.prefetchQuery({
+        queryKey: ticketingKeys.providers(currentProjectId),
+        queryFn: () => ticketingApi.listProviders({ projectId: currentProjectId }),
+        staleTime: 60_000,
+      }).catch(() => {
+        // Warm-up failures are non-blocking; opening the view surfaces real state.
+      });
+      return;
+    }
+    if (view === "github") {
+      void queryClient.prefetchQuery({
+        queryKey: githubBranchOverviewKeys.project(currentProjectId),
+        queryFn: () => githubApi.getBranchOverview({ projectId: currentProjectId }),
+        staleTime: 15_000,
+      }).catch(() => {
+        // Warm-up failures are non-blocking; opening the view surfaces real state.
+      });
+      return;
+    }
+    if (view === "granola") {
+      void queryClient.prefetchQuery({
+        queryKey: granolaDashboardKeys.settings(),
+        queryFn: () => granolaApi.getSettings(),
+        staleTime: 30_000,
+      }).catch(() => {
+        // Warm-up failures are non-blocking; opening the view surfaces real state.
+      });
+    }
   }, [currentProjectId]);
 
   const handleNavigateFromTicketAssociation = useCallback((deepLink: TicketDeepLink) => {
+    const targetProjectId = deepLink.projectId ?? currentProjectId;
+    const switchProjectForDeepLink = (view: ViewType) => {
+      setCurrentView(view);
+      if (targetProjectId && targetProjectId !== activeProjectId) {
+        preserveCurrentViewOnNextProjectSwitch();
+        selectProject(targetProjectId);
+      }
+    };
+
     if (deepLink.view === "kanban") {
       setCurrentView("kanban");
       setSelectedTaskId(deepLink.id);
+      return;
+    }
+    if (deepLink.view === "github" && targetProjectId) {
+      useIntegrationDashboardStore.getState().setGitHubState(targetProjectId, {
+        associationFilter: "pull_requests",
+        searchQuery: deepLink.id,
+        selectedBranchName: deepLink.id || null,
+      });
+      switchProjectForDeepLink("github");
+      return;
+    }
+    if (deepLink.view === "granola" && targetProjectId) {
+      useIntegrationDashboardStore.getState().setGranolaState(targetProjectId, {
+        query: "",
+        noteFilter: "all",
+        selectedNoteId: deepLink.id || null,
+      });
+      switchProjectForDeepLink("granola");
+      return;
+    }
+    if (deepLink.view === "ticketing") {
+      if (deepLink.id) {
+        useTicketingStore.getState().setFilters({ text: deepLink.id });
+      }
+      switchProjectForDeepLink("ticketing");
       return;
     }
     if (deepLink.view === "agents" && deepLink.projectId) {
@@ -656,7 +736,31 @@ function AppContent() {
       return;
     }
     setCurrentView(deepLink.view);
-  }, [setCurrentView, setSelectedTaskId, setFocusedAgentProject]);
+  }, [
+    activeProjectId,
+    currentProjectId,
+    preserveCurrentViewOnNextProjectSwitch,
+    selectProject,
+    setCurrentView,
+    setSelectedTaskId,
+    setFocusedAgentProject,
+  ]);
+
+  const handleStartConversationFromGranolaNote = useCallback((
+    note: GranolaNoteDetail | GranolaNoteSummary,
+    targetProjectId: string,
+  ) => {
+    useAgentSessionStore.getState().setStartConversationDraft({
+      projectId: targetProjectId,
+      content: "",
+      mode: "edit",
+      composerIntegrationReferences: [granolaComposerReference(note)],
+    });
+    setFocusedAgentProject(targetProjectId);
+    clearAgentSelection();
+    useChatStore.getState().setActiveConversation(`project:${targetProjectId}`, null);
+    setCurrentView("agents");
+  }, [clearAgentSelection, setCurrentView, setFocusedAgentProject]);
 
   useEffect(() => {
     if (
@@ -747,6 +851,13 @@ function AppContent() {
     setCurrentView("ideation");
     await handleSelectSession(sessionId);
   }, [setCurrentView, handleSelectSession]);
+
+  const handleNavigateToWorkspace = useCallback((projectId: string, conversationId: string) => {
+    setFocusedAgentProject(projectId);
+    useAgentSessionStore.getState().selectConversation(projectId, conversationId);
+    useChatStore.getState().setActiveConversation(`project:${projectId}`, conversationId);
+    setCurrentView("agents");
+  }, [setCurrentView, setFocusedAgentProject]);
 
   const handleEditProposal = useCallback((proposalId: string) => {
     setEditingProposalId(proposalId);
@@ -977,9 +1088,9 @@ function AppContent() {
     return testPage;
   }
 
-  const executionFooter = currentProjectId ? (
+  const executionFooter = executionProjectId ? (
     <ExecutionControlBar
-      projectId={currentProjectId}
+      projectId={executionProjectId}
       runningCount={executionStatus.runningCount}
       maxConcurrent={executionStatus.maxConcurrent}
       queuedCount={executionStatus.queuedCount}
@@ -1000,10 +1111,14 @@ function AppContent() {
       onStop={handleStop}
       runningProcesses={runningProcessesData?.processes ?? []}
       ideationSessions={runningProcessesData?.ideationSessions ?? []}
+      workspaceSessions={runningProcessesData?.workspaceSessions ?? []}
+      lanes={runningProcessesData?.lanes ?? []}
+      capacity={runningProcessesData?.capacity ?? null}
       onPauseProcess={handlePauseProcess}
       onStopProcess={handleStopProcess}
       onOpenSettings={handleOpenSettings}
       onNavigateToSession={handleNavigateToSession}
+      onNavigateToWorkspace={handleNavigateToWorkspace}
     />
   ) : null;
 
@@ -1038,6 +1153,7 @@ function AppContent() {
             reviewsPanelOpen={reviewsPanelOpen}
             onToggleReviewsPanel={toggleReviewsPanel}
             onNewProject={handleOpenProjectWizard}
+            onProjectSwitchIntent={preserveCurrentViewOnNextProjectSwitch}
             showProjectSelector={
               !hasNoProjects && !showWelcomeOverlay && !providerSetupRequired
             }
@@ -1095,21 +1211,27 @@ function AppContent() {
                 />
               )}
               {currentView === "ideation" && (
-                <IdeationView
-                  session={resolvedSession}
-                  proposals={proposals}
-                  isSessionLoading={isSessionLoading}
-                  onNewSession={handleNewSession}
-                  onSelectSession={handleSelectSession}
-                  onArchiveSession={handleArchiveSession}
-                  onEditProposal={handleEditProposal}
-                  onViewProposal={handleViewProposal}
-                  selectedProposalId={viewingProposalId}
-                  onRemoveProposal={handleRemoveProposal}
-                  onReorderProposals={handleReorderProposals}
-                  onApply={handleApplyProposals}
-                  footer={executionFooter}
-                />
+                isViewEnabled("ideation", featureFlags)
+                  ? (
+                    <IdeationView
+                      session={resolvedSession}
+                      proposals={proposals}
+                      isSessionLoading={isSessionLoading}
+                      onNewSession={handleNewSession}
+                      onSelectSession={handleSelectSession}
+                      onArchiveSession={handleArchiveSession}
+                      onEditProposal={handleEditProposal}
+                      onViewProposal={handleViewProposal}
+                      selectedProposalId={viewingProposalId}
+                      onRemoveProposal={handleRemoveProposal}
+                      onReorderProposals={handleReorderProposals}
+                      onApply={handleApplyProposals}
+                      footer={executionFooter}
+                    />
+                  )
+                  : import.meta.env.DEV
+                    ? <FeatureDisabledPlaceholder view="ideation" yamlKey="ideation_page" envVar="RALPHX_UI_IDEATION_PAGE" />
+                    : null
               )}
               {currentView === "agents" && (
                 <AgentsView
@@ -1141,6 +1263,22 @@ function AppContent() {
               {currentView === "ticketing" && (
                 <TicketingDashboardView
                   projectId={currentProjectId}
+                  onNavigateToAssociation={handleNavigateFromTicketAssociation}
+                />
+              )}
+              {currentView === "github" && (
+                <GitHubBranchesView
+                  projectId={currentProjectId}
+                  project={activeProject}
+                  onNavigateToAssociation={handleNavigateFromTicketAssociation}
+                />
+              )}
+              {currentView === "granola" && (
+                <GranolaDashboardView
+                  projectId={currentProjectId}
+                  project={activeProject}
+                  projects={fetchedProjects ?? []}
+                  onStartConversation={handleStartConversationFromGranolaNote}
                   onNavigateToAssociation={handleNavigateFromTicketAssociation}
                 />
               )}

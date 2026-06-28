@@ -11,7 +11,7 @@ use crate::domain::agents::{
 };
 use crate::domain::entities::{
     AgentConversationWorkspaceMode, AgentWorkspaceSourcePullRequest, ChatContextType,
-    ChatConversation, ChatConversationId, DelegatedSessionId, IdeationSession,
+    ChatConversation, ChatConversationId, ChatMessage, DelegatedSessionId, IdeationSession,
     IdeationSessionFlow, IdeationSessionId, ProjectId, TaskId,
 };
 use crate::domain::repositories::{
@@ -24,6 +24,8 @@ use tauri::Emitter;
 const AUTO_TITLE_SOURCE: &str = "auto";
 const USER_TITLE_SOURCE: &str = "user";
 const AGENT_CONVERSATION_SOURCE_CONTEXT: &str = "agent_conversation";
+const CONVERSATION_CONTEXT_MESSAGE_LIMIT: u32 = 6;
+const CONVERSATION_CONTEXT_MESSAGE_CHARS: usize = 600;
 
 #[derive(Debug, Clone)]
 pub(crate) enum SessionNamerTarget {
@@ -35,6 +37,7 @@ pub(crate) enum SessionNamerTarget {
         conversation_id: String,
         user_message: String,
         requested_harness: Option<AgentHarnessKind>,
+        service_tier_override: Option<String>,
     },
     AcceptedSession {
         session_id: String,
@@ -107,7 +110,10 @@ pub(crate) async fn build_session_namer_agent_spawn(
 ) -> AppResult<SessionNamerAgentSpawn> {
     let target_label = target.target_label();
     let resolved = resolve_target_context(state, &target).await?;
-    let prompt = target.prompt(resolved.review_pull_request.as_ref());
+    let prompt = target.prompt(
+        resolved.review_pull_request.as_ref(),
+        resolved.conversation_context.as_deref(),
+    );
     let working_directory =
         resolve_project_working_directory(state, resolved.project_id.as_deref()).await?;
 
@@ -116,6 +122,7 @@ pub(crate) async fn build_session_namer_agent_spawn(
         agent_names::AGENT_SESSION_NAMER,
         working_directory,
     );
+    let env = resolved.runtime.env_with_overrides(bootstrap.env);
 
     let config = AgentConfig {
         role: AgentRole::Custom(bootstrap.agent_role.clone()),
@@ -129,9 +136,10 @@ pub(crate) async fn build_session_namer_agent_spawn(
         logical_effort: resolved.runtime.logical_effort,
         approval_policy: resolved.runtime.approval_policy,
         sandbox_mode: resolved.runtime.sandbox_mode,
+        service_tier: resolved.runtime.service_tier,
         max_tokens: None,
         timeout_secs: Some(60),
-        env: bootstrap.env,
+        env,
     };
 
     Ok(SessionNamerAgentSpawn {
@@ -151,6 +159,7 @@ struct ResolvedSessionNamerTarget {
     project_id: Option<String>,
     harness_for_log: Option<AgentHarnessKind>,
     review_pull_request: Option<AgentWorkspaceSourcePullRequest>,
+    conversation_context: Option<String>,
 }
 
 async fn resolve_target_context(
@@ -173,11 +182,13 @@ async fn resolve_target_context(
                 project_id,
                 harness_for_log,
                 review_pull_request: None,
+                conversation_context: None,
             })
         }
         SessionNamerTarget::ConversationInitial {
             conversation_id,
             requested_harness,
+            service_tier_override,
             ..
         } => {
             let conversation = state
@@ -190,13 +201,18 @@ async fn resolve_target_context(
             let project_id = resolve_conversation_project_id(state, &conversation).await?;
             let review_pull_request =
                 resolve_review_pull_request_context(state, &conversation.id).await?;
-            let runtime = state
+            let conversation_context = format_conversation_context(state, &conversation).await?;
+            let mut runtime = state
                 .resolve_session_namer_runtime_for_conversation_with_requested_harness(
                     &conversation,
                     project_id.as_deref(),
                     *requested_harness,
                 )
                 .await?;
+            if let Some(service_tier_override) = service_tier_override.as_deref() {
+                runtime.service_tier =
+                    normalize_session_namer_service_tier_override(service_tier_override);
+            }
             let client = Arc::clone(&runtime.client);
             let harness_for_log = runtime.harness;
             Ok(ResolvedSessionNamerTarget {
@@ -205,9 +221,76 @@ async fn resolve_target_context(
                 project_id,
                 harness_for_log,
                 review_pull_request,
+                conversation_context,
             })
         }
     }
+}
+
+async fn format_conversation_context(
+    state: &AppState,
+    conversation: &ChatConversation,
+) -> AppResult<Option<String>> {
+    let messages = state
+        .chat_message_repo
+        .get_recent_by_conversation_paginated(
+            &conversation.id,
+            CONVERSATION_CONTEXT_MESSAGE_LIMIT,
+            0,
+        )
+        .await?;
+    if conversation.parent_conversation_id.is_none() && messages.is_empty() {
+        return Ok(None);
+    }
+
+    let mut context = String::from("\n<conversation_context>");
+    append_optional_xml_tag(
+        &mut context,
+        "parent_conversation_id",
+        conversation.parent_conversation_id.as_deref(),
+    );
+    append_optional_xml_tag(&mut context, "current_title", conversation.title.as_deref());
+    append_recent_messages_context(&mut context, messages);
+    context.push_str("\n</conversation_context>");
+    Ok(Some(context))
+}
+
+fn append_recent_messages_context(context: &mut String, messages: Vec<ChatMessage>) {
+    let mut wrote_messages = false;
+    for message in messages {
+        let content = compact_context_text(&message.content, CONVERSATION_CONTEXT_MESSAGE_CHARS);
+        if content.is_empty() {
+            continue;
+        }
+        if !wrote_messages {
+            context.push_str("\n<recent_messages>");
+            wrote_messages = true;
+        }
+        let role = message.role.to_string();
+        context.push_str("\n<message>");
+        append_optional_xml_tag(context, "role", Some(role.as_str()));
+        append_optional_xml_tag(context, "content", Some(content.as_str()));
+        context.push_str("\n</message>");
+    }
+    if wrote_messages {
+        context.push_str("\n</recent_messages>");
+    }
+}
+
+fn compact_context_text(value: &str, max_chars: usize) -> String {
+    let compact = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.chars().count() <= max_chars {
+        return compact;
+    }
+
+    let mut truncated = compact.chars().take(max_chars).collect::<String>();
+    if let Some((prefix, _)) = truncated.rsplit_once(char::is_whitespace) {
+        if !prefix.trim().is_empty() {
+            truncated = prefix.trim_end().to_string();
+        }
+    }
+    truncated.push_str("...");
+    truncated
 }
 
 async fn resolve_review_pull_request_context(
@@ -309,6 +392,7 @@ impl SessionNamerTarget {
         conversation_id: Option<String>,
         user_message: String,
         requested_harness: Option<AgentHarnessKind>,
+        service_tier_override: Option<String>,
     ) -> Result<Self, &'static str> {
         match (session_id, conversation_id) {
             (Some(session_id), None) => Ok(Self::session_initial(session_id, user_message)),
@@ -316,6 +400,7 @@ impl SessionNamerTarget {
                 conversation_id,
                 user_message,
                 requested_harness,
+                service_tier_override,
             }),
             (Some(_), Some(_)) | (None, None) => {
                 Err("spawn_session_namer requires exactly one of sessionId or conversationId")
@@ -323,7 +408,11 @@ impl SessionNamerTarget {
         }
     }
 
-    fn prompt(&self, review_pull_request: Option<&AgentWorkspaceSourcePullRequest>) -> String {
+    fn prompt(
+        &self,
+        review_pull_request: Option<&AgentWorkspaceSourcePullRequest>,
+        conversation_context: Option<&str>,
+    ) -> String {
         match self {
             Self::SessionInitial {
                 session_id,
@@ -339,8 +428,9 @@ impl SessionNamerTarget {
                 let review_pull_request_context = review_pull_request
                     .map(format_review_pull_request_context)
                     .unwrap_or_default();
+                let conversation_context = conversation_context.unwrap_or_default();
                 build_session_namer_prompt(&format!(
-                    "<conversation_id>{conversation_id}</conversation_id>\n<user_message>{user_message}</user_message>{review_pull_request_context}"
+                    "<conversation_id>{conversation_id}</conversation_id>\n<user_message>{user_message}</user_message>{conversation_context}{review_pull_request_context}"
                 ))
             }
             Self::AcceptedSession {
@@ -362,6 +452,14 @@ impl SessionNamerTarget {
             } => format!("conversation:{conversation_id}"),
         }
     }
+}
+
+fn normalize_session_namer_service_tier_override(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("standard") {
+        return Some("standard".to_string());
+    }
+    Some(trimmed.to_ascii_lowercase())
 }
 
 fn format_review_pull_request_context(pull_request: &AgentWorkspaceSourcePullRequest) -> String {
