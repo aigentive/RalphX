@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 
 import { ConflictDiffViewer } from "./ConflictDiffViewer";
 import type { ConflictDiff } from "@/hooks/useConflictDiff";
@@ -57,26 +57,33 @@ describe("ConflictDiffViewer", () => {
     expect(screen.getAllByText(/md/i).length).toBeGreaterThan(0);
   });
 
-  it("forwards ours / theirs content into the SimpleDiffView", () => {
+  it("renders a lightweight shell before hydrating the conflict diff", async () => {
     render(<ConflictDiffViewer conflictDiff={makeConflict()} />);
-    expect(screen.getByTestId("simple-diff-view")).toBeInTheDocument();
+    expect(screen.getByTestId("conflict-diff-hydration-shell")).toBeInTheDocument();
+    expect(screen.queryByTestId("simple-diff-view")).toBeNull();
+    await waitFor(() => expect(screen.getByTestId("simple-diff-view")).toBeInTheDocument());
   });
 
-  it("renders with zero hunks when both sides are empty strings", () => {
+  it("forwards ours / theirs content into the SimpleDiffView after hydration", async () => {
+    render(<ConflictDiffViewer conflictDiff={makeConflict()} />);
+    await waitFor(() => expect(screen.getByTestId("simple-diff-view")).toBeInTheDocument());
+  });
+
+  it("renders with zero hunks when both sides are empty strings", async () => {
     // Covers line 74: early return { hunks: [], oldTotalLines: 0, newTotalLines: 0 }
     render(
       <ConflictDiffViewer
         conflictDiff={makeConflict({ oursContent: "", theirsContent: "" })}
       />,
     );
-    const view = screen.getByTestId("simple-diff-view");
+    const view = await screen.findByTestId("simple-diff-view");
     expect(view).toBeInTheDocument();
     expect(view).toHaveAttribute("data-hunk-count", "0");
     expect(view).toHaveAttribute("data-old-total", "0");
     expect(view).toHaveAttribute("data-new-total", "0");
   });
 
-  it("produces two separate hunks when changes are separated by more than CONTEXT_LINES context lines", () => {
+  it("produces two separate hunks when changes are separated by more than CONTEXT_LINES context lines", async () => {
     // Covers lines 149, 151, 152: the else branch (inHunk[i] === false) for context lines
     // that fall outside the 3-line hunk window between two separate change regions.
     //
@@ -93,9 +100,27 @@ describe("ConflictDiffViewer", () => {
         })}
       />,
     );
-    const view = screen.getByTestId("simple-diff-view");
+    const view = await screen.findByTestId("simple-diff-view");
     expect(view).toBeInTheDocument();
     // Two separate hunks: one for the first change region, one for the second
     expect(view).toHaveAttribute("data-hunk-count", "2");
+  });
+
+  it("requires explicit hydration for large conflict diffs", () => {
+    const oursContent = Array.from({ length: 650 }, (_, index) => `ours ${index}`).join("\n");
+    const theirsContent = Array.from(
+      { length: 650 },
+      (_, index) => `theirs ${index}`,
+    ).join("\n");
+
+    render(
+      <ConflictDiffViewer
+        conflictDiff={makeConflict({ oursContent, theirsContent })}
+      />,
+    );
+
+    expect(screen.getByTestId("conflict-diff-hydration-shell")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Render full conflict diff" })).toBeInTheDocument();
+    expect(screen.queryByTestId("simple-diff-view")).toBeNull();
   });
 });
