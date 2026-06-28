@@ -4,6 +4,7 @@ import {
   getAgentChatFocusSwitchOptions,
   getAgentsChatFocusDisplay,
   getFocusedChatSessionId,
+  getFocusedWorkspaceReviewConversationId,
   type AgentsChatFocus,
 } from "./agentChatFocus";
 
@@ -17,6 +18,13 @@ const taskRuntimeFocus: Extract<AgentsChatFocus, { type: "task_runtime" }> = {
   taskId: "task-1",
   contextType: "review",
 };
+const workspaceReviewFocus: Extract<
+  AgentsChatFocus,
+  { type: "workspace_review" }
+> = {
+  type: "workspace_review",
+  conversationId: "review-conversation-1",
+};
 
 describe("getAgentChatFocusSwitchOptions", () => {
   it("keeps the full ideation focus switcher in ideation mode", () => {
@@ -25,6 +33,7 @@ describe("getAgentChatFocusSwitchOptions", () => {
       focusSwitcherIdeationSessionId: "session-1",
       verificationFocusTarget: verificationFocus,
       taskRuntimeFocusTarget: null,
+      workspaceReviewFocusTarget: null,
       hasPlanArtifact: true,
     });
 
@@ -41,6 +50,7 @@ describe("getAgentChatFocusSwitchOptions", () => {
       focusSwitcherIdeationSessionId: "session-1",
       verificationFocusTarget: verificationFocus,
       taskRuntimeFocusTarget: null,
+      workspaceReviewFocusTarget: null,
       hasPlanArtifact: true,
     });
 
@@ -56,6 +66,7 @@ describe("getAgentChatFocusSwitchOptions", () => {
       focusSwitcherIdeationSessionId: "session-1",
       verificationFocusTarget: verificationFocus,
       taskRuntimeFocusTarget: null,
+      workspaceReviewFocusTarget: null,
       hasPlanArtifact: false,
     });
 
@@ -68,6 +79,7 @@ describe("getAgentChatFocusSwitchOptions", () => {
       focusSwitcherIdeationSessionId: "session-1",
       verificationFocusTarget: verificationFocus,
       taskRuntimeFocusTarget: null,
+      workspaceReviewFocusTarget: null,
       hasPlanArtifact: true,
     });
 
@@ -80,6 +92,7 @@ describe("getAgentChatFocusSwitchOptions", () => {
       focusSwitcherIdeationSessionId: null,
       verificationFocusTarget: null,
       taskRuntimeFocusTarget: taskRuntimeFocus,
+      workspaceReviewFocusTarget: null,
       hasPlanArtifact: false,
     });
 
@@ -93,6 +106,27 @@ describe("getAgentChatFocusSwitchOptions", () => {
       tone: "accent",
     });
   });
+
+  it("adds workspace Review focus whenever the child review chat exists", () => {
+    const options = getAgentChatFocusSwitchOptions({
+      mode: "edit",
+      focusSwitcherIdeationSessionId: null,
+      verificationFocusTarget: null,
+      taskRuntimeFocusTarget: null,
+      workspaceReviewFocusTarget: workspaceReviewFocus,
+      hasPlanArtifact: false,
+    });
+
+    expect(options.map((option) => option.type)).toEqual([
+      "workspace",
+      "workspace_review",
+    ]);
+    expect(options[1]).toMatchObject({
+      label: "Review",
+      description: "Show the Review chat",
+      tone: "warning",
+    });
+  });
 });
 
 describe("task runtime focus helpers", () => {
@@ -104,5 +138,20 @@ describe("task runtime focus helpers", () => {
       tone: "accent",
     });
     expect(getFocusedChatSessionId(taskRuntimeFocus)).toBeNull();
+  });
+});
+
+describe("workspace Review focus helpers", () => {
+  it("describes workspace Review focus without mapping it to an ideation chat session", () => {
+    expect(getAgentsChatFocusDisplay(workspaceReviewFocus)).toEqual({
+      type: "workspace_review",
+      label: "Review",
+      description: "Focused on a Review run",
+      tone: "warning",
+    });
+    expect(getFocusedChatSessionId(workspaceReviewFocus)).toBeNull();
+    expect(getFocusedWorkspaceReviewConversationId(workspaceReviewFocus)).toBe(
+      "review-conversation-1",
+    );
   });
 });

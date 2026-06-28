@@ -919,6 +919,7 @@ function createMockWorkspace(
     conversationId: conversation.id,
     projectId,
     mode,
+    branchMode: base?.branchMode ?? "isolated",
     baseRefKind: base?.kind ?? "project_default",
     baseRef: base?.ref ?? "main",
     baseDisplayName: base?.displayName ?? null,

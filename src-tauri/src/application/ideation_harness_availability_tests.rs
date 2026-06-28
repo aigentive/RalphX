@@ -24,6 +24,8 @@ fn unavailable_probe(error: &str) -> HarnessRuntimeProbe {
         cli_version: None,
         supported_model_aliases: None,
         supported_efforts: None,
+        supports_fast_mode: false,
+        fast_mode_supported_models: Vec::new(),
         error: Some(error.to_string()),
     }
 }
@@ -50,6 +52,8 @@ fn codex_lane_uses_codex_when_core_exec_support_is_available() {
         cli_version: None,
         supported_model_aliases: None,
         supported_efforts: None,
+        supports_fast_mode: false,
+        fast_mode_supported_models: Vec::new(),
         error: None,
     };
     let codex_probe = HarnessRuntimeProbe {
@@ -61,6 +65,8 @@ fn codex_lane_uses_codex_when_core_exec_support_is_available() {
         cli_version: None,
         supported_model_aliases: None,
         supported_efforts: None,
+        supports_fast_mode: true,
+        fast_mode_supported_models: vec!["gpt-5.5".to_string()],
         error: None,
     };
 
@@ -90,6 +96,8 @@ fn codex_lane_stays_unavailable_when_codex_is_unavailable() {
         cli_version: None,
         supported_model_aliases: None,
         supported_efforts: None,
+        supports_fast_mode: false,
+        fast_mode_supported_models: Vec::new(),
         error: None,
     };
     let codex_probe = HarnessRuntimeProbe {
@@ -101,6 +109,8 @@ fn codex_lane_stays_unavailable_when_codex_is_unavailable() {
         cli_version: None,
         supported_model_aliases: None,
         supported_efforts: None,
+        supports_fast_mode: false,
+        fast_mode_supported_models: Vec::new(),
         error: Some("Codex CLI is missing required capability: json_output".to_string()),
     };
 
@@ -200,6 +210,8 @@ fn missing_requested_probe_does_not_silently_fall_back_to_default_probe() {
             cli_version: None,
             supported_model_aliases: None,
             supported_efforts: None,
+            supports_fast_mode: false,
+            fast_mode_supported_models: Vec::new(),
             error: None,
         },
     )]);
@@ -230,6 +242,8 @@ fn project_chat_runtime_override_uses_requested_harness_probe() {
                 cli_version: None,
                 supported_model_aliases: None,
                 supported_efforts: None,
+                supports_fast_mode: true,
+                fast_mode_supported_models: vec!["gpt-5.5".to_string()],
                 error: None,
             },
         ),

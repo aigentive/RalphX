@@ -152,6 +152,8 @@ pub fn assigned_issue_to_composer_reference(
         key: link.issue_key.clone(),
         title: link.title.clone(),
         url: link.issue_url.clone(),
+        summary_excerpt: None,
+        include_transcript: None,
     }
 }
 

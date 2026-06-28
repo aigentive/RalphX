@@ -7,11 +7,11 @@ use rusqlite::{Connection, OptionalExtension};
 use tokio::sync::Mutex;
 
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode,
-    AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
-    AgentWorkspaceFollowupProvenance, AgentWorkspacePrCommentEvidence,
-    AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription,
-    AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
+    AgentConversationWorkspace, AgentConversationWorkspaceBranchMode,
+    AgentConversationWorkspaceMode, AgentConversationWorkspacePublicationEvent,
+    AgentConversationWorkspaceStatus, AgentWorkspaceFollowupProvenance,
+    AgentWorkspacePrCommentEvidence, AgentWorkspacePrCommentEvidenceUpsert,
+    AgentWorkspacePrDescription, AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
     AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
     AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewMonitor,
     AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewTargetScope,
@@ -38,6 +38,7 @@ mod tests;
 
 fn row_to_workspace(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentConversationWorkspace> {
     let mode: String = row.get("mode")?;
+    let branch_mode: Option<String> = row.get("branch_mode").ok();
     let base_ref_kind: String = row.get("base_ref_kind")?;
     let status: String = row.get("status")?;
     let created_at: String = row.get("created_at")?;
@@ -63,6 +64,10 @@ fn row_to_workspace(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentConversati
         project_id: ProjectId::from_string(row.get::<_, String>("project_id")?),
         mode: AgentConversationWorkspaceMode::from_str(&mode)
             .unwrap_or(AgentConversationWorkspaceMode::Edit),
+        branch_mode: branch_mode
+            .as_deref()
+            .and_then(|value| AgentConversationWorkspaceBranchMode::from_str(value).ok())
+            .unwrap_or_default(),
         base_ref_kind: IdeationAnalysisBaseRefKind::from_str(&base_ref_kind)
             .unwrap_or(IdeationAnalysisBaseRefKind::ProjectDefault),
         base_ref: row.get("base_ref")?,
@@ -205,6 +210,9 @@ fn row_to_workspace_review_monitor(
             .unwrap_or(AgentWorkspaceReviewMonitorStatus::Idle),
         current_target_scope,
         reviewed_target_scope,
+        review_conversation_id: row
+            .get::<_, Option<String>>("review_conversation_id")?
+            .map(ChatConversationId::from_string),
         review_artifact_id: row
             .get::<_, Option<String>>("review_artifact_id")?
             .map(ArtifactId::from_string),
@@ -292,6 +300,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
         let conversation_id = workspace.conversation_id.as_str().to_string();
         let project_id = workspace.project_id.as_str().to_string();
         let mode = workspace.mode.to_string();
+        let branch_mode = workspace.branch_mode.to_string();
         let base_ref_kind = workspace.base_ref_kind.to_string();
         let base_ref = workspace.base_ref.clone();
         let base_display_name = workspace.base_display_name.clone();
@@ -358,7 +367,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
             .run(move |conn| {
                 conn.execute(
                     "INSERT INTO agent_conversation_workspaces (
-                        conversation_id, project_id, mode, base_ref_kind, base_ref,
+                        conversation_id, project_id, mode, branch_mode, base_ref_kind, base_ref,
                         base_display_name, base_commit, branch_name, worktree_path,
                         linked_ideation_session_id, linked_plan_branch_id,
                         source_pr_number, source_pr_url, source_pr_title,
@@ -371,10 +380,11 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         pr_auto_merge_current, pr_supervision_status,
                         pr_supervision_summary, pr_supervision_updated_at, status,
                         created_at, updated_at
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35)
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36)
                     ON CONFLICT(conversation_id) DO UPDATE SET
                         project_id=excluded.project_id,
                         mode=excluded.mode,
+                        branch_mode=excluded.branch_mode,
                         base_ref_kind=excluded.base_ref_kind,
                         base_ref=excluded.base_ref,
                         base_display_name=excluded.base_display_name,
@@ -410,6 +420,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         conversation_id,
                         project_id,
                         mode,
+                        branch_mode,
                         base_ref_kind,
                         base_ref,
                         base_display_name,
@@ -488,6 +499,63 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                      ORDER BY created_at DESC",
                 )?;
                 let rows = stmt.query_map(rusqlite::params![project_id], row_to_workspace)?;
+                let mut workspaces = Vec::new();
+                for row in rows {
+                    workspaces.push(row?);
+                }
+                Ok(workspaces)
+            })
+            .await
+    }
+
+    async fn find_active_by_project_and_branch_name(
+        &self,
+        project_id: &ProjectId,
+        branch_name: &str,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        let project_id = project_id.as_str().to_string();
+        let branch_name = branch_name.trim().to_string();
+        if branch_name.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.db
+            .run(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT * FROM agent_conversation_workspaces
+                     WHERE project_id = ?1
+                       AND branch_name = ?2
+                       AND status = 'active'
+                     ORDER BY updated_at DESC",
+                )?;
+                let rows =
+                    stmt.query_map(rusqlite::params![project_id, branch_name], row_to_workspace)?;
+                let mut workspaces = Vec::new();
+                for row in rows {
+                    workspaces.push(row?);
+                }
+                Ok(workspaces)
+            })
+            .await
+    }
+
+    async fn find_by_head_ref(
+        &self,
+        project_id: &ProjectId,
+        head_ref: &str,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        // Project-scoped: branch_name is global, so the project_id predicate is
+        // mandatory to avoid cross-project conversation mis-attachment.
+        let project_id = project_id.as_str().to_string();
+        let head_ref = head_ref.to_string();
+        self.db
+            .run(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT * FROM agent_conversation_workspaces
+                     WHERE project_id = ?1 AND branch_name = ?2
+                     ORDER BY created_at DESC",
+                )?;
+                let rows =
+                    stmt.query_map(rusqlite::params![project_id, head_ref], row_to_workspace)?;
                 let mut workspaces = Vec::new();
                 for row in rows {
                     workspaces.push(row?);
@@ -752,8 +820,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
         &self,
         stale_older_than_secs: u64,
     ) -> AppResult<Vec<AgentConversationWorkspace>> {
-        let cutoff = (chrono::Utc::now()
-            - chrono::Duration::seconds(stale_older_than_secs as i64))
+        let cutoff = (chrono::Utc::now() - chrono::Duration::seconds(stale_older_than_secs as i64))
             .format("%Y-%m-%dT%H:%M:%S+00:00")
             .to_string();
         self.db
@@ -1530,6 +1597,10 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
         let status = monitor.status.to_string();
         let current_target_scope = monitor.current_target_scope.map(|scope| scope.to_string());
         let reviewed_target_scope = monitor.reviewed_target_scope.map(|scope| scope.to_string());
+        let review_conversation_id = monitor
+            .review_conversation_id
+            .as_ref()
+            .map(|id| id.as_str().to_string());
         let review_artifact_id = monitor
             .review_artifact_id
             .as_ref()
@@ -1565,7 +1636,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                 conn.execute(
                     "INSERT INTO agent_workspace_review_monitors (
                         conversation_id, project_id, status, current_target_scope,
-                        reviewed_target_scope, review_artifact_id,
+                        reviewed_target_scope, review_conversation_id, review_artifact_id,
                         review_artifact_version, review_artifact_updated_at,
                         reviewed_head_sha, reviewed_diff_fingerprint,
                         selected_source_base_ref, selected_source_base_sha,
@@ -1576,13 +1647,14 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         last_error, created_at, updated_at
                     ) VALUES (
                         ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-                        ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25
+                        ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26
                     )
                     ON CONFLICT(conversation_id) DO UPDATE SET
                         project_id = excluded.project_id,
                         status = excluded.status,
                         current_target_scope = excluded.current_target_scope,
                         reviewed_target_scope = excluded.reviewed_target_scope,
+                        review_conversation_id = COALESCE(excluded.review_conversation_id, agent_workspace_review_monitors.review_conversation_id),
                         review_artifact_id = COALESCE(excluded.review_artifact_id, agent_workspace_review_monitors.review_artifact_id),
                         review_artifact_version = COALESCE(excluded.review_artifact_version, agent_workspace_review_monitors.review_artifact_version),
                         review_artifact_updated_at = COALESCE(excluded.review_artifact_updated_at, agent_workspace_review_monitors.review_artifact_updated_at),
@@ -1608,6 +1680,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         status,
                         current_target_scope,
                         reviewed_target_scope,
+                        review_conversation_id,
                         review_artifact_id,
                         review_artifact_version,
                         review_artifact_updated_at,

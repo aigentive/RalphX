@@ -300,7 +300,7 @@ async fn resolve_task_base_branch_returns_fallback_for_merged_branch() {
 
     let repo: Option<Arc<dyn PlanBranchRepository>> = Some(mem_repo);
     let task_repo: Option<Arc<dyn TaskRepository>> = None;
-    let result = resolve_task_base_branch(&task, &project, &repo, &task_repo, &None, &None).await;
+    let result = resolve_task_base_branch(&task, &project, &repo, &task_repo, &None, &None, &None).await;
 
     assert_eq!(
         result, "main",
@@ -325,7 +325,7 @@ async fn resolve_task_base_branch_uses_project_base_for_merged() {
 
     let repo: Option<Arc<dyn PlanBranchRepository>> = Some(mem_repo);
     let task_repo: Option<Arc<dyn TaskRepository>> = None;
-    let result = resolve_task_base_branch(&task, &project, &repo, &task_repo, &None, &None).await;
+    let result = resolve_task_base_branch(&task, &project, &repo, &task_repo, &None, &None, &None).await;
 
     assert_eq!(
         result, "develop",

@@ -698,10 +698,10 @@ async fn test_claim_pending_session_for_project_claims_oldest_and_updates_counts
 
     let mut newest = IdeationSession::new(project_id.clone());
     newest.pending_initial_prompt = Some("newest prompt".to_string());
-    newest.created_at = newest.created_at + chrono::Duration::minutes(5);
+    newest.created_at += chrono::Duration::minutes(5);
     let mut oldest = IdeationSession::new(project_id.clone());
     oldest.pending_initial_prompt = Some("oldest prompt".to_string());
-    oldest.created_at = oldest.created_at - chrono::Duration::minutes(5);
+    oldest.created_at -= chrono::Duration::minutes(5);
     let mut other_project = IdeationSession::new(other_project_id);
     other_project.pending_initial_prompt = Some("other prompt".to_string());
 

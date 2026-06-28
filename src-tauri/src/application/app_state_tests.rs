@@ -106,6 +106,18 @@ async fn test_new_test_creates_empty_repositories() {
     assert!(projects.is_empty());
 }
 
+#[test]
+fn production_granola_api_client_prefers_hyper_client_when_available() {
+    let client = AppState::production_granola_api_client();
+    let hyper_available = crate::infrastructure::HyperGranolaApiClient::new().is_ok();
+
+    assert_eq!(
+        client.is_unavailable_for_tests(),
+        !hyper_available,
+        "production Granola wiring should use the real Hyper client whenever it can be constructed"
+    );
+}
+
 #[tokio::test]
 async fn test_with_repos_uses_custom_repositories() {
     let task_repo = Arc::new(MemoryTaskRepository::new());

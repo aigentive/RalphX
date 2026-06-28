@@ -16,6 +16,7 @@ import {
   AGENT_WORKSPACE_STALE_MS,
   agentWorkspaceKeys,
 } from "./agentWorkspaceQueries";
+import { buildRepairChangeSignature } from "./repairDiffSignature";
 
 export interface AgentWorkspaceChangeSummaryState {
   mode: DiffFilterMode;
@@ -39,6 +40,7 @@ export interface AgentWorkspaceChangeSummaryState {
   unstagedCount: number | undefined;
   totalAdditions: number;
   totalDeletions: number;
+  repairChangeSignature?: string | undefined;
 }
 
 export function mapReviewCommitsToDiffViewerCommits(
@@ -80,6 +82,10 @@ export function useAgentWorkspaceChangeSummary({
     supportsWorktreeModes &&
     (review != null || liveSummary != null);
   const hasLiveWorktreeSummary = liveSummary != null && supportsWorktreeModes;
+  const repairChangeSignature = useMemo(
+    () => (repairMode ? buildRepairChangeSignature(liveSummary) : undefined),
+    [liveSummary, repairMode],
+  );
   const liveStagedCount = liveSummary?.staged.fileCount;
   const liveUnstagedCount = liveSummary?.unstaged.fileCount;
   const liveConflictedCount = liveSummary?.conflicted?.fileCount;
@@ -113,6 +119,7 @@ export function useAgentWorkspaceChangeSummary({
     queryKey: [
       ...agentWorkspaceKeys.diff(conversationId),
       repairMode ? "repair-staged-files" : "staged-files",
+      ...(repairChangeSignature !== undefined ? [repairChangeSignature] : []),
     ],
     queryFn: () =>
       repairMode
@@ -134,6 +141,7 @@ export function useAgentWorkspaceChangeSummary({
     queryKey: [
       ...agentWorkspaceKeys.diff(conversationId),
       repairMode ? "repair-unstaged-files" : "unstaged-files",
+      ...(repairChangeSignature !== undefined ? [repairChangeSignature] : []),
     ],
     queryFn: () =>
       repairMode
@@ -327,5 +335,6 @@ export function useAgentWorkspaceChangeSummary({
     unstagedCount,
     totalAdditions,
     totalDeletions,
+    repairChangeSignature,
   };
 }

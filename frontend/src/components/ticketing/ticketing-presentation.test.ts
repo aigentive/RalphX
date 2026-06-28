@@ -4,7 +4,7 @@ import { assigneeInitials, splitLabels } from "./ticketing-presentation";
 
 describe("assigneeInitials", () => {
   it("uses first and last initial for multi-word names", () => {
-    expect(assigneeInitials("Adrian Demian")).toBe("AD");
+    expect(assigneeInitials("Alex Developer")).toBe("AD");
     expect(assigneeInitials("ada lovelace byron")).toBe("AB");
   });
 

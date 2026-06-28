@@ -359,6 +359,9 @@ mod v20260622162352_agent_workspace_followup_provenance_tests;
 mod v20260623074101_clickup_integration_settings;
 #[cfg(test)]
 mod v20260623074101_clickup_integration_settings_tests;
+mod v20260624114053_granola_integration_settings;
+#[cfg(test)]
+mod v20260624114053_granola_integration_settings_tests;
 mod v20260625115000_custom_provider_binary;
 #[cfg(test)]
 mod v20260625115000_custom_provider_binary_tests;
@@ -368,6 +371,16 @@ mod v20260625153000_agent_conversation_issues_tests;
 mod v20260626092500_custom_provider_env_file;
 #[cfg(test)]
 mod v20260626092500_custom_provider_env_file_tests;
+mod v20260626191358_codex_service_tier_settings;
+#[cfg(test)]
+mod v20260626191358_codex_service_tier_settings_tests;
+mod v20260627104500_agent_conversation_granola_note_links;
+mod v20260627183000_agent_workspace_branch_mode;
+#[cfg(test)]
+mod v20260627183000_agent_workspace_branch_mode_tests;
+mod v20260628010000_workspace_review_child_conversation;
+#[cfg(test)]
+mod v20260628010000_workspace_review_child_conversation_tests;
 #[cfg(test)]
 mod v20_merge_validation_mode_tests;
 #[cfg(test)]
@@ -458,7 +471,7 @@ mod v8_task_git_fields_tests;
 mod v9_project_git_fields_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260626092500;
+pub const SCHEMA_VERSION: i64 = 20260628010000;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -1259,6 +1272,11 @@ const MIGRATIONS: &[Migration] = &[
         migrate: v20260623074101_clickup_integration_settings::migrate,
     },
     Migration {
+        version: 20260624114053,
+        name: "granola_integration_settings",
+        migrate: v20260624114053_granola_integration_settings::migrate,
+    },
+    Migration {
         version: 20260625115000,
         name: "custom_provider_binary",
         migrate: v20260625115000_custom_provider_binary::migrate,
@@ -1272,6 +1290,26 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260626092500,
         name: "custom_provider_env_file",
         migrate: v20260626092500_custom_provider_env_file::migrate,
+    },
+    Migration {
+        version: 20260626191358,
+        name: "codex_service_tier_settings",
+        migrate: v20260626191358_codex_service_tier_settings::migrate,
+    },
+    Migration {
+        version: 20260627104500,
+        name: "agent_conversation_granola_note_links",
+        migrate: v20260627104500_agent_conversation_granola_note_links::migrate,
+    },
+    Migration {
+        version: 20260627183000,
+        name: "agent_workspace_branch_mode",
+        migrate: v20260627183000_agent_workspace_branch_mode::migrate,
+    },
+    Migration {
+        version: 20260628010000,
+        name: "workspace_review_child_conversation",
+        migrate: v20260628010000_workspace_review_child_conversation::migrate,
     },
 ];
 

@@ -17,7 +17,7 @@ describe("CROSS_PROJECT_KEYWORDS — new semantic keywords", () => {
   });
 
   it("detects 'separate repository'", () => {
-    expect(detectsCrossProject("Deploy to a separate repository called reefagent-mcp-jira.")).toBe(true);
+    expect(detectsCrossProject("Deploy to a separate repository called external-mcp-jira.")).toBe(true);
   });
 
   it("detects 'new repo'", () => {

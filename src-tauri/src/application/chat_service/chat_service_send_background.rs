@@ -32,14 +32,15 @@ use crate::domain::entities::{
 };
 use crate::domain::entities::{ChatConversation, ChatTimelineItem};
 use crate::domain::repositories::{
-    ActivityEventRepository, AgentConversationJiraIssueRepository,
-    AgentConversationLinearIssueRepository, AgentConversationWorkspaceRepository,
-    AgentLaneSettingsRepository, AgentRunRepository, ArtifactRepository, ChatAttachmentRepository,
-    ChatConversationRepository, ChatMessageRepository, ChatTimelineRepository,
-    DelegatedSessionRepository, ExecutionSettingsRepository, IdeationEffortSettingsRepository,
-    IdeationModelSettingsRepository, IdeationSessionRepository, MemoryEventRepository,
-    PlanBranchRepository, ProjectRepository, QueuedMessageRepository, ReviewRepository,
-    TaskDependencyRepository, TaskProposalRepository, TaskRepository, TaskStepRepository,
+    ActivityEventRepository, AgentConversationGranolaNoteRepository,
+    AgentConversationJiraIssueRepository, AgentConversationLinearIssueRepository,
+    AgentConversationWorkspaceRepository, AgentLaneSettingsRepository, AgentRunRepository,
+    ArtifactRepository, ChatAttachmentRepository, ChatConversationRepository,
+    ChatMessageRepository, ChatTimelineRepository, DelegatedSessionRepository,
+    ExecutionSettingsRepository, IdeationEffortSettingsRepository, IdeationModelSettingsRepository,
+    IdeationSessionRepository, MemoryEventRepository, PlanBranchRepository, ProjectRepository,
+    QueuedMessageRepository, ReviewRepository, TaskDependencyRepository, TaskProposalRepository,
+    TaskRepository, TaskStepRepository,
 };
 use crate::domain::services::{
     MessageQueue, QueueKey, QueuedMessage, RunningAgentKey, RunningAgentRegistry,
@@ -68,6 +69,8 @@ pub(super) struct BackgroundRunRepos {
     pub agent_conversation_jira_issue_repo: Option<Arc<dyn AgentConversationJiraIssueRepository>>,
     pub agent_conversation_linear_issue_repo:
         Option<Arc<dyn AgentConversationLinearIssueRepository>>,
+    pub agent_conversation_granola_note_repo:
+        Option<Arc<dyn AgentConversationGranolaNoteRepository>>,
     pub task_proposal_repo: Option<Arc<dyn TaskProposalRepository>>,
     pub activity_event_repo: Arc<dyn ActivityEventRepository>,
     pub memory_event_repo: Arc<dyn MemoryEventRepository>,
@@ -932,6 +935,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
             agent_conversation_workspace_repo,
             agent_conversation_jira_issue_repo,
             agent_conversation_linear_issue_repo,
+            agent_conversation_granola_note_repo,
             task_proposal_repo,
             activity_event_repo,
             memory_event_repo,
@@ -1468,6 +1472,9 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                         )
                         .with_agent_conversation_linear_issue_repo(
                             agent_conversation_linear_issue_repo.as_ref().map(Arc::clone),
+                        )
+                        .with_agent_conversation_granola_note_repo(
+                            agent_conversation_granola_note_repo.as_ref().map(Arc::clone),
                         );
 
                         let chat_svc: Arc<dyn super::ChatService> = Arc::new(

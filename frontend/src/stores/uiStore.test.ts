@@ -69,6 +69,7 @@ describe("uiStore", () => {
       kanbanCardDisplayMode: "default",
       activityFilter: { taskId: null, sessionId: null },
       featureFlags: ALL_ENABLED,
+      preserveCurrentViewOnProjectSwitch: false,
     });
     // Clear localStorage to prevent cross-test contamination
     localStorage.clear();
@@ -602,6 +603,31 @@ describe("uiStore", () => {
       useUiStore.getState().switchToProject(PROJECT_A, PROJECT_B);
 
       expect(useUiStore.getState().currentView).toBe("graph");
+    });
+
+    it("preserves the current section for one top-bar project switch", () => {
+      useUiStore.setState({
+        currentView: "github",
+        viewByProject: { [PROJECT_B]: "kanban" },
+      });
+
+      useUiStore.getState().preserveCurrentViewOnNextProjectSwitch();
+      useUiStore.getState().switchToProject(PROJECT_A, PROJECT_B);
+
+      expect(useUiStore.getState().currentView).toBe("github");
+      expect(useUiStore.getState().viewByProject[PROJECT_B]).toBe("github");
+      expect(useUiStore.getState().preserveCurrentViewOnProjectSwitch).toBe(false);
+
+      useUiStore.setState({
+        currentView: "granola",
+        viewByProject: {
+          ...useUiStore.getState().viewByProject,
+          [PROJECT_A]: "kanban",
+        },
+      });
+
+      useUiStore.getState().switchToProject(PROJECT_B, PROJECT_A);
+      expect(useUiStore.getState().currentView).toBe("kanban");
     });
 
     it("restores saved insights view for new project from map", () => {

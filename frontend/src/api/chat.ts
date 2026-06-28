@@ -654,6 +654,7 @@ const ChatConversationResponseSchema = z.object({
   effective_model_id: z.string().nullable().optional(),
   logical_effort: z.string().nullable().optional(),
   effective_effort: z.string().nullable().optional(),
+  service_tier: z.string().nullable().optional(),
   agent_mode: AgentConversationModeSchema.nullable().optional(),
   parent_conversation_id: z.string().nullable().optional(),
   title: z.string().nullable(),
@@ -707,6 +708,7 @@ function transformConversation(raw: RawConversation): ChatConversation {
     effectiveModelId: raw.effective_model_id ?? null,
     logicalEffort: raw.logical_effort ?? null,
     effectiveEffort: raw.effective_effort ?? null,
+    serviceTier: raw.service_tier ?? null,
     agentMode: raw.agent_mode ?? null,
     parentConversationId: raw.parent_conversation_id ?? null,
     title: raw.title,
@@ -1666,12 +1668,14 @@ export interface ComposerProjectReference {
 }
 
 export interface ComposerIntegrationReference {
-  provider: "atlassian" | "linear" | "clickup";
-  kind: "jira" | "confluence" | "linear" | "clickup";
+  provider: "atlassian" | "linear" | "clickup" | "granola";
+  kind: "jira" | "confluence" | "linear" | "clickup" | "note";
   id: string;
   key?: string;
   title?: string;
   url?: string;
+  summaryExcerpt?: string;
+  includeTranscript?: boolean;
 }
 
 export interface ComposerArtifactReference {
@@ -1688,6 +1692,7 @@ export interface SendAgentMessageOptions {
   providerHarness?: string | null;
   modelId?: string | null;
   logicalEffort?: string | null;
+  codexFastMode?: boolean | null;
   suppressUserMessage?: boolean;
   composerProjectReferences?: ComposerProjectReference[];
   composerIntegrationReferences?: ComposerIntegrationReference[];
@@ -1699,9 +1704,11 @@ export type AgentConversationBaseRefKind =
   | "project_default"
   | "current_branch"
   | "local_branch";
+export type AgentConversationBranchMode = "isolated" | "linked";
 
 export interface AgentConversationBaseSelection {
   kind: AgentConversationBaseRefKind;
+  branchMode?: AgentConversationBranchMode;
   ref: string;
   displayName: string;
   sourcePullRequest?: AgentConversationSourcePullRequest | null;
@@ -1720,6 +1727,7 @@ export interface AgentConversationWorkspace {
   conversationId: string;
   projectId: string;
   mode: AgentConversationWorkspaceMode;
+  branchMode: AgentConversationBranchMode;
   baseRefKind: string;
   baseRef: string;
   baseDisplayName: string | null;
@@ -1768,6 +1776,7 @@ export interface StartAgentConversationInput {
   providerHarness?: string | null;
   modelId?: string | null;
   logicalEffort?: string | null;
+  codexFastMode?: boolean | null;
   mode?: AgentConversationWorkspaceMode;
   base?: AgentConversationBaseSelection | null;
   composerProjectReferences?: ComposerProjectReference[];
@@ -1972,6 +1981,7 @@ export interface AgentWorkspaceReviewMonitor {
   status: AgentWorkspaceReviewMonitorStatus;
   currentTargetScope: AgentWorkspaceReviewTargetScope | null;
   reviewedTargetScope: AgentWorkspaceReviewTargetScope | null;
+  reviewConversationId: string | null;
   reviewArtifactId: string | null;
   reviewArtifactVersion: number | null;
   reviewArtifactUpdatedAt: string | null;
@@ -2057,6 +2067,7 @@ const AgentConversationWorkspaceResponseSchema = z.object({
   conversation_id: z.string(),
   project_id: z.string(),
   mode: z.string(),
+  branch_mode: z.enum(["isolated", "linked"]).optional().default("isolated"),
   base_ref_kind: z.string(),
   base_ref: z.string(),
   base_display_name: z.string().nullable(),
@@ -2241,6 +2252,7 @@ const AgentWorkspaceReviewMonitorResponseSchema = z.object({
   status: z.enum(["idle", "reviewing", "ready", "blocked"]),
   current_target_scope: z.enum(["selected_source", "workspace_delta"]).nullable(),
   reviewed_target_scope: z.enum(["selected_source", "workspace_delta"]).nullable(),
+  review_conversation_id: z.string().nullable().optional(),
   review_artifact_id: z.string().nullable(),
   review_artifact_version: z.number().nullable(),
   review_artifact_updated_at: z.string().nullable(),
@@ -2426,6 +2438,7 @@ function transformAgentConversationWorkspace(
     conversationId: raw.conversation_id,
     projectId: raw.project_id,
     mode: raw.mode as AgentConversationWorkspaceMode,
+    branchMode: raw.branch_mode,
     baseRefKind: raw.base_ref_kind,
     baseRef: raw.base_ref,
     baseDisplayName: raw.base_display_name,
@@ -2531,6 +2544,9 @@ export function startAgentConversationInvokeInput(
       : {}),
     ...(input.modelId ? { modelOverride: input.modelId } : {}),
     ...(input.logicalEffort ? { logicalEffort: input.logicalEffort } : {}),
+    ...(input.codexFastMode != null
+      ? { codexFastMode: input.codexFastMode }
+      : {}),
     ...(input.mode ? { mode: input.mode } : {}),
     ...(input.composerProjectReferences?.length
       ? { composerProjectReferences: input.composerProjectReferences }
@@ -2544,6 +2560,9 @@ export function startAgentConversationInvokeInput(
     ...(input.base
       ? {
           baseRefKind: input.base.kind,
+          ...(input.base.branchMode
+            ? { baseBranchMode: input.base.branchMode }
+            : {}),
           baseRef: input.base.ref,
           baseDisplayName: input.base.displayName,
           ...(input.base.sourcePullRequest
@@ -2739,6 +2758,7 @@ function transformAgentWorkspaceReviewMonitor(
     status: raw.status,
     currentTargetScope: raw.current_target_scope,
     reviewedTargetScope: raw.reviewed_target_scope,
+    reviewConversationId: raw.review_conversation_id ?? null,
     reviewArtifactId: raw.review_artifact_id,
     reviewArtifactVersion: raw.review_artifact_version,
     reviewArtifactUpdatedAt: raw.review_artifact_updated_at,
@@ -3342,6 +3362,9 @@ export async function switchAgentConversationMode(
         ...(input.base
           ? {
               baseRefKind: input.base.kind,
+              ...(input.base.branchMode
+                ? { baseBranchMode: input.base.branchMode }
+                : {}),
               baseRef: input.base.ref,
               baseDisplayName: input.base.displayName,
               ...(input.base.sourcePullRequest
@@ -3397,6 +3420,9 @@ export async function sendAgentMessage(
         ...(options?.modelId ? { modelOverride: options.modelId } : {}),
         ...(options?.logicalEffort
           ? { logicalEffort: options.logicalEffort }
+          : {}),
+        ...(options?.codexFastMode != null
+          ? { codexFastMode: options.codexFastMode }
           : {}),
         ...(options?.suppressUserMessage ? { suppressUserMessage: true } : {}),
         ...(options?.composerProjectReferences?.length
@@ -3573,6 +3599,7 @@ export async function getAgentRunningStates(
 
 const AgentConversationRuntimeSourceSchema = z.enum([
   "workspace",
+  "workspace_review",
   "ideation",
   "verification",
   "task_execution",

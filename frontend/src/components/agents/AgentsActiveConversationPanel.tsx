@@ -42,6 +42,10 @@ import {
   type BranchBaseOption,
 } from "@/components/shared/branchBaseOptions";
 import { buildStoreKey } from "@/lib/chat-context-registry";
+import {
+  CODEX_FAST_MODE_DESCRIPTION,
+  codexFastModeAvailabilityForProvider,
+} from "@/lib/codex-fast-mode";
 import { formatQueuedMessageExcerpt } from "@/lib/queuedMessageExcerpt";
 import { useAgentModels } from "@/hooks/useAgentModels";
 import { useConfirmation } from "@/hooks/useConfirmation";
@@ -101,6 +105,7 @@ import {
 import type { IdeationArtifactTab } from "./agentArtifactTabs";
 import {
   getFocusedChatSessionId,
+  getFocusedWorkspaceReviewConversationId,
   type AgentsChatFocus,
   type AgentsChatFocusSwitchOption,
   type AgentsChatFocusType,
@@ -513,6 +518,7 @@ interface AgentsActiveConversationPanelProps {
     workspace: AgentConversationWorkspace | null
   ) => void;
   onFocusIdeationSession: (sessionId: string) => void;
+  onFocusWorkspaceReview: (conversationId: string) => void;
   onFocusVerificationSession: (
     parentSessionId: string,
     childSessionId: string
@@ -566,6 +572,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   onAgentUserMessageSent,
   onConversationModeSwitched,
   onFocusIdeationSession,
+  onFocusWorkspaceReview,
   onFocusVerificationSession,
   onFocusTaskRuntime,
   onOpenTaskArtifact,
@@ -591,6 +598,8 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   const queryClient = useQueryClient();
   const bus = useEventBus();
   const focusedChatSessionId = getFocusedChatSessionId(chatFocus);
+  const focusedWorkspaceReviewConversationId =
+    getFocusedWorkspaceReviewConversationId(chatFocus);
   const { registry: modelRegistry } = useAgentModels();
   const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
   const openModal = useUiStore((s) => s.openModal);
@@ -616,6 +625,8 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   const [isCreatingPlanProposals, setIsCreatingPlanProposals] = useState(false);
   const [isImplementingPlanDirectly, setIsImplementingPlanDirectly] = useState(false);
   const [isStartingPlanVerification, setIsStartingPlanVerification] = useState(false);
+  const [codexFastModeByConversationId, setCodexFastModeByConversationId] =
+    useState<Record<string, boolean>>({});
   const [
     shouldLoadWorkspaceBaseOptions,
     setShouldLoadWorkspaceBaseOptions,
@@ -674,6 +685,32 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     providerOptions,
     isReady: providerSettingsReady,
   });
+  const codexProviderSettings = configuredProviders.find(
+    (entry) => entry.provider === "codex",
+  );
+  const codexProviderFastMode =
+    codexProviderSettings?.serviceTier?.trim().toLowerCase() === "fast";
+  const conversationServiceTier = activeConversation.serviceTier
+    ?.trim()
+    .toLowerCase();
+  const conversationFastMode =
+    conversationServiceTier === "fast"
+      ? true
+      : conversationServiceTier === "standard"
+        ? false
+        : codexProviderFastMode;
+  const activeCodexFastMode =
+    codexFastModeByConversationId[selectedConversationId] ??
+    conversationFastMode;
+  const handleActiveCodexFastModeChange = useCallback(
+    (value: boolean) => {
+      setCodexFastModeByConversationId((current) => ({
+        ...current,
+        [selectedConversationId]: value,
+      }));
+    },
+    [selectedConversationId],
+  );
   const workspaceProviderSupportedEfforts = useMemo(
     () =>
       supportedEffortsForProvider(
@@ -705,6 +742,21 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       workspaceProviderSupportedModelAliases,
     ]
   );
+  const codexFastModeAvailability = codexFastModeAvailabilityForProvider({
+    provider: codexProviderSettings,
+    modelId: selectableWorkspaceRuntime.modelId,
+    isReady: providerSettingsReady,
+  });
+  const activeCodexFastModeOption =
+    normalizedActiveRuntime.provider === "codex" &&
+    codexFastModeAvailability.supported
+      ? activeCodexFastMode
+      : null;
+  const selectableCodexFastMode =
+    normalizedActiveRuntime.provider === "codex" &&
+    codexFastModeAvailability.supported
+      ? activeCodexFastMode
+      : false;
   const openProviderSettings = useCallback(() => {
     openModal("settings", { section: "providers" });
   }, [openModal]);
@@ -716,6 +768,8 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   const panelTaskRuntimeContextType = taskRuntimeFocus?.contextType;
   const focusedPanelKey = taskRuntimeFocus
     ? `${taskRuntimeFocus.contextType}:${taskRuntimeFocus.taskId}`
+    : focusedWorkspaceReviewConversationId
+    ? `workspace_review:${focusedWorkspaceReviewConversationId}`
     : focusedChatSessionId ?? "workspace";
   const isFocusedChildChat = chatFocus.type !== "workspace";
   const runtimeStatusQuery = useAgentConversationRuntimeStatus(selectedConversationId, {
@@ -965,15 +1019,35 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     if (taskRuntimeFocus) {
       return buildStoreKey(taskRuntimeFocus.contextType, taskRuntimeFocus.taskId);
     }
+    if (focusedWorkspaceReviewConversationId) {
+      return buildStoreKey("project", focusedWorkspaceReviewConversationId);
+    }
     if (focusedChatSessionId) {
       return buildStoreKey("ideation", focusedChatSessionId);
     }
     return getAgentConversationStoreKey(activeConversation);
-  }, [activeConversation, focusedChatSessionId, taskRuntimeFocus]);
+  }, [
+    activeConversation,
+    focusedChatSessionId,
+    focusedWorkspaceReviewConversationId,
+    taskRuntimeFocus,
+  ]);
   const queuedMessagesSelector = useMemo(
     () => selectQueuedMessages(panelStoreKeyOverride),
     [panelStoreKeyOverride]
   );
+  const panelConversationIdOverride =
+    focusedWorkspaceReviewConversationId ??
+    (!isFocusedChildChat ? selectedConversationId : null);
+  const panelAgentProcessContextIdOverride = taskRuntimeFocus
+    ? taskRuntimeFocus.taskId
+    : focusedWorkspaceReviewConversationId ??
+      (!isFocusedChildChat && activeConversation.contextType === "project"
+        ? selectedConversationId
+        : null);
+  const panelSendConversationId =
+    focusedWorkspaceReviewConversationId ??
+    (!isFocusedChildChat ? selectedConversationId : null);
   const queuedMessages = useChatStore(queuedMessagesSelector);
   const executionHaltState = useUiStore((s) =>
     getAgentQueueHaltState(s.executionStatus)
@@ -1050,6 +1124,12 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       onOpenTaskArtifact(taskId);
     },
     [onFocusTaskRuntime, onOpenTaskArtifact],
+  );
+  const handleViewRuntimeWorkspaceReview = useCallback(
+    (conversationId: string) => {
+      onFocusWorkspaceReview(conversationId);
+    },
+    [onFocusWorkspaceReview],
   );
   const workspaceModelOptions = useMemo(
     () =>
@@ -1193,7 +1273,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     approvedAt: planApprovalArtifact?.planApproval?.approvedAt,
   });
   const planVerificationQuery = useVerificationStatus(
-    planApprovalSessionId && isPlanApproved ? planApprovalSessionId : undefined,
+    planApprovalSessionId && planApprovalArtifact ? planApprovalSessionId : undefined,
   );
   const planVerificationState = planVerificationQuery.data?.status ?? null;
   const planVerificationInProgress =
@@ -1206,7 +1286,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     planVerificationState === "imported_verified";
   const canVerifyComposerPlan = Boolean(
     planApprovalSessionId &&
-      isPlanApproved &&
+      planApprovalArtifact &&
       !isPlanVerificationLoading &&
       !isPlanVerificationSatisfied,
   );
@@ -1355,6 +1435,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
           providerHarness: normalizedActiveRuntime.provider,
           modelId: normalizedActiveRuntime.modelId,
           logicalEffort: normalizedActiveRuntime.effort,
+          codexFastMode: activeCodexFastModeOption,
           suppressUserMessage: true,
         },
       );
@@ -1368,6 +1449,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   }, [
     activeProjectId,
     activeWorkspace,
+    activeCodexFastModeOption,
     canImplementPlanDirectly,
     normalizedActiveRuntime.effort,
     normalizedActiveRuntime.modelId,
@@ -1425,7 +1507,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   ]);
   const planComposerHint = useMemo(() => {
     if (canApproveComposerPlan) {
-      return "Approve the draft plan when it matches the intended scope. You can still keep chatting to refine it.";
+      return "Approve the draft plan when it matches the intended scope, or verify it first for adversarial review.";
     }
     return buildPlanActionHint({
       assessment: planComplexityQuery.data,
@@ -1444,6 +1526,21 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       return [];
     }
 
+    const verifyAction: PlanComposerCtaAction | null = canVerifyComposerPlan
+      ? {
+          id: "verify",
+          label: "Verify Plan",
+          icon: ShieldCheck,
+          isPrimary: false,
+          isPending:
+            isStartingPlanVerification || planVerificationInProgress,
+          disabled: isPlanRecommendationPending,
+          onClick: () => {
+            void handleVerifyPlanFromComposer();
+          },
+        }
+      : null;
+
     if (canApproveComposerPlan) {
       return [
         {
@@ -1457,7 +1554,8 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
             void handleApprovePlanFromQuestion();
           },
         },
-      ];
+        verifyAction,
+      ].filter((action): action is PlanComposerCtaAction => action !== null);
     }
 
     if (!isPlanApproved) {
@@ -1505,21 +1603,6 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
           },
         }
       : null;
-    const verifyAction: PlanComposerCtaAction | null = canVerifyComposerPlan
-      ? {
-          id: "verify",
-          label: "Verify Plan",
-          icon: ShieldCheck,
-          isPrimary: false,
-          isPending:
-            isStartingPlanVerification || planVerificationInProgress,
-          disabled: isPlanRecommendationPending,
-          onClick: () => {
-            void handleVerifyPlanFromComposer();
-          },
-        }
-      : null;
-
     const mainActions =
       isPlanRecommendationPending ||
       planComplexityQuery.data?.recommendedAction === "create_proposals"
@@ -1608,6 +1691,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
             providerHarness: normalizedActiveRuntime.provider,
             modelId: normalizedActiveRuntime.modelId,
             logicalEffort: normalizedActiveRuntime.effort,
+            codexFastMode: activeCodexFastModeOption,
           },
         );
         onAgentUserMessageSent({
@@ -1625,7 +1709,12 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
         return false;
       }
     },
-    [activeProjectId, normalizedActiveRuntime, onAgentUserMessageSent],
+    [
+      activeCodexFastModeOption,
+      activeProjectId,
+      normalizedActiveRuntime,
+      onAgentUserMessageSent,
+    ],
   );
 
   const switchConversationToPlanMode = useCallback(
@@ -1853,7 +1942,13 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       <div className="min-h-0 flex-1">
         <AgentWorkspaceFileLinkProvider
           conversationId={selectedConversationId}
-          workspace={isFocusedChildChat ? null : activeWorkspace}
+          workspace={
+            chatFocus.type === "workspace_review"
+              ? activeWorkspace
+              : isFocusedChildChat
+                ? null
+                : activeWorkspace
+          }
         >
           <IntegratedChatPanel
             key={`${selectedConversationId}:${chatFocus.type}:${focusedPanelKey}`}
@@ -1861,26 +1956,28 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
             {...(panelIdeationSessionId
               ? { ideationSessionId: panelIdeationSessionId }
               : {})}
-            {...(!isFocusedChildChat
-              ? { conversationIdOverride: selectedConversationId }
+            {...(panelConversationIdOverride
+              ? { conversationIdOverride: panelConversationIdOverride }
               : {})}
             selectedTaskIdOverride={panelSelectedTaskId}
             {...(panelTaskRuntimeContextType
               ? { taskRuntimeContextTypeOverride: panelTaskRuntimeContextType }
               : {})}
             storeContextKeyOverride={panelStoreKeyOverride}
-            {...(taskRuntimeFocus
-              ? { agentProcessContextIdOverride: taskRuntimeFocus.taskId }
-              : !isFocusedChildChat && activeConversation.contextType === "project"
-              ? { agentProcessContextIdOverride: selectedConversationId }
+            {...(panelAgentProcessContextIdOverride
+              ? {
+                  agentProcessContextIdOverride:
+                    panelAgentProcessContextIdOverride,
+                }
               : {})}
-            {...(!isFocusedChildChat
+            {...(panelSendConversationId
               ? {
                   sendOptions: {
-                    conversationId: selectedConversationId,
+                    conversationId: panelSendConversationId,
                     providerHarness: normalizedActiveRuntime.provider,
                     modelId: normalizedActiveRuntime.modelId,
                     logicalEffort: normalizedActiveRuntime.effort,
+                    codexFastMode: activeCodexFastModeOption,
                   },
                 }
               : {})}
@@ -1924,6 +2021,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                         providerHarness: normalizedActiveRuntime.provider,
                         modelId: normalizedActiveRuntime.modelId,
                         logicalEffort: normalizedActiveRuntime.effort,
+                        codexFastMode: activeCodexFastModeOption,
                         ...(options?.projectReferences?.length
                           ? { composerProjectReferences: options.projectReferences }
                           : {}),
@@ -2003,6 +2101,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                     onViewWorkspace={handleViewRuntimeWorkspace}
                     onViewIdeation={onFocusIdeationSession}
                     onViewVerification={onFocusVerificationSession}
+                    onViewWorkspaceReview={handleViewRuntimeWorkspaceReview}
                     onViewTaskRuntime={handleViewRuntimeTask}
                   />
                   {shouldShowPlanComposerCta && (
@@ -2039,6 +2138,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                         markComposerActivity();
                       }
                     }}
+                    onLayoutChange={composerProps.onLayoutChange}
                     sendDisabledReason={
                       !isFocusedChildChat ? workspaceProviderStatusMessage : null
                     }
@@ -2146,6 +2246,19 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                               ),
                             options: workspaceModelOptions,
                             disabled: Boolean(workspaceProviderStatusMessage),
+                            fastMode: {
+                              visible:
+                                normalizedActiveRuntime.provider === "codex",
+                              value: selectableCodexFastMode,
+                              onValueChange: handleActiveCodexFastModeChange,
+                              disabled:
+                                !providerSettingsReady ||
+                                !codexFastModeAvailability.supported,
+                              description:
+                                codexFastModeAvailability.reason ??
+                                CODEX_FAST_MODE_DESCRIPTION,
+                              testId: "agents-conversation-codex-fast-mode",
+                            },
                             onOpenModelSettings: () =>
                               openModal("settings", { section: "models" }),
                           },

@@ -258,6 +258,7 @@ export function AgentsPublishInlineDiffs({
     isStagedMode,
     isUnstagedMode,
     refKind,
+    repairChangeSignature,
     setMode,
     stagedCount,
     supportsWorktreeModes,
@@ -276,6 +277,9 @@ export function AgentsPublishInlineDiffs({
     review?.headRef.startsWith(PATCH_BACKED_HEAD_REF_PREFIX) === true
       ? undefined
       : refKind;
+  const repairDiffQuerySignature = repairMode
+    ? (repairChangeSignature ?? "repair:none")
+    : undefined;
   const canRenderPrAnnotations =
     !isConflictedMode && (refKind.kind === "head" || refKind.kind === "cumulative_head");
   const annotationsByPath = useMemo(() => {
@@ -468,6 +472,7 @@ export function AgentsPublishInlineDiffs({
       queryKey: [
         ...agentWorkspaceKeys.diff(conversationId),
         repairMode ? "repair-staged" : "staged",
+        ...(repairDiffQuerySignature !== undefined ? [repairDiffQuerySignature] : []),
         file.path,
       ],
       queryFn: () =>
@@ -490,6 +495,7 @@ export function AgentsPublishInlineDiffs({
       queryKey: [
         ...agentWorkspaceKeys.diff(conversationId),
         repairMode ? "repair-unstaged" : "unstaged",
+        ...(repairDiffQuerySignature !== undefined ? [repairDiffQuerySignature] : []),
         file.path,
       ],
       queryFn: () =>
@@ -512,6 +518,7 @@ export function AgentsPublishInlineDiffs({
       queryKey: [
         ...agentWorkspaceKeys.diff(conversationId),
         "repair-conflicted",
+        ...(repairDiffQuerySignature !== undefined ? [repairDiffQuerySignature] : []),
         file.path,
       ],
       queryFn: () =>
@@ -750,7 +757,9 @@ export function AgentsPublishInlineDiffs({
           onOpenFullscreenPath={handleOpenFullscreen}
           conversationId={conversationId}
           refKind={repairMode ? undefined : rangeRefKind}
-          diffPageRefKind={repairMode ? undefined : refKind}
+          diffPageRefKind={
+            !repairMode || isStagedMode || isUnstagedMode ? refKind : undefined
+          }
           shouldHydrate={hydratedPaths.has(fileChange.path)}
           annotations={annotationsByPath.get(fileChange.path) ?? EMPTY_PR_DIFF_ANNOTATIONS}
           isShowAnywayOverridden={userShowAnywayPaths.has(fileChange.path)}
@@ -772,6 +781,8 @@ export function AgentsPublishInlineDiffs({
       handleToggle,
       hydratedPaths,
       isConflictedMode,
+      isStagedMode,
+      isUnstagedMode,
       focusTargetPath,
       refKind,
       rangeRefKind,

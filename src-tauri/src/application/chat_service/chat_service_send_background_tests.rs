@@ -1083,6 +1083,7 @@ async fn mock_chat_service_send_queued_message_now_forwards_payload_options() {
         Some(AgentHarnessKind::Codex),
         Some("gpt-5.5".to_string()),
         Some(LogicalEffort::High),
+        Some("fast".to_string()),
         true,
         Vec::new(),
         Vec::new(),
@@ -1121,6 +1122,10 @@ async fn mock_chat_service_send_queued_message_now_forwards_payload_options() {
     assert_eq!(
         sent_options[0].logical_effort_override,
         Some(LogicalEffort::High)
+    );
+    assert_eq!(
+        sent_options[0].service_tier_override.as_deref(),
+        Some("fast")
     );
     assert_eq!(
         sent_options[0].composer_artifact_references,
@@ -1315,6 +1320,9 @@ async fn background_run_drains_queue_after_non_cancelled_silent_exit() {
         )),
         agent_conversation_linear_issue_repo: Some(Arc::clone(
             &state.agent_conversation_linear_issue_repo,
+        )),
+        agent_conversation_granola_note_repo: Some(Arc::clone(
+            &state.agent_conversation_granola_note_repo,
         )),
         task_proposal_repo: Some(Arc::clone(&state.task_proposal_repo)),
         activity_event_repo: Arc::clone(&state.activity_event_repo),

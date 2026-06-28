@@ -60,7 +60,7 @@ describe("ticketingApi", () => {
 
   it("loads ClickUp containers (Spaces) scoped to a project", async () => {
     vi.mocked(invoke).mockResolvedValueOnce([
-      { provider: "clickup", id: "space-eng", name: "Engineering", kind: "project" },
+      { provider: "clickup", id: "space-eng", name: "Engineering", kind: "space" },
     ]);
 
     const containers = await ticketingApi.listContainers({

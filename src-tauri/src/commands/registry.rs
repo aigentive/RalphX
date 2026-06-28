@@ -256,6 +256,16 @@ macro_rules! register_tauri_commands {
             commands::clickup_commands::disconnect_clickup_integration,
             commands::clickup_commands::list_clickup_workspaces,
             commands::clickup_commands::search_clickup_tasks,
+            // Granola integration commands
+            commands::granola_commands::assign_agent_conversation_granola_note,
+            commands::granola_commands::clear_agent_conversation_granola_note,
+            commands::granola_commands::get_agent_conversation_granola_note,
+            commands::granola_commands::get_granola_integration_settings,
+            commands::granola_commands::get_granola_note_detail,
+            commands::granola_commands::list_granola_notes,
+            commands::granola_commands::refresh_agent_conversation_granola_note,
+            commands::granola_commands::save_granola_integration_settings,
+            commands::granola_commands::validate_granola_integration_settings,
             // Artifact commands
             commands::artifact_commands::get_artifacts,
             commands::artifact_commands::get_artifact,
@@ -397,6 +407,10 @@ macro_rules! register_tauri_commands {
             commands::git_commands::retry_merge,
             commands::git_commands::cleanup_task_branch,
             commands::git_commands::change_project_git_mode,
+            // GitHub commands (PR visibility — connection status + PR detail)
+            commands::github_commands::get_github_branch_overview,
+            commands::github_commands::get_github_connection_status,
+            commands::github_commands::get_pull_request_detail,
             // Plan branch commands (Phase 85 - Feature branch for plan groups)
             commands::plan_branch_commands::get_plan_branch,
             commands::plan_branch_commands::get_plan_branch_by_task_id,

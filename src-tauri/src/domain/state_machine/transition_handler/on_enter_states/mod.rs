@@ -30,6 +30,7 @@ use crate::domain::entities::{
 };
 use crate::domain::repositories::{PlanBranchRepository, TaskRepository};
 use crate::domain::services::github_service::GithubServiceTrait;
+use crate::domain::services::PlanPrDescriptionDrafter;
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::{reconciliation_config, scheduler_config};
 
@@ -136,6 +137,7 @@ async fn create_fresh_branch_and_worktree(
     task_repo_ref: &Option<Arc<dyn TaskRepository>>,
     pr_creation_guard: &Option<Arc<dashmap::DashMap<PlanBranchId, ()>>>,
     github_service: &Option<Arc<dyn GithubServiceTrait>>,
+    plan_pr_description_drafter: &Option<Arc<dyn PlanPrDescriptionDrafter>>,
 ) -> AppResult<(String, std::path::PathBuf)> {
     let branch = format!("ralphx/{}/task-{}", slugify(&project.name), task_id_str);
     let resolved_base = resolve_task_base_branch(
@@ -145,6 +147,7 @@ async fn create_fresh_branch_and_worktree(
         task_repo_ref,
         pr_creation_guard,
         github_service,
+        plan_pr_description_drafter,
     )
     .await;
     let base_branch = resolved_base.as_str();

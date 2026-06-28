@@ -113,6 +113,7 @@ async fn test_update_attribution() {
             effective_model_id: Some("glm-4.7".to_string()),
             logical_effort: Some(LogicalEffort::High),
             effective_effort: Some("high".to_string()),
+            service_tier: Some("fast".to_string()),
         },
     )
     .await
@@ -130,6 +131,7 @@ async fn test_update_attribution() {
     assert_eq!(retrieved.effective_model_id.as_deref(), Some("glm-4.7"));
     assert_eq!(retrieved.logical_effort, Some(LogicalEffort::High));
     assert_eq!(retrieved.effective_effort.as_deref(), Some("high"));
+    assert_eq!(retrieved.service_tier.as_deref(), Some("fast"));
 }
 
 #[tokio::test]

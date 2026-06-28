@@ -100,7 +100,7 @@ function reviewStatusForState({
   if (isRunning) {
     return {
       label: "Review running",
-      detail: "The reviewer is checking the current changes. The artifact will appear here when it finishes.",
+      detail: "The reviewer is checking the current changes. The Review will appear here when it finishes.",
       color: "var(--accent-primary)",
       icon: Loader2,
       iconClassName: "animate-spin",
@@ -117,7 +117,7 @@ function reviewStatusForState({
   if (context?.isOutdated) {
     return {
       label: "Review is outdated",
-      detail: "This artifact was generated for earlier changes. Update it when you want a fresh reviewer pass.",
+      detail: "This Review was generated for earlier changes. Update it when you want a fresh reviewer pass.",
       color: "var(--status-warning)",
       icon: AlertCircle,
     };
@@ -125,7 +125,7 @@ function reviewStatusForState({
   if (context?.isCurrent) {
     return {
       label: "Review is current",
-      detail: "This artifact matches the current review target.",
+      detail: "This Review matches the current review target.",
       color: "var(--status-success)",
       icon: CheckCircle2,
     };
@@ -149,7 +149,7 @@ function reviewStatusForState({
   return {
     label: hasArtifact ? "Review available" : "No reviewable changes",
     detail: hasArtifact
-      ? "The latest Review artifact is available below."
+      ? "The latest Review is available below."
       : "No reviewable changes were found for this workspace.",
     color: "var(--text-muted)",
     icon: AlertCircle,
@@ -171,7 +171,11 @@ export function AgentReviewPanel({
     setIsReviewExpanded(true);
   }, [reviewArtifact?.id, reviewArtifact?.metadata.version]);
 
-  const displayContext = (reviewStartResult ?? reviewContext) as ReviewDisplayContext | null;
+  const displayContext = (
+    isReviewActionPending
+      ? reviewStartResult ?? reviewContext
+      : reviewContext ?? reviewStartResult
+  ) as ReviewDisplayContext | null;
   const isRunning =
     isReviewActionPending || displayContext?.monitor.status === "reviewing";
   const errorMessage = reviewErrorMessage(displayContext, reviewStartError);
@@ -200,12 +204,12 @@ export function AgentReviewPanel({
     ? new Date(displayContext.monitor.reviewArtifactUpdatedAt).toLocaleString()
     : null;
   const emptyArtifactTitle = isRunning
-    ? "Review artifact pending"
+    ? "Review pending"
     : displayContext?.target
-      ? "No Review artifact yet"
+      ? "No Review yet"
       : status.label;
   const emptyArtifactDetail = isRunning
-    ? "A Review artifact will appear here when the reviewer finishes."
+    ? "A Review will appear here when the reviewer finishes."
     : displayContext?.target
       ? isBlocked
         ? "Resolve the issue above or retry when the workspace is ready."
@@ -356,7 +360,7 @@ export function AgentReviewPanel({
             color: "var(--text-secondary)",
           }}
         >
-          Outdated for current changes. The artifact below is still available for reference.
+          Outdated for current changes. The Review below is still available for reference.
         </div>
       )}
 

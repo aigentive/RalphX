@@ -245,6 +245,32 @@ describe("AgentComposerSurface", () => {
     expect(runtimePopover).not.toHaveClass("overflow-hidden");
   });
 
+  it("shows disabled Codex Fast mode reason in the runtime selector", () => {
+    renderComposer({
+      model: {
+        value: "gpt-5.4-mini",
+        onValueChange: vi.fn(),
+        options: [{ id: "gpt-5.4-mini", label: "gpt-5.4-mini" }],
+        fastMode: {
+          visible: true,
+          value: false,
+          disabled: true,
+          description: "Fast mode is not available for gpt-5.4-mini.",
+          onValueChange: vi.fn(),
+          testId: "composer-codex-fast-mode",
+        },
+      },
+    });
+
+    fireEvent.click(screen.getByTestId("agent-composer-runtime-pill"));
+
+    expect(screen.getByText("Fast mode")).toBeInTheDocument();
+    expect(
+      screen.getByText("Fast mode is not available for gpt-5.4-mini."),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("composer-codex-fast-mode")).toBeDisabled();
+  });
+
   it("filters and selects projects from the compact project line", () => {
     const onValueChange = vi.fn();
     render(
@@ -1380,18 +1406,23 @@ describe("AgentComposerSurface", () => {
     });
 
     it("expands when the textarea is focused even with no text", () => {
-      renderComposer({ dataTestId: "agent-composer", collapsible: true });
+      const onLayoutChange = vi.fn();
+      renderComposer({ dataTestId: "agent-composer", collapsible: true, onLayoutChange });
       const surface = screen.getByTestId("agent-composer");
       const textarea = screen.getByLabelText(
         "Message input",
       ) as HTMLTextAreaElement;
 
+      onLayoutChange.mockClear();
       fireEvent.focus(textarea);
       expect(surface).toHaveAttribute("data-collapsed", "false");
+      expect(onLayoutChange).toHaveBeenCalled();
 
       // Blur with no text returns to the minimal resting state.
+      onLayoutChange.mockClear();
       fireEvent.blur(textarea);
       expect(surface).toHaveAttribute("data-collapsed", "true");
+      expect(onLayoutChange).toHaveBeenCalled();
     });
 
     it("stays minimal when a popover opens on an unfocused composer (no flicker)", () => {

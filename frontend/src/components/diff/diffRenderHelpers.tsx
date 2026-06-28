@@ -8,6 +8,9 @@ export type DiffRenderVariant = "standard" | "conflict";
 type Variant = DiffRenderVariant;
 type AnnotationSide = "old" | "new";
 export type AnnotationIndex = Map<string, PrDiffAnnotation[]>;
+export interface RenderDiffLineOptions {
+  stickyGutter?: boolean | undefined;
+}
 
 function getLineBackground(kind: DiffLine["kind"], variant: Variant): string {
   switch (kind) {
@@ -225,8 +228,10 @@ export function renderDiffLine(
   index: number,
   wrapLines: boolean,
   variant: Variant,
-  annotations: PrDiffAnnotation[] = []
+  annotations: PrDiffAnnotation[] = [],
+  options: RenderDiffLineOptions = {},
 ) {
+  const stickyGutter = options.stickyGutter ?? true;
   return (
     <div key={index}>
       <div
@@ -239,8 +244,7 @@ export function renderDiffLine(
         <div
           className="w-12 shrink-0 text-right pr-2 select-none z-10"
           style={{
-            position: "sticky",
-            left: 0,
+            ...(stickyGutter ? { position: "sticky" as const, left: 0 } : {}),
             color: getLineNumColor(line.kind, variant),
             backgroundColor: "var(--bg-surface)",
           }}
@@ -251,8 +255,7 @@ export function renderDiffLine(
         <div
           className="w-12 shrink-0 text-right pr-2 select-none border-r z-10"
           style={{
-            position: "sticky",
-            left: 48,
+            ...(stickyGutter ? { position: "sticky" as const, left: 48 } : {}),
             color: getLineNumColor(line.kind, variant),
             backgroundColor: "var(--bg-surface)",
             borderColor: "var(--border-subtle)",
@@ -264,8 +267,7 @@ export function renderDiffLine(
         <div
           className="w-6 shrink-0 text-center select-none font-bold z-10"
           style={{
-            position: "sticky",
-            left: 96,
+            ...(stickyGutter ? { position: "sticky" as const, left: 96 } : {}),
             color: getPrefixColor(line.kind, variant),
             backgroundColor: "var(--bg-surface)",
           }}

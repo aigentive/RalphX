@@ -333,7 +333,8 @@ export function PagedDiffView({
       index,
       wrapLines,
       "standard",
-      annotationsForLine(annotationIndex, row.line)
+      annotationsForLine(annotationIndex, row.line),
+      { stickyGutter: false },
     );
   };
 

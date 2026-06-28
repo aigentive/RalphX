@@ -431,6 +431,7 @@ pub struct AgentWorkspaceReviewMonitorResponse {
     pub status: String,
     pub current_target_scope: Option<String>,
     pub reviewed_target_scope: Option<String>,
+    pub review_conversation_id: Option<String>,
     pub review_artifact_id: Option<String>,
     pub review_artifact_version: Option<u32>,
     pub review_artifact_updated_at: Option<String>,
@@ -461,6 +462,9 @@ impl From<AgentWorkspaceReviewMonitor> for AgentWorkspaceReviewMonitorResponse {
             status: value.status.to_string(),
             current_target_scope: value.current_target_scope.map(|scope| scope.to_string()),
             reviewed_target_scope: value.reviewed_target_scope.map(|scope| scope.to_string()),
+            review_conversation_id: value
+                .review_conversation_id
+                .map(|conversation_id| conversation_id.as_str()),
             review_artifact_id: value
                 .review_artifact_id
                 .map(|artifact_id| artifact_id.as_str().to_string()),
@@ -727,6 +731,7 @@ pub async fn update_agent_workspace_from_base(
     let selection = AgentConversationWorkspaceBaseSelection {
         kind: parse_update_base_kind(req.base_ref_kind.as_deref())
             .map_err(|error| json_error(StatusCode::BAD_REQUEST, error, None))?,
+        branch_mode: None,
         base_ref: req.base_ref,
         display_name: req.base_display_name,
         source_pull_request: None,
@@ -2554,7 +2559,7 @@ fn ensure_review_artifact_for_head(
 
     Err(json_error(
         StatusCode::CONFLICT,
-        "Write the Review artifact for the current PR head before proposing or submitting a PR review action",
+        "Write the Review for the current PR head before proposing or submitting a PR review action",
         None,
     ))
 }
@@ -3962,10 +3967,7 @@ mod tests {
         .unwrap_err();
 
         assert_eq!(status, StatusCode::CONFLICT);
-        assert!(body["error"]
-            .as_str()
-            .unwrap()
-            .contains("Write the Review artifact"));
+        assert!(body["error"].as_str().unwrap().contains("Write the Review"));
         let actions = app_state
             .agent_conversation_workspace_repo
             .list_pr_review_actions(&conversation_id, 10)
@@ -4731,6 +4733,7 @@ mod tests {
             AgentConversationWorkspaceMode::Edit,
             AgentConversationWorkspaceBaseSelection {
                 kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+                branch_mode: None,
                 base_ref: Some("main".to_string()),
                 display_name: None,
                 source_pull_request: None,

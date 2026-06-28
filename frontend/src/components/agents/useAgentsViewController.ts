@@ -1,8 +1,14 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { useQuery, useQueryClient, type InfiniteData } from "@tanstack/react-query";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useMutation,
+  useQuery,
+  useQueryClient,
+  type InfiniteData,
+} from "@tanstack/react-query";
 
 import {
   chatApi,
+  type AgentConversationRuntimeStatus,
   type AgentConversationWorkspace,
   type AgentConversationWorkspaceMode,
   type ComposerIntegrationReference,
@@ -32,6 +38,7 @@ import { useAgentUserMessageAutoTitle } from "./useAgentUserMessageAutoTitle";
 import { useAgentUserMessageJiraInvalidation } from "./useAgentUserMessageJiraInvalidation";
 import { hasJiraIntegrationReference } from "./agentJiraIssueQueries";
 import { hasLinearIntegrationReference } from "./agentLinearIssueQueries";
+import { hasGranolaIntegrationReference } from "./agentGranolaNoteQueries";
 import { useAgentsSessionBindings } from "./useAgentsSessionBindings";
 import { useSyncedAgentProjectFocus } from "./useSyncedAgentProjectFocus";
 import { useAgentsOptimisticState } from "./useAgentsOptimisticState";
@@ -42,8 +49,10 @@ import { normalizeRuntimeSelection } from "./agentOptions";
 import { runtimeFromConversation } from "./agentConversationRuntime";
 import {
   agentWorkspaceKeys,
+  invalidateWorkspaceQueries,
   preflightAgentWorkspaceFreshness,
   prReviewContextForConversation,
+  workspaceReviewContextForConversation,
 } from "./agentWorkspaceQueries";
 import {
   agentConversationIssueKeys,
@@ -69,6 +78,7 @@ import {
 } from "./agentChatFocus";
 import type { AgentRuntimeSelection } from "@/stores/agentSessionStore";
 import type { ChatConversation } from "@/types/chat-conversation";
+import { useAgentConversationRuntimeStatus } from "./useAgentConversationRuntimeStatus";
 
 interface UseAgentsViewControllerParams {
   projectId: string;
@@ -81,6 +91,16 @@ type AgentConversationListPage = Omit<
 > & {
   conversations: AgentConversation[];
 };
+
+function hasGeneratingAgentRuntime(
+  status: AgentConversationRuntimeStatus | null | undefined,
+): boolean {
+  if (!status) return false;
+  return (
+    status.agentStatus === "generating" ||
+    status.items.some((item) => item.agentStatus === "generating")
+  );
+}
 
 type PrReviewArtifactEventPayload = {
   conversationId?: string;
@@ -239,6 +259,14 @@ export function useAgentsViewController({
     },
     [],
   );
+  const handleFocusWorkspaceReview = useCallback((conversationId: string) => {
+    setChatFocus((current) =>
+      current.type === "workspace_review" &&
+      current.conversationId === conversationId
+        ? current
+        : { type: "workspace_review", conversationId },
+    );
+  }, []);
   const handleTaskArtifactSelectionChange = useCallback(
     (taskId: string | null) => {
       setSelectedTaskArtifactId(taskId);
@@ -366,6 +394,7 @@ export function useAgentsViewController({
         );
       }
 
+      void invalidateWorkspaceQueries(queryClient, conversationId);
       void queryClient.invalidateQueries({
         queryKey: chatKeys.conversationSummary(conversationId),
       });
@@ -417,8 +446,98 @@ export function useAgentsViewController({
     prReviewContextQuery.data,
     prReviewConversationId,
   );
+  const workspaceReviewConversationId =
+    activeConversation?.contextType === "project" &&
+    activeConversationMode &&
+    ["edit", "ideation", "plan", "review_pr"].includes(activeConversationMode)
+      ? activeConversation.id
+      : null;
+  const shouldLoadWorkspaceReviewContext = Boolean(workspaceReviewConversationId);
+  const workspaceReviewContextQuery = useQuery({
+    queryKey: agentWorkspaceKeys.workspaceReview(workspaceReviewConversationId ?? ""),
+    queryFn: () =>
+      chatApi.getAgentWorkspaceReviewContext(workspaceReviewConversationId!),
+    enabled: shouldLoadWorkspaceReviewContext,
+    staleTime: 5_000,
+    refetchInterval: (query) =>
+      query.state.data?.monitor.status === "reviewing" ? 2_000 : false,
+  });
+  const workspaceReviewContext = workspaceReviewContextForConversation(
+    workspaceReviewContextQuery.data,
+    workspaceReviewConversationId,
+  );
+  const workspaceReviewRuntimeStatusQuery = useAgentConversationRuntimeStatus(
+    workspaceReviewConversationId,
+    { enabled: shouldLoadWorkspaceReviewContext },
+  );
+  const lastAutoReviewRefreshKeyRef = useRef<string | null>(null);
+  const autoReviewRefreshMutation = useMutation({
+    mutationFn: ({ conversationId }: { conversationId: string; key: string }) =>
+      chatApi.startAgentWorkspaceReview(conversationId, { force: true }),
+    onSuccess: (result, variables) => {
+      void queryClient.invalidateQueries({
+        queryKey: agentWorkspaceKeys.workspaceReview(variables.conversationId),
+      });
+      const artifactId = result.monitor.reviewArtifactId;
+      if (artifactId) {
+        void queryClient.invalidateQueries({
+          queryKey: ["agents", "artifact", artifactId],
+        });
+      }
+    },
+  });
+  const autoReviewRefreshKey = (() => {
+    if (
+      !workspaceReviewConversationId ||
+      !workspaceReviewContext?.isOutdated ||
+      !workspaceReviewContext.target ||
+      workspaceReviewContext.monitor.status === "reviewing"
+    ) {
+      return null;
+    }
+    return [
+      workspaceReviewConversationId,
+      workspaceReviewContext.target.scope,
+      workspaceReviewContext.monitor.currentDiffFingerprint ??
+        workspaceReviewContext.target.diffFingerprint,
+      workspaceReviewContext.monitor.reviewArtifactVersion ?? "none",
+    ].join(":");
+  })();
+  const workspaceReviewHasGeneratingRuntime = hasGeneratingAgentRuntime(
+    workspaceReviewRuntimeStatusQuery.data,
+  );
+  useEffect(() => {
+    if (
+      !workspaceReviewConversationId ||
+      !autoReviewRefreshKey ||
+      autoReviewRefreshMutation.isPending ||
+      !workspaceReviewRuntimeStatusQuery.isSuccess ||
+      workspaceReviewHasGeneratingRuntime
+    ) {
+      return;
+    }
+    if (lastAutoReviewRefreshKeyRef.current === autoReviewRefreshKey) {
+      return;
+    }
+    lastAutoReviewRefreshKeyRef.current = autoReviewRefreshKey;
+    autoReviewRefreshMutation.mutate({
+      conversationId: workspaceReviewConversationId,
+      key: autoReviewRefreshKey,
+    });
+  }, [
+    autoReviewRefreshKey,
+    autoReviewRefreshMutation,
+    workspaceReviewHasGeneratingRuntime,
+    workspaceReviewConversationId,
+    workspaceReviewRuntimeStatusQuery.isSuccess,
+  ]);
+  const workspaceReviewArtifactId =
+    workspaceReviewContext?.monitor.reviewArtifactId ?? null;
   const reviewArtifactId =
-    prReviewContext?.monitor?.reviewArtifactId ?? null;
+    workspaceReviewArtifactId ?? prReviewContext?.monitor?.reviewArtifactId ?? null;
+  const shouldShowWorkspaceReviewTab = Boolean(
+    workspaceReviewContext?.shouldShowTab || workspaceReviewArtifactId,
+  );
   const availableArtifactTabsWithReview = useMemo<IdeationArtifactTab[]>(() => {
     const tabs =
       activeConversation?.contextType === "project" &&
@@ -426,18 +545,22 @@ export function useAgentsViewController({
       !availableArtifactTabs.includes("issues")
         ? (["issues", ...availableArtifactTabs] as IdeationArtifactTab[])
         : availableArtifactTabs;
-    if (!reviewArtifactId || tabs.includes("review")) {
+    if (
+      (!reviewArtifactId && !shouldShowWorkspaceReviewTab) ||
+      tabs.includes("review")
+    ) {
       return tabs;
     }
-    return ["review", ...tabs];
+    return [...tabs, "review"];
   }, [
     activeConversation?.contextType,
     availableArtifactTabs,
     hasActiveConversationIssues,
     reviewArtifactId,
+    shouldShowWorkspaceReviewTab,
   ]);
   const hasAutoOpenArtifactsWithReview =
-    hasAutoOpenArtifacts || Boolean(reviewArtifactId);
+    hasAutoOpenArtifacts || Boolean(reviewArtifactId) || shouldShowWorkspaceReviewTab;
   const knownFocusIdeationSessionId =
     focusedArtifactIdeationSessionId ?? attachedIdeationSessionId ?? null;
   const latestVerificationChildQuery = useQuery({
@@ -492,6 +615,35 @@ export function useAgentsViewController({
       : null;
   const taskRuntimeFocusTarget =
     chatFocus.type === "task_runtime" ? chatFocus : null;
+  const workspaceReviewChildConversationId =
+    workspaceReviewContext?.monitor.reviewConversationId ?? null;
+  const workspaceReviewFocusTarget = useMemo(
+    () =>
+      workspaceReviewChildConversationId
+        ? ({
+            type: "workspace_review",
+            conversationId: workspaceReviewChildConversationId,
+          } satisfies Extract<AgentsChatFocus, { type: "workspace_review" }>)
+        : null,
+    [workspaceReviewChildConversationId],
+  );
+  useEffect(() => {
+    if (
+      workspaceReviewContext?.monitor.status !== "reviewing" ||
+      !workspaceReviewChildConversationId
+    ) {
+      return;
+    }
+    setChatFocus((current) =>
+      current.type === "workspace_review" &&
+      current.conversationId === workspaceReviewChildConversationId
+        ? current
+        : {
+            type: "workspace_review",
+            conversationId: workspaceReviewChildConversationId,
+          },
+    );
+  }, [workspaceReviewChildConversationId, workspaceReviewContext?.monitor.status]);
   const hasAttachedPlanArtifact = availableArtifactTabs.includes("plan");
   const chatFocusOptions = useMemo(() => {
     return getAgentChatFocusSwitchOptions({
@@ -499,6 +651,7 @@ export function useAgentsViewController({
       focusSwitcherIdeationSessionId,
       verificationFocusTarget,
       taskRuntimeFocusTarget,
+      workspaceReviewFocusTarget,
       hasPlanArtifact: hasAttachedPlanArtifact,
     });
   }, [
@@ -507,6 +660,7 @@ export function useAgentsViewController({
     hasAttachedPlanArtifact,
     taskRuntimeFocusTarget,
     verificationFocusTarget,
+    workspaceReviewFocusTarget,
   ]);
   useEffect(() => {
     if (chatFocusOptions.some((option) => option.type === chatFocus.type)) {
@@ -539,6 +693,11 @@ export function useAgentsViewController({
 
       if (type === "task_runtime" && taskRuntimeFocusTarget) {
         setChatFocus(taskRuntimeFocusTarget);
+        return;
+      }
+
+      if (type === "workspace_review" && workspaceReviewFocusTarget) {
+        setChatFocus(workspaceReviewFocusTarget);
       }
     },
     [
@@ -548,6 +707,7 @@ export function useAgentsViewController({
       handleReturnToWorkspaceChat,
       taskRuntimeFocusTarget,
       verificationFocusTarget,
+      workspaceReviewFocusTarget,
     ],
   );
   const {
@@ -597,6 +757,12 @@ export function useAgentsViewController({
     },
     [openArtifactTab],
   );
+  const openGranolaTabForConversation = useCallback(
+    (conversationId: string) => {
+      openArtifactTab(conversationId, "granola");
+    },
+    [openArtifactTab],
+  );
   useEffect(() => {
     const invalidateReviewArtifact = (payload: PrReviewArtifactEventPayload) => {
       const conversationId = payload.conversationId ?? payload.conversation_id;
@@ -634,7 +800,13 @@ export function useAgentsViewController({
     const unsubscribeWorkspaceCreated =
       eventBus.subscribe<PrReviewArtifactEventPayload>(
         "workspace_review_artifact:created",
-        invalidateReviewArtifact,
+        (payload) => {
+          invalidateReviewArtifact(payload);
+          const conversationId = payload.conversationId ?? payload.conversation_id;
+          if (conversationId && conversationId === selectedConversationId) {
+            openArtifactTab(conversationId, "review");
+          }
+        },
       );
     const unsubscribeWorkspaceUpdated =
       eventBus.subscribe<PrReviewArtifactEventPayload>(
@@ -655,17 +827,26 @@ export function useAgentsViewController({
       payload: AgentConversationLifecyclePayload,
     ) => {
       const conversationId = payload.conversationId ?? payload.conversation_id;
-      if (!conversationId) {
-        return;
+      if (conversationId) {
+        void queryClient.invalidateQueries({
+          queryKey: agentConversationIssueKeys.list(conversationId),
+        });
       }
-      void queryClient.invalidateQueries({
-        queryKey: agentConversationIssueKeys.list(conversationId),
-      });
+      if (selectedConversationId && activeConversation?.contextType === "project") {
+        void queryClient.invalidateQueries({
+          queryKey: agentWorkspaceKeys.workspaceReview(selectedConversationId),
+        });
+      }
     };
 
     const unsubscribeRunCompleted =
       eventBus.subscribe<AgentConversationLifecyclePayload>(
         "agent:run_completed",
+        invalidateConversationIssues,
+      );
+    const unsubscribeRunStarted =
+      eventBus.subscribe<AgentConversationLifecyclePayload>(
+        "agent:run_started",
         invalidateConversationIssues,
       );
     const unsubscribeTurnCompleted =
@@ -675,10 +856,11 @@ export function useAgentsViewController({
       );
 
     return () => {
+      unsubscribeRunStarted();
       unsubscribeRunCompleted();
       unsubscribeTurnCompleted();
     };
-  }, [eventBus, queryClient]);
+  }, [activeConversation?.contextType, eventBus, queryClient, selectedConversationId]);
 
   useEffect(() => {
     const unsubscribeCreated = eventBus.subscribe<unknown>(
@@ -725,6 +907,7 @@ export function useAgentsViewController({
     setRuntimeForConversation,
     onJiraLinked: openJiraTabForConversation,
     onLinearLinked: openLinearTabForConversation,
+    onGranolaLinked: openGranolaTabForConversation,
   });
 
   const {
@@ -882,12 +1065,15 @@ export function useAgentsViewController({
         openJiraTabForConversation(event.result.conversationId);
       } else if (hasLinearIntegrationReference(event.composerIntegrationReferences)) {
         openLinearTabForConversation(event.result.conversationId);
+      } else if (hasGranolaIntegrationReference(event.composerIntegrationReferences)) {
+        openGranolaTabForConversation(event.result.conversationId);
       }
     },
     [
       handleAgentUserMessageAutoTitle,
       invalidateAgentUserMessageJira,
       openJiraTabForConversation,
+      openGranolaTabForConversation,
       openLinearTabForConversation,
     ],
   );
@@ -984,6 +1170,7 @@ export function useAgentsViewController({
       onConversationModeSwitched: handleConversationModeSwitched,
       onCreateProject,
       onFocusIdeationSession: handleFocusIdeationSession,
+      onFocusWorkspaceReview: handleFocusWorkspaceReview,
       onFocusVerificationSession: handleFocusVerificationSession,
       onFocusTaskRuntime: handleFocusTaskRuntime,
       onOpenTaskArtifact: handleOpenTaskArtifact,

@@ -24,6 +24,7 @@ fn input(provider: &str) -> UpdateAgentProviderSettingsInput {
         effort: None,
         approval_policy: None,
         sandbox_mode: None,
+        service_tier: None,
         claude_permission_mode: None,
         claude_dangerously_skip_permissions: None,
         claude_allow_dangerously_skip_permissions: None,
@@ -48,8 +49,17 @@ fn ready_probe(path: &str) -> HarnessRuntimeProbe {
         cli_version: None,
         supported_model_aliases: None,
         supported_efforts: None,
+        supports_fast_mode: false,
+        fast_mode_supported_models: Vec::new(),
         error: None,
     }
+}
+
+fn fast_codex_probe(path: &str, supported_models: Vec<String>) -> HarnessRuntimeProbe {
+    let mut probe = ready_probe(path);
+    probe.supports_fast_mode = true;
+    probe.fast_mode_supported_models = supported_models;
+    probe
 }
 
 #[test]
@@ -91,6 +101,25 @@ fn merge_accepts_enabled_default_provider() {
 
     assert!(merged.enabled);
     assert!(merged.is_default);
+}
+
+#[test]
+fn merge_sets_and_clears_service_tier() {
+    let settings = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Codex);
+    let next = UpdateAgentProviderSettingsInput {
+        service_tier: Some(Some(" FAST ".to_string())),
+        ..input("codex")
+    };
+
+    let merged = merge_input(settings, next, true).expect("merge service tier");
+    assert_eq!(merged.service_tier.as_deref(), Some("fast"));
+
+    let next = UpdateAgentProviderSettingsInput {
+        service_tier: Some(None),
+        ..input("codex")
+    };
+    let merged = merge_input(merged, next, true).expect("clear service tier");
+    assert_eq!(merged.service_tier, None);
 }
 
 #[test]
@@ -463,6 +492,7 @@ fn response_maps_settings_and_probe_fields() {
     settings.is_default = true;
     settings.approval_policy = Some("never".to_string());
     settings.sandbox_mode = Some("danger-full-access".to_string());
+    settings.service_tier = Some("fast".to_string());
     settings.cli_management_mode = AgentProviderCliManagementMode::RxManaged;
     settings.auto_update_enabled = true;
     settings.custom_binary_path = Some("/opt/tools/codex-wrapper".to_string());
@@ -479,6 +509,8 @@ fn response_maps_settings_and_probe_fields() {
             cli_version: Some("2.1.170".to_string()),
             supported_model_aliases: Some(vec!["sonnet".to_string(), "fable".to_string()]),
             supported_efforts: Some(vec!["low".to_string(), "medium".to_string()]),
+            supports_fast_mode: true,
+            fast_mode_supported_models: vec!["gpt-5.4".to_string(), "gpt-5.5".to_string()],
             error: None,
         },
     );
@@ -490,6 +522,7 @@ fn response_maps_settings_and_probe_fields() {
     assert_eq!(response.effort.as_deref(), Some("xhigh"));
     assert_eq!(response.approval_policy.as_deref(), Some("never"));
     assert_eq!(response.sandbox_mode.as_deref(), Some("danger-full-access"));
+    assert_eq!(response.service_tier.as_deref(), Some("fast"));
     assert_eq!(response.cli_management_mode, "rx_managed");
     assert!(response.auto_update_enabled);
     assert!(!response.custom_binary_enabled);
@@ -524,6 +557,11 @@ fn response_maps_settings_and_probe_fields() {
     assert_eq!(
         response.supported_efforts,
         Some(vec!["low".to_string(), "medium".to_string()])
+    );
+    assert!(response.supports_fast_mode);
+    assert_eq!(
+        response.fast_mode_supported_models,
+        vec!["gpt-5.4".to_string(), "gpt-5.5".to_string()]
     );
     assert!(!response.updated_at.is_empty());
 }
@@ -669,6 +707,53 @@ async fn update_settings_saves_default_and_applies_lanes_with_ready_probe() {
 }
 
 #[tokio::test]
+async fn update_settings_rejects_codex_fast_without_fast_capability() {
+    let state = AppState::new_test();
+    let probes = HashMap::from([
+        (AgentHarnessKind::Codex, ready_probe("/usr/bin/codex")),
+        (AgentHarnessKind::Claude, ready_probe("/usr/bin/claude")),
+    ]);
+    let next = UpdateAgentProviderSettingsInput {
+        enabled: Some(true),
+        service_tier: Some(Some("fast".to_string())),
+        ..input("codex")
+    };
+
+    let err = update_provider_settings_with_probes(next, &state, &probes)
+        .await
+        .expect_err("unsupported Fast mode should be rejected");
+
+    assert!(err.contains("Codex Fast mode is not supported"));
+}
+
+#[tokio::test]
+async fn update_settings_rejects_codex_fast_for_unsupported_model() {
+    let state = AppState::new_test();
+    let probes = HashMap::from([
+        (
+            AgentHarnessKind::Codex,
+            fast_codex_probe("/usr/bin/codex", vec!["gpt-5.5".to_string()]),
+        ),
+        (AgentHarnessKind::Claude, ready_probe("/usr/bin/claude")),
+    ]);
+    let next = UpdateAgentProviderSettingsInput {
+        enabled: Some(true),
+        model: Some("gpt-5.4-mini".to_string()),
+        service_tier: Some(Some("fast".to_string())),
+        ..input("codex")
+    };
+
+    let err = update_provider_settings_with_probes(next, &state, &probes)
+        .await
+        .expect_err("model without Fast tier should be rejected");
+
+    assert_eq!(
+        err,
+        "Codex Fast mode is not available for model gpt-5.4-mini."
+    );
+}
+
+#[tokio::test]
 async fn update_settings_saves_custom_binary_after_candidate_probe() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let codex_path = temp_dir.path().join("codex-wrapper");
@@ -686,6 +771,8 @@ async fn update_settings_saves_custom_binary_after_candidate_probe() {
                 cli_version: None,
                 supported_model_aliases: None,
                 supported_efforts: None,
+                supports_fast_mode: false,
+                fast_mode_supported_models: Vec::new(),
                 error: Some("PATH Codex unavailable".to_string()),
             },
         ),

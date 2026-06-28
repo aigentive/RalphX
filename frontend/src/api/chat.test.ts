@@ -56,6 +56,7 @@ import {
   getChildSessionStatus,
 } from "./chat";
 import type { ConversationActiveStateResponse } from "./chat";
+import { backendApiUrl } from "./backend";
 
 const mockInvoke = invoke as ReturnType<typeof vi.fn>;
 
@@ -1930,6 +1931,7 @@ describe("chat api", () => {
       providerHarness: "codex",
       modelId: "gpt-5.5",
       logicalEffort: "xhigh",
+      codexFastMode: true,
       mode: "chat",
       base: {
         kind: "local_branch",
@@ -1953,6 +1955,7 @@ describe("chat api", () => {
         providerHarness: "codex",
         modelOverride: "gpt-5.5",
         logicalEffort: "xhigh",
+        codexFastMode: true,
         mode: "chat",
         baseRefKind: "local_branch",
         baseRef: "feature/agent-screen",
@@ -2271,6 +2274,7 @@ describe("chat api", () => {
       providerHarness: "codex",
       modelId: "gpt-5.4",
       logicalEffort: "high",
+      codexFastMode: true,
     });
 
     expect(mockInvoke).toHaveBeenCalledWith("send_agent_message", {
@@ -2282,6 +2286,7 @@ describe("chat api", () => {
         providerHarness: "codex",
         modelOverride: "gpt-5.4",
         logicalEffort: "high",
+        codexFastMode: true,
       },
     });
   });
@@ -2628,6 +2633,7 @@ describe("getConversationActiveState", () => {
     status: "ready",
     current_target_scope: "workspace_delta",
     reviewed_target_scope: "workspace_delta",
+    review_conversation_id: "review-conversation-1",
     review_artifact_id: "review-artifact-1",
     review_artifact_version: 2,
     review_artifact_updated_at: "2026-06-18T12:05:00Z",
@@ -2717,7 +2723,7 @@ describe("getConversationActiveState", () => {
     const result = await getConversationActiveState("conv-123");
 
     expect(mockFetch).toHaveBeenCalledWith(
-      "http://localhost:3847/api/conversations/conv-123/active-state"
+      backendApiUrl("conversations/conv-123/active-state")
     );
     expect(result.is_active).toBe(true);
     expect(result.streaming_tasks).toHaveLength(1);
@@ -2809,7 +2815,7 @@ describe("getConversationActiveState", () => {
     const result = await getAgentWorkspacePrReviewContext("conversation-1");
 
     expect(mockFetch).toHaveBeenCalledWith(
-      "http://localhost:3847/api/agent-workspaces/conversation-1/pr-review-context",
+      backendApiUrl("agent-workspaces/conversation-1/pr-review-context"),
       undefined
     );
     expect(result.workspace.conversationId).toBe("conversation-1");
@@ -2840,13 +2846,14 @@ describe("getConversationActiveState", () => {
     const result = await getAgentWorkspaceReviewContext("conversation-1");
 
     expect(mockFetch).toHaveBeenCalledWith(
-      "http://localhost:3847/api/agent-workspaces/conversation-1/workspace-review-context",
+      backendApiUrl("agent-workspaces/conversation-1/workspace-review-context"),
       undefined
     );
     expect(result.workspace.conversationId).toBe("conversation-1");
     expect(result.target?.scope).toBe("workspace_delta");
     expect(result.target?.diffFingerprint).toBe("fingerprint-1");
     expect(result.monitor.reviewArtifactVersion).toBe(2);
+    expect(result.monitor.reviewConversationId).toBe("review-conversation-1");
     expect(result.monitor.previousVersionId).toBe("review-artifact-0");
     expect(result.isCurrent).toBe(true);
   });
@@ -2879,7 +2886,7 @@ describe("getConversationActiveState", () => {
     });
 
     expect(mockFetch).toHaveBeenCalledWith(
-      "http://localhost:3847/api/agent-workspaces/conversation%2F1/workspace-review-runs",
+      backendApiUrl("agent-workspaces/conversation%2F1/workspace-review-runs"),
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -2936,7 +2943,9 @@ describe("getConversationActiveState", () => {
 
     expect(mockFetch).toHaveBeenNthCalledWith(
       1,
-      "http://localhost:3847/api/agent-workspaces/conversation%2F1/pr-review-actions/action%2F1/submit",
+      backendApiUrl(
+        "agent-workspaces/conversation%2F1/pr-review-actions/action%2F1/submit",
+      ),
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -2945,7 +2954,9 @@ describe("getConversationActiveState", () => {
     );
     expect(mockFetch).toHaveBeenNthCalledWith(
       2,
-      "http://localhost:3847/api/agent-workspaces/conversation%2F1/pr-review-actions/action%2F1/skip",
+      backendApiUrl(
+        "agent-workspaces/conversation%2F1/pr-review-actions/action%2F1/skip",
+      ),
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -3015,7 +3026,7 @@ describe("getConversationActiveState", () => {
 
     expect(mockFetch).toHaveBeenNthCalledWith(
       1,
-      "http://localhost:3847/api/agent_conversation_issues/list",
+      backendApiUrl("agent_conversation_issues/list"),
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -3027,7 +3038,7 @@ describe("getConversationActiveState", () => {
     );
     expect(mockFetch).toHaveBeenNthCalledWith(
       2,
-      "http://localhost:3847/api/agent_conversation_issues/status",
+      backendApiUrl("agent_conversation_issues/status"),
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -3036,7 +3047,7 @@ describe("getConversationActiveState", () => {
     );
     expect(mockFetch).toHaveBeenNthCalledWith(
       3,
-      "http://localhost:3847/api/agent_conversation_issues/convert_followup",
+      backendApiUrl("agent_conversation_issues/convert_followup"),
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -3105,6 +3116,7 @@ describe("startAgentConversationInvokeInput", () => {
       providerHarness: "codex",
       modelId: "gpt-5.5",
       logicalEffort: "xhigh",
+      codexFastMode: true,
       mode: "chat",
       composerProjectReferences: [{ path: "src/main.ts", kind: "file" }],
       composerIntegrationReferences: [
@@ -3113,6 +3125,7 @@ describe("startAgentConversationInvokeInput", () => {
       composerArtifactReferences: [{ artifactId: "artifact-1", kind: "plan" }],
       base: {
         kind: "local_branch",
+        branchMode: "linked",
         ref: "feature/x",
         displayName: "PR #7",
         sourcePullRequest: {
@@ -3133,6 +3146,7 @@ describe("startAgentConversationInvokeInput", () => {
       providerHarness: "codex",
       modelOverride: "gpt-5.5",
       logicalEffort: "xhigh",
+      codexFastMode: true,
       mode: "chat",
       composerProjectReferences: [{ path: "src/main.ts", kind: "file" }],
       composerIntegrationReferences: [
@@ -3140,6 +3154,7 @@ describe("startAgentConversationInvokeInput", () => {
       ],
       composerArtifactReferences: [{ artifactId: "artifact-1", kind: "plan" }],
       baseRefKind: "local_branch",
+      baseBranchMode: "linked",
       baseRef: "feature/x",
       baseDisplayName: "PR #7",
       baseSourcePullRequest: {
@@ -3198,6 +3213,7 @@ describe("transformStartAgentConversationResponse", () => {
         claude_session_id: null,
         provider_session_id: null,
         provider_harness: "codex",
+        service_tier: "fast",
         agent_mode: "chat",
         title: "Chat",
         message_count: 1,
@@ -3210,6 +3226,7 @@ describe("transformStartAgentConversationResponse", () => {
         conversation_id: "conversation-chat",
         project_id: "project-1",
         mode: "chat",
+        branch_mode: "linked",
         base_ref_kind: "local_branch",
         base_ref: "feature/agent-screen",
         base_display_name: "PR #42",
@@ -3245,9 +3262,11 @@ describe("transformStartAgentConversationResponse", () => {
 
     expect(result.conversation.id).toBe("conversation-chat");
     expect(result.conversation.agentMode).toBe("chat");
+    expect(result.conversation.serviceTier).toBe("fast");
     expect(result.workspace).toMatchObject({
       conversationId: "conversation-chat",
       mode: "chat",
+      branchMode: "linked",
       baseRef: "feature/agent-screen",
       sourcePullRequest: expect.objectContaining({
         number: 42,

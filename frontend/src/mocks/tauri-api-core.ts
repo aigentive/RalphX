@@ -88,6 +88,7 @@ const mockAtlassianIntegrationSettings = {
 
 const mockAgentConversationJiraIssues = new Map<string, unknown>();
 const mockAgentConversationLinearIssues = new Map<string, unknown>();
+const mockAgentConversationGranolaNotes = new Map<string, unknown>();
 
 function mockJiraIssue(input: {
   conversationId: string;
@@ -153,6 +154,34 @@ const mockClickUpIntegrationSettings = {
   updatedAt: new Date(0).toISOString(),
 };
 
+const mockGranolaIntegrationSettings = {
+  enabled: false,
+  hasApiToken: false,
+  validationStatus: "not_configured",
+  lastValidatedAt: null as string | null,
+  lastError: null as string | null,
+  updatedAt: new Date(0).toISOString(),
+};
+
+const mockGranolaNotes = [
+  {
+    id: "not_1234567890ABCD",
+    title: "Planning sync",
+    url: "https://granola.ai/notes/not_1234567890ABCD",
+    summary: "Mock Granola note summary for the planning sync.",
+    createdAt: new Date(0).toISOString(),
+    updatedAt: new Date(0).toISOString(),
+  },
+  {
+    id: "not_ABCDEFGHIJKLMN",
+    title: "Review follow-up",
+    url: "https://granola.ai/notes/not_ABCDEFGHIJKLMN",
+    summary: "Mock Granola note summary for a follow-up review.",
+    createdAt: new Date(0).toISOString(),
+    updatedAt: new Date(0).toISOString(),
+  },
+];
+
 const mockClickUpWorkspaces = [
   { id: "team-1", name: "Acme Workspace", color: "#ff6b35" },
   { id: "team-2", name: "Globex Workspace", color: null as string | null },
@@ -198,6 +227,38 @@ function mockLinearIssue(input: {
   };
 }
 
+function mockGranolaNote(input: {
+  conversationId: string;
+  projectId?: string | null;
+  noteId: string;
+  title?: string | null;
+  noteUrl?: string | null;
+  summary?: string | null;
+  includeTranscript?: boolean;
+}) {
+  const now = new Date(0).toISOString();
+  const note = mockGranolaNotes.find((item) => item.id === input.noteId);
+  return {
+    conversationId: input.conversationId,
+    projectId: input.projectId ?? "mock-project",
+    provider: "granola",
+    noteId: input.noteId,
+    noteUrl: input.noteUrl ?? note?.url ?? null,
+    title: input.title ?? note?.title ?? "Mock Granola note",
+    summaryMarkdown: input.summary ?? note?.summary ?? null,
+    transcript: [{ speaker: "Alex", text: "Mock transcript line." }],
+    includeTranscript: input.includeTranscript ?? true,
+    lastRefreshedAt: now,
+    refreshStatus: "loaded",
+    refreshError: null,
+    assignedAt: now,
+    assignedFromMessageId: null,
+    manuallyAssigned: true,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
 const mockAgentProviderSettings = {
   providers: [
     {
@@ -206,6 +267,7 @@ const mockAgentProviderSettings = {
       isDefault: true,
       model: "gpt-5.5",
       effort: "medium",
+      serviceTier: null,
       approvalPolicy: "never",
       sandboxMode: "danger-full-access",
       claudePermissionMode: null,
@@ -232,6 +294,7 @@ const mockAgentProviderSettings = {
       isDefault: false,
       model: "claude-sonnet-4-6",
       effort: null,
+      serviceTier: null,
       approvalPolicy: "never",
       sandboxMode: null,
       claudePermissionMode: "bypassPermissions",
@@ -647,7 +710,7 @@ const mockTicketingTickets = [
     ref: { provider: "jira", id: "10001", key: "RX-1" },
     title: "Fix merge race in transition handler",
     state: { id: "todo", name: "To Do", category: "todo", color: null },
-    assignee: { id: "user-1", name: "A. Demian", email: null, avatarUrl: null },
+    assignee: { id: "user-1", name: "A. Dev", email: null, avatarUrl: null },
     reporter: { id: "user-2", name: "Platform", email: null, avatarUrl: null },
     labels: ["backend", "race-condition"],
     priority: "High",
@@ -671,7 +734,7 @@ const mockTicketingTickets = [
     ref: { provider: "jira", id: "10003", key: "RX-3" },
     title: "Ticketing dashboard shell",
     state: { id: "review", name: "In Review", category: "in_progress", color: null },
-    assignee: { id: "user-1", name: "A. Demian", email: null, avatarUrl: null },
+    assignee: { id: "user-1", name: "A. Dev", email: null, avatarUrl: null },
     reporter: { id: "user-2", name: "Platform", email: null, avatarUrl: null },
     labels: ["frontend"],
     priority: "Medium",
@@ -683,7 +746,7 @@ const mockTicketingTickets = [
     ref: { provider: "clickup", id: "cu-1001", key: "CU-1001" },
     title: "Demo ClickUp dashboard task",
     state: { id: "in_progress", name: "In Progress", category: "in_progress", color: null },
-    assignee: { id: "cu-user-1", name: "A. Demian", email: null, avatarUrl: null },
+    assignee: { id: "cu-user-1", name: "A. Dev", email: null, avatarUrl: null },
     reporter: { id: "cu-user-2", name: "Platform", email: null, avatarUrl: null },
     labels: ["integrations", "frontend"],
     priority: "High",
@@ -707,7 +770,7 @@ const mockTicketingTickets = [
     ref: { provider: "clickup", id: "cu-1003", key: "CU-1003" },
     title: "List ClickUp Spaces as dashboard containers",
     state: { id: "done", name: "Done", category: "done", color: null },
-    assignee: { id: "cu-user-1", name: "A. Demian", email: null, avatarUrl: null },
+    assignee: { id: "cu-user-1", name: "A. Dev", email: null, avatarUrl: null },
     reporter: { id: "cu-user-2", name: "Platform", email: null, avatarUrl: null },
     labels: ["frontend"],
     priority: "Low",
@@ -1138,6 +1201,82 @@ const commandHandlers: Record<
   },
   list_clickup_workspaces: async () => ({ workspaces: mockClickUpWorkspaces }),
   search_clickup_tasks: async () => ({ tasks: [] }),
+  get_granola_integration_settings: async () => mockGranolaIntegrationSettings,
+  save_granola_integration_settings: async (args) => {
+    const input = args.input as { apiToken?: string | null };
+    if (input.apiToken !== undefined) {
+      mockGranolaIntegrationSettings.hasApiToken = Boolean(
+        input.apiToken?.trim(),
+      );
+      mockGranolaIntegrationSettings.enabled = false;
+      mockGranolaIntegrationSettings.validationStatus =
+        mockGranolaIntegrationSettings.hasApiToken
+          ? "pending"
+          : "not_configured";
+    }
+    mockGranolaIntegrationSettings.lastError = null;
+    mockGranolaIntegrationSettings.updatedAt = new Date(0).toISOString();
+    return mockGranolaIntegrationSettings;
+  },
+  validate_granola_integration_settings: async () => {
+    Object.assign(mockGranolaIntegrationSettings, {
+      enabled: true,
+      hasApiToken: true,
+      validationStatus: "valid",
+      lastValidatedAt: new Date(0).toISOString(),
+      lastError: null,
+      updatedAt: new Date(0).toISOString(),
+    });
+    return mockGranolaIntegrationSettings;
+  },
+  list_granola_notes: async () => ({
+    notes: mockGranolaNotes,
+    hasMore: false,
+    cursor: null,
+  }),
+  get_granola_note_detail: async (args) => {
+    const input = args.input as { noteId: string };
+    const note =
+      mockGranolaNotes.find((item) => item.id === input.noteId) ??
+      mockGranolaNotes[0];
+    return {
+      ...note,
+      transcript: [{ speaker: "Alex", text: "Mock transcript line." }],
+    };
+  },
+  get_agent_conversation_granola_note: async (args) => {
+    const input = args.input as { conversationId: string };
+    return {
+      note: mockAgentConversationGranolaNotes.get(input.conversationId) ?? null,
+    };
+  },
+  assign_agent_conversation_granola_note: async (args) => {
+    const input = args.input as {
+      conversationId: string;
+      projectId?: string | null;
+      noteId: string;
+      title?: string | null;
+      noteUrl?: string | null;
+      summary?: string | null;
+      includeTranscript?: boolean;
+    };
+    const note = mockGranolaNote(input);
+    mockAgentConversationGranolaNotes.set(input.conversationId, note);
+    return { note };
+  },
+  refresh_agent_conversation_granola_note: async (args) => {
+    const input = args.input as { conversationId: string };
+    const existing = mockAgentConversationGranolaNotes.get(input.conversationId);
+    if (!existing) {
+      return { note: null };
+    }
+    return { note: existing };
+  },
+  clear_agent_conversation_granola_note: async (args) => {
+    const input = args.input as { conversationId: string };
+    mockAgentConversationGranolaNotes.delete(input.conversationId);
+    return { note: null };
+  },
   get_agent_conversation_linear_issue: async (args) => {
     const input = args.input as { conversationId: string };
     return {
@@ -1463,6 +1602,100 @@ const commandHandlers: Record<
     return updated;
   },
   check_gh_auth: async () => window.__mockGhAuthStatus ?? true,
+  get_github_connection_status: async () => ({
+    ghInstalled: true,
+    authenticated: window.__mockGhAuthStatus ?? true,
+    host: "github.com",
+    account: "mock-octocat",
+  }),
+  get_github_branch_overview: async () => ({
+    currentBranch: "feature/mock-branch",
+    sourcesUnavailable: [],
+    branches: [
+      {
+        branchName: "feature/mock-branch",
+        isCurrent: true,
+        prNumber: 42,
+        prTitle: "Mock branch overview",
+        prUrl: "https://github.com/aigentive/ralphx.app/pull/42",
+        prStatus: "open",
+        prIsDraft: false,
+        prUpdatedAt: "2026-06-28T00:00:00Z",
+        prAuthorLogin: "mock-octocat",
+        prBaseRefName: "main",
+        rxConversationCount: 1,
+        rxConversations: [{ conversationId: "mock-conversation", title: "Mock agent" }],
+        ticketCount: 1,
+        ticketLinks: [
+          {
+            provider: "jira",
+            label: "RX-42",
+            title: "Mock ticket",
+            url: "https://example.atlassian.net/browse/RX-42",
+          },
+        ],
+        ticketLabels: ["Jira RX-42"],
+      },
+      {
+        branchName: "feature/no-pr",
+        isCurrent: false,
+        prNumber: null,
+        prTitle: null,
+        prUrl: null,
+        prStatus: null,
+        prIsDraft: false,
+        prUpdatedAt: null,
+        prAuthorLogin: null,
+        prBaseRefName: null,
+        rxConversationCount: 0,
+        rxConversations: [],
+        ticketCount: 0,
+        ticketLinks: [],
+        ticketLabels: [],
+      },
+      {
+        branchName: "feature/merged",
+        isCurrent: false,
+        prNumber: 41,
+        prTitle: "Merged mock branch",
+        prUrl: "https://github.com/aigentive/ralphx.app/pull/41",
+        prStatus: "merged",
+        prIsDraft: false,
+        prUpdatedAt: "2026-06-27T00:00:00Z",
+        prAuthorLogin: "mock-octocat",
+        prBaseRefName: "main",
+        rxConversationCount: 0,
+        rxConversations: [],
+        ticketCount: 0,
+        ticketLinks: [],
+        ticketLabels: [],
+      },
+      {
+        branchName: "ralphx/ticket/clickup-cu-1",
+        isCurrent: false,
+        prNumber: null,
+        prTitle: null,
+        prUrl: null,
+        prStatus: null,
+        prIsDraft: false,
+        prUpdatedAt: null,
+        prAuthorLogin: null,
+        prBaseRefName: null,
+        rxConversationCount: 0,
+        rxConversations: [],
+        ticketCount: 1,
+        ticketLinks: [
+          {
+            provider: "clickup",
+            label: "cu-1",
+            title: null,
+            url: null,
+          },
+        ],
+        ticketLabels: ["ClickUp cu-1"],
+      },
+    ],
+  }),
   login_gh_with_browser: async () => {
     window.__mockGhAuthStatus = true;
     return true;

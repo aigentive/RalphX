@@ -55,12 +55,17 @@ vi.mock("@tauri-apps/plugin-opener", () => ({
 vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
   IntegratedChatPanel: ({
     additionalQuestionSessionIds,
+    agentProcessContextIdOverride,
+    conversationIdOverride,
     headerContent,
     planApprovalAction,
     onQuestionAnswered,
     renderComposer,
+    storeContextKeyOverride,
   }: {
     additionalQuestionSessionIds?: string[];
+    agentProcessContextIdOverride?: string;
+    conversationIdOverride?: string;
     headerContent?: ReactNode;
     planApprovalAction?: {
       label: string;
@@ -74,10 +79,14 @@ vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
       result: Record<string, unknown>,
     ) => void | Promise<void>;
     renderComposer: (props: Record<string, unknown>) => ReactNode;
+    storeContextKeyOverride?: string;
   }) => (
     <div
       data-testid="integrated-chat-panel"
       data-question-session-ids={additionalQuestionSessionIds?.join(",") ?? ""}
+      data-agent-process-context-id={agentProcessContextIdOverride ?? ""}
+      data-conversation-id={conversationIdOverride ?? ""}
+      data-store-context-key={storeContextKeyOverride ?? ""}
     >
       {planApprovalAction && (
         <button
@@ -312,6 +321,8 @@ vi.mock("@/hooks/useHarnessProviders", () => ({
         error: null,
         missingCoreExecFeatures: [],
         supportedEfforts: ["low", "medium", "high", "max"],
+        supportsFastMode: false,
+        fastModeSupportedModels: [],
         updatedAt: "2026-05-16T00:00:00.000Z",
       },
       {
@@ -332,6 +343,8 @@ vi.mock("@/hooks/useHarnessProviders", () => ({
         error: null,
         missingCoreExecFeatures: [],
         supportedEfforts: ["low", "medium", "high", "xhigh"],
+        supportsFastMode: true,
+        fastModeSupportedModels: ["gpt-5.5", "gpt-5.4"],
         updatedAt: "2026-05-16T00:00:00.000Z",
       },
     ],
@@ -680,6 +693,7 @@ function renderPanel(
     onAgentUserMessageSent: vi.fn(),
     onConversationModeSwitched: vi.fn(),
     onFocusIdeationSession: vi.fn(),
+    onFocusWorkspaceReview: vi.fn(),
     onFocusVerificationSession: vi.fn(),
     onFocusTaskRuntime: vi.fn(),
     onOpenTaskArtifact: vi.fn(),
@@ -902,6 +916,61 @@ describe("AgentsActiveConversationPanel", () => {
 
     expect(onFocusTaskRuntime).toHaveBeenCalledWith("task-2", "review");
     expect(onOpenTaskArtifact).toHaveBeenCalledWith("task-2");
+  });
+
+  it("focuses the workspace Review chat from the runtime status CTA", async () => {
+    const onFocusWorkspaceReview = vi.fn();
+    const workspaceItem = workspaceRuntimeStatus().items[0]!;
+    getAgentConversationRuntimeStatusesMock.mockResolvedValue({
+      "conversation-1": workspaceRuntimeStatus({
+        primarySource: "workspace_review",
+        summaryLabel: "Reviewing",
+        items: [
+          { ...workspaceItem, agentStatus: "waiting_for_input" },
+          {
+            source: "workspace_review",
+            contextType: "project",
+            contextId: "review-conversation-1",
+            label: "Reviewing",
+            title: "Review workspace changes",
+            agentStatus: "generating",
+            taskId: null,
+            internalStatus: "reviewing",
+            runningProcess: null,
+            ideationSession: null,
+            parentSessionId: null,
+            childSessionId: null,
+            conversationId: "review-conversation-1",
+          },
+        ],
+      }),
+    });
+
+    renderPanel({ onFocusWorkspaceReview });
+
+    fireEvent.click(await screen.findByRole("button", { name: "View Review" }));
+
+    expect(onFocusWorkspaceReview).toHaveBeenCalledWith("review-conversation-1");
+  });
+
+  it("routes workspace Review focus through the review child project chat", () => {
+    renderPanel({
+      chatFocus: {
+        type: "workspace_review",
+        conversationId: "review-conversation-1",
+      },
+    });
+
+    const panel = screen.getByTestId("integrated-chat-panel");
+    expect(panel).toHaveAttribute("data-conversation-id", "review-conversation-1");
+    expect(panel).toHaveAttribute(
+      "data-agent-process-context-id",
+      "review-conversation-1",
+    );
+    expect(panel).toHaveAttribute(
+      "data-store-context-key",
+      "project:review-conversation-1",
+    );
   });
 
   it("refines selected task artifact focus to the matching runtime context", async () => {
@@ -1195,6 +1264,48 @@ describe("AgentsActiveConversationPanel", () => {
         artifactId: "artifact-1",
       }),
     );
+  });
+
+  it("shows Verify Plan beside Approve Plan for draft Plan-mode sessions", async () => {
+    const user = userEvent.setup();
+    const onSelectArtifact = vi.fn();
+    getSessionPlanMock.mockResolvedValue(planArtifact("draft"));
+    getVerificationSpecialistsMock.mockResolvedValue({
+      specialists: [
+        { name: "risk", enabled_by_default: false },
+        { name: "scope", enabled_by_default: true },
+      ],
+    });
+
+    renderPanel({
+      activeConversation: { ...projectConversation(), agentMode: "plan" },
+      activeConversationMode: "plan",
+      activeWorkspace: {
+        ...workspace(),
+        mode: "plan",
+        linkedIdeationSessionId: "planning-session-1",
+      },
+      attachedIdeationSessionId: "planning-session-1",
+      onSelectArtifact,
+    });
+
+    const actions = within(
+      await screen.findByTestId("agents-plan-composer-cta-actions"),
+    );
+    expect(
+      actions.getByRole("button", { name: /Approve Plan/i }),
+    ).toBeInTheDocument();
+
+    await user.click(actions.getByRole("button", { name: /Verify Plan/i }));
+
+    await waitFor(() =>
+      expect(confirmVerificationMock).toHaveBeenCalledWith(
+        "planning-session-1",
+        ["risk"],
+      ),
+    );
+    expect(onSelectArtifact).toHaveBeenCalledWith("verification");
+    expect(approvePlanArtifactMock).not.toHaveBeenCalled();
   });
 
   it("shows View Plan before Approve Plan when the plan tab is not visible", async () => {
@@ -1724,6 +1835,7 @@ describe("AgentsActiveConversationPanel", () => {
         providerHarness: "codex",
         modelId: "gpt-5.5",
         logicalEffort: "high",
+        codexFastMode: false,
         suppressUserMessage: true,
       },
     );
@@ -1818,6 +1930,7 @@ describe("AgentsActiveConversationPanel", () => {
           providerHarness: "codex",
           modelId: "gpt-5.5",
           logicalEffort: "high",
+          codexFastMode: false,
         },
       ),
     );

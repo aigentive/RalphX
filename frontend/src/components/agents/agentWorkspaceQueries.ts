@@ -5,6 +5,8 @@ import type {
   AgentConversationWorkspace,
   AgentConversationWorkspaceFreshnessScope,
   AgentWorkspacePrReviewContext,
+  AgentWorkspaceReviewContext,
+  StartAgentWorkspaceReviewResult,
 } from "@/api/chat";
 
 import {
@@ -114,6 +116,30 @@ export function prReviewContextForConversation(
     return null;
   }
   if (context.recentActions.some((action) => action.conversationId !== conversationId)) {
+    return null;
+  }
+
+  return context;
+}
+
+type WorkspaceReviewContextLike =
+  | AgentWorkspaceReviewContext
+  | StartAgentWorkspaceReviewResult;
+
+export function workspaceReviewContextForConversation<
+  T extends WorkspaceReviewContextLike,
+>(
+  context: T | null | undefined,
+  conversationId: string | null | undefined,
+): T | null {
+  if (!context || !conversationId) {
+    return null;
+  }
+
+  if ("workspace" in context && context.workspace.conversationId !== conversationId) {
+    return null;
+  }
+  if (context.monitor.conversationId !== conversationId) {
     return null;
   }
 
