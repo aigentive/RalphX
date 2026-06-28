@@ -1,12 +1,13 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { createElement, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { atlassianApi } from "@/api/atlassian";
 import { granolaApi } from "@/api/granola";
+import { githubApi } from "@/api/github";
 import { linearApi } from "@/api/linear";
-import { getGitCurrentBranch } from "@/api/projects";
 import * as chatHooks from "@/hooks/useChat";
 import { usePullRequestDetail } from "@/hooks/usePullRequestDetail";
 import * as ticketingHooks from "@/hooks/useTicketing";
@@ -39,8 +40,10 @@ vi.mock("@/api/granola", () => ({
   },
 }));
 
-vi.mock("@/api/projects", () => ({
-  getGitCurrentBranch: vi.fn(),
+vi.mock("@/api/github", () => ({
+  githubApi: {
+    getBranchOverview: vi.fn(),
+  },
 }));
 
 vi.mock("@/hooks/usePullRequestDetail", () => ({
@@ -322,7 +325,94 @@ describe("TicketingDashboardView", () => {
     useAgentSessionStore.getState().clearSelection();
     useAgentSessionStore.setState({ startConversationDraft: null });
     useChatStore.setState({ activeConversationIds: {} });
-    vi.mocked(getGitCurrentBranch).mockResolvedValue("feature/current");
+    vi.mocked(githubApi.getBranchOverview).mockResolvedValue({
+      currentBranch: "feature/current",
+      sourcesUnavailable: [],
+      branches: [
+        {
+          branchName: "feature/current",
+          isCurrent: true,
+          prNumber: 466,
+          prTitle: "Fix ticketing GitHub branch view",
+          prUrl: "https://github.com/aigentive/ralphx.app/pull/466",
+          prStatus: "open",
+          prIsDraft: false,
+          prUpdatedAt: "2026-06-28T07:00:00.000Z",
+          prAuthorLogin: "reefagent",
+          prBaseRefName: "main",
+          rxConversationCount: 1,
+          rxConversations: [{ conversationId: "conversation-1", title: "Branch work" }],
+          ticketCount: 1,
+          ticketLinks: [
+            {
+              provider: "jira",
+              label: "RX-77",
+              title: "Branch ticket",
+              url: "https://example.atlassian.net/browse/RX-77",
+            },
+          ],
+          ticketLabels: ["Jira RX-77"],
+        },
+        {
+          branchName: "feature/no-pr",
+          isCurrent: false,
+          prNumber: null,
+          prTitle: null,
+          prUrl: null,
+          prStatus: null,
+          prIsDraft: false,
+          prUpdatedAt: null,
+          prAuthorLogin: null,
+          prBaseRefName: null,
+          rxConversationCount: 0,
+          rxConversations: [],
+          ticketCount: 0,
+          ticketLinks: [],
+          ticketLabels: [],
+        },
+        {
+          branchName: "feature/merged",
+          isCurrent: false,
+          prNumber: 465,
+          prTitle: "Merged branch view",
+          prUrl: "https://github.com/aigentive/ralphx.app/pull/465",
+          prStatus: "merged",
+          prIsDraft: false,
+          prUpdatedAt: "2026-06-27T07:00:00.000Z",
+          prAuthorLogin: "reefagent",
+          prBaseRefName: "main",
+          rxConversationCount: 0,
+          rxConversations: [],
+          ticketCount: 0,
+          ticketLinks: [],
+          ticketLabels: [],
+        },
+        {
+          branchName: "ralphx/ticket/clickup-cu-1",
+          isCurrent: false,
+          prNumber: null,
+          prTitle: null,
+          prUrl: null,
+          prStatus: null,
+          prIsDraft: false,
+          prUpdatedAt: null,
+          prAuthorLogin: null,
+          prBaseRefName: null,
+          rxConversationCount: 0,
+          rxConversations: [],
+          ticketCount: 1,
+          ticketLinks: [
+            {
+              provider: "clickup",
+              label: "cu-1",
+              title: null,
+              url: null,
+            },
+          ],
+          ticketLabels: ["ClickUp cu-1"],
+        },
+      ],
+    });
     vi.mocked(usePullRequestDetail).mockReturnValue({
       data: null,
       isLoading: false,
@@ -650,24 +740,80 @@ describe("TicketingDashboardView", () => {
     });
   });
 
-  it("renders the current branch GitHub surface as a dashboard tab", async () => {
+  it("renders all branches with PR, ticket, and RalphX indicators", async () => {
     mockConnectedDashboard();
+    const user = userEvent.setup();
 
     renderDashboard();
 
-    fireEvent.click(screen.getByRole("tab", { name: "Current Branch" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Branches" }));
 
-    expect(await screen.findByTestId("ticketing-current-branch-pr")).toBeInTheDocument();
-    expect(await screen.findByText("Current branch (feature/current)")).toBeInTheDocument();
-    expect(screen.getByText("feature/current")).toBeInTheDocument();
-    expect(getGitCurrentBranch).toHaveBeenCalledWith("/repo/current");
-    expect(usePullRequestDetail).toHaveBeenCalledWith(
-      expect.objectContaining({
-        projectId: "project-1",
-        branch: "feature/current",
-      }),
-      expect.objectContaining({ enabled: expect.any(Boolean) }),
+    expect(await screen.findByTestId("ticketing-github-branches")).toBeInTheDocument();
+    const currentBranchRow = await screen.findByTestId(
+      "ticketing-github-branch-feature/current",
     );
+    expect(currentBranchRow).toHaveTextContent("feature/current");
+    expect(currentBranchRow).toHaveTextContent("#466");
+    expect(currentBranchRow).toHaveTextContent("Jira RX-77");
+    expect(
+      within(currentBranchRow).getByLabelText("1 attached tickets"),
+    ).toBeInTheDocument();
+    expect(
+      within(currentBranchRow).getByLabelText("1 RalphX conversations"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("ticketing-github-branch-feature/no-pr"),
+    ).toHaveTextContent("No PR");
+    expect(
+      screen.getByTestId("ticketing-github-branch-feature/merged"),
+    ).toHaveTextContent("Merged");
+    expect(
+      screen.getByTestId("ticketing-github-branch-ralphx/ticket/clickup-cu-1"),
+    ).toHaveTextContent("ClickUp cu-1");
+    expect(screen.getByRole("tab", { name: /Overview/ })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /Tickets 1/ })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /RX 1/ })).toBeInTheDocument();
+    expect(screen.getByText("Branch ticket")).toBeInTheDocument();
+    expect(screen.getByText("Branch work")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /PRs 2/ }));
+    expect(currentBranchRow).toBeInTheDocument();
+    expect(screen.getByTestId("ticketing-github-branch-feature/merged")).toBeInTheDocument();
+    expect(screen.queryByTestId("ticketing-github-branch-feature/no-pr")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("ticketing-github-branch-ralphx/ticket/clickup-cu-1"),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Open 1/ })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Merged 1/ }));
+    expect(screen.getByTestId("ticketing-github-branch-feature/merged")).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("ticketing-github-branch-feature/current"),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Draft 0/ }));
+    expect(screen.getByText("No branches match this filter.")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Tickets 2/ }));
+    expect(screen.getByTestId("ticketing-github-branch-feature/current")).toBeInTheDocument();
+    expect(
+      screen.getByTestId("ticketing-github-branch-ralphx/ticket/clickup-cu-1"),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId("ticketing-github-branch-feature/no-pr")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /RX 1/ }));
+    expect(screen.getByTestId("ticketing-github-branch-feature/current")).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("ticketing-github-branch-ralphx/ticket/clickup-cu-1"),
+    ).not.toBeInTheDocument();
+    expect(githubApi.getBranchOverview).toHaveBeenCalledWith({
+      projectId: "project-1",
+    });
+    await user.click(screen.getByRole("tab", { name: "Pull Request" }));
+    await waitFor(() => {
+      expect(screen.getByRole("tab", { name: "Pull Request" })).toHaveAttribute(
+        "aria-selected",
+        "true",
+      );
+    });
   });
 
   it("adds a Granola note as new conversation context or binds it to an existing conversation", async () => {

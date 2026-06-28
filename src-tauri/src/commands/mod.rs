@@ -343,4 +343,7 @@ pub use git_commands::{
     TaskCommitsResponse, TaskDiffStatsResponse,
 };
 // GitHub commands (PR visibility — connection status)
-pub use github_commands::{get_github_connection_status, GithubConnectionStatusResponse};
+pub use github_commands::{
+    get_github_branch_overview, get_github_connection_status, GithubBranchOverviewResponse,
+    GithubConnectionStatusResponse,
+};

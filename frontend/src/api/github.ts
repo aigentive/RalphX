@@ -24,6 +24,56 @@ export const GitHubConnectionStatusSchema = z.object({
 export type GitHubConnectionStatus = z.infer<typeof GitHubConnectionStatusSchema>;
 
 // ============================================================================
+// Branch overview (get_github_branch_overview)
+// ============================================================================
+
+/** One branch row joined to GitHub PR, RalphX workspace, and ticket indicators. */
+export const GitHubBranchRxConversationSchema = z.object({
+  conversationId: z.string(),
+  title: z.string().nullable().optional(),
+});
+export type GitHubBranchRxConversation = z.infer<
+  typeof GitHubBranchRxConversationSchema
+>;
+
+export const GitHubBranchTicketLinkSchema = z.object({
+  provider: z.string(),
+  label: z.string(),
+  title: z.string().nullable().optional(),
+  url: z.string().nullable().optional(),
+});
+export type GitHubBranchTicketLink = z.infer<typeof GitHubBranchTicketLinkSchema>;
+
+export const GitHubBranchOverviewItemSchema = z.object({
+  branchName: z.string(),
+  isCurrent: z.boolean(),
+  prNumber: z.number().nullable().optional(),
+  prTitle: z.string().nullable().optional(),
+  prUrl: z.string().nullable().optional(),
+  prStatus: z.string().nullable().optional(),
+  prIsDraft: z.boolean().default(false),
+  prUpdatedAt: z.string().nullable().optional(),
+  prAuthorLogin: z.string().nullable().optional(),
+  prBaseRefName: z.string().nullable().optional(),
+  rxConversationCount: z.number().default(0),
+  rxConversations: z.array(GitHubBranchRxConversationSchema).default([]),
+  ticketCount: z.number().default(0),
+  ticketLinks: z.array(GitHubBranchTicketLinkSchema).default([]),
+  ticketLabels: z.array(z.string()).default([]),
+});
+export type GitHubBranchOverviewItem = z.infer<
+  typeof GitHubBranchOverviewItemSchema
+>;
+
+/** Branch/PR overview for the Ticketing GitHub surface. */
+export const GitHubBranchOverviewSchema = z.object({
+  currentBranch: z.string().nullable().optional(),
+  branches: z.array(GitHubBranchOverviewItemSchema).default([]),
+  sourcesUnavailable: z.array(z.string()).default([]),
+});
+export type GitHubBranchOverview = z.infer<typeof GitHubBranchOverviewSchema>;
+
+// ============================================================================
 // PR-detail read model (get_pull_request_detail) — full graph (Decision 4)
 // ============================================================================
 
@@ -173,12 +223,28 @@ export interface GetPullRequestDetailInput {
   branch?: string | null | undefined;
 }
 
+export interface GetGithubBranchOverviewInput {
+  projectId: string;
+}
+
 export const githubApi = {
   getConnectionStatus(): Promise<GitHubConnectionStatus> {
     return typedInvoke(
       "get_github_connection_status",
       {},
       GitHubConnectionStatusSchema,
+    );
+  },
+
+  getBranchOverview(input: GetGithubBranchOverviewInput): Promise<GitHubBranchOverview> {
+    return typedInvoke(
+      "get_github_branch_overview",
+      {
+        input: {
+          projectId: input.projectId,
+        },
+      },
+      GitHubBranchOverviewSchema,
     );
   },
 

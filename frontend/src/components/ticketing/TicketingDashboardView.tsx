@@ -1,17 +1,27 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, Copy, Loader2, Search, ScrollText } from "lucide-react";
+import {
+  Check,
+  Copy,
+  GitBranch,
+  GitPullRequest,
+  Loader2,
+  MessageSquare,
+  Search,
+  ScrollText,
+  Ticket,
+} from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import { atlassianApi } from "@/api/atlassian";
+import { githubApi, type GitHubBranchOverviewItem } from "@/api/github";
 import {
   granolaApi,
   type GranolaNoteDetail,
   type GranolaNoteSummary,
 } from "@/api/granola";
 import { linearApi } from "@/api/linear";
-import { getGitCurrentBranch } from "@/api/projects";
 import type { ComposerIntegrationReference } from "@/api/chat";
 import type {
   ListTicketFilterOptionsInput,
@@ -74,6 +84,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 import { ProviderSwitcher } from "./ProviderSwitcher";
 import { TicketSearchableSelect } from "./TicketSearchableSelect";
@@ -81,6 +92,7 @@ import { TicketDetailSheet } from "./TicketDetailSheet";
 import { TicketFilterBar } from "./TicketFilterBar";
 import { TicketingStatePanel } from "./TicketingStatePanel";
 import { TicketKanbanShell, TicketKanbanView, TicketListView } from "./TicketViews";
+import { openExternalTicketUrl } from "./ticketing-open-external";
 import {
   distinctAssigneeNames,
   distinctCurrentUserSprintNames,
@@ -93,7 +105,7 @@ import {
 import { providerLabel, ticketKey } from "./ticketing-utils";
 import { useAfterPaint } from "./useAfterPaint";
 
-type DashboardSurface = "tickets" | "current_branch" | "granola";
+type DashboardSurface = "tickets" | "branches" | "granola";
 
 interface TicketingDashboardViewProps {
   projectId: string;
@@ -393,7 +405,7 @@ function DashboardSurfaceSwitcher({
 }) {
   const surfaces: Array<{ id: DashboardSurface; label: string }> = [
     { id: "tickets", label: "Tickets" },
-    { id: "current_branch", label: "Current Branch" },
+    { id: "branches", label: "Branches" },
     { id: "granola", label: "Granola" },
   ];
   return (
@@ -694,79 +706,799 @@ function GranolaContextDialog({
   );
 }
 
-function TicketingCurrentBranchPullRequestView({
+function branchPullRequestShell(
+  projectId: string,
+  branch: GitHubBranchOverviewItem,
+): PullRequestShell {
+  return {
+    projectId,
+    prNumber: branch.prNumber,
+    branch: branch.branchName,
+    title: branch.prNumber != null ? `PR #${branch.prNumber}` : branch.branchName,
+    url: branch.prUrl,
+    status: branch.prStatus,
+  };
+}
+
+function branchPrStatusLabel(branch: GitHubBranchOverviewItem): string {
+  if (branch.prNumber == null) {
+    return "No PR";
+  }
+  return branch.prStatus ? branch.prStatus : "PR";
+}
+
+type BranchFilter = "all" | "pull_requests" | "tickets" | "rx";
+type BranchPrStatusFilter = "all" | "open" | "draft" | "merged" | "closed";
+type BranchDetailTab = "overview" | "pull_request" | "tickets" | "rx";
+
+const EMPTY_BRANCH_OVERVIEW_ITEMS: GitHubBranchOverviewItem[] = [];
+
+const BRANCH_FILTERS: Array<{ id: BranchFilter; label: string }> = [
+  { id: "all", label: "All" },
+  { id: "pull_requests", label: "PRs" },
+  { id: "tickets", label: "Tickets" },
+  { id: "rx", label: "RX" },
+];
+
+const BRANCH_PR_STATUS_FILTERS: Array<{ id: BranchPrStatusFilter; label: string }> = [
+  { id: "all", label: "All PRs" },
+  { id: "open", label: "Open" },
+  { id: "draft", label: "Draft" },
+  { id: "merged", label: "Merged" },
+  { id: "closed", label: "Closed" },
+];
+
+function branchMatchesFilter(branch: GitHubBranchOverviewItem, filter: BranchFilter): boolean {
+  switch (filter) {
+    case "pull_requests":
+      return branch.prNumber != null;
+    case "tickets":
+      return branch.ticketCount > 0 || branch.ticketLinks.length > 0;
+    case "rx":
+      return branch.rxConversationCount > 0 || branch.rxConversations.length > 0;
+    case "all":
+      return true;
+  }
+}
+
+function branchFilterCount(branches: GitHubBranchOverviewItem[], filter: BranchFilter): number {
+  return branches.filter((branch) => branchMatchesFilter(branch, filter)).length;
+}
+
+function normalizedBranchPrStatus(branch: GitHubBranchOverviewItem): BranchPrStatusFilter | null {
+  if (branch.prNumber == null) {
+    return null;
+  }
+  const rawStatus = (branch.prStatus ?? "").toLowerCase();
+  if (branch.prIsDraft || rawStatus === "draft") {
+    return "draft";
+  }
+  if (rawStatus === "merged") {
+    return "merged";
+  }
+  if (rawStatus === "closed") {
+    return "closed";
+  }
+  return "open";
+}
+
+function branchMatchesPrStatusFilter(
+  branch: GitHubBranchOverviewItem,
+  filter: BranchPrStatusFilter,
+): boolean {
+  return filter === "all" || normalizedBranchPrStatus(branch) === filter;
+}
+
+function branchPrStatusFilterCount(
+  branches: GitHubBranchOverviewItem[],
+  filter: BranchPrStatusFilter,
+): number {
+  return branches.filter((branch) => branchMatchesPrStatusFilter(branch, filter)).length;
+}
+
+function githubPrStatusTone(branch: GitHubBranchOverviewItem): {
+  label: string;
+  style: CSSProperties;
+} {
+  const rawStatus = (branch.prStatus ?? "").toLowerCase();
+  if (branch.prNumber == null) {
+    return {
+      label: "No PR",
+      style: {
+        backgroundColor: "transparent",
+        borderColor: "var(--border-subtle)",
+        color: "var(--text-muted)",
+      },
+    };
+  }
+  if (branch.prIsDraft || rawStatus === "draft") {
+    return {
+      label: "Draft",
+      style: { backgroundColor: "#6e7781", borderColor: "#6e7781", color: "#ffffff" },
+    };
+  }
+  if (rawStatus === "merged") {
+    return {
+      label: "Merged",
+      style: { backgroundColor: "#8250df", borderColor: "#8250df", color: "#ffffff" },
+    };
+  }
+  if (rawStatus === "closed") {
+    return {
+      label: "Closed",
+      style: { backgroundColor: "#cf222e", borderColor: "#cf222e", color: "#ffffff" },
+    };
+  }
+  return {
+    label: rawStatus ? rawStatus.charAt(0).toUpperCase() + rawStatus.slice(1) : "Open",
+    style: { backgroundColor: "#1a7f37", borderColor: "#1a7f37", color: "#ffffff" },
+  };
+}
+
+function BranchPrStatusBadge({ branch }: { branch: GitHubBranchOverviewItem }) {
+  const tone = githubPrStatusTone(branch);
+  return (
+    <span
+      className="inline-flex h-5 items-center rounded-full border px-2 text-[11px] font-medium leading-none"
+      style={tone.style}
+    >
+      {tone.label}
+    </span>
+  );
+}
+
+function firstTicketUrl(branch: GitHubBranchOverviewItem): string | null {
+  return branch.ticketLinks.find((ticket) => ticket.url)?.url ?? null;
+}
+
+function firstRxConversation(branch: GitHubBranchOverviewItem) {
+  return branch.rxConversations[0] ?? null;
+}
+
+function providerDisplayName(provider: string): string {
+  switch (provider) {
+    case "jira":
+      return "Jira";
+    case "linear":
+      return "Linear";
+    case "clickup":
+      return "ClickUp";
+    default:
+      return "Ticket";
+  }
+}
+
+function TicketingGithubBranchesView({
   projectId,
   project,
+  onNavigateToAssociation,
 }: {
   projectId: string;
   project: Project | null;
+  onNavigateToAssociation?: ((deepLink: TicketDeepLink) => void) | undefined;
 }) {
-  const currentBranchQuery = useQuery({
-    queryKey: ["ticketing", "github", "current-branch", project?.workingDirectory ?? null],
-    queryFn: () => getGitCurrentBranch(project!.workingDirectory),
-    enabled: Boolean(project?.workingDirectory),
+  const [selectedBranchName, setSelectedBranchName] = useState<string | null>(null);
+  const [branchFilter, setBranchFilter] = useState<BranchFilter>("all");
+  const [prStatusFilter, setPrStatusFilter] = useState<BranchPrStatusFilter>("all");
+  const [activeBranchTab, setActiveBranchTab] = useState<BranchDetailTab>("overview");
+  const overviewQuery = useQuery({
+    queryKey: ["ticketing", "github", "branch-overview", projectId],
+    queryFn: () => githubApi.getBranchOverview({ projectId }),
+    enabled: Boolean(project),
     staleTime: 15_000,
   });
-  const currentBranch = currentBranchQuery.data?.trim() || null;
-  const shell: PullRequestShell | null = currentBranch
-    ? {
-        projectId,
-        branch: currentBranch,
-        title: `Current branch (${currentBranch})`,
+  const branches = overviewQuery.data?.branches ?? EMPTY_BRANCH_OVERVIEW_ITEMS;
+  const prBranches = useMemo(
+    () => branches.filter((branch) => branchMatchesFilter(branch, "pull_requests")),
+    [branches],
+  );
+  const filteredBranches = useMemo(() => {
+    const base = branches.filter((branch) => branchMatchesFilter(branch, branchFilter));
+    if (branchFilter !== "pull_requests") {
+      return base;
+    }
+    return base.filter((branch) => branchMatchesPrStatusFilter(branch, prStatusFilter));
+  }, [branches, branchFilter, prStatusFilter]);
+  const selectedBranch = filteredBranches.find((branch) => branch.branchName === selectedBranchName)
+    ?? filteredBranches.find((branch) => branch.isCurrent)
+    ?? filteredBranches[0]
+    ?? null;
+
+  useEffect(() => {
+    if (filteredBranches.length === 0) {
+      if (selectedBranchName !== null) {
+        setSelectedBranchName(null);
       }
-    : null;
-  const selector = pullRequestSelectorFromShell(shell);
+      return;
+    }
+    if (
+      selectedBranchName
+      && filteredBranches.some((branch) => branch.branchName === selectedBranchName)
+    ) {
+      return;
+    }
+    const nextBranch = filteredBranches.find((branch) => branch.isCurrent) ?? filteredBranches[0];
+    if (!nextBranch) {
+      return;
+    }
+    setSelectedBranchName(nextBranch.branchName);
+  }, [filteredBranches, selectedBranchName]);
 
   if (!project) {
     return (
       <TicketingStatePanel
         state="empty"
         title="Project unavailable"
-        description="Select a project to inspect its current branch."
+        description="Select a project to inspect its branches."
       />
     );
   }
 
-  if (currentBranchQuery.isLoading) {
+  if (overviewQuery.isLoading) {
     return (
       <TicketingStatePanel
         state="loading"
-        title="Loading current branch"
-        description="Reading the active repository branch."
+        title="Loading branches"
+        description="Reading repository branches and GitHub pull requests."
       />
     );
   }
 
-  if (currentBranchQuery.isError) {
+  if (overviewQuery.isError) {
     return (
       <TicketingStatePanel
         state="error"
-        title="Current branch failed to load"
+        title="Branches failed to load"
         description={
-          currentBranchQuery.error instanceof Error
-            ? currentBranchQuery.error.message
-            : "RalphX could not read the current git branch."
+          overviewQuery.error instanceof Error
+            ? overviewQuery.error.message
+            : "RalphX could not read repository branches."
         }
       />
     );
   }
 
-  if (!selector || !shell) {
+  if (branches.length === 0) {
     return (
       <TicketingStatePanel
         state="empty"
-        title="No current branch"
-        description="The active project repository did not report a branch."
+        title="No branches found"
+        description="The active project repository did not report any branches."
       />
+    );
+  }
+
+  const selectedShell = selectedBranch
+    ? branchPullRequestShell(projectId, selectedBranch)
+    : null;
+  const selectedSelector = pullRequestSelectorFromShell(selectedShell);
+  const githubUnavailable = overviewQuery.data?.sourcesUnavailable.includes(
+    "githubPullRequests",
+  );
+
+  return (
+    <div
+      data-testid="ticketing-github-branches"
+      className="grid h-full min-h-0 grid-cols-[minmax(260px,360px)_minmax(0,1fr)]"
+    >
+      <aside
+        className="flex min-h-0 flex-col"
+        style={{
+          backgroundColor: "var(--bg-surface)",
+          borderRightColor: "var(--border-subtle)",
+          borderRightStyle: "solid",
+          borderRightWidth: "1px",
+        }}
+      >
+        <div
+          className="shrink-0 px-4 py-3"
+          style={{
+            borderBottomColor: "var(--border-subtle)",
+            borderBottomStyle: "solid",
+            borderBottomWidth: "1px",
+          }}
+        >
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-[var(--text-primary)]">
+                Branches
+              </p>
+              <p className="mt-0.5 truncate text-xs text-[var(--text-muted)]">
+                {overviewQuery.data?.currentBranch ?? "No branch checked out"}
+              </p>
+            </div>
+            <Badge
+              variant="outline"
+              className="h-5 rounded-full border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-2 text-xs font-medium text-[var(--text-muted)]"
+            >
+              {branches.length}
+            </Badge>
+          </div>
+          <div className="mt-3 grid grid-cols-4 gap-1">
+            {BRANCH_FILTERS.map((filter) => {
+              const isActive = branchFilter === filter.id;
+              return (
+                <button
+                  key={filter.id}
+                  type="button"
+                  className="h-7 rounded px-2 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
+                  style={{
+                    backgroundColor: isActive ? "var(--bg-elevated)" : "var(--bg-sunken)",
+                    color: isActive ? "var(--text-primary)" : "var(--text-muted)",
+                    borderColor: "var(--border-subtle)",
+                    borderStyle: "solid",
+                    borderWidth: "1px",
+                  }}
+                  onClick={() => {
+                    setBranchFilter(filter.id);
+                    if (filter.id !== "pull_requests") {
+                      setPrStatusFilter("all");
+                    }
+                  }}
+                >
+                  {filter.label} {branchFilterCount(branches, filter.id)}
+                </button>
+              );
+            })}
+          </div>
+          {branchFilter === "pull_requests" ? (
+            <div className="mt-2 flex flex-wrap gap-1">
+              {BRANCH_PR_STATUS_FILTERS.map((filter) => {
+                const isActive = prStatusFilter === filter.id;
+                return (
+                  <button
+                    key={filter.id}
+                    type="button"
+                    className="h-7 rounded px-2 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
+                    style={{
+                      backgroundColor: isActive ? "var(--bg-elevated)" : "transparent",
+                      color: isActive ? "var(--text-primary)" : "var(--text-muted)",
+                      borderColor: "var(--border-subtle)",
+                      borderStyle: "solid",
+                      borderWidth: "1px",
+                    }}
+                    onClick={() => setPrStatusFilter(filter.id)}
+                  >
+                    {filter.label} {branchPrStatusFilterCount(prBranches, filter.id)}
+                  </button>
+                );
+              })}
+            </div>
+          ) : null}
+          {githubUnavailable ? (
+            <p className="mt-2 text-xs text-[var(--status-warning)]">
+              GitHub PR search unavailable.
+            </p>
+          ) : null}
+        </div>
+        <div className="min-h-0 overflow-y-auto p-2" aria-label="Repository branches">
+          {filteredBranches.length === 0 ? (
+            <div className="px-3 py-6 text-center text-xs text-[var(--text-muted)]">
+              No branches match this filter.
+            </div>
+          ) : null}
+          {filteredBranches.map((branch) => {
+            const isSelected = selectedBranch?.branchName === branch.branchName;
+            const ticketUrl = firstTicketUrl(branch);
+            const rxConversation = firstRxConversation(branch);
+            return (
+              <div
+                key={branch.branchName}
+                data-testid={`ticketing-github-branch-${branch.branchName}`}
+                aria-current={isSelected ? "true" : undefined}
+                className={cn(
+                  "grid gap-2 rounded-md px-3 py-2 transition-colors",
+                  isSelected ? "bg-[var(--bg-elevated)]" : "hover:bg-[var(--bg-sunken)]",
+                )}
+                style={{
+                  color: "var(--text-primary)",
+                }}
+              >
+                <button
+                  type="button"
+                  className="flex min-w-0 items-center gap-2 text-left focus-visible:outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
+                  onClick={() => {
+                    setSelectedBranchName(branch.branchName);
+                    setActiveBranchTab("overview");
+                  }}
+                >
+                  <GitBranch className="h-4 w-4 shrink-0 text-[var(--text-muted)]" aria-hidden="true" />
+                  <span className="truncate text-sm font-medium">{branch.branchName}</span>
+                  {branch.isCurrent ? (
+                    <Badge className="h-5 rounded-full bg-[var(--accent-primary)] px-2 text-[11px] font-medium text-white">
+                      Current
+                    </Badge>
+                  ) : null}
+                </button>
+                <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--text-muted)]">
+                  {branch.prNumber != null && branch.prUrl ? (
+                    <button
+                      type="button"
+                      className="inline-flex items-center gap-1 rounded px-1.5 py-1 hover:bg-[var(--bg-elevated)] focus-visible:outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
+                      aria-label={`Open pull request ${branch.prNumber}`}
+                      onClick={() => void openExternalTicketUrl(branch.prUrl!)}
+                    >
+                      <GitPullRequest className="h-3.5 w-3.5" aria-hidden="true" />
+                      #{branch.prNumber}
+                    </button>
+                  ) : (
+                    <span className="inline-flex items-center gap-1" aria-label={branch.prNumber != null ? "Pull request attached" : "No pull request"}>
+                      <GitPullRequest className="h-3.5 w-3.5" aria-hidden="true" />
+                      {branch.prNumber != null ? `#${branch.prNumber}` : branchPrStatusLabel(branch)}
+                    </span>
+                  )}
+                  <BranchPrStatusBadge branch={branch} />
+                  <button
+                    type="button"
+                    className="inline-flex items-center gap-1 rounded px-1.5 py-1 hover:bg-[var(--bg-elevated)] focus-visible:outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px] disabled:opacity-45"
+                    aria-label={`${branch.ticketCount} attached tickets`}
+                    disabled={branch.ticketCount === 0}
+                    onClick={() => {
+                      if (ticketUrl) {
+                        void openExternalTicketUrl(ticketUrl);
+                        return;
+                      }
+                      setSelectedBranchName(branch.branchName);
+                      setActiveBranchTab("tickets");
+                    }}
+                  >
+                    <Ticket className="h-3.5 w-3.5" aria-hidden="true" />
+                    {branch.ticketCount}
+                  </button>
+                  <button
+                    type="button"
+                    className="inline-flex items-center gap-1 rounded px-1.5 py-1 hover:bg-[var(--bg-elevated)] focus-visible:outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px] disabled:opacity-45"
+                    aria-label={`${branch.rxConversationCount} RalphX conversations`}
+                    disabled={branch.rxConversationCount === 0}
+                    onClick={() => {
+                      if (rxConversation && onNavigateToAssociation) {
+                        onNavigateToAssociation({
+                          view: "agents",
+                          id: rxConversation.conversationId,
+                          projectId,
+                        });
+                        return;
+                      }
+                      setSelectedBranchName(branch.branchName);
+                      setActiveBranchTab("rx");
+                    }}
+                  >
+                    <MessageSquare className="h-3.5 w-3.5" aria-hidden="true" />
+                    {branch.rxConversationCount}
+                  </button>
+                </div>
+                {branch.prTitle ? (
+                  <span className="truncate text-xs text-[var(--text-secondary)]">
+                    {branch.prTitle}
+                  </span>
+                ) : null}
+                {branch.ticketLabels.length > 0 ? (
+                  <span className="truncate text-xs text-[var(--text-muted)]">
+                    {branch.ticketLabels.join(", ")}
+                  </span>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      </aside>
+
+      <div className="min-h-0 overflow-y-auto">
+        {selectedBranch ? (
+          <Tabs
+            key={selectedBranch.branchName}
+            value={activeBranchTab}
+            onValueChange={(value) => setActiveBranchTab(value as BranchDetailTab)}
+            className="flex min-h-full flex-col"
+          >
+            <div
+              className="shrink-0 px-4 py-3"
+              style={{
+                backgroundColor: "var(--bg-surface)",
+                borderBottomColor: "var(--border-subtle)",
+                borderBottomStyle: "solid",
+                borderBottomWidth: "1px",
+              }}
+            >
+              <div className="mb-3 flex min-w-0 flex-wrap items-center gap-2">
+                <GitBranch className="h-4 w-4 text-[var(--text-muted)]" aria-hidden="true" />
+                <span className="truncate text-sm font-semibold text-[var(--text-primary)]">
+                  {selectedBranch.branchName}
+                </span>
+                <BranchPrStatusBadge branch={selectedBranch} />
+              </div>
+              <TabsList className="h-8 rounded-md bg-[var(--bg-sunken)] p-0.5">
+                <TabsTrigger value="overview" className="h-7 rounded px-3 text-xs">
+                  Overview
+                </TabsTrigger>
+                <TabsTrigger value="pull_request" className="h-7 rounded px-3 text-xs">
+                  Pull Request
+                </TabsTrigger>
+                <TabsTrigger value="tickets" className="h-7 rounded px-3 text-xs">
+                  Tickets {selectedBranch.ticketCount}
+                </TabsTrigger>
+                <TabsTrigger value="rx" className="h-7 rounded px-3 text-xs">
+                  RX {selectedBranch.rxConversationCount}
+                </TabsTrigger>
+              </TabsList>
+            </div>
+            <TabsContent value="overview" className="m-0 flex-1 p-4">
+              <BranchOverviewPanel
+                branch={selectedBranch}
+                projectId={projectId}
+                onNavigateToAssociation={onNavigateToAssociation}
+              />
+            </TabsContent>
+            <TabsContent value="pull_request" className="m-0 flex-1">
+              {selectedSelector && selectedShell ? (
+                <PullRequestDetailBody
+                  selector={selectedSelector}
+                  shell={selectedShell}
+                  className="min-h-full"
+                />
+              ) : (
+                <TicketingStatePanel
+                  state="empty"
+                  title="No pull request"
+                  description="This branch is not linked to a pull request yet."
+                />
+              )}
+            </TabsContent>
+            <TabsContent value="tickets" className="m-0 flex-1 p-4">
+              <BranchTicketsPanel branch={selectedBranch} />
+            </TabsContent>
+            <TabsContent value="rx" className="m-0 flex-1 p-4">
+              <BranchRxPanel
+                branch={selectedBranch}
+                projectId={projectId}
+                onNavigateToAssociation={onNavigateToAssociation}
+              />
+            </TabsContent>
+          </Tabs>
+        ) : (
+          <TicketingStatePanel
+            state="empty"
+            title="Select a branch"
+            description="Choose a branch to inspect its pull request."
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function BranchOverviewPanel({
+  branch,
+  projectId,
+  onNavigateToAssociation,
+}: {
+  branch: GitHubBranchOverviewItem;
+  projectId: string;
+  onNavigateToAssociation?: ((deepLink: TicketDeepLink) => void) | undefined;
+}) {
+  return (
+    <div className="grid gap-4">
+      <div
+        className="rounded-md p-4"
+        style={{
+          backgroundColor: "var(--bg-surface)",
+          borderColor: "var(--border-subtle)",
+          borderStyle: "solid",
+          borderWidth: "1px",
+        }}
+      >
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-xs font-semibold uppercase text-[var(--text-muted)]">
+              Pull Request
+            </p>
+            <p className="mt-1 truncate text-sm font-medium text-[var(--text-primary)]">
+              {branch.prNumber != null
+                ? branch.prTitle ?? `PR #${branch.prNumber}`
+                : "No pull request linked"}
+            </p>
+            {branch.prBaseRefName ? (
+              <p className="mt-1 text-xs text-[var(--text-muted)]">
+                into {branch.prBaseRefName}
+              </p>
+            ) : null}
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <BranchPrStatusBadge branch={branch} />
+            {branch.prUrl ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => void openExternalTicketUrl(branch.prUrl!)}
+              >
+                <GitPullRequest className="h-4 w-4" aria-hidden="true" />
+                Open
+              </Button>
+            ) : null}
+          </div>
+        </div>
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <BranchTicketsPanel branch={branch} compact />
+        <BranchRxPanel
+          branch={branch}
+          projectId={projectId}
+          onNavigateToAssociation={onNavigateToAssociation}
+          compact
+        />
+      </div>
+    </div>
+  );
+}
+
+function BranchTicketsPanel({
+  branch,
+  compact = false,
+}: {
+  branch: GitHubBranchOverviewItem;
+  compact?: boolean;
+}) {
+  if (branch.ticketLinks.length === 0) {
+    return (
+      <div
+        className="rounded-md p-4 text-sm text-[var(--text-muted)]"
+        style={{
+          backgroundColor: "var(--bg-surface)",
+          borderColor: "var(--border-subtle)",
+          borderStyle: "solid",
+          borderWidth: "1px",
+        }}
+      >
+        No tickets attached.
+      </div>
     );
   }
 
   return (
     <div
-      data-testid="ticketing-current-branch-pr"
-      className="h-full min-h-0 overflow-y-auto"
+      className="rounded-md p-4"
+      style={{
+        backgroundColor: "var(--bg-surface)",
+        borderColor: "var(--border-subtle)",
+        borderStyle: "solid",
+        borderWidth: "1px",
+      }}
     >
-      <PullRequestDetailBody selector={selector} shell={shell} className="min-h-full" />
+      <p className="mb-3 text-xs font-semibold uppercase text-[var(--text-muted)]">
+        Tickets
+      </p>
+      <div className={cn("grid gap-2", compact && "max-h-64 overflow-y-auto")}>
+        {branch.ticketLinks.map((ticket) => {
+          const provider = providerDisplayName(ticket.provider);
+          const label = `${provider} ${ticket.label}`;
+          return (
+            <div
+              key={`${ticket.provider}:${ticket.label}:${ticket.url ?? ""}`}
+              className="flex min-w-0 items-center justify-between gap-3 rounded-md px-3 py-2"
+              style={{
+                backgroundColor: "var(--bg-sunken)",
+                borderColor: "var(--border-subtle)",
+                borderStyle: "solid",
+                borderWidth: "1px",
+              }}
+            >
+              <div className="min-w-0">
+                <p className="truncate text-sm font-medium text-[var(--text-primary)]">
+                  {label}
+                </p>
+                {ticket.title ? (
+                  <p className="truncate text-xs text-[var(--text-muted)]">
+                    {ticket.title}
+                  </p>
+                ) : null}
+              </div>
+              {ticket.url ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => void openExternalTicketUrl(ticket.url!)}
+                >
+                  <Ticket className="h-4 w-4" aria-hidden="true" />
+                  Open
+                </Button>
+              ) : (
+                <Badge
+                  variant="outline"
+                  className="h-6 rounded-full border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-2 text-xs text-[var(--text-muted)]"
+                >
+                  {provider}
+                </Badge>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function BranchRxPanel({
+  branch,
+  projectId,
+  onNavigateToAssociation,
+  compact = false,
+}: {
+  branch: GitHubBranchOverviewItem;
+  projectId: string;
+  onNavigateToAssociation?: ((deepLink: TicketDeepLink) => void) | undefined;
+  compact?: boolean;
+}) {
+  if (branch.rxConversations.length === 0) {
+    return (
+      <div
+        className="rounded-md p-4 text-sm text-[var(--text-muted)]"
+        style={{
+          backgroundColor: "var(--bg-surface)",
+          borderColor: "var(--border-subtle)",
+          borderStyle: "solid",
+          borderWidth: "1px",
+        }}
+      >
+        No RalphX conversations attached.
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="rounded-md p-4"
+      style={{
+        backgroundColor: "var(--bg-surface)",
+        borderColor: "var(--border-subtle)",
+        borderStyle: "solid",
+        borderWidth: "1px",
+      }}
+    >
+      <p className="mb-3 text-xs font-semibold uppercase text-[var(--text-muted)]">
+        RalphX Conversations
+      </p>
+      <div className={cn("grid gap-2", compact && "max-h-64 overflow-y-auto")}>
+        {branch.rxConversations.map((conversation) => (
+          <div
+            key={conversation.conversationId}
+            className="flex min-w-0 items-center justify-between gap-3 rounded-md px-3 py-2"
+            style={{
+              backgroundColor: "var(--bg-sunken)",
+              borderColor: "var(--border-subtle)",
+              borderStyle: "solid",
+              borderWidth: "1px",
+            }}
+          >
+            <div className="min-w-0">
+              <p className="truncate text-sm font-medium text-[var(--text-primary)]">
+                {conversation.title ?? "Untitled agent conversation"}
+              </p>
+              <p className="truncate text-xs text-[var(--text-muted)]">
+                {conversation.conversationId}
+              </p>
+            </div>
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              disabled={!onNavigateToAssociation}
+              onClick={() => {
+                onNavigateToAssociation?.({
+                  view: "agents",
+                  id: conversation.conversationId,
+                  projectId,
+                });
+              }}
+            >
+              <MessageSquare className="h-4 w-4" aria-hidden="true" />
+              Open
+            </Button>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -1764,14 +2496,15 @@ export function TicketingDashboardView({
 
   let content: React.ReactNode;
 
-  if (activeSurface === "current_branch") {
+  if (activeSurface === "branches") {
     content = (
-      <TicketingCurrentBranchPullRequestView
+      <TicketingGithubBranchesView
         projectId={projectId}
         project={activeProject}
+        onNavigateToAssociation={onNavigateToAssociation}
       />
     );
-  } else if (!showingTickets) {
+  } else if (activeSurface === "granola") {
     content = (
       <TicketingGranolaNotesView
         projectId={projectId}

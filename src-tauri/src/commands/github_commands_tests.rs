@@ -1,16 +1,24 @@
+use std::process::Command;
 use std::sync::Arc;
 
 use tauri::Manager;
 
 use super::github_commands::{
-    get_github_connection_status, get_pull_request_detail, GetPullRequestDetailInput,
-    GithubConnectionStatusResponse,
+    get_github_branch_overview, get_github_connection_status, get_pull_request_detail,
+    GetGithubBranchOverviewInput, GetPullRequestDetailInput, GithubConnectionStatusResponse,
 };
 use crate::application::pull_request_detail::types::PullRequestDetailState;
 use crate::application::AppState;
-use crate::domain::entities::Project;
-use crate::domain::services::github_service::{GithubConnectionStatus, GithubServiceTrait};
+use crate::domain::entities::{
+    AgentConversationJiraIssueLink, AgentConversationWorkspace, AgentConversationWorkspaceMode,
+    ChatConversation, IdeationAnalysisBaseRefKind, Project,
+};
+use crate::domain::services::github_service::{
+    GithubConnectionStatus, GithubServiceTrait, PrBranchMatch, PrSearchResult, PrStatus,
+};
+use crate::infrastructure::tool_paths::resolve_git_cli_path;
 use crate::tests::mock_github_service::MockGithubService;
+use crate::utils::path_safety::validate_absolute_non_root_path;
 
 fn test_app(state: AppState) -> tauri::App<tauri::test::MockRuntime> {
     tauri::test::mock_builder()
@@ -107,4 +115,229 @@ async fn get_pull_request_detail_builds_deps_and_returns_typed_payload() {
     .expect("command should not fail");
 
     assert_eq!(detail.state, PullRequestDetailState::RepoUnresolvable);
+}
+
+#[tokio::test]
+async fn get_github_branch_overview_lists_pr_rx_and_ticket_indicators() {
+    let test_root = validate_absolute_non_root_path(
+        &std::env::current_dir().expect("current checkout should be available"),
+        "test checkout",
+    )
+    .expect("current checkout should be a safe path");
+    let temp_dir = tempfile::Builder::new()
+        .prefix("github-branch-overview-")
+        .tempdir_in(test_root)
+        .expect("tempdir should be created");
+    let repo = validate_absolute_non_root_path(temp_dir.path(), "test git repository")
+        .expect("temp repo should be a safe path");
+    let readme_path =
+        validate_absolute_non_root_path(&repo.join("README.md"), "test repository README")
+            .expect("README path should be safe");
+    Command::new(resolve_git_cli_path())
+        .args(["init", "-b", "main"])
+        .current_dir(&repo)
+        .output()
+        .expect("git init should run");
+    Command::new(resolve_git_cli_path())
+        .args(["config", "user.email", "test@example.com"])
+        .current_dir(&repo)
+        .output()
+        .expect("git config should run");
+    Command::new(resolve_git_cli_path())
+        .args(["config", "user.name", "Test User"])
+        .current_dir(&repo)
+        .output()
+        .expect("git config should run");
+    std::fs::write(&readme_path, "base\n").expect("fixture should be written");
+    Command::new(resolve_git_cli_path())
+        .args(["add", "."])
+        .current_dir(&repo)
+        .output()
+        .expect("git add should run");
+    Command::new(resolve_git_cli_path())
+        .args(["commit", "-m", "base"])
+        .current_dir(&repo)
+        .output()
+        .expect("git commit should run");
+    Command::new(resolve_git_cli_path())
+        .args(["branch", "feature/alpha"])
+        .current_dir(&repo)
+        .output()
+        .expect("git branch should run");
+    Command::new(resolve_git_cli_path())
+        .args(["branch", "feature/merged"])
+        .current_dir(&repo)
+        .output()
+        .expect("git merged branch should run");
+    Command::new(resolve_git_cli_path())
+        .args(["branch", "ralphx/ticket/clickup-cu-1"])
+        .current_dir(&repo)
+        .output()
+        .expect("git clickup ticket branch should run");
+
+    let github = Arc::new(MockGithubService::new());
+    github.will_return_pull_request_search(vec![
+        PrSearchResult {
+            number: 9,
+            title: "Alpha PR".to_string(),
+            url: "https://github.com/aigentive/ralphx.app/pull/9".to_string(),
+            head_ref_name: "feature/alpha".to_string(),
+            head_ref_oid: None,
+            base_ref_name: "main".to_string(),
+            is_draft: false,
+            updated_at: Some("2026-06-28T08:00:00Z".to_string()),
+            author_login: Some("reefagent".to_string()),
+            is_cross_repository: false,
+        },
+        PrSearchResult {
+            number: 10,
+            title: "Remote-only PR".to_string(),
+            url: "https://github.com/aigentive/ralphx.app/pull/10".to_string(),
+            head_ref_name: "feature/pr-only".to_string(),
+            head_ref_oid: None,
+            base_ref_name: "main".to_string(),
+            is_draft: true,
+            updated_at: None,
+            author_login: None,
+            is_cross_repository: false,
+        },
+    ]);
+    github.set_find_latest_pr_by_head_branch(Ok(Some(PrBranchMatch {
+        number: 11,
+        url: "https://github.com/aigentive/ralphx.app/pull/11".to_string(),
+        status: PrStatus::Merged {
+            merge_commit_sha: Some("abc123".to_string()),
+        },
+        is_draft: false,
+        head_ref_name: "feature/merged".to_string(),
+        updated_at: Some("2026-06-27T08:00:00Z".to_string()),
+    })));
+
+    let mut state = AppState::new_test();
+    state.github_service = Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>);
+    let project = state
+        .project_repo
+        .create(Project::new(
+            "Branch Overview".to_string(),
+            repo.to_string_lossy().to_string(),
+        ))
+        .await
+        .expect("project should seed");
+    let mut conversation = ChatConversation::new_project(project.id.clone());
+    conversation.set_title("Alpha branch work");
+    let conversation = state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("conversation should be created");
+    let mut workspace = AgentConversationWorkspace::new(
+        conversation.id,
+        project.id.clone(),
+        AgentConversationWorkspaceMode::Edit,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("Current branch (main)".to_string()),
+        None,
+        "feature/alpha".to_string(),
+        repo.join(".ralphx-test-worktree")
+            .to_string_lossy()
+            .to_string(),
+    );
+    workspace.publication_pr_number = Some(8);
+    workspace.publication_pr_status = Some("closed".to_string());
+    state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should be created");
+    state
+        .agent_conversation_jira_issue_repo
+        .upsert({
+            let mut link = AgentConversationJiraIssueLink::new(
+                conversation.id,
+                project.id.clone(),
+                "RX-77".to_string(),
+                chrono::Utc::now(),
+            );
+            link.title = Some("Jira branch ticket".to_string());
+            link.issue_url = Some("https://example.atlassian.net/browse/RX-77".to_string());
+            link
+        })
+        .await
+        .expect("jira link should be created");
+
+    let app = test_app(state);
+    let overview = get_github_branch_overview(
+        GetGithubBranchOverviewInput {
+            project_id: project.id.0,
+        },
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("overview should load");
+
+    assert_eq!(overview.current_branch.as_deref(), Some("main"));
+    assert!(overview.sources_unavailable.is_empty());
+    let alpha = overview
+        .branches
+        .iter()
+        .find(|branch| branch.branch_name == "feature/alpha")
+        .expect("feature branch row should exist");
+    assert_eq!(alpha.pr_number, Some(9));
+    assert_eq!(alpha.pr_title.as_deref(), Some("Alpha PR"));
+    assert_eq!(alpha.pr_status.as_deref(), Some("open"));
+    assert_eq!(alpha.rx_conversation_count, 1);
+    assert_eq!(alpha.rx_conversations.len(), 1);
+    assert_eq!(
+        alpha.rx_conversations[0].title.as_deref(),
+        Some("Alpha branch work")
+    );
+    assert_eq!(alpha.ticket_count, 1);
+    assert_eq!(alpha.ticket_labels, vec!["Jira RX-77"]);
+    assert_eq!(alpha.ticket_links.len(), 1);
+    assert_eq!(alpha.ticket_links[0].provider, "jira");
+    assert_eq!(
+        alpha.ticket_links[0].url.as_deref(),
+        Some("https://example.atlassian.net/browse/RX-77")
+    );
+
+    let pr_only = overview
+        .branches
+        .iter()
+        .find(|branch| branch.branch_name == "feature/pr-only")
+        .expect("GitHub-only PR branch row should exist");
+    assert_eq!(pr_only.pr_number, Some(10));
+    assert_eq!(pr_only.pr_status.as_deref(), Some("draft"));
+    assert_eq!(pr_only.rx_conversation_count, 0);
+    assert_eq!(pr_only.ticket_count, 0);
+
+    let merged = overview
+        .branches
+        .iter()
+        .find(|branch| branch.branch_name == "feature/merged")
+        .expect("merged local PR branch row should exist");
+    assert_eq!(merged.pr_number, Some(11));
+    assert_eq!(merged.pr_status.as_deref(), Some("merged"));
+
+    let main = overview
+        .branches
+        .iter()
+        .find(|branch| branch.branch_name == "main")
+        .expect("main branch row should exist");
+    assert!(main.is_current);
+
+    let clickup = overview
+        .branches
+        .iter()
+        .find(|branch| branch.branch_name == "ralphx/ticket/clickup-cu-1")
+        .expect("ClickUp canonical ticket branch row should exist");
+    assert_eq!(clickup.ticket_count, 1);
+    assert_eq!(clickup.ticket_labels, vec!["ClickUp cu-1"]);
+    assert_eq!(clickup.ticket_links[0].provider, "clickup");
+    assert!(clickup.ticket_links[0].url.is_none());
+
+    assert_eq!(
+        github.state().last_search_pull_requests_args,
+        Some((None, 50))
+    );
 }

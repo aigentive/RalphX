@@ -408,6 +408,7 @@ macro_rules! register_tauri_commands {
             commands::git_commands::cleanup_task_branch,
             commands::git_commands::change_project_git_mode,
             // GitHub commands (PR visibility — connection status + PR detail)
+            commands::github_commands::get_github_branch_overview,
             commands::github_commands::get_github_connection_status,
             commands::github_commands::get_pull_request_detail,
             // Plan branch commands (Phase 85 - Feature branch for plan groups)
