@@ -8,7 +8,7 @@ use super::agent_workspace_pr_description::{
     MAX_STAT_CHARS,
 };
 use super::plan_pr_description::{
-    build_plan_pr_describer_prompt, read_pr_template, AppStatePlanPrDescriptionDrafter,
+    build_app_state_plan_pr_description_drafter, build_plan_pr_describer_prompt, read_pr_template,
 };
 use crate::domain::agents::{
     AgentConfig, AgentHandle, AgentOutput, AgentResponse, AgentResult, AgenticClient,
@@ -203,12 +203,12 @@ fn project_and_plan_branch(repo_path: &Path) -> (Project, PlanBranch) {
 async fn build_drafter(
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     agent_client: Arc<dyn AgenticClient>,
-) -> AppStatePlanPrDescriptionDrafter {
+) -> Arc<dyn PlanPrDescriptionDrafter> {
     let provider_repo: Arc<dyn AgentProviderSettingsRepository> = Arc::new(
         MemoryAgentProviderSettingsRepository::with_all_providers_enabled(DEFAULT_AGENT_HARNESS),
     );
     let agent_clients = AgentClientBundle::from_default_client(DEFAULT_AGENT_HARNESS, agent_client);
-    AppStatePlanPrDescriptionDrafter::new(workspace_repo, provider_repo, agent_clients)
+    build_app_state_plan_pr_description_drafter(workspace_repo, provider_repo, agent_clients)
 }
 
 #[tokio::test]

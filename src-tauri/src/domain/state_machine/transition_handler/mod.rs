@@ -73,9 +73,9 @@ pub(crate) use merge_helpers::{
     get_trigger_origin, has_branch_missing_metadata, has_main_merge_deferred_metadata,
     has_merge_deferred_metadata, is_commit_hook_merge_error_text, is_main_merge_deferred_timed_out,
     is_merge_deferred_timed_out, is_merge_worktree_path, is_repeated_commit_hook_failure,
-    merge_metadata_into, plan_branch_has_reviewable_diff, plan_regular_tasks_complete,
-    resolve_plan_branch_pr_base, restore_task_worktree, set_conflict_metadata,
-    set_source_conflict_resolved, sync_plan_branch_pr_if_needed,
+    draft_plan_pr_description_for_write, merge_metadata_into, plan_branch_has_reviewable_diff,
+    plan_regular_tasks_complete, resolve_plan_branch_pr_base, restore_task_worktree,
+    set_conflict_metadata, set_source_conflict_resolved, sync_plan_branch_pr_if_needed,
     task_has_commit_hook_merge_failure, CommitHookFailureKind, PlanBranchPrSyncServices,
 };
 #[doc(hidden)]

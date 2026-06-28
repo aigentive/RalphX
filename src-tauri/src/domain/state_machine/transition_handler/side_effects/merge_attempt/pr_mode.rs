@@ -4,7 +4,7 @@ use crate::domain::entities::plan_branch::PrPushStatus;
 use crate::domain::services::{PlanPrPublisher, PrReviewState};
 use crate::domain::state_machine::{State, TransitionHandler};
 use crate::domain::state_machine::transition_handler::{
-    resolve_plan_branch_pr_base, TaskCore,
+    draft_plan_pr_description_for_write, resolve_plan_branch_pr_base, TaskCore,
 };
 
 impl<'a> TransitionHandler<'a> {
@@ -81,18 +81,17 @@ impl<'a> TransitionHandler<'a> {
         let branch_name = plan_branch.branch_name.clone();
 
         // 5.5. Draft PR description via describer agent before any PR body write.
-        let pr_description_result = if let Some(ref drafter) =
-            self.machine.context.services.plan_pr_description_drafter
-        {
-            let review_base = resolve_plan_branch_pr_base(project, &plan_branch);
-            drafter
-                .draft_plan_description(project, &plan_branch, &review_base, PrReviewState::Ready)
-                .await
-        } else {
-            Err(crate::error::AppError::Infrastructure(
-                "plan PR describer is not configured".to_string(),
-            ))
-        };
+        let pr_description_result = draft_plan_pr_description_for_write(
+            project,
+            &plan_branch,
+            self.machine
+                .context
+                .services
+                .plan_pr_description_drafter
+                .as_ref(),
+            PrReviewState::Ready,
+        )
+        .await;
 
         // 6. Perform PR operation: push branch and mark PR ready (or create PR if missing)
         let pr_op_result: Result<i64, crate::error::AppError> = if let Err(e) = pr_description_result.as_ref() {

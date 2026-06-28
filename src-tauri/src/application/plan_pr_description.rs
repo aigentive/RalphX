@@ -18,8 +18,7 @@ use crate::domain::agents::{
 };
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentWorkspacePrDescription,
-    ChatConversationId,
-    IdeationAnalysisBaseRefKind, PlanBranch, Project,
+    ChatConversationId, IdeationAnalysisBaseRefKind, PlanBranch, Project,
 };
 use crate::domain::repositories::AgentConversationWorkspaceRepository;
 use crate::domain::repositories::AgentProviderSettingsRepository;
@@ -46,6 +45,18 @@ impl AppStatePlanPrDescriptionDrafter {
             agent_clients,
         }
     }
+}
+
+pub(crate) fn build_app_state_plan_pr_description_drafter(
+    agent_conversation_workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    agent_provider_settings_repo: Arc<dyn AgentProviderSettingsRepository>,
+    agent_clients: AgentClientBundle,
+) -> Arc<dyn PlanPrDescriptionDrafter> {
+    Arc::new(AppStatePlanPrDescriptionDrafter::new(
+        agent_conversation_workspace_repo,
+        agent_provider_settings_repo,
+        agent_clients,
+    ))
 }
 
 #[async_trait]

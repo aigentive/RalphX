@@ -2232,21 +2232,14 @@ impl<R: Runtime> TaskTransitionService<R> {
             .await?
             .unwrap_or_else(|| plan_branch.clone());
 
-        let pr_description = if let Some(ref drafter) = self.plan_pr_description_drafter {
-            let review_base = crate::domain::state_machine::transition_handler::resolve_plan_branch_pr_base(project, &refreshed_plan_branch);
-            drafter
-                .draft_plan_description(
-                    project,
-                    &refreshed_plan_branch,
-                    &review_base,
-                    PrReviewState::Ready,
-                )
-                .await?
-        } else {
-            return Err(AppError::Infrastructure(
-                "plan PR describer is not configured".to_string(),
-            ));
-        };
+        let pr_description =
+            crate::domain::state_machine::transition_handler::draft_plan_pr_description_for_write(
+                project,
+                &refreshed_plan_branch,
+                self.plan_pr_description_drafter.as_ref(),
+                PrReviewState::Ready,
+            )
+            .await?;
 
         let publisher = PlanPrPublisher::new(
             github_service,

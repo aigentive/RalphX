@@ -171,6 +171,84 @@ impl PlanPrDescriptionDrafter for StaticPlanPrDescriptionDrafter {
     }
 }
 
+#[tokio::test]
+async fn draft_plan_pr_description_for_write_uses_resolved_base() {
+    let mut project = Project::new(
+        "PR mode project".to_string(),
+        "/tmp/pr-mode-test".to_string(),
+    );
+    project.id = ProjectId::from_string("proj-1".to_string());
+    project.base_branch = Some("develop".to_string());
+
+    let mut plan_branch = make_plan_branch(
+        "artifact-1",
+        "plan/feature-branch",
+        PlanBranchStatus::Active,
+        None,
+    );
+    plan_branch.base_branch_override = Some("release/2026-06".to_string());
+
+    let drafter = Arc::new(StaticPlanPrDescriptionDrafter::default());
+    let drafter_trait: Arc<dyn PlanPrDescriptionDrafter> = drafter.clone();
+    let description = super::super::merge_helpers::draft_plan_pr_description_for_write(
+        &project,
+        &plan_branch,
+        Some(&drafter_trait),
+        PrReviewState::Ready,
+    )
+    .await
+    .expect("description should be drafted");
+
+    assert_eq!(
+        description.body_markdown,
+        "## Summary\n\nDrafted by plan PR describer"
+    );
+    let calls = drafter
+        .calls
+        .lock()
+        .expect("drafter calls lock should not be poisoned")
+        .clone();
+    assert_eq!(
+        calls,
+        vec![(
+            "plan/feature-branch".to_string(),
+            "release/2026-06".to_string()
+        )],
+        "drafter should receive the branch-specific PR base"
+    );
+}
+
+#[tokio::test]
+async fn draft_plan_pr_description_for_write_requires_configured_drafter() {
+    let mut project = Project::new(
+        "PR mode project".to_string(),
+        "/tmp/pr-mode-test".to_string(),
+    );
+    project.id = ProjectId::from_string("proj-1".to_string());
+    let plan_branch = make_plan_branch(
+        "artifact-1",
+        "plan/feature-branch",
+        PlanBranchStatus::Active,
+        None,
+    );
+
+    let result = super::super::merge_helpers::draft_plan_pr_description_for_write(
+        &project,
+        &plan_branch,
+        None,
+        PrReviewState::Draft,
+    )
+    .await;
+
+    match result {
+        Err(AppError::Infrastructure(message)) => {
+            assert_eq!(message, "plan PR describer is not configured");
+        }
+        Err(other) => panic!("expected infrastructure error, got {other:?}"),
+        Ok(_) => panic!("missing drafter should fail closed"),
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Test 1: PR-mode with existing pr_number → push_branch + mark_pr_ready
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1255,9 +1333,7 @@ async fn test_regular_plan_task_completion_updates_existing_pr_as_draft_when_pla
             github_service: Some(Arc::clone(&mock_github) as Arc<dyn GithubServiceTrait>),
             ideation_session_repo: None,
             artifact_repo: None,
-            plan_pr_description_drafter: Some(Arc::new(
-                StaticPlanPrDescriptionDrafter::default(),
-            )),
+            plan_pr_description_drafter: Some(Arc::new(StaticPlanPrDescriptionDrafter::default())),
         },
     )
     .await;
