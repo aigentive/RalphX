@@ -359,6 +359,8 @@ fn managed_probe_error_falls_back_to_purpose_and_provider() {
         cli_version: None,
         supported_model_aliases: None,
         supported_efforts: None,
+        supports_fast_mode: false,
+        fast_mode_supported_models: Vec::new(),
         error: None,
     };
 

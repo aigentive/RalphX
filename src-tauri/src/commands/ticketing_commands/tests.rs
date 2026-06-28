@@ -5,19 +5,18 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use async_trait::async_trait;
 use crate::application::clickup_integration_service::ClickUpAttachment;
 use crate::application::linear_integration_service::LinearAttachment;
 use crate::application::{
-    AtlassianApiClient, AtlassianAuthContext, AtlassianConnectivity, AtlassianIntegrationService,
-    AtlassianOAuthResource, AtlassianOAuthTokenResponse, AppState, AtlassianJiraAttachment,
-    AtlassianJiraComment, ClickUpComment, ClickUpSpace, ClickUpStatus, ClickUpTaskContent,
-    ClickUpTaskSummary, ClickUpUser, JiraIssueDetail, JiraProjectSummary, JiraStatusSummary,
-    AtlassianResourceContent, AtlassianResourceKind, AtlassianResourceSummary,
-    LinearApiClient, LinearAuthContext, LinearIntegrationService, LinearIntegrationSettings,
-    LinearIntegrationSettingsRepository, LinearIssueContent, LinearIssueSummary, LinearProject,
-    TeamService, TeamStateTracker, TicketingLabelResult, TicketingMutationResult,
-    TicketingTicketIdentity, TicketingTransitionOption,
+    AppState, AtlassianApiClient, AtlassianAuthContext, AtlassianConnectivity,
+    AtlassianIntegrationService, AtlassianJiraAttachment, AtlassianJiraComment,
+    AtlassianOAuthResource, AtlassianOAuthTokenResponse, AtlassianResourceContent,
+    AtlassianResourceKind, AtlassianResourceSummary, ClickUpComment, ClickUpSpace, ClickUpStatus,
+    ClickUpTaskContent, ClickUpTaskSummary, ClickUpUser, JiraIssueDetail, JiraProjectSummary,
+    JiraStatusSummary, LinearApiClient, LinearAuthContext, LinearIntegrationService,
+    LinearIntegrationSettings, LinearIntegrationSettingsRepository, LinearIssueContent,
+    LinearIssueSummary, LinearProject, TeamService, TeamStateTracker, TicketingLabelResult,
+    TicketingMutationResult, TicketingTicketIdentity, TicketingTransitionOption,
 };
 use crate::commands::unified_chat_commands::StartAgentConversationInput;
 use crate::commands::ExecutionState;
@@ -36,6 +35,7 @@ use crate::infrastructure::memory::{
     MemorySecretStore,
 };
 use crate::tests::mock_github_service::MockGithubService;
+use async_trait::async_trait;
 use tauri::test::{mock_builder, mock_context, noop_assets};
 use tauri::Manager;
 
@@ -955,14 +955,10 @@ fn linear_issue_summary(
 #[tokio::test]
 async fn list_ticketing_containers_uses_expanded_provider_limits() {
     let linear_client = Arc::new(FakeLinearTicketingClient::default());
-    linear_client
-        .projects
-        .lock()
-        .unwrap()
-        .push(LinearProject {
-            id: "linear-project-1".to_string(),
-            name: "Linear Project".to_string(),
-        });
+    linear_client.projects.lock().unwrap().push(LinearProject {
+        id: "linear-project-1".to_string(),
+        name: "Linear Project".to_string(),
+    });
     let atlassian_client = Arc::new(FakeAtlassianTicketingClient::default());
     atlassian_client
         .projects
@@ -997,11 +993,7 @@ async fn list_ticketing_containers_uses_expanded_provider_limits() {
         &[TICKETING_CONTAINER_LIMIT]
     );
     assert_eq!(
-        linear_client
-            .list_projects_first
-            .lock()
-            .unwrap()
-            .as_slice(),
+        linear_client.list_projects_first.lock().unwrap().as_slice(),
         &[TICKETING_CONTAINER_LIMIT]
     );
 }
@@ -2212,6 +2204,7 @@ fn ticket_start_input(
             provider_harness: None,
             model_override: None,
             logical_effort: None,
+            codex_fast_mode: None,
             mode: Some("chat".to_string()),
             base_ref_kind: None,
             base_ref: None,
@@ -2366,6 +2359,7 @@ async fn start_agent_conversation_with_ticket_default_base_uses_canonical_branch
         provider_harness: None,
         model_override: None,
         logical_effort: None,
+        codex_fast_mode: None,
         mode: Some("edit".to_string()),
         base_ref_kind: Some("project_default".to_string()),
         base_ref: Some("main".to_string()),
@@ -2788,6 +2782,7 @@ fn base_test_start_input() -> StartAgentConversationInput {
         provider_harness: None,
         model_override: None,
         logical_effort: None,
+        codex_fast_mode: None,
         mode: Some("edit".to_string()),
         base_ref_kind: Some("project_default".to_string()),
         base_ref: Some("client-supplied-branch".to_string()),

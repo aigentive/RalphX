@@ -153,6 +153,8 @@ pub struct AgentRunAttribution {
     pub logical_effort: Option<LogicalEffort>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effective_effort: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<String>,
 }
 
 impl AgentRunUsage {
@@ -209,6 +211,9 @@ pub struct AgentRun {
     /// Resolved provider-specific effort actually used.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effective_effort: Option<String>,
+    /// Provider service tier used for this run (for example Codex fast mode).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<String>,
     /// Provider input tokens attributed to this run.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input_tokens: Option<u64>,
@@ -258,6 +263,7 @@ impl AgentRun {
             effective_model_id: None,
             logical_effort: None,
             effective_effort: None,
+            service_tier: None,
             input_tokens: None,
             output_tokens: None,
             cache_creation_tokens: None,
@@ -291,6 +297,7 @@ impl AgentRun {
             effective_model_id: None,
             logical_effort: None,
             effective_effort: None,
+            service_tier: None,
             input_tokens: None,
             output_tokens: None,
             cache_creation_tokens: None,
@@ -366,6 +373,9 @@ impl AgentRun {
         }
         if let Some(value) = attribution.effective_effort.as_ref() {
             self.effective_effort = Some(value.clone());
+        }
+        if let Some(value) = attribution.service_tier.as_ref() {
+            self.service_tier = Some(value.clone());
         }
     }
 

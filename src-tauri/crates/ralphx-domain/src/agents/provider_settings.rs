@@ -53,6 +53,8 @@ pub struct AgentProviderSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox_mode: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claude_permission_mode: Option<String>,
     pub claude_dangerously_skip_permissions: bool,
     pub claude_allow_dangerously_skip_permissions: bool,
@@ -78,6 +80,7 @@ impl AgentProviderSettings {
             effort: Some(default_effort_for_provider(provider)),
             approval_policy: default_approval_policy(provider).map(str::to_string),
             sandbox_mode: default_sandbox_mode(provider).map(str::to_string),
+            service_tier: None,
             claude_permission_mode: default_claude_permission_mode(provider).map(str::to_string),
             claude_dangerously_skip_permissions: match provider {
                 AgentHarnessKind::Claude => CLAUDE_DEFAULT_DANGEROUSLY_SKIP_PERMISSIONS,

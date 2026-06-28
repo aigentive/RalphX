@@ -312,6 +312,8 @@ vi.mock("@/hooks/useHarnessProviders", () => ({
         error: null,
         missingCoreExecFeatures: [],
         supportedEfforts: ["low", "medium", "high", "max"],
+        supportsFastMode: false,
+        fastModeSupportedModels: [],
         updatedAt: "2026-05-16T00:00:00.000Z",
       },
       {
@@ -332,6 +334,8 @@ vi.mock("@/hooks/useHarnessProviders", () => ({
         error: null,
         missingCoreExecFeatures: [],
         supportedEfforts: ["low", "medium", "high", "xhigh"],
+        supportsFastMode: true,
+        fastModeSupportedModels: ["gpt-5.5", "gpt-5.4"],
         updatedAt: "2026-05-16T00:00:00.000Z",
       },
     ],
@@ -1724,6 +1728,7 @@ describe("AgentsActiveConversationPanel", () => {
         providerHarness: "codex",
         modelId: "gpt-5.5",
         logicalEffort: "high",
+        codexFastMode: false,
         suppressUserMessage: true,
       },
     );
@@ -1818,6 +1823,7 @@ describe("AgentsActiveConversationPanel", () => {
           providerHarness: "codex",
           modelId: "gpt-5.5",
           logicalEffort: "high",
+          codexFastMode: false,
         },
       ),
     );

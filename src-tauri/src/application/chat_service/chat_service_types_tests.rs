@@ -21,6 +21,7 @@ fn agent_run_started_payload_serde_snake_case() {
         effective_model_label: Some("Sonnet 4.6".to_string()),
         provider_harness: Some("claude".to_string()),
         provider_session_id: Some("session-123".to_string()),
+        service_tier: None,
     };
 
     let value = serde_json::to_value(&payload).expect("serialization failed");
@@ -53,6 +54,7 @@ fn agent_run_started_payload_serde_skips_none_fields() {
         effective_model_label: None,
         provider_harness: None,
         provider_session_id: None,
+        service_tier: None,
     };
 
     let value = serde_json::to_value(&payload).expect("serialization failed");
@@ -263,11 +265,10 @@ fn message_render_ready_payload_handles_empty_and_text_timeline_items() {
     message.tool_calls = Some("not-json".to_string());
     message.content_blocks = Some("not-json".to_string());
 
-    assert!(AgentMessageRenderReadyPayload::from_message_and_timeline_items(
-        &message,
-        Vec::new()
-    )
-    .is_none());
+    assert!(
+        AgentMessageRenderReadyPayload::from_message_and_timeline_items(&message, Vec::new())
+            .is_none()
+    );
 
     let mut item = ChatTimelineItem::for_message_block(
         message_id,
@@ -290,7 +291,13 @@ fn message_render_ready_payload_handles_empty_and_text_timeline_items() {
     assert!(value["message"]["content_blocks"].is_null());
     assert_eq!(value["timeline_items"][0]["kind"], "text");
     assert_eq!(value["timeline_items"][0]["content"], "Done");
-    assert_eq!(value["timeline_items"][0]["content_blocks"][0]["type"], "text");
-    assert_eq!(value["timeline_items"][0]["content_blocks"][0]["text"], "Done");
+    assert_eq!(
+        value["timeline_items"][0]["content_blocks"][0]["type"],
+        "text"
+    );
+    assert_eq!(
+        value["timeline_items"][0]["content_blocks"][0]["text"],
+        "Done"
+    );
     assert!(value["timeline_items"][0]["tool_call"].is_null());
 }

@@ -86,6 +86,8 @@ const settings: AgentProvidersSettingsResponse = {
       status: "Available codex detected at /opt/homebrew/bin/codex.",
       error: null,
       missingCoreExecFeatures: [],
+      supportsFastMode: true,
+      fastModeSupportedModels: ["gpt-5.5", "gpt-5.4"],
       updatedAt: providerUpdatedAt,
     },
     {
@@ -111,6 +113,8 @@ const settings: AgentProvidersSettingsResponse = {
       status: "Claude CLI not found",
       error: "Claude CLI not found",
       missingCoreExecFeatures: [],
+      supportsFastMode: false,
+      fastModeSupportedModels: [],
       updatedAt: providerUpdatedAt,
     },
   ],
@@ -356,6 +360,31 @@ describe("HarnessProvidersSection", () => {
       provider: "codex",
       enabled: false,
     });
+  });
+
+  it("disables Codex Fast mode when the provider does not advertise support", () => {
+    mockProviders({
+      ...settings,
+      providers: settings.providers.map((provider) =>
+        provider.provider === "codex"
+          ? {
+              ...provider,
+              supportsFastMode: false,
+              fastModeSupportedModels: [],
+            }
+          : provider,
+      ),
+    });
+
+    render(<HarnessProvidersSection />);
+
+    const codexCard = screen.getByTestId("provider-card-codex");
+    expect(
+      within(codexCard).getByText(
+        "Fast mode is not available for this Codex CLI or model catalog.",
+      ),
+    ).toBeInTheDocument();
+    expect(within(codexCard).getByLabelText("Fast mode")).toBeDisabled();
   });
 
   it("updates managed CLI and auto-update policy controls", async () => {

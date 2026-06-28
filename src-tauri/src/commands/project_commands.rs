@@ -742,6 +742,7 @@ pub async fn spawn_project_analyzer(
         logical_effort: runtime.logical_effort,
         approval_policy: runtime.approval_policy,
         sandbox_mode: runtime.sandbox_mode,
+        service_tier: runtime.service_tier,
         max_tokens: None,
         timeout_secs: Some(120),
         env,
@@ -1665,12 +1666,9 @@ mod git_auth_command_tests {
             .build(mock_context(noop_assets()))
             .expect("mock app should build");
 
-        let result = get_git_remote_url(
-            "project-remote-test".to_string(),
-            app.state::<AppState>(),
-        )
-        .await
-        .expect("get_git_remote_url should succeed with missing remote");
+        let result = get_git_remote_url("project-remote-test".to_string(), app.state::<AppState>())
+            .await
+            .expect("get_git_remote_url should succeed with missing remote");
         assert!(result.is_none());
 
         Command::new(resolve_git_cli_path())
@@ -1684,12 +1682,9 @@ mod git_auth_command_tests {
             .output()
             .expect("git remote add should run");
 
-        let gitlab = get_git_remote_url(
-            "project-remote-test".to_string(),
-            app.state::<AppState>(),
-        )
-        .await
-        .expect("get_git_remote_url should succeed for non-github remote");
+        let gitlab = get_git_remote_url("project-remote-test".to_string(), app.state::<AppState>())
+            .await
+            .expect("get_git_remote_url should succeed for non-github remote");
         assert!(gitlab.is_none());
 
         Command::new(resolve_git_cli_path())
@@ -1703,12 +1698,9 @@ mod git_auth_command_tests {
             .output()
             .expect("git remote set-url should run");
 
-        let github = get_git_remote_url(
-            "project-remote-test".to_string(),
-            app.state::<AppState>(),
-        )
-        .await
-        .expect("get_git_remote_url should succeed for github remote");
+        let github = get_git_remote_url("project-remote-test".to_string(), app.state::<AppState>())
+            .await
+            .expect("get_git_remote_url should succeed for github remote");
         assert_eq!(
             github,
             Some("https://github.com/aigentive/test-repo.git".to_string())
@@ -1726,7 +1718,12 @@ mod git_auth_command_tests {
             .expect("git init should run");
 
         Command::new(resolve_git_cli_path())
-            .args(["remote", "add", "origin", "https://bitbucket.org/aigentive/test-repo.git"])
+            .args([
+                "remote",
+                "add",
+                "origin",
+                "https://bitbucket.org/aigentive/test-repo.git",
+            ])
             .current_dir(repo)
             .output()
             .expect("git remote add should run");
@@ -1741,11 +1738,9 @@ mod git_auth_command_tests {
             .build(mock_context(noop_assets()))
             .expect("mock app should build");
 
-        let result = switch_git_origin_to_ssh(
-            "project-remote-switch".to_string(),
-            app.state::<AppState>(),
-        )
-        .await;
+        let result =
+            switch_git_origin_to_ssh("project-remote-switch".to_string(), app.state::<AppState>())
+                .await;
 
         let error = result.expect_err("non-github remote should not be convertible");
         assert!(
@@ -1764,8 +1759,7 @@ mod git_auth_command_tests {
             .await
             .expect_err("command should fail when current dir is missing");
         assert!(
-            error.contains("Failed to spawn git")
-                || error.contains("git config command timed out"),
+            error.contains("Failed to spawn git") || error.contains("git config command timed out"),
             "expected spawn or timeout failure, got {error}"
         );
     }

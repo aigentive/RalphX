@@ -224,6 +224,7 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
       providerHarness?: string | null | undefined;
       providerSessionId?: string | null | undefined;
       claudeSessionId?: string | null | undefined;
+      serviceTier?: string | null | undefined;
     }) {
       const {
         conversationId,
@@ -232,6 +233,7 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
         providerHarness,
         providerSessionId,
         claudeSessionId,
+        serviceTier,
       } = args;
 
       const mergeConversation = (conversation: ChatConversation): ChatConversation =>
@@ -239,6 +241,7 @@ export function useAgentEvents(activeConversationId: string | null, storeKey?: s
           providerHarness,
           providerSessionId,
           claudeSessionId,
+          serviceTier,
         });
 
       queryClient.setQueryData<ConversationQueryData>(

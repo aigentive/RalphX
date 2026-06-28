@@ -371,6 +371,9 @@ mod v20260625153000_agent_conversation_issues_tests;
 mod v20260626092500_custom_provider_env_file;
 #[cfg(test)]
 mod v20260626092500_custom_provider_env_file_tests;
+mod v20260626191358_codex_service_tier_settings;
+#[cfg(test)]
+mod v20260626191358_codex_service_tier_settings_tests;
 mod v20260627104500_agent_conversation_granola_note_links;
 #[cfg(test)]
 mod v20_merge_validation_mode_tests;
@@ -1281,6 +1284,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260626092500,
         name: "custom_provider_env_file",
         migrate: v20260626092500_custom_provider_env_file::migrate,
+    },
+    Migration {
+        version: 20260626191358,
+        name: "codex_service_tier_settings",
+        migrate: v20260626191358_codex_service_tier_settings::migrate,
     },
     Migration {
         version: 20260627104500,
