@@ -33,6 +33,7 @@ interface AgentsConversationMainRegionProps {
   onConversationModeSwitched: ActiveConversationPanelProps["onConversationModeSwitched"];
   onCreateProject: StartConversationPanelProps["onCreateProject"];
   onFocusIdeationSession: ActiveConversationPanelProps["onFocusIdeationSession"];
+  onFocusWorkspaceReview: ActiveConversationPanelProps["onFocusWorkspaceReview"];
   onFocusVerificationSession: ActiveConversationPanelProps["onFocusVerificationSession"];
   onFocusTaskRuntime: ActiveConversationPanelProps["onFocusTaskRuntime"];
   onOpenTaskArtifact: ActiveConversationPanelProps["onOpenTaskArtifact"];
@@ -86,6 +87,7 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
   onConversationModeSwitched,
   onCreateProject,
   onFocusIdeationSession,
+  onFocusWorkspaceReview,
   onFocusVerificationSession,
   onFocusTaskRuntime,
   onOpenTaskArtifact,
@@ -135,6 +137,7 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
         onAgentUserMessageSent={onAgentUserMessageSent}
         onConversationModeSwitched={onConversationModeSwitched}
         onFocusIdeationSession={onFocusIdeationSession}
+        onFocusWorkspaceReview={onFocusWorkspaceReview}
         onFocusVerificationSession={onFocusVerificationSession}
         onFocusTaskRuntime={onFocusTaskRuntime}
         onOpenTaskArtifact={onOpenTaskArtifact}

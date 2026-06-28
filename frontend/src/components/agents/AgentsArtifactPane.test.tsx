@@ -411,6 +411,7 @@ const workspaceReviewTarget = {
 };
 
 function workspaceReviewContext(overrides: {
+  conversationId?: string;
   target?: typeof workspaceReviewTarget | null;
   status?: "idle" | "ready" | "reviewing" | "blocked";
   reviewArtifactId?: string | null;
@@ -422,13 +423,15 @@ function workspaceReviewContext(overrides: {
 } = {}) {
   const target = overrides.target === undefined ? workspaceReviewTarget : overrides.target;
   const reviewArtifactId = overrides.reviewArtifactId ?? null;
+  const conversationId = overrides.conversationId ?? "conversation-1";
 
   return {
     success: true,
-    workspace: workspace({ mode: "edit" }),
+    workspace: workspace({ conversationId, mode: "edit" }),
     events: [],
     target,
     monitor: {
+      conversationId,
       status: overrides.status ?? "idle",
       reviewArtifactId,
       reviewArtifactVersion: overrides.reviewArtifactVersion ?? null,
@@ -518,6 +521,22 @@ function renderPane(
       </TooltipProvider>
     </QueryClientProvider>
   );
+}
+
+function artifactTabIds(tabRow: HTMLElement): string[] {
+  return Array.from(
+    tabRow.querySelectorAll("[data-testid^='agents-artifact-tab-']"),
+  ).map((tab) => tab.getAttribute("data-testid") ?? "");
+}
+
+function expectReviewImmediatelyBeforePublish(tabRow: HTMLElement) {
+  const ids = artifactTabIds(tabRow);
+  const reviewIndex = ids.indexOf("agents-artifact-tab-review");
+  const publishIndex = ids.indexOf("agents-artifact-tab-publish");
+
+  expect(reviewIndex).toBeGreaterThanOrEqual(0);
+  expect(publishIndex).toBeGreaterThanOrEqual(0);
+  expect(reviewIndex).toBe(publishIndex - 1);
 }
 
 function renderControlledPane(
@@ -1138,7 +1157,7 @@ describe("AgentsArtifactPane", () => {
     expect(screen.queryByTestId("agents-artifact-tab-tasks")).not.toBeInTheDocument();
   });
 
-  it("renders the Review artifact tab first for merged edit workspaces with reviewable PR changes", async () => {
+  it("renders the Review tab immediately before Commit & Publish for merged edit workspaces with reviewable PR changes", async () => {
     getWorkspaceReviewContextMock.mockResolvedValue(
       workspaceReviewContext({
         target: workspaceReviewTarget,
@@ -1160,11 +1179,9 @@ describe("AgentsArtifactPane", () => {
     );
 
     const tabRow = screen.getByTestId("agents-artifact-tab-row");
-    const reviewTab = await screen.findByTestId("agents-artifact-tab-review");
+    await screen.findByTestId("agents-artifact-tab-review");
 
-    expect(
-      tabRow.querySelector("[data-testid^='agents-artifact-tab-']"),
-    ).toBe(reviewTab);
+    expectReviewImmediatelyBeforePublish(tabRow);
     expect(screen.getByTestId("agents-artifact-tab-publish")).toBeInTheDocument();
     expect(screen.getByTestId("agents-publish-pane")).toBeInTheDocument();
   });
@@ -1298,6 +1315,32 @@ describe("AgentsArtifactPane", () => {
     expect(startWorkspaceReviewMock).not.toHaveBeenCalled();
   });
 
+  it("ignores Review state returned for another conversation", async () => {
+    const queryClient = createTestQueryClient();
+    queryClient.setQueryData(
+      agentWorkspaceKeys.workspaceReview("conversation-2"),
+      workspaceReviewContext({
+        conversationId: "conversation-1",
+        target: workspaceReviewTarget,
+        status: "reviewing",
+        shouldShowTab: true,
+      }),
+    );
+
+    renderPane(
+      "publish",
+      workspace({ conversationId: "conversation-2", mode: "edit" }),
+      vi.fn(),
+      false,
+      { ...conversation(), id: "conversation-2" },
+      {},
+      queryClient,
+    );
+
+    expect(screen.queryByTestId("agents-artifact-tab-review")).not.toBeInTheDocument();
+    expect(screen.queryByText("Review running")).not.toBeInTheDocument();
+  });
+
   it("offers a forced rerun for a current Review artifact without success toasts", async () => {
     getWorkspaceReviewContextMock.mockResolvedValue(
       workspaceReviewContext({
@@ -1341,12 +1384,66 @@ describe("AgentsArtifactPane", () => {
     expect(toastSuccessMock).not.toHaveBeenCalled();
   });
 
+  it("does not let stale completed start data override the current Review context", async () => {
+    getWorkspaceReviewContextMock.mockResolvedValue(
+      workspaceReviewContext({
+        target: workspaceReviewTarget,
+        status: "ready",
+        reviewArtifactId: "review-artifact-v2",
+        reviewArtifactVersion: 2,
+        isCurrent: true,
+        shouldShowTab: true,
+      }),
+    );
+    getArtifactMock.mockResolvedValue({
+      id: "review-artifact-v2",
+      type: "workspace_review",
+      name: "Workspace Review",
+      content: {
+        type: "inline",
+        text: "# Workspace Review\n\nCurrent v2 findings.",
+      },
+      metadata: {
+        createdAt: "2026-04-23T09:35:00Z",
+        createdBy: "ralphx-workspace-reviewer",
+        version: 2,
+      },
+      derivedFrom: [],
+      bucketId: "prd-library",
+    });
+    startWorkspaceReviewMock.mockResolvedValue(
+      workspaceReviewContext({
+        target: workspaceReviewTarget,
+        status: "reviewing",
+        reviewArtifactId: "review-artifact-v1",
+        reviewArtifactVersion: 1,
+        isOutdated: true,
+        shouldShowTab: true,
+      }),
+    );
+
+    renderPane("review", workspace({ mode: "edit" }), vi.fn(), false, conversation());
+
+    expect(await screen.findByText("Review is current")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Run again" }));
+
+    await waitFor(() =>
+      expect(startWorkspaceReviewMock).toHaveBeenCalledWith("conversation-1", {
+        force: true,
+      }),
+    );
+    expect(screen.getByText("Review is current")).toBeInTheDocument();
+    expect(screen.queryByText("Review running")).not.toBeInTheDocument();
+    expect(screen.queryByText("Review is outdated")).not.toBeInTheDocument();
+    expect(screen.queryByText(/The Review below is still available/)).not.toBeInTheDocument();
+  });
+
   it("offers a forced retry when Review is blocked", async () => {
     getWorkspaceReviewContextMock.mockResolvedValue(
       workspaceReviewContext({
         target: workspaceReviewTarget,
         status: "blocked",
-        lastError: "Reviewer sidecar failed",
+        lastError: "Reviewer child chat failed",
         shouldShowTab: true,
       }),
     );
@@ -1354,7 +1451,7 @@ describe("AgentsArtifactPane", () => {
     renderPane("review", workspace({ mode: "edit" }), vi.fn(), false, conversation());
 
     expect(await screen.findByText("Review blocked")).toBeInTheDocument();
-    expect(screen.getByText("Reviewer sidecar failed")).toBeInTheDocument();
+    expect(screen.getByText("Reviewer child chat failed")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Retry review" }));
 
     await waitFor(() =>
@@ -1410,7 +1507,7 @@ describe("AgentsArtifactPane", () => {
     expect(screen.getByTestId("agents-pr-auto-merge-switch")).toBeEnabled();
   });
 
-  it("renders the Review artifact tab first for Review PR workspaces", async () => {
+  it("renders the Review tab for Review PR workspaces without plan tabs", async () => {
     getPrReviewContextMock.mockResolvedValue({
       success: true,
       workspace: workspace({ mode: "review_pr" }),
@@ -1470,11 +1567,9 @@ describe("AgentsArtifactPane", () => {
     );
 
     const tabRow = screen.getByTestId("agents-artifact-tab-row");
-    const reviewTab = await screen.findByTestId("agents-artifact-tab-review");
+    await screen.findByTestId("agents-artifact-tab-review");
 
-    expect(
-      tabRow.querySelector("[data-testid^='agents-artifact-tab-']"),
-    ).toBe(reviewTab);
+    expect(artifactTabIds(tabRow)).toContain("agents-artifact-tab-review");
     expect(screen.queryByTestId("agents-artifact-tab-plan")).not.toBeInTheDocument();
     expect(await screen.findByText("PR Review")).toBeInTheDocument();
     expect(getPrReviewContextMock).toHaveBeenCalledWith("conversation-1");

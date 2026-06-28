@@ -210,6 +210,9 @@ fn row_to_workspace_review_monitor(
             .unwrap_or(AgentWorkspaceReviewMonitorStatus::Idle),
         current_target_scope,
         reviewed_target_scope,
+        review_conversation_id: row
+            .get::<_, Option<String>>("review_conversation_id")?
+            .map(ChatConversationId::from_string),
         review_artifact_id: row
             .get::<_, Option<String>>("review_artifact_id")?
             .map(ArtifactId::from_string),
@@ -790,8 +793,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
         &self,
         stale_older_than_secs: u64,
     ) -> AppResult<Vec<AgentConversationWorkspace>> {
-        let cutoff = (chrono::Utc::now()
-            - chrono::Duration::seconds(stale_older_than_secs as i64))
+        let cutoff = (chrono::Utc::now() - chrono::Duration::seconds(stale_older_than_secs as i64))
             .format("%Y-%m-%dT%H:%M:%S+00:00")
             .to_string();
         self.db
@@ -1568,6 +1570,10 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
         let status = monitor.status.to_string();
         let current_target_scope = monitor.current_target_scope.map(|scope| scope.to_string());
         let reviewed_target_scope = monitor.reviewed_target_scope.map(|scope| scope.to_string());
+        let review_conversation_id = monitor
+            .review_conversation_id
+            .as_ref()
+            .map(|id| id.as_str().to_string());
         let review_artifact_id = monitor
             .review_artifact_id
             .as_ref()
@@ -1603,7 +1609,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                 conn.execute(
                     "INSERT INTO agent_workspace_review_monitors (
                         conversation_id, project_id, status, current_target_scope,
-                        reviewed_target_scope, review_artifact_id,
+                        reviewed_target_scope, review_conversation_id, review_artifact_id,
                         review_artifact_version, review_artifact_updated_at,
                         reviewed_head_sha, reviewed_diff_fingerprint,
                         selected_source_base_ref, selected_source_base_sha,
@@ -1614,13 +1620,14 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         last_error, created_at, updated_at
                     ) VALUES (
                         ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-                        ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25
+                        ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26
                     )
                     ON CONFLICT(conversation_id) DO UPDATE SET
                         project_id = excluded.project_id,
                         status = excluded.status,
                         current_target_scope = excluded.current_target_scope,
                         reviewed_target_scope = excluded.reviewed_target_scope,
+                        review_conversation_id = COALESCE(excluded.review_conversation_id, agent_workspace_review_monitors.review_conversation_id),
                         review_artifact_id = COALESCE(excluded.review_artifact_id, agent_workspace_review_monitors.review_artifact_id),
                         review_artifact_version = COALESCE(excluded.review_artifact_version, agent_workspace_review_monitors.review_artifact_version),
                         review_artifact_updated_at = COALESCE(excluded.review_artifact_updated_at, agent_workspace_review_monitors.review_artifact_updated_at),
@@ -1646,6 +1653,7 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         status,
                         current_target_scope,
                         reviewed_target_scope,
+                        review_conversation_id,
                         review_artifact_id,
                         review_artifact_version,
                         review_artifact_updated_at,

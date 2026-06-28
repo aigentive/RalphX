@@ -2632,6 +2632,7 @@ describe("getConversationActiveState", () => {
     status: "ready",
     current_target_scope: "workspace_delta",
     reviewed_target_scope: "workspace_delta",
+    review_conversation_id: "review-conversation-1",
     review_artifact_id: "review-artifact-1",
     review_artifact_version: 2,
     review_artifact_updated_at: "2026-06-18T12:05:00Z",
@@ -2851,6 +2852,7 @@ describe("getConversationActiveState", () => {
     expect(result.target?.scope).toBe("workspace_delta");
     expect(result.target?.diffFingerprint).toBe("fingerprint-1");
     expect(result.monitor.reviewArtifactVersion).toBe(2);
+    expect(result.monitor.reviewConversationId).toBe("review-conversation-1");
     expect(result.monitor.previousVersionId).toBe("review-artifact-0");
     expect(result.isCurrent).toBe(true);
   });

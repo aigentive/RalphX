@@ -351,7 +351,7 @@ export function AgentWorkspacePrReviewCard({
                   color: "var(--text-secondary)",
                 }}
               >
-                Write the Review artifact for this PR head before submitting.
+                Write the Review for this PR head before submitting.
               </div>
             ) : null}
             {submitFailureMessage ? (
