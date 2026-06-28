@@ -1,3 +1,5 @@
+use std::collections::{BTreeMap, BTreeSet};
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tauri::State;
@@ -7,7 +9,8 @@ use crate::application::{
     GranolaNoteSummary,
 };
 use crate::domain::entities::{
-    AgentConversationGranolaNoteLink, ChatContextType, ChatConversationId, ProjectId,
+    AgentConversationGranolaNoteLink, AgentConversationWorkspace, ChatContextType,
+    ChatConversationId, ProjectId,
 };
 use crate::domain::integrations::GranolaIntegrationSettings;
 
@@ -53,6 +56,7 @@ pub struct SaveGranolaIntegrationSettingsInput {
 pub struct ListGranolaNotesInput {
     pub page_size: Option<usize>,
     pub cursor: Option<String>,
+    pub project_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -61,6 +65,37 @@ pub struct GetGranolaNoteDetailInput {
     pub note_id: String,
     #[serde(default)]
     pub include_transcript: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GranolaNoteRxConversationResponse {
+    pub conversation_id: String,
+    pub title: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GranolaNoteTicketLinkResponse {
+    pub provider: String,
+    pub label: String,
+    pub title: Option<String>,
+    pub url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GranolaNotePullRequestLinkResponse {
+    pub number: i64,
+    pub url: Option<String>,
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct GranolaNoteAssociations {
+    rx_conversations: Vec<GranolaNoteRxConversationResponse>,
+    ticket_links: Vec<GranolaNoteTicketLinkResponse>,
+    pull_requests: Vec<GranolaNotePullRequestLinkResponse>,
 }
 
 #[derive(Debug, Serialize)]
@@ -72,6 +107,12 @@ pub struct GranolaNoteSummaryResponse {
     pub summary: Option<String>,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
+    pub rx_conversation_count: usize,
+    pub rx_conversations: Vec<GranolaNoteRxConversationResponse>,
+    pub ticket_count: usize,
+    pub ticket_links: Vec<GranolaNoteTicketLinkResponse>,
+    pub pr_count: usize,
+    pub pull_requests: Vec<GranolaNotePullRequestLinkResponse>,
 }
 
 impl From<GranolaNoteSummary> for GranolaNoteSummaryResponse {
@@ -83,7 +124,25 @@ impl From<GranolaNoteSummary> for GranolaNoteSummaryResponse {
             summary: note.summary,
             created_at: note.created_at,
             updated_at: note.updated_at,
+            rx_conversation_count: 0,
+            rx_conversations: Vec::new(),
+            ticket_count: 0,
+            ticket_links: Vec::new(),
+            pr_count: 0,
+            pull_requests: Vec::new(),
         }
+    }
+}
+
+impl GranolaNoteSummaryResponse {
+    fn with_associations(mut self, associations: GranolaNoteAssociations) -> Self {
+        self.rx_conversation_count = associations.rx_conversations.len();
+        self.ticket_count = associations.ticket_links.len();
+        self.pr_count = associations.pull_requests.len();
+        self.rx_conversations = associations.rx_conversations;
+        self.ticket_links = associations.ticket_links;
+        self.pull_requests = associations.pull_requests;
+        self
     }
 }
 
@@ -271,6 +330,159 @@ fn note_response(
     }
 }
 
+fn push_unique<T: PartialEq>(items: &mut Vec<T>, item: T) {
+    if !items.contains(&item) {
+        items.push(item);
+    }
+}
+
+async fn granola_project_conversation_titles(
+    state: &AppState,
+    project_id: &ProjectId,
+) -> Result<BTreeMap<String, Option<String>>, String> {
+    let conversations = state
+        .chat_conversation_repo
+        .get_by_context_filtered(ChatContextType::Project, project_id.as_str(), true)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(conversations
+        .into_iter()
+        .map(|conversation| {
+            (
+                conversation.id.as_str(),
+                conversation.title.filter(|title| !title.trim().is_empty()),
+            )
+        })
+        .collect())
+}
+
+async fn granola_note_ticket_links(
+    state: &AppState,
+    project_id: &ProjectId,
+    conversation_id: &ChatConversationId,
+) -> Result<Vec<GranolaNoteTicketLinkResponse>, String> {
+    let mut ticket_links = Vec::new();
+
+    if let Some(link) = state
+        .agent_conversation_jira_issue_repo
+        .get_by_conversation_id(conversation_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .filter(|link| link.project_id == *project_id)
+    {
+        ticket_links.push(GranolaNoteTicketLinkResponse {
+            provider: "jira".to_string(),
+            label: link.issue_key,
+            title: link.title,
+            url: link.issue_url,
+        });
+    }
+
+    if let Some(link) = state
+        .agent_conversation_linear_issue_repo
+        .get_by_conversation_id(conversation_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .filter(|link| link.project_id == *project_id)
+    {
+        ticket_links.push(GranolaNoteTicketLinkResponse {
+            provider: "linear".to_string(),
+            label: link.issue_key.unwrap_or(link.issue_id),
+            title: link.title,
+            url: link.issue_url,
+        });
+    }
+
+    Ok(ticket_links)
+}
+
+fn granola_note_pull_request(
+    workspace: Option<&AgentConversationWorkspace>,
+) -> Option<GranolaNotePullRequestLinkResponse> {
+    let workspace = workspace?;
+    Some(GranolaNotePullRequestLinkResponse {
+        number: workspace.publication_pr_number?,
+        url: workspace.publication_pr_url.clone(),
+        status: workspace.publication_pr_status.clone(),
+    })
+}
+
+fn sort_granola_note_associations(associations: &mut GranolaNoteAssociations) {
+    associations.rx_conversations.sort_by(|left, right| {
+        left.title
+            .cmp(&right.title)
+            .then_with(|| left.conversation_id.cmp(&right.conversation_id))
+    });
+    associations.ticket_links.sort_by(|left, right| {
+        left.provider
+            .cmp(&right.provider)
+            .then_with(|| left.label.cmp(&right.label))
+    });
+    associations
+        .pull_requests
+        .sort_by(|left, right| left.number.cmp(&right.number));
+}
+
+async fn build_granola_note_associations(
+    state: &AppState,
+    project_id: &ProjectId,
+    note_ids: &[String],
+) -> Result<BTreeMap<String, GranolaNoteAssociations>, String> {
+    let requested_note_ids: BTreeSet<&str> = note_ids.iter().map(String::as_str).collect();
+    if requested_note_ids.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+
+    let links = state
+        .agent_conversation_granola_note_repo
+        .list_by_project_id(project_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let conversation_titles = granola_project_conversation_titles(state, project_id).await?;
+    let workspaces_by_conversation: BTreeMap<String, AgentConversationWorkspace> = state
+        .agent_conversation_workspace_repo
+        .get_by_project_id(project_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .map(|workspace| (workspace.conversation_id.as_str(), workspace))
+        .collect();
+
+    let mut associations: BTreeMap<String, GranolaNoteAssociations> = BTreeMap::new();
+    for link in links {
+        if !requested_note_ids.contains(link.note_id.as_str()) {
+            continue;
+        }
+        let conversation_id = link.conversation_id.as_str();
+        let note_associations = associations.entry(link.note_id.clone()).or_default();
+        push_unique(
+            &mut note_associations.rx_conversations,
+            GranolaNoteRxConversationResponse {
+                conversation_id: conversation_id.clone(),
+                title: conversation_titles.get(&conversation_id).cloned().flatten(),
+            },
+        );
+
+        for ticket_link in
+            granola_note_ticket_links(state, project_id, &link.conversation_id).await?
+        {
+            push_unique(&mut note_associations.ticket_links, ticket_link);
+        }
+
+        if let Some(pr_link) =
+            granola_note_pull_request(workspaces_by_conversation.get(&conversation_id))
+        {
+            push_unique(&mut note_associations.pull_requests, pr_link);
+        }
+    }
+
+    for associations in associations.values_mut() {
+        sort_granola_note_associations(associations);
+    }
+
+    Ok(associations)
+}
+
 #[tauri::command]
 pub async fn get_granola_integration_settings(
     state: State<'_, AppState>,
@@ -314,11 +526,30 @@ pub async fn list_granola_notes(
         .granola_integration_service
         .list_notes(input.page_size.unwrap_or(20), input.cursor.as_deref())
         .await?;
+    let note_ids: Vec<String> = page.notes.iter().map(|note| note.id.clone()).collect();
+    let associations_by_note = if let Some(project_id) = non_empty(input.project_id) {
+        build_granola_note_associations(
+            state.inner(),
+            &ProjectId::from_string(project_id),
+            &note_ids,
+        )
+        .await?
+    } else {
+        BTreeMap::new()
+    };
     Ok(ListGranolaNotesResponse {
         notes: page
             .notes
             .into_iter()
-            .map(GranolaNoteSummaryResponse::from)
+            .map(|note| {
+                let note_id = note.id.clone();
+                GranolaNoteSummaryResponse::from(note).with_associations(
+                    associations_by_note
+                        .get(&note_id)
+                        .cloned()
+                        .unwrap_or_default(),
+                )
+            })
             .collect(),
         has_more: page.has_more,
         cursor: page.cursor,

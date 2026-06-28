@@ -1,94 +1,147 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, type QueryClient } from "@tanstack/react-query";
 
-import { chatApi } from "@/api/chat";
-import type { AgentConversationWorkspace } from "@/api/chat";
 import {
-  AGENT_WORKSPACE_STALE_MS,
-  agentWorkspaceKeys,
-} from "@/components/agents/agentWorkspaceQueries";
+  githubApi,
+  type PullRequestDetail,
+  type PullRequestIssueComment,
+} from "@/api/github";
 
-export type PullRequestDetailStatus = "Draft" | "Open" | "Merged" | "Closed";
-export type PullRequestDetailOrigin = "publication" | "source";
-
-export interface PullRequestDetailViewModel {
-  origin: PullRequestDetailOrigin;
-  number: number | null;
-  status: PullRequestDetailStatus | null;
-  url: string | null;
-  headRef: string | null;
-  baseRef: string | null;
-  pushStatus: string | null;
-  supervisionStatus: string | null;
-  supervisionSummary: string | null;
-  supervisionUpdatedAt: string | null;
-  title?: string;
+interface QueryOptions {
+  enabled?: boolean | undefined;
 }
 
-const STATUS_BY_NORMALIZED_VALUE: Record<string, PullRequestDetailStatus> = {
-  closed: "Closed",
-  draft: "Draft",
-  merged: "Merged",
-  open: "Open",
+/**
+ * "Like ticketing" React Query staleTime for the full PR-detail payload
+ * (description + comments + review thread + RX conversations). Mirrors
+ * `useTicketDetail`'s cached-detail behavior so re-opening the same PR within a
+ * session is instant. Comments are part of the cached payload (Decision 6).
+ */
+export const PR_DETAIL_CACHE_MS = 5 * 60 * 1000;
+
+/** Selector for a PR-detail query — provide `prNumber` or `branch`. */
+export interface PullRequestDetailSelector {
+  projectId: string;
+  prNumber?: number | null | undefined;
+  branch?: string | null | undefined;
+}
+
+/**
+ * Query-key factory for the GitHub PR-visibility data layer. Intentionally a
+ * SEPARATE root (`["github-pr"]`) from `ticketingKeys` (`["ticketing"]`) so the
+ * ticketing store is never overloaded with PR state (Proof Obligation / plan
+ * acceptance: `prKeys` namespace separate from `ticketingKeys`).
+ */
+export const prKeys = {
+  all: ["github-pr"] as const,
+  connectionStatus: () => [...prKeys.all, "connection-status"] as const,
+  details: () => [...prKeys.all, "detail"] as const,
+  detail: (selector: PullRequestDetailSelector) =>
+    [
+      ...prKeys.details(),
+      selector.projectId,
+      selector.prNumber ?? null,
+      selector.branch ?? null,
+    ] as const,
 };
 
-function nonEmptyString(value: string | null | undefined): string | null {
-  const trimmed = value?.trim();
-  return trimmed ? trimmed : null;
+function hasResolvableSelector(
+  selector: PullRequestDetailSelector | null,
+): selector is PullRequestDetailSelector {
+  return Boolean(
+    selector
+      && selector.projectId
+      && (selector.prNumber != null
+        || (selector.branch != null && selector.branch.length > 0)),
+  );
 }
 
-export function normalizePrStatus(
-  raw: string | null,
-): PullRequestDetailStatus | null {
-  const normalized = nonEmptyString(raw)?.toLowerCase();
-  return normalized ? STATUS_BY_NORMALIZED_VALUE[normalized] ?? null : null;
+/**
+ * Cache the full PR-detail graph for a `(project, pr|branch)` selector.
+ *
+ * The query is deferred/enabled-gated (Constraint 6): it is not fired until the
+ * caller passes `enabled` (e.g. after the PR-detail shell paints) AND the
+ * selector resolves to a project + PR number/branch. The payload — including
+ * comments — is cached with a `staleTime` so re-opens are instant.
+ */
+export function usePullRequestDetail(
+  selector: PullRequestDetailSelector | null,
+  options: QueryOptions = {},
+) {
+  return useQuery<PullRequestDetail>({
+    queryKey: selector ? prKeys.detail(selector) : [...prKeys.details(), null],
+    queryFn: () => {
+      if (!selector) {
+        throw new Error("Pull request selector is required");
+      }
+      return githubApi.getPullRequestDetail(selector);
+    },
+    enabled: (options.enabled ?? true) && hasResolvableSelector(selector),
+    staleTime: PR_DETAIL_CACHE_MS,
+    gcTime: PR_DETAIL_CACHE_MS,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
+  });
 }
 
-export function mapPullRequestDetail(
-  workspace: AgentConversationWorkspace | null | undefined,
-): PullRequestDetailViewModel | null {
-  if (!workspace) {
-    return null;
-  }
+// ============================================================================
+// Optimistic issue-comment dedupe (mirrors the `useTicketing` optimistic append
+// + dedupe). PR detail is read-focused in v1, but a user-posted comment can be
+// appended optimistically; dedupe-by-id keeps the cached `issueComments`
+// consistent when the server payload later refreshes with the same comment.
+// ============================================================================
 
-  const sourcePullRequest = workspace.sourcePullRequest ?? null;
-  const publicationUrl = nonEmptyString(workspace.publicationPrUrl);
-  const sourceUrl = nonEmptyString(sourcePullRequest?.url);
-  const hasPublicationPr =
-    workspace.publicationPrNumber !== null || publicationUrl !== null;
+export interface OptimisticPrCommentInput {
+  clientId: string;
+  body: string;
+  author?: string | null | undefined;
+}
 
-  if (!hasPublicationPr && !sourcePullRequest) {
-    return null;
-  }
-
-  const title = nonEmptyString(sourcePullRequest?.title);
-  const detail: PullRequestDetailViewModel = {
-    origin: hasPublicationPr ? "publication" : "source",
-    number: workspace.publicationPrNumber ?? sourcePullRequest?.number ?? null,
-    status: normalizePrStatus(workspace.publicationPrStatus),
-    url: publicationUrl ?? sourceUrl,
-    headRef: nonEmptyString(sourcePullRequest?.headRefName),
-    baseRef:
-      nonEmptyString(workspace.baseRef) ??
-      nonEmptyString(sourcePullRequest?.baseRefName),
-    pushStatus: nonEmptyString(workspace.publicationPushStatus),
-    supervisionStatus: nonEmptyString(workspace.prSupervisionStatus),
-    supervisionSummary: nonEmptyString(workspace.prSupervisionSummary),
-    supervisionUpdatedAt: nonEmptyString(workspace.prSupervisionUpdatedAt),
+/** Build a synthetic optimistic issue comment keyed by `optimistic:<clientId>`. */
+export function buildOptimisticPrComment(
+  input: OptimisticPrCommentInput,
+): PullRequestIssueComment {
+  const now = new Date().toISOString();
+  return {
+    id: `optimistic:${input.clientId}`,
+    author: input.author ?? "You",
+    body: input.body,
+    url: null,
+    createdAt: now,
+    updatedAt: now,
+    isBot: false,
+    isCodecov: false,
+    source: "live",
   };
-
-  if (title) {
-    detail.title = title;
-  }
-
-  return detail;
 }
 
-export function usePullRequestDetail(conversationId: string | null | undefined) {
-  return useQuery({
-    queryKey: agentWorkspaceKeys.workspace(conversationId),
-    queryFn: () => chatApi.getAgentConversationWorkspace(conversationId!),
-    enabled: Boolean(conversationId),
-    staleTime: AGENT_WORKSPACE_STALE_MS,
-    select: mapPullRequestDetail,
+/** Dedupe issue comments by id (last write wins, stable first-appearance order). */
+export function dedupePrIssueComments(
+  comments: PullRequestIssueComment[],
+): PullRequestIssueComment[] {
+  const byId = new Map<string, PullRequestIssueComment>();
+  for (const comment of comments) {
+    byId.set(comment.id, comment);
+  }
+  return [...byId.values()];
+}
+
+/**
+ * Append an optimistic comment into the cached PR detail, idempotent by id so
+ * repeated appends (or a later server refresh carrying the same id) never
+ * duplicate the comment.
+ */
+export function appendOptimisticPrComment(
+  queryClient: QueryClient,
+  selector: PullRequestDetailSelector,
+  comment: PullRequestIssueComment,
+): void {
+  queryClient.setQueryData<PullRequestDetail>(prKeys.detail(selector), (detail) => {
+    if (!detail) {
+      return detail;
+    }
+    return {
+      ...detail,
+      issueComments: dedupePrIssueComments([...detail.issueComments, comment]),
+    };
   });
 }

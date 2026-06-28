@@ -71,6 +71,26 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         Ok(None)
     }
 
+    /// Project-scoped lookup of workspaces whose branch matches `head_ref`.
+    ///
+    /// Powers the PR-detail "attached RalphX conversations" rollup: workspaces
+    /// where `project_id == project_id` AND `branch_name == head_ref` (each may
+    /// also carry a `linked_ideation_session_id`). Project scope is MANDATORY —
+    /// `branch_name` is not globally unique, so an unscoped lookup would
+    /// cross-attach conversations from unrelated projects. The default filters
+    /// the project's workspaces in memory; SQLite overrides with a scoped query.
+    async fn find_by_head_ref(
+        &self,
+        project_id: &ProjectId,
+        head_ref: &str,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        let workspaces = self.get_by_project_id(project_id).await?;
+        Ok(workspaces
+            .into_iter()
+            .filter(|workspace| workspace.branch_name == head_ref)
+            .collect())
+    }
+
     async fn get_terminal_local_cleanup_candidates_by_project_id(
         &self,
         project_id: &ProjectId,

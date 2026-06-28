@@ -126,6 +126,26 @@ impl AgentConversationGranolaNoteRepository for SqliteAgentConversationGranolaNo
             .await
     }
 
+    async fn list_by_project_id(
+        &self,
+        project_id: &ProjectId,
+    ) -> AppResult<Vec<AgentConversationGranolaNoteLink>> {
+        let project_id = project_id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                let mut statement = conn.prepare(
+                    "SELECT * FROM agent_conversation_granola_note_links
+                     WHERE project_id = ?1
+                     ORDER BY updated_at DESC",
+                )?;
+                let rows = statement
+                    .query_map(params![project_id], row_to_link)?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(rows)
+            })
+            .await
+    }
+
     async fn upsert(
         &self,
         link: AgentConversationGranolaNoteLink,

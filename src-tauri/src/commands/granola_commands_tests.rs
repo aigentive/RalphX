@@ -16,7 +16,10 @@ use crate::application::{
     AppState, GranolaApiClient, GranolaApiError, GranolaAuthContext, GranolaIntegrationService,
     GranolaNoteDetail, GranolaNoteListPage, GranolaNoteSummary, GranolaTranscriptEntry,
 };
-use crate::domain::entities::{ChatConversation, ProjectId};
+use crate::domain::entities::{
+    AgentConversationGranolaNoteLink, AgentConversationJiraIssueLink, AgentConversationWorkspace,
+    AgentConversationWorkspaceMode, ChatConversation, IdeationAnalysisBaseRefKind, ProjectId,
+};
 use crate::domain::integrations::{GranolaIntegrationSettings, IntegrationValidationStatus};
 use crate::infrastructure::memory::{
     MemoryGranolaIntegrationSettingsRepository, MemorySecretStore,
@@ -327,6 +330,7 @@ async fn granola_note_commands_list_and_detail_return_api_data() {
         ListGranolaNotesInput {
             page_size: Some(99),
             cursor: Some("cursor/value".to_string()),
+            project_id: None,
         },
         app.state::<AppState>(),
     )
@@ -365,6 +369,96 @@ async fn granola_note_commands_list_and_detail_return_api_data() {
         client.detail_requests(),
         vec![("not_1234567890ABCD".to_string(), true)]
     );
+}
+
+#[tokio::test]
+async fn granola_note_list_includes_project_conversation_ticket_and_pr_associations() {
+    let client = Arc::new(TestGranolaClient::default());
+    let app = test_app_with_granola_client(client);
+    enable_granola(&app).await;
+    let project_id = ProjectId::from_string("project-with-granola-links".to_string());
+    let mut conversation = ChatConversation::new_project(project_id.clone());
+    conversation.set_title("Launch checklist agent");
+    let conversation = app
+        .state::<AppState>()
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .expect("create project conversation");
+    let mut workspace = AgentConversationWorkspace::new(
+        conversation.id,
+        project_id.clone(),
+        AgentConversationWorkspaceMode::Edit,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("Current branch (main)".to_string()),
+        None,
+        "feature/launch-checklist".to_string(),
+        "/tmp/ralphx-launch-checklist".to_string(),
+    );
+    workspace.publication_pr_number = Some(516);
+    workspace.publication_pr_url =
+        Some("https://github.com/aigentive/ralphx.app/pull/516".to_string());
+    workspace.publication_pr_status = Some("open".to_string());
+    app.state::<AppState>()
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("create workspace");
+    app.state::<AppState>()
+        .agent_conversation_granola_note_repo
+        .upsert(AgentConversationGranolaNoteLink::new(
+            conversation.id,
+            project_id.clone(),
+            "not_1234567890ABCD".to_string(),
+            chrono::Utc::now(),
+        ))
+        .await
+        .expect("link Granola note");
+    app.state::<AppState>()
+        .agent_conversation_jira_issue_repo
+        .upsert({
+            let mut link = AgentConversationJiraIssueLink::new(
+                conversation.id,
+                project_id.clone(),
+                "RX-77".to_string(),
+                chrono::Utc::now(),
+            );
+            link.title = Some("Launch checklist ticket".to_string());
+            link.issue_url = Some("https://example.atlassian.net/browse/RX-77".to_string());
+            link
+        })
+        .await
+        .expect("link Jira ticket");
+
+    let listed = list_granola_notes(
+        ListGranolaNotesInput {
+            page_size: Some(30),
+            cursor: None,
+            project_id: Some(project_id.as_str().to_string()),
+        },
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("list Granola notes");
+
+    let note = listed.notes.first().expect("Granola note");
+    assert_eq!(note.id, "not_1234567890ABCD");
+    assert_eq!(note.rx_conversation_count, 1);
+    assert_eq!(
+        note.rx_conversations[0].conversation_id,
+        conversation.id.as_str()
+    );
+    assert_eq!(
+        note.rx_conversations[0].title.as_deref(),
+        Some("Launch checklist agent")
+    );
+    assert_eq!(note.ticket_count, 1);
+    assert_eq!(note.ticket_links[0].provider, "jira");
+    assert_eq!(note.ticket_links[0].label, "RX-77");
+    assert_eq!(note.pr_count, 1);
+    assert_eq!(note.pull_requests[0].number, 516);
+    assert_eq!(note.pull_requests[0].status.as_deref(), Some("open"));
 }
 
 #[tokio::test]

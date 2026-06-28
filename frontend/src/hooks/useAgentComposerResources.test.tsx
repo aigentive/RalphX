@@ -89,7 +89,7 @@ describe("useAgentComposerIntegrationResources", () => {
         statusType: "open",
         statusCategory: "todo",
         statusColor: "#999",
-        assignees: ["Adrian"],
+        assignees: ["Alex"],
         tags: ["frontend"],
         spaceId: "space-1",
         listName: "Current Sprint",

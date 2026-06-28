@@ -59,6 +59,11 @@ const LazyAtlassianIntegrationSettingsPanel = lazy(() =>
     default: module.AtlassianIntegrationSettingsPanel,
   })),
 );
+const LazyGitHubIntegrationSettingsPanel = lazy(() =>
+  import("./GitHubIntegrationSettingsPanel").then((module) => ({
+    default: module.GitHubIntegrationSettingsPanel,
+  })),
+);
 const LazyLinearIntegrationSettingsPanel = lazy(() =>
   import("./LinearIntegrationSettingsPanel").then((module) => ({
     default: module.LinearIntegrationSettingsPanel,
@@ -144,6 +149,7 @@ export function SettingsSectionContent({
       {section === "ideation-workflow" && <LazyIdeationSettingsPanel />}
       {section === "ideation-harnesses" && <LazyIdeationHarnessSection />}
       {section === "integrations" && <LazyAtlassianIntegrationSettingsPanel />}
+      {section === "github" && <LazyGitHubIntegrationSettingsPanel />}
       {section === "linear" && <LazyLinearIntegrationSettingsPanel />}
       {section === "clickup" && <LazyClickUpIntegrationSettingsPanel />}
       {section === "granola" && <LazyGranolaIntegrationSettingsPanel />}

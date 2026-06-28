@@ -10,8 +10,8 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use ralphx_lib::domain::services::github_service::{
-    GithubServiceTrait, PrMergeStateStatus, PrMergeableState, PrReviewFeedback, PrStatus,
-    PrSyncState,
+    GithubServiceTrait, PrDetail, PrMergeStateStatus, PrMergeableState, PrReviewFeedback, PrStatus,
+    PrReviewThread, PrSyncState,
 };
 use ralphx_lib::{AppError, AppResult};
 
@@ -40,6 +40,8 @@ pub struct MockGithubService {
     pub close_pr_calls: Arc<Mutex<u32>>,
     pub delete_remote_branch_calls: Arc<Mutex<u32>>,
     pub find_pr_by_head_branch_calls: Arc<Mutex<u32>>,
+    pub fetch_pr_detail_calls: Arc<Mutex<u32>>,
+    pub fetch_pr_review_thread_calls: Arc<Mutex<u32>>,
     push_branch_result: Arc<Mutex<Option<AppResult<()>>>>,
     #[allow(clippy::type_complexity)]
     create_draft_pr_result: Arc<Mutex<Option<AppResult<(i64, String)>>>>,
@@ -48,6 +50,8 @@ pub struct MockGithubService {
     update_pr_base_result: Arc<Mutex<Option<AppResult<()>>>>,
     #[allow(clippy::type_complexity)]
     find_pr_by_head_branch_result: Arc<Mutex<Option<AppResult<Option<(i64, String)>>>>>,
+    fetch_pr_detail_result: Arc<Mutex<Option<AppResult<PrDetail>>>>,
+    fetch_pr_review_thread_result: Arc<Mutex<Option<AppResult<PrReviewThread>>>>,
 }
 
 #[allow(dead_code)]
@@ -68,12 +72,16 @@ impl MockGithubService {
             close_pr_calls: Arc::new(Mutex::new(0)),
             delete_remote_branch_calls: Arc::new(Mutex::new(0)),
             find_pr_by_head_branch_calls: Arc::new(Mutex::new(0)),
+            fetch_pr_detail_calls: Arc::new(Mutex::new(0)),
+            fetch_pr_review_thread_calls: Arc::new(Mutex::new(0)),
             push_branch_result: Arc::new(Mutex::new(None)),
             create_draft_pr_result: Arc::new(Mutex::new(None)),
             mark_pr_ready_result: Arc::new(Mutex::new(None)),
             update_pr_details_result: Arc::new(Mutex::new(None)),
             update_pr_base_result: Arc::new(Mutex::new(None)),
             find_pr_by_head_branch_result: Arc::new(Mutex::new(None)),
+            fetch_pr_detail_result: Arc::new(Mutex::new(None)),
+            fetch_pr_review_thread_result: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -129,6 +137,28 @@ impl MockGithubService {
     pub fn will_return_existing_pr(&self, pr_number: i64, pr_url: impl Into<String>) {
         *self.find_pr_by_head_branch_result.lock().unwrap() =
             Some(Ok(Some((pr_number, pr_url.into()))));
+    }
+
+    /// Make the next `fetch_pr_detail` call return the given detail.
+    pub fn will_return_pr_detail(&self, detail: PrDetail) {
+        *self.fetch_pr_detail_result.lock().unwrap() = Some(Ok(detail));
+    }
+
+    /// Make the next `fetch_pr_detail` call fail with the given message.
+    pub fn will_fail_pr_detail(&self, msg: impl Into<String>) {
+        *self.fetch_pr_detail_result.lock().unwrap() =
+            Some(Err(AppError::Infrastructure(msg.into())));
+    }
+
+    /// Make the next `fetch_pr_review_thread` call return the given thread.
+    pub fn will_return_pr_review_thread(&self, thread: PrReviewThread) {
+        *self.fetch_pr_review_thread_result.lock().unwrap() = Some(Ok(thread));
+    }
+
+    /// Make the next `fetch_pr_review_thread` call fail with the given message.
+    pub fn will_fail_pr_review_thread(&self, msg: impl Into<String>) {
+        *self.fetch_pr_review_thread_result.lock().unwrap() =
+            Some(Err(AppError::Infrastructure(msg.into())));
     }
 
     // --- Convenience accessors ---
@@ -196,6 +226,28 @@ impl GithubServiceTrait for MockGithubService {
             return result;
         }
         Ok((1, "https://github.com/owner/repo/pull/1".to_string()))
+    }
+
+    async fn fetch_pr_detail(&self, _wd: &Path, _pr_number: i64) -> AppResult<PrDetail> {
+        *self.fetch_pr_detail_calls.lock().unwrap() += 1;
+        self.fetch_pr_detail_result.lock().unwrap().take().unwrap_or_else(|| {
+            Err(AppError::Infrastructure(
+                "MockGithubService::fetch_pr_detail not configured".to_string(),
+            ))
+        })
+    }
+
+    async fn fetch_pr_review_thread(
+        &self,
+        _wd: &Path,
+        pr_number: i64,
+    ) -> AppResult<PrReviewThread> {
+        *self.fetch_pr_review_thread_calls.lock().unwrap() += 1;
+        self.fetch_pr_review_thread_result
+            .lock()
+            .unwrap()
+            .take()
+            .unwrap_or_else(|| Ok(PrReviewThread::empty(pr_number)))
     }
 
     async fn mark_pr_ready(&self, _wd: &Path, _pr_number: i64) -> AppResult<()> {

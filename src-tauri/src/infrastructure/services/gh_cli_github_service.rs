@@ -19,10 +19,11 @@ use tokio::time::{timeout, Duration};
 use tracing::{debug, warn};
 
 use crate::domain::services::github_service::{
-    GithubServiceTrait, PrAnnotationSourceUnavailable, PrAutoMergeRequest, PrBranchMatch,
-    PrDiffAnnotation, PrDiffAnnotations, PrHealth, PrHealthCheck, PrIssueCommentSummary,
-    PrMergeStateStatus, PrMergeableState, PrReviewCommentFeedback, PrReviewFeedback,
-    PrReviewSubmissionEvent, PrSearchResult, PrStatus, PrSubmittedReview, PrSyncState,
+    GithubConnectionStatus, GithubServiceTrait, PrAnnotationSourceUnavailable, PrAutoMergeRequest,
+    PrBranchMatch, PrDetail, PrDiffAnnotation, PrDiffAnnotations, PrHealth, PrHealthCheck,
+    PrIssueCommentSummary, PrMergeStateStatus, PrMergeableState, PrReviewCommentFeedback,
+    PrReviewFeedback, PrReviewSubmissionEvent, PrReviewThread, PrReviewThreadComment,
+    PrSearchResult, PrStatus, PrSubmittedReview, PrSyncState,
 };
 use crate::error::AppError;
 use crate::infrastructure::agents::claude::git_runtime_config;
@@ -54,10 +55,24 @@ pub(crate) const DUPLICATE_PR_FRAGMENTS: [&str; 3] = [
     "already a pull request",
 ];
 
+/// Raw outcome of invoking `gh auth status`, before parsing into a typed status.
+///
+/// Captures whether the binary spawned (installed) and the combined output lines
+/// (stdout + sanitized stderr) used to parse host/account. A non-zero exit is
+/// expected when unauthenticated and is NOT an error here.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct GhAuthStatusRaw {
+    pub gh_installed: bool,
+    pub output_lines: Vec<String>,
+}
+
 #[async_trait]
 pub(crate) trait GhCliCommandRunner: Send + Sync {
     async fn run_gh(&self, working_dir: &Path, args: &[String]) -> AppResult<Vec<String>>;
     async fn run_git(&self, working_dir: &Path, args: &[String]) -> AppResult<()>;
+    /// Invoke `gh auth status`, capturing installed-state + combined output.
+    /// Never errors on a non-zero exit (unauthenticated `gh` exits non-zero).
+    async fn run_gh_auth_status(&self) -> GhAuthStatusRaw;
 }
 
 struct RealGhCliCommandRunner;
@@ -70,6 +85,10 @@ impl GhCliCommandRunner for RealGhCliCommandRunner {
 
     async fn run_git(&self, working_dir: &Path, args: &[String]) -> AppResult<()> {
         GhCliGithubService::run_git_process(working_dir, args).await
+    }
+
+    async fn run_gh_auth_status(&self) -> GhAuthStatusRaw {
+        GhCliGithubService::run_gh_auth_status_process().await
     }
 }
 
@@ -242,6 +261,52 @@ impl GhCliGithubService {
 
         Ok(())
     }
+
+    /// Invoke `gh auth status`, capturing installed-state + combined output.
+    ///
+    /// `gh auth status` exits non-zero when unauthenticated, so a non-zero exit
+    /// is NOT treated as an error here — only a spawn failure (binary missing/not
+    /// executable) marks `gh` as not-installed. Output is gathered from both
+    /// stdout and stderr because `gh` has historically emitted the status block
+    /// on either stream. No `current_dir` override is set: `gh auth status` is
+    /// global and we avoid feeding any caller-derived path into the launch sink.
+    async fn run_gh_auth_status_process() -> GhAuthStatusRaw {
+        let spawn_result = tokio::process::Command::new(resolve_gh_cli_path())
+            .args(["auth", "status"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn();
+
+        let mut child = match spawn_result {
+            Ok(child) => child,
+            // Binary missing / not executable → gh not installed.
+            Err(_) => return GhAuthStatusRaw::default(),
+        };
+
+        let collected = timeout(SUBPROCESS_TIMEOUT, async {
+            let (stdout, stderr) = Self::collect_output(&mut child).await?;
+            let _ = child.wait().await;
+            Ok::<_, AppError>((stdout, stderr))
+        })
+        .await;
+
+        match collected {
+            Ok(Ok((mut stdout, mut stderr))) => {
+                stdout.append(&mut stderr);
+                GhAuthStatusRaw {
+                    gh_installed: true,
+                    output_lines: stdout,
+                }
+            }
+            // Timed out or pipe error: the binary spawned (installed) but no
+            // parseable output is available.
+            _ => GhAuthStatusRaw {
+                gh_installed: true,
+                output_lines: Vec::new(),
+            },
+        }
+    }
 }
 
 impl Default for GhCliGithubService {
@@ -339,6 +404,17 @@ fn build_pr_health_view_args(pr_number: i64) -> Vec<String> {
         pr_number.to_string(),
         "--json".to_string(),
         "state,mergeStateStatus,mergeable,isDraft,headRefName,baseRefName,headRefOid,baseRefOid,mergedAt,mergeCommit,reviewDecision,statusCheckRollup,autoMergeRequest".to_string(),
+    ]
+}
+
+fn build_pr_detail_view_args(pr_number: i64) -> Vec<String> {
+    vec![
+        "pr".to_string(),
+        "view".to_string(),
+        pr_number.to_string(),
+        "--json".to_string(),
+        "number,title,body,author,createdAt,url,state,isDraft,headRefName,baseRefName,mergeCommit"
+            .to_string(),
     ]
 }
 
@@ -829,6 +905,29 @@ impl GithubServiceTrait for GhCliGithubService {
         Ok(payload)
     }
 
+    async fn fetch_pr_detail(&self, working_dir: &Path, pr_number: i64) -> AppResult<PrDetail> {
+        let stdout = self
+            .runner
+            .run_gh(working_dir, &build_pr_detail_view_args(pr_number))
+            .await?;
+        parse_pr_detail_output(pr_number, &stdout.join("\n"))
+    }
+
+    async fn fetch_pr_review_thread(
+        &self,
+        working_dir: &Path,
+        pr_number: i64,
+    ) -> AppResult<PrReviewThread> {
+        // Reuses the same review-comments source as `fetch_pr_diff_annotations`,
+        // but returns the conversation thread directly (live, transient) so the
+        // detail view never triggers the opt-in check-run/code-scanning fan-out.
+        let stdout = self
+            .runner
+            .run_gh(working_dir, &build_pr_review_comments_api_args(pr_number))
+            .await?;
+        parse_pr_review_thread_output(pr_number, &stdout.join("\n"))
+    }
+
     async fn submit_pr_review(
         &self,
         working_dir: &Path,
@@ -1060,9 +1159,99 @@ impl GithubServiceTrait for GhCliGithubService {
         let json_str = stdout.join("\n");
         parse_pr_branch_match_output(&json_str, head)
     }
+
+    async fn list_pull_request_branch_matches(
+        &self,
+        working_dir: &Path,
+        limit: usize,
+    ) -> AppResult<Vec<PrBranchMatch>> {
+        let limit = limit.clamp(1, 200);
+        let args = vec![
+            "pr".to_string(),
+            "list".to_string(),
+            "--state".to_string(),
+            "all".to_string(),
+            "--limit".to_string(),
+            limit.to_string(),
+            "--json".to_string(),
+            "number,url,state,isDraft,headRefName,updatedAt".to_string(),
+        ];
+        let stdout = self.runner.run_gh(working_dir, &args).await?;
+
+        let json_str = stdout.join("\n");
+        parse_pr_branch_matches_output(&json_str)
+    }
+
+    async fn fetch_github_connection_status(&self) -> AppResult<GithubConnectionStatus> {
+        let raw = self.runner.run_gh_auth_status().await;
+        if !raw.gh_installed {
+            return Ok(GithubConnectionStatus::unavailable());
+        }
+        let (authenticated, host, account) = parse_gh_auth_status_lines(&raw.output_lines);
+        Ok(GithubConnectionStatus {
+            gh_installed: true,
+            authenticated,
+            host,
+            account,
+        })
+    }
 }
 
 // ── Output parsers ────────────────────────────────────────────────────────────
+
+/// Parse `gh auth status` output lines into `(authenticated, host, account)`.
+///
+/// Prefers the account block marked `Active account: true`; falls back to the
+/// first authenticated block (older `gh` has no active-account marker). Token
+/// lines are ignored — only the `Logged in to <host> account <account>` lines
+/// carry the host/account we surface.
+pub(crate) fn parse_gh_auth_status_lines(
+    lines: &[String],
+) -> (bool, Option<String>, Option<String>) {
+    let mut entries: Vec<(String, String)> = Vec::new();
+    let mut active_index: Option<usize> = None;
+
+    for line in lines {
+        if let Some((host, account)) = parse_logged_in_line(line) {
+            entries.push((host, account));
+        } else if is_active_account_true(line) {
+            if let Some(last) = entries.len().checked_sub(1) {
+                active_index = Some(last);
+            }
+        }
+    }
+
+    let Some((host, account)) = active_index
+        .or(if entries.is_empty() { None } else { Some(0) })
+        .map(|index| entries[index].clone())
+    else {
+        return (false, None, None);
+    };
+
+    (true, Some(host), Some(account))
+}
+
+/// Extract `(host, account)` from a `✓ Logged in to <host> account <account> (...)` line.
+fn parse_logged_in_line(line: &str) -> Option<(String, String)> {
+    const LOGGED_IN: &str = "Logged in to ";
+    const ACCOUNT: &str = " account ";
+    let start = line.find(LOGGED_IN)?;
+    let rest = &line[start + LOGGED_IN.len()..];
+    let account_at = rest.find(ACCOUNT)?;
+    let host = rest[..account_at].trim().to_string();
+    let after = rest[account_at + ACCOUNT.len()..].trim();
+    let account = after.split_whitespace().next()?.to_string();
+    if host.is_empty() || account.is_empty() {
+        return None;
+    }
+    Some((host, account))
+}
+
+/// True for the `- Active account: true` marker line.
+fn is_active_account_true(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    lower.contains("active account:") && lower.contains("true")
+}
 
 #[cfg(test)]
 pub(crate) fn parse_pr_create_output(json_str: &str) -> AppResult<(i64, String)> {
@@ -1194,6 +1383,30 @@ pub(crate) fn parse_pr_branch_match_output(
     Ok(matches.into_iter().next())
 }
 
+pub(crate) fn parse_pr_branch_matches_output(json_str: &str) -> AppResult<Vec<PrBranchMatch>> {
+    let arr: Value = serde_json::from_str(json_str).map_err(|e| {
+        AppError::Infrastructure(format!(
+            "Failed to parse gh pr list branch JSON: {e}\nRaw: {json_str}"
+        ))
+    })?;
+
+    let items = arr.as_array().ok_or_else(|| {
+        AppError::Infrastructure(format!(
+            "gh pr list branch lookup: expected JSON array, got: {json_str}"
+        ))
+    })?;
+
+    items
+        .iter()
+        .filter(|item| {
+            item.get("headRefName")
+                .and_then(Value::as_str)
+                .is_some_and(|head| !head.trim().is_empty())
+        })
+        .map(parse_pr_branch_match_item)
+        .collect()
+}
+
 pub(crate) fn parse_pr_search_output(json_str: &str) -> AppResult<Vec<PrSearchResult>> {
     let arr: Value = serde_json::from_str(json_str).map_err(|e| {
         AppError::Infrastructure(format!(
@@ -1304,6 +1517,48 @@ pub(crate) fn parse_pr_status_output(json_str: &str) -> AppResult<PrStatus> {
             "gh pr view: unknown state '{other}'"
         ))),
     }
+}
+
+/// Parse `gh pr view <n> --json title,body,author,...` into a [`PrDetail`].
+pub(crate) fn parse_pr_detail_output(pr_number: i64, json_str: &str) -> AppResult<PrDetail> {
+    let v: Value = serde_json::from_str(json_str).map_err(|e| {
+        AppError::Infrastructure(format!(
+            "Failed to parse gh pr view detail JSON: {e}\nRaw: {json_str}"
+        ))
+    })?;
+
+    let context = "gh pr view detail";
+    let state = parse_pr_status_value(&v)?;
+    let head_ref_name = required_string(&v, "headRefName", context)?;
+    let base_ref_name = required_string(&v, "baseRefName", context)?;
+
+    Ok(PrDetail {
+        number: v.get("number").and_then(Value::as_i64).unwrap_or(pr_number),
+        title: v
+            .get("title")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        body: v
+            .get("body")
+            .and_then(Value::as_str)
+            .filter(|body| !body.is_empty())
+            .map(str::to_string),
+        author: v
+            .get("author")
+            .and_then(|author| author.get("login"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        created_at: v
+            .get("createdAt")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        url: v.get("url").and_then(Value::as_str).map(str::to_string),
+        state,
+        is_draft: v.get("isDraft").and_then(Value::as_bool).unwrap_or(false),
+        head_ref_name,
+        base_ref_name,
+    })
 }
 
 pub(crate) fn parse_pr_sync_state_output(json_str: &str) -> AppResult<PrSyncState> {
@@ -1763,6 +2018,75 @@ pub(crate) fn parse_pr_review_comment_annotations_output(
             }
         })
         .collect())
+}
+
+/// Parse the PR review-comments API payload into a live [`PrReviewThread`].
+///
+/// Shares the review-comments source with `parse_pr_review_comment_annotations_output`
+/// but preserves the conversation shape (author/body/reply linkage) rather than
+/// projecting onto diff annotations.
+pub(crate) fn parse_pr_review_thread_output(
+    pr_number: i64,
+    comments_json: &str,
+) -> AppResult<PrReviewThread> {
+    let comments_value: Value = serde_json::from_str(comments_json).map_err(|e| {
+        AppError::Infrastructure(format!(
+            "Failed to parse gh review thread JSON: {e}\nRaw: {comments_json}"
+        ))
+    })?;
+    let comments = flatten_paginated_array(&comments_value).ok_or_else(|| {
+        AppError::Infrastructure(format!(
+            "gh review thread: expected JSON array/pages, got: {comments_json}"
+        ))
+    })?;
+
+    let comments = comments
+        .into_iter()
+        .map(|comment| {
+            let id = json_id_to_string(comment.get("id"))
+                .unwrap_or_else(|| format!("pr-{pr_number}-review-comment"));
+            let line = comment.get("line").and_then(Value::as_i64);
+            let original_line = comment.get("original_line").and_then(Value::as_i64);
+            PrReviewThreadComment {
+                id,
+                author: comment
+                    .get("user")
+                    .and_then(|user| user.get("login"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                body: comment
+                    .get("body")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                path: comment
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                side: comment
+                    .get("side")
+                    .and_then(Value::as_str)
+                    .or_else(|| comment.get("diff_side").and_then(Value::as_str))
+                    .map(|side| side.to_ascii_lowercase()),
+                line: line.or(original_line),
+                url: comment
+                    .get("html_url")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                created_at: comment
+                    .get("created_at")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                in_reply_to_id: json_id_to_string(comment.get("in_reply_to_id")),
+                is_outdated: line.is_none() && original_line.is_some(),
+            }
+        })
+        .collect();
+
+    Ok(PrReviewThread {
+        pr_number,
+        comments,
+    })
 }
 
 pub(crate) fn parse_check_runs_output(json_str: &str) -> AppResult<Vec<CheckRunAnnotationSource>> {

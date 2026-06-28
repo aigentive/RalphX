@@ -38,6 +38,23 @@ pub struct ClickUpSpace {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct ClickUpFolder {
+    pub id: String,
+    pub name: String,
+    pub space_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ClickUpList {
+    pub id: String,
+    pub name: String,
+    pub folder_id: Option<String>,
+    pub space_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct ClickUpStatus {
     pub id: Option<String>,
     pub status: String,
@@ -102,7 +119,13 @@ pub struct ClickUpTaskSummary {
     pub assignee_ids: Vec<i64>,
     pub watchers: Vec<ClickUpUser>,
     pub tags: Vec<String>,
+    pub sprint_names: Vec<String>,
+    pub location_ids: Vec<String>,
+    pub location_folder_ids: Vec<String>,
+    pub location_space_ids: Vec<String>,
     pub space_id: Option<String>,
+    pub folder_id: Option<String>,
+    pub list_id: Option<String>,
     pub list_name: Option<String>,
     pub updated_at: Option<String>,
 }
@@ -133,6 +156,7 @@ pub struct ClickUpTaskContent {
 pub struct ClickUpTaskListOptions {
     pub query: Option<String>,
     pub limit: Option<usize>,
+    pub assignee_ids: Vec<i64>,
 }
 
 #[async_trait]
@@ -152,6 +176,30 @@ pub trait ClickUpApiClient: Send + Sync {
         Err("ClickUp spaces are not available for this client".to_string())
     }
 
+    async fn list_folders(
+        &self,
+        _auth: &ClickUpAuthContext,
+        _space_id: &str,
+    ) -> Result<Vec<ClickUpFolder>, String> {
+        Err("ClickUp folders are not available for this client".to_string())
+    }
+
+    async fn list_folder_lists(
+        &self,
+        _auth: &ClickUpAuthContext,
+        _folder_id: &str,
+    ) -> Result<Vec<ClickUpList>, String> {
+        Err("ClickUp folder lists are not available for this client".to_string())
+    }
+
+    async fn list_folderless_lists(
+        &self,
+        _auth: &ClickUpAuthContext,
+        _space_id: &str,
+    ) -> Result<Vec<ClickUpList>, String> {
+        Err("ClickUp folderless lists are not available for this client".to_string())
+    }
+
     async fn list_tasks(
         &self,
         _auth: &ClickUpAuthContext,
@@ -160,6 +208,15 @@ pub trait ClickUpApiClient: Send + Sync {
         _options: ClickUpTaskListOptions,
     ) -> Result<Vec<ClickUpTaskSummary>, String> {
         Err("ClickUp tasks are not available for this client".to_string())
+    }
+
+    async fn list_tasks_for_list(
+        &self,
+        _auth: &ClickUpAuthContext,
+        _list_id: &str,
+        _options: ClickUpTaskListOptions,
+    ) -> Result<Vec<ClickUpTaskSummary>, String> {
+        Err("ClickUp list tasks are not available for this client".to_string())
     }
 
     async fn fetch_task(
@@ -679,6 +736,21 @@ impl ClickUpIntegrationService {
         self.client.list_spaces(&auth, &workspace_id).await
     }
 
+    pub async fn list_folders(&self, space_id: &str) -> Result<Vec<ClickUpFolder>, String> {
+        let (auth, _) = self.enabled_workspace_context().await?;
+        self.client.list_folders(&auth, space_id).await
+    }
+
+    pub async fn list_folder_lists(&self, folder_id: &str) -> Result<Vec<ClickUpList>, String> {
+        let (auth, _) = self.enabled_workspace_context().await?;
+        self.client.list_folder_lists(&auth, folder_id).await
+    }
+
+    pub async fn list_folderless_lists(&self, space_id: &str) -> Result<Vec<ClickUpList>, String> {
+        let (auth, _) = self.enabled_workspace_context().await?;
+        self.client.list_folderless_lists(&auth, space_id).await
+    }
+
     pub async fn list_tasks(
         &self,
         space_ids: Vec<String>,
@@ -687,6 +759,17 @@ impl ClickUpIntegrationService {
         let (auth, workspace_id) = self.enabled_workspace_context().await?;
         self.client
             .list_tasks(&auth, &workspace_id, &space_ids, options)
+            .await
+    }
+
+    pub async fn list_tasks_for_list(
+        &self,
+        list_id: &str,
+        options: ClickUpTaskListOptions,
+    ) -> Result<Vec<ClickUpTaskSummary>, String> {
+        let (auth, _) = self.enabled_workspace_context().await?;
+        self.client
+            .list_tasks_for_list(&auth, list_id, options)
             .await
     }
 

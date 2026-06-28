@@ -296,6 +296,8 @@ interface UiState {
   welcomeOverlayReturnView: ViewType | null;
   /** View to return to when leaving team split view */
   previousView: ViewType | null;
+  /** One-shot flag for top-bar project switches that should keep the visible section. */
+  preserveCurrentViewOnProjectSwitch: boolean;
   /** Filter for activity view navigation (set by StatusActivityBadge) */
   activityFilter: ActivityFilter;
   /** Set of collapsed column IDs (persisted to localStorage) */
@@ -440,6 +442,8 @@ interface UiActions {
   setCollapsedColumns: (columns: Set<string>) => void;
   /** Set the view to return to when leaving team split view */
   setPreviousView: (view: ViewType | null) => void;
+  /** Preserve the current section for the next project switch. */
+  preserveCurrentViewOnNextProjectSwitch: () => void;
   /** Atomically save old project state, restore new project state, clear ephemeral state */
   switchToProject: (oldProjectId: string | null, newProjectId: string) => void;
   /** Remove stale per-project route entries for a deleted project */
@@ -526,6 +530,7 @@ export const useUiStore = create<UiState & UiActions>()(
     showWelcomeOverlay: false,
     welcomeOverlayReturnView: null,
     previousView: null,
+    preserveCurrentViewOnProjectSwitch: false,
     activityFilter: { taskId: null, sessionId: null },
     collapsedColumns: loadCollapsedColumns(),
     viewByProject: loadViewByProject(),
@@ -870,6 +875,11 @@ export const useUiStore = create<UiState & UiActions>()(
         state.previousView = view;
       }),
 
+    preserveCurrentViewOnNextProjectSwitch: () =>
+      set((state) => {
+        state.preserveCurrentViewOnProjectSwitch = true;
+      }),
+
     switchToProject: (oldProjectId, newProjectId) =>
       set((state) => {
         // SAVE phase — skip if oldProjectId is null (first load)
@@ -879,8 +889,13 @@ export const useUiStore = create<UiState & UiActions>()(
           state.selectedTaskByProject[oldProjectId] = state.selectedTaskId;
         }
 
+        const preserveCurrentView = state.preserveCurrentViewOnProjectSwitch;
+        state.preserveCurrentViewOnProjectSwitch = false;
+
         // RESTORE phase — resolve view, fallback ephemeral views to the default project view
-        let restoredView: ViewType = state.viewByProject[newProjectId] ?? DEFAULT_PROJECT_VIEW;
+        let restoredView: ViewType = preserveCurrentView
+          ? state.currentView
+          : state.viewByProject[newProjectId] ?? DEFAULT_PROJECT_VIEW;
         let restoredSelectedTaskId = state.selectedTaskByProject[newProjectId] ?? null;
         // Guard against stale localStorage values ("settings" was removed from ViewType)
         if ((restoredView as string) === "settings" || restoredView === "team") {
@@ -895,6 +910,9 @@ export const useUiStore = create<UiState & UiActions>()(
         }
         if (restoredView !== "kanban" && restoredView !== "graph") {
           restoredSelectedTaskId = null;
+        }
+        if (preserveCurrentView) {
+          state.viewByProject[newProjectId] = restoredView;
         }
 
         // Persist updated maps
