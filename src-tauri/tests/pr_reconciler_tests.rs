@@ -9,6 +9,7 @@ mod common;
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use chrono::Utc;
 use common::MockGithubService;
 use ralphx_lib::application::pr_startup_recovery::{recover_missing_draft_prs, recover_pr_pollers};
@@ -24,6 +25,7 @@ use ralphx_lib::domain::repositories::{
     ExecutionPlanRepository, PlanBranchRepository, ProjectRepository, TaskRepository,
 };
 use ralphx_lib::domain::services::github_service::{PrReviewCommentFeedback, PrReviewFeedback};
+use ralphx_lib::domain::services::{PlanPrDescriptionDrafter, PrReviewState};
 use ralphx_lib::infrastructure::memory::{
     MemoryArtifactRepository, MemoryExecutionPlanRepository, MemoryIdeationSessionRepository,
     MemoryPlanBranchRepository, MemoryTaskRepository,
@@ -35,6 +37,29 @@ use ralphx_lib::infrastructure::memory::{
 
 fn empty_startup_blocked_projects() -> Arc<HashSet<ProjectId>> {
     Arc::new(HashSet::new())
+}
+
+struct StaticPlanPrDescriptionDrafter;
+
+#[async_trait]
+impl PlanPrDescriptionDrafter for StaticPlanPrDescriptionDrafter {
+    async fn draft_plan_description(
+        &self,
+        _project: &Project,
+        _plan_branch: &PlanBranch,
+        _review_base: &str,
+        _review_state: PrReviewState,
+    ) -> ralphx_lib::error::AppResult<ralphx_lib::domain::entities::AgentWorkspacePrDescription>
+    {
+        Ok(ralphx_lib::domain::entities::AgentWorkspacePrDescription::new(
+            None,
+            "## Summary\n\nStartup recovery drafted body".to_string(),
+        ))
+    }
+}
+
+fn static_plan_pr_description_drafter() -> Arc<dyn PlanPrDescriptionDrafter> {
+    Arc::new(StaticPlanPrDescriptionDrafter)
 }
 
 async fn wait_for_pr_detail_updates(mock_github: &MockGithubService, expected: u32) {
@@ -898,6 +923,7 @@ async fn test_startup_recovery_creates_missing_draft_pr_for_active_plan() {
         Arc::new(MemoryIdeationSessionRepository::new()),
         Arc::new(MemoryArtifactRepository::new()),
         github_service,
+        static_plan_pr_description_drafter(),
         empty_startup_blocked_projects(),
     )
     .await;
@@ -973,6 +999,7 @@ async fn test_startup_recovery_skips_empty_plan_branch_without_reviewable_diff()
         Arc::new(MemoryIdeationSessionRepository::new()),
         Arc::new(MemoryArtifactRepository::new()),
         github_service,
+        static_plan_pr_description_drafter(),
         empty_startup_blocked_projects(),
     )
     .await;
@@ -1047,6 +1074,7 @@ async fn test_startup_recovery_skips_plan_branch_without_merged_regular_task() {
         Arc::new(MemoryIdeationSessionRepository::new()),
         Arc::new(MemoryArtifactRepository::new()),
         github_service,
+        static_plan_pr_description_drafter(),
         empty_startup_blocked_projects(),
     )
     .await;
@@ -1120,6 +1148,7 @@ async fn test_startup_recovery_skips_superseded_execution_plan() {
         Arc::new(MemoryIdeationSessionRepository::new()),
         Arc::new(MemoryArtifactRepository::new()),
         github_service,
+        static_plan_pr_description_drafter(),
         empty_startup_blocked_projects(),
     )
     .await;
@@ -1186,6 +1215,7 @@ async fn test_startup_recovery_skips_when_project_pr_mode_disabled() {
         Arc::new(MemoryIdeationSessionRepository::new()),
         Arc::new(MemoryArtifactRepository::new()),
         github_service,
+        static_plan_pr_description_drafter(),
         empty_startup_blocked_projects(),
     )
     .await;
@@ -1263,6 +1293,7 @@ async fn test_startup_recovery_skips_terminal_or_already_open_prs() {
         Arc::new(MemoryIdeationSessionRepository::new()),
         Arc::new(MemoryArtifactRepository::new()),
         github_service,
+        static_plan_pr_description_drafter(),
         empty_startup_blocked_projects(),
     )
     .await;
@@ -1340,6 +1371,7 @@ async fn test_startup_recovery_pushes_existing_pr_branch_when_local_sync_pending
         Arc::new(MemoryIdeationSessionRepository::new()),
         Arc::new(MemoryArtifactRepository::new()),
         github_service,
+        static_plan_pr_description_drafter(),
         empty_startup_blocked_projects(),
     )
     .await;
@@ -1420,6 +1452,7 @@ async fn test_startup_recovery_refreshes_existing_pushed_pr_metadata() {
         Arc::new(MemoryIdeationSessionRepository::new()),
         Arc::new(MemoryArtifactRepository::new()),
         github_service,
+        static_plan_pr_description_drafter(),
         empty_startup_blocked_projects(),
     )
     .await;
@@ -1494,6 +1527,7 @@ async fn test_startup_recovery_refreshes_existing_pr_metadata_without_local_diff
         Arc::new(MemoryIdeationSessionRepository::new()),
         Arc::new(MemoryArtifactRepository::new()),
         github_service,
+        static_plan_pr_description_drafter(),
         empty_startup_blocked_projects(),
     )
     .await;
@@ -1562,6 +1596,7 @@ async fn test_startup_recovery_recovers_duplicate_pr() {
         Arc::new(MemoryIdeationSessionRepository::new()),
         Arc::new(MemoryArtifactRepository::new()),
         github_service,
+        static_plan_pr_description_drafter(),
         empty_startup_blocked_projects(),
     )
     .await;
