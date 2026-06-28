@@ -2644,7 +2644,17 @@ mod tests {
                 .last_update_pr_details_body
                 .as_deref()
                 .unwrap_or_default()
-                .contains("Ready for GitHub review"));
+                .starts_with("## Summary\n\nStartup recovery drafted body"));
+            assert!(!state
+                .last_update_pr_details_body
+                .as_deref()
+                .unwrap_or_default()
+                .contains("## RalphX Status"));
+            assert!(!state
+                .last_update_pr_details_body
+                .as_deref()
+                .unwrap_or_default()
+                .contains("## How To Review"));
         }
 
         let stored_merge_task = app_state
