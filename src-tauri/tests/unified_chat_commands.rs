@@ -2646,6 +2646,7 @@ mod ipc_contract {
                 title: None,
                 provider_harness: None,
                 model_override: None,
+                codex_fast_mode: None,
                 logical_effort: Some(LogicalEffort::Medium),
                 mode: Some("edit".to_string()),
                 base_ref_kind: Some("local_branch".to_string()),
