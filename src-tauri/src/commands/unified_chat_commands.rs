@@ -8945,14 +8945,15 @@ mod tests {
     };
     use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
     use crate::domain::entities::{
-        AgentConversationWorkspace, AgentConversationWorkspaceMode,
-        AgentConversationWorkspacePublicationEvent, AgentRun, AgentWorkspacePrDescription,
-        AgentWorkspaceSourcePullRequest, ArtifactId, ChatContextType, ChatConversation,
-        ChatConversationId, ChatMessage, ChatMessageId, ChatTimelineItem, ChatTimelineItemId,
-        ChatTimelineItemKind, ChatTimelineItemStatus, ExecutionPlan, ExecutionPlanId,
-        ExecutionPlanStatus, IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow,
-        IdeationSessionId, InternalStatus, MessageRole, PlanBranch, PlanBranchId, PlanBranchStatus,
-        Project, ProjectId, SessionPurpose, Task, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+        AgentConversationWorkspace, AgentConversationWorkspaceBranchMode,
+        AgentConversationWorkspaceMode, AgentConversationWorkspacePublicationEvent, AgentRun,
+        AgentWorkspacePrDescription, AgentWorkspaceSourcePullRequest, ArtifactId, ChatContextType,
+        ChatConversation, ChatConversationId, ChatMessage, ChatMessageId, ChatTimelineItem,
+        ChatTimelineItemId, ChatTimelineItemKind, ChatTimelineItemStatus, ExecutionPlan,
+        ExecutionPlanId, ExecutionPlanStatus, IdeationAnalysisBaseRefKind, IdeationSession,
+        IdeationSessionFlow, IdeationSessionId, InternalStatus, MessageRole, PlanBranch,
+        PlanBranchId, PlanBranchStatus, Project, ProjectId, SessionPurpose, Task,
+        DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
     };
     use crate::domain::execution::ExecutionSettings;
     use crate::domain::repositories::AgentConversationWorkspaceRepository;
@@ -14413,12 +14414,18 @@ mod tests {
 
         let workspace = response.workspace.expect("workspace should be returned");
         assert_eq!(workspace.mode, "edit");
-        assert_eq!(workspace.base_ref, "feature/source-pr");
+        assert_eq!(workspace.branch_mode, "linked");
+        assert_eq!(workspace.base_ref_kind, "project_default");
+        assert_eq!(workspace.base_ref, "main");
+        assert_eq!(workspace.branch_name, "feature/source-pr");
+        assert_eq!(workspace.publication_pr_number, Some(456));
+        assert_eq!(workspace.publication_pr_status.as_deref(), Some("open"));
         let source = workspace
             .source_pull_request
             .expect("source PR metadata should be returned");
         assert_eq!(source.number, 456);
         assert_eq!(source.head_ref_name, "feature/source-pr");
+        assert_eq!(source.base_ref_name.as_deref(), Some("main"));
         assert_eq!(source.head_ref_oid.as_deref(), Some(source_sha.as_str()));
 
         let persisted = state
@@ -14428,13 +14435,35 @@ mod tests {
             .expect("workspace lookup succeeds")
             .expect("workspace should persist");
         assert_eq!(
+            persisted.branch_mode,
+            AgentConversationWorkspaceBranchMode::Linked
+        );
+        assert_eq!(
+            persisted.base_ref_kind,
+            IdeationAnalysisBaseRefKind::ProjectDefault
+        );
+        assert_eq!(persisted.base_ref, "main");
+        assert_eq!(persisted.branch_name, "feature/source-pr");
+        assert_eq!(persisted.publication_pr_number, Some(456));
+        assert_eq!(
+            persisted.publication_pr_url.as_deref(),
+            Some("https://github.com/owner/repo/pull/456")
+        );
+        assert_eq!(persisted.publication_pr_status.as_deref(), Some("open"));
+        assert_eq!(
             persisted
                 .source_pull_request
                 .as_ref()
                 .map(|source| source.number),
             Some(456)
         );
-        assert!(persisted.publication_pr_number.is_none());
+        assert_eq!(
+            persisted
+                .source_pull_request
+                .as_ref()
+                .and_then(|source| source.base_ref_name.as_deref()),
+            Some("main")
+        );
     }
 
     #[tokio::test]
