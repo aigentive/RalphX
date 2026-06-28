@@ -12,12 +12,115 @@ import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ideationKeys } from "@/hooks/useIdeation";
+import type {
+  AgentConversationRuntimeStatus,
+  AgentRuntimeStatus,
+} from "@/api/chat";
 import {
   conversationFixture as conversation,
   conversationWorkspaceFixture as conversationWorkspace,
 } from "./agentsTestFixtures";
 
-const { getAgentConversationWorkspaceMock } = getAgentsViewTestMocks();
+const {
+  getAgentConversationRuntimeStatusesMock,
+  getAgentConversationWorkspaceMock,
+  getWorkspaceReviewContextMock,
+  startWorkspaceReviewMock,
+} = getAgentsViewTestMocks();
+
+const workspaceReviewTarget = {
+  scope: "workspace_delta",
+  baseRef: "main",
+  baseSha: "base-sha",
+  headRef: "HEAD",
+  headSha: "head-sha",
+  diffFingerprint: "fingerprint-1",
+  sourcePullRequestNumber: null,
+};
+
+function workspaceReviewContext(overrides: {
+  conversationId?: string;
+  status?: "idle" | "ready" | "reviewing" | "blocked";
+  isOutdated?: boolean;
+  isCurrent?: boolean;
+  shouldShowTab?: boolean;
+} = {}) {
+  const conversationId = overrides.conversationId ?? "conversation-1";
+  return {
+    success: true,
+    workspace: conversationWorkspace({ conversationId, mode: "edit" }),
+    events: [],
+    target: workspaceReviewTarget,
+    monitor: {
+      conversationId,
+      projectId: "project-1",
+      status: overrides.status ?? "ready",
+      currentTargetScope: "workspace_delta",
+      reviewedTargetScope: "workspace_delta",
+      reviewConversationId: "review-conversation-1",
+      reviewArtifactId: "review-artifact-1",
+      reviewArtifactVersion: 1,
+      reviewArtifactUpdatedAt: "2026-04-23T09:30:00Z",
+      reviewedHeadSha: "previous-head-sha",
+      reviewedDiffFingerprint: "previous-fingerprint",
+      selectedSourceBaseRef: null,
+      selectedSourceBaseSha: null,
+      selectedSourceHeadRef: null,
+      selectedSourceHeadSha: null,
+      selectedSourcePullRequestNumber: null,
+      workspaceBaseRef: "main",
+      workspaceBaseSha: "base-sha",
+      workspaceHeadRef: "HEAD",
+      workspaceHeadSha: "head-sha",
+      currentDiffFingerprint: workspaceReviewTarget.diffFingerprint,
+      previousVersionId: null,
+      lastRunId: null,
+      lastError: null,
+      createdAt: "2026-04-23T09:00:00Z",
+      updatedAt: "2026-04-23T09:30:00Z",
+    },
+    isCurrent: overrides.isCurrent ?? false,
+    isOutdated: overrides.isOutdated ?? true,
+    shouldShowTab: overrides.shouldShowTab ?? true,
+  };
+}
+
+function runtimeStatus(
+  isRunning: boolean,
+  agentStatus: AgentRuntimeStatus = isRunning ? "generating" : "idle",
+): AgentConversationRuntimeStatus {
+  return {
+    conversationId: "conversation-1",
+    isRunning,
+    agentStatus,
+    primarySource: isRunning ? "task_execution" : null,
+    summaryLabel:
+      agentStatus === "waiting_for_input"
+        ? "Awaiting input"
+        : isRunning
+          ? "Executing task"
+          : null,
+    items: isRunning
+      ? [
+          {
+            source: "task_execution",
+            contextType: "task_execution",
+            contextId: "task-1",
+            label: "Executing task",
+            title: "Implement plan",
+            agentStatus,
+            taskId: "task-1",
+            internalStatus: "running",
+            runningProcess: null,
+            ideationSession: null,
+            parentSessionId: null,
+            childSessionId: null,
+            conversationId: "task-conversation-1",
+          },
+        ]
+      : [],
+  };
+}
 
 describe("AgentsView artifact pane", () => {
   beforeEach(setupAgentsViewTest);
@@ -165,7 +268,7 @@ describe("AgentsView artifact pane", () => {
     expect(screen.getByTestId("agents-artifact-resizable-pane")).toBeInTheDocument();
   });
 
-  it("keeps the current tab when a workspace Review artifact is created", async () => {
+  it("opens the Review tab when a workspace Review artifact is created", async () => {
     mockAgentViewData(conversation({ agentMode: "edit" }));
     getAgentConversationWorkspaceMock.mockResolvedValue(conversationWorkspace({ mode: "edit" }));
     resetAgentSessionState({
@@ -196,9 +299,96 @@ describe("AgentsView artifact pane", () => {
       });
     });
 
-    expect(screen.getByTestId("agents-artifact-pane")).toHaveAttribute(
-      "data-active-tab",
-      "publish",
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-artifact-pane")).toHaveAttribute(
+        "data-active-tab",
+        "review",
+      ),
+    );
+  });
+
+  it("refreshes an outdated Review only after all related runtimes are idle", async () => {
+    let relatedRuntimesRunning = true;
+    mockAgentViewData(conversation({ agentMode: "edit" }));
+    getAgentConversationWorkspaceMock.mockResolvedValue(conversationWorkspace({ mode: "edit" }));
+    getWorkspaceReviewContextMock.mockResolvedValue(
+      workspaceReviewContext({ isOutdated: true, shouldShowTab: true }),
+    );
+    getAgentConversationRuntimeStatusesMock.mockImplementation(() =>
+      Promise.resolve({
+        "conversation-1": runtimeStatus(relatedRuntimesRunning),
+      }),
+    );
+    startWorkspaceReviewMock.mockResolvedValue(
+      workspaceReviewContext({ status: "reviewing", isOutdated: true }),
+    );
+    resetAgentSessionState({
+      selectedProjectId: "project-1",
+      selectedConversationId: "conversation-1",
+    });
+
+    renderAgentsView();
+
+    await waitFor(() =>
+      expect(getWorkspaceReviewContextMock).toHaveBeenCalledWith("conversation-1"),
+    );
+    await waitFor(() =>
+      expect(getAgentConversationRuntimeStatusesMock).toHaveBeenCalledWith([
+        "conversation-1",
+      ]),
+    );
+    expect(startWorkspaceReviewMock).not.toHaveBeenCalled();
+
+    relatedRuntimesRunning = false;
+    act(() => {
+      fireAgentViewEvent("agent:run_completed", {
+        conversationId: "task-conversation-1",
+      });
+    });
+
+    await waitFor(() =>
+      expect(startWorkspaceReviewMock).toHaveBeenCalledWith("conversation-1", {
+        force: true,
+      }),
+    );
+
+    act(() => {
+      fireAgentViewEvent("agent:run_completed", {
+        conversationId: "task-conversation-1",
+      });
+    });
+
+    await waitFor(() => expect(startWorkspaceReviewMock).toHaveBeenCalledTimes(1));
+  });
+
+  it("refreshes an outdated Review when retained related runtimes are only waiting for input", async () => {
+    mockAgentViewData(conversation({ agentMode: "edit" }));
+    getAgentConversationWorkspaceMock.mockResolvedValue(conversationWorkspace({ mode: "edit" }));
+    getWorkspaceReviewContextMock.mockResolvedValue(
+      workspaceReviewContext({ isOutdated: true, shouldShowTab: true }),
+    );
+    getAgentConversationRuntimeStatusesMock.mockResolvedValue({
+      "conversation-1": runtimeStatus(true, "waiting_for_input"),
+    });
+    startWorkspaceReviewMock.mockResolvedValue(
+      workspaceReviewContext({ status: "reviewing", isOutdated: true }),
+    );
+    resetAgentSessionState({
+      selectedProjectId: "project-1",
+      selectedConversationId: "conversation-1",
+    });
+
+    renderAgentsView();
+
+    await waitFor(() =>
+      expect(getAgentConversationRuntimeStatusesMock).toHaveBeenCalledWith([
+        "conversation-1",
+      ]),
+    );
+    await waitFor(() =>
+      expect(startWorkspaceReviewMock).toHaveBeenCalledWith("conversation-1", {
+        force: true,
+      }),
     );
   });
 

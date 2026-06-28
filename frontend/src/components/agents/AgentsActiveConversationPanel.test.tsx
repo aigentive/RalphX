@@ -55,12 +55,17 @@ vi.mock("@tauri-apps/plugin-opener", () => ({
 vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
   IntegratedChatPanel: ({
     additionalQuestionSessionIds,
+    agentProcessContextIdOverride,
+    conversationIdOverride,
     headerContent,
     planApprovalAction,
     onQuestionAnswered,
     renderComposer,
+    storeContextKeyOverride,
   }: {
     additionalQuestionSessionIds?: string[];
+    agentProcessContextIdOverride?: string;
+    conversationIdOverride?: string;
     headerContent?: ReactNode;
     planApprovalAction?: {
       label: string;
@@ -74,10 +79,14 @@ vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
       result: Record<string, unknown>,
     ) => void | Promise<void>;
     renderComposer: (props: Record<string, unknown>) => ReactNode;
+    storeContextKeyOverride?: string;
   }) => (
     <div
       data-testid="integrated-chat-panel"
       data-question-session-ids={additionalQuestionSessionIds?.join(",") ?? ""}
+      data-agent-process-context-id={agentProcessContextIdOverride ?? ""}
+      data-conversation-id={conversationIdOverride ?? ""}
+      data-store-context-key={storeContextKeyOverride ?? ""}
     >
       {planApprovalAction && (
         <button
@@ -684,6 +693,7 @@ function renderPanel(
     onAgentUserMessageSent: vi.fn(),
     onConversationModeSwitched: vi.fn(),
     onFocusIdeationSession: vi.fn(),
+    onFocusWorkspaceReview: vi.fn(),
     onFocusVerificationSession: vi.fn(),
     onFocusTaskRuntime: vi.fn(),
     onOpenTaskArtifact: vi.fn(),
@@ -906,6 +916,61 @@ describe("AgentsActiveConversationPanel", () => {
 
     expect(onFocusTaskRuntime).toHaveBeenCalledWith("task-2", "review");
     expect(onOpenTaskArtifact).toHaveBeenCalledWith("task-2");
+  });
+
+  it("focuses the workspace Review chat from the runtime status CTA", async () => {
+    const onFocusWorkspaceReview = vi.fn();
+    const workspaceItem = workspaceRuntimeStatus().items[0]!;
+    getAgentConversationRuntimeStatusesMock.mockResolvedValue({
+      "conversation-1": workspaceRuntimeStatus({
+        primarySource: "workspace_review",
+        summaryLabel: "Reviewing",
+        items: [
+          { ...workspaceItem, agentStatus: "waiting_for_input" },
+          {
+            source: "workspace_review",
+            contextType: "project",
+            contextId: "review-conversation-1",
+            label: "Reviewing",
+            title: "Review workspace changes",
+            agentStatus: "generating",
+            taskId: null,
+            internalStatus: "reviewing",
+            runningProcess: null,
+            ideationSession: null,
+            parentSessionId: null,
+            childSessionId: null,
+            conversationId: "review-conversation-1",
+          },
+        ],
+      }),
+    });
+
+    renderPanel({ onFocusWorkspaceReview });
+
+    fireEvent.click(await screen.findByRole("button", { name: "View Review" }));
+
+    expect(onFocusWorkspaceReview).toHaveBeenCalledWith("review-conversation-1");
+  });
+
+  it("routes workspace Review focus through the review child project chat", () => {
+    renderPanel({
+      chatFocus: {
+        type: "workspace_review",
+        conversationId: "review-conversation-1",
+      },
+    });
+
+    const panel = screen.getByTestId("integrated-chat-panel");
+    expect(panel).toHaveAttribute("data-conversation-id", "review-conversation-1");
+    expect(panel).toHaveAttribute(
+      "data-agent-process-context-id",
+      "review-conversation-1",
+    );
+    expect(panel).toHaveAttribute(
+      "data-store-context-key",
+      "project:review-conversation-1",
+    );
   });
 
   it("refines selected task artifact focus to the matching runtime context", async () => {

@@ -8,8 +8,7 @@ use crate::domain::entities::{
     AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewMonitor,
     AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewTargetScope,
     AgentWorkspaceSourcePullRequest, ArtifactId, ChatConversationId, IdeationAnalysisBaseRefKind,
-    IdeationSessionId, PlanBranchId, ProjectId,
-    DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+    IdeationSessionId, PlanBranchId, ProjectId, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::repositories::AgentConversationWorkspaceRepository;
 use crate::testing::SqliteTestDb;
@@ -464,6 +463,9 @@ async fn workspace_review_monitor_round_trips_and_preserves_versioned_artifacts(
     monitor.review_artifact_id = Some(ArtifactId::from_string("artifact-current"));
     monitor.review_artifact_version = Some(4);
     monitor.review_artifact_updated_at = Some(artifact_updated_at);
+    monitor.review_conversation_id = Some(ChatConversationId::from_string(
+        "22222222-2222-2222-2222-222222222222",
+    ));
     monitor.reviewed_head_sha = Some("head-sha".to_string());
     monitor.reviewed_diff_fingerprint = Some("fingerprint".to_string());
     monitor.selected_source_base_ref = Some("main".to_string());
@@ -475,10 +477,7 @@ async fn workspace_review_monitor_round_trips_and_preserves_versioned_artifacts(
     monitor.previous_version_id = Some(ArtifactId::from_string("artifact-previous"));
     monitor.last_run_id = Some("run-1".to_string());
 
-    let saved = repo
-        .upsert_workspace_review_monitor(monitor)
-        .await
-        .unwrap();
+    let saved = repo.upsert_workspace_review_monitor(monitor).await.unwrap();
     assert_eq!(saved.status, AgentWorkspaceReviewMonitorStatus::Ready);
     assert_eq!(
         saved.current_target_scope,
@@ -488,6 +487,13 @@ async fn workspace_review_monitor_round_trips_and_preserves_versioned_artifacts(
     assert_eq!(
         saved.review_artifact_id.as_ref().map(ArtifactId::as_str),
         Some("artifact-current")
+    );
+    assert_eq!(
+        saved
+            .review_conversation_id
+            .as_ref()
+            .map(ChatConversationId::as_str),
+        Some("22222222-2222-2222-2222-222222222222".to_string())
     );
     assert_eq!(
         saved.previous_version_id.as_ref().map(ArtifactId::as_str),
@@ -508,10 +514,7 @@ async fn workspace_review_monitor_round_trips_and_preserves_versioned_artifacts(
     update.last_run_id = Some("run-2".to_string());
     update.last_error = Some("review failed".to_string());
 
-    let updated = repo
-        .upsert_workspace_review_monitor(update)
-        .await
-        .unwrap();
+    let updated = repo.upsert_workspace_review_monitor(update).await.unwrap();
     assert_eq!(updated.status, AgentWorkspaceReviewMonitorStatus::Blocked);
     assert_eq!(
         updated.current_target_scope,
@@ -529,6 +532,14 @@ async fn workspace_review_monitor_round_trips_and_preserves_versioned_artifacts(
         "partial monitor updates should preserve the last artifact id"
     );
     assert_eq!(updated.review_artifact_version, Some(4));
+    assert_eq!(
+        updated
+            .review_conversation_id
+            .as_ref()
+            .map(ChatConversationId::as_str),
+        Some("22222222-2222-2222-2222-222222222222".to_string()),
+        "partial monitor updates should preserve the active Review chat id"
+    );
     assert_eq!(
         updated.previous_version_id.as_ref().map(ArtifactId::as_str),
         Some("artifact-previous")

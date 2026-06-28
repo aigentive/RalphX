@@ -1981,6 +1981,7 @@ export interface AgentWorkspaceReviewMonitor {
   status: AgentWorkspaceReviewMonitorStatus;
   currentTargetScope: AgentWorkspaceReviewTargetScope | null;
   reviewedTargetScope: AgentWorkspaceReviewTargetScope | null;
+  reviewConversationId: string | null;
   reviewArtifactId: string | null;
   reviewArtifactVersion: number | null;
   reviewArtifactUpdatedAt: string | null;
@@ -2251,6 +2252,7 @@ const AgentWorkspaceReviewMonitorResponseSchema = z.object({
   status: z.enum(["idle", "reviewing", "ready", "blocked"]),
   current_target_scope: z.enum(["selected_source", "workspace_delta"]).nullable(),
   reviewed_target_scope: z.enum(["selected_source", "workspace_delta"]).nullable(),
+  review_conversation_id: z.string().nullable().optional(),
   review_artifact_id: z.string().nullable(),
   review_artifact_version: z.number().nullable(),
   review_artifact_updated_at: z.string().nullable(),
@@ -2756,6 +2758,7 @@ function transformAgentWorkspaceReviewMonitor(
     status: raw.status,
     currentTargetScope: raw.current_target_scope,
     reviewedTargetScope: raw.reviewed_target_scope,
+    reviewConversationId: raw.review_conversation_id ?? null,
     reviewArtifactId: raw.review_artifact_id,
     reviewArtifactVersion: raw.review_artifact_version,
     reviewArtifactUpdatedAt: raw.review_artifact_updated_at,
@@ -3596,6 +3599,7 @@ export async function getAgentRunningStates(
 
 const AgentConversationRuntimeSourceSchema = z.enum([
   "workspace",
+  "workspace_review",
   "ideation",
   "verification",
   "task_execution",
