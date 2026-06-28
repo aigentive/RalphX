@@ -6,8 +6,8 @@ use async_trait::async_trait;
 use crate::application::agent_client_bundle::AgentClientBundle;
 use crate::application::agent_workspace_pr_description::{
     escape_xml_text, format_changed_files, format_commit_summaries, run_git_text, truncate_chars,
-    DEFAULT_AGENT_WORKSPACE_PR_TEMPLATE, MAX_NAME_STATUS_CHARS, MAX_PATCH_EXCERPT_CHARS,
-    MAX_STAT_CHARS,
+    validate_agent_workspace_pr_description_body, DEFAULT_AGENT_WORKSPACE_PR_TEMPLATE,
+    MAX_NAME_STATUS_CHARS, MAX_PATCH_EXCERPT_CHARS, MAX_STAT_CHARS,
 };
 use crate::application::app_state::ResolvedBackgroundAgentRuntime;
 use crate::application::harness_runtime_registry::resolve_harness_agent_bootstrap;
@@ -17,15 +17,16 @@ use crate::domain::agents::{
     AgentProviderSettings, AgentRole, DEFAULT_AGENT_HARNESS,
 };
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode, ChatConversationId,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentWorkspacePrDescription,
+    ChatConversationId,
     IdeationAnalysisBaseRefKind, PlanBranch, Project,
 };
 use crate::domain::repositories::AgentConversationWorkspaceRepository;
 use crate::domain::repositories::AgentProviderSettingsRepository;
-use crate::domain::services::PlanPrDescriptionDrafter;
+use crate::domain::services::{PlanPrDescriptionDrafter, PrReviewState};
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::agent_names;
-use tracing::{info, warn};
+use tracing::info;
 
 pub(crate) struct AppStatePlanPrDescriptionDrafter {
     agent_conversation_workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
@@ -54,28 +55,18 @@ impl PlanPrDescriptionDrafter for AppStatePlanPrDescriptionDrafter {
         project: &Project,
         plan_branch: &PlanBranch,
         review_base: &str,
-    ) -> Option<String> {
-        match draft_plan_pr_description(
+        review_state: PrReviewState,
+    ) -> AppResult<AgentWorkspacePrDescription> {
+        draft_plan_pr_description(
             &self.agent_conversation_workspace_repo,
             &self.agent_provider_settings_repo,
             &self.agent_clients,
             project,
             plan_branch,
             review_base,
+            review_state,
         )
         .await
-        {
-            Ok(body) => Some(body),
-            Err(error) => {
-                warn!(
-                    target: "ralphx_lib::application::plan_pr_description",
-                    plan_branch_id = %plan_branch.id,
-                    project_id = %project.id,
-                    "Failed to draft plan PR description, falling back to template: {error}"
-                );
-                None
-            }
-        }
     }
 }
 
@@ -86,7 +77,8 @@ async fn draft_plan_pr_description(
     project: &Project,
     plan_branch: &PlanBranch,
     review_base: &str,
-) -> AppResult<String> {
+    review_state: PrReviewState,
+) -> AppResult<AgentWorkspacePrDescription> {
     let repo_path = Path::new(&project.working_directory);
 
     let synthetic_id = ChatConversationId::new();
@@ -112,6 +104,7 @@ async fn draft_plan_pr_description(
         plan_branch,
         repo_path,
         review_base,
+        review_state,
         &synthetic_id,
         &workspace,
     )
@@ -131,9 +124,10 @@ async fn draft_plan_pr_description_inner(
     plan_branch: &PlanBranch,
     repo_path: &Path,
     review_base: &str,
+    review_state: PrReviewState,
     synthetic_id: &ChatConversationId,
     _workspace: &AgentConversationWorkspace,
-) -> AppResult<String> {
+) -> AppResult<AgentWorkspacePrDescription> {
     workspace_repo.clear_pr_description(synthetic_id).await?;
 
     let review_range = format!("{review_base}..{}", plan_branch.branch_name);
@@ -173,6 +167,7 @@ async fn draft_plan_pr_description_inner(
         project,
         plan_branch,
         review_base,
+        review_state,
         &template,
         &commits,
         &diff_stats,
@@ -242,6 +237,7 @@ async fn draft_plan_pr_description_inner(
             "plan PR describer agent completed but did not submit a description".to_string(),
         ));
     };
+    validate_agent_workspace_pr_description_body(&description.body_markdown)?;
 
     info!(
         target: "ralphx_lib::application::plan_pr_description",
@@ -252,7 +248,7 @@ async fn draft_plan_pr_description_inner(
         "Drafted plan PR description"
     );
 
-    Ok(description.body_markdown)
+    Ok(description)
 }
 
 async fn resolve_plan_pr_describer_runtime(
@@ -335,6 +331,7 @@ pub(crate) fn build_plan_pr_describer_prompt(
     project: &Project,
     plan_branch: &PlanBranch,
     review_base: &str,
+    review_state: PrReviewState,
     template: &str,
     commits: &[crate::application::git_service::CommitInfo],
     diff_stats: &crate::application::git_service::DiffStats,
@@ -344,6 +341,10 @@ pub(crate) fn build_plan_pr_describer_prompt(
 ) -> String {
     let commit_summaries = format_commit_summaries(commits);
     let changed_files = format_changed_files(diff_stats);
+    let review_state_label = match review_state {
+        PrReviewState::Draft => "draft",
+        PrReviewState::Ready => "ready",
+    };
     let diff_summary = format!(
         "{} files changed, {} insertions, {} deletions",
         diff_stats.files_changed, diff_stats.insertions, diff_stats.deletions
@@ -370,6 +371,7 @@ pub(crate) fn build_plan_pr_describer_prompt(
          <base_ref>{base_ref}</base_ref>\n\
          <branch_name>{branch_name}</branch_name>\n\
          <review_base>{review_base}</review_base>\n\
+         <review_state>{review_state}</review_state>\n\
          <template source=\"ralphx_fallback\">\n{template}\n</template>\n\
          <diff_summary>{diff_summary}</diff_summary>\n\
          <changed_files>\n{changed_files}\n</changed_files>\n\
@@ -384,6 +386,7 @@ pub(crate) fn build_plan_pr_describer_prompt(
         base_ref = escape_xml_text(&plan_branch.source_branch),
         branch_name = escape_xml_text(&plan_branch.branch_name),
         review_base = escape_xml_text(review_base),
+        review_state = review_state_label,
         template = escape_xml_text(template),
         diff_summary = escape_xml_text(&diff_summary),
         commit_summaries = escape_xml_text(&commit_summaries),

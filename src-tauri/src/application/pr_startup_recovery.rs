@@ -40,7 +40,8 @@ use crate::domain::repositories::{
     TaskRepository,
 };
 use crate::domain::services::{
-    GithubServiceTrait, PlanPrPublisher, PrReviewState, RunningAgentRegistry,
+    GithubServiceTrait, PlanPrDescriptionDrafter, PlanPrPublisher, PrReviewState,
+    RunningAgentRegistry,
 };
 use crate::domain::state_machine::transition_handler::{
     create_draft_pr_if_needed, plan_branch_has_reviewable_diff, plan_regular_tasks_complete,
@@ -377,6 +378,7 @@ pub async fn recover_missing_draft_prs(
     ideation_session_repo: Arc<dyn IdeationSessionRepository>,
     artifact_repo: Arc<dyn ArtifactRepository>,
     github_service: Arc<dyn GithubServiceTrait>,
+    plan_pr_description_drafter: Arc<dyn PlanPrDescriptionDrafter>,
     blocked_git_project_ids: Arc<HashSet<ProjectId>>,
 ) {
     let started_at = Instant::now();
@@ -399,6 +401,7 @@ pub async fn recover_missing_draft_prs(
             let ideation_session_repo = Arc::clone(&ideation_session_repo);
             let artifact_repo = Arc::clone(&artifact_repo);
             let github_service = Arc::clone(&github_service);
+            let plan_pr_description_drafter = Arc::clone(&plan_pr_description_drafter);
             let blocked_git_project_ids = Arc::clone(&blocked_git_project_ids);
             let pr_creation_guard = Arc::clone(&pr_creation_guard);
             async move {
@@ -410,6 +413,7 @@ pub async fn recover_missing_draft_prs(
                     ideation_session_repo,
                     artifact_repo,
                     github_service,
+                    plan_pr_description_drafter,
                     blocked_git_project_ids,
                     pr_creation_guard,
                 )
@@ -455,6 +459,7 @@ pub async fn recover_missing_draft_prs(
             "PR startup recovery: scheduling existing PR metadata refresh in background"
         );
         let metadata_refresh_jobs = totals.metadata_refresh_jobs;
+        let plan_pr_description_drafter = Arc::clone(&plan_pr_description_drafter);
         tauri::async_runtime::spawn(async move {
             tokio::time::sleep(STARTUP_BACKGROUND_DB_GRACE).await;
             git_cmd::with_git_command_lane(git_cmd::GitCommandLane::Background, async move {
@@ -463,6 +468,7 @@ pub async fn recover_missing_draft_prs(
                     github_service,
                     ideation_session_repo,
                     artifact_repo,
+                    plan_pr_description_drafter,
                 )
                 .await;
             })
@@ -480,6 +486,7 @@ async fn recover_missing_draft_prs_for_project(
     ideation_session_repo: Arc<dyn IdeationSessionRepository>,
     artifact_repo: Arc<dyn ArtifactRepository>,
     github_service: Arc<dyn GithubServiceTrait>,
+    plan_pr_description_drafter: Arc<dyn PlanPrDescriptionDrafter>,
     blocked_git_project_ids: Arc<HashSet<ProjectId>>,
     pr_creation_guard: Arc<dashmap::DashMap<PlanBranchId, ()>>,
 ) -> PrCreationRecoveryProjectResult {
@@ -729,6 +736,7 @@ async fn recover_missing_draft_prs_for_project(
             &pr_creation_guard,
             &github_service,
             &plan_branch_repo,
+            Some(&plan_pr_description_drafter),
             Some(&ideation_session_repo),
             Some(&artifact_repo),
         )
@@ -764,6 +772,7 @@ async fn refresh_existing_pr_metadata(
     github_service: Arc<dyn GithubServiceTrait>,
     ideation_session_repo: Arc<dyn IdeationSessionRepository>,
     artifact_repo: Arc<dyn ArtifactRepository>,
+    plan_pr_description_drafter: Arc<dyn PlanPrDescriptionDrafter>,
 ) {
     if jobs.is_empty() {
         return;
@@ -787,12 +796,38 @@ async fn refresh_existing_pr_metadata(
             let github_service = Arc::clone(&github_service);
             let ideation_session_repo = Arc::clone(&ideation_session_repo);
             let artifact_repo = Arc::clone(&artifact_repo);
+            let plan_pr_description_drafter = Arc::clone(&plan_pr_description_drafter);
             let refreshed_count = Arc::clone(&refreshed_count);
             let refresh_failed_count = Arc::clone(&refresh_failed_count);
             let mark_ready_count = Arc::clone(&mark_ready_count);
             let mark_ready_failed_count = Arc::clone(&mark_ready_failed_count);
             async move {
                 let job_started_at = Instant::now();
+                let review_base = crate::domain::state_machine::transition_handler::resolve_plan_branch_pr_base(
+                    &job.project,
+                    &job.plan_branch,
+                );
+                let description = match plan_pr_description_drafter
+                    .draft_plan_description(
+                        &job.project,
+                        &job.plan_branch,
+                        &review_base,
+                        job.review_state,
+                    )
+                    .await
+                {
+                    Ok(description) => description,
+                    Err(e) => {
+                        tracing::warn!(
+                            branch_id = job.plan_branch.id.as_str(),
+                            branch = %job.plan_branch.branch_name,
+                            error = %e,
+                            "PR startup recovery: failed to draft PR description for metadata refresh"
+                        );
+                        refresh_failed_count.fetch_add(1, Ordering::Relaxed);
+                        return;
+                    }
+                };
                 let publisher = PlanPrPublisher::new(
                     &github_service,
                     Some(&ideation_session_repo),
@@ -804,6 +839,7 @@ async fn refresh_existing_pr_metadata(
                         &job.project,
                         &job.plan_branch,
                         job.review_state,
+                        &description,
                     )
                     .await
                 {
@@ -2104,6 +2140,7 @@ mod tests {
     use std::process::Command;
     use std::sync::LazyLock;
 
+    use async_trait::async_trait;
     use crate::application::agent_conversation_workspace::{
         agent_conversation_branch_name, resolve_agent_conversation_workspace_path,
     };
@@ -2125,6 +2162,25 @@ mod tests {
 
     static TERMINAL_CLEANUP_FETCH_TEST_LOCK: LazyLock<TokioMutex<()>> =
         LazyLock::new(|| TokioMutex::new(()));
+
+    struct StaticPlanPrDescriptionDrafter;
+
+    #[async_trait]
+    impl PlanPrDescriptionDrafter for StaticPlanPrDescriptionDrafter {
+        async fn draft_plan_description(
+            &self,
+            _project: &Project,
+            _plan_branch: &PlanBranch,
+            _review_base: &str,
+            _review_state: PrReviewState,
+        ) -> crate::error::AppResult<crate::domain::entities::AgentWorkspacePrDescription>
+        {
+            Ok(crate::domain::entities::AgentWorkspacePrDescription::new(
+                None,
+                "## Summary\n\nStartup recovery drafted body".to_string(),
+            ))
+        }
+    }
 
     fn run_git(repo: &Path, args: &[&str]) {
         let output = Command::new("git")
@@ -2427,6 +2483,7 @@ mod tests {
             Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
             Arc::clone(&app_state.ideation_session_repo),
             Arc::clone(&app_state.artifact_repo),
+            Arc::new(StaticPlanPrDescriptionDrafter),
         )
         .await;
 
@@ -2434,6 +2491,13 @@ mod tests {
         assert_eq!(state.update_pr_details_calls, 1);
         assert_eq!(state.mark_pr_ready_calls, 1);
         assert_eq!(state.last_mark_pr_ready_number, Some(42));
+        let body = state
+            .last_update_pr_details_body
+            .as_deref()
+            .expect("updated PR body should be captured");
+        assert!(body.starts_with("## Summary\n\nStartup recovery drafted body"));
+        assert!(!body.contains("## RalphX Status"));
+        assert!(!body.contains("## How To Review"));
     }
 
     #[test]
@@ -2542,6 +2606,7 @@ mod tests {
             Arc::clone(&app_state.ideation_session_repo),
             Arc::clone(&app_state.artifact_repo),
             Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+            Arc::new(StaticPlanPrDescriptionDrafter),
             Arc::new(HashSet::new()),
         )
         .await;

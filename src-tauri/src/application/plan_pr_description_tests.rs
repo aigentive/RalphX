@@ -21,7 +21,7 @@ use crate::domain::entities::{
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentProviderSettingsRepository,
 };
-use crate::domain::services::PlanPrDescriptionDrafter;
+use crate::domain::services::{PlanPrDescriptionDrafter, PrReviewState};
 use crate::infrastructure::memory::{
     MemoryAgentConversationWorkspaceRepository, MemoryAgentProviderSettingsRepository,
 };
@@ -227,17 +227,19 @@ async fn draft_plan_description_runs_describer_and_cleans_synthetic_workspace() 
     let drafter = build_drafter(Arc::clone(&workspace_repo_trait), client_trait).await;
 
     let body = drafter
-        .draft_plan_description(&project, &plan_branch, "main")
-        .await;
+        .draft_plan_description(&project, &plan_branch, "main", PrReviewState::Draft)
+        .await
+        .expect("plan PR describer should return submitted description");
 
     assert_eq!(
-        body.as_deref(),
-        Some("## Summary\n\nDrafted by the test describer")
+        body.body_markdown,
+        "## Summary\n\nDrafted by the test describer"
     );
     let prompt = client.last_prompt().await;
     assert!(prompt.contains("submit_agent_workspace_pr_description exactly once"));
     assert!(prompt.contains("<project_name>R&amp;D &lt;Project&gt;</project_name>"));
     assert!(prompt.contains("<branch_name>plan/generated-pr-description</branch_name>"));
+    assert!(prompt.contains("<review_state>draft</review_state>"));
     assert!(prompt.contains("src/generated.rs"));
     assert!(prompt.contains("Add plan description fixture"));
     assert!(prompt.contains("## Custom Summary"));
@@ -252,7 +254,7 @@ async fn draft_plan_description_runs_describer_and_cleans_synthetic_workspace() 
 }
 
 #[tokio::test]
-async fn draft_plan_description_returns_none_when_agent_fails() {
+async fn draft_plan_description_returns_error_when_agent_fails() {
     let repo = setup_plan_repo();
     let (project, plan_branch) = project_and_plan_branch(repo.path());
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
@@ -267,10 +269,10 @@ async fn draft_plan_description_returns_none_when_agent_fails() {
     let drafter = build_drafter(Arc::clone(&workspace_repo_trait), client_trait).await;
 
     let body = drafter
-        .draft_plan_description(&project, &plan_branch, "main")
+        .draft_plan_description(&project, &plan_branch, "main", PrReviewState::Ready)
         .await;
 
-    assert!(body.is_none());
+    assert!(body.is_err());
     assert!(
         workspace_repo
             .get_by_project_id(&project.id)
@@ -282,7 +284,7 @@ async fn draft_plan_description_returns_none_when_agent_fails() {
 }
 
 #[tokio::test]
-async fn draft_plan_description_returns_none_when_agent_submits_no_description() {
+async fn draft_plan_description_returns_error_when_agent_submits_no_description() {
     let repo = setup_plan_repo();
     let (project, plan_branch) = project_and_plan_branch(repo.path());
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
@@ -297,10 +299,10 @@ async fn draft_plan_description_returns_none_when_agent_submits_no_description()
     let drafter = build_drafter(Arc::clone(&workspace_repo_trait), client_trait).await;
 
     let body = drafter
-        .draft_plan_description(&project, &plan_branch, "main")
+        .draft_plan_description(&project, &plan_branch, "main", PrReviewState::Ready)
         .await;
 
-    assert!(body.is_none());
+    assert!(body.is_err());
     assert!(
         workspace_repo
             .get_by_project_id(&project.id)
@@ -377,6 +379,7 @@ fn build_plan_pr_describer_prompt_escapes_and_truncates_context() {
         &project,
         &plan_branch,
         "main&base",
+        PrReviewState::Ready,
         "## Template & <Heading>",
         &commits,
         &diff_stats,
@@ -389,6 +392,7 @@ fn build_plan_pr_describer_prompt_escapes_and_truncates_context() {
     assert!(prompt.contains("<registered_project_cwd>/tmp/a&amp;b</registered_project_cwd>"));
     assert!(prompt.contains("<base_ref>main&amp;base</base_ref>"));
     assert!(prompt.contains("<branch_name>plan/&lt;feature&gt;&amp;branch</branch_name>"));
+    assert!(prompt.contains("<review_state>ready</review_state>"));
     assert!(prompt.contains("## Template &amp; &lt;Heading&gt;"));
     assert!(prompt.contains("src/&lt;unsafe&gt;&amp;file.rs"));
     assert!(prompt.contains("Add &lt;unsafe&gt; &amp; useful change"));

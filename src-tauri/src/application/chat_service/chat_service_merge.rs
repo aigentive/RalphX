@@ -32,7 +32,7 @@ use crate::domain::repositories::{
     IdeationSessionRepository, MemoryEventRepository, PlanBranchRepository, ProjectRepository,
     TaskDependencyRepository, TaskRepository,
 };
-use crate::domain::services::{MessageQueue, RunningAgentRegistry};
+use crate::domain::services::{MessageQueue, PlanPrDescriptionDrafter, RunningAgentRegistry};
 use crate::domain::state_machine::resolve_merge_branches;
 use crate::domain::state_machine::services::TaskScheduler;
 use crate::domain::state_machine::transition_handler::{
@@ -1068,6 +1068,15 @@ async fn complete_merge_and_schedule<R: Runtime + 'static>(
             .and_then(|state| state.github_service.clone()),
         ideation_session_repo: Some(Arc::clone(ctx.ideation_session_repo)),
         artifact_repo: Some(Arc::clone(ctx.artifact_repo)),
+        plan_pr_description_drafter: app_state.as_ref().map(|state| {
+            Arc::new(
+                crate::application::plan_pr_description::AppStatePlanPrDescriptionDrafter::new(
+                    Arc::clone(&state.agent_conversation_workspace_repo),
+                    Arc::clone(&state.agent_provider_settings_repo),
+                    state.agent_clients.clone(),
+                ),
+            ) as Arc<dyn PlanPrDescriptionDrafter>
+        }),
     };
 
     if let Err(e) = complete_merge_internal_with_pr_sync(
