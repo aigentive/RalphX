@@ -189,12 +189,7 @@ fn workspace_base_selection(
     workspace: Option<&AgentConversationWorkspace>,
 ) -> AgentConversationWorkspaceBaseSelection {
     workspace
-        .map(|workspace| AgentConversationWorkspaceBaseSelection {
-            kind: Some(workspace.base_ref_kind),
-            base_ref: Some(workspace.base_ref.clone()),
-            display_name: workspace.base_display_name.clone(),
-            source_pull_request: workspace.source_pull_request.clone(),
-        })
+        .map(AgentConversationWorkspaceBaseSelection::for_workspace_reuse)
         .unwrap_or_default()
 }
 
@@ -216,10 +211,7 @@ fn truncate_fork_title(title: &str) -> String {
         return title.to_string();
     }
 
-    let mut truncated = title
-        .chars()
-        .take(MAX_FORK_TITLE_CHARS)
-        .collect::<String>();
+    let mut truncated = title.chars().take(MAX_FORK_TITLE_CHARS).collect::<String>();
     if let Some((prefix, _)) = truncated.rsplit_once(char::is_whitespace) {
         if prefix.len() >= FORK_TITLE_PREFIX.len() {
             truncated = prefix.trim_end().to_string();
@@ -383,6 +375,7 @@ mod tests {
     use super::*;
     use crate::domain::agents::AgentHarnessKind;
     use crate::domain::entities::{
+        AgentConversationWorkspaceBranchMode, AgentWorkspaceSourcePullRequest,
         ChatTimelineItemKind, ChatTimelineItemStatus, IdeationAnalysisBaseRefKind, MessageRole,
         Project,
     };
@@ -471,6 +464,79 @@ mod tests {
 
         assert!(title.starts_with("[Fork] "));
         assert!(title.chars().count() <= MAX_FORK_TITLE_CHARS);
+    }
+
+    #[test]
+    fn workspace_base_selection_preserves_branch_mode_without_pr_metadata() {
+        let mut workspace = AgentConversationWorkspace::new(
+            ChatConversationId::from_string("conversation-1"),
+            ProjectId::from_string("project-1".to_string()),
+            AgentConversationWorkspaceMode::Edit,
+            IdeationAnalysisBaseRefKind::LocalBranch,
+            "feature/shared".to_string(),
+            Some("feature/shared".to_string()),
+            Some("abc123".to_string()),
+            "feature/shared".to_string(),
+            "/tmp/worktree".to_string(),
+        );
+        workspace.branch_mode = AgentConversationWorkspaceBranchMode::Linked;
+        workspace.source_pull_request = None;
+
+        let selection = workspace_base_selection(Some(&workspace));
+
+        assert_eq!(
+            selection.branch_mode,
+            Some(AgentConversationWorkspaceBranchMode::Linked)
+        );
+        assert_eq!(
+            selection.kind,
+            Some(IdeationAnalysisBaseRefKind::LocalBranch)
+        );
+        assert_eq!(selection.base_ref.as_deref(), Some("feature/shared"));
+        assert!(selection.source_pull_request.is_none());
+    }
+
+    #[test]
+    fn workspace_base_selection_uses_pr_head_for_pr_backed_linked_workspace() {
+        let mut workspace = AgentConversationWorkspace::new(
+            ChatConversationId::from_string("conversation-1"),
+            ProjectId::from_string("project-1".to_string()),
+            AgentConversationWorkspaceMode::Edit,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main".to_string(),
+            Some("PR #42: Add linked PR".to_string()),
+            Some("base123".to_string()),
+            "feature/linked-pr".to_string(),
+            "/tmp/worktree".to_string(),
+        );
+        workspace.branch_mode = AgentConversationWorkspaceBranchMode::Linked;
+        workspace.source_pull_request = Some(AgentWorkspaceSourcePullRequest {
+            number: 42,
+            url: Some("https://github.test/pull/42".to_string()),
+            title: Some("Add linked PR".to_string()),
+            head_ref_name: "feature/linked-pr".to_string(),
+            base_ref_name: Some("main".to_string()),
+            head_ref_oid: Some("head123".to_string()),
+        });
+
+        let selection = workspace_base_selection(Some(&workspace));
+
+        assert_eq!(
+            selection.kind,
+            Some(IdeationAnalysisBaseRefKind::LocalBranch)
+        );
+        assert_eq!(
+            selection.branch_mode,
+            Some(AgentConversationWorkspaceBranchMode::Linked)
+        );
+        assert_eq!(selection.base_ref.as_deref(), Some("feature/linked-pr"));
+        assert_eq!(
+            selection
+                .source_pull_request
+                .as_ref()
+                .and_then(|pull_request| pull_request.base_ref_name.as_deref()),
+            Some("main")
+        );
     }
 
     #[test]
@@ -568,7 +634,10 @@ mod tests {
             result.conversation.parent_conversation_id,
             Some(parent.id.as_str())
         );
-        assert_eq!(result.conversation.title.as_deref(), Some("[Fork] Build fork flow"));
+        assert_eq!(
+            result.conversation.title.as_deref(),
+            Some("[Fork] Build fork flow")
+        );
         assert_eq!(
             result.conversation.agent_mode,
             Some(AgentConversationWorkspaceMode::Chat)
@@ -626,8 +695,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("create temp dir");
         let repo_path = temp_dir.path().join("repo");
         init_repo(&repo_path);
-        let mut project =
-            create_project(&state, repo_path.to_string_lossy().as_ref()).await;
+        let mut project = create_project(&state, repo_path.to_string_lossy().as_ref()).await;
         project.worktree_parent_directory = Some(
             temp_dir
                 .path()

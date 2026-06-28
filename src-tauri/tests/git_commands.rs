@@ -113,6 +113,7 @@ async fn setup_agent_workspace_review_state() -> (tempfile::TempDir, AppState, C
         AgentConversationWorkspaceMode::Edit,
         AgentConversationWorkspaceBaseSelection {
             kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+                branch_mode: None,
             base_ref: Some("main".to_string()),
             display_name: None,
             source_pull_request: None,

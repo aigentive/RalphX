@@ -59,7 +59,8 @@ pub use agent_conversation_linear_issue::{
 };
 pub use agent_conversation_workspace::{
     is_open_pr, is_pr_status_pollable_push_status, is_terminal_publication_pr_status,
-    pr_comment_body_excerpt, AgentConversationWorkspace, AgentConversationWorkspaceMode,
+    pr_comment_body_excerpt, AgentConversationWorkspace, AgentConversationWorkspaceBranchMode,
+    AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
     AgentWorkspaceFollowupProvenance, AgentWorkspacePrCommentEvidence,
     AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription,

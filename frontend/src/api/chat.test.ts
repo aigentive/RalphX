@@ -3118,6 +3118,7 @@ describe("startAgentConversationInvokeInput", () => {
       composerArtifactReferences: [{ artifactId: "artifact-1", kind: "plan" }],
       base: {
         kind: "local_branch",
+        branchMode: "linked",
         ref: "feature/x",
         displayName: "PR #7",
         sourcePullRequest: {
@@ -3146,6 +3147,7 @@ describe("startAgentConversationInvokeInput", () => {
       ],
       composerArtifactReferences: [{ artifactId: "artifact-1", kind: "plan" }],
       baseRefKind: "local_branch",
+      baseBranchMode: "linked",
       baseRef: "feature/x",
       baseDisplayName: "PR #7",
       baseSourcePullRequest: {
@@ -3217,6 +3219,7 @@ describe("transformStartAgentConversationResponse", () => {
         conversation_id: "conversation-chat",
         project_id: "project-1",
         mode: "chat",
+        branch_mode: "linked",
         base_ref_kind: "local_branch",
         base_ref: "feature/agent-screen",
         base_display_name: "PR #42",
@@ -3256,6 +3259,7 @@ describe("transformStartAgentConversationResponse", () => {
     expect(result.workspace).toMatchObject({
       conversationId: "conversation-chat",
       mode: "chat",
+      branchMode: "linked",
       baseRef: "feature/agent-screen",
       sourcePullRequest: expect.objectContaining({
         number: 42,

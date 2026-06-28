@@ -1,12 +1,13 @@
 use axum::{extract::State, http::StatusCode, Json};
 
+use crate::application::agent_conversation_workspace::AgentConversationWorkspaceBaseSelection;
 use crate::commands::unified_chat_commands::{
     start_agent_conversation_for_state, AgentWorkspaceSourcePullRequestInput,
     StartAgentConversationInput,
 };
 use crate::domain::entities::{
-    AgentWorkspaceFollowupProvenance, AgentWorkspaceSourcePullRequest, ChatContextType,
-    ChatConversation, ChatConversationId, TaskId,
+    AgentConversationWorkspace, AgentWorkspaceFollowupProvenance, AgentWorkspaceSourcePullRequest,
+    ChatContextType, ChatConversation, ChatConversationId, TaskId,
 };
 use crate::http_server::helpers::get_task_context_impl;
 use crate::http_server::types::{
@@ -46,6 +47,14 @@ fn source_pull_request_input(
         base_ref_name: pull_request.base_ref_name,
         head_ref_oid: pull_request.head_ref_oid,
     })
+}
+
+fn followup_base_selection(
+    workspace: Option<&AgentConversationWorkspace>,
+) -> AgentConversationWorkspaceBaseSelection {
+    workspace
+        .map(AgentConversationWorkspaceBaseSelection::for_workspace_reuse)
+        .unwrap_or_default()
 }
 
 async fn resolve_origin_conversation(
@@ -323,6 +332,7 @@ pub(crate) async fn create_followup_agent_conversation_for_request(
         })?;
 
     let content = followup_prompt(&req, &origin, blocker_fingerprint.as_deref());
+    let base_selection = followup_base_selection(parent_workspace.as_ref());
     let response = start_agent_conversation_for_state(
         StartAgentConversationInput {
             project_id: origin.context_id.clone(),
@@ -335,18 +345,13 @@ pub(crate) async fn create_followup_agent_conversation_for_request(
             logical_effort: req.logical_effort,
             codex_fast_mode: None,
             mode: Some("ideation".to_string()),
-            base_ref_kind: parent_workspace
-                .as_ref()
-                .map(|workspace| workspace.base_ref_kind.to_string()),
-            base_ref: parent_workspace
-                .as_ref()
-                .map(|workspace| workspace.base_ref.clone()),
-            base_display_name: parent_workspace
-                .as_ref()
-                .and_then(|workspace| workspace.base_display_name.clone()),
-            base_source_pull_request: source_pull_request_input(
-                parent_workspace.and_then(|workspace| workspace.source_pull_request),
-            ),
+            base_ref_kind: base_selection.kind.map(|kind| kind.to_string()),
+            base_branch_mode: base_selection
+                .branch_mode
+                .map(|branch_mode| branch_mode.to_string()),
+            base_ref: base_selection.base_ref,
+            base_display_name: base_selection.display_name,
+            base_source_pull_request: source_pull_request_input(base_selection.source_pull_request),
             composer_project_references: Vec::new(),
             composer_integration_references: Vec::new(),
             composer_artifact_references: Vec::new(),
