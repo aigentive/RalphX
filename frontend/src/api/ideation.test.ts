@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
+import { backendApiUrl } from "./backend";
 import { ideationApi } from "./ideation";
 import {
   ApiVerificationGapSchema,
@@ -1102,7 +1103,7 @@ describe("ideationApi.verification", () => {
       const result = await ideationApi.verification.getStatus("session-1");
 
       expect(mockFetch).toHaveBeenCalledWith(
-        "http://localhost:3847/api/ideation/sessions/session-1/verification"
+        backendApiUrl("ideation/sessions/session-1/verification")
       );
       expect(result.sessionId).toBe("session-1");
       expect(result.status).toBe("reviewing");
@@ -1144,7 +1145,7 @@ describe("ideationApi.verification", () => {
       const result = await ideationApi.verification.skip("session-1");
 
       expect(mockFetch).toHaveBeenCalledWith(
-        "http://localhost:3847/api/ideation/sessions/session-1/verification",
+        backendApiUrl("ideation/sessions/session-1/verification"),
         expect.objectContaining({ method: "POST" })
       );
       expect(result.status).toBe("skipped");
@@ -1175,7 +1176,7 @@ describe("ideationApi.verification", () => {
       const result = await ideationApi.verification.revertAndSkip("session-1", "v2");
 
       expect(mockFetch).toHaveBeenCalledWith(
-        "http://localhost:3847/api/ideation/sessions/session-1/revert-and-skip",
+        backendApiUrl("ideation/sessions/session-1/revert-and-skip"),
         expect.objectContaining({
           method: "POST",
           body: JSON.stringify({ plan_version_to_restore: "v2" }),

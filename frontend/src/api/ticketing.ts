@@ -49,7 +49,7 @@ export const TicketingProviderSummarySchema = z.object({
 });
 export type TicketingProviderSummary = z.infer<typeof TicketingProviderSummarySchema>;
 
-export const TicketingContainerKindSchema = z.enum(["project", "board", "team"]);
+export const TicketingContainerKindSchema = z.enum(["project", "board", "team", "space", "folder", "list"]);
 export type TicketingContainerKind = z.infer<typeof TicketingContainerKindSchema>;
 
 export const TicketingContainerSchema = z.object({
@@ -112,6 +112,7 @@ export const TicketSummarySchema = z.object({
   watchers: z.array(TicketingPersonSchema).default([]),
   reporter: TicketingPersonSchema.nullable().optional(),
   labels: z.array(z.string()).default([]),
+  sprints: z.array(z.string()).default([]),
   project: z.string().nullable().optional(),
   priority: z.string().nullable().optional(),
   updatedAt: z.string(),
@@ -127,12 +128,13 @@ export const TicketSummarySchema = z.object({
 type ParsedTicketSummary = z.infer<typeof TicketSummarySchema>;
 export type TicketSummary = Omit<
   ParsedTicketSummary,
-  "currentUserAssigned" | "currentUserWatching" | "assignees" | "watchers"
+  "currentUserAssigned" | "currentUserWatching" | "assignees" | "watchers" | "sprints"
 > & {
   currentUserAssigned?: boolean;
   currentUserWatching?: boolean;
   assignees?: TicketingPerson[];
   watchers?: TicketingPerson[];
+  sprints?: string[];
 };
 
 export const TicketAttachmentSchema = z.object({
@@ -297,6 +299,7 @@ export interface ListTicketingProvidersInput {
 export interface ListTicketingContainersInput {
   provider: TicketingProvider;
   projectId?: string | undefined;
+  parentContainerId?: string | undefined;
 }
 
 export interface ListTicketingColumnsInput {
@@ -310,6 +313,7 @@ export interface TicketFiltersInput {
   watcherMe?: boolean | undefined;
   stateIds?: string[] | undefined;
   labels?: string[] | undefined;
+  sprint?: string | null | undefined;
 }
 
 export interface ListTicketsInput {
@@ -411,6 +415,7 @@ export const ticketingApi = {
       {
         provider: input.provider,
         ...(input.projectId !== undefined && { projectId: input.projectId }),
+        ...(input.parentContainerId !== undefined && { parentContainerId: input.parentContainerId }),
       },
       z.array(TicketingContainerSchema),
     );

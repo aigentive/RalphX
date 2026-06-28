@@ -375,7 +375,7 @@ impl ClaudeCodeClient {
         config
             .cli_path_override
             .as_deref()
-            .unwrap_or_else(|| self.cli_path.as_path())
+            .unwrap_or(self.cli_path.as_path())
     }
 
     fn cli_path_is_available(cli_path: &Path) -> bool {

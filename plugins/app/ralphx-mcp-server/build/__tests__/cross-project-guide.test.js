@@ -13,7 +13,7 @@ describe("CROSS_PROJECT_KEYWORDS — new semantic keywords", () => {
         expect(detectsCrossProject("We will create a separate repo for this service.")).toBe(true);
     });
     it("detects 'separate repository'", () => {
-        expect(detectsCrossProject("Deploy to a separate repository called reefagent-mcp-jira.")).toBe(true);
+        expect(detectsCrossProject("Deploy to a separate repository called external-mcp-jira.")).toBe(true);
     });
     it("detects 'new repo'", () => {
         expect(detectsCrossProject("Create a new repo under the organization.")).toBe(true);

@@ -1,15 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, Copy, Loader2, Search, ScrollText } from "lucide-react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { atlassianApi } from "@/api/atlassian";
-import {
-  granolaApi,
-  type GranolaNoteDetail,
-  type GranolaNoteSummary,
-} from "@/api/granola";
 import { linearApi } from "@/api/linear";
 import type { ComposerIntegrationReference } from "@/api/chat";
 import type {
@@ -19,6 +11,7 @@ import type {
   TicketFiltersInput,
   TicketRef,
   TicketingColumn,
+  TicketingContainer,
   TicketSummary,
   TicketTransitionOption,
 } from "@/api/ticketing";
@@ -46,16 +39,20 @@ import {
   getValidTicketingProviders,
   isValidTicketingProvider,
 } from "@/lib/ticketing-provider-state";
+import { cn } from "@/lib/utils";
 import { useTicketingStore } from "@/stores/ticketingStore";
 import { useChatStore } from "@/stores/chatStore";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
 import { useUiStore } from "@/stores/uiStore";
+import { PullRequestDetailSheet } from "@/components/pr/PullRequestDetailSheet";
+import {
+  pullRequestSelectorFromShell,
+  pullRequestShellFromTicket,
+  type PullRequestShell,
+} from "@/components/pr/PullRequestDetailShell";
 import { formatRelativeTime } from "@/lib/formatters";
-import { markdownComponents } from "@/components/Chat/MessageItem.markdown";
-import { invalidateAgentConversationGranolaNote } from "@/components/agents/agentGranolaNoteQueries";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import {
   Dialog,
   DialogContent,
@@ -74,16 +71,14 @@ import { TicketKanbanShell, TicketKanbanView, TicketListView } from "./TicketVie
 import {
   distinctAssigneeNames,
   distinctCurrentUserSprintNames,
-  filterTicketsByAssignee,
   filterTicketsByProject,
   hasActiveTicketFilters,
   isTicketUpdatedSince,
   ticketRefKey,
+  UNASSIGNED_ASSIGNEE,
 } from "./ticketing-read-state";
 import { providerLabel, ticketKey } from "./ticketing-utils";
 import { useAfterPaint } from "./useAfterPaint";
-
-type DashboardSurface = "tickets" | "granola";
 
 interface TicketingDashboardViewProps {
   projectId: string;
@@ -91,15 +86,22 @@ interface TicketingDashboardViewProps {
 }
 
 function toTicketFilters(filters: ReturnType<typeof useTicketingStore.getState>["filters"]): TicketFiltersInput | undefined {
-  // Assignee is filtered client-side (see filterTicketsByAssignee), so it is not
-  // forwarded to the provider search here.
   const next: TicketFiltersInput = {
     ...(filters.text.trim() && { text: filters.text.trim() }),
+    ...(filters.assignee && { assignee: filters.assignee }),
     ...(filters.stateIds.length > 0 && { stateIds: filters.stateIds }),
     ...(filters.labels.length > 0 && { labels: filters.labels }),
+    ...(filters.sprint && { sprint: filters.sprint }),
     ...(filters.watcherMe && { watcherMe: true }),
   };
   return Object.keys(next).length > 0 ? next : undefined;
+}
+
+function toTicketFilterOptionFilters(
+  filters: ReturnType<typeof useTicketingStore.getState>["filters"],
+): TicketFiltersInput | undefined {
+  const text = filters.text.trim();
+  return text ? { text } : undefined;
 }
 
 function columnsFromTickets(tickets: TicketSummary[]): TicketingColumn[] {
@@ -158,10 +160,97 @@ function containerLabelsForProvider(provider: string | null): {
     return { containerLabel: "Project", allContainersLabel: "All projects" };
   }
   if (provider === "clickup") {
-    // ClickUp containers are Spaces within the selected Workspace (Team).
-    return { containerLabel: "Space", allContainersLabel: "All spaces" };
+    return { containerLabel: "Space", allContainersLabel: "Select space" };
   }
   return { containerLabel: "Container", allContainersLabel: "All containers" };
+}
+
+function clickupSpaceForContainer(
+  containerId: string | null,
+  containers: TicketingContainer[],
+): string | null {
+  if (!containerId) {
+    return null;
+  }
+  const byId = new Map(containers.map((container) => [container.id, container]));
+  let current = byId.get(containerId) ?? null;
+  while (current) {
+    if (current.kind === "space") {
+      return current.id;
+    }
+    current = current.parentId ? byId.get(current.parentId) ?? null : null;
+  }
+  return null;
+}
+
+function clickupChildLocations(
+  spaceId: string | null,
+  containers: TicketingContainer[],
+): TicketingContainer[] {
+  if (!spaceId) {
+    return [];
+  }
+  const folderIds = new Set(
+    containers
+      .filter((container) => container.kind === "folder" && container.parentId === spaceId)
+      .map((container) => container.id),
+  );
+  return containers.filter((container) => (
+    (container.kind === "folder" && container.parentId === spaceId)
+    || (container.kind === "list" && (container.parentId === spaceId || folderIds.has(container.parentId ?? "")))
+  ));
+}
+
+function ClickUpLocationRail({
+  space,
+  locations,
+  activeContainerId,
+  onSelect,
+}: {
+  space: TicketingContainer;
+  locations: TicketingContainer[];
+  activeContainerId: string | null;
+  onSelect: (containerId: string) => void;
+}) {
+  const firstLevelLocations = locations.filter((location) => location.parentId === space.id);
+
+  const itemClass = (selected: boolean) =>
+    cn(
+      "flex h-7 w-full items-center rounded px-2 text-left text-xs",
+      "focus-visible:outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:1px]",
+      selected ? "font-medium text-[var(--accent-primary)]" : "text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]",
+    );
+
+  return (
+    <aside
+      className="w-56 shrink-0 overflow-y-auto border-r px-3 py-3"
+      style={{
+        backgroundColor: "var(--bg-surface)",
+        borderColor: "var(--border-subtle)",
+      }}
+      aria-label="ClickUp locations"
+    >
+      <button
+        type="button"
+        className={itemClass(activeContainerId === space.id)}
+        onClick={() => onSelect(space.id)}
+      >
+        All in {space.name}
+      </button>
+      <div className="mt-2 space-y-0.5">
+        {firstLevelLocations.map((location) => (
+          <button
+            key={location.id}
+            type="button"
+            className={itemClass(activeContainerId === location.id)}
+            onClick={() => onSelect(location.id)}
+          >
+            {location.name}
+          </button>
+        ))}
+      </div>
+    </aside>
+  );
 }
 
 interface StartWorkSelection {
@@ -266,66 +355,6 @@ function ticketComposerReference(ticket: TicketSummary): ComposerIntegrationRefe
   };
 }
 
-function granolaComposerReference(
-  note: GranolaNoteDetail | GranolaNoteSummary,
-): ComposerIntegrationReference {
-  return {
-    provider: "granola",
-    kind: "note",
-    id: note.id,
-    title: note.title ?? note.id,
-    ...(note.url ? { url: note.url } : {}),
-    ...(note.summary ? { summaryExcerpt: note.summary } : {}),
-    includeTranscript: true,
-  };
-}
-
-function DashboardSurfaceSwitcher({
-  activeSurface,
-  onSurfaceChange,
-}: {
-  activeSurface: DashboardSurface;
-  onSurfaceChange: (surface: DashboardSurface) => void;
-}) {
-  const surfaces: Array<{ id: DashboardSurface; label: string }> = [
-    { id: "tickets", label: "Tickets" },
-    { id: "granola", label: "Granola" },
-  ];
-  return (
-    <div
-      className="inline-flex h-8 items-center rounded-md p-0.5"
-      role="tablist"
-      aria-label="Ticketing content"
-      style={{
-        backgroundColor: "var(--bg-sunken)",
-        borderColor: "var(--border-subtle)",
-        borderStyle: "solid",
-        borderWidth: "1px",
-      }}
-    >
-      {surfaces.map((surface) => {
-        const isActive = surface.id === activeSurface;
-        return (
-          <button
-            key={surface.id}
-            type="button"
-            role="tab"
-            aria-selected={isActive}
-            className="h-7 rounded px-3 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
-            style={{
-              backgroundColor: isActive ? "var(--bg-elevated)" : "transparent",
-              color: isActive ? "var(--text-primary)" : "var(--text-muted)",
-            }}
-            onClick={() => onSurfaceChange(surface.id)}
-          >
-            {surface.label}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
 function ticketRefsIdentifySameTicket(left: TicketRef, right: TicketRef): boolean {
   if (left.provider !== right.provider) {
     return false;
@@ -387,591 +416,6 @@ function TicketingStatusStrip({ notices }: { notices: TicketingStatusNotice[] })
   );
 }
 
-function granolaNoteTimestamp(note: GranolaNoteSummary | GranolaNoteDetail): string | null {
-  if ("updatedAt" in note && note.updatedAt) {
-    return note.updatedAt;
-  }
-  if ("createdAt" in note && note.createdAt) {
-    return note.createdAt;
-  }
-  return null;
-}
-
-function parseGranolaDate(value: string | null | undefined): Date | null {
-  if (!value) {
-    return null;
-  }
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? null : date;
-}
-
-function formatGranolaNoteDate(value: string | null | undefined): string | null {
-  const date = parseGranolaDate(value);
-  if (!date) {
-    return null;
-  }
-  return new Intl.DateTimeFormat(undefined, {
-    month: "short",
-    day: "numeric",
-    ...(date.getFullYear() === new Date().getFullYear() ? {} : { year: "numeric" }),
-  }).format(date);
-}
-
-function formatGranolaNoteTime(value: string | null | undefined): string | null {
-  const date = parseGranolaDate(value);
-  if (!date) {
-    return null;
-  }
-  return new Intl.DateTimeFormat(undefined, {
-    hour: "numeric",
-    minute: "2-digit",
-  }).format(date);
-}
-
-function GranolaMarkdownBlock({ markdown }: { markdown: string }) {
-  return (
-    <div className="prose prose-sm max-w-none text-sm leading-6 dark:prose-invert">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-        {markdown}
-      </ReactMarkdown>
-    </div>
-  );
-}
-
-function granolaTranscriptText(note: GranolaNoteDetail | GranolaNoteSummary | null): string {
-  if (!note || !("transcript" in note)) {
-    return "";
-  }
-  return note.transcript
-    .map((entry) => {
-      const text = entry.text.trim();
-      if (!text) {
-        return "";
-      }
-      const speaker = entry.speaker?.trim();
-      return speaker ? `${speaker}: ${text}` : text;
-    })
-    .filter(Boolean)
-    .join("\n\n");
-}
-
-interface GranolaContextDialogProps {
-  open: boolean;
-  note: GranolaNoteDetail | GranolaNoteSummary | null;
-  projects: Project[];
-  selectedProjectId: string;
-  conversations: { id: string; title: string | null }[];
-  selectedConversationId: string;
-  isConversationsLoading: boolean;
-  isBindPending: boolean;
-  bindError: string | null;
-  onProjectChange: (projectId: string) => void;
-  onConversationChange: (conversationId: string) => void;
-  onStartNew: () => void;
-  onBindExisting: () => void;
-  onClose: () => void;
-}
-
-function GranolaContextDialog({
-  open,
-  note,
-  projects,
-  selectedProjectId,
-  conversations,
-  selectedConversationId,
-  isConversationsLoading,
-  isBindPending,
-  bindError,
-  onProjectChange,
-  onConversationChange,
-  onStartNew,
-  onBindExisting,
-  onClose,
-}: GranolaContextDialogProps) {
-  return (
-    <Dialog open={open} onOpenChange={(nextOpen) => !nextOpen && onClose()}>
-      <DialogContent className="sm:max-w-[520px]">
-        <DialogHeader className="block space-y-1.5 px-6 py-5 pr-14">
-          <DialogTitle className="text-lg leading-6">Add Granola Context</DialogTitle>
-          <DialogDescription className="max-w-[34rem] leading-5">
-            {note?.title ?? note?.id ?? "Granola note"}
-          </DialogDescription>
-        </DialogHeader>
-
-        <div className="grid gap-5 px-6 py-5">
-          <label className="grid gap-1.5 text-sm">
-            <span className="font-medium text-[var(--text-primary)]">Project</span>
-            <TicketSearchableSelect
-              ariaLabel="Project"
-              size="md"
-              value={selectedProjectId}
-              onValueChange={onProjectChange}
-              placeholder={projects.length === 0 ? "No projects" : "Select project"}
-              searchPlaceholder="Search projects..."
-              emptyLabel="No projects found"
-              options={projects.map((project) => ({
-                value: project.id,
-                label: project.name,
-                description: project.workingDirectory ?? undefined,
-              }))}
-            />
-          </label>
-
-          <div className="grid gap-2">
-            <div className="flex items-center justify-between gap-3">
-              <div className="min-w-0">
-                <p className="text-sm font-medium text-[var(--text-primary)]">
-                  New conversation
-                </p>
-                <p className="truncate text-xs text-[var(--text-muted)]">
-                  {note?.title ?? note?.id ?? "Granola note"}
-                </p>
-              </div>
-              <Button
-                type="button"
-                onClick={onStartNew}
-                disabled={!note || !selectedProjectId || projects.length === 0}
-              >
-                Open composer
-              </Button>
-            </div>
-          </div>
-
-          <div className="grid gap-2">
-            <label className="grid gap-1.5 text-sm">
-              <span className="font-medium text-[var(--text-primary)]">
-                Existing conversation
-              </span>
-              <TicketSearchableSelect
-                ariaLabel="Existing conversation"
-                size="md"
-                value={selectedConversationId}
-                onValueChange={onConversationChange}
-                placeholder={
-                  isConversationsLoading
-                    ? "Loading conversations"
-                    : conversations.length === 0
-                      ? "No conversations"
-                      : "Select conversation"
-                }
-                searchPlaceholder="Search conversations..."
-                emptyLabel="No conversations found"
-                disabled={isConversationsLoading || conversations.length === 0}
-                options={conversations.map((conversation) => ({
-                  value: conversation.id,
-                  label: conversation.title ?? "Untitled conversation",
-                }))}
-              />
-            </label>
-            {bindError ? (
-              <p className="text-xs text-[var(--status-error)]">{bindError}</p>
-            ) : null}
-            <div className="flex justify-end">
-              <Button
-                type="button"
-                variant="outline"
-                disabled={!note || !selectedConversationId || isBindPending}
-                onClick={onBindExisting}
-              >
-                {isBindPending ? "Binding..." : "Bind existing conversation"}
-              </Button>
-            </div>
-          </div>
-        </div>
-
-        <DialogFooter className="px-6 py-4">
-          <Button type="button" variant="ghost" onClick={onClose}>
-            Close
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-function TicketingGranolaNotesView({
-  projectId,
-  projects,
-  onStartConversation,
-}: {
-  projectId: string;
-  projects: Project[];
-  onStartConversation: (note: GranolaNoteDetail | GranolaNoteSummary, projectId: string) => void;
-}) {
-  const [query, setQuery] = useState("");
-  const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
-  const [copiedAction, setCopiedAction] = useState<"summary" | "transcript" | null>(null);
-  const [contextDialogOpen, setContextDialogOpen] = useState(false);
-  const [contextProjectId, setContextProjectId] = useState(projectId);
-  const [selectedConversationId, setSelectedConversationId] = useState("");
-  const queryClient = useQueryClient();
-  const settingsQuery = useQuery({
-    queryKey: ["ticketing", "granola", "settings"] as const,
-    queryFn: () => granolaApi.getSettings(),
-    staleTime: 30_000,
-  });
-  const granolaSettings = settingsQuery.data;
-  const granolaReady =
-    granolaSettings?.enabled === true
-    && granolaSettings.validationStatus === "valid";
-  const notesQuery = useQuery({
-    queryKey: ["ticketing", "granola", "notes"] as const,
-    queryFn: () => granolaApi.listNotes({ pageSize: 30 }),
-    enabled: granolaReady,
-    staleTime: 20_000,
-  });
-  const notes = useMemo(() => notesQuery.data?.notes ?? [], [notesQuery.data?.notes]);
-  const filteredNotes = useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    if (!needle) {
-      return notes;
-    }
-    return notes.filter((note) =>
-      [note.title, note.summary, note.id]
-        .filter(Boolean)
-        .some((value) => value!.toLowerCase().includes(needle)),
-    );
-  }, [notes, query]);
-  const selectedSummary = selectedNoteId
-    ? notes.find((note) => note.id === selectedNoteId) ?? null
-    : null;
-  const detailQuery = useQuery({
-    queryKey: ["ticketing", "granola", "note-detail", selectedNoteId] as const,
-    queryFn: () =>
-      granolaApi.getNoteDetail({
-        noteId: selectedNoteId!,
-        includeTranscript: true,
-      }),
-    enabled: granolaReady && Boolean(selectedNoteId),
-    staleTime: 20_000,
-  });
-  const selectedNote = detailQuery.data ?? selectedSummary;
-  const transcriptText = granolaTranscriptText(selectedNote);
-  const conversationsQuery = useConversations({
-    view: "ticketing",
-    projectId: contextProjectId || projectId,
-  });
-  const bindableConversations = useMemo(
-    () =>
-      (conversationsQuery.data ?? []).map((conversation) => ({
-        id: conversation.id,
-        title: conversation.title,
-      })),
-    [conversationsQuery.data],
-  );
-  const bindGranolaConversation = useMutation({
-    mutationFn: async () => {
-      if (!selectedNote || !selectedConversationId) {
-        throw new Error("Select a Granola note and conversation.");
-      }
-      return granolaApi.assignAgentConversationGranolaNote({
-        conversationId: selectedConversationId,
-        projectId: contextProjectId,
-        noteId: selectedNote.id,
-        title: selectedNote.title ?? null,
-        noteUrl: selectedNote.url ?? null,
-        summary: selectedNote.summary ?? null,
-        includeTranscript: true,
-        refresh: true,
-      });
-    },
-    onSuccess: () => {
-      void invalidateAgentConversationGranolaNote(queryClient, selectedConversationId);
-      setContextDialogOpen(false);
-      setSelectedConversationId("");
-    },
-  });
-  const bindError =
-    bindGranolaConversation.error instanceof Error
-      ? bindGranolaConversation.error.message
-      : bindGranolaConversation.error
-        ? "Conversation could not be bound."
-        : null;
-
-  useEffect(() => {
-    if (!contextDialogOpen) {
-      return;
-    }
-    setContextProjectId(projectId);
-    setSelectedConversationId("");
-  }, [contextDialogOpen, projectId]);
-
-  async function copyGranolaText(kind: "summary" | "transcript", text: string) {
-    const trimmed = text.trim();
-    if (!trimmed) {
-      return;
-    }
-    try {
-      await navigator.clipboard?.writeText(trimmed);
-      setCopiedAction(kind);
-      window.setTimeout(() => {
-        setCopiedAction((current) => (current === kind ? null : current));
-      }, 1600);
-    } catch {
-      setCopiedAction(null);
-    }
-  }
-
-  function handleStartContext() {
-    if (!selectedNote || !contextProjectId) {
-      return;
-    }
-    onStartConversation(selectedNote, contextProjectId);
-    setContextDialogOpen(false);
-  }
-
-  if (settingsQuery.isLoading) {
-    return (
-      <TicketingStatePanel
-        state="loading"
-        title="Loading Granola"
-        description="Checking the Granola connection."
-      />
-    );
-  }
-
-  if (!granolaReady) {
-    return (
-      <TicketingStatePanel
-        state="disconnected"
-        title="Granola is not connected"
-        description={
-          granolaSettings?.lastError
-            ?? "Connect and validate Granola from Settings to browse notes."
-        }
-      />
-    );
-  }
-
-  return (
-    <div
-      className="grid min-h-0 flex-1 grid-cols-[minmax(260px,380px)_minmax(0,1fr)] overflow-hidden max-lg:grid-cols-1"
-      data-testid="ticketing-granola-notes"
-      data-project-id={projectId}
-    >
-      <aside
-        className="flex min-h-0 flex-col border-r max-lg:border-r-0 max-lg:border-b"
-        style={{
-          backgroundColor: "var(--bg-surface)",
-          borderColor: "var(--border-subtle)",
-          borderStyle: "solid",
-          borderTopWidth: 0,
-          borderBottomWidth: 0,
-          borderLeftWidth: 0,
-          borderRightWidth: 1,
-        }}
-      >
-        <div className="border-b p-3" style={{ borderColor: "var(--border-subtle)" }}>
-          <div className="relative">
-            <Search
-              className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2"
-              style={{ color: "var(--text-muted)" }}
-            />
-            <Input
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search Granola notes"
-              className="pl-9"
-            />
-          </div>
-        </div>
-        <div className="min-h-0 flex-1 overflow-y-auto p-2">
-          {notesQuery.isLoading ? (
-            <div className="flex items-center gap-2 px-3 py-2 text-sm text-[var(--text-muted)]">
-              <Loader2 className="h-4 w-4 animate-spin" />
-              Loading notes
-            </div>
-          ) : filteredNotes.length === 0 ? (
-            <div className="px-3 py-6 text-sm text-[var(--text-muted)]">
-              No Granola notes found.
-            </div>
-          ) : (
-            <div className="space-y-1">
-              {filteredNotes.map((note) => {
-                const selected = note.id === selectedNoteId;
-                const timestamp = granolaNoteTimestamp(note);
-                const dateLabel = formatGranolaNoteDate(timestamp);
-                const timeLabel = formatGranolaNoteTime(timestamp);
-                return (
-                  <button
-                    key={note.id}
-                    type="button"
-                    className="w-full rounded-md px-3 py-2 text-left transition-colors focus-visible:outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
-                    style={{
-                      backgroundColor: selected ? "var(--bg-hover)" : "transparent",
-                      color: "var(--text-primary)",
-                    }}
-                    onClick={() => setSelectedNoteId(note.id)}
-                  >
-                    <span className="flex min-w-0 items-start gap-3">
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate text-sm font-medium">
-                          {note.title ?? note.id}
-                        </span>
-                        {dateLabel ? (
-                          <span className="mt-1 block text-xs text-[var(--text-muted)]">
-                            {dateLabel}
-                          </span>
-                        ) : null}
-                      </span>
-                      {timeLabel ? (
-                        <span className="shrink-0 pt-0.5 text-xs text-[var(--text-muted)]">
-                          {timeLabel}
-                        </span>
-                      ) : null}
-                    </span>
-                    {note.summary ? (
-                      <span className="mt-1 block line-clamp-2 text-xs text-[var(--text-muted)]">
-                        {note.summary}
-                      </span>
-                    ) : null}
-                  </button>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      </aside>
-
-      <section className="min-h-0 overflow-y-auto p-5">
-        {!selectedNote ? (
-          <div className="flex h-full min-h-[220px] items-center justify-center text-sm text-[var(--text-muted)]">
-            Select a Granola note to inspect its details.
-          </div>
-        ) : (
-          <div className="mx-auto flex max-w-3xl flex-col gap-4">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div className="min-w-0">
-                <div className="flex items-center gap-2 text-xs font-medium uppercase text-[var(--text-muted)]">
-                  <ScrollText className="h-4 w-4" />
-                  Granola note
-                </div>
-                <h2 className="mt-1 text-xl font-semibold text-[var(--text-primary)]">
-                  {selectedNote.title ?? selectedNote.id}
-                </h2>
-                {granolaNoteTimestamp(selectedNote) ? (
-                  <p className="mt-1 text-xs text-[var(--text-muted)]">
-                    {[
-                      formatGranolaNoteDate(granolaNoteTimestamp(selectedNote)),
-                      formatGranolaNoteTime(granolaNoteTimestamp(selectedNote)),
-                    ]
-                      .filter(Boolean)
-                      .join(" at ")}
-                  </p>
-                ) : null}
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <Button
-                  type="button"
-                  size="sm"
-                  onClick={() => setContextDialogOpen(true)}
-                >
-                  Add as context
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  disabled={!selectedNote.summary?.trim()}
-                  onClick={() => void copyGranolaText("summary", selectedNote.summary ?? "")}
-                >
-                  {copiedAction === "summary" ? (
-                    <Check className="mr-2 h-3.5 w-3.5" aria-hidden="true" />
-                  ) : (
-                    <Copy className="mr-2 h-3.5 w-3.5" aria-hidden="true" />
-                  )}
-                  {copiedAction === "summary" ? "Copied" : "Copy summary"}
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  disabled={!transcriptText}
-                  onClick={() => void copyGranolaText("transcript", transcriptText)}
-                >
-                  {copiedAction === "transcript" ? (
-                    <Check className="mr-2 h-3.5 w-3.5" aria-hidden="true" />
-                  ) : (
-                    <Copy className="mr-2 h-3.5 w-3.5" aria-hidden="true" />
-                  )}
-                  {copiedAction === "transcript" ? "Copied" : "Copy full transcript"}
-                </Button>
-              </div>
-            </div>
-
-            {detailQuery.isFetching ? (
-              <div className="flex items-center gap-2 text-sm text-[var(--text-muted)]">
-                <Loader2 className="h-4 w-4 animate-spin" />
-                Loading details
-              </div>
-            ) : null}
-
-            {selectedNote.summary ? (
-              <div
-                className="rounded-md border p-4"
-                style={{
-                  backgroundColor: "var(--bg-surface)",
-                  borderColor: "var(--border-subtle)",
-                  borderStyle: "solid",
-                  borderWidth: 1,
-                }}
-              >
-                <GranolaMarkdownBlock markdown={selectedNote.summary} />
-              </div>
-            ) : null}
-
-            {"transcript" in selectedNote && selectedNote.transcript.length > 0 ? (
-              <div className="space-y-2">
-                <h3 className="text-sm font-semibold text-[var(--text-primary)]">Transcript</h3>
-                <div className="space-y-2">
-                  {selectedNote.transcript.map((entry, index) => (
-                    <div
-                      key={`${entry.startMs ?? index}:${index}`}
-                      className="rounded-md border p-3 text-sm"
-                      style={{
-                        backgroundColor: "var(--bg-surface)",
-                        borderColor: "var(--border-subtle)",
-                        borderStyle: "solid",
-                        borderWidth: 1,
-                      }}
-                    >
-                      {entry.speaker ? (
-                        <div className="mb-1 text-xs font-medium text-[var(--text-muted)]">
-                          {entry.speaker}
-                        </div>
-                      ) : null}
-                      <p className="leading-6 text-[var(--text-primary)]">{entry.text}</p>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ) : null}
-          </div>
-        )}
-      </section>
-      <GranolaContextDialog
-        open={contextDialogOpen}
-        note={selectedNote}
-        projects={projects}
-        selectedProjectId={contextProjectId}
-        conversations={bindableConversations}
-        selectedConversationId={selectedConversationId}
-        isConversationsLoading={conversationsQuery.isLoading}
-        isBindPending={bindGranolaConversation.isPending}
-        bindError={bindError}
-        onProjectChange={(nextProjectId) => {
-          setContextProjectId(nextProjectId);
-          setSelectedConversationId("");
-        }}
-        onConversationChange={setSelectedConversationId}
-        onStartNew={handleStartContext}
-        onBindExisting={() => bindGranolaConversation.mutate()}
-        onClose={() => setContextDialogOpen(false)}
-      />
-    </div>
-  );
-}
-
 export function TicketingDashboardView({
   projectId,
   onNavigateToAssociation,
@@ -997,12 +441,12 @@ export function TicketingDashboardView({
   const setFocusedAgentProject = useAgentSessionStore((s) => s.setFocusedProject);
   const setStartConversationDraft = useAgentSessionStore((s) => s.setStartConversationDraft);
   const [startWorkDialogOpen, setStartWorkDialogOpen] = useState(false);
+  const [selectedPullRequestShell, setSelectedPullRequestShell] =
+    useState<PullRequestShell | null>(null);
   const [seenBaseline, setSeenBaseline] = useState<string | null>(null);
-  const [activeSurface, setActiveSurface] = useState<DashboardSurface>("tickets");
   const [startWorkSelection, setStartWorkSelection] = useState<StartWorkSelection>({
     projectId,
   });
-  const showingTickets = activeSurface === "tickets";
 
   const queryClient = useQueryClient();
   const projectsQuery = useProjects();
@@ -1034,7 +478,37 @@ export function TicketingDashboardView({
     activeProvider ? { provider: activeProvider, projectId } : null,
     { enabled: Boolean(activeProvider && readableProvider) },
   );
-  const containers = useMemo(() => containersQuery.data ?? [], [containersQuery.data]);
+  const topLevelContainers = useMemo(() => containersQuery.data ?? [], [containersQuery.data]);
+  const selectedSpaceFromTopLevel = useMemo(
+    () => activeProvider === "clickup" ? clickupSpaceForContainer(activeContainerId, topLevelContainers) : null,
+    [activeContainerId, activeProvider, topLevelContainers],
+  );
+  const clickupChildContainersQuery = useTicketingContainers(
+    activeProvider === "clickup" && selectedSpaceFromTopLevel
+      ? { provider: "clickup", projectId, parentContainerId: selectedSpaceFromTopLevel }
+      : null,
+    { enabled: Boolean(activeProvider === "clickup" && selectedSpaceFromTopLevel && readableProvider) },
+  );
+  const containers = useMemo(
+    () => activeProvider === "clickup"
+      ? [...topLevelContainers, ...(clickupChildContainersQuery.data ?? [])]
+      : topLevelContainers,
+    [activeProvider, clickupChildContainersQuery.data, topLevelContainers],
+  );
+  const clickupSpaceContainers = useMemo(
+    () => containers.filter((container) => container.kind === "space"),
+    [containers],
+  );
+  const selectedClickUpSpaceId = useMemo(
+    () => activeProvider === "clickup" ? clickupSpaceForContainer(activeContainerId, containers) : null,
+    [activeContainerId, activeProvider, containers],
+  );
+  const clickupLocationChildren = useMemo(
+    () => activeProvider === "clickup" ? clickupChildLocations(selectedClickUpSpaceId, containers) : [],
+    [activeProvider, containers, selectedClickUpSpaceId],
+  );
+  const filterBarContainers = activeProvider === "clickup" ? clickupSpaceContainers : containers;
+  const filterBarContainerId = activeProvider === "clickup" ? selectedClickUpSpaceId : activeContainerId;
 
   // When Linear is the only enabled provider, auto-load its tickets instead of
   // forcing a container pick. Jira projects and ClickUp Spaces remain explicit
@@ -1060,11 +534,12 @@ export function TicketingDashboardView({
     }
   }, [activeContainerId, activeProvider, containers, setContainerId]);
 
+  const columnsContainerId = activeProvider === "clickup" ? selectedClickUpSpaceId : activeContainerId;
   const columnsQuery = useTicketingColumns(
     activeProvider && !containerSelectionNeeded
       ? {
           provider: activeProvider,
-          ...(activeContainerId !== null && { containerId: activeContainerId }),
+          ...(columnsContainerId !== null && { containerId: columnsContainerId }),
         }
       : null,
     { enabled: Boolean(activeProvider && readableProvider && !containerSelectionNeeded) },
@@ -1072,26 +547,28 @@ export function TicketingDashboardView({
   const columns = columnsQuery.data ?? [];
 
   const ticketFilters = toTicketFilters(filters);
+  const filterOptionFilters = toTicketFilterOptionFilters(filters);
+  const ticketContainerId = activeContainerId;
   const ticketQuery: ListTicketsInput | null = activeProvider && readableProvider && !containerSelectionNeeded
     ? {
         provider: activeProvider,
         projectId,
         limit: 40,
         sort: "updated_desc",
-        ...(activeContainerId !== null && { containerId: activeContainerId }),
+        ...(ticketContainerId !== null && { containerId: ticketContainerId }),
         ...(ticketFilters !== undefined && { filters: ticketFilters }),
       }
     : null;
 
   const ticketsQuery = useTickets(ticketQuery, { enabled: Boolean(ticketQuery) });
   const tickets = useMemo(() => flattenTicketPages(ticketsQuery.data), [ticketsQuery.data]);
-  const filterOptionsInput: ListTicketFilterOptionsInput | null = activeProvider && readableProvider && !containerSelectionNeeded
+  const filterOptionsInput: ListTicketFilterOptionsInput | null = activeProvider && activeProvider !== "clickup" && readableProvider && !containerSelectionNeeded
     ? {
         provider: activeProvider,
         projectId,
         limit: 500,
-        ...(activeContainerId !== null && { containerId: activeContainerId }),
-        ...(ticketFilters !== undefined && { filters: ticketFilters }),
+        ...(ticketContainerId !== null && { containerId: ticketContainerId }),
+        ...(filterOptionFilters !== undefined && { filters: filterOptionFilters }),
       }
     : null;
   const filterOptionsQuery = useTicketFilterOptions(filterOptionsInput, {
@@ -1109,11 +586,35 @@ export function TicketingDashboardView({
     () => (activeProvider === "clickup" ? distinctCurrentUserSprintNames(tickets) : []),
     [activeProvider, tickets],
   );
-  const assigneeOptions = filterOptionsQuery.data?.assignees ?? pageAssigneeOptions;
-  const sprintOptions = useMemo(
+  const clickupListSprintOptions = useMemo(
     () =>
-      activeProvider === "clickup" ? filterOptionsQuery.data?.sprints ?? pageSprintOptions : [],
-    [activeProvider, filterOptionsQuery.data?.sprints, pageSprintOptions],
+      activeProvider === "clickup"
+        ? clickupLocationChildren
+            .filter((location) => location.kind === "list")
+            .map((location) => location.name.trim())
+            .filter(Boolean)
+        : [],
+    [activeProvider, clickupLocationChildren],
+  );
+  const assigneeOptions = useMemo(() => {
+    const options = activeProvider === "clickup"
+      ? pageAssigneeOptions
+      : filterOptionsQuery.data?.assignees ?? pageAssigneeOptions;
+    const selectedAssignee = filters.assignee?.trim();
+    if (!selectedAssignee || selectedAssignee === UNASSIGNED_ASSIGNEE || options.includes(selectedAssignee)) {
+      return options;
+    }
+    return [...options, selectedAssignee].sort((left, right) => left.localeCompare(right));
+  }, [activeProvider, filterOptionsQuery.data?.assignees, filters.assignee, pageAssigneeOptions]);
+  const sprintOptions = useMemo(
+    () => {
+      if (activeProvider !== "clickup") {
+        return [];
+      }
+      return Array.from(new Set([...clickupListSprintOptions, ...pageSprintOptions]))
+        .sort((left, right) => left.localeCompare(right));
+    },
+    [activeProvider, clickupListSprintOptions, pageSprintOptions],
   );
   useEffect(() => {
     if (!filters.sprint) {
@@ -1132,6 +633,10 @@ export function TicketingDashboardView({
     () => containers.find((container) => container.id === activeContainerId)?.name ?? null,
     [containers, activeContainerId],
   );
+  const selectedClickUpSpace = useMemo(
+    () => clickupSpaceContainers.find((space) => space.id === selectedClickUpSpaceId) ?? null,
+    [clickupSpaceContainers, selectedClickUpSpaceId],
+  );
   // Jira and ClickUp scope tickets to the selected container server-side (issues
   // carry no matching `project` field), so the client-side container-name filter
   // must be skipped for them; Linear returns all issues and relies on this
@@ -1140,14 +645,8 @@ export function TicketingDashboardView({
     activeProvider === "jira" || activeProvider === "clickup" ? null : activeContainerName;
   const displayedTickets = useMemo(
     () =>
-      filterTicketsByProject(
-        filterTicketsByProject(
-          filterTicketsByAssignee(tickets, filters.assignee),
-          activeProvider === "clickup" ? filters.sprint : null,
-        ),
-        clientContainerFilter,
-      ),
-    [tickets, filters.assignee, filters.sprint, activeProvider, clientContainerFilter],
+      filterTicketsByProject(tickets, clientContainerFilter),
+    [tickets, clientContainerFilter],
   );
   const ticketColumns = useMemo(() => columnsFromTickets(tickets), [tickets]);
   // Remember the last non-empty columns so the kanban board does not collapse
@@ -1170,6 +669,8 @@ export function TicketingDashboardView({
   const selectedSummary = selectedTicketRef
     ? tickets.find((ticket) => ticketRefsIdentifySameTicket(ticket.ref, selectedTicketRef)) ?? null
     : null;
+  const selectedPullRequestSelector =
+    pullRequestSelectorFromShell(selectedPullRequestShell);
   const shouldHydrateKanban = useAfterPaint(viewMode === "kanban");
   const shouldHydrateDetail = useAfterPaint(selectedTicketRef !== null);
   const detailInput = selectedTicketRef && activeProvider && shouldHydrateDetail
@@ -1355,6 +856,21 @@ export function TicketingDashboardView({
     markTicketOpened(key);
   }
 
+  function handleOpenPullRequestDetail(ticket: TicketSummary) {
+    if (ticket.openPrNumber == null) {
+      return;
+    }
+    setSelectedPullRequestShell(
+      pullRequestShellFromTicket({
+        projectId,
+        prNumber: ticket.openPrNumber,
+        prUrl: ticket.openPrUrl,
+        prStatus: ticket.openPrStatus,
+        title: ticket.title,
+      }),
+    );
+  }
+
   function handleRefresh() {
     if (!activeProvider) {
       return;
@@ -1486,33 +1002,9 @@ export function TicketingDashboardView({
     setCurrentView("agents");
   }
 
-  function handleStartWorkFromGranolaNote(
-    note: GranolaNoteDetail | GranolaNoteSummary,
-    targetProjectId: string,
-  ) {
-    setStartConversationDraft({
-      projectId: targetProjectId,
-      content: "",
-      mode: "edit",
-      composerIntegrationReferences: [granolaComposerReference(note)],
-    });
-    setFocusedAgentProject(targetProjectId);
-    clearAgentSelection();
-    setActiveConversation(`project:${targetProjectId}`, null);
-    setCurrentView("agents");
-  }
-
   let content: React.ReactNode;
 
-  if (!showingTickets) {
-    content = (
-      <TicketingGranolaNotesView
-        projectId={projectId}
-        projects={projectsQuery.data ?? []}
-        onStartConversation={handleStartWorkFromGranolaNote}
-      />
-    );
-  } else if (providersQuery.isLoading) {
+  if (providersQuery.isLoading) {
     content = (
       <TicketingStatePanel
         state="loading"
@@ -1541,7 +1033,7 @@ export function TicketingDashboardView({
       <TicketingStatePanel
         state="disconnected"
         title="No valid ticketing integration"
-        description="Connect a valid Jira or Linear integration from Settings to browse tickets."
+        description="Connect a valid Jira, Linear, or ClickUp integration from Settings to browse tickets."
       />
     );
   } else if (selectedProvider?.connectionStatus === "disconnected") {
@@ -1624,6 +1116,7 @@ export function TicketingDashboardView({
         isUnread={isTicketUnread}
         canQuickAssign={Boolean(selectedProvider?.capabilities.assignmentWrite)}
         onQuickAssign={handleQuickAssign}
+        onOpenPullRequestDetail={handleOpenPullRequestDetail}
       />
     ) : (
       <TicketKanbanShell columns={statusColumns} />
@@ -1642,6 +1135,7 @@ export function TicketingDashboardView({
         onQuickAssign={handleQuickAssign}
         canMoveTickets={Boolean(selectedProvider?.capabilities.kanbanWrite)}
         onMoveTicket={handleMoveTicket}
+        onOpenPullRequestDetail={handleOpenPullRequestDetail}
       />
     );
   }
@@ -1671,27 +1165,21 @@ export function TicketingDashboardView({
             className="flex min-w-0 items-center gap-2 text-lg font-semibold text-[var(--text-primary)]"
           >
             <span>Ticketing</span>
-            {showingTickets ? (
-              <Badge
-                data-testid="ticketing-visible-count"
-                aria-label={`${displayedTickets.length} visible ${displayedTickets.length === 1 ? "ticket" : "tickets"}`}
-                variant="outline"
-                className="h-5 rounded-full border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-2 text-xs font-medium leading-none text-[var(--text-muted)]"
-              >
-                {displayedTickets.length}
-              </Badge>
-            ) : null}
+            <Badge
+              data-testid="ticketing-visible-count"
+              aria-label={`${displayedTickets.length} visible ${displayedTickets.length === 1 ? "ticket" : "tickets"}`}
+              variant="outline"
+              className="h-5 rounded-full border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-2 text-xs font-medium leading-none text-[var(--text-muted)]"
+            >
+              {displayedTickets.length}
+            </Badge>
           </h1>
           <p className="mt-0.5 text-xs text-[var(--text-muted)]">
             Browse provider tickets and inspect RalphX associations.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <DashboardSurfaceSwitcher
-            activeSurface={activeSurface}
-            onSurfaceChange={setActiveSurface}
-          />
-          {showingTickets && validProviders.length > 1 && (
+          {validProviders.length > 1 && (
             <ProviderSwitcher
               providers={validProviders}
               activeProvider={activeProvider}
@@ -1701,56 +1189,68 @@ export function TicketingDashboardView({
         </div>
       </header>
 
-      {showingTickets ? (
-        <>
-          <TicketFilterBar
-            containers={containers}
-            columns={filterColumns}
-            assigneeOptions={assigneeOptions}
-            sprintOptions={sprintOptions}
-            showWatcherFilter={
-              activeProvider === "clickup" && (hasWatcherMetadata || filters.watcherMe)
-            }
-            containerLabel={containerLabels.containerLabel}
-            allContainersLabel={containerLabels.allContainersLabel}
+      <TicketFilterBar
+        containers={filterBarContainers}
+        columns={filterColumns}
+        assigneeOptions={assigneeOptions}
+        sprintOptions={sprintOptions}
+        showWatcherFilter={
+          activeProvider === "clickup" && (hasWatcherMetadata || filters.watcherMe)
+        }
+        containerLabel={containerLabels.containerLabel}
+        allContainersLabel={containerLabels.allContainersLabel}
+        activeContainerId={filterBarContainerId}
+        containerSelectionNeeded={containerSelectionNeeded}
+        filters={filters}
+        viewMode={viewMode}
+        isRefreshing={refreshTickets.isPending || ticketsQuery.isFetching}
+        onContainerChange={(containerId) => {
+          setContainerId(containerId);
+          if (activeProvider === "clickup" && containerId !== filterBarContainerId) {
+            setFilters({ sprint: null });
+          }
+        }}
+        onFiltersChange={setFilters}
+        onResetFilters={resetFilters}
+        onViewModeChange={setViewMode}
+        onRefresh={handleRefresh}
+      />
+
+      <TicketingStatusStrip notices={statusNotices} />
+
+      {selectedProvider?.connectionStatus === "permission_limited" && (
+        <div
+          className="px-4 py-2 text-xs text-[var(--status-warning)]"
+          style={{
+            backgroundColor: "var(--bg-surface)",
+            borderBottomColor: "var(--border-subtle)",
+            borderBottomStyle: "solid",
+            borderBottomWidth: "1px",
+          }}
+        >
+          {statusMessage ?? `${providerName} has limited permissions. Read-only data may be partial.`}
+        </div>
+      )}
+
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+        {activeProvider === "clickup" && selectedClickUpSpace && !filters.sprint ? (
+          <ClickUpLocationRail
+            space={selectedClickUpSpace}
+            locations={clickupLocationChildren}
             activeContainerId={activeContainerId}
-            containerSelectionNeeded={containerSelectionNeeded}
-            filters={filters}
-            viewMode={viewMode}
-            isRefreshing={refreshTickets.isPending || ticketsQuery.isFetching}
-            onContainerChange={setContainerId}
-            onFiltersChange={setFilters}
-            onResetFilters={resetFilters}
-            onViewModeChange={setViewMode}
-            onRefresh={handleRefresh}
+            onSelect={setContainerId}
           />
-
-          <TicketingStatusStrip notices={statusNotices} />
-
-          {selectedProvider?.connectionStatus === "permission_limited" && (
-            <div
-              className="px-4 py-2 text-xs text-[var(--status-warning)]"
-              style={{
-                backgroundColor: "var(--bg-surface)",
-                borderBottomColor: "var(--border-subtle)",
-                borderBottomStyle: "solid",
-                borderBottomWidth: "1px",
-              }}
-            >
-              {statusMessage ?? `${providerName} has limited permissions. Read-only data may be partial.`}
-            </div>
-          )}
-        </>
-      ) : null}
-
-      <div className="flex min-h-0 flex-1 overflow-hidden">{content}</div>
+        ) : null}
+        <div className="min-w-0 flex-1">{content}</div>
+      </div>
 
       <TicketDetailSheet
-        open={showingTickets && selectedTicketRef !== null}
+        open={selectedTicketRef !== null}
         ticket={selectedTicket}
         capabilities={selectedProvider?.capabilities ?? null}
         transitions={transitions}
         associations={associationsQuery.data}
+        projectId={projectId}
         isDetailLoading={isDetailPending}
         isAssociationsLoading={associationsQuery.isLoading}
         isTransitionPending={ticketingMutations.transitionStatusMutation.isPending}
@@ -1775,6 +1275,14 @@ export function TicketingDashboardView({
         onNavigate={onNavigateToAssociation}
         onStartWork={selectedTicket ? handleStartWorkFromTicket : undefined}
         onClose={() => setSelectedTicketRef(null)}
+      />
+
+      <PullRequestDetailSheet
+        open={selectedPullRequestShell !== null}
+        selector={selectedPullRequestSelector}
+        shell={selectedPullRequestShell}
+        onNavigateToAssociation={onNavigateToAssociation}
+        onClose={() => setSelectedPullRequestShell(null)}
       />
 
       <StartWorkDialog

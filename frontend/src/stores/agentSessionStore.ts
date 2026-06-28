@@ -25,6 +25,7 @@ export type AgentArtifactTab =
   | "verification"
   | "proposal"
   | "tasks"
+  | "pr"
   | "jira"
   | "linear"
   | "granola"
