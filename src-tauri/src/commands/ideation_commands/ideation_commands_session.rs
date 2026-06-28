@@ -603,6 +603,7 @@ pub async fn spawn_session_namer(
         conversation_id,
         first_message,
         requested_harness,
+        None,
     )
     .map_err(str::to_string)?;
     spawn_session_namer_agent(&state, target)

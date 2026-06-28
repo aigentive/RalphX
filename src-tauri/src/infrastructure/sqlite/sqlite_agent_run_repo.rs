@@ -33,7 +33,7 @@ use crate::domain::entities::{
 /// Map a SQLite row to an AgentRun (expects columns: id, conversation_id, status,
 /// started_at, completed_at, error_message, harness, provider_session_id,
 /// upstream_provider, provider_profile, logical_model, effective_model_id, logical_effort, effective_effort,
-/// input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
+/// service_tier, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
 /// estimated_usd, approval_policy, sandbox_mode, run_chain_id, parent_run_id)
 fn row_to_agent_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentRun> {
     let status_str: String = row.get("status")?;
@@ -59,6 +59,7 @@ fn row_to_agent_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentRun> {
             .get::<_, Option<String>>("logical_effort")?
             .and_then(|value| value.parse::<LogicalEffort>().ok()),
         effective_effort: row.get("effective_effort")?,
+        service_tier: row.get("service_tier")?,
         input_tokens: row.get("input_tokens")?,
         output_tokens: row.get("output_tokens")?,
         cache_creation_tokens: row.get("cache_creation_tokens")?,
@@ -105,10 +106,10 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                     "INSERT INTO agent_runs (
                         id, conversation_id, status, started_at, completed_at, error_message,
                         harness, provider_session_id, upstream_provider, provider_profile, logical_model, effective_model_id,
-                        logical_effort, effective_effort, input_tokens, output_tokens,
+                        logical_effort, effective_effort, service_tier, input_tokens, output_tokens,
                         cache_creation_tokens, cache_read_tokens, estimated_usd,
                         approval_policy, sandbox_mode, run_chain_id, parent_run_id
-                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
                     rusqlite::params![
                         run.id.as_str(),
                         run.conversation_id.as_str(),
@@ -124,6 +125,7 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                         run.effective_model_id,
                         run.logical_effort.map(|value| value.to_string()),
                         run.effective_effort,
+                        run.service_tier,
                         run.input_tokens,
                         run.output_tokens,
                         run.cache_creation_tokens,
@@ -147,7 +149,7 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                 conn.query_row(
                     "SELECT id, conversation_id, status, started_at, completed_at, error_message,
                             harness, provider_session_id, upstream_provider, provider_profile, logical_model, effective_model_id,
-                            logical_effort, effective_effort, input_tokens, output_tokens,
+                            logical_effort, effective_effort, service_tier, input_tokens, output_tokens,
                             cache_creation_tokens, cache_read_tokens, estimated_usd,
                             approval_policy, sandbox_mode, run_chain_id, parent_run_id
                      FROM agent_runs WHERE id = ?1",
@@ -172,7 +174,7 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                 let sql = format!(
                     "SELECT id, conversation_id, status, started_at, completed_at, error_message,
                             harness, provider_session_id, upstream_provider, provider_profile, logical_model, effective_model_id,
-                            logical_effort, effective_effort, input_tokens, output_tokens,
+                            logical_effort, effective_effort, service_tier, input_tokens, output_tokens,
                             cache_creation_tokens, cache_read_tokens, estimated_usd,
                             approval_policy, sandbox_mode, run_chain_id, parent_run_id
                      FROM agent_runs WHERE id IN ({placeholders})"
@@ -196,7 +198,7 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                 conn.query_row(
                     "SELECT id, conversation_id, status, started_at, completed_at, error_message,
                             harness, provider_session_id, upstream_provider, provider_profile, logical_model, effective_model_id,
-                            logical_effort, effective_effort, input_tokens, output_tokens,
+                            logical_effort, effective_effort, service_tier, input_tokens, output_tokens,
                             cache_creation_tokens, cache_read_tokens, estimated_usd,
                             approval_policy, sandbox_mode, run_chain_id, parent_run_id
                      FROM agent_runs WHERE conversation_id = ?1 ORDER BY started_at DESC LIMIT 1",
@@ -217,7 +219,7 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                 conn.query_row(
                     "SELECT id, conversation_id, status, started_at, completed_at, error_message,
                             harness, provider_session_id, upstream_provider, provider_profile, logical_model, effective_model_id,
-                            logical_effort, effective_effort, input_tokens, output_tokens,
+                            logical_effort, effective_effort, service_tier, input_tokens, output_tokens,
                             cache_creation_tokens, cache_read_tokens, estimated_usd,
                             approval_policy, sandbox_mode, run_chain_id, parent_run_id
                      FROM agent_runs WHERE conversation_id = ?1 AND status = 'running' ORDER BY started_at DESC LIMIT 1",
@@ -238,7 +240,7 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                 let mut stmt = conn.prepare(
                     "SELECT id, conversation_id, status, started_at, completed_at, error_message,
                             harness, provider_session_id, upstream_provider, provider_profile, logical_model, effective_model_id,
-                            logical_effort, effective_effort, input_tokens, output_tokens,
+                            logical_effort, effective_effort, service_tier, input_tokens, output_tokens,
                             cache_creation_tokens, cache_read_tokens, estimated_usd,
                             approval_policy, sandbox_mode, run_chain_id, parent_run_id
                      FROM agent_runs WHERE conversation_id = ?1 ORDER BY started_at DESC",
@@ -314,8 +316,9 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                          logical_model = COALESCE(?5, logical_model),
                          effective_model_id = COALESCE(?6, effective_model_id),
                          logical_effort = COALESCE(?7, logical_effort),
-                         effective_effort = COALESCE(?8, effective_effort)
-                     WHERE id = ?9",
+                         effective_effort = COALESCE(?8, effective_effort),
+                         service_tier = COALESCE(?9, service_tier)
+                     WHERE id = ?10",
                     rusqlite::params![
                         attribution.harness.map(|value| value.to_string()),
                         attribution.provider_session_id,
@@ -325,6 +328,7 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                         attribution.effective_model_id,
                         attribution.logical_effort.map(|value| value.to_string()),
                         attribution.effective_effort,
+                        attribution.service_tier,
                         id,
                     ],
                 )?;
@@ -481,6 +485,7 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                         ar.effective_model_id,
                         ar.logical_effort,
                         ar.effective_effort,
+                        ar.service_tier,
                         ar.input_tokens,
                         ar.output_tokens,
                         ar.cache_creation_tokens,
@@ -517,14 +522,15 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                             .and_then(|value| value.parse::<AgentHarnessKind>().ok());
                         let upstream_provider: Option<String> =
                             row.get("conv_upstream_provider")?;
-                        let provider_profile: Option<String> =
-                            row.get("conv_provider_profile")?;
+                        let provider_profile: Option<String> = row.get("conv_provider_profile")?;
                         let conv_created_at_str: String = row.get("conv_created_at")?;
                         let conv_updated_at_str: String = row.get("conv_updated_at")?;
                         let last_message_at_str: Option<String> = row.get("last_message_at")?;
                         let mut conversation = ChatConversation {
                             id: ChatConversationId::from_string(row.get::<_, String>("conv_id")?),
-                            context_type: context_type_str.parse().unwrap_or(ChatContextType::Project),
+                            context_type: context_type_str
+                                .parse()
+                                .unwrap_or(ChatContextType::Project),
                             context_id: row.get("context_id")?,
                             claude_session_id,
                             provider_session_id,
@@ -573,6 +579,7 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                                 .get::<_, Option<String>>("logical_effort")?
                                 .and_then(|value| value.parse::<LogicalEffort>().ok()),
                             effective_effort: row.get("effective_effort")?,
+                            service_tier: row.get("service_tier")?,
                             input_tokens: row.get("input_tokens")?,
                             output_tokens: row.get("output_tokens")?,
                             cache_creation_tokens: row.get("cache_creation_tokens")?,

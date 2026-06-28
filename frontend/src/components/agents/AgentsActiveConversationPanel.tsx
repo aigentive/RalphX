@@ -42,6 +42,10 @@ import {
   type BranchBaseOption,
 } from "@/components/shared/branchBaseOptions";
 import { buildStoreKey } from "@/lib/chat-context-registry";
+import {
+  CODEX_FAST_MODE_DESCRIPTION,
+  codexFastModeAvailabilityForProvider,
+} from "@/lib/codex-fast-mode";
 import { formatQueuedMessageExcerpt } from "@/lib/queuedMessageExcerpt";
 import { useAgentModels } from "@/hooks/useAgentModels";
 import { useConfirmation } from "@/hooks/useConfirmation";
@@ -616,6 +620,8 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   const [isCreatingPlanProposals, setIsCreatingPlanProposals] = useState(false);
   const [isImplementingPlanDirectly, setIsImplementingPlanDirectly] = useState(false);
   const [isStartingPlanVerification, setIsStartingPlanVerification] = useState(false);
+  const [codexFastModeByConversationId, setCodexFastModeByConversationId] =
+    useState<Record<string, boolean>>({});
   const [
     shouldLoadWorkspaceBaseOptions,
     setShouldLoadWorkspaceBaseOptions,
@@ -674,6 +680,32 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     providerOptions,
     isReady: providerSettingsReady,
   });
+  const codexProviderSettings = configuredProviders.find(
+    (entry) => entry.provider === "codex",
+  );
+  const codexProviderFastMode =
+    codexProviderSettings?.serviceTier?.trim().toLowerCase() === "fast";
+  const conversationServiceTier = activeConversation.serviceTier
+    ?.trim()
+    .toLowerCase();
+  const conversationFastMode =
+    conversationServiceTier === "fast"
+      ? true
+      : conversationServiceTier === "standard"
+        ? false
+        : codexProviderFastMode;
+  const activeCodexFastMode =
+    codexFastModeByConversationId[selectedConversationId] ??
+    conversationFastMode;
+  const handleActiveCodexFastModeChange = useCallback(
+    (value: boolean) => {
+      setCodexFastModeByConversationId((current) => ({
+        ...current,
+        [selectedConversationId]: value,
+      }));
+    },
+    [selectedConversationId],
+  );
   const workspaceProviderSupportedEfforts = useMemo(
     () =>
       supportedEffortsForProvider(
@@ -705,6 +737,21 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       workspaceProviderSupportedModelAliases,
     ]
   );
+  const codexFastModeAvailability = codexFastModeAvailabilityForProvider({
+    provider: codexProviderSettings,
+    modelId: selectableWorkspaceRuntime.modelId,
+    isReady: providerSettingsReady,
+  });
+  const activeCodexFastModeOption =
+    normalizedActiveRuntime.provider === "codex" &&
+    codexFastModeAvailability.supported
+      ? activeCodexFastMode
+      : null;
+  const selectableCodexFastMode =
+    normalizedActiveRuntime.provider === "codex" &&
+    codexFastModeAvailability.supported
+      ? activeCodexFastMode
+      : false;
   const openProviderSettings = useCallback(() => {
     openModal("settings", { section: "providers" });
   }, [openModal]);
@@ -1355,6 +1402,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
           providerHarness: normalizedActiveRuntime.provider,
           modelId: normalizedActiveRuntime.modelId,
           logicalEffort: normalizedActiveRuntime.effort,
+          codexFastMode: activeCodexFastModeOption,
           suppressUserMessage: true,
         },
       );
@@ -1368,6 +1416,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   }, [
     activeProjectId,
     activeWorkspace,
+    activeCodexFastModeOption,
     canImplementPlanDirectly,
     normalizedActiveRuntime.effort,
     normalizedActiveRuntime.modelId,
@@ -1608,6 +1657,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
             providerHarness: normalizedActiveRuntime.provider,
             modelId: normalizedActiveRuntime.modelId,
             logicalEffort: normalizedActiveRuntime.effort,
+            codexFastMode: activeCodexFastModeOption,
           },
         );
         onAgentUserMessageSent({
@@ -1625,7 +1675,12 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
         return false;
       }
     },
-    [activeProjectId, normalizedActiveRuntime, onAgentUserMessageSent],
+    [
+      activeCodexFastModeOption,
+      activeProjectId,
+      normalizedActiveRuntime,
+      onAgentUserMessageSent,
+    ],
   );
 
   const switchConversationToPlanMode = useCallback(
@@ -1881,6 +1936,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                     providerHarness: normalizedActiveRuntime.provider,
                     modelId: normalizedActiveRuntime.modelId,
                     logicalEffort: normalizedActiveRuntime.effort,
+                    codexFastMode: activeCodexFastModeOption,
                   },
                 }
               : {})}
@@ -1924,6 +1980,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                         providerHarness: normalizedActiveRuntime.provider,
                         modelId: normalizedActiveRuntime.modelId,
                         logicalEffort: normalizedActiveRuntime.effort,
+                        codexFastMode: activeCodexFastModeOption,
                         ...(options?.projectReferences?.length
                           ? { composerProjectReferences: options.projectReferences }
                           : {}),
@@ -2147,6 +2204,19 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                               ),
                             options: workspaceModelOptions,
                             disabled: Boolean(workspaceProviderStatusMessage),
+                            fastMode: {
+                              visible:
+                                normalizedActiveRuntime.provider === "codex",
+                              value: selectableCodexFastMode,
+                              onValueChange: handleActiveCodexFastModeChange,
+                              disabled:
+                                !providerSettingsReady ||
+                                !codexFastModeAvailability.supported,
+                              description:
+                                codexFastModeAvailability.reason ??
+                                CODEX_FAST_MODE_DESCRIPTION,
+                              testId: "agents-conversation-codex-fast-mode",
+                            },
                             onOpenModelSettings: () =>
                               openModal("settings", { section: "models" }),
                           },

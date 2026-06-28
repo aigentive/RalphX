@@ -536,10 +536,12 @@ export interface AgentRunStartedPayload {
   effective_model_label?: string;
   provider_harness?: string | null;
   provider_session_id?: string | null;
+  service_tier?: string | null;
   effectiveModelId?: string;
   effectiveModelLabel?: string;
   providerHarness?: string | null;
   providerSessionId?: string | null;
+  serviceTier?: string | null;
 }
 
 /**
@@ -555,6 +557,7 @@ export interface AgentRunCompletedPayload {
   claude_session_id?: string | null;
   provider_harness?: string | null;
   provider_session_id?: string | null;
+  service_tier?: string | null;
   run_chain_id?: string | null;
   teammate_name?: string | null;
 }
@@ -573,6 +576,10 @@ export function extractConversationProviderMetadataFromRunPayload(
         snakePayload.provider_session_id ??
         ("providerSessionId" in snakePayload ? snakePayload.providerSessionId : undefined) ??
         undefined,
+      serviceTier:
+        snakePayload.service_tier ??
+        ("serviceTier" in snakePayload ? snakePayload.serviceTier : undefined) ??
+        undefined,
     };
   }
 
@@ -581,6 +588,7 @@ export function extractConversationProviderMetadataFromRunPayload(
     return {
       providerHarness: startedPayload.providerHarness ?? undefined,
       providerSessionId: startedPayload.providerSessionId ?? undefined,
+      serviceTier: startedPayload.serviceTier ?? undefined,
     };
   }
 
@@ -590,5 +598,6 @@ export function extractConversationProviderMetadataFromRunPayload(
     claudeSessionId: completedPayload.claude_session_id ?? undefined,
     providerHarness: completedPayload.provider_harness ?? undefined,
     providerSessionId: completedPayload.provider_session_id ?? undefined,
+    serviceTier: completedPayload.service_tier ?? undefined,
   };
 }

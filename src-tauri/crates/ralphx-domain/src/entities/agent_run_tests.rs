@@ -79,6 +79,7 @@ fn test_new_agent_run() {
     assert_eq!(run.effective_model_id, None);
     assert_eq!(run.logical_effort, None);
     assert_eq!(run.effective_effort, None);
+    assert_eq!(run.service_tier, None);
     assert_eq!(run.approval_policy, None);
     assert_eq!(run.sandbox_mode, None);
     assert!(run.run_chain_id.is_some());
@@ -108,6 +109,7 @@ fn test_agent_run_provider_metadata_serialization() {
     run.effective_model_id = Some("gpt-5.4".to_string());
     run.logical_effort = Some(LogicalEffort::XHigh);
     run.effective_effort = Some("high".to_string());
+    run.service_tier = Some("fast".to_string());
     run.approval_policy = Some("on-request".to_string());
     run.sandbox_mode = Some("workspace-write".to_string());
 
@@ -115,6 +117,7 @@ fn test_agent_run_provider_metadata_serialization() {
     assert_eq!(serialized["harness"], "codex");
     assert_eq!(serialized["provider_session_id"], "session-123");
     assert_eq!(serialized["logical_effort"], "xhigh");
+    assert_eq!(serialized["service_tier"], "fast");
     assert_eq!(serialized["sandbox_mode"], "workspace-write");
 }
 

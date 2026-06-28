@@ -345,6 +345,7 @@ pub async fn start_agent_workspace_review(
             logical_effort: runtime.logical_effort,
             approval_policy: runtime.approval_policy,
             sandbox_mode: runtime.sandbox_mode,
+            service_tier: runtime.service_tier,
             max_tokens: None,
             timeout_secs: Some(WORKSPACE_REVIEWER_TIMEOUT_SECS),
             env,
@@ -1600,9 +1601,14 @@ x
         let context = load_agent_workspace_review_context(&state, &workspace)
             .await
             .expect("workspace delta context should load");
-        let target = context.target.expect("workspace delta should be reviewable");
+        let target = context
+            .target
+            .expect("workspace delta should be reviewable");
 
-        assert_eq!(target.scope, AgentWorkspaceReviewTargetScope::WorkspaceDelta);
+        assert_eq!(
+            target.scope,
+            AgentWorkspaceReviewTargetScope::WorkspaceDelta
+        );
         assert_eq!(target.base_ref, base_sha);
         assert_eq!(target.head_ref, "HEAD");
         assert!(target.base_sha.is_some());
@@ -1643,7 +1649,10 @@ x
             Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta)
         );
         assert_eq!(context.monitor.workspace_head_ref.as_deref(), Some("HEAD"));
-        assert_eq!(context.monitor.workspace_base_ref.as_deref(), Some(base_sha.as_str()));
+        assert_eq!(
+            context.monitor.workspace_base_ref.as_deref(),
+            Some(base_sha.as_str())
+        );
     }
 
     #[tokio::test]
@@ -1671,7 +1680,9 @@ x
         let context = load_agent_workspace_review_context(&state, &workspace)
             .await
             .expect("selected branch context should load");
-        let target = context.target.expect("selected branch should be reviewable");
+        let target = context
+            .target
+            .expect("selected branch should be reviewable");
 
         assert_eq!(
             target.scope,
@@ -1701,8 +1712,7 @@ x
     async fn load_context_resolves_selected_pull_request_metadata() {
         let (temp, repo, _base_sha) = init_repo();
         git(&repo, &["checkout", "-b", "feature/pr-42"]);
-        std::fs::write(repo.join("pr.rs"), "pub fn pr() {}\n")
-            .expect("pr file should be written");
+        std::fs::write(repo.join("pr.rs"), "pub fn pr() {}\n").expect("pr file should be written");
         git(&repo, &["add", "pr.rs"]);
         git(&repo, &["commit", "-m", "pr change"]);
         let pr_head = git(&repo, &["rev-parse", "HEAD"]);
@@ -1803,7 +1813,10 @@ x
             .expect("empty context should load");
 
         assert!(context.target.is_none());
-        assert_eq!(context.monitor.status, AgentWorkspaceReviewMonitorStatus::Idle);
+        assert_eq!(
+            context.monitor.status,
+            AgentWorkspaceReviewMonitorStatus::Idle
+        );
         assert!(!context.is_current);
         assert!(!context.is_outdated);
         assert!(!context.should_show_tab);
@@ -1850,7 +1863,10 @@ x
             .expect("current context should load");
         assert!(current.is_current);
         assert!(!current.is_outdated);
-        assert_eq!(current.monitor.status, AgentWorkspaceReviewMonitorStatus::Ready);
+        assert_eq!(
+            current.monitor.status,
+            AgentWorkspaceReviewMonitorStatus::Ready
+        );
 
         std::fs::write(repo.join("later.rs"), "pub fn later() {}\n")
             .expect("later file should be written");
@@ -2055,10 +2071,9 @@ x
             .upsert_workspace_review_monitor(ready_monitor)
             .await
             .expect("ready monitor should persist");
-        let ready =
-            complete_agent_workspace_review_run(&state, &workspace, None, None, None)
-                .await
-                .expect("ready completion should persist");
+        let ready = complete_agent_workspace_review_run(&state, &workspace, None, None, None)
+            .await
+            .expect("ready completion should persist");
         assert_eq!(ready.status, AgentWorkspaceReviewMonitorStatus::Ready);
         assert_eq!(ready.review_artifact_version, Some(3));
 

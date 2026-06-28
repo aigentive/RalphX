@@ -37,6 +37,7 @@ pub(crate) enum SessionNamerTarget {
         conversation_id: String,
         user_message: String,
         requested_harness: Option<AgentHarnessKind>,
+        service_tier_override: Option<String>,
     },
     AcceptedSession {
         session_id: String,
@@ -135,6 +136,7 @@ pub(crate) async fn build_session_namer_agent_spawn(
         logical_effort: resolved.runtime.logical_effort,
         approval_policy: resolved.runtime.approval_policy,
         sandbox_mode: resolved.runtime.sandbox_mode,
+        service_tier: resolved.runtime.service_tier,
         max_tokens: None,
         timeout_secs: Some(60),
         env,
@@ -186,6 +188,7 @@ async fn resolve_target_context(
         SessionNamerTarget::ConversationInitial {
             conversation_id,
             requested_harness,
+            service_tier_override,
             ..
         } => {
             let conversation = state
@@ -199,13 +202,17 @@ async fn resolve_target_context(
             let review_pull_request =
                 resolve_review_pull_request_context(state, &conversation.id).await?;
             let conversation_context = format_conversation_context(state, &conversation).await?;
-            let runtime = state
+            let mut runtime = state
                 .resolve_session_namer_runtime_for_conversation_with_requested_harness(
                     &conversation,
                     project_id.as_deref(),
                     *requested_harness,
                 )
                 .await?;
+            if let Some(service_tier_override) = service_tier_override.as_deref() {
+                runtime.service_tier =
+                    normalize_session_namer_service_tier_override(service_tier_override);
+            }
             let client = Arc::clone(&runtime.client);
             let harness_for_log = runtime.harness;
             Ok(ResolvedSessionNamerTarget {
@@ -385,6 +392,7 @@ impl SessionNamerTarget {
         conversation_id: Option<String>,
         user_message: String,
         requested_harness: Option<AgentHarnessKind>,
+        service_tier_override: Option<String>,
     ) -> Result<Self, &'static str> {
         match (session_id, conversation_id) {
             (Some(session_id), None) => Ok(Self::session_initial(session_id, user_message)),
@@ -392,6 +400,7 @@ impl SessionNamerTarget {
                 conversation_id,
                 user_message,
                 requested_harness,
+                service_tier_override,
             }),
             (Some(_), Some(_)) | (None, None) => {
                 Err("spawn_session_namer requires exactly one of sessionId or conversationId")
@@ -443,6 +452,14 @@ impl SessionNamerTarget {
             } => format!("conversation:{conversation_id}"),
         }
     }
+}
+
+fn normalize_session_namer_service_tier_override(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("standard") {
+        return Some("standard".to_string());
+    }
+    Some(trimmed.to_ascii_lowercase())
 }
 
 fn format_review_pull_request_context(pull_request: &AgentWorkspaceSourcePullRequest) -> String {

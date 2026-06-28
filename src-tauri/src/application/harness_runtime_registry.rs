@@ -32,6 +32,8 @@ pub(crate) struct HarnessRuntimeProbe {
     pub cli_version: Option<String>,
     pub supported_model_aliases: Option<Vec<String>>,
     pub supported_efforts: Option<Vec<String>>,
+    pub supports_fast_mode: bool,
+    pub fast_mode_supported_models: Vec<String>,
     pub error: Option<String>,
 }
 
@@ -121,6 +123,8 @@ fn probe_claude_harness() -> HarnessRuntimeProbe {
                         cli_version: capabilities.version.clone(),
                         supported_model_aliases: Some(capabilities.supported_model_aliases.clone()),
                         supported_efforts: Some(capabilities.supported_effort_labels()),
+                        supports_fast_mode: false,
+                        fast_mode_supported_models: Vec::new(),
                         error: None,
                     }
                 }
@@ -133,6 +137,8 @@ fn probe_claude_harness() -> HarnessRuntimeProbe {
                     cli_version: None,
                     supported_model_aliases: None,
                     supported_efforts: None,
+                    supports_fast_mode: false,
+                    fast_mode_supported_models: Vec::new(),
                     error: Some(error),
                 },
             }
@@ -146,6 +152,8 @@ fn probe_claude_harness() -> HarnessRuntimeProbe {
             cli_version: None,
             supported_model_aliases: None,
             supported_efforts: None,
+            supports_fast_mode: false,
+            fast_mode_supported_models: Vec::new(),
             error: Some("Claude CLI not found".to_string()),
         },
     }
@@ -170,6 +178,8 @@ fn probe_codex_harness() -> HarnessRuntimeProbe {
                     missing_core_exec_features.join(", ")
                 ))
             };
+            let supports_fast_mode = capabilities.supports_fast_mode();
+            let fast_mode_supported_models = capabilities.fast_mode_supported_models();
             HarnessRuntimeProbe {
                 binary_path,
                 binary_found: true,
@@ -179,6 +189,8 @@ fn probe_codex_harness() -> HarnessRuntimeProbe {
                 cli_version: capabilities.version,
                 supported_model_aliases: None,
                 supported_efforts: None,
+                supports_fast_mode,
+                fast_mode_supported_models,
                 error,
             }
         }
@@ -192,6 +204,8 @@ fn probe_codex_harness() -> HarnessRuntimeProbe {
                 cli_version: None,
                 supported_model_aliases: None,
                 supported_efforts: None,
+                supports_fast_mode: false,
+                fast_mode_supported_models: Vec::new(),
                 error: Some(error),
             },
             None => HarnessRuntimeProbe {
@@ -203,6 +217,8 @@ fn probe_codex_harness() -> HarnessRuntimeProbe {
                 cli_version: None,
                 supported_model_aliases: None,
                 supported_efforts: None,
+                supports_fast_mode: false,
+                fast_mode_supported_models: Vec::new(),
                 error: Some(error),
             },
         },
@@ -418,6 +434,8 @@ pub(crate) fn seed_available_harness_probes_for_test() {
                 cli_version: None,
                 supported_model_aliases: None,
                 supported_efforts: None,
+                supports_fast_mode: false,
+                fast_mode_supported_models: Vec::new(),
                 error: None,
             },
         );
@@ -438,6 +456,8 @@ fn probe_harness_uncached(harness: AgentHarnessKind) -> HarnessRuntimeProbe {
             cli_version: None,
             supported_model_aliases: None,
             supported_efforts: None,
+            supports_fast_mode: false,
+            fast_mode_supported_models: Vec::new(),
             error: Some(format!("No harness probe registered for {}", harness)),
         })
 }
@@ -500,6 +520,8 @@ pub(crate) fn probe_harness(harness: AgentHarnessKind) -> HarnessRuntimeProbe {
                 cli_version: None,
                 supported_model_aliases: None,
                 supported_efforts: None,
+                supports_fast_mode: false,
+                fast_mode_supported_models: Vec::new(),
                 error: Some("Harness runtime probe panicked".to_string()),
             }
         }
@@ -999,6 +1021,8 @@ pub(crate) fn probe_codex_harness_with_capabilities(
                     missing_core_exec_features.join(", ")
                 ))
             };
+            let supports_fast_mode = capabilities.supports_fast_mode();
+            let fast_mode_supported_models = capabilities.fast_mode_supported_models();
             (
                 HarnessRuntimeProbe {
                     binary_path: Some(resolved.path.to_string_lossy().into_owned()),
@@ -1009,6 +1033,8 @@ pub(crate) fn probe_codex_harness_with_capabilities(
                     cli_version: capabilities.version.clone(),
                     supported_model_aliases: None,
                     supported_efforts: None,
+                    supports_fast_mode,
+                    fast_mode_supported_models,
                     error,
                 },
                 Some(capabilities),
@@ -1025,6 +1051,8 @@ pub(crate) fn probe_codex_harness_with_capabilities(
                     cli_version: None,
                     supported_model_aliases: None,
                     supported_efforts: None,
+                    supports_fast_mode: false,
+                    fast_mode_supported_models: Vec::new(),
                     error: Some(error),
                 },
                 None => HarnessRuntimeProbe {
@@ -1036,6 +1064,8 @@ pub(crate) fn probe_codex_harness_with_capabilities(
                     cli_version: None,
                     supported_model_aliases: None,
                     supported_efforts: None,
+                    supports_fast_mode: false,
+                    fast_mode_supported_models: Vec::new(),
                     error: Some(error),
                 },
             };
@@ -1199,6 +1229,8 @@ mod tests {
             supports_search_flag: true,
             supports_resume_subcommand: true,
             supports_mcp_subcommand: true,
+            supports_fast_mode_feature: true,
+            fast_mode_supported_models: vec!["gpt-5.5".to_string()],
         }
     }
 
@@ -1365,6 +1397,8 @@ mod tests {
                     cli_version: None,
                     supported_model_aliases: None,
                     supported_efforts: None,
+                    supports_fast_mode: false,
+                    fast_mode_supported_models: Vec::new(),
                     error: None,
                 },
             );
@@ -1424,6 +1458,8 @@ mod tests {
             cli_version: None,
             supported_model_aliases: None,
             supported_efforts: None,
+            supports_fast_mode: false,
+            fast_mode_supported_models: Vec::new(),
             error: None,
         };
         let probe_in_flight = Arc::new(HarnessRuntimeProbeInFlight::new());
@@ -1630,6 +1666,8 @@ esac
                     cli_version: None,
                     supported_model_aliases: None,
                     supported_efforts: None,
+                    supports_fast_mode: false,
+                    fast_mode_supported_models: Vec::new(),
                     error: None,
                 },
             );

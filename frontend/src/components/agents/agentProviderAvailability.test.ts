@@ -20,6 +20,7 @@ function provider(
     effort: "xhigh",
     approvalPolicy: "never",
     sandboxMode: "danger-full-access",
+    serviceTier: null,
     claudePermissionMode: null,
     claudeDangerouslySkipPermissions: false,
     claudeAllowDangerouslySkipPermissions: false,
@@ -29,6 +30,8 @@ function provider(
     status: "Available",
     error: null,
     missingCoreExecFeatures: [],
+    supportsFastMode: false,
+    fastModeSupportedModels: [],
     updatedAt: "2026-05-12T00:00:00.000Z",
     ...overrides,
   };
@@ -116,5 +119,22 @@ describe("agent provider availability", () => {
       "haiku",
       "fable",
     ]);
+  });
+
+  it("preserves Codex Fast capability metadata", () => {
+    const providerOptions = buildAgentProviderAvailabilityOptions({
+      providers: [
+        provider({
+          supportsFastMode: true,
+          fastModeSupportedModels: ["gpt-5.5", "gpt-5.4"],
+        }),
+      ],
+      isReady: true,
+    });
+
+    expect(providerOptions.find((option) => option.id === "codex")).toMatchObject({
+      supportsFastMode: true,
+      fastModeSupportedModels: ["gpt-5.5", "gpt-5.4"],
+    });
   });
 });

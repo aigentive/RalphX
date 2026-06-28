@@ -21,6 +21,7 @@ fn input(provider: &str) -> UpdateAgentProviderSettingsInput {
         effort: None,
         approval_policy: None,
         sandbox_mode: None,
+        service_tier: None,
         claude_permission_mode: None,
         claude_dangerously_skip_permissions: None,
         claude_allow_dangerously_skip_permissions: None,

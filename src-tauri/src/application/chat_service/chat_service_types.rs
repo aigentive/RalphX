@@ -142,6 +142,8 @@ pub struct AgentRunStartedPayload {
     pub provider_harness: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider_session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<String>,
 }
 
 impl AgentRunStartedPayload {
@@ -169,6 +171,7 @@ impl AgentRunStartedPayload {
             effective_model_label,
             provider_harness: harness.map(|value| value.to_string()),
             provider_session_id,
+            service_tier: None,
         }
     }
 }
