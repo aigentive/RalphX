@@ -338,7 +338,7 @@ describe("IntegratedChatPanel", () => {
       );
     });
 
-    it("observes the input container so composer chrome height changes can update transcript layout", async () => {
+    it("observes all chrome below the transcript so any sibling height change can update transcript layout", async () => {
       const observedTargets: Element[] = [];
       const resizeCallbacks: ResizeObserverCallback[] = [];
       const originalResizeObserver = globalThis.ResizeObserver;
@@ -373,8 +373,10 @@ describe("IntegratedChatPanel", () => {
           </TestWrapper>
         );
 
+        const belowTranscriptChrome = screen.getByTestId("chat-below-transcript-chrome");
         const inputContainer = screen.getByTestId("chat-input-container");
-        await waitFor(() => expect(observedTargets).toContain(inputContainer));
+        expect(belowTranscriptChrome).toContainElement(inputContainer);
+        await waitFor(() => expect(observedTargets).toContain(belowTranscriptChrome));
         expect(resizeCallbacks).toHaveLength(1);
 
         act(() => {
