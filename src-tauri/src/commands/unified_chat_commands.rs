@@ -100,11 +100,11 @@ use crate::domain::entities::task_step::StepProgressSummary;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceBranchMode, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus, AgentRun,
-    AgentRunId, AgentRunStatus, AgentWorkspaceSourcePullRequest, ArtifactContent, ChatAttachmentId,
-    ChatContextType, ChatConversation, ChatConversationId, ChatMessage, ChatMessageId,
-    ChatTimelineItem, DelegatedSessionId, ExecutionPlanStatus, IdeationAnalysisBaseRefKind,
-    IdeationSession, IdeationSessionFlow, IdeationSessionId, InternalStatus, PlanBranch,
-    PlanBranchStatus, Project, ProjectId, Task, TaskCategory, TaskId,
+    AgentRunId, AgentRunStatus, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceSourcePullRequest,
+    ArtifactContent, ChatAttachmentId, ChatContextType, ChatConversation, ChatConversationId,
+    ChatMessage, ChatMessageId, ChatTimelineItem, DelegatedSessionId, ExecutionPlanStatus,
+    IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow, IdeationSessionId,
+    InternalStatus, PlanBranch, PlanBranchStatus, Project, ProjectId, Task, TaskCategory, TaskId,
     DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::execution::{
@@ -8211,6 +8211,7 @@ pub async fn get_agent_running_states_for_service(
 #[serde(rename_all = "snake_case")]
 pub enum AgentConversationRuntimeSource {
     Workspace,
+    WorkspaceReview,
     Ideation,
     Verification,
     TaskExecution,
@@ -8291,6 +8292,7 @@ impl AgentConversationRuntimeStatus {
 fn runtime_source_priority(source: AgentConversationRuntimeSource) -> u8 {
     match source {
         AgentConversationRuntimeSource::Verification => 50,
+        AgentConversationRuntimeSource::WorkspaceReview => 46,
         AgentConversationRuntimeSource::Merge => 45,
         AgentConversationRuntimeSource::Review => 44,
         AgentConversationRuntimeSource::TaskExecution => 43,
@@ -8312,6 +8314,13 @@ fn summary_label_for_runtime_items(items: &[AgentConversationRuntimeItem]) -> St
         .any(|item| item.source == AgentConversationRuntimeSource::Verification)
     {
         return "Verifying".to_string();
+    }
+
+    if items
+        .iter()
+        .any(|item| item.source == AgentConversationRuntimeSource::WorkspaceReview)
+    {
+        return "Reviewing".to_string();
     }
 
     let task_items = items
@@ -8658,6 +8667,83 @@ async fn add_workspace_runtime_item(
     Ok(())
 }
 
+async fn add_workspace_review_runtime_item(
+    state: &AppState,
+    execution_state: &ExecutionState,
+    runtime: &mut AgentConversationRuntimeStatus,
+    workspace: &AgentConversationWorkspace,
+) -> Result<(), String> {
+    let Some(monitor) = state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&workspace.conversation_id)
+        .await
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(());
+    };
+    if monitor.status != AgentWorkspaceReviewMonitorStatus::Reviewing {
+        return Ok(());
+    }
+
+    let Some(review_conversation_id) = monitor.review_conversation_id.as_ref() else {
+        return Ok(());
+    };
+    let review_conversation_id = review_conversation_id.as_str();
+    let running_state = match direct_agent_running_state_for_context(
+        state,
+        execution_state,
+        ChatContextType::Project,
+        &review_conversation_id,
+    )
+    .await?
+    {
+        Some(state) if state.is_running => Some(state),
+        _ => match monitor.last_run_id.as_deref() {
+            Some(run_id) => state
+                .agent_run_repo
+                .get_by_id(&AgentRunId::from_string(run_id))
+                .await
+                .map_err(|error| error.to_string())?
+                .map(|run| running_state_from_run_status_and_idle(Some(run.status), false))
+                .filter(|state| state.is_running),
+            None => None,
+        },
+    };
+
+    let Some(running_state) = running_state else {
+        return Ok(());
+    };
+
+    let title = state
+        .chat_conversation_repo
+        .get_by_id(&ChatConversationId::from_string(
+            review_conversation_id.clone(),
+        ))
+        .await
+        .map_err(|error| error.to_string())?
+        .and_then(|conversation| conversation.title)
+        .filter(|title| !title.trim().is_empty())
+        .unwrap_or_else(|| "Review".to_string());
+
+    runtime.items.push(AgentConversationRuntimeItem {
+        source: AgentConversationRuntimeSource::WorkspaceReview,
+        context_type: ChatContextType::Project.to_string(),
+        context_id: review_conversation_id.clone(),
+        label: "Reviewing".to_string(),
+        title,
+        agent_status: running_state.agent_status,
+        task_id: None,
+        internal_status: Some(monitor.status.to_string()),
+        running_process: None,
+        ideation_session: None,
+        parent_session_id: None,
+        child_session_id: None,
+        conversation_id: Some(review_conversation_id),
+    });
+
+    Ok(())
+}
+
 async fn add_associated_runtime_items(
     state: &AppState,
     execution_state: &ExecutionState,
@@ -8696,6 +8782,7 @@ async fn add_associated_runtime_items(
         }
     }
 
+    add_workspace_review_runtime_item(state, execution_state, runtime, workspace).await?;
     add_task_runtime_items(state, service, runtime, workspace).await
 }
 
@@ -8956,12 +9043,13 @@ mod tests {
     use crate::domain::entities::{
         AgentConversationWorkspace, AgentConversationWorkspaceBranchMode,
         AgentConversationWorkspaceMode, AgentConversationWorkspacePublicationEvent, AgentRun,
-        AgentWorkspacePrDescription, AgentWorkspaceSourcePullRequest, ArtifactId, ChatContextType,
-        ChatConversation, ChatConversationId, ChatMessage, ChatMessageId, ChatTimelineItem,
-        ChatTimelineItemId, ChatTimelineItemKind, ChatTimelineItemStatus, ExecutionPlan,
-        ExecutionPlanId, ExecutionPlanStatus, IdeationAnalysisBaseRefKind, IdeationSession,
-        IdeationSessionFlow, IdeationSessionId, InternalStatus, MessageRole, PlanBranch,
-        PlanBranchId, PlanBranchStatus, Project, ProjectId, SessionPurpose, Task,
+        AgentWorkspacePrDescription, AgentWorkspaceReviewMonitor,
+        AgentWorkspaceReviewMonitorStatus, AgentWorkspaceSourcePullRequest, ArtifactId,
+        ChatContextType, ChatConversation, ChatConversationId, ChatMessage, ChatMessageId,
+        ChatTimelineItem, ChatTimelineItemId, ChatTimelineItemKind, ChatTimelineItemStatus,
+        ExecutionPlan, ExecutionPlanId, ExecutionPlanStatus, IdeationAnalysisBaseRefKind,
+        IdeationSession, IdeationSessionFlow, IdeationSessionId, InternalStatus, MessageRole,
+        PlanBranch, PlanBranchId, PlanBranchStatus, Project, ProjectId, SessionPurpose, Task,
         DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
     };
     use crate::domain::execution::ExecutionSettings;
@@ -9095,6 +9183,90 @@ mod tests {
             verification.child_session_id.as_deref(),
             Some(child_id.as_str())
         );
+    }
+
+    #[tokio::test]
+    async fn agent_conversation_runtime_status_includes_workspace_review_child_chat() {
+        let state = AppState::new_sqlite_test();
+        let execution_state = Arc::new(ExecutionState::new());
+        let project_id = ProjectId::from_string("project-workspace-review-runtime".to_string());
+        let conversation_id = ChatConversationId::new();
+        let review_conversation_id = ChatConversationId::new();
+
+        let workspace = workspace_for_runtime_test(&conversation_id, &project_id);
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .unwrap();
+
+        let mut review_conversation = ChatConversation::new_project(project_id.clone());
+        review_conversation.id = review_conversation_id.clone();
+        review_conversation.parent_conversation_id = Some(conversation_id.as_str());
+        review_conversation.title = Some("Review workspace changes".to_string());
+        state
+            .chat_conversation_repo
+            .create(review_conversation)
+            .await
+            .unwrap();
+
+        let review_run = AgentRun::new(review_conversation_id.clone());
+        let review_run_id = review_run.id;
+        state.agent_run_repo.create(review_run).await.unwrap();
+        state
+            .running_agent_registry
+            .register(
+                RunningAgentKey::new(
+                    ChatContextType::Project.to_string(),
+                    review_conversation_id.as_str(),
+                ),
+                0,
+                review_conversation_id.as_str(),
+                review_run_id.as_str().to_string(),
+                None,
+                None,
+            )
+            .await;
+
+        let mut monitor =
+            AgentWorkspaceReviewMonitor::new(conversation_id.clone(), project_id.clone());
+        monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
+        monitor.review_conversation_id = Some(review_conversation_id.clone());
+        monitor.last_run_id = Some(review_run_id.as_str().to_string());
+        state
+            .agent_conversation_workspace_repo
+            .upsert_workspace_review_monitor(monitor)
+            .await
+            .unwrap();
+
+        let statuses = get_agent_conversation_runtime_statuses_for_app_state(
+            &state,
+            execution_state,
+            vec![conversation_id.as_str().to_string()],
+        )
+        .await
+        .unwrap();
+        let conversation_key = conversation_id.as_str();
+        let review_conversation_key = review_conversation_id.as_str();
+        let runtime = statuses.get(&conversation_key).unwrap();
+
+        assert!(runtime.is_running);
+        assert_eq!(runtime.summary_label.as_deref(), Some("Reviewing"));
+        assert_eq!(
+            runtime.primary_source,
+            Some(AgentConversationRuntimeSource::WorkspaceReview)
+        );
+        assert_eq!(runtime.items.len(), 1);
+        let item = &runtime.items[0];
+        assert_eq!(item.source, AgentConversationRuntimeSource::WorkspaceReview);
+        assert_eq!(item.context_type, "project");
+        assert_eq!(item.context_id, review_conversation_key);
+        assert_eq!(
+            item.conversation_id.as_deref(),
+            Some(review_conversation_key.as_str())
+        );
+        assert_eq!(item.title, "Review workspace changes");
+        assert!(item.task_id.is_none());
     }
 
     #[tokio::test]

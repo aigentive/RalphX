@@ -67,6 +67,7 @@ import {
   agentWorkspaceKeys,
   invalidateWorkspaceQueries,
   prReviewContextForConversation,
+  workspaceReviewContextForConversation,
 } from "./agentWorkspaceQueries";
 import {
   hasOpenAgentConversationIssues,
@@ -151,13 +152,18 @@ const ARTIFACT_TABS: Array<{
   label: string;
   icon: ElementType;
 }> = [
-  { id: "review", label: "Review", icon: FileText },
   { id: "issues", label: "Issues", icon: AlertCircle },
   { id: "plan", label: "Plan", icon: FileText },
   { id: "verification", label: "Verification", icon: CheckCircle2 },
   { id: "proposal", label: "Proposals", icon: GitPullRequestArrow },
   { id: "tasks", label: "Tasks", icon: ClipboardList },
 ];
+
+const REVIEW_TAB = {
+  id: "review" as const,
+  label: "Review",
+  icon: FileText,
+};
 
 const PUBLISH_TAB = {
   id: "publish" as const,
@@ -355,7 +361,10 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     refetchInterval: (query) =>
       query.state.data?.monitor.status === "reviewing" ? 2_000 : false,
   });
-  const workspaceReviewContext = workspaceReviewContextQuery.data ?? null;
+  const workspaceReviewContext = workspaceReviewContextForConversation(
+    workspaceReviewContextQuery.data,
+    conversationId,
+  );
   const workspaceReviewArtifactId =
     workspaceReviewContext?.monitor.reviewArtifactId ?? null;
   const prReviewArtifactId =
@@ -372,14 +381,17 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       ? reviewArtifactQuery.data
       : null;
   const startWorkspaceReviewMutation = useMutation({
-    mutationFn: ({ force }: { force: boolean }) =>
-      chatApi.startAgentWorkspaceReview(conversationId!, { force }),
-    onSuccess: (result) => {
-      if (conversationId) {
-        void queryClient.invalidateQueries({
-          queryKey: agentWorkspaceKeys.workspaceReview(conversationId),
-        });
-      }
+    mutationFn: ({
+      conversationId,
+      force,
+    }: {
+      conversationId: string;
+      force: boolean;
+    }) => chatApi.startAgentWorkspaceReview(conversationId, { force }),
+    onSuccess: (result, variables) => {
+      void queryClient.invalidateQueries({
+        queryKey: agentWorkspaceKeys.workspaceReview(variables.conversationId),
+      });
       const artifactId = result.monitor.reviewArtifactId;
       if (artifactId) {
         void queryClient.invalidateQueries({
@@ -491,7 +503,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     if (!shouldShowReviewTab || tabs.includes("review")) {
       return tabs;
     }
-    return ["review", ...tabs];
+    return [...tabs, "review"];
   }, [
     availableIdeationTabIds,
     conversation?.contextType,
@@ -505,6 +517,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       ...(showJiraTab ? [JIRA_TAB] : []),
       ...(showLinearTab ? [LINEAR_TAB] : []),
       ...(showGranolaTab ? [GRANOLA_TAB] : []),
+      ...(availableArtifactTabIds.includes("review") ? [REVIEW_TAB] : []),
       ...(showPublishTab ? [PUBLISH_TAB] : []),
     ],
     [
@@ -516,29 +529,38 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     ],
   );
   const fallbackActiveTab =
-    workspaceReviewContext?.shouldShowTab || reviewArtifactId
-      ? "review"
-      : showJiraTab
-        ? "jira"
-        : showLinearTab
-          ? "linear"
-          : showGranolaTab
-            ? "granola"
-            : visibleTabs.some((tab) => tab.id === "plan")
-              ? "plan"
-              : visibleTabs.some((tab) => tab.id === "issues")
-                ? "issues"
+    showJiraTab
+      ? "jira"
+      : showLinearTab
+        ? "linear"
+        : showGranolaTab
+          ? "granola"
+          : visibleTabs.some((tab) => tab.id === "plan")
+            ? "plan"
+            : visibleTabs.some((tab) => tab.id === "issues")
+              ? "issues"
+              : visibleTabs.some((tab) => tab.id === "review")
+                ? "review"
                 : "plan";
   const effectiveActiveTab =
     visibleTabs.some((tab) => tab.id === activeTab)
       ? activeTab
       : fallbackActiveTab;
-  const reviewDisplayContext = startWorkspaceReviewMutation.data ?? workspaceReviewContext;
+  const isWorkspaceReviewActionPending =
+    startWorkspaceReviewMutation.isPending &&
+    startWorkspaceReviewMutation.variables?.conversationId === conversationId;
+  const workspaceReviewStartResult = workspaceReviewContextForConversation(
+    startWorkspaceReviewMutation.data,
+    conversationId,
+  );
+  const reviewDisplayContext = isWorkspaceReviewActionPending
+    ? workspaceReviewStartResult ?? workspaceReviewContext
+    : workspaceReviewContext ?? workspaceReviewStartResult;
   const isWorkspaceReviewRunning =
-    startWorkspaceReviewMutation.isPending ||
+    isWorkspaceReviewActionPending ||
     reviewDisplayContext?.monitor.status === "reviewing";
   const workspaceReviewBlocked =
-    Boolean(startWorkspaceReviewMutation.error) ||
+    (isWorkspaceReviewActionPending && Boolean(startWorkspaceReviewMutation.error)) ||
     reviewDisplayContext?.monitor.status === "blocked";
   const reviewTabStatusColor = isWorkspaceReviewRunning
     ? "var(--accent-primary)"
@@ -619,11 +641,11 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     [attachedSessionId, queryClient],
   );
   const handleStartReview = useCallback((force: boolean) => {
-    if (!conversationId || startWorkspaceReviewMutation.isPending) {
+    if (!conversationId || isWorkspaceReviewActionPending) {
       return;
     }
-    startWorkspaceReviewMutation.mutate({ force });
-  }, [conversationId, startWorkspaceReviewMutation]);
+    startWorkspaceReviewMutation.mutate({ conversationId, force });
+  }, [conversationId, isWorkspaceReviewActionPending, startWorkspaceReviewMutation]);
 
   return (
     <aside
@@ -828,14 +850,16 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
           taskMode={taskMode}
           reviewArtifact={reviewArtifact}
           reviewContext={workspaceReviewContext}
-          reviewStartResult={startWorkspaceReviewMutation.data ?? null}
-          reviewStartError={startWorkspaceReviewMutation.error}
+          reviewStartResult={workspaceReviewStartResult}
+          reviewStartError={
+            isWorkspaceReviewActionPending ? startWorkspaceReviewMutation.error : null
+          }
           isReviewLoading={
             Boolean(reviewArtifactId) &&
             !reviewArtifact &&
             reviewArtifactQuery.isFetching
           }
-          isReviewActionPending={startWorkspaceReviewMutation.isPending}
+          isReviewActionPending={isWorkspaceReviewActionPending}
           onStartReview={handleStartReview}
           planArtifact={planArtifact}
           isPlanLoading={isPlanHydrating}
