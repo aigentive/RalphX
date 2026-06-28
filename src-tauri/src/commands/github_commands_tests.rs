@@ -222,6 +222,14 @@ async fn get_github_branch_overview_lists_pr_rx_and_ticket_indicators() {
             updated_at: Some("2026-06-27T08:00:00Z".to_string()),
         },
         PrBranchMatch {
+            number: 14,
+            url: "https://github.com/aigentive/ralphx.app/pull/14".to_string(),
+            status: PrStatus::Closed,
+            is_draft: false,
+            head_ref_name: "feature/merged".to_string(),
+            updated_at: Some("2026-06-27T08:00:00Z".to_string()),
+        },
+        PrBranchMatch {
             number: 12,
             url: "https://github.com/aigentive/ralphx.app/pull/12".to_string(),
             status: PrStatus::Open,
@@ -304,19 +312,39 @@ async fn get_github_branch_overview_lists_pr_rx_and_ticket_indicators() {
 
     assert_eq!(overview.current_branch.as_deref(), Some("main"));
     assert!(overview.sources_unavailable.is_empty());
+    assert_eq!(
+        overview
+            .branches
+            .first()
+            .map(|branch| branch.branch_name.as_str()),
+        Some("main")
+    );
     let alpha = overview
         .branches
         .iter()
         .find(|branch| branch.branch_name == "feature/alpha")
         .expect("feature branch row should exist");
+    assert!(!alpha.is_current);
     assert_eq!(alpha.pr_number, Some(9));
     assert_eq!(alpha.pr_title.as_deref(), Some("Alpha PR"));
+    assert_eq!(
+        alpha.pr_url.as_deref(),
+        Some("https://github.com/aigentive/ralphx.app/pull/9")
+    );
     assert_eq!(alpha.pr_status.as_deref(), Some("open"));
+    assert!(!alpha.pr_is_draft);
+    assert_eq!(alpha.pr_updated_at.as_deref(), Some("2026-06-28T08:00:00Z"));
+    assert_eq!(alpha.pr_author_login.as_deref(), Some("reefagent"));
+    assert_eq!(alpha.pr_base_ref_name.as_deref(), Some("main"));
     assert_eq!(alpha.rx_conversation_count, 1);
     assert_eq!(alpha.rx_conversations.len(), 1);
     assert_eq!(
         alpha.rx_conversations[0].title.as_deref(),
         Some("Alpha branch work")
+    );
+    assert_eq!(
+        alpha.rx_conversations[0].conversation_id,
+        conversation.id.to_string()
     );
     assert_eq!(alpha.ticket_count, 1);
     assert_eq!(alpha.ticket_labels, vec!["Jira RX-77"]);
@@ -332,8 +360,17 @@ async fn get_github_branch_overview_lists_pr_rx_and_ticket_indicators() {
         .iter()
         .find(|branch| branch.branch_name == "feature/pr-only")
         .expect("GitHub-only PR branch row should exist");
+    assert!(!pr_only.is_current);
     assert_eq!(pr_only.pr_number, Some(10));
     assert_eq!(pr_only.pr_status.as_deref(), Some("draft"));
+    assert!(pr_only.pr_is_draft);
+    assert_eq!(
+        pr_only.pr_url.as_deref(),
+        Some("https://github.com/aigentive/ralphx.app/pull/10")
+    );
+    assert_eq!(pr_only.pr_updated_at, None);
+    assert_eq!(pr_only.pr_author_login, None);
+    assert_eq!(pr_only.pr_base_ref_name.as_deref(), Some("main"));
     assert_eq!(pr_only.rx_conversation_count, 0);
     assert_eq!(pr_only.ticket_count, 0);
 
@@ -342,12 +379,14 @@ async fn get_github_branch_overview_lists_pr_rx_and_ticket_indicators() {
         .iter()
         .find(|branch| branch.branch_name == "feature/merged")
         .expect("merged local PR branch row should exist");
-    assert_eq!(merged.pr_number, Some(11));
-    assert_eq!(merged.pr_status.as_deref(), Some("merged"));
+    assert_eq!(merged.pr_number, Some(14));
+    assert_eq!(merged.pr_status.as_deref(), Some("closed"));
     assert_eq!(
         merged.pr_url.as_deref(),
-        Some("https://github.com/aigentive/ralphx.app/pull/11")
+        Some("https://github.com/aigentive/ralphx.app/pull/14")
     );
+    assert_eq!(merged.pr_title, None);
+    assert_eq!(merged.pr_base_ref_name, None);
     assert!(overview
         .branches
         .iter()
@@ -360,15 +399,21 @@ async fn get_github_branch_overview_lists_pr_rx_and_ticket_indicators() {
         .expect("main branch row should exist");
     assert!(main.is_current);
     assert_eq!(main.pr_number, None);
+    assert_eq!(main.rx_conversation_count, 0);
+    assert_eq!(main.rx_conversations.len(), 0);
+    assert_eq!(main.ticket_count, 0);
+    assert_eq!(main.ticket_links.len(), 0);
 
     let clickup = overview
         .branches
         .iter()
         .find(|branch| branch.branch_name == "ralphx/ticket/clickup-cu-1")
         .expect("ClickUp canonical ticket branch row should exist");
+    assert!(!clickup.is_current);
     assert_eq!(clickup.ticket_count, 1);
     assert_eq!(clickup.ticket_labels, vec!["ClickUp cu-1"]);
     assert_eq!(clickup.ticket_links[0].provider, "clickup");
+    assert_eq!(clickup.ticket_links[0].title, None);
     assert!(clickup.ticket_links[0].url.is_none());
 
     assert_eq!(
