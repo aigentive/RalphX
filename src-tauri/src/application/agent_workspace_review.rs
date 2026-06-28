@@ -1491,7 +1491,7 @@ mod tests {
     use crate::application::chat_service::MockChatService;
     use crate::domain::agents::AgenticClient;
     use crate::domain::entities::{
-        AgentConversationWorkspaceMode, AgentWorkspaceSourcePullRequest, ArtifactId,
+        AgentConversationWorkspaceMode, AgentRun, AgentWorkspaceSourcePullRequest, ArtifactId,
         ChatConversation, ChatConversationId, IdeationAnalysisBaseRefKind,
     };
     use crate::infrastructure::MockAgenticClient;
@@ -1577,6 +1577,27 @@ mod tests {
             .create(conversation)
             .await
             .expect("conversation should persist");
+    }
+
+    async fn wait_for_monitor_status(
+        state: &AppState,
+        workspace: &AgentConversationWorkspace,
+        status: AgentWorkspaceReviewMonitorStatus,
+    ) -> AgentWorkspaceReviewMonitor {
+        for _ in 0..100 {
+            if let Some(monitor) = state
+                .agent_conversation_workspace_repo
+                .get_workspace_review_monitor(&workspace.conversation_id)
+                .await
+                .expect("monitor read should succeed")
+            {
+                if monitor.status == status {
+                    return monitor;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        panic!("monitor did not reach status {status}");
     }
 
     #[test]
@@ -2175,6 +2196,165 @@ x
     }
 
     #[tokio::test]
+    async fn start_review_blocks_monitor_when_child_chat_send_fails() {
+        let (_temp, repo, base_sha) = init_repo();
+        committed_workspace_delta(&repo);
+
+        let agent_client: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
+        let state = Arc::new(AppState::new_test().with_agent_client(agent_client));
+        let chat_service = MockChatService::new();
+        chat_service.set_available(false).await;
+        let project = seed_project(&state, &repo).await;
+        let workspace = workspace(
+            &project,
+            &repo,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main",
+            Some(base_sha),
+        );
+        seed_conversation(&state, &workspace).await;
+
+        let error = start_agent_workspace_review_with_chat_service(
+            Arc::clone(&state),
+            &workspace,
+            true,
+            &chat_service,
+        )
+        .await
+        .expect_err("review child chat send should fail");
+
+        assert!(error
+            .to_string()
+            .contains("failed to start workspace reviewer chat"));
+        let sent_options = chat_service.get_sent_options().await;
+        assert_eq!(sent_options.len(), 1);
+        let review_conversation_id = sent_options[0]
+            .conversation_id_override
+            .clone()
+            .expect("review conversation override should be created before send");
+        let monitor = state
+            .agent_conversation_workspace_repo
+            .get_workspace_review_monitor(&workspace.conversation_id)
+            .await
+            .expect("monitor read should succeed")
+            .expect("monitor should persist");
+        assert_eq!(monitor.status, AgentWorkspaceReviewMonitorStatus::Blocked);
+        assert_eq!(monitor.review_conversation_id, Some(review_conversation_id));
+        assert!(monitor.last_run_id.is_none());
+        assert_eq!(
+            monitor.last_error.as_deref(),
+            Some(
+                "failed to start workspace reviewer chat: Agent not available: Mock agent not available"
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn workspace_review_waiter_handles_failed_and_completed_child_runs() {
+        let (_temp, repo, base_sha) = init_repo();
+        committed_workspace_delta(&repo);
+
+        let state = Arc::new(AppState::new_test());
+        let project = seed_project(&state, &repo).await;
+        let workspace = workspace(
+            &project,
+            &repo,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main",
+            Some(base_sha),
+        );
+        let context = load_agent_workspace_review_context(&state, &workspace)
+            .await
+            .expect("context should load");
+        let target = context.target.expect("target should exist");
+
+        let mut failed_run = AgentRun::new(ChatConversationId::new());
+        let failed_run_id = failed_run.id.as_str().to_string();
+        failed_run.fail("review process crashed");
+        state
+            .agent_run_repo
+            .create(failed_run)
+            .await
+            .expect("failed run should persist");
+        let mut reviewing_monitor = context.monitor.clone();
+        apply_current_target_to_monitor(&mut reviewing_monitor, Some(&target));
+        reviewing_monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
+        reviewing_monitor.last_run_id = Some(failed_run_id.clone());
+        state
+            .agent_conversation_workspace_repo
+            .upsert_workspace_review_monitor(reviewing_monitor)
+            .await
+            .expect("reviewing monitor should persist");
+
+        spawn_workspace_review_waiter(
+            Arc::clone(&state),
+            workspace.clone(),
+            target.clone(),
+            failed_run_id.clone(),
+        );
+
+        let blocked = wait_for_monitor_status(
+            &state,
+            &workspace,
+            AgentWorkspaceReviewMonitorStatus::Blocked,
+        )
+        .await;
+        assert_eq!(blocked.last_run_id.as_deref(), Some(failed_run_id.as_str()));
+        assert_eq!(
+            blocked.last_error.as_deref(),
+            Some("review process crashed")
+        );
+
+        let mut completed_run = AgentRun::new(ChatConversationId::new());
+        let completed_run_id = completed_run.id.as_str().to_string();
+        completed_run.complete();
+        state
+            .agent_run_repo
+            .create(completed_run)
+            .await
+            .expect("completed run should persist");
+        let mut ready_monitor = blocked;
+        apply_review_artifact_to_monitor(
+            &mut ready_monitor,
+            target.scope,
+            target.head_sha.clone(),
+            target.diff_fingerprint.clone(),
+            Some(completed_run_id.clone()),
+            ArtifactId::from_string("artifact-ready"),
+            4,
+            Utc::now(),
+            None,
+        );
+        state
+            .agent_conversation_workspace_repo
+            .upsert_workspace_review_monitor(ready_monitor)
+            .await
+            .expect("ready monitor should persist");
+
+        spawn_workspace_review_waiter(
+            Arc::clone(&state),
+            workspace.clone(),
+            target,
+            completed_run_id.clone(),
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let monitor = state
+            .agent_conversation_workspace_repo
+            .get_workspace_review_monitor(&workspace.conversation_id)
+            .await
+            .expect("monitor read should succeed")
+            .expect("monitor should exist");
+        assert_eq!(monitor.status, AgentWorkspaceReviewMonitorStatus::Ready);
+        assert_eq!(
+            monitor.last_run_id.as_deref(),
+            Some(completed_run_id.as_str())
+        );
+        assert_eq!(monitor.review_artifact_version, Some(4));
+        assert_eq!(monitor.last_error, None);
+    }
+
+    #[tokio::test]
     async fn complete_review_run_sets_ready_idle_and_blocked_statuses() {
         let (_temp, repo, base_sha) = init_repo();
         committed_workspace_delta(&repo);
@@ -2375,9 +2555,17 @@ x
             review_started_summary(&selected),
             "Reviewing selected PR #483 against main."
         );
+        assert_eq!(
+            workspace_review_conversation_title(&selected),
+            "Review PR #483"
+        );
 
         let mut branch = selected.clone();
         branch.source_pull_request_number = None;
+        assert_eq!(
+            workspace_review_conversation_title(&branch),
+            "Review feature/review"
+        );
         assert_eq!(
             review_started_summary(&branch),
             "Reviewing selected source branch feature/review against main."
@@ -2385,6 +2573,10 @@ x
 
         let mut workspace_delta = selected;
         workspace_delta.scope = AgentWorkspaceReviewTargetScope::WorkspaceDelta;
+        assert_eq!(
+            workspace_review_conversation_title(&workspace_delta),
+            "Review workspace changes"
+        );
         assert_eq!(
             review_started_summary(&workspace_delta),
             "Reviewing current workspace changes."
