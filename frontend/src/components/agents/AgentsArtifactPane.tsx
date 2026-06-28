@@ -1244,7 +1244,6 @@ function AgentPlanPanel({
   const canVerifyPlan =
     canShowApprovedPlanActions &&
     isOwnedCurrentPlan &&
-    isPlanApproved &&
     !isPlanVerificationSatisfied;
   const canCreateProposals =
     canShowApprovedPlanActions &&

@@ -1240,7 +1240,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     approvedAt: planApprovalArtifact?.planApproval?.approvedAt,
   });
   const planVerificationQuery = useVerificationStatus(
-    planApprovalSessionId && isPlanApproved ? planApprovalSessionId : undefined,
+    planApprovalSessionId && planApprovalArtifact ? planApprovalSessionId : undefined,
   );
   const planVerificationState = planVerificationQuery.data?.status ?? null;
   const planVerificationInProgress =
@@ -1253,7 +1253,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     planVerificationState === "imported_verified";
   const canVerifyComposerPlan = Boolean(
     planApprovalSessionId &&
-      isPlanApproved &&
+      planApprovalArtifact &&
       !isPlanVerificationLoading &&
       !isPlanVerificationSatisfied,
   );
@@ -1474,7 +1474,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   ]);
   const planComposerHint = useMemo(() => {
     if (canApproveComposerPlan) {
-      return "Approve the draft plan when it matches the intended scope. You can still keep chatting to refine it.";
+      return "Approve the draft plan when it matches the intended scope, or verify it first for adversarial review.";
     }
     return buildPlanActionHint({
       assessment: planComplexityQuery.data,
@@ -1493,6 +1493,21 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       return [];
     }
 
+    const verifyAction: PlanComposerCtaAction | null = canVerifyComposerPlan
+      ? {
+          id: "verify",
+          label: "Verify Plan",
+          icon: ShieldCheck,
+          isPrimary: false,
+          isPending:
+            isStartingPlanVerification || planVerificationInProgress,
+          disabled: isPlanRecommendationPending,
+          onClick: () => {
+            void handleVerifyPlanFromComposer();
+          },
+        }
+      : null;
+
     if (canApproveComposerPlan) {
       return [
         {
@@ -1506,7 +1521,8 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
             void handleApprovePlanFromQuestion();
           },
         },
-      ];
+        verifyAction,
+      ].filter((action): action is PlanComposerCtaAction => action !== null);
     }
 
     if (!isPlanApproved) {
@@ -1554,21 +1570,6 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
           },
         }
       : null;
-    const verifyAction: PlanComposerCtaAction | null = canVerifyComposerPlan
-      ? {
-          id: "verify",
-          label: "Verify Plan",
-          icon: ShieldCheck,
-          isPrimary: false,
-          isPending:
-            isStartingPlanVerification || planVerificationInProgress,
-          disabled: isPlanRecommendationPending,
-          onClick: () => {
-            void handleVerifyPlanFromComposer();
-          },
-        }
-      : null;
-
     const mainActions =
       isPlanRecommendationPending ||
       planComplexityQuery.data?.recommendedAction === "create_proposals"
