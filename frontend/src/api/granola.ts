@@ -30,6 +30,36 @@ export interface SaveGranolaIntegrationSettingsInput {
   apiToken?: string | null;
 }
 
+export const GranolaNoteRxConversationSchema = z.object({
+  conversationId: z.string(),
+  title: z.string().nullable().optional(),
+});
+
+export type GranolaNoteRxConversation = z.infer<
+  typeof GranolaNoteRxConversationSchema
+>;
+
+export const GranolaNoteTicketLinkSchema = z.object({
+  provider: z.string(),
+  label: z.string(),
+  title: z.string().nullable().optional(),
+  url: z.string().nullable().optional(),
+});
+
+export type GranolaNoteTicketLink = z.infer<
+  typeof GranolaNoteTicketLinkSchema
+>;
+
+export const GranolaNotePullRequestLinkSchema = z.object({
+  number: z.number(),
+  url: z.string().nullable().optional(),
+  status: z.string().nullable().optional(),
+});
+
+export type GranolaNotePullRequestLink = z.infer<
+  typeof GranolaNotePullRequestLinkSchema
+>;
+
 export const GranolaNoteSummarySchema = z.object({
   id: z.string(),
   title: z.string().nullable().optional(),
@@ -37,6 +67,12 @@ export const GranolaNoteSummarySchema = z.object({
   summary: z.string().nullable().optional(),
   createdAt: z.string().nullable().optional(),
   updatedAt: z.string().nullable().optional(),
+  rxConversationCount: z.number().default(0),
+  rxConversations: z.array(GranolaNoteRxConversationSchema).default([]),
+  ticketCount: z.number().default(0),
+  ticketLinks: z.array(GranolaNoteTicketLinkSchema).default([]),
+  prCount: z.number().default(0),
+  pullRequests: z.array(GranolaNotePullRequestLinkSchema).default([]),
 });
 
 export type GranolaNoteSummary = z.infer<typeof GranolaNoteSummarySchema>;
@@ -97,6 +133,7 @@ export const AgentConversationGranolaNoteResponseSchema = z.object({
 export interface ListGranolaNotesInput {
   pageSize?: number;
   cursor?: string | null;
+  projectId?: string | null;
 }
 
 export interface GetGranolaNoteDetailInput {

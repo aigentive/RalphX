@@ -4,10 +4,13 @@ import {
   CalendarClock,
   Check,
   Copy,
+  GitPullRequest,
   Loader2,
+  MessageSquare,
   RefreshCw,
   ScrollText,
   Search,
+  Ticket,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -176,7 +179,27 @@ function granolaNoteMatchesSearch(note: GranolaNoteSummary, query: string): bool
   if (!trimmed) {
     return true;
   }
-  const haystack = [note.title, note.summary, note.id, note.url]
+  const haystack = [
+    note.title,
+    note.summary,
+    note.id,
+    note.url,
+    ...(note.rxConversations ?? []).flatMap((conversation) => [
+      conversation.title,
+      conversation.conversationId,
+    ]),
+    ...(note.ticketLinks ?? []).flatMap((ticketLink) => [
+      ticketLink.provider,
+      ticketLink.label,
+      ticketLink.title,
+      ticketLink.url,
+    ]),
+    ...(note.pullRequests ?? []).flatMap((pullRequest) => [
+      `#${pullRequest.number}`,
+      pullRequest.status,
+      pullRequest.url,
+    ]),
+  ]
     .filter(Boolean)
     .join(" ")
     .toLowerCase();
@@ -199,6 +222,159 @@ function granolaNoteMatchesFilter(
 
 function noteFilterCount(notes: GranolaNoteSummary[], filter: GranolaNoteFilter): number {
   return notes.filter((note) => granolaNoteMatchesFilter(note, filter)).length;
+}
+
+function granolaTicketProviderLabel(provider: string): string {
+  switch (provider.toLowerCase()) {
+    case "atlassian":
+    case "jira":
+      return "Jira";
+    case "linear":
+      return "Linear";
+    case "clickup":
+      return "ClickUp";
+    default:
+      return provider;
+  }
+}
+
+function granolaAssociationCount(note: GranolaNoteSummary | null | undefined): number {
+  if (!note) {
+    return 0;
+  }
+  return (
+    (note.rxConversationCount ?? note.rxConversations?.length ?? 0)
+    + (note.ticketCount ?? note.ticketLinks?.length ?? 0)
+    + (note.prCount ?? note.pullRequests?.length ?? 0)
+  );
+}
+
+function GranolaAssociationPills({
+  note,
+  compact = false,
+}: {
+  note: GranolaNoteSummary | null | undefined;
+  compact?: boolean;
+}) {
+  if (!note || granolaAssociationCount(note) === 0) {
+    return null;
+  }
+
+  const rxCount = note.rxConversationCount ?? note.rxConversations?.length ?? 0;
+  const ticketCount = note.ticketCount ?? note.ticketLinks?.length ?? 0;
+  const prCount = note.prCount ?? note.pullRequests?.length ?? 0;
+  const items = [
+    {
+      id: "rx",
+      count: rxCount,
+      label: compact ? String(rxCount) : `${rxCount} RX`,
+      ariaLabel: `${rxCount} RalphX conversation${rxCount === 1 ? "" : "s"} attached`,
+      icon: MessageSquare,
+    },
+    {
+      id: "tickets",
+      count: ticketCount,
+      label: compact
+        ? String(ticketCount)
+        : `${ticketCount} ticket${ticketCount === 1 ? "" : "s"}`,
+      ariaLabel: `${ticketCount} ticket${ticketCount === 1 ? "" : "s"} attached`,
+      icon: Ticket,
+    },
+    {
+      id: "prs",
+      count: prCount,
+      label: compact ? String(prCount) : `${prCount} PR${prCount === 1 ? "" : "s"}`,
+      ariaLabel: `${prCount} pull request${prCount === 1 ? "" : "s"} attached`,
+      icon: GitPullRequest,
+    },
+  ].filter((item) => item.count > 0);
+
+  return (
+    <span
+      className={cn("inline-flex flex-wrap items-center gap-1", compact ? "mt-2" : "")}
+    >
+      {items.map(({ id, label, ariaLabel, icon: Icon }) => (
+        <span
+          key={id}
+          aria-label={ariaLabel}
+          className={cn(
+            "inline-flex items-center rounded-full border text-xs font-medium",
+            compact ? "h-5 gap-1 px-1.5" : "h-6 gap-1.5 px-2",
+          )}
+          style={{
+            backgroundColor: "var(--bg-elevated)",
+            borderColor: "var(--border-subtle)",
+            borderStyle: "solid",
+            borderWidth: "1px",
+            color: "var(--text-muted)",
+          }}
+        >
+          <Icon className={compact ? "h-3 w-3" : "h-3.5 w-3.5"} aria-hidden="true" />
+          <span>{label}</span>
+        </span>
+      ))}
+    </span>
+  );
+}
+
+function GranolaAssociationDetails({
+  note,
+}: {
+  note: GranolaNoteSummary | null | undefined;
+}) {
+  if (!note || granolaAssociationCount(note) === 0) {
+    return null;
+  }
+
+  return (
+    <div
+      className="grid gap-2 rounded-md border px-3 py-2"
+      style={{
+        backgroundColor: "var(--bg-surface)",
+        borderColor: "var(--border-subtle)",
+        borderStyle: "solid",
+        borderWidth: "1px",
+      }}
+    >
+      <GranolaAssociationPills note={note} />
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-[var(--text-muted)]">
+        {(note.rxConversations ?? []).map((conversation) => (
+          <span
+            key={conversation.conversationId}
+            className="inline-flex min-w-0 items-center gap-1.5"
+          >
+            <MessageSquare className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+            <span className="truncate">
+              {conversation.title ?? conversation.conversationId}
+            </span>
+          </span>
+        ))}
+        {(note.ticketLinks ?? []).map((ticketLink) => (
+          <span
+            key={`${ticketLink.provider}:${ticketLink.label}`}
+            className="inline-flex min-w-0 items-center gap-1.5"
+          >
+            <Ticket className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+            <span className="truncate">
+              {granolaTicketProviderLabel(ticketLink.provider)} {ticketLink.label}
+            </span>
+          </span>
+        ))}
+        {(note.pullRequests ?? []).map((pullRequest) => (
+          <span
+            key={pullRequest.number}
+            className="inline-flex min-w-0 items-center gap-1.5"
+          >
+            <GitPullRequest className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+            <span className="truncate">
+              PR #{pullRequest.number}
+              {pullRequest.status ? ` ${pullRequest.status}` : ""}
+            </span>
+          </span>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 function GranolaFilterButton({
@@ -436,6 +612,7 @@ function GranolaNoteRow({
         ) : (
           <span className="mt-1 block text-xs text-[var(--text-muted)]">No summary</span>
         )}
+        <GranolaAssociationPills note={note} compact />
       </span>
       <span className="shrink-0 text-right text-xs text-[var(--text-muted)]">
         {dateLabel ? <span className="block">{dateLabel}</span> : null}
@@ -493,9 +670,9 @@ export function GranolaDashboardView({
     granolaSettings?.enabled === true
     && granolaSettings.validationStatus === "valid";
   const notesQuery = useQuery({
-    queryKey: granolaDashboardKeys.notes(),
-    queryFn: () => granolaApi.listNotes({ pageSize: 30 }),
-    enabled: granolaReady,
+    queryKey: granolaDashboardKeys.notes(projectId),
+    queryFn: () => granolaApi.listNotes({ pageSize: 30, projectId }),
+    enabled: granolaReady && Boolean(projectId),
     staleTime: 20_000,
   });
   const notes = notesQuery.data?.notes ?? EMPTY_NOTES;
@@ -552,6 +729,9 @@ export function GranolaDashboardView({
     },
     onSuccess: () => {
       void invalidateAgentConversationGranolaNote(queryClient, selectedConversationId);
+      void queryClient.invalidateQueries({
+        queryKey: granolaDashboardKeys.notes(contextProjectId || projectId),
+      });
       setContextDialogOpen(false);
       setSelectedConversationId("");
     },
@@ -564,11 +744,11 @@ export function GranolaDashboardView({
         : null;
 
   useEffect(() => {
-    if (selectedNoteId && notes.some((note) => note.id === selectedNoteId)) {
+    if (selectedNoteId && filteredNotes.some((note) => note.id === selectedNoteId)) {
       return;
     }
     setSelectedNoteId(filteredNotes[0]?.id ?? null);
-  }, [filteredNotes, notes, selectedNoteId]);
+  }, [filteredNotes, selectedNoteId]);
 
   useEffect(() => {
     if (!contextDialogOpen) {
@@ -879,6 +1059,8 @@ export function GranolaDashboardView({
                   Loading details
                 </div>
               ) : null}
+
+              <GranolaAssociationDetails note={selectedSummary} />
 
               {selectedNote.summary ? (
                 <div

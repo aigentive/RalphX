@@ -163,6 +163,10 @@ describe("GranolaDashboardView", () => {
     expect(row).toHaveTextContent("Weekly planning");
     expect(row).toHaveTextContent(/Jun (19|20)/);
     expect(row).toHaveTextContent(/\d{1,2}:00/);
+    expect(granolaApi.listNotes).toHaveBeenCalledWith({
+      pageSize: 30,
+      projectId: "project-1",
+    });
     expect(chatHooks.useConversations).toHaveBeenCalledWith({
       view: "granola",
       projectId: "project-1",
@@ -207,6 +211,60 @@ describe("GranolaDashboardView", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "No summary 0" }));
     expect(screen.getByText("No Granola notes match these filters.")).toBeInTheDocument();
+  });
+
+  it("shows RX conversation, ticket, and PR associations for a Granola note", async () => {
+    vi.mocked(granolaApi.listNotes).mockResolvedValue({
+      notes: [
+        {
+          ...granolaNote,
+          rxConversationCount: 1,
+          rxConversations: [
+            {
+              conversationId: "conversation-1",
+              title: "Planning agent",
+            },
+          ],
+          ticketCount: 1,
+          ticketLinks: [
+            {
+              provider: "clickup",
+              label: "TASK-123",
+              title: "ClickUp implementation ticket",
+              url: "https://app.clickup.com/t/TASK-123",
+            },
+          ],
+          prCount: 1,
+          pullRequests: [
+            {
+              number: 466,
+              url: "https://github.com/aigentive/ralphx.app/pull/466",
+              status: "merged",
+            },
+          ],
+        },
+      ],
+      hasMore: false,
+      cursor: null,
+    });
+
+    renderGranolaView();
+
+    await screen.findByTestId(`granola-note-row-${granolaNote.id}`);
+    await waitFor(() => {
+      expect(screen.getAllByLabelText("1 RalphX conversation attached")).toHaveLength(2);
+      expect(screen.getAllByLabelText("1 ticket attached")).toHaveLength(2);
+      expect(screen.getAllByLabelText("1 pull request attached")).toHaveLength(2);
+    });
+    expect(screen.getByText("Planning agent")).toBeInTheDocument();
+    expect(screen.getByText("ClickUp TASK-123")).toBeInTheDocument();
+    expect(screen.getByText("PR #466 merged")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByPlaceholderText("Search notes, summaries, or links"), {
+      target: { value: "TASK-123" },
+    });
+
+    expect(screen.getByTestId(`granola-note-row-${granolaNote.id}`)).toBeInTheDocument();
   });
 
   it("starts a new conversation from a note or binds it to an existing conversation", async () => {

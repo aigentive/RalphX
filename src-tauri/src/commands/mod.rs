@@ -156,7 +156,9 @@ pub use granola_commands::{
     AgentConversationGranolaNoteResponse, AssignAgentConversationGranolaNoteInput,
     ClearAgentConversationGranolaNoteInput, GetAgentConversationGranolaNoteInput,
     GetGranolaNoteDetailInput, GranolaIntegrationSettingsResponse, GranolaNoteDetailResponse,
-    GranolaNoteSummaryResponse, ListGranolaNotesInput, ListGranolaNotesResponse,
+    GranolaNotePullRequestLinkResponse, GranolaNoteRxConversationResponse,
+    GranolaNoteSummaryResponse, GranolaNoteTicketLinkResponse, ListGranolaNotesInput,
+    ListGranolaNotesResponse,
     RefreshAgentConversationGranolaNoteInput, SaveGranolaIntegrationSettingsInput,
 };
 // Re-export ConflictDiff from application for convenience

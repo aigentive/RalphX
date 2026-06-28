@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use tokio::sync::RwLock;
 
-use crate::domain::entities::{AgentConversationGranolaNoteLink, ChatConversationId};
+use crate::domain::entities::{AgentConversationGranolaNoteLink, ChatConversationId, ProjectId};
 use crate::domain::repositories::AgentConversationGranolaNoteRepository;
 use crate::error::AppResult;
 
@@ -33,6 +33,20 @@ impl AgentConversationGranolaNoteRepository for MemoryAgentConversationGranolaNo
         conversation_id: &ChatConversationId,
     ) -> AppResult<Option<AgentConversationGranolaNoteLink>> {
         Ok(self.links.read().await.get(conversation_id).cloned())
+    }
+
+    async fn list_by_project_id(
+        &self,
+        project_id: &ProjectId,
+    ) -> AppResult<Vec<AgentConversationGranolaNoteLink>> {
+        Ok(self
+            .links
+            .read()
+            .await
+            .values()
+            .filter(|link| link.project_id == *project_id)
+            .cloned()
+            .collect())
     }
 
     async fn upsert(
