@@ -106,6 +106,7 @@ pub struct TicketSummaryResponse {
     pub watchers: Vec<TicketingPersonResponse>,
     pub reporter: Option<TicketingPersonResponse>,
     pub labels: Vec<String>,
+    pub sprints: Vec<String>,
     pub project: Option<String>,
     pub priority: Option<String>,
     pub updated_at: String,
@@ -330,6 +331,7 @@ pub struct TicketFiltersInput {
     pub watcher_me: Option<bool>,
     pub state_ids: Option<Vec<String>>,
     pub labels: Option<Vec<String>>,
+    pub sprint: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

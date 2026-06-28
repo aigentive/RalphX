@@ -1,7 +1,8 @@
 use super::{
     build_codex_exec_args, build_codex_exec_resume_args, build_codex_mcp_overrides,
     build_codex_mcp_overrides_for_profile, build_spawnable_codex_exec_command,
-    compose_codex_prompt, compose_codex_prompt_for_profile, configure_spawn, probe_codex_cli,
+    compose_codex_prompt, compose_codex_prompt_for_profile, configure_spawn,
+    parse_codex_fast_mode_feature, parse_codex_fast_mode_supported_models, probe_codex_cli,
     resolve_codex_cli_from_candidates, CodexCliCapabilities, CodexExecCliConfig,
     CodexMcpRuntimeContext,
 };
@@ -62,7 +63,44 @@ fn full_codex_capabilities() -> CodexCliCapabilities {
         supports_search_flag: true,
         supports_resume_subcommand: true,
         supports_mcp_subcommand: true,
+        supports_fast_mode_feature: true,
+        fast_mode_supported_models: vec!["gpt-5.4".to_string(), "gpt-5.5".to_string()],
     }
+}
+
+#[test]
+fn parse_codex_fast_mode_feature_detects_enabled_feature() {
+    assert!(parse_codex_fast_mode_feature(
+        "name stage enabled\nfast_mode stable true\n"
+    ));
+    assert!(!parse_codex_fast_mode_feature(
+        "name stage enabled\nfast_mode stable false\n"
+    ));
+}
+
+#[test]
+fn parse_codex_fast_mode_supported_models_reads_speed_tier_catalog() {
+    let models = parse_codex_fast_mode_supported_models(
+        r#"{
+          "models": [
+            {
+              "slug": "gpt-5.5",
+              "additional_speed_tiers": ["fast"],
+              "service_tiers": [{"id": "priority", "name": "Fast"}]
+            },
+            {
+              "slug": "gpt-5.4",
+              "service_tiers": [{"id": "priority"}]
+            },
+            {
+              "slug": "gpt-5.4-mini",
+              "additional_speed_tiers": []
+            }
+          ]
+        }"#,
+    );
+
+    assert_eq!(models, vec!["gpt-5.4".to_string(), "gpt-5.5".to_string()]);
 }
 
 fn create_plugin_dir(root: &std::path::Path) -> PathBuf {
@@ -146,6 +184,10 @@ elif [ "$1" = "--help" ]; then
   printf '%s\n' 'Codex CLI' 'Commands:' '  exec' '  resume' '  mcp' 'Options:' '  -c, --config <key=value>' '  -m, --model <MODEL>' '  -s, --sandbox <SANDBOX>' '      --search' '      --add-dir <DIR>'
 elif [ "$1" = "exec" ] && [ "$2" = "--help" ]; then
   printf '%s\n' 'Run Codex non-interactively' 'Options:' '  -c, --config <key=value>' '  -m, --model <MODEL>' '  -s, --sandbox <SANDBOX>' '      --add-dir <DIR>' '      --json'
+elif [ "$1" = "features" ] && [ "$2" = "list" ]; then
+  printf '%s\n' 'fast_mode stable true'
+elif [ "$1" = "debug" ] && [ "$2" = "models" ] && [ "$3" = "--bundled" ]; then
+  printf '%s\n' '{"models":[{"slug":"gpt-5.5","additional_speed_tiers":["fast"],"service_tiers":[{"id":"priority","name":"Fast"}]},{"slug":"gpt-5.4-mini","additional_speed_tiers":[]}]}'
 else
   printf 'unexpected args: %s\n' "$*" >&2
   exit 64
@@ -173,6 +215,11 @@ fi
     assert!(capabilities.supports_search_flag);
     assert!(capabilities.supports_resume_subcommand);
     assert!(capabilities.supports_mcp_subcommand);
+    assert!(capabilities.supports_fast_mode());
+    assert_eq!(
+        capabilities.fast_mode_supported_models(),
+        vec!["gpt-5.5".to_string()]
+    );
 }
 
 #[test]
@@ -201,6 +248,7 @@ fi
 
     assert!(!capabilities.supports_exec_subcommand);
     assert!(!capabilities.has_core_exec_support());
+    assert!(!capabilities.supports_fast_mode());
     assert_eq!(
         capabilities.missing_core_exec_features(),
         vec![
@@ -352,6 +400,25 @@ fn build_codex_exec_args_defaults_to_mcp_safe_approval_and_sandbox() {
 }
 
 #[test]
+fn build_codex_exec_args_enables_fast_service_tier() {
+    let args = build_codex_exec_args(
+        &full_codex_capabilities(),
+        &CodexExecCliConfig {
+            service_tier: Some("fast".to_string()),
+            ..CodexExecCliConfig::default()
+        },
+    )
+    .expect("build codex exec args");
+
+    assert!(args
+        .windows(2)
+        .any(|pair| pair[0] == "-c" && pair[1] == "service_tier=\"fast\""));
+    assert!(args
+        .windows(2)
+        .any(|pair| pair[0] == "-c" && pair[1] == "features.fast_mode=true"));
+}
+
+#[test]
 fn build_codex_exec_resume_args_defaults_to_mcp_safe_approval_and_sandbox() {
     let args = build_codex_exec_resume_args(
         &full_codex_capabilities(),
@@ -366,6 +433,26 @@ fn build_codex_exec_resume_args_defaults_to_mcp_safe_approval_and_sandbox() {
     assert!(args
         .windows(2)
         .any(|pair| pair[0] == "-c" && pair[1] == "sandbox_mode=\"danger-full-access\""));
+}
+
+#[test]
+fn build_codex_exec_resume_args_enables_fast_service_tier() {
+    let args = build_codex_exec_resume_args(
+        &full_codex_capabilities(),
+        "session-123",
+        &CodexExecCliConfig {
+            service_tier: Some("fast".to_string()),
+            ..CodexExecCliConfig::default()
+        },
+    )
+    .expect("build codex resume args");
+
+    assert!(args
+        .windows(2)
+        .any(|pair| pair[0] == "-c" && pair[1] == "service_tier=\"fast\""));
+    assert!(args
+        .windows(2)
+        .any(|pair| pair[0] == "-c" && pair[1] == "features.fast_mode=true"));
 }
 
 #[test]
@@ -946,11 +1033,8 @@ fn compose_codex_prompt_includes_runtime_profile_context_for_profile() {
     assert!(prompt.contains("<profile_slug>plan</profile_slug>"));
     assert!(prompt.contains("<profile_role>plan_chat</profile_role>"));
 
-    let default_prompt = compose_codex_prompt(
-        "Create a plan",
-        Some(&plugin_dir),
-        Some("ralphx-ideation"),
-    );
+    let default_prompt =
+        compose_codex_prompt("Create a plan", Some(&plugin_dir), Some("ralphx-ideation"));
     assert!(!default_prompt.contains("<agent_name>ralphx-ideation</agent_name>"));
     assert!(!default_prompt.contains("<profile_role>plan_chat</profile_role>"));
 }

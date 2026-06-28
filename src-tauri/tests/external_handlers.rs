@@ -265,6 +265,7 @@ async fn setup_ideation_parent_workspace(
         AgentConversationWorkspaceMode::Ideation,
         AgentConversationWorkspaceBaseSelection {
             kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+                branch_mode: None,
             base_ref: Some("main".to_string()),
             display_name: Some("Project default (main)".to_string()),
             source_pull_request: None,
@@ -715,6 +716,7 @@ async fn test_start_ideation_tauri_parent_workspace_binds_analysis_and_links_wor
         AgentConversationWorkspaceMode::Ideation,
         AgentConversationWorkspaceBaseSelection {
             kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+                branch_mode: None,
             base_ref: Some("main".to_string()),
             display_name: Some("Project default (main)".to_string()),
             source_pull_request: None,
@@ -4842,6 +4844,7 @@ async fn setup_plan_import_test_with_state(state: HttpServerState) -> PlanImport
         AgentConversationWorkspaceMode::Ideation,
         AgentConversationWorkspaceBaseSelection {
             kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+                branch_mode: None,
             base_ref: Some("main".to_string()),
             display_name: Some("Project default (main)".to_string()),
             source_pull_request: None,
@@ -5292,6 +5295,7 @@ async fn test_plan_import_missing_artifact_error() {
         AgentConversationWorkspaceMode::Ideation,
         AgentConversationWorkspaceBaseSelection {
             kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+                branch_mode: None,
             base_ref: Some("main".to_string()),
             display_name: Some("Project default (main)".to_string()),
             source_pull_request: None,
@@ -5415,6 +5419,7 @@ async fn test_plan_import_wrong_project_error() {
         AgentConversationWorkspaceMode::Ideation,
         AgentConversationWorkspaceBaseSelection {
             kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+                branch_mode: None,
             base_ref: Some("main".to_string()),
             display_name: Some("Project default (main)".to_string()),
             source_pull_request: None,
@@ -5587,6 +5592,7 @@ async fn test_plan_import_verification_child_error() {
         AgentConversationWorkspaceMode::Ideation,
         AgentConversationWorkspaceBaseSelection {
             kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+                branch_mode: None,
             base_ref: Some("main".to_string()),
             display_name: Some("Project default (main)".to_string()),
             source_pull_request: None,
@@ -5694,6 +5700,7 @@ async fn test_plan_import_non_spec_artifact_error() {
         AgentConversationWorkspaceMode::Ideation,
         AgentConversationWorkspaceBaseSelection {
             kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+                branch_mode: None,
             base_ref: Some("main".to_string()),
             display_name: Some("Project default (main)".to_string()),
             source_pull_request: None,

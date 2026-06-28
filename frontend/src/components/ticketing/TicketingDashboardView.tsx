@@ -11,6 +11,7 @@ import type {
   TicketFiltersInput,
   TicketRef,
   TicketingColumn,
+  TicketingContainer,
   TicketSummary,
   TicketTransitionOption,
 } from "@/api/ticketing";
@@ -38,10 +39,17 @@ import {
   getValidTicketingProviders,
   isValidTicketingProvider,
 } from "@/lib/ticketing-provider-state";
+import { cn } from "@/lib/utils";
 import { useTicketingStore } from "@/stores/ticketingStore";
 import { useChatStore } from "@/stores/chatStore";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
 import { useUiStore } from "@/stores/uiStore";
+import { PullRequestDetailSheet } from "@/components/pr/PullRequestDetailSheet";
+import {
+  pullRequestSelectorFromShell,
+  pullRequestShellFromTicket,
+  type PullRequestShell,
+} from "@/components/pr/PullRequestDetailShell";
 import { formatRelativeTime } from "@/lib/formatters";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -63,11 +71,11 @@ import { TicketKanbanShell, TicketKanbanView, TicketListView } from "./TicketVie
 import {
   distinctAssigneeNames,
   distinctCurrentUserSprintNames,
-  filterTicketsByAssignee,
   filterTicketsByProject,
   hasActiveTicketFilters,
   isTicketUpdatedSince,
   ticketRefKey,
+  UNASSIGNED_ASSIGNEE,
 } from "./ticketing-read-state";
 import { providerLabel, ticketKey } from "./ticketing-utils";
 import { useAfterPaint } from "./useAfterPaint";
@@ -78,15 +86,22 @@ interface TicketingDashboardViewProps {
 }
 
 function toTicketFilters(filters: ReturnType<typeof useTicketingStore.getState>["filters"]): TicketFiltersInput | undefined {
-  // Assignee is filtered client-side (see filterTicketsByAssignee), so it is not
-  // forwarded to the provider search here.
   const next: TicketFiltersInput = {
     ...(filters.text.trim() && { text: filters.text.trim() }),
+    ...(filters.assignee && { assignee: filters.assignee }),
     ...(filters.stateIds.length > 0 && { stateIds: filters.stateIds }),
     ...(filters.labels.length > 0 && { labels: filters.labels }),
+    ...(filters.sprint && { sprint: filters.sprint }),
     ...(filters.watcherMe && { watcherMe: true }),
   };
   return Object.keys(next).length > 0 ? next : undefined;
+}
+
+function toTicketFilterOptionFilters(
+  filters: ReturnType<typeof useTicketingStore.getState>["filters"],
+): TicketFiltersInput | undefined {
+  const text = filters.text.trim();
+  return text ? { text } : undefined;
 }
 
 function columnsFromTickets(tickets: TicketSummary[]): TicketingColumn[] {
@@ -145,10 +160,97 @@ function containerLabelsForProvider(provider: string | null): {
     return { containerLabel: "Project", allContainersLabel: "All projects" };
   }
   if (provider === "clickup") {
-    // ClickUp containers are Spaces within the selected Workspace (Team).
-    return { containerLabel: "Space", allContainersLabel: "All spaces" };
+    return { containerLabel: "Space", allContainersLabel: "Select space" };
   }
   return { containerLabel: "Container", allContainersLabel: "All containers" };
+}
+
+function clickupSpaceForContainer(
+  containerId: string | null,
+  containers: TicketingContainer[],
+): string | null {
+  if (!containerId) {
+    return null;
+  }
+  const byId = new Map(containers.map((container) => [container.id, container]));
+  let current = byId.get(containerId) ?? null;
+  while (current) {
+    if (current.kind === "space") {
+      return current.id;
+    }
+    current = current.parentId ? byId.get(current.parentId) ?? null : null;
+  }
+  return null;
+}
+
+function clickupChildLocations(
+  spaceId: string | null,
+  containers: TicketingContainer[],
+): TicketingContainer[] {
+  if (!spaceId) {
+    return [];
+  }
+  const folderIds = new Set(
+    containers
+      .filter((container) => container.kind === "folder" && container.parentId === spaceId)
+      .map((container) => container.id),
+  );
+  return containers.filter((container) => (
+    (container.kind === "folder" && container.parentId === spaceId)
+    || (container.kind === "list" && (container.parentId === spaceId || folderIds.has(container.parentId ?? "")))
+  ));
+}
+
+function ClickUpLocationRail({
+  space,
+  locations,
+  activeContainerId,
+  onSelect,
+}: {
+  space: TicketingContainer;
+  locations: TicketingContainer[];
+  activeContainerId: string | null;
+  onSelect: (containerId: string) => void;
+}) {
+  const firstLevelLocations = locations.filter((location) => location.parentId === space.id);
+
+  const itemClass = (selected: boolean) =>
+    cn(
+      "flex h-7 w-full items-center rounded px-2 text-left text-xs",
+      "focus-visible:outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:1px]",
+      selected ? "font-medium text-[var(--accent-primary)]" : "text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]",
+    );
+
+  return (
+    <aside
+      className="w-56 shrink-0 overflow-y-auto border-r px-3 py-3"
+      style={{
+        backgroundColor: "var(--bg-surface)",
+        borderColor: "var(--border-subtle)",
+      }}
+      aria-label="ClickUp locations"
+    >
+      <button
+        type="button"
+        className={itemClass(activeContainerId === space.id)}
+        onClick={() => onSelect(space.id)}
+      >
+        All in {space.name}
+      </button>
+      <div className="mt-2 space-y-0.5">
+        {firstLevelLocations.map((location) => (
+          <button
+            key={location.id}
+            type="button"
+            className={itemClass(activeContainerId === location.id)}
+            onClick={() => onSelect(location.id)}
+          >
+            {location.name}
+          </button>
+        ))}
+      </div>
+    </aside>
+  );
 }
 
 interface StartWorkSelection {
@@ -339,6 +441,8 @@ export function TicketingDashboardView({
   const setFocusedAgentProject = useAgentSessionStore((s) => s.setFocusedProject);
   const setStartConversationDraft = useAgentSessionStore((s) => s.setStartConversationDraft);
   const [startWorkDialogOpen, setStartWorkDialogOpen] = useState(false);
+  const [selectedPullRequestShell, setSelectedPullRequestShell] =
+    useState<PullRequestShell | null>(null);
   const [seenBaseline, setSeenBaseline] = useState<string | null>(null);
   const [startWorkSelection, setStartWorkSelection] = useState<StartWorkSelection>({
     projectId,
@@ -374,7 +478,37 @@ export function TicketingDashboardView({
     activeProvider ? { provider: activeProvider, projectId } : null,
     { enabled: Boolean(activeProvider && readableProvider) },
   );
-  const containers = useMemo(() => containersQuery.data ?? [], [containersQuery.data]);
+  const topLevelContainers = useMemo(() => containersQuery.data ?? [], [containersQuery.data]);
+  const selectedSpaceFromTopLevel = useMemo(
+    () => activeProvider === "clickup" ? clickupSpaceForContainer(activeContainerId, topLevelContainers) : null,
+    [activeContainerId, activeProvider, topLevelContainers],
+  );
+  const clickupChildContainersQuery = useTicketingContainers(
+    activeProvider === "clickup" && selectedSpaceFromTopLevel
+      ? { provider: "clickup", projectId, parentContainerId: selectedSpaceFromTopLevel }
+      : null,
+    { enabled: Boolean(activeProvider === "clickup" && selectedSpaceFromTopLevel && readableProvider) },
+  );
+  const containers = useMemo(
+    () => activeProvider === "clickup"
+      ? [...topLevelContainers, ...(clickupChildContainersQuery.data ?? [])]
+      : topLevelContainers,
+    [activeProvider, clickupChildContainersQuery.data, topLevelContainers],
+  );
+  const clickupSpaceContainers = useMemo(
+    () => containers.filter((container) => container.kind === "space"),
+    [containers],
+  );
+  const selectedClickUpSpaceId = useMemo(
+    () => activeProvider === "clickup" ? clickupSpaceForContainer(activeContainerId, containers) : null,
+    [activeContainerId, activeProvider, containers],
+  );
+  const clickupLocationChildren = useMemo(
+    () => activeProvider === "clickup" ? clickupChildLocations(selectedClickUpSpaceId, containers) : [],
+    [activeProvider, containers, selectedClickUpSpaceId],
+  );
+  const filterBarContainers = activeProvider === "clickup" ? clickupSpaceContainers : containers;
+  const filterBarContainerId = activeProvider === "clickup" ? selectedClickUpSpaceId : activeContainerId;
 
   // When Linear is the only enabled provider, auto-load its tickets instead of
   // forcing a container pick. Jira projects and ClickUp Spaces remain explicit
@@ -400,11 +534,12 @@ export function TicketingDashboardView({
     }
   }, [activeContainerId, activeProvider, containers, setContainerId]);
 
+  const columnsContainerId = activeProvider === "clickup" ? selectedClickUpSpaceId : activeContainerId;
   const columnsQuery = useTicketingColumns(
     activeProvider && !containerSelectionNeeded
       ? {
           provider: activeProvider,
-          ...(activeContainerId !== null && { containerId: activeContainerId }),
+          ...(columnsContainerId !== null && { containerId: columnsContainerId }),
         }
       : null,
     { enabled: Boolean(activeProvider && readableProvider && !containerSelectionNeeded) },
@@ -412,26 +547,28 @@ export function TicketingDashboardView({
   const columns = columnsQuery.data ?? [];
 
   const ticketFilters = toTicketFilters(filters);
+  const filterOptionFilters = toTicketFilterOptionFilters(filters);
+  const ticketContainerId = activeContainerId;
   const ticketQuery: ListTicketsInput | null = activeProvider && readableProvider && !containerSelectionNeeded
     ? {
         provider: activeProvider,
         projectId,
         limit: 40,
         sort: "updated_desc",
-        ...(activeContainerId !== null && { containerId: activeContainerId }),
+        ...(ticketContainerId !== null && { containerId: ticketContainerId }),
         ...(ticketFilters !== undefined && { filters: ticketFilters }),
       }
     : null;
 
   const ticketsQuery = useTickets(ticketQuery, { enabled: Boolean(ticketQuery) });
   const tickets = useMemo(() => flattenTicketPages(ticketsQuery.data), [ticketsQuery.data]);
-  const filterOptionsInput: ListTicketFilterOptionsInput | null = activeProvider && readableProvider && !containerSelectionNeeded
+  const filterOptionsInput: ListTicketFilterOptionsInput | null = activeProvider && activeProvider !== "clickup" && readableProvider && !containerSelectionNeeded
     ? {
         provider: activeProvider,
         projectId,
         limit: 500,
-        ...(activeContainerId !== null && { containerId: activeContainerId }),
-        ...(ticketFilters !== undefined && { filters: ticketFilters }),
+        ...(ticketContainerId !== null && { containerId: ticketContainerId }),
+        ...(filterOptionFilters !== undefined && { filters: filterOptionFilters }),
       }
     : null;
   const filterOptionsQuery = useTicketFilterOptions(filterOptionsInput, {
@@ -449,11 +586,35 @@ export function TicketingDashboardView({
     () => (activeProvider === "clickup" ? distinctCurrentUserSprintNames(tickets) : []),
     [activeProvider, tickets],
   );
-  const assigneeOptions = filterOptionsQuery.data?.assignees ?? pageAssigneeOptions;
-  const sprintOptions = useMemo(
+  const clickupListSprintOptions = useMemo(
     () =>
-      activeProvider === "clickup" ? filterOptionsQuery.data?.sprints ?? pageSprintOptions : [],
-    [activeProvider, filterOptionsQuery.data?.sprints, pageSprintOptions],
+      activeProvider === "clickup"
+        ? clickupLocationChildren
+            .filter((location) => location.kind === "list")
+            .map((location) => location.name.trim())
+            .filter(Boolean)
+        : [],
+    [activeProvider, clickupLocationChildren],
+  );
+  const assigneeOptions = useMemo(() => {
+    const options = activeProvider === "clickup"
+      ? pageAssigneeOptions
+      : filterOptionsQuery.data?.assignees ?? pageAssigneeOptions;
+    const selectedAssignee = filters.assignee?.trim();
+    if (!selectedAssignee || selectedAssignee === UNASSIGNED_ASSIGNEE || options.includes(selectedAssignee)) {
+      return options;
+    }
+    return [...options, selectedAssignee].sort((left, right) => left.localeCompare(right));
+  }, [activeProvider, filterOptionsQuery.data?.assignees, filters.assignee, pageAssigneeOptions]);
+  const sprintOptions = useMemo(
+    () => {
+      if (activeProvider !== "clickup") {
+        return [];
+      }
+      return Array.from(new Set([...clickupListSprintOptions, ...pageSprintOptions]))
+        .sort((left, right) => left.localeCompare(right));
+    },
+    [activeProvider, clickupListSprintOptions, pageSprintOptions],
   );
   useEffect(() => {
     if (!filters.sprint) {
@@ -472,6 +633,10 @@ export function TicketingDashboardView({
     () => containers.find((container) => container.id === activeContainerId)?.name ?? null,
     [containers, activeContainerId],
   );
+  const selectedClickUpSpace = useMemo(
+    () => clickupSpaceContainers.find((space) => space.id === selectedClickUpSpaceId) ?? null,
+    [clickupSpaceContainers, selectedClickUpSpaceId],
+  );
   // Jira and ClickUp scope tickets to the selected container server-side (issues
   // carry no matching `project` field), so the client-side container-name filter
   // must be skipped for them; Linear returns all issues and relies on this
@@ -480,14 +645,8 @@ export function TicketingDashboardView({
     activeProvider === "jira" || activeProvider === "clickup" ? null : activeContainerName;
   const displayedTickets = useMemo(
     () =>
-      filterTicketsByProject(
-        filterTicketsByProject(
-          filterTicketsByAssignee(tickets, filters.assignee),
-          activeProvider === "clickup" ? filters.sprint : null,
-        ),
-        clientContainerFilter,
-      ),
-    [tickets, filters.assignee, filters.sprint, activeProvider, clientContainerFilter],
+      filterTicketsByProject(tickets, clientContainerFilter),
+    [tickets, clientContainerFilter],
   );
   const ticketColumns = useMemo(() => columnsFromTickets(tickets), [tickets]);
   // Remember the last non-empty columns so the kanban board does not collapse
@@ -510,6 +669,8 @@ export function TicketingDashboardView({
   const selectedSummary = selectedTicketRef
     ? tickets.find((ticket) => ticketRefsIdentifySameTicket(ticket.ref, selectedTicketRef)) ?? null
     : null;
+  const selectedPullRequestSelector =
+    pullRequestSelectorFromShell(selectedPullRequestShell);
   const shouldHydrateKanban = useAfterPaint(viewMode === "kanban");
   const shouldHydrateDetail = useAfterPaint(selectedTicketRef !== null);
   const detailInput = selectedTicketRef && activeProvider && shouldHydrateDetail
@@ -695,6 +856,21 @@ export function TicketingDashboardView({
     markTicketOpened(key);
   }
 
+  function handleOpenPullRequestDetail(ticket: TicketSummary) {
+    if (ticket.openPrNumber == null) {
+      return;
+    }
+    setSelectedPullRequestShell(
+      pullRequestShellFromTicket({
+        projectId,
+        prNumber: ticket.openPrNumber,
+        prUrl: ticket.openPrUrl,
+        prStatus: ticket.openPrStatus,
+        title: ticket.title,
+      }),
+    );
+  }
+
   function handleRefresh() {
     if (!activeProvider) {
       return;
@@ -857,7 +1033,7 @@ export function TicketingDashboardView({
       <TicketingStatePanel
         state="disconnected"
         title="No valid ticketing integration"
-        description="Connect a valid Jira or Linear integration from Settings to browse tickets."
+        description="Connect a valid Jira, Linear, or ClickUp integration from Settings to browse tickets."
       />
     );
   } else if (selectedProvider?.connectionStatus === "disconnected") {
@@ -940,6 +1116,7 @@ export function TicketingDashboardView({
         isUnread={isTicketUnread}
         canQuickAssign={Boolean(selectedProvider?.capabilities.assignmentWrite)}
         onQuickAssign={handleQuickAssign}
+        onOpenPullRequestDetail={handleOpenPullRequestDetail}
       />
     ) : (
       <TicketKanbanShell columns={statusColumns} />
@@ -958,6 +1135,7 @@ export function TicketingDashboardView({
         onQuickAssign={handleQuickAssign}
         canMoveTickets={Boolean(selectedProvider?.capabilities.kanbanWrite)}
         onMoveTicket={handleMoveTicket}
+        onOpenPullRequestDetail={handleOpenPullRequestDetail}
       />
     );
   }
@@ -1000,17 +1178,19 @@ export function TicketingDashboardView({
             Browse provider tickets and inspect RalphX associations.
           </p>
         </div>
-        {validProviders.length > 1 && (
-          <ProviderSwitcher
-            providers={validProviders}
-            activeProvider={activeProvider}
-            onProviderChange={setProvider}
-          />
-        )}
+        <div className="flex flex-wrap items-center gap-2">
+          {validProviders.length > 1 && (
+            <ProviderSwitcher
+              providers={validProviders}
+              activeProvider={activeProvider}
+              onProviderChange={setProvider}
+            />
+          )}
+        </div>
       </header>
 
       <TicketFilterBar
-        containers={containers}
+        containers={filterBarContainers}
         columns={filterColumns}
         assigneeOptions={assigneeOptions}
         sprintOptions={sprintOptions}
@@ -1019,12 +1199,17 @@ export function TicketingDashboardView({
         }
         containerLabel={containerLabels.containerLabel}
         allContainersLabel={containerLabels.allContainersLabel}
-        activeContainerId={activeContainerId}
+        activeContainerId={filterBarContainerId}
         containerSelectionNeeded={containerSelectionNeeded}
         filters={filters}
         viewMode={viewMode}
         isRefreshing={refreshTickets.isPending || ticketsQuery.isFetching}
-        onContainerChange={setContainerId}
+        onContainerChange={(containerId) => {
+          setContainerId(containerId);
+          if (activeProvider === "clickup" && containerId !== filterBarContainerId) {
+            setFilters({ sprint: null });
+          }
+        }}
         onFiltersChange={setFilters}
         onResetFilters={resetFilters}
         onViewModeChange={setViewMode}
@@ -1047,7 +1232,17 @@ export function TicketingDashboardView({
         </div>
       )}
 
-      <div className="flex min-h-0 flex-1 overflow-hidden">{content}</div>
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+        {activeProvider === "clickup" && selectedClickUpSpace && !filters.sprint ? (
+          <ClickUpLocationRail
+            space={selectedClickUpSpace}
+            locations={clickupLocationChildren}
+            activeContainerId={activeContainerId}
+            onSelect={setContainerId}
+          />
+        ) : null}
+        <div className="min-w-0 flex-1">{content}</div>
+      </div>
 
       <TicketDetailSheet
         open={selectedTicketRef !== null}
@@ -1055,6 +1250,7 @@ export function TicketingDashboardView({
         capabilities={selectedProvider?.capabilities ?? null}
         transitions={transitions}
         associations={associationsQuery.data}
+        projectId={projectId}
         isDetailLoading={isDetailPending}
         isAssociationsLoading={associationsQuery.isLoading}
         isTransitionPending={ticketingMutations.transitionStatusMutation.isPending}
@@ -1079,6 +1275,14 @@ export function TicketingDashboardView({
         onNavigate={onNavigateToAssociation}
         onStartWork={selectedTicket ? handleStartWorkFromTicket : undefined}
         onClose={() => setSelectedTicketRef(null)}
+      />
+
+      <PullRequestDetailSheet
+        open={selectedPullRequestShell !== null}
+        selector={selectedPullRequestSelector}
+        shell={selectedPullRequestShell}
+        onNavigateToAssociation={onNavigateToAssociation}
+        onClose={() => setSelectedPullRequestShell(null)}
       />
 
       <StartWorkDialog

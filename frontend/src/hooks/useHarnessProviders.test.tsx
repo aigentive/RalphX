@@ -50,6 +50,8 @@ describe("useHarnessProviders", () => {
           status: "Available codex detected at /opt/homebrew/bin/codex.",
           error: null,
           missingCoreExecFeatures: [],
+          supportsFastMode: true,
+          fastModeSupportedModels: ["gpt-5.5", "gpt-5.4"],
           updatedAt: new Date().toISOString(),
         },
       ],

@@ -46,10 +46,17 @@ import {
   hasLinearIntegrationReference,
   invalidateAgentConversationLinearIssue,
 } from "./agentLinearIssueQueries";
+import {
+  hasGranolaIntegrationReference,
+  invalidateAgentConversationGranolaNote,
+} from "./agentGranolaNoteQueries";
 import { normalizeRuntimeSelection } from "./agentOptions";
 import { uploadDraftAttachment } from "./chatAttachmentUpload";
 
-type SupportedStartIntegrationTab = Extract<AgentArtifactTab, "jira" | "linear">;
+type SupportedStartIntegrationTab = Extract<
+  AgentArtifactTab,
+  "jira" | "linear" | "granola"
+>;
 
 interface HandleAutoManagedTitleArgs {
   content: string;
@@ -78,6 +85,7 @@ interface UseStartAgentConversationArgs {
   ) => void;
   onJiraLinked?: (conversationId: string) => void;
   onLinearLinked?: (conversationId: string) => void;
+  onGranolaLinked?: (conversationId: string) => void;
 }
 
 export function useStartAgentConversation({
@@ -93,6 +101,7 @@ export function useStartAgentConversation({
   setRuntimeForConversation,
   onJiraLinked,
   onLinearLinked,
+  onGranolaLinked,
 }: UseStartAgentConversationArgs) {
   const { registry: modelRegistry } = useAgentModels();
   const queueMessage = useChatStore((s) => s.queueMessage);
@@ -108,6 +117,7 @@ export function useStartAgentConversation({
       mode,
       base,
       files,
+      codexFastMode,
       composerArtifactReferences,
       composerIntegrationReferences,
       composerProjectReferences,
@@ -118,6 +128,7 @@ export function useStartAgentConversation({
       mode: AgentConversationWorkspaceMode;
       base: AgentConversationBaseSelection | null;
       files: File[];
+      codexFastMode?: boolean | null;
       composerArtifactReferences?: ComposerArtifactReference[] | undefined;
       composerIntegrationReferences?: ComposerIntegrationReference[] | undefined;
       composerProjectReferences?: ComposerProjectReference[] | undefined;
@@ -319,6 +330,12 @@ export function useStartAgentConversation({
           providerHarness: normalizedRuntime.provider,
           modelId: normalizedRuntime.modelId,
           logicalEffort: normalizedRuntime.effort,
+          ...(codexFastMode !== undefined
+            ? {
+                codexFastMode:
+                  normalizedRuntime.provider === "codex" ? codexFastMode : null,
+              }
+            : {}),
           mode,
           ...(composerProjectReferences?.length
             ? { composerProjectReferences }
@@ -400,6 +417,15 @@ export function useStartAgentConversation({
             resolvedConversationId,
           );
         }
+        if (hasGranolaIntegrationReference(composerIntegrationReferences)) {
+          if (startIntegrationTab === "granola") {
+            onGranolaLinked?.(resolvedConversationId);
+          }
+          await invalidateAgentConversationGranolaNote(
+            queryClient,
+            resolvedConversationId,
+          );
+        }
         await invalidateProjectConversations(targetProjectId);
         handleAutoManagedTitle({
           content,
@@ -436,6 +462,7 @@ export function useStartAgentConversation({
       setRuntimeForConversation,
       onJiraLinked,
       onLinearLinked,
+      onGranolaLinked,
       setSending,
     ]
   );
@@ -452,6 +479,9 @@ function getSupportedStartIntegrationTab(
     }
     if (reference.kind === "linear") {
       return "linear";
+    }
+    if (reference.provider === "granola" && reference.kind === "note") {
+      return "granola";
     }
   }
   return null;

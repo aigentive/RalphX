@@ -74,6 +74,7 @@ struct ResolvedSpawnerHarness {
     logical_effort: Option<LogicalEffort>,
     approval_policy: Option<String>,
     sandbox_mode: Option<String>,
+    service_tier: Option<String>,
     cli_path_override: Option<PathBuf>,
     env: HashMap<String, String>,
 }
@@ -86,6 +87,7 @@ impl fmt::Debug for ResolvedSpawnerHarness {
             .field("logical_effort", &self.logical_effort)
             .field("approval_policy", &self.approval_policy)
             .field("sandbox_mode", &self.sandbox_mode)
+            .field("service_tier", &self.service_tier)
             .field("cli_path_override", &self.cli_path_override)
             .field("env_keys", &self.env.keys().collect::<Vec<_>>())
             .finish_non_exhaustive()
@@ -416,7 +418,15 @@ impl AgenticClientSpawner {
         &self,
         harness: AgentHarnessKind,
         agent_type: &str,
-    ) -> Result<(Arc<dyn AgenticClient>, Option<PathBuf>, HashMap<String, String>), String> {
+    ) -> Result<
+        (
+            Arc<dyn AgenticClient>,
+            Option<PathBuf>,
+            HashMap<String, String>,
+            Option<String>,
+        ),
+        String,
+    > {
         let client = self.resolve_client_for_harness(harness).ok_or_else(|| {
             format!(
                 "Configured execution harness {} is not registered in the runtime",
@@ -439,8 +449,23 @@ impl AgenticClientSpawner {
                         "state-machine agent spawn",
                     )
                 {
-                    return Ok((client, Some(launch_path?), provider_env));
+                    return Ok((
+                        client,
+                        Some(launch_path?),
+                        provider_env,
+                        settings.service_tier.clone(),
+                    ));
                 }
+                let service_tier = settings.service_tier.clone();
+                let harness_available = client.is_available().await.unwrap_or(false);
+                if !harness_available {
+                    return Err(format!(
+                        "Configured execution harness {} is unavailable for {}",
+                        harness, agent_type
+                    ));
+                }
+
+                return Ok((client, None, provider_env, service_tier));
             }
         }
 
@@ -452,7 +477,7 @@ impl AgenticClientSpawner {
             ));
         }
 
-        Ok((client, None, provider_env))
+        Ok((client, None, provider_env, None))
     }
 
     async fn resolve_spawn_harness(
@@ -470,7 +495,7 @@ impl AgenticClientSpawner {
                 )
                 .await?;
             }
-            let (client, cli_path_override, env) = self
+            let (client, cli_path_override, env, service_tier) = self
                 .resolve_client_and_launch_env(self.default_harness, agent_type)
                 .await?;
             return Ok(ResolvedSpawnerHarness {
@@ -480,6 +505,7 @@ impl AgenticClientSpawner {
                 logical_effort: None,
                 approval_policy: None,
                 sandbox_mode: None,
+                service_tier,
                 cli_path_override,
                 env,
             });
@@ -493,7 +519,7 @@ impl AgenticClientSpawner {
                 )
                 .await?;
             }
-            let (client, cli_path_override, env) = self
+            let (client, cli_path_override, env, service_tier) = self
                 .resolve_client_and_launch_env(self.default_harness, agent_type)
                 .await?;
             return Ok(ResolvedSpawnerHarness {
@@ -503,6 +529,7 @@ impl AgenticClientSpawner {
                 logical_effort: None,
                 approval_policy: None,
                 sandbox_mode: None,
+                service_tier,
                 cli_path_override,
                 env,
             });
@@ -529,7 +556,7 @@ impl AgenticClientSpawner {
             )
             .await?;
         }
-        let (client, cli_path_override, env) = self
+        let (client, cli_path_override, env, provider_service_tier) = self
             .resolve_client_and_launch_env(harness, agent_type)
             .await?;
 
@@ -540,6 +567,7 @@ impl AgenticClientSpawner {
             logical_effort: resolved.logical_effort,
             approval_policy: resolved.approval_policy,
             sandbox_mode: resolved.sandbox_mode,
+            service_tier: resolved.service_tier.or(provider_service_tier),
             cli_path_override,
             env,
         })
@@ -558,6 +586,7 @@ impl AgenticClientSpawner {
         logical_effort: Option<LogicalEffort>,
         approval_policy: Option<String>,
         sandbox_mode: Option<String>,
+        service_tier: Option<String>,
         cli_path_override: Option<PathBuf>,
         provider_env: HashMap<String, String>,
     ) -> AgentConfig {
@@ -579,6 +608,7 @@ impl AgenticClientSpawner {
             logical_effort,
             approval_policy,
             sandbox_mode,
+            service_tier,
             max_tokens: None,
             timeout_secs: None,
             env,
@@ -728,6 +758,7 @@ impl AgentSpawner for AgenticClientSpawner {
             resolved_harness.logical_effort,
             resolved_harness.approval_policy,
             resolved_harness.sandbox_mode,
+            resolved_harness.service_tier,
             resolved_harness.cli_path_override,
             resolved_harness.env,
         );

@@ -867,6 +867,10 @@ pub fn classify_agent_error(
 }
 
 #[cfg(test)]
+#[path = "chat_service_errors_summary_tests.rs"]
+mod summary_tests;
+
+#[cfg(test)]
 mod tests {
     use super::{
         classify_codex_stream_failure, classify_provider_error_from_assistant_content,

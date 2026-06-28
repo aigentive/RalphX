@@ -89,6 +89,8 @@ fn integration_reference(kind: &str, id: &str) -> ComposerIntegrationReference {
         key: None,
         title: None,
         url: None,
+        summary_excerpt: None,
+        include_transcript: None,
     }
 }
 

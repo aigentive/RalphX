@@ -645,6 +645,7 @@ describe("useTicketing hooks", () => {
       "containers",
       "jira",
       null,
+      null,
     ]);
     expect(ticketingKeys.columns({ provider: "linear" })).toEqual([
       "ticketing",

@@ -1043,7 +1043,7 @@ pub(crate) async fn list_jira_projects<C: AtlassianJsonRequester + ?Sized>(
     limit: usize,
 ) -> Result<Vec<JiraProjectSummary>, String> {
     let limit = limit.max(1);
-    let page_size = limit.min(JIRA_PROJECT_SEARCH_PAGE_SIZE).max(1);
+    let page_size = limit.clamp(1, JIRA_PROJECT_SEARCH_PAGE_SIZE);
     let mut start_at = 0usize;
     let mut projects = Vec::new();
 
@@ -1213,7 +1213,7 @@ pub(crate) async fn search_jira_by_project<C: AtlassianJsonRequester + ?Sized>(
     let jql = build_jira_project_jql(project_key);
     let site_url = &auth.site_url;
     let limit = limit.max(1);
-    let page_size = limit.min(JIRA_ISSUE_SEARCH_PAGE_SIZE).max(1);
+    let page_size = limit.clamp(1, JIRA_ISSUE_SEARCH_PAGE_SIZE);
     let mut next_page_token: Option<String> = None;
     let mut issues = Vec::new();
 
@@ -1915,10 +1915,7 @@ mod tests {
             if responses.len() > 1 {
                 responses.remove(0)
             } else {
-                responses
-                    .first()
-                    .cloned()
-                    .unwrap_or_else(|| Ok(Value::Null))
+                responses.first().cloned().unwrap_or(Ok(Value::Null))
             }
         }
     }

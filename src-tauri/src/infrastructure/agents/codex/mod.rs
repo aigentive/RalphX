@@ -17,9 +17,8 @@ use crate::infrastructure::agents::claude::{
 };
 use crate::infrastructure::agents::harness_agent_catalog::{
     internal_mcp_server_name, load_harness_agent_prompt_for_profile,
-    render_agent_runtime_profile_context,
-    resolve_project_root_from_plugin_dir, try_load_canonical_codex_metadata_for_profile,
-    AgentPromptHarness, CanonicalCodexAgentMetadata,
+    render_agent_runtime_profile_context, resolve_project_root_from_plugin_dir,
+    try_load_canonical_codex_metadata_for_profile, AgentPromptHarness, CanonicalCodexAgentMetadata,
 };
 use crate::infrastructure::agents::internal_skills::inject_internal_skills_into_system_prompt_for_profile;
 use crate::infrastructure::agents::mcp_runtime_context::{
@@ -42,6 +41,8 @@ pub struct CodexCliCapabilities {
     pub supports_search_flag: bool,
     pub supports_resume_subcommand: bool,
     pub supports_mcp_subcommand: bool,
+    pub supports_fast_mode_feature: bool,
+    pub fast_mode_supported_models: Vec<String>,
 }
 
 impl CodexCliCapabilities {
@@ -71,6 +72,18 @@ impl CodexCliCapabilities {
         }
         missing
     }
+
+    pub fn supports_fast_mode(&self) -> bool {
+        self.supports_fast_mode_feature && !self.fast_mode_supported_models.is_empty()
+    }
+
+    pub fn fast_mode_supported_models(&self) -> Vec<String> {
+        if self.supports_fast_mode_feature {
+            self.fast_mode_supported_models.clone()
+        } else {
+            Vec::new()
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,6 +98,7 @@ pub struct CodexExecCliConfig {
     pub reasoning_effort: Option<LogicalEffort>,
     pub approval_policy: Option<String>,
     pub sandbox_mode: Option<String>,
+    pub service_tier: Option<String>,
     pub config_overrides: Vec<String>,
     pub cwd: Option<PathBuf>,
     pub add_dirs: Vec<PathBuf>,
@@ -100,6 +114,7 @@ impl Default for CodexExecCliConfig {
             reasoning_effort: None,
             approval_policy: Some(CODEX_DEFAULT_APPROVAL_POLICY.to_string()),
             sandbox_mode: Some(CODEX_DEFAULT_SANDBOX_MODE.to_string()),
+            service_tier: None,
             config_overrides: Vec::new(),
             cwd: None,
             add_dirs: Vec::new(),
@@ -118,6 +133,27 @@ fn effective_codex_approval_policy(_config: &CodexExecCliConfig) -> &str {
 
 fn effective_codex_sandbox_mode(_config: &CodexExecCliConfig) -> &str {
     CODEX_DEFAULT_SANDBOX_MODE
+}
+
+fn codex_service_tier_overrides(config: &CodexExecCliConfig) -> Result<Vec<String>, String> {
+    let Some(service_tier) = config.service_tier.as_deref().map(str::trim) else {
+        return Ok(Vec::new());
+    };
+    if service_tier.is_empty() {
+        return Ok(Vec::new());
+    }
+    if service_tier.eq_ignore_ascii_case("standard") {
+        return Ok(Vec::new());
+    }
+
+    let mut overrides = vec![format!(
+        "service_tier={}",
+        encode_codex_string_literal(service_tier)?
+    )];
+    if service_tier.eq_ignore_ascii_case("fast") {
+        overrides.push("features.fast_mode=true".to_string());
+    }
+    Ok(overrides)
 }
 
 fn encode_codex_string_literal(value: &str) -> Result<String, String> {
@@ -454,7 +490,20 @@ pub fn parse_codex_cli_capabilities(
     root_help: &str,
     exec_help: &str,
     version_output: Option<&str>,
+    features_output: Option<&str>,
+    model_catalog_output: Option<&str>,
 ) -> CodexCliCapabilities {
+    let supports_fast_mode_feature = features_output
+        .map(parse_codex_fast_mode_feature)
+        .unwrap_or(false);
+    let fast_mode_supported_models = if supports_fast_mode_feature {
+        model_catalog_output
+            .map(parse_codex_fast_mode_supported_models)
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
     CodexCliCapabilities {
         version: version_output.and_then(parse_codex_version),
         supports_exec_subcommand: root_help.contains("exec"),
@@ -466,17 +515,92 @@ pub fn parse_codex_cli_capabilities(
         supports_search_flag: root_help.contains("--search"),
         supports_resume_subcommand: root_help.contains("resume"),
         supports_mcp_subcommand: root_help.contains("mcp"),
+        supports_fast_mode_feature,
+        fast_mode_supported_models,
     }
+}
+
+pub fn parse_codex_fast_mode_feature(output: &str) -> bool {
+    output.lines().any(|line| {
+        let mut parts = line.split_whitespace();
+        let Some(name) = parts.next() else {
+            return false;
+        };
+        if name != "fast_mode" {
+            return false;
+        }
+        parts
+            .last()
+            .is_some_and(|enabled| enabled.eq_ignore_ascii_case("true"))
+    })
+}
+
+pub fn parse_codex_fast_mode_supported_models(output: &str) -> Vec<String> {
+    let Ok(root) = serde_json::from_str::<serde_json::Value>(output) else {
+        return Vec::new();
+    };
+    let Some(models) = root.get("models").and_then(serde_json::Value::as_array) else {
+        return Vec::new();
+    };
+
+    let mut supported_models = models
+        .iter()
+        .filter_map(|model| {
+            let slug = model
+                .get("slug")
+                .or_else(|| model.get("id"))
+                .and_then(serde_json::Value::as_str)?;
+            model_supports_codex_fast_mode(model).then(|| slug.to_string())
+        })
+        .collect::<Vec<_>>();
+    supported_models.sort();
+    supported_models.dedup();
+    supported_models
+}
+
+fn model_supports_codex_fast_mode(model: &serde_json::Value) -> bool {
+    model
+        .get("additional_speed_tiers")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|tiers| {
+            tiers.iter().any(|tier| {
+                tier.as_str()
+                    .is_some_and(|tier| tier.eq_ignore_ascii_case("fast"))
+            })
+        })
+        || model
+            .get("service_tiers")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|tiers| {
+                tiers.iter().any(|tier| {
+                    let id = tier
+                        .get("id")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default();
+                    let name = tier
+                        .get("name")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default();
+                    id.eq_ignore_ascii_case("fast")
+                        || id.eq_ignore_ascii_case("priority")
+                        || name.eq_ignore_ascii_case("fast")
+                })
+            })
 }
 
 pub fn probe_codex_cli(cli_path: &Path) -> Result<CodexCliCapabilities, String> {
     let version_output = run_codex_command(cli_path, &["--version"])?;
     let root_help = run_codex_command(cli_path, &["--help"])?;
     let exec_help = run_codex_optional_command(cli_path, &["exec", "--help"]);
+    let features_output = run_codex_optional_command(cli_path, &["features", "list"]);
+    let model_catalog_output =
+        run_codex_optional_command(cli_path, &["debug", "models", "--bundled"]);
     Ok(parse_codex_cli_capabilities(
         &root_help,
         &exec_help,
         Some(&version_output),
+        Some(&features_output),
+        Some(&model_catalog_output),
     ))
 }
 
@@ -574,6 +698,12 @@ pub fn build_codex_exec_args(
         args.push(override_value.clone());
     }
 
+    for override_value in codex_service_tier_overrides(config)? {
+        require_capability(capabilities.supports_config_override, "config_override")?;
+        args.push("-c".to_string());
+        args.push(override_value);
+    }
+
     if let Some(reasoning_effort) = config.reasoning_effort {
         require_capability(capabilities.supports_config_override, "config_override")?;
         args.push("-c".to_string());
@@ -624,6 +754,12 @@ pub fn build_codex_exec_resume_args(
         require_capability(capabilities.supports_config_override, "config_override")?;
         args.push("-c".to_string());
         args.push(override_value.clone());
+    }
+
+    for override_value in codex_service_tier_overrides(config)? {
+        require_capability(capabilities.supports_config_override, "config_override")?;
+        args.push("-c".to_string());
+        args.push(override_value);
     }
 
     if let Some(reasoning_effort) = config.reasoning_effort {

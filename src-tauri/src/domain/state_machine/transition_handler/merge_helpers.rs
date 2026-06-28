@@ -18,12 +18,15 @@ use crate::domain::entities::plan_branch::{PlanBranchId, PrPushStatus, PrStatus}
 use crate::domain::entities::task_metadata::{MergeRecoveryMetadata, MergeRecoveryState};
 use crate::domain::entities::InternalStatus;
 use crate::domain::entities::{
-    IdeationSessionId, PlanBranch, PlanBranchStatus, Project, Task, TaskCategory, TaskId,
+    AgentWorkspacePrDescription, IdeationSessionId, PlanBranch, PlanBranchStatus, Project, Task,
+    TaskCategory, TaskId,
 };
 use crate::domain::repositories::{
     ArtifactRepository, IdeationSessionRepository, PlanBranchRepository, TaskRepository,
 };
-use crate::domain::services::{GithubServiceTrait, PlanPrPublisher, PrReviewState};
+use crate::domain::services::{
+    GithubServiceTrait, PlanPrDescriptionDrafter, PlanPrPublisher, PrReviewState,
+};
 use crate::domain::state_machine::context::TaskServices;
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::git_runtime_config;
@@ -1004,6 +1007,7 @@ pub(super) async fn resolve_task_base_branch(
     _task_repo: &Option<Arc<dyn TaskRepository>>,
     pr_creation_guard: &Option<Arc<dashmap::DashMap<PlanBranchId, ()>>>,
     github_service: &Option<Arc<dyn GithubServiceTrait>>,
+    plan_pr_description_drafter: &Option<Arc<dyn PlanPrDescriptionDrafter>>,
 ) -> String {
     let default = project.base_branch.as_deref().unwrap_or("main").to_string();
 
@@ -1071,6 +1075,7 @@ pub(super) async fn resolve_task_base_branch(
                         guard,
                         gh_svc,
                         &Arc::clone(plan_branch_repo),
+                        plan_pr_description_drafter.as_ref(),
                         None,
                         None,
                     )
@@ -1259,12 +1264,33 @@ pub(crate) async fn sync_existing_plan_branch_pr_details(
     project: &Project,
     pb: &PlanBranch,
     github: &Arc<dyn GithubServiceTrait>,
+    plan_pr_description_drafter: Option<&Arc<dyn PlanPrDescriptionDrafter>>,
     ideation_session_repo: Option<&Arc<dyn IdeationSessionRepository>>,
     artifact_repo: Option<&Arc<dyn ArtifactRepository>>,
     review_state: PrReviewState,
 ) -> AppResult<()> {
+    let description =
+        draft_plan_pr_description_for_write(project, pb, plan_pr_description_drafter, review_state)
+            .await?;
     PlanPrPublisher::new(github, ideation_session_repo, artifact_repo)
-        .sync_existing_pr(task, project, pb, review_state)
+        .sync_existing_pr(task, project, pb, review_state, &description)
+        .await
+}
+
+pub(crate) async fn draft_plan_pr_description_for_write(
+    project: &Project,
+    pb: &PlanBranch,
+    plan_pr_description_drafter: Option<&Arc<dyn PlanPrDescriptionDrafter>>,
+    review_state: PrReviewState,
+) -> AppResult<AgentWorkspacePrDescription> {
+    let Some(drafter) = plan_pr_description_drafter else {
+        return Err(AppError::Infrastructure(
+            "plan PR describer is not configured".to_string(),
+        ));
+    };
+    let review_base = resolve_plan_branch_pr_base(project, pb);
+    drafter
+        .draft_plan_description(project, pb, &review_base, review_state)
         .await
 }
 
@@ -1276,6 +1302,7 @@ pub(crate) struct PlanBranchPrSyncServices {
     pub github_service: Option<Arc<dyn GithubServiceTrait>>,
     pub ideation_session_repo: Option<Arc<dyn IdeationSessionRepository>>,
     pub artifact_repo: Option<Arc<dyn ArtifactRepository>>,
+    pub plan_pr_description_drafter: Option<Arc<dyn PlanPrDescriptionDrafter>>,
 }
 
 impl PlanBranchPrSyncServices {
@@ -1287,6 +1314,7 @@ impl PlanBranchPrSyncServices {
             github_service: services.github_service.clone(),
             ideation_session_repo: services.ideation_session_repo.clone(),
             artifact_repo: services.artifact_repo.clone(),
+            plan_pr_description_drafter: services.plan_pr_description_drafter.clone(),
         }
     }
 }
@@ -1350,6 +1378,7 @@ pub(crate) async fn sync_plan_branch_pr_after_regular_task_merge(
             project,
             &refreshed_plan_branch,
             github_service,
+            services.plan_pr_description_drafter.as_ref(),
             services.ideation_session_repo.as_ref(),
             services.artifact_repo.as_ref(),
             review_state,
@@ -1361,6 +1390,9 @@ pub(crate) async fn sync_plan_branch_pr_after_regular_task_merge(
                 error = %e,
                 "PR mode: failed to refresh PR details after plan branch push"
             );
+            if ready_for_review {
+                return Ok(());
+            }
         }
         if ready_for_review {
             if let Some(pr_number) = refreshed_plan_branch.pr_number {
@@ -1385,6 +1417,7 @@ pub(crate) async fn sync_plan_branch_pr_after_regular_task_merge(
             pr_creation_guard,
             github_service,
             plan_branch_repo,
+            services.plan_pr_description_drafter.as_ref(),
             services.ideation_session_repo.as_ref(),
             services.artifact_repo.as_ref(),
         )
@@ -1397,6 +1430,7 @@ pub(crate) async fn sync_plan_branch_pr_after_regular_task_merge(
                         project,
                         &refreshed_plan_branch,
                         github_service,
+                        services.plan_pr_description_drafter.as_ref(),
                         services.ideation_session_repo.as_ref(),
                         services.artifact_repo.as_ref(),
                         PrReviewState::Ready,
@@ -1408,6 +1442,7 @@ pub(crate) async fn sync_plan_branch_pr_after_regular_task_merge(
                             error = %e,
                             "PR mode: failed to refresh newly-created PR details before ready"
                         );
+                        return Ok(());
                     }
                     if let Some(pr_number) = refreshed_plan_branch.pr_number {
                         if let Err(e) = github_service
@@ -1473,6 +1508,7 @@ pub(crate) async fn create_draft_pr_if_needed(
     guard: &Arc<dashmap::DashMap<crate::domain::entities::PlanBranchId, ()>>,
     github: &Arc<dyn GithubServiceTrait>,
     plan_branch_repo: &Arc<dyn PlanBranchRepository>,
+    plan_pr_description_drafter: Option<&Arc<dyn PlanPrDescriptionDrafter>>,
     ideation_session_repo: Option<&Arc<dyn IdeationSessionRepository>>,
     artifact_repo: Option<&Arc<dyn ArtifactRepository>>,
 ) {
@@ -1563,6 +1599,27 @@ pub(crate) async fn create_draft_pr_if_needed(
 
         // --- CREATE DRAFT PR ---
         let base = resolve_plan_branch_pr_base(project, &current_pb);
+        let description = match draft_plan_pr_description_for_write(
+            project,
+            &current_pb,
+            plan_pr_description_drafter,
+            PrReviewState::Draft,
+        )
+        .await
+        {
+            Ok(description) => description,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    branch = %branch_name,
+                    "create_draft_pr_if_needed: plan PR describer failed — skipping PR creation"
+                );
+                let _ = plan_branch_repo
+                    .update_pr_push_status(&plan_branch_id, PrPushStatus::Failed)
+                    .await;
+                return;
+            }
+        };
         let publisher = PlanPrPublisher::new(github, ideation_session_repo, artifact_repo);
 
         tracing::info!(
@@ -1570,7 +1627,10 @@ pub(crate) async fn create_draft_pr_if_needed(
             base = %base,
             "create_draft_pr_if_needed: creating draft PR"
         );
-        match publisher.create_draft_pr(task, project, &current_pb).await {
+        match publisher
+            .create_draft_pr(task, project, &current_pb, &description)
+            .await
+        {
             Ok((pr_number, pr_url)) => {
                 tracing::info!(pr_number, %pr_url, "Draft PR created");
                 if let Err(e) = plan_branch_repo
@@ -1611,7 +1671,13 @@ pub(crate) async fn create_draft_pr_if_needed(
                         recovered_pb.pr_number = Some(pr_number);
                         recovered_pb.pr_url = Some(pr_url);
                         if let Err(e) = publisher
-                            .sync_existing_pr(task, project, &recovered_pb, PrReviewState::Draft)
+                            .sync_existing_pr(
+                                task,
+                                project,
+                                &recovered_pb,
+                                PrReviewState::Draft,
+                                &description,
+                            )
                             .await
                         {
                             tracing::warn!(

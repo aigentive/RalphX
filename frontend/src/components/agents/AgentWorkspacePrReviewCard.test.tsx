@@ -288,7 +288,7 @@ describe("AgentWorkspacePrReviewCard", () => {
     });
 
     expect(
-      screen.getByText("Write the Review artifact for this PR head before submitting."),
+      screen.getByText("Write the Review for this PR head before submitting."),
     ).toBeInTheDocument();
 
     const submitButton = screen.getByRole("button", { name: /Request Changes/i });

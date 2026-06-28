@@ -6,7 +6,7 @@ use tempfile::NamedTempFile;
 
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentWorkspacePrDescription, ArtifactContent, ChatConversation,
-    PlanBranch, Project, Task, TaskCategory,
+    PlanBranch, Project, Task,
 };
 use crate::domain::repositories::{ArtifactRepository, IdeationSessionRepository};
 use crate::domain::services::{
@@ -21,7 +21,8 @@ pub trait PlanPrDescriptionDrafter: Send + Sync {
         project: &Project,
         plan_branch: &PlanBranch,
         review_base: &str,
-    ) -> Option<String>;
+        review_state: PrReviewState,
+    ) -> AppResult<AgentWorkspacePrDescription>;
 }
 
 const GITHUB_PR_BODY_SOFT_LIMIT_CHARS: usize = 60_000;
@@ -39,7 +40,6 @@ pub struct PlanPrPublisher<'a> {
     github: &'a Arc<dyn GithubServiceTrait>,
     ideation_session_repo: Option<&'a Arc<dyn IdeationSessionRepository>>,
     artifact_repo: Option<&'a Arc<dyn ArtifactRepository>>,
-    description_override: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -168,13 +168,7 @@ impl<'a> PlanPrPublisher<'a> {
             github,
             ideation_session_repo,
             artifact_repo,
-            description_override: None,
         }
-    }
-
-    pub fn with_description(mut self, body: String) -> Self {
-        self.description_override = Some(body);
-        self
     }
 
     pub async fn create_draft_pr(
@@ -182,13 +176,14 @@ impl<'a> PlanPrPublisher<'a> {
         task: &Task,
         project: &Project,
         plan_branch: &PlanBranch,
+        description: &AgentWorkspacePrDescription,
     ) -> AppResult<(i64, String)> {
         let repo_path = Path::new(&project.working_directory);
         let title = self
             .build_title(task, plan_branch, PrReviewState::Draft)
             .await;
         let body_file = self
-            .write_body_file(task, project, plan_branch, PrReviewState::Draft)
+            .write_body_file(project, plan_branch, description)
             .await?;
         let base = resolve_plan_branch_pr_base(project, plan_branch);
 
@@ -209,6 +204,7 @@ impl<'a> PlanPrPublisher<'a> {
         project: &Project,
         plan_branch: &PlanBranch,
         review_state: PrReviewState,
+        description: &AgentWorkspacePrDescription,
     ) -> AppResult<()> {
         let Some(pr_number) = plan_branch.pr_number else {
             return Ok(());
@@ -217,7 +213,7 @@ impl<'a> PlanPrPublisher<'a> {
         let repo_path = Path::new(&project.working_directory);
         let title = self.build_title(task, plan_branch, review_state).await;
         let body_file = self
-            .write_body_file(task, project, plan_branch, review_state)
+            .write_body_file(project, plan_branch, description)
             .await?;
 
         self.github
@@ -227,14 +223,11 @@ impl<'a> PlanPrPublisher<'a> {
 
     async fn write_body_file(
         &self,
-        task: &Task,
         project: &Project,
         plan_branch: &PlanBranch,
-        review_state: PrReviewState,
+        description: &AgentWorkspacePrDescription,
     ) -> AppResult<NamedTempFile> {
-        let body = self
-            .build_body(task, project, plan_branch, review_state)
-            .await;
+        let body = self.build_body(project, plan_branch, description).await?;
         let body_file = NamedTempFile::new().map_err(|e| {
             AppError::Infrastructure(format!("failed to create PR body temp file: {e}"))
         })?;
@@ -260,13 +253,10 @@ impl<'a> PlanPrPublisher<'a> {
 
     async fn build_body(
         &self,
-        task: &Task,
-        project: &Project,
+        _project: &Project,
         plan_branch: &PlanBranch,
-        review_state: PrReviewState,
-    ) -> String {
-        let repo_path = Path::new(&project.working_directory);
-        let pr_base = resolve_plan_branch_pr_base(project, plan_branch);
+        description: &AgentWorkspacePrDescription,
+    ) -> AppResult<String> {
         let plan_markdown = self
             .read_plan_artifact_markdown(plan_branch)
             .await
@@ -274,59 +264,25 @@ impl<'a> PlanPrPublisher<'a> {
                 "_No plan artifact was available when RalphX synced this PR._".to_string()
             });
 
-        let mut sections = Vec::new();
-
-        if review_state == PrReviewState::Ready {
-            if let Some(ref description) = self.description_override {
-                sections.push(description.clone());
-            } else if let Some(template) = read_pull_request_template(repo_path).await {
-                sections.push(template);
-            }
-        } else if let Some(template) = read_pull_request_template(repo_path).await {
-            sections.push(template);
+        let generated_body = description.body_markdown.trim_end();
+        if generated_body.trim().is_empty() {
+            return Err(AppError::Infrastructure(
+                "plan PR describer returned an empty PR body".to_string(),
+            ));
         }
-
-        let state_line = match review_state {
-            PrReviewState::Draft => {
-                "Draft while RalphX is still merging plan tasks into the plan branch."
-            }
-            PrReviewState::Ready => {
-                "Ready for GitHub review. RalphX has finished merging plan tasks into the plan branch."
-            }
-        };
-        let workflow_task_note = if task.category == TaskCategory::PlanMerge {
-            format!(
-                "**{}** - final workflow task handing the completed plan branch to GitHub review.",
-                task.title.trim()
-            )
-        } else {
-            format!("**{}**", task.title.trim())
-        };
-
-        sections.push(format!(
-            "## RalphX Status\n\n- State: {}\n- Current RalphX task: {}\n- Base branch: `{}`\n- Plan branch: `{}`",
-            state_line,
-            workflow_task_note,
-            pr_base,
-            plan_branch.branch_name
-        ));
-
-        sections.push(
-            "## How To Review\n\n\
-             - Review the plan below against the delivered diff and repository checks.\n\
-             - Leave GitHub comments or requested changes if the implementation does not satisfy the plan.\n\
-             - Merge this PR in GitHub when it is ready; RalphX will detect the merge and finish the plan."
-                .to_string(),
-        );
 
         let footer = format!("---\n\n_Generated by [RalphX]({})_", RALPHX_REPOSITORY_URL);
         let prefix = format!(
             "{}\n\n## Plan\n\n<details>\n<summary>View full plan</summary>\n\n",
-            sections.join("\n\n")
+            generated_body
         );
         let suffix = format!("\n\n</details>\n\n{footer}");
 
-        fit_plan_markdown_to_pr_body(&prefix, &plan_markdown, &suffix)
+        Ok(fit_plan_markdown_to_pr_body(
+            &prefix,
+            &plan_markdown,
+            &suffix,
+        ))
     }
 
     async fn resolve_display_title(&self, task: &Task, plan_branch: &PlanBranch) -> String {
@@ -371,18 +327,6 @@ impl<'a> PlanPrPublisher<'a> {
         }
 
         Some(trimmed.to_string())
-    }
-}
-
-async fn read_pull_request_template(repo_path: &Path) -> Option<String> {
-    let template_path = repo_path.join(".github").join("PULL_REQUEST_TEMPLATE.md");
-    if !template_path.exists() {
-        return None;
-    }
-
-    match tokio::fs::read_to_string(&template_path).await {
-        Ok(content) if !content.trim().is_empty() => Some(content.trim().to_string()),
-        _ => None,
     }
 }
 
@@ -464,7 +408,7 @@ mod tests {
 
     use crate::domain::entities::{
         AgentConversationWorkspaceMode, ArtifactId, IdeationAnalysisBaseRefKind,
-        IdeationSessionId, ProjectId,
+        IdeationSessionId, ProjectId, TaskCategory,
     };
     use crate::tests::mock_github_service::MockGithubService;
 
@@ -614,7 +558,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn plan_pr_publisher_keeps_template_when_ready_without_override() {
+    async fn plan_pr_publisher_uses_agent_body_and_ignores_repo_template() {
         let temp_dir = tempfile::tempdir().unwrap();
         let github_dir = temp_dir.path().join(".github");
         std::fs::create_dir_all(&github_dir).unwrap();
@@ -648,9 +592,19 @@ mod tests {
         let github = Arc::new(MockGithubService::new());
         let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
         let publisher = PlanPrPublisher::new(&github_trait, None, None);
+        let description = AgentWorkspacePrDescription::new(
+            None,
+            "## Summary\n\nAgent-written plan PR body".to_string(),
+        );
 
         publisher
-            .sync_existing_pr(&task, &project, &plan_branch, PrReviewState::Ready)
+            .sync_existing_pr(
+                &task,
+                &project,
+                &plan_branch,
+                PrReviewState::Ready,
+                &description,
+            )
             .await
             .unwrap();
 
@@ -663,9 +617,61 @@ mod tests {
         assert_eq!(pr_number, 123);
         assert_eq!(title, "Merge plan");
         let body = state.last_update_pr_details_body.as_deref().unwrap();
-        assert!(body.starts_with("## Checklist\n\n- [ ] Template item"));
-        assert!(body.contains("Ready for GitHub review."));
+        assert!(body.starts_with("## Summary\n\nAgent-written plan PR body"));
+        assert!(!body.contains("## Checklist"));
+        assert!(!body.contains("## RalphX Status"));
+        assert!(!body.contains("## How To Review"));
         assert!(body.contains("_No plan artifact was available"));
+        assert!(body.contains("<summary>View full plan</summary>"));
+        assert!(body.contains("_Generated by [RalphX]("));
+    }
+
+    #[tokio::test]
+    async fn plan_pr_publisher_rejects_empty_agent_body() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let project_id = ProjectId::from_string("project-plan-pr".to_string());
+        let mut project = Project::new(
+            "Plan project".to_string(),
+            temp_dir.path().to_string_lossy().to_string(),
+        );
+        project.id = project_id.clone();
+        let task = Task::new_with_category(
+            project_id.clone(),
+            "Merge plan".to_string(),
+            TaskCategory::PlanMerge,
+        );
+        let mut plan_branch = PlanBranch::new(
+            ArtifactId::from_string("artifact-plan".to_string()),
+            IdeationSessionId::from_string("session-plan".to_string()),
+            project_id,
+            "feature/plan".to_string(),
+            "main".to_string(),
+        );
+        plan_branch.pr_number = Some(123);
+
+        let github = Arc::new(MockGithubService::new());
+        let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
+        let publisher = PlanPrPublisher::new(&github_trait, None, None);
+        let description = AgentWorkspacePrDescription::new(None, "   \n".to_string());
+
+        let result = publisher
+            .sync_existing_pr(
+                &task,
+                &project,
+                &plan_branch,
+                PrReviewState::Ready,
+                &description,
+            )
+            .await;
+
+        match result {
+            Err(AppError::Infrastructure(message)) => {
+                assert_eq!(message, "plan PR describer returned an empty PR body");
+            }
+            Err(other) => panic!("expected infrastructure error, got {other:?}"),
+            Ok(_) => panic!("empty agent body should fail before writing PR details"),
+        }
+        assert_eq!(github.state().update_pr_details_calls, 0);
     }
 
     #[test]

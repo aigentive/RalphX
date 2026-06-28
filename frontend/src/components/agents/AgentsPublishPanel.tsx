@@ -537,6 +537,11 @@ export function AgentPublishPanel({
     : workspace.publicationPrUrl
       ? "Published PR"
       : "No PR yet";
+  const publishTargetPullRequestLabel = workspace.publicationPrNumber
+    ? `PR #${workspace.publicationPrNumber}`
+    : workspace.publicationPrUrl
+      ? "the linked pull request"
+      : null;
   const prUrlLabel = workspace.publicationPrUrl
     ? formatPullRequestUrlLabel(workspace.publicationPrUrl)
     : null;
@@ -1504,6 +1509,7 @@ export function AgentPublishPanel({
         phase={publishDialogPhase}
         branch={branch}
         base={base}
+        targetPullRequestLabel={publishTargetPullRequestLabel}
         prSupervisionStatus={prSupervisionStatus}
         status={pipelineStatus}
         isPublishing={isPublishingThisWorkspace}

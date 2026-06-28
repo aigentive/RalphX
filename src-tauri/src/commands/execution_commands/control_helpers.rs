@@ -46,6 +46,9 @@ pub(super) fn queued_message_to_send_options(
         metadata: message.metadata_override.clone(),
         created_at,
         harness_override: message.harness_override,
+        model_override: message.model_override.clone(),
+        logical_effort_override: message.logical_effort_override,
+        service_tier_override: message.service_tier_override.clone(),
         composer_project_references: message.composer_project_references.clone(),
         composer_integration_references: message.composer_integration_references.clone(),
         composer_artifact_references: message.composer_artifact_references.clone(),
@@ -298,10 +301,7 @@ pub(super) async fn count_queued_messages_for_context_types(
 ) -> Result<u32, String> {
     let mut count = 0u32;
     for key in queued_keys(app_state).await? {
-        if !context_types
-            .iter()
-            .any(|context_type| *context_type == key.context_type)
-        {
+        if !context_types.contains(&key.context_type) {
             continue;
         }
         if !queue_key_matches_project(&key, project_filter, app_state).await? {

@@ -10,6 +10,7 @@ pub mod sqlite_activity_event_repo;
 pub mod sqlite_agent_lane_settings_repo;
 pub mod sqlite_agent_conversation_issue_repo;
 pub mod sqlite_agent_conversation_jira_issue_repo;
+pub mod sqlite_agent_conversation_granola_note_repo;
 pub mod sqlite_agent_conversation_linear_issue_repo;
 pub mod sqlite_agent_conversation_workspace_repo;
 pub mod sqlite_agent_model_registry_repo;
@@ -20,6 +21,9 @@ pub mod sqlite_atlassian_integration_settings_repo;
 pub mod sqlite_clickup_integration_settings_repo;
 #[cfg(test)]
 mod sqlite_clickup_integration_settings_repo_tests;
+pub mod sqlite_granola_integration_settings_repo;
+#[cfg(test)]
+mod sqlite_granola_integration_settings_repo_tests;
 #[cfg(test)]
 mod sqlite_agent_task_repo_tests;
 pub mod sqlite_agent_run_repo;
@@ -107,6 +111,7 @@ pub use sqlite_activity_event_repo::SqliteActivityEventRepository;
 pub use sqlite_agent_lane_settings_repo::SqliteAgentLaneSettingsRepository;
 pub use sqlite_agent_conversation_issue_repo::SqliteAgentConversationIssueRepository;
 pub use sqlite_agent_conversation_jira_issue_repo::SqliteAgentConversationJiraIssueRepository;
+pub use sqlite_agent_conversation_granola_note_repo::SqliteAgentConversationGranolaNoteRepository;
 pub use sqlite_agent_conversation_linear_issue_repo::SqliteAgentConversationLinearIssueRepository;
 pub use sqlite_agent_conversation_workspace_repo::SqliteAgentConversationWorkspaceRepository;
 pub use sqlite_agent_model_registry_repo::SqliteAgentModelRegistryRepository;
@@ -115,6 +120,7 @@ pub use sqlite_agent_provider_settings_repo::SqliteAgentProviderSettingsReposito
 pub use sqlite_agent_task_repo::SqliteAgentTaskRepository;
 pub use sqlite_atlassian_integration_settings_repo::SqliteAtlassianIntegrationSettingsRepository;
 pub use sqlite_clickup_integration_settings_repo::SqliteClickUpIntegrationSettingsRepository;
+pub use sqlite_granola_integration_settings_repo::SqliteGranolaIntegrationSettingsRepository;
 pub use sqlite_agent_run_repo::SqliteAgentRunRepository;
 pub use sqlite_app_state_repo::SqliteAppStateRepository;
 pub use sqlite_artifact_bucket_repo::SqliteArtifactBucketRepository;

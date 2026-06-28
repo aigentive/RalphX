@@ -565,6 +565,8 @@ async fn provider_observations_report_missing_and_probe_errors() {
                 supports_search_flag: true,
                 supports_resume_subcommand: true,
                 supports_mcp_subcommand: true,
+                supports_fast_mode_feature: false,
+                fast_mode_supported_models: Vec::new(),
             },
         },
         false,

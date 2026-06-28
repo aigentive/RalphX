@@ -5,20 +5,22 @@ use tauri::{AppHandle, Manager, Runtime};
 
 use crate::application::chat_service::{AppChatService, StreamingStateCache};
 use crate::application::{
-    AgentClientBundle, AppState, AtlassianIntegrationService, InteractiveProcessRegistry,
-    LinearIntegrationService, PrPollerRegistry, TaskSchedulerService, TaskTransitionService,
+    AgentClientBundle, AppState, AtlassianIntegrationService, GranolaIntegrationService,
+    InteractiveProcessRegistry, LinearIntegrationService, PrPollerRegistry, TaskSchedulerService,
+    TaskTransitionService,
 };
 use crate::commands::ExecutionState;
 use crate::domain::repositories::{
-    ActivityEventRepository, AgentConversationJiraIssueRepository,
-    AgentConversationLinearIssueRepository, AgentConversationWorkspaceRepository,
-    AgentLaneSettingsRepository, AgentProviderSettingsRepository, AgentRunRepository,
-    ArtifactRepository, ChatAttachmentRepository, ChatConversationRepository,
-    ChatMessageRepository, ChatTimelineRepository, DelegatedSessionRepository,
-    ExecutionPlanRepository, ExecutionSettingsRepository, IdeationEffortSettingsRepository,
-    IdeationModelSettingsRepository, IdeationSessionRepository, MemoryEventRepository,
-    PlanBranchRepository, ProjectRepository, QueuedMessageRepository, ReviewRepository,
-    TaskDependencyRepository, TaskProposalRepository, TaskRepository, TaskStepRepository,
+    ActivityEventRepository, AgentConversationGranolaNoteRepository,
+    AgentConversationJiraIssueRepository, AgentConversationLinearIssueRepository,
+    AgentConversationWorkspaceRepository, AgentLaneSettingsRepository,
+    AgentProviderSettingsRepository, AgentRunRepository, ArtifactRepository,
+    ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,
+    ChatTimelineRepository, DelegatedSessionRepository, ExecutionPlanRepository,
+    ExecutionSettingsRepository, IdeationEffortSettingsRepository, IdeationModelSettingsRepository,
+    IdeationSessionRepository, MemoryEventRepository, PlanBranchRepository, ProjectRepository,
+    QueuedMessageRepository, ReviewRepository, TaskDependencyRepository, TaskProposalRepository,
+    TaskRepository, TaskStepRepository,
 };
 use crate::domain::services::{GithubServiceTrait, MessageQueue, RunningAgentRegistry};
 use crate::infrastructure::memory::MemoryDelegatedSessionRepository;
@@ -204,6 +206,8 @@ pub(crate) struct ChatRuntimeFactoryDeps {
     pub agent_conversation_jira_issue_repo: Option<Arc<dyn AgentConversationJiraIssueRepository>>,
     pub agent_conversation_linear_issue_repo:
         Option<Arc<dyn AgentConversationLinearIssueRepository>>,
+    pub agent_conversation_granola_note_repo:
+        Option<Arc<dyn AgentConversationGranolaNoteRepository>>,
     pub plan_branch_repo: Option<Arc<dyn PlanBranchRepository>>,
     pub task_proposal_repo: Option<Arc<dyn TaskProposalRepository>>,
     pub task_step_repo: Option<Arc<dyn TaskStepRepository>>,
@@ -212,6 +216,7 @@ pub(crate) struct ChatRuntimeFactoryDeps {
     pub streaming_state_cache: Option<StreamingStateCache>,
     pub atlassian_integration_service: Option<Arc<AtlassianIntegrationService>>,
     pub linear_integration_service: Option<Arc<LinearIntegrationService>>,
+    pub granola_integration_service: Option<Arc<GranolaIntegrationService>>,
 }
 
 impl ChatRuntimeFactoryDeps {
@@ -256,6 +261,7 @@ impl ChatRuntimeFactoryDeps {
             agent_conversation_workspace_repo: None,
             agent_conversation_jira_issue_repo: None,
             agent_conversation_linear_issue_repo: None,
+            agent_conversation_granola_note_repo: None,
             plan_branch_repo: None,
             task_proposal_repo: None,
             task_step_repo: None,
@@ -264,6 +270,7 @@ impl ChatRuntimeFactoryDeps {
             streaming_state_cache: None,
             atlassian_integration_service: None,
             linear_integration_service: None,
+            granola_integration_service: None,
         }
     }
 
@@ -344,6 +351,14 @@ impl ChatRuntimeFactoryDeps {
         self
     }
 
+    pub(crate) fn with_agent_conversation_granola_note_repo(
+        mut self,
+        repo: Option<Arc<dyn AgentConversationGranolaNoteRepository>>,
+    ) -> Self {
+        self.agent_conversation_granola_note_repo = repo;
+        self
+    }
+
     pub(crate) fn with_plan_branch_repo(mut self, repo: Arc<dyn PlanBranchRepository>) -> Self {
         self.plan_branch_repo = Some(repo);
         self
@@ -398,6 +413,14 @@ impl ChatRuntimeFactoryDeps {
         service: Arc<LinearIntegrationService>,
     ) -> Self {
         self.linear_integration_service = Some(service);
+        self
+    }
+
+    pub(crate) fn with_granola_integration_service(
+        mut self,
+        service: Arc<GranolaIntegrationService>,
+    ) -> Self {
+        self.granola_integration_service = Some(service);
         self
     }
 
@@ -502,6 +525,9 @@ impl ChatRuntimeFactoryDeps {
         .with_agent_conversation_linear_issue_repo(Some(Arc::clone(
             &state.agent_conversation_linear_issue_repo,
         )))
+        .with_agent_conversation_granola_note_repo(Some(Arc::clone(
+            &state.agent_conversation_granola_note_repo,
+        )))
         .with_chat_context_support(
             Some(Arc::clone(&state.task_proposal_repo)),
             Some(Arc::clone(&state.task_step_repo)),
@@ -510,6 +536,7 @@ impl ChatRuntimeFactoryDeps {
         )
         .with_atlassian_integration_service(Arc::clone(&state.atlassian_integration_service))
         .with_linear_integration_service(Arc::clone(&state.linear_integration_service))
+        .with_granola_integration_service(Arc::clone(&state.granola_integration_service))
     }
 }
 
@@ -574,6 +601,9 @@ pub(crate) fn build_chat_service_from_deps<R: Runtime>(
     if let Some(repo) = deps.agent_conversation_linear_issue_repo.as_ref() {
         service = service.with_agent_conversation_linear_issue_repo(Arc::clone(repo));
     }
+    if let Some(repo) = deps.agent_conversation_granola_note_repo.as_ref() {
+        service = service.with_agent_conversation_granola_note_repo(Arc::clone(repo));
+    }
     if let Some(repo) = deps.plan_branch_repo.as_ref() {
         service = service.with_plan_branch_repo(Arc::clone(repo));
     }
@@ -597,6 +627,9 @@ pub(crate) fn build_chat_service_from_deps<R: Runtime>(
     }
     if let Some(linear) = deps.linear_integration_service.as_ref() {
         service = service.with_linear_integration_service(Arc::clone(linear));
+    }
+    if let Some(granola) = deps.granola_integration_service.as_ref() {
+        service = service.with_granola_integration_service(Arc::clone(granola));
     }
 
     service

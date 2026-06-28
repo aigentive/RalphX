@@ -182,8 +182,7 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
         &self,
         stale_older_than_secs: u64,
     ) -> AppResult<Vec<AgentConversationWorkspace>> {
-        let cutoff =
-            Utc::now() - chrono::Duration::seconds(stale_older_than_secs as i64);
+        let cutoff = Utc::now() - chrono::Duration::seconds(stale_older_than_secs as i64);
         Ok(self
             .workspaces
             .read()
@@ -627,6 +626,9 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
         let mut monitors = self.workspace_review_monitors.write().await;
         if let Some(existing) = monitors.get(&monitor.conversation_id) {
             monitor.created_at = existing.created_at;
+            if monitor.review_conversation_id.is_none() {
+                monitor.review_conversation_id = existing.review_conversation_id.clone();
+            }
             if monitor.review_artifact_id.is_none() {
                 monitor.review_artifact_id = existing.review_artifact_id.clone();
                 monitor.review_artifact_version = existing.review_artifact_version;

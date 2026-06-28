@@ -25,6 +25,7 @@ export function PublishWorkspaceDialog({
   onOpenChange,
   open,
   phase,
+  targetPullRequestLabel = null,
   prSupervisionStatus = null,
   status,
 }: {
@@ -38,10 +39,14 @@ export function PublishWorkspaceDialog({
   onOpenChange: (open: boolean) => void;
   open: boolean;
   phase: PublishWorkspaceDialogPhase;
+  targetPullRequestLabel?: string | null;
   prSupervisionStatus?: string | null;
   status: string | null;
 }) {
   const isProgress = phase === "publishing";
+  const publishDescription = targetPullRequestLabel
+    ? `This will commit workspace changes on ${branch} and push updates to ${targetPullRequestLabel}.`
+    : `This will commit workspace changes on ${branch} and push them to a pull request against ${base}.`;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -71,7 +76,7 @@ export function PublishWorkspaceDialog({
             </DialogDescription>
           ) : (
             <DialogDescription className="mt-1.5 max-w-[28rem] text-sm leading-5 text-[var(--text-secondary)]">
-              {`This will commit workspace changes on ${branch} and push them to a pull request against ${base}.`}
+              {publishDescription}
             </DialogDescription>
           )}
         </DialogHeader>

@@ -30,6 +30,7 @@ pub struct AgentProviderSettingsResponse {
     pub effort: Option<String>,
     pub approval_policy: Option<String>,
     pub sandbox_mode: Option<String>,
+    pub service_tier: Option<String>,
     pub claude_permission_mode: Option<String>,
     pub claude_dangerously_skip_permissions: bool,
     pub claude_allow_dangerously_skip_permissions: bool,
@@ -48,6 +49,8 @@ pub struct AgentProviderSettingsResponse {
     pub cli_version: Option<String>,
     pub supported_model_aliases: Option<Vec<String>>,
     pub supported_efforts: Option<Vec<String>>,
+    pub supports_fast_mode: bool,
+    pub fast_mode_supported_models: Vec<String>,
     pub updated_at: String,
 }
 
@@ -76,6 +79,8 @@ pub struct UpdateAgentProviderSettingsInput {
     pub effort: Option<String>,
     pub approval_policy: Option<String>,
     pub sandbox_mode: Option<String>,
+    #[serde(default)]
+    pub service_tier: Option<Option<String>>,
     pub claude_permission_mode: Option<String>,
     pub claude_dangerously_skip_permissions: Option<bool>,
     pub claude_allow_dangerously_skip_permissions: Option<bool>,
@@ -133,6 +138,7 @@ fn reset_configurable_defaults(settings: &mut AgentProviderSettings) {
     settings.effort = defaults.effort;
     settings.approval_policy = defaults.approval_policy;
     settings.sandbox_mode = defaults.sandbox_mode;
+    settings.service_tier = defaults.service_tier;
     settings.claude_permission_mode = defaults.claude_permission_mode;
     settings.claude_dangerously_skip_permissions = defaults.claude_dangerously_skip_permissions;
     settings.claude_allow_dangerously_skip_permissions =
@@ -158,6 +164,51 @@ fn normalize_custom_binary_path(path: Option<String>) -> Option<String> {
 
 fn normalize_custom_env_file_path(path: Option<String>) -> Option<String> {
     normalize_optional_path(path)
+}
+
+fn normalize_service_tier(value: Option<String>) -> Option<String> {
+    value.and_then(|tier| {
+        let trimmed = tier.trim();
+        if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("standard") {
+            None
+        } else {
+            Some(trimmed.to_ascii_lowercase())
+        }
+    })
+}
+
+fn validate_codex_fast_mode_selection(
+    settings: &AgentProviderSettings,
+    probe: &HarnessRuntimeProbe,
+) -> Result<(), String> {
+    if settings.provider != AgentHarnessKind::Codex
+        || settings.service_tier.as_deref() != Some("fast")
+    {
+        return Ok(());
+    }
+
+    if !probe.supports_fast_mode {
+        return Err(
+            "Codex Fast mode is not supported by the selected Codex CLI or model catalog."
+                .to_string(),
+        );
+    }
+
+    let Some(model) = settings.model.as_deref() else {
+        return Ok(());
+    };
+    if !probe.fast_mode_supported_models.is_empty()
+        && !probe
+            .fast_mode_supported_models
+            .iter()
+            .any(|supported_model| supported_model == model)
+    {
+        return Err(format!(
+            "Codex Fast mode is not available for model {model}."
+        ));
+    }
+
+    Ok(())
 }
 
 fn normalize_optional_path(path: Option<String>) -> Option<String> {
@@ -202,6 +253,9 @@ fn merge_input(
         } else {
             Some(sandbox_mode)
         };
+    }
+    if let Some(service_tier) = input.service_tier {
+        settings.service_tier = normalize_service_tier(service_tier);
     }
     if let Some(permission_mode) = input.claude_permission_mode {
         settings.claude_permission_mode = if permission_mode.trim().is_empty() {
@@ -354,6 +408,7 @@ fn to_response(
         effort: settings.effort.map(|value| value.to_string()),
         approval_policy: settings.approval_policy,
         sandbox_mode: settings.sandbox_mode,
+        service_tier: settings.service_tier,
         claude_permission_mode: settings.claude_permission_mode,
         claude_dangerously_skip_permissions: settings.claude_dangerously_skip_permissions,
         claude_allow_dangerously_skip_permissions: settings
@@ -373,6 +428,8 @@ fn to_response(
         cli_version: probe.cli_version,
         supported_model_aliases: probe.supported_model_aliases,
         supported_efforts: probe.supported_efforts,
+        supports_fast_mode: probe.supports_fast_mode,
+        fast_mode_supported_models: probe.fast_mode_supported_models,
         updated_at: settings.updated_at.to_rfc3339(),
     }
 }
@@ -390,6 +447,8 @@ pub(crate) fn provider_settings_snapshot_probe(
             cli_version: None,
             supported_model_aliases: None,
             supported_efforts: None,
+            supports_fast_mode: false,
+            fast_mode_supported_models: Vec::new(),
             error: None,
         };
     }
@@ -403,6 +462,8 @@ pub(crate) fn provider_settings_snapshot_probe(
         cli_version: None,
         supported_model_aliases: None,
         supported_efforts: None,
+        supports_fast_mode: false,
+        fast_mode_supported_models: Vec::new(),
         error: Some(format!(
             "{} is disabled. Enable and validate it in Settings before use.",
             settings.provider
@@ -510,6 +571,8 @@ async fn read_provider_settings_with_stored_and_probes(
                     cli_version: None,
                     supported_model_aliases: None,
                     supported_efforts: None,
+                    supports_fast_mode: false,
+                    fast_mode_supported_models: Vec::new(),
                     error: Some(format!("{provider} probe unavailable")),
                 });
             to_response(settings, probe)
@@ -558,7 +621,10 @@ pub async fn update_agent_provider_settings(
         .await
         .map_err(|err| err.to_string())?;
     let mut probes = snapshot_probes_from_provider_settings(&stored);
-    if input.enabled == Some(true) {
+    let should_refresh_runtime_probe = input.enabled == Some(true)
+        || (provider == AgentHarnessKind::Codex
+            && (input.service_tier.is_some() || input.model.is_some()));
+    if should_refresh_runtime_probe {
         let existing = stored
             .iter()
             .find(|row| row.provider == provider)
@@ -605,6 +671,11 @@ async fn update_provider_settings_with_probes(
         return Err(effective_probe
             .error
             .unwrap_or_else(|| format!("Custom {provider} binary is not available and ready")));
+    }
+    if provider == AgentHarnessKind::Codex
+        && (input.service_tier.is_some() || input.model.is_some())
+    {
+        validate_codex_fast_mode_selection(&candidate, &effective_probe)?;
     }
     crate::application::provider_env_file::validate_provider_custom_env_file_settings(&candidate)?;
     if input.enabled == Some(true) && !effective_probe.available {

@@ -166,6 +166,7 @@ interface IntegratedChatPanelProps {
     providerHarness?: string | null;
     modelId?: string | null;
     logicalEffort?: string | null;
+    codexFastMode?: boolean | null;
   };
   /** Optional host-owned child session navigation. Falls back to transcript modal. */
   onChildSessionNavigate?: (sessionId: string) => void | Promise<void>;
@@ -210,6 +211,8 @@ export interface IntegratedChatComposerRenderProps {
   effectiveModel?: { id: string; label: string } | undefined;
   /** Provider harness label (e.g. "claude", "codex") for this chat context. */
   providerHarness?: string | null | undefined;
+  /** Notify the transcript that composer chrome is resizing outside ResizeObserver timing. */
+  onLayoutChange: () => void;
 }
 
 export function IntegratedChatPanel({
@@ -749,29 +752,33 @@ export function IntegratedChatPanel({
   );
 
   const virtuosoRef = useRef<VirtuosoHandle>(null);
-  const inputContainerRef = useRef<HTMLDivElement | null>(null);
-  const inputContainerHeightRef = useRef<number | null>(null);
-  const [inputLayoutVersion, setInputLayoutVersion] = useState(0);
+  const belowTranscriptChromeRef = useRef<HTMLDivElement | null>(null);
+  const belowTranscriptChromeHeightRef = useRef<number | null>(null);
+  const [transcriptLayoutVersion, setTranscriptLayoutVersion] = useState(0);
+
+  const updateBelowTranscriptChromeHeight = useCallback((height: number, { force = false } = {}) => {
+    const nextHeight = Math.round(height);
+    if (!force && belowTranscriptChromeHeightRef.current === nextHeight) {
+      return;
+    }
+    belowTranscriptChromeHeightRef.current = nextHeight;
+    setTranscriptLayoutVersion((version) => version + 1);
+  }, []);
+
+  const notifyInputLayoutChanged = useCallback(() => {
+    setTranscriptLayoutVersion((version) => version + 1);
+  }, []);
 
   useLayoutEffect(() => {
-    const container = inputContainerRef.current;
+    const container = belowTranscriptChromeRef.current;
     if (!container || typeof ResizeObserver === "undefined") {
       return undefined;
     }
 
-    const updateInputHeight = (height: number) => {
-      const nextHeight = Math.round(height);
-      if (inputContainerHeightRef.current === nextHeight) {
-        return;
-      }
-      inputContainerHeightRef.current = nextHeight;
-      setInputLayoutVersion((version) => version + 1);
-    };
-
-    updateInputHeight(container.getBoundingClientRect().height);
+    updateBelowTranscriptChromeHeight(container.getBoundingClientRect().height);
 
     const observer = new ResizeObserver((entries) => {
-      updateInputHeight(
+      updateBelowTranscriptChromeHeight(
         entries[0]?.contentRect.height ?? container.getBoundingClientRect().height,
       );
     });
@@ -780,7 +787,7 @@ export function IntegratedChatPanel({
     return () => {
       observer.disconnect();
     };
-  }, []);
+  }, [updateBelowTranscriptChromeHeight]);
 
   // File attachments - use activeConversationId for attachment association
   // Only enable attachments when there's an active conversation (not in history mode)
@@ -1347,10 +1354,15 @@ export function IntegratedChatPanel({
                   ? teammateConversationHistory.fetchOlderMessages
                   : primaryConversationHistory.fetchOlderMessages
               }
-              externalLayoutVersion={inputLayoutVersion}
+              externalLayoutVersion={transcriptLayoutVersion}
             />
           )}
 
+          <div
+            ref={belowTranscriptChromeRef}
+            data-testid="chat-below-transcript-chrome"
+            className="shrink-0"
+          >
           {/* StreamingToolIndicator — outside scroll container so it's always visible.
               Filters out Task calls (shown as TaskSubagentCard), diff calls (shown inline),
               and any tool calls already rendered inline via streamingContentBlocks to avoid duplication. */}
@@ -1406,8 +1418,6 @@ export function IntegratedChatPanel({
                 }
               }}
             />
-          </ChildSessionNavigationContext.Provider>
-
           {/* Previous Run Banner - shown when viewing stale agent conversation */}
           {isAgentContext && !isHistoryMode && agentStatus === "idle" && agentRunQuery.data?.status !== "running" && !isSending && sortedMessages.length > 0 && !isRecentlyActive && (
             <div className="px-3">
@@ -1437,7 +1447,6 @@ export function IntegratedChatPanel({
              chrome rhythm. Previous bg-base@50 collapsed on HC and shaded
              darker than body on Dark, producing a three-tier sandwich. */}
           <div
-            ref={inputContainerRef}
             data-testid="chat-input-container"
             className={inputContainerClassName ?? "shrink-0"}
             style={inputContainerClassName ? undefined : {
@@ -1501,6 +1510,7 @@ export function IntegratedChatPanel({
                       activeConversationMeta?.providerHarness ??
                       fallbackProviderHarness ??
                       null,
+                    onLayoutChange: notifyInputLayoutChanged,
                     ...(activeQuestion
                       ? {
                           value: questionInputValue,
@@ -1543,6 +1553,8 @@ export function IntegratedChatPanel({
               </div>
             </div>
           </div>
+          </div>
+          </ChildSessionNavigationContext.Provider>
         </div>
       </div>
     </>

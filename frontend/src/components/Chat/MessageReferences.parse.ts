@@ -119,20 +119,31 @@ function parseIntegrationReferences(
     if (
       (record.provider !== "atlassian" &&
         record.provider !== "linear" &&
-        record.provider !== "clickup") ||
+        record.provider !== "clickup" &&
+        record.provider !== "granola") ||
       (record.provider === "atlassian" &&
         record.kind !== "jira" &&
         record.kind !== "confluence") ||
       (record.provider === "linear" && record.kind !== "linear") ||
       (record.provider === "clickup" && record.kind !== "clickup") ||
+      (record.provider === "granola" && record.kind !== "note") ||
       typeof record.id !== "string" ||
       record.id.trim().length === 0
     ) {
       continue;
     }
 
-    const provider = record.provider as "atlassian" | "linear" | "clickup";
-    const kind = record.kind as "jira" | "confluence" | "linear" | "clickup";
+    const provider = record.provider as
+      | "atlassian"
+      | "linear"
+      | "clickup"
+      | "granola";
+    const kind = record.kind as
+      | "jira"
+      | "confluence"
+      | "linear"
+      | "clickup"
+      | "note";
     references.push({
       provider,
       kind,
@@ -145,6 +156,20 @@ function parseIntegrationReferences(
         : {}),
       ...(typeof record.url === "string" && record.url.trim().length > 0
         ? { url: record.url }
+        : {}),
+      ...(typeof record.summaryExcerpt === "string" &&
+      record.summaryExcerpt.trim().length > 0
+        ? { summaryExcerpt: record.summaryExcerpt }
+        : {}),
+      ...(typeof record.summary_excerpt === "string" &&
+      record.summary_excerpt.trim().length > 0
+        ? { summaryExcerpt: record.summary_excerpt }
+        : {}),
+      ...(typeof record.includeTranscript === "boolean"
+        ? { includeTranscript: record.includeTranscript }
+        : {}),
+      ...(typeof record.include_transcript === "boolean"
+        ? { includeTranscript: record.include_transcript }
         : {}),
     });
   }

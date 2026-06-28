@@ -13,6 +13,7 @@ const SETTINGS_SECTION_VISUALS = [
   { id: "review", heading: "Review Policy" },
   { id: "ideation-workflow", heading: "Planning & Verification" },
   { id: "ideation-harnesses", heading: "Ideation Agents" },
+  { id: "github", heading: "GitHub" },
   { id: "api-keys", heading: "API Keys" },
   { id: "external-mcp", heading: "External MCP" },
   { id: "accessibility", heading: "Accessibility" },

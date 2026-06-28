@@ -31,8 +31,7 @@ pub(crate) mod tool_result_preview;
 pub(crate) mod verification_child_process_registry;
 
 use crate::application::agent_conversation_workspace::{
-    ensure_linked_plan_branch_agent_worktree,
-    is_terminal_agent_conversation_publication_status,
+    ensure_linked_plan_branch_agent_worktree, is_terminal_agent_conversation_publication_status,
     resolve_agent_conversation_workspace_path_for_send,
     rollover_agent_conversation_workspace_with_setup_mode, AgentConversationWorkspaceSetupMode,
     AGENT_CONVERSATION_WORKSPACE_CONTINUATION_MESSAGE,
@@ -41,31 +40,37 @@ use crate::application::harness_runtime_registry::{
     default_harness_runtime_available, resolve_chat_service_bootstrap,
     resolve_default_chat_service_bootstrap, resolve_harness_plugin_dir,
 };
+use crate::application::integration_reference_expansion::{
+    expand_integration_references_for_prompt, log_skipped_integration_references,
+};
 use crate::application::interactive_process_registry::{
     InteractiveProcessKey, InteractiveProcessMetadata, InteractiveProcessRegistry,
 };
 use crate::application::question_state::QuestionState;
 use crate::application::AtlassianIntegrationService;
+use crate::application::GranolaIntegrationService;
 use crate::application::LinearIntegrationService;
 use crate::domain::agents::{AgentHarnessKind, LogicalEffort, DEFAULT_AGENT_HARNESS};
 use crate::domain::entities::ideation::SessionPurpose;
 use crate::domain::entities::{
-    AgentConversationJiraIssueLink, AgentConversationLinearIssueLink, AgentConversationWorkspace,
-    AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus, AgentRun, AgentRunId,
-    AgentRunStatus, Artifact, ChatAttachment, ChatAttachmentId, ChatContextType, ChatConversation,
-    ChatConversationId, ChatMessage, ChatMessageAttribution, ChatMessageId, IdeationSessionId,
-    InternalStatus, MessageRole, ProjectId, TaskId,
+    AgentConversationGranolaNoteLink, AgentConversationJiraIssueLink,
+    AgentConversationLinearIssueLink, AgentConversationWorkspace, AgentConversationWorkspaceMode,
+    AgentConversationWorkspaceStatus, AgentRun, AgentRunId, AgentRunStatus, Artifact,
+    ChatAttachment, ChatAttachmentId, ChatContextType, ChatConversation, ChatConversationId,
+    ChatMessage, ChatMessageAttribution, ChatMessageId, IdeationSessionId, InternalStatus,
+    MessageRole, ProjectId, TaskId,
 };
 use crate::domain::repositories::{
-    ActivityEventRepository, AgentConversationJiraIssueRepository,
-    AgentConversationLinearIssueRepository, AgentConversationWorkspaceRepository,
-    AgentLaneSettingsRepository, AgentProviderSettingsRepository, AgentRunRepository,
-    ArtifactRepository, ChatAttachmentRepository, ChatConversationRepository,
-    ChatMessageRepository, ChatTimelineRepository, DelegatedSessionRepository,
-    ExecutionSettingsRepository, IdeationEffortSettingsRepository, IdeationModelSettingsRepository,
-    IdeationSessionRepository, MemoryEventRepository, PlanBranchRepository, ProjectRepository,
-    QueuedMessageRepository, ReviewRepository, StateHistoryMetadata, TaskDependencyRepository,
-    TaskProposalRepository, TaskRepository, TaskStepRepository,
+    ActivityEventRepository, AgentConversationGranolaNoteRepository,
+    AgentConversationJiraIssueRepository, AgentConversationLinearIssueRepository,
+    AgentConversationWorkspaceRepository, AgentLaneSettingsRepository,
+    AgentProviderSettingsRepository, AgentRunRepository, ArtifactRepository,
+    ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,
+    ChatTimelineRepository, DelegatedSessionRepository, ExecutionSettingsRepository,
+    IdeationEffortSettingsRepository, IdeationModelSettingsRepository, IdeationSessionRepository,
+    MemoryEventRepository, PlanBranchRepository, ProjectRepository, QueuedMessageRepository,
+    ReviewRepository, StateHistoryMetadata, TaskDependencyRepository, TaskProposalRepository,
+    TaskRepository, TaskStepRepository,
 };
 use crate::domain::services::{
     is_process_alive, kill_process, ComposerArtifactReference, ComposerIntegrationReference,
@@ -719,6 +724,38 @@ fn apply_send_message_overrides(
         resolved.configured_sandbox_mode = Some(sandbox_mode_override.clone());
         resolved.sandbox_mode = Some(sandbox_mode_override.clone());
     }
+
+    if let Some(service_tier_override) = options.service_tier_override.as_ref() {
+        let service_tier = normalize_service_tier_override(service_tier_override);
+        resolved.configured_service_tier = service_tier.clone();
+        resolved.service_tier = service_tier;
+    }
+}
+
+fn normalize_service_tier_override(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("standard") {
+        return Some("standard".to_string());
+    }
+    Some(trimmed.to_ascii_lowercase())
+}
+
+fn normalize_provider_service_tier(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("standard") {
+        return None;
+    }
+    Some(trimmed.to_ascii_lowercase())
+}
+
+pub(crate) fn codex_fast_mode_service_tier_override(enabled: Option<bool>) -> Option<String> {
+    enabled.map(|value| {
+        if value {
+            "fast".to_string()
+        } else {
+            "standard".to_string()
+        }
+    })
 }
 
 // ============================================================================
@@ -751,6 +788,9 @@ pub struct SendMessageOptions {
     pub approval_policy_override: Option<String>,
     /// Optional explicit sandbox-mode override for this send.
     pub sandbox_mode_override: Option<String>,
+    /// Optional provider service-tier override for this send. An empty string forces
+    /// the provider default tier even when the provider has a global fast tier set.
+    pub service_tier_override: Option<String>,
     /// Structured composer project references for runtime-only prompt expansion.
     pub composer_project_references: Vec<ComposerProjectReference>,
     /// Structured composer integration references for runtime-only prompt expansion.
@@ -933,6 +973,7 @@ pub struct AppChatService<R: Runtime = tauri::Wry> {
     agent_provider_settings_repo: Option<Arc<dyn AgentProviderSettingsRepository>>,
     atlassian_integration_service: Option<Arc<AtlassianIntegrationService>>,
     linear_integration_service: Option<Arc<LinearIntegrationService>>,
+    granola_integration_service: Option<Arc<GranolaIntegrationService>>,
     ideation_effort_settings_repo: Option<Arc<dyn IdeationEffortSettingsRepository>>,
     ideation_model_settings_repo: Option<Arc<dyn IdeationModelSettingsRepository>>,
     ideation_session_repo: Arc<dyn IdeationSessionRepository>,
@@ -951,6 +992,8 @@ pub struct AppChatService<R: Runtime = tauri::Wry> {
         std::sync::Mutex<Option<Arc<dyn AgentConversationJiraIssueRepository>>>,
     agent_conversation_linear_issue_repo:
         std::sync::Mutex<Option<Arc<dyn AgentConversationLinearIssueRepository>>>,
+    agent_conversation_granola_note_repo:
+        std::sync::Mutex<Option<Arc<dyn AgentConversationGranolaNoteRepository>>>,
     task_proposal_repo: Option<Arc<dyn TaskProposalRepository>>,
     task_step_repo: Option<Arc<dyn TaskStepRepository>>,
     review_repo: Option<Arc<dyn ReviewRepository>>,
@@ -1020,6 +1063,7 @@ impl<R: Runtime> AppChatService<R> {
             agent_provider_settings_repo: None,
             atlassian_integration_service: None,
             linear_integration_service: None,
+            granola_integration_service: None,
             ideation_effort_settings_repo: None,
             ideation_model_settings_repo: None,
             ideation_session_repo,
@@ -1035,6 +1079,7 @@ impl<R: Runtime> AppChatService<R> {
             agent_conversation_workspace_repo: std::sync::Mutex::new(None),
             agent_conversation_jira_issue_repo: std::sync::Mutex::new(None),
             agent_conversation_linear_issue_repo: std::sync::Mutex::new(None),
+            agent_conversation_granola_note_repo: std::sync::Mutex::new(None),
             task_proposal_repo: None,
             task_step_repo: None,
             review_repo: None,
@@ -1161,7 +1206,10 @@ impl<R: Runtime> AppChatService<R> {
         message_id: &str,
     ) -> Result<QueuedMessage, ChatServiceError> {
         let key = Self::queued_key(context_type, context_id);
-        if let Some(message) = self.message_queue.take(context_type, context_id, message_id) {
+        if let Some(message) = self
+            .message_queue
+            .take(context_type, context_id, message_id)
+        {
             self.delete_durable_queued(&key, message_id).await?;
             return Ok(message);
         }
@@ -1237,6 +1285,14 @@ impl<R: Runtime> AppChatService<R> {
         self
     }
 
+    pub fn with_granola_integration_service(
+        mut self,
+        service: Arc<GranolaIntegrationService>,
+    ) -> Self {
+        self.granola_integration_service = Some(service);
+        self
+    }
+
     pub fn with_ideation_effort_settings_repo(
         mut self,
         repo: Arc<dyn IdeationEffortSettingsRepository>,
@@ -1272,6 +1328,7 @@ impl<R: Runtime> AppChatService<R> {
                 options.harness_override,
                 options.model_override.clone(),
                 options.logical_effort_override,
+                options.service_tier_override.clone(),
                 options.force_new_provider_session,
                 options.composer_project_references.clone(),
                 options.composer_integration_references.clone(),
@@ -1280,7 +1337,8 @@ impl<R: Runtime> AppChatService<R> {
             );
         let key = Self::queued_key(context_type, context_id);
         if let Err(error) = self.persist_queued_back(&key, &queued).await {
-            self.message_queue.delete(context_type, context_id, &queued.id);
+            self.message_queue
+                .delete(context_type, context_id, &queued.id);
             return Err(error);
         }
         if !message_metadata_hidden_from_ui(queued.metadata_override.as_deref()) {
@@ -1414,6 +1472,14 @@ impl<R: Runtime> AppChatService<R> {
         self
     }
 
+    pub fn with_agent_conversation_granola_note_repo(
+        self,
+        repo: Arc<dyn AgentConversationGranolaNoteRepository>,
+    ) -> Self {
+        *self.agent_conversation_granola_note_repo.lock().unwrap() = Some(repo);
+        self
+    }
+
     pub fn with_task_proposal_repo(mut self, repo: Arc<dyn TaskProposalRepository>) -> Self {
         self.task_proposal_repo = Some(repo);
         self
@@ -1530,7 +1596,10 @@ impl<R: Runtime> AppChatService<R> {
         let mut conversation_by_ideation_session_id = HashMap::new();
         for conversation_id in requested_ids {
             let conversation_id = ChatConversationId::from_string(conversation_id.clone());
-            match workspace_repo.get_by_conversation_id(&conversation_id).await {
+            match workspace_repo
+                .get_by_conversation_id(&conversation_id)
+                .await
+            {
                 Ok(Some(workspace)) => {
                     if let Some(session_id) = workspace.linked_ideation_session_id {
                         conversation_by_ideation_session_id
@@ -1570,8 +1639,9 @@ impl<R: Runtime> AppChatService<R> {
 
         let mut live_entries = Vec::new();
         for (key, info) in entries {
-            let Some(conversation_id) =
-                conversation_by_ideation_session_id.get(&key.context_id).cloned()
+            let Some(conversation_id) = conversation_by_ideation_session_id
+                .get(&key.context_id)
+                .cloned()
             else {
                 continue;
             };
@@ -1596,10 +1666,8 @@ impl<R: Runtime> AppChatService<R> {
 
         let run_ids: HashSet<AgentRunId> = live_entries
             .iter()
-            .filter_map(|(_, info, _, _)| {
-                (!info.agent_run_id.is_empty())
-                    .then(|| AgentRunId::from_string(&info.agent_run_id))
-            })
+            .filter(|(_, info, _, _)| !info.agent_run_id.is_empty())
+            .map(|(_, info, _, _)| AgentRunId::from_string(&info.agent_run_id))
             .collect();
         let run_id_list: Vec<AgentRunId> = run_ids.iter().copied().collect();
         let run_statuses: HashMap<String, AgentRunStatus> =
@@ -2016,7 +2084,9 @@ impl<R: Runtime> AppChatService<R> {
                         return Ok(true);
                     }
                 }
-                ChatContextType::TaskExecution | ChatContextType::Review | ChatContextType::Merge => {
+                ChatContextType::TaskExecution
+                | ChatContextType::Review
+                | ChatContextType::Merge => {
                     let task_id = TaskId::from_string(key.context_id.clone());
                     let Some(task) = self
                         .task_repo
@@ -2253,6 +2323,29 @@ impl<R: Runtime> AppChatService<R> {
             .flatten()
     }
 
+    async fn load_agent_conversation_granola_note(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> Option<AgentConversationGranolaNoteLink> {
+        let repo = self
+            .agent_conversation_granola_note_repo
+            .lock()
+            .unwrap()
+            .clone()?;
+        repo.get_by_conversation_id(conversation_id)
+            .await
+            .map_err(|error| {
+                tracing::warn!(
+                    conversation_id = %conversation_id.as_str(),
+                    error = %error,
+                    "failed to load agent conversation Granola note assignment"
+                );
+                error
+            })
+            .ok()
+            .flatten()
+    }
+
     async fn auto_assign_primary_jira_issue_from_turn(
         &self,
         context_type: ChatContextType,
@@ -2363,6 +2456,61 @@ impl<R: Runtime> AppChatService<R> {
         }
     }
 
+    async fn auto_assign_primary_granola_note_from_turn(
+        &self,
+        context_type: ChatContextType,
+        context_id: &str,
+        conversation_id: &ChatConversationId,
+        agent_workspace: Option<&AgentConversationWorkspace>,
+        integration_references: &[ComposerIntegrationReference],
+        message_id: &str,
+        created_at: chrono::DateTime<chrono::Utc>,
+    ) {
+        if integration_references.is_empty() {
+            return;
+        }
+        let repo = self
+            .agent_conversation_granola_note_repo
+            .lock()
+            .unwrap()
+            .clone();
+        let Some(repo) = repo else {
+            return;
+        };
+        let project_id = if let Some(workspace) = agent_workspace {
+            Some(workspace.project_id.clone())
+        } else if context_type == ChatContextType::Project {
+            Some(ProjectId::from_string(context_id.to_string()))
+        } else {
+            self.load_agent_conversation_workspace(context_type, context_id, Some(conversation_id))
+                .await
+                .ok()
+                .flatten()
+                .map(|workspace| workspace.project_id)
+        };
+        let Some(project_id) = project_id else {
+            return;
+        };
+        let assignment_result =
+            crate::application::agent_conversation_granola_note::assign_primary_granola_note_if_absent_and_refresh(
+                &repo,
+                self.granola_integration_service.as_deref(),
+                conversation_id,
+                &project_id,
+                integration_references,
+                Some(ChatMessageId::from_string(message_id.to_string())),
+                created_at,
+            )
+            .await;
+        if let Err(error) = assignment_result {
+            tracing::warn!(
+                conversation_id = %conversation_id.as_str(),
+                error = %error,
+                "failed to auto-assign primary Granola note from composer references"
+            );
+        }
+    }
+
     async fn agent_workspace_prompt_context_for_send(
         &self,
         context_type: ChatContextType,
@@ -2458,7 +2606,8 @@ impl<R: Runtime> AppChatService<R> {
             .map_err(|error| ChatServiceError::SpawnFailed(error.to_string()))?;
 
         if workspace.status == AgentConversationWorkspaceStatus::Missing {
-            self.mark_agent_conversation_workspace_active(workspace).await;
+            self.mark_agent_conversation_workspace_active(workspace)
+                .await;
         }
 
         Ok(Some(path))
@@ -2762,10 +2911,9 @@ impl<R: Runtime> AppChatService<R> {
                 .await
                 .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?;
             if let Some(settings) = settings.as_ref() {
-                provider_env = crate::application::provider_env_file::load_provider_custom_env_file(
-                    settings,
-                )
-                .map_err(ChatServiceError::SpawnFailed)?;
+                provider_env =
+                    crate::application::provider_env_file::load_provider_custom_env_file(settings)
+                        .map_err(ChatServiceError::SpawnFailed)?;
                 if let Some(path) =
                     crate::application::managed_provider_cli::checked_managed_provider_cli_launch_path(
                         settings,
@@ -3020,15 +3168,26 @@ impl<R: Runtime> AppChatService<R> {
         } else {
             None
         };
+        let assigned_granola_note = if let Some(conversation_id) = conversation_id_override {
+            self.load_agent_conversation_granola_note(conversation_id)
+                .await
+        } else {
+            None
+        };
         let merged_jira_references =
             crate::application::agent_conversation_jira_issue::merge_assigned_jira_reference(
                 assigned_jira_issue.as_ref(),
                 integration_references,
             );
-        let merged_integration_references =
+        let merged_linear_references =
             crate::application::agent_conversation_linear_issue::merge_assigned_linear_reference(
                 assigned_linear_issue.as_ref(),
                 &merged_jira_references,
+            );
+        let merged_integration_references =
+            crate::application::agent_conversation_granola_note::merge_assigned_granola_reference(
+                assigned_granola_note.as_ref(),
+                &merged_linear_references,
             );
         let edit_plan_handoff_artifact = self
             .load_edit_mode_plan_handoff_artifact(agent_workspace.as_ref())
@@ -3067,36 +3226,16 @@ impl<R: Runtime> AppChatService<R> {
                 Err(_) => message.to_string(),
             }
         };
-        let with_atlassian_references = if merged_integration_references.is_empty() {
-            with_project_references
-        } else {
-            match self.atlassian_integration_service.as_ref() {
-                Some(service) => {
-                    service
-                        .expand_references_for_prompt(
-                            &with_project_references,
-                            &merged_integration_references,
-                        )
-                        .await
-                }
-                None => with_project_references,
-            }
-        };
-        let with_integration_references = if merged_integration_references.is_empty() {
-            with_atlassian_references
-        } else {
-            match self.linear_integration_service.as_ref() {
-                Some(service) => {
-                    service
-                        .expand_references_for_prompt(
-                            &with_atlassian_references,
-                            &merged_integration_references,
-                        )
-                        .await
-                }
-                None => with_atlassian_references,
-            }
-        };
+        let integration_expansion = expand_integration_references_for_prompt(
+            &with_project_references,
+            &merged_integration_references,
+            self.atlassian_integration_service.clone(),
+            self.linear_integration_service.clone(),
+            self.granola_integration_service.clone(),
+        )
+        .await;
+        log_skipped_integration_references(&integration_expansion.skipped_references);
+        let with_integration_references = integration_expansion.rewritten_prompt;
         let with_artifact_references =
             chat_service_composer_references::append_artifact_references_for_prompt(
                 &with_integration_references,
@@ -3373,14 +3512,15 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 }
             }
 
-            let queued = self.enqueue_pending_send(
-                context_type,
-                &runtime_context_id,
-                message,
-                &options,
-                Some(conversation.id.as_str()),
-            )
-            .await?;
+            let queued = self
+                .enqueue_pending_send(
+                    context_type,
+                    &runtime_context_id,
+                    message,
+                    &options,
+                    Some(conversation.id.as_str()),
+                )
+                .await?;
             tracing::info!(
                 %context_type,
                 context_id,
@@ -3490,14 +3630,15 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             {
                 let mut queued_options = options.clone();
                 queued_options.force_new_provider_session = true;
-                let queued = self.enqueue_pending_send(
-                    context_type,
-                    &runtime_context_id,
-                    message,
-                    &queued_options,
-                    Some(existing.conversation_id.clone()),
-                )
-                .await?;
+                let queued = self
+                    .enqueue_pending_send(
+                        context_type,
+                        &runtime_context_id,
+                        message,
+                        &queued_options,
+                        Some(existing.conversation_id.clone()),
+                    )
+                    .await?;
                 tracing::info!(
                     %context_type,
                     context_id,
@@ -3669,6 +3810,16 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                         )
                         .await;
                         self.auto_assign_primary_linear_issue_from_turn(
+                            context_type,
+                            context_id,
+                            &conversation.id,
+                            None,
+                            &options.composer_integration_references,
+                            &user_msg_id,
+                            user_msg.created_at,
+                        )
+                        .await;
+                        self.auto_assign_primary_granola_note_from_turn(
                             context_type,
                             context_id,
                             &conversation.id,
@@ -3942,14 +4093,15 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 existing_run_id = %existing.agent_run_id,
                 "[GATE_TRACE] Gate 2 blocked — agent already running, queuing message"
             );
-            let queued = self.enqueue_pending_send(
-                context_type,
-                &runtime_context_id,
-                message,
-                &options,
-                Some(existing.conversation_id.clone()),
-            )
-            .await?;
+            let queued = self
+                .enqueue_pending_send(
+                    context_type,
+                    &runtime_context_id,
+                    message,
+                    &options,
+                    Some(existing.conversation_id.clone()),
+                )
+                .await?;
             return Ok(SendResult {
                 conversation_id: existing.conversation_id.clone(),
                 agent_run_id: existing.agent_run_id.clone(),
@@ -4284,14 +4436,15 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     self.running_agent_registry
                         .unregister(&registry_key, &agent_run_id)
                         .await;
-                    let queued = self.enqueue_pending_send(
-                        context_type,
-                        &runtime_context_id,
-                        message,
-                        &options,
-                        Some(conversation.id.as_str()),
-                    )
-                    .await?;
+                    let queued = self
+                        .enqueue_pending_send(
+                            context_type,
+                            &runtime_context_id,
+                            message,
+                            &options,
+                            Some(conversation.id.as_str()),
+                        )
+                        .await?;
                     tracing::info!(
                         %context_type,
                         context_id,
@@ -4414,6 +4567,16 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             )
             .await;
             self.auto_assign_primary_linear_issue_from_turn(
+                context_type,
+                context_id,
+                &conversation_id,
+                agent_workspace.as_ref(),
+                &options.composer_integration_references,
+                &user_msg_id,
+                user_msg.created_at,
+            )
+            .await;
+            self.auto_assign_primary_granola_note_from_turn(
                 context_type,
                 context_id,
                 &conversation_id,
@@ -4583,7 +4746,8 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             spawn_settings_started,
         );
         let provider_spawn_check_started = Instant::now();
-        if let Some(provider_repo) = self.agent_provider_settings_repo.as_ref() {
+        let provider_settings_for_spawn =
+            if let Some(provider_repo) = self.agent_provider_settings_repo.as_ref() {
             if let Err(error) = crate::application::ensure_provider_spawn_enabled(
                 provider_repo,
                 resolved_spawn_settings.effective_harness,
@@ -4592,6 +4756,27 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             .await
             {
                 cleanup_and_err!(ChatServiceError::SpawnFailed(error));
+            }
+            match provider_repo
+                .get(resolved_spawn_settings.effective_harness)
+                .await
+                .map_err(|error| error.to_string())
+            {
+                Ok(settings) => settings,
+                Err(error) => cleanup_and_err!(ChatServiceError::RepositoryError(error)),
+            }
+        } else {
+            None
+        };
+        if options.service_tier_override.is_none() && resolved_spawn_settings.service_tier.is_none()
+        {
+            if let Some(service_tier) = provider_settings_for_spawn
+                .as_ref()
+                .and_then(|settings| settings.service_tier.as_deref())
+                .and_then(normalize_provider_service_tier)
+            {
+                resolved_spawn_settings.configured_service_tier = Some(service_tier.clone());
+                resolved_spawn_settings.service_tier = Some(service_tier);
             }
         }
         log_send_message_spawn_prep_phase(
@@ -4670,6 +4855,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         agent_run.effective_model_id = Some(effective_model_id.clone());
         agent_run.logical_effort = resolved_spawn_settings.configured_logical_effort;
         agent_run.effective_effort = Some(effective_effort.clone());
+        agent_run.service_tier = resolved_spawn_settings.service_tier.clone();
         agent_run.approval_policy = resolved_spawn_settings.approval_policy.clone();
         agent_run.sandbox_mode = resolved_spawn_settings.sandbox_mode.clone();
 
@@ -4712,18 +4898,22 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         // 3. Emit run started event (deferred from step 3 to include effective model info)
         self.emit_event(
             "agent:run_started",
-            AgentRunStartedPayload::with_provider_session(
-                agent_run_id.clone(),
-                conversation_id.as_str().to_string(),
-                context_type.to_string(),
-                context_id.to_string(),
-                run_chain_id.clone(),
-                None,
-                Some(effective_model_id.clone()),
-                effective_model_label,
-                Some(resolved_spawn_settings.effective_harness),
-                stored_session_id.clone(),
-            ),
+            {
+                let mut payload = AgentRunStartedPayload::with_provider_session(
+                    agent_run_id.clone(),
+                    conversation_id.as_str().to_string(),
+                    context_type.to_string(),
+                    context_id.to_string(),
+                    run_chain_id.clone(),
+                    None,
+                    Some(effective_model_id.clone()),
+                    effective_model_label,
+                    Some(resolved_spawn_settings.effective_harness),
+                    stored_session_id.clone(),
+                );
+                payload.service_tier = resolved_spawn_settings.service_tier.clone();
+                payload
+            },
         );
 
         // Fetch recent session messages when spawning a new process. The agent has no prior
@@ -4951,6 +5141,11 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     .lock()
                     .unwrap()
                     .clone(),
+                agent_conversation_granola_note_repo: self
+                    .agent_conversation_granola_note_repo
+                    .lock()
+                    .unwrap()
+                    .clone(),
                 activity_event_repo: Arc::clone(&self.activity_event_repo),
                 memory_event_repo: Arc::clone(&self.memory_event_repo),
                 message_queue: Arc::clone(&self.message_queue),
@@ -5167,7 +5362,8 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         };
         let key = Self::queued_key(context_type, context_id);
         if let Err(error) = self.persist_queued_back(&key, &queued).await {
-            self.message_queue.delete(context_type, context_id, &queued.id);
+            self.message_queue
+                .delete(context_type, context_id, &queued.id);
             return Err(error);
         }
         Ok(queued)
@@ -5266,6 +5462,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             harness_override: queued_msg.harness_override,
             model_override: queued_msg.model_override.clone(),
             logical_effort_override: queued_msg.logical_effort_override,
+            service_tier_override: queued_msg.service_tier_override.clone(),
             force_new_provider_session: queued_msg.force_new_provider_session,
             conversation_id_override,
             composer_project_references: queued_msg.composer_project_references.clone(),
@@ -5982,7 +6179,9 @@ mod managed_provider_launch_path_tests {
                 .map(String::as_str),
             Some("from-env-file")
         );
-        assert!(!launch_settings.provider_env.contains_key("RALPHX_CONTEXT_ID"));
+        assert!(!launch_settings
+            .provider_env
+            .contains_key("RALPHX_CONTEXT_ID"));
         assert!(!launch_settings.provider_env.contains_key("CODEX_MODEL"));
     }
 
@@ -6832,7 +7031,10 @@ mod bulk_running_state_tests {
             .await
             .expect("workspace should persist");
         registry
-            .set_running(RunningAgentKey::new("ideation", ideation_session.id.as_str()))
+            .set_running(RunningAgentKey::new(
+                "ideation",
+                ideation_session.id.as_str(),
+            ))
             .await;
         let service =
             app_state.build_chat_service_with_execution_state(Arc::new(ExecutionState::new()));

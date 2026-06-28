@@ -172,6 +172,42 @@ describe("AgentRuntimeStatusWidget", () => {
     expect(onViewTaskRuntime).toHaveBeenCalledWith("task-1", "task_execution");
   });
 
+  it("routes workspace Review CTA to the review child conversation", () => {
+    const onViewWorkspaceReview = vi.fn();
+
+    render(
+      <AgentRuntimeStatusWidget
+        status={runtimeStatus({
+          primarySource: "workspace_review",
+          summaryLabel: "Reviewing",
+          items: [
+            runtimeItem({
+              source: "workspace_review",
+              contextType: "project",
+              contextId: "review-conversation-1",
+              label: "Reviewing",
+              title: "Review workspace changes",
+              taskId: null,
+              internalStatus: "reviewing",
+              conversationId: "review-conversation-1",
+            }),
+          ],
+        })}
+        onViewWorkspace={vi.fn()}
+        onViewIdeation={vi.fn()}
+        onViewVerification={vi.fn()}
+        onViewTaskRuntime={vi.fn()}
+        onViewWorkspaceReview={onViewWorkspaceReview}
+      />,
+    );
+
+    expect(screen.getAllByText("Review workspace changes")).toHaveLength(2);
+
+    fireEvent.click(screen.getByRole("button", { name: "View Review" }));
+
+    expect(onViewWorkspaceReview).toHaveBeenCalledWith("review-conversation-1");
+  });
+
   it("renders all waiting runtimes without active spinner presentation", () => {
     render(
       <AgentRuntimeStatusWidget
@@ -558,7 +594,7 @@ describe("AgentRuntimeStatusWidget", () => {
     ).toBeInTheDocument();
   });
 
-  it("matches ideation, verification, and task runtime focus rows", () => {
+  it("matches ideation, verification, task, and workspace Review focus rows", () => {
     const baseStatus = runtimeStatus({
       primarySource: "verification",
       summaryLabel: "Runtime activity",
@@ -581,7 +617,7 @@ describe("AgentRuntimeStatusWidget", () => {
           taskId: null,
           internalStatus: null,
           parentSessionId: "parent-session",
-          childSessionId: null,
+          childSessionId: "verification-child",
         }),
         runtimeItem({
           source: "review",
@@ -592,6 +628,16 @@ describe("AgentRuntimeStatusWidget", () => {
           taskId: "task-2",
           internalStatus: "reviewing",
         }),
+        runtimeItem({
+          source: "workspace_review",
+          contextType: "project",
+          contextId: "review-conversation-1",
+          label: "Reviewing",
+          title: "Review workspace changes",
+          taskId: null,
+          internalStatus: "reviewing",
+          conversationId: "review-conversation-1",
+        }),
       ],
     });
     const defaultHandlers = {
@@ -599,6 +645,7 @@ describe("AgentRuntimeStatusWidget", () => {
       onViewIdeation: vi.fn(),
       onViewVerification: vi.fn(),
       onViewTaskRuntime: vi.fn(),
+      onViewWorkspaceReview: vi.fn(),
     };
 
     const { rerender } = render(
@@ -644,6 +691,21 @@ describe("AgentRuntimeStatusWidget", () => {
     expect(
       screen.getByTestId("agents-runtime-status-current-review"),
     ).toHaveAttribute("aria-label", "Currently viewing Review task");
+
+    rerender(
+      <AgentRuntimeStatusWidget
+        status={baseStatus}
+        currentFocus={{
+          type: "workspace_review",
+          conversationId: "review-conversation-1",
+        }}
+        {...defaultHandlers}
+      />,
+    );
+
+    expect(
+      screen.getByTestId("agents-runtime-status-current-workspace_review"),
+    ).toHaveAttribute("aria-label", "Currently viewing Review workspace changes");
   });
 
   it("does not scroll when no runtime row is running or selected", async () => {

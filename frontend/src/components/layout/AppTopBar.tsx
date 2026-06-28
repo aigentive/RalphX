@@ -24,6 +24,7 @@ interface AppTopBarProps {
   reviewsPanelOpen: boolean;
   onToggleReviewsPanel: () => void;
   onNewProject?: () => void;
+  onProjectSwitchIntent?: (() => void) | undefined;
   showProjectSelector?: boolean;
 }
 
@@ -33,6 +34,8 @@ const VIEW_LABELS: Partial<Record<ViewType, string>> = {
   graph: "Graph",
   kanban: "Kanban",
   ticketing: "Ticketing",
+  github: "GitHub",
+  granola: "Granola",
   insights: "Insights",
   extensibility: "Extensibility",
   activity: "Activity",
@@ -45,7 +48,14 @@ const FONT_SCALE_OPTIONS: Array<{ value: FontScale; label: string }> = [
   { value: "xl", label: "125%" },
 ];
 
-const PROJECT_SELECTOR_VIEWS = new Set<ViewType>(["ideation", "graph", "kanban", "ticketing"]);
+const PROJECT_SELECTOR_VIEWS = new Set<ViewType>([
+  "ideation",
+  "graph",
+  "kanban",
+  "ticketing",
+  "github",
+  "granola",
+]);
 
 function viewLabel(view: ViewType): string {
   return VIEW_LABELS[view] ?? "Workspace";
@@ -66,6 +76,14 @@ function breadcrumbItems(
 
   if (currentView === "ticketing") {
     return ["Workspace", projectName ?? "Project", "Ticketing"];
+  }
+
+  if (currentView === "github") {
+    return ["Workspace", projectName ?? "Project", "GitHub"];
+  }
+
+  if (currentView === "granola") {
+    return ["Workspace", projectName ?? "Project", "Granola"];
   }
 
   return ["Workspace", viewLabel(currentView)];
@@ -427,6 +445,7 @@ export function AppTopBar({
   reviewsPanelOpen,
   onToggleReviewsPanel,
   onNewProject,
+  onProjectSwitchIntent,
   showProjectSelector = false,
 }: AppTopBarProps) {
   const activeProject = useProjectStore(selectActiveProject);
@@ -552,6 +571,7 @@ export function AppTopBar({
         {shouldShowProjectSelector && onNewProject && (
           <ProjectSelector
             onNewProject={onNewProject}
+            onBeforeProjectChange={onProjectSwitchIntent}
             align="end"
             className="max-w-[240px]"
           />
