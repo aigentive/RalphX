@@ -49,6 +49,8 @@ pub struct AgentProviderSettingsResponse {
     pub cli_version: Option<String>,
     pub supported_model_aliases: Option<Vec<String>>,
     pub supported_efforts: Option<Vec<String>>,
+    pub supports_fast_mode: bool,
+    pub fast_mode_supported_models: Vec<String>,
     pub updated_at: String,
 }
 
@@ -173,6 +175,40 @@ fn normalize_service_tier(value: Option<String>) -> Option<String> {
             Some(trimmed.to_ascii_lowercase())
         }
     })
+}
+
+fn validate_codex_fast_mode_selection(
+    settings: &AgentProviderSettings,
+    probe: &HarnessRuntimeProbe,
+) -> Result<(), String> {
+    if settings.provider != AgentHarnessKind::Codex
+        || settings.service_tier.as_deref() != Some("fast")
+    {
+        return Ok(());
+    }
+
+    if !probe.supports_fast_mode {
+        return Err(
+            "Codex Fast mode is not supported by the selected Codex CLI or model catalog."
+                .to_string(),
+        );
+    }
+
+    let Some(model) = settings.model.as_deref() else {
+        return Ok(());
+    };
+    if !probe.fast_mode_supported_models.is_empty()
+        && !probe
+            .fast_mode_supported_models
+            .iter()
+            .any(|supported_model| supported_model == model)
+    {
+        return Err(format!(
+            "Codex Fast mode is not available for model {model}."
+        ));
+    }
+
+    Ok(())
 }
 
 fn normalize_optional_path(path: Option<String>) -> Option<String> {
@@ -392,6 +428,8 @@ fn to_response(
         cli_version: probe.cli_version,
         supported_model_aliases: probe.supported_model_aliases,
         supported_efforts: probe.supported_efforts,
+        supports_fast_mode: probe.supports_fast_mode,
+        fast_mode_supported_models: probe.fast_mode_supported_models,
         updated_at: settings.updated_at.to_rfc3339(),
     }
 }
@@ -409,6 +447,8 @@ pub(crate) fn provider_settings_snapshot_probe(
             cli_version: None,
             supported_model_aliases: None,
             supported_efforts: None,
+            supports_fast_mode: false,
+            fast_mode_supported_models: Vec::new(),
             error: None,
         };
     }
@@ -422,6 +462,8 @@ pub(crate) fn provider_settings_snapshot_probe(
         cli_version: None,
         supported_model_aliases: None,
         supported_efforts: None,
+        supports_fast_mode: false,
+        fast_mode_supported_models: Vec::new(),
         error: Some(format!(
             "{} is disabled. Enable and validate it in Settings before use.",
             settings.provider
@@ -529,6 +571,8 @@ async fn read_provider_settings_with_stored_and_probes(
                     cli_version: None,
                     supported_model_aliases: None,
                     supported_efforts: None,
+                    supports_fast_mode: false,
+                    fast_mode_supported_models: Vec::new(),
                     error: Some(format!("{provider} probe unavailable")),
                 });
             to_response(settings, probe)
@@ -577,7 +621,10 @@ pub async fn update_agent_provider_settings(
         .await
         .map_err(|err| err.to_string())?;
     let mut probes = snapshot_probes_from_provider_settings(&stored);
-    if input.enabled == Some(true) {
+    let should_refresh_runtime_probe = input.enabled == Some(true)
+        || (provider == AgentHarnessKind::Codex
+            && (input.service_tier.is_some() || input.model.is_some()));
+    if should_refresh_runtime_probe {
         let existing = stored
             .iter()
             .find(|row| row.provider == provider)
@@ -624,6 +671,11 @@ async fn update_provider_settings_with_probes(
         return Err(effective_probe
             .error
             .unwrap_or_else(|| format!("Custom {provider} binary is not available and ready")));
+    }
+    if provider == AgentHarnessKind::Codex
+        && (input.service_tier.is_some() || input.model.is_some())
+    {
+        validate_codex_fast_mode_selection(&candidate, &effective_probe)?;
     }
     crate::application::provider_env_file::validate_provider_custom_env_file_settings(&candidate)?;
     if input.enabled == Some(true) && !effective_probe.available {

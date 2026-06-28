@@ -42,6 +42,10 @@ import {
   type AgentProvider,
 } from "@/lib/agent-models";
 import {
+  CODEX_FAST_MODE_DESCRIPTION,
+  codexFastModeAvailabilityForProvider,
+} from "@/lib/codex-fast-mode";
+import {
   providerCliUpdateToastId,
   providerCliUpdateToastMatchesInstalledStatus,
 } from "@/lib/provider-cli-update-toast";
@@ -617,6 +621,22 @@ export function HarnessProvidersSection() {
                 undefined,
                 provider.supportedEfforts,
               );
+              const codexFastModeAvailability =
+                provider.provider === "codex"
+                  ? codexFastModeAvailabilityForProvider({
+                      provider,
+                      modelId: selectedModelId,
+                      isReady: !showLoading,
+                    })
+                  : null;
+              const codexFastModeChecked = provider.serviceTier === "fast";
+              const codexFastModeDisabled =
+                isUpdating ||
+                (!codexFastModeChecked &&
+                  codexFastModeAvailability?.supported === false);
+              const codexFastModeDescription =
+                codexFastModeAvailability?.reason ??
+                CODEX_FAST_MODE_DESCRIPTION;
               const selectedEffort =
                 provider.effort ?? PROVIDER_DEFAULT_SELECT_VALUE;
               const hasCustomModel =
@@ -1054,14 +1074,14 @@ export function HarnessProvidersSection() {
                                   Fast mode
                                 </Label>
                                 <p className="text-[0.6875rem] leading-relaxed text-[var(--text-muted)]">
-                                  Use Codex priority service tier by default.
+                                  {codexFastModeDescription}
                                 </p>
                               </div>
                               <Switch
                                 id="codex-fast-mode"
                                 data-testid="codex-provider-fast-mode"
-                                checked={provider.serviceTier === "fast"}
-                                disabled={isUpdating}
+                                checked={codexFastModeChecked}
+                                disabled={codexFastModeDisabled}
                                 onCheckedChange={(checked) =>
                                   void updateProvider(provider, {
                                     serviceTier: checked ? "fast" : null,

@@ -180,6 +180,7 @@ interface ModelFieldConfig {
     value: boolean;
     onValueChange: (value: boolean) => void;
     disabled?: boolean;
+    description?: string;
     testId?: string;
   };
   testId?: string;
@@ -2863,6 +2864,7 @@ function ComposerRuntimePill({
                       model.fastMode.testId ??
                       "agent-composer-runtime-codex-fast-mode"
                     }
+                    description={model.fastMode.description}
                     onValueChange={model.fastMode.onValueChange}
                   />
                 )}
@@ -2913,11 +2915,13 @@ function ComposerRuntimeFastModeControl({
   value,
   disabled,
   testId,
+  description,
   onValueChange,
 }: {
   value: boolean;
   disabled: boolean;
   testId: string;
+  description?: string | undefined;
   onValueChange: (value: boolean) => void;
 }) {
   return (
@@ -2933,7 +2937,7 @@ function ComposerRuntimeFastModeControl({
           Fast mode
         </div>
         <div className="text-[0.6875rem] leading-snug text-[var(--text-muted)]">
-          Use Codex priority service tier
+          {description ?? "Use Codex priority service tier"}
         </div>
       </div>
       <Switch

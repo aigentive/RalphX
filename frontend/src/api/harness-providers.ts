@@ -35,6 +35,8 @@ export const AgentProviderSettingsResponseSchema = z.object({
   cliVersion: z.string().nullable().optional(),
   supportedModelAliases: z.array(z.string().min(1)).nullable().optional(),
   supportedEfforts: z.array(z.string().min(1)).nullable().optional(),
+  supportsFastMode: z.boolean().optional().default(false),
+  fastModeSupportedModels: z.array(z.string().min(1)).optional().default([]),
   updatedAt: z.string(),
 });
 

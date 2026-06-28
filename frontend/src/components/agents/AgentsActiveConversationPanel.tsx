@@ -42,6 +42,10 @@ import {
   type BranchBaseOption,
 } from "@/components/shared/branchBaseOptions";
 import { buildStoreKey } from "@/lib/chat-context-registry";
+import {
+  CODEX_FAST_MODE_DESCRIPTION,
+  codexFastModeAvailabilityForProvider,
+} from "@/lib/codex-fast-mode";
 import { formatQueuedMessageExcerpt } from "@/lib/queuedMessageExcerpt";
 import { useAgentModels } from "@/hooks/useAgentModels";
 import { useConfirmation } from "@/hooks/useConfirmation";
@@ -676,11 +680,11 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     providerOptions,
     isReady: providerSettingsReady,
   });
+  const codexProviderSettings = configuredProviders.find(
+    (entry) => entry.provider === "codex",
+  );
   const codexProviderFastMode =
-    configuredProviders
-      .find((entry) => entry.provider === "codex")
-      ?.serviceTier?.trim()
-      .toLowerCase() === "fast";
+    codexProviderSettings?.serviceTier?.trim().toLowerCase() === "fast";
   const conversationServiceTier = activeConversation.serviceTier
     ?.trim()
     .toLowerCase();
@@ -693,8 +697,6 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   const activeCodexFastMode =
     codexFastModeByConversationId[selectedConversationId] ??
     conversationFastMode;
-  const activeCodexFastModeOption =
-    normalizedActiveRuntime.provider === "codex" ? activeCodexFastMode : null;
   const handleActiveCodexFastModeChange = useCallback(
     (value: boolean) => {
       setCodexFastModeByConversationId((current) => ({
@@ -735,6 +737,21 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       workspaceProviderSupportedModelAliases,
     ]
   );
+  const codexFastModeAvailability = codexFastModeAvailabilityForProvider({
+    provider: codexProviderSettings,
+    modelId: selectableWorkspaceRuntime.modelId,
+    isReady: providerSettingsReady,
+  });
+  const activeCodexFastModeOption =
+    normalizedActiveRuntime.provider === "codex" &&
+    codexFastModeAvailability.supported
+      ? activeCodexFastMode
+      : null;
+  const selectableCodexFastMode =
+    normalizedActiveRuntime.provider === "codex" &&
+    codexFastModeAvailability.supported
+      ? activeCodexFastMode
+      : false;
   const openProviderSettings = useCallback(() => {
     openModal("settings", { section: "providers" });
   }, [openModal]);
@@ -2190,9 +2207,14 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                             fastMode: {
                               visible:
                                 normalizedActiveRuntime.provider === "codex",
-                              value: activeCodexFastMode,
+                              value: selectableCodexFastMode,
                               onValueChange: handleActiveCodexFastModeChange,
-                              disabled: !providerSettingsReady,
+                              disabled:
+                                !providerSettingsReady ||
+                                !codexFastModeAvailability.supported,
+                              description:
+                                codexFastModeAvailability.reason ??
+                                CODEX_FAST_MODE_DESCRIPTION,
                               testId: "agents-conversation-codex-fast-mode",
                             },
                             onOpenModelSettings: () =>

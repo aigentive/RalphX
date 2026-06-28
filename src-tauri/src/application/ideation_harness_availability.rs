@@ -335,6 +335,8 @@ fn missing_harness_probe(harness: AgentHarnessKind) -> HarnessRuntimeProbe {
         cli_version: None,
         supported_model_aliases: None,
         supported_efforts: None,
+        supports_fast_mode: false,
+        fast_mode_supported_models: Vec::new(),
         error: Some(format!("No harness probe registered for {}", harness)),
     }
 }

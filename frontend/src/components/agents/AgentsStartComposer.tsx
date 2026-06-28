@@ -40,6 +40,10 @@ import {
 } from "@/components/shared/branchBaseOptions";
 import type { AgentModelRegistry } from "@/lib/agent-models";
 import {
+  CODEX_FAST_MODE_DESCRIPTION,
+  codexFastModeAvailabilityForProvider,
+} from "@/lib/codex-fast-mode";
+import {
   AgentComposerProjectCreateButton,
   AgentComposerProjectLine,
   AgentComposerSurface,
@@ -264,12 +268,21 @@ export function AgentsStartComposer({
     providerOptions,
     isReady: providerSettingsReady,
   });
+  const codexProviderSettings = configuredProviders.find(
+    (entry) => entry.provider === "codex",
+  );
   const codexProviderFastMode =
-    configuredProviders
-      .find((entry) => entry.provider === "codex")
-      ?.serviceTier?.trim()
-      .toLowerCase() === "fast";
+    codexProviderSettings?.serviceTier?.trim().toLowerCase() === "fast";
+  const codexFastModeAvailability = codexFastModeAvailabilityForProvider({
+    provider: codexProviderSettings,
+    modelId,
+    isReady: providerSettingsReady,
+  });
   const codexFastMode = codexFastModeOverride ?? codexProviderFastMode;
+  const selectableCodexFastMode =
+    provider === "codex" && codexFastModeAvailability.supported
+      ? codexFastMode
+      : false;
   const hasSelectableProvider = providerOptions.some((option) => !option.disabled);
   const openProviderSettings = useCallback(() => {
     openModal("settings", { section: "providers" });
@@ -785,7 +798,7 @@ export function AgentsStartComposer({
         mode,
         base: selectedStartFrom?.selection ?? fallbackStartFrom,
         files: attachments.map((attachment) => attachment.file),
-        codexFastMode: provider === "codex" ? codexFastMode : null,
+        codexFastMode: provider === "codex" ? selectableCodexFastMode : null,
         ...(options?.projectReferences?.length
           ? { composerProjectReferences: options.projectReferences }
           : {}),
@@ -972,9 +985,14 @@ export function AgentsStartComposer({
               disabled: Boolean(providerStatusMessage),
               fastMode: {
                 visible: provider === "codex",
-                value: codexFastMode,
+                value: selectableCodexFastMode,
                 onValueChange: setCodexFastModeOverride,
-                disabled: !providerSettingsReady,
+                disabled:
+                  !providerSettingsReady ||
+                  !codexFastModeAvailability.supported,
+                description:
+                  codexFastModeAvailability.reason ??
+                  CODEX_FAST_MODE_DESCRIPTION,
                 testId: "agents-start-codex-fast-mode",
               },
               onOpenModelSettings: () => openModal("settings", { section: "models" }),
