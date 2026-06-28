@@ -22,7 +22,7 @@ async fn resolve_task_base_branch_returns_project_base_when_no_repo() {
     let task = make_task_with_session(Some("art-1"), None, Some("sess-1"));
     let repo: Option<Arc<dyn PlanBranchRepository>> = None;
 
-    let result = resolve_task_base_branch(&task, &project, &repo, &None, &None, &None).await;
+    let result = resolve_task_base_branch(&task, &project, &repo, &None, &None, &None, &None).await;
     assert_eq!(result, "develop");
 }
 
@@ -32,7 +32,7 @@ async fn resolve_task_base_branch_defaults_to_main_when_no_base_branch() {
     let task = make_task_with_session(Some("art-1"), None, Some("sess-1"));
     let repo: Option<Arc<dyn PlanBranchRepository>> = None;
 
-    let result = resolve_task_base_branch(&task, &project, &repo, &None, &None, &None).await;
+    let result = resolve_task_base_branch(&task, &project, &repo, &None, &None, &None, &None).await;
     assert_eq!(result, "main");
 }
 
@@ -43,7 +43,7 @@ async fn resolve_task_base_branch_returns_default_when_task_has_no_session_id() 
     let mem_repo = Arc::new(MemoryPlanBranchRepository::new());
     let repo: Option<Arc<dyn PlanBranchRepository>> = Some(mem_repo);
 
-    let result = resolve_task_base_branch(&task, &project, &repo, &None, &None, &None).await;
+    let result = resolve_task_base_branch(&task, &project, &repo, &None, &None, &None, &None).await;
     assert_eq!(result, "develop");
 }
 
@@ -64,7 +64,7 @@ async fn resolve_task_base_branch_falls_back_when_branch_creation_fails() {
     mem_repo.create(pb).await.unwrap();
 
     let repo: Option<Arc<dyn PlanBranchRepository>> = Some(mem_repo);
-    let result = resolve_task_base_branch(&task, &project, &repo, &None, &None, &None).await;
+    let result = resolve_task_base_branch(&task, &project, &repo, &None, &None, &None, &None).await;
     assert_eq!(result, "main");
 }
 
@@ -144,7 +144,7 @@ async fn resolve_task_base_branch_returns_feature_branch_when_branch_exists() {
     mem_repo.create(pb).await.unwrap();
 
     let repo: Option<Arc<dyn PlanBranchRepository>> = Some(mem_repo);
-    let result = resolve_task_base_branch(&task, &project, &repo, &None, &None, &None).await;
+    let result = resolve_task_base_branch(&task, &project, &repo, &None, &None, &None, &None).await;
     assert_eq!(result, "ralphx/test/plan-abc123");
 }
 
@@ -163,7 +163,7 @@ async fn resolve_task_base_branch_returns_default_when_branch_merged() {
     mem_repo.create(pb).await.unwrap();
 
     let repo: Option<Arc<dyn PlanBranchRepository>> = Some(mem_repo);
-    let result = resolve_task_base_branch(&task, &project, &repo, &None, &None, &None).await;
+    let result = resolve_task_base_branch(&task, &project, &repo, &None, &None, &None, &None).await;
     assert_eq!(result, "main");
 }
 
@@ -182,7 +182,7 @@ async fn resolve_task_base_branch_returns_default_when_branch_abandoned() {
     mem_repo.create(pb).await.unwrap();
 
     let repo: Option<Arc<dyn PlanBranchRepository>> = Some(mem_repo);
-    let result = resolve_task_base_branch(&task, &project, &repo, &None, &None, &None).await;
+    let result = resolve_task_base_branch(&task, &project, &repo, &None, &None, &None, &None).await;
     assert_eq!(result, "main");
 }
 
@@ -202,7 +202,7 @@ async fn resolve_task_base_branch_returns_default_when_no_matching_branch() {
     mem_repo.create(pb).await.unwrap();
 
     let repo: Option<Arc<dyn PlanBranchRepository>> = Some(mem_repo);
-    let result = resolve_task_base_branch(&task, &project, &repo, &None, &None, &None).await;
+    let result = resolve_task_base_branch(&task, &project, &repo, &None, &None, &None, &None).await;
     assert_eq!(result, "main");
 }
 
@@ -255,7 +255,7 @@ async fn resolve_task_base_branch_uses_execution_plan_id_without_session_id() {
     mem_repo.create(pb).await.unwrap();
 
     let repo: Option<Arc<dyn PlanBranchRepository>> = Some(mem_repo);
-    let result = resolve_task_base_branch(&task, &project, &repo, &None, &None, &None).await;
+    let result = resolve_task_base_branch(&task, &project, &repo, &None, &None, &None, &None).await;
     assert_eq!(result, "ralphx/test/plan-exec-id");
 }
 
@@ -306,7 +306,7 @@ async fn resolve_task_base_branch_clears_stale_merge_task_id_when_task_deleted()
     let task_opt: Option<Arc<dyn TaskRepository>> = Some(task_repo);
 
     let result =
-        resolve_task_base_branch(&task, &project, &plan_opt, &task_opt, &None, &None).await;
+        resolve_task_base_branch(&task, &project, &plan_opt, &task_opt, &None, &None, &None).await;
     // Fix D: merged branches now fall back to project base (no resurrection)
     assert_eq!(result, "main");
 }
@@ -358,7 +358,7 @@ async fn resolve_task_base_branch_keeps_valid_merge_task_id() {
     let task_opt: Option<Arc<dyn TaskRepository>> = Some(task_repo);
 
     let result =
-        resolve_task_base_branch(&task, &project, &plan_opt, &task_opt, &None, &None).await;
+        resolve_task_base_branch(&task, &project, &plan_opt, &task_opt, &None, &None, &None).await;
     // Fix D: merged branches now fall back to project base (no resurrection)
     assert_eq!(result, "main");
 }
