@@ -328,6 +328,8 @@ impl<'a> TransitionHandler<'a> {
                 let task_repo_ref = &self.machine.context.services.task_repo;
                 let pr_creation_guard_ref = &self.machine.context.services.pr_creation_guard;
                 let github_service_ref = &self.machine.context.services.github_service;
+                let plan_pr_description_drafter_ref =
+                    &self.machine.context.services.plan_pr_description_drafter;
 
                 if task
                     .worktree_path
@@ -416,6 +418,7 @@ impl<'a> TransitionHandler<'a> {
                             task_repo_ref,
                             pr_creation_guard_ref,
                             github_service_ref,
+                            plan_pr_description_drafter_ref,
                         )
                         .await
                         {
@@ -455,6 +458,7 @@ impl<'a> TransitionHandler<'a> {
                             task_repo_ref,
                             pr_creation_guard_ref,
                             github_service_ref,
+                            plan_pr_description_drafter_ref,
                         )
                         .await
                         {

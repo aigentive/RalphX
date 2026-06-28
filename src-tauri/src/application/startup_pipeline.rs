@@ -306,6 +306,12 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
     if let Some(github_service) = github_service.as_ref() {
         tracing::info!("Running startup PR creation recovery...");
         let phase_started_at = Instant::now();
+        let plan_pr_description_drafter =
+            crate::application::plan_pr_description::build_app_state_plan_pr_description_drafter(
+                Arc::clone(&agent_conversation_workspace_repo),
+                Arc::clone(&agent_provider_settings_repo),
+                agent_clients.clone(),
+            );
         crate::application::pr_startup_recovery::recover_missing_draft_prs(
             Arc::clone(&task_repo),
             Arc::clone(&plan_branch_repo),
@@ -314,6 +320,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
             Arc::clone(&ideation_session_repo),
             Arc::clone(&artifact_repo),
             Arc::clone(github_service),
+            plan_pr_description_drafter,
             Arc::clone(&blocked_git_project_ids),
         )
         .await;
