@@ -1,10 +1,9 @@
 /**
- * useChatAutoScroll - Unified scroll behavior for all chat components
+ * useChatAutoScroll - shared bottom-state and Virtuoso callback primitives
  *
- * Single-path scroll control: Virtuoso's followOutput callback is the ONLY
- * auto-scroll mechanism. No useEffect triggers, no DOM marker scrolling,
- * no requestAnimationFrame — just one callback that Virtuoso invokes when
- * content changes and the user is at bottom.
+ * For Virtuoso chat lists this hook supplies bottom state, followOutput, and
+ * manual scroll-to-index fallback. The production ChatMessageList layers DOM
+ * true-bottom correction on top so footer/meta/chrome growth is included.
  *
  * Key features:
  * - Bottom tracking with 150px threshold (via Virtuoso atBottomStateChange)
@@ -98,10 +97,9 @@ export function useChatAutoScroll({
     setIsAtBottom(atBottom);
   }, []);
 
-  // Virtuoso callback: control followOutput behavior
-  // This is the ONLY auto-scroll mechanism for Virtuoso-based lists.
-  // When user is at bottom and not in history mode, Virtuoso smoothly
-  // follows new content (messages, footer height changes).
+  // Virtuoso callback: control row materialization/follow behavior. Components
+  // with extra footer/meta chrome may add their own true-bottom DOM correction
+  // after Virtuoso has rendered the relevant rows.
   const handleFollowOutput = useCallback(
     (atBottom: boolean) => {
       if (atBottom && !disabled) return preferredScrollBehavior;
@@ -143,10 +141,8 @@ export function useChatAutoScroll({
     }
   }, [preferredScrollBehavior, virtuosoRef]);
 
-  // NOTE: No useEffect auto-scroll triggers here for Virtuoso mode.
-  // Virtuoso's followOutput callback handles all auto-scrolling natively.
-  // The old messagesEndRef.scrollIntoView effects competed with followOutput
-  // causing dual scroll mechanisms and jank during streaming.
+  // NOTE: This hook intentionally has no message-count effects. Virtuoso hosts
+  // consume the callbacks above and own any host-specific DOM correction.
 
   return {
     containerRef,

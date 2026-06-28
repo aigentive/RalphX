@@ -752,33 +752,33 @@ export function IntegratedChatPanel({
   );
 
   const virtuosoRef = useRef<VirtuosoHandle>(null);
-  const inputContainerRef = useRef<HTMLDivElement | null>(null);
-  const inputContainerHeightRef = useRef<number | null>(null);
-  const [inputLayoutVersion, setInputLayoutVersion] = useState(0);
+  const belowTranscriptChromeRef = useRef<HTMLDivElement | null>(null);
+  const belowTranscriptChromeHeightRef = useRef<number | null>(null);
+  const [transcriptLayoutVersion, setTranscriptLayoutVersion] = useState(0);
 
-  const updateInputLayoutHeight = useCallback((height: number, { force = false } = {}) => {
+  const updateBelowTranscriptChromeHeight = useCallback((height: number, { force = false } = {}) => {
     const nextHeight = Math.round(height);
-    if (!force && inputContainerHeightRef.current === nextHeight) {
+    if (!force && belowTranscriptChromeHeightRef.current === nextHeight) {
       return;
     }
-    inputContainerHeightRef.current = nextHeight;
-    setInputLayoutVersion((version) => version + 1);
+    belowTranscriptChromeHeightRef.current = nextHeight;
+    setTranscriptLayoutVersion((version) => version + 1);
   }, []);
 
   const notifyInputLayoutChanged = useCallback(() => {
-    setInputLayoutVersion((version) => version + 1);
+    setTranscriptLayoutVersion((version) => version + 1);
   }, []);
 
   useLayoutEffect(() => {
-    const container = inputContainerRef.current;
+    const container = belowTranscriptChromeRef.current;
     if (!container || typeof ResizeObserver === "undefined") {
       return undefined;
     }
 
-    updateInputLayoutHeight(container.getBoundingClientRect().height);
+    updateBelowTranscriptChromeHeight(container.getBoundingClientRect().height);
 
     const observer = new ResizeObserver((entries) => {
-      updateInputLayoutHeight(
+      updateBelowTranscriptChromeHeight(
         entries[0]?.contentRect.height ?? container.getBoundingClientRect().height,
       );
     });
@@ -787,7 +787,7 @@ export function IntegratedChatPanel({
     return () => {
       observer.disconnect();
     };
-  }, [updateInputLayoutHeight]);
+  }, [updateBelowTranscriptChromeHeight]);
 
   // File attachments - use activeConversationId for attachment association
   // Only enable attachments when there's an active conversation (not in history mode)
@@ -1354,10 +1354,15 @@ export function IntegratedChatPanel({
                   ? teammateConversationHistory.fetchOlderMessages
                   : primaryConversationHistory.fetchOlderMessages
               }
-              externalLayoutVersion={inputLayoutVersion}
+              externalLayoutVersion={transcriptLayoutVersion}
             />
           )}
 
+          <div
+            ref={belowTranscriptChromeRef}
+            data-testid="chat-below-transcript-chrome"
+            className="shrink-0"
+          >
           {/* StreamingToolIndicator — outside scroll container so it's always visible.
               Filters out Task calls (shown as TaskSubagentCard), diff calls (shown inline),
               and any tool calls already rendered inline via streamingContentBlocks to avoid duplication. */}
@@ -1413,8 +1418,6 @@ export function IntegratedChatPanel({
                 }
               }}
             />
-          </ChildSessionNavigationContext.Provider>
-
           {/* Previous Run Banner - shown when viewing stale agent conversation */}
           {isAgentContext && !isHistoryMode && agentStatus === "idle" && agentRunQuery.data?.status !== "running" && !isSending && sortedMessages.length > 0 && !isRecentlyActive && (
             <div className="px-3">
@@ -1444,7 +1447,6 @@ export function IntegratedChatPanel({
              chrome rhythm. Previous bg-base@50 collapsed on HC and shaded
              darker than body on Dark, producing a three-tier sandwich. */}
           <div
-            ref={inputContainerRef}
             data-testid="chat-input-container"
             className={inputContainerClassName ?? "shrink-0"}
             style={inputContainerClassName ? undefined : {
@@ -1551,6 +1553,8 @@ export function IntegratedChatPanel({
               </div>
             </div>
           </div>
+          </div>
+          </ChildSessionNavigationContext.Provider>
         </div>
       </div>
     </>
