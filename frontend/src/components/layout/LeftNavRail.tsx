@@ -16,6 +16,7 @@ import { cn } from "@/lib/utils";
 import { useFeatureFlags } from "@/hooks/useFeatureFlags";
 import { useProjectStats } from "@/hooks/useProjectStats";
 import { useTicketingProviders } from "@/hooks/useTicketing";
+import { useGranolaIntegration } from "@/hooks/useGranolaIntegration";
 import { hasValidTicketingProvider } from "@/lib/ticketing-provider-state";
 import { useProjectStore } from "@/stores/projectStore";
 import { ALL_NAV_ITEMS } from "./nav-items";
@@ -114,6 +115,7 @@ export function LeftNavRail({
     activeProjectId ?? undefined,
     { enabled: !hideViews },
   );
+  const { connected: hasGranolaDashboardProvider } = useGranolaIntegration();
   const hasTicketingDashboardProvider = hasValidTicketingProvider(ticketingProviders);
 
   const taskCount = stats?.taskCount ?? 0;
@@ -123,8 +125,11 @@ export function LeftNavRail({
   const dashboardViews = new Set<ViewType>(["ticketing", "github", "granola"]);
   const primaryItems = visibleItems.filter((item) => !dashboardViews.has(item.view));
   const dashboardItems = visibleItems.filter((item) => {
-    if (item.view === "github" || item.view === "granola") {
+    if (item.view === "github") {
       return true;
+    }
+    if (item.view === "granola") {
+      return hasGranolaDashboardProvider;
     }
     if (item.view === "ticketing") {
       return hasTicketingDashboardProvider;

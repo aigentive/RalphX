@@ -1250,6 +1250,7 @@ export function TicketingDashboardView({
         capabilities={selectedProvider?.capabilities ?? null}
         transitions={transitions}
         associations={associationsQuery.data}
+        projectId={projectId}
         isDetailLoading={isDetailPending}
         isAssociationsLoading={associationsQuery.isLoading}
         isTransitionPending={ticketingMutations.transitionStatusMutation.isPending}
@@ -1280,6 +1281,7 @@ export function TicketingDashboardView({
         open={selectedPullRequestShell !== null}
         selector={selectedPullRequestSelector}
         shell={selectedPullRequestShell}
+        onNavigateToAssociation={onNavigateToAssociation}
         onClose={() => setSelectedPullRequestShell(null)}
       />
 

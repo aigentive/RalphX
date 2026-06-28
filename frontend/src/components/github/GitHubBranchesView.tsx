@@ -1,6 +1,7 @@
 import { useMemo, useState, type CSSProperties, type KeyboardEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
+  Briefcase,
   ChevronDown,
   ChevronRight,
   CircleDashed,
@@ -8,7 +9,6 @@ import {
   GitBranch,
   GitMerge,
   GitPullRequest,
-  MessageSquare,
   RefreshCw,
   Search,
   Ticket,
@@ -34,20 +34,26 @@ import {
 } from "@/components/ui/tooltip";
 import { formatRelativeTime } from "@/lib/formatters";
 import { cn } from "@/lib/utils";
+import {
+  DEFAULT_GITHUB_DASHBOARD_STATE,
+  useIntegrationDashboardStore,
+  type GitHubBranchAssociationFilter,
+  type GitHubBranchPrStatusFilter,
+} from "@/stores/integrationDashboardStore";
 import type { Project } from "@/types/project";
 
 import { githubBranchOverviewKeys } from "./githubBranchOverviewKeys";
 
-type BranchAssociationFilter = "all" | "pull_requests" | "tickets" | "rx";
-type BranchPrStatusFilter = "all" | "open" | "draft" | "merged" | "closed" | "no_pr";
+type BranchAssociationFilter = GitHubBranchAssociationFilter;
+type BranchPrStatusFilter = GitHubBranchPrStatusFilter;
 type BranchStatusGroup = Exclude<BranchPrStatusFilter, "all">;
 
 const EMPTY_BRANCH_OVERVIEW_ITEMS: GitHubBranchOverviewItem[] = [];
 const BRANCH_GROUP_ORDER: BranchStatusGroup[] = ["open", "draft", "merged", "closed", "no_pr"];
 
 const BRANCH_ASSOCIATION_FILTERS: Array<{ id: BranchAssociationFilter; label: string }> = [
-  { id: "all", label: "All" },
   { id: "pull_requests", label: "PRs" },
+  { id: "all", label: "Branches" },
   { id: "tickets", label: "Tickets" },
   { id: "rx", label: "RX" },
 ];
@@ -71,6 +77,8 @@ function branchPullRequestShell(
     title: branch.prNumber != null ? branch.prTitle ?? `PR #${branch.prNumber}` : branch.branchName,
     url: branch.prUrl,
     status: branch.prStatus,
+    rxConversations: branch.rxConversations,
+    ticketLinks: branch.ticketLinks,
   };
 }
 
@@ -215,6 +223,18 @@ function branchMatchesSearch(branch: GitHubBranchOverviewItem, query: string): b
   return haystack.includes(trimmed);
 }
 
+function branchMatchesSelection(branch: GitHubBranchOverviewItem, selectedValue: string): boolean {
+  const normalized = selectedValue.trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  return (
+    branch.branchName.toLowerCase() === normalized ||
+    (branch.prNumber != null && String(branch.prNumber) === normalized) ||
+    (branch.prNumber != null && `#${branch.prNumber}` === normalized)
+  );
+}
+
 function filterCount(
   branches: GitHubBranchOverviewItem[],
   filter: BranchAssociationFilter,
@@ -340,11 +360,13 @@ function BranchMetricButton({
 
 function BranchRow({
   branch,
+  primaryMode,
   projectId,
   onOpenDetails,
   onNavigateToAssociation,
 }: {
   branch: GitHubBranchOverviewItem;
+  primaryMode: "pull_request" | "branch";
   projectId: string;
   onOpenDetails: (branch: GitHubBranchOverviewItem) => void;
   onNavigateToAssociation?: ((deepLink: TicketDeepLink) => void) | undefined;
@@ -358,6 +380,14 @@ function BranchRow({
     ticketCount === 1 ? "1 attached ticket" : `${ticketCount} attached tickets`;
   const rxLabel =
     rxCount === 1 ? "1 RalphX conversation" : `${rxCount} RalphX conversations`;
+  const primaryTitle =
+    primaryMode === "pull_request" && branch.prNumber != null
+      ? branch.prTitle ?? `PR #${branch.prNumber}`
+      : branch.branchName;
+  const secondaryTitle =
+    primaryMode === "pull_request" && branch.prNumber != null
+      ? branch.branchName
+      : branch.prTitle ?? branch.ticketLabels[0] ?? "Branch without a linked PR";
 
   function openDetails() {
     onOpenDetails(branch);
@@ -378,7 +408,7 @@ function BranchRow({
       role="button"
       tabIndex={0}
       data-testid={`github-branch-row-${branch.branchName}`}
-      aria-label={`Open pull request details for ${branch.branchName}`}
+      aria-label={`Open pull request details for ${primaryTitle}`}
       className="grid min-h-[56px] grid-cols-[28px_minmax(220px,1fr)_128px_92px_56px_56px] items-center gap-3 border-b px-4 py-2 text-left transition-colors hover:bg-[var(--bg-sunken)] focus-visible:outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:-2px]"
       style={{
         backgroundColor: "var(--bg-surface)",
@@ -393,7 +423,7 @@ function BranchRow({
       <BranchStatusIcon status={status} />
       <div className="min-w-0">
         <div className="flex min-w-0 items-center gap-2">
-          <span className="truncate text-sm font-medium">{branch.branchName}</span>
+          <span className="truncate text-sm font-medium">{primaryTitle}</span>
           {branch.isCurrent ? (
             <Badge
               variant="outline"
@@ -411,7 +441,7 @@ function BranchRow({
           ) : null}
         </div>
         <p className="mt-0.5 truncate text-xs text-[var(--text-muted)]">
-          {branch.prTitle ?? branch.ticketLabels[0] ?? "Branch without a linked PR"}
+          {secondaryTitle}
         </p>
       </div>
       <div className="min-w-0 text-xs text-[var(--text-muted)]">
@@ -444,7 +474,7 @@ function BranchRow({
       <BranchMetricButton
         count={rxCount}
         label={rxLabel}
-        icon={MessageSquare}
+        icon={Briefcase}
         onClick={() => {
           if (rxConversation && onNavigateToAssociation) {
             onNavigateToAssociation({
@@ -503,7 +533,7 @@ function EmptyFilteredState({ onReset }: { onReset: () => void }) {
           No branches match these filters.
         </p>
         <p className="mt-1 text-sm text-[var(--text-muted)]">
-          Clear the filters to return to the full repository branch list.
+          Clear the filters to return to the default pull request list.
         </p>
         <Button type="button" variant="outline" size="sm" className="mt-4" onClick={onReset}>
           Reset filters
@@ -522,12 +552,15 @@ export function GitHubBranchesView({
   project: Project | null;
   onNavigateToAssociation?: ((deepLink: TicketDeepLink) => void) | undefined;
 }) {
-  const [associationFilter, setAssociationFilter] = useState<BranchAssociationFilter>("all");
-  const [statusFilter, setStatusFilter] = useState<BranchPrStatusFilter>("all");
-  const [searchQuery, setSearchQuery] = useState("");
+  const persistedState = useIntegrationDashboardStore((state) => state.githubByProject[projectId]);
+  const setGitHubState = useIntegrationDashboardStore((state) => state.setGitHubState);
+  const resetGitHubFilters = useIntegrationDashboardStore((state) => state.resetGitHubFilters);
+  const associationFilter =
+    persistedState?.associationFilter ?? DEFAULT_GITHUB_DASHBOARD_STATE.associationFilter;
+  const statusFilter = persistedState?.statusFilter ?? DEFAULT_GITHUB_DASHBOARD_STATE.statusFilter;
+  const searchQuery = persistedState?.searchQuery ?? DEFAULT_GITHUB_DASHBOARD_STATE.searchQuery;
+  const selectedBranchName = persistedState?.selectedBranchName ?? null;
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
-  const [selectedPullRequestShell, setSelectedPullRequestShell] =
-    useState<PullRequestShell | null>(null);
 
   const overviewQuery = useQuery({
     queryKey: githubBranchOverviewKeys.project(projectId),
@@ -561,16 +594,20 @@ export function GitHubBranchesView({
   const rxBranchCount = filterCount(branches, "rx");
   const currentBranch = overviewQuery.data?.currentBranch ?? null;
   const githubUnavailable = overviewQuery.data?.sourcesUnavailable.includes("githubPullRequests");
+  const selectedBranch = selectedBranchName
+    ? branches.find((branch) => branchMatchesSelection(branch, selectedBranchName)) ?? null
+    : null;
+  const selectedPullRequestShell = selectedBranch
+    ? branchPullRequestShell(projectId, selectedBranch)
+    : null;
   const selectedSelector = pullRequestSelectorFromShell(selectedPullRequestShell);
 
   function resetFilters() {
-    setSearchQuery("");
-    setAssociationFilter("all");
-    setStatusFilter("all");
+    resetGitHubFilters(projectId);
   }
 
   function openBranchDetails(branch: GitHubBranchOverviewItem) {
-    setSelectedPullRequestShell(branchPullRequestShell(projectId, branch));
+    setGitHubState(projectId, { selectedBranchName: branch.branchName });
   }
 
   if (!project) {
@@ -689,7 +726,7 @@ export function GitHubBranchesView({
             />
             <Input
               value={searchQuery}
-              onChange={(event) => setSearchQuery(event.target.value)}
+              onChange={(event) => setGitHubState(projectId, { searchQuery: event.target.value })}
               placeholder="Search branches, PRs, tickets, or authors"
               className="h-8 pl-9 text-sm"
               style={{
@@ -705,10 +742,10 @@ export function GitHubBranchesView({
                 key={filter.id}
                 active={associationFilter === filter.id}
                 onClick={() => {
-                  setAssociationFilter(filter.id);
-                  if (filter.id !== "pull_requests") {
-                    setStatusFilter("all");
-                  }
+                  setGitHubState(projectId, {
+                    associationFilter: filter.id,
+                    ...(filter.id !== "pull_requests" ? { statusFilter: "all" } : {}),
+                  });
                 }}
               >
                 {filter.label} {filterCount(branches, filter.id)}
@@ -723,7 +760,7 @@ export function GitHubBranchesView({
               <BranchFilterButton
                 key={filter.id}
                 active={statusFilter === filter.id}
-                onClick={() => setStatusFilter(filter.id)}
+                onClick={() => setGitHubState(projectId, { statusFilter: filter.id })}
               >
                 {filter.label} {statusFilterCount(branches, filter.id)}
               </BranchFilterButton>
@@ -748,7 +785,7 @@ export function GitHubBranchesView({
         ) : null}
       </header>
 
-      <div className="grid min-h-0 flex-1 grid-rows-[auto_1fr]">
+      <div className="grid min-h-0 flex-1 grid-rows-[auto_1fr] overflow-hidden">
         <div
           className="grid h-9 grid-cols-[28px_minmax(220px,1fr)_128px_92px_56px_56px] items-center gap-3 border-b px-4 text-xs font-semibold uppercase tracking-[0.08em] text-[var(--text-muted)]"
           style={{
@@ -759,7 +796,7 @@ export function GitHubBranchesView({
           }}
         >
           <span />
-          <span>Branch</span>
+          <span>{associationFilter === "pull_requests" ? "Pull request" : "Branch"}</span>
           <span>PR</span>
           <span>Owner</span>
           <span>Ticket</span>
@@ -793,6 +830,9 @@ export function GitHubBranchesView({
                         <BranchRow
                           key={branch.branchName}
                           branch={branch}
+                          primaryMode={
+                            associationFilter === "pull_requests" ? "pull_request" : "branch"
+                          }
                           projectId={projectId}
                           onOpenDetails={openBranchDetails}
                           onNavigateToAssociation={onNavigateToAssociation}
@@ -810,7 +850,8 @@ export function GitHubBranchesView({
         open={selectedPullRequestShell !== null}
         selector={selectedSelector}
         shell={selectedPullRequestShell}
-        onClose={() => setSelectedPullRequestShell(null)}
+        onNavigateToAssociation={onNavigateToAssociation}
+        onClose={() => setGitHubState(projectId, { selectedBranchName: null })}
       />
 
       <span className="sr-only" data-testid="github-branch-association-counts">

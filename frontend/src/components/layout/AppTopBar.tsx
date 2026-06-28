@@ -24,6 +24,7 @@ interface AppTopBarProps {
   reviewsPanelOpen: boolean;
   onToggleReviewsPanel: () => void;
   onNewProject?: () => void;
+  onProjectSwitchIntent?: (() => void) | undefined;
   showProjectSelector?: boolean;
 }
 
@@ -444,6 +445,7 @@ export function AppTopBar({
   reviewsPanelOpen,
   onToggleReviewsPanel,
   onNewProject,
+  onProjectSwitchIntent,
   showProjectSelector = false,
 }: AppTopBarProps) {
   const activeProject = useProjectStore(selectActiveProject);
@@ -569,6 +571,7 @@ export function AppTopBar({
         {shouldShowProjectSelector && onNewProject && (
           <ProjectSelector
             onNewProject={onNewProject}
+            onBeforeProjectChange={onProjectSwitchIntent}
             align="end"
             className="max-w-[240px]"
           />

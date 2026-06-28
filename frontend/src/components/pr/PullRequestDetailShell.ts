@@ -1,4 +1,8 @@
 import type { AgentConversationWorkspace } from "@/api/chat";
+import type {
+  GitHubBranchRxConversation,
+  GitHubBranchTicketLink,
+} from "@/api/github";
 import type { PullRequestDetailSelector } from "@/hooks/usePullRequestDetail";
 
 export interface PullRequestShell {
@@ -9,6 +13,8 @@ export interface PullRequestShell {
   status?: string | null | undefined;
   branch?: string | null | undefined;
   conversationId?: string | null | undefined;
+  rxConversations?: GitHubBranchRxConversation[] | undefined;
+  ticketLinks?: GitHubBranchTicketLink[] | undefined;
 }
 
 export function pullRequestShellFromTicket(input: {

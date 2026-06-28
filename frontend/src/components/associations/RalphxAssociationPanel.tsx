@@ -1,13 +1,10 @@
 /**
- * Shared RalphX association rail.
- *
- * Extracted verbatim from `ticketing/TicketDetailSheet.tsx` so PR-detail surfaces
- * can reuse the same association panel without duplicating it. Behavior and the
- * prop contract are unchanged from the original inline implementation.
+ * Shared RalphX association rail for tickets and related integration detail views.
  */
-import { useMemo, useState } from "react";
-import { GitBranch, GitPullRequestArrow } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { GitBranch, GitPullRequestArrow, ScrollText } from "lucide-react";
 
+import type { GranolaNoteSummary } from "@/api/granola";
 import type {
   TicketAssociationItem,
   TicketAssociations,
@@ -16,6 +13,7 @@ import type {
   TicketSummary,
 } from "@/api/ticketing";
 import { Button } from "@/components/ui/button";
+import { TicketSearchableSelect } from "@/components/ticketing/TicketSearchableSelect";
 import { openExternalTicketUrl } from "@/components/ticketing/ticketing-open-external";
 import { ticketCanonicalBranchName } from "@/components/ticketing/ticketing-utils";
 
@@ -191,6 +189,142 @@ function BindConversationControl({
   );
 }
 
+function granolaNoteSubtitle(note: GranolaNoteSummary): string | null {
+  const parts = [
+    (note.rxConversationCount ?? note.rxConversations?.length ?? 0) > 0
+      ? `${note.rxConversationCount ?? note.rxConversations?.length ?? 0} RX`
+      : null,
+    (note.ticketCount ?? note.ticketLinks?.length ?? 0) > 0
+      ? `${note.ticketCount ?? note.ticketLinks?.length ?? 0} ticket${
+          (note.ticketCount ?? note.ticketLinks?.length ?? 0) === 1 ? "" : "s"
+        }`
+      : null,
+    (note.prCount ?? note.pullRequests?.length ?? 0) > 0
+      ? `${note.prCount ?? note.pullRequests?.length ?? 0} PR${
+          (note.prCount ?? note.pullRequests?.length ?? 0) === 1 ? "" : "s"
+        }`
+      : null,
+  ].filter(Boolean);
+  return parts.length > 0 ? parts.join(" · ") : note.url ?? null;
+}
+
+function GranolaAssociationControl({
+  notes,
+  conversations,
+  onBindGranolaNote,
+  isBindPending,
+  bindError,
+}: {
+  notes: GranolaNoteSummary[];
+  conversations: TicketAssociationItem[];
+  onBindGranolaNote?: ((input: { noteId: string; conversationId: string }) => void) | undefined;
+  isBindPending?: boolean | undefined;
+  bindError?: string | null | undefined;
+}) {
+  const [open, setOpen] = useState(false);
+  const [selectedNoteId, setSelectedNoteId] = useState("");
+  const [selectedConversationId, setSelectedConversationId] = useState("");
+  const canBind = Boolean(selectedNoteId && selectedConversationId && onBindGranolaNote);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    if (
+      selectedConversationId &&
+      conversations.some((conversation) => conversation.deepLink.id === selectedConversationId)
+    ) {
+      return;
+    }
+    setSelectedConversationId(conversations[0]?.deepLink.id ?? "");
+  }, [conversations, open, selectedConversationId]);
+
+  useEffect(() => {
+    if (!selectedNoteId) {
+      return;
+    }
+    if (notes.some((note) => note.id === selectedNoteId)) {
+      return;
+    }
+    setSelectedNoteId("");
+  }, [notes, selectedNoteId]);
+
+  return (
+    <div className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-elevated)] p-2">
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        className="h-7 w-full justify-center text-xs"
+        disabled={!onBindGranolaNote || conversations.length === 0 || notes.length === 0 || isBindPending}
+        onClick={() => setOpen((current) => !current)}
+        aria-expanded={open}
+      >
+        Add Granola
+      </Button>
+      {open ? (
+        <div className="mt-2 grid gap-2">
+          <TicketSearchableSelect
+            ariaLabel="Granola note"
+            value={selectedNoteId}
+            onValueChange={setSelectedNoteId}
+            placeholder={notes.length === 0 ? "No notes" : "Select note"}
+            searchPlaceholder="Search Granola notes..."
+            emptyLabel="No Granola notes found"
+            disabled={notes.length === 0}
+            options={notes.map((note) => ({
+              value: note.id,
+              label: note.title ?? note.id,
+              description: granolaNoteSubtitle(note) ?? note.id,
+            }))}
+          />
+          <TicketSearchableSelect
+            ariaLabel="Granola conversation"
+            value={selectedConversationId}
+            onValueChange={setSelectedConversationId}
+            placeholder={conversations.length === 0 ? "No conversations" : "Select conversation"}
+            searchPlaceholder="Search conversations..."
+            emptyLabel="No conversations found"
+            disabled={conversations.length === 0}
+            options={conversations.map((conversation) => ({
+              value: conversation.deepLink.id,
+              label: conversation.title,
+              description: conversation.subtitle ?? conversation.deepLink.id,
+            }))}
+          />
+          {bindError ? (
+            <p className="text-xs text-[var(--status-error)]" role="alert">
+              {bindError}
+            </p>
+          ) : null}
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-7 w-full justify-center text-xs"
+            disabled={!canBind || isBindPending}
+            onClick={() => onBindGranolaNote?.({
+              noteId: selectedNoteId,
+              conversationId: selectedConversationId,
+            })}
+          >
+            {isBindPending ? "Binding..." : "Bind Granola note"}
+          </Button>
+        </div>
+      ) : null}
+      {conversations.length === 0 ? (
+        <p className="mt-2 text-xs leading-5 text-[var(--text-muted)]">
+          Bind a conversation before adding Granola.
+        </p>
+      ) : notes.length === 0 ? (
+        <p className="mt-2 text-xs leading-5 text-[var(--text-muted)]">
+          No unlinked Granola notes available.
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 export function RalphxAssociationPanel({
   ticket,
   associations,
@@ -203,6 +337,14 @@ export function RalphxAssociationPanel({
   onBindConversation,
   isBindPending,
   bindError,
+  granolaEnabled = false,
+  granolaProjectId,
+  granolaNotes,
+  availableGranolaNotes,
+  isGranolaLoading = false,
+  onBindGranolaNote,
+  isGranolaBindPending,
+  granolaBindError,
   onNavigate,
   onStartWork,
 }: {
@@ -217,6 +359,14 @@ export function RalphxAssociationPanel({
   onBindConversation?: ((conversationId: string) => void) | undefined;
   isBindPending?: boolean | undefined;
   bindError?: string | null | undefined;
+  granolaEnabled?: boolean | undefined;
+  granolaProjectId?: string | null | undefined;
+  granolaNotes?: GranolaNoteSummary[] | undefined;
+  availableGranolaNotes?: GranolaNoteSummary[] | undefined;
+  isGranolaLoading?: boolean | undefined;
+  onBindGranolaNote?: ((input: { noteId: string; conversationId: string }) => void) | undefined;
+  isGranolaBindPending?: boolean | undefined;
+  granolaBindError?: string | null | undefined;
   onNavigate?: ((deepLink: TicketDeepLink) => void) | undefined;
   onStartWork?: (() => void) | undefined;
 }) {
@@ -229,6 +379,7 @@ export function RalphxAssociationPanel({
   const totalCount = ASSOCIATION_GROUPS.reduce((count, group) => {
     return count + (associations?.[group.key].length ?? 0);
   }, 0);
+  const conversationItems = associations?.conversations ?? [];
 
   return (
     <aside
@@ -343,6 +494,65 @@ export function RalphxAssociationPanel({
             <p className="text-sm text-[var(--text-muted)]">
               No RalphX links yet. Start a conversation with this ticket attached.
             </p>
+          )}
+          {granolaEnabled && (
+            <section>
+              <h4 className="mb-2 text-[11px] font-semibold uppercase text-[var(--text-muted)]">
+                Granola ({granolaNotes?.length ?? 0})
+              </h4>
+              <div className="space-y-2">
+                {isGranolaLoading ? (
+                  <p className="text-sm text-[var(--text-muted)]">Loading Granola notes</p>
+                ) : (
+                  <>
+                    <GranolaAssociationControl
+                      notes={availableGranolaNotes ?? []}
+                      conversations={conversationItems}
+                      onBindGranolaNote={onBindGranolaNote}
+                      isBindPending={isGranolaBindPending}
+                      bindError={granolaBindError}
+                    />
+                    {(granolaNotes ?? []).length > 0 ? (
+                      (granolaNotes ?? []).map((note) => (
+                        <button
+                          key={note.id}
+                          type="button"
+                          className="w-full rounded-md px-3 py-2 text-left hover:bg-[var(--bg-hover)] focus-visible:outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
+                          style={{
+                            backgroundColor: "var(--bg-elevated)",
+                            borderColor: "var(--border-subtle)",
+                            borderStyle: "solid",
+                            borderWidth: "1px",
+                            color: "var(--text-primary)",
+                          }}
+                          onClick={() => onNavigate?.({
+                            view: "granola",
+                            id: note.id,
+                            projectId: granolaProjectId ?? undefined,
+                          })}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="flex min-w-0 items-center gap-1.5">
+                              <ScrollText className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                              <span className="truncate text-sm font-medium">{note.title ?? note.id}</span>
+                            </span>
+                          </div>
+                          {granolaNoteSubtitle(note) ? (
+                            <p className="mt-1 truncate text-xs text-[var(--text-muted)]">
+                              {granolaNoteSubtitle(note)}
+                            </p>
+                          ) : null}
+                        </button>
+                      ))
+                    ) : (
+                      <p className="text-sm text-[var(--text-muted)]">
+                        No Granola notes linked.
+                      </p>
+                    )}
+                  </>
+                )}
+              </div>
+            </section>
           )}
           {ASSOCIATION_GROUPS.map((group) => {
             const items = associations?.[group.key] ?? [];

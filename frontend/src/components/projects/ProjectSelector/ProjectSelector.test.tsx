@@ -231,8 +231,9 @@ describe("ProjectSelector", () => {
       });
     });
 
-    it("selects project when clicked", async () => {
+    it("selects project when clicked and announces the impending switch", async () => {
       const user = userEvent.setup();
+      const onBeforeProjectChange = vi.fn();
       const projects: Project[] = [
         createMockProject({ id: "project-1", name: "Project Alpha" }),
         createMockProject({ id: "project-2", name: "Project Beta" }),
@@ -243,7 +244,12 @@ describe("ProjectSelector", () => {
         activeProjectId: null,
       });
 
-      render(<ProjectSelector onNewProject={() => {}} />);
+      render(
+        <ProjectSelector
+          onNewProject={() => {}}
+          onBeforeProjectChange={onBeforeProjectChange}
+        />,
+      );
       await user.click(screen.getByTestId("project-selector-trigger"));
 
       await waitFor(() => {
@@ -256,6 +262,7 @@ describe("ProjectSelector", () => {
         const state = useProjectStore.getState();
         expect(state.activeProjectId).toBe("project-2");
       });
+      expect(onBeforeProjectChange).toHaveBeenCalledWith("project-2");
     });
 
     it("closes dropdown after selecting a project", async () => {

@@ -35,9 +35,14 @@ let mockTicketingProviders: Array<{
   enabled: boolean;
   connectionStatus: "connected" | "disconnected" | "permission_limited" | "error";
 }> = [];
+let mockGranolaConnected = true;
 
 vi.mock("@/hooks/useTicketing", () => ({
   useTicketingProviders: vi.fn(() => ({ data: mockTicketingProviders })),
+}));
+
+vi.mock("@/hooks/useGranolaIntegration", () => ({
+  useGranolaIntegration: vi.fn(() => ({ connected: mockGranolaConnected })),
 }));
 
 vi.mock("@/components/ui/tooltip", () => ({
@@ -61,6 +66,7 @@ describe("LeftNavRail", () => {
     mockTicketingProviders = [
       { provider: "linear", enabled: true, connectionStatus: "connected" },
     ];
+    mockGranolaConnected = true;
   });
 
   it("separates dashboard access from primary mini-sidebar views", () => {
@@ -144,6 +150,15 @@ describe("LeftNavRail", () => {
     expect(screen.getByTestId("nav-github")).toBeInTheDocument();
     expect(screen.getByTestId("nav-granola")).toBeInTheDocument();
     expect(screen.getByTestId("nav-dashboard-separator")).toBeInTheDocument();
+  });
+
+  it("hides the Granola entry until the API token is configured and valid", () => {
+    mockGranolaConnected = false;
+
+    render(<LeftNavRail currentView="agents" onViewChange={vi.fn()} />);
+
+    expect(screen.getByTestId("nav-github")).toBeInTheDocument();
+    expect(screen.queryByTestId("nav-granola")).not.toBeInTheDocument();
   });
 
   it("filters dashboard items out of the primary nav section", () => {

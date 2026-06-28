@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { githubApi, type GitHubBranchOverviewItem } from "@/api/github";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { useIntegrationDashboardStore } from "@/stores/integrationDashboardStore";
 import type { Project } from "@/types/project";
 
 import { GitHubBranchesView } from "./GitHubBranchesView";
@@ -182,6 +183,7 @@ function renderBranchesView(
 describe("GitHubBranchesView", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    useIntegrationDashboardStore.getState().reset();
     openExternalTicketUrlMock.mockResolvedValue(undefined);
     vi.mocked(githubApi.getBranchOverview).mockResolvedValue({
       currentBranch: "feature/current",
@@ -195,13 +197,23 @@ describe("GitHubBranchesView", () => {
 
     expect(await screen.findByTestId("github-branches-view")).toBeInTheDocument();
     const currentRow = screen.getByTestId("github-branch-row-feature/current");
-    expect(currentRow).toHaveTextContent("feature/current");
+    expect(within(currentRow).getByText("Fix GitHub branch view")).toHaveClass("text-sm");
+    expect(within(currentRow).getByText("feature/current")).toHaveClass("text-xs");
     expect(currentRow).toHaveTextContent("#466");
     expect(currentRow).toHaveTextContent("reefagent");
     expect(within(currentRow).getByLabelText("1 attached ticket")).toBeInTheDocument();
     expect(within(currentRow).getByLabelText("1 RalphX conversation")).toBeInTheDocument();
-    expect(screen.getByTestId("github-branch-row-feature/no-pr")).toHaveTextContent("No PR");
     expect(screen.getByTestId("github-branch-row-feature/merged")).toHaveTextContent("#465");
+    expect(screen.queryByTestId("github-branch-row-feature/no-pr")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("github-branch-row-ralphx/ticket/clickup-cu-1"),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Branches 4/ }));
+    const currentBranchRow = screen.getByTestId("github-branch-row-feature/current");
+    expect(within(currentBranchRow).getByText("feature/current")).toHaveClass("text-sm");
+    expect(within(currentBranchRow).getByText("Fix GitHub branch view")).toHaveClass("text-xs");
+    expect(screen.getByTestId("github-branch-row-feature/no-pr")).toHaveTextContent("No PR");
     expect(screen.getByTestId("github-branch-row-ralphx/ticket/clickup-cu-1")).toHaveTextContent(
       "ClickUp cu-1",
     );
@@ -212,8 +224,6 @@ describe("GitHubBranchesView", () => {
     renderBranchesView();
 
     await screen.findByTestId("github-branch-row-feature/current");
-
-    fireEvent.click(screen.getByRole("button", { name: /PRs 2/ }));
     expect(screen.getByTestId("github-branch-row-feature/current")).toBeInTheDocument();
     expect(screen.getByTestId("github-branch-row-feature/merged")).toBeInTheDocument();
     expect(screen.queryByTestId("github-branch-row-feature/no-pr")).not.toBeInTheDocument();
@@ -260,10 +270,53 @@ describe("GitHubBranchesView", () => {
       projectId: "project-1",
     });
 
+    fireEvent.click(screen.getByRole("button", { name: /Branches 4/ }));
     const ticketOnlyRow = screen.getByTestId("github-branch-row-ralphx/ticket/clickup-cu-1");
     fireEvent.click(within(ticketOnlyRow).getByLabelText("1 attached ticket"));
     expect(screen.getByTestId("pr-detail-sheet")).toHaveTextContent(
       "ralphx/ticket/clickup-cu-1",
     );
+  });
+
+  it("restores filters and the selected branch after remounting from sidebar navigation", async () => {
+    const firstRender = renderBranchesView();
+
+    await screen.findByTestId("github-branch-row-feature/current");
+    fireEvent.click(screen.getByRole("button", { name: /Tickets 2/ }));
+    fireEvent.change(screen.getByPlaceholderText("Search branches, PRs, tickets, or authors"), {
+      target: { value: "cu-1" },
+    });
+
+    const ticketOnlyRow = screen.getByTestId("github-branch-row-ralphx/ticket/clickup-cu-1");
+    fireEvent.click(ticketOnlyRow);
+    expect(screen.getByTestId("pr-detail-sheet")).toHaveTextContent(
+      "ralphx/ticket/clickup-cu-1",
+    );
+
+    firstRender.unmount();
+    renderBranchesView();
+
+    expect(await screen.findByTestId("github-branch-row-ralphx/ticket/clickup-cu-1")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Search branches, PRs, tickets, or authors")).toHaveValue(
+      "cu-1",
+    );
+    expect(screen.queryByTestId("github-branch-row-feature/current")).not.toBeInTheDocument();
+    expect(screen.getByTestId("pr-detail-sheet")).toHaveTextContent(
+      "ralphx/ticket/clickup-cu-1",
+    );
+  });
+
+  it("opens a selected PR when navigation stores the PR number instead of the branch name", async () => {
+    useIntegrationDashboardStore.getState().setGitHubState("project-1", {
+      associationFilter: "pull_requests",
+      searchQuery: "466",
+      selectedBranchName: "466",
+    });
+
+    renderBranchesView();
+
+    expect(await screen.findByTestId("github-branch-row-feature/current")).toBeInTheDocument();
+    expect(screen.getByTestId("pr-detail-sheet")).toHaveTextContent("feature/current");
+    expect(screen.getByTestId("pr-detail-sheet")).toHaveTextContent("466");
   });
 });

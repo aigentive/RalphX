@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState, type ComponentProps } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ExternalLink, FolderKanban, Image as ImageIcon, MessageSquare, Send, UserCheck, UserX, X, ZoomIn } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
+import { granolaApi, type GranolaNoteSummary } from "@/api/granola";
 import type {
   TicketAssociations,
   TicketAttachment,
@@ -14,8 +16,10 @@ import type {
   TicketSummary,
   TicketTransitionOption,
 } from "@/api/ticketing";
+import { invalidateAgentConversationGranolaNote } from "@/components/agents/agentGranolaNoteQueries";
 import { RalphxAssociationPanel } from "@/components/associations/RalphxAssociationPanel";
 import { markdownComponents } from "@/components/Chat/MessageItem.markdown";
+import { granolaDashboardKeys } from "@/components/granola/granolaDashboardKeys";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -40,6 +44,7 @@ interface TicketDetailSheetProps {
   capabilities: TicketingCapabilities | null;
   transitions: TicketTransitionOption[];
   associations: TicketAssociations | undefined;
+  projectId?: string | undefined;
   isDetailLoading: boolean;
   isAssociationsLoading: boolean;
   isTransitionPending: boolean;
@@ -58,6 +63,7 @@ interface TicketDetailSheetProps {
   seenUntil?: string | null | undefined;
   isStartWorkPending?: boolean | undefined;
   startWorkError?: string | null | undefined;
+  showStartWork?: boolean | undefined;
   /** Existing project conversations the viewer may bind to this ticket. */
   bindableConversations?: { id: string; title: string | null }[] | undefined;
   onBindConversation?: ((conversationId: string) => void) | undefined;
@@ -72,6 +78,42 @@ interface TicketDetailSheetProps {
    */
   showConversationBinding?: boolean | undefined;
   onClose: () => void;
+}
+
+const EMPTY_GRANOLA_NOTES: GranolaNoteSummary[] = [];
+
+function normalizeAssociationKey(value: string | null | undefined): string {
+  return (value ?? "").trim().toLowerCase();
+}
+
+function granolaNoteMatchesTicket(
+  note: GranolaNoteSummary,
+  ticket: TicketDetail | TicketSummary | null,
+  conversationIds: Set<string>,
+): boolean {
+  if (
+    conversationIds.size > 0 &&
+    (note.rxConversations ?? []).some((conversation) =>
+      conversationIds.has(normalizeAssociationKey(conversation.conversationId)),
+    )
+  ) {
+    return true;
+  }
+  if (!ticket) {
+    return false;
+  }
+  const provider = normalizeAssociationKey(ticket.ref.provider);
+  const ticketKeys = [ticket.ref.key, ticket.ref.id]
+    .map(normalizeAssociationKey)
+    .filter(Boolean);
+  return (note.ticketLinks ?? []).some((ticketLink) => {
+    const linkProvider = normalizeAssociationKey(ticketLink.provider);
+    const linkLabel = normalizeAssociationKey(ticketLink.label);
+    return ticketKeys.some((key) =>
+      linkLabel === key &&
+      (linkProvider === provider || (provider === "jira" && linkProvider === "atlassian")),
+    );
+  });
 }
 
 function ControlTooltip({
@@ -304,6 +346,7 @@ export function TicketDetailSheet({
   capabilities,
   transitions,
   associations,
+  projectId,
   isDetailLoading,
   isAssociationsLoading,
   isTransitionPending,
@@ -320,6 +363,7 @@ export function TicketDetailSheet({
   seenUntil,
   isStartWorkPending,
   startWorkError,
+  showStartWork = true,
   bindableConversations,
   onBindConversation,
   isBindPending,
@@ -329,6 +373,7 @@ export function TicketDetailSheet({
   showConversationBinding = true,
   onClose,
 }: TicketDetailSheetProps) {
+  const queryClient = useQueryClient();
   const [commentDraft, setCommentDraft] = useState("");
   const [localComments, setLocalComments] = useState<TicketComment[]>([]);
   const [expandedThreadIds, setExpandedThreadIds] = useState<Set<string>>(() => new Set());
@@ -406,6 +451,88 @@ export function TicketDetailSheet({
   const descriptionMarkdown = ticket && "descriptionMarkdown" in ticket && ticket.descriptionMarkdown
     ? ticket.descriptionMarkdown
     : null;
+  const associationConversationIds = useMemo(
+    () =>
+      new Set(
+        (associations?.conversations ?? [])
+          .map((conversation) => normalizeAssociationKey(conversation.deepLink.id))
+          .filter(Boolean),
+      ),
+    [associations?.conversations],
+  );
+  const effectiveProjectId = projectId
+    ?? associations?.conversations.find((conversation) => conversation.deepLink.projectId)?.deepLink.projectId
+    ?? null;
+  const granolaSettingsQuery = useQuery({
+    queryKey: granolaDashboardKeys.settings(),
+    queryFn: () => granolaApi.getSettings(),
+    enabled: open && Boolean(effectiveProjectId),
+    staleTime: 30_000,
+  });
+  const granolaEnabled =
+    granolaSettingsQuery.data?.enabled === true &&
+    granolaSettingsQuery.data.hasApiToken === true &&
+    granolaSettingsQuery.data.validationStatus === "valid";
+  const granolaNotesQuery = useQuery({
+    queryKey: effectiveProjectId
+      ? granolaDashboardKeys.notes(effectiveProjectId)
+      : [...granolaDashboardKeys.all, "notes", null],
+    queryFn: () =>
+      granolaApi.listNotes({
+        pageSize: 100,
+        ...(effectiveProjectId ? { projectId: effectiveProjectId } : {}),
+      }),
+    enabled: open && granolaEnabled && Boolean(effectiveProjectId),
+    staleTime: 20_000,
+  });
+  const allGranolaNotes = granolaNotesQuery.data?.notes ?? EMPTY_GRANOLA_NOTES;
+  const linkedGranolaNotes = useMemo(
+    () =>
+      allGranolaNotes.filter((note) =>
+        granolaNoteMatchesTicket(note, ticket, associationConversationIds),
+      ),
+    [allGranolaNotes, associationConversationIds, ticket],
+  );
+  const linkedGranolaNoteIds = useMemo(
+    () => new Set(linkedGranolaNotes.map((note) => note.id)),
+    [linkedGranolaNotes],
+  );
+  const availableGranolaNotes = useMemo(
+    () => allGranolaNotes.filter((note) => !linkedGranolaNoteIds.has(note.id)),
+    [allGranolaNotes, linkedGranolaNoteIds],
+  );
+  const bindGranolaNote = useMutation({
+    mutationFn: async ({ noteId, conversationId }: { noteId: string; conversationId: string }) => {
+      const note = allGranolaNotes.find((candidate) => candidate.id === noteId);
+      if (!note || !conversationId) {
+        throw new Error("Select a Granola note and RalphX conversation.");
+      }
+      return granolaApi.assignAgentConversationGranolaNote({
+        conversationId,
+        projectId: effectiveProjectId,
+        noteId: note.id,
+        title: note.title ?? null,
+        noteUrl: note.url ?? null,
+        summary: note.summary ?? null,
+        includeTranscript: true,
+        refresh: true,
+      });
+    },
+    onSuccess: (_note, variables) => {
+      void invalidateAgentConversationGranolaNote(queryClient, variables.conversationId);
+      if (effectiveProjectId) {
+        void queryClient.invalidateQueries({
+          queryKey: granolaDashboardKeys.notes(effectiveProjectId),
+        });
+      }
+    },
+  });
+  const granolaBindError =
+    bindGranolaNote.error instanceof Error
+      ? bindGranolaNote.error.message
+      : bindGranolaNote.error
+        ? "Granola note could not be bound."
+        : null;
 
   function handleStatusChange(nextStateId: string) {
     const transition = transitions.find((item) => item.toStateId === nextStateId);
@@ -886,11 +1013,20 @@ export function TicketDetailSheet({
               isLoading={isAssociationsLoading}
               isStartWorkPending={isStartWorkPending}
               startWorkError={startWorkError}
+              showStartWork={showStartWork}
               showConversationBinding={showConversationBinding}
               bindableConversations={bindableConversations}
               onBindConversation={onBindConversation}
               isBindPending={isBindPending}
               bindError={bindError}
+              granolaEnabled={granolaEnabled}
+              granolaProjectId={effectiveProjectId}
+              granolaNotes={linkedGranolaNotes}
+              availableGranolaNotes={availableGranolaNotes}
+              isGranolaLoading={granolaSettingsQuery.isLoading || granolaNotesQuery.isLoading || granolaNotesQuery.isFetching}
+              onBindGranolaNote={(input) => bindGranolaNote.mutate(input)}
+              isGranolaBindPending={bindGranolaNote.isPending}
+              granolaBindError={granolaBindError}
               onNavigate={onNavigate}
               onStartWork={onStartWork}
             />

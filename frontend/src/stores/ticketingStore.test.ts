@@ -4,6 +4,7 @@ import { useTicketingStore } from "./ticketingStore";
 
 describe("useTicketingStore", () => {
   beforeEach(() => {
+    localStorage.removeItem("ralphx-ticketing-store");
     useTicketingStore.getState().reset();
   });
 
@@ -77,5 +78,41 @@ describe("useTicketingStore", () => {
 
     useTicketingStore.getState().reset();
     expect(useTicketingStore.getState().lastOpenedAt).toEqual({});
+  });
+
+  it("persists the active ticketing dashboard state", () => {
+    useTicketingStore.getState().setProvider("linear");
+    useTicketingStore.getState().setContainerId("team-1");
+    useTicketingStore.getState().setViewMode("kanban");
+    useTicketingStore.getState().setFilters({
+      text: "billing",
+      assignee: "Ada",
+      stateIds: ["started"],
+    });
+    useTicketingStore.getState().setSelectedTicketRef({
+      provider: "linear",
+      id: "issue-1",
+      key: "LIN-1",
+    });
+
+    const persisted = JSON.parse(localStorage.getItem("ralphx-ticketing-store") ?? "{}") as {
+      state?: Record<string, unknown>;
+    };
+
+    expect(persisted.state).toMatchObject({
+      activeProvider: "linear",
+      activeContainerId: "team-1",
+      viewMode: "kanban",
+      filters: {
+        text: "billing",
+        assignee: "Ada",
+        stateIds: ["started"],
+      },
+      selectedTicketRef: {
+        provider: "linear",
+        id: "issue-1",
+        key: "LIN-1",
+      },
+    });
   });
 });

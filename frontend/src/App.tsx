@@ -44,7 +44,9 @@ import { useIdeationStore, selectActiveSession } from "@/stores/ideationStore";
 import { useProposalStore } from "@/stores/proposalStore";
 import { useProjectStore } from "@/stores/projectStore";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
+import { useIntegrationDashboardStore } from "@/stores/integrationDashboardStore";
 import { DEFAULT_PROJECT_VIEW, type ViewType } from "@/types/chat";
+import { useTicketingStore } from "@/stores/ticketingStore";
 import type { ApplyProposalsInput } from "@/api/ideation.types";
 import type { UpdateProposalInput } from "@/api/ideation";
 import { toTaskProposal, ideationApi } from "@/api/ideation";
@@ -213,6 +215,9 @@ function AppContent() {
   const clearMessages = useChatStore((s) => s.clearMessages);
 
   const switchToProject = useUiStore((s) => s.switchToProject);
+  const preserveCurrentViewOnNextProjectSwitch = useUiStore(
+    (s) => s.preserveCurrentViewOnNextProjectSwitch,
+  );
 
   // Project state
   const activeProjectId = useProjectStore((s) => s.activeProjectId);
@@ -681,9 +686,43 @@ function AppContent() {
   }, [currentProjectId]);
 
   const handleNavigateFromTicketAssociation = useCallback((deepLink: TicketDeepLink) => {
+    const targetProjectId = deepLink.projectId ?? currentProjectId;
+    const switchProjectForDeepLink = (view: ViewType) => {
+      setCurrentView(view);
+      if (targetProjectId && targetProjectId !== activeProjectId) {
+        preserveCurrentViewOnNextProjectSwitch();
+        selectProject(targetProjectId);
+      }
+    };
+
     if (deepLink.view === "kanban") {
       setCurrentView("kanban");
       setSelectedTaskId(deepLink.id);
+      return;
+    }
+    if (deepLink.view === "github" && targetProjectId) {
+      useIntegrationDashboardStore.getState().setGitHubState(targetProjectId, {
+        associationFilter: "pull_requests",
+        searchQuery: deepLink.id,
+        selectedBranchName: deepLink.id || null,
+      });
+      switchProjectForDeepLink("github");
+      return;
+    }
+    if (deepLink.view === "granola" && targetProjectId) {
+      useIntegrationDashboardStore.getState().setGranolaState(targetProjectId, {
+        query: "",
+        noteFilter: "all",
+        selectedNoteId: deepLink.id || null,
+      });
+      switchProjectForDeepLink("granola");
+      return;
+    }
+    if (deepLink.view === "ticketing") {
+      if (deepLink.id) {
+        useTicketingStore.getState().setFilters({ text: deepLink.id });
+      }
+      switchProjectForDeepLink("ticketing");
       return;
     }
     if (deepLink.view === "agents" && deepLink.projectId) {
@@ -697,7 +736,15 @@ function AppContent() {
       return;
     }
     setCurrentView(deepLink.view);
-  }, [setCurrentView, setSelectedTaskId, setFocusedAgentProject]);
+  }, [
+    activeProjectId,
+    currentProjectId,
+    preserveCurrentViewOnNextProjectSwitch,
+    selectProject,
+    setCurrentView,
+    setSelectedTaskId,
+    setFocusedAgentProject,
+  ]);
 
   const handleStartConversationFromGranolaNote = useCallback((
     note: GranolaNoteDetail | GranolaNoteSummary,
@@ -1106,6 +1153,7 @@ function AppContent() {
             reviewsPanelOpen={reviewsPanelOpen}
             onToggleReviewsPanel={toggleReviewsPanel}
             onNewProject={handleOpenProjectWizard}
+            onProjectSwitchIntent={preserveCurrentViewOnNextProjectSwitch}
             showProjectSelector={
               !hasNoProjects && !showWelcomeOverlay && !providerSetupRequired
             }
@@ -1231,6 +1279,7 @@ function AppContent() {
                   project={activeProject}
                   projects={fetchedProjects ?? []}
                   onStartConversation={handleStartConversationFromGranolaNote}
+                  onNavigateToAssociation={handleNavigateFromTicketAssociation}
                 />
               )}
               {currentView === "insights" && <InsightsView />}
