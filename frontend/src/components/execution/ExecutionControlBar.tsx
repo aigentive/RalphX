@@ -201,20 +201,16 @@ export function ExecutionControlBar({
   const taskActive = taskLane?.active ?? runningCount;
   const taskMax = taskLane?.max ?? maxConcurrent;
   const displayedIdeationMax = ideationLane?.max ?? ideationMax;
-  const terminalOpenByConversationId = useAgentTerminalStore((state) => state.openByConversationId);
   const terminalStatusByConversationId = useAgentTerminalStore((state) => state.statusByConversationId);
   const terminalMetadataByConversationId = useAgentTerminalStore(
     (state) => state.metadataByConversationId
   );
   const projectsById = useProjectStore((state) => state.projects);
   const terminalSessions = useMemo<ExecutionBarTerminalSession[]>(() => {
-    return Object.entries(terminalOpenByConversationId)
-      .flatMap(([conversationId, open]) => {
-        if (!open) {
-          return [];
-        }
-        const metadata = terminalMetadataByConversationId[conversationId];
-        if (!metadata) {
+    return Object.entries(terminalMetadataByConversationId)
+      .flatMap(([conversationId, metadata]) => {
+        const status = terminalStatusByConversationId[conversationId] ?? "closed";
+        if (status === "closed") {
           return [];
         }
         const projectName = projectsById[metadata.projectId]?.name ?? "Unknown project";
@@ -226,7 +222,7 @@ export function ExecutionControlBar({
             projectName,
             branchName: metadata.branchName,
             worktreePath: metadata.worktreePath,
-            status: terminalStatusByConversationId[conversationId] ?? "closed",
+            status,
           },
         ];
       })
@@ -234,7 +230,6 @@ export function ExecutionControlBar({
   }, [
     projectsById,
     terminalMetadataByConversationId,
-    terminalOpenByConversationId,
     terminalStatusByConversationId,
   ]);
   const terminalCount = terminalSessions.length;
