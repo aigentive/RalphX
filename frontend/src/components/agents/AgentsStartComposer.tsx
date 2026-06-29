@@ -29,6 +29,11 @@ import {
   type AgentProvider,
   type AgentRuntimeSelection,
 } from "@/stores/agentSessionStore";
+import {
+  selectComposerDraft,
+  useChatStore,
+  type ChatComposerAttachment,
+} from "@/stores/chatStore";
 import { BranchBasePicker } from "@/components/shared/BranchBasePicker";
 import {
   fallbackBranchBaseOptions,
@@ -119,8 +124,15 @@ const STARTER_TYPING_HOLD_MS = 1600;
 const STARTER_TYPING_SPEED_MS = 72;
 const STARTER_DELETING_SPEED_MS = 44;
 const STARTER_TYPING_INITIAL_WORD = STARTER_TYPING_WORDS[0];
+const AGENTS_START_COMPOSER_DRAFT_KEY = "agents:start";
 
 type StarterTypingPhase = "holding" | "typing" | "deleting";
+
+function isPendingAttachment(
+  attachment: ChatComposerAttachment,
+): attachment is PendingAttachment {
+  return attachment.file !== undefined;
+}
 
 const AGENT_MODE_OPTIONS: Array<{
   id: AgentConversationWorkspaceMode;
@@ -170,9 +182,7 @@ export function AgentsStartComposer({
     useState<string | null>(null);
   const [hydratedStartFromProjectId, setHydratedStartFromProjectId] =
     useState<string | null>(null);
-  const [content, setContent] = useState("");
   const [isComposerActive, setIsComposerActive] = useState(false);
-  const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [draftProjectReferences, setDraftProjectReferences] = useState<
     ComposerProjectReference[]
   >([]);
@@ -217,6 +227,19 @@ export function AgentsStartComposer({
   );
   const consumeStartConversationDraft = useAgentSessionStore(
     (s) => s.consumeStartConversationDraft
+  );
+  const startComposerDraft = useChatStore(
+    selectComposerDraft(AGENTS_START_COMPOSER_DRAFT_KEY)
+  );
+  const setComposerDraftContent = useChatStore((s) => s.setComposerDraftContent);
+  const setComposerDraftAttachments = useChatStore(
+    (s) => s.setComposerDraftAttachments
+  );
+  const clearComposerDraft = useChatStore((s) => s.clearComposerDraft);
+  const content = startComposerDraft?.content ?? "";
+  const attachments = useMemo(
+    () => (startComposerDraft?.attachments ?? []).filter(isPendingAttachment),
+    [startComposerDraft?.attachments]
   );
 
   const providerSettingsReady =
@@ -304,7 +327,7 @@ export function AgentsStartComposer({
       return;
     }
     setProjectId(draft.projectId);
-    setContent(draft.content);
+    setComposerDraftContent(AGENTS_START_COMPOSER_DRAFT_KEY, draft.content);
     setMode(draft.mode);
     setDraftProjectReferences(draft.composerProjectReferences ?? []);
     setDraftIntegrationReferences(draft.composerIntegrationReferences ?? []);
@@ -312,7 +335,11 @@ export function AgentsStartComposer({
     setDraftArtifactReferences(draft.composerArtifactReferences ?? []);
     setIsStartFromIsolatedBranch(false);
     userSelectedStartFromRef.current = false;
-  }, [consumeStartConversationDraft, startConversationDraft]);
+  }, [
+    consumeStartConversationDraft,
+    setComposerDraftContent,
+    startConversationDraft,
+  ]);
 
   useEffect(() => {
     setProvider(normalizedRuntime.provider);
@@ -557,8 +584,8 @@ export function AgentsStartComposer({
     }
 
     setError(null);
-    setAttachments((current) => [
-      ...current,
+    setComposerDraftAttachments(AGENTS_START_COMPOSER_DRAFT_KEY, [
+      ...attachments,
       ...files.map((file) => ({
         id:
           globalThis.crypto?.randomUUID?.() ??
@@ -788,7 +815,10 @@ export function AgentsStartComposer({
   ]);
 
   const handleRemoveAttachment = (attachmentId: string) => {
-    setAttachments((current) => current.filter((attachment) => attachment.id !== attachmentId));
+    setComposerDraftAttachments(
+      AGENTS_START_COMPOSER_DRAFT_KEY,
+      attachments.filter((attachment) => attachment.id !== attachmentId),
+    );
   };
 
   const handleSubmit: AgentComposerSurfaceProps["onSend"] = async (
@@ -838,8 +868,7 @@ export function AgentsStartComposer({
           ? { composerArtifactReferences: options.artifactReferences }
           : {}),
       });
-      setContent("");
-      setAttachments([]);
+      clearComposerDraft(AGENTS_START_COMPOSER_DRAFT_KEY);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to start agent conversation");
     }
@@ -939,7 +968,9 @@ export function AgentsStartComposer({
             textareaTestId="agents-start-textarea"
             actionTestId="agents-start-submit"
             value={content}
-            onChange={setContent}
+            onChange={(value) =>
+              setComposerDraftContent(AGENTS_START_COMPOSER_DRAFT_KEY, value)
+            }
             onSend={handleSubmit}
             placeholder={
               mode === "review_pr"

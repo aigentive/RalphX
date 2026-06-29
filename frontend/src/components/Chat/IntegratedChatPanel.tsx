@@ -26,6 +26,7 @@ import {
   selectIsSending,
   selectToolCallStartTimes,
   selectLastAgentEventTimestamp,
+  selectComposerDraft,
   type AgentStatus,
 } from "@/stores/chatStore";
 import { useUiStore } from "@/stores/uiStore";
@@ -789,7 +790,16 @@ export function IntegratedChatPanel({
     };
   }, [updateBelowTranscriptChromeHeight]);
 
-  // File attachments - use activeConversationId for attachment association
+  // Effective conversation ID: teammate's when on teammate tab, lead's otherwise
+  const effectiveConversationId = isTeammateTab ? teammateConversationId : activeConversationId;
+  const composerDraftKey = effectiveConversationId
+    ? `conversation:${effectiveConversationId}`
+    : null;
+  const composerDraft = useChatStore(selectComposerDraft(composerDraftKey));
+  const setComposerDraftContent = useChatStore((s) => s.setComposerDraftContent);
+  const clearComposerDraft = useChatStore((s) => s.clearComposerDraft);
+
+  // File attachments - use effectiveConversationId for attachment association
   // Only enable attachments when there's an active conversation (not in history mode)
   const {
     attachments,
@@ -797,10 +807,9 @@ export function IntegratedChatPanel({
     removeAttachment,
     clearAttachments,
     uploading,
-  } = useChatAttachments(activeConversationId ?? "");
-
-  // Effective conversation ID: teammate's when on teammate tab, lead's otherwise
-  const effectiveConversationId = isTeammateTab ? teammateConversationId : activeConversationId;
+  } = useChatAttachments(effectiveConversationId ?? "", {
+    draftKey: composerDraftKey,
+  });
   const activeConversationMeta = useMemo(() => {
     const queriedConversation = isTeammateTab
       ? currentTeammateConversationData?.conversation
@@ -914,10 +923,20 @@ export function IntegratedChatPanel({
       showTeamUi ? sendTarget : undefined,
       options
     );
-    if (attachmentIds.length > 0) {
+    if (composerDraftKey) {
+      clearComposerDraft(composerDraftKey);
+    } else if (attachmentIds.length > 0) {
       clearAttachments();
     }
-  }, [attachments, handleSendBase, clearAttachments, showTeamUi, sendTarget]);
+  }, [
+    attachments,
+    clearAttachments,
+    clearComposerDraft,
+    composerDraftKey,
+    handleSendBase,
+    showTeamUi,
+    sendTarget,
+  ]);
 
   // Wrapper for handleEditLastQueued that provides the queued messages
   const handleEditLastQueuedWrapper = () => {
@@ -1500,7 +1519,7 @@ export function IntegratedChatPanel({
                     isReadOnly: isHistoryMode,
                     placeholder: getContextConfig(currentContextType).placeholder,
                     autoFocus: autoFocusInput,
-                    enableAttachments: !!activeConversationId && !isHistoryMode,
+                    enableAttachments: !!effectiveConversationId && !isHistoryMode,
                     attachments,
                     onFilesSelected: uploadFiles,
                     onRemoveAttachment: removeAttachment,
@@ -1521,7 +1540,13 @@ export function IntegratedChatPanel({
                             onMatchedOptions: handleMatchedOptions,
                           },
                         }
-                      : {}),
+                      : composerDraftKey
+                        ? {
+                            value: composerDraft?.content ?? "",
+                            onChange: (value: string) =>
+                              setComposerDraftContent(composerDraftKey, value),
+                          }
+                        : {})
                   })
                 ) : (
                   <ChatInput
@@ -1542,9 +1567,15 @@ export function IntegratedChatPanel({
                         multiSelect: activeQuestion.multiSelect,
                         onMatchedOptions: handleMatchedOptions,
                       },
-                    } : {})}
+                    } : composerDraftKey
+                      ? {
+                          value: composerDraft?.content ?? "",
+                          onChange: (value: string) =>
+                            setComposerDraftContent(composerDraftKey, value),
+                        }
+                      : {})}
                     autoFocus={autoFocusInput}
-                    enableAttachments={!!activeConversationId && !isHistoryMode}
+                    enableAttachments={!!effectiveConversationId && !isHistoryMode}
                     attachments={attachments}
                     onFilesSelected={uploadFiles}
                     onRemoveAttachment={removeAttachment}

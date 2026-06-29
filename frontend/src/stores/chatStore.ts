@@ -49,6 +49,25 @@ export interface QueuedMessage {
   attachmentIds: string[];
 }
 
+export interface ChatComposerAttachment {
+  id: string;
+  conversationId?: string;
+  messageId?: string;
+  fileName: string;
+  filePath?: string;
+  mimeType?: string;
+  fileSize: number;
+  createdAt?: string;
+  file?: File;
+  previewUrl?: string;
+}
+
+export interface ChatComposerDraft {
+  content: string;
+  attachments: ChatComposerAttachment[];
+  updatedAt: string;
+}
+
 // ============================================================================
 // State Interface
 // ============================================================================
@@ -84,6 +103,8 @@ interface ChatState {
   toolCallCompletionTimestamps: Record<string, Record<string, number>>;
   /** Effective model per context key (id + label). Transient — NOT persisted. */
   effectiveModel: Record<string, ModelDisplay>;
+  /** Unsent composer drafts keyed by conversation/start-composer target. Transient only. */
+  composerDraftsByKey: Record<string, ChatComposerDraft>;
 }
 
 // ============================================================================
@@ -154,6 +175,15 @@ interface ChatActions {
   clearToolCallCompletionTimestamps: (storeKey: string) => void;
   /** Set the effective model for a context key (from agent:run_started event or session HTTP response) */
   setEffectiveModel: (storeKey: string, model: ModelDisplay) => void;
+  /** Remember unsent composer text for a target. */
+  setComposerDraftContent: (draftKey: string, content: string) => void;
+  /** Remember unsent composer attachments for a target. */
+  setComposerDraftAttachments: (
+    draftKey: string,
+    attachments: ChatComposerAttachment[],
+  ) => void;
+  /** Clear the full unsent composer draft for a target. */
+  clearComposerDraft: (draftKey: string) => void;
 }
 
 function queuedMessageListsEqual(
@@ -178,6 +208,23 @@ function queuedMessageListsEqual(
   });
 }
 
+function writeComposerDraft(
+  state: ChatState,
+  draftKey: string,
+  draft: Pick<ChatComposerDraft, "content" | "attachments">,
+) {
+  if (draft.content.length === 0 && draft.attachments.length === 0) {
+    delete state.composerDraftsByKey[draftKey];
+    return;
+  }
+
+  state.composerDraftsByKey[draftKey] = {
+    content: draft.content,
+    attachments: draft.attachments.map((attachment) => ({ ...attachment })),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
 // ============================================================================
 // Store Implementation
 // ============================================================================
@@ -200,6 +247,7 @@ export const useChatStore = create<ChatState & ChatActions>()(
     lastToolCallCompletionTimestamp: {},
     toolCallCompletionTimestamps: {},
     effectiveModel: {},
+    composerDraftsByKey: {},
 
     // Actions
     setContext: (context) =>
@@ -508,6 +556,29 @@ export const useChatStore = create<ChatState & ChatActions>()(
         effectiveModel: { ...state.effectiveModel, [storeKey]: model },
       })),
 
+    setComposerDraftContent: (draftKey, content) =>
+      set((state) => {
+        const current = state.composerDraftsByKey[draftKey];
+        writeComposerDraft(state, draftKey, {
+          content,
+          attachments: current?.attachments ?? [],
+        });
+      }),
+
+    setComposerDraftAttachments: (draftKey, attachments) =>
+      set((state) => {
+        const current = state.composerDraftsByKey[draftKey];
+        writeComposerDraft(state, draftKey, {
+          content: current?.content ?? "",
+          attachments,
+        });
+      }),
+
+    clearComposerDraft: (draftKey) =>
+      set((state) => {
+        delete state.composerDraftsByKey[draftKey];
+      }),
+
     processQueue: async (contextKey) => {
       const state = get();
       const messages = state.queuedMessages[contextKey];
@@ -644,6 +715,11 @@ export const selectActiveAgentRunId =
   (storeKey: string) =>
   (state: ChatState): string | undefined =>
     state.activeAgentRunIds[storeKey];
+
+export const selectComposerDraft =
+  (draftKey: string | null) =>
+  (state: ChatState): ChatComposerDraft | null =>
+    draftKey ? state.composerDraftsByKey[draftKey] ?? null : null;
 
 /**
  * Select whether a team is active for a context

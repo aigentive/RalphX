@@ -181,6 +181,32 @@ describe("AgentsView start conversation", () => {
     expect(useAgentSessionStore.getState().startConversationDraft).toBeNull();
   });
 
+  it("restores unsent starter composer text and attachments from the draft store", async () => {
+    mockAgentViewData();
+    const file = new File(["draft"], "notes.md", { type: "text/markdown" });
+    useChatStore
+      .getState()
+      .setComposerDraftContent("agents:start", "continue this draft");
+    useChatStore.getState().setComposerDraftAttachments("agents:start", [
+      {
+        id: "starter-attachment-1",
+        file,
+        fileName: "notes.md",
+        fileSize: 5,
+        mimeType: "text/markdown",
+      },
+    ]);
+
+    renderAgentsView();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-start-textarea")).toHaveValue(
+        "continue this draft"
+      )
+    );
+    expect(screen.getByTestId("chat-attachment-gallery")).toHaveTextContent("notes.md");
+  });
+
   it("restores a persisted selected conversation even when it is outside the first sidebar page", async () => {
     const restoredConversation = conversation({
       id: "conversation-restored",
@@ -289,6 +315,77 @@ describe("AgentsView start conversation", () => {
       expect(useAgentSessionStore.getState().selectedConversationId).toBeNull()
     );
     expect(screen.getByTestId("agents-start-composer")).toBeInTheDocument();
+  });
+
+  it("restores starter composer text and attachments after visiting another conversation", async () => {
+    const existingConversation = conversation({
+      id: "conversation-existing",
+      title: "Existing agent",
+      contextId: "project-1",
+      projectId: "project-1",
+    });
+    useProjectsMock.mockReturnValue({
+      data: [project],
+      isLoading: false,
+    });
+    useProjectAgentConversationsMock.mockReturnValue({
+      data: [existingConversation],
+      conversations: [existingConversation],
+      isLoading: false,
+      isSuccess: true,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+    mockAgentSidebarData([existingConversation]);
+    useConversationMock.mockImplementation((conversationId: string | null) => ({
+      data:
+        conversationId === existingConversation.id
+          ? {
+              conversation: existingConversation,
+              messages: [],
+            }
+          : null,
+      isLoading: false,
+    }));
+    resetAgentSessionState({
+      selectedProjectId: null,
+      selectedConversationId: null,
+    });
+
+    renderAgentsView();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-start-composer")).toBeInTheDocument()
+    );
+    const file = new File(["draft"], "starter-draft.txt", {
+      type: "text/plain",
+    });
+    fireEvent.change(screen.getByTestId("attachment-file-input"), {
+      target: { files: [file] },
+    });
+    fireEvent.change(screen.getByTestId("agents-start-textarea"), {
+      target: { value: "keep this starter draft" },
+    });
+    expect(screen.getByText("starter-draft.txt")).toBeInTheDocument();
+
+    const row = await screen.findByTestId("agents-session-conversation-existing");
+    const button = row.querySelector("button");
+    expect(button).not.toBeNull();
+    fireEvent.click(button as HTMLButtonElement);
+    await waitFor(() =>
+      expect(screen.queryByTestId("agents-start-composer")).not.toBeInTheDocument()
+    );
+
+    fireEvent.click(button as HTMLButtonElement);
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-start-composer")).toBeInTheDocument()
+    );
+
+    expect(screen.getByTestId("agents-start-textarea")).toHaveValue(
+      "keep this starter draft"
+    );
+    expect(screen.getByText("starter-draft.txt")).toBeInTheDocument();
   });
 
   it("starts a new conversation directly from the starter composer and triggers the session namer", async () => {
