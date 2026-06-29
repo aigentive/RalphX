@@ -3694,8 +3694,10 @@ mod tests {
     use crate::commands::ExecutionState;
     use crate::domain::entities::{
         AgentConversationWorkspace, AgentConversationWorkspaceMode,
-        AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspaceSourcePullRequest, ArtifactId,
-        ChatContextType, ChatConversation, IdeationAnalysisBaseRefKind, Project, ProjectId,
+        AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspaceReviewGateStatus,
+        AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
+        AgentWorkspaceSourcePullRequest, ArtifactId, ChatContextType, ChatConversation,
+        IdeationAnalysisBaseRefKind, Project, ProjectId,
     };
     use crate::domain::services::github_service::{
         GithubServiceTrait, PrHealth, PrIssueCommentSummary, PrReviewSubmissionEvent, PrStatus,
@@ -3938,6 +3940,39 @@ mod tests {
             base_block_reason: (base_status == "blocked")
                 .then_some("Workspace base is blocked".to_string()),
         }
+    }
+
+    async fn seed_current_passing_workspace_review(
+        app_state: &AppState,
+        workspace: &AgentConversationWorkspace,
+    ) {
+        let context = load_agent_workspace_review_context(app_state, workspace)
+            .await
+            .expect("review context should load");
+        let target = context.target.expect("review target should exist");
+        let mut monitor = context.monitor;
+        apply_review_artifact_to_monitor(
+            &mut monitor,
+            target.scope,
+            target.head_sha,
+            target.diff_fingerprint,
+            Some("seeded-passing-review".to_string()),
+            ArtifactId::from_string(format!(
+                "review-artifact-{}",
+                workspace.conversation_id.as_str()
+            )),
+            1,
+            chrono::Utc::now(),
+            None,
+        );
+        monitor.review_outcome = AgentWorkspaceReviewOutcome::Passed;
+        monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Passed;
+        monitor.status = AgentWorkspaceReviewMonitorStatus::Ready;
+        app_state
+            .agent_conversation_workspace_repo
+            .upsert_workspace_review_monitor(monitor)
+            .await
+            .expect("passing review monitor should persist");
     }
 
     #[test]
@@ -4186,21 +4221,23 @@ mod tests {
         );
         std::fs::write(workspace_path.join("implementation.txt"), "uncommitted\n")
             .expect("write workspace change");
+        let workspace = AgentConversationWorkspace::new(
+            conversation_id.clone(),
+            project.id.clone(),
+            AgentConversationWorkspaceMode::Edit,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main".to_string(),
+            Some("Project default (main)".to_string()),
+            Some(base_sha),
+            branch_name.to_string(),
+            workspace_path.to_string_lossy().to_string(),
+        );
         app_state
             .agent_conversation_workspace_repo
-            .create_or_update(AgentConversationWorkspace::new(
-                conversation_id.clone(),
-                project.id.clone(),
-                AgentConversationWorkspaceMode::Edit,
-                IdeationAnalysisBaseRefKind::ProjectDefault,
-                "main".to_string(),
-                Some("Project default (main)".to_string()),
-                Some(base_sha),
-                branch_name.to_string(),
-                workspace_path.to_string_lossy().to_string(),
-            ))
+            .create_or_update(workspace.clone())
             .await
             .expect("seed workspace");
+        seed_current_passing_workspace_review(app_state.as_ref(), &workspace).await;
         let state = test_http_state(app_state);
 
         let Json(response) = check_agent_workspace_publish_readiness(

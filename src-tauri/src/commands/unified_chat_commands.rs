@@ -6392,19 +6392,13 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
             )
         })?;
 
-    if matches!(
-        workspace.mode,
-        AgentConversationWorkspaceMode::Edit | AgentConversationWorkspaceMode::Ideation
-    ) {
+    if workspace.mode == AgentConversationWorkspaceMode::Ideation {
         if let Some(blocker) = load_workspace_review_publish_blocker(state, &workspace)
             .await
             .map_err(|e| e.to_string())?
         {
             return Err(blocker);
         }
-    }
-
-    if workspace.mode == AgentConversationWorkspaceMode::Ideation {
         return publish_linked_ideation_plan_branch_workspace_for_app_state(
             state,
             execution_state,
@@ -6426,6 +6420,17 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
     }
     if workspace.has_terminal_publication_pr_status() {
         return Err("Cannot publish a workspace whose PR is already closed or merged".to_string());
+    }
+    if let Err(error) =
+        review_base_for_publish(workspace.base_commit.as_deref(), &workspace.base_ref)
+    {
+        return Err(error);
+    }
+    if let Some(blocker) = load_workspace_review_publish_blocker(state, &workspace)
+        .await
+        .map_err(|e| e.to_string())?
+    {
+        return Err(blocker);
     }
 
     let conversation = state
@@ -9089,13 +9094,14 @@ mod tests {
     use crate::domain::entities::{
         AgentConversationWorkspace, AgentConversationWorkspaceBranchMode,
         AgentConversationWorkspaceMode, AgentConversationWorkspacePublicationEvent, AgentRun,
-        AgentWorkspacePrDescription, AgentWorkspaceReviewMonitor,
-        AgentWorkspaceReviewMonitorStatus, AgentWorkspaceSourcePullRequest, ArtifactId,
-        ChatContextType, ChatConversation, ChatConversationId, ChatMessage, ChatMessageId,
-        ChatTimelineItem, ChatTimelineItemId, ChatTimelineItemKind, ChatTimelineItemStatus,
-        ExecutionPlan, ExecutionPlanId, ExecutionPlanStatus, IdeationAnalysisBaseRefKind,
-        IdeationSession, IdeationSessionFlow, IdeationSessionId, InternalStatus, MessageRole,
-        PlanBranch, PlanBranchId, PlanBranchStatus, Project, ProjectId, SessionPurpose, Task,
+        AgentWorkspacePrDescription, AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor,
+        AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
+        AgentWorkspaceSourcePullRequest, ArtifactId, ChatContextType, ChatConversation,
+        ChatConversationId, ChatMessage, ChatMessageId, ChatTimelineItem, ChatTimelineItemId,
+        ChatTimelineItemKind, ChatTimelineItemStatus, ExecutionPlan, ExecutionPlanId,
+        ExecutionPlanStatus, IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow,
+        IdeationSessionId, InternalStatus, MessageRole, PlanBranch, PlanBranchId,
+        PlanBranchStatus, Project, ProjectId, SessionPurpose, Task,
         DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
     };
     use crate::domain::execution::ExecutionSettings;
@@ -11369,6 +11375,45 @@ mod tests {
         workspace
     }
 
+    async fn seed_current_passing_workspace_review(
+        state: &AppState,
+        conversation_id: &ChatConversationId,
+    ) {
+        let workspace = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        let context =
+            crate::application::agent_workspace_review::load_agent_workspace_review_context(
+                state, &workspace,
+            )
+            .await
+            .expect("review context should load");
+        let target = context.target.expect("review target should exist");
+        let mut monitor = context.monitor;
+        crate::application::agent_workspace_review::apply_review_artifact_to_monitor(
+            &mut monitor,
+            target.scope,
+            target.head_sha,
+            target.diff_fingerprint,
+            Some("seeded-passing-review".to_string()),
+            ArtifactId::from_string(format!("review-artifact-{}", conversation_id.as_str())),
+            1,
+            chrono::Utc::now(),
+            None,
+        );
+        monitor.review_outcome = AgentWorkspaceReviewOutcome::Passed;
+        monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Passed;
+        monitor.status = AgentWorkspaceReviewMonitorStatus::Ready;
+        state
+            .agent_conversation_workspace_repo
+            .upsert_workspace_review_monitor(monitor)
+            .await
+            .expect("passing review monitor should persist");
+    }
+
     fn commit_file(repo: &Path, relative_path: &str, contents: &str, message: &str) -> String {
         let path = repo.join(relative_path);
         if let Some(parent) = path.parent() {
@@ -13318,7 +13363,7 @@ mod tests {
         .await
         .expect_err("missing base commit should block publish");
 
-        assert_eq!(error, BLOCK_REASON_MISSING_BASE_COMMIT);
+        assert!(error.contains("missing its captured base commit"));
         assert_eq!(github.state().update_pr_base_calls, 0);
         let stored = state
             .agent_conversation_workspace_repo
@@ -13327,6 +13372,43 @@ mod tests {
             .expect("workspace lookup should succeed")
             .expect("workspace should exist");
         assert_eq!(stored.base_ref, "feature/deleted-base");
+    }
+
+    #[tokio::test]
+    async fn publish_workspace_blocks_on_review_gate_before_push_when_base_is_valid() {
+        let (_temp, state, conversation_id, github) = setup_publish_command_state(
+            "review-required",
+            true,
+            Some(322),
+            Arc::new(MockGithubService::new()),
+        )
+        .await;
+        let workspace = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        std::fs::write(
+            Path::new(&workspace.worktree_path).join("implementation.txt"),
+            "change requiring review\n",
+        )
+        .expect("workspace change should be written");
+        let execution_state = Arc::new(ExecutionState::new());
+
+        let error = publish_agent_conversation_workspace_for_app_state(
+            &state,
+            &execution_state,
+            None,
+            conversation_id,
+            false,
+        )
+        .await
+        .expect_err("review gate should block publish");
+
+        assert_eq!(error, "Workspace Review is required before publishing");
+        assert_eq!(github.state().push_branch_calls, 0);
+        assert_eq!(github.state().update_pr_base_calls, 0);
     }
 
     #[tokio::test]
@@ -13419,6 +13501,7 @@ mod tests {
             "ready for review\n",
         )
         .expect("workspace change should be written");
+        seed_current_passing_workspace_review(&state, &conversation_id).await;
         github.state().fetch_pr_health_result = Some(Ok(PrHealth {
             sync_state: PrSyncState {
                 status: GithubPrStatus::Open,
@@ -13509,6 +13592,7 @@ mod tests {
             "ready for review\n",
         )
         .expect("workspace change should be written");
+        seed_current_passing_workspace_review(&state, &conversation_id).await;
         github.state().fetch_pr_health_result = Some(Err(AppError::Infrastructure(
             "GitHub health unavailable".to_string(),
         )));
@@ -13580,6 +13664,7 @@ mod tests {
             "change that should be described\n",
         )
         .expect("workspace change should be written");
+        seed_current_passing_workspace_review(&state, &conversation_id).await;
         let execution_state = Arc::new(ExecutionState::new());
 
         let error = publish_agent_conversation_workspace_for_app_state(
