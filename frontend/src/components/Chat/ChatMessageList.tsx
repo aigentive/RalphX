@@ -143,6 +143,7 @@ const ChatVirtuosoScroller = forwardRef<HTMLDivElement, ChatVirtuosoScrollerProp
         style={{
           ...style,
           overflowAnchor: "none",
+          overscrollBehavior: "none",
         }}
       />
     );
