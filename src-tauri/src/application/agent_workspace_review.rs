@@ -358,6 +358,7 @@ async fn start_agent_workspace_review_with_chat_service<S: ChatService + ?Sized>
                 sandbox_mode_override: runtime.sandbox_mode,
                 service_tier_override: runtime.service_tier,
                 force_new_provider_session: true,
+                metadata: Some(workspace_review_request_metadata()),
                 caller_context: SendCallerContext::UserInitiated,
                 ..Default::default()
             },
@@ -474,6 +475,14 @@ fn workspace_review_conversation_title(target: &AgentWorkspaceReviewTarget) -> S
         }
         AgentWorkspaceReviewTargetScope::WorkspaceDelta => "Review workspace changes".to_string(),
     }
+}
+
+fn workspace_review_request_metadata() -> String {
+    serde_json::json!({
+        "hidden_from_ui": true,
+        "source": "workspace_review_request",
+    })
+    .to_string()
 }
 
 fn spawn_workspace_review_waiter(
@@ -1447,7 +1456,7 @@ fn build_review_request_message(
          - Review packet: {files_changed} files changed, {insertions} insertions, {deletions} deletions\n\
          {pr_line}\
          - Workspace conversation: {conversation_id}\n\n\
-         This Review is running in a child chat, so pass conversation_id `{conversation_id}` explicitly to every workspace Review tool call. \
+         RalphX scopes workspace Review tools to this parent conversation from runtime context. \
          Use the `target.review_packet` returned by `get_workspace_review_context` as the primary diff input, then inspect only targeted files with read-only filesystem tools if needed. \
          Do not run shell commands, tests, linters, or validation suites. \
          Write a concise reviewer-focused Markdown Review with the `write_workspace_review_artifact` tool, then call `complete_workspace_review_run`. Do not modify files.",
@@ -2147,6 +2156,7 @@ x
         assert!(review_prompt.contains("Create or refresh the Review"));
         assert!(review_prompt.contains("- Scope: workspace_delta"));
         assert!(review_prompt.contains(&workspace.conversation_id.as_str()));
+        assert!(!review_prompt.contains("pass conversation_id"));
 
         let sent_options = chat_service.get_sent_options().await;
         assert_eq!(sent_options.len(), 1);
@@ -2164,6 +2174,15 @@ x
             Some(repo.as_path())
         );
         assert!(options.force_new_provider_session);
+        let metadata: serde_json::Value = serde_json::from_str(
+            options
+                .metadata
+                .as_deref()
+                .expect("review kickoff should carry hidden message metadata"),
+        )
+        .expect("review kickoff metadata should be valid json");
+        assert_eq!(metadata["hidden_from_ui"], true);
+        assert_eq!(metadata["source"], "workspace_review_request");
 
         let mut blocked_monitor = None;
         for _ in 0..100 {

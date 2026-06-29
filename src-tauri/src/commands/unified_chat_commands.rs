@@ -3747,7 +3747,11 @@ pub async fn list_agent_conversations(
             .map_err(|e| e.to_string())?
     };
 
-    agent_conversation_responses_for_state(state.inner(), conversations).await
+    agent_conversation_responses_for_state(
+        state.inner(),
+        filter_top_level_agent_conversations(conversations),
+    )
+    .await
 }
 
 /// List a page of conversations for a context with optional title search.
@@ -3768,29 +3772,61 @@ pub async fn list_agent_conversations_page(
     let offset = offset.unwrap_or(0);
     let limit = limit.unwrap_or(6);
 
-    let page = state
+    let mut conversations = state
         .chat_conversation_repo
-        .get_by_context_page_filtered(
+        .get_by_context_filtered(
             context_type_enum,
             &context_id,
             include_archived,
-            archived_only,
-            offset,
-            limit,
-            search.as_deref(),
         )
         .await
         .map_err(|e| e.to_string())?;
-    let has_more = page.has_more();
+    conversations = filter_top_level_agent_conversations(conversations)
+        .into_iter()
+        .filter(|conversation| {
+            if archived_only && !conversation.is_archived() {
+                return false;
+            }
+            conversation_matches_agent_list_search(conversation, search.as_deref())
+        })
+        .collect();
+    let total = i64::try_from(conversations.len()).unwrap_or(i64::MAX);
+    let offset_usize = usize::try_from(offset).unwrap_or(usize::MAX);
+    let limit_usize = usize::try_from(limit).unwrap_or(usize::MAX);
+    let conversations = conversations
+        .into_iter()
+        .skip(offset_usize)
+        .take(limit_usize)
+        .collect::<Vec<_>>();
+    let has_more = i64::from(offset.saturating_add(limit)) < total;
 
     Ok(AgentConversationListPageResponse {
-        conversations: agent_conversation_responses_for_state(state.inner(), page.conversations)
-            .await?,
-        total: page.total_count,
-        limit: page.limit,
-        offset: page.offset,
+        conversations: agent_conversation_responses_for_state(state.inner(), conversations).await?,
+        total,
+        limit,
+        offset,
         has_more,
     })
+}
+
+fn filter_top_level_agent_conversations(
+    conversations: Vec<ChatConversation>,
+) -> Vec<ChatConversation> {
+    conversations
+        .into_iter()
+        .filter(|conversation| conversation.parent_conversation_id.is_none())
+        .collect()
+}
+
+fn conversation_matches_agent_list_search(
+    conversation: &ChatConversation,
+    search: Option<&str>,
+) -> bool {
+    let Some(search) = search.map(str::trim).filter(|value| !value.is_empty()) else {
+        return true;
+    };
+    let title = conversation.title.as_deref().unwrap_or("Untitled agent");
+    title.to_lowercase().contains(&search.to_lowercase())
 }
 
 /// Core archive logic, testable without Tauri `State` wrapper.
@@ -14230,6 +14266,14 @@ mod tests {
             .create(run)
             .await
             .expect("run should be created");
+        let mut child = ChatConversation::new_project(project_id.clone());
+        child.parent_conversation_id = Some(conversation.id.as_str().to_string());
+        child.set_title("Review workspace changes");
+        let child = state
+            .chat_conversation_repo
+            .create(child)
+            .await
+            .expect("child conversation should be created");
         let app = mock_builder()
             .manage(state)
             .build(mock_context(noop_assets()))
@@ -14247,6 +14291,7 @@ mod tests {
         )
         .await
         .expect("conversation page should load");
+        assert_eq!(page.total, 1);
         let page_conversation = page
             .conversations
             .iter()
@@ -14254,6 +14299,11 @@ mod tests {
             .expect("seeded conversation should be listed");
         assert_eq!(page_conversation.logical_model.as_deref(), Some("gpt-5.5"));
         assert_eq!(page_conversation.logical_effort.as_deref(), Some("high"));
+        assert!(
+            page.conversations
+                .iter()
+                .all(|conversation| conversation.id != child.id.as_str())
+        );
 
         let summary = get_agent_conversation_summary_for_app_state(
             app.state::<AppState>().inner(),

@@ -953,6 +953,34 @@ describe("AgentsActiveConversationPanel", () => {
     expect(onFocusWorkspaceReview).toHaveBeenCalledWith("review-conversation-1");
   });
 
+  it("queries parent runtime status when the selected conversation is a Review child", async () => {
+    getAgentConversationRuntimeStatusesMock.mockResolvedValue({
+      "conversation-1": workspaceRuntimeStatus({
+        primarySource: "workspace_review",
+        summaryLabel: "Reviewing",
+      }),
+    });
+
+    renderPanel({
+      activeConversation: {
+        ...projectConversation(),
+        id: "review-conversation-1",
+        parentConversationId: "conversation-1",
+      },
+      selectedConversationId: "review-conversation-1",
+      chatFocus: {
+        type: "workspace_review",
+        conversationId: "review-conversation-1",
+      },
+    });
+
+    await waitFor(() =>
+      expect(getAgentConversationRuntimeStatusesMock).toHaveBeenCalledWith([
+        "conversation-1",
+      ]),
+    );
+  });
+
   it("routes workspace Review focus through the review child project chat", () => {
     renderPanel({
       chatFocus: {

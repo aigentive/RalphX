@@ -24,6 +24,19 @@ function normalizeRuntimeStatus(status: AgentConversationRuntimeStatus | undefin
   };
 }
 
+function runtimeActivityLabel(
+  status: AgentConversationRuntimeStatus | undefined
+): string | null {
+  if (!status?.isRunning) return null;
+  if (
+    status.primarySource === "workspace_review" ||
+    status.items.some((item) => item.source === "workspace_review")
+  ) {
+    return "reviewing";
+  }
+  return null;
+}
+
 export function useAgentSidebarRunningStates(
   conversations: AgentConversation[],
   isVisible: boolean
@@ -67,6 +80,9 @@ export function useAgentSidebarRunningStates(
             const { isRunning, agentStatus } = normalizeRuntimeStatus(
               runtimeStatuses[conversation.id]
             );
+            const activityLabel = runtimeActivityLabel(
+              runtimeStatuses[conversation.id]
+            );
             const currentStatus = chatState.agentStatus[storeKey] ?? "idle";
 
             if (isRunning) {
@@ -74,11 +90,14 @@ export function useAgentSidebarRunningStates(
               if (currentStatus !== agentStatus) {
                 chatState.setAgentStatus(storeKey, agentStatus);
               }
+              chatState.setAgentActivityLabel(storeKey, activityLabel);
               continue;
             }
 
             if (currentStatus !== "idle") {
               chatState.setAgentRunning(storeKey, false);
+            } else {
+              chatState.setAgentActivityLabel(storeKey, null);
             }
           }
         })

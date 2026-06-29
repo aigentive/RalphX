@@ -446,11 +446,16 @@ export function useAgentsViewController({
     prReviewContextQuery.data,
     prReviewConversationId,
   );
+  const activeParentWorkspaceConversationId =
+    activeConversation?.contextType === "project"
+      ? activeConversation.parentConversationId ?? null
+      : null;
   const workspaceReviewConversationId =
     activeConversation?.contextType === "project" &&
-    activeConversationMode &&
-    ["edit", "ideation", "plan", "review_pr"].includes(activeConversationMode)
-      ? activeConversation.id
+    (activeParentWorkspaceConversationId ||
+      (activeConversationMode &&
+        ["edit", "ideation", "plan", "review_pr"].includes(activeConversationMode)))
+      ? activeParentWorkspaceConversationId ?? activeConversation.id
       : null;
   const shouldLoadWorkspaceReviewContext = Boolean(workspaceReviewConversationId);
   const workspaceReviewContextQuery = useQuery({

@@ -772,9 +772,14 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     ? `workspace_review:${focusedWorkspaceReviewConversationId}`
     : focusedChatSessionId ?? "workspace";
   const isFocusedChildChat = chatFocus.type !== "workspace";
-  const runtimeStatusQuery = useAgentConversationRuntimeStatus(selectedConversationId, {
-    enabled: activeConversation.contextType === "project",
-  });
+  const runtimeStatusConversationId =
+    activeConversation.parentConversationId ?? selectedConversationId;
+  const runtimeStatusQuery = useAgentConversationRuntimeStatus(
+    runtimeStatusConversationId,
+    {
+      enabled: activeConversation.contextType === "project",
+    },
+  );
   const hasLinkedChatFocusTargets = chatFocusOptions.some(
     (option) => option.type !== "workspace",
   );

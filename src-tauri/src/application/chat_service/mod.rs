@@ -3765,6 +3765,8 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     }
 
                     let persisted_metadata = persisted_user_metadata(&options);
+                    let hide_user_message =
+                        message_metadata_hidden_from_ui(persisted_metadata.as_deref());
 
                     // Store user message for conversation history
                     if !resume_in_place {
@@ -3783,6 +3785,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                             .create(user_msg.clone())
                             .await
                             .is_ok()
+                            && !hide_user_message
                         {
                             chat_service_streaming::persist_message_text_timeline_item(
                                 &self.chat_timeline_repo,
@@ -3793,58 +3796,60 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                         self.link_turn_attachments(&turn_attachments, &user_msg_id)
                             .await?;
 
-                        if context_type == ChatContextType::Ideation {
-                            let _ = self
-                                .ideation_session_repo
-                                .touch_updated_at(context_id)
-                                .await;
-                        }
-                        self.auto_assign_primary_jira_issue_from_turn(
-                            context_type,
-                            context_id,
-                            &conversation.id,
-                            None,
-                            &options.composer_integration_references,
-                            &user_msg_id,
-                            user_msg.created_at,
-                        )
-                        .await;
-                        self.auto_assign_primary_linear_issue_from_turn(
-                            context_type,
-                            context_id,
-                            &conversation.id,
-                            None,
-                            &options.composer_integration_references,
-                            &user_msg_id,
-                            user_msg.created_at,
-                        )
-                        .await;
-                        self.auto_assign_primary_granola_note_from_turn(
-                            context_type,
-                            context_id,
-                            &conversation.id,
-                            None,
-                            &options.composer_integration_references,
-                            &user_msg_id,
-                            user_msg.created_at,
-                        )
-                        .await;
+                        if !hide_user_message {
+                            if context_type == ChatContextType::Ideation {
+                                let _ = self
+                                    .ideation_session_repo
+                                    .touch_updated_at(context_id)
+                                    .await;
+                            }
+                            self.auto_assign_primary_jira_issue_from_turn(
+                                context_type,
+                                context_id,
+                                &conversation.id,
+                                None,
+                                &options.composer_integration_references,
+                                &user_msg_id,
+                                user_msg.created_at,
+                            )
+                            .await;
+                            self.auto_assign_primary_linear_issue_from_turn(
+                                context_type,
+                                context_id,
+                                &conversation.id,
+                                None,
+                                &options.composer_integration_references,
+                                &user_msg_id,
+                                user_msg.created_at,
+                            )
+                            .await;
+                            self.auto_assign_primary_granola_note_from_turn(
+                                context_type,
+                                context_id,
+                                &conversation.id,
+                                None,
+                                &options.composer_integration_references,
+                                &user_msg_id,
+                                user_msg.created_at,
+                            )
+                            .await;
 
-                        // Emit message_created event for frontend
-                        self.emit_event(
-                            "agent:message_created",
-                            AgentMessageCreatedPayload {
-                                message_id: user_msg_id,
-                                conversation_id: conversation.id.as_str().to_string(),
-                                context_type: context_type.to_string(),
-                                context_id: context_id.to_string(),
-                                role: "user".to_string(),
-                                content: message.to_string(),
-                                created_at: Some(user_msg_created_at),
-                                metadata: persisted_metadata.clone(),
-                                render_ready: None,
-                            },
-                        );
+                            // Emit message_created event for frontend
+                            self.emit_event(
+                                "agent:message_created",
+                                AgentMessageCreatedPayload {
+                                    message_id: user_msg_id,
+                                    conversation_id: conversation.id.as_str().to_string(),
+                                    context_type: context_type.to_string(),
+                                    context_id: context_id.to_string(),
+                                    role: "user".to_string(),
+                                    content: message.to_string(),
+                                    created_at: Some(user_msg_created_at),
+                                    metadata: persisted_metadata.clone(),
+                                    render_ready: None,
+                                },
+                            );
+                        }
                     } else {
                         self.persist_hidden_resume_in_place_marker(
                             context_type,
@@ -4493,6 +4498,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
 
         let resume_in_place = resume_in_place_requested(options.metadata.as_deref());
         let persisted_metadata = persisted_user_metadata(&options);
+        let hide_user_message = message_metadata_hidden_from_ui(persisted_metadata.as_deref());
         let turn_attachments = if resume_in_place {
             Vec::new()
         } else {
@@ -4525,16 +4531,18 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 cleanup_and_err!(ChatServiceError::RepositoryError(e.to_string()));
             }
             user_message_persisted = true;
-            chat_service_streaming::persist_message_text_timeline_item(
-                &self.chat_timeline_repo,
-                &user_msg,
-            )
-            .await;
-            if context_type == ChatContextType::Ideation {
-                let _ = self
-                    .ideation_session_repo
-                    .touch_updated_at(context_id)
-                    .await;
+            if !hide_user_message {
+                chat_service_streaming::persist_message_text_timeline_item(
+                    &self.chat_timeline_repo,
+                    &user_msg,
+                )
+                .await;
+                if context_type == ChatContextType::Ideation {
+                    let _ = self
+                        .ideation_session_repo
+                        .touch_updated_at(context_id)
+                        .await;
+                }
             }
             tracing::debug!(
                 message_id = %user_msg_id,
@@ -4556,52 +4564,54 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                     "chat_service.send_message linked attachments to user message"
                 );
             }
-            self.auto_assign_primary_jira_issue_from_turn(
-                context_type,
-                context_id,
-                &conversation_id,
-                agent_workspace.as_ref(),
-                &options.composer_integration_references,
-                &user_msg_id,
-                user_msg.created_at,
-            )
-            .await;
-            self.auto_assign_primary_linear_issue_from_turn(
-                context_type,
-                context_id,
-                &conversation_id,
-                agent_workspace.as_ref(),
-                &options.composer_integration_references,
-                &user_msg_id,
-                user_msg.created_at,
-            )
-            .await;
-            self.auto_assign_primary_granola_note_from_turn(
-                context_type,
-                context_id,
-                &conversation_id,
-                agent_workspace.as_ref(),
-                &options.composer_integration_references,
-                &user_msg_id,
-                user_msg.created_at,
-            )
-            .await;
+            if !hide_user_message {
+                self.auto_assign_primary_jira_issue_from_turn(
+                    context_type,
+                    context_id,
+                    &conversation_id,
+                    agent_workspace.as_ref(),
+                    &options.composer_integration_references,
+                    &user_msg_id,
+                    user_msg.created_at,
+                )
+                .await;
+                self.auto_assign_primary_linear_issue_from_turn(
+                    context_type,
+                    context_id,
+                    &conversation_id,
+                    agent_workspace.as_ref(),
+                    &options.composer_integration_references,
+                    &user_msg_id,
+                    user_msg.created_at,
+                )
+                .await;
+                self.auto_assign_primary_granola_note_from_turn(
+                    context_type,
+                    context_id,
+                    &conversation_id,
+                    agent_workspace.as_ref(),
+                    &options.composer_integration_references,
+                    &user_msg_id,
+                    user_msg.created_at,
+                )
+                .await;
 
-            // 5. Emit message created event
-            self.emit_event(
-                "agent:message_created",
-                AgentMessageCreatedPayload {
-                    message_id: user_msg_id.clone(),
-                    conversation_id: conversation_id.as_str().to_string(),
-                    context_type: context_type.to_string(),
-                    context_id: context_id.to_string(),
-                    role: "user".to_string(),
-                    content: message.to_string(),
-                    created_at: Some(user_msg_created_at),
-                    metadata: persisted_metadata.clone(),
-                    render_ready: None,
-                },
-            );
+                // 5. Emit message created event
+                self.emit_event(
+                    "agent:message_created",
+                    AgentMessageCreatedPayload {
+                        message_id: user_msg_id.clone(),
+                        conversation_id: conversation_id.as_str().to_string(),
+                        context_type: context_type.to_string(),
+                        context_id: context_id.to_string(),
+                        role: "user".to_string(),
+                        content: message.to_string(),
+                        created_at: Some(user_msg_created_at),
+                        metadata: persisted_metadata.clone(),
+                        render_ready: None,
+                    },
+                );
+            }
         } else if let Err(error) = self
             .persist_hidden_resume_in_place_marker(
                 context_type,

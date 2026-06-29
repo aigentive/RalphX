@@ -1779,6 +1779,7 @@ function PublicationStateGroup({
   });
   const activeConversationIds = useChatStore((s) => s.activeConversationIds);
   const agentStatuses = useChatStore((s) => s.agentStatus);
+  const agentActivityLabels = useChatStore((s) => s.agentActivityLabels);
   const sessionActionsTriggerRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const [renameDialogConversation, setRenameDialogConversation] =
     useState<AgentConversation | null>(null);
@@ -1879,6 +1880,7 @@ function PublicationStateGroup({
       const rowKey = getAgentConversationStoreKey(conversation);
       const activeConversationId = activeConversationIds[rowKey] ?? null;
       const agentStatus = agentStatuses[rowKey] ?? "idle";
+      const runtimeLabel = agentActivityLabels[rowKey] ?? null;
       const isSelected = selectedConversationId === conversation.id;
       const isActiveRuntime = activeConversationId === conversation.id;
       const isPinned = Boolean(pinnedConversationIds[conversation.id]);
@@ -1905,6 +1907,7 @@ function PublicationStateGroup({
           isSelected={isSelected}
           isPinned={isPinned}
           runtimeState={runtimeState}
+          runtimeLabel={runtimeLabel}
           showRuntimeState={showRuntimeState}
           sessionActionsOpen={sessionActionsOpen}
           onSelect={() => onSelectConversation(conversation.projectId, conversation)}
@@ -1929,6 +1932,7 @@ function PublicationStateGroup({
     },
     [
       activeConversationIds,
+      agentActivityLabels,
       agentStatuses,
       openRenameDialog,
       onForkConversation,
@@ -2134,6 +2138,7 @@ interface AgentSessionRowProps {
   isSelected: boolean;
   isPinned: boolean;
   runtimeState: SessionRuntimeState;
+  runtimeLabel: string | null;
   showRuntimeState: boolean;
   sessionActionsOpen: boolean;
   onSelect: () => void;
@@ -2157,6 +2162,7 @@ function AgentSessionRow({
   isSelected,
   isPinned,
   runtimeState,
+  runtimeLabel,
   showRuntimeState,
   sessionActionsOpen,
   onSelect,
@@ -2254,7 +2260,7 @@ function AgentSessionRow({
                 <span className="flex h-[1em] shrink-0 items-center" aria-hidden="true">
                   ·
                 </span>
-                <SessionRuntimeLabel state={runtimeState} />
+                <SessionRuntimeLabel state={runtimeState} label={runtimeLabel} />
               </>
             )}
           </span>
@@ -2435,6 +2441,7 @@ function ProjectSessionGroup({
   });
   const activeConversationIds = useChatStore((s) => s.activeConversationIds);
   const agentStatuses = useChatStore((s) => s.agentStatus);
+  const agentActivityLabels = useChatStore((s) => s.agentActivityLabels);
   const visibleRows = groupQuery.group.rows;
   const visibleConversations = useMemo(
     () => visibleRows.map((row) => toProjectAgentConversation(row.conversation)),
@@ -2541,6 +2548,7 @@ function ProjectSessionGroup({
       const rowKey = getAgentConversationStoreKey(conversation);
       const activeConversationId = activeConversationIds[rowKey] ?? null;
       const agentStatus = agentStatuses[rowKey] ?? "idle";
+      const runtimeLabel = agentActivityLabels[rowKey] ?? null;
       const isSelected = selectedConversationId === conversation.id;
       const isActiveRuntime = activeConversationId === conversation.id;
       const isPinned = Boolean(pinnedConversationIds[conversation.id]);
@@ -2567,6 +2575,7 @@ function ProjectSessionGroup({
           isSelected={isSelected}
           isPinned={isPinned}
           runtimeState={runtimeState}
+          runtimeLabel={runtimeLabel}
           showRuntimeState={showRuntimeState}
           sessionActionsOpen={sessionActionsOpen}
           onSelect={() => onSelectConversation(project.id, conversation)}
@@ -2591,6 +2600,7 @@ function ProjectSessionGroup({
     },
     [
       activeConversationIds,
+      agentActivityLabels,
       agentStatuses,
       onForkConversation,
       onRestoreConversation,
@@ -3047,11 +3057,17 @@ function shouldShowSessionRuntimeLabel(
   );
 }
 
-function SessionRuntimeLabel({ state }: { state: SessionRuntimeState }) {
+function SessionRuntimeLabel({
+  state,
+  label,
+}: {
+  state: SessionRuntimeState;
+  label: string | null;
+}) {
   if (state === "running") {
     return (
       <span className="agents-session-runtime-label font-medium">
-        running
+        {label ?? "running"}
       </span>
     );
   }

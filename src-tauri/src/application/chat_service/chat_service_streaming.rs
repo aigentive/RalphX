@@ -48,9 +48,9 @@ use super::tool_result_preview::{
     live_tool_result_activity_metadata, tool_detail_ref,
 };
 use super::{
-    event_context, events, has_meaningful_output, AgentChunkPayload, AgentHookPayload,
-    AgentTaskCompletedPayload, AgentTaskStartedPayload, AgentToolCallPayload,
-    AgentToolCallPreviewFields,
+    event_context, events, has_meaningful_output, message_metadata_hidden_from_ui,
+    AgentChunkPayload, AgentHookPayload, AgentTaskCompletedPayload, AgentTaskStartedPayload,
+    AgentToolCallPayload, AgentToolCallPreviewFields,
 };
 use crate::utils::truncate_str;
 
@@ -372,17 +372,7 @@ pub(super) async fn persist_message_text_timeline_item(
     if message.content.is_empty() {
         return;
     }
-    if message
-        .metadata
-        .as_deref()
-        .and_then(|metadata| serde_json::from_str::<serde_json::Value>(metadata).ok())
-        .and_then(|metadata| {
-            metadata
-                .get("recovery_context")
-                .and_then(serde_json::Value::as_bool)
-        })
-        .unwrap_or(false)
-    {
+    if message_metadata_hidden_from_ui(message.metadata.as_deref()) {
         return;
     }
 
