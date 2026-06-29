@@ -413,6 +413,17 @@ function canContinueToolCallGroup(
   return true;
 }
 
+function liveTranscriptRowSortTime(
+  row: LiveTranscriptRow,
+  rowIndex: number,
+  rowCount: number,
+): number {
+  if (row.receivedAt != null) {
+    return row.receivedAt;
+  }
+  return Number.MAX_SAFE_INTEGER - rowCount + rowIndex - 1;
+}
+
 function collectToolCallGroupRun(
   messages: ChatMessageData[],
   startIndex: number,
@@ -1451,7 +1462,11 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         items.push({
           kind: "streaming_row",
           data: row,
-          sortTime: Number.MAX_SAFE_INTEGER - liveTranscriptRows.length + rowIndex - 1,
+          sortTime: liveTranscriptRowSortTime(
+            row,
+            rowIndex,
+            liveTranscriptRows.length,
+          ),
         });
       });
 
