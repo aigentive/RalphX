@@ -585,7 +585,8 @@ async fn collect_workspace_review_inherited_references(
         );
     }
 
-    if let Some(plan_reference) = linked_workspace_plan_artifact_reference(state, workspace).await? {
+    if let Some(plan_reference) = linked_workspace_plan_artifact_reference(state, workspace).await?
+    {
         push_inherited_artifact_reference(
             &mut inherited.artifact_references,
             &mut artifact_seen,
@@ -624,10 +625,9 @@ fn merge_workspace_review_references_from_metadata(
             );
         }
     }
-    if let Some(references) =
-        parse_workspace_review_metadata_references::<ComposerIntegrationReference>(
-            object.get("composer_integration_references"),
-        )
+    if let Some(references) = parse_workspace_review_metadata_references::<
+        ComposerIntegrationReference,
+    >(object.get("composer_integration_references"))
     {
         for reference in references {
             push_inherited_integration_reference(
@@ -637,11 +637,9 @@ fn merge_workspace_review_references_from_metadata(
             );
         }
     }
-    if let Some(references) =
-        parse_workspace_review_metadata_references::<ComposerArtifactReference>(
-            object.get("composer_artifact_references"),
-        )
-    {
+    if let Some(references) = parse_workspace_review_metadata_references::<ComposerArtifactReference>(
+        object.get("composer_artifact_references"),
+    ) {
         for reference in references {
             push_inherited_artifact_reference(
                 &mut inherited.artifact_references,
@@ -2138,7 +2136,7 @@ mod tests {
         AgentConversationWorkspaceMode, AgentRun, AgentWorkspaceReviewGateStatus,
         AgentWorkspaceReviewOutcome, AgentWorkspaceSourcePullRequest, Artifact, ArtifactId,
         ArtifactType, ChatConversation, ChatConversationId, ChatMessage,
-        IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow,
+        IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow, IdeationSessionId,
     };
     use crate::infrastructure::MockAgenticClient;
     use std::process::Command;
@@ -2244,6 +2242,197 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
         panic!("monitor did not reach status {status}");
+    }
+
+    #[test]
+    fn inherited_reference_metadata_deduplicates_limits_and_ignores_invalid_payloads() {
+        let mut inherited = WorkspaceReviewInheritedReferences::default();
+        let mut project_seen = BTreeSet::new();
+        let mut integration_seen = BTreeSet::new();
+        let mut artifact_seen = BTreeSet::new();
+
+        merge_workspace_review_references_from_metadata(
+            None,
+            &mut inherited,
+            &mut project_seen,
+            &mut integration_seen,
+            &mut artifact_seen,
+        );
+        merge_workspace_review_references_from_metadata(
+            Some("not-json"),
+            &mut inherited,
+            &mut project_seen,
+            &mut integration_seen,
+            &mut artifact_seen,
+        );
+        merge_workspace_review_references_from_metadata(
+            Some("[]"),
+            &mut inherited,
+            &mut project_seen,
+            &mut integration_seen,
+            &mut artifact_seen,
+        );
+
+        let metadata = serde_json::json!({
+            "composer_project_references": [
+                { "path": "README.md", "kind": "file" },
+                { "path": "README.md", "kind": "file" },
+                { "path": "src", "kind": "directory" },
+                { "path": "docs", "kind": "directory" },
+                { "path": "frontend", "kind": "directory" },
+                { "path": "src-tauri", "kind": "directory" },
+                { "path": "package.json", "kind": "file" },
+                { "path": "Cargo.toml", "kind": "file" },
+                { "path": "CLAUDE.md", "kind": "file" },
+                { "path": "ignored-after-cap.md", "kind": "file" }
+            ],
+            "composer_integration_references": [
+                {
+                    "provider": "atlassian",
+                    "kind": "jira",
+                    "id": "RX-42",
+                    "key": "RX-42",
+                    "title": "Fix Review gate"
+                },
+                {
+                    "provider": "atlassian",
+                    "kind": "jira",
+                    "id": "RX-42",
+                    "key": "RX-42",
+                    "title": "Duplicate"
+                },
+                { "provider": "linear", "kind": "issue", "id": "LIN-1" },
+                { "provider": "clickup", "kind": "task", "id": "CU-1" },
+                { "provider": "granola", "kind": "note", "id": "GN-1" },
+                { "provider": "github", "kind": "issue", "id": "GH-1" },
+                { "provider": "sentry", "kind": "issue", "id": "SEN-1" },
+                { "provider": "notion", "kind": "page", "id": "NOT-1" },
+                { "provider": "slack", "kind": "thread", "id": "SL-1" },
+                { "provider": "ignored", "kind": "thread", "id": "IGN-1" }
+            ],
+            "composer_artifact_references": [
+                { "artifactId": "artifact-1", "kind": "plan", "title": "Plan" },
+                { "artifactId": "artifact-1", "kind": "plan", "title": "Duplicate" },
+                { "artifactId": "artifact-2", "kind": "design" },
+                { "artifactId": "artifact-3", "kind": "spec" },
+                { "artifactId": "artifact-4", "kind": "notes" },
+                { "artifactId": "artifact-5", "kind": "review" },
+                { "artifactId": "artifact-6", "kind": "diff" },
+                { "artifactId": "artifact-7", "kind": "trace" },
+                { "artifactId": "artifact-8", "kind": "context" },
+                { "artifactId": "artifact-9", "kind": "ignored" }
+            ]
+        })
+        .to_string();
+
+        merge_workspace_review_references_from_metadata(
+            Some(&metadata),
+            &mut inherited,
+            &mut project_seen,
+            &mut integration_seen,
+            &mut artifact_seen,
+        );
+
+        assert_eq!(inherited.project_references.len(), 8);
+        assert_eq!(inherited.project_references[0].path, "README.md");
+        assert_eq!(inherited.project_references[1].path, "src");
+        assert!(!inherited
+            .project_references
+            .iter()
+            .any(|reference| reference.path == "ignored-after-cap.md"));
+        assert_eq!(inherited.integration_references.len(), 8);
+        assert_eq!(
+            inherited.integration_references[0].key.as_deref(),
+            Some("RX-42")
+        );
+        assert!(!inherited
+            .integration_references
+            .iter()
+            .any(|reference| reference.id == "IGN-1"));
+        assert_eq!(inherited.artifact_references.len(), 8);
+        assert_eq!(inherited.artifact_references[0].artifact_id, "artifact-1");
+        assert!(!inherited
+            .artifact_references
+            .iter()
+            .any(|reference| reference.artifact_id == "artifact-9"));
+
+        merge_workspace_review_references_from_metadata(
+            Some(&metadata),
+            &mut inherited,
+            &mut project_seen,
+            &mut integration_seen,
+            &mut artifact_seen,
+        );
+        assert_eq!(inherited.project_references.len(), 8);
+        assert_eq!(inherited.integration_references.len(), 8);
+        assert_eq!(inherited.artifact_references.len(), 8);
+    }
+
+    #[tokio::test]
+    async fn linked_workspace_plan_reference_handles_missing_links_and_missing_artifact() {
+        let (_temp, repo, base_sha) = init_repo();
+        let state = AppState::new_test();
+        let project = seed_project(&state, &repo).await;
+        let mut workspace = workspace(
+            &project,
+            &repo,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main",
+            Some(base_sha),
+        );
+
+        assert!(linked_workspace_plan_artifact_reference(&state, &workspace)
+            .await
+            .expect("missing link should load")
+            .is_none());
+
+        workspace.linked_ideation_session_id =
+            Some(IdeationSessionId::from_string("missing-session"));
+        assert!(linked_workspace_plan_artifact_reference(&state, &workspace)
+            .await
+            .expect("missing session should load")
+            .is_none());
+
+        let empty_session = IdeationSession::builder()
+            .project_id(project.id.clone())
+            .session_flow(IdeationSessionFlow::Planning)
+            .build();
+        let empty_session = state
+            .ideation_session_repo
+            .create(empty_session)
+            .await
+            .expect("empty planning session should persist");
+        workspace.linked_ideation_session_id = Some(empty_session.id.clone());
+        assert!(linked_workspace_plan_artifact_reference(&state, &workspace)
+            .await
+            .expect("empty session should load")
+            .is_none());
+
+        let missing_artifact_id = ArtifactId::from_string("missing-plan-artifact");
+        let missing_artifact_session = IdeationSession::builder()
+            .project_id(project.id.clone())
+            .session_flow(IdeationSessionFlow::Planning)
+            .inherited_plan_artifact_id(missing_artifact_id.clone())
+            .build();
+        let missing_artifact_session = state
+            .ideation_session_repo
+            .create(missing_artifact_session)
+            .await
+            .expect("missing-artifact planning session should persist");
+        workspace.linked_ideation_session_id = Some(missing_artifact_session.id.clone());
+
+        let reference = linked_workspace_plan_artifact_reference(&state, &workspace)
+            .await
+            .expect("missing artifact reference should load")
+            .expect("missing artifact id should still produce a reference");
+        assert_eq!(reference.artifact_id, missing_artifact_id.as_str());
+        assert_eq!(
+            reference.session_id.as_deref(),
+            Some(missing_artifact_session.id.as_str())
+        );
+        assert_eq!(reference.kind, "plan");
+        assert_eq!(reference.title, None);
+        assert_eq!(reference.version, None);
     }
 
     #[test]
@@ -2900,11 +3089,13 @@ x
         assert!(options
             .composer_artifact_references
             .iter()
-            .any(|reference| reference.artifact_id == plan_artifact.id.as_str()
-                && reference.kind == "plan"
-                && reference.session_id.as_deref() == Some(planning_session.id.as_str())
-                && reference.title.as_deref() == Some("Approved implementation plan")
-                && reference.version == Some(4)));
+            .any(
+                |reference| reference.artifact_id == plan_artifact.id.as_str()
+                    && reference.kind == "plan"
+                    && reference.session_id.as_deref() == Some(planning_session.id.as_str())
+                    && reference.title.as_deref() == Some("Approved implementation plan")
+                    && reference.version == Some(4)
+            ));
         assert!(options.force_new_provider_session);
         let metadata: serde_json::Value = serde_json::from_str(
             options

@@ -29,7 +29,7 @@ struct AgentCompletionPayload {
     context_type: ChatContextType,
 }
 
-struct AutoReviewGuard {
+pub(crate) struct AutoReviewGuard {
     conversation_id: String,
 }
 
@@ -40,13 +40,13 @@ impl Drop for AutoReviewGuard {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AutoReviewDecision {
+pub(crate) enum AutoReviewDecision {
     Started,
     Skipped(AutoReviewSkipReason),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AutoReviewSkipReason {
+pub(crate) enum AutoReviewSkipReason {
     WorkspaceMissing,
     InactiveWorkspace,
     NotReviewableMode,
@@ -62,7 +62,7 @@ enum AutoReviewSkipReason {
 }
 
 impl AutoReviewSkipReason {
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::WorkspaceMissing => "workspace_missing",
             Self::InactiveWorkspace => "inactive_workspace",
@@ -103,7 +103,7 @@ where
     });
 }
 
-fn spawn_auto_review_from_completion_event<R>(
+pub(crate) fn spawn_auto_review_from_completion_event<R>(
     app_handle: tauri::AppHandle<R>,
     event_name: &'static str,
     payload: &str,
@@ -151,7 +151,7 @@ fn spawn_auto_review_from_completion_event<R>(
     });
 }
 
-fn spawn_auto_review_for_workspace<R>(
+pub(crate) fn spawn_auto_review_for_workspace<R>(
     app_handle: tauri::AppHandle<R>,
     event_name: &'static str,
     conversation_id: ChatConversationId,
@@ -201,7 +201,7 @@ fn spawn_auto_review_for_workspace<R>(
     });
 }
 
-async fn resolve_workspace_conversation_id_for_review_event<R>(
+pub(crate) async fn resolve_workspace_conversation_id_for_review_event<R>(
     app_handle: &tauri::AppHandle<R>,
     conversation_id: &ChatConversationId,
 ) -> Result<Option<ChatConversationId>, String>
@@ -247,7 +247,7 @@ where
     }
 }
 
-async fn maybe_start_auto_review_from_app_handle<R>(
+pub(crate) async fn maybe_start_auto_review_from_app_handle<R>(
     app_handle: &tauri::AppHandle<R>,
     conversation_id: ChatConversationId,
 ) -> Result<AutoReviewDecision, String>
@@ -276,7 +276,7 @@ where
     maybe_start_auto_review(state.inner(), &execution_state, &workspace).await
 }
 
-async fn maybe_start_auto_review(
+pub(crate) async fn maybe_start_auto_review(
     state: &AppState,
     execution_state: &ExecutionState,
     workspace: &AgentConversationWorkspace,
@@ -360,7 +360,7 @@ async fn maybe_start_auto_review(
     }
 }
 
-async fn related_workspace_runtime_is_generating(
+pub(crate) async fn related_workspace_runtime_is_generating(
     state: &AppState,
     execution_state: &ExecutionState,
     workspace: &AgentConversationWorkspace,
@@ -424,11 +424,11 @@ async fn conversation_is_generating(
         .is_some())
 }
 
-fn interactive_slot_key(context_id: &str) -> String {
+pub(crate) fn interactive_slot_key(context_id: &str) -> String {
     format!("{}/{}", ChatContextType::Project, context_id)
 }
 
-fn begin_auto_review(conversation_id: &ChatConversationId) -> Option<AutoReviewGuard> {
+pub(crate) fn begin_auto_review(conversation_id: &ChatConversationId) -> Option<AutoReviewGuard> {
     let conversation_id = conversation_id.as_str().to_string();
     match auto_review_in_flight().entry(conversation_id.clone()) {
         Entry::Occupied(_) => None,

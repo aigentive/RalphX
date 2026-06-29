@@ -42,6 +42,7 @@ interface AgentReviewPanelProps {
   reviewStartError: Error | null;
   isReviewLoading: boolean;
   isReviewActionPending: boolean;
+  isWorkspaceRuntimeGenerating?: boolean;
   onStartReview: (force: boolean) => void;
 }
 
@@ -69,6 +70,14 @@ function reviewErrorMessage(
     return context.monitor.lastError ?? "Review could not complete.";
   }
   return null;
+}
+
+function hasPassedWorkspaceReview(context: ReviewDisplayContext | null): boolean {
+  const gateStatus = context?.monitor.reviewGateStatus ?? null;
+  if (gateStatus) {
+    return gateStatus === "passed";
+  }
+  return Boolean(context?.isCurrent && context.monitor.reviewOutcome === "passed");
 }
 
 function reviewActionForState({
@@ -137,7 +146,7 @@ function reviewStatusForState({
       icon: AlertCircle,
     };
   }
-  if (gateStatus === "passed" || context?.isCurrent) {
+  if (hasPassedWorkspaceReview(context)) {
     return {
       label: "Review passed",
       detail: "This Review passed for the current review target.",
@@ -178,6 +187,7 @@ export function AgentReviewPanel({
   reviewStartError,
   isReviewLoading,
   isReviewActionPending,
+  isWorkspaceRuntimeGenerating = false,
   onStartReview,
 }: AgentReviewPanelProps) {
   const [isReviewExpanded, setIsReviewExpanded] = useState(true);
@@ -234,12 +244,14 @@ export function AgentReviewPanel({
       );
     }
     if (!action) return null;
+    const isActionDisabled =
+      isReviewActionPending || isWorkspaceRuntimeGenerating;
     return (
       <Button
         type="button"
         size="sm"
         onClick={() => onStartReview(action.force)}
-        disabled={isReviewActionPending}
+        disabled={isActionDisabled}
         className="h-8 gap-1.5 bg-[var(--accent-primary)] text-white hover:bg-[var(--accent-hover)]"
       >
         <ActionIcon className={`h-4 w-4 ${actionIconClassName}`} />
@@ -251,6 +263,7 @@ export function AgentReviewPanel({
     action,
     actionIconClassName,
     isReviewActionPending,
+    isWorkspaceRuntimeGenerating,
     isRunning,
     onStartReview,
   ]);
