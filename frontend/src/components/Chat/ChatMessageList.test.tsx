@@ -7813,7 +7813,7 @@ describe("ChatMessageList - Virtuoso production render path", () => {
     expect(screen.getByTestId("integrated-chat-messages")).toBeInTheDocument();
   });
 
-  it("disables browser scroll anchoring on the Virtuoso scroller and message rows", () => {
+  it("disables browser scroll anchoring and rubber-band overscroll on the Virtuoso scroller", () => {
     render(<ChatMessageList {...defaultProps} messages={createMessages(3)} />);
 
     const scroller = screen.getByTestId("mock-virtuoso");
@@ -7821,6 +7821,7 @@ describe("ChatMessageList - Virtuoso production render path", () => {
     const firstMessageRow = firstRenderedItem?.querySelector(".px-3.w-full");
 
     expect(scroller.style.overflowAnchor).toBe("none");
+    expect(scroller.style.overscrollBehavior).toBe("none");
     expect(firstMessageRow).toBeInstanceOf(HTMLElement);
     expect((firstMessageRow as HTMLElement).style.overflowAnchor).toBe("none");
   });
