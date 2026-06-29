@@ -23,11 +23,14 @@ export type StreamingTaskProviderStatus = StreamingTaskStatus | "cancelled";
  * tool call appeared. Actual task metadata is read from `streamingTasks` Map via
  * toolUseId lookup. This preserves all existing StreamingTask behavior (status updates,
  * child tool calls) while rendering the card at its chronological position.
+ *
+ * `seq` preserves provider stream order; `receivedAt` is UI-local wall-clock
+ * order for interleaving live rows with user messages sent during streaming.
  */
 export type StreamingContentBlock =
-  | { type: "text"; text: string; seq?: number }
-  | { type: "tool_use"; toolCall: ToolCall; seq?: number }
-  | { type: "task"; toolUseId: string };
+  | { type: "text"; text: string; seq?: number; receivedAt?: number }
+  | { type: "tool_use"; toolCall: ToolCall; seq?: number; receivedAt?: number }
+  | { type: "task"; toolUseId: string; seq?: number; receivedAt?: number };
 
 export interface StreamingTask {
   /** The Task tool_use.id — links child tool calls via parentToolUseId */

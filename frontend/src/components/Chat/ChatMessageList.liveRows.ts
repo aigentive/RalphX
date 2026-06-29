@@ -14,12 +14,14 @@ export type LiveTranscriptRow =
       key: string;
       text: string;
       sourceIndex: number;
+      receivedAt?: number;
     }
   | {
       kind: "task";
       key: string;
       toolUseId: string;
       sourceIndex: number;
+      receivedAt?: number;
     }
   | {
       kind: "tool_call";
@@ -27,6 +29,7 @@ export type LiveTranscriptRow =
       block: StreamingToolUseBlock;
       index: number;
       toolCall: ToolCall;
+      receivedAt?: number;
     }
   | {
       kind: "tool_group";
@@ -34,6 +37,7 @@ export type LiveTranscriptRow =
       entries: LiveTranscriptToolEntry[];
       count: number;
       sourceIndex: number;
+      receivedAt?: number;
     };
 
 export type ShouldHideLiveToolCall = (toolCall: ToolCall) => boolean;
@@ -87,6 +91,7 @@ export function buildLiveTranscriptRows(
           key: textRowKey(block, index),
           text: block.text,
           sourceIndex: index,
+          ...(block.receivedAt != null ? { receivedAt: block.receivedAt } : {}),
         });
       }
       index += 1;
@@ -100,6 +105,7 @@ export function buildLiveTranscriptRows(
           key: taskRowKey(block.toolUseId),
           toolUseId: block.toolUseId,
           sourceIndex: index,
+          ...(block.receivedAt != null ? { receivedAt: block.receivedAt } : {}),
         });
       }
       index += 1;
@@ -126,6 +132,9 @@ export function buildLiveTranscriptRows(
         entries,
         count: entries.length,
         sourceIndex: entries[0]!.index,
+        ...(entries[0]!.block.receivedAt != null
+          ? { receivedAt: entries[0]!.block.receivedAt }
+          : {}),
       });
     }
 

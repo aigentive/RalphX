@@ -45,6 +45,18 @@ describe("ChatMessageList live transcript rows", () => {
     ]);
   });
 
+  it("carries live block receipt timestamps onto visible rows", () => {
+    const blocks = [
+      { type: "text", text: "Before user send", receivedAt: 1_000 },
+      { type: "text", text: "After user send", receivedAt: 3_000 },
+    ] satisfies StreamingContentBlock[];
+
+    const rows = buildLiveTranscriptRows(blocks, new Map());
+
+    expect(rows[0]).toMatchObject({ kind: "text", receivedAt: 1_000 });
+    expect(rows[1]).toMatchObject({ kind: "text", receivedAt: 3_000 });
+  });
+
   it("keeps every live text row available instead of tail-clipping raw blocks", () => {
     const blocks = Array.from({ length: 45 }, (_, index) =>
       textBlock(index + 1)

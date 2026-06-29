@@ -301,6 +301,16 @@ fn queued_created_at_override(queued_msg: &QueuedMessage) -> Option<chrono::Date
         .map(|ts| ts.with_timezone(&chrono::Utc))
 }
 
+fn queued_persisted_created_at(
+    queued_msg: &QueuedMessage,
+) -> Option<chrono::DateTime<chrono::Utc>> {
+    queued_created_at_override(queued_msg).or_else(|| {
+        chrono::DateTime::parse_from_rfc3339(&queued_msg.created_at)
+            .ok()
+            .map(|ts| ts.with_timezone(&chrono::Utc))
+    })
+}
+
 fn provider_switch_send_options_for_queued_message(
     queued_msg: &QueuedMessage,
     conversation_id: ChatConversationId,
@@ -308,7 +318,7 @@ fn provider_switch_send_options_for_queued_message(
 ) -> SendMessageOptions {
     SendMessageOptions {
         metadata: queued_msg.metadata_override.clone(),
-        created_at: queued_created_at_override(queued_msg),
+        created_at: queued_persisted_created_at(queued_msg),
         harness_override: queued_msg.harness_override,
         model_override: queued_msg.model_override.clone(),
         conversation_id_override: Some(conversation_id),
@@ -1021,20 +1031,15 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                     }
                 };
 
-            // Persist user message — apply overrides if present (e.g. auto-verification metadata + trigger timestamp)
+            // Persist user message at enqueue time so replayed timelines match live ordering.
             if !resume_in_place {
-                let created_at_override = queued_msg
-                    .created_at_override
-                    .as_deref()
-                    .and_then(|ts| chrono::DateTime::parse_from_rfc3339(ts).ok())
-                    .map(|ts| ts.with_timezone(&chrono::Utc));
                 let mut user_msg = chat_service_context::create_user_message(
                     context_type,
                     context_id,
                     &queued_msg.content,
                     conversation_id,
                     queued_persisted_metadata(&queued_msg),
-                    created_at_override,
+                    queued_persisted_created_at(&queued_msg),
                 );
                 // Mark session recovery rehydration prompts so the frontend can hide them
                 // (only if no metadata_override was provided — override takes precedence)
@@ -1813,6 +1818,17 @@ mod tests {
 
         message.created_at_override = Some("not-a-timestamp".to_string());
         assert!(queued_created_at_override(&message).is_none());
+    }
+
+    #[test]
+    fn queued_persisted_created_at_falls_back_to_queue_entry_time() {
+        let mut message = crate::domain::services::QueuedMessage::new("timed".to_string());
+        message.created_at = "2026-06-12T12:00:00Z".to_string();
+
+        let parsed =
+            queued_persisted_created_at(&message).expect("queue timestamp should be parsed");
+
+        assert_eq!(parsed.to_rfc3339(), "2026-06-12T12:00:00+00:00");
     }
 
     #[test]

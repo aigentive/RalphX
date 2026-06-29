@@ -939,10 +939,9 @@ describe("useChatEvents", () => {
         props.setStreamingContentBlocks,
         [{ type: "text", text: "First block" }],
       );
-      expect(result).toEqual([
-        { type: "text", text: "First block" },
-        { type: "text", text: "Second block" },
-      ]);
+      expect(result).toHaveLength(2);
+      expect(result[0]).toEqual({ type: "text", text: "First block" });
+      expect(result[1]).toMatchObject({ type: "text", text: "Second block" });
     });
   });
 
@@ -1818,7 +1817,8 @@ describe("useChatEvents", () => {
         props.setStreamingContentBlocks,
         [],
       );
-      expect(blocks).toEqual([{ type: "task", toolUseId: "toolu_task_001" }]);
+      expect(blocks).toHaveLength(1);
+      expect(blocks[0]).toMatchObject({ type: "task", toolUseId: "toolu_task_001" });
     });
 
     it("should enrich delegated streaming tasks from backend-native agent:task_started payloads", () => {
@@ -2058,7 +2058,8 @@ describe("useChatEvents", () => {
         props.setStreamingContentBlocks,
         [],
       );
-      expect(blocks).toEqual([{ type: "task", toolUseId: "toolu_delegate_001" }]);
+      expect(blocks).toHaveLength(1);
+      expect(blocks[0]).toMatchObject({ type: "task", toolUseId: "toolu_delegate_001" });
 
       const tasks = executeUpdater<Map<string, StreamingTask>>(
         props.setStreamingTasks,
@@ -2095,7 +2096,8 @@ describe("useChatEvents", () => {
         props.setStreamingContentBlocks,
         [],
       );
-      expect(blocks).toEqual([{ type: "task", toolUseId: "toolu_delegate_002" }]);
+      expect(blocks).toHaveLength(1);
+      expect(blocks[0]).toMatchObject({ type: "task", toolUseId: "toolu_delegate_002" });
 
       const tasks = executeUpdater<Map<string, StreamingTask>>(
         props.setStreamingTasks,
@@ -2245,9 +2247,9 @@ describe("useChatEvents", () => {
 
       // Expect: [text, task-marker, text] in chronological order
       expect(blocks).toHaveLength(3);
-      expect(blocks[0]).toEqual({ type: "text", text: "About to launch a task: " });
-      expect(blocks[1]).toEqual({ type: "task", toolUseId: "toolu_task_abc" });
-      expect(blocks[2]).toEqual({ type: "text", text: "Task launched." });
+      expect(blocks[0]).toMatchObject({ type: "text", text: "About to launch a task: " });
+      expect(blocks[1]).toMatchObject({ type: "task", toolUseId: "toolu_task_abc" });
+      expect(blocks[2]).toMatchObject({ type: "text", text: "Task launched." });
     });
 
     it("should deduplicate task position markers when same tool_id arrives twice", () => {
@@ -2284,7 +2286,7 @@ describe("useChatEvents", () => {
       // Only one task marker should exist
       const taskMarkers = blocks.filter((b) => b.type === "task");
       expect(taskMarkers).toHaveLength(1);
-      expect(taskMarkers[0]).toEqual({ type: "task", toolUseId: "toolu_task_dup" });
+      expect(taskMarkers[0]).toMatchObject({ type: "task", toolUseId: "toolu_task_dup" });
     });
 
     it("should render null (no crash) when task position marker exists but agent:task_started has not yet arrived", () => {
@@ -2309,7 +2311,7 @@ describe("useChatEvents", () => {
         blocks = typeof updater === "function" ? updater(blocks) : updater;
       }
       expect(blocks).toHaveLength(1);
-      expect(blocks[0]).toEqual({ type: "task", toolUseId: "toolu_task_late" });
+      expect(blocks[0]).toMatchObject({ type: "task", toolUseId: "toolu_task_late" });
 
       // The streamingTasks map is still empty — agent:task_started has not arrived yet.
       // Simulate what ChatMessageList does: Map.get(toolUseId) returns undefined.
@@ -2417,7 +2419,7 @@ describe("useChatEvents", () => {
         blocks = typeof updater === "function" ? updater(blocks) : updater;
       }
       expect(blocks).toHaveLength(1);
-      expect(blocks[0]).toEqual({ type: "task", toolUseId: "toolu_agent_001" });
+      expect(blocks[0]).toMatchObject({ type: "task", toolUseId: "toolu_agent_001" });
     });
 
     it("should create a task position marker when tool_name is 'agent' (lowercase)", () => {
@@ -2440,7 +2442,7 @@ describe("useChatEvents", () => {
         blocks = typeof updater === "function" ? updater(blocks) : updater;
       }
       expect(blocks).toHaveLength(1);
-      expect(blocks[0]).toEqual({ type: "task", toolUseId: "toolu_agent_002" });
+      expect(blocks[0]).toMatchObject({ type: "task", toolUseId: "toolu_agent_002" });
     });
 
     it("should create a task position marker when tool_name is 'AGENT' (uppercase)", () => {
@@ -2463,7 +2465,7 @@ describe("useChatEvents", () => {
         blocks = typeof updater === "function" ? updater(blocks) : updater;
       }
       expect(blocks).toHaveLength(1);
-      expect(blocks[0]).toEqual({ type: "task", toolUseId: "toolu_agent_003" });
+      expect(blocks[0]).toMatchObject({ type: "task", toolUseId: "toolu_agent_003" });
     });
 
     it("should deduplicate Agent position markers when same tool_id fires twice", () => {
@@ -2501,7 +2503,7 @@ describe("useChatEvents", () => {
       // Only one task marker
       const taskMarkers = blocks.filter((b) => b.type === "task");
       expect(taskMarkers).toHaveLength(1);
-      expect(taskMarkers[0]).toEqual({ type: "task", toolUseId: "toolu_agent_dup" });
+      expect(taskMarkers[0]).toMatchObject({ type: "task", toolUseId: "toolu_agent_dup" });
     });
 
     it("should create a StreamingTask on agent:task_started for an Agent tool_use_id", () => {
@@ -2593,9 +2595,9 @@ describe("useChatEvents", () => {
 
       // Expect: [text, task-marker, text] in chronological order
       expect(blocks).toHaveLength(3);
-      expect(blocks[0]).toEqual({ type: "text", text: "Spawning an agent: " });
-      expect(blocks[1]).toEqual({ type: "task", toolUseId: "toolu_agent_interleave" });
-      expect(blocks[2]).toEqual({ type: "text", text: "Agent spawned." });
+      expect(blocks[0]).toMatchObject({ type: "text", text: "Spawning an agent: " });
+      expect(blocks[1]).toMatchObject({ type: "task", toolUseId: "toolu_agent_interleave" });
+      expect(blocks[2]).toMatchObject({ type: "text", text: "Agent spawned." });
     });
   });
 
