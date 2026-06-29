@@ -1,6 +1,7 @@
 use ralphx_lib::application::AppState;
 use ralphx_lib::commands::ideation_commands::*;
 use ralphx_lib::domain::agents::{AgentHarnessKind, AgentLane, AgentLaneSettings};
+use ralphx_lib::domain::entities::ideation::VerificationStatus;
 use ralphx_lib::domain::entities::{
     ChatMessage, IdeationSession, IdeationSessionId, IdeationSessionStatus, Priority, Project,
     ProjectId, ProposalCategory, TaskProposal, TaskProposalId,
@@ -2012,6 +2013,63 @@ async fn test_apply_proposals_core_repairs_stale_orphaned_execution_plan() {
         .expect("repo error")
         .expect("session should exist");
     assert_eq!(updated_session.status, IdeationSessionStatus::Accepted);
+}
+
+#[tokio::test]
+async fn test_apply_proposals_core_blocks_active_verification_when_accept_gate_disabled() {
+    let state = setup_apply_test_state();
+    let (_project_id, session, proposal_ids) = setup_session_with_proposals(&state, 1).await;
+
+    state
+        .ideation_session_repo
+        .update_verification_state(&session.id, VerificationStatus::Reviewing, true)
+        .await
+        .expect("Failed to mark verification active");
+
+    let input = ApplyProposalsInput {
+        session_id: session.id.as_str().to_string(),
+        proposal_ids,
+        target_column: "auto".to_string(),
+        base_branch_override: None,
+    };
+
+    let err = apply_proposals_core(&state, input)
+        .await
+        .expect_err("apply_proposals_core should block active verification");
+
+    assert!(
+        matches!(err, ralphx_lib::error::AppError::Validation(_)),
+        "Expected Validation error from verification gate, got: {:?}",
+        err
+    );
+
+    let active_plan = state
+        .execution_plan_repo
+        .get_active_for_session(&session.id)
+        .await
+        .expect("execution plan lookup should not fail");
+    assert!(
+        active_plan.is_none(),
+        "blocked verification must not create an execution plan"
+    );
+
+    let tasks = state
+        .task_repo
+        .get_by_ideation_session(&session.id)
+        .await
+        .expect("task lookup should not fail");
+    assert!(
+        tasks.is_empty(),
+        "blocked verification must not create proposal tasks"
+    );
+
+    let updated_session = state
+        .ideation_session_repo
+        .get_by_id(&session.id)
+        .await
+        .expect("repo error")
+        .expect("session should exist");
+    assert_eq!(updated_session.status, IdeationSessionStatus::Active);
 }
 
 #[tokio::test]
