@@ -1715,11 +1715,21 @@ export function setupAgentsViewTest() {
 
   useChatStore.setState({
     messages: {},
+    context: null,
+    isLoading: false,
     activeConversationIds: {},
+    activeAgentRunIds: {},
     queuedMessages: {},
     agentStatus: {},
     agentActivityLabels: {},
     isSending: {},
+    isTeamActive: {},
+    lastAgentEventTimestamp: {},
+    toolCallStartTimes: {},
+    lastToolCallCompletionTimestamp: {},
+    toolCallCompletionTimestamps: {},
+    effectiveModel: {},
+    composerDraftsByKey: {},
   });
   useUiStore.getState().closeModal();
   useUiStore.getState().setExecutionPaused(false);

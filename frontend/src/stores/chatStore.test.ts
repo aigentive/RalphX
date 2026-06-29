@@ -52,6 +52,10 @@ describe("chatStore", () => {
       isTeamActive: {},
       lastAgentEventTimestamp: {},
       toolCallStartTimes: {},
+      lastToolCallCompletionTimestamp: {},
+      toolCallCompletionTimestamps: {},
+      effectiveModel: {},
+      composerDraftsByKey: {},
     });
   });
 
@@ -120,6 +124,63 @@ describe("chatStore", () => {
 
       const state = useChatStore.getState();
       expect(state.context).toBeNull();
+    });
+  });
+
+  describe("composer drafts", () => {
+    it("stores draft content and removes the draft when content and attachments are empty", () => {
+      const store = useChatStore.getState();
+
+      store.setComposerDraftContent("conversation:one", "unsent message");
+
+      expect(useChatStore.getState().composerDraftsByKey["conversation:one"]).toMatchObject({
+        content: "unsent message",
+        attachments: [],
+      });
+
+      useChatStore.getState().setComposerDraftContent("conversation:one", "");
+
+      expect(useChatStore.getState().composerDraftsByKey["conversation:one"]).toBeUndefined();
+    });
+
+    it("keeps attachment drafts scoped by composer key", () => {
+      const file = new File(["draft"], "draft.txt", { type: "text/plain" });
+      const store = useChatStore.getState();
+
+      store.setComposerDraftContent("conversation:one", "first");
+      store.setComposerDraftAttachments("conversation:one", [
+        {
+          id: "attachment-1",
+          conversationId: "one",
+          fileName: "draft.txt",
+          filePath: "/tmp/draft.txt",
+          fileSize: 5,
+          mimeType: "text/plain",
+          createdAt: "2026-06-29T00:00:00Z",
+          file,
+        },
+      ]);
+      store.setComposerDraftContent("conversation:two", "second");
+
+      expect(
+        useChatStore.getState().composerDraftsByKey["conversation:one"]?.attachments,
+      ).toEqual([
+        expect.objectContaining({
+          id: "attachment-1",
+          fileName: "draft.txt",
+          file,
+        }),
+      ]);
+      expect(
+        useChatStore.getState().composerDraftsByKey["conversation:two"]?.attachments,
+      ).toEqual([]);
+
+      useChatStore.getState().clearComposerDraft("conversation:one");
+
+      expect(useChatStore.getState().composerDraftsByKey["conversation:one"]).toBeUndefined();
+      expect(useChatStore.getState().composerDraftsByKey["conversation:two"]).toMatchObject({
+        content: "second",
+      });
     });
   });
 

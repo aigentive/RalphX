@@ -13,7 +13,10 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { act } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { IntegratedChatPanel } from "./IntegratedChatPanel";
+import {
+  IntegratedChatPanel,
+  type IntegratedChatComposerRenderProps,
+} from "./IntegratedChatPanel";
 import { PreviousRunBanner } from "./IntegratedChatPanel.components";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { chatApi } from "@/api/chat";
@@ -297,7 +300,17 @@ describe("IntegratedChatPanel", () => {
         activeConversationId: null,
         queuedMessages: {},
         agentStatus: {},
+        agentActivityLabels: {},
         isSending: {},
+        activeConversationIds: {},
+        activeAgentRunIds: {},
+        isTeamActive: {},
+        lastAgentEventTimestamp: {},
+        toolCallStartTimes: {},
+        lastToolCallCompletionTimestamp: {},
+        toolCallCompletionTimestamps: {},
+        effectiveModel: {},
+        composerDraftsByKey: {},
       });
     });
 
@@ -549,6 +562,62 @@ describe("IntegratedChatPanel", () => {
       );
 
       expect(screen.getByTestId("integrated-chat-input-shell")).toHaveClass("max-w-[980px]");
+    });
+  });
+
+  describe("composer drafts", () => {
+    it("restores unsent composer text per active conversation", () => {
+      mockChatPanelContext.storeContextKey = "project:project-1";
+      mockChatPanelContext.currentContextType = "project";
+      mockChatPanelContext.currentContextId = "project-1";
+      mockChatPanelContext.activeConversationId = "conv-1";
+      useChatMockState.conversations = [{ id: "conv-1" }, { id: "conv-2" }];
+
+      const renderComposer = (props: IntegratedChatComposerRenderProps) => (
+        <textarea
+          data-testid="draft-composer"
+          value={props.value ?? ""}
+          onChange={(event) => props.onChange?.(event.currentTarget.value)}
+        />
+      );
+      const panel = () => (
+        <TestWrapper>
+          <IntegratedChatPanel
+            projectId="project-1"
+            selectedTaskIdOverride={null}
+            storeContextKeyOverride="project:project-1"
+            renderComposer={renderComposer}
+          />
+        </TestWrapper>
+      );
+
+      const { rerender } = render(panel());
+
+      fireEvent.change(screen.getByTestId("draft-composer"), {
+        target: { value: "draft for first conversation" },
+      });
+      expect(
+        useChatStore.getState().composerDraftsByKey["conversation:conv-1"]
+          ?.content,
+      ).toBe("draft for first conversation");
+
+      mockChatPanelContext.activeConversationId = "conv-2";
+      rerender(panel());
+      expect(screen.getByTestId("draft-composer")).toHaveValue("");
+
+      fireEvent.change(screen.getByTestId("draft-composer"), {
+        target: { value: "draft for second conversation" },
+      });
+
+      mockChatPanelContext.activeConversationId = "conv-1";
+      rerender(panel());
+      expect(screen.getByTestId("draft-composer")).toHaveValue(
+        "draft for first conversation",
+      );
+      expect(
+        useChatStore.getState().composerDraftsByKey["conversation:conv-2"]
+          ?.content,
+      ).toBe("draft for second conversation");
     });
   });
 
