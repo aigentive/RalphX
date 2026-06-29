@@ -66,6 +66,7 @@ use crate::application::agent_workspace_pr_supervision_recovery::{
     AgentWorkspacePrSupervisionRecoveryDeps, AgentWorkspacePrSupervisionRecoveryTrigger,
 };
 use crate::application::agent_workspace_publish_recovery::recover_stale_publish_repair_for_workspace_in_state;
+use crate::application::agent_workspace_review::load_workspace_review_publish_blocker;
 use crate::application::chat_service::tool_result_preview::{
     preview_tool_arguments_object, preview_tool_result_object, tool_detail_ref,
 };
@@ -98,11 +99,12 @@ use crate::domain::agents::{
 use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
 use crate::domain::entities::task_step::StepProgressSummary;
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceBranchMode, AgentConversationWorkspaceMode,
-    AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus, AgentRun,
-    AgentRunId, AgentRunStatus, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceSourcePullRequest,
-    ArtifactContent, ChatAttachmentId, ChatContextType, ChatConversation, ChatConversationId,
-    ChatMessage, ChatMessageId, ChatTimelineItem, DelegatedSessionId, ExecutionPlanStatus,
+    AgentConversationWorkspace, AgentConversationWorkspaceBranchMode,
+    AgentConversationWorkspaceMode, AgentConversationWorkspacePublicationEvent,
+    AgentConversationWorkspaceStatus, AgentRun, AgentRunId, AgentRunStatus,
+    AgentWorkspaceReviewMonitorStatus, AgentWorkspaceSourcePullRequest, ArtifactContent,
+    ChatAttachmentId, ChatContextType, ChatConversation, ChatConversationId, ChatMessage,
+    ChatMessageId, ChatTimelineItem, DelegatedSessionId, ExecutionPlanStatus,
     IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow, IdeationSessionId,
     InternalStatus, PlanBranch, PlanBranchStatus, Project, ProjectId, Task, TaskCategory, TaskId,
     DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
@@ -3747,7 +3749,11 @@ pub async fn list_agent_conversations(
             .map_err(|e| e.to_string())?
     };
 
-    agent_conversation_responses_for_state(state.inner(), conversations).await
+    agent_conversation_responses_for_state(
+        state.inner(),
+        filter_top_level_agent_conversations(conversations),
+    )
+    .await
 }
 
 /// List a page of conversations for a context with optional title search.
@@ -3768,29 +3774,57 @@ pub async fn list_agent_conversations_page(
     let offset = offset.unwrap_or(0);
     let limit = limit.unwrap_or(6);
 
-    let page = state
+    let mut conversations = state
         .chat_conversation_repo
-        .get_by_context_page_filtered(
-            context_type_enum,
-            &context_id,
-            include_archived,
-            archived_only,
-            offset,
-            limit,
-            search.as_deref(),
-        )
+        .get_by_context_filtered(context_type_enum, &context_id, include_archived)
         .await
         .map_err(|e| e.to_string())?;
-    let has_more = page.has_more();
+    conversations = filter_top_level_agent_conversations(conversations)
+        .into_iter()
+        .filter(|conversation| {
+            if archived_only && !conversation.is_archived() {
+                return false;
+            }
+            conversation_matches_agent_list_search(conversation, search.as_deref())
+        })
+        .collect();
+    let total = i64::try_from(conversations.len()).unwrap_or(i64::MAX);
+    let offset_usize = usize::try_from(offset).unwrap_or(usize::MAX);
+    let limit_usize = usize::try_from(limit).unwrap_or(usize::MAX);
+    let conversations = conversations
+        .into_iter()
+        .skip(offset_usize)
+        .take(limit_usize)
+        .collect::<Vec<_>>();
+    let has_more = i64::from(offset.saturating_add(limit)) < total;
 
     Ok(AgentConversationListPageResponse {
-        conversations: agent_conversation_responses_for_state(state.inner(), page.conversations)
-            .await?,
-        total: page.total_count,
-        limit: page.limit,
-        offset: page.offset,
+        conversations: agent_conversation_responses_for_state(state.inner(), conversations).await?,
+        total,
+        limit,
+        offset,
         has_more,
     })
+}
+
+fn filter_top_level_agent_conversations(
+    conversations: Vec<ChatConversation>,
+) -> Vec<ChatConversation> {
+    conversations
+        .into_iter()
+        .filter(|conversation| conversation.parent_conversation_id.is_none())
+        .collect()
+}
+
+fn conversation_matches_agent_list_search(
+    conversation: &ChatConversation,
+    search: Option<&str>,
+) -> bool {
+    let Some(search) = search.map(str::trim).filter(|value| !value.is_empty()) else {
+        return true;
+    };
+    let title = conversation.title.as_deref().unwrap_or("Untitled agent");
+    title.to_lowercase().contains(&search.to_lowercase())
 }
 
 /// Core archive logic, testable without Tauri `State` wrapper.
@@ -6359,6 +6393,12 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
         })?;
 
     if workspace.mode == AgentConversationWorkspaceMode::Ideation {
+        if let Some(blocker) = load_workspace_review_publish_blocker(state, &workspace)
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            return Err(blocker);
+        }
         return publish_linked_ideation_plan_branch_workspace_for_app_state(
             state,
             execution_state,
@@ -6380,6 +6420,17 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
     }
     if workspace.has_terminal_publication_pr_status() {
         return Err("Cannot publish a workspace whose PR is already closed or merged".to_string());
+    }
+    if let Err(error) =
+        review_base_for_publish(workspace.base_commit.as_deref(), &workspace.base_ref)
+    {
+        return Err(error);
+    }
+    if let Some(blocker) = load_workspace_review_publish_blocker(state, &workspace)
+        .await
+        .map_err(|e| e.to_string())?
+    {
+        return Err(blocker);
     }
 
     let conversation = state
@@ -9043,13 +9094,14 @@ mod tests {
     use crate::domain::entities::{
         AgentConversationWorkspace, AgentConversationWorkspaceBranchMode,
         AgentConversationWorkspaceMode, AgentConversationWorkspacePublicationEvent, AgentRun,
-        AgentWorkspacePrDescription, AgentWorkspaceReviewMonitor,
-        AgentWorkspaceReviewMonitorStatus, AgentWorkspaceSourcePullRequest, ArtifactId,
-        ChatContextType, ChatConversation, ChatConversationId, ChatMessage, ChatMessageId,
-        ChatTimelineItem, ChatTimelineItemId, ChatTimelineItemKind, ChatTimelineItemStatus,
-        ExecutionPlan, ExecutionPlanId, ExecutionPlanStatus, IdeationAnalysisBaseRefKind,
-        IdeationSession, IdeationSessionFlow, IdeationSessionId, InternalStatus, MessageRole,
-        PlanBranch, PlanBranchId, PlanBranchStatus, Project, ProjectId, SessionPurpose, Task,
+        AgentWorkspacePrDescription, AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor,
+        AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
+        AgentWorkspaceSourcePullRequest, ArtifactId, ChatContextType, ChatConversation,
+        ChatConversationId, ChatMessage, ChatMessageId, ChatTimelineItem, ChatTimelineItemId,
+        ChatTimelineItemKind, ChatTimelineItemStatus, ExecutionPlan, ExecutionPlanId,
+        ExecutionPlanStatus, IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow,
+        IdeationSessionId, InternalStatus, MessageRole, PlanBranch, PlanBranchId,
+        PlanBranchStatus, Project, ProjectId, SessionPurpose, Task,
         DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
     };
     use crate::domain::execution::ExecutionSettings;
@@ -11323,6 +11375,45 @@ mod tests {
         workspace
     }
 
+    async fn seed_current_passing_workspace_review(
+        state: &AppState,
+        conversation_id: &ChatConversationId,
+    ) {
+        let workspace = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        let context =
+            crate::application::agent_workspace_review::load_agent_workspace_review_context(
+                state, &workspace,
+            )
+            .await
+            .expect("review context should load");
+        let target = context.target.expect("review target should exist");
+        let mut monitor = context.monitor;
+        crate::application::agent_workspace_review::apply_review_artifact_to_monitor(
+            &mut monitor,
+            target.scope,
+            target.head_sha,
+            target.diff_fingerprint,
+            Some("seeded-passing-review".to_string()),
+            ArtifactId::from_string(format!("review-artifact-{}", conversation_id.as_str())),
+            1,
+            chrono::Utc::now(),
+            None,
+        );
+        monitor.review_outcome = AgentWorkspaceReviewOutcome::Passed;
+        monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Passed;
+        monitor.status = AgentWorkspaceReviewMonitorStatus::Ready;
+        state
+            .agent_conversation_workspace_repo
+            .upsert_workspace_review_monitor(monitor)
+            .await
+            .expect("passing review monitor should persist");
+    }
+
     fn commit_file(repo: &Path, relative_path: &str, contents: &str, message: &str) -> String {
         let path = repo.join(relative_path);
         if let Some(parent) = path.parent() {
@@ -13272,7 +13363,7 @@ mod tests {
         .await
         .expect_err("missing base commit should block publish");
 
-        assert_eq!(error, BLOCK_REASON_MISSING_BASE_COMMIT);
+        assert!(error.contains("missing its captured base commit"));
         assert_eq!(github.state().update_pr_base_calls, 0);
         let stored = state
             .agent_conversation_workspace_repo
@@ -13281,6 +13372,43 @@ mod tests {
             .expect("workspace lookup should succeed")
             .expect("workspace should exist");
         assert_eq!(stored.base_ref, "feature/deleted-base");
+    }
+
+    #[tokio::test]
+    async fn publish_workspace_blocks_on_review_gate_before_push_when_base_is_valid() {
+        let (_temp, state, conversation_id, github) = setup_publish_command_state(
+            "review-required",
+            true,
+            Some(322),
+            Arc::new(MockGithubService::new()),
+        )
+        .await;
+        let workspace = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        std::fs::write(
+            Path::new(&workspace.worktree_path).join("implementation.txt"),
+            "change requiring review\n",
+        )
+        .expect("workspace change should be written");
+        let execution_state = Arc::new(ExecutionState::new());
+
+        let error = publish_agent_conversation_workspace_for_app_state(
+            &state,
+            &execution_state,
+            None,
+            conversation_id,
+            false,
+        )
+        .await
+        .expect_err("review gate should block publish");
+
+        assert_eq!(error, "Workspace Review is required before publishing");
+        assert_eq!(github.state().push_branch_calls, 0);
+        assert_eq!(github.state().update_pr_base_calls, 0);
     }
 
     #[tokio::test]
@@ -13373,6 +13501,7 @@ mod tests {
             "ready for review\n",
         )
         .expect("workspace change should be written");
+        seed_current_passing_workspace_review(&state, &conversation_id).await;
         github.state().fetch_pr_health_result = Some(Ok(PrHealth {
             sync_state: PrSyncState {
                 status: GithubPrStatus::Open,
@@ -13463,6 +13592,7 @@ mod tests {
             "ready for review\n",
         )
         .expect("workspace change should be written");
+        seed_current_passing_workspace_review(&state, &conversation_id).await;
         github.state().fetch_pr_health_result = Some(Err(AppError::Infrastructure(
             "GitHub health unavailable".to_string(),
         )));
@@ -13534,6 +13664,7 @@ mod tests {
             "change that should be described\n",
         )
         .expect("workspace change should be written");
+        seed_current_passing_workspace_review(&state, &conversation_id).await;
         let execution_state = Arc::new(ExecutionState::new());
 
         let error = publish_agent_conversation_workspace_for_app_state(
@@ -14230,6 +14361,14 @@ mod tests {
             .create(run)
             .await
             .expect("run should be created");
+        let mut child = ChatConversation::new_project(project_id.clone());
+        child.parent_conversation_id = Some(conversation.id.as_str().to_string());
+        child.set_title("Review workspace changes");
+        let child = state
+            .chat_conversation_repo
+            .create(child)
+            .await
+            .expect("child conversation should be created");
         let app = mock_builder()
             .manage(state)
             .build(mock_context(noop_assets()))
@@ -14247,6 +14386,7 @@ mod tests {
         )
         .await
         .expect("conversation page should load");
+        assert_eq!(page.total, 1);
         let page_conversation = page
             .conversations
             .iter()
@@ -14254,6 +14394,10 @@ mod tests {
             .expect("seeded conversation should be listed");
         assert_eq!(page_conversation.logical_model.as_deref(), Some("gpt-5.5"));
         assert_eq!(page_conversation.logical_effort.as_deref(), Some("high"));
+        assert!(page
+            .conversations
+            .iter()
+            .all(|conversation| conversation.id != child.id.as_str()));
 
         let summary = get_agent_conversation_summary_for_app_state(
             app.state::<AppState>().inner(),

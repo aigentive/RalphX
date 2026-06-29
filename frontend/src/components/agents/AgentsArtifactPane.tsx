@@ -25,6 +25,7 @@ import {
   chatApi,
   type AgentConversationWorkspace,
   type AgentConversationWorkspaceFreshness,
+  type AgentConversationRuntimeStatus,
   type AgentWorkspaceReviewContext,
   type StartAgentWorkspaceReviewResult,
 } from "@/api/chat";
@@ -79,10 +80,33 @@ import {
   PLAN_IMPLEMENT_DIRECTLY_REQUEST,
   PLAN_TO_PROPOSALS_REQUEST,
 } from "./agentPlanModeActions";
+import { useAgentConversationRuntimeStatus } from "./useAgentConversationRuntimeStatus";
 
 const EMPTY_PROPOSAL_HIGHLIGHTS = new Set<string>();
 
 function noop() {}
+
+type WorkspaceReviewPassState = Pick<
+  AgentWorkspaceReviewContext | StartAgentWorkspaceReviewResult,
+  "monitor" | "isCurrent"
+>;
+
+function hasPassedWorkspaceReview(context: WorkspaceReviewPassState | null): boolean {
+  const gateStatus = context?.monitor.reviewGateStatus ?? null;
+  if (gateStatus) {
+    return gateStatus === "passed";
+  }
+  return Boolean(context?.isCurrent && context.monitor.reviewOutcome === "passed");
+}
+
+function hasGeneratingConversationRuntime(
+  status: AgentConversationRuntimeStatus | null | undefined,
+): boolean {
+  return Boolean(
+    status?.agentStatus === "generating" ||
+      status?.items.some((item) => item.agentStatus === "generating"),
+  );
+}
 
 const LazyTaskGraphView = lazy(() =>
   import("@/components/TaskGraph").then((module) => ({ default: module.TaskGraphView })),
@@ -570,6 +594,12 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     visibleTabs.some((tab) => tab.id === activeTab)
       ? activeTab
       : fallbackActiveTab;
+  const runtimeStatusQuery = useAgentConversationRuntimeStatus(conversationId, {
+    enabled: Boolean(conversationId && effectiveActiveTab === "review"),
+  });
+  const isWorkspaceRuntimeGenerating = hasGeneratingConversationRuntime(
+    runtimeStatusQuery.data,
+  );
   const isWorkspaceReviewActionPending =
     startWorkspaceReviewMutation.isPending &&
     startWorkspaceReviewMutation.variables?.conversationId === conversationId;
@@ -582,21 +612,30 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     : workspaceReviewContext ?? workspaceReviewStartResult;
   const isWorkspaceReviewRunning =
     isWorkspaceReviewActionPending ||
-    reviewDisplayContext?.monitor.status === "reviewing";
+    reviewDisplayContext?.monitor.status === "reviewing" ||
+    reviewDisplayContext?.monitor.reviewGateStatus === "reviewing";
   const workspaceReviewBlocked =
     (isWorkspaceReviewActionPending && Boolean(startWorkspaceReviewMutation.error)) ||
-    reviewDisplayContext?.monitor.status === "blocked";
+    reviewDisplayContext?.monitor.status === "blocked" ||
+    reviewDisplayContext?.monitor.reviewGateStatus === "blocking" ||
+    reviewDisplayContext?.monitor.reviewGateStatus === "failed" ||
+    reviewDisplayContext?.monitor.reviewOutcome === "blocking" ||
+    reviewDisplayContext?.monitor.reviewOutcome === "run_failed";
+  const reviewTabIconColor = (() => {
+    if (isWorkspaceReviewRunning) return "var(--accent-primary)";
+    if (workspaceReviewBlocked) return "var(--status-error)";
+    if (hasPassedWorkspaceReview(reviewDisplayContext)) return "var(--status-success)";
+    if (
+      reviewDisplayContext?.isOutdated ||
+      reviewDisplayContext?.monitor.reviewGateStatus === "required"
+    ) {
+      return "var(--status-warning)";
+    }
+    return null;
+  })();
   const reviewTabStatusColor = isWorkspaceReviewRunning
-    ? "var(--accent-primary)"
-    : workspaceReviewBlocked
-      ? "var(--status-error)"
-      : reviewDisplayContext?.isOutdated
-        ? "var(--status-warning)"
-        : reviewDisplayContext?.isCurrent
-          ? "var(--status-success)"
-          : reviewDisplayContext?.target
-            ? "var(--text-muted)"
-            : null;
+    ? reviewTabIconColor
+    : null;
   const shouldLoadVerificationData =
     shouldLoadIdeationData && effectiveActiveTab === "verification";
   const shouldLoadDependencyGraph =
@@ -665,11 +704,20 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     [attachedSessionId, queryClient],
   );
   const handleStartReview = useCallback((force: boolean) => {
-    if (!conversationId || isWorkspaceReviewActionPending) {
+    if (
+      !conversationId ||
+      isWorkspaceReviewActionPending ||
+      isWorkspaceRuntimeGenerating
+    ) {
       return;
     }
     startWorkspaceReviewMutation.mutate({ conversationId, force });
-  }, [conversationId, isWorkspaceReviewActionPending, startWorkspaceReviewMutation]);
+  }, [
+    conversationId,
+    isWorkspaceReviewActionPending,
+    isWorkspaceRuntimeGenerating,
+    startWorkspaceReviewMutation,
+  ]);
 
   return (
     <aside
@@ -711,7 +759,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
                 iconColor = "var(--status-warning)";
               }
             } else if (id === "review") {
-              iconColor = reviewTabStatusColor ?? undefined;
+              iconColor = reviewTabIconColor ?? undefined;
               iconPulse = isWorkspaceReviewRunning;
               tabStatusColor = reviewTabStatusColor;
             }
@@ -884,6 +932,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
             reviewArtifactQuery.isFetching
           }
           isReviewActionPending={isWorkspaceReviewActionPending}
+          isWorkspaceRuntimeGenerating={isWorkspaceRuntimeGenerating}
           onStartReview={handleStartReview}
           planArtifact={planArtifact}
           isPlanLoading={isPlanHydrating}
@@ -897,6 +946,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
           onDisplayedVerificationStatusChange={setDisplayedVerificationStatus}
           verificationState={verificationState}
           verificationInProgress={verificationInProgress}
+          onOpenReview={() => onTabChange("review")}
           onOpenVerification={() => onTabChange("verification")}
           taskArtifactSelectedId={taskArtifactSelectedId}
           onTaskArtifactSelectedIdChange={setTaskArtifactSelectedId}
@@ -925,6 +975,7 @@ type ArtifactContentProps = {
   reviewStartError: Error | null;
   isReviewLoading: boolean;
   isReviewActionPending: boolean;
+  isWorkspaceRuntimeGenerating: boolean;
   onStartReview: (force: boolean) => void;
   planArtifact: Artifact | null;
   isPlanLoading: boolean;
@@ -941,6 +992,7 @@ type ArtifactContentProps = {
   } | null) => void;
   verificationState: VerificationStatus | null;
   verificationInProgress: boolean;
+  onOpenReview: () => void;
   onOpenVerification: () => void;
   taskArtifactSelectedId: string | null;
   onTaskArtifactSelectedIdChange: (id: string | null) => void;
@@ -965,6 +1017,7 @@ function ArtifactContent({
   reviewStartError,
   isReviewLoading,
   isReviewActionPending,
+  isWorkspaceRuntimeGenerating,
   onStartReview,
   planArtifact,
   isPlanLoading,
@@ -978,6 +1031,7 @@ function ArtifactContent({
   onDisplayedVerificationStatusChange,
   verificationState,
   verificationInProgress,
+  onOpenReview,
   onOpenVerification,
   taskArtifactSelectedId,
   onTaskArtifactSelectedIdChange,
@@ -1027,6 +1081,8 @@ function ArtifactContent({
         onPublishWorkspace={onPublishWorkspace}
         isPublishingWorkspace={isPublishingWorkspace}
         publishFocusRequest={publishFocusRequest}
+        reviewContext={reviewContext}
+        onOpenReview={onOpenReview}
       />
     );
   }
@@ -1092,6 +1148,7 @@ function ArtifactContent({
         reviewStartError={reviewStartError}
         isReviewLoading={isReviewLoading}
         isReviewActionPending={isReviewActionPending}
+        isWorkspaceRuntimeGenerating={isWorkspaceRuntimeGenerating}
         onStartReview={onStartReview}
       />
     );
