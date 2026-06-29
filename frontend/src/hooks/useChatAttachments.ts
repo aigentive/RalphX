@@ -3,6 +3,11 @@
 
 import { useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import {
+  selectComposerDraft,
+  useChatStore,
+  type ChatComposerAttachment,
+} from "@/stores/chatStore";
 
 // ============================================================================
 // Types
@@ -11,16 +16,11 @@ import { invoke } from "@tauri-apps/api/core";
 /**
  * Chat attachment metadata
  */
-export interface ChatAttachment {
-  id: string;
+export type ChatAttachment = ChatComposerAttachment & {
   conversationId: string;
-  messageId?: string;
-  fileName: string;
   filePath: string;
-  mimeType?: string;
-  fileSize: number;
   createdAt: string;
-}
+};
 
 /**
  * Upload progress state for an individual file
@@ -51,16 +51,53 @@ export interface UseChatAttachmentsResult {
   uploadProgress: UploadProgress[];
 }
 
+interface UseChatAttachmentsOptions {
+  draftKey?: string | null;
+}
+
+const EMPTY_ATTACHMENTS: ChatAttachment[] = [];
+
 /**
  * Hook for managing pending chat attachments (pre-send)
  *
  * @param conversationId The conversation ID to associate attachments with
  * @returns Attachment state and operations
  */
-export function useChatAttachments(conversationId: string): UseChatAttachmentsResult {
-  const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
+export function useChatAttachments(
+  conversationId: string,
+  options: UseChatAttachmentsOptions = {},
+): UseChatAttachmentsResult {
+  const draftKey = options.draftKey ?? null;
+  const draft = useChatStore(selectComposerDraft(draftKey));
+  const setDraftAttachments = useChatStore((state) => state.setComposerDraftAttachments);
+  const [localAttachments, setLocalAttachments] = useState<ChatAttachment[]>([]);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<UploadProgress[]>([]);
+  const attachments = draftKey
+    ? (draft?.attachments as ChatAttachment[] | undefined) ?? EMPTY_ATTACHMENTS
+    : localAttachments;
+
+  const setAttachments = useCallback(
+    (
+      updater:
+        | ChatAttachment[]
+        | ((current: ChatAttachment[]) => ChatAttachment[]),
+    ) => {
+      const resolveNext = (current: ChatAttachment[]) =>
+        typeof updater === "function" ? updater(current) : updater;
+
+      if (draftKey) {
+        const current =
+          (useChatStore.getState().composerDraftsByKey[draftKey]
+            ?.attachments as ChatAttachment[] | undefined) ?? EMPTY_ATTACHMENTS;
+        setDraftAttachments(draftKey, resolveNext(current));
+        return;
+      }
+
+      setLocalAttachments((current) => resolveNext(current));
+    },
+    [draftKey, setDraftAttachments],
+  );
 
   /**
    * Upload multiple files with validation
@@ -142,7 +179,7 @@ export function useChatAttachments(conversationId: string): UseChatAttachmentsRe
         setTimeout(() => setUploadProgress([]), 2000);
       }
     },
-    [conversationId, attachments.length]
+    [conversationId, attachments.length, setAttachments]
   );
 
   /**
@@ -151,7 +188,7 @@ export function useChatAttachments(conversationId: string): UseChatAttachmentsRe
   const removeAttachment = useCallback(async (id: string): Promise<void> => {
     await invoke("delete_chat_attachment", { attachmentId: id });
     setAttachments((prev) => prev.filter((a) => a.id !== id));
-  }, []);
+  }, [setAttachments]);
 
   /**
    * Clear all attachments
@@ -159,7 +196,7 @@ export function useChatAttachments(conversationId: string): UseChatAttachmentsRe
   const clearAttachments = useCallback(() => {
     setAttachments([]);
     setUploadProgress([]);
-  }, []);
+  }, [setAttachments]);
 
   return {
     attachments,
