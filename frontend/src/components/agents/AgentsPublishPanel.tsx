@@ -28,6 +28,7 @@ import {
   chatApi,
   type AgentConversationWorkspace,
   type AgentConversationWorkspacePublicationEvent,
+  type AgentWorkspaceReviewContext,
 } from "@/api/chat";
 import type {
   Commit as DiffViewerCommit,
@@ -196,6 +197,8 @@ export function AgentPublishPanel({
   onPublishWorkspace,
   isPublishingWorkspace,
   publishFocusRequest,
+  reviewContext,
+  onOpenReview,
 }: {
   workspace: AgentConversationWorkspace | null;
   conversationTitle?: string | null;
@@ -203,6 +206,8 @@ export function AgentPublishPanel({
   onPublishWorkspace: ((conversationId: string) => Promise<void>) | undefined;
   isPublishingWorkspace: boolean;
   publishFocusRequest?: AgentPublishFocusRequest | null;
+  reviewContext?: AgentWorkspaceReviewContext | null;
+  onOpenReview?: () => void;
 }) {
   const queryClient = useQueryClient();
   const [reviewOpen, setReviewOpen] = useState(false);
@@ -601,6 +606,30 @@ export function AgentPublishPanel({
   const prSupervisionStatus = workspace.prSupervisionStatus ?? null;
   const prConflictSummary = getAgentWorkspacePrConflictSummary(workspace);
   const hasPrConflict = prConflictSummary !== null;
+  const reviewGateStatus = reviewContext?.monitor.reviewGateStatus ?? null;
+  const reviewBlocksPublish =
+    reviewGateStatus === "required" ||
+    reviewGateStatus === "reviewing" ||
+    reviewGateStatus === "blocking" ||
+    reviewGateStatus === "failed";
+  const reviewGateSummary = (() => {
+    if (reviewGateStatus === "reviewing") {
+      return "Workspace Review is running. Open the Review tab to inspect it before publishing.";
+    }
+    if (reviewGateStatus === "blocking") {
+      return (
+        reviewContext?.monitor.reviewBlockingSummary ??
+        "Workspace Review found blocking issues. Publishing is blocked until the agent addresses them and a new Review passes."
+      );
+    }
+    if (reviewGateStatus === "failed") {
+      return "Workspace Review failed. Retry Review before publishing.";
+    }
+    if (reviewGateStatus === "required") {
+      return "Workspace Review is required before publishing.";
+    }
+    return null;
+  })();
   const autoMergeArgs = {
     autoMergeDesired: prAutoMergeDesired,
     autoMergeCurrent: prAutoMergeCurrent,
@@ -625,19 +654,23 @@ export function AgentPublishPanel({
     effectivePublishing ||
     isAutomationPreferenceSaving ||
     baseBlocked ||
+    reviewBlocksPublish ||
     hasPrConflict ||
     (isRepairPending && !isPipelineOwnedWorkspace) ||
     isPublishCurrent ||
     Boolean(terminalPublicationStatus) ||
     (hasNoDetectedChanges && !isPipelinePrAutomationWorkspace) ||
     workspace.status === "missing";
-  const publishButtonLabel =
-    terminalPublicationLabel ??
-    (isManagedByTaskPipeline
-      ? "Managed by Tasks"
-      : isPublishCurrent
-        ? "PR is up to date"
-        : "Commit & Publish");
+  const publishButtonLabel = (() => {
+    if (terminalPublicationLabel) return terminalPublicationLabel;
+    if (isManagedByTaskPipeline) return "Managed by Tasks";
+    if (reviewGateStatus === "reviewing") return "Reviewing";
+    if (reviewGateStatus === "required") return "Review required";
+    if (reviewGateStatus === "blocking") return "Review blocking";
+    if (reviewGateStatus === "failed") return "Review failed";
+    if (isPublishCurrent) return "PR is up to date";
+    return "Commit & Publish";
+  })();
   const canClosePr = hasPublishedPr && !isRepairPending && !terminalPublicationStatus;
   const isClosingPr = closePrMutation.isPending;
   const shouldShowPrSupervisionControls =
@@ -691,6 +724,8 @@ export function AgentPublishPanel({
             : "This pull request has conflicts. Resolve conflicts to update the branch from base before publishing can continue."
           : baseBlocked
             ? "Publishing is blocked until the workspace base branch is resolved."
+            : reviewGateSummary
+              ? reviewGateSummary
             : isPipelineOwnedWorkspace
               ? workspace.publicationPrNumber || workspace.publicationPrUrl
                 ? `${terminalPrLabel} is managed by this ideation plan's task pipeline.`
@@ -979,6 +1014,25 @@ export function AgentPublishPanel({
                     <GitBranch className="h-3.5 w-3.5" />
                   )}
                   Rebase branch
+                </Button>
+              ) : reviewBlocksPublish ? (
+                <Button
+                  type="button"
+                  className={primaryActionClassName}
+                  onClick={onOpenReview}
+                  disabled={!onOpenReview}
+                  data-testid={
+                    reviewGateStatus === "reviewing"
+                      ? "agents-publish-reviewing"
+                      : "agents-publish-review-required"
+                  }
+                >
+                  {reviewGateStatus === "reviewing" ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <AlertTriangle className="h-3.5 w-3.5" />
+                  )}
+                  {publishButtonLabel}
                 </Button>
               ) : (
                 <Button

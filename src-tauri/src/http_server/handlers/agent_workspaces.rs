@@ -16,7 +16,7 @@ use crate::application::agent_conversation_workspace::{
 use crate::application::agent_workspace_pr_description::validate_agent_workspace_pr_description_body;
 use crate::application::agent_workspace_review::{
     apply_review_artifact_to_monitor, load_agent_workspace_review_context,
-    start_agent_workspace_review, AgentWorkspaceReviewTarget,
+    review_gate_publish_blocker, start_agent_workspace_review, AgentWorkspaceReviewTarget,
 };
 use crate::application::publish_resilience::{
     inspect_publish_branch_freshness_for_source, push_publish_branch,
@@ -100,6 +100,7 @@ pub struct AgentWorkspacePublishReadinessResponse {
     pub success: bool,
     pub workspace: AgentConversationWorkspaceResponse,
     pub freshness: AgentConversationWorkspaceFreshnessResponse,
+    pub review_gate_status: Option<String>,
     pub can_publish: bool,
     pub blockers: Vec<String>,
     pub needs_base_update: bool,
@@ -429,6 +430,8 @@ pub struct AgentWorkspaceReviewMonitorResponse {
     pub conversation_id: String,
     pub project_id: String,
     pub status: String,
+    pub review_outcome: String,
+    pub review_gate_status: String,
     pub current_target_scope: Option<String>,
     pub reviewed_target_scope: Option<String>,
     pub review_conversation_id: Option<String>,
@@ -448,6 +451,11 @@ pub struct AgentWorkspaceReviewMonitorResponse {
     pub workspace_head_sha: Option<String>,
     pub current_diff_fingerprint: Option<String>,
     pub previous_version_id: Option<String>,
+    pub review_blocking_summary: Option<String>,
+    pub review_blocking_fingerprint: Option<String>,
+    pub review_fixer_run_id: Option<String>,
+    pub review_fixer_conversation_id: Option<String>,
+    pub review_fixer_status: Option<String>,
     pub last_run_id: Option<String>,
     pub last_error: Option<String>,
     pub created_at: String,
@@ -460,6 +468,8 @@ impl From<AgentWorkspaceReviewMonitor> for AgentWorkspaceReviewMonitorResponse {
             conversation_id: value.conversation_id.as_str(),
             project_id: value.project_id.as_str().to_string(),
             status: value.status.to_string(),
+            review_outcome: value.review_outcome.to_string(),
+            review_gate_status: value.review_gate_status.to_string(),
             current_target_scope: value.current_target_scope.map(|scope| scope.to_string()),
             reviewed_target_scope: value.reviewed_target_scope.map(|scope| scope.to_string()),
             review_conversation_id: value
@@ -487,6 +497,13 @@ impl From<AgentWorkspaceReviewMonitor> for AgentWorkspaceReviewMonitorResponse {
             previous_version_id: value
                 .previous_version_id
                 .map(|artifact_id| artifact_id.as_str().to_string()),
+            review_blocking_summary: value.review_blocking_summary,
+            review_blocking_fingerprint: value.review_blocking_fingerprint,
+            review_fixer_run_id: value.review_fixer_run_id,
+            review_fixer_conversation_id: value
+                .review_fixer_conversation_id
+                .map(|conversation_id| conversation_id.as_str()),
+            review_fixer_status: value.review_fixer_status,
             last_run_id: value.last_run_id,
             last_error: value.last_error,
             created_at: value.created_at.to_rfc3339(),
@@ -706,13 +723,24 @@ pub async fn check_agent_workspace_publish_readiness(
     )
     .await
     .map_err(|error| json_error(StatusCode::CONFLICT, error, None))?;
-    let blockers = publish_readiness_blockers(&freshness);
+    let workspace_entity =
+        load_agent_workspace_entity(state.app_state.as_ref(), &conversation_id).await?;
+    let review_context =
+        load_agent_workspace_review_context(state.app_state.as_ref(), &workspace_entity)
+            .await
+            .map_err(|error| {
+                json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
+            })?;
+    let review_gate_status = Some(review_context.monitor.review_gate_status.to_string());
+    let blockers =
+        publish_readiness_blockers(&freshness, review_gate_publish_blocker(&review_context));
     let recommended_actions = publish_readiness_recommended_actions(&freshness);
     Ok(Json(AgentWorkspacePublishReadinessResponse {
         success: true,
         can_publish: blockers.is_empty(),
         workspace,
         freshness,
+        review_gate_status,
         blockers,
         needs_base_update: recommended_actions
             .iter()
@@ -1342,6 +1370,7 @@ pub async fn complete_agent_workspace_review_run(
         state.app_state.as_ref(),
         &workspace,
         req.outcome,
+        Some(summary),
         req.blocker,
         req.created_by_run_id,
     )
@@ -2833,8 +2862,12 @@ async fn publish_action_response_for_existing_workspace_state(
 
 fn publish_readiness_blockers(
     freshness: &AgentConversationWorkspaceFreshnessResponse,
+    review_blocker: Option<String>,
 ) -> Vec<String> {
     let mut blockers = Vec::new();
+    if let Some(blocker) = review_blocker {
+        blockers.push(blocker);
+    }
     if freshness.base_status == "blocked" {
         blockers.push(
             freshness
@@ -4597,7 +4630,7 @@ mod tests {
     fn readiness_treats_base_ahead_as_recommended_action_not_blocker() {
         let freshness = test_freshness(true, true, Some(1), "valid");
 
-        assert!(publish_readiness_blockers(&freshness).is_empty());
+        assert!(publish_readiness_blockers(&freshness, None).is_empty());
         assert_eq!(
             publish_readiness_recommended_actions(&freshness),
             vec!["update_from_base".to_string()]
@@ -4608,16 +4641,29 @@ mod tests {
     fn readiness_blocks_missing_changes_and_blocked_base() {
         let no_changes = test_freshness(false, false, Some(0), "valid");
         assert_eq!(
-            publish_readiness_blockers(&no_changes),
+            publish_readiness_blockers(&no_changes, None),
             vec!["No committed or uncommitted workspace changes to publish".to_string()]
         );
 
         let blocked = test_freshness(true, true, Some(1), "blocked");
         assert_eq!(
-            publish_readiness_blockers(&blocked),
+            publish_readiness_blockers(&blocked, None),
             vec!["Workspace base is blocked".to_string()]
         );
         assert!(publish_readiness_recommended_actions(&blocked).is_empty());
+    }
+
+    #[test]
+    fn readiness_includes_workspace_review_gate_blocker() {
+        let freshness = test_freshness(true, true, Some(1), "valid");
+
+        assert_eq!(
+            publish_readiness_blockers(
+                &freshness,
+                Some("Workspace Review is required before publishing".to_string()),
+            ),
+            vec!["Workspace Review is required before publishing".to_string()]
+        );
     }
 
     #[tokio::test]

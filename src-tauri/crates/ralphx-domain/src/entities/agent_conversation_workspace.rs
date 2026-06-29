@@ -132,6 +132,83 @@ impl FromStr for AgentWorkspaceReviewMonitorStatus {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum AgentWorkspaceReviewOutcome {
+    None,
+    Passed,
+    Blocking,
+    NoChanges,
+    RunFailed,
+}
+
+impl std::fmt::Display for AgentWorkspaceReviewOutcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::None => write!(f, "none"),
+            Self::Passed => write!(f, "passed"),
+            Self::Blocking => write!(f, "blocking"),
+            Self::NoChanges => write!(f, "no_changes"),
+            Self::RunFailed => write!(f, "run_failed"),
+        }
+    }
+}
+
+impl FromStr for AgentWorkspaceReviewOutcome {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "none" => Ok(Self::None),
+            "passed" | "reviewed" => Ok(Self::Passed),
+            "blocking" => Ok(Self::Blocking),
+            "no_changes" => Ok(Self::NoChanges),
+            "run_failed" | "failed" | "blocked" => Ok(Self::RunFailed),
+            _ => Err(format!("unknown workspace review outcome: '{value}'")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentWorkspaceReviewGateStatus {
+    NotRequired,
+    Required,
+    Reviewing,
+    Passed,
+    Blocking,
+    Failed,
+}
+
+impl std::fmt::Display for AgentWorkspaceReviewGateStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotRequired => write!(f, "not_required"),
+            Self::Required => write!(f, "required"),
+            Self::Reviewing => write!(f, "reviewing"),
+            Self::Passed => write!(f, "passed"),
+            Self::Blocking => write!(f, "blocking"),
+            Self::Failed => write!(f, "failed"),
+        }
+    }
+}
+
+impl FromStr for AgentWorkspaceReviewGateStatus {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "not_required" => Ok(Self::NotRequired),
+            "required" => Ok(Self::Required),
+            "reviewing" => Ok(Self::Reviewing),
+            "passed" => Ok(Self::Passed),
+            "blocking" => Ok(Self::Blocking),
+            "failed" => Ok(Self::Failed),
+            _ => Err(format!("unknown workspace review gate status: '{value}'")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum AgentWorkspaceReviewTargetScope {
     SelectedSource,
     WorkspaceDelta,
@@ -342,6 +419,8 @@ pub struct AgentWorkspaceReviewMonitor {
     pub conversation_id: ChatConversationId,
     pub project_id: ProjectId,
     pub status: AgentWorkspaceReviewMonitorStatus,
+    pub review_outcome: AgentWorkspaceReviewOutcome,
+    pub review_gate_status: AgentWorkspaceReviewGateStatus,
     pub current_target_scope: Option<AgentWorkspaceReviewTargetScope>,
     pub reviewed_target_scope: Option<AgentWorkspaceReviewTargetScope>,
     pub review_conversation_id: Option<ChatConversationId>,
@@ -361,6 +440,11 @@ pub struct AgentWorkspaceReviewMonitor {
     pub workspace_head_sha: Option<String>,
     pub current_diff_fingerprint: Option<String>,
     pub previous_version_id: Option<ArtifactId>,
+    pub review_blocking_summary: Option<String>,
+    pub review_blocking_fingerprint: Option<String>,
+    pub review_fixer_run_id: Option<String>,
+    pub review_fixer_conversation_id: Option<ChatConversationId>,
+    pub review_fixer_status: Option<String>,
     pub last_run_id: Option<String>,
     pub last_error: Option<String>,
     pub created_at: DateTime<Utc>,
@@ -374,6 +458,8 @@ impl AgentWorkspaceReviewMonitor {
             conversation_id,
             project_id,
             status: AgentWorkspaceReviewMonitorStatus::Idle,
+            review_outcome: AgentWorkspaceReviewOutcome::None,
+            review_gate_status: AgentWorkspaceReviewGateStatus::NotRequired,
             current_target_scope: None,
             reviewed_target_scope: None,
             review_conversation_id: None,
@@ -393,6 +479,11 @@ impl AgentWorkspaceReviewMonitor {
             workspace_head_sha: None,
             current_diff_fingerprint: None,
             previous_version_id: None,
+            review_blocking_summary: None,
+            review_blocking_fingerprint: None,
+            review_fixer_run_id: None,
+            review_fixer_conversation_id: None,
+            review_fixer_status: None,
             last_run_id: None,
             last_error: None,
             created_at: now,
@@ -411,6 +502,17 @@ impl AgentWorkspaceReviewMonitor {
         self.reviewed_target_scope == Some(target_scope)
             && self.reviewed_head_sha.as_deref() == head_sha
             && self.reviewed_diff_fingerprint.as_deref() == Some(diff_fingerprint)
+    }
+
+    pub fn has_current_passing_review_for_target(
+        &self,
+        target_scope: AgentWorkspaceReviewTargetScope,
+        head_sha: Option<&str>,
+        diff_fingerprint: &str,
+    ) -> bool {
+        self.review_outcome == AgentWorkspaceReviewOutcome::Passed
+            && self.is_current_for_target(target_scope, head_sha, diff_fingerprint)
+            && self.review_artifact_id.is_some()
     }
 }
 
@@ -923,10 +1025,10 @@ mod monitor_and_action_constructor_tests {
 mod enum_roundtrip_tests {
     use super::{
         AgentConversationWorkspaceBranchMode, AgentConversationWorkspaceMode,
-        AgentConversationWorkspaceStatus,
-        AgentWorkspacePrReviewActionKind, AgentWorkspacePrReviewActionStatus,
-        AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewMonitorStatus,
-        AgentWorkspaceReviewTargetScope,
+        AgentConversationWorkspaceStatus, AgentWorkspacePrReviewActionKind,
+        AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitorStatus,
+        AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitorStatus,
+        AgentWorkspaceReviewOutcome, AgentWorkspaceReviewTargetScope,
     };
     use std::str::FromStr;
 
@@ -1027,6 +1129,51 @@ mod enum_roundtrip_tests {
     }
 
     #[test]
+    fn workspace_review_outcome_display_and_from_str_roundtrip() {
+        for (variant, text) in [
+            (AgentWorkspaceReviewOutcome::None, "none"),
+            (AgentWorkspaceReviewOutcome::Passed, "passed"),
+            (AgentWorkspaceReviewOutcome::Blocking, "blocking"),
+            (AgentWorkspaceReviewOutcome::NoChanges, "no_changes"),
+            (AgentWorkspaceReviewOutcome::RunFailed, "run_failed"),
+        ] {
+            assert_eq!(variant.to_string(), text);
+            assert_eq!(
+                AgentWorkspaceReviewOutcome::from_str(text).unwrap(),
+                variant
+            );
+        }
+        assert_eq!(
+            AgentWorkspaceReviewOutcome::from_str("reviewed").unwrap(),
+            AgentWorkspaceReviewOutcome::Passed
+        );
+        assert_eq!(
+            AgentWorkspaceReviewOutcome::from_str("blocked").unwrap(),
+            AgentWorkspaceReviewOutcome::RunFailed
+        );
+        assert!(AgentWorkspaceReviewOutcome::from_str("bogus").is_err());
+    }
+
+    #[test]
+    fn workspace_review_gate_status_display_and_from_str_roundtrip() {
+        for (variant, text) in [
+            (AgentWorkspaceReviewGateStatus::NotRequired, "not_required"),
+            (AgentWorkspaceReviewGateStatus::Required, "required"),
+            (AgentWorkspaceReviewGateStatus::Reviewing, "reviewing"),
+            (AgentWorkspaceReviewGateStatus::Passed, "passed"),
+            (AgentWorkspaceReviewGateStatus::Blocking, "blocking"),
+            (AgentWorkspaceReviewGateStatus::Failed, "failed"),
+        ] {
+            assert_eq!(variant.to_string(), text);
+            assert_eq!(
+                AgentWorkspaceReviewGateStatus::from_str(text).unwrap(),
+                variant
+            );
+        }
+        assert!(AgentWorkspaceReviewGateStatus::from_str("bogus").is_err());
+    }
+
+    #[test]
     fn workspace_review_target_scope_display_and_from_str_roundtrip() {
         for (variant, text) in [
             (
@@ -1089,7 +1236,8 @@ mod enum_roundtrip_tests {
 #[cfg(test)]
 mod workspace_review_monitor_tests {
     use super::{
-        AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus,
+        AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor,
+        AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
         AgentWorkspaceReviewTargetScope, ArtifactId, ChatConversationId, ProjectId,
     };
 
@@ -1101,6 +1249,11 @@ mod workspace_review_monitor_tests {
 
         assert_eq!(monitor.conversation_id, conversation_id);
         assert_eq!(monitor.status, AgentWorkspaceReviewMonitorStatus::Idle);
+        assert_eq!(monitor.review_outcome, AgentWorkspaceReviewOutcome::None);
+        assert_eq!(
+            monitor.review_gate_status,
+            AgentWorkspaceReviewGateStatus::NotRequired
+        );
         assert!(monitor.current_target_scope.is_none());
         assert!(monitor.review_conversation_id.is_none());
         assert!(monitor.review_artifact_id.is_none());
@@ -1116,6 +1269,17 @@ mod workspace_review_monitor_tests {
         monitor.review_artifact_id = Some(ArtifactId::from_string("artifact-1"));
 
         assert!(monitor.is_current_for_target(
+            AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+            Some("head"),
+            "fingerprint"
+        ));
+        assert!(!monitor.has_current_passing_review_for_target(
+            AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+            Some("head"),
+            "fingerprint"
+        ));
+        monitor.review_outcome = AgentWorkspaceReviewOutcome::Passed;
+        assert!(monitor.has_current_passing_review_for_target(
             AgentWorkspaceReviewTargetScope::WorkspaceDelta,
             Some("head"),
             "fingerprint"

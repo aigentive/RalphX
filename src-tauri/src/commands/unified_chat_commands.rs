@@ -66,6 +66,7 @@ use crate::application::agent_workspace_pr_supervision_recovery::{
     AgentWorkspacePrSupervisionRecoveryDeps, AgentWorkspacePrSupervisionRecoveryTrigger,
 };
 use crate::application::agent_workspace_publish_recovery::recover_stale_publish_repair_for_workspace_in_state;
+use crate::application::agent_workspace_review::load_workspace_review_publish_blocker;
 use crate::application::chat_service::tool_result_preview::{
     preview_tool_arguments_object, preview_tool_result_object, tool_detail_ref,
 };
@@ -98,11 +99,12 @@ use crate::domain::agents::{
 use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
 use crate::domain::entities::task_step::StepProgressSummary;
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceBranchMode, AgentConversationWorkspaceMode,
-    AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus, AgentRun,
-    AgentRunId, AgentRunStatus, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceSourcePullRequest,
-    ArtifactContent, ChatAttachmentId, ChatContextType, ChatConversation, ChatConversationId,
-    ChatMessage, ChatMessageId, ChatTimelineItem, DelegatedSessionId, ExecutionPlanStatus,
+    AgentConversationWorkspace, AgentConversationWorkspaceBranchMode,
+    AgentConversationWorkspaceMode, AgentConversationWorkspacePublicationEvent,
+    AgentConversationWorkspaceStatus, AgentRun, AgentRunId, AgentRunStatus,
+    AgentWorkspaceReviewMonitorStatus, AgentWorkspaceSourcePullRequest, ArtifactContent,
+    ChatAttachmentId, ChatContextType, ChatConversation, ChatConversationId, ChatMessage,
+    ChatMessageId, ChatTimelineItem, DelegatedSessionId, ExecutionPlanStatus,
     IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow, IdeationSessionId,
     InternalStatus, PlanBranch, PlanBranchStatus, Project, ProjectId, Task, TaskCategory, TaskId,
     DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
@@ -3774,11 +3776,7 @@ pub async fn list_agent_conversations_page(
 
     let mut conversations = state
         .chat_conversation_repo
-        .get_by_context_filtered(
-            context_type_enum,
-            &context_id,
-            include_archived,
-        )
+        .get_by_context_filtered(context_type_enum, &context_id, include_archived)
         .await
         .map_err(|e| e.to_string())?;
     conversations = filter_top_level_agent_conversations(conversations)
@@ -6393,6 +6391,18 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
                 conversation_id
             )
         })?;
+
+    if matches!(
+        workspace.mode,
+        AgentConversationWorkspaceMode::Edit | AgentConversationWorkspaceMode::Ideation
+    ) {
+        if let Some(blocker) = load_workspace_review_publish_blocker(state, &workspace)
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            return Err(blocker);
+        }
+    }
 
     if workspace.mode == AgentConversationWorkspaceMode::Ideation {
         return publish_linked_ideation_plan_branch_workspace_for_app_state(
@@ -14299,11 +14309,10 @@ mod tests {
             .expect("seeded conversation should be listed");
         assert_eq!(page_conversation.logical_model.as_deref(), Some("gpt-5.5"));
         assert_eq!(page_conversation.logical_effort.as_deref(), Some("high"));
-        assert!(
-            page.conversations
-                .iter()
-                .all(|conversation| conversation.id != child.id.as_str())
-        );
+        assert!(page
+            .conversations
+            .iter()
+            .all(|conversation| conversation.id != child.id.as_str()));
 
         let summary = get_agent_conversation_summary_for_app_state(
             app.state::<AppState>().inner(),

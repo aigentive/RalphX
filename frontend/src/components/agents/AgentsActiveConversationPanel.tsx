@@ -2388,6 +2388,9 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                 isPublishingWorkspace={publishingConversationId === selectedConversationId}
                 onToggleArtifacts={onToggleArtifacts}
                 onSelectArtifact={onSelectArtifact}
+                {...(isFocusedChildChat
+                  ? { onBackToWorkspaceChat: handleViewRuntimeWorkspace }
+                  : {})}
                 workspaceControl={workspaceBaseControl}
                 showTitle={false}
               />

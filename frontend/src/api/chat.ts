@@ -1895,6 +1895,21 @@ export type AgentWorkspaceReviewMonitorStatus =
   | "ready"
   | "blocked";
 
+export type AgentWorkspaceReviewOutcome =
+  | "none"
+  | "passed"
+  | "blocking"
+  | "no_changes"
+  | "run_failed";
+
+export type AgentWorkspaceReviewGateStatus =
+  | "not_required"
+  | "required"
+  | "reviewing"
+  | "passed"
+  | "blocking"
+  | "failed";
+
 export type AgentWorkspaceReviewTargetScope =
   | "selected_source"
   | "workspace_delta";
@@ -1979,6 +1994,8 @@ export interface AgentWorkspaceReviewMonitor {
   conversationId: string;
   projectId: string;
   status: AgentWorkspaceReviewMonitorStatus;
+  reviewOutcome: AgentWorkspaceReviewOutcome;
+  reviewGateStatus: AgentWorkspaceReviewGateStatus;
   currentTargetScope: AgentWorkspaceReviewTargetScope | null;
   reviewedTargetScope: AgentWorkspaceReviewTargetScope | null;
   reviewConversationId: string | null;
@@ -1998,6 +2015,11 @@ export interface AgentWorkspaceReviewMonitor {
   workspaceHeadSha: string | null;
   currentDiffFingerprint: string | null;
   previousVersionId: string | null;
+  reviewBlockingSummary: string | null;
+  reviewBlockingFingerprint: string | null;
+  reviewFixerRunId: string | null;
+  reviewFixerConversationId: string | null;
+  reviewFixerStatus: string | null;
   lastRunId: string | null;
   lastError: string | null;
   createdAt: string;
@@ -2250,6 +2272,14 @@ const AgentWorkspaceReviewMonitorResponseSchema = z.object({
   conversation_id: z.string(),
   project_id: z.string(),
   status: z.enum(["idle", "reviewing", "ready", "blocked"]),
+  review_outcome: z
+    .enum(["none", "passed", "blocking", "no_changes", "run_failed"])
+    .optional()
+    .default("none"),
+  review_gate_status: z
+    .enum(["not_required", "required", "reviewing", "passed", "blocking", "failed"])
+    .optional()
+    .default("not_required"),
   current_target_scope: z.enum(["selected_source", "workspace_delta"]).nullable(),
   reviewed_target_scope: z.enum(["selected_source", "workspace_delta"]).nullable(),
   review_conversation_id: z.string().nullable().optional(),
@@ -2269,6 +2299,11 @@ const AgentWorkspaceReviewMonitorResponseSchema = z.object({
   workspace_head_sha: z.string().nullable(),
   current_diff_fingerprint: z.string().nullable(),
   previous_version_id: z.string().nullable(),
+  review_blocking_summary: z.string().nullable().optional().default(null),
+  review_blocking_fingerprint: z.string().nullable().optional().default(null),
+  review_fixer_run_id: z.string().nullable().optional().default(null),
+  review_fixer_conversation_id: z.string().nullable().optional().default(null),
+  review_fixer_status: z.string().nullable().optional().default(null),
   last_run_id: z.string().nullable(),
   last_error: z.string().nullable(),
   created_at: z.string(),
@@ -2756,6 +2791,8 @@ function transformAgentWorkspaceReviewMonitor(
     conversationId: raw.conversation_id,
     projectId: raw.project_id,
     status: raw.status,
+    reviewOutcome: raw.review_outcome,
+    reviewGateStatus: raw.review_gate_status,
     currentTargetScope: raw.current_target_scope,
     reviewedTargetScope: raw.reviewed_target_scope,
     reviewConversationId: raw.review_conversation_id ?? null,
@@ -2775,6 +2812,11 @@ function transformAgentWorkspaceReviewMonitor(
     workspaceHeadSha: raw.workspace_head_sha,
     currentDiffFingerprint: raw.current_diff_fingerprint,
     previousVersionId: raw.previous_version_id,
+    reviewBlockingSummary: raw.review_blocking_summary,
+    reviewBlockingFingerprint: raw.review_blocking_fingerprint,
+    reviewFixerRunId: raw.review_fixer_run_id,
+    reviewFixerConversationId: raw.review_fixer_conversation_id,
+    reviewFixerStatus: raw.review_fixer_status,
     lastRunId: raw.last_run_id,
     lastError: raw.last_error,
     createdAt: raw.created_at,

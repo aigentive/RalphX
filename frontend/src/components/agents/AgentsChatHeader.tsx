@@ -10,6 +10,7 @@ import {
 import { useQuery } from "@tanstack/react-query";
 import {
   AlertCircle,
+  ArrowLeft,
   CheckCircle2,
   ChevronDown,
   ClipboardList,
@@ -132,6 +133,7 @@ export interface AgentsChatHeaderProps {
   onPreloadTerminal?: () => void;
   onToggleArtifacts: () => void;
   onSelectArtifact: (tab: AgentArtifactTab) => void;
+  onBackToWorkspaceChat?: () => void;
   showTitle?: boolean;
   workspaceControl?: ReactNode;
 }
@@ -309,6 +311,7 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
   onPreloadTerminal,
   onToggleArtifacts,
   onSelectArtifact,
+  onBackToWorkspaceChat,
   showTitle = true,
   workspaceControl,
 }: AgentsChatHeaderProps) {
@@ -389,6 +392,8 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
   const sidebarVisibility = useAgentsSidebarVisibility();
   const showOpenSidebarButton =
     sidebarVisibility !== null && sidebarVisibility.isCollapsed;
+  const showBackToWorkspaceChat =
+    chatFocus.type !== "workspace" && Boolean(onBackToWorkspaceChat);
 
   useEffect(() => {
     if (!isEditing) {
@@ -453,6 +458,19 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
         )}
         {workspaceControl ??
           (workspace ? <AgentsWorkspaceStatusPill workspace={workspace} /> : null)}
+        {showBackToWorkspaceChat && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-7 shrink-0 gap-1.5 px-2.5 text-xs"
+            onClick={onBackToWorkspaceChat}
+            data-testid="agents-chat-header-back-to-workspace"
+          >
+            <ArrowLeft className="h-3.5 w-3.5" aria-hidden="true" />
+            <span>Back to Workspace Chat</span>
+          </Button>
+        )}
         {showTitle ? (
           <div className="min-w-0 flex-1">
             {isEditing ? (

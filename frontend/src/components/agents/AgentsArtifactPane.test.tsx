@@ -1337,7 +1337,7 @@ describe("AgentsArtifactPane", () => {
 
     const content = await screen.findByTestId("agents-artifact-content-review");
 
-    expect(await within(content).findByText("Review running")).toBeInTheDocument();
+    expect(await within(content).findByText("Reviewing")).toBeInTheDocument();
     expect(within(content).queryByRole("heading", { name: "Review" })).not.toBeInTheDocument();
     expect(startWorkspaceReviewMock).not.toHaveBeenCalled();
   });
@@ -1365,7 +1365,7 @@ describe("AgentsArtifactPane", () => {
     );
 
     expect(screen.queryByTestId("agents-artifact-tab-review")).not.toBeInTheDocument();
-    expect(screen.queryByText("Review running")).not.toBeInTheDocument();
+    expect(screen.queryByText("Reviewing")).not.toBeInTheDocument();
   });
 
   it("offers a forced rerun for a current Review artifact without success toasts", async () => {
@@ -1398,7 +1398,7 @@ describe("AgentsArtifactPane", () => {
 
     renderPane("review", workspace({ mode: "edit" }), vi.fn(), false, conversation());
 
-    expect(await screen.findByText("Review is current")).toBeInTheDocument();
+    expect(await screen.findByText("Review passed")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Run again" }));
 
     await waitFor(() =>
@@ -1451,7 +1451,7 @@ describe("AgentsArtifactPane", () => {
 
     renderPane("review", workspace({ mode: "edit" }), vi.fn(), false, conversation());
 
-    expect(await screen.findByText("Review is current")).toBeInTheDocument();
+    expect(await screen.findByText("Review passed")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Run again" }));
 
     await waitFor(() =>
@@ -1459,8 +1459,8 @@ describe("AgentsArtifactPane", () => {
         force: true,
       }),
     );
-    expect(screen.getByText("Review is current")).toBeInTheDocument();
-    expect(screen.queryByText("Review running")).not.toBeInTheDocument();
+    expect(screen.getByText("Review passed")).toBeInTheDocument();
+    expect(screen.queryByText("Reviewing")).not.toBeInTheDocument();
     expect(screen.queryByText("Review is outdated")).not.toBeInTheDocument();
     expect(screen.queryByText(/The Review below is still available/)).not.toBeInTheDocument();
   });
@@ -1477,7 +1477,7 @@ describe("AgentsArtifactPane", () => {
 
     renderPane("review", workspace({ mode: "edit" }), vi.fn(), false, conversation());
 
-    expect(await screen.findByText("Review blocked")).toBeInTheDocument();
+    expect(await screen.findByText("Review failed")).toBeInTheDocument();
     expect(screen.getByText("Reviewer child chat failed")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Retry review" }));
 
@@ -1506,7 +1506,7 @@ describe("AgentsArtifactPane", () => {
       });
       await act(async () => {});
 
-      expect(screen.getByText("Review running")).toBeInTheDocument();
+      expect(screen.getByText("Reviewing")).toBeInTheDocument();
       expect(getWorkspaceReviewContextMock).toHaveBeenCalledTimes(1);
 
       await act(async () => {

@@ -61,7 +61,11 @@ function reviewErrorMessage(
   if (reviewStartError) {
     return reviewStartError.message || "Failed to start review.";
   }
-  if (context?.monitor.status === "blocked") {
+  if (
+    context?.monitor.status === "blocked" ||
+    context?.monitor.reviewGateStatus === "failed" ||
+    context?.monitor.reviewOutcome === "run_failed"
+  ) {
     return context.monitor.lastError ?? "Review could not complete.";
   }
   return null;
@@ -70,16 +74,16 @@ function reviewErrorMessage(
 function reviewActionForState({
   context,
   hasArtifact,
-  isBlocked,
+  isRunFailed,
   isRunning,
 }: {
   context: ReviewDisplayContext | null;
   hasArtifact: boolean;
-  isBlocked: boolean;
+  isRunFailed: boolean;
   isRunning: boolean;
 }): ReviewAction | null {
   if (!context?.target || isRunning) return null;
-  if (isBlocked) return { label: "Retry review", force: true };
+  if (isRunFailed) return { label: "Retry review", force: true };
   if (!hasArtifact) return { label: "Run review", force: false };
   if (context.isOutdated) return { label: "Update review", force: true };
   if (context.isCurrent) return { label: "Run again", force: true };
@@ -89,27 +93,38 @@ function reviewActionForState({
 function reviewStatusForState({
   context,
   hasArtifact,
-  isBlocked,
+  isRunFailed,
   isRunning,
 }: {
   context: ReviewDisplayContext | null;
   hasArtifact: boolean;
-  isBlocked: boolean;
+  isRunFailed: boolean;
   isRunning: boolean;
 }): ReviewStatus {
+  const gateStatus = context?.monitor.reviewGateStatus ?? null;
   if (isRunning) {
     return {
-      label: "Review running",
+      label: "Reviewing",
       detail: "The reviewer is checking the current changes. The Review will appear here when it finishes.",
       color: "var(--accent-primary)",
       icon: Loader2,
       iconClassName: "animate-spin",
     };
   }
-  if (isBlocked) {
+  if (isRunFailed) {
     return {
-      label: "Review blocked",
+      label: "Review failed",
       detail: "The last review attempt did not complete.",
+      color: "var(--status-error)",
+      icon: AlertCircle,
+    };
+  }
+  if (gateStatus === "blocking") {
+    return {
+      label: "Review blocking",
+      detail:
+        context?.monitor.reviewBlockingSummary ??
+        "The reviewer found blocking issues in the current changes.",
       color: "var(--status-error)",
       icon: AlertCircle,
     };
@@ -122,10 +137,10 @@ function reviewStatusForState({
       icon: AlertCircle,
     };
   }
-  if (context?.isCurrent) {
+  if (gateStatus === "passed" || context?.isCurrent) {
     return {
-      label: "Review is current",
-      detail: "This Review matches the current review target.",
+      label: "Review passed",
+      detail: "This Review passed for the current review target.",
       color: "var(--status-success)",
       icon: CheckCircle2,
     };
@@ -179,17 +194,17 @@ export function AgentReviewPanel({
   const isRunning =
     isReviewActionPending || displayContext?.monitor.status === "reviewing";
   const errorMessage = reviewErrorMessage(displayContext, reviewStartError);
-  const isBlocked = Boolean(errorMessage) && !isRunning;
+  const isRunFailed = Boolean(errorMessage) && !isRunning;
   const status = reviewStatusForState({
     context: displayContext,
     hasArtifact: Boolean(reviewArtifact),
-    isBlocked,
+    isRunFailed,
     isRunning,
   });
   const action = reviewActionForState({
     context: displayContext,
     hasArtifact: Boolean(reviewArtifact),
-    isBlocked,
+    isRunFailed,
     isRunning,
   });
   const targetLabel = reviewTargetLabel(displayContext);
@@ -203,19 +218,6 @@ export function AgentReviewPanel({
   const reviewUpdatedAt = displayContext?.monitor.reviewArtifactUpdatedAt
     ? new Date(displayContext.monitor.reviewArtifactUpdatedAt).toLocaleString()
     : null;
-  const emptyArtifactTitle = isRunning
-    ? "Review pending"
-    : displayContext?.target
-      ? "No Review yet"
-      : status.label;
-  const emptyArtifactDetail = isRunning
-    ? "A Review will appear here when the reviewer finishes."
-    : displayContext?.target
-      ? isBlocked
-        ? "Resolve the issue above or retry when the workspace is ready."
-        : "Run review when you want a reviewer pass."
-      : status.detail;
-
   const actionButton = useMemo(() => {
     if (isRunning && !action) {
       return (
@@ -364,7 +366,7 @@ export function AgentReviewPanel({
         </div>
       )}
 
-      {reviewArtifact ? (
+      {reviewArtifact && (
         <Suspense fallback={<EmptyArtifactState title="Loading review..." />}>
           <LazyPlanDisplay
             plan={reviewArtifact}
@@ -375,23 +377,6 @@ export function AgentReviewPanel({
             chromeless
           />
         </Suspense>
-      ) : (
-        <div
-          className="rounded-md px-6 py-8 text-center"
-          style={{
-            backgroundColor: "var(--bg-sunken)",
-            borderColor: "var(--border-subtle)",
-            borderWidth: 1,
-            borderStyle: "solid",
-          }}
-        >
-          <p className="text-sm font-medium" style={{ color: "var(--text-primary)" }}>
-            {emptyArtifactTitle}
-          </p>
-          <p className="mx-auto mt-1 max-w-[28rem] text-xs" style={{ color: "var(--text-muted)" }}>
-            {emptyArtifactDetail}
-          </p>
-        </div>
       )}
     </div>
   );

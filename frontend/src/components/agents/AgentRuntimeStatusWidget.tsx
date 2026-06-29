@@ -192,6 +192,10 @@ export function AgentRuntimeStatusWidget({
       : allItemsWaiting
         ? `${items.length} waiting runtimes`
         : `${items.length} active runtimes`;
+  const suppressHeader =
+    items.length === 1 &&
+    singleItem !== undefined &&
+    isCurrentRuntimeItem(singleItem, currentFocus);
 
   const handleItemClick = (item: AgentConversationRuntimeItem) => {
     if (item.source === "ideation") {
@@ -234,34 +238,36 @@ export function AgentRuntimeStatusWidget({
       }}
       data-testid="agents-runtime-status-widget"
     >
-      <div className="flex items-center gap-2">
-        <HeaderIcon
-          className={`h-4 w-4 shrink-0${hasGeneratingItem ? " animate-spin" : ""}`}
-          style={{
-            color: hasGeneratingItem
-              ? "var(--accent-primary)"
-              : "var(--text-muted)",
-          }}
-          aria-hidden="true"
-          data-testid="agents-runtime-status-icon"
-        />
-        <div className="min-w-0 flex-1">
-          <p
-            className="truncate text-xs font-semibold"
-            style={{ color: "var(--text-primary)" }}
-          >
-            {headerLabel}
-          </p>
-          <p
-            className="truncate text-[0.6875rem]"
-            style={{ color: "var(--text-muted)" }}
-          >
-            {headerDetail}
-          </p>
+      {!suppressHeader && (
+        <div className="flex items-center gap-2">
+          <HeaderIcon
+            className={`h-4 w-4 shrink-0${hasGeneratingItem ? " animate-spin" : ""}`}
+            style={{
+              color: hasGeneratingItem
+                ? "var(--accent-primary)"
+                : "var(--text-muted)",
+            }}
+            aria-hidden="true"
+            data-testid="agents-runtime-status-icon"
+          />
+          <div className="min-w-0 flex-1">
+            <p
+              className="truncate text-xs font-semibold"
+              style={{ color: "var(--text-primary)" }}
+            >
+              {headerLabel}
+            </p>
+            <p
+              className="truncate text-[0.6875rem]"
+              style={{ color: "var(--text-muted)" }}
+            >
+              {headerDetail}
+            </p>
+          </div>
         </div>
-      </div>
+      )}
       <div
-        className="mt-2 flex flex-col gap-1.5 overflow-y-auto overscroll-contain pr-1"
+        className={`${suppressHeader ? "" : "mt-2 "}flex flex-col gap-1.5 overflow-y-auto overscroll-contain pr-1`}
         data-testid="agents-runtime-status-list"
         style={{ maxHeight: `${RUNTIME_STATUS_LIST_MAX_HEIGHT_PX}px` }}
       >

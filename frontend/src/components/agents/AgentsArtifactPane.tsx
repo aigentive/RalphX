@@ -897,6 +897,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
           onDisplayedVerificationStatusChange={setDisplayedVerificationStatus}
           verificationState={verificationState}
           verificationInProgress={verificationInProgress}
+          onOpenReview={() => onTabChange("review")}
           onOpenVerification={() => onTabChange("verification")}
           taskArtifactSelectedId={taskArtifactSelectedId}
           onTaskArtifactSelectedIdChange={setTaskArtifactSelectedId}
@@ -941,6 +942,7 @@ type ArtifactContentProps = {
   } | null) => void;
   verificationState: VerificationStatus | null;
   verificationInProgress: boolean;
+  onOpenReview: () => void;
   onOpenVerification: () => void;
   taskArtifactSelectedId: string | null;
   onTaskArtifactSelectedIdChange: (id: string | null) => void;
@@ -978,6 +980,7 @@ function ArtifactContent({
   onDisplayedVerificationStatusChange,
   verificationState,
   verificationInProgress,
+  onOpenReview,
   onOpenVerification,
   taskArtifactSelectedId,
   onTaskArtifactSelectedIdChange,
@@ -1027,6 +1030,8 @@ function ArtifactContent({
         onPublishWorkspace={onPublishWorkspace}
         isPublishingWorkspace={isPublishingWorkspace}
         publishFocusRequest={publishFocusRequest}
+        reviewContext={reviewContext}
+        onOpenReview={onOpenReview}
       />
     );
   }

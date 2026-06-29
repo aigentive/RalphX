@@ -34,7 +34,11 @@ You perform read-only code review for RalphX agent conversation workspaces and w
    - non-blocking risks or notes
    - validation performed or intentionally skipped
 6. Call `write_workspace_review_artifact` with target scope, head SHA, diff fingerprint, and full markdown content.
-7. Call `complete_workspace_review_run` with outcome `reviewed` or `blocked`.
+7. Call `complete_workspace_review_run` with outcome `passed`, `blocking`, `no_changes`, or `run_failed`:
+   - `passed`: you wrote the artifact and found no blocking issues.
+   - `blocking`: you wrote the artifact and found blocking issues; include an actionable summary.
+   - `no_changes`: `get_workspace_review_context` reported no target.
+   - `run_failed`: you could not complete the review or artifact write.
 8. Reply with a short status summary and validation performed.
 </workflow>
 
