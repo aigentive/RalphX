@@ -27,8 +27,8 @@ use crate::commands::ExecutionState;
 use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunId,
-    ChatContextType, ChatConversationId, ChatMessageId, InternalStatus, MessageRole, ProjectId,
-    TaskId,
+    ChatContextType, ChatConversationId, ChatMessageId, IdeationSessionId, InternalStatus,
+    MessageRole, ProjectId, SessionPurpose, TaskId,
 };
 use crate::domain::repositories::{
     ActivityEventRepository, AgentRunRepository, ArtifactRepository, ChatMessageRepository,
@@ -475,6 +475,74 @@ async fn fail_queued_agent_run(
     running_agent_registry
         .unregister(registry_key, run_id)
         .await;
+}
+
+async fn reconcile_queued_verification_child_completion<R: Runtime>(
+    context_type: ChatContextType,
+    context_id: &str,
+    ideation_session_repo: &Arc<dyn IdeationSessionRepository>,
+    chat_message_repo: &Arc<dyn ChatMessageRepository>,
+    message_queue: &Arc<MessageQueue>,
+    app_handle: Option<&AppHandle<R>>,
+) {
+    if context_type != ChatContextType::Ideation {
+        return;
+    }
+
+    let child_id = IdeationSessionId::from_string(context_id.to_string());
+    let child_session = match ideation_session_repo.get_by_id(&child_id).await {
+        Ok(Some(session)) => session,
+        Ok(None) => {
+            tracing::debug!(
+                context_id,
+                "[QUEUE] Ideation session not found for queued verification reconciliation"
+            );
+            return;
+        }
+        Err(error) => {
+            tracing::warn!(
+                context_id,
+                error = %error,
+                "[QUEUE] Failed to fetch ideation session for queued verification reconciliation"
+            );
+            return;
+        }
+    };
+
+    if child_session.session_purpose != SessionPurpose::Verification {
+        return;
+    }
+
+    let Some(parent_id) = child_session.parent_session_id else {
+        tracing::warn!(
+            context_id,
+            "[QUEUE] Verification child has no parent for queued completion reconciliation"
+        );
+        return;
+    };
+
+    let Some(handle) = app_handle else {
+        tracing::warn!(
+            context_id,
+            parent_id = %parent_id.as_str(),
+            "[QUEUE] Cannot reconcile queued verification child completion without app handle"
+        );
+        return;
+    };
+
+    let app_state = handle.state::<AppState>();
+    let verification_child_registry = None;
+    super::chat_service_handlers::handle_verification_child_completion(
+        &child_id,
+        &parent_id,
+        ideation_session_repo,
+        &app_state.chat_conversation_repo,
+        chat_message_repo,
+        message_queue,
+        &Some(handle.clone()),
+        &verification_child_registry,
+    )
+    .await;
 }
 
 /// Process all queued messages for a context with retry loop.
@@ -1543,6 +1611,15 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                                 let _ = agent_run_repo
                                     .complete(&AgentRunId::from_string(queued_run_id.clone()))
                                     .await;
+                                reconcile_queued_verification_child_completion(
+                                    context_type,
+                                    context_id,
+                                    ideation_session_repo,
+                                    chat_message_repo,
+                                    message_queue,
+                                    app_handle.as_ref(),
+                                )
+                                .await;
                             }
                         }
                         Err(e) => {

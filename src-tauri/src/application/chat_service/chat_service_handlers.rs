@@ -95,7 +95,7 @@ fn queue_verification_auto_continue(
     queued
 }
 
-async fn handle_verification_child_completion<R: Runtime>(
+pub(super) async fn handle_verification_child_completion<R: Runtime>(
     child_id: &IdeationSessionId,
     parent_id: &IdeationSessionId,
     ideation_session_repo: &Arc<dyn IdeationSessionRepository>,
