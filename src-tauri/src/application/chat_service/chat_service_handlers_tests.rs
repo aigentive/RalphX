@@ -769,15 +769,16 @@ async fn test_apply_system_wide_provider_pause_pauses_mixed_active_task_states()
     let handle = app.handle().clone();
     let state = handle.state::<AppState>();
 
-    apply_system_wide_provider_pause::<MockRuntime>(
+    let pause_applied = apply_system_wide_provider_pause::<MockRuntime>(
         &Some(handle.clone()),
         &ProviderErrorCategory::RateLimit,
         "You've hit your limit · resets 11pm (Europe/Bucharest)",
         &Some((chrono::Utc::now() + chrono::Duration::minutes(30)).to_rfc3339()),
-        "task_execution",
+        ChatContextType::TaskExecution,
         executing.id.as_str(),
     )
     .await;
+    assert!(pause_applied);
 
     assert!(execution_state.is_paused());
     assert!(execution_state.is_provider_blocked());
@@ -810,6 +811,70 @@ async fn test_apply_system_wide_provider_pause_pauses_mixed_active_task_states()
     assert_eq!(reviewing_after.internal_status, InternalStatus::Paused);
     assert_eq!(merging_after.internal_status, InternalStatus::Paused);
     assert_eq!(ready_after.internal_status, InternalStatus::Ready);
+}
+
+#[tokio::test]
+async fn test_provider_pause_from_delegation_does_not_pause_execution_tasks() {
+    let app_state = AppState::new_test();
+    let execution_state = Arc::new(ExecutionState::new());
+
+    let project = Project::new(
+        "Delegation Provider Pause".to_string(),
+        "/tmp/delegation-provider-pause".to_string(),
+    );
+    let project_id = project.id.clone();
+    app_state.project_repo.create(project).await.unwrap();
+
+    let mut executing = Task::new(project_id, "Codex execution".to_string());
+    executing.internal_status = InternalStatus::Executing;
+    let executing = app_state.task_repo.create(executing).await.unwrap();
+
+    let app = mock_builder()
+        .manage(app_state)
+        .manage(Arc::clone(&execution_state))
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let handle = app.handle().clone();
+    let state = handle.state::<AppState>();
+
+    let pause_applied = apply_system_wide_provider_pause::<MockRuntime>(
+        &Some(handle.clone()),
+        &ProviderErrorCategory::RateLimit,
+        "You've hit your weekly limit · resets 11pm (Europe/Bucharest)",
+        &Some((chrono::Utc::now() + chrono::Duration::minutes(30)).to_rfc3339()),
+        ChatContextType::Delegation,
+        "delegated-session-1",
+    )
+    .await;
+    assert!(!pause_applied);
+
+    assert!(
+        !execution_state.is_paused(),
+        "delegation provider errors must not globally pause execution"
+    );
+    assert!(
+        !execution_state.is_provider_blocked(),
+        "delegation provider errors must not set the global execution provider gate"
+    );
+    assert!(
+        execution_state.can_start_task(),
+        "unrelated execution work should remain schedulable"
+    );
+
+    let persisted = state.app_state_repo.get().await.unwrap();
+    assert_ne!(persisted.execution_halt_mode, ExecutionHaltMode::Paused);
+
+    let executing_after = state
+        .task_repo
+        .get_by_id(&executing.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(executing_after.internal_status, InternalStatus::Executing);
+    assert!(
+        ProviderErrorMetadata::from_task_metadata(executing_after.metadata.as_deref()).is_none(),
+        "unrelated execution task should not receive provider pause metadata"
+    );
 }
 
 #[tokio::test]

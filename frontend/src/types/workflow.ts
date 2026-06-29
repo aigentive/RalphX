@@ -408,15 +408,6 @@ export const defaultWorkflow: WorkflowSchema = {
           canDragFrom: true,
           canDropTo: true,
         },
-        {
-          id: "paused",
-          label: "Paused",
-          statuses: ["paused"],
-          icon: "Pause",
-          accentColor: "hsl(var(--warning))",
-          canDragFrom: false, // User must resume via execution bar
-          canDropTo: false,
-        },
       ],
     },
     {
@@ -438,6 +429,15 @@ export const defaultWorkflow: WorkflowSchema = {
           icon: "RefreshCw",
           accentColor: "hsl(var(--warning))",
           canDragFrom: false, // System-managed (agent revising)
+          canDropTo: false,
+        },
+        {
+          id: "paused",
+          label: "Paused",
+          statuses: ["paused"],
+          icon: "Pause",
+          accentColor: "hsl(var(--warning))",
+          canDragFrom: false, // User must resume via execution bar
           canDropTo: false,
         },
       ],

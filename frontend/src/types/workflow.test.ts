@@ -299,6 +299,18 @@ describe("defaultWorkflow", () => {
     expect(attentionGroup?.label).toBe("Escalated");
     expect(attentionGroup?.statuses).toContain("merge_conflict");
   });
+
+  it("keeps paused tasks in the In Progress lane as suspended active work", () => {
+    const readyColumn = defaultWorkflow.columns.find((column) => column.id === "ready");
+    const inProgressColumn = defaultWorkflow.columns.find((column) => column.id === "in_progress");
+
+    expect(
+      readyColumn?.groups?.some((group) => group.statuses.includes("paused")),
+    ).toBe(false);
+    expect(
+      inProgressColumn?.groups?.some((group) => group.statuses.includes("paused")),
+    ).toBe(true);
+  });
 });
 
 describe("type inference", () => {

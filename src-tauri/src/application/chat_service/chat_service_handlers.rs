@@ -63,6 +63,13 @@ fn should_requeue_after_provider_pause(context_type: ChatContextType) -> bool {
     )
 }
 
+fn provider_pause_targets_execution(context_type: ChatContextType) -> bool {
+    matches!(
+        context_type,
+        ChatContextType::TaskExecution | ChatContextType::Review | ChatContextType::Merge
+    )
+}
+
 const VERIFICATION_AUTO_CONTINUE_METADATA: &str = r#"{"resume_in_place":true}"#;
 
 async fn provider_env_for_harness<R: Runtime>(
@@ -324,9 +331,9 @@ async fn validated_completion_override(
     validation_cache_fresh_for_episode(&cache, &current_head_sha, episode_entered_at)
 }
 
-/// Parse an ISO 8601 retry_after string and set the global provider rate limit gate
-/// on ExecutionState. Called from all agent error contexts (TaskExecution, Merge, Review)
-/// so a single rate limit detection blocks ALL subsequent spawns.
+/// Parse an ISO 8601 retry_after string and set the execution-lane provider gate.
+/// This gate is still global within execution scheduling, so callers must only
+/// apply it for execution-owned contexts.
 fn apply_global_rate_limit_backpressure(
     execution_state: &Option<Arc<ExecutionState>>,
     retry_after: &Option<String>,
@@ -668,12 +675,24 @@ pub(super) async fn apply_system_wide_provider_pause<R: Runtime>(
     category: &super::ProviderErrorCategory,
     message: &str,
     retry_after: &Option<String>,
-    source_context: &str,
+    source_context_type: ChatContextType,
     source_context_id: &str,
-) {
+) -> bool {
     let Some(handle) = app_handle else {
-        return;
+        return false;
     };
+
+    let source_context = source_context_type.to_string();
+    if !provider_pause_targets_execution(source_context_type) {
+        tracing::info!(
+            source_context = source_context,
+            source_context_id = source_context_id,
+            category = %category,
+            retry_after = ?retry_after,
+            "Provider error from non-execution context left execution tasks running"
+        );
+        return false;
+    }
 
     let app_state = handle.state::<AppState>();
     let execution_state = handle.state::<Arc<ExecutionState>>();
@@ -682,7 +701,7 @@ pub(super) async fn apply_system_wide_provider_pause<R: Runtime>(
     apply_global_rate_limit_backpressure(
         &Some(Arc::clone(execution_state.inner())),
         retry_after,
-        source_context,
+        &source_context,
         source_context_id,
     );
 
@@ -705,7 +724,7 @@ pub(super) async fn apply_system_wide_provider_pause<R: Runtime>(
         Ok(projects) => projects,
         Err(error) => {
             tracing::error!(error = %error, "Failed to load projects for provider-triggered pause");
-            return;
+            return false;
         }
     };
 
@@ -770,6 +789,8 @@ pub(super) async fn apply_system_wide_provider_pause<R: Runtime>(
             "timestamp": chrono::Utc::now().to_rfc3339(),
         }),
     );
+
+    true
 }
 
 /// Read existing message content, tool_calls, and content_blocks from the database.
@@ -2313,17 +2334,17 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
         retry_after,
     }) = stream_error
     {
-        apply_system_wide_provider_pause(
+        let pause_applied = apply_system_wide_provider_pause(
             app_handle,
             category,
             message,
             retry_after,
-            &context_type.to_string(),
+            context_type,
             context_id,
         )
         .await;
 
-        if should_requeue_after_provider_pause(context_type) {
+        if pause_applied && should_requeue_after_provider_pause(context_type) {
             if let Some(msg) = user_message_content {
                 let queued = message_queue.queue_with_overrides(
                     context_type,
