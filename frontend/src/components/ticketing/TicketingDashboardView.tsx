@@ -88,7 +88,7 @@ interface TicketingDashboardViewProps {
 function toTicketFilters(filters: ReturnType<typeof useTicketingStore.getState>["filters"]): TicketFiltersInput | undefined {
   const next: TicketFiltersInput = {
     ...(filters.text.trim() && { text: filters.text.trim() }),
-    ...(filters.assignee && { assignee: filters.assignee }),
+    ...(filters.assignees.length > 0 && { assignees: filters.assignees }),
     ...(filters.stateIds.length > 0 && { stateIds: filters.stateIds }),
     ...(filters.labels.length > 0 && { labels: filters.labels }),
     ...(filters.sprint && { sprint: filters.sprint }),
@@ -600,12 +600,15 @@ export function TicketingDashboardView({
     const options = activeProvider === "clickup"
       ? pageAssigneeOptions
       : filterOptionsQuery.data?.assignees ?? pageAssigneeOptions;
-    const selectedAssignee = filters.assignee?.trim();
-    if (!selectedAssignee || selectedAssignee === UNASSIGNED_ASSIGNEE || options.includes(selectedAssignee)) {
+    const selectedAssignees = filters.assignees
+      .map((assignee) => assignee.trim())
+      .filter((assignee) => assignee && assignee !== UNASSIGNED_ASSIGNEE);
+    const missingSelected = selectedAssignees.filter((assignee) => !options.includes(assignee));
+    if (missingSelected.length === 0) {
       return options;
     }
-    return [...options, selectedAssignee].sort((left, right) => left.localeCompare(right));
-  }, [activeProvider, filterOptionsQuery.data?.assignees, filters.assignee, pageAssigneeOptions]);
+    return [...options, ...missingSelected].sort((left, right) => left.localeCompare(right));
+  }, [activeProvider, filterOptionsQuery.data?.assignees, filters.assignees, pageAssigneeOptions]);
   const sprintOptions = useMemo(
     () => {
       if (activeProvider !== "clickup") {

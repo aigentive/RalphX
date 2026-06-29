@@ -92,6 +92,10 @@ const GithubPullRequestSearchResultSchema = z.object({
   isDraft: z.boolean(),
   updatedAt: z.string().nullable().optional(),
   authorLogin: z.string().nullable().optional(),
+  assigneeLogins: z.array(z.string()).default([]),
+  reviewDecision: z.string().nullable().optional(),
+  latestReviewAuthorLogins: z.array(z.string()).default([]),
+  reviewRequestLogins: z.array(z.string()).default([]),
   isCrossRepository: z.boolean(),
 });
 

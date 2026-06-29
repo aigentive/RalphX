@@ -187,6 +187,10 @@ async fn get_github_branch_overview_lists_pr_rx_and_ticket_indicators() {
             is_draft: false,
             updated_at: Some("2026-06-28T08:00:00Z".to_string()),
             author_login: Some("reefagent".to_string()),
+            assignee_logins: vec!["lazabogdan".to_string()],
+            review_decision: Some("REVIEW_REQUIRED".to_string()),
+            latest_review_author_logins: vec!["adriandemian".to_string()],
+            review_request_logins: vec!["lazabogdan".to_string()],
             is_cross_repository: false,
         },
         PrSearchResult {
@@ -199,6 +203,10 @@ async fn get_github_branch_overview_lists_pr_rx_and_ticket_indicators() {
             is_draft: true,
             updated_at: None,
             author_login: None,
+            assignee_logins: Vec::new(),
+            review_decision: None,
+            latest_review_author_logins: Vec::new(),
+            review_request_logins: Vec::new(),
             is_cross_repository: false,
         },
     ]);
@@ -335,6 +343,10 @@ async fn get_github_branch_overview_lists_pr_rx_and_ticket_indicators() {
     assert!(!alpha.pr_is_draft);
     assert_eq!(alpha.pr_updated_at.as_deref(), Some("2026-06-28T08:00:00Z"));
     assert_eq!(alpha.pr_author_login.as_deref(), Some("reefagent"));
+    assert_eq!(alpha.pr_assignee_logins, vec!["lazabogdan"]);
+    assert_eq!(alpha.pr_review_decision.as_deref(), Some("REVIEW_REQUIRED"));
+    assert_eq!(alpha.pr_latest_review_author_logins, vec!["adriandemian"]);
+    assert_eq!(alpha.pr_review_request_logins, vec!["lazabogdan"]);
     assert_eq!(alpha.pr_base_ref_name.as_deref(), Some("main"));
     assert_eq!(alpha.rx_conversation_count, 1);
     assert_eq!(alpha.rx_conversations.len(), 1);

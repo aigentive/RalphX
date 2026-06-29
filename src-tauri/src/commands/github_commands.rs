@@ -52,6 +52,10 @@ pub struct GithubBranchOverviewItem {
     pub pr_is_draft: bool,
     pub pr_updated_at: Option<String>,
     pub pr_author_login: Option<String>,
+    pub pr_assignee_logins: Vec<String>,
+    pub pr_review_decision: Option<String>,
+    pub pr_latest_review_author_logins: Vec<String>,
+    pub pr_review_request_logins: Vec<String>,
     pub pr_base_ref_name: Option<String>,
     pub rx_conversation_count: usize,
     pub rx_conversations: Vec<GithubBranchRxConversation>,
@@ -96,6 +100,10 @@ struct BranchPrSummary {
     is_draft: bool,
     updated_at: Option<String>,
     author_login: Option<String>,
+    assignee_logins: Vec<String>,
+    review_decision: Option<String>,
+    latest_review_author_logins: Vec<String>,
+    review_request_logins: Vec<String>,
     base_ref_name: Option<String>,
 }
 
@@ -429,6 +437,10 @@ fn build_branch_overview_response(
                 is_draft: pr.is_draft,
                 updated_at: pr.updated_at,
                 author_login: pr.author_login,
+                assignee_logins: pr.assignee_logins,
+                review_decision: pr.review_decision,
+                latest_review_author_logins: pr.latest_review_author_logins,
+                review_request_logins: pr.review_request_logins,
                 base_ref_name: Some(pr.base_ref_name),
             },
         );
@@ -479,6 +491,10 @@ fn build_branch_overview_response(
                     is_draft: false,
                     updated_at: Some(workspace.updated_at.to_rfc3339()),
                     author_login: None,
+                    assignee_logins: Vec::new(),
+                    review_decision: None,
+                    latest_review_author_logins: Vec::new(),
+                    review_request_logins: Vec::new(),
                     base_ref_name: Some(workspace.base_ref),
                 });
         }
@@ -522,6 +538,16 @@ fn build_branch_overview_response(
                 pr_is_draft: pr.is_some_and(|summary| summary.is_draft),
                 pr_updated_at: pr.and_then(|summary| summary.updated_at.clone()),
                 pr_author_login: pr.and_then(|summary| summary.author_login.clone()),
+                pr_assignee_logins: pr
+                    .map(|summary| summary.assignee_logins.clone())
+                    .unwrap_or_default(),
+                pr_review_decision: pr.and_then(|summary| summary.review_decision.clone()),
+                pr_latest_review_author_logins: pr
+                    .map(|summary| summary.latest_review_author_logins.clone())
+                    .unwrap_or_default(),
+                pr_review_request_logins: pr
+                    .map(|summary| summary.review_request_logins.clone())
+                    .unwrap_or_default(),
                 pr_base_ref_name: pr.and_then(|summary| summary.base_ref_name.clone()),
                 branch_name,
             }
@@ -554,6 +580,10 @@ fn branch_match_pr_summary(pr_match: PrBranchMatch) -> BranchPrSummary {
         is_draft: pr_match.is_draft,
         updated_at: pr_match.updated_at,
         author_login: None,
+        assignee_logins: Vec::new(),
+        review_decision: None,
+        latest_review_author_logins: Vec::new(),
+        review_request_logins: Vec::new(),
         base_ref_name: None,
     }
 }

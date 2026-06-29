@@ -5,7 +5,7 @@ import type { TicketComment, TicketSummary } from "@/api/ticketing";
 import {
   countNewComments,
   distinctAssigneeNames,
-  filterTicketsByAssignee,
+  filterTicketsByAssignees,
   filterTicketsByProject,
   groupTicketsByStatus,
   hasActiveTicketFilters,
@@ -169,30 +169,30 @@ describe("distinctAssigneeNames", () => {
   });
 });
 
-describe("filterTicketsByAssignee", () => {
+describe("filterTicketsByAssignees", () => {
   const tickets = [ticket("1", "Ada"), ticket("2", null), ticket("3", "Grace")];
 
   it("returns everyone when no assignee is selected", () => {
-    expect(filterTicketsByAssignee(tickets, null)).toHaveLength(3);
+    expect(filterTicketsByAssignees(tickets, [])).toHaveLength(3);
   });
 
   it("returns only unassigned tickets for the sentinel", () => {
-    const result = filterTicketsByAssignee(tickets, UNASSIGNED_ASSIGNEE);
+    const result = filterTicketsByAssignees(tickets, [UNASSIGNED_ASSIGNEE]);
     expect(result.map((t) => t.ref.id)).toEqual(["2"]);
   });
 
-  it("returns only tickets matching the named assignee", () => {
-    const result = filterTicketsByAssignee(tickets, "Grace");
-    expect(result.map((t) => t.ref.id)).toEqual(["3"]);
+  it("returns tickets matching any selected assignee", () => {
+    const result = filterTicketsByAssignees(tickets, ["Grace", "Ada"]);
+    expect(result.map((t) => t.ref.id)).toEqual(["1", "3"]);
   });
 
   it("returns tickets when the selected assignee appears anywhere in the assignee list", () => {
-    const result = filterTicketsByAssignee(
+    const result = filterTicketsByAssignees(
       [
         { ...ticket("1", "Ada"), assignees: [{ name: "Ada" }, { name: "Grace" }] },
         ticket("2", "Linus"),
       ],
-      "Grace",
+      ["Grace"],
     );
     expect(result.map((t) => t.ref.id)).toEqual(["1"]);
   });
@@ -240,18 +240,18 @@ describe("groupTicketsByStatus", () => {
 });
 
 describe("hasActiveTicketFilters", () => {
-  const empty = { text: "", stateIds: [], labels: [], assignee: null, sprint: null, watcherMe: false };
+  const empty = { text: "", stateIds: [], labels: [], assignees: [], sprint: null, watcherMe: false };
 
   it("is false when no filter is set (whitespace-only text counts as empty)", () => {
     expect(hasActiveTicketFilters(empty)).toBe(false);
     expect(hasActiveTicketFilters({ ...empty, text: "   " })).toBe(false);
   });
 
-  it("is true when any of text, status, labels, assignee, sprint, or watcher is set", () => {
+  it("is true when any of text, status, labels, assignees, sprint, or watcher is set", () => {
     expect(hasActiveTicketFilters({ ...empty, text: "bug" })).toBe(true);
     expect(hasActiveTicketFilters({ ...empty, stateIds: ["todo"] })).toBe(true);
     expect(hasActiveTicketFilters({ ...empty, labels: ["backend"] })).toBe(true);
-    expect(hasActiveTicketFilters({ ...empty, assignee: "Me" })).toBe(true);
+    expect(hasActiveTicketFilters({ ...empty, assignees: ["Me"] })).toBe(true);
     expect(hasActiveTicketFilters({ ...empty, sprint: "Sprint 42" })).toBe(true);
     expect(hasActiveTicketFilters({ ...empty, watcherMe: true })).toBe(true);
   });

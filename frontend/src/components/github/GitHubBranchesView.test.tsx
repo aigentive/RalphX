@@ -16,6 +16,7 @@ const { openExternalTicketUrlMock } = vi.hoisted(() => ({
 
 vi.mock("@/api/github", () => ({
   githubApi: {
+    getConnectionStatus: vi.fn(),
     getBranchOverview: vi.fn(),
   },
 }));
@@ -76,6 +77,10 @@ const branches: GitHubBranchOverviewItem[] = [
     prIsDraft: false,
     prUpdatedAt: "2026-06-28T07:00:00.000Z",
     prAuthorLogin: "reefagent",
+    prAssigneeLogins: ["lazabogdan"],
+    prReviewDecision: "REVIEW_REQUIRED",
+    prLatestReviewAuthorLogins: ["reviewer"],
+    prReviewRequestLogins: ["lazabogdan"],
     prBaseRefName: "main",
     rxConversationCount: 1,
     rxConversations: [{ conversationId: "conversation-1", title: "Branch work" }],
@@ -100,6 +105,10 @@ const branches: GitHubBranchOverviewItem[] = [
     prIsDraft: false,
     prUpdatedAt: null,
     prAuthorLogin: null,
+    prAssigneeLogins: [],
+    prReviewDecision: null,
+    prLatestReviewAuthorLogins: [],
+    prReviewRequestLogins: [],
     prBaseRefName: null,
     rxConversationCount: 0,
     rxConversations: [],
@@ -117,6 +126,10 @@ const branches: GitHubBranchOverviewItem[] = [
     prIsDraft: false,
     prUpdatedAt: "2026-06-27T07:00:00.000Z",
     prAuthorLogin: "reefagent",
+    prAssigneeLogins: ["adriandemian"],
+    prReviewDecision: "APPROVED",
+    prLatestReviewAuthorLogins: ["lazabogdan"],
+    prReviewRequestLogins: [],
     prBaseRefName: "main",
     rxConversationCount: 0,
     rxConversations: [],
@@ -134,6 +147,10 @@ const branches: GitHubBranchOverviewItem[] = [
     prIsDraft: false,
     prUpdatedAt: null,
     prAuthorLogin: null,
+    prAssigneeLogins: [],
+    prReviewDecision: null,
+    prLatestReviewAuthorLogins: [],
+    prReviewRequestLogins: [],
     prBaseRefName: null,
     rxConversationCount: 0,
     rxConversations: [],
@@ -185,6 +202,12 @@ describe("GitHubBranchesView", () => {
     vi.clearAllMocks();
     useIntegrationDashboardStore.getState().reset();
     openExternalTicketUrlMock.mockResolvedValue(undefined);
+    vi.mocked(githubApi.getConnectionStatus).mockResolvedValue({
+      ghInstalled: true,
+      authenticated: true,
+      host: "github.com",
+      account: "lazabogdan",
+    });
     vi.mocked(githubApi.getBranchOverview).mockResolvedValue({
       currentBranch: "feature/current",
       sourcesUnavailable: [],
@@ -242,10 +265,34 @@ describe("GitHubBranchesView", () => {
     expect(screen.getByTestId("github-branch-row-feature/current")).toBeInTheDocument();
     expect(screen.queryByTestId("github-branch-row-ralphx/ticket/clickup-cu-1")).not.toBeInTheDocument();
 
-    fireEvent.change(screen.getByPlaceholderText("Search branches, PRs, tickets, or authors"), {
+    fireEvent.change(screen.getByPlaceholderText("Search branches, PRs, tickets, assignees, or authors"), {
       target: { value: "missing" },
     });
     expect(screen.getByText("No branches match these filters.")).toBeInTheDocument();
+  });
+
+  it("filters pull requests by assignees, authors, and review state", async () => {
+    renderBranchesView();
+
+    await screen.findByTestId("github-branch-row-feature/current");
+    expect(screen.getByTestId("github-branch-row-feature/current")).toHaveTextContent("lazabogdan");
+    expect(screen.getByTestId("github-branch-row-feature/merged")).toHaveTextContent("adriandemian");
+
+    fireEvent.click(screen.getByRole("combobox", { name: "GitHub assignee" }));
+    fireEvent.click(screen.getByRole("option", { name: /adriandemian/ }));
+    expect(screen.getByTestId("github-branch-row-feature/merged")).toBeInTheDocument();
+    expect(screen.queryByTestId("github-branch-row-feature/current")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear GitHub assignee filter" }));
+    fireEvent.click(screen.getByRole("combobox", { name: "GitHub author" }));
+    fireEvent.click(screen.getByRole("option", { name: /reefagent/ }));
+    expect(screen.getByTestId("github-branch-row-feature/current")).toBeInTheDocument();
+    expect(screen.getByTestId("github-branch-row-feature/merged")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("combobox", { name: "GitHub reviews" }));
+    fireEvent.click(screen.getByRole("option", { name: /Review required/ }));
+    expect(screen.getByTestId("github-branch-row-feature/current")).toBeInTheDocument();
+    expect(screen.queryByTestId("github-branch-row-feature/merged")).not.toBeInTheDocument();
   });
 
   it("opens PR details from row clicks and follows ticket or RX controls", async () => {
@@ -283,7 +330,7 @@ describe("GitHubBranchesView", () => {
 
     await screen.findByTestId("github-branch-row-feature/current");
     fireEvent.click(screen.getByRole("button", { name: /Tickets 2/ }));
-    fireEvent.change(screen.getByPlaceholderText("Search branches, PRs, tickets, or authors"), {
+    fireEvent.change(screen.getByPlaceholderText("Search branches, PRs, tickets, assignees, or authors"), {
       target: { value: "cu-1" },
     });
 
@@ -297,7 +344,7 @@ describe("GitHubBranchesView", () => {
     renderBranchesView();
 
     expect(await screen.findByTestId("github-branch-row-ralphx/ticket/clickup-cu-1")).toBeInTheDocument();
-    expect(screen.getByPlaceholderText("Search branches, PRs, tickets, or authors")).toHaveValue(
+    expect(screen.getByPlaceholderText("Search branches, PRs, tickets, assignees, or authors")).toHaveValue(
       "cu-1",
     );
     expect(screen.queryByTestId("github-branch-row-feature/current")).not.toBeInTheDocument();

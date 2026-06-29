@@ -45,11 +45,11 @@ describe("useTicketingStore", () => {
       text: "race",
       stateIds: ["started"],
     });
-    useTicketingStore.getState().setFilters({ assignee: "me" });
+    useTicketingStore.getState().setFilters({ assignees: ["me", "you"] });
 
     expect(useTicketingStore.getState().filters).toEqual({
       text: "race",
-      assignee: "me",
+      assignees: ["me", "you"],
       stateIds: ["started"],
       labels: [],
       sprint: null,
@@ -60,7 +60,7 @@ describe("useTicketingStore", () => {
 
     expect(useTicketingStore.getState().filters).toEqual({
       text: "",
-      assignee: null,
+      assignees: [],
       stateIds: [],
       labels: [],
       sprint: null,
@@ -86,7 +86,7 @@ describe("useTicketingStore", () => {
     useTicketingStore.getState().setViewMode("kanban");
     useTicketingStore.getState().setFilters({
       text: "billing",
-      assignee: "Ada",
+      assignees: ["Ada"],
       stateIds: ["started"],
     });
     useTicketingStore.getState().setSelectedTicketRef({
@@ -105,7 +105,7 @@ describe("useTicketingStore", () => {
       viewMode: "kanban",
       filters: {
         text: "billing",
-        assignee: "Ada",
+        assignees: ["Ada"],
         stateIds: ["started"],
       },
       selectedTicketRef: {
