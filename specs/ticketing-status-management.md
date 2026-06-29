@@ -1,5 +1,79 @@
 # Ticketing Status Management Spec
 
+## Stage 0 Gate Baseline
+
+This file is the authoritative Stage 0 baseline for ticketing status-management work. All Stage 1 implementation proposals for B1/B2/F1/F2 must treat this baseline as their prerequisite contract.
+
+Plan reference: `fdc227c5-b394-4b18-854c-6f0ab9282df2` (`Ticketing Status Management - Operation Lifecycle Hardening (Fallback-Acceptance)`).
+
+### Reconciliation Status
+
+- At the time task `90b62284-ebcf-49c0-b80a-7bd9d6e3485f` was created, `specs/ticketing-status-management.md` was reported absent from the working tree and Git history.
+- During Stage 0 execution, this path existed in the worktree and Git history as a status catalog/presentation spec added by `ba9c182d3` (`chore: auto-commit before freshness check`).
+- The supplied content below is accepted as the real spec for status catalog, presentation, ordering, color, visibility, stale handling, and provider scope semantics.
+- The supplied content does not define the operation-lifecycle hardening contract needed by the planned B1/B2/F1/F2 implementation tasks. For that missing operation-lifecycle scope, Stage 0 formally accepts Option 2 fallback: use the observed-code interpretation below until a more specific real spec is supplied.
+
+### Observed-Code Operation Lifecycle Interpretation
+
+Stage 1 status-management hardening is scoped to existing ticket mutation lifecycle behavior:
+
+- Backend operation lifecycle integrity: `begin_operation` must claim a provider ticket operation atomically and `finish_operation` must fail closed when a terminal update cannot find the row.
+- Scoped idempotency: duplicate handling must be scoped by provider, external ticket identity, operation kind, and target metadata; a bare `client_operation_id` match is not enough to prove the same user intent.
+- Provider capabilities and mutation mechanics remain provider-authored: Jira uses transition ids, Linear uses state ids, ClickUp uses status names or provider-required status tokens.
+- Operation events are part of the contract: `ticketing:operation_updated` is emitted for operation lifecycle changes and frontend state must consume it for reconciliation.
+- List, kanban, and detail views may use optimistic state, but optimistic state is provisional until backend operation state and query invalidation reconcile it.
+- Transition discovery failures, mutation failures, and missing valid transitions must surface scoped feedback and roll back optimistic state instead of silently disappearing.
+- Operation history bootstrap must use the repository/service list path for provider ticket operations, exposed through an IPC command, rather than a new ad-hoc query path.
+
+### Additive Provider Constraint
+
+Stage 1 must be additive to the current Jira/Linear/ClickUp write model. Do not rewrite provider mutation APIs, transition payload semantics, or assignment/comment/label mutation mechanics while hardening lifecycle behavior.
+
+Provider write semantics stay:
+
+- Jira status transition: submit provider transition id.
+- Linear status transition: submit Linear state id.
+- ClickUp status transition: submit status name or provider-required status token.
+- Assignment, comment, and label mutations keep their current provider-specific payload requirements.
+
+### Stage 1 Constraints
+
+1. Atomic claim belongs at the repository/service boundary and must be implemented consistently for SQLite and memory repositories.
+2. Idempotency is scoped by provider, external ticket identity (`external_kind`, `external_id`, `external_key`), operation kind, and target metadata. Never treat bare `client_operation_id` as sufficient for cross-ticket or cross-target success.
+3. `finish_operation` must fail closed when `update_provider_ticket_operation_status` returns `None`; it must not emit a success event or return the stale begun operation.
+4. Missing write-command ids must generate unique fallback operation ids, or the command layer must require explicit ids. Do not introduce deterministic ids that collide across failed terminal retries.
+5. Operation bootstrap must go through the existing provider-ticket-operation repository/service list path.
+6. Frontend operation schemas must stay aligned with Rust `ProviderTicketOperationKind`, including `transition`, `assign`, `comment`, and `set_labels`.
+7. UI feedback must preserve accessible status controls, disabled reasons, tooltip behavior, first-paint safety, and WKWebView-safe themed surfaces.
+8. Status catalog/presentation work in the supplied real spec remains valid, but it is not a license to broaden Stage 1 into a full status-management UI unless a later task explicitly scopes that work.
+
+### Avoid
+
+1. Do not block Stage 1 on the historical absence of this spec; this file now records the accepted baseline.
+2. Do not replace per-ticket provider transition legality with catalog ordering or local presentation state.
+3. Do not treat reused `client_operation_id` values on different tickets, operations, or targets as idempotent success.
+4. Do not swallow transition discovery failures, mutation failures, or missing-transition no-ops.
+5. Do not collapse operation-bootstrap repository errors into "no operations" or misleading success UI.
+6. Do not reuse or renumber existing migrations; any required schema change must be a new forward-only migration.
+7. Do not build a large operation center UI for this hardening slice; reuse existing list, kanban, detail, and compact status surfaces unless verification expands scope.
+
+### Proof Obligations
+
+1. Atomic claim: tests prove two concurrent `begin_operation` calls for the same scoped intent create exactly one provider-bound pending operation and avoid a second provider call in both SQLite and memory repositories.
+2. Fail-closed terminal update: tests prove `finish_operation` returns an error when the terminal row is missing and does not emit a succeeded event from stale state.
+3. Scoped idempotency: tests cover pending/in-flight conflict, succeeded idempotent success for the same scoped intent, failed/timed-out/canceled requiring a new id, and different ticket/target never becoming false success.
+4. Crash-window behavior: tests pin the chosen retry behavior when provider success occurs before `Succeeded` is persisted.
+5. Schema/kind alignment: tests prove frontend operation responses parse all Rust operation kinds, including `set_labels`.
+6. Optimistic rollback and failure surfacing: tests prove move and quick-assign failures surface scoped feedback and roll back list/kanban/detail state.
+7. Event reconciliation: tests prove `ticketing:operation_updated` invalidates or reconciles the correct frontend queries and operation state.
+
+### Downstream Gate Map
+
+- B1: Backend operation-lifecycle integrity depends on the atomic claim, scoped idempotency, and fail-closed `finish_operation` contract above.
+- B2: Backend operation bootstrap depends on the repository/service list-path and schema/kind-alignment contract above.
+- F1: Frontend failure surfacing and optimistic rollback depends on the no-swallowed-failures and scoped feedback contract above.
+- F2: Frontend operation bootstrap and `ticketing:operation_updated` handling depends on the event reconciliation contract above.
+
 ## Summary
 
 RalphX needs first-class ticketing status management so imported provider statuses can be shown in a stable order, colored consistently, and edited for presentation without drifting from Linear, Jira, or ClickUp workflow reality.
