@@ -2308,3 +2308,7 @@ impl IdeationSessionRepository for SqliteIdeationSessionRepository {
             .await
     }
 }
+
+#[cfg(test)]
+#[path = "sqlite_ideation_session_repo_tests.rs"]
+mod tests;
