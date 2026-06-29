@@ -9,7 +9,7 @@ import { UNASSIGNED_ASSIGNEE } from "./ticketing-read-state";
 
 const baseFilters: TicketingFilterState = {
   text: "",
-  assignee: null,
+  assignees: [],
   stateIds: [],
   labels: [],
   sprint: null,
@@ -69,30 +69,27 @@ describe("TicketFilterBar", () => {
     expect(hidden.onFiltersChange).not.toHaveBeenCalled();
   });
 
-  it("renders Everyone, Unassigned, and each assignee option", () => {
+  it("renders Unassigned and each assignee option", () => {
     renderBar();
     fireEvent.click(screen.getByRole("combobox", { name: /assignee/i }));
     const options = within(screen.getByRole("listbox", { name: /assignee/i }))
       .getAllByRole("option")
       .map((option) => option.textContent);
-    expect(options).toEqual(["Everyone", "Unassigned", "Ada", "Grace"]);
+    expect(options).toEqual(["Unassigned", "Ada", "Grace"]);
   });
 
-  it("emits the selected assignee, the unassigned sentinel, and null for everyone", () => {
-    const props = renderBar({ filters: { ...baseFilters, assignee: "Ada" } });
+  it("emits multiple selected assignees and the unassigned sentinel", () => {
+    const props = renderBar({ filters: { ...baseFilters, assignees: ["Ada"] } });
     const select = screen.getByRole("combobox", { name: /assignee/i });
 
     fireEvent.click(select);
     fireEvent.click(screen.getByRole("option", { name: "Grace" }));
-    expect(props.onFiltersChange).toHaveBeenCalledWith({ assignee: "Grace" });
+    expect(props.onFiltersChange).toHaveBeenCalledWith({ assignees: ["Ada", "Grace"] });
 
-    fireEvent.click(select);
     fireEvent.click(screen.getByRole("option", { name: "Unassigned" }));
-    expect(props.onFiltersChange).toHaveBeenCalledWith({ assignee: UNASSIGNED_ASSIGNEE });
-
-    fireEvent.click(select);
-    fireEvent.click(screen.getByRole("option", { name: "Everyone" }));
-    expect(props.onFiltersChange).toHaveBeenCalledWith({ assignee: null });
+    expect(props.onFiltersChange).toHaveBeenCalledWith({
+      assignees: ["Ada", UNASSIGNED_ASSIGNEE],
+    });
   });
 
   it("clears selected filter values from the select trigger", () => {
@@ -100,7 +97,7 @@ describe("TicketFilterBar", () => {
       containers: [{ provider: "jira", id: "project-1", name: "Demo", kind: "project" }],
       columns: [{ id: "todo", name: "To Do", category: "todo", order: 0 }],
       activeContainerId: "project-1",
-      filters: { ...baseFilters, assignee: "Ada", stateIds: ["todo"], sprint: "Sprint 42" },
+      filters: { ...baseFilters, assignees: ["Ada"], stateIds: ["todo"], sprint: "Sprint 42" },
       sprintOptions: ["Sprint 41", "Sprint 42"],
     });
 
@@ -111,7 +108,7 @@ describe("TicketFilterBar", () => {
     expect(props.onFiltersChange).toHaveBeenCalledWith({ stateIds: [] });
 
     fireEvent.click(screen.getByRole("button", { name: "Clear assignee filter" }));
-    expect(props.onFiltersChange).toHaveBeenCalledWith({ assignee: null });
+    expect(props.onFiltersChange).toHaveBeenCalledWith({ assignees: [] });
 
     fireEvent.click(screen.getByRole("button", { name: "Clear sprint filter" }));
     expect(props.onFiltersChange).toHaveBeenCalledWith({ sprint: null });

@@ -327,6 +327,7 @@ pub struct TicketMutationResponse {
 #[serde(rename_all = "camelCase")]
 pub struct TicketFiltersInput {
     pub text: Option<String>,
+    pub assignees: Option<Vec<String>>,
     pub assignee: Option<String>,
     pub watcher_me: Option<bool>,
     pub state_ids: Option<Vec<String>>,

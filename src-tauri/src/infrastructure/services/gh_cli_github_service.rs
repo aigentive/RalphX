@@ -9,7 +9,7 @@
 
 use async_trait::async_trait;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::ffi::OsString;
 use std::path::Path;
 use std::process::Stdio;
@@ -1124,7 +1124,7 @@ impl GithubServiceTrait for GhCliGithubService {
             "--limit".to_string(),
             limit.to_string(),
             "--json".to_string(),
-            "number,title,url,headRefName,headRefOid,baseRefName,isDraft,updatedAt,author,isCrossRepository".to_string(),
+            "number,title,url,headRefName,headRefOid,baseRefName,isDraft,updatedAt,author,assignees,reviewDecision,latestReviews,reviewRequests,isCrossRepository".to_string(),
         ];
         if let Some(query) = query.map(str::trim).filter(|value| !value.is_empty()) {
             args.push("--search".to_string());
@@ -1452,11 +1452,80 @@ fn parse_pr_search_item(item: &Value) -> AppResult<PrSearchResult> {
             .and_then(|author| author.get("login"))
             .and_then(Value::as_str)
             .map(str::to_string),
+        assignee_logins: parse_login_array(item.get("assignees")),
+        review_decision: item
+            .get("reviewDecision")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
+        latest_review_author_logins: parse_latest_review_author_logins(item.get("latestReviews")),
+        review_request_logins: parse_review_request_logins(item.get("reviewRequests")),
         is_cross_repository: item
             .get("isCrossRepository")
             .and_then(Value::as_bool)
             .unwrap_or(false),
     })
+}
+
+fn parse_login_array(value: Option<&Value>) -> Vec<String> {
+    value
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.get("login").and_then(Value::as_str))
+                .map(str::trim)
+                .filter(|login| !login.is_empty())
+                .map(str::to_string)
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn parse_latest_review_author_logins(value: Option<&Value>) -> Vec<String> {
+    value
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    item.get("author")
+                        .and_then(|author| author.get("login"))
+                        .and_then(Value::as_str)
+                })
+                .map(str::trim)
+                .filter(|login| !login.is_empty())
+                .map(str::to_string)
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn parse_review_request_logins(value: Option<&Value>) -> Vec<String> {
+    value
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    item.get("login")
+                        .or_else(|| item.get("slug"))
+                        .or_else(|| item.get("name"))
+                        .and_then(Value::as_str)
+                })
+                .map(str::trim)
+                .filter(|login| !login.is_empty())
+                .map(str::to_string)
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn parse_pr_branch_match_item(item: &Value) -> AppResult<PrBranchMatch> {

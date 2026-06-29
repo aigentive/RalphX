@@ -108,6 +108,10 @@ pub struct GithubPullRequestSearchResult {
     pub is_draft: bool,
     pub updated_at: Option<String>,
     pub author_login: Option<String>,
+    pub assignee_logins: Vec<String>,
+    pub review_decision: Option<String>,
+    pub latest_review_author_logins: Vec<String>,
+    pub review_request_logins: Vec<String>,
     pub is_cross_repository: bool,
 }
 
@@ -123,6 +127,10 @@ impl From<crate::domain::services::PrSearchResult> for GithubPullRequestSearchRe
             is_draft: result.is_draft,
             updated_at: result.updated_at,
             author_login: result.author_login,
+            assignee_logins: result.assignee_logins,
+            review_decision: result.review_decision,
+            latest_review_author_logins: result.latest_review_author_logins,
+            review_request_logins: result.review_request_logins,
             is_cross_repository: result.is_cross_repository,
         }
     }
@@ -1447,6 +1455,10 @@ mod git_auth_command_tests {
             is_draft: true,
             updated_at: Some("2026-05-21T10:00:00Z".to_string()),
             author_login: Some("dev".to_string()),
+            assignee_logins: vec!["ops".to_string()],
+            review_decision: Some("APPROVED".to_string()),
+            latest_review_author_logins: vec!["reviewer".to_string()],
+            review_request_logins: Vec::new(),
             is_cross_repository: false,
         }]);
 
@@ -1488,6 +1500,10 @@ mod git_auth_command_tests {
         assert_eq!(results[0].base_ref_name, "main");
         assert!(results[0].is_draft);
         assert_eq!(results[0].author_login.as_deref(), Some("dev"));
+        assert_eq!(results[0].assignee_logins, vec!["ops"]);
+        assert_eq!(results[0].review_decision.as_deref(), Some("APPROVED"));
+        assert_eq!(results[0].latest_review_author_logins, vec!["reviewer"]);
+        assert!(results[0].review_request_logins.is_empty());
         assert!(!results[0].is_cross_repository);
     }
 

@@ -15,11 +15,15 @@ describe("useIntegrationDashboardStore", () => {
     useIntegrationDashboardStore.getState().setGitHubState("project-1", {
       associationFilter: "tickets",
       statusFilter: "merged",
+      assigneeLogins: ["lazabogdan"],
+      authorLogins: ["reefagent"],
+      reviewFilters: ["approved"],
       searchQuery: "WISE-27",
       selectedBranchName: "agent/work",
     });
     useIntegrationDashboardStore.getState().setGitHubState("project-2", {
       associationFilter: "rx",
+      assigneeLogins: ["adriandemian"],
       searchQuery: "planning",
     });
 

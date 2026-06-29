@@ -53,6 +53,7 @@ const TICKET_PAGE_MAX_LIMIT: usize = 40;
 const TICKET_SELECTOR_OPTION_LIMIT: usize = 500;
 const CLICKUP_FILTERED_TASK_SCAN_LIMIT: usize = 5000;
 const TICKET_OFFSET_CURSOR_PREFIX: &str = "offset:";
+const UNASSIGNED_ASSIGNEE_FILTER: &str = "__unassigned__";
 
 #[derive(Debug, Clone)]
 enum ProjectTicketLink {
@@ -377,11 +378,7 @@ fn ticket_filters_need_wide_clickup_scan(filters: Option<&TicketFiltersInput>) -
     let Some(filters) = filters else {
         return false;
     };
-    filters
-        .assignee
-        .as_deref()
-        .map(str::trim)
-        .is_some_and(|value| !value.is_empty())
+    !ticket_assignee_filters(filters).is_empty()
         || filters
             .sprint
             .as_deref()
@@ -393,14 +390,6 @@ fn clickup_provider_assignee_ids(
     filters: Option<&TicketFiltersInput>,
     current_user: Option<&ClickUpUser>,
 ) -> Vec<i64> {
-    let Some(assignee) = filters
-        .and_then(|filters| filters.assignee.as_deref())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_ascii_lowercase)
-    else {
-        return Vec::new();
-    };
     let Some(current_user) = current_user else {
         return Vec::new();
     };
@@ -409,10 +398,25 @@ fn clickup_provider_assignee_ids(
         current_user.username.clone(),
         current_user.email.clone(),
     ];
-    if haystacks.into_iter().flatten().any(|value| {
-        let value = value.to_ascii_lowercase();
-        value.contains(&assignee) || assignee.contains(&value)
-    }) {
+    let current_user_values: Vec<String> = haystacks
+        .into_iter()
+        .flatten()
+        .map(|value| value.to_ascii_lowercase())
+        .collect();
+    let named_assignees: Vec<String> = filters
+        .map(ticket_assignee_filters)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|assignee| assignee != UNASSIGNED_ASSIGNEE_FILTER)
+        .map(|assignee| assignee.to_ascii_lowercase())
+        .collect();
+    if named_assignees.len() == 1
+        && named_assignees.iter().any(|assignee| {
+            current_user_values
+                .iter()
+                .any(|value| value.contains(assignee.as_str()) || assignee.contains(value.as_str()))
+        })
+    {
         return vec![current_user.id];
     }
     Vec::new()
@@ -1564,20 +1568,23 @@ fn ticket_matches_filters(ticket: &TicketSummaryResponse, filters: &TicketFilter
         return false;
     }
 
-    if let Some(assignee) = filters
-        .assignee
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        let assignee = assignee.to_ascii_lowercase();
-        let matches_assignee =
-            ticket
-                .assignees
-                .iter()
-                .chain(ticket.assignee.iter())
-                .any(|ticket_assignee| ticket_assignee_matches_filter(ticket_assignee, &assignee));
-        if !matches_assignee {
+    let assignees = ticket_assignee_filters(filters);
+    if !assignees.is_empty() {
+        let ticket_assignees: Vec<&TicketingPersonResponse> =
+            ticket.assignees.iter().chain(ticket.assignee.iter()).collect();
+        let matches_named_assignee = assignees
+            .iter()
+            .filter(|assignee| assignee.as_str() != UNASSIGNED_ASSIGNEE_FILTER)
+            .map(|assignee| assignee.to_ascii_lowercase())
+            .any(|assignee| {
+                ticket_assignees
+                    .iter()
+                    .any(|ticket_assignee| ticket_assignee_matches_filter(ticket_assignee, &assignee))
+            });
+        let matches_unassigned =
+            assignees.iter().any(|assignee| assignee == UNASSIGNED_ASSIGNEE_FILTER)
+                && ticket_assignees.is_empty();
+        if !matches_named_assignee && !matches_unassigned {
             return false;
         }
     }
@@ -1612,6 +1619,24 @@ fn ticket_matches_filters(ticket: &TicketSummaryResponse, filters: &TicketFilter
     }
 
     true
+}
+
+fn ticket_assignee_filters(filters: &TicketFiltersInput) -> Vec<String> {
+    let mut assignees = BTreeSet::new();
+    if let Some(values) = filters.assignees.as_ref() {
+        for value in values {
+            let value = value.trim();
+            if !value.is_empty() {
+                assignees.insert(value.to_string());
+            }
+        }
+    }
+    if let Some(value) = filters.assignee.as_deref().map(str::trim) {
+        if !value.is_empty() {
+            assignees.insert(value.to_string());
+        }
+    }
+    assignees.into_iter().collect()
 }
 
 fn ticket_has_terminal_state(ticket: &TicketSummaryResponse) -> bool {

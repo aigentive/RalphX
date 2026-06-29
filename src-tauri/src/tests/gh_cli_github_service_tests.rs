@@ -99,6 +99,16 @@ fn parse_pr_search_output_returns_base_picker_fields() {
             "isDraft": true,
             "updatedAt": "2026-05-20T10:00:00Z",
             "author": {"login": "dev"},
+            "assignees": [{"login": "ops"}, {"login": "qa"}],
+            "reviewDecision": "CHANGES_REQUESTED",
+            "latestReviews": [
+                {"author": {"login": "reviewer"}},
+                {"author": {"login": "dev"}}
+            ],
+            "reviewRequests": [
+                {"login": "lazabogdan"},
+                {"slug": "platform"}
+            ],
             "isCrossRepository": false
         }
     ]"#;
@@ -113,6 +123,10 @@ fn parse_pr_search_output_returns_base_picker_fields() {
     assert_eq!(result.base_ref_name, "main");
     assert!(result.is_draft);
     assert_eq!(result.author_login.as_deref(), Some("dev"));
+    assert_eq!(result.assignee_logins, vec!["ops", "qa"]);
+    assert_eq!(result.review_decision.as_deref(), Some("CHANGES_REQUESTED"));
+    assert_eq!(result.latest_review_author_logins, vec!["dev", "reviewer"]);
+    assert_eq!(result.review_request_logins, vec!["lazabogdan", "platform"]);
     assert!(!result.is_cross_repository);
 }
 

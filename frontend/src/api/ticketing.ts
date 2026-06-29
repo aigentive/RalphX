@@ -309,6 +309,8 @@ export interface ListTicketingColumnsInput {
 
 export interface TicketFiltersInput {
   text?: string | undefined;
+  assignees?: string[] | undefined;
+  /** @deprecated Use `assignees` for dashboard filters. Kept for legacy callers. */
   assignee?: string | null | undefined;
   watcherMe?: boolean | undefined;
   stateIds?: string[] | undefined;
