@@ -11,6 +11,9 @@ pub mod agent_profile_commands;
 pub mod agent_sidebar_commands;
 pub mod agent_terminal_commands;
 pub(crate) mod agent_workspace_auto_publish;
+pub(crate) mod agent_workspace_auto_review;
+#[cfg(test)]
+mod agent_workspace_auto_review_tests;
 pub mod api_key_commands;
 pub mod artifact_commands;
 pub mod atlassian_commands;

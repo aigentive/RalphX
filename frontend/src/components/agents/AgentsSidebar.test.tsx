@@ -988,6 +988,33 @@ describe("AgentsSidebar", () => {
     expect(screen.queryByText("blocked")).not.toBeInTheDocument();
   });
 
+  it("uses the Review activity label for a running workspace Review", () => {
+    const reviewingConversation = conversation({
+      id: "conversation-reviewing",
+      title: "Reviewing workspace",
+    });
+    const reviewingStoreKey = getAgentConversationStoreKey(reviewingConversation);
+    conversationsByProject.set("project-1", {
+      data: [reviewingConversation],
+      total: 1,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+    useChatStore.setState({
+      activeConversationIds: { [reviewingStoreKey]: reviewingConversation.id },
+      agentStatus: { [reviewingStoreKey]: "generating" },
+      agentActivityLabels: { [reviewingStoreKey]: "reviewing" },
+    });
+
+    renderSidebar();
+
+    const row = screen.getByTestId("agents-session-conversation-reviewing");
+    expect(row).toHaveTextContent("reviewing");
+    expect(within(row).queryByText("running")).not.toBeInTheDocument();
+  });
+
   it("uses fixing publication label instead of generic running text", () => {
     const fixingConversation = conversation({
       id: "conversation-fixing",

@@ -1,4 +1,5 @@
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { chatApi, type ConversationStatsResponse } from "@/api/chat";
@@ -465,6 +466,34 @@ describe("AgentsChatHeader", () => {
       "border-l-2",
     );
     expect(screen.queryByTestId("agents-chat-focus-return")).not.toBeInTheDocument();
+  });
+
+  it("shows a back to workspace chat action for child chat focus", async () => {
+    const user = userEvent.setup();
+    const onBackToWorkspaceChat = vi.fn();
+
+    renderWithProviders(
+      <AgentsChatHeader
+        conversation={conversation()}
+        workspace={null}
+        chatFocus={{ type: "workspace_review", conversationId: "review-child" }}
+        artifactOpen={false}
+        activeArtifactTab="review"
+        onRenameConversation={vi.fn().mockResolvedValue(undefined)}
+        onToggleArtifacts={vi.fn()}
+        onSelectArtifact={vi.fn()}
+        onBackToWorkspaceChat={onBackToWorkspaceChat}
+      />
+    );
+
+    const backButton = screen.getByRole("button", {
+      name: "Back to Workspace Chat",
+    });
+    expect(backButton).toBeInTheDocument();
+
+    await user.click(backButton);
+
+    expect(onBackToWorkspaceChat).toHaveBeenCalledTimes(1);
   });
 
   it("keeps verification focus out of the primary title row", () => {

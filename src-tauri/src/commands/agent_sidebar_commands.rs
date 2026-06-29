@@ -246,6 +246,9 @@ pub async fn list_agent_sidebar_conversations_for_app_state(
             .map_err(|e| e.to_string())?;
 
         for conversation in conversations {
+            if conversation.parent_conversation_id.is_some() {
+                continue;
+            }
             if archived_only && !conversation.is_archived() {
                 continue;
             }
@@ -889,6 +892,43 @@ mod tests {
             unpushed.id.as_str()
         );
         assert_eq!(response.groups[1].rows[0].publication_state, "unpushed");
+    }
+
+    #[tokio::test]
+    async fn sidebar_excludes_parent_owned_child_conversations() {
+        let state = AppState::new_test();
+        let project = create_project(&state, "alpha").await;
+        let parent = create_conversation(&state, &project.id, "Parent work", Utc::now()).await;
+        create_workspace(
+            &state,
+            &parent,
+            &project.id,
+            None,
+            Some("open"),
+            Some("published"),
+        )
+        .await;
+
+        let mut child = ChatConversation::new_project(project.id.clone());
+        child.title = Some("Review workspace changes".to_string());
+        child.parent_conversation_id = Some(parent.id.as_str().to_string());
+        state
+            .chat_conversation_repo
+            .create(child)
+            .await
+            .expect("child conversation should be created");
+
+        let response = list_agent_sidebar_conversations_for_app_state(
+            sidebar_input(&project.id),
+            &state,
+        )
+        .await
+        .expect("sidebar conversations should load");
+
+        let rows = &response.groups[0].rows;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].conversation.id, parent.id.as_str());
+        assert_eq!(rows[0].conversation.title.as_deref(), Some("Parent work"));
     }
 
     #[tokio::test]

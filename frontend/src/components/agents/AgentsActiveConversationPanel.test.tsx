@@ -498,10 +498,21 @@ vi.mock("./AgentConversationBaseLine", () => ({
 
 vi.mock("./AgentsChatHeaderController", () => ({
   AgentsChatHeaderController: ({
+    onBackToWorkspaceChat,
     workspaceControl,
   }: {
+    onBackToWorkspaceChat?: () => void;
     workspaceControl?: ReactNode;
-  }) => <div data-testid="mock-agents-chat-header">{workspaceControl}</div>,
+  }) => (
+    <div data-testid="mock-agents-chat-header">
+      {onBackToWorkspaceChat ? (
+        <button type="button" onClick={onBackToWorkspaceChat}>
+          Back to Workspace Chat
+        </button>
+      ) : null}
+      {workspaceControl}
+    </div>
+  ),
 }));
 
 vi.mock("./AgentProviderSettingsButton", () => ({
@@ -953,6 +964,34 @@ describe("AgentsActiveConversationPanel", () => {
     expect(onFocusWorkspaceReview).toHaveBeenCalledWith("review-conversation-1");
   });
 
+  it("queries parent runtime status when the selected conversation is a Review child", async () => {
+    getAgentConversationRuntimeStatusesMock.mockResolvedValue({
+      "conversation-1": workspaceRuntimeStatus({
+        primarySource: "workspace_review",
+        summaryLabel: "Reviewing",
+      }),
+    });
+
+    renderPanel({
+      activeConversation: {
+        ...projectConversation(),
+        id: "review-conversation-1",
+        parentConversationId: "conversation-1",
+      },
+      selectedConversationId: "review-conversation-1",
+      chatFocus: {
+        type: "workspace_review",
+        conversationId: "review-conversation-1",
+      },
+    });
+
+    await waitFor(() =>
+      expect(getAgentConversationRuntimeStatusesMock).toHaveBeenCalledWith([
+        "conversation-1",
+      ]),
+    );
+  });
+
   it("routes workspace Review focus through the review child project chat", () => {
     renderPanel({
       chatFocus: {
@@ -971,6 +1010,24 @@ describe("AgentsActiveConversationPanel", () => {
       "data-store-context-key",
       "project:review-conversation-1",
     );
+  });
+
+  it("returns from child chat focus to the workspace chat from the header", async () => {
+    const onSelectChatFocus = vi.fn();
+
+    renderPanel({
+      chatFocus: {
+        type: "workspace_review",
+        conversationId: "review-conversation-1",
+      },
+      onSelectChatFocus,
+    });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Back to Workspace Chat" }),
+    );
+
+    expect(onSelectChatFocus).toHaveBeenCalledWith("workspace");
   });
 
   it("refines selected task artifact focus to the matching runtime context", async () => {

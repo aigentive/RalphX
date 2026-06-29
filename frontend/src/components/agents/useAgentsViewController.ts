@@ -1,14 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  useMutation,
-  useQuery,
-  useQueryClient,
-  type InfiniteData,
-} from "@tanstack/react-query";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useQuery, useQueryClient, type InfiniteData } from "@tanstack/react-query";
 
 import {
   chatApi,
-  type AgentConversationRuntimeStatus,
   type AgentConversationWorkspace,
   type AgentConversationWorkspaceMode,
   type ComposerIntegrationReference,
@@ -78,7 +72,6 @@ import {
 } from "./agentChatFocus";
 import type { AgentRuntimeSelection } from "@/stores/agentSessionStore";
 import type { ChatConversation } from "@/types/chat-conversation";
-import { useAgentConversationRuntimeStatus } from "./useAgentConversationRuntimeStatus";
 
 interface UseAgentsViewControllerParams {
   projectId: string;
@@ -91,16 +84,6 @@ type AgentConversationListPage = Omit<
 > & {
   conversations: AgentConversation[];
 };
-
-function hasGeneratingAgentRuntime(
-  status: AgentConversationRuntimeStatus | null | undefined,
-): boolean {
-  if (!status) return false;
-  return (
-    status.agentStatus === "generating" ||
-    status.items.some((item) => item.agentStatus === "generating")
-  );
-}
 
 type PrReviewArtifactEventPayload = {
   conversationId?: string;
@@ -446,11 +429,16 @@ export function useAgentsViewController({
     prReviewContextQuery.data,
     prReviewConversationId,
   );
+  const activeParentWorkspaceConversationId =
+    activeConversation?.contextType === "project"
+      ? activeConversation.parentConversationId ?? null
+      : null;
   const workspaceReviewConversationId =
     activeConversation?.contextType === "project" &&
-    activeConversationMode &&
-    ["edit", "ideation", "plan", "review_pr"].includes(activeConversationMode)
-      ? activeConversation.id
+    (activeParentWorkspaceConversationId ||
+      (activeConversationMode &&
+        ["edit", "ideation", "plan", "review_pr"].includes(activeConversationMode)))
+      ? activeParentWorkspaceConversationId ?? activeConversation.id
       : null;
   const shouldLoadWorkspaceReviewContext = Boolean(workspaceReviewConversationId);
   const workspaceReviewContextQuery = useQuery({
@@ -466,71 +454,6 @@ export function useAgentsViewController({
     workspaceReviewContextQuery.data,
     workspaceReviewConversationId,
   );
-  const workspaceReviewRuntimeStatusQuery = useAgentConversationRuntimeStatus(
-    workspaceReviewConversationId,
-    { enabled: shouldLoadWorkspaceReviewContext },
-  );
-  const lastAutoReviewRefreshKeyRef = useRef<string | null>(null);
-  const autoReviewRefreshMutation = useMutation({
-    mutationFn: ({ conversationId }: { conversationId: string; key: string }) =>
-      chatApi.startAgentWorkspaceReview(conversationId, { force: true }),
-    onSuccess: (result, variables) => {
-      void queryClient.invalidateQueries({
-        queryKey: agentWorkspaceKeys.workspaceReview(variables.conversationId),
-      });
-      const artifactId = result.monitor.reviewArtifactId;
-      if (artifactId) {
-        void queryClient.invalidateQueries({
-          queryKey: ["agents", "artifact", artifactId],
-        });
-      }
-    },
-  });
-  const autoReviewRefreshKey = (() => {
-    if (
-      !workspaceReviewConversationId ||
-      !workspaceReviewContext?.isOutdated ||
-      !workspaceReviewContext.target ||
-      workspaceReviewContext.monitor.status === "reviewing"
-    ) {
-      return null;
-    }
-    return [
-      workspaceReviewConversationId,
-      workspaceReviewContext.target.scope,
-      workspaceReviewContext.monitor.currentDiffFingerprint ??
-        workspaceReviewContext.target.diffFingerprint,
-      workspaceReviewContext.monitor.reviewArtifactVersion ?? "none",
-    ].join(":");
-  })();
-  const workspaceReviewHasGeneratingRuntime = hasGeneratingAgentRuntime(
-    workspaceReviewRuntimeStatusQuery.data,
-  );
-  useEffect(() => {
-    if (
-      !workspaceReviewConversationId ||
-      !autoReviewRefreshKey ||
-      autoReviewRefreshMutation.isPending ||
-      !workspaceReviewRuntimeStatusQuery.isSuccess ||
-      workspaceReviewHasGeneratingRuntime
-    ) {
-      return;
-    }
-    if (lastAutoReviewRefreshKeyRef.current === autoReviewRefreshKey) {
-      return;
-    }
-    lastAutoReviewRefreshKeyRef.current = autoReviewRefreshKey;
-    autoReviewRefreshMutation.mutate({
-      conversationId: workspaceReviewConversationId,
-      key: autoReviewRefreshKey,
-    });
-  }, [
-    autoReviewRefreshKey,
-    autoReviewRefreshMutation,
-    workspaceReviewHasGeneratingRuntime,
-    workspaceReviewConversationId,
-    workspaceReviewRuntimeStatusQuery.isSuccess,
-  ]);
   const workspaceReviewArtifactId =
     workspaceReviewContext?.monitor.reviewArtifactId ?? null;
   const reviewArtifactId =
@@ -644,6 +567,18 @@ export function useAgentsViewController({
           },
     );
   }, [workspaceReviewChildConversationId, workspaceReviewContext?.monitor.status]);
+  useEffect(() => {
+    const fixerStatus = workspaceReviewContext?.monitor.reviewFixerStatus ?? null;
+    if (fixerStatus !== "queued" && fixerStatus !== "running") {
+      return;
+    }
+    setChatFocus((current) =>
+      current.type === "workspace_review" ? { type: "workspace" } : current,
+    );
+  }, [
+    workspaceReviewContext?.monitor.reviewFixerRunId,
+    workspaceReviewContext?.monitor.reviewFixerStatus,
+  ]);
   const hasAttachedPlanArtifact = availableArtifactTabs.includes("plan");
   const chatFocusOptions = useMemo(() => {
     return getAgentChatFocusSwitchOptions({

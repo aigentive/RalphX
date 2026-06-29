@@ -59,6 +59,8 @@ export function useAgentConversationRuntimeStatus(
       bus.subscribe("execution:status_changed", invalidate),
       bus.subscribe("step:status_changed", invalidate),
       bus.subscribe("plan_verification:status_changed", invalidate),
+      bus.subscribe("workspace_review_artifact:created", invalidate),
+      bus.subscribe("workspace_review_artifact:updated", invalidate),
     ];
 
     return () => {
