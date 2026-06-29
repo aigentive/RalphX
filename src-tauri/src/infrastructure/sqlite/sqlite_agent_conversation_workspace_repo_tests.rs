@@ -1,9 +1,9 @@
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceBranchMode,
-    AgentConversationWorkspaceMode,
-    AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
-    AgentWorkspaceFollowupProvenance, AgentWorkspacePrCommentEvidenceUpsert,
-    AgentWorkspacePrDescription, AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
+    AgentConversationWorkspaceMode, AgentConversationWorkspacePublicationEvent,
+    AgentConversationWorkspaceStatus, AgentWorkspaceFollowupProvenance,
+    AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription,
+    AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
     AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
     AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewMonitor,
     AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewTargetScope,
@@ -171,6 +171,57 @@ async fn active_branch_lookup_ignores_terminal_workspace_statuses() {
         .await
         .unwrap();
     assert!(missing.is_empty());
+}
+
+#[tokio::test]
+async fn find_by_head_ref_matches_only_same_project_branch() {
+    let (db, repo, first_id) = setup_repo();
+    let mut first = make_workspace(first_id.clone());
+    first.branch_name = "shared/feature-branch".to_string();
+    repo.create_or_update(first).await.unwrap();
+
+    // A different project's workspace shares the same branch name — it must NOT
+    // be returned (branch_name is global; the project_id predicate is mandatory).
+    let second_id = ChatConversationId::from_string("22222222-2222-2222-2222-222222222222");
+    seed_conversation(&db, &second_id);
+    let mut second = make_workspace(second_id.clone());
+    second.project_id = ProjectId::from_string("project-2".to_string());
+    second.branch_name = "shared/feature-branch".to_string();
+    second.worktree_path = "/tmp/ralphx/agent-22222222".to_string();
+    repo.create_or_update(second).await.unwrap();
+
+    let project_1 = ProjectId::from_string("project-1".to_string());
+    let matches = repo
+        .find_by_head_ref(&project_1, "shared/feature-branch")
+        .await
+        .unwrap();
+
+    assert_eq!(
+        matches.len(),
+        1,
+        "only the project-1 workspace should match"
+    );
+    assert_eq!(matches[0].conversation_id, first_id);
+    assert_eq!(matches[0].project_id, project_1);
+}
+
+#[tokio::test]
+async fn find_by_head_ref_returns_empty_when_no_branch_match() {
+    let (_db, repo, conversation_id) = setup_repo();
+    let mut workspace = make_workspace(conversation_id);
+    workspace.branch_name = "ralphx/project/real-branch".to_string();
+    repo.create_or_update(workspace).await.unwrap();
+
+    let project_1 = ProjectId::from_string("project-1".to_string());
+    let matches = repo
+        .find_by_head_ref(&project_1, "does/not/exist")
+        .await
+        .unwrap();
+
+    assert!(
+        matches.is_empty(),
+        "no branch match yields an empty vec, not an error"
+    );
 }
 
 #[tokio::test]

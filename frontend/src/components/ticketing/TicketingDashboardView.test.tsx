@@ -1,12 +1,12 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { createElement, type ReactNode } from "react";
+import { createElement, type ComponentProps, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { atlassianApi } from "@/api/atlassian";
-import { granolaApi } from "@/api/granola";
 import { linearApi } from "@/api/linear";
 import * as chatHooks from "@/hooks/useChat";
+import { usePullRequestDetail } from "@/hooks/usePullRequestDetail";
 import * as ticketingHooks from "@/hooks/useTicketing";
 import * as projectHooks from "@/hooks/useProjects";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -28,13 +28,18 @@ vi.mock("@/api/linear", () => ({
   },
 }));
 
-vi.mock("@/api/granola", () => ({
-  granolaApi: {
-    getSettings: vi.fn(),
-    listNotes: vi.fn(),
-    getNoteDetail: vi.fn(),
-    assignAgentConversationGranolaNote: vi.fn(),
+vi.mock("@/hooks/usePullRequestDetail", () => ({
+  prKeys: {
+    all: ["github-pr"],
+    detail: (selector: { projectId: string; prNumber?: number; branch?: string }) => [
+      "github-pr",
+      "detail",
+      selector.projectId,
+      selector.prNumber ?? null,
+      selector.branch ?? null,
+    ],
   },
+  usePullRequestDetail: vi.fn(),
 }));
 
 vi.mock("@/hooks/useChat", () => ({
@@ -119,15 +124,6 @@ const ticket = {
   openPrCount: 0,
 };
 
-const granolaNote = {
-  id: "not_1234567890ABCD",
-  title: "Weekly planning",
-  url: "https://granola.ai/notes/not_1234567890ABCD",
-  summary: "Discussed release priorities.",
-  createdAt: "2026-06-19T21:00:00.000Z",
-  updatedAt: "2026-06-19T22:00:00.000Z",
-};
-
 function createWrapper() {
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -144,11 +140,21 @@ function createWrapper() {
   };
 }
 
-function renderDashboard() {
+function renderDashboard(props: {
+  onNavigateToAssociation?: ComponentProps<
+    typeof TicketingDashboardView
+  >["onNavigateToAssociation"];
+} = {}) {
   const Wrapper = createWrapper();
-  return render(<TicketingDashboardView projectId="project-1" />, {
-    wrapper: Wrapper,
-  });
+  return render(
+    <TicketingDashboardView
+      projectId="project-1"
+      onNavigateToAssociation={props.onNavigateToAssociation}
+    />,
+    {
+      wrapper: Wrapper,
+    },
+  );
 }
 
 function mockConnectedDashboard() {
@@ -292,16 +298,17 @@ describe("TicketingDashboardView", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     window.HTMLElement.prototype.scrollIntoView = vi.fn();
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: {
-        writeText: vi.fn().mockResolvedValue(undefined),
-      },
-    });
     useTicketingStore.getState().reset();
     useAgentSessionStore.getState().clearSelection();
     useAgentSessionStore.setState({ startConversationDraft: null });
     useChatStore.setState({ activeConversationIds: {} });
+    vi.mocked(usePullRequestDetail).mockReturnValue({
+      data: null,
+      isLoading: false,
+      isError: false,
+      error: null,
+      fetchStatus: "idle",
+    } as unknown as ReturnType<typeof usePullRequestDetail>);
     vi.mocked(projectHooks.useProjects).mockReturnValue({
       data: [
         {
@@ -420,52 +427,6 @@ describe("TicketingDashboardView", () => {
       isError: false,
       error: null,
     } as unknown as ReturnType<typeof chatHooks.useConversations>);
-    vi.mocked(granolaApi.getSettings).mockResolvedValue({
-      enabled: true,
-      hasApiToken: true,
-      validationStatus: "valid",
-      lastValidatedAt: "2026-06-19T22:00:00.000Z",
-      lastError: null,
-      updatedAt: "2026-06-19T22:00:00.000Z",
-    });
-    vi.mocked(granolaApi.listNotes).mockResolvedValue({
-      notes: [granolaNote],
-      hasMore: false,
-      cursor: null,
-    });
-    vi.mocked(granolaApi.getNoteDetail).mockResolvedValue({
-      id: granolaNote.id,
-      title: granolaNote.title,
-      url: granolaNote.url,
-      summary: "### Release priorities\n\n- Ship Granola note browsing.",
-      transcript: [
-        {
-          speaker: "Ada",
-          text: "We should finish the Granola ticketing tab.",
-          startMs: 0,
-          endMs: 2400,
-        },
-      ],
-    });
-    vi.mocked(granolaApi.assignAgentConversationGranolaNote).mockResolvedValue({
-      conversationId: "conversation-1",
-      projectId: "project-1",
-      provider: "granola",
-      noteId: granolaNote.id,
-      noteUrl: granolaNote.url,
-      title: granolaNote.title,
-      summaryMarkdown: "### Release priorities\n\n- Ship Granola note browsing.",
-      transcript: [],
-      includeTranscript: true,
-      lastRefreshedAt: "2026-06-19T22:00:00.000Z",
-      refreshStatus: "loaded",
-      refreshError: null,
-      assignedAt: "2026-06-19T22:00:00.000Z",
-      assignedFromMessageId: null,
-      manuallyAssigned: true,
-      createdAt: "2026-06-19T22:00:00.000Z",
-      updatedAt: "2026-06-19T22:00:00.000Z",
-    });
   });
 
   it("renders a no-valid-integration state without blanking the shell", () => {
@@ -494,7 +455,7 @@ describe("TicketingDashboardView", () => {
     expect(screen.getByRole("heading", { name: "Ticketing" })).toBeInTheDocument();
     expect(screen.getByText("No valid ticketing integration")).toBeInTheDocument();
     expect(
-      screen.getByText("Connect a valid Jira or Linear integration from Settings to browse tickets."),
+      screen.getByText("Connect a valid Jira, Linear, or ClickUp integration from Settings to browse tickets."),
     ).toBeInTheDocument();
   });
 
@@ -584,100 +545,16 @@ describe("TicketingDashboardView", () => {
     expect(screen.getByText("Fix merge race in transition handler")).toBeInTheDocument();
   });
 
-  it("shows Granola notes from the ticketing dashboard and copies summary and full transcript", async () => {
+  it("keeps GitHub and Granola out of the ticketing dashboard", () => {
     mockConnectedDashboard();
 
     renderDashboard();
 
-    fireEvent.click(screen.getByRole("tab", { name: "Granola" }));
-
-    expect(await screen.findByTestId("ticketing-granola-notes")).toBeInTheDocument();
-    expect(await screen.findByRole("button", { name: /Weekly planning/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Weekly planning/ })).toHaveTextContent(/Jun (19|20)/);
-    expect(screen.getByRole("button", { name: /Weekly planning/ })).toHaveTextContent(/\d{1,2}:00/);
-
-    fireEvent.click(screen.getByRole("button", { name: /Weekly planning/ }));
-
-    expect(await screen.findByRole("heading", { name: "Release priorities" })).toBeInTheDocument();
-    expect(await screen.findByText("We should finish the Granola ticketing tab.")).toBeInTheDocument();
-    expect(granolaApi.getNoteDetail).toHaveBeenCalledWith({
-      noteId: granolaNote.id,
-      includeTranscript: true,
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: "Copy summary" }));
-
-    await waitFor(() => {
-      expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
-        "### Release priorities\n\n- Ship Granola note browsing.",
-      );
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: "Copy full transcript" }));
-
-    await waitFor(() => {
-      expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
-        "Ada: We should finish the Granola ticketing tab.",
-      );
-    });
-  });
-
-  it("adds a Granola note as new conversation context or binds it to an existing conversation", async () => {
-    mockConnectedDashboard();
-    vi.mocked(chatHooks.useConversations).mockReturnValue({
-      data: [{ id: "conversation-1", title: "Existing agent conversation" }],
-      isLoading: false,
-      isError: false,
-      error: null,
-    } as unknown as ReturnType<typeof chatHooks.useConversations>);
-
-    renderDashboard();
-
-    fireEvent.click(screen.getByRole("tab", { name: "Granola" }));
-    fireEvent.click(await screen.findByRole("button", { name: /Weekly planning/ }));
-    await screen.findByText("We should finish the Granola ticketing tab.");
-
-    fireEvent.click(screen.getByRole("button", { name: "Add as context" }));
-
-    expect(screen.getByRole("dialog", { name: "Add Granola Context" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Open composer" }));
-
-    expect(useAgentSessionStore.getState().startConversationDraft).toMatchObject({
-      projectId: "project-1",
-      mode: "edit",
-      composerIntegrationReferences: [
-        {
-          provider: "granola",
-          kind: "note",
-          id: granolaNote.id,
-          title: granolaNote.title,
-          includeTranscript: true,
-        },
-      ],
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: "Add as context" }));
-    fireEvent.click(screen.getByRole("combobox", { name: "Existing conversation" }));
-    fireEvent.click(
-      within(screen.getByRole("listbox", { name: "Existing conversation" })).getByRole(
-        "option",
-        { name: "Existing agent conversation" },
-      ),
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Bind existing conversation" }));
-
-    await waitFor(() => {
-      expect(granolaApi.assignAgentConversationGranolaNote).toHaveBeenCalledWith({
-        conversationId: "conversation-1",
-        projectId: "project-1",
-        noteId: granolaNote.id,
-        title: granolaNote.title,
-        noteUrl: granolaNote.url,
-        summary: "### Release priorities\n\n- Ship Granola note browsing.",
-        includeTranscript: true,
-        refresh: true,
-      });
-    });
+    expect(screen.queryByRole("tablist", { name: "Ticketing content" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Tickets" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Granola" })).not.toBeInTheDocument();
+    expect(screen.queryByTestId("ticketing-github-branches")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("granola-dashboard-view")).not.toBeInTheDocument();
   });
 
   it("auto-selects the only valid provider and hides provider tabs", async () => {
@@ -759,7 +636,7 @@ describe("TicketingDashboardView", () => {
     expect(screen.queryByText("Select a project")).not.toBeInTheDocument();
   });
 
-  it("forces a Space selection before loading ClickUp tickets when Spaces exist", async () => {
+  it("forces a Space selection before loading ClickUp tickets when ClickUp locations exist", async () => {
     vi.mocked(ticketingHooks.useTicketingProviders).mockReturnValue({
       data: [
         {
@@ -790,7 +667,7 @@ describe("TicketingDashboardView", () => {
       error: null,
     } as ReturnType<typeof ticketingHooks.useTicketingProviders>);
     vi.mocked(ticketingHooks.useTicketingContainers).mockReturnValue({
-      data: [{ provider: "clickup", id: "space-1", key: null, name: "Engineering", kind: "project" }],
+      data: [{ provider: "clickup", id: "space-1", key: null, name: "Engineering", kind: "space" }],
       isLoading: false,
       isError: false,
       error: null,
@@ -803,13 +680,15 @@ describe("TicketingDashboardView", () => {
     expect(ticketingHooks.useTickets).toHaveBeenCalledWith(null, { enabled: false });
   });
 
-  it("filters ClickUp tickets by the selected sprint list", async () => {
+  it("forwards ClickUp sprint filters without changing the selected Space scope", async () => {
     useTicketingStore.getState().setProvider("clickup");
+    useTicketingStore.getState().setContainerId("space-sprints");
     const sprintTicket = {
       ...ticket,
       ref: { provider: "clickup" as const, id: "cu-current", key: "CU-42" },
       title: "Current sprint task",
-      project: "Sprint 42",
+      project: "Continuous Improvement",
+      sprints: ["Sprint 42"],
       currentUserAssigned: true,
     };
     const backlogTicket = {
@@ -817,6 +696,7 @@ describe("TicketingDashboardView", () => {
       ref: { provider: "clickup" as const, id: "cu-backlog", key: "CU-7" },
       title: "Backlog task",
       project: "Backlog",
+      sprints: ["Backlog Sprint"],
       currentUserAssigned: false,
     };
     vi.mocked(ticketingHooks.useTicketingProviders).mockReturnValue({
@@ -834,6 +714,14 @@ describe("TicketingDashboardView", () => {
       isError: false,
       error: null,
     } as ReturnType<typeof ticketingHooks.useTicketingProviders>);
+    vi.mocked(ticketingHooks.useTicketingContainers).mockImplementation((input) => ({
+      data: input?.parentContainerId
+        ? [{ provider: "clickup", id: "list:sprint-42", key: "List", name: "Sprint 42", kind: "list", parentId: "space-sprints" }]
+        : [{ provider: "clickup", id: "space-sprints", key: "Space", name: "Sprints", kind: "space" }],
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof ticketingHooks.useTicketingContainers>));
     vi.mocked(ticketingHooks.useTickets).mockReturnValue({
       data: { pages: [{ items: [sprintTicket, backlogTicket], nextCursor: null, total: 2 }], pageParams: [null] },
       isLoading: false,
@@ -868,8 +756,15 @@ describe("TicketingDashboardView", () => {
 
     fireEvent.click(within(sprintListbox).getByRole("option", { name: "Sprint 42" }));
 
-    expect(screen.getByRole("button", { name: /Current sprint task/ })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Backlog task/ })).not.toBeInTheDocument();
+    await waitFor(() => {
+      expect(ticketingHooks.useTickets).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          containerId: "space-sprints",
+          filters: expect.objectContaining({ sprint: "Sprint 42" }),
+        }),
+        { enabled: true },
+      );
+    });
   });
 
   it("surfaces stale provider freshness without hiding ticket content", () => {
@@ -952,15 +847,9 @@ describe("TicketingDashboardView", () => {
           {
             items: [
               { ...ticket, assignee: { id: "ada", name: "Ada" } },
-              {
-                ...ticket,
-                ref: { provider: "jira" as const, id: "10002", key: "RX-2" },
-                title: "Unassigned backlog item",
-                assignee: null,
-              },
             ],
             nextCursor: null,
-            total: 2,
+            total: 1,
           },
         ],
         pageParams: [null],
@@ -1149,15 +1038,20 @@ describe("TicketingDashboardView", () => {
     expect(list.queryByText("Unassigned")).not.toBeInTheDocument();
   });
 
-  it("filters the list client-side by the selected assignee", () => {
+  it("forwards the selected assignee to the ticket query", () => {
     mockConnectedDashboard();
     useTicketingStore.setState({
       filters: { text: "", assignee: "Someone Else", stateIds: [], labels: [], sprint: null, watcherMe: false },
     });
     renderDashboard();
 
-    // The only ticket (RX-1) is unassigned, so the named-assignee filter empties the list.
-    expect(screen.getByText("No tickets match these filters")).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Assignee" })).toHaveTextContent("Someone Else");
+    expect(ticketingHooks.useTickets).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        filters: expect.objectContaining({ assignee: "Someone Else" }),
+      }),
+      { enabled: true },
+    );
   });
 
   it("shows a non-filter empty state when there are no tickets and no active filters", () => {
@@ -1225,7 +1119,7 @@ describe("TicketingDashboardView", () => {
       error: null,
     } as ReturnType<typeof ticketingHooks.useTicketingProviders>);
     vi.mocked(ticketingHooks.useTicketingContainers).mockReturnValue({
-      data: [{ provider: "clickup", id: "space-1", key: null, name: "Engineering", kind: "project" }],
+      data: [{ provider: "clickup", id: "space-1", key: null, name: "Engineering", kind: "space" }],
       isLoading: false,
       isError: false,
       error: null,
@@ -1294,7 +1188,7 @@ describe("TicketingDashboardView", () => {
       error: null,
     } as ReturnType<typeof ticketingHooks.useTicketingProviders>);
     vi.mocked(ticketingHooks.useTicketingContainers).mockReturnValue({
-      data: [{ provider: "clickup", id: "space-1", key: null, name: "Engineering", kind: "project" }],
+      data: [{ provider: "clickup", id: "space-1", key: null, name: "Engineering", kind: "space" }],
       isLoading: false,
       isError: false,
       error: null,
@@ -2022,7 +1916,7 @@ describe("TicketingDashboardView", () => {
     // ClickUp containers are Spaces; one is pre-selected so tasks load (ClickUp is
     // server-scoped like Jira, so the client container-name filter is skipped).
     vi.mocked(ticketingHooks.useTicketingContainers).mockReturnValue({
-      data: [{ provider: "clickup", id: "space-eng", key: null, name: "Engineering", kind: "project" }],
+      data: [{ provider: "clickup", id: "space-eng", key: null, name: "Engineering", kind: "space" }],
       isLoading: false,
       isError: false,
       error: null,

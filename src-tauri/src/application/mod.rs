@@ -103,6 +103,7 @@ pub mod startup_transition_factory;
 pub mod supervisor_service;
 pub mod task_cleanup_service;
 pub mod task_context_service;
+pub mod pull_request_detail;
 pub mod task_scheduler_service;
 pub mod task_transition_service;
 pub mod team_events;
@@ -309,6 +310,8 @@ mod task_transition_service_tests;
 mod throttled_emitter_tests;
 #[cfg(test)]
 mod ticketing_cache_invalidator_tests;
+#[cfg(test)]
+mod pull_request_detail_tests;
 #[cfg(test)]
 mod ticketing_pr_summary_tests;
 #[cfg(test)]

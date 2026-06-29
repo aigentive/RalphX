@@ -34,7 +34,6 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { TicketAssigneeChips } from "./TicketAssigneeChip";
 import { TicketLabels } from "./TicketLabels";
-import { openExternalTicketUrl } from "./ticketing-open-external";
 import { groupTicketsByStatus, ticketAssignees } from "./ticketing-read-state";
 import { resolveTicketKanbanMove, ticketDragId } from "./ticketing-kanban-utils";
 import { categoryToken, formatTicketDate, ticketButtonLabel, ticketKey } from "./ticketing-utils";
@@ -154,6 +153,7 @@ interface TicketListViewProps {
   onQuickAssign?: ((ticket: TicketSummary) => void) | undefined;
   canMoveTickets?: boolean | undefined;
   onMoveTicket?: ((ticket: TicketSummary, column: TicketingColumn) => void) | undefined;
+  onOpenPullRequestDetail?: ((ticket: TicketSummary) => void) | undefined;
 }
 
 /** Orange comment glyph shown when a ticket changed since the viewer last opened it. */
@@ -204,7 +204,7 @@ function TicketAssociationBadge({ count }: { count: number }) {
 }
 
 /**
- * Interactive "open this ticket's representative PR in the browser" control.
+ * Interactive "open this ticket's representative PR detail" control.
  * Shows the representative PR regardless of status; the icon is colored green
  * for a live (open/draft) PR and muted for a terminal one (merged/closed). The
  * accessible name and tooltip name the status for non-live PRs. Rendered as a
@@ -214,18 +214,18 @@ function TicketAssociationBadge({ count }: { count: number }) {
  * sufficient — see .claude/rules/icon-only-buttons.md).
  */
 function TicketPrOpenControl({
-  prNumber,
-  prUrl,
-  prStatus,
+  ticket,
+  onOpenPullRequestDetail,
 }: {
-  prNumber: number;
-  prUrl: string;
-  prStatus: string | null | undefined;
+  ticket: TicketSummary;
+  onOpenPullRequestDetail: (ticket: TicketSummary) => void;
 }) {
+  const prNumber = ticket.openPrNumber ?? 0;
+  const prStatus = ticket.openPrStatus;
   const live = isLivePrStatus(prStatus);
   const label = live
-    ? `Open pull request #${prNumber} in browser`
-    : `Pull request #${prNumber} (${prStatus?.trim() ?? "closed"}) in browser`;
+    ? `Open pull request #${prNumber}`
+    : `Open pull request #${prNumber} (${prStatus?.trim() ?? "closed"})`;
   const color = live ? "var(--status-success)" : "var(--text-muted)";
   return (
     <Tooltip>
@@ -236,7 +236,7 @@ function TicketPrOpenControl({
           className="pointer-events-auto inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-xs font-medium hover:bg-[var(--bg-hover)] focus-visible:outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:1px]"
           onClick={(event) => {
             event.stopPropagation();
-            void openExternalTicketUrl(prUrl);
+            onOpenPullRequestDetail(ticket);
           }}
           style={{ color }}
         >
@@ -304,6 +304,7 @@ export function TicketListView({
   onQuickAssign,
   canMoveTickets,
   onMoveTicket,
+  onOpenPullRequestDetail,
 }: TicketListViewProps) {
   const groups = groupTicketsByStatus(tickets, columns);
   // The interactive status control only appears when ticket moves are writable
@@ -401,7 +402,7 @@ export function TicketListView({
                   </span>
                   <span className="text-xs text-[var(--text-secondary)]">{formatTicketDate(ticket.updatedAt)}</span>
                 </button>
-                {ticket.openPrNumber != null && ticket.openPrUrl != null && (
+                {ticket.openPrNumber != null && onOpenPullRequestDetail && (
                   <div className={`${TICKET_ROW_GRID} pointer-events-none absolute inset-0 py-1.5`}>
                     {/* Key | Status | Title | Assignee | RX | PR | Project | Updated —
                         the PR control sits in the 6th cell, after the RX column. */}
@@ -412,9 +413,8 @@ export function TicketListView({
                     <span aria-hidden="true" />
                     <span className="flex min-w-0 items-center">
                       <TicketPrOpenControl
-                        prNumber={ticket.openPrNumber}
-                        prUrl={ticket.openPrUrl}
-                        prStatus={ticket.openPrStatus}
+                        ticket={ticket}
+                        onOpenPullRequestDetail={onOpenPullRequestDetail}
                       />
                     </span>
                     <span aria-hidden="true" />
@@ -468,6 +468,7 @@ interface TicketKanbanViewProps {
   isUnread?: ((ticket: TicketSummary) => boolean) | undefined;
   canQuickAssign?: boolean | undefined;
   onQuickAssign?: ((ticket: TicketSummary) => void) | undefined;
+  onOpenPullRequestDetail?: ((ticket: TicketSummary) => void) | undefined;
 }
 
 function TicketColumn({
@@ -503,6 +504,7 @@ function TicketKanbanCard({
   canQuickAssign,
   onQuickAssign,
   onSelectTicket,
+  onOpenPullRequestDetail,
 }: {
   ticket: TicketSummary;
   canMove: boolean;
@@ -510,6 +512,7 @@ function TicketKanbanCard({
   canQuickAssign: boolean;
   onQuickAssign?: ((ticket: TicketSummary) => void) | undefined;
   onSelectTicket: (ticket: TicketSummary) => void;
+  onOpenPullRequestDetail?: ((ticket: TicketSummary) => void) | undefined;
 }) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: ticketDragId(ticket),
@@ -518,55 +521,63 @@ function TicketKanbanCard({
 
   return (
     <div className="group relative">
-    <button
-      ref={setNodeRef}
-      type="button"
-      className="w-full rounded-md p-3 text-left hover:bg-[var(--bg-hover)] focus-visible:outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
-      aria-label={ticketButtonLabel(ticket)}
-      onClick={() => onSelectTicket(ticket)}
-      style={{
-        backgroundColor: "var(--bg-elevated)",
-        borderColor: "var(--border-subtle)",
-        borderStyle: "solid",
-        borderWidth: "1px",
-        color: "var(--text-primary)",
-        opacity: isDragging ? 0.72 : 1,
-        transform: CSS.Translate.toString(transform),
-      }}
-      {...attributes}
-      {...listeners}
-    >
-      <div className="flex items-center justify-between gap-2">
-        <span className="flex items-center gap-1.5 font-mono text-xs text-[var(--text-muted)]">
-          {unread && <UnreadCommentIndicator />}
-          {ticketKey(ticket.ref)}
-        </span>
-        <span className="flex items-center gap-2">
-          {ticket.openPrNumber != null && (
-            <span
-              className="inline-flex items-center gap-1 text-xs font-medium"
-              style={{
-                color: isLivePrStatus(ticket.openPrStatus)
-                  ? "var(--status-success)"
-                  : "var(--text-muted)",
-              }}
-            >
-              <GitPullRequestArrow className="h-3.5 w-3.5" aria-hidden="true" />
-              #{ticket.openPrNumber}
-            </span>
-          )}
-          <TicketAssociationBadge count={ticket.associationCount} />
-        </span>
-      </div>
-      <p className="mt-2 line-clamp-2 text-sm font-medium">{ticket.title}</p>
-      {ticket.labels.length > 0 && (
-        <TicketLabels labels={ticket.labels} max={2} className="mt-2 text-[var(--text-muted)]" />
+      <button
+        ref={setNodeRef}
+        type="button"
+        className="w-full rounded-md p-3 text-left hover:bg-[var(--bg-hover)] focus-visible:outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:2px]"
+        aria-label={ticketButtonLabel(ticket)}
+        onClick={() => onSelectTicket(ticket)}
+        style={{
+          backgroundColor: "var(--bg-elevated)",
+          borderColor: "var(--border-subtle)",
+          borderStyle: "solid",
+          borderWidth: "1px",
+          color: "var(--text-primary)",
+          opacity: isDragging ? 0.72 : 1,
+          transform: CSS.Translate.toString(transform),
+        }}
+        {...attributes}
+        {...listeners}
+      >
+        <div className="flex items-center justify-between gap-2">
+          <span className="flex items-center gap-1.5 font-mono text-xs text-[var(--text-muted)]">
+            {unread && <UnreadCommentIndicator />}
+            {ticketKey(ticket.ref)}
+          </span>
+          <span className="flex items-center gap-2">
+            {ticket.openPrNumber != null && !onOpenPullRequestDetail && (
+              <span
+                className="inline-flex items-center gap-1 text-xs font-medium"
+                style={{
+                  color: isLivePrStatus(ticket.openPrStatus)
+                    ? "var(--status-success)"
+                    : "var(--text-muted)",
+                }}
+              >
+                <GitPullRequestArrow className="h-3.5 w-3.5" aria-hidden="true" />
+                #{ticket.openPrNumber}
+              </span>
+            )}
+            <TicketAssociationBadge count={ticket.associationCount} />
+          </span>
+        </div>
+        <p className="mt-2 line-clamp-2 text-sm font-medium">{ticket.title}</p>
+        {ticket.labels.length > 0 && (
+          <TicketLabels labels={ticket.labels} max={2} className="mt-2 text-[var(--text-muted)]" />
+        )}
+        <div className="mt-3 flex items-center justify-between gap-2 text-xs text-[var(--text-muted)]">
+          <TicketAssigneeChips people={ticketAssignees(ticket)} />
+          <ChevronRight className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+        </div>
+      </button>
+      {ticket.openPrNumber != null && onOpenPullRequestDetail && (
+        <div className="pointer-events-none absolute right-10 top-2">
+          <TicketPrOpenControl
+            ticket={ticket}
+            onOpenPullRequestDetail={onOpenPullRequestDetail}
+          />
+        </div>
       )}
-      <div className="mt-3 flex items-center justify-between gap-2 text-xs text-[var(--text-muted)]">
-        <TicketAssigneeChips people={ticketAssignees(ticket)} />
-        <ChevronRight className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-      </div>
-    </button>
       {canQuickAssign && onQuickAssign && ticketAssignees(ticket).length === 0 && (
         <QuickAssignButton onClick={() => onQuickAssign(ticket)} />
       )}
@@ -583,6 +594,7 @@ export function TicketKanbanView({
   isUnread,
   canQuickAssign,
   onQuickAssign,
+  onOpenPullRequestDetail,
 }: TicketKanbanViewProps) {
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -649,6 +661,7 @@ export function TicketKanbanView({
                     canQuickAssign={canQuickAssign ?? false}
                     onQuickAssign={onQuickAssign}
                     onSelectTicket={onSelectTicket}
+                    onOpenPullRequestDetail={onOpenPullRequestDetail}
                   />
                 ))}
               </div>

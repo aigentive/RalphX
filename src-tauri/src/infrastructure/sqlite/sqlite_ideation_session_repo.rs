@@ -989,8 +989,8 @@ impl IdeationSessionRepository for SqliteIdeationSessionRepository {
         let session_id = id.as_str().to_string();
         let snapshot = snapshot.clone();
         self.db
-            .run(move |conn| {
-                let tx = conn.unchecked_transaction()?;
+            .run_transaction(move |conn| {
+                let tx = conn;
                 let now = Utc::now().to_rfc3339();
                 let completed_at = if snapshot.in_progress {
                     None
@@ -1153,7 +1153,6 @@ impl IdeationSessionRepository for SqliteIdeationSessionRepository {
                     )?;
                 }
 
-                tx.commit()?;
                 Ok(())
             })
             .await
@@ -2309,3 +2308,7 @@ impl IdeationSessionRepository for SqliteIdeationSessionRepository {
             .await
     }
 }
+
+#[cfg(test)]
+#[path = "sqlite_ideation_session_repo_tests.rs"]
+mod tests;

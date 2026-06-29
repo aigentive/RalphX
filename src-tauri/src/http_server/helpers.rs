@@ -19,7 +19,8 @@ use crate::domain::entities::{
 };
 use crate::domain::review::{compute_out_of_scope_blocker_fingerprint, compute_scope_drift};
 use crate::domain::services::{
-    check_proposal_verification_gate, resolve_effective_gate_policy, ProposalOperation,
+    check_proposal_verification_gate, check_verification_gate, resolve_effective_gate_policy,
+    ProposalOperation,
 };
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::sqlite::sqlite_ideation_settings_repo::get_settings_sync;
@@ -1023,6 +1024,9 @@ pub async fn finalize_proposals_impl(
                 ))
             })?;
         let effective_policy = resolve_effective_gate_policy(&ideation_settings, session.origin);
+        if let Err(e) = check_verification_gate(&session, &effective_policy) {
+            return Err(AppError::Validation(e.to_string()));
+        }
         if effective_policy.require_accept_for_finalize {
             // Set acceptance_status to Pending (CAS: only if currently None)
             state

@@ -15,11 +15,13 @@ use ralphx_lib::commands::ideation_commands::{
     migrate_proposals_impl, CreateCrossProjectSessionInput, MigrateProposalsInput,
 };
 use ralphx_lib::commands::ExecutionState;
+use ralphx_lib::domain::entities::ideation::VerificationStatus;
 use ralphx_lib::domain::entities::{
     project::{GitMode, Project},
     IdeationSession, IdeationSessionId, IdeationSessionStatus, Priority, ProjectId,
     ProposalCategory, TaskProposal, TaskProposalId,
 };
+use ralphx_lib::error::AppError;
 use ralphx_lib::http_server::handlers::*;
 use ralphx_lib::http_server::types::HttpServerState;
 use std::sync::Arc;
@@ -726,6 +728,63 @@ async fn test_all_foreign_finalize_transitions_session_to_accepted() {
         "Session in repo must be Accepted after all-foreign finalize"
     );
 }
+
+#[tokio::test]
+async fn test_all_foreign_finalize_blocks_active_verification_when_accept_gate_disabled() {
+    let state = setup_test_state().await;
+
+    let project = make_project(
+        "foreign-proj-active-verification",
+        "SourceProject",
+        "/tmp/source-project",
+    );
+    let project_id = project.id.as_str().to_string();
+    state.app_state.project_repo.create(project).await.unwrap();
+
+    let session = IdeationSession::new(ProjectId::from_string(project_id));
+    let session_id = session.id.as_str().to_string();
+    let session_id_typed = IdeationSessionId::from_string(session_id.clone());
+    state
+        .app_state
+        .ideation_session_repo
+        .create(session)
+        .await
+        .unwrap();
+    state
+        .app_state
+        .ideation_session_repo
+        .update_verification_state(&session_id_typed, VerificationStatus::Reviewing, true)
+        .await
+        .unwrap();
+
+    let p1 = make_proposal_with_target(&session_id_typed, "Foreign Task 1", "/tmp/other-project");
+    let p2 = make_proposal_with_target(&session_id_typed, "Foreign Task 2", "/tmp/other-project");
+    state.app_state.task_proposal_repo.create(p1).await.unwrap();
+    state.app_state.task_proposal_repo.create(p2).await.unwrap();
+
+    let result = finalize_proposals_impl(&state.app_state, &session_id, false).await;
+
+    assert!(
+        matches!(result, Err(AppError::Validation(_))),
+        "all-foreign finalize must block active verification, got: {:?}",
+        result
+    );
+
+    let updated_session = state
+        .app_state
+        .ideation_session_repo
+        .get_by_id(&session_id_typed)
+        .await
+        .unwrap()
+        .expect("Session must still exist after blocked finalize");
+
+    assert_eq!(
+        updated_session.status,
+        IdeationSessionStatus::Active,
+        "Session in repo must remain Active when verification blocks finalize"
+    );
+}
+
 #[tokio::test]
 async fn test_migrate_then_finalize_target_session_accepted() {
     // Use SQLite-backed state so apply_proposals_core's db.run_transaction can see

@@ -261,10 +261,10 @@ describe("distinctCurrentUserSprintNames", () => {
   it("returns sorted sprint names only from tickets assigned to the current user", () => {
     expect(
       distinctCurrentUserSprintNames([
-        { ...ticket("1", "Me"), project: "Sprint 42", currentUserAssigned: true },
-        { ...ticket("2", "Me"), project: "Backlog", currentUserAssigned: false },
+        { ...ticket("1", "Me"), project: "Continuous Improvement", sprints: ["Sprint 42"], currentUserAssigned: true },
+        { ...ticket("2", "Me"), project: "Backlog", sprints: ["Backlog Sprint"], currentUserAssigned: false },
         { ...ticket("3", "Me"), project: "Sprint 41", currentUserAssigned: true },
-        { ...ticket("4", "Me"), project: "Sprint 42", currentUserAssigned: true },
+        { ...ticket("4", "Me"), project: "Continuous Improvement", sprints: ["Sprint 42"], currentUserAssigned: true },
       ]),
     ).toEqual(["Sprint 41", "Sprint 42"]);
   });

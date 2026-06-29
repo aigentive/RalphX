@@ -29,6 +29,9 @@ pub mod git_commands;
 pub mod granola_commands;
 #[cfg(test)]
 mod granola_commands_tests;
+pub mod github_commands;
+#[cfg(test)]
+mod github_commands_tests;
 pub mod harness_provider_commands;
 pub mod health;
 pub mod ideation_commands;
@@ -153,7 +156,9 @@ pub use granola_commands::{
     AgentConversationGranolaNoteResponse, AssignAgentConversationGranolaNoteInput,
     ClearAgentConversationGranolaNoteInput, GetAgentConversationGranolaNoteInput,
     GetGranolaNoteDetailInput, GranolaIntegrationSettingsResponse, GranolaNoteDetailResponse,
-    GranolaNoteSummaryResponse, ListGranolaNotesInput, ListGranolaNotesResponse,
+    GranolaNotePullRequestLinkResponse, GranolaNoteRxConversationResponse,
+    GranolaNoteSummaryResponse, GranolaNoteTicketLinkResponse, ListGranolaNotesInput,
+    ListGranolaNotesResponse,
     RefreshAgentConversationGranolaNoteInput, SaveGranolaIntegrationSettingsInput,
 };
 // Re-export ConflictDiff from application for convenience
@@ -338,4 +343,9 @@ pub use git_commands::{
     change_project_git_mode, cleanup_task_branch, get_task_commits, get_task_diff_stats,
     resolve_merge_conflict, retry_merge, ChangeGitModeInput, CommitInfoResponse,
     TaskCommitsResponse, TaskDiffStatsResponse,
+};
+// GitHub commands (PR visibility — connection status)
+pub use github_commands::{
+    get_github_branch_overview, get_github_connection_status, GithubBranchOverviewResponse,
+    GithubConnectionStatusResponse,
 };

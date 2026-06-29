@@ -11,7 +11,9 @@ use crate::application::AppState;
 use crate::commands::ExecutionState;
 use crate::domain::entities::{
     AgentConversationWorkspaceMode, AgentRunId, AgentRunStatus, ChatAttachment, ChatContextType,
-    ChatConversation, ChatConversationId, ChatMessage, ChatTimelineItemStatus, ProjectId,
+    ChatConversation, ChatConversationId, ChatMessage, ChatTimelineItemStatus, IdeationSession,
+    IdeationSessionStatus, ProjectId, SessionPurpose, VerificationRoundSnapshot,
+    VerificationRunSnapshot, VerificationStatus,
 };
 use crate::domain::repositories::QueuedMessageRepository;
 use crate::domain::services::{QueueKey, RunningAgentKey};
@@ -1055,6 +1057,148 @@ EOF
             .is_none(),
         "successful queued continuation should unregister the runtime key"
     );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn queue_processing_success_reconciles_verification_child_completion() {
+    use crate::domain::agents::AgentHarnessKind;
+
+    let state = AppState::new_test();
+    let message_queue = Arc::clone(&state.message_queue);
+    let running_agent_registry = Arc::clone(&state.running_agent_registry);
+    let agent_run_repo = Arc::clone(&state.agent_run_repo);
+    let chat_message_repo = Arc::clone(&state.chat_message_repo);
+    let chat_timeline_repo = Arc::clone(&state.chat_timeline_repo);
+    let chat_attachment_repo = Arc::clone(&state.chat_attachment_repo);
+    let artifact_repo = Arc::clone(&state.artifact_repo);
+    let activity_event_repo = Arc::clone(&state.activity_event_repo);
+    let task_repo = Arc::clone(&state.task_repo);
+    let ideation_session_repo = Arc::clone(&state.ideation_session_repo);
+
+    let project_id = ProjectId::new();
+    let mut parent = IdeationSession::new(project_id.clone());
+    parent.verification_status = VerificationStatus::Reviewing;
+    parent.verification_in_progress = true;
+    let parent_id = parent.id.clone();
+    ideation_session_repo
+        .create(parent)
+        .await
+        .expect("parent verification session should persist");
+    ideation_session_repo
+        .save_verification_run_snapshot(
+            &parent_id,
+            &VerificationRunSnapshot {
+                generation: 0,
+                status: VerificationStatus::Reviewing,
+                in_progress: true,
+                current_round: 1,
+                max_rounds: 5,
+                best_round_index: Some(0),
+                convergence_reason: Some("zero_blocking".to_string()),
+                current_gaps: vec![],
+                rounds: vec![VerificationRoundSnapshot {
+                    round: 1,
+                    gap_score: 0,
+                    fingerprints: vec![],
+                    gaps: vec![],
+                    parse_failed: false,
+                }],
+            },
+        )
+        .await
+        .expect("terminal verification snapshot should persist");
+
+    let mut child = IdeationSession::new(project_id);
+    child.session_purpose = SessionPurpose::Verification;
+    child.parent_session_id = Some(parent_id.clone());
+    let child_id = child.id.clone();
+    ideation_session_repo
+        .create(child)
+        .await
+        .expect("verification child should persist");
+
+    let app = tauri::test::mock_builder()
+        .manage(state)
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app");
+    let app_handle = app.handle().clone();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let cli_path = temp.path().join("fake-claude");
+    std::fs::write(
+        &cli_path,
+        r#"#!/bin/sh
+cat <<'EOF'
+{"type":"assistant","message":{"content":[{"type":"text","text":"queued verifier continuation complete"}]},"session_id":"session-cli"}
+{"type":"result","session_id":"session-cli","is_error":false,"result":"queued verifier continuation complete","cost_usd":0.0}
+EOF
+"#,
+    )
+    .expect("write fake cli");
+    let mut permissions = std::fs::metadata(&cli_path)
+        .expect("fake cli metadata")
+        .permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
+    std::fs::set_permissions(&cli_path, permissions).expect("mark fake cli executable");
+
+    message_queue.queue(
+        ChatContextType::Ideation,
+        child_id.as_str(),
+        "Continue".to_string(),
+    );
+
+    let outcome =
+        super::super::chat_service_queue::process_queued_messages::<tauri::test::MockRuntime>(
+            ChatContextType::Ideation,
+            AgentHarnessKind::Claude,
+            child_id.as_str(),
+            child_id.as_str(),
+            ChatConversationId::new(),
+            "session-cli",
+            &message_queue,
+            None,
+            &running_agent_registry,
+            &agent_run_repo,
+            &chat_message_repo,
+            Some(chat_timeline_repo),
+            &chat_attachment_repo,
+            &artifact_repo,
+            &activity_event_repo,
+            &task_repo,
+            &ideation_session_repo,
+            &cli_path,
+            temp.path(),
+            temp.path(),
+            None,
+            None,
+            Some(app_handle),
+            None,
+            false,
+            tokio_util::sync::CancellationToken::new(),
+            Some("verification-chain"),
+            Some("parent-run"),
+            super::StreamingStateCache::new(),
+        )
+        .await;
+
+    assert_eq!(outcome.total_processed, 1);
+    let child_after = ideation_session_repo
+        .get_by_id(&child_id)
+        .await
+        .expect("child lookup should succeed")
+        .expect("child should still exist");
+    assert_eq!(
+        child_after.status,
+        IdeationSessionStatus::Archived,
+        "queued verifier continuation completion must run verification reconciliation"
+    );
+    let snapshot = ideation_session_repo
+        .get_verification_run_snapshot(&parent_id, 0)
+        .await
+        .expect("snapshot lookup should succeed")
+        .expect("snapshot should remain present");
+    assert_eq!(snapshot.status, VerificationStatus::Verified);
+    assert!(!snapshot.in_progress);
 }
 
 #[tokio::test]

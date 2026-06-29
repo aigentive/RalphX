@@ -60,9 +60,17 @@ export function distinctCurrentUserSprintNames(tickets: TicketSummary[]): string
     if (!ticket.currentUserAssigned) {
       continue;
     }
-    const name = ticket.project?.trim();
-    if (name) {
-      names.add(name);
+    for (const sprint of ticket.sprints ?? []) {
+      const name = sprint.trim();
+      if (name) {
+        names.add(name);
+      }
+    }
+    if ((ticket.sprints ?? []).length === 0) {
+      const name = ticket.project?.trim();
+      if (name?.toLowerCase().includes("sprint")) {
+        names.add(name);
+      }
     }
   }
   return Array.from(names).sort((left, right) => left.localeCompare(right));

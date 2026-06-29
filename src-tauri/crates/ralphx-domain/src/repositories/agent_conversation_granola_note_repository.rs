@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 
-use crate::entities::{AgentConversationGranolaNoteLink, ChatConversationId};
+use crate::entities::{AgentConversationGranolaNoteLink, ChatConversationId, ProjectId};
 use crate::error::AppResult;
 
 #[async_trait]
@@ -9,6 +9,11 @@ pub trait AgentConversationGranolaNoteRepository: Send + Sync {
         &self,
         conversation_id: &ChatConversationId,
     ) -> AppResult<Option<AgentConversationGranolaNoteLink>>;
+
+    async fn list_by_project_id(
+        &self,
+        project_id: &ProjectId,
+    ) -> AppResult<Vec<AgentConversationGranolaNoteLink>>;
 
     async fn upsert(
         &self,

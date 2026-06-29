@@ -570,8 +570,6 @@ pub fn apply_env_overrides(cfg: &mut AllRuntimeConfig) {
     apply_env_overrides_with(cfg, &|name| std::env::var(name).ok());
 }
 
-/// Test-only entry point: apply env overrides using a custom lookup function.
-#[cfg(test)]
 pub(crate) fn apply_env_overrides_with_lookup(
     cfg: &mut AllRuntimeConfig,
     lookup: &dyn Fn(&str) -> Option<String>,

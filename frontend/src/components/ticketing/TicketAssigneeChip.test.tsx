@@ -5,20 +5,20 @@ import { TicketAssigneeChip } from "./TicketAssigneeChip";
 
 describe("TicketAssigneeChip", () => {
   it("renders initials only and exposes the assignee name as hover text", () => {
-    render(<TicketAssigneeChip person={{ name: "Adrian Demian" }} />);
+    render(<TicketAssigneeChip person={{ name: "Alex Developer" }} />);
 
     expect(screen.getByText("AD")).toBeInTheDocument();
-    expect(screen.getByRole("img", { name: "Adrian Demian" })).toHaveAttribute(
+    expect(screen.getByRole("img", { name: "Alex Developer" })).toHaveAttribute(
       "title",
-      "Adrian Demian",
+      "Alex Developer",
     );
-    expect(screen.queryByText("Adrian Demian")).not.toBeInTheDocument();
+    expect(screen.queryByText("Alex Developer")).not.toBeInTheDocument();
   });
 
   it("renders an avatar image when avatarUrl is present", () => {
     render(
       <TicketAssigneeChip
-        person={{ name: "Adrian Demian", avatarUrl: "https://example.com/a.png" }}
+        person={{ name: "Alex Developer", avatarUrl: "https://example.com/a.png" }}
       />,
     );
 
@@ -31,10 +31,10 @@ describe("TicketAssigneeChip", () => {
 
   it("surfaces the email through the title tooltip", () => {
     const { container } = render(
-      <TicketAssigneeChip person={{ name: "Adrian Demian", email: "adrian@example.com" }} />,
+      <TicketAssigneeChip person={{ name: "Alex Developer", email: "alex@example.com" }} />,
     );
 
-    expect(container.querySelector("[title='Adrian Demian · adrian@example.com']")).not.toBeNull();
+    expect(container.querySelector("[title='Alex Developer · alex@example.com']")).not.toBeNull();
   });
 
   it("renders a muted placeholder when unassigned", () => {
@@ -50,7 +50,7 @@ describe("TicketAssigneeChip", () => {
   it("falls back to initials when the avatar image fails to load", () => {
     const { container } = render(
       <TicketAssigneeChip
-        person={{ name: "Adrian Demian", avatarUrl: "https://example.com/broken.png" }}
+        person={{ name: "Alex Developer", avatarUrl: "https://example.com/broken.png" }}
       />,
     );
 

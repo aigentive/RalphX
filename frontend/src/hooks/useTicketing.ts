@@ -45,7 +45,7 @@ export const ticketingKeys = {
   providers: (projectId?: string) =>
     [...ticketingKeys.all, "providers", projectId ?? null] as const,
   containers: (input: ListTicketingContainersInput) =>
-    [...ticketingKeys.all, "containers", input.provider, input.projectId ?? null] as const,
+    [...ticketingKeys.all, "containers", input.provider, input.projectId ?? null, input.parentContainerId ?? null] as const,
   columns: (input: ListTicketingColumnsInput) =>
     [...ticketingKeys.all, "columns", input.provider, input.containerId ?? null] as const,
   tickets: (input: ListTicketsInput) =>

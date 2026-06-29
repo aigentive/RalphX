@@ -7,6 +7,7 @@ import {
   isIdeationContext,
   isTaskDetailContext,
   isTicketingContext,
+  isGranolaContext,
   createKanbanContext,
   createIdeationContext,
   createTaskDetailContext,
@@ -14,8 +15,8 @@ import {
 } from "./chat";
 
 describe("ViewTypeSchema", () => {
-  it("should have 10 view type values", () => {
-    expect(VIEW_TYPE_VALUES.length).toBe(10);
+  it("should have 12 view type values", () => {
+    expect(VIEW_TYPE_VALUES.length).toBe(12);
   });
 
   it("should parse all valid view types", () => {
@@ -32,6 +33,8 @@ describe("ViewTypeSchema", () => {
     expect(VIEW_TYPE_VALUES).toContain("extensibility");
     expect(VIEW_TYPE_VALUES).toContain("activity");
     expect(VIEW_TYPE_VALUES).toContain("ticketing");
+    expect(VIEW_TYPE_VALUES).toContain("github");
+    expect(VIEW_TYPE_VALUES).toContain("granola");
     expect(VIEW_TYPE_VALUES).toContain("task_detail");
   });
 
@@ -156,6 +159,18 @@ describe("Context helper functions", () => {
       expect(isTicketingContext({ view: "agents", projectId: "p1" })).toBe(false);
     });
   });
+
+  describe("isGranolaContext", () => {
+    it("should return true for granola view", () => {
+      expect(isGranolaContext({ view: "granola", projectId: "p1" })).toBe(true);
+    });
+
+    it("should return false for non-granola views", () => {
+      expect(isGranolaContext({ view: "kanban", projectId: "p1" })).toBe(false);
+      expect(isGranolaContext({ view: "ticketing", projectId: "p1" })).toBe(false);
+      expect(isGranolaContext({ view: "github", projectId: "p1" })).toBe(false);
+    });
+  });
 });
 
 describe("Context factory functions", () => {
@@ -209,6 +224,13 @@ describe("Context factory functions", () => {
       expect(ctx.view).toBe("ticketing");
       expect(ctx.projectId).toBe("project-123");
       expect(isTicketingContext(ctx)).toBe(true);
+    });
+
+    it("should accept 'granola' as a valid view and create a Granola context", () => {
+      const ctx = createProjectContext("project-123", "granola");
+      expect(ctx.view).toBe("granola");
+      expect(ctx.projectId).toBe("project-123");
+      expect(isGranolaContext(ctx)).toBe(true);
     });
   });
 });

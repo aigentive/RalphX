@@ -1068,6 +1068,13 @@ async fn complete_merge_and_schedule<R: Runtime + 'static>(
             .and_then(|state| state.github_service.clone()),
         ideation_session_repo: Some(Arc::clone(ctx.ideation_session_repo)),
         artifact_repo: Some(Arc::clone(ctx.artifact_repo)),
+        plan_pr_description_drafter: app_state.as_ref().map(|state| {
+            crate::application::plan_pr_description::build_app_state_plan_pr_description_drafter(
+                Arc::clone(&state.agent_conversation_workspace_repo),
+                Arc::clone(&state.agent_provider_settings_repo),
+                state.agent_clients.clone(),
+            )
+        }),
     };
 
     if let Err(e) = complete_merge_internal_with_pr_sync(
@@ -1693,8 +1700,8 @@ mod tests {
 
         attempt_merge_auto_complete(&merge_ctx).await;
 
-        let updated = wait_for_status(&app_state.task_repo, &task_id, InternalStatus::ReExecuting)
-            .await;
+        let updated =
+            wait_for_status(&app_state.task_repo, &task_id, InternalStatus::ReExecuting).await;
         let metadata: serde_json::Value =
             serde_json::from_str(updated.metadata.as_deref().unwrap_or("{}"))
                 .expect("task metadata is JSON");

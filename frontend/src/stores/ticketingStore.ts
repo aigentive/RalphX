@@ -132,7 +132,14 @@ export const useTicketingStore = create<TicketingState & TicketingActions>()(
     {
       name: "ralphx-ticketing-store",
       version: 1,
-      partialize: (state) => ({ lastOpenedAt: state.lastOpenedAt }),
+      partialize: (state) => ({
+        activeProvider: state.activeProvider,
+        activeContainerId: state.activeContainerId,
+        viewMode: state.viewMode,
+        filters: cloneFilters(state.filters),
+        selectedTicketRef: state.selectedTicketRef,
+        lastOpenedAt: state.lastOpenedAt,
+      }),
     },
   ),
 );
