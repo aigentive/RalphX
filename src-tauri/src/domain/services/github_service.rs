@@ -104,6 +104,7 @@ pub struct PrBranchMatch {
     pub is_draft: bool,
     pub head_ref_name: String,
     pub updated_at: Option<String>,
+    pub author_login: Option<String>,
 }
 
 impl PrBranchMatch {

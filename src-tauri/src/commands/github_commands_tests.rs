@@ -218,6 +218,7 @@ async fn get_github_branch_overview_lists_pr_rx_and_ticket_indicators() {
             is_draft: false,
             head_ref_name: "feature/merged".to_string(),
             updated_at: Some("2026-06-26T08:00:00Z".to_string()),
+            author_login: Some("olderauthor".to_string()),
         },
         PrBranchMatch {
             number: 11,
@@ -228,6 +229,7 @@ async fn get_github_branch_overview_lists_pr_rx_and_ticket_indicators() {
             is_draft: false,
             head_ref_name: "feature/merged".to_string(),
             updated_at: Some("2026-06-27T08:00:00Z".to_string()),
+            author_login: Some("mergeauthor".to_string()),
         },
         PrBranchMatch {
             number: 14,
@@ -236,6 +238,7 @@ async fn get_github_branch_overview_lists_pr_rx_and_ticket_indicators() {
             is_draft: false,
             head_ref_name: "feature/merged".to_string(),
             updated_at: Some("2026-06-27T08:00:00Z".to_string()),
+            author_login: Some("closedauthor".to_string()),
         },
         PrBranchMatch {
             number: 12,
@@ -244,6 +247,7 @@ async fn get_github_branch_overview_lists_pr_rx_and_ticket_indicators() {
             is_draft: false,
             head_ref_name: "feature/not-local".to_string(),
             updated_at: Some("2026-06-28T08:00:00Z".to_string()),
+            author_login: Some("nonlocalauthor".to_string()),
         },
         PrBranchMatch {
             number: 13,
@@ -252,6 +256,7 @@ async fn get_github_branch_overview_lists_pr_rx_and_ticket_indicators() {
             is_draft: false,
             head_ref_name: "main".to_string(),
             updated_at: Some("2026-06-28T09:00:00Z".to_string()),
+            author_login: Some("mainauthor".to_string()),
         },
     ]);
 
@@ -398,6 +403,7 @@ async fn get_github_branch_overview_lists_pr_rx_and_ticket_indicators() {
         Some("https://github.com/aigentive/ralphx.app/pull/14")
     );
     assert_eq!(merged.pr_title, None);
+    assert_eq!(merged.pr_author_login.as_deref(), Some("closedauthor"));
     assert_eq!(merged.pr_base_ref_name, None);
     assert!(overview
         .branches

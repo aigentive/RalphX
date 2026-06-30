@@ -11070,6 +11070,7 @@ mod tests {
             is_draft: false,
             head_ref_name: workspace.branch_name.clone(),
             updated_at: Some("2026-05-14T10:00:00Z".to_string()),
+            author_login: None,
         })));
         state.github_service = Some(github.clone());
         state.project_repo.create(project).await.unwrap();

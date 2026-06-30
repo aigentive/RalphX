@@ -1174,7 +1174,7 @@ impl GithubServiceTrait for GhCliGithubService {
             "--limit".to_string(),
             limit.to_string(),
             "--json".to_string(),
-            "number,url,state,isDraft,headRefName,updatedAt".to_string(),
+            "number,url,state,isDraft,headRefName,updatedAt,author".to_string(),
         ];
         let stdout = self.runner.run_gh(working_dir, &args).await?;
 
@@ -1556,6 +1556,11 @@ fn parse_pr_branch_match_item(item: &Value) -> AppResult<PrBranchMatch> {
         head_ref_name,
         updated_at: item
             .get("updatedAt")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        author_login: item
+            .get("author")
+            .and_then(|author| author.get("login"))
             .and_then(Value::as_str)
             .map(str::to_string),
     })
