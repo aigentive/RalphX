@@ -1466,6 +1466,7 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                     let queue_assistant_msg_id = queue_assistant_msg.id.as_str().to_string();
                     let _ = chat_message_repo.create(queue_assistant_msg).await;
 
+                    let mut stop_queue_after_provider_error = false;
                     match process_stream_background(
                         child,
                         harness,
@@ -1650,10 +1651,11 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                                     category,
                                     message,
                                     retry_after,
-                                    &context_type.to_string(),
+                                    context_type,
                                     context_id,
                                 )
                                 .await;
+                                stop_queue_after_provider_error = true;
                             }
                             let error_string = redact(&e.to_string());
                             tracing::error!(
@@ -1696,6 +1698,19 @@ pub(super) async fn process_queued_messages<R: Runtime + 'static>(
                     running_agent_registry
                         .unregister(&queue_registry_key, &queued_run_id)
                         .await;
+                    if stop_queue_after_provider_error {
+                        tracing::info!(
+                            %context_type,
+                            context_id,
+                            queue_context_id,
+                            queued_run_id = %queued_run_id,
+                            "[QUEUE] Provider error restored queued message; stopping queue processing"
+                        );
+                        return QueueProcessingOutcome {
+                            total_processed,
+                            last_run_id,
+                        };
+                    }
                 }
                 Err(e) => {
                     tracing::error!("Failed to spawn queued message command: {}", e);

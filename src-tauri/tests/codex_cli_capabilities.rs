@@ -54,7 +54,7 @@ fn parse_codex_version_extracts_semver() {
 #[test]
 fn parse_codex_cli_capabilities_detects_core_exec_surface() {
     let capabilities =
-        parse_codex_cli_capabilities(ROOT_HELP, EXEC_HELP, Some("codex-cli 0.116.0"));
+        parse_codex_cli_capabilities(ROOT_HELP, EXEC_HELP, Some("codex-cli 0.116.0"), None, None);
 
     assert_eq!(capabilities.version.as_deref(), Some("0.116.0"));
     assert!(capabilities.supports_exec_subcommand);
@@ -72,7 +72,7 @@ fn parse_codex_cli_capabilities_detects_core_exec_surface() {
 #[test]
 fn parse_codex_cli_capabilities_reports_missing_json_feature() {
     let capabilities =
-        parse_codex_cli_capabilities(ROOT_HELP, &EXEC_HELP.replace("--json", ""), None);
+        parse_codex_cli_capabilities(ROOT_HELP, &EXEC_HELP.replace("--json", ""), None, None, None);
 
     assert!(!capabilities.supports_json_output);
     assert_eq!(capabilities.missing_core_exec_features(), vec!["json_output"]);
@@ -81,12 +81,13 @@ fn parse_codex_cli_capabilities_reports_missing_json_feature() {
 #[test]
 fn build_codex_exec_args_maps_lane_settings_to_flags_and_overrides() {
     let capabilities =
-        parse_codex_cli_capabilities(ROOT_HELP, EXEC_HELP, Some("codex-cli 0.116.0"));
+        parse_codex_cli_capabilities(ROOT_HELP, EXEC_HELP, Some("codex-cli 0.116.0"), None, None);
     let config = CodexExecCliConfig {
         model: Some("gpt-5.4".to_string()),
         reasoning_effort: Some(LogicalEffort::XHigh),
         approval_policy: Some("on_request".to_string()),
         sandbox_mode: Some("workspace_write".to_string()),
+        service_tier: None,
         config_overrides: vec!["mcp_servers.ralphx.enabled=true".to_string()],
         cwd: Some(PathBuf::from("/tmp/work")),
         add_dirs: vec![PathBuf::from("/tmp/extra")],
@@ -128,6 +129,8 @@ fn build_codex_exec_args_rejects_missing_config_override_support() {
         &ROOT_HELP.replace("--config", ""),
         &EXEC_HELP.replace("--config", ""),
         Some("codex-cli 0.116.0"),
+        None,
+        None,
     );
     let config = CodexExecCliConfig {
         reasoning_effort: Some(LogicalEffort::Medium),
@@ -143,7 +146,7 @@ fn build_codex_exec_args_rejects_missing_config_override_support() {
 #[test]
 fn build_codex_exec_resume_args_maps_config_to_resume_surface() {
     let capabilities =
-        parse_codex_cli_capabilities(ROOT_HELP, EXEC_HELP, Some("codex-cli 0.116.0"));
+        parse_codex_cli_capabilities(ROOT_HELP, EXEC_HELP, Some("codex-cli 0.116.0"), None, None);
     let config = CodexExecCliConfig {
         model: Some("gpt-5.4".to_string()),
         reasoning_effort: Some(LogicalEffort::XHigh),
@@ -184,7 +187,7 @@ fn build_codex_exec_resume_args_maps_config_to_resume_surface() {
 #[test]
 fn build_spawnable_codex_exec_command_uses_prompt_arg_transport() {
     let capabilities =
-        parse_codex_cli_capabilities(ROOT_HELP, EXEC_HELP, Some("codex-cli 0.116.0"));
+        parse_codex_cli_capabilities(ROOT_HELP, EXEC_HELP, Some("codex-cli 0.116.0"), None, None);
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let config = CodexExecCliConfig {
         model: Some("gpt-5.4".to_string()),
@@ -219,7 +222,7 @@ fn build_spawnable_codex_exec_command_uses_prompt_arg_transport() {
 #[test]
 fn build_spawnable_codex_resume_command_uses_resume_subcommand_and_prompt_arg() {
     let capabilities =
-        parse_codex_cli_capabilities(ROOT_HELP, EXEC_HELP, Some("codex-cli 0.116.0"));
+        parse_codex_cli_capabilities(ROOT_HELP, EXEC_HELP, Some("codex-cli 0.116.0"), None, None);
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let config = CodexExecCliConfig {
         cwd: Some(temp_dir.path().to_path_buf()),
@@ -262,7 +265,7 @@ fn build_spawnable_codex_resume_command_uses_resume_subcommand_and_prompt_arg() 
 #[test]
 fn build_spawnable_codex_exec_command_logs_prompt_to_artifact_and_redacts_debug_output() {
     let capabilities =
-        parse_codex_cli_capabilities(ROOT_HELP, EXEC_HELP, Some("codex-cli 0.116.0"));
+        parse_codex_cli_capabilities(ROOT_HELP, EXEC_HELP, Some("codex-cli 0.116.0"), None, None);
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let config = CodexExecCliConfig {
         cwd: Some(temp_dir.path().to_path_buf()),
@@ -423,6 +426,8 @@ fn build_codex_cli_diagnostics_response_handles_successful_probe() {
         supports_search_flag: true,
         supports_resume_subcommand: true,
         supports_mcp_subcommand: true,
+        supports_fast_mode_feature: false,
+        fast_mode_supported_models: Vec::new(),
     };
 
     let diagnostics = build_codex_cli_diagnostics_response(
