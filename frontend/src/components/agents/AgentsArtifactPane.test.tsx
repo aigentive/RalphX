@@ -14,6 +14,7 @@ import type {
 import type { AgentArtifactTab } from "@/stores/agentSessionStore";
 import { useUiStore } from "@/stores/uiStore";
 import { createTestQueryClient } from "@/test/store-utils";
+import { chatKeys } from "@/hooks/useChat";
 import { reviewSettingsKeys } from "@/hooks/useReviewSettings";
 import { AgentsArtifactPane } from "./AgentsArtifactPane";
 import { agentWorkspaceKeys } from "./agentWorkspaceQueries";
@@ -1539,6 +1540,47 @@ describe("AgentsArtifactPane", () => {
     expect(toastMessageMock).not.toHaveBeenCalled();
     expect(toastInfoMock).not.toHaveBeenCalled();
     expect(toastSuccessMock).not.toHaveBeenCalled();
+  });
+
+  it("hydrates the shared Review context and invalidates the review child transcript after starting", async () => {
+    const queryClient = createTestQueryClient();
+    const initialContext = workspaceReviewContext({
+      target: workspaceReviewTarget,
+      shouldShowTab: true,
+    });
+    const startedContext = workspaceReviewContext({
+      target: workspaceReviewTarget,
+      status: "reviewing",
+      reviewGateStatus: "reviewing",
+      reviewConversationId: "review-conversation-1",
+      shouldShowTab: true,
+    });
+    getWorkspaceReviewContextMock
+      .mockResolvedValueOnce(initialContext)
+      .mockResolvedValue(startedContext);
+    startWorkspaceReviewMock.mockResolvedValue(startedContext);
+    const invalidateQueriesSpy = vi.spyOn(queryClient, "invalidateQueries");
+
+    renderPane(
+      "review",
+      workspace({ mode: "edit" }),
+      vi.fn(),
+      false,
+      conversation(),
+      {},
+      queryClient,
+    );
+
+    expect(await screen.findByText("Review not run")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Run review" }));
+
+    await waitFor(() =>
+      expect(queryClient.getQueryData(agentWorkspaceKeys.workspaceReview("conversation-1")))
+        .toEqual(startedContext),
+    );
+    expect(invalidateQueriesSpy).toHaveBeenCalledWith({
+      queryKey: chatKeys.conversationTimeline("review-conversation-1"),
+    });
   });
 
   it("runs a forced update for an outdated Review artifact", async () => {
