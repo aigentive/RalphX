@@ -3749,11 +3749,9 @@ pub async fn list_agent_conversations(
             .map_err(|e| e.to_string())?
     };
 
-    agent_conversation_responses_for_state(
-        state.inner(),
-        filter_top_level_agent_conversations(conversations),
-    )
-    .await
+    let conversations =
+        filter_agent_list_visible_conversations(state.inner(), conversations).await?;
+    agent_conversation_responses_for_state(state.inner(), conversations).await
 }
 
 /// List a page of conversations for a context with optional title search.
@@ -3779,7 +3777,8 @@ pub async fn list_agent_conversations_page(
         .get_by_context_filtered(context_type_enum, &context_id, include_archived)
         .await
         .map_err(|e| e.to_string())?;
-    conversations = filter_top_level_agent_conversations(conversations)
+    conversations = filter_agent_list_visible_conversations(state.inner(), conversations)
+        .await?
         .into_iter()
         .filter(|conversation| {
             if archived_only && !conversation.is_archived() {
@@ -3807,13 +3806,24 @@ pub async fn list_agent_conversations_page(
     })
 }
 
-fn filter_top_level_agent_conversations(
+async fn filter_agent_list_visible_conversations(
+    state: &AppState,
     conversations: Vec<ChatConversation>,
-) -> Vec<ChatConversation> {
-    conversations
-        .into_iter()
-        .filter(|conversation| conversation.parent_conversation_id.is_none())
-        .collect()
+) -> Result<Vec<ChatConversation>, String> {
+    let mut visible = Vec::with_capacity(conversations.len());
+    for conversation in conversations {
+        if conversation.parent_conversation_id.is_none()
+            || state
+                .agent_conversation_workspace_repo
+                .get_by_conversation_id(&conversation.id)
+                .await
+                .map_err(|e| e.to_string())?
+                .is_some()
+        {
+            visible.push(conversation);
+        }
+    }
+    Ok(visible)
 }
 
 fn conversation_matches_agent_list_search(
@@ -9100,9 +9110,8 @@ mod tests {
         ChatConversationId, ChatMessage, ChatMessageId, ChatTimelineItem, ChatTimelineItemId,
         ChatTimelineItemKind, ChatTimelineItemStatus, ExecutionPlan, ExecutionPlanId,
         ExecutionPlanStatus, IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow,
-        IdeationSessionId, InternalStatus, MessageRole, PlanBranch, PlanBranchId,
-        PlanBranchStatus, Project, ProjectId, SessionPurpose, Task,
-        DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+        IdeationSessionId, InternalStatus, MessageRole, PlanBranch, PlanBranchId, PlanBranchStatus,
+        Project, ProjectId, SessionPurpose, Task, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
     };
     use crate::domain::execution::ExecutionSettings;
     use crate::domain::repositories::AgentConversationWorkspaceRepository;
@@ -14433,6 +14442,75 @@ mod tests {
             .expect("conversation should be restored");
         assert!(restored.archived_at.is_none());
         assert_eq!(restored.logical_effort.as_deref(), Some("high"));
+    }
+
+    #[tokio::test]
+    async fn list_page_includes_child_conversations_with_owned_workspaces() {
+        let state = AppState::new_test();
+        let project_id = ProjectId::from_string("project-command-child-workspace".to_string());
+        let mut parent = ChatConversation::new_project(project_id.clone());
+        parent.set_title("Merged parent workspace");
+        let parent = state
+            .chat_conversation_repo
+            .create(parent)
+            .await
+            .expect("parent conversation should be created");
+
+        let mut embedded_child = ChatConversation::new_project(project_id.clone());
+        embedded_child.parent_conversation_id = Some(parent.id.as_str().to_string());
+        embedded_child.set_title("Embedded review child");
+        let embedded_child = state
+            .chat_conversation_repo
+            .create(embedded_child)
+            .await
+            .expect("embedded child should be created");
+
+        let mut workspace_child = ChatConversation::new_project(project_id.clone());
+        workspace_child.parent_conversation_id = Some(parent.id.as_str().to_string());
+        workspace_child.set_title("Continued child workspace");
+        let workspace_child = state
+            .chat_conversation_repo
+            .create(workspace_child)
+            .await
+            .expect("workspace child should be created");
+        let workspace = workspace_for_runtime_test(&workspace_child.id, &project_id);
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace should be created");
+
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        let page = list_agent_conversations_page(
+            ChatContextType::Project.to_string(),
+            project_id.as_str().to_string(),
+            Some(false),
+            Some(false),
+            Some(0),
+            Some(10),
+            None,
+            app.state(),
+        )
+        .await
+        .expect("conversation page should load");
+
+        let conversation_ids = page
+            .conversations
+            .iter()
+            .map(|conversation| conversation.id.clone())
+            .collect::<Vec<_>>();
+        assert!(
+            conversation_ids.contains(&workspace_child.id.as_str()),
+            "child conversations with their own workspace should be listed"
+        );
+        assert!(
+            !conversation_ids.contains(&embedded_child.id.as_str()),
+            "embedded child conversations without workspaces should stay hidden"
+        );
     }
 
     fn mode_lock_test_workspace(

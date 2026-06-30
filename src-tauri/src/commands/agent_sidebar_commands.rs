@@ -246,7 +246,8 @@ pub async fn list_agent_sidebar_conversations_for_app_state(
             .map_err(|e| e.to_string())?;
 
         for conversation in conversations {
-            if conversation.parent_conversation_id.is_some() {
+            let workspace = workspace_by_conversation_id.remove(&conversation.id);
+            if conversation.parent_conversation_id.is_some() && workspace.is_none() {
                 continue;
             }
             if archived_only && !conversation.is_archived() {
@@ -256,7 +257,6 @@ pub async fn list_agent_sidebar_conversations_for_app_state(
                 continue;
             }
 
-            let workspace = workspace_by_conversation_id.remove(&conversation.id);
             let latest_run_status = state
                 .agent_run_repo
                 .get_latest_for_conversation(&conversation.id)
@@ -918,17 +918,60 @@ mod tests {
             .await
             .expect("child conversation should be created");
 
-        let response = list_agent_sidebar_conversations_for_app_state(
-            sidebar_input(&project.id),
-            &state,
-        )
-        .await
-        .expect("sidebar conversations should load");
+        let response =
+            list_agent_sidebar_conversations_for_app_state(sidebar_input(&project.id), &state)
+                .await
+                .expect("sidebar conversations should load");
 
         let rows = &response.groups[0].rows;
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].conversation.id, parent.id.as_str());
         assert_eq!(rows[0].conversation.title.as_deref(), Some("Parent work"));
+    }
+
+    #[tokio::test]
+    async fn sidebar_includes_child_conversations_with_owned_workspaces() {
+        let state = AppState::new_test();
+        let project = create_project(&state, "alpha").await;
+        let now = Utc::now();
+        let parent = create_conversation(&state, &project.id, "Parent work", now).await;
+        create_workspace(
+            &state,
+            &parent,
+            &project.id,
+            Some(525),
+            Some("merged"),
+            Some("published"),
+        )
+        .await;
+
+        let mut child = ChatConversation::new_project(project.id.clone());
+        child.title = Some("Investigate follow-up".to_string());
+        child.parent_conversation_id = Some(parent.id.as_str().to_string());
+        child.created_at = now + chrono::Duration::minutes(1);
+        child.updated_at = child.created_at;
+        let child = state
+            .chat_conversation_repo
+            .create(child)
+            .await
+            .expect("child conversation should be created");
+        create_workspace(&state, &child, &project.id, None, None, None).await;
+
+        let response =
+            list_agent_sidebar_conversations_for_app_state(sidebar_input(&project.id), &state)
+                .await
+                .expect("sidebar conversations should load");
+
+        let conversation_ids = response
+            .groups
+            .iter()
+            .flat_map(|group| group.rows.iter())
+            .map(|row| row.conversation.id.clone())
+            .collect::<Vec<_>>();
+        assert!(
+            conversation_ids.contains(&child.id.as_str()),
+            "child conversations with their own workspace should be listed"
+        );
     }
 
     #[tokio::test]
