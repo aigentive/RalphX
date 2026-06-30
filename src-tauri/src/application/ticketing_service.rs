@@ -6,9 +6,9 @@ use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, Runtime};
 
 use crate::application::{
-    AtlassianIntegrationService, AtlassianJiraComment, AtlassianJiraTransition,
-    ClickUpComment, ClickUpIntegrationService, ClickUpStatus, ClickUpUser, LinearComment,
-    LinearIntegrationService, LinearUser, LinearWorkflowState,
+    AtlassianIntegrationService, AtlassianJiraComment, AtlassianJiraTransition, ClickUpComment,
+    ClickUpIntegrationService, ClickUpStatus, ClickUpUser, LinearComment, LinearIntegrationService,
+    LinearUser, LinearWorkflowState,
 };
 use crate::domain::integrations::{
     ExternalIssueLink, ExternalIssueSyncRecordUpsert, ExternalIssueSyncStatus,
@@ -235,7 +235,8 @@ impl TicketingService {
         request: TicketTransitionRequest,
     ) -> Result<TicketingMutationResult, String> {
         let identity = normalize_ticket_identity(&request.ticket)?;
-        let target_state_id = required_trimmed(&request.to_state_id, "Target state id is required")?;
+        let target_state_id =
+            required_trimmed(&request.to_state_id, "Target state id is required")?;
         let client_operation_id = client_operation_id_or_derive(
             request.client_operation_id.as_deref(),
             &identity,
@@ -269,14 +270,17 @@ impl TicketingService {
                 return Err(error);
             }
         };
-        let transition =
-            match find_transition(&transitions, target_state_id, request.provider_transition_id.as_deref()) {
-                Ok(transition) => transition,
-                Err(error) => {
-                    self.fail_operation(&mut begun, error.clone()).await?;
-                    return Err(error);
-                }
-            };
+        let transition = match find_transition(
+            &transitions,
+            target_state_id,
+            request.provider_transition_id.as_deref(),
+        ) {
+            Ok(transition) => transition,
+            Err(error) => {
+                self.fail_operation(&mut begun, error.clone()).await?;
+                return Err(error);
+            }
+        };
 
         let provider_result = match identity.provider.as_str() {
             PROVIDER_JIRA => {
@@ -353,26 +357,23 @@ impl TicketingService {
         }
 
         let assignee = match identity.provider.as_str() {
-            PROVIDER_JIRA => {
-                self.atlassian
-                    .assign_jira_issue_to_current_user(&identity.external_id)
-                    .await
-                    .map(|_| None)
-            }
-            PROVIDER_LINEAR => {
-                self.linear
-                    .assign_issue_to_current_user(&identity.external_id)
-                    .await
-                    .map(linear_user_to_ticketing_person)
-                    .map(Some)
-            }
-            PROVIDER_CLICKUP => {
-                self.clickup
-                    .assign_task_to_current_user(&identity.external_id)
-                    .await
-                    .map(clickup_user_to_ticketing_person)
-                    .map(Some)
-            }
+            PROVIDER_JIRA => self
+                .atlassian
+                .assign_jira_issue_to_current_user(&identity.external_id)
+                .await
+                .map(|_| None),
+            PROVIDER_LINEAR => self
+                .linear
+                .assign_issue_to_current_user(&identity.external_id)
+                .await
+                .map(linear_user_to_ticketing_person)
+                .map(Some),
+            PROVIDER_CLICKUP => self
+                .clickup
+                .assign_task_to_current_user(&identity.external_id)
+                .await
+                .map(clickup_user_to_ticketing_person)
+                .map(Some),
             _ => unreachable!("ticket provider validated above"),
         };
         let assignee = match assignee {
@@ -383,8 +384,12 @@ impl TicketingService {
             }
         };
 
-        self.succeed_operation(&mut begun, None, json!({ "assignee": "current_user" }).to_string())
-            .await?;
+        self.succeed_operation(
+            &mut begun,
+            None,
+            json!({ "assignee": "current_user" }).to_string(),
+        )
+        .await?;
         Ok(self.result_for(request.ticket, begun, None, assignee, None, None))
     }
 
@@ -420,12 +425,21 @@ impl TicketingService {
         }
 
         let provider_result = match identity.provider.as_str() {
-            PROVIDER_JIRA => self
-                .atlassian
-                .clear_jira_issue_assignee(&identity.external_id)
-                .await,
-            PROVIDER_LINEAR => self.linear.clear_issue_assignee(&identity.external_id).await,
-            PROVIDER_CLICKUP => self.clickup.clear_task_assignee(&identity.external_id).await,
+            PROVIDER_JIRA => {
+                self.atlassian
+                    .clear_jira_issue_assignee(&identity.external_id)
+                    .await
+            }
+            PROVIDER_LINEAR => {
+                self.linear
+                    .clear_issue_assignee(&identity.external_id)
+                    .await
+            }
+            PROVIDER_CLICKUP => {
+                self.clickup
+                    .clear_task_assignee(&identity.external_id)
+                    .await
+            }
             _ => unreachable!("ticket provider validated above"),
         };
         if let Err(error) = provider_result {
@@ -595,8 +609,9 @@ impl TicketingService {
                     return Err("Jira integration is not enabled".to_string());
                 }
                 if !settings.jira_available {
-                    return Err("Jira ticket write-back is not available for this connection"
-                        .to_string());
+                    return Err(
+                        "Jira ticket write-back is not available for this connection".to_string(),
+                    );
                 }
             }
             PROVIDER_LINEAR => {
@@ -608,8 +623,9 @@ impl TicketingService {
                     return Err("Linear integration is not enabled".to_string());
                 }
                 if !settings.issue_search_available {
-                    return Err("Linear ticket write-back is not available for this connection"
-                        .to_string());
+                    return Err(
+                        "Linear ticket write-back is not available for this connection".to_string(),
+                    );
                 }
             }
             PROVIDER_CLICKUP => {
@@ -621,8 +637,10 @@ impl TicketingService {
                     return Err("ClickUp integration is not enabled".to_string());
                 }
                 if !settings.task_search_available {
-                    return Err("ClickUp ticket write-back is not available for this connection"
-                        .to_string());
+                    return Err(
+                        "ClickUp ticket write-back is not available for this connection"
+                            .to_string(),
+                    );
                 }
             }
             _ => return Err(format!("Unknown ticketing provider: {provider}")),
@@ -644,6 +662,12 @@ impl TicketingService {
             .await
             .map_err(|error| error.to_string())?
         {
+            if !ticket_operation_matches_request(&existing, identity, operation) {
+                return Err(format!(
+                    "Client operation id {} was already used for a different ticketing operation",
+                    client_operation_id
+                ));
+            }
             if existing.status == ProviderTicketOperationStatus::Succeeded {
                 return Ok(BegunOperation {
                     operation: existing,
@@ -680,7 +704,10 @@ impl TicketingService {
         })
     }
 
-    async fn find_link(&self, identity: &TicketIdentity) -> Result<Option<ExternalIssueLink>, String> {
+    async fn find_link(
+        &self,
+        identity: &TicketIdentity,
+    ) -> Result<Option<ExternalIssueLink>, String> {
         let link_provider = match identity.provider.as_str() {
             PROVIDER_JIRA => LINK_PROVIDER_JIRA,
             PROVIDER_CLICKUP => LINK_PROVIDER_CLICKUP,
@@ -752,7 +779,12 @@ impl TicketingService {
             )
             .await
             .map_err(|error| error.to_string())?
-            .unwrap_or_else(|| begun.operation.clone());
+            .ok_or_else(|| {
+                format!(
+                    "Ticketing operation {} no longer exists; refusing to emit stale operation result",
+                    begun.operation.id
+                )
+            })?;
         if let Some(link) = begun.link.as_ref() {
             if let Err(error) = self
                 .external_issues
@@ -861,6 +893,19 @@ fn normalize_ticket_identity(ticket: &TicketingTicketIdentity) -> Result<TicketI
             .filter(|value| !value.is_empty())
             .map(str::to_string),
     })
+}
+
+fn ticket_operation_matches_request(
+    operation: &ProviderTicketOperation,
+    identity: &TicketIdentity,
+    requested_operation: ProviderTicketOperationKind,
+) -> bool {
+    operation.provider == identity.provider
+        && operation.external_kind == identity.external_kind
+        && operation.external_id == identity.external_id
+        && operation.external_key == identity.external_key
+        && operation.local_project_id == identity.local_project_id
+        && operation.operation == requested_operation
 }
 
 fn required_trimmed<'a>(value: &'a str, message: &str) -> Result<&'a str, String> {

@@ -439,6 +439,7 @@ async fn external_branch_loads_via_live_lookup_with_live_comments() {
         is_draft: false,
         head_ref_name: "external/feature".to_string(),
         updated_at: None,
+        author_login: None,
     })));
     harness.github.will_return_pr_detail(pr_detail(99, "external/feature"));
     harness.github.state().fetch_pr_health_result =

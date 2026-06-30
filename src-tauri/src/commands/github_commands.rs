@@ -579,7 +579,7 @@ fn branch_match_pr_summary(pr_match: PrBranchMatch) -> BranchPrSummary {
         status: Some(publication_status_label(&pr_match.status, pr_match.is_draft).to_string()),
         is_draft: pr_match.is_draft,
         updated_at: pr_match.updated_at,
-        author_login: None,
+        author_login: pr_match.author_login,
         assignee_logins: Vec::new(),
         review_decision: None,
         latest_review_author_logins: Vec::new(),
