@@ -45,6 +45,8 @@ pub(crate) enum AutoReviewDecision {
     Skipped(AutoReviewSkipReason),
 }
 
+pub(crate) type WorkspaceChangedEmitter = Box<dyn Fn(&ChatConversationId) + Send + 'static>;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AutoReviewStartAction {
     Start,
@@ -305,6 +307,7 @@ pub(crate) fn spawn_auto_review_after_workspace_change(
     execution_state: Arc<ExecutionState>,
     workspace: AgentConversationWorkspace,
     trigger: AutoReviewTrigger,
+    workspace_changed_emitter: Option<WorkspaceChangedEmitter>,
 ) -> bool {
     let conversation_id = workspace.conversation_id.clone();
     let Some(_guard) = begin_auto_review(&conversation_id) else {
@@ -325,6 +328,9 @@ pub(crate) fn spawn_auto_review_after_workspace_change(
         .await
         {
             Ok(AutoReviewDecision::Started) => {
+                if let Some(emit_workspace_changed) = workspace_changed_emitter.as_ref() {
+                    emit_workspace_changed(&conversation_id);
+                }
                 tracing::debug!(
                     trigger = trigger.as_str(),
                     conversation_id = conversation_id.as_str(),
