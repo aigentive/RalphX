@@ -2907,6 +2907,107 @@ fn clickup_container_scope_parses_workspace_space_folder_and_list() {
 }
 
 #[test]
+fn status_catalog_scope_helpers_cover_provider_edges() {
+    let jira_scope = column_status_catalog_scope(PROVIDER_JIRA, Some("RX"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(jira_scope.provider, PROVIDER_JIRA);
+    assert_eq!(jira_scope.scope_kind, "jira_project");
+    assert_eq!(jira_scope.scope_id, "RX");
+    assert!(column_status_catalog_scope(PROVIDER_JIRA, None)
+        .unwrap()
+        .is_none());
+
+    let linear_global = column_status_catalog_scope(PROVIDER_LINEAR, None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(linear_global.scope_kind, "linear_global");
+    assert_eq!(linear_global.scope_id, "all");
+    let linear_team = column_status_catalog_scope(PROVIDER_LINEAR, Some("team:team-1"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(linear_team.scope_kind, "linear_team");
+    assert_eq!(linear_team.scope_id, "team-1");
+
+    assert!(column_status_catalog_scope(PROVIDER_CLICKUP, None)
+        .unwrap()
+        .is_none());
+    assert!(column_status_catalog_scope("github", None)
+        .unwrap_err()
+        .contains("Unsupported ticketing provider"));
+
+    assert!(normalize_status_catalog_scope(
+        PROVIDER_LINEAR.to_string(),
+        "linear_team".to_string(),
+        " ".to_string(),
+    )
+    .unwrap_err()
+    .contains("Status scope id is required"));
+    assert!(normalize_status_catalog_scope(
+        PROVIDER_JIRA.to_string(),
+        "linear_team".to_string(),
+        "RX".to_string(),
+    )
+    .unwrap_err()
+    .contains("Unsupported status scope"));
+    assert!(clickup_status_scope_id("clickup_unknown", "space-1")
+        .unwrap_err()
+        .contains("Unsupported ClickUp status scope"));
+}
+
+#[tokio::test]
+async fn status_catalog_observed_helpers_reject_unknown_scopes() {
+    let state = AppState::new_test();
+    let unsupported_provider = observed_statuses_for_scope(
+        &state,
+        &TicketingStatusCatalogScope {
+            provider: "github".to_string(),
+            scope_kind: "github_project".to_string(),
+            scope_id: "repo".to_string(),
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(unsupported_provider.contains("Unsupported ticketing provider"));
+
+    let unsupported_clickup_scope = clickup_statuses_for_catalog_scope(
+        &state,
+        &TicketingStatusCatalogScope {
+            provider: PROVIDER_CLICKUP.to_string(),
+            scope_kind: "clickup_workspace".to_string(),
+            scope_id: "workspace-1".to_string(),
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(unsupported_clickup_scope.contains("Unsupported ClickUp status scope"));
+}
+
+#[test]
+fn status_presentation_patch_validates_required_status_and_absent_color_patch() {
+    let missing_status = status_presentation_patch(TicketingStatusPresentationPatchInput {
+        provider_status_id: " ".to_string(),
+        display_order: None,
+        color_override: None,
+        is_visible: None,
+    })
+    .unwrap_err();
+    assert!(missing_status.contains("Provider status id is required"));
+
+    let patch = status_presentation_patch(TicketingStatusPresentationPatchInput {
+        provider_status_id: "state-1".to_string(),
+        display_order: Some(4),
+        color_override: None,
+        is_visible: Some(true),
+    })
+    .unwrap();
+    assert_eq!(patch.provider_status_id, "state-1");
+    assert_eq!(patch.display_order, Some(4));
+    assert!(patch.color_override.is_none());
+    assert_eq!(patch.is_visible, Some(true));
+}
+
+#[test]
 fn clickup_current_user_assignee_filter_maps_to_provider_assignee_id() {
     let filter = TicketFiltersInput {
         text: None,
