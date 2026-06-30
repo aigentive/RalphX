@@ -49,6 +49,8 @@ export const ProjectReviewSettingsSchema = z.object({
   require_fix_approval: z.boolean().default(false),
   /** Require human review even after AI approval */
   require_human_review: z.boolean().default(false),
+  /** Require workspace Review before publishing agent workspace branches */
+  require_workspace_review: z.boolean().default(true),
   /** Maximum fix attempts before moving to backlog */
   max_fix_attempts: z.number().int().min(1).max(10).default(3),
 });
@@ -60,6 +62,7 @@ export const DEFAULT_PROJECT_REVIEW_SETTINGS: ProjectReviewSettings = {
   ai_review_auto_fix: true,
   require_fix_approval: false,
   require_human_review: false,
+  require_workspace_review: true,
   max_fix_attempts: 3,
 };
 

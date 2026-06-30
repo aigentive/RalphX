@@ -25,6 +25,7 @@ use crate::domain::entities::{
     AgentWorkspaceReviewOutcome, ArtifactId, ChatContextType, ChatConversation, ChatConversationId,
     IdeationAnalysisBaseRefKind, Project,
 };
+use crate::domain::review::ReviewSettings;
 use crate::domain::services::running_agent_registry::RunningAgentKey;
 use crate::infrastructure::tool_paths::resolve_git_cli_path;
 
@@ -416,6 +417,34 @@ async fn auto_review_skips_when_no_reviewable_changes_exist() {
     assert_eq!(
         decision,
         AutoReviewDecision::Skipped(AutoReviewSkipReason::NoReviewableChanges)
+    );
+}
+
+#[tokio::test]
+async fn auto_review_skips_required_gate_when_workspace_review_not_required() {
+    let (_temp, repo, base_sha) = init_repo();
+    commit_workspace_delta(&repo);
+    let state = AppState::new_test();
+    let execution_state = ExecutionState::new();
+    let project = seed_project(&state, &repo).await;
+    let workspace = workspace(&project, &repo, Some(base_sha));
+    seed_workspace_conversation(&state, &workspace).await;
+    state
+        .review_settings_repo
+        .update_settings(&ReviewSettings {
+            require_workspace_review: false,
+            ..ReviewSettings::default()
+        })
+        .await
+        .expect("review settings should update");
+
+    let decision = maybe_start_auto_review(&state, &execution_state, &workspace)
+        .await
+        .expect("decision should load");
+
+    assert_eq!(
+        decision,
+        AutoReviewDecision::Skipped(AutoReviewSkipReason::GateNotRequired)
     );
 }
 

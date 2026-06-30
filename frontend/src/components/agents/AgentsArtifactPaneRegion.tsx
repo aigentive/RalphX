@@ -60,6 +60,7 @@ interface AgentsArtifactPaneRegionProps {
   publishFocusRequest: AgentPublishFocusRequest | null;
   taskFocusRequest: AgentTaskArtifactFocusRequest | null;
   onFocusVerificationSession: (parentSessionId: string, childSessionId: string) => void;
+  onFocusWorkspaceReview: (conversationId: string) => void;
   onTaskArtifactSelectionChange: (taskId: string | null) => void;
   onClose: () => void;
   terminalArchivedReason: string | null;
@@ -86,6 +87,7 @@ export function AgentsArtifactPaneRegion({
   publishFocusRequest,
   taskFocusRequest,
   onFocusVerificationSession,
+  onFocusWorkspaceReview,
   onTaskArtifactSelectionChange,
   onClose,
   terminalArchivedReason,
@@ -149,6 +151,7 @@ export function AgentsArtifactPaneRegion({
                     publishFocusRequest={publishFocusRequest}
                     taskFocusRequest={taskFocusRequest}
                     onFocusVerificationSession={onFocusVerificationSession}
+                    onFocusWorkspaceReview={onFocusWorkspaceReview}
                     onTaskArtifactSelectionChange={onTaskArtifactSelectionChange}
                     onClose={onClose}
                   />

@@ -542,11 +542,7 @@ impl ResolvedChatHarnessCli {
                             session_id,
                             request.project_id,
                             request.filesystem_read_roots,
-                            if request.context_type == ChatContextType::Project {
-                                Some(request.conversation.id.as_str())
-                            } else {
-                                None
-                            },
+                            project_mcp_parent_conversation_id(request.conversation),
                             request.runtime_team_mode,
                             request.artifact_repo,
                             request.ideation_session_repo,
@@ -2013,6 +2009,17 @@ fn build_mcp_runtime_context(
     }
 }
 
+fn project_mcp_parent_conversation_id(conversation: &ChatConversation) -> Option<String> {
+    if conversation.context_type != ChatContextType::Project {
+        return None;
+    }
+
+    conversation
+        .parent_conversation_id
+        .clone()
+        .or_else(|| Some(conversation.id.as_str()))
+}
+
 /// Create a spawnable Claude CLI command.
 ///
 /// `entity_status` is optional and enables dynamic agent resolution based on state.
@@ -2186,11 +2193,7 @@ async fn build_command_from_resolved_settings(
         project_id,
         filesystem_read_roots,
         None,
-        if conversation.context_type == ChatContextType::Project {
-            Some(conversation.id.as_str())
-        } else {
-            None
-        },
+        project_mcp_parent_conversation_id(conversation),
     );
     let mut spawnable = build_claude_spawnable_command(
         cli_path,
@@ -2427,11 +2430,7 @@ pub async fn build_codex_command(
         project_id,
         filesystem_read_roots,
         None,
-        if conversation.context_type == ChatContextType::Project {
-            Some(conversation.id.as_str())
-        } else {
-            None
-        },
+        project_mcp_parent_conversation_id(conversation),
     );
     let config_overrides = build_codex_mcp_overrides_for_profile(
         plugin_dir,
@@ -2770,11 +2769,7 @@ pub async fn build_interactive_command(
         project_id,
         filesystem_read_roots,
         None,
-        if conversation.context_type == ChatContextType::Project {
-            Some(conversation.id.as_str())
-        } else {
-            None
-        },
+        project_mcp_parent_conversation_id(conversation),
     );
     log_claude_launch_plan_phase(
         conversation,
@@ -4344,6 +4339,88 @@ exit 0
                 prompt.contains("<user_message>review this PR</user_message>"),
                 "{} launch prompt should include the user message",
                 harness
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn project_child_launch_plans_scope_mcp_workspace_tools_to_parent_conversation() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let plugin_dir = repo_plugin_dir();
+        let project_id = ProjectId::new();
+        let parent_conversation_id = ChatConversationId::new().as_str();
+        let agent_name = agent_names::AGENT_WORKSPACE_REVIEWER;
+        let harness_clis = [
+            (AgentHarnessKind::Claude, make_fake_claude_cli(&temp)),
+            (AgentHarnessKind::Codex, make_fake_codex_cli(&temp)),
+        ];
+
+        for (harness, cli_path) in harness_clis {
+            let mut conversation = ChatConversation::new_project(project_id.clone());
+            let child_conversation_id = conversation.id.as_str();
+            conversation.parent_conversation_id = Some(parent_conversation_id.clone());
+            let resolved_spawn_settings =
+                crate::application::agent_lane_resolution::resolve_agent_spawn_settings(
+                    agent_name,
+                    Some(project_id.as_str()),
+                    ChatContextType::Project,
+                    None,
+                    Some(harness),
+                    None,
+                    None,
+                )
+                .await;
+
+            let launch_plan = build_launch_plan_for_harness(
+                harness,
+                &cli_path,
+                &plugin_dir,
+                &conversation,
+                "review workspace changes",
+                Some(agent_name),
+                None,
+                ChatContextType::Project,
+                project_id.as_str(),
+                temp.path(),
+                None,
+                Some(project_id.as_str()),
+                &[],
+                false,
+                Arc::new(MemoryChatAttachmentRepository::new()),
+                Arc::new(MemoryArtifactRepository::new()),
+                Arc::new(MemoryIdeationSessionRepository::new()),
+                Arc::new(MemoryDelegatedSessionRepository::new()),
+                Arc::new(MemoryTaskRepository::new()),
+                &[],
+                0,
+                false,
+                None,
+                &resolved_spawn_settings,
+                None,
+                None,
+            )
+            .await
+            .expect("workspace review child launch plan should build");
+
+            let spawnable = launch_spawnable(&launch_plan);
+            let mcp_args = match harness {
+                AgentHarnessKind::Claude => claude_mcp_config_args(spawnable).join("\n"),
+                AgentHarnessKind::Codex => spawnable
+                    .get_args_for_test()
+                    .into_iter()
+                    .filter(|arg| arg.starts_with("mcp_servers."))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            };
+
+            assert!(
+                mcp_args.contains("--parent-conversation-id")
+                    && mcp_args.contains(&parent_conversation_id),
+                "{harness} child project launch should scope MCP workspace tools to parent conversation: {mcp_args}"
+            );
+            assert!(
+                !mcp_args.contains(&child_conversation_id),
+                "{harness} child project launch must not scope workspace MCP tools to child conversation: {mcp_args}"
             );
         }
     }

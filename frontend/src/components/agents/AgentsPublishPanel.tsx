@@ -62,6 +62,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useConfirmation } from "@/hooks/useConfirmation";
+import { useReviewSettings } from "@/hooks/useReviewSettings";
 import { useDeferredAgentHydration } from "./useDeferredAgentHydration";
 import { EmptyArtifactState } from "./AgentsArtifactEmptyState";
 import { PublishEventLog } from "./AgentsPublishEventLog";
@@ -227,6 +228,7 @@ export function AgentPublishPanel({
   const autoRefreshFromBaseKeysRef = useRef<Set<string>>(new Set());
   const [selectedRebaseBaseKey, setSelectedRebaseBaseKey] = useState("");
   const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
+  const reviewSettingsQuery = useReviewSettings();
   const conversationId = workspace?.conversationId ?? null;
   const currentLocalPublishState =
     localPublishState?.conversationId === conversationId ? localPublishState : null;
@@ -606,13 +608,19 @@ export function AgentPublishPanel({
   const prSupervisionStatus = workspace.prSupervisionStatus ?? null;
   const prConflictSummary = getAgentWorkspacePrConflictSummary(workspace);
   const hasPrConflict = prConflictSummary !== null;
+  const workspaceReviewRequired =
+    reviewSettingsQuery.data?.require_workspace_review ?? true;
   const reviewGateStatus = reviewContext?.monitor.reviewGateStatus ?? null;
   const reviewBlocksPublish =
-    reviewGateStatus === "required" ||
-    reviewGateStatus === "reviewing" ||
-    reviewGateStatus === "blocking" ||
-    reviewGateStatus === "failed";
+    workspaceReviewRequired &&
+    (reviewGateStatus === "required" ||
+      reviewGateStatus === "reviewing" ||
+      reviewGateStatus === "blocking" ||
+      reviewGateStatus === "failed");
   const reviewGateSummary = (() => {
+    if (!workspaceReviewRequired) {
+      return null;
+    }
     if (reviewGateStatus === "reviewing") {
       return "Workspace Review is running. Open the Review tab to inspect it before publishing.";
     }
@@ -664,10 +672,10 @@ export function AgentPublishPanel({
   const publishButtonLabel = (() => {
     if (terminalPublicationLabel) return terminalPublicationLabel;
     if (isManagedByTaskPipeline) return "Managed by Tasks";
-    if (reviewGateStatus === "reviewing") return "Reviewing";
-    if (reviewGateStatus === "required") return "Review required";
-    if (reviewGateStatus === "blocking") return "Review blocking";
-    if (reviewGateStatus === "failed") return "Review failed";
+    if (reviewBlocksPublish && reviewGateStatus === "reviewing") return "Reviewing";
+    if (reviewBlocksPublish && reviewGateStatus === "required") return "Review required";
+    if (reviewBlocksPublish && reviewGateStatus === "blocking") return "Review blocking";
+    if (reviewBlocksPublish && reviewGateStatus === "failed") return "Review failed";
     if (isPublishCurrent) return "PR is up to date";
     return "Commit & Publish";
   })();

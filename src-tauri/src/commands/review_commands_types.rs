@@ -376,6 +376,7 @@ pub struct MarkIssueAddressedInput {
 #[derive(Debug, Serialize)]
 pub struct ReviewSettingsResponse {
     pub require_human_review: bool,
+    pub require_workspace_review: bool,
     pub max_fix_attempts: u32,
     pub max_revision_cycles: u32,
     /// Stored-only; follow-up decision pending
@@ -395,6 +396,7 @@ pub struct ReviewSettingsResponse {
 #[serde(rename_all = "camelCase")]
 pub struct UpdateReviewSettingsInput {
     pub require_human_review: Option<bool>,
+    pub require_workspace_review: Option<bool>,
     pub max_fix_attempts: Option<u32>,
     pub max_revision_cycles: Option<u32>,
     pub auto_create_followup_agent_conversation: Option<bool>,
@@ -406,6 +408,7 @@ impl From<ReviewSettings> for ReviewSettingsResponse {
     fn from(s: ReviewSettings) -> Self {
         Self {
             require_human_review: s.require_human_review,
+            require_workspace_review: s.require_workspace_review,
             max_fix_attempts: s.max_fix_attempts,
             max_revision_cycles: s.max_revision_cycles,
             ai_review_enabled: s.ai_review_enabled,

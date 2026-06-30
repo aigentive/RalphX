@@ -7,6 +7,10 @@ fn default_auto_create_followup_agent_conversation() -> bool {
     true
 }
 
+fn default_require_workspace_review() -> bool {
+    true
+}
+
 /// Global review settings stored in project settings
 ///
 /// Controls how the review system behaves including:
@@ -34,6 +38,11 @@ pub struct ReviewSettings {
     /// Default: false
     pub require_human_review: bool,
 
+    /// Require workspace Review before publishing agent workspace branches
+    /// Default: true
+    #[serde(default = "default_require_workspace_review")]
+    pub require_workspace_review: bool,
+
     /// Maximum fix attempts before giving up and moving to backlog
     /// Default: 3
     pub max_fix_attempts: u32,
@@ -55,6 +64,7 @@ impl Default for ReviewSettings {
             ai_review_auto_fix: true,
             require_fix_approval: false,
             require_human_review: false,
+            require_workspace_review: true,
             max_fix_attempts: 3,
             max_revision_cycles: 5,
             auto_create_followup_agent_conversation: true,

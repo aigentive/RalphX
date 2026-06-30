@@ -731,9 +731,21 @@ pub async fn check_agent_workspace_publish_readiness(
             .map_err(|error| {
                 json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
             })?;
+    let review_settings = state
+        .app_state
+        .review_settings_repo
+        .get_settings()
+        .await
+        .map_err(|error| {
+            json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
+        })?;
     let review_gate_status = Some(review_context.monitor.review_gate_status.to_string());
-    let blockers =
-        publish_readiness_blockers(&freshness, review_gate_publish_blocker(&review_context));
+    let review_gate_blocker = if review_settings.require_workspace_review {
+        review_gate_publish_blocker(&review_context)
+    } else {
+        None
+    };
+    let blockers = publish_readiness_blockers(&freshness, review_gate_blocker);
     let recommended_actions = publish_readiness_recommended_actions(&freshness);
     Ok(Json(AgentWorkspacePublishReadinessResponse {
         success: true,
@@ -3699,6 +3711,7 @@ mod tests {
         AgentWorkspaceSourcePullRequest, ArtifactId, ChatContextType, ChatConversation,
         IdeationAnalysisBaseRefKind, Project, ProjectId,
     };
+    use crate::domain::review::ReviewSettings;
     use crate::domain::services::github_service::{
         GithubServiceTrait, PrHealth, PrIssueCommentSummary, PrReviewSubmissionEvent, PrStatus,
         PrSyncState,
@@ -4252,6 +4265,98 @@ mod tests {
         assert!(response.blockers.is_empty());
         assert!(!response.needs_base_update);
         assert!(response.recommended_actions.is_empty());
+        assert!(response.freshness.has_uncommitted_changes);
+    }
+
+    #[tokio::test]
+    async fn readiness_handler_ignores_required_review_gate_when_policy_is_disabled() {
+        let repo = tempfile::TempDir::new().expect("repo tempdir");
+        let worktrees = tempfile::TempDir::new().expect("worktree tempdir");
+        git(repo.path(), &["init", "-b", "main"]);
+        git(repo.path(), &["config", "user.email", "test@example.com"]);
+        git(repo.path(), &["config", "user.name", "RalphX Test"]);
+        std::fs::write(repo.path().join("README.md"), "base\n").expect("write base file");
+        git(repo.path(), &["add", "README.md"]);
+        git(repo.path(), &["commit", "-m", "base"]);
+        let base_sha = git(repo.path(), &["rev-parse", "HEAD"]);
+
+        let app_state = Arc::new(AppState::new_test());
+        app_state
+            .review_settings_repo
+            .update_settings(&ReviewSettings {
+                require_workspace_review: false,
+                ..ReviewSettings::default()
+            })
+            .await
+            .expect("review settings should update");
+        let conversation_id = ChatConversationId::new();
+        let mut project = Project::new(
+            "Readiness Workspace Disabled Review".to_string(),
+            repo.path().to_string_lossy().to_string(),
+        );
+        project.base_branch = Some("main".to_string());
+        project.worktree_parent_directory = Some(worktrees.path().to_string_lossy().to_string());
+        app_state
+            .project_repo
+            .create(project.clone())
+            .await
+            .expect("seed project");
+
+        let mut conversation = ChatConversation::new_project(project.id.clone());
+        conversation.id = conversation_id.clone();
+        conversation.context_type = ChatContextType::Project;
+        conversation.context_id = project.id.as_str().to_string();
+        app_state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .expect("seed conversation");
+
+        let workspace_path = resolve_agent_conversation_workspace_path(&project, &conversation_id)
+            .expect("workspace path");
+        let branch_name = "ralphx/test/readiness-policy-disabled";
+        git(
+            repo.path(),
+            &[
+                "worktree",
+                "add",
+                "-b",
+                branch_name,
+                workspace_path.to_str().unwrap(),
+                "main",
+            ],
+        );
+        std::fs::write(workspace_path.join("implementation.txt"), "uncommitted\n")
+            .expect("write workspace change");
+        let workspace = AgentConversationWorkspace::new(
+            conversation_id.clone(),
+            project.id.clone(),
+            AgentConversationWorkspaceMode::Edit,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main".to_string(),
+            Some("Project default (main)".to_string()),
+            Some(base_sha),
+            branch_name.to_string(),
+            workspace_path.to_string_lossy().to_string(),
+        );
+        app_state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("seed workspace");
+        let state = test_http_state(app_state);
+
+        let Json(response) = check_agent_workspace_publish_readiness(
+            State(state),
+            Path(conversation_id.to_string()),
+        )
+        .await
+        .expect("readiness should load");
+
+        assert!(response.success);
+        assert_eq!(response.review_gate_status.as_deref(), Some("required"));
+        assert!(response.can_publish);
+        assert!(response.blockers.is_empty());
         assert!(response.freshness.has_uncommitted_changes);
     }
 

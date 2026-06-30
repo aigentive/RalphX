@@ -14,6 +14,7 @@ import type {
 import type { AgentArtifactTab } from "@/stores/agentSessionStore";
 import { useUiStore } from "@/stores/uiStore";
 import { createTestQueryClient } from "@/test/store-utils";
+import { reviewSettingsKeys } from "@/hooks/useReviewSettings";
 import { AgentsArtifactPane } from "./AgentsArtifactPane";
 import { agentWorkspaceKeys } from "./agentWorkspaceQueries";
 
@@ -482,6 +483,7 @@ function workspaceReviewContext(overrides: {
     | "failed";
   reviewArtifactId?: string | null;
   reviewArtifactVersion?: number | null;
+  reviewConversationId?: string | null;
   isCurrent?: boolean;
   isOutdated?: boolean;
   shouldShowTab?: boolean;
@@ -501,6 +503,7 @@ function workspaceReviewContext(overrides: {
       status: overrides.status ?? "idle",
       reviewOutcome: overrides.reviewOutcome ?? "none",
       reviewGateStatus: overrides.reviewGateStatus ?? "not_required",
+      reviewConversationId: overrides.reviewConversationId ?? null,
       reviewArtifactId,
       reviewArtifactVersion: overrides.reviewArtifactVersion ?? null,
       lastError: overrides.lastError ?? null,
@@ -1326,6 +1329,127 @@ describe("AgentsArtifactPane", () => {
 
     expect(await screen.findByText("Review not run")).toBeInTheDocument();
     expect(startWorkspaceReviewMock).not.toHaveBeenCalled();
+  });
+
+  it("focuses the workspace Review chat when the user opens the Review tab", async () => {
+    const onFocusWorkspaceReview = vi.fn();
+    getWorkspaceReviewContextMock.mockResolvedValue(
+      workspaceReviewContext({
+        target: workspaceReviewTarget,
+        reviewConversationId: "review-conversation-1",
+        shouldShowTab: true,
+      }),
+    );
+
+    renderControlledPane(
+      "publish",
+      workspace({
+        mode: "edit",
+        publicationPrNumber: 351,
+        publicationPrStatus: "merged",
+        publicationPushStatus: "pushed",
+      }),
+      conversation(),
+      { onFocusWorkspaceReview },
+    );
+
+    fireEvent.click(await screen.findByTestId("agents-artifact-tab-review"));
+
+    expect(await screen.findByText("Review not run")).toBeInTheDocument();
+    expect(onFocusWorkspaceReview).toHaveBeenCalledWith("review-conversation-1");
+  });
+
+  it("does not focus Review chat when the Review tab has no child conversation", async () => {
+    const onFocusWorkspaceReview = vi.fn();
+    getWorkspaceReviewContextMock.mockResolvedValue(
+      workspaceReviewContext({
+        target: workspaceReviewTarget,
+        reviewConversationId: null,
+        shouldShowTab: true,
+      }),
+    );
+
+    renderControlledPane(
+      "publish",
+      workspace({
+        mode: "edit",
+        publicationPrNumber: 351,
+        publicationPrStatus: "merged",
+        publicationPushStatus: "pushed",
+      }),
+      conversation(),
+      { onFocusWorkspaceReview },
+    );
+
+    fireEvent.click(await screen.findByTestId("agents-artifact-tab-review"));
+
+    expect(await screen.findByText("Review not run")).toBeInTheDocument();
+    expect(onFocusWorkspaceReview).not.toHaveBeenCalled();
+  });
+
+  it("opens Review and focuses the Review chat from the publish Review CTA", async () => {
+    const onFocusWorkspaceReview = vi.fn();
+    getWorkspaceReviewContextMock.mockResolvedValue(
+      workspaceReviewContext({
+        target: workspaceReviewTarget,
+        reviewConversationId: "review-conversation-1",
+        reviewGateStatus: "required",
+        shouldShowTab: true,
+      }),
+    );
+
+    renderControlledPane(
+      "publish",
+      workspace({ mode: "edit" }),
+      conversation(),
+      { onFocusWorkspaceReview },
+    );
+
+    fireEvent.click(await screen.findByTestId("agents-publish-review-required"));
+
+    expect(await screen.findByText("Review not run")).toBeInTheDocument();
+    expect(onFocusWorkspaceReview).toHaveBeenCalledWith("review-conversation-1");
+  });
+
+  it("does not block publishing on a required Review gate when policy is disabled", async () => {
+    const queryClient = createTestQueryClient();
+    queryClient.setQueryData(reviewSettingsKeys.all, {
+      require_human_review: false,
+      require_workspace_review: false,
+      max_fix_attempts: 3,
+      max_revision_cycles: 5,
+      ai_review_enabled: true,
+      ai_review_auto_fix: true,
+      require_fix_approval: false,
+      auto_create_followup_agent_conversation: true,
+    });
+    getWorkspaceReviewContextMock.mockResolvedValue(
+      workspaceReviewContext({
+        target: workspaceReviewTarget,
+        reviewConversationId: "review-conversation-1",
+        reviewGateStatus: "required",
+        shouldShowTab: true,
+      }),
+    );
+
+    renderPane(
+      "publish",
+      workspace({ mode: "edit" }),
+      vi.fn(),
+      false,
+      conversation(),
+      {},
+      queryClient,
+    );
+
+    await waitFor(() =>
+      expect(getWorkspaceReviewContextMock).toHaveBeenCalledWith("conversation-1"),
+    );
+    await screen.findByTestId("agents-artifact-tab-review");
+    expect(
+      screen.queryByTestId("agents-publish-review-required"),
+    ).not.toBeInTheDocument();
+    expect(await screen.findByTestId("agents-publish-confirm")).toBeInTheDocument();
   });
 
   it("does not render a Review tab status dot for non-running review states", async () => {

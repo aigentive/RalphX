@@ -37,6 +37,7 @@ interface AgentsConversationSideRegionsProps {
   terminalArchivedReason: string | null;
   terminalUnavailableReason: string | null;
   onFocusVerificationSession: (parentSessionId: string, childSessionId: string) => void;
+  onFocusWorkspaceReview: (conversationId: string) => void;
   onPublishWorkspace: (conversationId: string) => Promise<void>;
   onResizeReset: (event: ReactMouseEvent) => void;
   onResizeStart: (event: ReactMouseEvent) => void;
@@ -66,6 +67,7 @@ export function AgentsConversationSideRegions({
   terminalArchivedReason,
   terminalUnavailableReason,
   onFocusVerificationSession,
+  onFocusWorkspaceReview,
   onPublishWorkspace,
   onResizeReset,
   onResizeStart,
@@ -96,6 +98,7 @@ export function AgentsConversationSideRegions({
           publishFocusRequest={publishFocusRequest}
           taskFocusRequest={taskArtifactFocusRequest}
           onFocusVerificationSession={onFocusVerificationSession}
+          onFocusWorkspaceReview={onFocusWorkspaceReview}
           onTaskArtifactSelectionChange={onTaskArtifactSelectionChange}
           onClose={() => setArtifactPaneVisibility(selectedConversationId, false)}
           terminalArchivedReason={terminalArchivedReason}
