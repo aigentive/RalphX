@@ -15,16 +15,23 @@ use crate::domain::agents::{
     ClientCapabilities, ResponseChunk, DEFAULT_AGENT_HARNESS,
 };
 use crate::domain::entities::{
-    AgentWorkspacePrDescription, ArtifactId, ChatConversationId, IdeationSessionId, PlanBranch,
-    Project,
+    AgentWorkspacePrDescription, ArtifactId, ChatContextType, ChatConversationId,
+    IdeationSessionId, PlanBranch, Project,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentProviderSettingsRepository,
+    ChatConversationRepository,
 };
 use crate::domain::services::{PlanPrDescriptionDrafter, PrReviewState};
 use crate::infrastructure::memory::{
     MemoryAgentConversationWorkspaceRepository, MemoryAgentProviderSettingsRepository,
+    MemoryChatConversationRepository,
 };
+use crate::infrastructure::sqlite::{
+    sqlite_agent_conversation_workspace_repo::SqliteAgentConversationWorkspaceRepository,
+    sqlite_chat_conversation_repo::SqliteChatConversationRepository,
+};
+use crate::testing::SqliteTestDb;
 use async_trait::async_trait;
 use futures::Stream;
 use tokio::sync::Mutex;
@@ -201,6 +208,7 @@ fn project_and_plan_branch(repo_path: &Path) -> (Project, PlanBranch) {
 }
 
 async fn build_drafter(
+    chat_conversation_repo: Arc<dyn ChatConversationRepository>,
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     agent_client: Arc<dyn AgenticClient>,
 ) -> Arc<dyn PlanPrDescriptionDrafter> {
@@ -208,7 +216,12 @@ async fn build_drafter(
         MemoryAgentProviderSettingsRepository::with_all_providers_enabled(DEFAULT_AGENT_HARNESS),
     );
     let agent_clients = AgentClientBundle::from_default_client(DEFAULT_AGENT_HARNESS, agent_client);
-    build_app_state_plan_pr_description_drafter(workspace_repo, provider_repo, agent_clients)
+    build_app_state_plan_pr_description_drafter(
+        chat_conversation_repo,
+        workspace_repo,
+        provider_repo,
+        agent_clients,
+    )
 }
 
 #[tokio::test]
@@ -218,13 +231,20 @@ async fn draft_plan_description_runs_describer_and_cleans_synthetic_workspace() 
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let workspace_repo_trait: Arc<dyn AgentConversationWorkspaceRepository> =
         workspace_repo.clone();
+    let chat_conversation_repo: Arc<dyn ChatConversationRepository> =
+        Arc::new(MemoryChatConversationRepository::new());
     let client = Arc::new(SubmittingPlanPrAgentClient::new(
         Arc::clone(&workspace_repo_trait),
         true,
         true,
     ));
     let client_trait: Arc<dyn AgenticClient> = client.clone();
-    let drafter = build_drafter(Arc::clone(&workspace_repo_trait), client_trait).await;
+    let drafter = build_drafter(
+        Arc::clone(&chat_conversation_repo),
+        Arc::clone(&workspace_repo_trait),
+        client_trait,
+    )
+    .await;
 
     let body = drafter
         .draft_plan_description(&project, &plan_branch, "main", PrReviewState::Draft)
@@ -251,6 +271,75 @@ async fn draft_plan_description_runs_describer_and_cleans_synthetic_workspace() 
             .is_empty(),
         "synthetic workspace should be removed after drafting"
     );
+    assert!(
+        chat_conversation_repo
+            .get_by_context(ChatContextType::Project, project.id.as_str())
+            .await
+            .expect("conversation lookup should succeed")
+            .is_empty(),
+        "synthetic conversation should be removed after drafting"
+    );
+}
+
+#[tokio::test]
+async fn draft_plan_description_sqlite_creates_parent_for_synthetic_workspace() {
+    let repo = setup_plan_repo();
+    let (project, plan_branch) = project_and_plan_branch(repo.path());
+    let db = SqliteTestDb::new("plan_pr_description_sqlite");
+    let workspace_repo = Arc::new(SqliteAgentConversationWorkspaceRepository::from_shared(
+        db.shared_conn(),
+    ));
+    let workspace_repo_trait: Arc<dyn AgentConversationWorkspaceRepository> =
+        workspace_repo.clone();
+    let chat_conversation_repo = Arc::new(SqliteChatConversationRepository::from_shared(
+        db.shared_conn(),
+    ));
+    let chat_conversation_repo_trait: Arc<dyn ChatConversationRepository> =
+        chat_conversation_repo.clone();
+    let client = Arc::new(SubmittingPlanPrAgentClient::new(
+        Arc::clone(&workspace_repo_trait),
+        true,
+        true,
+    ));
+    let client_trait: Arc<dyn AgenticClient> = client.clone();
+    let drafter = build_drafter(
+        Arc::clone(&chat_conversation_repo_trait),
+        Arc::clone(&workspace_repo_trait),
+        client_trait,
+    )
+    .await;
+
+    let body = drafter
+        .draft_plan_description(&project, &plan_branch, "main", PrReviewState::Ready)
+        .await
+        .expect("SQLite-backed plan PR describer should create a valid parent conversation");
+
+    assert_eq!(
+        body.body_markdown,
+        "## Summary\n\nDrafted by the test describer"
+    );
+    let prompt = client.last_prompt().await;
+    let synthetic_id =
+        tag_value(&prompt, "conversation_id").expect("prompt should include conversation_id");
+    let (conversation_count, workspace_count) = db.with_connection(|conn| {
+        let conversation_count = conn
+            .query_row(
+                "SELECT COUNT(*) FROM chat_conversations WHERE id = ?1",
+                rusqlite::params![synthetic_id.as_str()],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("conversation count query should succeed");
+        let workspace_count = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_conversation_workspaces WHERE conversation_id = ?1",
+                rusqlite::params![synthetic_id.as_str()],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("workspace count query should succeed");
+        (conversation_count, workspace_count)
+    });
+    assert_eq!(conversation_count, 0, "synthetic conversation is cleaned");
+    assert_eq!(workspace_count, 0, "synthetic workspace is cleaned");
 }
 
 #[tokio::test]
@@ -260,13 +349,20 @@ async fn draft_plan_description_returns_error_when_agent_fails() {
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let workspace_repo_trait: Arc<dyn AgentConversationWorkspaceRepository> =
         workspace_repo.clone();
+    let chat_conversation_repo: Arc<dyn ChatConversationRepository> =
+        Arc::new(MemoryChatConversationRepository::new());
     let client = Arc::new(SubmittingPlanPrAgentClient::new(
         Arc::clone(&workspace_repo_trait),
         false,
         false,
     ));
     let client_trait: Arc<dyn AgenticClient> = client;
-    let drafter = build_drafter(Arc::clone(&workspace_repo_trait), client_trait).await;
+    let drafter = build_drafter(
+        Arc::clone(&chat_conversation_repo),
+        Arc::clone(&workspace_repo_trait),
+        client_trait,
+    )
+    .await;
 
     let body = drafter
         .draft_plan_description(&project, &plan_branch, "main", PrReviewState::Ready)
@@ -281,6 +377,14 @@ async fn draft_plan_description_returns_error_when_agent_fails() {
             .is_empty(),
         "synthetic workspace should still be cleaned on failure"
     );
+    assert!(
+        chat_conversation_repo
+            .get_by_context(ChatContextType::Project, project.id.as_str())
+            .await
+            .expect("conversation lookup should succeed")
+            .is_empty(),
+        "synthetic conversation should still be cleaned on failure"
+    );
 }
 
 #[tokio::test]
@@ -290,13 +394,20 @@ async fn draft_plan_description_returns_error_when_agent_submits_no_description(
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let workspace_repo_trait: Arc<dyn AgentConversationWorkspaceRepository> =
         workspace_repo.clone();
+    let chat_conversation_repo: Arc<dyn ChatConversationRepository> =
+        Arc::new(MemoryChatConversationRepository::new());
     let client = Arc::new(SubmittingPlanPrAgentClient::new(
         Arc::clone(&workspace_repo_trait),
         true,
         false,
     ));
     let client_trait: Arc<dyn AgenticClient> = client;
-    let drafter = build_drafter(Arc::clone(&workspace_repo_trait), client_trait).await;
+    let drafter = build_drafter(
+        Arc::clone(&chat_conversation_repo),
+        Arc::clone(&workspace_repo_trait),
+        client_trait,
+    )
+    .await;
 
     let body = drafter
         .draft_plan_description(&project, &plan_branch, "main", PrReviewState::Ready)
@@ -310,6 +421,14 @@ async fn draft_plan_description_returns_error_when_agent_submits_no_description(
             .expect("workspace lookup should succeed")
             .is_empty(),
         "synthetic workspace should still be cleaned without a submitted description"
+    );
+    assert!(
+        chat_conversation_repo
+            .get_by_context(ChatContextType::Project, project.id.as_str())
+            .await
+            .expect("conversation lookup should succeed")
+            .is_empty(),
+        "synthetic conversation should still be cleaned without a submitted description"
     );
 }
 

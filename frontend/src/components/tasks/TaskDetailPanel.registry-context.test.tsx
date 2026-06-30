@@ -15,6 +15,10 @@ const mockPlanBranchApi = vi.hoisted(() => ({
   getByProject: vi.fn(),
 }));
 
+const contextProbe = vi.hoisted(() => ({
+  viewModes: [] as unknown[],
+}));
+
 vi.mock("@/api/task-context", () => ({
   taskContextApi: mockTaskContextApi,
 }));
@@ -33,11 +37,19 @@ vi.mock("@/hooks/useTaskSteps", () => ({
 
 vi.mock("./detail-views", async () => {
   const { TwoColumnLayout } = await import("./detail-views/shared");
-  const MockRegistryView = ({ task }: { task: Task }) => (
-    <TwoColumnLayout description={task.description} testId="mock-registry-view">
-      <div>Registry body for {task.title}</div>
-    </TwoColumnLayout>
+  const { useTaskDetailContextModel } = await import(
+    "./detail-views/shared/TaskDetailContext"
   );
+  const MockRegistryView = ({ task }: { task: Task }) => {
+    const model = useTaskDetailContextModel();
+    contextProbe.viewModes.push(model?.viewMode ?? null);
+
+    return (
+      <TwoColumnLayout description={task.description} testId="mock-registry-view">
+        <div>Registry body for {task.title}</div>
+      </TwoColumnLayout>
+    );
+  };
 
   return {
     BasicTaskDetail: MockRegistryView,
@@ -158,6 +170,7 @@ describe("TaskDetailPanel registry context", () => {
   beforeEach(() => {
     mockTaskContextApi.getTaskContext.mockResolvedValue(createTaskContext());
     mockPlanBranchApi.getByProject.mockResolvedValue([createPlanBranch()]);
+    contextProbe.viewModes = [];
   });
 
   it("wraps registry views with the common task context rail", async () => {
@@ -181,5 +194,44 @@ describe("TaskDetailPanel registry context", () => {
 
     expect(await screen.findByText("Historical State")).toBeInTheDocument();
     expect(screen.getByText("Waiting on PR")).toBeInTheDocument();
+  });
+
+  it("keeps registry view mode stable across identical rerenders", async () => {
+    const task = createTask({
+      category: "plan_merge",
+      internalStatus: "merge_incomplete",
+      metadata: JSON.stringify({
+        error:
+          "PR operation failed: Infrastructure error: failed to draft plan PR description: Database error: FOREIGN KEY constraint failed",
+        source_branch: "agent-7dc9bd5e",
+        target_branch: "main",
+      }),
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+      },
+    });
+    const renderUi = () => (
+      <QueryClientProvider client={queryClient}>
+        <TaskDetailPanel task={task} useViewRegistry />
+      </QueryClientProvider>
+    );
+    const { rerender } = render(renderUi());
+
+    expect(await screen.findByText("Plan visible from registry detail")).toBeInTheDocument();
+    const initialModes = contextProbe.viewModes.filter(Boolean);
+    expect(initialModes.length).toBeGreaterThan(0);
+    const stableMode = initialModes[0];
+    expect(initialModes.every((mode) => mode === stableMode)).toBe(true);
+
+    contextProbe.viewModes = [];
+    rerender(renderUi());
+    rerender(renderUi());
+
+    expect(screen.getByText("Registry body for Test Task")).toBeInTheDocument();
+    const rerenderedModes = contextProbe.viewModes.filter(Boolean);
+    expect(rerenderedModes.length).toBeGreaterThan(0);
+    expect(rerenderedModes.every((mode) => mode === stableMode)).toBe(true);
   });
 });

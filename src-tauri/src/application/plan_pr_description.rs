@@ -18,16 +18,19 @@ use crate::domain::agents::{
 };
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentWorkspacePrDescription,
-    ChatConversationId, IdeationAnalysisBaseRefKind, PlanBranch, Project,
+    ChatConversation, ChatConversationId, IdeationAnalysisBaseRefKind, PlanBranch, Project,
 };
-use crate::domain::repositories::AgentConversationWorkspaceRepository;
-use crate::domain::repositories::AgentProviderSettingsRepository;
+use crate::domain::repositories::{
+    AgentConversationWorkspaceRepository, AgentProviderSettingsRepository,
+    ChatConversationRepository,
+};
 use crate::domain::services::{PlanPrDescriptionDrafter, PrReviewState};
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::agent_names;
 use tracing::info;
 
 pub(crate) struct AppStatePlanPrDescriptionDrafter {
+    chat_conversation_repo: Arc<dyn ChatConversationRepository>,
     agent_conversation_workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     agent_provider_settings_repo: Arc<dyn AgentProviderSettingsRepository>,
     agent_clients: AgentClientBundle,
@@ -35,11 +38,13 @@ pub(crate) struct AppStatePlanPrDescriptionDrafter {
 
 impl AppStatePlanPrDescriptionDrafter {
     pub(crate) fn new(
+        chat_conversation_repo: Arc<dyn ChatConversationRepository>,
         agent_conversation_workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
         agent_provider_settings_repo: Arc<dyn AgentProviderSettingsRepository>,
         agent_clients: AgentClientBundle,
     ) -> Self {
         Self {
+            chat_conversation_repo,
             agent_conversation_workspace_repo,
             agent_provider_settings_repo,
             agent_clients,
@@ -48,11 +53,13 @@ impl AppStatePlanPrDescriptionDrafter {
 }
 
 pub(crate) fn build_app_state_plan_pr_description_drafter(
+    chat_conversation_repo: Arc<dyn ChatConversationRepository>,
     agent_conversation_workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     agent_provider_settings_repo: Arc<dyn AgentProviderSettingsRepository>,
     agent_clients: AgentClientBundle,
 ) -> Arc<dyn PlanPrDescriptionDrafter> {
     Arc::new(AppStatePlanPrDescriptionDrafter::new(
+        chat_conversation_repo,
         agent_conversation_workspace_repo,
         agent_provider_settings_repo,
         agent_clients,
@@ -69,6 +76,7 @@ impl PlanPrDescriptionDrafter for AppStatePlanPrDescriptionDrafter {
         review_state: PrReviewState,
     ) -> AppResult<AgentWorkspacePrDescription> {
         draft_plan_pr_description(
+            &self.chat_conversation_repo,
             &self.agent_conversation_workspace_repo,
             &self.agent_provider_settings_repo,
             &self.agent_clients,
@@ -82,6 +90,7 @@ impl PlanPrDescriptionDrafter for AppStatePlanPrDescriptionDrafter {
 }
 
 async fn draft_plan_pr_description(
+    chat_conversation_repo: &Arc<dyn ChatConversationRepository>,
     workspace_repo: &Arc<dyn AgentConversationWorkspaceRepository>,
     provider_settings_repo: &Arc<dyn AgentProviderSettingsRepository>,
     agent_clients: &AgentClientBundle,
@@ -93,6 +102,11 @@ async fn draft_plan_pr_description(
     let repo_path = Path::new(&project.working_directory);
 
     let synthetic_id = ChatConversationId::new();
+    let mut conversation = ChatConversation::new_project(project.id.clone());
+    conversation.id = synthetic_id.clone();
+    conversation.title = Some("Plan PR description helper".to_string());
+    conversation.archived_at = Some(chrono::Utc::now());
+    chat_conversation_repo.create(conversation).await?;
 
     let workspace = AgentConversationWorkspace::new(
         synthetic_id.clone(),
@@ -105,7 +119,10 @@ async fn draft_plan_pr_description(
         plan_branch.branch_name.clone(),
         project.working_directory.clone(),
     );
-    workspace_repo.create_or_update(workspace.clone()).await?;
+    if let Err(error) = workspace_repo.create_or_update(workspace.clone()).await {
+        let _ = chat_conversation_repo.delete(&synthetic_id).await;
+        return Err(error);
+    }
 
     let result = draft_plan_pr_description_inner(
         workspace_repo,
@@ -122,6 +139,7 @@ async fn draft_plan_pr_description(
     .await;
 
     let _ = workspace_repo.delete(&synthetic_id).await;
+    let _ = chat_conversation_repo.delete(&synthetic_id).await;
 
     result
 }

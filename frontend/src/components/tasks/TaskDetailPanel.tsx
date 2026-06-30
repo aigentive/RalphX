@@ -26,7 +26,7 @@ import { useTaskSteps } from "@/hooks/useTaskSteps";
 import type { Task, InternalStatus } from "@/types/task";
 import type { ComponentType } from "react";
 import { Bot, User, Settings, Loader2, FileText } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { markdownComponents } from "@/components/Chat/MessageItem.markdown";
@@ -377,25 +377,34 @@ export function TaskDetailPanel({
   // Fetch steps - must be called unconditionally (hooks rules)
   const { data: steps, isLoading: stepsLoading } = useTaskSteps(task.id);
   const categoryLabel = getTaskCategoryLabel(task.category);
+  const statusForView = viewAsStatus ?? task.internalStatus;
+  const isHistorical = viewAsStatus !== undefined;
+  const viewMode = useMemo<TaskDetailViewMode>(
+    () =>
+      isHistorical
+        ? {
+            kind: "historical",
+            status: statusForView,
+            timestamp: viewTimestamp ?? task.updatedAt,
+            conversationId: viewConversationId,
+            agentRunId: viewAgentRunId,
+          }
+        : { kind: "current" },
+    [
+      isHistorical,
+      statusForView,
+      viewTimestamp,
+      task.updatedAt,
+      viewConversationId,
+      viewAgentRunId,
+    ]
+  );
 
   // If using View Registry Pattern, render the appropriate state-specific component
   // This check must come AFTER all hooks to satisfy React hooks rules
   if (useViewRegistry) {
-    // Use viewAsStatus for history mode, otherwise use current status
-    const statusForView = viewAsStatus ?? task.internalStatus;
     const ViewComponent =
       TASK_DETAIL_VIEWS[statusForView] ?? BasicTaskDetail;
-    // Pass isHistorical when viewing a historical state (viewAsStatus is set)
-    const isHistorical = viewAsStatus !== undefined;
-    const viewMode: TaskDetailViewMode = isHistorical
-      ? {
-          kind: "historical",
-          status: statusForView,
-          timestamp: viewTimestamp ?? task.updatedAt,
-          conversationId: viewConversationId,
-          agentRunId: viewAgentRunId,
-        }
-      : { kind: "current" };
     if (statusForView === "reviewing") {
       return (
         <TaskDetailContextProvider task={task} viewMode={viewMode}>
