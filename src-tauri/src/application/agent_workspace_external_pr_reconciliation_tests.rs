@@ -105,6 +105,7 @@ async fn reconciliation_links_external_open_pr_to_unpublished_workspace() {
         is_draft: false,
         head_ref_name: workspace.branch_name.clone(),
         updated_at: Some("2026-05-11T22:00:00Z".to_string()),
+        author_login: None,
     })));
     let (mut deps, workspace_repo) =
         deps_with_workspace(project, workspace.clone(), github.clone()).await;
@@ -169,6 +170,7 @@ async fn reconciliation_marks_external_merged_pr_terminal() {
         is_draft: false,
         head_ref_name: workspace.branch_name.clone(),
         updated_at: Some("2026-05-11T22:05:00Z".to_string()),
+        author_login: None,
     })));
     let (deps, workspace_repo) = deps_with_workspace(project, workspace, github.clone()).await;
 
@@ -216,6 +218,7 @@ async fn reconciliation_links_external_draft_pr() {
         is_draft: true,
         head_ref_name: workspace.branch_name.clone(),
         updated_at: Some("2026-05-11T22:10:00Z".to_string()),
+        author_login: None,
     })));
     let (deps, workspace_repo) = deps_with_workspace(project, workspace, github.clone()).await;
 
@@ -260,6 +263,7 @@ async fn reconciliation_marks_external_closed_pr_terminal_without_fetch() {
         is_draft: false,
         head_ref_name: workspace.branch_name.clone(),
         updated_at: Some("2026-05-11T22:15:00Z".to_string()),
+        author_login: None,
     })));
     let (deps, workspace_repo) = deps_with_workspace(project, workspace, github.clone()).await;
 
@@ -567,6 +571,7 @@ async fn startup_reconciliation_processes_candidates_and_skips_blocked_projects(
         is_draft: false,
         head_ref_name: workspace.branch_name.clone(),
         updated_at: Some("2026-05-11T22:20:00Z".to_string()),
+        author_login: None,
     })));
     let project_repo = Arc::new(MemoryProjectRepository::with_projects(vec![
         project.clone(),
@@ -677,6 +682,7 @@ async fn scheduled_reconciliation_deduplicates_recent_workspace_loads_until_forc
         is_draft: false,
         head_ref_name: workspace.branch_name,
         updated_at: Some("2026-05-11T22:25:00Z".to_string()),
+        author_login: None,
     })));
     schedule_agent_workspace_external_pr_reconciliation(
         deps,
