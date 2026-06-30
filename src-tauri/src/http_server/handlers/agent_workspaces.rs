@@ -4872,7 +4872,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn complete_pr_fix_starts_workspace_review_when_required() {
+    async fn complete_pr_fix_waits_for_running_workspace_review_when_required() {
         let repo = tempfile::TempDir::new().expect("repo tempdir");
         let worktrees = tempfile::TempDir::new().expect("worktree tempdir");
         git(repo.path(), &["init", "-b", "main"]);
@@ -4942,9 +4942,20 @@ mod tests {
         workspace.pr_auto_merge_desired = true;
         app_state
             .agent_conversation_workspace_repo
-            .create_or_update(workspace)
+            .create_or_update(workspace.clone())
             .await
             .expect("seed workspace");
+        let review_context = load_agent_workspace_review_context(app_state.as_ref(), &workspace)
+            .await
+            .expect("review context should load");
+        let mut monitor = review_context.monitor;
+        monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
+        monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Reviewing;
+        app_state
+            .agent_conversation_workspace_repo
+            .upsert_workspace_review_monitor(monitor)
+            .await
+            .expect("running review monitor should persist");
         let state = test_http_state(Arc::clone(&app_state));
 
         let Json(response) = complete_agent_workspace_pr_fix(
@@ -4956,9 +4967,9 @@ mod tests {
             }),
         )
         .await
-        .expect("required review should start instead of blocking supervision");
+        .expect("running review should wait instead of blocking supervision");
 
-        assert_eq!(response.status, "workspace_review_started");
+        assert_eq!(response.status, "workspace_reviewing");
         assert_eq!(
             response.publish_status.as_deref(),
             Some("waiting_for_workspace_review")
@@ -4990,7 +5001,7 @@ mod tests {
             .unwrap();
         assert!(events.iter().any(|event| {
             event.step == "pr_autofix_workspace_review"
-                && event.classification.as_deref() == Some("workspace_review_started")
+                && event.classification.as_deref() == Some("workspace_reviewing")
         }));
     }
 
