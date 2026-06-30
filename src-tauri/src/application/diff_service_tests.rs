@@ -206,6 +206,24 @@ fn test_get_worktree_file_changes_uses_combined_numstat_counts() {
 }
 
 #[test]
+fn worktree_file_changes_include_untracked_files() {
+    let (_temp_dir, repo_path) = create_git_repo();
+    let base = git_stdout(&repo_path, &["rev-parse", "HEAD"]);
+    fs::write(repo_path.join("notes.md"), "one\ntwo\n").expect("Failed to write untracked file");
+
+    let diff_service = DiffService::new();
+    let changes = diff_service
+        .get_worktree_file_changes_from_ref(&repo_path.to_string_lossy(), &base)
+        .unwrap();
+
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0].path, "notes.md");
+    assert!(matches!(changes[0].status, FileChangeStatus::Added));
+    assert_eq!(changes[0].additions, 2);
+    assert_eq!(changes[0].deletions, 0);
+}
+
+#[test]
 fn test_get_file_changes_between_refs_uses_combined_numstat_counts() {
     let (_temp_dir, repo_path) = create_git_repo();
     let base = git_stdout(&repo_path, &["rev-parse", "HEAD"]);
@@ -257,7 +275,10 @@ fn test_get_file_diff_for_worktree_uses_current_disk_content() {
         "Diff should have at least one hunk for the uncommitted change"
     );
     assert!(
-        diff.hunks.iter().flat_map(|h| h.lines.iter()).any(|l| l.content.contains("Uncommitted")),
+        diff.hunks
+            .iter()
+            .flat_map(|h| h.lines.iter())
+            .any(|l| l.content.contains("Uncommitted")),
         "Diff hunks should contain the uncommitted addition"
     );
     // old_total_lines = HEAD (1 line), new_total_lines = disk (3 lines)
@@ -450,6 +471,42 @@ fn unstaged_file_changes_returns_only_unstaged_files() {
 }
 
 #[test]
+fn unstaged_file_changes_include_untracked_files() {
+    let (_tmp, repo) = create_staged_unstaged_repo();
+    let repo_str = repo.to_string_lossy().to_string();
+
+    fs::write(repo.join("untracked.txt"), "first\nsecond\n").unwrap();
+
+    let svc = DiffService::new();
+    let changes = svc.get_unstaged_file_changes(&repo_str).unwrap();
+
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0].path, "untracked.txt");
+    assert!(matches!(changes[0].status, FileChangeStatus::Added));
+    assert_eq!(changes[0].additions, 2);
+    assert_eq!(changes[0].deletions, 0);
+}
+
+#[test]
+fn unstaged_file_changes_exclude_ignored_untracked_files() {
+    let (_tmp, repo) = create_staged_unstaged_repo();
+    let repo_str = repo.to_string_lossy().to_string();
+
+    fs::write(repo.join(".gitignore"), "*.log\n").unwrap();
+    git_cmd(&repo, &["add", ".gitignore"]);
+    git_cmd(&repo, &["commit", "-m", "Ignore logs"]);
+    fs::write(repo.join("debug.log"), "ignored\n").unwrap();
+
+    let svc = DiffService::new();
+    let changes = svc.get_unstaged_file_changes(&repo_str).unwrap();
+
+    assert!(
+        changes.is_empty(),
+        "Ignored untracked files should not appear in unstaged changes"
+    );
+}
+
+#[test]
 fn staged_file_diff_shows_head_vs_index_content() {
     let (_tmp, repo) = create_staged_unstaged_repo();
     let repo_str = repo.to_string_lossy().to_string();
@@ -459,7 +516,11 @@ fn staged_file_diff_shows_head_vs_index_content() {
     git_cmd(&repo, &["add", "base.txt"]);
 
     // Write a further unstaged change (should NOT appear in staged diff)
-    fs::write(repo.join("base.txt"), "base\nadded line\nfurther unstaged\n").unwrap();
+    fs::write(
+        repo.join("base.txt"),
+        "base\nadded line\nfurther unstaged\n",
+    )
+    .unwrap();
 
     let svc = DiffService::new();
     let diff = svc.get_staged_file_diff("base.txt", &repo_str).unwrap();
@@ -468,12 +529,19 @@ fn staged_file_diff_shows_head_vs_index_content() {
     assert_eq!(diff.language, "plaintext");
     // Hunk-based: staged diff HEAD→index; "added line" appears as an addition
     assert!(
-        diff.hunks.iter().flat_map(|h| h.lines.iter()).any(|l| l.content.contains("added line")),
+        diff.hunks
+            .iter()
+            .flat_map(|h| h.lines.iter())
+            .any(|l| l.content.contains("added line")),
         "Staged diff hunks should contain the staged addition"
     );
     // The further unstaged change must NOT appear in the staged diff
     assert!(
-        !diff.hunks.iter().flat_map(|h| h.lines.iter()).any(|l| l.content.contains("further unstaged")),
+        !diff
+            .hunks
+            .iter()
+            .flat_map(|h| h.lines.iter())
+            .any(|l| l.content.contains("further unstaged")),
         "Staged diff should not include disk-only change"
     );
     assert_eq!(diff.old_total_lines, 1, "HEAD has 1 line");
@@ -498,11 +566,39 @@ fn unstaged_file_diff_shows_index_vs_disk_content() {
     assert_eq!(diff.file_path, "base.txt");
     // Hunk-based: unstaged diff index→disk; "disk change" appears as an addition
     assert!(
-        diff.hunks.iter().flat_map(|h| h.lines.iter()).any(|l| l.content.contains("disk change")),
+        diff.hunks
+            .iter()
+            .flat_map(|h| h.lines.iter())
+            .any(|l| l.content.contains("disk change")),
         "Unstaged diff hunks should contain the disk-only addition"
     );
     assert_eq!(diff.old_total_lines, 2, "Index has 2 lines");
     assert_eq!(diff.new_total_lines, 3, "Disk has 3 lines");
+}
+
+#[test]
+fn unstaged_file_diff_renders_untracked_file_as_added() {
+    let (_tmp, repo) = create_staged_unstaged_repo();
+    let repo_str = repo.to_string_lossy().to_string();
+
+    fs::write(repo.join("untracked.md"), "alpha\nbeta\n").unwrap();
+
+    let svc = DiffService::new();
+    let diff = svc
+        .get_unstaged_file_diff("untracked.md", &repo_str)
+        .unwrap();
+
+    assert_eq!(diff.file_path, "untracked.md");
+    assert_eq!(diff.language, "markdown");
+    assert_eq!(diff.old_total_lines, 0);
+    assert_eq!(diff.new_total_lines, 2);
+    assert!(
+        diff.hunks
+            .iter()
+            .flat_map(|h| h.lines.iter())
+            .any(|line| line.kind == DiffLineKind::Addition && line.content == "alpha"),
+        "Untracked file diff should render disk content as additions"
+    );
 }
 
 #[test]
@@ -515,7 +611,10 @@ fn staged_file_changes_empty_when_nothing_staged() {
 
     let svc = DiffService::new();
     let changes = svc.get_staged_file_changes(&repo_str).unwrap();
-    assert!(changes.is_empty(), "No staged changes, result should be empty");
+    assert!(
+        changes.is_empty(),
+        "No staged changes, result should be empty"
+    );
 }
 
 #[test]
@@ -929,7 +1028,14 @@ fn get_file_content_range_rejects_from_greater_than_to() {
 fn get_file_content_range_rejects_traversal_path() {
     let svc = DiffService::new();
     let err = svc
-        .get_file_content_range(".", &DiffSide::New, "../etc/passwd", &DiffRefKind::Head, 1, 10)
+        .get_file_content_range(
+            ".",
+            &DiffSide::New,
+            "../etc/passwd",
+            &DiffRefKind::Head,
+            1,
+            10,
+        )
         .unwrap_err();
     assert!(err.to_string().contains("unsafe") || err.to_string().contains("relative"));
 }
@@ -960,14 +1066,34 @@ fn get_file_content_range_reads_working_tree_lines() {
 fn get_file_content_range_rejects_cumulative_base_and_head() {
     let svc = DiffService::new();
     let err_base = svc
-        .get_file_content_range(".", &DiffSide::New, "x.rs", &DiffRefKind::CumulativeBase, 1, 5)
+        .get_file_content_range(
+            ".",
+            &DiffSide::New,
+            "x.rs",
+            &DiffRefKind::CumulativeBase,
+            1,
+            5,
+        )
         .unwrap_err();
-    assert!(err_base.to_string().contains("CumulativeBase") || err_base.to_string().contains("resolved"));
+    assert!(
+        err_base.to_string().contains("CumulativeBase")
+            || err_base.to_string().contains("resolved")
+    );
 
     let err_head = svc
-        .get_file_content_range(".", &DiffSide::New, "x.rs", &DiffRefKind::CumulativeHead, 1, 5)
+        .get_file_content_range(
+            ".",
+            &DiffSide::New,
+            "x.rs",
+            &DiffRefKind::CumulativeHead,
+            1,
+            5,
+        )
         .unwrap_err();
-    assert!(err_head.to_string().contains("CumulativeHead") || err_head.to_string().contains("resolved"));
+    assert!(
+        err_head.to_string().contains("CumulativeHead")
+            || err_head.to_string().contains("resolved")
+    );
 }
 
 #[test]
@@ -987,7 +1113,14 @@ fn get_file_content_range_reads_head_ref() {
     // base.txt committed as "base\n" — HEAD has 1 line
     let svc = DiffService::new();
     let lines = svc
-        .get_file_content_range(&repo_str, &DiffSide::Old, "base.txt", &DiffRefKind::Head, 1, 1)
+        .get_file_content_range(
+            &repo_str,
+            &DiffSide::Old,
+            "base.txt",
+            &DiffRefKind::Head,
+            1,
+            1,
+        )
         .unwrap();
     assert_eq!(lines.len(), 1);
     assert_eq!(lines[0].line_num, 1);
@@ -1004,7 +1137,14 @@ fn get_file_content_range_reads_staged_ref() {
     // Staged ref reads from the index — should see "staged" line
     let svc = DiffService::new();
     let lines = svc
-        .get_file_content_range(&repo_str, &DiffSide::New, "base.txt", &DiffRefKind::Staged, 1, 2)
+        .get_file_content_range(
+            &repo_str,
+            &DiffSide::New,
+            "base.txt",
+            &DiffRefKind::Staged,
+            1,
+            2,
+        )
         .unwrap();
     assert_eq!(lines.len(), 2);
     assert_eq!(lines[0].content, "base");
@@ -1260,5 +1400,9 @@ fn compute_generated_flags_falls_back_to_heuristic_when_git_unavailable() {
         "Fallback heuristic must leave normal source files unflagged"
     );
     // Every requested path must have an entry in the returned map
-    assert_eq!(flags.len(), 2, "All requested paths must appear in the result");
+    assert_eq!(
+        flags.len(),
+        2,
+        "All requested paths must appear in the result"
+    );
 }

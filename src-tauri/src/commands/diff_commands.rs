@@ -1296,18 +1296,17 @@ async fn get_agent_workspace_review_for_context(
     let changes_path = working_path.clone();
     let changes_base_ref = base_ref.clone();
     let changes_target = ctx.diff_target.clone();
+    let changes_supports_worktree_modes = ctx.supports_worktree_modes;
     let changes_fut = async move {
         tokio::task::spawn_blocking(move || {
             let diff_service = DiffService::new();
-            let mut changes = if let Some(target) = changes_target {
-                diff_service.get_file_changes_between_refs(
-                    &changes_path,
-                    &changes_base_ref,
-                    &target,
-                )
-            } else {
-                diff_service.get_worktree_file_changes_from_ref(&changes_path, &changes_base_ref)
-            }?;
+            let mut changes = get_workspace_file_changes_for_context(
+                &diff_service,
+                &changes_path,
+                &changes_base_ref,
+                changes_target.as_deref(),
+                changes_supports_worktree_modes,
+            )?;
             let flags = {
                 let path_strs: Vec<&str> = changes.iter().map(|c| c.path.as_str()).collect();
                 diff_service.compute_generated_flags(Path::new(&changes_path), &path_strs)?
@@ -1343,6 +1342,43 @@ async fn get_agent_workspace_review_for_context(
             supports_worktree_modes: ctx.supports_worktree_modes,
         },
     })
+}
+
+fn get_workspace_file_changes_for_context(
+    diff_service: &DiffService,
+    working_path: &str,
+    base_ref: &str,
+    diff_target: Option<&str>,
+    supports_worktree_modes: bool,
+) -> AppResult<Vec<FileChange>> {
+    if supports_worktree_modes {
+        return diff_service.get_worktree_file_changes_from_ref(working_path, base_ref);
+    }
+
+    if let Some(target) = diff_target {
+        return diff_service.get_file_changes_between_refs(working_path, base_ref, target);
+    }
+
+    diff_service.get_worktree_file_changes_from_ref(working_path, base_ref)
+}
+
+fn get_workspace_file_diff_for_context(
+    diff_service: &DiffService,
+    file_path: &str,
+    working_path: &str,
+    base_ref: &str,
+    diff_target: Option<&str>,
+    supports_worktree_modes: bool,
+) -> AppResult<FileDiff> {
+    if supports_worktree_modes {
+        return diff_service.get_file_diff(file_path, working_path, base_ref);
+    }
+
+    if let Some(target) = diff_target {
+        return diff_service.get_file_diff_between_refs(file_path, working_path, base_ref, target);
+    }
+
+    diff_service.get_file_diff(file_path, working_path, base_ref)
 }
 
 #[tauri::command]
@@ -1396,15 +1432,15 @@ pub async fn get_agent_conversation_workspace_file_diff(
         let diff_service = DiffService::new();
         let diff = if let Some(patch) = &ctx.patch_diff {
             diff_service.get_file_diff_from_unified_diff(patch, &file_path)
-        } else if let Some(target) = &ctx.diff_target {
-            diff_service.get_file_diff_between_refs(
+        } else {
+            get_workspace_file_diff_for_context(
+                &diff_service,
                 &file_path,
                 &working_path,
                 &ctx.base_ref,
-                target,
+                ctx.diff_target.as_deref(),
+                ctx.supports_worktree_modes,
             )
-        } else {
-            diff_service.get_file_diff(&file_path, &working_path, &ctx.base_ref)
         }?;
         Ok((diff, cache_status))
     }
@@ -1849,9 +1885,7 @@ pub async fn get_agent_conversation_workspace_repair_conflict_file_diff_for_stat
         DiffService::new().get_index_conflict_diff(&file_path, &working_path)
     })
     .await
-    .map_err(|e| {
-        AppError::Infrastructure(format!("repair conflict file diff task failed: {e}"))
-    })?
+    .map_err(|e| AppError::Infrastructure(format!("repair conflict file diff task failed: {e}")))?
 }
 
 #[doc(hidden)]
@@ -1880,10 +1914,16 @@ pub async fn get_agent_conversation_workspace_cumulative_file_changes_for_state(
         .diff_target
         .clone()
         .unwrap_or_else(|| "HEAD".to_string());
+    let supports_worktree_modes = ctx.supports_worktree_modes;
     tokio::task::spawn_blocking(move || {
         let diff_service = DiffService::new();
-        let mut changes =
-            diff_service.get_file_changes_between_refs(&working_path, &base_ref, &head_ref)?;
+        let mut changes = get_workspace_file_changes_for_context(
+            &diff_service,
+            &working_path,
+            &base_ref,
+            Some(&head_ref),
+            supports_worktree_modes,
+        )?;
         let flags = {
             let path_strs: Vec<&str> = changes.iter().map(|c| c.path.as_str()).collect();
             diff_service.compute_generated_flags(Path::new(&working_path), &path_strs)?
@@ -1915,12 +1955,16 @@ pub async fn get_agent_conversation_workspace_cumulative_file_diff_for_state(
         .diff_target
         .clone()
         .unwrap_or_else(|| "HEAD".to_string());
+    let supports_worktree_modes = ctx.supports_worktree_modes;
     tokio::task::spawn_blocking(move || {
-        DiffService::new().get_file_diff_between_refs(
+        let diff_service = DiffService::new();
+        get_workspace_file_diff_for_context(
+            &diff_service,
             &file_path,
             &working_path,
             &base_ref,
-            &head_ref,
+            Some(&head_ref),
+            supports_worktree_modes,
         )
     })
     .await
@@ -1968,6 +2012,7 @@ pub async fn get_agent_conversation_workspace_file_diff_page_for_state(
     let base_ref = ctx.base_ref.clone();
     let diff_target = ctx.diff_target.clone();
     let patch_diff = ctx.patch_diff.clone();
+    let supports_worktree_modes = ctx.supports_worktree_modes;
 
     tokio::task::spawn_blocking(move || {
         let diff_service = DiffService::new();
@@ -1975,15 +2020,15 @@ pub async fn get_agent_conversation_workspace_file_diff_page_for_state(
             DiffRefKind::Head => {
                 if let Some(patch) = patch_diff.as_deref() {
                     diff_service.get_file_diff_from_unified_diff(patch, &file_path)
-                } else if let Some(target) = diff_target.as_deref() {
-                    diff_service.get_file_diff_between_refs(
+                } else {
+                    get_workspace_file_diff_for_context(
+                        &diff_service,
                         &file_path,
                         &working_path,
                         &base_ref,
-                        target,
+                        diff_target.as_deref(),
+                        supports_worktree_modes,
                     )
-                } else {
-                    diff_service.get_file_diff(&file_path, &working_path, &base_ref)
                 }
             }
             DiffRefKind::Staged => diff_service.get_staged_file_diff(&file_path, &working_path),
@@ -2005,11 +2050,13 @@ pub async fn get_agent_conversation_workspace_file_diff_page_for_state(
                     diff_service.get_file_diff_from_unified_diff(patch, &file_path)
                 } else {
                     let head_ref = diff_target.unwrap_or_else(|| "HEAD".to_string());
-                    diff_service.get_file_diff_between_refs(
+                    get_workspace_file_diff_for_context(
+                        &diff_service,
                         &file_path,
                         &working_path,
                         &base_ref,
-                        &head_ref,
+                        Some(&head_ref),
+                        supports_worktree_modes,
                     )
                 }
             }
@@ -2593,11 +2640,12 @@ pub async fn get_agent_conversation_workspace_file_content_range_for_state(
     // Resolve workspace-specific ref_kind variants to concrete refs that match
     // the same old/new pair used by get_agent_conversation_workspace_file_diff.
     let live_worktree_head_range =
-        ctx.supports_worktree_modes && ctx.diff_target.is_none() && ctx.patch_diff.is_none();
+        ctx.supports_worktree_modes && ctx.patch_diff.is_none();
     let resolved_ref_kind = match ref_kind {
         DiffRefKind::CumulativeBase => DiffRefKind::Commit {
             sha: ctx.base_ref.clone(),
         },
+        DiffRefKind::CumulativeHead if live_worktree_head_range => DiffRefKind::Unstaged,
         DiffRefKind::CumulativeHead => {
             let head = ctx
                 .diff_target
@@ -3139,8 +3187,14 @@ mod tests {
 
     #[tokio::test]
     async fn agent_workspace_diff_commands_use_shared_review_cache() {
-        let (_temp_dir, state, conversation_id, _worktree_path, commit_sha) =
+        let (_temp_dir, state, conversation_id, worktree_path, commit_sha) =
             create_agent_workspace_command_state().await;
+        std::fs::create_dir_all(worktree_path.join("docs")).unwrap();
+        std::fs::write(
+            worktree_path.join("docs").join("untracked.md"),
+            "draft\nnotes\n",
+        )
+        .unwrap();
         let app = mock_builder()
             .manage(state)
             .build(mock_context(noop_assets()))
@@ -3154,6 +3208,11 @@ mod tests {
             .changes
             .iter()
             .any(|change| change.path == "src/lib.rs"));
+        assert!(review
+            .changes
+            .iter()
+            .any(|change| change.path == "docs/untracked.md"
+                && matches!(change.status, FileChangeStatus::Added)));
         assert!(review.commits.iter().any(|commit| commit.sha == commit_sha));
 
         let changes =
@@ -3161,6 +3220,19 @@ mod tests {
                 .await
                 .expect("cached file changes should load");
         assert!(changes.iter().any(|change| change.path == "src/lib.rs"));
+        assert!(changes
+            .iter()
+            .any(|change| change.path == "docs/untracked.md"));
+
+        let unstaged_changes = get_agent_conversation_workspace_unstaged_file_changes(
+            app.state(),
+            conversation_id.as_str(),
+        )
+        .await
+        .expect("unstaged file changes should load");
+        assert!(unstaged_changes
+            .iter()
+            .any(|change| change.path == "docs/untracked.md"));
 
         let commits =
             get_agent_conversation_workspace_commits(app.state(), conversation_id.as_str())
@@ -3188,6 +3260,21 @@ mod tests {
                 .any(|l| l.content.contains("answer")),
             "file diff hunks should contain the 'answer' function"
         );
+
+        let untracked_file_diff = get_agent_conversation_workspace_file_diff(
+            app.state(),
+            conversation_id.as_str(),
+            "docs/untracked.md".to_string(),
+        )
+        .await
+        .expect("untracked workspace file diff should load");
+        assert_eq!(untracked_file_diff.old_total_lines, 0);
+        assert_eq!(untracked_file_diff.new_total_lines, 2);
+        assert!(untracked_file_diff
+            .hunks
+            .iter()
+            .flat_map(|hunk| hunk.lines.iter())
+            .any(|line| line.content == "draft"));
 
         let file_diff_page = get_agent_conversation_workspace_file_diff_page(
             app.state(),
@@ -3236,6 +3323,110 @@ mod tests {
                 .any(|l| l.content.contains("answer")),
             "commit diff hunks should contain the 'answer' function"
         );
+
+        invalidate_agent_workspace_diff_caches(&conversation_id);
+    }
+
+    #[tokio::test]
+    async fn diff_target_editable_workspace_includes_untracked_files() {
+        let (_temp_dir, state, conversation_id, worktree_path, _commit_sha) =
+            create_agent_workspace_command_state().await;
+        let workspace = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        std::fs::create_dir_all(worktree_path.join("docs")).unwrap();
+        std::fs::write(
+            worktree_path.join("docs").join("untracked.md"),
+            "draft\nnotes\n",
+        )
+        .unwrap();
+        store_agent_workspace_context(
+            &conversation_id,
+            AgentWorkspaceContextMode::Strict,
+            &AgentWorkspaceContext {
+                working_path: worktree_path,
+                base_ref: workspace
+                    .base_commit
+                    .expect("workspace should have captured base commit"),
+                diff_target: Some("HEAD".to_string()),
+                patch_diff: None,
+                supports_worktree_modes: true,
+                repair_state: None,
+            },
+        );
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        let review =
+            get_agent_conversation_workspace_review(app.state(), conversation_id.as_str()).await;
+        let review = review.expect("diff-target review should load");
+        assert!(review
+            .changes
+            .iter()
+            .any(|change| change.path == "docs/untracked.md"));
+
+        let file_diff = get_agent_conversation_workspace_file_diff(
+            app.state(),
+            conversation_id.as_str(),
+            "docs/untracked.md".to_string(),
+        )
+        .await
+        .expect("diff-target untracked file diff should load");
+        assert_eq!(file_diff.old_total_lines, 0);
+        assert_eq!(file_diff.new_total_lines, 2);
+        assert!(file_diff
+            .hunks
+            .iter()
+            .flat_map(|hunk| hunk.lines.iter())
+            .any(|line| line.content == "draft"));
+
+        let file_diff_page = get_agent_conversation_workspace_file_diff_page(
+            app.state(),
+            conversation_id.as_str(),
+            "docs/untracked.md".to_string(),
+            DiffRefKind::Head,
+            0,
+            20,
+        )
+        .await
+        .expect("diff-target untracked file diff page should load");
+        assert!(
+            diff_page_contains_line(&file_diff_page, "draft"),
+            "diff-target file diff page should include untracked content"
+        );
+
+        let cumulative_page = get_agent_conversation_workspace_file_diff_page(
+            app.state(),
+            conversation_id.as_str(),
+            "docs/untracked.md".to_string(),
+            DiffRefKind::CumulativeHead,
+            0,
+            20,
+        )
+        .await
+        .expect("diff-target cumulative untracked file diff page should load");
+        assert!(
+            diff_page_contains_line(&cumulative_page, "draft"),
+            "cumulative file diff page should include untracked content"
+        );
+
+        let content_range = get_agent_conversation_workspace_file_content_range(
+            app.state(),
+            conversation_id.as_str(),
+            DiffSide::New,
+            "docs/untracked.md".to_string(),
+            DiffRefKind::Head,
+            1,
+            2,
+        )
+        .await
+        .expect("diff-target untracked file content range should load");
+        assert_eq!(content_range[0].content, "draft");
 
         invalidate_agent_workspace_diff_caches(&conversation_id);
     }
