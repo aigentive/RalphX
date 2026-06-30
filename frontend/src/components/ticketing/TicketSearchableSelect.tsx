@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState, type ReactNode } from "react";
 import { Check, ChevronDown, Search, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -23,6 +23,7 @@ export interface TicketSearchableSelectOption {
   description?: string | null | undefined;
   disabled?: boolean | undefined;
   leadingColor?: string | undefined;
+  leadingIcon?: ReactNode | undefined;
   testId?: string | undefined;
 }
 
@@ -156,7 +157,11 @@ export function TicketSearchableSelect({
             }}
           >
             <span className="flex min-w-0 flex-1 items-center gap-2">
-              {selectedOption?.leadingColor ? (
+              {selectedOption?.leadingIcon ? (
+                <span className="inline-flex shrink-0" aria-hidden="true">
+                  {selectedOption.leadingIcon}
+                </span>
+              ) : selectedOption?.leadingColor ? (
                 <span
                   className="h-2.5 w-2.5 shrink-0 rounded-full"
                   aria-hidden="true"
@@ -279,7 +284,11 @@ export function TicketSearchableSelect({
                       <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center">
                         {selected ? <Check className="h-4 w-4" aria-hidden="true" /> : null}
                       </span>
-                      {option.leadingColor ? (
+                      {option.leadingIcon ? (
+                        <span className="mt-0.5 inline-flex shrink-0" aria-hidden="true">
+                          {option.leadingIcon}
+                        </span>
+                      ) : option.leadingColor ? (
                         <span
                           className="mt-[5px] h-2.5 w-2.5 shrink-0 rounded-full"
                           aria-hidden="true"

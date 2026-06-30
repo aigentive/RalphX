@@ -26,12 +26,15 @@ import {
   type TicketFilterOptions,
   type TicketingColumn,
   type TicketingPerson,
+  type TicketingStatusCatalogEntry,
+  type TicketingStatusCatalogScopeInput,
   type TicketLabelOption,
   type TicketPage,
   type TicketRefInput,
   type TicketSummary,
   type TicketTransitionOption,
   type TransitionTicketStatusInput,
+  type UpdateTicketingStatusPresentationInput,
 } from "@/api/ticketing";
 
 interface QueryOptions {
@@ -48,6 +51,8 @@ export const ticketingKeys = {
     [...ticketingKeys.all, "containers", input.provider, input.projectId ?? null, input.parentContainerId ?? null] as const,
   columns: (input: ListTicketingColumnsInput) =>
     [...ticketingKeys.all, "columns", input.provider, input.containerId ?? null] as const,
+  statusCatalog: (input: TicketingStatusCatalogScopeInput) =>
+    [...ticketingKeys.all, "status-catalog", input.provider, input.scopeKind, input.scopeId] as const,
   tickets: (input: ListTicketsInput) =>
     [
       ...ticketingKeys.all,
@@ -343,6 +348,23 @@ export function useTicketingColumns(
   });
 }
 
+export function useTicketingStatusCatalog(
+  input: TicketingStatusCatalogScopeInput | null,
+  options: QueryOptions = {},
+) {
+  return useQuery<TicketingStatusCatalogEntry[]>({
+    queryKey: input ? ticketingKeys.statusCatalog(input) : [...ticketingKeys.all, "status-catalog", null],
+    queryFn: () => {
+      if (!input) {
+        throw new Error("Ticketing status scope is required");
+      }
+      return ticketingApi.listStatusCatalog(input);
+    },
+    enabled: (options.enabled ?? true) && Boolean(input?.provider && input.scopeKind && input.scopeId),
+    staleTime: 30_000,
+  });
+}
+
 export function useTicketLabelOptions(
   input: TicketRefInput | null,
   options: QueryOptions = {},
@@ -499,6 +521,42 @@ export function useRefreshTickets() {
     mutationFn: (input: RefreshTicketsInput) => ticketingApi.refreshTickets(input),
     onSuccess: () => {
       invalidateTicketingQueries(queryClient);
+    },
+  });
+}
+
+function invalidateStatusPresentationQueries(
+  queryClient: QueryClient,
+  input: TicketingStatusCatalogScopeInput,
+) {
+  void queryClient.invalidateQueries({ queryKey: ticketingKeys.statusCatalog(input) });
+  void queryClient.invalidateQueries({
+    queryKey: [...ticketingKeys.all, "columns", input.provider],
+  });
+  void queryClient.invalidateQueries({ queryKey: ticketingKeys.ticketLists() });
+}
+
+export function useRefreshTicketingStatusCatalog() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (input: TicketingStatusCatalogScopeInput) => ticketingApi.refreshStatusCatalog(input),
+    onSuccess: (data, input) => {
+      queryClient.setQueryData(ticketingKeys.statusCatalog(input), data);
+      invalidateStatusPresentationQueries(queryClient, input);
+    },
+  });
+}
+
+export function useUpdateTicketingStatusPresentation() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (input: UpdateTicketingStatusPresentationInput) =>
+      ticketingApi.updateStatusPresentation(input),
+    onSuccess: (data, input) => {
+      queryClient.setQueryData(ticketingKeys.statusCatalog(input), data);
+      invalidateStatusPresentationQueries(queryClient, input);
     },
   });
 }

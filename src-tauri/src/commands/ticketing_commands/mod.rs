@@ -1414,7 +1414,6 @@ fn catalog_entries_to_columns(
 ) -> Vec<TicketingColumnResponse> {
     entries
         .into_iter()
-        .filter(|entry| entry.is_visible)
         .enumerate()
         .map(|(index, entry)| status_catalog_entry_column(entry, index))
         .collect()

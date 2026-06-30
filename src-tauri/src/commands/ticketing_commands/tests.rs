@@ -2012,6 +2012,56 @@ fn status_catalog_entry_maps_into_column_with_resolved_presentation() {
 }
 
 #[test]
+fn status_catalog_entries_to_columns_preserve_hidden_visibility_metadata() {
+    let now = chrono::Utc::now();
+    let columns = catalog_entries_to_columns(vec![
+        crate::domain::integrations::TicketingStatusCatalogEntry {
+            id: "catalog-1".to_string(),
+            provider: "linear".to_string(),
+            scope_kind: "linear_global".to_string(),
+            scope_id: "all".to_string(),
+            provider_status_id: "archived".to_string(),
+            provider_status_name: "Archived".to_string(),
+            provider_category: "done".to_string(),
+            provider_color: Some("#112233".to_string()),
+            provider_order: Some(3),
+            display_order: 3,
+            color_override: None,
+            is_visible: false,
+            is_terminal: true,
+            last_seen_at: Some(now),
+            stale_since: None,
+            metadata_json: None,
+            created_at: now,
+            updated_at: now,
+        },
+    ]);
+
+    assert_eq!(columns.len(), 1);
+    assert_eq!(columns[0].id, "archived");
+    assert_eq!(columns[0].is_visible, Some(false));
+}
+
+#[test]
+fn status_presentation_patch_deserializes_null_color_override_as_clear() {
+    let input: UpdateTicketingStatusPresentationInput = serde_json::from_value(serde_json::json!({
+        "provider": "linear",
+        "scopeKind": "linear_global",
+        "scopeId": "all",
+        "patches": [{
+            "providerStatusId": "state-1",
+            "colorOverride": null
+        }]
+    }))
+    .unwrap();
+
+    let patch = status_presentation_patch(input.patches.into_iter().next().unwrap()).unwrap();
+
+    assert_eq!(patch.provider_status_id, "state-1");
+    assert_eq!(patch.color_override, Some(None));
+}
+
+#[test]
 fn jira_project_maps_to_container_keyed_by_project_key() {
     let container = jira_project_to_container(JiraProjectSummary {
         id: "10000".to_string(),

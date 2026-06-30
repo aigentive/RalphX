@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::application::agent_conversation_start_service::StartAgentConversationInput;
 
@@ -85,11 +85,20 @@ pub struct TicketingStatusCatalogEntryResponse {
     pub updated_at: String,
 }
 
+fn deserialize_optional_nullable<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Ok(Some(Option::deserialize(deserializer)?))
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TicketingStatusPresentationPatchInput {
     pub provider_status_id: String,
     pub display_order: Option<i64>,
+    #[serde(default, deserialize_with = "deserialize_optional_nullable")]
     pub color_override: Option<Option<String>>,
     pub is_visible: Option<bool>,
 }
