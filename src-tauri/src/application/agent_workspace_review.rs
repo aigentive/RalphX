@@ -32,6 +32,9 @@ const WORKSPACE_REVIEW_MAX_CHANGED_FILES: usize = 120;
 const WORKSPACE_REVIEW_MAX_INHERITED_PROJECT_REFERENCES: usize = 8;
 const WORKSPACE_REVIEW_MAX_INHERITED_INTEGRATION_REFERENCES: usize = 8;
 const WORKSPACE_REVIEW_MAX_INHERITED_ARTIFACT_REFERENCES: usize = 8;
+const WORKSPACE_REVIEW_TARGET_MISMATCH_ERROR: &str =
+    "Workspace reviewer completion did not match the current Review target";
+const MERGED_PUBLICATION_PR_STATUS: &str = "merged";
 
 fn compact_log_fingerprint(value: Option<&str>) -> String {
     value
@@ -1054,13 +1057,21 @@ pub async fn complete_agent_workspace_review_run(
                 AgentWorkspaceReviewOutcome::RunFailed
             }
         });
-    let artifact_current = target.as_ref().is_some_and(|target| {
+    let mut artifact_current = target.as_ref().is_some_and(|target| {
         monitor.is_current_for_target(
             target.scope,
             target.head_sha.as_deref(),
             &target.diff_fingerprint,
         ) && monitor.review_artifact_id.is_some()
     });
+    if !artifact_current {
+        if let Some(target) = target.as_ref().filter(|target| {
+            workspace_review_artifact_covers_merged_pr_target(workspace, &monitor, target)
+        }) {
+            mark_review_artifact_current_for_target(&mut monitor, target);
+            artifact_current = true;
+        }
+    }
     let previous_blocking_fingerprint = monitor.review_blocking_fingerprint.clone();
     let previous_fixer_status = monitor.review_fixer_status.clone();
 
@@ -1115,9 +1126,7 @@ pub async fn complete_agent_workspace_review_run(
         | AgentWorkspaceReviewOutcome::NoChanges => {
             monitor.status = AgentWorkspaceReviewMonitorStatus::Blocked;
             monitor.review_outcome = AgentWorkspaceReviewOutcome::RunFailed;
-            monitor.last_error = Some(
-                "Workspace reviewer completion did not match the current Review target".to_string(),
-            );
+            monitor.last_error = Some(WORKSPACE_REVIEW_TARGET_MISMATCH_ERROR.to_string());
             clear_review_blocking_state(&mut monitor);
         }
     }
@@ -1387,11 +1396,76 @@ pub fn apply_review_artifact_to_monitor(
     monitor.last_error = None;
 }
 
+fn mark_review_artifact_current_for_target(
+    monitor: &mut AgentWorkspaceReviewMonitor,
+    target: &AgentWorkspaceReviewTarget,
+) {
+    apply_current_target_to_monitor(monitor, Some(target));
+    monitor.reviewed_target_scope = Some(target.scope);
+    monitor.reviewed_head_sha = target.head_sha.clone();
+    monitor.reviewed_diff_fingerprint = Some(target.diff_fingerprint.clone());
+}
+
+fn workspace_review_artifact_covers_merged_pr_target(
+    workspace: &AgentConversationWorkspace,
+    monitor: &AgentWorkspaceReviewMonitor,
+    target: &AgentWorkspaceReviewTarget,
+) -> bool {
+    if target.scope != AgentWorkspaceReviewTargetScope::SelectedSource
+        || monitor.reviewed_target_scope != Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta)
+        || monitor.review_artifact_id.is_none()
+        || monitor.reviewed_diff_fingerprint.is_none()
+        || workspace.publication_pr_status.as_deref() != Some(MERGED_PUBLICATION_PR_STATUS)
+    {
+        return false;
+    }
+
+    let Some(publication_pr_number) = workspace.publication_pr_number else {
+        return false;
+    };
+    if target.source_pull_request_number != Some(publication_pr_number) {
+        return false;
+    }
+
+    let (Some(reviewed_head), Some(workspace_head), Some(target_head)) = (
+        monitor.reviewed_head_sha.as_deref(),
+        monitor.workspace_head_sha.as_deref(),
+        target.head_sha.as_deref(),
+    ) else {
+        return false;
+    };
+    if reviewed_head != target_head || workspace_head != target_head {
+        return false;
+    }
+
+    let (Some(workspace_base), Some(target_base)) =
+        (monitor.workspace_base_sha.as_deref(), target.base_sha.as_deref())
+    else {
+        return false;
+    };
+    workspace_base == target_base
+}
+
+fn workspace_review_is_target_mismatch_failure(monitor: &AgentWorkspaceReviewMonitor) -> bool {
+    monitor.status == AgentWorkspaceReviewMonitorStatus::Blocked
+        && monitor.review_outcome == AgentWorkspaceReviewOutcome::RunFailed
+        && monitor.last_error.as_deref() == Some(WORKSPACE_REVIEW_TARGET_MISMATCH_ERROR)
+}
+
 fn build_context(
     workspace: &AgentConversationWorkspace,
     mut monitor: AgentWorkspaceReviewMonitor,
     target: Option<AgentWorkspaceReviewTarget>,
 ) -> AgentWorkspaceReviewContext {
+    if let Some(target) = target.as_ref().filter(|target| {
+        (matches!(
+            monitor.review_outcome,
+            AgentWorkspaceReviewOutcome::Passed | AgentWorkspaceReviewOutcome::Blocking
+        ) || workspace_review_is_target_mismatch_failure(&monitor))
+            && workspace_review_artifact_covers_merged_pr_target(workspace, &monitor, target)
+    }) {
+        mark_review_artifact_current_for_target(&mut monitor, target);
+    }
     apply_review_gate_to_monitor(&mut monitor, target.as_ref());
     let is_current = target.as_ref().is_some_and(|target| {
         monitor.is_current_for_target(
@@ -2137,6 +2211,7 @@ mod tests {
         AgentWorkspaceReviewOutcome, AgentWorkspaceSourcePullRequest, Artifact, ArtifactId,
         ArtifactType, ChatConversation, ChatConversationId, ChatMessage,
         IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow, IdeationSessionId,
+        ProjectId,
     };
     use crate::infrastructure::MockAgenticClient;
     use std::process::Command;
@@ -2210,6 +2285,23 @@ mod tests {
             .expect("committed file should be written");
         git(repo, &["add", "committed.rs"]);
         git(repo, &["commit", "-m", "committed change"]);
+    }
+
+    fn committed_workspace_delta_on_branch(repo: &Path, branch: &str) -> String {
+        git(repo, &["checkout", "-b", branch]);
+        std::fs::write(repo.join("committed.rs"), "pub fn committed() {}\n")
+            .expect("committed file should be written");
+        git(repo, &["add", "committed.rs"]);
+        git(repo, &["commit", "-m", "committed change"]);
+        git(repo, &["rev-parse", "HEAD"])
+    }
+
+    fn commit_followup_change(repo: &Path) -> String {
+        std::fs::write(repo.join("followup.rs"), "pub fn followup() {}\n")
+            .expect("followup file should be written");
+        git(repo, &["add", "followup.rs"]);
+        git(repo, &["commit", "-m", "followup change"]);
+        git(repo, &["rev-parse", "HEAD"])
     }
 
     async fn seed_conversation(state: &AppState, workspace: &AgentConversationWorkspace) {
@@ -3406,6 +3498,461 @@ x
             .last_error
             .as_deref()
             .is_some_and(|error| error.contains("Failed to route Review fixer")));
+    }
+
+    #[test]
+    fn mark_review_artifact_current_for_target_updates_reviewed_and_current_metadata() {
+        let mut monitor = AgentWorkspaceReviewMonitor::new(
+            ChatConversationId::from_string("review-monitor-conversation"),
+            ProjectId::from_string("project-1".to_string()),
+        );
+        monitor.review_artifact_id = Some(ArtifactId::from_string("artifact-1"));
+        monitor.reviewed_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
+        monitor.reviewed_head_sha = Some("selected-head".to_string());
+        monitor.reviewed_diff_fingerprint = Some("workspace-fingerprint".to_string());
+        monitor.current_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
+        monitor.current_diff_fingerprint = Some("workspace-fingerprint".to_string());
+
+        let target = AgentWorkspaceReviewTarget {
+            scope: AgentWorkspaceReviewTargetScope::SelectedSource,
+            base_ref: "main".to_string(),
+            base_sha: Some("base-sha".to_string()),
+            head_ref: "refs/ralphx/pr-heads/483".to_string(),
+            head_sha: Some("selected-head".to_string()),
+            diff_fingerprint: "selected-fingerprint".to_string(),
+            working_directory: PathBuf::from("/tmp/selected-source"),
+            source_pull_request_number: Some(483),
+            review_packet: AgentWorkspaceReviewPacket::default(),
+        };
+
+        mark_review_artifact_current_for_target(&mut monitor, &target);
+
+        assert!(monitor.is_current_for_target(
+            AgentWorkspaceReviewTargetScope::SelectedSource,
+            Some("selected-head"),
+            "selected-fingerprint"
+        ));
+        assert_eq!(
+            monitor.current_target_scope,
+            Some(AgentWorkspaceReviewTargetScope::SelectedSource)
+        );
+        assert_eq!(
+            monitor.current_diff_fingerprint.as_deref(),
+            Some("selected-fingerprint")
+        );
+        assert_eq!(
+            monitor.selected_source_pull_request_number,
+            Some(483)
+        );
+        assert_eq!(
+            monitor.selected_source_head_sha.as_deref(),
+            Some("selected-head")
+        );
+    }
+
+    #[tokio::test]
+    async fn complete_review_run_carries_workspace_review_forward_after_same_pr_merges() {
+        let (temp, repo, base_sha) = init_repo();
+        let pr_head = committed_workspace_delta_on_branch(&repo, "feature/merged-pr");
+        git(&repo, &["update-ref", "refs/ralphx/pr-heads/483", &pr_head]);
+
+        let state = AppState::new_test();
+        let project = seed_project(&state, &repo).await;
+        let mut workspace = workspace(
+            &project,
+            &repo,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main",
+            Some(base_sha),
+        );
+        seed_conversation(&state, &workspace).await;
+
+        let initial = load_agent_workspace_review_context(&state, &workspace)
+            .await
+            .expect("workspace delta context should load");
+        let target = initial.target.expect("workspace delta target should exist");
+        assert_eq!(
+            target.scope,
+            AgentWorkspaceReviewTargetScope::WorkspaceDelta
+        );
+        assert_eq!(target.head_sha.as_deref(), Some(pr_head.as_str()));
+        let mut monitor = initial.monitor;
+        apply_review_artifact_to_monitor(
+            &mut monitor,
+            target.scope,
+            target.head_sha.clone(),
+            target.diff_fingerprint.clone(),
+            Some("review-run".to_string()),
+            ArtifactId::from_string("artifact-merged-pr-review"),
+            1,
+            Utc::now(),
+            None,
+        );
+        state
+            .agent_conversation_workspace_repo
+            .upsert_workspace_review_monitor(monitor)
+            .await
+            .expect("monitor should persist");
+
+        workspace.worktree_path = temp
+            .path()
+            .join("missing-worktree")
+            .to_string_lossy()
+            .to_string();
+        workspace.publication_pr_number = Some(483);
+        workspace.publication_pr_status = Some("merged".to_string());
+
+        let completed = complete_agent_workspace_review_run(
+            &state,
+            &workspace,
+            Some("passed".to_string()),
+            Some("No blocking findings".to_string()),
+            None,
+            Some("review-run".to_string()),
+        )
+        .await
+        .expect("merged equivalent review should complete");
+
+        assert_eq!(completed.status, AgentWorkspaceReviewMonitorStatus::Ready);
+        assert_eq!(
+            completed.review_outcome,
+            AgentWorkspaceReviewOutcome::Passed
+        );
+        assert_eq!(
+            completed.review_gate_status,
+            AgentWorkspaceReviewGateStatus::Passed
+        );
+        assert_eq!(
+            completed.current_target_scope,
+            Some(AgentWorkspaceReviewTargetScope::SelectedSource)
+        );
+        assert_eq!(
+            completed.reviewed_target_scope,
+            Some(AgentWorkspaceReviewTargetScope::SelectedSource)
+        );
+        assert_eq!(completed.reviewed_head_sha.as_deref(), Some(pr_head.as_str()));
+        assert_eq!(completed.last_error, None);
+
+        let context = load_agent_workspace_review_context(&state, &workspace)
+            .await
+            .expect("merged equivalent context should load");
+        assert!(context.is_current);
+        assert!(!context.is_outdated);
+        assert_eq!(
+            context.monitor.review_gate_status,
+            AgentWorkspaceReviewGateStatus::Passed
+        );
+    }
+
+    #[tokio::test]
+    async fn complete_review_run_preserves_blocking_outcome_after_same_pr_merges() {
+        let (temp, repo, base_sha) = init_repo();
+        let pr_head = committed_workspace_delta_on_branch(&repo, "feature/merged-pr");
+        git(&repo, &["update-ref", "refs/ralphx/pr-heads/483", &pr_head]);
+
+        let state = AppState::new_test();
+        let project = seed_project(&state, &repo).await;
+        let mut workspace = workspace(
+            &project,
+            &repo,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main",
+            Some(base_sha),
+        );
+        seed_conversation(&state, &workspace).await;
+
+        let initial = load_agent_workspace_review_context(&state, &workspace)
+            .await
+            .expect("workspace delta context should load");
+        let target = initial.target.expect("workspace delta target should exist");
+        let mut monitor = initial.monitor;
+        apply_review_artifact_to_monitor(
+            &mut monitor,
+            target.scope,
+            target.head_sha.clone(),
+            target.diff_fingerprint.clone(),
+            Some("review-run".to_string()),
+            ArtifactId::from_string("artifact-merged-pr-blocking-review"),
+            1,
+            Utc::now(),
+            None,
+        );
+        state
+            .agent_conversation_workspace_repo
+            .upsert_workspace_review_monitor(monitor)
+            .await
+            .expect("monitor should persist");
+
+        workspace.worktree_path = temp
+            .path()
+            .join("missing-worktree")
+            .to_string_lossy()
+            .to_string();
+        workspace.publication_pr_number = Some(483);
+        workspace.publication_pr_status = Some("merged".to_string());
+
+        let completed = complete_agent_workspace_review_run(
+            &state,
+            &workspace,
+            Some("blocking".to_string()),
+            Some("Blocking issue summary".to_string()),
+            None,
+            Some("review-run".to_string()),
+        )
+        .await
+        .expect("merged equivalent blocking review should complete");
+
+        assert_eq!(completed.status, AgentWorkspaceReviewMonitorStatus::Ready);
+        assert_eq!(
+            completed.review_outcome,
+            AgentWorkspaceReviewOutcome::Blocking
+        );
+        assert_eq!(
+            completed.review_gate_status,
+            AgentWorkspaceReviewGateStatus::Blocking
+        );
+        assert_eq!(
+            completed.reviewed_target_scope,
+            Some(AgentWorkspaceReviewTargetScope::SelectedSource)
+        );
+        assert_eq!(
+            completed.review_blocking_summary.as_deref(),
+            Some("Blocking issue summary")
+        );
+        assert!(completed.review_blocking_fingerprint.is_some());
+        assert!(completed
+            .last_error
+            .as_deref()
+            .is_some_and(|error| error.contains("Failed to route Review fixer")));
+
+        let context = load_agent_workspace_review_context(&state, &workspace)
+            .await
+            .expect("merged equivalent blocking context should load");
+        assert!(context.is_current);
+        assert!(!context.is_outdated);
+        assert_eq!(
+            context.monitor.review_gate_status,
+            AgentWorkspaceReviewGateStatus::Blocking
+        );
+    }
+
+    #[tokio::test]
+    async fn existing_merged_target_mismatch_failure_marks_context_current_without_autopass() {
+        let (temp, repo, base_sha) = init_repo();
+        let pr_head = committed_workspace_delta_on_branch(&repo, "feature/merged-pr");
+        git(&repo, &["update-ref", "refs/ralphx/pr-heads/483", &pr_head]);
+
+        let state = AppState::new_test();
+        let project = seed_project(&state, &repo).await;
+        let mut workspace = workspace(
+            &project,
+            &repo,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main",
+            Some(base_sha),
+        );
+        seed_conversation(&state, &workspace).await;
+
+        let initial = load_agent_workspace_review_context(&state, &workspace)
+            .await
+            .expect("workspace delta context should load");
+        let target = initial.target.expect("workspace delta target should exist");
+        let mut monitor = initial.monitor;
+        apply_review_artifact_to_monitor(
+            &mut monitor,
+            target.scope,
+            target.head_sha.clone(),
+            target.diff_fingerprint.clone(),
+            Some("review-run".to_string()),
+            ArtifactId::from_string("artifact-merged-pr-failed-review"),
+            1,
+            Utc::now(),
+            None,
+        );
+        monitor.status = AgentWorkspaceReviewMonitorStatus::Blocked;
+        monitor.review_outcome = AgentWorkspaceReviewOutcome::RunFailed;
+        monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Failed;
+        monitor.last_error = Some(WORKSPACE_REVIEW_TARGET_MISMATCH_ERROR.to_string());
+        state
+            .agent_conversation_workspace_repo
+            .upsert_workspace_review_monitor(monitor)
+            .await
+            .expect("monitor should persist");
+
+        workspace.worktree_path = temp
+            .path()
+            .join("missing-worktree")
+            .to_string_lossy()
+            .to_string();
+        workspace.publication_pr_number = Some(483);
+        workspace.publication_pr_status = Some("merged".to_string());
+
+        let context = load_agent_workspace_review_context(&state, &workspace)
+            .await
+            .expect("merged equivalent failed context should load");
+
+        assert!(context.is_current);
+        assert!(!context.is_outdated);
+        assert_eq!(
+            context.monitor.reviewed_target_scope,
+            Some(AgentWorkspaceReviewTargetScope::SelectedSource)
+        );
+        assert_eq!(
+            context.monitor.review_outcome,
+            AgentWorkspaceReviewOutcome::RunFailed
+        );
+        assert_eq!(
+            context.monitor.review_gate_status,
+            AgentWorkspaceReviewGateStatus::Failed
+        );
+        assert_eq!(
+            context.monitor.last_error.as_deref(),
+            Some(WORKSPACE_REVIEW_TARGET_MISMATCH_ERROR)
+        );
+    }
+
+    #[tokio::test]
+    async fn complete_review_run_rejects_merged_pr_when_reviewed_head_differs() {
+        let (temp, repo, base_sha) = init_repo();
+        let reviewed_head = committed_workspace_delta_on_branch(&repo, "feature/merged-pr");
+        git(&repo, &["update-ref", "refs/ralphx/pr-heads/483", &reviewed_head]);
+
+        let state = AppState::new_test();
+        let project = seed_project(&state, &repo).await;
+        let mut workspace = workspace(
+            &project,
+            &repo,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main",
+            Some(base_sha),
+        );
+        seed_conversation(&state, &workspace).await;
+
+        let initial = load_agent_workspace_review_context(&state, &workspace)
+            .await
+            .expect("workspace delta context should load");
+        let target = initial.target.expect("workspace delta target should exist");
+        let mut monitor = initial.monitor;
+        apply_review_artifact_to_monitor(
+            &mut monitor,
+            target.scope,
+            target.head_sha.clone(),
+            target.diff_fingerprint.clone(),
+            Some("review-run".to_string()),
+            ArtifactId::from_string("artifact-stale-head-review"),
+            1,
+            Utc::now(),
+            None,
+        );
+        state
+            .agent_conversation_workspace_repo
+            .upsert_workspace_review_monitor(monitor)
+            .await
+            .expect("monitor should persist");
+
+        let new_head = commit_followup_change(&repo);
+        git(&repo, &["update-ref", "refs/ralphx/pr-heads/483", &new_head]);
+        workspace.worktree_path = temp
+            .path()
+            .join("missing-worktree")
+            .to_string_lossy()
+            .to_string();
+        workspace.publication_pr_number = Some(483);
+        workspace.publication_pr_status = Some("merged".to_string());
+
+        let completed = complete_agent_workspace_review_run(
+            &state,
+            &workspace,
+            Some("passed".to_string()),
+            Some("No blocking findings".to_string()),
+            None,
+            Some("review-run".to_string()),
+        )
+        .await
+        .expect("stale head completion should persist failed monitor");
+
+        assert_eq!(completed.status, AgentWorkspaceReviewMonitorStatus::Blocked);
+        assert_eq!(
+            completed.review_outcome,
+            AgentWorkspaceReviewOutcome::RunFailed
+        );
+        assert_eq!(
+            completed.review_gate_status,
+            AgentWorkspaceReviewGateStatus::Failed
+        );
+        assert_eq!(
+            completed.last_error.as_deref(),
+            Some(WORKSPACE_REVIEW_TARGET_MISMATCH_ERROR)
+        );
+    }
+
+    #[tokio::test]
+    async fn complete_review_run_rejects_unmerged_pr_target_drift() {
+        let (temp, repo, base_sha) = init_repo();
+        let pr_head = committed_workspace_delta_on_branch(&repo, "feature/open-pr");
+        git(&repo, &["update-ref", "refs/ralphx/pr-heads/483", &pr_head]);
+
+        let state = AppState::new_test();
+        let project = seed_project(&state, &repo).await;
+        let mut workspace = workspace(
+            &project,
+            &repo,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main",
+            Some(base_sha),
+        );
+        seed_conversation(&state, &workspace).await;
+
+        let initial = load_agent_workspace_review_context(&state, &workspace)
+            .await
+            .expect("workspace delta context should load");
+        let target = initial.target.expect("workspace delta target should exist");
+        let mut monitor = initial.monitor;
+        apply_review_artifact_to_monitor(
+            &mut monitor,
+            target.scope,
+            target.head_sha.clone(),
+            target.diff_fingerprint.clone(),
+            Some("review-run".to_string()),
+            ArtifactId::from_string("artifact-open-pr-review"),
+            1,
+            Utc::now(),
+            None,
+        );
+        state
+            .agent_conversation_workspace_repo
+            .upsert_workspace_review_monitor(monitor)
+            .await
+            .expect("monitor should persist");
+
+        workspace.worktree_path = temp
+            .path()
+            .join("missing-worktree")
+            .to_string_lossy()
+            .to_string();
+        workspace.publication_pr_number = Some(483);
+        workspace.publication_pr_status = Some("open".to_string());
+
+        let completed = complete_agent_workspace_review_run(
+            &state,
+            &workspace,
+            Some("passed".to_string()),
+            Some("No blocking findings".to_string()),
+            None,
+            Some("review-run".to_string()),
+        )
+        .await
+        .expect("open PR target drift should persist failed monitor");
+
+        assert_eq!(completed.status, AgentWorkspaceReviewMonitorStatus::Blocked);
+        assert_eq!(
+            completed.review_gate_status,
+            AgentWorkspaceReviewGateStatus::Failed
+        );
+        assert_eq!(
+            completed.last_error.as_deref(),
+            Some(WORKSPACE_REVIEW_TARGET_MISMATCH_ERROR)
+        );
     }
 
     #[tokio::test]
