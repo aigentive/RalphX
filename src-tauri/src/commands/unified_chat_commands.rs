@@ -5479,6 +5479,13 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state(
         .map_err(|e| e.to_string())?
         .unwrap_or(workspace);
 
+    crate::commands::agent_workspace_auto_review::spawn_auto_review_after_workspace_change(
+        state.clone(),
+        Arc::clone(execution_state),
+        refreshed.clone(),
+        crate::commands::agent_workspace_auto_review::AutoReviewTrigger::BaseUpdate,
+    );
+
     Ok(UpdateAgentConversationWorkspaceFromBaseResponse {
         workspace: agent_workspace_response_for_state(state, refreshed).await?,
         updated,
