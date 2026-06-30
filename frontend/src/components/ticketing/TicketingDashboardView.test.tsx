@@ -79,16 +79,19 @@ vi.mock("@/hooks/useTicketing", () => ({
   findTicketTransitionForColumn: vi.fn(),
   flattenTicketPages: vi.fn((data) => data?.pages.flatMap((page) => page.items) ?? []),
   useRefreshTickets: vi.fn(),
+  useRefreshTicketingStatusCatalog: vi.fn(),
   useTicketAssociations: vi.fn(),
   useTicketDetail: vi.fn(),
   useTicketingMutations: vi.fn(),
   useTicketingColumns: vi.fn(),
   useTicketingContainers: vi.fn(),
   useTicketingProviders: vi.fn(),
+  useTicketingStatusCatalog: vi.fn(),
   useTicketFilterOptions: vi.fn(),
   useTicketLabelOptions: vi.fn(),
   useTicketTransitions: vi.fn(),
   useTickets: vi.fn(),
+  useUpdateTicketingStatusPresentation: vi.fn(),
 }));
 
 vi.mock("@/hooks/useProjects", () => ({
@@ -403,6 +406,24 @@ describe("TicketingDashboardView", () => {
       mutate: vi.fn(),
       isPending: false,
     } as unknown as ReturnType<typeof ticketingHooks.useRefreshTickets>);
+    vi.mocked(ticketingHooks.useTicketingStatusCatalog).mockReturnValue({
+      data: [],
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof ticketingHooks.useTicketingStatusCatalog>);
+    vi.mocked(ticketingHooks.useRefreshTicketingStatusCatalog).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof ticketingHooks.useRefreshTicketingStatusCatalog>);
+    vi.mocked(ticketingHooks.useUpdateTicketingStatusPresentation).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof ticketingHooks.useUpdateTicketingStatusPresentation>);
     vi.mocked(ticketingHooks.useTicketLabelOptions).mockReturnValue({
       data: [],
       isLoading: false,
@@ -543,6 +564,61 @@ describe("TicketingDashboardView", () => {
     );
     expect(screen.getByRole("button", { name: /RX-1/ })).toBeInTheDocument();
     expect(screen.getByText("Fix merge race in transition handler")).toBeInTheDocument();
+  });
+
+  it("opens scoped status management from the header and syncs the selected project", async () => {
+    const syncStatuses = vi.fn();
+    mockConnectedDashboard();
+    vi.mocked(ticketingHooks.useTicketingStatusCatalog).mockReturnValue({
+      data: [
+        {
+          id: "catalog-1",
+          provider: "jira",
+          scopeKind: "jira_project",
+          scopeId: "RX",
+          providerStatusId: "todo",
+          providerStatusName: "To Do",
+          providerCategory: "todo",
+          providerColor: null,
+          providerOrder: 0,
+          displayOrder: 0,
+          colorOverride: null,
+          color: null,
+          isVisible: true,
+          isTerminal: false,
+          stale: false,
+          lastSeenAt: "2026-06-19T22:00:00.000Z",
+          staleSince: null,
+          updatedAt: "2026-06-19T22:00:00.000Z",
+        },
+      ],
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof ticketingHooks.useTicketingStatusCatalog>);
+    vi.mocked(ticketingHooks.useRefreshTicketingStatusCatalog).mockReturnValue({
+      mutate: syncStatuses,
+      isPending: false,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof ticketingHooks.useRefreshTicketingStatusCatalog>);
+
+    renderDashboard();
+
+    fireEvent.click(screen.getByRole("button", { name: "Statuses" }));
+
+    const dialog = screen.getByRole("dialog");
+    expect(dialog).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Statuses" })).toBeInTheDocument();
+    expect(within(dialog).getByText("To Do")).toBeInTheDocument();
+    expect(within(dialog).getByLabelText("1 ticket in To Do")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(syncStatuses).toHaveBeenCalledWith({
+        provider: "jira",
+        scopeKind: "jira_project",
+        scopeId: "RX",
+      });
+    });
   });
 
   it("keeps GitHub and Granola out of the ticketing dashboard", () => {

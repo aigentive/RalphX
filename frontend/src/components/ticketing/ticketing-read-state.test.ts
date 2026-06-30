@@ -230,6 +230,24 @@ describe("groupTicketsByStatus", () => {
     expect(groups[1]?.tickets.map((t) => t.ref.id)).toEqual(["1", "3"]);
   });
 
+  it("uses configured column presentation for group names and colors", () => {
+    const groups = groupTicketsByStatus(
+      [ticketInState("1", "started", "Started")],
+      [
+        {
+          id: "started",
+          name: "In Progress",
+          category: "in_progress",
+          color: "#ff6600",
+          order: 0,
+        },
+      ],
+    );
+
+    expect(groups[0]?.name).toBe("In Progress");
+    expect(groups[0]?.color).toBe("#ff6600");
+  });
+
   it("sorts states absent from the columns last, alphabetically", () => {
     const groups = groupTicketsByStatus(
       [ticketInState("1", "z", "Zeta"), ticketInState("2", "a", "Alpha")],

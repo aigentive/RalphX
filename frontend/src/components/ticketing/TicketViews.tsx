@@ -13,10 +13,6 @@ import {
   Briefcase,
   ChevronDown,
   ChevronRight,
-  Circle,
-  CircleCheck,
-  CircleDashed,
-  CircleDot,
   GitPullRequestArrow,
   MessageSquare,
   UserCheck,
@@ -34,9 +30,11 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { TicketAssigneeChips } from "./TicketAssigneeChip";
 import { TicketLabels } from "./TicketLabels";
+import { TicketStatusGlyph } from "./TicketStatusGlyph";
 import { groupTicketsByStatus, ticketAssignees } from "./ticketing-read-state";
 import { resolveTicketKanbanMove, ticketDragId } from "./ticketing-kanban-utils";
-import { categoryToken, formatTicketDate, ticketButtonLabel, ticketKey } from "./ticketing-utils";
+import { statusColor } from "./ticketing-status-presentation";
+import { formatTicketDate, ticketButtonLabel, ticketKey } from "./ticketing-utils";
 
 /**
  * Shared grid template for list rows and the column-aligned overlays.
@@ -56,20 +54,6 @@ function isLivePrStatus(status: string | null | undefined): boolean {
   return normalized === "" || normalized === "open" || normalized === "draft";
 }
 
-/** Glyph picker shared by the read-only status icon and the interactive trigger. */
-function statusGlyph(category: TicketSummary["state"]["category"], className: string) {
-  if (category === "done") {
-    return <CircleCheck className={className} />;
-  }
-  if (category === "in_progress") {
-    return <CircleDot className={className} />;
-  }
-  if (category === "other") {
-    return <CircleDashed className={className} />;
-  }
-  return <Circle className={className} />;
-}
-
 /** Colored status glyph (Linear-style) with the state name as tooltip/accessible name. */
 function TicketStatusIcon({ state }: { state: TicketSummary["state"] }) {
   return (
@@ -78,9 +62,9 @@ function TicketStatusIcon({ state }: { state: TicketSummary["state"] }) {
       aria-label={`Status: ${state.name}`}
       title={state.name}
       className="inline-flex shrink-0"
-      style={{ color: categoryToken(state.category) }}
+      style={{ color: statusColor(state) }}
     >
-      {statusGlyph(state.category, "h-4 w-4")}
+      <TicketStatusGlyph category={state.category} className="h-4 w-4" />
     </span>
   );
 }
@@ -114,9 +98,9 @@ function TicketStatusControl({
               aria-label={label}
               className="pointer-events-auto inline-flex shrink-0 items-center justify-center rounded-md p-0.5 hover:bg-[var(--bg-hover)] focus-visible:outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:1px]"
               onClick={(event) => event.stopPropagation()}
-              style={{ color: categoryToken(ticket.state.category) }}
+              style={{ color: statusColor(ticket.state) }}
             >
-              {statusGlyph(ticket.state.category, "h-4 w-4")}
+              <TicketStatusGlyph category={ticket.state.category} className="h-4 w-4" />
             </button>
           </DropdownMenuTrigger>
         </TooltipTrigger>
@@ -131,7 +115,7 @@ function TicketStatusControl({
             <span
               className="mr-2 inline-block h-2 w-2 shrink-0 rounded-full"
               aria-hidden="true"
-              style={{ backgroundColor: categoryToken(column.category) }}
+              style={{ backgroundColor: statusColor(column) }}
             />
             {column.name}
           </DropdownMenuItem>
@@ -343,7 +327,14 @@ export function TicketListView({
               ) : (
                 <ChevronDown className="h-3.5 w-3.5 text-[var(--text-muted)]" aria-hidden="true" />
               )}
-              <TicketStatusIcon state={{ id: group.id, name: group.name, category: group.category }} />
+              <TicketStatusIcon
+                state={{
+                  id: group.id,
+                  name: group.name,
+                  category: group.category,
+                  color: group.color,
+                }}
+              />
               <span className="text-[var(--text-secondary)]">{group.name}</span>
               <span className="text-[var(--text-muted)]">{group.tickets.length}</span>
             </button>
@@ -645,7 +636,7 @@ export function TicketKanbanView({
                   <span
                     className="h-2 w-2 rounded-full"
                     aria-hidden="true"
-                    style={{ backgroundColor: categoryToken(column.category) }}
+                    style={{ backgroundColor: statusColor(column) }}
                   />
                   <h2 className="text-sm font-semibold text-[var(--text-primary)]">{column.name}</h2>
                 </div>

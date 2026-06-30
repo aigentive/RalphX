@@ -62,6 +62,7 @@ pub mod memory_task_step_repo;
 pub mod memory_team_message_repo;
 pub mod memory_team_session_repo;
 pub mod memory_ticket_canonical_branch_repo;
+pub mod memory_ticketing_status_catalog_repo;
 pub mod memory_webhook_registration_repo;
 pub mod memory_workflow_repo;
 
@@ -129,5 +130,6 @@ pub use memory_task_step_repo::MemoryTaskStepRepository;
 pub use memory_team_message_repo::MemoryTeamMessageRepository;
 pub use memory_team_session_repo::MemoryTeamSessionRepository;
 pub use memory_ticket_canonical_branch_repo::MemoryTicketCanonicalBranchRepository;
+pub use memory_ticketing_status_catalog_repo::MemoryTicketingStatusCatalogRepository;
 pub use memory_webhook_registration_repo::MemoryWebhookRegistrationRepository;
 pub use memory_workflow_repo::MemoryWorkflowRepository;

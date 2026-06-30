@@ -222,6 +222,22 @@ where
         fetch_space_statuses(self, &auth.api_token, space_id).await
     }
 
+    async fn list_folder_statuses(
+        &self,
+        auth: &ClickUpAuthContext,
+        folder_id: &str,
+    ) -> Result<Vec<ClickUpStatus>, String> {
+        fetch_folder_statuses(self, &auth.api_token, folder_id).await
+    }
+
+    async fn list_list_statuses(
+        &self,
+        auth: &ClickUpAuthContext,
+        list_id: &str,
+    ) -> Result<Vec<ClickUpStatus>, String> {
+        fetch_list_statuses(self, &auth.api_token, list_id).await
+    }
+
     async fn current_user(&self, auth: &ClickUpAuthContext) -> Result<ClickUpUser, String> {
         fetch_current_user(self, &auth.api_token).await
     }
@@ -585,13 +601,33 @@ pub(crate) async fn fetch_space_statuses<C: ClickUpJsonRequester + ?Sized>(
         percent_encode_path_segment(space_id)
     );
     let value = client.request_json(Method::GET, url, token, None).await?;
-    Ok(value
-        .get("statuses")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(status_from_value)
-        .collect())
+    Ok(statuses_from_value(&value))
+}
+
+pub(crate) async fn fetch_folder_statuses<C: ClickUpJsonRequester + ?Sized>(
+    client: &C,
+    token: &str,
+    folder_id: &str,
+) -> Result<Vec<ClickUpStatus>, String> {
+    let url = format!(
+        "{CLICKUP_API_BASE}/folder/{}",
+        percent_encode_path_segment(folder_id)
+    );
+    let value = client.request_json(Method::GET, url, token, None).await?;
+    Ok(statuses_from_value(&value))
+}
+
+pub(crate) async fn fetch_list_statuses<C: ClickUpJsonRequester + ?Sized>(
+    client: &C,
+    token: &str,
+    list_id: &str,
+) -> Result<Vec<ClickUpStatus>, String> {
+    let url = format!(
+        "{CLICKUP_API_BASE}/list/{}",
+        percent_encode_path_segment(list_id)
+    );
+    let value = client.request_json(Method::GET, url, token, None).await?;
+    Ok(statuses_from_value(&value))
 }
 
 pub(crate) async fn put_task_status<C: ClickUpJsonRequester + ?Sized>(
@@ -866,6 +902,16 @@ fn status_from_value(value: &Value) -> Option<ClickUpStatus> {
         color: opt_str(value, "color"),
         orderindex: value.get("orderindex").and_then(Value::as_i64),
     })
+}
+
+fn statuses_from_value(value: &Value) -> Vec<ClickUpStatus> {
+    value
+        .get("statuses")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(status_from_value)
+        .collect()
 }
 
 fn task_summary_from_value(task: &Value) -> Option<ClickUpTaskSummary> {

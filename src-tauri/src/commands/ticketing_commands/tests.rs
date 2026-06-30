@@ -18,8 +18,9 @@ use crate::application::{
     ClickUpTaskContent, ClickUpTaskSummary, ClickUpUser, JiraIssueDetail, JiraProjectSummary,
     JiraStatusSummary, LinearApiClient, LinearAuthContext, LinearIntegrationService,
     LinearIntegrationSettings, LinearIntegrationSettingsRepository, LinearIssueContent,
-    LinearIssueSummary, LinearProject, TeamService, TeamStateTracker, TicketingLabelResult,
-    TicketingMutationResult, TicketingTicketIdentity, TicketingTransitionOption,
+    LinearIssueSummary, LinearProject, LinearWorkflowState, TeamService, TeamStateTracker,
+    TicketingLabelResult, TicketingMutationResult, TicketingTicketIdentity,
+    TicketingTransitionOption,
 };
 use crate::commands::unified_chat_commands::StartAgentConversationInput;
 use crate::commands::ExecutionState;
@@ -200,14 +201,27 @@ fn clickup_space_maps_to_project_container() {
 
 #[test]
 fn clickup_status_maps_into_column_with_name_derived_id() {
-    let column = clickup_status_to_column(
-        ClickUpStatus {
-            id: Some("status-99".to_string()),
-            status: "In Progress".to_string(),
-            status_type: "custom".to_string(),
-            category: "in_progress".to_string(),
-            color: Some("#abcdef".to_string()),
-            orderindex: Some(1),
+    let now = chrono::Utc::now();
+    let column = status_catalog_entry_column(
+        crate::domain::integrations::TicketingStatusCatalogEntry {
+            id: "catalog-1".to_string(),
+            provider: "clickup".to_string(),
+            scope_kind: "clickup_space".to_string(),
+            scope_id: "space-1".to_string(),
+            provider_status_id: state_id("In Progress"),
+            provider_status_name: "In Progress".to_string(),
+            provider_category: "in_progress".to_string(),
+            provider_color: Some("#abcdef".to_string()),
+            provider_order: Some(1),
+            display_order: 1,
+            color_override: None,
+            is_visible: true,
+            is_terminal: false,
+            last_seen_at: Some(now),
+            stale_since: None,
+            metadata_json: Some(serde_json::json!({ "clickupStatusId": "status-99" }).to_string()),
+            created_at: now,
+            updated_at: now,
         },
         1,
     );
@@ -660,14 +674,27 @@ fn clickup_comment_mapper_preserves_sparse_nested_comments() {
 fn clickup_ticket_state_id_aligns_with_column_id_for_kanban() {
     // Kanban groups tickets by `state.id == column.id`. ClickUp tasks carry no
     // status id, so both sides must derive the id from the same status name.
-    let column = clickup_status_to_column(
-        ClickUpStatus {
-            id: None,
-            status: "In Review".to_string(),
-            status_type: "custom".to_string(),
-            category: "in_progress".to_string(),
-            color: None,
-            orderindex: Some(2),
+    let now = chrono::Utc::now();
+    let column = status_catalog_entry_column(
+        crate::domain::integrations::TicketingStatusCatalogEntry {
+            id: "catalog-1".to_string(),
+            provider: "clickup".to_string(),
+            scope_kind: "clickup_space".to_string(),
+            scope_id: "space-1".to_string(),
+            provider_status_id: state_id("In Review"),
+            provider_status_name: "In Review".to_string(),
+            provider_category: "in_progress".to_string(),
+            provider_color: None,
+            provider_order: Some(2),
+            display_order: 2,
+            color_override: None,
+            is_visible: true,
+            is_terminal: false,
+            last_seen_at: Some(now),
+            stale_since: None,
+            metadata_json: None,
+            created_at: now,
+            updated_at: now,
         },
         0,
     );
@@ -758,6 +785,8 @@ async fn clickup_conversation_associations_are_empty_pending_followup() {
 struct FakeLinearTicketingClient {
     issues: Mutex<Vec<LinearIssueSummary>>,
     projects: Mutex<Vec<LinearProject>>,
+    workflow_states: Mutex<Vec<LinearWorkflowState>>,
+    list_workflow_states_team: Mutex<Vec<Option<String>>>,
     search_limits: Mutex<Vec<usize>>,
     list_projects_first: Mutex<Vec<usize>>,
 }
@@ -811,12 +840,26 @@ impl LinearApiClient for FakeLinearTicketingClient {
         self.list_projects_first.lock().unwrap().push(first);
         Ok(self.projects.lock().unwrap().clone())
     }
+
+    async fn list_workflow_states(
+        &self,
+        _auth: &LinearAuthContext,
+        team_id: Option<&str>,
+    ) -> Result<Vec<LinearWorkflowState>, String> {
+        self.list_workflow_states_team
+            .lock()
+            .unwrap()
+            .push(team_id.map(str::to_string));
+        Ok(self.workflow_states.lock().unwrap().clone())
+    }
 }
 
 #[derive(Default)]
 struct FakeAtlassianTicketingClient {
     projects: Mutex<Vec<JiraProjectSummary>>,
+    statuses: Mutex<Vec<JiraStatusSummary>>,
     list_project_limits: Mutex<Vec<usize>>,
+    list_status_project_keys: Mutex<Vec<String>>,
 }
 
 #[async_trait]
@@ -889,6 +932,18 @@ impl AtlassianApiClient for FakeAtlassianTicketingClient {
         Ok(self.projects.lock().unwrap().clone())
     }
 
+    async fn list_jira_project_statuses(
+        &self,
+        _auth: &AtlassianAuthContext,
+        project_key: &str,
+    ) -> Result<Vec<JiraStatusSummary>, String> {
+        self.list_status_project_keys
+            .lock()
+            .unwrap()
+            .push(project_key.to_string());
+        Ok(self.statuses.lock().unwrap().clone())
+    }
+
     async fn exchange_oauth_code(
         &self,
         _client_id: &str,
@@ -924,6 +979,9 @@ struct FakeClickUpTicketingClient {
     list_folderless_lists_calls: Mutex<Vec<String>>,
     list_tasks_calls: Mutex<Vec<Vec<String>>>,
     list_tasks_for_list_calls: Mutex<Vec<(String, Vec<i64>)>>,
+    list_statuses_calls: Mutex<Vec<String>>,
+    list_folder_statuses_calls: Mutex<Vec<String>>,
+    list_list_statuses_calls: Mutex<Vec<String>>,
 }
 
 impl FakeClickUpTicketingClient {
@@ -1096,6 +1154,83 @@ impl ClickUpApiClient for FakeClickUpTicketingClient {
         task.list_id = Some(list_id.to_string());
         task.location_ids = vec![list_id.to_string()];
         Ok(vec![task])
+    }
+
+    async fn list_statuses(
+        &self,
+        _auth: &ClickUpAuthContext,
+        space_id: &str,
+    ) -> Result<Vec<ClickUpStatus>, String> {
+        self.list_statuses_calls
+            .lock()
+            .unwrap()
+            .push(space_id.to_string());
+        Ok(vec![
+            ClickUpStatus {
+                id: None,
+                status: "to do".to_string(),
+                status_type: "open".to_string(),
+                category: "todo".to_string(),
+                color: Some("#94a3b8".to_string()),
+                orderindex: Some(0),
+            },
+            ClickUpStatus {
+                id: None,
+                status: "complete".to_string(),
+                status_type: "done".to_string(),
+                category: "done".to_string(),
+                color: Some("#16a34a".to_string()),
+                orderindex: Some(1),
+            },
+        ])
+    }
+
+    async fn list_folder_statuses(
+        &self,
+        _auth: &ClickUpAuthContext,
+        folder_id: &str,
+    ) -> Result<Vec<ClickUpStatus>, String> {
+        self.list_folder_statuses_calls
+            .lock()
+            .unwrap()
+            .push(folder_id.to_string());
+        Ok(vec![
+            ClickUpStatus {
+                id: None,
+                status: "backlog".to_string(),
+                status_type: "open".to_string(),
+                category: "todo".to_string(),
+                color: Some("#64748b".to_string()),
+                orderindex: Some(0),
+            },
+            ClickUpStatus {
+                id: None,
+                status: "awaiting deploy".to_string(),
+                status_type: "custom".to_string(),
+                category: "in_progress".to_string(),
+                color: Some("#0891b2".to_string()),
+                orderindex: Some(1),
+            },
+        ])
+    }
+
+    async fn list_list_statuses(
+        &self,
+        _auth: &ClickUpAuthContext,
+        list_id: &str,
+    ) -> Result<Vec<ClickUpStatus>, String> {
+        self.list_list_statuses_calls
+            .lock()
+            .unwrap()
+            .push(list_id.to_string());
+        Ok(vec![ClickUpStatus {
+            id: None,
+            status: "on staging for review".to_string(),
+            status_type: "custom".to_string(),
+            category: "in_progress".to_string(),
+            color: Some("#0284c7".to_string()),
+            orderindex: Some(0),
+        }])
     }
 
     async fn current_user(&self, _auth: &ClickUpAuthContext) -> Result<ClickUpUser, String> {
@@ -1309,6 +1444,341 @@ async fn list_ticketing_containers_loads_clickup_space_children() {
             .as_slice(),
         &["space-1"]
     );
+}
+
+#[tokio::test]
+async fn list_ticketing_columns_syncs_clickup_selected_location_statuses() {
+    let clickup_client = Arc::new(FakeClickUpTicketingClient::default());
+    let mut state = AppState::new_test();
+    state.clickup_integration_service = valid_clickup_service(Arc::clone(&clickup_client)).await;
+    let app = build_ticketing_start_app(state, Arc::new(ExecutionState::new()));
+
+    let folder_columns = list_ticketing_columns(
+        "clickup".to_string(),
+        Some("folder:folder-1".to_string()),
+        app.state(),
+    )
+    .await
+    .expect("folder-scoped clickup statuses should load");
+
+    assert_eq!(
+        folder_columns
+            .iter()
+            .map(|column| column.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["backlog", "awaiting deploy"]
+    );
+    assert_eq!(
+        folder_columns
+            .iter()
+            .map(|column| column.scope_kind.as_deref())
+            .collect::<Vec<_>>(),
+        vec![Some("clickup_folder"), Some("clickup_folder")]
+    );
+    assert_eq!(
+        clickup_client
+            .list_folder_statuses_calls
+            .lock()
+            .unwrap()
+            .as_slice(),
+        &["folder-1"]
+    );
+    assert!(clickup_client
+        .list_statuses_calls
+        .lock()
+        .unwrap()
+        .is_empty());
+
+    let list_columns = list_ticketing_columns(
+        "clickup".to_string(),
+        Some("list:list-folder".to_string()),
+        app.state(),
+    )
+    .await
+    .expect("list-scoped clickup statuses should load");
+
+    assert_eq!(
+        list_columns
+            .iter()
+            .map(|column| column.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["on staging for review"]
+    );
+    assert_eq!(list_columns[0].scope_kind.as_deref(), Some("clickup_list"));
+    assert_eq!(
+        clickup_client
+            .list_list_statuses_calls
+            .lock()
+            .unwrap()
+            .as_slice(),
+        &["list-folder"]
+    );
+}
+
+#[tokio::test]
+async fn list_ticketing_columns_aggregates_clickup_space_child_statuses() {
+    let clickup_client = Arc::new(FakeClickUpTicketingClient::default());
+    let mut state = AppState::new_test();
+    state.clickup_integration_service = valid_clickup_service(Arc::clone(&clickup_client)).await;
+    let app = build_ticketing_start_app(state, Arc::new(ExecutionState::new()));
+
+    let columns = list_ticketing_columns(
+        "clickup".to_string(),
+        Some("space:space-1".to_string()),
+        app.state(),
+    )
+    .await
+    .expect("space-scoped clickup statuses should include child location statuses");
+
+    assert_eq!(
+        columns
+            .iter()
+            .map(|column| column.name.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "to do",
+            "backlog",
+            "awaiting deploy",
+            "on staging for review",
+            "complete",
+        ]
+    );
+    assert!(columns
+        .iter()
+        .all(|column| column.scope_kind.as_deref() == Some("clickup_space")));
+    assert_eq!(
+        clickup_client
+            .list_statuses_calls
+            .lock()
+            .unwrap()
+            .as_slice(),
+        &["space-1"]
+    );
+    assert_eq!(
+        clickup_client
+            .list_folder_statuses_calls
+            .lock()
+            .unwrap()
+            .as_slice(),
+        &["folder-1"]
+    );
+    assert_eq!(
+        clickup_client
+            .list_list_statuses_calls
+            .lock()
+            .unwrap()
+            .as_slice(),
+        &["list-folder", "list-space"]
+    );
+}
+
+#[tokio::test]
+async fn status_catalog_commands_refresh_list_and_update_jira_scope_locally() {
+    let atlassian_client = Arc::new(FakeAtlassianTicketingClient::default());
+    atlassian_client.statuses.lock().unwrap().extend([
+        JiraStatusSummary {
+            id: "jira-done".to_string(),
+            name: "Done".to_string(),
+            category: "done".to_string(),
+        },
+        JiraStatusSummary {
+            id: "jira-todo".to_string(),
+            name: "Todo".to_string(),
+            category: "todo".to_string(),
+        },
+        JiraStatusSummary {
+            id: "jira-progress".to_string(),
+            name: "In Progress".to_string(),
+            category: "in_progress".to_string(),
+        },
+    ]);
+    let mut state = AppState::new_test();
+    state.atlassian_integration_service =
+        valid_atlassian_service(Arc::clone(&atlassian_client)).await;
+    let app = build_ticketing_start_app(state, Arc::new(ExecutionState::new()));
+
+    let synced = refresh_ticketing_status_catalog(
+        "jira".to_string(),
+        "jira_project".to_string(),
+        "RX".to_string(),
+        app.state(),
+    )
+    .await
+    .expect("jira statuses should sync into RalphX catalog");
+
+    assert_eq!(
+        synced
+            .iter()
+            .map(|entry| entry.provider_status_name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Todo", "In Progress", "Done"]
+    );
+    assert_eq!(synced[1].provider_status_id, "jira-progress");
+    assert_eq!(synced[1].provider_order, Some(1));
+    assert!(synced[2].is_terminal);
+    assert_eq!(
+        atlassian_client
+            .list_status_project_keys
+            .lock()
+            .unwrap()
+            .as_slice(),
+        &["RX"]
+    );
+
+    let updated = update_ticketing_status_presentation(
+        UpdateTicketingStatusPresentationInput {
+            provider: "jira".to_string(),
+            scope_kind: "jira_project".to_string(),
+            scope_id: "RX".to_string(),
+            patches: vec![TicketingStatusPresentationPatchInput {
+                provider_status_id: "jira-progress".to_string(),
+                display_order: Some(-1),
+                color_override: Some(Some("#ff6600".to_string())),
+                is_visible: Some(false),
+            }],
+        },
+        app.state(),
+    )
+    .await
+    .expect("local presentation patch should update RalphX catalog");
+
+    assert_eq!(updated[0].provider_status_id, "jira-progress");
+    assert_eq!(updated[0].color_override.as_deref(), Some("#ff6600"));
+    assert_eq!(updated[0].color.as_deref(), Some("#ff6600"));
+    assert!(!updated[0].is_visible);
+    assert_eq!(
+        atlassian_client
+            .list_status_project_keys
+            .lock()
+            .unwrap()
+            .as_slice(),
+        &["RX"],
+        "presentation edits must not call provider status mutation/read APIs"
+    );
+
+    let listed = list_ticketing_status_catalog(
+        "jira".to_string(),
+        "jira_project".to_string(),
+        "RX".to_string(),
+        app.state(),
+    )
+    .await
+    .expect("stored catalog should list without provider refresh");
+
+    assert_eq!(listed[0].provider_status_id, "jira-progress");
+    assert_eq!(listed[0].display_order, -1);
+    assert_eq!(
+        atlassian_client
+            .list_status_project_keys
+            .lock()
+            .unwrap()
+            .as_slice(),
+        &["RX"]
+    );
+}
+
+#[tokio::test]
+async fn status_catalog_refresh_supports_linear_global_and_team_scopes() {
+    let linear_client = Arc::new(FakeLinearTicketingClient::default());
+    linear_client.workflow_states.lock().unwrap().extend([
+        LinearWorkflowState {
+            id: "triage".to_string(),
+            name: "Triage".to_string(),
+            category: "other".to_string(),
+            color: Some("#fb923c".to_string()),
+        },
+        LinearWorkflowState {
+            id: "started".to_string(),
+            name: "Started".to_string(),
+            category: "in_progress".to_string(),
+            color: Some("#facc15".to_string()),
+        },
+        LinearWorkflowState {
+            id: "done".to_string(),
+            name: "Done".to_string(),
+            category: "done".to_string(),
+            color: Some("#22c55e".to_string()),
+        },
+    ]);
+    let mut state = AppState::new_test();
+    state.linear_integration_service = valid_linear_service(Arc::clone(&linear_client)).await;
+    let app = build_ticketing_start_app(state, Arc::new(ExecutionState::new()));
+
+    let global = refresh_ticketing_status_catalog(
+        "linear".to_string(),
+        "linear_global".to_string(),
+        "all".to_string(),
+        app.state(),
+    )
+    .await
+    .expect("global linear workflow states should sync");
+    assert_eq!(global[0].scope_kind, "linear_global");
+    assert_eq!(global[0].scope_id, "all");
+    assert_eq!(global[1].provider_status_id, "started");
+    assert_eq!(global[1].provider_color.as_deref(), Some("#facc15"));
+    assert!(global[2].is_terminal);
+
+    let team = refresh_ticketing_status_catalog(
+        "linear".to_string(),
+        "linear_team".to_string(),
+        "team-1".to_string(),
+        app.state(),
+    )
+    .await
+    .expect("team linear workflow states should sync");
+    assert_eq!(team[0].scope_kind, "linear_team");
+    assert_eq!(team[0].scope_id, "team-1");
+    assert_eq!(
+        linear_client
+            .list_workflow_states_team
+            .lock()
+            .unwrap()
+            .as_slice(),
+        &[None, Some("team-1".to_string())]
+    );
+}
+
+#[tokio::test]
+async fn status_catalog_refresh_accepts_prefixed_clickup_scope_ids_and_rejects_mismatch() {
+    let clickup_client = Arc::new(FakeClickUpTicketingClient::default());
+    let mut state = AppState::new_test();
+    state.clickup_integration_service = valid_clickup_service(Arc::clone(&clickup_client)).await;
+    let app = build_ticketing_start_app(state, Arc::new(ExecutionState::new()));
+
+    let entries = refresh_ticketing_status_catalog(
+        "clickup".to_string(),
+        "clickup_space".to_string(),
+        "space:space-1".to_string(),
+        app.state(),
+    )
+    .await
+    .expect("prefixed ClickUp Space ids should normalize for status refresh");
+
+    assert_eq!(entries[0].scope_kind, "clickup_space");
+    assert_eq!(entries[0].scope_id, "space-1");
+    assert_eq!(
+        entries
+            .iter()
+            .map(|entry| entry.provider_status_name.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "to do",
+            "backlog",
+            "awaiting deploy",
+            "on staging for review",
+            "complete",
+        ]
+    );
+
+    let error = refresh_ticketing_status_catalog(
+        "clickup".to_string(),
+        "clickup_list".to_string(),
+        "folder:folder-1".to_string(),
+        app.state(),
+    )
+    .await
+    .expect_err("mismatched ClickUp scope prefixes should be rejected");
+    assert!(error.contains("list id"));
 }
 
 #[tokio::test]
@@ -1949,22 +2419,90 @@ fn ticket_state_combines_id_name_and_category() {
 }
 
 #[test]
-fn linear_workflow_state_maps_into_column_with_order() {
-    let column = linear_workflow_state_to_column(
-        LinearWorkflowState {
-            id: "state-1".to_string(),
-            name: "In Progress".to_string(),
-            category: "started".to_string(),
-            color: Some("#112233".to_string()),
+fn status_catalog_entry_maps_into_column_with_resolved_presentation() {
+    let now = chrono::Utc::now();
+    let column = status_catalog_entry_column(
+        crate::domain::integrations::TicketingStatusCatalogEntry {
+            id: "catalog-1".to_string(),
+            provider: "linear".to_string(),
+            scope_kind: "linear_global".to_string(),
+            scope_id: "all".to_string(),
+            provider_status_id: "state-1".to_string(),
+            provider_status_name: "In Progress".to_string(),
+            provider_category: "in_progress".to_string(),
+            provider_color: Some("#112233".to_string()),
+            provider_order: Some(2),
+            display_order: 7,
+            color_override: Some("#445566".to_string()),
+            is_visible: true,
+            is_terminal: false,
+            last_seen_at: Some(now),
+            stale_since: None,
+            metadata_json: None,
+            created_at: now,
+            updated_at: now,
         },
-        2,
+        0,
     );
 
     assert_eq!(column.id, "state-1");
     assert_eq!(column.name, "In Progress");
-    assert_eq!(column.category, "started");
-    assert_eq!(column.order, 2);
-    assert_eq!(column.color.as_deref(), Some("#112233"));
+    assert_eq!(column.category, "in_progress");
+    assert_eq!(column.order, 0);
+    assert_eq!(column.color.as_deref(), Some("#445566"));
+    assert_eq!(column.provider_color.as_deref(), Some("#112233"));
+    assert_eq!(column.display_order, Some(7));
+    assert_eq!(column.scope_kind.as_deref(), Some("linear_global"));
+}
+
+#[test]
+fn status_catalog_entries_to_columns_preserve_hidden_visibility_metadata() {
+    let now = chrono::Utc::now();
+    let columns = catalog_entries_to_columns(vec![
+        crate::domain::integrations::TicketingStatusCatalogEntry {
+            id: "catalog-1".to_string(),
+            provider: "linear".to_string(),
+            scope_kind: "linear_global".to_string(),
+            scope_id: "all".to_string(),
+            provider_status_id: "archived".to_string(),
+            provider_status_name: "Archived".to_string(),
+            provider_category: "done".to_string(),
+            provider_color: Some("#112233".to_string()),
+            provider_order: Some(3),
+            display_order: 3,
+            color_override: None,
+            is_visible: false,
+            is_terminal: true,
+            last_seen_at: Some(now),
+            stale_since: None,
+            metadata_json: None,
+            created_at: now,
+            updated_at: now,
+        },
+    ]);
+
+    assert_eq!(columns.len(), 1);
+    assert_eq!(columns[0].id, "archived");
+    assert_eq!(columns[0].is_visible, Some(false));
+}
+
+#[test]
+fn status_presentation_patch_deserializes_null_color_override_as_clear() {
+    let input: UpdateTicketingStatusPresentationInput = serde_json::from_value(serde_json::json!({
+        "provider": "linear",
+        "scopeKind": "linear_global",
+        "scopeId": "all",
+        "patches": [{
+            "providerStatusId": "state-1",
+            "colorOverride": null
+        }]
+    }))
+    .unwrap();
+
+    let patch = status_presentation_patch(input.patches.into_iter().next().unwrap()).unwrap();
+
+    assert_eq!(patch.provider_status_id, "state-1");
+    assert_eq!(patch.color_override, Some(None));
 }
 
 #[test]
@@ -1986,11 +2524,27 @@ fn jira_project_maps_to_container_keyed_by_project_key() {
 
 #[test]
 fn jira_status_maps_into_column_preserving_real_id_and_category() {
-    let column = jira_status_to_column(
-        JiraStatusSummary {
-            id: "3".to_string(),
-            name: "In Progress".to_string(),
-            category: "in_progress".to_string(),
+    let now = chrono::Utc::now();
+    let column = status_catalog_entry_column(
+        crate::domain::integrations::TicketingStatusCatalogEntry {
+            id: "catalog-1".to_string(),
+            provider: "jira".to_string(),
+            scope_kind: "jira_project".to_string(),
+            scope_id: "RX".to_string(),
+            provider_status_id: "3".to_string(),
+            provider_status_name: "In Progress".to_string(),
+            provider_category: "in_progress".to_string(),
+            provider_color: None,
+            provider_order: Some(1),
+            display_order: 1,
+            color_override: None,
+            is_visible: true,
+            is_terminal: false,
+            last_seen_at: Some(now),
+            stale_since: None,
+            metadata_json: None,
+            created_at: now,
+            updated_at: now,
         },
         1,
     );
@@ -2336,6 +2890,121 @@ fn clickup_container_scope_parses_workspace_space_folder_and_list() {
     );
     assert_eq!(clickup_selected_space_id(Some("folder:folder-1")), None);
     assert_eq!(clickup_selected_space_id(Some("list:list-1")), None);
+
+    let folder_scope = column_status_catalog_scope(PROVIDER_CLICKUP, Some("folder:folder-1"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(folder_scope.scope_kind, "clickup_folder");
+    assert_eq!(folder_scope.scope_id, "folder-1");
+    let list_scope = normalize_status_catalog_scope(
+        PROVIDER_CLICKUP.to_string(),
+        "clickup_list".to_string(),
+        "list:list-1".to_string(),
+    )
+    .unwrap();
+    assert_eq!(list_scope.scope_kind, "clickup_list");
+    assert_eq!(list_scope.scope_id, "list-1");
+}
+
+#[test]
+fn status_catalog_scope_helpers_cover_provider_edges() {
+    let jira_scope = column_status_catalog_scope(PROVIDER_JIRA, Some("RX"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(jira_scope.provider, PROVIDER_JIRA);
+    assert_eq!(jira_scope.scope_kind, "jira_project");
+    assert_eq!(jira_scope.scope_id, "RX");
+    assert!(column_status_catalog_scope(PROVIDER_JIRA, None)
+        .unwrap()
+        .is_none());
+
+    let linear_global = column_status_catalog_scope(PROVIDER_LINEAR, None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(linear_global.scope_kind, "linear_global");
+    assert_eq!(linear_global.scope_id, "all");
+    let linear_team = column_status_catalog_scope(PROVIDER_LINEAR, Some("team:team-1"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(linear_team.scope_kind, "linear_team");
+    assert_eq!(linear_team.scope_id, "team-1");
+
+    assert!(column_status_catalog_scope(PROVIDER_CLICKUP, None)
+        .unwrap()
+        .is_none());
+    assert!(column_status_catalog_scope("github", None)
+        .unwrap_err()
+        .contains("Unsupported ticketing provider"));
+
+    assert!(normalize_status_catalog_scope(
+        PROVIDER_LINEAR.to_string(),
+        "linear_team".to_string(),
+        " ".to_string(),
+    )
+    .unwrap_err()
+    .contains("Status scope id is required"));
+    assert!(normalize_status_catalog_scope(
+        PROVIDER_JIRA.to_string(),
+        "linear_team".to_string(),
+        "RX".to_string(),
+    )
+    .unwrap_err()
+    .contains("Unsupported status scope"));
+    assert!(clickup_status_scope_id("clickup_unknown", "space-1")
+        .unwrap_err()
+        .contains("Unsupported ClickUp status scope"));
+}
+
+#[tokio::test]
+async fn status_catalog_observed_helpers_reject_unknown_scopes() {
+    let state = AppState::new_test();
+    let unsupported_provider = observed_statuses_for_scope(
+        &state,
+        &TicketingStatusCatalogScope {
+            provider: "github".to_string(),
+            scope_kind: "github_project".to_string(),
+            scope_id: "repo".to_string(),
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(unsupported_provider.contains("Unsupported ticketing provider"));
+
+    let unsupported_clickup_scope = clickup_statuses_for_catalog_scope(
+        &state,
+        &TicketingStatusCatalogScope {
+            provider: PROVIDER_CLICKUP.to_string(),
+            scope_kind: "clickup_workspace".to_string(),
+            scope_id: "workspace-1".to_string(),
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(unsupported_clickup_scope.contains("Unsupported ClickUp status scope"));
+}
+
+#[test]
+fn status_presentation_patch_validates_required_status_and_absent_color_patch() {
+    let missing_status = status_presentation_patch(TicketingStatusPresentationPatchInput {
+        provider_status_id: " ".to_string(),
+        display_order: None,
+        color_override: None,
+        is_visible: None,
+    })
+    .unwrap_err();
+    assert!(missing_status.contains("Provider status id is required"));
+
+    let patch = status_presentation_patch(TicketingStatusPresentationPatchInput {
+        provider_status_id: "state-1".to_string(),
+        display_order: Some(4),
+        color_override: None,
+        is_visible: Some(true),
+    })
+    .unwrap();
+    assert_eq!(patch.provider_status_id, "state-1");
+    assert_eq!(patch.display_order, Some(4));
+    assert!(patch.color_override.is_none());
+    assert_eq!(patch.is_visible, Some(true));
 }
 
 #[test]

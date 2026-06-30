@@ -11,9 +11,10 @@ use crate::application::{ClickUpApiClient, ClickUpAuthContext};
 use super::clickup_client::{
     apply_task_tags, assign_task_to_user, clear_task_assignees, clickup_authorization_header,
     create_task_comment, fetch_current_user, fetch_filtered_tasks, fetch_folder_lists,
-    fetch_folderless_lists, fetch_list_tasks, fetch_space_folders, fetch_space_statuses,
-    fetch_spaces, fetch_task_detail, fetch_task_detail_by_custom_id, fetch_workspaces,
-    map_status_type_to_category, put_task_status, validate_token, ClickUpJsonRequester,
+    fetch_folder_statuses, fetch_folderless_lists, fetch_list_statuses, fetch_list_tasks,
+    fetch_space_folders, fetch_space_statuses, fetch_spaces, fetch_task_detail,
+    fetch_task_detail_by_custom_id, fetch_workspaces, map_status_type_to_category,
+    put_task_status, validate_token, ClickUpJsonRequester,
     HyperClickUpApiClient,
 };
 
@@ -144,6 +145,8 @@ async fn requester_trait_impl_delegates_clickup_api_client_methods() {
         Ok(sample_task("opaque-from-custom", "custom")),
         Ok(json!({ "comments": [] })),
         Ok(json!({ "statuses": [{ "status": "done", "type": "done" }] })),
+        Ok(json!({ "statuses": [{ "status": "review", "type": "custom" }] })),
+        Ok(json!({ "statuses": [{ "status": "ready", "type": "custom" }] })),
         Ok(json!({ "user": { "id": 42, "username": "dev" } })),
         Ok(json!({ "user": { "id": 42, "username": "dev" } })),
         Ok(json!({})),
@@ -194,6 +197,22 @@ async fn requester_trait_impl_delegates_clickup_api_client_methods() {
         client.list_statuses(&auth, "space-1").await.unwrap()[0].category,
         "done"
     );
+    assert_eq!(
+        client
+            .list_folder_statuses(&auth, "folder-1")
+            .await
+            .unwrap()[0]
+            .status,
+        "review"
+    );
+    assert_eq!(
+        client
+            .list_list_statuses(&auth, "list-1")
+            .await
+            .unwrap()[0]
+            .status,
+        "ready"
+    );
     assert_eq!(client.current_user(&auth).await.unwrap().id, 42);
     assert_eq!(
         client
@@ -218,7 +237,7 @@ async fn requester_trait_impl_delegates_clickup_api_client_methods() {
         .unwrap();
 
     let requests = fake.requests();
-    assert_eq!(requests.len(), 17);
+    assert_eq!(requests.len(), 19);
     assert!(requests.iter().all(|request| request.token == "tok"));
 }
 
@@ -303,6 +322,34 @@ async fn space_statuses_map_with_category() {
     assert_eq!(statuses[0].category, "todo");
     assert_eq!(statuses[1].category, "in_progress");
     assert_eq!(statuses[2].category, "done");
+}
+
+#[tokio::test]
+async fn folder_and_list_statuses_map_with_category() {
+    let fake = FakeClickUpRequester::new(vec![
+        Ok(json!({
+            "statuses": [
+                { "status": "awaiting deploy", "type": "custom", "color": "#0099aa", "orderindex": 4 }
+            ]
+        })),
+        Ok(json!({
+            "statuses": [
+                { "status": "done", "type": "closed", "color": "#008844", "orderindex": 9 }
+            ]
+        })),
+    ]);
+
+    let folder_statuses = fetch_folder_statuses(&fake, "tok", "folder-1").await.unwrap();
+    let list_statuses = fetch_list_statuses(&fake, "tok", "list-1").await.unwrap();
+
+    assert_eq!(folder_statuses[0].status, "awaiting deploy");
+    assert_eq!(folder_statuses[0].category, "in_progress");
+    assert_eq!(folder_statuses[0].color.as_deref(), Some("#0099aa"));
+    assert_eq!(folder_statuses[0].orderindex, Some(4));
+    assert_eq!(list_statuses[0].status, "done");
+    assert_eq!(list_statuses[0].category, "done");
+    assert!(fake.requests()[0].url.contains("/folder/folder-1"));
+    assert!(fake.requests()[1].url.contains("/list/list-1"));
 }
 
 #[tokio::test]
