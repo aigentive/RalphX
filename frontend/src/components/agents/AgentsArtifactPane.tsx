@@ -42,7 +42,10 @@ import type {
   AgentArtifactTab,
   AgentTaskArtifactMode,
 } from "@/stores/agentSessionStore";
-import { useConversationHistoryWindow } from "@/hooks/useChat";
+import {
+  invalidateConversationDataQueries,
+  useConversationHistoryWindow,
+} from "@/hooks/useChat";
 import { ideationKeys } from "@/hooks/useIdeation";
 import { useDependencyGraph } from "@/hooks/useDependencyGraph";
 import { useVerificationStatus, verificationStatusKey } from "@/hooks/useVerificationStatus";
@@ -433,9 +436,17 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       force: boolean;
     }) => chatApi.startAgentWorkspaceReview(conversationId, { force }),
     onSuccess: (result, variables) => {
+      queryClient.setQueryData(
+        agentWorkspaceKeys.workspaceReview(variables.conversationId),
+        result,
+      );
       void queryClient.invalidateQueries({
         queryKey: agentWorkspaceKeys.workspaceReview(variables.conversationId),
       });
+      const reviewConversationId = result.monitor.reviewConversationId;
+      if (reviewConversationId) {
+        invalidateConversationDataQueries(queryClient, reviewConversationId);
+      }
       const artifactId = result.monitor.reviewArtifactId;
       if (artifactId) {
         void queryClient.invalidateQueries({
