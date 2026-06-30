@@ -14,13 +14,13 @@ use crate::application::{
     AppState, AtlassianApiClient, AtlassianAuthContext, AtlassianConnectivity,
     AtlassianIntegrationService, AtlassianJiraAttachment, AtlassianJiraComment,
     AtlassianOAuthResource, AtlassianOAuthTokenResponse, AtlassianResourceContent,
-    AtlassianResourceKind, AtlassianResourceSummary, ClickUpComment, ClickUpSpace,
-    ClickUpStatus, ClickUpTaskContent, ClickUpTaskSummary, ClickUpUser, JiraIssueDetail,
-    JiraProjectSummary, LinearApiClient, LinearAuthContext, LinearIntegrationService,
+    AtlassianResourceKind, AtlassianResourceSummary, ClickUpComment, ClickUpSpace, ClickUpStatus,
+    ClickUpTaskContent, ClickUpTaskSummary, ClickUpUser, JiraIssueDetail, JiraProjectSummary,
+    JiraStatusSummary, LinearApiClient, LinearAuthContext, LinearIntegrationService,
     LinearIntegrationSettings, LinearIntegrationSettingsRepository, LinearIssueContent,
-    LinearIssueSummary, LinearProject, TeamService, TeamStateTracker, TicketingLabelResult,
-    TicketingMutationResult,
-    TicketingTicketIdentity, TicketingTransitionOption,
+    LinearIssueSummary, LinearProject, LinearWorkflowState, TeamService, TeamStateTracker,
+    TicketingLabelResult, TicketingMutationResult, TicketingTicketIdentity,
+    TicketingTransitionOption,
 };
 use crate::commands::unified_chat_commands::StartAgentConversationInput;
 use crate::commands::ExecutionState;
@@ -785,6 +785,8 @@ async fn clickup_conversation_associations_are_empty_pending_followup() {
 struct FakeLinearTicketingClient {
     issues: Mutex<Vec<LinearIssueSummary>>,
     projects: Mutex<Vec<LinearProject>>,
+    workflow_states: Mutex<Vec<LinearWorkflowState>>,
+    list_workflow_states_team: Mutex<Vec<Option<String>>>,
     search_limits: Mutex<Vec<usize>>,
     list_projects_first: Mutex<Vec<usize>>,
 }
@@ -838,12 +840,26 @@ impl LinearApiClient for FakeLinearTicketingClient {
         self.list_projects_first.lock().unwrap().push(first);
         Ok(self.projects.lock().unwrap().clone())
     }
+
+    async fn list_workflow_states(
+        &self,
+        _auth: &LinearAuthContext,
+        team_id: Option<&str>,
+    ) -> Result<Vec<LinearWorkflowState>, String> {
+        self.list_workflow_states_team
+            .lock()
+            .unwrap()
+            .push(team_id.map(str::to_string));
+        Ok(self.workflow_states.lock().unwrap().clone())
+    }
 }
 
 #[derive(Default)]
 struct FakeAtlassianTicketingClient {
     projects: Mutex<Vec<JiraProjectSummary>>,
+    statuses: Mutex<Vec<JiraStatusSummary>>,
     list_project_limits: Mutex<Vec<usize>>,
+    list_status_project_keys: Mutex<Vec<String>>,
 }
 
 #[async_trait]
@@ -914,6 +930,18 @@ impl AtlassianApiClient for FakeAtlassianTicketingClient {
     ) -> Result<Vec<JiraProjectSummary>, String> {
         self.list_project_limits.lock().unwrap().push(limit);
         Ok(self.projects.lock().unwrap().clone())
+    }
+
+    async fn list_jira_project_statuses(
+        &self,
+        _auth: &AtlassianAuthContext,
+        project_key: &str,
+    ) -> Result<Vec<JiraStatusSummary>, String> {
+        self.list_status_project_keys
+            .lock()
+            .unwrap()
+            .push(project_key.to_string());
+        Ok(self.statuses.lock().unwrap().clone())
     }
 
     async fn exchange_oauth_code(
@@ -1455,7 +1483,11 @@ async fn list_ticketing_columns_syncs_clickup_selected_location_statuses() {
             .as_slice(),
         &["folder-1"]
     );
-    assert!(clickup_client.list_statuses_calls.lock().unwrap().is_empty());
+    assert!(clickup_client
+        .list_statuses_calls
+        .lock()
+        .unwrap()
+        .is_empty());
 
     let list_columns = list_ticketing_columns(
         "clickup".to_string(),
@@ -1515,7 +1547,11 @@ async fn list_ticketing_columns_aggregates_clickup_space_child_statuses() {
         .iter()
         .all(|column| column.scope_kind.as_deref() == Some("clickup_space")));
     assert_eq!(
-        clickup_client.list_statuses_calls.lock().unwrap().as_slice(),
+        clickup_client
+            .list_statuses_calls
+            .lock()
+            .unwrap()
+            .as_slice(),
         &["space-1"]
     );
     assert_eq!(
@@ -1534,6 +1570,215 @@ async fn list_ticketing_columns_aggregates_clickup_space_child_statuses() {
             .as_slice(),
         &["list-folder", "list-space"]
     );
+}
+
+#[tokio::test]
+async fn status_catalog_commands_refresh_list_and_update_jira_scope_locally() {
+    let atlassian_client = Arc::new(FakeAtlassianTicketingClient::default());
+    atlassian_client.statuses.lock().unwrap().extend([
+        JiraStatusSummary {
+            id: "jira-done".to_string(),
+            name: "Done".to_string(),
+            category: "done".to_string(),
+        },
+        JiraStatusSummary {
+            id: "jira-todo".to_string(),
+            name: "Todo".to_string(),
+            category: "todo".to_string(),
+        },
+        JiraStatusSummary {
+            id: "jira-progress".to_string(),
+            name: "In Progress".to_string(),
+            category: "in_progress".to_string(),
+        },
+    ]);
+    let mut state = AppState::new_test();
+    state.atlassian_integration_service =
+        valid_atlassian_service(Arc::clone(&atlassian_client)).await;
+    let app = build_ticketing_start_app(state, Arc::new(ExecutionState::new()));
+
+    let synced = refresh_ticketing_status_catalog(
+        "jira".to_string(),
+        "jira_project".to_string(),
+        "RX".to_string(),
+        app.state(),
+    )
+    .await
+    .expect("jira statuses should sync into RalphX catalog");
+
+    assert_eq!(
+        synced
+            .iter()
+            .map(|entry| entry.provider_status_name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Todo", "In Progress", "Done"]
+    );
+    assert_eq!(synced[1].provider_status_id, "jira-progress");
+    assert_eq!(synced[1].provider_order, Some(1));
+    assert!(synced[2].is_terminal);
+    assert_eq!(
+        atlassian_client
+            .list_status_project_keys
+            .lock()
+            .unwrap()
+            .as_slice(),
+        &["RX"]
+    );
+
+    let updated = update_ticketing_status_presentation(
+        UpdateTicketingStatusPresentationInput {
+            provider: "jira".to_string(),
+            scope_kind: "jira_project".to_string(),
+            scope_id: "RX".to_string(),
+            patches: vec![TicketingStatusPresentationPatchInput {
+                provider_status_id: "jira-progress".to_string(),
+                display_order: Some(-1),
+                color_override: Some(Some("#ff6600".to_string())),
+                is_visible: Some(false),
+            }],
+        },
+        app.state(),
+    )
+    .await
+    .expect("local presentation patch should update RalphX catalog");
+
+    assert_eq!(updated[0].provider_status_id, "jira-progress");
+    assert_eq!(updated[0].color_override.as_deref(), Some("#ff6600"));
+    assert_eq!(updated[0].color.as_deref(), Some("#ff6600"));
+    assert!(!updated[0].is_visible);
+    assert_eq!(
+        atlassian_client
+            .list_status_project_keys
+            .lock()
+            .unwrap()
+            .as_slice(),
+        &["RX"],
+        "presentation edits must not call provider status mutation/read APIs"
+    );
+
+    let listed = list_ticketing_status_catalog(
+        "jira".to_string(),
+        "jira_project".to_string(),
+        "RX".to_string(),
+        app.state(),
+    )
+    .await
+    .expect("stored catalog should list without provider refresh");
+
+    assert_eq!(listed[0].provider_status_id, "jira-progress");
+    assert_eq!(listed[0].display_order, -1);
+    assert_eq!(
+        atlassian_client
+            .list_status_project_keys
+            .lock()
+            .unwrap()
+            .as_slice(),
+        &["RX"]
+    );
+}
+
+#[tokio::test]
+async fn status_catalog_refresh_supports_linear_global_and_team_scopes() {
+    let linear_client = Arc::new(FakeLinearTicketingClient::default());
+    linear_client.workflow_states.lock().unwrap().extend([
+        LinearWorkflowState {
+            id: "triage".to_string(),
+            name: "Triage".to_string(),
+            category: "other".to_string(),
+            color: Some("#fb923c".to_string()),
+        },
+        LinearWorkflowState {
+            id: "started".to_string(),
+            name: "Started".to_string(),
+            category: "in_progress".to_string(),
+            color: Some("#facc15".to_string()),
+        },
+        LinearWorkflowState {
+            id: "done".to_string(),
+            name: "Done".to_string(),
+            category: "done".to_string(),
+            color: Some("#22c55e".to_string()),
+        },
+    ]);
+    let mut state = AppState::new_test();
+    state.linear_integration_service = valid_linear_service(Arc::clone(&linear_client)).await;
+    let app = build_ticketing_start_app(state, Arc::new(ExecutionState::new()));
+
+    let global = refresh_ticketing_status_catalog(
+        "linear".to_string(),
+        "linear_global".to_string(),
+        "all".to_string(),
+        app.state(),
+    )
+    .await
+    .expect("global linear workflow states should sync");
+    assert_eq!(global[0].scope_kind, "linear_global");
+    assert_eq!(global[0].scope_id, "all");
+    assert_eq!(global[1].provider_status_id, "started");
+    assert_eq!(global[1].provider_color.as_deref(), Some("#facc15"));
+    assert!(global[2].is_terminal);
+
+    let team = refresh_ticketing_status_catalog(
+        "linear".to_string(),
+        "linear_team".to_string(),
+        "team-1".to_string(),
+        app.state(),
+    )
+    .await
+    .expect("team linear workflow states should sync");
+    assert_eq!(team[0].scope_kind, "linear_team");
+    assert_eq!(team[0].scope_id, "team-1");
+    assert_eq!(
+        linear_client
+            .list_workflow_states_team
+            .lock()
+            .unwrap()
+            .as_slice(),
+        &[None, Some("team-1".to_string())]
+    );
+}
+
+#[tokio::test]
+async fn status_catalog_refresh_accepts_prefixed_clickup_scope_ids_and_rejects_mismatch() {
+    let clickup_client = Arc::new(FakeClickUpTicketingClient::default());
+    let mut state = AppState::new_test();
+    state.clickup_integration_service = valid_clickup_service(Arc::clone(&clickup_client)).await;
+    let app = build_ticketing_start_app(state, Arc::new(ExecutionState::new()));
+
+    let entries = refresh_ticketing_status_catalog(
+        "clickup".to_string(),
+        "clickup_space".to_string(),
+        "space:space-1".to_string(),
+        app.state(),
+    )
+    .await
+    .expect("prefixed ClickUp Space ids should normalize for status refresh");
+
+    assert_eq!(entries[0].scope_kind, "clickup_space");
+    assert_eq!(entries[0].scope_id, "space-1");
+    assert_eq!(
+        entries
+            .iter()
+            .map(|entry| entry.provider_status_name.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "to do",
+            "backlog",
+            "awaiting deploy",
+            "on staging for review",
+            "complete",
+        ]
+    );
+
+    let error = refresh_ticketing_status_catalog(
+        "clickup".to_string(),
+        "clickup_list".to_string(),
+        "folder:folder-1".to_string(),
+        app.state(),
+    )
+    .await
+    .expect_err("mismatched ClickUp scope prefixes should be rejected");
+    assert!(error.contains("list id"));
 }
 
 #[tokio::test]
