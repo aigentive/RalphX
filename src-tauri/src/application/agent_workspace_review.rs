@@ -128,6 +128,7 @@ pub async fn load_agent_workspace_review_context(
     if target.is_none() && monitor.status != AgentWorkspaceReviewMonitorStatus::Reviewing {
         monitor.status = AgentWorkspaceReviewMonitorStatus::Idle;
     }
+    carry_forward_existing_merged_pr_review_if_current(workspace, &mut monitor, target.as_ref());
     apply_review_gate_to_monitor(&mut monitor, target.as_ref());
     let monitor = state
         .agent_conversation_workspace_repo
@@ -188,6 +189,7 @@ async fn start_agent_workspace_review_with_chat_service<S: ChatService + ?Sized>
     let target = resolve_review_target(workspace, &project).await?;
     let mut monitor = load_or_create_monitor(&state, workspace).await?;
     apply_current_target_to_monitor(&mut monitor, target.as_ref());
+    carry_forward_existing_merged_pr_review_if_current(workspace, &mut monitor, target.as_ref());
     let target_scope = target_scope_label(target.as_ref());
     let target_fingerprint = target_fingerprint_label(target.as_ref());
     info!(
@@ -1438,9 +1440,10 @@ fn workspace_review_artifact_covers_merged_pr_target(
         return false;
     }
 
-    let (Some(workspace_base), Some(target_base)) =
-        (monitor.workspace_base_sha.as_deref(), target.base_sha.as_deref())
-    else {
+    let (Some(workspace_base), Some(target_base)) = (
+        monitor.workspace_base_sha.as_deref(),
+        target.base_sha.as_deref(),
+    ) else {
         return false;
     };
     workspace_base == target_base
@@ -1452,20 +1455,36 @@ fn workspace_review_is_target_mismatch_failure(monitor: &AgentWorkspaceReviewMon
         && monitor.last_error.as_deref() == Some(WORKSPACE_REVIEW_TARGET_MISMATCH_ERROR)
 }
 
+fn workspace_review_can_carry_existing_merged_pr_review(
+    monitor: &AgentWorkspaceReviewMonitor,
+) -> bool {
+    matches!(
+        monitor.review_outcome,
+        AgentWorkspaceReviewOutcome::Passed | AgentWorkspaceReviewOutcome::Blocking
+    ) || workspace_review_is_target_mismatch_failure(monitor)
+}
+
+fn carry_forward_existing_merged_pr_review_if_current(
+    workspace: &AgentConversationWorkspace,
+    monitor: &mut AgentWorkspaceReviewMonitor,
+    target: Option<&AgentWorkspaceReviewTarget>,
+) -> bool {
+    let Some(target) = target.filter(|target| {
+        workspace_review_can_carry_existing_merged_pr_review(monitor)
+            && workspace_review_artifact_covers_merged_pr_target(workspace, monitor, target)
+    }) else {
+        return false;
+    };
+    mark_review_artifact_current_for_target(monitor, target);
+    true
+}
+
 fn build_context(
     workspace: &AgentConversationWorkspace,
     mut monitor: AgentWorkspaceReviewMonitor,
     target: Option<AgentWorkspaceReviewTarget>,
 ) -> AgentWorkspaceReviewContext {
-    if let Some(target) = target.as_ref().filter(|target| {
-        (matches!(
-            monitor.review_outcome,
-            AgentWorkspaceReviewOutcome::Passed | AgentWorkspaceReviewOutcome::Blocking
-        ) || workspace_review_is_target_mismatch_failure(&monitor))
-            && workspace_review_artifact_covers_merged_pr_target(workspace, &monitor, target)
-    }) {
-        mark_review_artifact_current_for_target(&mut monitor, target);
-    }
+    carry_forward_existing_merged_pr_review_if_current(workspace, &mut monitor, target.as_ref());
     apply_review_gate_to_monitor(&mut monitor, target.as_ref());
     let is_current = target.as_ref().is_some_and(|target| {
         monitor.is_current_for_target(
@@ -3540,10 +3559,7 @@ x
             monitor.current_diff_fingerprint.as_deref(),
             Some("selected-fingerprint")
         );
-        assert_eq!(
-            monitor.selected_source_pull_request_number,
-            Some(483)
-        );
+        assert_eq!(monitor.selected_source_pull_request_number, Some(483));
         assert_eq!(
             monitor.selected_source_head_sha.as_deref(),
             Some("selected-head")
@@ -3630,7 +3646,10 @@ x
             completed.reviewed_target_scope,
             Some(AgentWorkspaceReviewTargetScope::SelectedSource)
         );
-        assert_eq!(completed.reviewed_head_sha.as_deref(), Some(pr_head.as_str()));
+        assert_eq!(
+            completed.reviewed_head_sha.as_deref(),
+            Some(pr_head.as_str())
+        );
         assert_eq!(completed.last_error, None);
 
         let context = load_agent_workspace_review_context(&state, &workspace)
@@ -3642,6 +3661,93 @@ x
             context.monitor.review_gate_status,
             AgentWorkspaceReviewGateStatus::Passed
         );
+    }
+
+    #[tokio::test]
+    async fn load_context_persists_carried_merged_pr_review_for_start_skip() {
+        let (temp, repo, base_sha) = init_repo();
+        let pr_head = committed_workspace_delta_on_branch(&repo, "feature/merged-pr");
+        git(&repo, &["update-ref", "refs/ralphx/pr-heads/483", &pr_head]);
+
+        let state = Arc::new(AppState::new_test());
+        let project = seed_project(&state, &repo).await;
+        let mut workspace = workspace(
+            &project,
+            &repo,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main",
+            Some(base_sha),
+        );
+        seed_conversation(&state, &workspace).await;
+
+        let initial = load_agent_workspace_review_context(&state, &workspace)
+            .await
+            .expect("workspace delta context should load");
+        let target = initial.target.expect("workspace delta target should exist");
+        let mut monitor = initial.monitor;
+        apply_review_artifact_to_monitor(
+            &mut monitor,
+            target.scope,
+            target.head_sha.clone(),
+            target.diff_fingerprint.clone(),
+            Some("review-run".to_string()),
+            ArtifactId::from_string("artifact-merged-pr-review"),
+            1,
+            Utc::now(),
+            None,
+        );
+        monitor.review_outcome = AgentWorkspaceReviewOutcome::Passed;
+        monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Passed;
+        state
+            .agent_conversation_workspace_repo
+            .upsert_workspace_review_monitor(monitor)
+            .await
+            .expect("monitor should persist");
+
+        workspace.worktree_path = temp
+            .path()
+            .join("missing-worktree")
+            .to_string_lossy()
+            .to_string();
+        workspace.publication_pr_number = Some(483);
+        workspace.publication_pr_status = Some("merged".to_string());
+
+        let context = load_agent_workspace_review_context(&state, &workspace)
+            .await
+            .expect("merged equivalent context should load");
+        assert!(context.is_current);
+        assert_eq!(
+            context.monitor.reviewed_target_scope,
+            Some(AgentWorkspaceReviewTargetScope::SelectedSource)
+        );
+
+        let persisted = state
+            .agent_conversation_workspace_repo
+            .get_workspace_review_monitor(&workspace.conversation_id)
+            .await
+            .expect("persisted monitor read should succeed")
+            .expect("persisted monitor should exist");
+        assert_eq!(
+            persisted.reviewed_target_scope,
+            Some(AgentWorkspaceReviewTargetScope::SelectedSource)
+        );
+        assert_eq!(
+            persisted.review_gate_status,
+            AgentWorkspaceReviewGateStatus::Passed
+        );
+
+        let chat_service = MockChatService::new();
+        let start = start_agent_workspace_review_with_chat_service(
+            Arc::clone(&state),
+            &workspace,
+            false,
+            &chat_service,
+        )
+        .await
+        .expect("current merged equivalent review should not re-run");
+        assert!(!start.started);
+        assert_eq!(start.skipped_reason.as_deref(), Some("current"));
+        assert_eq!(chat_service.get_sent_messages().await.len(), 0);
     }
 
     #[tokio::test]
@@ -3815,7 +3921,10 @@ x
     async fn complete_review_run_rejects_merged_pr_when_reviewed_head_differs() {
         let (temp, repo, base_sha) = init_repo();
         let reviewed_head = committed_workspace_delta_on_branch(&repo, "feature/merged-pr");
-        git(&repo, &["update-ref", "refs/ralphx/pr-heads/483", &reviewed_head]);
+        git(
+            &repo,
+            &["update-ref", "refs/ralphx/pr-heads/483", &reviewed_head],
+        );
 
         let state = AppState::new_test();
         let project = seed_project(&state, &repo).await;
@@ -3851,7 +3960,10 @@ x
             .expect("monitor should persist");
 
         let new_head = commit_followup_change(&repo);
-        git(&repo, &["update-ref", "refs/ralphx/pr-heads/483", &new_head]);
+        git(
+            &repo,
+            &["update-ref", "refs/ralphx/pr-heads/483", &new_head],
+        );
         workspace.worktree_path = temp
             .path()
             .join("missing-worktree")
