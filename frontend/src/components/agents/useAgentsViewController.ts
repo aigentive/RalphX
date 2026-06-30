@@ -1163,6 +1163,7 @@ export function useAgentsViewController({
       terminalArchivedReason,
       terminalUnavailableReason,
       onFocusVerificationSession: handleFocusVerificationSession,
+      onFocusWorkspaceReview: handleFocusWorkspaceReview,
       onTaskArtifactSelectionChange: handleTaskArtifactSelectionChange,
       onPublishWorkspace: handlePublishWorkspace,
       onResizeReset: handleArtifactResizeReset,

@@ -279,6 +279,7 @@ interface AgentsArtifactPaneProps {
   publishFocusRequest?: AgentPublishFocusRequest | null;
   taskFocusRequest?: AgentTaskArtifactFocusRequest | null;
   onFocusVerificationSession: ((parentSessionId: string, childSessionId: string) => void) | undefined;
+  onFocusWorkspaceReview?: (conversationId: string) => void;
   onTaskArtifactSelectionChange?: (taskId: string | null) => void;
   onClose: () => void;
 }
@@ -298,6 +299,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   publishFocusRequest = null,
   taskFocusRequest = null,
   onFocusVerificationSession,
+  onFocusWorkspaceReview,
   onTaskArtifactSelectionChange,
   onClose,
 }: AgentsArtifactPaneProps) {
@@ -718,6 +720,20 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     isWorkspaceRuntimeGenerating,
     startWorkspaceReviewMutation,
   ]);
+  const handleFocusWorkspaceReview = useCallback(() => {
+    const reviewConversationId =
+      reviewDisplayContext?.monitor.reviewConversationId ?? null;
+    if (reviewConversationId) {
+      onFocusWorkspaceReview?.(reviewConversationId);
+    }
+  }, [
+    onFocusWorkspaceReview,
+    reviewDisplayContext?.monitor.reviewConversationId,
+  ]);
+  const handleOpenReview = useCallback(() => {
+    onTabChange("review");
+    handleFocusWorkspaceReview();
+  }, [handleFocusWorkspaceReview, onTabChange]);
 
   return (
     <aside
@@ -775,6 +791,10 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
                     taskArtifactSelectedId
                   ) {
                     setTaskArtifactSelectedId(null);
+                    return;
+                  }
+                  if (id === "review") {
+                    handleOpenReview();
                     return;
                   }
                   onTabChange(id);
@@ -946,7 +966,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
           onDisplayedVerificationStatusChange={setDisplayedVerificationStatus}
           verificationState={verificationState}
           verificationInProgress={verificationInProgress}
-          onOpenReview={() => onTabChange("review")}
+          onOpenReview={handleOpenReview}
           onOpenVerification={() => onTabChange("verification")}
           taskArtifactSelectedId={taskArtifactSelectedId}
           onTaskArtifactSelectedIdChange={setTaskArtifactSelectedId}

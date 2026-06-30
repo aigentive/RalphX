@@ -1014,6 +1014,9 @@ pub async fn update_review_settings(
     if let Some(v) = input.require_human_review {
         settings.require_human_review = v;
     }
+    if let Some(v) = input.require_workspace_review {
+        settings.require_workspace_review = v;
+    }
     if let Some(v) = input.max_fix_attempts {
         settings.max_fix_attempts = v;
     }

@@ -804,6 +804,39 @@ describe("AgentsActiveConversationPanel", () => {
     ], null);
   });
 
+  it("uses workspace runtime controls while focused on the workspace Review chat", () => {
+    const onActiveModelChange = vi.fn();
+    const onActiveEffortChange = vi.fn();
+    renderPanel({
+      chatFocus: {
+        type: "workspace_review",
+        conversationId: "review-conversation-1",
+      },
+      onActiveEffortChange,
+      onActiveModelChange,
+    });
+
+    expect(screen.getByTestId("workspace-provider-value").textContent).toBe("claude");
+    expect(screen.getByTestId("workspace-model-value").textContent).toBe("opus");
+    expect(screen.getByTestId("workspace-effort-value").textContent).toBe("high");
+
+    fireEvent.click(screen.getByTestId("change-workspace-model"));
+    fireEvent.click(screen.getByTestId("change-workspace-effort"));
+
+    expect(onActiveModelChange).toHaveBeenCalledWith("sonnet", [
+      "low",
+      "medium",
+      "high",
+      "max",
+    ], null);
+    expect(onActiveEffortChange).toHaveBeenCalledWith("max", [
+      "low",
+      "medium",
+      "high",
+      "max",
+    ], null);
+  });
+
   it("allows provider changes in an existing workspace conversation", () => {
     const onActiveProviderChange = vi.fn();
     renderPanel({ onActiveProviderChange });

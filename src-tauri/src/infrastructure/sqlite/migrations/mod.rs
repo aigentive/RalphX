@@ -384,6 +384,9 @@ mod v20260628010000_workspace_review_child_conversation_tests;
 mod v20260629101000_workspace_review_gate;
 #[cfg(test)]
 mod v20260629101000_workspace_review_gate_tests;
+mod v20260630123000_workspace_review_policy_setting;
+#[cfg(test)]
+mod v20260630123000_workspace_review_policy_setting_tests;
 #[cfg(test)]
 mod v20_merge_validation_mode_tests;
 #[cfg(test)]
@@ -474,7 +477,7 @@ mod v8_task_git_fields_tests;
 mod v9_project_git_fields_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260629101000;
+pub const SCHEMA_VERSION: i64 = 20260630123000;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -1318,6 +1321,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260629101000,
         name: "workspace_review_gate",
         migrate: v20260629101000_workspace_review_gate::migrate,
+    },
+    Migration {
+        version: 20260630123000,
+        name: "workspace_review_policy_setting",
+        migrate: v20260630123000_workspace_review_policy_setting::migrate,
     },
 ];
 
