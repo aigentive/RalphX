@@ -1,17 +1,20 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
+use std::time::Duration;
 
 use chrono::Utc;
 use serde_json::json;
 use tauri::Emitter;
 
 use super::agent_workspace_auto_review::{
-    begin_auto_review, install_agent_workspace_auto_review_listeners, interactive_slot_key,
-    maybe_start_auto_review, maybe_start_auto_review_from_app_handle,
-    related_workspace_runtime_is_generating, resolve_workspace_conversation_id_for_review_event,
-    spawn_auto_review_for_workspace, spawn_auto_review_from_completion_event, AutoReviewDecision,
-    AutoReviewSkipReason,
+    begin_auto_review, handle_auto_review_workspace_change_result,
+    install_agent_workspace_auto_review_listeners, interactive_slot_key, maybe_start_auto_review,
+    maybe_start_auto_review_from_app_handle, related_workspace_runtime_is_generating,
+    resolve_auto_review_start_action, resolve_workspace_conversation_id_for_review_event,
+    spawn_auto_review_after_workspace_change, spawn_auto_review_for_workspace,
+    spawn_auto_review_from_completion_event, AutoReviewDecision, AutoReviewSkipReason,
+    AutoReviewStartAction, AutoReviewTrigger, WorkspaceChangedEmitter,
 };
 use crate::application::agent_workspace_review::{
     apply_review_artifact_to_monitor, load_agent_workspace_review_context,
@@ -21,9 +24,9 @@ use crate::application::AppState;
 use crate::commands::ExecutionState;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus,
-    AgentRun, AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus,
-    AgentWorkspaceReviewOutcome, ArtifactId, ChatContextType, ChatConversation, ChatConversationId,
-    IdeationAnalysisBaseRefKind, Project,
+    AgentRun, AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor,
+    AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome, ArtifactId, ChatContextType,
+    ChatConversation, ChatConversationId, IdeationAnalysisBaseRefKind, Project,
 };
 use crate::domain::review::ReviewSettings;
 use crate::domain::services::running_agent_registry::RunningAgentKey;
@@ -140,6 +143,30 @@ fn commit_workspace_delta(repo: &Path) {
     git(repo, &["commit", "-m", "workspace change"]);
 }
 
+fn commit_tracked_base_file(repo: &Path) -> String {
+    std::fs::write(repo.join("tracked.rs"), "pub fn tracked() {}\n")
+        .expect("tracked file should be written");
+    git(repo, &["add", "tracked.rs"]);
+    git(repo, &["commit", "-m", "tracked base"]);
+    git(repo, &["rev-parse", "HEAD"])
+}
+
+fn add_all_workspace_delta_sources(repo: &Path) {
+    std::fs::write(repo.join("committed.rs"), "pub fn committed() {}\n")
+        .expect("committed file should be written");
+    git(repo, &["add", "committed.rs"]);
+    git(repo, &["commit", "-m", "committed workspace delta"]);
+
+    std::fs::write(repo.join("staged.rs"), "pub fn staged() {}\n")
+        .expect("staged file should be written");
+    git(repo, &["add", "staged.rs"]);
+
+    std::fs::write(repo.join("tracked.rs"), "pub fn tracked() { let _ = 1; }\n")
+        .expect("tracked file should be modified");
+    std::fs::write(repo.join("untracked.rs"), "pub fn untracked() {}\n")
+        .expect("untracked file should be written");
+}
+
 async fn current_target_monitor(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
@@ -204,6 +231,18 @@ fn skip_reason_codes_are_stable() {
 
     for (reason, expected) in cases {
         assert_eq!(reason.as_str(), expected);
+    }
+}
+
+#[test]
+fn auto_review_trigger_codes_are_stable() {
+    let cases = [
+        (AutoReviewTrigger::AgentCompletion, "agent_completion"),
+        (AutoReviewTrigger::BaseUpdate, "base_update"),
+    ];
+
+    for (trigger, expected) in cases {
+        assert_eq!(trigger.as_str(), expected);
     }
 }
 
@@ -342,6 +381,182 @@ async fn spawn_auto_review_for_workspace_runs_async_skip_path() {
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     let guard = begin_auto_review(&conversation_id).expect("spawn guard should release");
     drop(guard);
+}
+
+#[tokio::test]
+async fn auto_review_start_action_starts_first_review_for_dirty_workspace_without_artifact() {
+    let (_temp, repo, _initial_base_sha) = init_repo();
+    let base_sha = commit_tracked_base_file(&repo);
+    add_all_workspace_delta_sources(&repo);
+    let state = AppState::new_test();
+    let execution_state = ExecutionState::new();
+    let project = seed_project(&state, &repo).await;
+    let workspace = workspace(&project, &repo, Some(base_sha));
+    seed_workspace_conversation(&state, &workspace).await;
+
+    let context = load_agent_workspace_review_context(&state, &workspace)
+        .await
+        .expect("review context should load");
+    let target = context.target.expect("dirty workspace should have target");
+    let changed_paths = target
+        .review_packet
+        .changed_files
+        .iter()
+        .map(|file| file.path.as_str())
+        .collect::<Vec<_>>();
+    assert!(changed_paths.contains(&"committed.rs"));
+    assert!(changed_paths.contains(&"staged.rs"));
+    assert!(changed_paths.contains(&"tracked.rs"));
+    assert!(changed_paths.contains(&"untracked.rs"));
+    assert_eq!(
+        context.monitor.review_gate_status,
+        AgentWorkspaceReviewGateStatus::Required
+    );
+    assert!(context.monitor.review_artifact_id.is_none());
+
+    let action = resolve_auto_review_start_action(&state, &execution_state, &workspace)
+        .await
+        .expect("auto-review action should resolve");
+
+    assert_eq!(action, AutoReviewStartAction::Start);
+}
+
+#[tokio::test]
+async fn auto_review_start_action_starts_when_existing_review_is_outdated() {
+    let (_temp, repo, base_sha) = init_repo();
+    commit_workspace_delta(&repo);
+    let state = AppState::new_test();
+    let execution_state = ExecutionState::new();
+    let project = seed_project(&state, &repo).await;
+    let workspace = workspace(&project, &repo, Some(base_sha));
+    seed_workspace_conversation(&state, &workspace).await;
+    let monitor = current_target_monitor(
+        &state,
+        &workspace,
+        AgentWorkspaceReviewMonitorStatus::Ready,
+        AgentWorkspaceReviewOutcome::Passed,
+    )
+    .await;
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await
+        .expect("current passing monitor should persist");
+    std::fs::write(repo.join("new-untracked.rs"), "pub fn newer() {}\n")
+        .expect("new untracked file should be written");
+
+    let context = load_agent_workspace_review_context(&state, &workspace)
+        .await
+        .expect("review context should load");
+    assert!(context.is_outdated);
+    assert_eq!(
+        context.monitor.review_gate_status,
+        AgentWorkspaceReviewGateStatus::Required
+    );
+
+    let action = resolve_auto_review_start_action(&state, &execution_state, &workspace)
+        .await
+        .expect("auto-review action should resolve");
+
+    assert_eq!(action, AutoReviewStartAction::Start);
+}
+
+#[test]
+fn base_update_auto_review_trigger_dedupes_when_workspace_is_already_in_flight() {
+    let (_temp, repo, base_sha) = init_repo();
+    let state = AppState::new_test();
+    let execution_state = Arc::new(ExecutionState::new());
+    let project = Project::new(
+        "Auto Review Base Update".to_string(),
+        repo.to_string_lossy().to_string(),
+    );
+    let workspace = workspace(&project, &repo, Some(base_sha));
+    let guard = begin_auto_review(&workspace.conversation_id).expect("guard should be acquired");
+
+    assert!(!spawn_auto_review_after_workspace_change(
+        state,
+        execution_state,
+        workspace.clone(),
+        AutoReviewTrigger::BaseUpdate,
+        None,
+    ));
+    assert!(begin_auto_review(&workspace.conversation_id).is_none());
+    drop(guard);
+}
+
+#[test]
+fn base_update_auto_review_emits_workspace_changed_when_review_starts() {
+    let conversation_id = ChatConversationId::new();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let emitter: WorkspaceChangedEmitter = Box::new(move |conversation_id| {
+        tx.send(conversation_id.as_str().to_string())
+            .expect("workspace changed event should send");
+    });
+
+    assert!(handle_auto_review_workspace_change_result(
+        AutoReviewTrigger::BaseUpdate,
+        &conversation_id,
+        Ok(AutoReviewDecision::Started),
+        Some(&emitter),
+    ));
+
+    assert_eq!(
+        rx.recv_timeout(Duration::from_secs(1))
+            .expect("workspace changed event should emit after review starts"),
+        conversation_id.as_str()
+    );
+}
+
+#[test]
+fn base_update_auto_review_does_not_emit_workspace_changed_when_review_skips() {
+    let conversation_id = ChatConversationId::new();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let emitter: WorkspaceChangedEmitter = Box::new(move |conversation_id| {
+        tx.send(conversation_id.as_str().to_string())
+            .expect("workspace changed event should send");
+    });
+
+    assert!(!handle_auto_review_workspace_change_result(
+        AutoReviewTrigger::BaseUpdate,
+        &conversation_id,
+        Ok(AutoReviewDecision::Skipped(
+            AutoReviewSkipReason::GateNotRequired,
+        )),
+        Some(&emitter),
+    ));
+
+    assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn auto_review_workspace_change_result_handles_started_without_emitter() {
+    let conversation_id = ChatConversationId::new();
+
+    assert!(handle_auto_review_workspace_change_result(
+        AutoReviewTrigger::AgentCompletion,
+        &conversation_id,
+        Ok(AutoReviewDecision::Started),
+        None,
+    ));
+}
+
+#[test]
+fn auto_review_workspace_change_result_handles_errors_without_emitting() {
+    let conversation_id = ChatConversationId::new();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let emitter: WorkspaceChangedEmitter = Box::new(move |conversation_id| {
+        tx.send(conversation_id.as_str().to_string())
+            .expect("workspace changed event should send");
+    });
+
+    assert!(!handle_auto_review_workspace_change_result(
+        AutoReviewTrigger::AgentCompletion,
+        &conversation_id,
+        Err("review start failed".to_string()),
+        Some(&emitter),
+    ));
+
+    assert!(rx.try_recv().is_err());
 }
 
 #[tokio::test]
