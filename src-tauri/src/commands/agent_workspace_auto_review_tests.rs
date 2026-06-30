@@ -235,6 +235,18 @@ fn skip_reason_codes_are_stable() {
 }
 
 #[test]
+fn auto_review_trigger_codes_are_stable() {
+    let cases = [
+        (AutoReviewTrigger::AgentCompletion, "agent_completion"),
+        (AutoReviewTrigger::BaseUpdate, "base_update"),
+    ];
+
+    for (trigger, expected) in cases {
+        assert_eq!(trigger.as_str(), expected);
+    }
+}
+
+#[test]
 fn begin_auto_review_deduplicates_until_guard_drops() {
     let conversation_id = ChatConversationId::new();
     let guard = begin_auto_review(&conversation_id).expect("first guard should be acquired");
@@ -510,6 +522,37 @@ fn base_update_auto_review_does_not_emit_workspace_changed_when_review_skips() {
         Ok(AutoReviewDecision::Skipped(
             AutoReviewSkipReason::GateNotRequired,
         )),
+        Some(&emitter),
+    ));
+
+    assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn auto_review_workspace_change_result_handles_started_without_emitter() {
+    let conversation_id = ChatConversationId::new();
+
+    assert!(handle_auto_review_workspace_change_result(
+        AutoReviewTrigger::AgentCompletion,
+        &conversation_id,
+        Ok(AutoReviewDecision::Started),
+        None,
+    ));
+}
+
+#[test]
+fn auto_review_workspace_change_result_handles_errors_without_emitting() {
+    let conversation_id = ChatConversationId::new();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let emitter: WorkspaceChangedEmitter = Box::new(move |conversation_id| {
+        tx.send(conversation_id.as_str().to_string())
+            .expect("workspace changed event should send");
+    });
+
+    assert!(!handle_auto_review_workspace_change_result(
+        AutoReviewTrigger::AgentCompletion,
+        &conversation_id,
+        Err("review start failed".to_string()),
         Some(&emitter),
     ));
 
