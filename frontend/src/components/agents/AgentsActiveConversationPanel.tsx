@@ -772,6 +772,8 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     ? `workspace_review:${focusedWorkspaceReviewConversationId}`
     : focusedChatSessionId ?? "workspace";
   const isFocusedChildChat = chatFocus.type !== "workspace";
+  const usesWorkspaceRuntimeControls =
+    !isFocusedChildChat || chatFocus.type === "workspace_review";
   const runtimeStatusConversationId =
     activeConversation.parentConversationId ?? selectedConversationId;
   const runtimeStatusQuery = useAgentConversationRuntimeStatus(
@@ -2145,7 +2147,9 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                     }}
                     onLayoutChange={composerProps.onLayoutChange}
                     sendDisabledReason={
-                      !isFocusedChildChat ? workspaceProviderStatusMessage : null
+                      usesWorkspaceRuntimeControls
+                        ? workspaceProviderStatusMessage
+                        : null
                     }
                     hasQueuedMessages={composerProps.hasQueuedMessages}
                     onEditLastQueued={composerProps.onEditLastQueued}
@@ -2210,7 +2214,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                       disabled: true,
                     }}
                     {...(() => {
-                      if (!isFocusedChildChat) {
+                      if (usesWorkspaceRuntimeControls) {
                         return {
                           provider: {
                             value: normalizedActiveRuntime.provider,
@@ -2317,7 +2321,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                       };
                     })()}
                   />
-                  {!isFocusedChildChat && workspaceProviderStatusMessage && (
+                  {usesWorkspaceRuntimeControls && workspaceProviderStatusMessage && (
                     <div
                       className="mx-2 mt-2 flex flex-wrap items-center justify-between gap-2 rounded-md border px-3 py-2 text-[0.8125rem]"
                       style={{

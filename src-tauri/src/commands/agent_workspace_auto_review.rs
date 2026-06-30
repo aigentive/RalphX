@@ -306,6 +306,16 @@ pub(crate) async fn maybe_start_auto_review(
             AutoReviewSkipReason::ManualOnlyTerminalPr,
         ));
     }
+    let review_settings = state
+        .review_settings_repo
+        .get_settings()
+        .await
+        .map_err(|error| error.to_string())?;
+    if !review_settings.require_workspace_review {
+        return Ok(AutoReviewDecision::Skipped(
+            AutoReviewSkipReason::GateNotRequired,
+        ));
+    }
 
     let context = load_agent_workspace_review_context(state, workspace)
         .await

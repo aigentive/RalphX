@@ -573,6 +573,15 @@ fn test_review_settings_has_defaults() {
         .query_row("SELECT COUNT(*) FROM review_settings", [], |row| row.get(0))
         .unwrap();
     assert_eq!(count, 1);
+
+    let require_workspace_review: i64 = conn
+        .query_row(
+            "SELECT require_workspace_review FROM review_settings WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(require_workspace_review, 1);
 }
 
 #[test]

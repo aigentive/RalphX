@@ -181,6 +181,7 @@ export const DEFAULT_REVIEW_SETTINGS = {
   aiReviewAutoFix: true,
   requireFixApproval: false,
   requireHumanReview: false,
+  requireWorkspaceReview: true,
   maxFixAttempts: 3,
 } as const;
 
@@ -197,6 +198,10 @@ export const ReviewSettingsSchema = z.object({
   requireFixApproval: z.boolean().default(DEFAULT_REVIEW_SETTINGS.requireFixApproval),
   /** Require human review even after AI approval */
   requireHumanReview: z.boolean().default(DEFAULT_REVIEW_SETTINGS.requireHumanReview),
+  /** Require workspace Review before publishing agent workspace branches */
+  requireWorkspaceReview: z
+    .boolean()
+    .default(DEFAULT_REVIEW_SETTINGS.requireWorkspaceReview),
   /** Maximum fix attempts before giving up and moving to backlog */
   maxFixAttempts: z.number().int().nonnegative().default(DEFAULT_REVIEW_SETTINGS.maxFixAttempts),
 });

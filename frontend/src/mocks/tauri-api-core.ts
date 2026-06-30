@@ -50,6 +50,7 @@ import type { GitAuthDiagnostics } from "@/hooks/useGithubSettings";
 
 const mockReviewSettings = {
   require_human_review: false,
+  require_workspace_review: true,
   max_fix_attempts: 3,
   max_revision_cycles: 2,
   ai_review_enabled: true,
@@ -2594,12 +2595,16 @@ const commandHandlers: Record<
   update_review_settings: async (args) => {
     const input = args.input as {
       requireHumanReview?: boolean;
+      requireWorkspaceReview?: boolean;
       maxFixAttempts?: number;
       maxRevisionCycles?: number;
       autoCreateFollowupAgentConversation?: boolean;
     };
     if (input.requireHumanReview !== undefined) {
       mockReviewSettings.require_human_review = input.requireHumanReview;
+    }
+    if (input.requireWorkspaceReview !== undefined) {
+      mockReviewSettings.require_workspace_review = input.requireWorkspaceReview;
     }
     if (input.maxFixAttempts !== undefined) {
       mockReviewSettings.max_fix_attempts = input.maxFixAttempts;
