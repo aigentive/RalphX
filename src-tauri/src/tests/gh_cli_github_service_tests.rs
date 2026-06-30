@@ -1475,7 +1475,7 @@ mod mock_roundtrip {
     async fn list_pull_request_branch_matches_uses_single_all_state_lookup() {
         let runner = Arc::new(MockGhCliRunner::with_gh_results(vec![Ok(vec![
             r#"[
-                {"number":42,"url":"https://github.com/owner/repo/pull/42","state":"MERGED","isDraft":false,"headRefName":"ralphx/demo/agent-1234","updatedAt":"2026-05-11T22:00:00Z"},
+                {"number":42,"url":"https://github.com/owner/repo/pull/42","state":"MERGED","isDraft":false,"headRefName":"ralphx/demo/agent-1234","updatedAt":"2026-05-11T22:00:00Z","author":{"login":"closedauthor"}},
                 {"number":43,"url":"https://github.com/owner/repo/pull/43","state":"CLOSED","isDraft":false,"headRefName":"","updatedAt":"2026-05-12T22:00:00Z"}
             ]"#
             .to_string(),
@@ -1490,6 +1490,7 @@ mod mock_roundtrip {
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].number, 42);
         assert_eq!(matches[0].publication_status(), "merged");
+        assert_eq!(matches[0].author_login.as_deref(), Some("closedauthor"));
         assert_eq!(
             runner.gh_calls(),
             vec![vec![
@@ -1500,7 +1501,7 @@ mod mock_roundtrip {
                 "--limit",
                 "200",
                 "--json",
-                "number,url,state,isDraft,headRefName,updatedAt",
+                "number,url,state,isDraft,headRefName,updatedAt,author",
             ]
             .into_iter()
             .map(str::to_string)
