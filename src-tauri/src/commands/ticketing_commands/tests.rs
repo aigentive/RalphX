@@ -14,12 +14,12 @@ use crate::application::{
     AppState, AtlassianApiClient, AtlassianAuthContext, AtlassianConnectivity,
     AtlassianIntegrationService, AtlassianJiraAttachment, AtlassianJiraComment,
     AtlassianOAuthResource, AtlassianOAuthTokenResponse, AtlassianResourceContent,
-    AtlassianResourceKind, AtlassianResourceSummary, ClickUpComment, ClickUpSpace, ClickUpStatus,
+    AtlassianResourceKind, AtlassianResourceSummary, ClickUpComment, ClickUpSpace,
     ClickUpTaskContent, ClickUpTaskSummary, ClickUpUser, JiraIssueDetail, JiraProjectSummary,
-    JiraStatusSummary, LinearApiClient, LinearAuthContext, LinearIntegrationService,
-    LinearIntegrationSettings, LinearIntegrationSettingsRepository, LinearIssueContent,
-    LinearIssueSummary, LinearProject, TeamService, TeamStateTracker, TicketingLabelResult,
-    TicketingMutationResult, TicketingTicketIdentity, TicketingTransitionOption,
+    LinearApiClient, LinearAuthContext, LinearIntegrationService, LinearIntegrationSettings,
+    LinearIntegrationSettingsRepository, LinearIssueContent, LinearIssueSummary, LinearProject,
+    TeamService, TeamStateTracker, TicketingLabelResult, TicketingMutationResult,
+    TicketingTicketIdentity, TicketingTransitionOption,
 };
 use crate::commands::unified_chat_commands::StartAgentConversationInput;
 use crate::commands::ExecutionState;
@@ -200,14 +200,27 @@ fn clickup_space_maps_to_project_container() {
 
 #[test]
 fn clickup_status_maps_into_column_with_name_derived_id() {
-    let column = clickup_status_to_column(
-        ClickUpStatus {
-            id: Some("status-99".to_string()),
-            status: "In Progress".to_string(),
-            status_type: "custom".to_string(),
-            category: "in_progress".to_string(),
-            color: Some("#abcdef".to_string()),
-            orderindex: Some(1),
+    let now = chrono::Utc::now();
+    let column = status_catalog_entry_column(
+        crate::domain::integrations::TicketingStatusCatalogEntry {
+            id: "catalog-1".to_string(),
+            provider: "clickup".to_string(),
+            scope_kind: "clickup_space".to_string(),
+            scope_id: "space-1".to_string(),
+            provider_status_id: state_id("In Progress"),
+            provider_status_name: "In Progress".to_string(),
+            provider_category: "in_progress".to_string(),
+            provider_color: Some("#abcdef".to_string()),
+            provider_order: Some(1),
+            display_order: 1,
+            color_override: None,
+            is_visible: true,
+            is_terminal: false,
+            last_seen_at: Some(now),
+            stale_since: None,
+            metadata_json: Some(serde_json::json!({ "clickupStatusId": "status-99" }).to_string()),
+            created_at: now,
+            updated_at: now,
         },
         1,
     );
@@ -660,14 +673,27 @@ fn clickup_comment_mapper_preserves_sparse_nested_comments() {
 fn clickup_ticket_state_id_aligns_with_column_id_for_kanban() {
     // Kanban groups tickets by `state.id == column.id`. ClickUp tasks carry no
     // status id, so both sides must derive the id from the same status name.
-    let column = clickup_status_to_column(
-        ClickUpStatus {
-            id: None,
-            status: "In Review".to_string(),
-            status_type: "custom".to_string(),
-            category: "in_progress".to_string(),
-            color: None,
-            orderindex: Some(2),
+    let now = chrono::Utc::now();
+    let column = status_catalog_entry_column(
+        crate::domain::integrations::TicketingStatusCatalogEntry {
+            id: "catalog-1".to_string(),
+            provider: "clickup".to_string(),
+            scope_kind: "clickup_space".to_string(),
+            scope_id: "space-1".to_string(),
+            provider_status_id: state_id("In Review"),
+            provider_status_name: "In Review".to_string(),
+            provider_category: "in_progress".to_string(),
+            provider_color: None,
+            provider_order: Some(2),
+            display_order: 2,
+            color_override: None,
+            is_visible: true,
+            is_terminal: false,
+            last_seen_at: Some(now),
+            stale_since: None,
+            metadata_json: None,
+            created_at: now,
+            updated_at: now,
         },
         0,
     );
@@ -1949,22 +1975,40 @@ fn ticket_state_combines_id_name_and_category() {
 }
 
 #[test]
-fn linear_workflow_state_maps_into_column_with_order() {
-    let column = linear_workflow_state_to_column(
-        LinearWorkflowState {
-            id: "state-1".to_string(),
-            name: "In Progress".to_string(),
-            category: "started".to_string(),
-            color: Some("#112233".to_string()),
+fn status_catalog_entry_maps_into_column_with_resolved_presentation() {
+    let now = chrono::Utc::now();
+    let column = status_catalog_entry_column(
+        crate::domain::integrations::TicketingStatusCatalogEntry {
+            id: "catalog-1".to_string(),
+            provider: "linear".to_string(),
+            scope_kind: "linear_global".to_string(),
+            scope_id: "all".to_string(),
+            provider_status_id: "state-1".to_string(),
+            provider_status_name: "In Progress".to_string(),
+            provider_category: "in_progress".to_string(),
+            provider_color: Some("#112233".to_string()),
+            provider_order: Some(2),
+            display_order: 7,
+            color_override: Some("#445566".to_string()),
+            is_visible: true,
+            is_terminal: false,
+            last_seen_at: Some(now),
+            stale_since: None,
+            metadata_json: None,
+            created_at: now,
+            updated_at: now,
         },
-        2,
+        0,
     );
 
     assert_eq!(column.id, "state-1");
     assert_eq!(column.name, "In Progress");
-    assert_eq!(column.category, "started");
-    assert_eq!(column.order, 2);
-    assert_eq!(column.color.as_deref(), Some("#112233"));
+    assert_eq!(column.category, "in_progress");
+    assert_eq!(column.order, 0);
+    assert_eq!(column.color.as_deref(), Some("#445566"));
+    assert_eq!(column.provider_color.as_deref(), Some("#112233"));
+    assert_eq!(column.display_order, Some(7));
+    assert_eq!(column.scope_kind.as_deref(), Some("linear_global"));
 }
 
 #[test]
@@ -1986,11 +2030,27 @@ fn jira_project_maps_to_container_keyed_by_project_key() {
 
 #[test]
 fn jira_status_maps_into_column_preserving_real_id_and_category() {
-    let column = jira_status_to_column(
-        JiraStatusSummary {
-            id: "3".to_string(),
-            name: "In Progress".to_string(),
-            category: "in_progress".to_string(),
+    let now = chrono::Utc::now();
+    let column = status_catalog_entry_column(
+        crate::domain::integrations::TicketingStatusCatalogEntry {
+            id: "catalog-1".to_string(),
+            provider: "jira".to_string(),
+            scope_kind: "jira_project".to_string(),
+            scope_id: "RX".to_string(),
+            provider_status_id: "3".to_string(),
+            provider_status_name: "In Progress".to_string(),
+            provider_category: "in_progress".to_string(),
+            provider_color: None,
+            provider_order: Some(1),
+            display_order: 1,
+            color_override: None,
+            is_visible: true,
+            is_terminal: false,
+            last_seen_at: Some(now),
+            stale_since: None,
+            metadata_json: None,
+            created_at: now,
+            updated_at: now,
         },
         1,
     );

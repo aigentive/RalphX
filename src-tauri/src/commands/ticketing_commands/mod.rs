@@ -2,6 +2,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use chrono::Utc;
+use serde_json::json;
 use tauri::{AppHandle, Runtime, State};
 
 use crate::application::clickup_integration_service::{
@@ -15,13 +16,13 @@ use crate::application::{
         AgentConversationStartDeps, AgentConversationStartService, StartAgentConversationInput,
     },
     AppState, AtlassianResourceContent, AtlassianResourceKind, AtlassianResourceSummary,
-    ClickUpComment, ClickUpSpace, ClickUpStatus, ClickUpTaskContent, ClickUpTaskSummary,
-    ClickUpUser, JiraIssueDetail, JiraProjectSummary, JiraStatusSummary, LinearComment,
+    ClickUpComment, ClickUpSpace, ClickUpTaskContent, ClickUpTaskSummary, ClickUpUser,
+    JiraIssueDetail, JiraProjectSummary, LinearComment,
     LinearIntegrationSettings, LinearIssueContent, LinearIssueSummary, LinearLabel,
-    LinearWorkflowState, TauriTicketingEventSink, TeamService, TicketAssignRequest,
-    TicketCommentRequest, TicketSetLabelsRequest, TicketTransitionRequest, TicketingCommentResult,
-    TicketingLabelResult, TicketingMutationResult, TicketingPersonResult, TicketingService,
-    TicketingTicketIdentity, TicketingTransitionOption,
+    TauriTicketingEventSink, TeamService, TicketAssignRequest, TicketCommentRequest,
+    TicketSetLabelsRequest, TicketTransitionRequest, TicketingCommentResult, TicketingLabelResult,
+    TicketingMutationResult, TicketingPersonResult, TicketingService, TicketingTicketIdentity,
+    TicketingTransitionOption,
 };
 use crate::commands::unified_chat_commands::{
     agent_conversation_response_for_state, agent_workspace_response_for_state,
@@ -35,7 +36,8 @@ use crate::domain::entities::{
 };
 use crate::domain::integrations::{
     AtlassianIntegrationSettings, ClickUpIntegrationSettings, IntegrationValidationStatus,
-    ProviderTicketOperation,
+    ObservedTicketingStatus, ProviderTicketOperation, TicketingStatusCatalogEntry,
+    TicketingStatusPresentationPatch,
 };
 use crate::domain::services::{
     jira_reference_from_composer_reference, ComposerIntegrationReference,
@@ -65,6 +67,13 @@ enum ProjectTicketLink {
 struct ProjectTicketConversationAssociation {
     link: ProjectTicketLink,
     item: TicketAssociationItemResponse,
+}
+
+#[derive(Debug, Clone)]
+struct TicketingStatusCatalogScope {
+    provider: String,
+    scope_kind: String,
+    scope_id: String,
 }
 
 #[tauri::command]
@@ -145,64 +154,60 @@ pub async fn list_ticketing_columns(
     state: State<'_, AppState>,
 ) -> Result<Vec<TicketingColumnResponse>, String> {
     validate_provider(&provider)?;
-    match provider.as_str() {
-        PROVIDER_JIRA => match container_id.as_deref() {
-            // Jira statuses are project-scoped; columns only load meaningfully once
-            // a project is selected (matches the force-select gate). No project →
-            // provider-neutral defaults.
-            Some(key) => state
-                .atlassian_integration_service
-                .list_jira_project_statuses(key)
-                .await
-                .map(|mut statuses| {
-                    // Jira's status endpoint exposes no order field; category is the
-                    // only stable signal, so sort To Do → In Progress → Done (stable
-                    // within a category, preserving the API order) for left-to-right
-                    // columns.
-                    statuses.sort_by_key(|status| jira_status_category_rank(&status.category));
-                    statuses
-                        .into_iter()
-                        .enumerate()
-                        .map(|(index, status)| jira_status_to_column(status, index))
-                        .collect()
-                }),
-            // No project selected → no statuses; the dashboard forces a project pick
-            // before loading per-project statuses.
-            None => Ok(Vec::new()),
-        },
-        PROVIDER_LINEAR => state
-            .linear_integration_service
-            // Linear containers are projects, but workflow states are team-scoped;
-            // passing a project id as a team id errors, so fetch all states.
-            .list_workflow_states(None)
-            .await
-            .map(|states| {
-                states
-                    .into_iter()
-                    .enumerate()
-                    .map(|(index, state)| linear_workflow_state_to_column(state, index))
-                    .collect()
-            }),
-        // ClickUp statuses are Space-scoped, so columns only load meaningfully once
-        // a Space (container) is selected, mirroring the Jira project gate. ClickUp
-        // exposes an explicit `orderindex`, so sort by it for left-to-right columns.
-        PROVIDER_CLICKUP => match clickup_selected_space_id(container_id.as_deref()) {
-            Some(space_id) => state
-                .clickup_integration_service
-                .list_statuses(space_id)
-                .await
-                .map(|mut statuses| {
-                    statuses.sort_by_key(|status| status.orderindex.unwrap_or(i64::MAX));
-                    statuses
-                        .into_iter()
-                        .enumerate()
-                        .map(|(index, status)| clickup_status_to_column(status, index))
-                        .collect()
-                }),
-            None => Ok(Vec::new()),
-        },
-        _ => unreachable!("provider validated above"),
-    }
+    let Some(scope) = column_status_catalog_scope(&provider, container_id.as_deref())? else {
+        return Ok(Vec::new());
+    };
+    sync_status_catalog_for_scope(state.inner(), &scope)
+        .await
+        .map(catalog_entries_to_columns)
+}
+
+#[tauri::command]
+pub async fn list_ticketing_status_catalog(
+    provider: String,
+    scope_kind: String,
+    scope_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<TicketingStatusCatalogEntryResponse>, String> {
+    let scope = normalize_status_catalog_scope(provider, scope_kind, scope_id)?;
+    state
+        .ticketing_status_catalog_service
+        .list_status_catalog(&scope.provider, &scope.scope_kind, &scope.scope_id)
+        .await
+        .map(|entries| entries.into_iter().map(status_catalog_entry_response).collect())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn refresh_ticketing_status_catalog(
+    provider: String,
+    scope_kind: String,
+    scope_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<TicketingStatusCatalogEntryResponse>, String> {
+    let scope = normalize_status_catalog_scope(provider, scope_kind, scope_id)?;
+    sync_status_catalog_for_scope(state.inner(), &scope)
+        .await
+        .map(|entries| entries.into_iter().map(status_catalog_entry_response).collect())
+}
+
+#[tauri::command]
+pub async fn update_ticketing_status_presentation(
+    input: UpdateTicketingStatusPresentationInput,
+    state: State<'_, AppState>,
+) -> Result<Vec<TicketingStatusCatalogEntryResponse>, String> {
+    let scope = normalize_status_catalog_scope(input.provider, input.scope_kind, input.scope_id)?;
+    let patches = input
+        .patches
+        .into_iter()
+        .map(status_presentation_patch)
+        .collect::<Result<Vec<_>, _>>()?;
+    state
+        .ticketing_status_catalog_service
+        .update_status_presentation(&scope.provider, &scope.scope_kind, &scope.scope_id, patches)
+        .await
+        .map(|entries| entries.into_iter().map(status_catalog_entry_response).collect())
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -1209,6 +1214,263 @@ fn writable_capabilities(freshness: &str) -> TicketingCapabilitiesResponse {
     }
 }
 
+fn column_status_catalog_scope(
+    provider: &str,
+    container_id: Option<&str>,
+) -> Result<Option<TicketingStatusCatalogScope>, String> {
+    match provider {
+        PROVIDER_JIRA => Ok(container_selected_key(container_id).map(|project_key| {
+            TicketingStatusCatalogScope {
+                provider: PROVIDER_JIRA.to_string(),
+                scope_kind: "jira_project".to_string(),
+                scope_id: project_key.to_string(),
+            }
+        })),
+        PROVIDER_LINEAR => {
+            if let Some(team_id) = container_selected_key(container_id)
+                .and_then(|value| value.strip_prefix("team:"))
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                return Ok(Some(TicketingStatusCatalogScope {
+                    provider: PROVIDER_LINEAR.to_string(),
+                    scope_kind: "linear_team".to_string(),
+                    scope_id: team_id.to_string(),
+                }));
+            }
+            Ok(Some(TicketingStatusCatalogScope {
+                provider: PROVIDER_LINEAR.to_string(),
+                scope_kind: "linear_global".to_string(),
+                scope_id: "all".to_string(),
+            }))
+        }
+        PROVIDER_CLICKUP => Ok(clickup_selected_space_id(container_id).map(|space_id| {
+            TicketingStatusCatalogScope {
+                provider: PROVIDER_CLICKUP.to_string(),
+                scope_kind: "clickup_space".to_string(),
+                scope_id: space_id.to_string(),
+            }
+        })),
+        _ => Err(format!("Unsupported ticketing provider: {provider}")),
+    }
+}
+
+fn normalize_status_catalog_scope(
+    provider: String,
+    scope_kind: String,
+    scope_id: String,
+) -> Result<TicketingStatusCatalogScope, String> {
+    validate_provider(&provider)?;
+    let scope_kind = scope_kind.trim();
+    let scope_id = scope_id.trim();
+    if scope_id.is_empty() {
+        return Err("Status scope id is required".to_string());
+    }
+    match provider.as_str() {
+        PROVIDER_JIRA if scope_kind == "jira_project" => Ok(TicketingStatusCatalogScope {
+            provider,
+            scope_kind: scope_kind.to_string(),
+            scope_id: scope_id.to_string(),
+        }),
+        PROVIDER_LINEAR if scope_kind == "linear_team" => Ok(TicketingStatusCatalogScope {
+            provider,
+            scope_kind: scope_kind.to_string(),
+            scope_id: scope_id.to_string(),
+        }),
+        PROVIDER_LINEAR if scope_kind == "linear_global" => Ok(TicketingStatusCatalogScope {
+            provider,
+            scope_kind: scope_kind.to_string(),
+            scope_id: "all".to_string(),
+        }),
+        PROVIDER_CLICKUP if scope_kind == "clickup_space" => {
+            let scope_id = scope_id.strip_prefix("space:").unwrap_or(scope_id);
+            if scope_id.contains(':') || scope_id.trim().is_empty() {
+                return Err("ClickUp status scope must be a Space id".to_string());
+            }
+            Ok(TicketingStatusCatalogScope {
+                provider,
+                scope_kind: scope_kind.to_string(),
+                scope_id: scope_id.to_string(),
+            })
+        }
+        _ => Err(format!(
+            "Unsupported status scope for provider {provider}: {scope_kind}"
+        )),
+    }
+}
+
+async fn sync_status_catalog_for_scope(
+    state: &AppState,
+    scope: &TicketingStatusCatalogScope,
+) -> Result<Vec<TicketingStatusCatalogEntry>, String> {
+    let observed = observed_statuses_for_scope(state, scope).await?;
+    state
+        .ticketing_status_catalog_service
+        .sync_observed_statuses(&scope.provider, &scope.scope_kind, &scope.scope_id, observed)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+async fn observed_statuses_for_scope(
+    state: &AppState,
+    scope: &TicketingStatusCatalogScope,
+) -> Result<Vec<ObservedTicketingStatus>, String> {
+    match scope.provider.as_str() {
+        PROVIDER_JIRA => {
+            let mut statuses = state
+                .atlassian_integration_service
+                .list_jira_project_statuses(&scope.scope_id)
+                .await?;
+            statuses.sort_by_key(|status| jira_status_category_rank(&status.category));
+            Ok(statuses
+                .into_iter()
+                .enumerate()
+                .map(|(index, status)| ObservedTicketingStatus {
+                    provider_status_id: status.id,
+                    provider_status_name: status.name,
+                    provider_category: status.category.clone(),
+                    provider_color: None,
+                    provider_order: Some(index as i64),
+                    is_terminal: status.category == "done",
+                    metadata_json: None,
+                })
+                .collect())
+        }
+        PROVIDER_LINEAR => {
+            let team_id = (scope.scope_kind == "linear_team").then_some(scope.scope_id.as_str());
+            state
+                .linear_integration_service
+                .list_workflow_states(team_id)
+                .await
+                .map(|states| {
+                    states
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, state)| ObservedTicketingStatus {
+                            provider_status_id: state.id,
+                            provider_status_name: state.name,
+                            provider_category: state.category.clone(),
+                            provider_color: state.color,
+                            provider_order: Some(index as i64),
+                            is_terminal: state.category == "done",
+                            metadata_json: None,
+                        })
+                        .collect()
+                })
+        }
+        PROVIDER_CLICKUP => {
+            let mut statuses = state
+                .clickup_integration_service
+                .list_statuses(&scope.scope_id)
+                .await?;
+            statuses.sort_by_key(|status| status.orderindex.unwrap_or(i64::MAX));
+            Ok(statuses
+                .into_iter()
+                .enumerate()
+                .map(|(index, status)| {
+                    let raw_status_id = status.id.clone();
+                    ObservedTicketingStatus {
+                        provider_status_id: state_id(&status.status),
+                        provider_status_name: status.status,
+                        provider_category: status.category.clone(),
+                        provider_color: status.color,
+                        provider_order: Some(status.orderindex.unwrap_or(index as i64)),
+                        is_terminal: status.category == "done",
+                        metadata_json: raw_status_id
+                            .map(|raw_id| json!({ "clickupStatusId": raw_id }).to_string()),
+                    }
+                })
+                .collect())
+        }
+        _ => Err(format!("Unsupported ticketing provider: {}", scope.provider)),
+    }
+}
+
+fn status_presentation_patch(
+    input: TicketingStatusPresentationPatchInput,
+) -> Result<TicketingStatusPresentationPatch, String> {
+    let provider_status_id = input.provider_status_id.trim();
+    if provider_status_id.is_empty() {
+        return Err("Provider status id is required".to_string());
+    }
+    let color_override = match input.color_override {
+        Some(Some(value)) => {
+            let value = value.trim();
+            Some((!value.is_empty()).then(|| value.to_string()))
+        }
+        Some(None) => Some(None),
+        None => None,
+    };
+    Ok(TicketingStatusPresentationPatch {
+        provider_status_id: provider_status_id.to_string(),
+        display_order: input.display_order,
+        color_override,
+        is_visible: input.is_visible,
+    })
+}
+
+fn catalog_entries_to_columns(
+    entries: Vec<TicketingStatusCatalogEntry>,
+) -> Vec<TicketingColumnResponse> {
+    entries
+        .into_iter()
+        .filter(|entry| entry.is_visible)
+        .enumerate()
+        .map(|(index, entry)| status_catalog_entry_column(entry, index))
+        .collect()
+}
+
+fn status_catalog_entry_column(
+    entry: TicketingStatusCatalogEntry,
+    order: usize,
+) -> TicketingColumnResponse {
+    let color = entry.color_override.clone().or_else(|| entry.provider_color.clone());
+    TicketingColumnResponse {
+        id: entry.provider_status_id,
+        name: entry.provider_status_name,
+        category: entry.provider_category,
+        order,
+        color,
+        provider_color: entry.provider_color,
+        color_override: entry.color_override,
+        provider_order: entry.provider_order,
+        display_order: Some(entry.display_order),
+        scope_kind: Some(entry.scope_kind),
+        scope_id: Some(entry.scope_id),
+        is_visible: Some(entry.is_visible),
+        is_terminal: Some(entry.is_terminal),
+        stale: Some(entry.stale_since.is_some()),
+        last_seen_at: entry.last_seen_at.map(|value| value.to_rfc3339()),
+        stale_since: entry.stale_since.map(|value| value.to_rfc3339()),
+    }
+}
+
+fn status_catalog_entry_response(
+    entry: TicketingStatusCatalogEntry,
+) -> TicketingStatusCatalogEntryResponse {
+    let color = entry.color_override.clone().or_else(|| entry.provider_color.clone());
+    TicketingStatusCatalogEntryResponse {
+        id: entry.id,
+        provider: entry.provider,
+        scope_kind: entry.scope_kind,
+        scope_id: entry.scope_id,
+        provider_status_id: entry.provider_status_id,
+        provider_status_name: entry.provider_status_name,
+        provider_category: entry.provider_category,
+        provider_color: entry.provider_color,
+        provider_order: entry.provider_order,
+        display_order: entry.display_order,
+        color_override: entry.color_override,
+        color,
+        is_visible: entry.is_visible,
+        is_terminal: entry.is_terminal,
+        stale: entry.stale_since.is_some(),
+        last_seen_at: entry.last_seen_at.map(|value| value.to_rfc3339()),
+        stale_since: entry.stale_since.map(|value| value.to_rfc3339()),
+        updated_at: entry.updated_at.to_rfc3339(),
+    }
+}
+
 // Test-only helper: a provider-neutral default column set. No production path uses
 // it now that Jira columns load per project (None → empty) and Linear always
 // fetches workflow states.
@@ -1230,19 +1492,17 @@ fn ticketing_column(id: &str, name: &str, category: &str, order: usize) -> Ticke
         category: category.to_string(),
         order,
         color: None,
-    }
-}
-
-fn linear_workflow_state_to_column(
-    state: LinearWorkflowState,
-    order: usize,
-) -> TicketingColumnResponse {
-    TicketingColumnResponse {
-        id: state.id,
-        name: state.name,
-        category: state.category,
-        order,
-        color: state.color,
+        provider_color: None,
+        color_override: None,
+        provider_order: None,
+        display_order: None,
+        scope_kind: None,
+        scope_id: None,
+        is_visible: None,
+        is_terminal: None,
+        stale: None,
+        last_seen_at: None,
+        stale_since: None,
     }
 }
 
@@ -1308,18 +1568,6 @@ fn jira_status_category_rank(category: &str) -> u8 {
         "in_progress" => 1,
         "done" => 2,
         _ => 3,
-    }
-}
-
-/// Map a deduped Jira project status into a kanban column, preserving the real
-/// provider status id/name and the normalized category.
-fn jira_status_to_column(status: JiraStatusSummary, order: usize) -> TicketingColumnResponse {
-    TicketingColumnResponse {
-        id: status.id,
-        name: status.name,
-        category: status.category,
-        order,
-        color: None,
     }
 }
 
@@ -1895,21 +2143,6 @@ fn clickup_folder_container_id(folder_id: &str) -> String {
 
 fn clickup_list_container_id(list_id: &str) -> String {
     format!("list:{list_id}")
-}
-
-/// Map a ClickUp Space status into a kanban column. ClickUp tasks expose their
-/// status by NAME (no stable per-task status id), so the column id is derived from
-/// the status name to match the ticket `state.id` produced by the ticket mappers
-/// (kanban groups by `state.id == column.id`). `category` is the already-derived
-/// `status.type` category.
-fn clickup_status_to_column(status: ClickUpStatus, order: usize) -> TicketingColumnResponse {
-    TicketingColumnResponse {
-        id: state_id(&status.status),
-        name: status.status,
-        category: status.category,
-        order,
-        color: status.color,
-    }
 }
 
 /// Map a ClickUp task summary into a ticket summary. The `state.id` is derived from

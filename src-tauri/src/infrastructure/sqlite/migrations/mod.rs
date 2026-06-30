@@ -384,6 +384,9 @@ mod v20260628010000_workspace_review_child_conversation_tests;
 mod v20260629101000_workspace_review_gate;
 #[cfg(test)]
 mod v20260629101000_workspace_review_gate_tests;
+mod v20260630120000_ticketing_status_catalog;
+#[cfg(test)]
+mod v20260630120000_ticketing_status_catalog_tests;
 mod v20260630123000_workspace_review_policy_setting;
 #[cfg(test)]
 mod v20260630123000_workspace_review_policy_setting_tests;
@@ -1321,6 +1324,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260629101000,
         name: "workspace_review_gate",
         migrate: v20260629101000_workspace_review_gate::migrate,
+    },
+    Migration {
+        version: 20260630120000,
+        name: "ticketing_status_catalog",
+        migrate: v20260630120000_ticketing_status_catalog::migrate,
     },
     Migration {
         version: 20260630123000,

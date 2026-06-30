@@ -114,3 +114,72 @@ pub struct ProviderTicketOperationUpsert {
     pub error_message: Option<String>,
     pub metadata_json: Option<String>,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ObservedTicketingStatus {
+    pub provider_status_id: String,
+    pub provider_status_name: String,
+    pub provider_category: String,
+    pub provider_color: Option<String>,
+    pub provider_order: Option<i64>,
+    pub is_terminal: bool,
+    pub metadata_json: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TicketingStatusCatalogEntry {
+    pub id: String,
+    pub provider: String,
+    pub scope_kind: String,
+    pub scope_id: String,
+    pub provider_status_id: String,
+    pub provider_status_name: String,
+    pub provider_category: String,
+    pub provider_color: Option<String>,
+    pub provider_order: Option<i64>,
+    pub display_order: i64,
+    pub color_override: Option<String>,
+    pub is_visible: bool,
+    pub is_terminal: bool,
+    pub last_seen_at: Option<DateTime<Utc>>,
+    pub stale_since: Option<DateTime<Utc>>,
+    pub metadata_json: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl TicketingStatusCatalogEntry {
+    pub fn resolved_color(&self) -> Option<&str> {
+        self.color_override
+            .as_deref()
+            .or(self.provider_color.as_deref())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TicketingStatusCatalogUpsert {
+    pub provider: String,
+    pub scope_kind: String,
+    pub scope_id: String,
+    pub provider_status_id: String,
+    pub provider_status_name: String,
+    pub provider_category: String,
+    pub provider_color: Option<String>,
+    pub provider_order: Option<i64>,
+    pub display_order: i64,
+    pub is_terminal: bool,
+    pub last_seen_at: DateTime<Utc>,
+    pub metadata_json: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TicketingStatusPresentationPatch {
+    pub provider_status_id: String,
+    pub display_order: Option<i64>,
+    pub color_override: Option<Option<String>>,
+    pub is_visible: Option<bool>,
+}

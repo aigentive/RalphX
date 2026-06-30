@@ -6,8 +6,9 @@ use crate::error::AppResult;
 
 mod ticketing;
 pub use ticketing::{
-    ProviderTicketOperation, ProviderTicketOperationKind, ProviderTicketOperationStatus,
-    ProviderTicketOperationUpsert,
+    ObservedTicketingStatus, ProviderTicketOperation, ProviderTicketOperationKind,
+    ProviderTicketOperationStatus, ProviderTicketOperationUpsert, TicketingStatusCatalogEntry,
+    TicketingStatusCatalogUpsert, TicketingStatusPresentationPatch,
 };
 
 mod clickup_settings;
@@ -406,6 +407,38 @@ pub trait ExternalIssueLinkRepository: Send + Sync {
     ) -> AppResult<Option<ProviderTicketOperation>>;
 }
 
+#[async_trait]
+pub trait TicketingStatusCatalogRepository: Send + Sync {
+    async fn list_status_catalog(
+        &self,
+        provider: &str,
+        scope_kind: &str,
+        scope_id: &str,
+    ) -> AppResult<Vec<TicketingStatusCatalogEntry>>;
+
+    async fn upsert_status_catalog_entry(
+        &self,
+        input: TicketingStatusCatalogUpsert,
+    ) -> AppResult<TicketingStatusCatalogEntry>;
+
+    async fn update_status_presentation(
+        &self,
+        provider: &str,
+        scope_kind: &str,
+        scope_id: &str,
+        patches: Vec<TicketingStatusPresentationPatch>,
+    ) -> AppResult<Vec<TicketingStatusCatalogEntry>>;
+
+    async fn mark_missing_statuses_stale(
+        &self,
+        provider: &str,
+        scope_kind: &str,
+        scope_id: &str,
+        observed_provider_status_ids: &[String],
+        stale_since: DateTime<Utc>,
+    ) -> AppResult<Vec<TicketingStatusCatalogEntry>>;
+}
+
 #[cfg(test)]
 mod tests {
     use std::str::FromStr;
@@ -528,6 +561,7 @@ mod tests {
             (ProviderTicketOperationKind::Transition, "transition"),
             (ProviderTicketOperationKind::Assign, "assign"),
             (ProviderTicketOperationKind::Comment, "comment"),
+            (ProviderTicketOperationKind::SetLabels, "set_labels"),
         ];
 
         for (kind, value) in cases {
