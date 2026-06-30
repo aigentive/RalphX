@@ -244,6 +244,22 @@ pub trait ClickUpApiClient: Send + Sync {
         Err("ClickUp statuses are not available for this client".to_string())
     }
 
+    async fn list_folder_statuses(
+        &self,
+        _auth: &ClickUpAuthContext,
+        _folder_id: &str,
+    ) -> Result<Vec<ClickUpStatus>, String> {
+        Err("ClickUp folder statuses are not available for this client".to_string())
+    }
+
+    async fn list_list_statuses(
+        &self,
+        _auth: &ClickUpAuthContext,
+        _list_id: &str,
+    ) -> Result<Vec<ClickUpStatus>, String> {
+        Err("ClickUp list statuses are not available for this client".to_string())
+    }
+
     async fn current_user(&self, _auth: &ClickUpAuthContext) -> Result<ClickUpUser, String> {
         Err("ClickUp current-user lookup is not available for this client".to_string())
     }
@@ -403,6 +419,22 @@ impl ClickUpApiClient for EmptyClickUpApiClient {
         Ok(Vec::new())
     }
 
+    async fn list_folder_statuses(
+        &self,
+        _auth: &ClickUpAuthContext,
+        _folder_id: &str,
+    ) -> Result<Vec<ClickUpStatus>, String> {
+        Ok(Vec::new())
+    }
+
+    async fn list_list_statuses(
+        &self,
+        _auth: &ClickUpAuthContext,
+        _list_id: &str,
+    ) -> Result<Vec<ClickUpStatus>, String> {
+        Ok(Vec::new())
+    }
+
     async fn current_user(&self, _auth: &ClickUpAuthContext) -> Result<ClickUpUser, String> {
         Ok(ClickUpUser {
             id: 0,
@@ -519,6 +551,22 @@ impl ClickUpApiClient for UnavailableClickUpApiClient {
         &self,
         _auth: &ClickUpAuthContext,
         _space_id: &str,
+    ) -> Result<Vec<ClickUpStatus>, String> {
+        Err(self.reason.clone())
+    }
+
+    async fn list_folder_statuses(
+        &self,
+        _auth: &ClickUpAuthContext,
+        _folder_id: &str,
+    ) -> Result<Vec<ClickUpStatus>, String> {
+        Err(self.reason.clone())
+    }
+
+    async fn list_list_statuses(
+        &self,
+        _auth: &ClickUpAuthContext,
+        _list_id: &str,
     ) -> Result<Vec<ClickUpStatus>, String> {
         Err(self.reason.clone())
     }
@@ -776,6 +824,19 @@ impl ClickUpIntegrationService {
     pub async fn list_statuses(&self, space_id: &str) -> Result<Vec<ClickUpStatus>, String> {
         let auth = self.enabled_auth_context().await?;
         self.client.list_statuses(&auth, space_id).await
+    }
+
+    pub async fn list_folder_statuses(
+        &self,
+        folder_id: &str,
+    ) -> Result<Vec<ClickUpStatus>, String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client.list_folder_statuses(&auth, folder_id).await
+    }
+
+    pub async fn list_list_statuses(&self, list_id: &str) -> Result<Vec<ClickUpStatus>, String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client.list_list_statuses(&auth, list_id).await
     }
 
     pub async fn fetch_task(&self, task_id: &str) -> Result<ClickUpTaskContent, String> {

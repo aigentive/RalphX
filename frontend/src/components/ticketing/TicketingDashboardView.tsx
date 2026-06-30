@@ -200,20 +200,36 @@ function clickupChildLocations(
 
 function statusCatalogScopeForSelection(
   provider: TicketingProvider | null,
-  columnsContainerId: string | null,
+  containerId: string | null,
+  container: TicketingContainer | null,
 ): TicketingStatusCatalogScopeInput | null {
   if (!provider) {
     return null;
   }
   if (provider === "jira") {
-    return columnsContainerId
-      ? { provider, scopeKind: "jira_project", scopeId: columnsContainerId }
+    return containerId
+      ? { provider, scopeKind: "jira_project", scopeId: containerId }
       : null;
   }
   if (provider === "clickup") {
-    return columnsContainerId
-      ? { provider, scopeKind: "clickup_space", scopeId: columnsContainerId.replace(/^space:/, "") }
-      : null;
+    if (!containerId) {
+      return null;
+    }
+    const kind = container?.kind ?? (
+      containerId.startsWith("folder:")
+        ? "folder"
+        : containerId.startsWith("list:")
+          ? "list"
+          : "space"
+    );
+    if (kind !== "space" && kind !== "folder" && kind !== "list") {
+      return null;
+    }
+    return {
+      provider,
+      scopeKind: `clickup_${kind}`,
+      scopeId: containerId.replace(/^(space|folder|list):/, ""),
+    };
   }
   return { provider, scopeKind: "linear_global", scopeId: "all" };
 }
@@ -226,7 +242,6 @@ function statusCatalogScopeLabel(
   provider: TicketingProvider | null,
   scope: TicketingStatusCatalogScopeInput | null,
   activeContainerName: string | null,
-  selectedClickUpSpace: TicketingContainer | null,
 ): string {
   if (!provider || !scope) {
     return "No scope selected";
@@ -235,7 +250,7 @@ function statusCatalogScopeLabel(
     return activeContainerName ?? scope.scopeId;
   }
   if (provider === "clickup") {
-    return selectedClickUpSpace?.name ?? scope.scopeId;
+    return activeContainerName ?? scope.scopeId;
   }
   return "All Linear workflow states";
 }
@@ -825,6 +840,11 @@ export function TicketingDashboardView({
     () => containers.filter((container) => container.kind === "space"),
     [containers],
   );
+  const activeContainer = useMemo(
+    () => containers.find((container) => container.id === activeContainerId) ?? null,
+    [activeContainerId, containers],
+  );
+  const activeContainerName = activeContainer?.name ?? null;
   const selectedClickUpSpaceId = useMemo(
     () => activeProvider === "clickup" ? clickupSpaceForContainer(activeContainerId, containers) : null,
     [activeContainerId, activeProvider, containers],
@@ -860,10 +880,10 @@ export function TicketingDashboardView({
     }
   }, [activeContainerId, activeProvider, containers, setContainerId]);
 
-  const columnsContainerId = activeProvider === "clickup" ? selectedClickUpSpaceId : activeContainerId;
+  const columnsContainerId = activeContainerId;
   const statusCatalogScope = useMemo(
-    () => statusCatalogScopeForSelection(activeProvider, columnsContainerId),
-    [activeProvider, columnsContainerId],
+    () => statusCatalogScopeForSelection(activeProvider, columnsContainerId, activeContainer),
+    [activeContainer, activeProvider, columnsContainerId],
   );
   const columnsQuery = useTicketingColumns(
     activeProvider && !containerSelectionNeeded
@@ -962,10 +982,6 @@ export function TicketingDashboardView({
       setFilters({ watcherMe: false });
     }
   }, [activeProvider, filters.watcherMe, setFilters]);
-  const activeContainerName = useMemo(
-    () => containers.find((container) => container.id === activeContainerId)?.name ?? null,
-    [containers, activeContainerId],
-  );
   const selectedClickUpSpace = useMemo(
     () => clickupSpaceContainers.find((space) => space.id === selectedClickUpSpaceId) ?? null,
     [clickupSpaceContainers, selectedClickUpSpaceId],
@@ -976,9 +992,8 @@ export function TicketingDashboardView({
         activeProvider,
         statusCatalogScope,
         activeContainerName,
-        selectedClickUpSpace,
       ),
-    [activeContainerName, activeProvider, selectedClickUpSpace, statusCatalogScope],
+    [activeContainerName, activeProvider, statusCatalogScope],
   );
   // Jira and ClickUp scope tickets to the selected container server-side (issues
   // carry no matching `project` field), so the client-side container-name filter

@@ -15,10 +15,11 @@ use crate::application::{
     AtlassianIntegrationService, AtlassianJiraAttachment, AtlassianJiraComment,
     AtlassianOAuthResource, AtlassianOAuthTokenResponse, AtlassianResourceContent,
     AtlassianResourceKind, AtlassianResourceSummary, ClickUpComment, ClickUpSpace,
-    ClickUpTaskContent, ClickUpTaskSummary, ClickUpUser, JiraIssueDetail, JiraProjectSummary,
-    LinearApiClient, LinearAuthContext, LinearIntegrationService, LinearIntegrationSettings,
-    LinearIntegrationSettingsRepository, LinearIssueContent, LinearIssueSummary, LinearProject,
-    TeamService, TeamStateTracker, TicketingLabelResult, TicketingMutationResult,
+    ClickUpStatus, ClickUpTaskContent, ClickUpTaskSummary, ClickUpUser, JiraIssueDetail,
+    JiraProjectSummary, LinearApiClient, LinearAuthContext, LinearIntegrationService,
+    LinearIntegrationSettings, LinearIntegrationSettingsRepository, LinearIssueContent,
+    LinearIssueSummary, LinearProject, TeamService, TeamStateTracker, TicketingLabelResult,
+    TicketingMutationResult,
     TicketingTicketIdentity, TicketingTransitionOption,
 };
 use crate::commands::unified_chat_commands::StartAgentConversationInput;
@@ -950,6 +951,9 @@ struct FakeClickUpTicketingClient {
     list_folderless_lists_calls: Mutex<Vec<String>>,
     list_tasks_calls: Mutex<Vec<Vec<String>>>,
     list_tasks_for_list_calls: Mutex<Vec<(String, Vec<i64>)>>,
+    list_statuses_calls: Mutex<Vec<String>>,
+    list_folder_statuses_calls: Mutex<Vec<String>>,
+    list_list_statuses_calls: Mutex<Vec<String>>,
 }
 
 impl FakeClickUpTicketingClient {
@@ -1122,6 +1126,83 @@ impl ClickUpApiClient for FakeClickUpTicketingClient {
         task.list_id = Some(list_id.to_string());
         task.location_ids = vec![list_id.to_string()];
         Ok(vec![task])
+    }
+
+    async fn list_statuses(
+        &self,
+        _auth: &ClickUpAuthContext,
+        space_id: &str,
+    ) -> Result<Vec<ClickUpStatus>, String> {
+        self.list_statuses_calls
+            .lock()
+            .unwrap()
+            .push(space_id.to_string());
+        Ok(vec![
+            ClickUpStatus {
+                id: None,
+                status: "to do".to_string(),
+                status_type: "open".to_string(),
+                category: "todo".to_string(),
+                color: Some("#94a3b8".to_string()),
+                orderindex: Some(0),
+            },
+            ClickUpStatus {
+                id: None,
+                status: "complete".to_string(),
+                status_type: "done".to_string(),
+                category: "done".to_string(),
+                color: Some("#16a34a".to_string()),
+                orderindex: Some(1),
+            },
+        ])
+    }
+
+    async fn list_folder_statuses(
+        &self,
+        _auth: &ClickUpAuthContext,
+        folder_id: &str,
+    ) -> Result<Vec<ClickUpStatus>, String> {
+        self.list_folder_statuses_calls
+            .lock()
+            .unwrap()
+            .push(folder_id.to_string());
+        Ok(vec![
+            ClickUpStatus {
+                id: None,
+                status: "backlog".to_string(),
+                status_type: "open".to_string(),
+                category: "todo".to_string(),
+                color: Some("#64748b".to_string()),
+                orderindex: Some(0),
+            },
+            ClickUpStatus {
+                id: None,
+                status: "awaiting deploy".to_string(),
+                status_type: "custom".to_string(),
+                category: "in_progress".to_string(),
+                color: Some("#0891b2".to_string()),
+                orderindex: Some(1),
+            },
+        ])
+    }
+
+    async fn list_list_statuses(
+        &self,
+        _auth: &ClickUpAuthContext,
+        list_id: &str,
+    ) -> Result<Vec<ClickUpStatus>, String> {
+        self.list_list_statuses_calls
+            .lock()
+            .unwrap()
+            .push(list_id.to_string());
+        Ok(vec![ClickUpStatus {
+            id: None,
+            status: "on staging for review".to_string(),
+            status_type: "custom".to_string(),
+            category: "in_progress".to_string(),
+            color: Some("#0284c7".to_string()),
+            orderindex: Some(0),
+        }])
     }
 
     async fn current_user(&self, _auth: &ClickUpAuthContext) -> Result<ClickUpUser, String> {
@@ -1334,6 +1415,124 @@ async fn list_ticketing_containers_loads_clickup_space_children() {
             .unwrap()
             .as_slice(),
         &["space-1"]
+    );
+}
+
+#[tokio::test]
+async fn list_ticketing_columns_syncs_clickup_selected_location_statuses() {
+    let clickup_client = Arc::new(FakeClickUpTicketingClient::default());
+    let mut state = AppState::new_test();
+    state.clickup_integration_service = valid_clickup_service(Arc::clone(&clickup_client)).await;
+    let app = build_ticketing_start_app(state, Arc::new(ExecutionState::new()));
+
+    let folder_columns = list_ticketing_columns(
+        "clickup".to_string(),
+        Some("folder:folder-1".to_string()),
+        app.state(),
+    )
+    .await
+    .expect("folder-scoped clickup statuses should load");
+
+    assert_eq!(
+        folder_columns
+            .iter()
+            .map(|column| column.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["backlog", "awaiting deploy"]
+    );
+    assert_eq!(
+        folder_columns
+            .iter()
+            .map(|column| column.scope_kind.as_deref())
+            .collect::<Vec<_>>(),
+        vec![Some("clickup_folder"), Some("clickup_folder")]
+    );
+    assert_eq!(
+        clickup_client
+            .list_folder_statuses_calls
+            .lock()
+            .unwrap()
+            .as_slice(),
+        &["folder-1"]
+    );
+    assert!(clickup_client.list_statuses_calls.lock().unwrap().is_empty());
+
+    let list_columns = list_ticketing_columns(
+        "clickup".to_string(),
+        Some("list:list-folder".to_string()),
+        app.state(),
+    )
+    .await
+    .expect("list-scoped clickup statuses should load");
+
+    assert_eq!(
+        list_columns
+            .iter()
+            .map(|column| column.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["on staging for review"]
+    );
+    assert_eq!(list_columns[0].scope_kind.as_deref(), Some("clickup_list"));
+    assert_eq!(
+        clickup_client
+            .list_list_statuses_calls
+            .lock()
+            .unwrap()
+            .as_slice(),
+        &["list-folder"]
+    );
+}
+
+#[tokio::test]
+async fn list_ticketing_columns_aggregates_clickup_space_child_statuses() {
+    let clickup_client = Arc::new(FakeClickUpTicketingClient::default());
+    let mut state = AppState::new_test();
+    state.clickup_integration_service = valid_clickup_service(Arc::clone(&clickup_client)).await;
+    let app = build_ticketing_start_app(state, Arc::new(ExecutionState::new()));
+
+    let columns = list_ticketing_columns(
+        "clickup".to_string(),
+        Some("space:space-1".to_string()),
+        app.state(),
+    )
+    .await
+    .expect("space-scoped clickup statuses should include child location statuses");
+
+    assert_eq!(
+        columns
+            .iter()
+            .map(|column| column.name.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "to do",
+            "backlog",
+            "awaiting deploy",
+            "on staging for review",
+            "complete",
+        ]
+    );
+    assert!(columns
+        .iter()
+        .all(|column| column.scope_kind.as_deref() == Some("clickup_space")));
+    assert_eq!(
+        clickup_client.list_statuses_calls.lock().unwrap().as_slice(),
+        &["space-1"]
+    );
+    assert_eq!(
+        clickup_client
+            .list_folder_statuses_calls
+            .lock()
+            .unwrap()
+            .as_slice(),
+        &["folder-1"]
+    );
+    assert_eq!(
+        clickup_client
+            .list_list_statuses_calls
+            .lock()
+            .unwrap()
+            .as_slice(),
+        &["list-folder", "list-space"]
     );
 }
 
@@ -2446,6 +2645,20 @@ fn clickup_container_scope_parses_workspace_space_folder_and_list() {
     );
     assert_eq!(clickup_selected_space_id(Some("folder:folder-1")), None);
     assert_eq!(clickup_selected_space_id(Some("list:list-1")), None);
+
+    let folder_scope = column_status_catalog_scope(PROVIDER_CLICKUP, Some("folder:folder-1"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(folder_scope.scope_kind, "clickup_folder");
+    assert_eq!(folder_scope.scope_id, "folder-1");
+    let list_scope = normalize_status_catalog_scope(
+        PROVIDER_CLICKUP.to_string(),
+        "clickup_list".to_string(),
+        "list:list-1".to_string(),
+    )
+    .unwrap();
+    assert_eq!(list_scope.scope_kind, "clickup_list");
+    assert_eq!(list_scope.scope_id, "list-1");
 }
 
 #[test]

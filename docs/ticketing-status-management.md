@@ -8,7 +8,7 @@ RalphX manages ticketing status presentation from the main Ticketing view.
 2. Select the provider.
 3. Select the status scope:
    - Jira: select a project.
-   - ClickUp: select a Space. Folder/list drill-downs still use the parent Space status set.
+   - ClickUp: select a Space, Folder, or List. Space views aggregate child Folder/List status sets.
    - Linear: current UI manages the global Linear workflow-state scope.
 4. Click `Statuses` in the Ticketing header.
 
@@ -35,4 +35,4 @@ RalphX manages ticketing status presentation from the main Ticketing view.
 
 - Jira project statuses do not expose a reliable board order through the project status API, so RalphX seeds order by category and then preserves the user order.
 - Linear workflow states expose provider colors and order; RalphX preserves local presentation after the first sync.
-- ClickUp Space statuses expose colors and `orderindex`; RalphX uses the Space status name as the grouping identity because ClickUp tasks expose status by name.
+- ClickUp Space statuses expose colors and `orderindex`; RalphX also syncs child Folder/List statuses for Space aggregate views because ClickUp Lists can define custom workflows. RalphX uses the status name as the grouping identity because ClickUp tasks expose status by name.

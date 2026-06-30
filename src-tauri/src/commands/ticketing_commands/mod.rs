@@ -6,7 +6,7 @@ use serde_json::json;
 use tauri::{AppHandle, Runtime, State};
 
 use crate::application::clickup_integration_service::{
-    ClickUpFolder, ClickUpList, ClickUpTaskListOptions,
+    ClickUpFolder, ClickUpList, ClickUpStatus, ClickUpTaskListOptions,
 };
 use crate::application::ticket_canonical_branch::ensure_ticket_canonical_branch;
 use crate::application::ticketing_pr_summary::{ticket_pr_branch_summary, TicketPrBranchSummary};
@@ -470,6 +470,46 @@ fn clickup_container_scope(container_id: Option<&str>) -> ClickUpContainerScope 
         return ClickUpContainerScope::List(id.to_string());
     }
     ClickUpContainerScope::Space(container_id.to_string())
+}
+
+fn clickup_status_catalog_scope(
+    scope: ClickUpContainerScope,
+) -> Option<TicketingStatusCatalogScope> {
+    match scope {
+        ClickUpContainerScope::Workspace => None,
+        ClickUpContainerScope::Space(scope_id) => Some(TicketingStatusCatalogScope {
+            provider: PROVIDER_CLICKUP.to_string(),
+            scope_kind: "clickup_space".to_string(),
+            scope_id,
+        }),
+        ClickUpContainerScope::Folder(scope_id) => Some(TicketingStatusCatalogScope {
+            provider: PROVIDER_CLICKUP.to_string(),
+            scope_kind: "clickup_folder".to_string(),
+            scope_id,
+        }),
+        ClickUpContainerScope::List(scope_id) => Some(TicketingStatusCatalogScope {
+            provider: PROVIDER_CLICKUP.to_string(),
+            scope_kind: "clickup_list".to_string(),
+            scope_id,
+        }),
+    }
+}
+
+fn clickup_status_scope_id(scope_kind: &str, scope_id: &str) -> Result<String, String> {
+    let prefix = match scope_kind {
+        "clickup_space" => "space:",
+        "clickup_folder" => "folder:",
+        "clickup_list" => "list:",
+        _ => return Err(format!("Unsupported ClickUp status scope: {scope_kind}")),
+    };
+    let scope_id = scope_id.strip_prefix(prefix).unwrap_or(scope_id).trim();
+    if scope_id.is_empty() || scope_id.contains(':') {
+        return Err(format!(
+            "ClickUp status scope must be a {} id",
+            scope_kind.trim_start_matches("clickup_")
+        ));
+    }
+    Ok(scope_id.to_string())
 }
 
 fn clickup_selected_space_id(container_id: Option<&str>) -> Option<&str> {
@@ -1244,13 +1284,7 @@ fn column_status_catalog_scope(
                 scope_id: "all".to_string(),
             }))
         }
-        PROVIDER_CLICKUP => Ok(clickup_selected_space_id(container_id).map(|space_id| {
-            TicketingStatusCatalogScope {
-                provider: PROVIDER_CLICKUP.to_string(),
-                scope_kind: "clickup_space".to_string(),
-                scope_id: space_id.to_string(),
-            }
-        })),
+        PROVIDER_CLICKUP => Ok(clickup_status_catalog_scope(clickup_container_scope(container_id))),
         _ => Err(format!("Unsupported ticketing provider: {provider}")),
     }
 }
@@ -1282,15 +1316,17 @@ fn normalize_status_catalog_scope(
             scope_kind: scope_kind.to_string(),
             scope_id: "all".to_string(),
         }),
-        PROVIDER_CLICKUP if scope_kind == "clickup_space" => {
-            let scope_id = scope_id.strip_prefix("space:").unwrap_or(scope_id);
-            if scope_id.contains(':') || scope_id.trim().is_empty() {
-                return Err("ClickUp status scope must be a Space id".to_string());
-            }
+        PROVIDER_CLICKUP
+            if matches!(
+                scope_kind,
+                "clickup_space" | "clickup_folder" | "clickup_list"
+            ) =>
+        {
+            let scope_id = clickup_status_scope_id(scope_kind, scope_id)?;
             Ok(TicketingStatusCatalogScope {
                 provider,
                 scope_kind: scope_kind.to_string(),
-                scope_id: scope_id.to_string(),
+                scope_id,
             })
         }
         _ => Err(format!(
@@ -1359,10 +1395,7 @@ async fn observed_statuses_for_scope(
                 })
         }
         PROVIDER_CLICKUP => {
-            let mut statuses = state
-                .clickup_integration_service
-                .list_statuses(&scope.scope_id)
-                .await?;
+            let mut statuses = clickup_statuses_for_catalog_scope(state, scope).await?;
             statuses.sort_by_key(|status| status.orderindex.unwrap_or(i64::MAX));
             Ok(statuses
                 .into_iter()
@@ -1383,6 +1416,119 @@ async fn observed_statuses_for_scope(
                 .collect())
         }
         _ => Err(format!("Unsupported ticketing provider: {}", scope.provider)),
+    }
+}
+
+async fn clickup_statuses_for_catalog_scope(
+    state: &AppState,
+    scope: &TicketingStatusCatalogScope,
+) -> Result<Vec<ClickUpStatus>, String> {
+    match scope.scope_kind.as_str() {
+        "clickup_space" => clickup_aggregate_space_statuses(state, &scope.scope_id).await,
+        "clickup_folder" => state
+            .clickup_integration_service
+            .list_folder_statuses(&scope.scope_id)
+            .await,
+        "clickup_list" => {
+            state
+                .clickup_integration_service
+                .list_list_statuses(&scope.scope_id)
+                .await
+        }
+        _ => Err(format!(
+            "Unsupported ClickUp status scope: {}",
+            scope.scope_kind
+        )),
+    }
+}
+
+async fn clickup_aggregate_space_statuses(
+    state: &AppState,
+    space_id: &str,
+) -> Result<Vec<ClickUpStatus>, String> {
+    let mut statuses = Vec::new();
+    let mut seen = BTreeSet::new();
+    append_clickup_statuses(
+        &mut statuses,
+        &mut seen,
+        state
+            .clickup_integration_service
+            .list_statuses(space_id)
+            .await?,
+    );
+
+    let folders = state.clickup_integration_service.list_folders(space_id).await?;
+    for folder in folders {
+        append_clickup_statuses(
+            &mut statuses,
+            &mut seen,
+            state
+                .clickup_integration_service
+                .list_folder_statuses(&folder.id)
+                .await?,
+        );
+        for list in state
+            .clickup_integration_service
+            .list_folder_lists(&folder.id)
+            .await?
+        {
+            append_clickup_statuses(
+                &mut statuses,
+                &mut seen,
+                state
+                    .clickup_integration_service
+                    .list_list_statuses(&list.id)
+                    .await?,
+            );
+        }
+    }
+
+    for list in state
+        .clickup_integration_service
+        .list_folderless_lists(space_id)
+        .await?
+    {
+        append_clickup_statuses(
+            &mut statuses,
+            &mut seen,
+            state
+                .clickup_integration_service
+                .list_list_statuses(&list.id)
+                .await?,
+        );
+    }
+
+    statuses.sort_by_key(|status| {
+        (
+            jira_status_category_rank(&status.category),
+            status.orderindex.unwrap_or(i64::MAX),
+            status.status.to_lowercase(),
+        )
+    });
+    for (index, status) in statuses.iter_mut().enumerate() {
+        status.orderindex = Some(index as i64);
+    }
+    Ok(statuses)
+}
+
+fn append_clickup_statuses(
+    target: &mut Vec<ClickUpStatus>,
+    seen: &mut BTreeSet<String>,
+    mut source: Vec<ClickUpStatus>,
+) {
+    source.sort_by_key(|status| {
+        (
+            status.orderindex.unwrap_or(i64::MAX),
+            status.status.to_lowercase(),
+        )
+    });
+    for mut status in source {
+        let key = state_id(&status.status);
+        if !seen.insert(key) {
+            continue;
+        }
+        status.orderindex = Some(target.len() as i64);
+        target.push(status);
     }
 }
 
