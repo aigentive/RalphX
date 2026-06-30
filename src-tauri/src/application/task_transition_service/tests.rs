@@ -286,15 +286,16 @@ async fn push_and_refresh_pr_branch_uses_drafted_description() {
         .await
         .expect("PR branch should push and refresh");
 
-    let state = github.state();
-    assert_eq!(state.push_branch_calls, 1);
-    assert_eq!(state.update_pr_details_calls, 1);
-    let body = state
-        .last_update_pr_details_body
-        .as_deref()
-        .expect("updated PR body should be captured");
-    assert!(body.starts_with("## Summary\n\nTransition service drafted body"));
-    drop(state);
+    {
+        let state = github.state();
+        assert_eq!(state.push_branch_calls, 1);
+        assert_eq!(state.update_pr_details_calls, 1);
+        let body = state
+            .last_update_pr_details_body
+            .as_deref()
+            .expect("updated PR body should be captured");
+        assert!(body.starts_with("## Summary\n\nTransition service drafted body"));
+    }
 
     let updated_plan_branch = app_state
         .plan_branch_repo

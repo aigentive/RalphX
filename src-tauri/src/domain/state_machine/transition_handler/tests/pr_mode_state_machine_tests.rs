@@ -629,11 +629,12 @@ async fn test_pr_mode_missing_drafter_fails_before_pr_write() {
         result
     );
 
-    let state = mock_github.state();
-    assert_eq!(state.push_branch_calls, 0);
-    assert_eq!(state.update_pr_details_calls, 0);
-    assert_eq!(state.mark_pr_ready_calls, 0);
-    drop(state);
+    {
+        let state = mock_github.state();
+        assert_eq!(state.push_branch_calls, 0);
+        assert_eq!(state.update_pr_details_calls, 0);
+        assert_eq!(state.mark_pr_ready_calls, 0);
+    }
 
     let updated_task = task_repo
         .get_by_id(&task_id)
@@ -1238,13 +1239,14 @@ async fn create_draft_pr_if_needed_marks_failed_when_describer_fails() {
     )
     .await;
 
-    let state = mock_github.state();
-    assert_eq!(state.push_branch_calls, 1);
-    assert_eq!(
-        state.create_draft_pr_calls, 0,
-        "describer failure should stop before creating a GitHub PR"
-    );
-    drop(state);
+    {
+        let state = mock_github.state();
+        assert_eq!(state.push_branch_calls, 1);
+        assert_eq!(
+            state.create_draft_pr_calls, 0,
+            "describer failure should stop before creating a GitHub PR"
+        );
+    }
 
     assert!(guard.is_empty(), "creation guard should be released");
     let updated_plan_branch = plan_branch_repo
