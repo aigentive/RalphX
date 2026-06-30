@@ -368,7 +368,24 @@ describe("ticketingApi", () => {
 
   it("lists columns and threads containerId only when present", async () => {
     vi.mocked(invoke).mockResolvedValueOnce([
-      { id: "todo", name: "To Do", category: "todo", order: 0 },
+      {
+        id: "todo",
+        name: "To Do",
+        category: "todo",
+        order: 0,
+        color: "#445566",
+        providerColor: "#112233",
+        colorOverride: "#445566",
+        providerOrder: 0,
+        displayOrder: 7,
+        scopeKind: "jira_project",
+        scopeId: "RX",
+        isVisible: true,
+        isTerminal: false,
+        stale: false,
+        lastSeenAt: "2026-06-19T22:00:00.000Z",
+        staleSince: null,
+      },
     ]);
 
     const columns = await ticketingApi.listColumns({
@@ -381,6 +398,8 @@ describe("ticketingApi", () => {
       containerId: "board-1",
     });
     expect(columns[0]?.category).toBe("todo");
+    expect(columns[0]?.displayOrder).toBe(7);
+    expect(columns[0]?.color).toBe("#445566");
   });
 
   it("lists columns without containerId when omitted", async () => {
@@ -391,6 +410,57 @@ describe("ticketingApi", () => {
     expect(invoke).toHaveBeenCalledWith("list_ticketing_columns", {
       provider: "jira",
     });
+  });
+
+  it("manages the scoped status catalog through dedicated commands", async () => {
+    const catalogEntry = {
+      id: "catalog-1",
+      provider: "clickup",
+      scopeKind: "clickup_space",
+      scopeId: "space-1",
+      providerStatusId: "in_progress",
+      providerStatusName: "In Progress",
+      providerCategory: "in_progress",
+      providerColor: "#112233",
+      providerOrder: 1,
+      displayOrder: 2,
+      colorOverride: "#445566",
+      color: "#445566",
+      isVisible: true,
+      isTerminal: false,
+      stale: false,
+      lastSeenAt: "2026-06-19T22:00:00.000Z",
+      staleSince: null,
+      updatedAt: "2026-06-19T22:00:00.000Z",
+    };
+    vi.mocked(invoke)
+      .mockResolvedValueOnce([catalogEntry])
+      .mockResolvedValueOnce([catalogEntry])
+      .mockResolvedValueOnce([{ ...catalogEntry, colorOverride: null, color: "#112233" }]);
+
+    const scope = {
+      provider: "clickup" as const,
+      scopeKind: "clickup_space",
+      scopeId: "space-1",
+    };
+    const listed = await ticketingApi.listStatusCatalog(scope);
+    const refreshed = await ticketingApi.refreshStatusCatalog(scope);
+    const updated = await ticketingApi.updateStatusPresentation({
+      ...scope,
+      patches: [{ providerStatusId: "in_progress", colorOverride: null, displayOrder: 0 }],
+    });
+
+    expect(invoke).toHaveBeenNthCalledWith(1, "list_ticketing_status_catalog", scope);
+    expect(invoke).toHaveBeenNthCalledWith(2, "refresh_ticketing_status_catalog", scope);
+    expect(invoke).toHaveBeenNthCalledWith(3, "update_ticketing_status_presentation", {
+      input: {
+        ...scope,
+        patches: [{ providerStatusId: "in_progress", colorOverride: null, displayOrder: 0 }],
+      },
+    });
+    expect(listed[0]?.providerStatusName).toBe("In Progress");
+    expect(refreshed[0]?.providerColor).toBe("#112233");
+    expect(updated[0]?.colorOverride ?? null).toBeNull();
   });
 
   it("reads ticket detail including the new openPrStatus and labels fields", async () => {
@@ -613,7 +683,7 @@ describe("ticketingApi", () => {
       ticketRef: { provider: "jira", id: "10001", key: "RX-1" },
       operation: {
         id: "operation-labels",
-        operation: "transition",
+        operation: "set_labels",
         clientOperationId: "labels-op",
         status: "succeeded",
         linked: false,

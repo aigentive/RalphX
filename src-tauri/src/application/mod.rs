@@ -115,6 +115,7 @@ pub mod ticket_canonical_branch;
 pub mod ticketing_cache_invalidator;
 pub mod ticketing_pr_summary;
 pub mod ticketing_service;
+pub mod ticketing_status_catalog_service;
 pub mod webhook_service;
 pub(crate) mod workspace_capacity;
 
@@ -218,6 +219,7 @@ pub use session_export_service::{
     SessionData, SessionExport, SessionExportService, SourceInstance,
 };
 pub use session_reopen_service::SessionReopenService;
+pub use ticketing_status_catalog_service::TicketingStatusCatalogService;
 pub use startup_jobs::StartupJobRunner;
 pub use supervisor_service::{SupervisorConfig, SupervisorService, TaskMonitorState};
 pub use task_cleanup_service::{

@@ -45,6 +45,29 @@ pub(crate) enum AutoReviewDecision {
     Skipped(AutoReviewSkipReason),
 }
 
+pub(crate) type WorkspaceChangedEmitter = Box<dyn Fn(&ChatConversationId) + Send + 'static>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AutoReviewStartAction {
+    Start,
+    Skip(AutoReviewSkipReason),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AutoReviewTrigger {
+    AgentCompletion,
+    BaseUpdate,
+}
+
+impl AutoReviewTrigger {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::AgentCompletion => "agent_completion",
+            Self::BaseUpdate => "base_update",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AutoReviewSkipReason {
     WorkspaceMissing,
@@ -161,6 +184,7 @@ pub(crate) fn spawn_auto_review_for_workspace<R>(
     let Some(_guard) = begin_auto_review(&conversation_id) else {
         tracing::debug!(
             event_name,
+            trigger = AutoReviewTrigger::AgentCompletion.as_str(),
             conversation_id = conversation_id.as_str(),
             reason = "already_in_flight",
             "Skipped agent workspace auto-review"
@@ -184,6 +208,7 @@ pub(crate) fn spawn_auto_review_for_workspace<R>(
             Ok(AutoReviewDecision::Skipped(reason)) => {
                 tracing::debug!(
                     event_name,
+                    trigger = AutoReviewTrigger::AgentCompletion.as_str(),
                     conversation_id = conversation_id.as_str(),
                     reason = reason.as_str(),
                     "Skipped agent workspace auto-review"
@@ -192,6 +217,7 @@ pub(crate) fn spawn_auto_review_for_workspace<R>(
             Err(error) => {
                 tracing::warn!(
                     event_name,
+                    trigger = AutoReviewTrigger::AgentCompletion.as_str(),
                     conversation_id = conversation_id.as_str(),
                     error = %error,
                     "Agent workspace auto-review failed"
@@ -276,18 +302,91 @@ where
     maybe_start_auto_review(state.inner(), &execution_state, &workspace).await
 }
 
-pub(crate) async fn maybe_start_auto_review(
+pub(crate) fn spawn_auto_review_after_workspace_change(
+    state: AppState,
+    execution_state: Arc<ExecutionState>,
+    workspace: AgentConversationWorkspace,
+    trigger: AutoReviewTrigger,
+    workspace_changed_emitter: Option<WorkspaceChangedEmitter>,
+) -> bool {
+    let conversation_id = workspace.conversation_id.clone();
+    let Some(_guard) = begin_auto_review(&conversation_id) else {
+        tracing::debug!(
+            trigger = trigger.as_str(),
+            conversation_id = conversation_id.as_str(),
+            reason = "already_in_flight",
+            "Skipped agent workspace auto-review"
+        );
+        return false;
+    };
+
+    tauri::async_runtime::spawn(async move {
+        let _guard = _guard;
+        let decision = git_cmd::with_git_command_lane(git_cmd::GitCommandLane::Background, async {
+            maybe_start_auto_review(&state, execution_state.as_ref(), &workspace).await
+        })
+        .await;
+        handle_auto_review_workspace_change_result(
+            trigger,
+            &conversation_id,
+            decision,
+            workspace_changed_emitter.as_ref(),
+        );
+    });
+    true
+}
+
+pub(crate) fn handle_auto_review_workspace_change_result(
+    trigger: AutoReviewTrigger,
+    conversation_id: &ChatConversationId,
+    decision: Result<AutoReviewDecision, String>,
+    workspace_changed_emitter: Option<&WorkspaceChangedEmitter>,
+) -> bool {
+    match decision {
+        Ok(AutoReviewDecision::Started) => {
+            if let Some(emit_workspace_changed) = workspace_changed_emitter {
+                emit_workspace_changed(conversation_id);
+            }
+            tracing::debug!(
+                trigger = trigger.as_str(),
+                conversation_id = conversation_id.as_str(),
+                "Started agent workspace auto-review"
+            );
+            true
+        }
+        Ok(AutoReviewDecision::Skipped(reason)) => {
+            tracing::debug!(
+                trigger = trigger.as_str(),
+                conversation_id = conversation_id.as_str(),
+                reason = reason.as_str(),
+                "Skipped agent workspace auto-review"
+            );
+            false
+        }
+        Err(error) => {
+            tracing::warn!(
+                trigger = trigger.as_str(),
+                conversation_id = conversation_id.as_str(),
+                error = %error,
+                "Agent workspace auto-review failed"
+            );
+            false
+        }
+    }
+}
+
+pub(crate) async fn resolve_auto_review_start_action(
     state: &AppState,
     execution_state: &ExecutionState,
     workspace: &AgentConversationWorkspace,
-) -> Result<AutoReviewDecision, String> {
+) -> Result<AutoReviewStartAction, String> {
     if workspace.status == AgentConversationWorkspaceStatus::Archived {
-        return Ok(AutoReviewDecision::Skipped(
+        return Ok(AutoReviewStartAction::Skip(
             AutoReviewSkipReason::ManualOnlyArchived,
         ));
     }
     if workspace.status != AgentConversationWorkspaceStatus::Active {
-        return Ok(AutoReviewDecision::Skipped(
+        return Ok(AutoReviewStartAction::Skip(
             AutoReviewSkipReason::InactiveWorkspace,
         ));
     }
@@ -297,12 +396,12 @@ pub(crate) async fn maybe_start_auto_review(
             | AgentConversationWorkspaceMode::Ideation
             | AgentConversationWorkspaceMode::Plan
     ) {
-        return Ok(AutoReviewDecision::Skipped(
+        return Ok(AutoReviewStartAction::Skip(
             AutoReviewSkipReason::NotReviewableMode,
         ));
     }
     if workspace.has_terminal_publication_pr_status() {
-        return Ok(AutoReviewDecision::Skipped(
+        return Ok(AutoReviewStartAction::Skip(
             AutoReviewSkipReason::ManualOnlyTerminalPr,
         ));
     }
@@ -312,7 +411,7 @@ pub(crate) async fn maybe_start_auto_review(
         .await
         .map_err(|error| error.to_string())?;
     if !review_settings.require_workspace_review {
-        return Ok(AutoReviewDecision::Skipped(
+        return Ok(AutoReviewStartAction::Skip(
             AutoReviewSkipReason::GateNotRequired,
         ));
     }
@@ -321,7 +420,7 @@ pub(crate) async fn maybe_start_auto_review(
         .await
         .map_err(|error| error.to_string())?;
     if context.target.is_none() {
-        return Ok(AutoReviewDecision::Skipped(
+        return Ok(AutoReviewStartAction::Skip(
             AutoReviewSkipReason::NoReviewableChanges,
         ));
     }
@@ -329,22 +428,22 @@ pub(crate) async fn maybe_start_auto_review(
     match context.monitor.review_gate_status {
         AgentWorkspaceReviewGateStatus::Required => {}
         AgentWorkspaceReviewGateStatus::Reviewing => {
-            return Ok(AutoReviewDecision::Skipped(
+            return Ok(AutoReviewStartAction::Skip(
                 AutoReviewSkipReason::AlreadyReviewing,
             ));
         }
         AgentWorkspaceReviewGateStatus::Blocking => {
-            return Ok(AutoReviewDecision::Skipped(
+            return Ok(AutoReviewStartAction::Skip(
                 AutoReviewSkipReason::BlockingFindings,
             ));
         }
         AgentWorkspaceReviewGateStatus::Failed => {
-            return Ok(AutoReviewDecision::Skipped(
+            return Ok(AutoReviewStartAction::Skip(
                 AutoReviewSkipReason::ReviewFailed,
             ));
         }
         AgentWorkspaceReviewGateStatus::NotRequired | AgentWorkspaceReviewGateStatus::Passed => {
-            return Ok(AutoReviewDecision::Skipped(
+            return Ok(AutoReviewStartAction::Skip(
                 AutoReviewSkipReason::GateNotRequired,
             ));
         }
@@ -353,9 +452,22 @@ pub(crate) async fn maybe_start_auto_review(
     if related_workspace_runtime_is_generating(state, execution_state, workspace, &context.monitor)
         .await?
     {
-        return Ok(AutoReviewDecision::Skipped(
+        return Ok(AutoReviewStartAction::Skip(
             AutoReviewSkipReason::RelatedRuntimeGenerating,
         ));
+    }
+
+    Ok(AutoReviewStartAction::Start)
+}
+
+pub(crate) async fn maybe_start_auto_review(
+    state: &AppState,
+    execution_state: &ExecutionState,
+    workspace: &AgentConversationWorkspace,
+) -> Result<AutoReviewDecision, String> {
+    match resolve_auto_review_start_action(state, execution_state, workspace).await? {
+        AutoReviewStartAction::Start => {}
+        AutoReviewStartAction::Skip(reason) => return Ok(AutoReviewDecision::Skipped(reason)),
     }
 
     let started = start_agent_workspace_review(Arc::new(state.clone()), workspace, false)

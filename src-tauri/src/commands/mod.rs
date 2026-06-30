@@ -281,7 +281,8 @@ pub use ticketing_commands::{
     add_ticket_comment, assign_ticket, clear_ticket_assignee, get_conversation_ticket,
     get_ticket_associations, get_ticket_detail, list_ticket_filter_options, list_ticket_labels,
     list_ticket_transitions, list_ticketing_columns, list_ticketing_containers,
-    list_ticketing_providers, list_tickets, refresh_tickets, set_ticket_labels,
+    list_ticketing_providers, list_ticketing_status_catalog, list_tickets, refresh_tickets,
+    refresh_ticketing_status_catalog, set_ticket_labels,
     start_ralphx_work_from_ticket, transition_ticket_status, AddTicketCommentInput,
     AssignTicketInput, ConversationTicketResponse, ListTicketFilterOptionsQuery, ListTicketsQuery,
     RefreshTicketsResponse, SetTicketLabelsInput, StartRalphxWorkFromTicketInput,
@@ -289,7 +290,9 @@ pub use ticketing_commands::{
     TicketLabelOptionResponse, TicketLabelsResponse, TicketMutationResponse,
     TicketOperationResponse, TicketPageResponse, TicketRefInput, TicketSummaryResponse,
     TicketingCapabilitiesResponse, TicketingColumnResponse, TicketingContainerResponse,
-    TicketingProviderSummaryResponse, TransitionTicketStatusInput,
+    TicketingProviderSummaryResponse, TicketingStatusCatalogEntryResponse,
+    TransitionTicketStatusInput, UpdateTicketingStatusPresentationInput,
+    update_ticketing_status_presentation,
 };
 // Unified chat commands (consolidates context_chat + execution_chat)
 pub use agent_sidebar_commands::{

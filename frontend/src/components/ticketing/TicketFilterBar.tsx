@@ -9,8 +9,9 @@ import { cn } from "@/lib/utils";
 
 import { TicketSearchableMultiSelect } from "./TicketSearchableMultiSelect";
 import { TicketSearchableSelect } from "./TicketSearchableSelect";
+import { TicketStatusGlyph } from "./TicketStatusGlyph";
 import { hasActiveTicketFilters, UNASSIGNED_ASSIGNEE } from "./ticketing-read-state";
-import { categoryToken } from "./ticketing-utils";
+import { statusColor } from "./ticketing-status-presentation";
 
 interface TicketFilterBarProps {
   containers: TicketingContainer[];
@@ -145,7 +146,11 @@ export function TicketFilterBar({
             ...columns.map((column) => ({
               value: column.id,
               label: column.name,
-              leadingColor: categoryToken(column.category),
+              leadingIcon: (
+                <span className="inline-flex" style={{ color: statusColor(column) }}>
+                  <TicketStatusGlyph category={column.category} className="h-4 w-4" />
+                </span>
+              ),
             })),
           ]}
         />

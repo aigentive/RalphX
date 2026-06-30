@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { ArrowDown, ArrowUp, ListOrdered, RefreshCw, RotateCcw } from "lucide-react";
 
 import { atlassianApi } from "@/api/atlassian";
 import { linearApi } from "@/api/linear";
@@ -12,6 +13,9 @@ import type {
   TicketRef,
   TicketingColumn,
   TicketingContainer,
+  TicketingProvider,
+  TicketingStatusCatalogEntry,
+  TicketingStatusCatalogScopeInput,
   TicketSummary,
   TicketTransitionOption,
 } from "@/api/ticketing";
@@ -21,6 +25,7 @@ import {
   findTicketTransitionForColumn,
   flattenTicketPages,
   useRefreshTickets,
+  useRefreshTicketingStatusCatalog,
   useTicketAssociations,
   useTicketDetail,
   useTicketingMutations,
@@ -28,10 +33,12 @@ import {
   useTicketingContainers,
   useTicketingProviders,
   ticketingKeys,
+  useTicketingStatusCatalog,
   useTicketFilterOptions,
   useTicketLabelOptions,
   useTicketTransitions,
   useTickets,
+  useUpdateTicketingStatusPresentation,
 } from "@/hooks/useTicketing";
 import { useConversations } from "@/hooks/useChat";
 import { useProjects } from "@/hooks/useProjects";
@@ -61,11 +68,15 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 import { ProviderSwitcher } from "./ProviderSwitcher";
 import { TicketSearchableSelect } from "./TicketSearchableSelect";
 import { TicketDetailSheet } from "./TicketDetailSheet";
 import { TicketFilterBar } from "./TicketFilterBar";
+import { TicketStatusGlyph } from "./TicketStatusGlyph";
 import { TicketingStatePanel } from "./TicketingStatePanel";
 import { TicketKanbanShell, TicketKanbanView, TicketListView } from "./TicketViews";
 import {
@@ -77,6 +88,10 @@ import {
   ticketRefKey,
   UNASSIGNED_ASSIGNEE,
 } from "./ticketing-read-state";
+import {
+  mergeProviderAndTicketColumns,
+  normalizeStatusKey,
+} from "./ticketing-status-presentation";
 import { providerLabel, ticketKey } from "./ticketing-utils";
 import { useAfterPaint } from "./useAfterPaint";
 
@@ -119,24 +134,6 @@ function columnsFromTickets(tickets: TicketSummary[]): TicketingColumn[] {
     });
   }
   return Array.from(byStateId.values());
-}
-
-function mergeProviderAndTicketColumns(
-  providerColumns: TicketingColumn[],
-  ticketColumns: TicketingColumn[],
-): TicketingColumn[] {
-  if (providerColumns.length === 0) {
-    return ticketColumns;
-  }
-  const merged = providerColumns
-    .sort((left, right) => left.order - right.order);
-  const providerColumnIds = new Set(merged.map((column) => column.id));
-  for (const column of ticketColumns) {
-    if (!providerColumnIds.has(column.id)) {
-      merged.push({ ...column, order: merged.length });
-    }
-  }
-  return merged;
 }
 
 function columnsFromTransitions(transitions: TicketTransitionOption[]): TicketingColumn[] {
@@ -199,6 +196,110 @@ function clickupChildLocations(
     (container.kind === "folder" && container.parentId === spaceId)
     || (container.kind === "list" && (container.parentId === spaceId || folderIds.has(container.parentId ?? "")))
   ));
+}
+
+function statusCatalogScopeForSelection(
+  provider: TicketingProvider | null,
+  containerId: string | null,
+  container: TicketingContainer | null,
+): TicketingStatusCatalogScopeInput | null {
+  if (!provider) {
+    return null;
+  }
+  if (provider === "jira") {
+    return containerId
+      ? { provider, scopeKind: "jira_project", scopeId: containerId }
+      : null;
+  }
+  if (provider === "clickup") {
+    if (!containerId) {
+      return null;
+    }
+    const kind = container?.kind ?? (
+      containerId.startsWith("folder:")
+        ? "folder"
+        : containerId.startsWith("list:")
+          ? "list"
+          : "space"
+    );
+    if (kind !== "space" && kind !== "folder" && kind !== "list") {
+      return null;
+    }
+    return {
+      provider,
+      scopeKind: `clickup_${kind}`,
+      scopeId: containerId.replace(/^(space|folder|list):/, ""),
+    };
+  }
+  return { provider, scopeKind: "linear_global", scopeId: "all" };
+}
+
+function statusCatalogScopeKey(scope: TicketingStatusCatalogScopeInput | null): string | null {
+  return scope ? `${scope.provider}:${scope.scopeKind}:${scope.scopeId}` : null;
+}
+
+function statusCatalogScopeLabel(
+  provider: TicketingProvider | null,
+  scope: TicketingStatusCatalogScopeInput | null,
+  activeContainerName: string | null,
+): string {
+  if (!provider || !scope) {
+    return "No scope selected";
+  }
+  if (provider === "jira") {
+    return activeContainerName ?? scope.scopeId;
+  }
+  if (provider === "clickup") {
+    return activeContainerName ?? scope.scopeId;
+  }
+  return "All Linear workflow states";
+}
+
+function catalogEntryColor(entry: TicketingStatusCatalogEntry): string {
+  return entry.color?.trim() || "var(--text-muted)";
+}
+
+function colorInputValue(entry: TicketingStatusCatalogEntry): string {
+  const color = entry.colorOverride?.trim() || entry.providerColor?.trim();
+  return color && /^#[0-9a-f]{6}$/i.test(color) ? color : "#6b7280";
+}
+
+function sortedStatusCatalogEntries(
+  entries: TicketingStatusCatalogEntry[],
+): TicketingStatusCatalogEntry[] {
+  return [...entries].sort((left, right) =>
+    left.displayOrder - right.displayOrder
+    || (left.providerOrder ?? Number.MAX_SAFE_INTEGER) - (right.providerOrder ?? Number.MAX_SAFE_INTEGER)
+    || left.providerStatusName.localeCompare(right.providerStatusName),
+  );
+}
+
+function ticketStatusCountsByKey(tickets: TicketSummary[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const ticket of tickets) {
+    const keys = new Set(
+      [normalizeStatusKey(ticket.state.id), normalizeStatusKey(ticket.state.name)]
+        .filter((value): value is string => Boolean(value)),
+    );
+    for (const key of keys) {
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+  }
+  return counts;
+}
+
+function catalogEntryTicketCount(
+  entry: TicketingStatusCatalogEntry,
+  counts: Map<string, number> | null | undefined,
+): number {
+  if (!counts) {
+    return 0;
+  }
+  const keys = [
+    normalizeStatusKey(entry.providerStatusId),
+    normalizeStatusKey(entry.providerStatusName),
+  ].filter((value): value is string => Boolean(value));
+  return Math.max(0, ...keys.map((key) => counts.get(key) ?? 0));
 }
 
 function ClickUpLocationRail({
@@ -416,6 +517,244 @@ function TicketingStatusStrip({ notices }: { notices: TicketingStatusNotice[] })
   );
 }
 
+function StatusManagementDialog({
+  open,
+  providerName,
+  scopeLabel,
+  entries,
+  ticketCounts = new Map<string, number>(),
+  isLoading,
+  isSyncing,
+  isUpdating,
+  error,
+  onSync,
+  onMove,
+  onColorChange,
+  onResetColor,
+  onVisibilityChange,
+  onClose,
+}: {
+  open: boolean;
+  providerName: string;
+  scopeLabel: string;
+  entries: TicketingStatusCatalogEntry[];
+  ticketCounts?: Map<string, number> | null;
+  isLoading: boolean;
+  isSyncing: boolean;
+  isUpdating: boolean;
+  error: string | null;
+  onSync: () => void;
+  onMove: (entry: TicketingStatusCatalogEntry, direction: -1 | 1) => void;
+  onColorChange: (entry: TicketingStatusCatalogEntry, color: string) => void;
+  onResetColor: (entry: TicketingStatusCatalogEntry) => void;
+  onVisibilityChange: (entry: TicketingStatusCatalogEntry, visible: boolean) => void;
+  onClose: () => void;
+}) {
+  const sortedEntries = sortedStatusCatalogEntries(entries);
+  const controlsDisabled = isSyncing || isUpdating;
+
+  return (
+    <Dialog open={open} onOpenChange={(nextOpen) => !nextOpen && onClose()}>
+      <DialogContent className="max-h-[82vh] overflow-hidden sm:max-w-[760px]">
+        <DialogHeader className="block space-y-1.5 px-6 py-5 pr-14">
+          <DialogTitle className="text-lg leading-6">Statuses</DialogTitle>
+          <DialogDescription className="leading-5">
+            {providerName} · {scopeLabel}
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="min-h-0 overflow-y-auto px-6 py-4">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <div className="text-xs text-[var(--text-muted)]">
+              {isSyncing ? "Syncing statuses" : `${sortedEntries.length} statuses`}
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={onSync}
+              disabled={controlsDisabled}
+            >
+              <RefreshCw className={isSyncing ? "animate-spin" : ""} aria-hidden="true" />
+              Sync
+            </Button>
+          </div>
+
+          {error && (
+            <div
+              role="status"
+              className="mb-3 rounded-md px-3 py-2 text-xs"
+              style={{
+                backgroundColor: "var(--bg-surface)",
+                borderColor: "var(--status-error)",
+                borderStyle: "solid",
+                borderWidth: "1px",
+                color: "var(--status-error)",
+              }}
+            >
+              {error}
+            </div>
+          )}
+
+          {isLoading && sortedEntries.length === 0 ? (
+            <div className="py-10 text-center text-sm text-[var(--text-secondary)]">
+              Loading statuses
+            </div>
+          ) : sortedEntries.length === 0 ? (
+            <div className="py-10 text-center text-sm text-[var(--text-secondary)]">
+              No statuses synced for this scope
+            </div>
+          ) : (
+            <div
+              className="overflow-hidden rounded-md"
+              style={{
+                borderColor: "var(--border-subtle)",
+                borderStyle: "solid",
+                borderWidth: "1px",
+              }}
+            >
+              <div
+                className="grid grid-cols-[76px_minmax(0,1fr)_132px_160px_88px] items-center gap-3 px-3 py-2 text-[11px] font-medium uppercase text-[var(--text-muted)]"
+                style={{
+                  backgroundColor: "var(--bg-surface)",
+                  borderBottomColor: "var(--border-subtle)",
+                  borderBottomStyle: "solid",
+                  borderBottomWidth: "1px",
+                }}
+              >
+                <span>Order</span>
+                <span>Status</span>
+                <span>Provider</span>
+                <span>Color</span>
+                <span>Visible</span>
+              </div>
+              {sortedEntries.map((entry, index) => {
+                const ticketCount = catalogEntryTicketCount(entry, ticketCounts);
+                const ticketCountLabel = `${ticketCount} ${ticketCount === 1 ? "ticket" : "tickets"} in ${entry.providerStatusName}`;
+                return (
+                  <div
+                    key={entry.providerStatusId}
+                    className="grid grid-cols-[76px_minmax(0,1fr)_132px_160px_88px] items-center gap-3 px-3 py-2 text-sm"
+                    style={{
+                      backgroundColor: "var(--bg-elevated)",
+                      borderBottomColor: index === sortedEntries.length - 1
+                        ? "transparent"
+                        : "var(--border-subtle)",
+                      borderBottomStyle: "solid",
+                      borderBottomWidth: "1px",
+                    }}
+                  >
+                    <div className="flex gap-1">
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon-sm"
+                            className="h-7 w-7"
+                            aria-label={`Move ${entry.providerStatusName} up`}
+                            disabled={controlsDisabled || index === 0}
+                            onClick={() => onMove(entry, -1)}
+                          >
+                            <ArrowUp aria-hidden="true" />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>Move up</TooltipContent>
+                      </Tooltip>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon-sm"
+                            className="h-7 w-7"
+                            aria-label={`Move ${entry.providerStatusName} down`}
+                            disabled={controlsDisabled || index === sortedEntries.length - 1}
+                            onClick={() => onMove(entry, 1)}
+                          >
+                            <ArrowDown aria-hidden="true" />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>Move down</TooltipContent>
+                      </Tooltip>
+                    </div>
+                    <div className="flex min-w-0 items-center gap-2">
+                      <span
+                        className="inline-flex shrink-0"
+                        aria-hidden="true"
+                        style={{ color: catalogEntryColor(entry) }}
+                      >
+                        <TicketStatusGlyph category={entry.providerCategory} className="h-4 w-4" />
+                      </span>
+                      <div className="min-w-0" title={entry.providerStatusId}>
+                        <div className="flex min-w-0 items-center gap-2">
+                          <span className="truncate font-medium text-[var(--text-primary)]">
+                            {entry.providerStatusName}
+                          </span>
+                          <Badge
+                            variant="outline"
+                            aria-label={ticketCountLabel}
+                            className="h-5 shrink-0 rounded-full border-[var(--border-subtle)] px-2 text-[10px] font-medium text-[var(--text-muted)]"
+                          >
+                            {ticketCount}
+                          </Badge>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex min-w-0 items-center gap-2 text-xs text-[var(--text-secondary)]">
+                      <span className="truncate">{entry.providerCategory.replace(/_/g, " ")}</span>
+                      {entry.stale && (
+                        <Badge variant="outline" className="h-5 rounded-full px-2 text-[10px]">
+                          Stale
+                        </Badge>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Input
+                        aria-label={`Color for ${entry.providerStatusName}`}
+                        type="color"
+                        className="h-8 w-10 shrink-0 cursor-pointer p-1"
+                        value={colorInputValue(entry)}
+                        disabled={controlsDisabled}
+                        onChange={(event) => onColorChange(entry, event.currentTarget.value)}
+                      />
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 px-2"
+                        disabled={controlsDisabled || !entry.colorOverride}
+                        onClick={() => onResetColor(entry)}
+                      >
+                        <RotateCcw aria-hidden="true" />
+                        Reset
+                      </Button>
+                    </div>
+                    <div className="flex justify-end">
+                      <Switch
+                        aria-label={`Show ${entry.providerStatusName}`}
+                        checked={entry.isVisible}
+                        disabled={controlsDisabled}
+                        onCheckedChange={(checked) => onVisibilityChange(entry, checked)}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        <DialogFooter className="px-6 py-4">
+          <Button type="button" variant="ghost" onClick={onClose}>
+            Close
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export function TicketingDashboardView({
   projectId,
   onNavigateToAssociation,
@@ -443,10 +782,12 @@ export function TicketingDashboardView({
   const [startWorkDialogOpen, setStartWorkDialogOpen] = useState(false);
   const [selectedPullRequestShell, setSelectedPullRequestShell] =
     useState<PullRequestShell | null>(null);
+  const [statusManagerOpen, setStatusManagerOpen] = useState(false);
   const [seenBaseline, setSeenBaseline] = useState<string | null>(null);
   const [startWorkSelection, setStartWorkSelection] = useState<StartWorkSelection>({
     projectId,
   });
+  const lastAutoSyncedStatusScope = useRef<string | null>(null);
 
   const queryClient = useQueryClient();
   const projectsQuery = useProjects();
@@ -499,6 +840,11 @@ export function TicketingDashboardView({
     () => containers.filter((container) => container.kind === "space"),
     [containers],
   );
+  const activeContainer = useMemo(
+    () => containers.find((container) => container.id === activeContainerId) ?? null,
+    [activeContainerId, containers],
+  );
+  const activeContainerName = activeContainer?.name ?? null;
   const selectedClickUpSpaceId = useMemo(
     () => activeProvider === "clickup" ? clickupSpaceForContainer(activeContainerId, containers) : null,
     [activeContainerId, activeProvider, containers],
@@ -534,7 +880,11 @@ export function TicketingDashboardView({
     }
   }, [activeContainerId, activeProvider, containers, setContainerId]);
 
-  const columnsContainerId = activeProvider === "clickup" ? selectedClickUpSpaceId : activeContainerId;
+  const columnsContainerId = activeContainerId;
+  const statusCatalogScope = useMemo(
+    () => statusCatalogScopeForSelection(activeProvider, columnsContainerId, activeContainer),
+    [activeContainer, activeProvider, columnsContainerId],
+  );
   const columnsQuery = useTicketingColumns(
     activeProvider && !containerSelectionNeeded
       ? {
@@ -632,13 +982,18 @@ export function TicketingDashboardView({
       setFilters({ watcherMe: false });
     }
   }, [activeProvider, filters.watcherMe, setFilters]);
-  const activeContainerName = useMemo(
-    () => containers.find((container) => container.id === activeContainerId)?.name ?? null,
-    [containers, activeContainerId],
-  );
   const selectedClickUpSpace = useMemo(
     () => clickupSpaceContainers.find((space) => space.id === selectedClickUpSpaceId) ?? null,
     [clickupSpaceContainers, selectedClickUpSpaceId],
+  );
+  const statusCatalogScopeName = useMemo(
+    () =>
+      statusCatalogScopeLabel(
+        activeProvider,
+        statusCatalogScope,
+        activeContainerName,
+      ),
+    [activeContainerName, activeProvider, statusCatalogScope],
   );
   // Jira and ClickUp scope tickets to the selected container server-side (issues
   // carry no matching `project` field), so the client-side container-name filter
@@ -650,6 +1005,10 @@ export function TicketingDashboardView({
     () =>
       filterTicketsByProject(tickets, clientContainerFilter),
     [tickets, clientContainerFilter],
+  );
+  const statusTicketCounts = useMemo(
+    () => ticketStatusCountsByKey(displayedTickets),
+    [displayedTickets],
   );
   const ticketColumns = useMemo(() => columnsFromTickets(tickets), [tickets]);
   // Remember the last non-empty columns so the kanban board does not collapse
@@ -666,9 +1025,7 @@ export function TicketingDashboardView({
   // statuses into the filter/board until a project is chosen).
   const statusColumns = containerSelectionNeeded
     ? []
-    : effectiveTicketColumns.length > 0
-      ? mergeProviderAndTicketColumns(columns, effectiveTicketColumns)
-      : columns;
+    : mergeProviderAndTicketColumns(columns, effectiveTicketColumns);
   const selectedSummary = selectedTicketRef
     ? tickets.find((ticket) => ticketRefsIdentifySameTicket(ticket.ref, selectedTicketRef)) ?? null
     : null;
@@ -690,6 +1047,11 @@ export function TicketingDashboardView({
     { enabled: Boolean(detailInput && projectId) },
   );
   const refreshTickets = useRefreshTickets();
+  const statusCatalogQuery = useTicketingStatusCatalog(statusCatalogScope, {
+    enabled: statusManagerOpen && Boolean(statusCatalogScope && readableProvider),
+  });
+  const refreshStatusCatalog = useRefreshTicketingStatusCatalog();
+  const updateStatusPresentationMutation = useUpdateTicketingStatusPresentation();
   const ticketingMutations = useTicketingMutations(projectId);
   const conversationsQuery = useConversations({ view: "ticketing", projectId });
   const bindableConversations = useMemo(
@@ -752,9 +1114,97 @@ export function TicketingDashboardView({
     : bindConversation.error
       ? "Conversation could not be bound."
       : null;
+  const statusManagerError = statusCatalogQuery.isError
+    ? queryErrorDetail(statusCatalogQuery.error, "Statuses could not be loaded.")
+    : refreshStatusCatalog.isError
+      ? queryErrorDetail(refreshStatusCatalog.error, "Statuses could not be synced.")
+      : updateStatusPresentationMutation.isError
+        ? queryErrorDetail(updateStatusPresentationMutation.error, "Status presentation could not be saved.")
+        : null;
+
+  useEffect(() => {
+    if (!statusManagerOpen) {
+      lastAutoSyncedStatusScope.current = null;
+      return;
+    }
+    if (!statusCatalogScope || !readableProvider) {
+      return;
+    }
+    const scopeKey = statusCatalogScopeKey(statusCatalogScope);
+    if (!scopeKey || lastAutoSyncedStatusScope.current === scopeKey) {
+      return;
+    }
+    lastAutoSyncedStatusScope.current = scopeKey;
+    refreshStatusCatalog.mutate(statusCatalogScope);
+  }, [readableProvider, refreshStatusCatalog, statusCatalogScope, statusManagerOpen]);
 
   function handleBindConversation(conversationId: string) {
     bindConversation.mutate(conversationId);
+  }
+
+  function handleSyncStatuses() {
+    if (!statusCatalogScope) {
+      return;
+    }
+    refreshStatusCatalog.mutate(statusCatalogScope);
+  }
+
+  function handleMoveStatus(entry: TicketingStatusCatalogEntry, direction: -1 | 1) {
+    if (!statusCatalogScope) {
+      return;
+    }
+    const entries = sortedStatusCatalogEntries(statusCatalogQuery.data ?? []);
+    const currentIndex = entries.findIndex((item) => item.providerStatusId === entry.providerStatusId);
+    const target = entries[currentIndex + direction];
+    if (!target) {
+      return;
+    }
+    updateStatusPresentationMutation.mutate({
+      ...statusCatalogScope,
+      patches: [
+        {
+          providerStatusId: entry.providerStatusId,
+          displayOrder: target.displayOrder,
+        },
+        {
+          providerStatusId: target.providerStatusId,
+          displayOrder: entry.displayOrder,
+        },
+      ],
+    });
+  }
+
+  function handleStatusColorChange(entry: TicketingStatusCatalogEntry, color: string) {
+    if (!statusCatalogScope) {
+      return;
+    }
+    updateStatusPresentationMutation.mutate({
+      ...statusCatalogScope,
+      patches: [{ providerStatusId: entry.providerStatusId, colorOverride: color }],
+    });
+  }
+
+  function handleResetStatusColor(entry: TicketingStatusCatalogEntry) {
+    if (!statusCatalogScope) {
+      return;
+    }
+    updateStatusPresentationMutation.mutate({
+      ...statusCatalogScope,
+      patches: [{ providerStatusId: entry.providerStatusId, colorOverride: null }],
+    });
+  }
+
+  function handleStatusVisibilityChange(
+    entry: TicketingStatusCatalogEntry,
+    visible: boolean,
+  ) {
+    if (!statusCatalogScope) {
+      return;
+    }
+    updateStatusPresentationMutation.mutate({
+      ...statusCatalogScope,
+      patches: [{ providerStatusId: entry.providerStatusId, isVisible: visible }],
+    });
   }
 
   // Only treat the loaded detail as the selected ticket when it actually matches
@@ -776,7 +1226,7 @@ export function TicketingDashboardView({
   const transitionColumns = useMemo(() => columnsFromTransitions(transitions), [transitions]);
   const filterColumns = containerSelectionNeeded
     ? []
-    : mergeProviderAndTicketColumns(statusColumns, transitionColumns);
+    : mergeProviderAndTicketColumns(columns, [...effectiveTicketColumns, ...transitionColumns]);
   const providerName = selectedProvider?.label ?? (activeProvider ? providerLabel(activeProvider) : "Provider");
   const containerLabels = containerLabelsForProvider(activeProvider);
   // ClickUp conversation-linking is deferred (no ClickUp link table yet), so
@@ -1189,6 +1639,18 @@ export function TicketingDashboardView({
               onProviderChange={setProvider}
             />
           )}
+          {activeProvider && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={!statusCatalogScope || !readableProvider}
+              onClick={() => setStatusManagerOpen(true)}
+            >
+              <ListOrdered aria-hidden="true" />
+              Statuses
+            </Button>
+          )}
         </div>
       </header>
 
@@ -1286,6 +1748,24 @@ export function TicketingDashboardView({
         shell={selectedPullRequestShell}
         onNavigateToAssociation={onNavigateToAssociation}
         onClose={() => setSelectedPullRequestShell(null)}
+      />
+
+      <StatusManagementDialog
+        open={statusManagerOpen}
+        providerName={providerName}
+        scopeLabel={statusCatalogScopeName}
+        entries={statusCatalogQuery.data ?? []}
+        ticketCounts={statusTicketCounts}
+        isLoading={statusCatalogQuery.isLoading || refreshStatusCatalog.isPending}
+        isSyncing={refreshStatusCatalog.isPending}
+        isUpdating={updateStatusPresentationMutation.isPending}
+        error={statusManagerError}
+        onSync={handleSyncStatuses}
+        onMove={handleMoveStatus}
+        onColorChange={handleStatusColorChange}
+        onResetColor={handleResetStatusColor}
+        onVisibilityChange={handleStatusVisibilityChange}
+        onClose={() => setStatusManagerOpen(false)}
       />
 
       <StartWorkDialog

@@ -119,6 +119,7 @@ export interface TicketStatusGroup {
   id: string;
   name: string;
   category: TicketStateCategory;
+  color?: string | null | undefined;
   tickets: TicketSummary[];
 }
 
@@ -132,16 +133,19 @@ export function groupTicketsByStatus(
   columns: TicketingColumn[],
 ): TicketStatusGroup[] {
   const order = new Map(columns.map((column, index) => [column.id, index]));
+  const columnById = new Map(columns.map((column) => [column.id, column]));
   const groups = new Map<string, TicketStatusGroup>();
   for (const ticket of tickets) {
+    const column = columnById.get(ticket.state.id);
     const existing = groups.get(ticket.state.id);
     if (existing) {
       existing.tickets.push(ticket);
     } else {
       groups.set(ticket.state.id, {
         id: ticket.state.id,
-        name: ticket.state.name,
-        category: ticket.state.category,
+        name: column?.name ?? ticket.state.name,
+        category: column?.category ?? ticket.state.category,
+        color: column?.color ?? ticket.state.color,
         tickets: [ticket],
       });
     }

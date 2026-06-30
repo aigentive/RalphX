@@ -25,12 +25,15 @@ import {
   useTicketingColumns,
   useTicketingContainers,
   useTicketingMutations,
+  useTicketingStatusCatalog,
   useTicketFilterOptions,
   useTicketLabelOptions,
+  useRefreshTicketingStatusCatalog,
   useTicketTransitions,
   useStartWorkFromTicket,
   useTicketingProviders,
   useTickets,
+  useUpdateTicketingStatusPresentation,
   TICKET_DETAIL_CACHE_MS,
 } from "./useTicketing";
 
@@ -42,6 +45,9 @@ vi.mock("@/api/ticketing", async (importActual) => {
       listProviders: vi.fn(),
       listContainers: vi.fn(),
       listColumns: vi.fn(),
+      listStatusCatalog: vi.fn(),
+      refreshStatusCatalog: vi.fn(),
+      updateStatusPresentation: vi.fn(),
       listTickets: vi.fn(),
       listTicketFilterOptions: vi.fn(),
       getTicketDetail: vi.fn(),
@@ -762,6 +768,84 @@ describe("useTicketing hooks", () => {
     });
     expect(result.current.fetchStatus).toBe("idle");
     expect(ticketingApi.listColumns).not.toHaveBeenCalled();
+  });
+
+  it("loads a scoped ticketing status catalog", async () => {
+    vi.mocked(ticketingApi.listStatusCatalog).mockResolvedValueOnce([
+      {
+        id: "catalog-1",
+        provider: "clickup",
+        scopeKind: "clickup_space",
+        scopeId: "space-1",
+        providerStatusId: "in_progress",
+        providerStatusName: "In Progress",
+        providerCategory: "in_progress",
+        providerColor: "#112233",
+        providerOrder: 1,
+        displayOrder: 2,
+        colorOverride: "#445566",
+        color: "#445566",
+        isVisible: true,
+        isTerminal: false,
+        stale: false,
+        lastSeenAt: "2026-06-19T22:00:00.000Z",
+        staleSince: null,
+        updatedAt: "2026-06-19T22:00:00.000Z",
+      },
+    ]);
+
+    const scope = {
+      provider: "clickup" as const,
+      scopeKind: "clickup_space",
+      scopeId: "space-1",
+    };
+    const { result } = renderHook(() => useTicketingStatusCatalog(scope), {
+      wrapper: createWrapper().wrapper,
+    });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(ticketingApi.listStatusCatalog).toHaveBeenCalledWith(scope);
+    expect(result.current.data?.[0]?.color).toBe("#445566");
+  });
+
+  it("refreshes and updates status presentation through mutations", async () => {
+    vi.mocked(ticketingApi.refreshStatusCatalog).mockResolvedValueOnce([]);
+    vi.mocked(ticketingApi.updateStatusPresentation).mockResolvedValueOnce([]);
+    const { queryClient, wrapper } = createWrapper();
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+    const scope = {
+      provider: "jira" as const,
+      scopeKind: "jira_project",
+      scopeId: "RX",
+    };
+    const { result } = renderHook(
+      () => ({
+        refresh: useRefreshTicketingStatusCatalog(),
+        update: useUpdateTicketingStatusPresentation(),
+      }),
+      { wrapper },
+    );
+
+    await act(async () => {
+      await result.current.refresh.mutateAsync(scope);
+      await result.current.update.mutateAsync({
+        ...scope,
+        patches: [{ providerStatusId: "todo", displayOrder: 1, colorOverride: null }],
+      });
+    });
+
+    expect(ticketingApi.refreshStatusCatalog).toHaveBeenCalledWith(scope);
+    expect(ticketingApi.updateStatusPresentation).toHaveBeenCalledWith({
+      ...scope,
+      patches: [{ providerStatusId: "todo", displayOrder: 1, colorOverride: null }],
+    });
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: ticketingKeys.statusCatalog(scope),
+    });
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: ["ticketing", "columns", "jira"],
+    });
   });
 
   it("loads label options for a ticket", async () => {

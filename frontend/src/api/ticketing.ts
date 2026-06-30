@@ -77,8 +77,41 @@ export const TicketingColumnSchema = z.object({
   category: TicketStateCategorySchema,
   order: z.number().default(0),
   color: z.string().nullable().optional(),
+  providerColor: z.string().nullable().optional(),
+  colorOverride: z.string().nullable().optional(),
+  providerOrder: z.number().nullable().optional(),
+  displayOrder: z.number().nullable().optional(),
+  scopeKind: z.string().nullable().optional(),
+  scopeId: z.string().nullable().optional(),
+  isVisible: z.boolean().nullable().optional(),
+  isTerminal: z.boolean().nullable().optional(),
+  stale: z.boolean().nullable().optional(),
+  lastSeenAt: z.string().nullable().optional(),
+  staleSince: z.string().nullable().optional(),
 });
 export type TicketingColumn = z.infer<typeof TicketingColumnSchema>;
+
+export const TicketingStatusCatalogEntrySchema = z.object({
+  id: z.string(),
+  provider: TicketingProviderSchema,
+  scopeKind: z.string(),
+  scopeId: z.string(),
+  providerStatusId: z.string(),
+  providerStatusName: z.string(),
+  providerCategory: TicketStateCategorySchema,
+  providerColor: z.string().nullable().optional(),
+  providerOrder: z.number().nullable().optional(),
+  displayOrder: z.number(),
+  colorOverride: z.string().nullable().optional(),
+  color: z.string().nullable().optional(),
+  isVisible: z.boolean(),
+  isTerminal: z.boolean(),
+  stale: z.boolean(),
+  lastSeenAt: z.string().nullable().optional(),
+  staleSince: z.string().nullable().optional(),
+  updatedAt: z.string(),
+});
+export type TicketingStatusCatalogEntry = z.infer<typeof TicketingStatusCatalogEntrySchema>;
 
 export const TicketRefSchema = z.object({
   provider: TicketingProviderSchema,
@@ -266,7 +299,7 @@ export type RefreshTicketsResponse = z.infer<typeof RefreshTicketsResponseSchema
 
 export const TicketOperationResponseSchema = z.object({
   id: z.string(),
-  operation: z.enum(["transition", "assign", "comment"]),
+  operation: z.enum(["transition", "assign", "comment", "set_labels"]),
   clientOperationId: z.string(),
   status: z.enum(["pending", "succeeded", "failed", "canceled", "timed_out"]),
   providerOperationId: z.string().nullable().optional(),
@@ -305,6 +338,23 @@ export interface ListTicketingContainersInput {
 export interface ListTicketingColumnsInput {
   provider: TicketingProvider;
   containerId?: string | undefined;
+}
+
+export interface TicketingStatusCatalogScopeInput {
+  provider: TicketingProvider;
+  scopeKind: string;
+  scopeId: string;
+}
+
+export interface TicketingStatusPresentationPatchInput {
+  providerStatusId: string;
+  displayOrder?: number | undefined;
+  colorOverride?: string | null | undefined;
+  isVisible?: boolean | undefined;
+}
+
+export interface UpdateTicketingStatusPresentationInput extends TicketingStatusCatalogScopeInput {
+  patches: TicketingStatusPresentationPatchInput[];
 }
 
 export interface TicketFiltersInput {
@@ -431,6 +481,47 @@ export const ticketingApi = {
         ...(input.containerId !== undefined && { containerId: input.containerId }),
       },
       z.array(TicketingColumnSchema),
+    );
+  },
+
+  listStatusCatalog(input: TicketingStatusCatalogScopeInput): Promise<TicketingStatusCatalogEntry[]> {
+    return typedInvoke(
+      "list_ticketing_status_catalog",
+      {
+        provider: input.provider,
+        scopeKind: input.scopeKind,
+        scopeId: input.scopeId,
+      },
+      z.array(TicketingStatusCatalogEntrySchema),
+    );
+  },
+
+  refreshStatusCatalog(input: TicketingStatusCatalogScopeInput): Promise<TicketingStatusCatalogEntry[]> {
+    return typedInvoke(
+      "refresh_ticketing_status_catalog",
+      {
+        provider: input.provider,
+        scopeKind: input.scopeKind,
+        scopeId: input.scopeId,
+      },
+      z.array(TicketingStatusCatalogEntrySchema),
+    );
+  },
+
+  updateStatusPresentation(
+    input: UpdateTicketingStatusPresentationInput,
+  ): Promise<TicketingStatusCatalogEntry[]> {
+    return typedInvoke(
+      "update_ticketing_status_presentation",
+      {
+        input: {
+          provider: input.provider,
+          scopeKind: input.scopeKind,
+          scopeId: input.scopeId,
+          patches: input.patches,
+        },
+      },
+      z.array(TicketingStatusCatalogEntrySchema),
     );
   },
 
