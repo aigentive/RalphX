@@ -2639,8 +2639,7 @@ pub async fn get_agent_conversation_workspace_file_content_range_for_state(
 
     // Resolve workspace-specific ref_kind variants to concrete refs that match
     // the same old/new pair used by get_agent_conversation_workspace_file_diff.
-    let live_worktree_head_range =
-        ctx.supports_worktree_modes && ctx.patch_diff.is_none();
+    let live_worktree_head_range = ctx.supports_worktree_modes && ctx.patch_diff.is_none();
     let resolved_ref_kind = match ref_kind {
         DiffRefKind::CumulativeBase => DiffRefKind::Commit {
             sha: ctx.base_ref.clone(),
@@ -3395,10 +3394,7 @@ mod tests {
         )
         .await
         .expect("diff-target untracked file diff page should load");
-        assert!(
-            diff_page_contains_line(&file_diff_page, "draft"),
-            "diff-target file diff page should include untracked content"
-        );
+        assert!(diff_page_contains_line(&file_diff_page, "draft"));
 
         let cumulative_page = get_agent_conversation_workspace_file_diff_page(
             app.state(),
@@ -3410,10 +3406,7 @@ mod tests {
         )
         .await
         .expect("diff-target cumulative untracked file diff page should load");
-        assert!(
-            diff_page_contains_line(&cumulative_page, "draft"),
-            "cumulative file diff page should include untracked content"
-        );
+        assert!(diff_page_contains_line(&cumulative_page, "draft"));
 
         let content_range = get_agent_conversation_workspace_file_content_range(
             app.state(),

@@ -602,6 +602,70 @@ fn unstaged_file_diff_renders_untracked_file_as_added() {
 }
 
 #[test]
+fn unstaged_file_diff_renders_empty_untracked_file_without_hunks() {
+    let (_tmp, repo) = create_staged_unstaged_repo();
+    let repo_str = repo.to_string_lossy().to_string();
+
+    fs::write(repo.join("empty.txt"), "").unwrap();
+
+    let svc = DiffService::new();
+    let diff = svc.get_unstaged_file_diff("empty.txt", &repo_str).unwrap();
+
+    assert_eq!(diff.file_path, "empty.txt");
+    assert!(!diff.is_binary);
+    assert_eq!(diff.old_total_lines, 0);
+    assert_eq!(diff.new_total_lines, 0);
+    assert!(diff.hunks.is_empty());
+}
+
+#[test]
+fn unstaged_file_diff_treats_invalid_utf8_untracked_file_as_binary() {
+    let (_tmp, repo) = create_staged_unstaged_repo();
+    let repo_str = repo.to_string_lossy().to_string();
+
+    fs::write(repo.join("binary.bin"), [0xff, 0xfe, 0xfd]).unwrap();
+
+    let svc = DiffService::new();
+    let changes = svc.get_unstaged_file_changes(&repo_str).unwrap();
+    let binary_change = changes
+        .iter()
+        .find(|change| change.path == "binary.bin")
+        .unwrap();
+    assert_eq!(binary_change.additions, 0);
+
+    let diff = svc.get_unstaged_file_diff("binary.bin", &repo_str).unwrap();
+    assert_eq!(diff.file_path, "binary.bin");
+    assert!(diff.is_binary);
+    assert!(diff.hunks.is_empty());
+    assert_eq!(diff.old_total_lines, 0);
+    assert_eq!(diff.new_total_lines, 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn unstaged_file_diff_treats_untracked_symlink_as_binary_without_reading_target() {
+    let (_tmp, repo) = create_staged_unstaged_repo();
+    let repo_str = repo.to_string_lossy().to_string();
+
+    std::os::unix::fs::symlink("README.md", repo.join("linked.md")).unwrap();
+
+    let svc = DiffService::new();
+    let changes = svc.get_unstaged_file_changes(&repo_str).unwrap();
+    let linked_change = changes
+        .iter()
+        .find(|change| change.path == "linked.md")
+        .unwrap();
+    assert_eq!(linked_change.additions, 0);
+
+    let diff = svc.get_unstaged_file_diff("linked.md", &repo_str).unwrap();
+    assert_eq!(diff.file_path, "linked.md");
+    assert!(diff.is_binary);
+    assert!(diff.hunks.is_empty());
+    assert_eq!(diff.old_total_lines, 0);
+    assert_eq!(diff.new_total_lines, 0);
+}
+
+#[test]
 fn staged_file_changes_empty_when_nothing_staged() {
     let (_tmp, repo) = create_staged_unstaged_repo();
     let repo_str = repo.to_string_lossy().to_string();
@@ -1038,6 +1102,61 @@ fn get_file_content_range_rejects_traversal_path() {
         )
         .unwrap_err();
     assert!(err.to_string().contains("unsafe") || err.to_string().contains("relative"));
+}
+
+#[test]
+fn get_file_content_range_reports_missing_ref_content() {
+    let (_tmp, repo) = create_staged_unstaged_repo();
+    let repo_str = repo.to_string_lossy().to_string();
+    let head = git_stdout(&repo, &["rev-parse", "HEAD"]);
+    let svc = DiffService::new();
+
+    let staged_err = svc
+        .get_file_content_range(
+            &repo_str,
+            &DiffSide::New,
+            "missing.txt",
+            &DiffRefKind::Staged,
+            1,
+            1,
+        )
+        .unwrap_err();
+    assert!(staged_err.to_string().contains("git index"));
+
+    let head_err = svc
+        .get_file_content_range(
+            &repo_str,
+            &DiffSide::New,
+            "missing.txt",
+            &DiffRefKind::Head,
+            1,
+            1,
+        )
+        .unwrap_err();
+    assert!(head_err.to_string().contains("HEAD"));
+
+    let commit_err = svc
+        .get_file_content_range(
+            &repo_str,
+            &DiffSide::New,
+            "missing.txt",
+            &DiffRefKind::Commit { sha: head },
+            1,
+            1,
+        )
+        .unwrap_err();
+    assert!(commit_err.to_string().contains("commit"));
+}
+
+#[test]
+fn unstaged_file_diff_rejects_empty_file_path() {
+    let (_tmp, repo) = create_staged_unstaged_repo();
+    let repo_str = repo.to_string_lossy().to_string();
+    let svc = DiffService::new();
+
+    let err = svc.get_unstaged_file_diff("", &repo_str).unwrap_err();
+
+    assert!(err.to_string().contains("empty"));
 }
 
 #[test]
