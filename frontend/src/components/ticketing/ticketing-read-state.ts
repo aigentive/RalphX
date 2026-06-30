@@ -19,7 +19,7 @@ export function hasActiveTicketFilters(filters: TicketingFilterState): boolean {
     filters.text.trim() !== ""
     || filters.stateIds.length > 0
     || filters.labels.length > 0
-    || filters.assignee !== null
+    || filters.assignees.length > 0
     || filters.sprint !== null
     || filters.watcherMe
   );
@@ -77,22 +77,28 @@ export function distinctCurrentUserSprintNames(tickets: TicketSummary[]): string
 }
 
 /**
- * Client-side assignee filter. null/empty = everyone, the UNASSIGNED_ASSIGNEE
+ * Client-side assignee filter. empty = everyone, the UNASSIGNED_ASSIGNEE
  * sentinel = tickets with no assignee, any other value = exact name match.
  */
+export function filterTicketsByAssignees(
+  tickets: TicketSummary[],
+  assignees: string[],
+): TicketSummary[] {
+  if (assignees.length === 0) {
+    return tickets;
+  }
+  const selected = new Set(assignees.map((assignee) => assignee.trim()).filter(Boolean));
+  return tickets.filter((ticket) =>
+    (selected.has(UNASSIGNED_ASSIGNEE) && ticketAssignees(ticket).length === 0)
+      || ticketAssignees(ticket).some((person) => selected.has(person.name)),
+  );
+}
+
 export function filterTicketsByAssignee(
   tickets: TicketSummary[],
   assignee: string | null,
 ): TicketSummary[] {
-  if (!assignee) {
-    return tickets;
-  }
-  if (assignee === UNASSIGNED_ASSIGNEE) {
-    return tickets.filter((ticket) => ticketAssignees(ticket).length === 0);
-  }
-  return tickets.filter((ticket) =>
-    ticketAssignees(ticket).some((person) => person.name === assignee),
-  );
+  return filterTicketsByAssignees(tickets, assignee ? [assignee] : []);
 }
 
 /**

@@ -1331,6 +1331,7 @@ async fn list_tickets_builds_paged_response_from_provider_summaries() {
             limit: Some(1),
             filters: Some(TicketFiltersInput {
                 text: Some("ticket".to_string()),
+                assignees: None,
                 assignee: None,
                 state_ids: None,
                 labels: Some(vec!["backend".to_string()]),
@@ -1370,6 +1371,7 @@ async fn list_ticket_filter_options_builds_truncated_provider_response() {
             limit: Some(1),
             filters: Some(TicketFiltersInput {
                 text: Some("ticket".to_string()),
+                assignees: None,
                 assignee: None,
                 state_ids: None,
                 labels: None,
@@ -1527,6 +1529,7 @@ fn ticket_summary_filters_match_text_status_assignee_and_labels() {
         items,
         Some(&TicketFiltersInput {
             text: Some("filter".to_string()),
+            assignees: None,
             assignee: Some("agent".to_string()),
             watcher_me: None,
             state_ids: Some(vec!["in_progress".to_string()]),
@@ -1553,6 +1556,7 @@ fn ticket_summary_filters_remove_rows_without_requested_metadata() {
         items,
         Some(&TicketFiltersInput {
             text: None,
+            assignees: None,
             assignee: Some("me".to_string()),
             watcher_me: None,
             state_ids: None,
@@ -2091,6 +2095,7 @@ fn ticket_page_from_loaded_summaries_applies_filters_offset_and_next_cursor() {
     ];
     let filters = TicketFiltersInput {
         text: None,
+        assignees: None,
         assignee: None,
         state_ids: None,
         labels: Some(vec!["backend".to_string()]),
@@ -2166,6 +2171,7 @@ fn ticket_filter_options_collects_assignees_and_clickup_current_user_sprints() {
 
     let filters = TicketFiltersInput {
         text: None,
+        assignees: None,
         assignee: None,
         state_ids: None,
         labels: Some(vec!["backend".to_string()]),
@@ -2207,6 +2213,7 @@ fn ticket_filter_options_marks_truncation_from_provider_or_limit() {
 fn clickup_assignee_or_sprint_filters_request_wide_provider_scan() {
     let assignee_filter = TicketFiltersInput {
         text: None,
+        assignees: None,
         assignee: Some("Alex Developer".to_string()),
         watcher_me: None,
         state_ids: None,
@@ -2215,6 +2222,7 @@ fn clickup_assignee_or_sprint_filters_request_wide_provider_scan() {
     };
     let sprint_filter = TicketFiltersInput {
         text: None,
+        assignees: None,
         assignee: None,
         watcher_me: None,
         state_ids: None,
@@ -2244,6 +2252,7 @@ fn clickup_assignee_or_sprint_filters_request_wide_provider_scan() {
 fn clickup_sprint_filter_uses_workspace_scope_over_selected_space() {
     let sprint_filter = TicketFiltersInput {
         text: None,
+        assignees: None,
         assignee: Some("Alex Developer".to_string()),
         watcher_me: None,
         state_ids: None,
@@ -2252,6 +2261,7 @@ fn clickup_sprint_filter_uses_workspace_scope_over_selected_space() {
     };
     let assignee_filter = TicketFiltersInput {
         text: None,
+        assignees: None,
         assignee: Some("Alex Developer".to_string()),
         watcher_me: None,
         state_ids: None,
@@ -2332,6 +2342,7 @@ fn clickup_container_scope_parses_workspace_space_folder_and_list() {
 fn clickup_current_user_assignee_filter_maps_to_provider_assignee_id() {
     let filter = TicketFiltersInput {
         text: None,
+        assignees: None,
         assignee: Some("Alex Developer".to_string()),
         watcher_me: None,
         state_ids: None,
@@ -2356,8 +2367,23 @@ fn clickup_current_user_assignee_filter_maps_to_provider_assignee_id() {
     };
     assert!(clickup_provider_assignee_ids(Some(&other_filter), Some(&user)).is_empty());
 
+    let mixed_multi_filter = TicketFiltersInput {
+        text: None,
+        assignees: Some(vec![
+            "Alex Developer".to_string(),
+            "Someone Else".to_string(),
+        ]),
+        assignee: None,
+        watcher_me: None,
+        state_ids: None,
+        labels: None,
+        sprint: None,
+    };
+    assert!(clickup_provider_assignee_ids(Some(&mixed_multi_filter), Some(&user)).is_empty());
+
     let empty_filter = TicketFiltersInput {
         text: None,
+        assignees: None,
         assignee: Some("   ".to_string()),
         watcher_me: None,
         state_ids: None,
@@ -2614,6 +2640,7 @@ async fn load_ticket_summaries_routes_clickup_space_list_and_folder_scopes() {
 
     let list_filter = TicketFiltersInput {
         text: None,
+        assignees: None,
         assignee: Some("Alex Developer".to_string()),
         watcher_me: None,
         state_ids: None,
@@ -2651,6 +2678,7 @@ fn ticket_matches_filters_with_empty_filter_input_keeps_open_states() {
     let ticket = ticket_summary_fixture("LIN-1", "First", "Todo", None, &[]);
     let empty = TicketFiltersInput {
         text: None,
+        assignees: None,
         assignee: None,
         watcher_me: None,
         state_ids: None,
@@ -2668,6 +2696,7 @@ fn ticket_matches_filters_explicit_completed_status_includes_completed() {
     let completed = ticket_summary_fixture("LIN-2", "Second", "Done", None, &[]);
     let filter = TicketFiltersInput {
         text: None,
+        assignees: None,
         assignee: None,
         watcher_me: None,
         state_ids: Some(vec!["done".to_string()]),
@@ -2683,6 +2712,7 @@ fn ticket_matches_filters_text_matches_provider_id_case_insensitively() {
     let ticket = ticket_summary_fixture("LIN-99", "Some title", "Todo", None, &[]);
     let by_id = TicketFiltersInput {
         text: Some("lin-99".to_string()),
+        assignees: None,
         assignee: None,
         watcher_me: None,
         state_ids: None,
@@ -2693,6 +2723,7 @@ fn ticket_matches_filters_text_matches_provider_id_case_insensitively() {
 
     let by_title = TicketFiltersInput {
         text: Some("SOME".to_string()),
+        assignees: None,
         assignee: None,
         watcher_me: None,
         state_ids: None,
@@ -2703,6 +2734,7 @@ fn ticket_matches_filters_text_matches_provider_id_case_insensitively() {
 
     let miss = TicketFiltersInput {
         text: Some("absent".to_string()),
+        assignees: None,
         assignee: None,
         watcher_me: None,
         state_ids: None,
@@ -2718,6 +2750,7 @@ fn ticket_matches_filters_state_id_matches_category_alias() {
     let ticket = ticket_summary_fixture("LIN-1", "Title", "In Progress", None, &[]);
     let by_category = TicketFiltersInput {
         text: None,
+        assignees: None,
         assignee: None,
         watcher_me: None,
         state_ids: Some(vec!["in_progress".to_string()]),
@@ -2728,6 +2761,7 @@ fn ticket_matches_filters_state_id_matches_category_alias() {
 
     let by_state_id = TicketFiltersInput {
         text: None,
+        assignees: None,
         assignee: None,
         watcher_me: None,
         state_ids: Some(vec!["in_progress".to_string(), "other".to_string()]),
@@ -2738,6 +2772,7 @@ fn ticket_matches_filters_state_id_matches_category_alias() {
 
     let miss = TicketFiltersInput {
         text: None,
+        assignees: None,
         assignee: None,
         watcher_me: None,
         state_ids: Some(vec!["done".to_string()]),
@@ -2754,6 +2789,7 @@ fn ticket_matches_filters_assignee_matches_any_assignee() {
 
     let by_second_assignee = TicketFiltersInput {
         text: None,
+        assignees: None,
         assignee: Some("Grace".to_string()),
         watcher_me: None,
         state_ids: None,
@@ -2764,6 +2800,7 @@ fn ticket_matches_filters_assignee_matches_any_assignee() {
 
     let miss = TicketFiltersInput {
         text: None,
+        assignees: None,
         assignee: Some("Katherine".to_string()),
         watcher_me: None,
         state_ids: None,
@@ -2771,6 +2808,37 @@ fn ticket_matches_filters_assignee_matches_any_assignee() {
         sprint: None,
     };
     assert!(!ticket_matches_filters(&ticket, &miss));
+}
+
+#[test]
+fn ticket_matches_filters_assignees_match_any_selected_assignee_or_unassigned() {
+    let mut assigned = ticket_summary_fixture("CU-1", "Multi-assignee task", "Todo", None, &[]);
+    assigned.assignees = vec![named_person("Ada Lovelace"), named_person("Grace Hopper")];
+    let unassigned = ticket_summary_fixture("CU-2", "Unassigned task", "Todo", None, &[]);
+
+    let multi_filter = TicketFiltersInput {
+        text: None,
+        assignees: Some(vec!["Katherine".to_string(), "Grace".to_string()]),
+        assignee: None,
+        watcher_me: None,
+        state_ids: None,
+        labels: None,
+        sprint: None,
+    };
+    assert!(ticket_matches_filters(&assigned, &multi_filter));
+    assert!(!ticket_matches_filters(&unassigned, &multi_filter));
+
+    let unassigned_filter = TicketFiltersInput {
+        text: None,
+        assignees: Some(vec![UNASSIGNED_ASSIGNEE_FILTER.to_string()]),
+        assignee: None,
+        watcher_me: None,
+        state_ids: None,
+        labels: None,
+        sprint: None,
+    };
+    assert!(!ticket_matches_filters(&assigned, &unassigned_filter));
+    assert!(ticket_matches_filters(&unassigned, &unassigned_filter));
 }
 
 #[test]
@@ -2789,6 +2857,7 @@ fn ticket_matches_filters_clickup_sprint_and_short_assignee_name() {
 
     let filter = TicketFiltersInput {
         text: None,
+        assignees: None,
         assignee: Some("Alex Developer".to_string()),
         watcher_me: None,
         state_ids: None,
@@ -2807,6 +2876,7 @@ fn ticket_matches_filters_watcher_me_requires_current_user_watching() {
     let unwatched = ticket_summary_fixture("CU-2", "Unwatched task", "Todo", None, &[]);
     let filter = TicketFiltersInput {
         text: None,
+        assignees: None,
         assignee: None,
         watcher_me: Some(true),
         state_ids: None,
@@ -2823,6 +2893,7 @@ fn ticket_matches_filters_requires_all_labels_present() {
     let ticket = ticket_summary_fixture("LIN-1", "Title", "Todo", None, &["backend", "linear"]);
     let all_present = TicketFiltersInput {
         text: None,
+        assignees: None,
         assignee: None,
         watcher_me: None,
         state_ids: None,
@@ -2834,6 +2905,7 @@ fn ticket_matches_filters_requires_all_labels_present() {
 
     let missing_one = TicketFiltersInput {
         text: None,
+        assignees: None,
         assignee: None,
         watcher_me: None,
         state_ids: None,

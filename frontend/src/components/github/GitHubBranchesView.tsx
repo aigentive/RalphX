@@ -22,6 +22,7 @@ import {
   pullRequestSelectorFromShell,
   type PullRequestShell,
 } from "@/components/pr/PullRequestDetailShell";
+import { TicketSearchableMultiSelect } from "@/components/ticketing/TicketSearchableMultiSelect";
 import { TicketingStatePanel } from "@/components/ticketing/TicketingStatePanel";
 import { openExternalTicketUrl } from "@/components/ticketing/ticketing-open-external";
 import { Badge } from "@/components/ui/badge";
@@ -34,11 +35,13 @@ import {
 } from "@/components/ui/tooltip";
 import { formatRelativeTime } from "@/lib/formatters";
 import { cn } from "@/lib/utils";
+import { useGitHubConnectionStatus } from "@/hooks/useGitHubConnectionStatus";
 import {
   DEFAULT_GITHUB_DASHBOARD_STATE,
   useIntegrationDashboardStore,
   type GitHubBranchAssociationFilter,
   type GitHubBranchPrStatusFilter,
+  type GitHubBranchReviewFilter,
 } from "@/stores/integrationDashboardStore";
 import type { Project } from "@/types/project";
 
@@ -46,6 +49,7 @@ import { githubBranchOverviewKeys } from "./githubBranchOverviewKeys";
 
 type BranchAssociationFilter = GitHubBranchAssociationFilter;
 type BranchPrStatusFilter = GitHubBranchPrStatusFilter;
+type BranchReviewFilter = GitHubBranchReviewFilter;
 type BranchStatusGroup = Exclude<BranchPrStatusFilter, "all">;
 
 const EMPTY_BRANCH_OVERVIEW_ITEMS: GitHubBranchOverviewItem[] = [];
@@ -64,6 +68,17 @@ const BRANCH_PR_STATUS_FILTERS: Array<{ id: BranchPrStatusFilter; label: string 
   { id: "draft", label: "Draft" },
   { id: "merged", label: "Merged" },
   { id: "closed", label: "Closed" },
+];
+
+const BRANCH_REVIEW_FILTERS: Array<{ id: BranchReviewFilter; label: string }> = [
+  { id: "no_reviews", label: "No reviews" },
+  { id: "review_required", label: "Review required" },
+  { id: "approved", label: "Approved review" },
+  { id: "changes_requested", label: "Changes requested" },
+  { id: "reviewed_by_you", label: "Reviewed by you" },
+  { id: "not_reviewed_by_you", label: "Not reviewed by you" },
+  { id: "awaiting_your_review", label: "Awaiting review from you" },
+  { id: "awaiting_review", label: "Awaiting review from you or your team" },
 ];
 
 function branchPullRequestShell(
@@ -209,6 +224,10 @@ function branchMatchesSearch(branch: GitHubBranchOverviewItem, query: string): b
     branch.prNumber != null ? String(branch.prNumber) : "",
     branch.prTitle ?? "",
     branch.prAuthorLogin ?? "",
+    ...branch.prAssigneeLogins,
+    branch.prReviewDecision ?? "",
+    ...branch.prLatestReviewAuthorLogins,
+    ...branch.prReviewRequestLogins,
     branch.prBaseRefName ?? "",
     ...branch.ticketLabels,
     ...branch.ticketLinks.flatMap((ticket) => [
@@ -221,6 +240,105 @@ function branchMatchesSearch(branch: GitHubBranchOverviewItem, query: string): b
     .join(" ")
     .toLowerCase();
   return haystack.includes(trimmed);
+}
+
+function normalizedLogin(value: string | null | undefined): string {
+  return value?.trim().toLowerCase() ?? "";
+}
+
+function normalizedReviewDecision(branch: GitHubBranchOverviewItem): string {
+  return branch.prReviewDecision?.trim().toUpperCase() ?? "";
+}
+
+function branchHasReviewFromLogin(
+  branch: GitHubBranchOverviewItem,
+  login: string | null,
+): boolean {
+  const normalized = normalizedLogin(login);
+  return Boolean(normalized)
+    && branch.prLatestReviewAuthorLogins.some(
+      (authorLogin) => normalizedLogin(authorLogin) === normalized,
+    );
+}
+
+function branchHasReviewRequestForLogin(
+  branch: GitHubBranchOverviewItem,
+  login: string | null,
+): boolean {
+  const normalized = normalizedLogin(login);
+  return Boolean(normalized)
+    && branch.prReviewRequestLogins.some(
+      (requestLogin) => normalizedLogin(requestLogin) === normalized,
+    );
+}
+
+function branchMatchesReviewFilter(
+  branch: GitHubBranchOverviewItem,
+  filter: BranchReviewFilter,
+  currentUserLogin: string | null,
+): boolean {
+  if (branch.prNumber == null) {
+    return false;
+  }
+  const reviewDecision = normalizedReviewDecision(branch);
+  switch (filter) {
+    case "no_reviews":
+      return reviewDecision === "" && branch.prLatestReviewAuthorLogins.length === 0;
+    case "review_required":
+      return reviewDecision === "REVIEW_REQUIRED";
+    case "approved":
+      return reviewDecision === "APPROVED";
+    case "changes_requested":
+      return reviewDecision === "CHANGES_REQUESTED";
+    case "reviewed_by_you":
+      return branchHasReviewFromLogin(branch, currentUserLogin);
+    case "not_reviewed_by_you":
+      return Boolean(currentUserLogin) && !branchHasReviewFromLogin(branch, currentUserLogin);
+    case "awaiting_your_review":
+      return branchHasReviewRequestForLogin(branch, currentUserLogin);
+    case "awaiting_review":
+      return branch.prReviewRequestLogins.length > 0;
+  }
+}
+
+function branchMatchesReviewFilters(
+  branch: GitHubBranchOverviewItem,
+  filters: BranchReviewFilter[],
+  currentUserLogin: string | null,
+): boolean {
+  return filters.length === 0
+    || filters.some((filter) => branchMatchesReviewFilter(branch, filter, currentUserLogin));
+}
+
+function branchMatchesAnyLogin(
+  logins: string[],
+  selectedLogins: string[],
+): boolean {
+  if (selectedLogins.length === 0) {
+    return true;
+  }
+  const normalized = new Set(logins.map(normalizedLogin).filter(Boolean));
+  return selectedLogins.some((login) => normalized.has(normalizedLogin(login)));
+}
+
+function distinctSortedLogins(
+  branches: GitHubBranchOverviewItem[],
+  getLogins: (branch: GitHubBranchOverviewItem) => string[],
+): string[] {
+  const logins = new Set<string>();
+  for (const branch of branches) {
+    for (const login of getLogins(branch)) {
+      const normalized = login.trim();
+      if (normalized) {
+        logins.add(normalized);
+      }
+    }
+  }
+  return Array.from(logins).sort((left, right) => left.localeCompare(right));
+}
+
+function countLabel(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }
 
 function branchMatchesSelection(branch: GitHubBranchOverviewItem, selectedValue: string): boolean {
@@ -388,6 +506,8 @@ function BranchRow({
     primaryMode === "pull_request" && branch.prNumber != null
       ? branch.branchName
       : branch.prTitle ?? branch.ticketLabels[0] ?? "Branch without a linked PR";
+  const prAssigneeLabel =
+    branch.prAssigneeLogins.length > 0 ? branch.prAssigneeLogins.join(", ") : "-";
 
   function openDetails() {
     onOpenDetails(branch);
@@ -409,7 +529,7 @@ function BranchRow({
       tabIndex={0}
       data-testid={`github-branch-row-${branch.branchName}`}
       aria-label={`Open pull request details for ${primaryTitle}`}
-      className="grid min-h-[56px] grid-cols-[28px_minmax(220px,1fr)_128px_92px_56px_56px] items-center gap-3 border-b px-4 py-2 text-left transition-colors hover:bg-[var(--bg-sunken)] focus-visible:outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:-2px]"
+      className="grid min-h-[56px] grid-cols-[28px_minmax(220px,1fr)_128px_92px_116px_56px_56px] items-center gap-3 border-b px-4 py-2 text-left transition-colors hover:bg-[var(--bg-sunken)] focus-visible:outline-none focus-visible:[outline:2px_solid_var(--border-focus)] focus-visible:[outline-offset:-2px]"
       style={{
         backgroundColor: "var(--bg-surface)",
         borderBottomColor: "var(--border-subtle)",
@@ -458,6 +578,9 @@ function BranchRow({
       <div className="min-w-0 text-xs text-[var(--text-muted)]">
         <span className="truncate">{branch.prAuthorLogin ?? "-"}</span>
         <span className="block truncate">{branchUpdatedLabel(branch)}</span>
+      </div>
+      <div className="min-w-0 text-xs text-[var(--text-muted)]">
+        <span className="block truncate">{prAssigneeLabel}</span>
       </div>
       <BranchMetricButton
         count={ticketCount}
@@ -558,6 +681,12 @@ export function GitHubBranchesView({
   const associationFilter =
     persistedState?.associationFilter ?? DEFAULT_GITHUB_DASHBOARD_STATE.associationFilter;
   const statusFilter = persistedState?.statusFilter ?? DEFAULT_GITHUB_DASHBOARD_STATE.statusFilter;
+  const assigneeLogins =
+    persistedState?.assigneeLogins ?? DEFAULT_GITHUB_DASHBOARD_STATE.assigneeLogins;
+  const authorLogins =
+    persistedState?.authorLogins ?? DEFAULT_GITHUB_DASHBOARD_STATE.authorLogins;
+  const reviewFilters =
+    persistedState?.reviewFilters ?? DEFAULT_GITHUB_DASHBOARD_STATE.reviewFilters;
   const searchQuery = persistedState?.searchQuery ?? DEFAULT_GITHUB_DASHBOARD_STATE.searchQuery;
   const selectedBranchName = persistedState?.selectedBranchName ?? null;
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
@@ -568,8 +697,54 @@ export function GitHubBranchesView({
     enabled: Boolean(projectId && project),
     staleTime: 15_000,
   });
+  const connectionStatusQuery = useGitHubConnectionStatus({ enabled: Boolean(projectId && project) });
+  const currentUserLogin = connectionStatusQuery.data?.account?.trim() || null;
 
   const branches = overviewQuery.data?.branches ?? EMPTY_BRANCH_OVERVIEW_ITEMS;
+  const pullRequestBranches = useMemo(
+    () => branches.filter((branch) => branch.prNumber != null),
+    [branches],
+  );
+  const assigneeOptions = useMemo(
+    () =>
+      distinctSortedLogins(pullRequestBranches, (branch) => branch.prAssigneeLogins).map((login) => ({
+        value: login,
+        label: login,
+        description: countLabel(
+          pullRequestBranches.filter((branch) => branch.prAssigneeLogins.includes(login)).length,
+          "PR",
+        ),
+      })),
+    [pullRequestBranches],
+  );
+  const authorOptions = useMemo(
+    () =>
+      distinctSortedLogins(pullRequestBranches, (branch) =>
+        branch.prAuthorLogin ? [branch.prAuthorLogin] : [],
+      ).map((login) => ({
+        value: login,
+        label: login,
+        description: countLabel(
+          pullRequestBranches.filter((branch) => branch.prAuthorLogin === login).length,
+          "PR",
+        ),
+      })),
+    [pullRequestBranches],
+  );
+  const reviewOptions = useMemo(
+    () =>
+      BRANCH_REVIEW_FILTERS.map((filter) => ({
+        value: filter.id,
+        label: filter.label,
+        description: countLabel(
+          pullRequestBranches.filter((branch) =>
+            branchMatchesReviewFilter(branch, filter.id, currentUserLogin),
+          ).length,
+          "PR",
+        ),
+      })),
+    [currentUserLogin, pullRequestBranches],
+  );
   const filteredBranches = useMemo(() => {
     return branches.filter((branch) => {
       if (!branchMatchesSearch(branch, searchQuery)) {
@@ -578,18 +753,32 @@ export function GitHubBranchesView({
       if (!branchMatchesAssociationFilter(branch, associationFilter)) {
         return false;
       }
+      if (!branchMatchesAnyLogin(branch.prAssigneeLogins, assigneeLogins)) {
+        return false;
+      }
+      if (!branchMatchesAnyLogin(branch.prAuthorLogin ? [branch.prAuthorLogin] : [], authorLogins)) {
+        return false;
+      }
+      if (!branchMatchesReviewFilters(branch, reviewFilters, currentUserLogin)) {
+        return false;
+      }
       if (associationFilter === "pull_requests" && statusFilter !== "all") {
         return normalizedBranchStatus(branch) === statusFilter;
       }
       return true;
     });
-  }, [associationFilter, branches, searchQuery, statusFilter]);
+  }, [
+    associationFilter,
+    assigneeLogins,
+    authorLogins,
+    branches,
+    currentUserLogin,
+    reviewFilters,
+    searchQuery,
+    statusFilter,
+  ]);
 
   const groups = useMemo(() => groupedBranches(filteredBranches), [filteredBranches]);
-  const pullRequestBranches = useMemo(
-    () => branches.filter((branch) => branch.prNumber != null),
-    [branches],
-  );
   const ticketBranchCount = filterCount(branches, "tickets");
   const rxBranchCount = filterCount(branches, "rx");
   const currentBranch = overviewQuery.data?.currentBranch ?? null;
@@ -727,7 +916,7 @@ export function GitHubBranchesView({
             <Input
               value={searchQuery}
               onChange={(event) => setGitHubState(projectId, { searchQuery: event.target.value })}
-              placeholder="Search branches, PRs, tickets, or authors"
+              placeholder="Search branches, PRs, tickets, assignees, or authors"
               className="h-8 pl-9 text-sm"
               style={{
                 backgroundColor: "var(--bg-elevated)",
@@ -744,7 +933,14 @@ export function GitHubBranchesView({
                 onClick={() => {
                   setGitHubState(projectId, {
                     associationFilter: filter.id,
-                    ...(filter.id !== "pull_requests" ? { statusFilter: "all" } : {}),
+                    ...(filter.id !== "pull_requests"
+                      ? {
+                          statusFilter: "all",
+                          assigneeLogins: [],
+                          authorLogins: [],
+                          reviewFilters: [],
+                        }
+                      : {}),
                   });
                 }}
               >
@@ -768,6 +964,56 @@ export function GitHubBranchesView({
           </div>
         ) : null}
 
+        {associationFilter === "pull_requests" ? (
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <label className="flex items-center gap-2 text-xs text-[var(--text-muted)]">
+              Assignee
+              <TicketSearchableMultiSelect
+                ariaLabel="GitHub assignee"
+                className="min-w-[140px] max-w-[220px]"
+                selectedValues={assigneeLogins}
+                onSelectedValuesChange={(values) =>
+                  setGitHubState(projectId, { assigneeLogins: values })
+                }
+                placeholder="Anyone"
+                searchPlaceholder="Search assignees..."
+                clearLabel="Clear GitHub assignee filter"
+                options={assigneeOptions}
+              />
+            </label>
+            <label className="flex items-center gap-2 text-xs text-[var(--text-muted)]">
+              Author
+              <TicketSearchableMultiSelect
+                ariaLabel="GitHub author"
+                className="min-w-[140px] max-w-[220px]"
+                selectedValues={authorLogins}
+                onSelectedValuesChange={(values) =>
+                  setGitHubState(projectId, { authorLogins: values })
+                }
+                placeholder="Anyone"
+                searchPlaceholder="Search authors..."
+                clearLabel="Clear GitHub author filter"
+                options={authorOptions}
+              />
+            </label>
+            <label className="flex items-center gap-2 text-xs text-[var(--text-muted)]">
+              Reviews
+              <TicketSearchableMultiSelect
+                ariaLabel="GitHub reviews"
+                className="min-w-[180px] max-w-[280px]"
+                selectedValues={reviewFilters}
+                onSelectedValuesChange={(values) =>
+                  setGitHubState(projectId, { reviewFilters: values as BranchReviewFilter[] })
+                }
+                placeholder="Any review"
+                searchPlaceholder="Search reviews..."
+                clearLabel="Clear GitHub reviews filter"
+                options={reviewOptions}
+              />
+            </label>
+          </div>
+        ) : null}
+
         {githubUnavailable ? (
           <div
             className="mt-3 flex items-center gap-2 rounded-md px-3 py-2 text-xs"
@@ -787,7 +1033,7 @@ export function GitHubBranchesView({
 
       <div className="grid min-h-0 flex-1 grid-rows-[auto_1fr] overflow-hidden">
         <div
-          className="grid h-9 grid-cols-[28px_minmax(220px,1fr)_128px_92px_56px_56px] items-center gap-3 border-b px-4 text-xs font-semibold uppercase tracking-[0.08em] text-[var(--text-muted)]"
+          className="grid h-9 grid-cols-[28px_minmax(220px,1fr)_128px_92px_116px_56px_56px] items-center gap-3 border-b px-4 text-xs font-semibold uppercase tracking-[0.08em] text-[var(--text-muted)]"
           style={{
             backgroundColor: "var(--bg-surface)",
             borderBottomColor: "var(--border-subtle)",
@@ -798,7 +1044,8 @@ export function GitHubBranchesView({
           <span />
           <span>{associationFilter === "pull_requests" ? "Pull request" : "Branch"}</span>
           <span>PR</span>
-          <span>Owner</span>
+          <span>Author</span>
+          <span>Assignee</span>
           <span>Ticket</span>
           <span>RX</span>
         </div>

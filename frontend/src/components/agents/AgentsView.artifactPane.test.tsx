@@ -12,17 +12,12 @@ import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ideationKeys } from "@/hooks/useIdeation";
-import type {
-  AgentConversationRuntimeStatus,
-  AgentRuntimeStatus,
-} from "@/api/chat";
 import {
   conversationFixture as conversation,
   conversationWorkspaceFixture as conversationWorkspace,
 } from "./agentsTestFixtures";
 
 const {
-  getAgentConversationRuntimeStatusesMock,
   getAgentConversationWorkspaceMock,
   getWorkspaceReviewContextMock,
   startWorkspaceReviewMock,
@@ -82,43 +77,6 @@ function workspaceReviewContext(overrides: {
     isCurrent: overrides.isCurrent ?? false,
     isOutdated: overrides.isOutdated ?? true,
     shouldShowTab: overrides.shouldShowTab ?? true,
-  };
-}
-
-function runtimeStatus(
-  isRunning: boolean,
-  agentStatus: AgentRuntimeStatus = isRunning ? "generating" : "idle",
-): AgentConversationRuntimeStatus {
-  return {
-    conversationId: "conversation-1",
-    isRunning,
-    agentStatus,
-    primarySource: isRunning ? "task_execution" : null,
-    summaryLabel:
-      agentStatus === "waiting_for_input"
-        ? "Awaiting input"
-        : isRunning
-          ? "Executing task"
-          : null,
-    items: isRunning
-      ? [
-          {
-            source: "task_execution",
-            contextType: "task_execution",
-            contextId: "task-1",
-            label: "Executing task",
-            title: "Implement plan",
-            agentStatus,
-            taskId: "task-1",
-            internalStatus: "running",
-            runningProcess: null,
-            ideationSession: null,
-            parentSessionId: null,
-            childSessionId: null,
-            conversationId: "task-conversation-1",
-          },
-        ]
-      : [],
   };
 }
 
@@ -307,20 +265,11 @@ describe("AgentsView artifact pane", () => {
     );
   });
 
-  it("refreshes an outdated Review only after all related runtimes are idle", async () => {
-    let relatedRuntimesRunning = true;
+  it("does not refresh an outdated Review from the UI when related runtimes become idle", async () => {
     mockAgentViewData(conversation({ agentMode: "edit" }));
     getAgentConversationWorkspaceMock.mockResolvedValue(conversationWorkspace({ mode: "edit" }));
     getWorkspaceReviewContextMock.mockResolvedValue(
       workspaceReviewContext({ isOutdated: true, shouldShowTab: true }),
-    );
-    getAgentConversationRuntimeStatusesMock.mockImplementation(() =>
-      Promise.resolve({
-        "conversation-1": runtimeStatus(relatedRuntimesRunning),
-      }),
-    );
-    startWorkspaceReviewMock.mockResolvedValue(
-      workspaceReviewContext({ status: "reviewing", isOutdated: true }),
     );
     resetAgentSessionState({
       selectedProjectId: "project-1",
@@ -332,25 +281,15 @@ describe("AgentsView artifact pane", () => {
     await waitFor(() =>
       expect(getWorkspaceReviewContextMock).toHaveBeenCalledWith("conversation-1"),
     );
-    await waitFor(() =>
-      expect(getAgentConversationRuntimeStatusesMock).toHaveBeenCalledWith([
-        "conversation-1",
-      ]),
-    );
     expect(startWorkspaceReviewMock).not.toHaveBeenCalled();
 
-    relatedRuntimesRunning = false;
     act(() => {
       fireAgentViewEvent("agent:run_completed", {
         conversationId: "task-conversation-1",
       });
     });
 
-    await waitFor(() =>
-      expect(startWorkspaceReviewMock).toHaveBeenCalledWith("conversation-1", {
-        force: true,
-      }),
-    );
+    expect(startWorkspaceReviewMock).not.toHaveBeenCalled();
 
     act(() => {
       fireAgentViewEvent("agent:run_completed", {
@@ -358,20 +297,14 @@ describe("AgentsView artifact pane", () => {
       });
     });
 
-    await waitFor(() => expect(startWorkspaceReviewMock).toHaveBeenCalledTimes(1));
+    expect(startWorkspaceReviewMock).not.toHaveBeenCalled();
   });
 
-  it("refreshes an outdated Review when retained related runtimes are only waiting for input", async () => {
+  it("does not auto-start Review from the UI when retained related runtimes are only waiting for input", async () => {
     mockAgentViewData(conversation({ agentMode: "edit" }));
     getAgentConversationWorkspaceMock.mockResolvedValue(conversationWorkspace({ mode: "edit" }));
     getWorkspaceReviewContextMock.mockResolvedValue(
       workspaceReviewContext({ isOutdated: true, shouldShowTab: true }),
-    );
-    getAgentConversationRuntimeStatusesMock.mockResolvedValue({
-      "conversation-1": runtimeStatus(true, "waiting_for_input"),
-    });
-    startWorkspaceReviewMock.mockResolvedValue(
-      workspaceReviewContext({ status: "reviewing", isOutdated: true }),
     );
     resetAgentSessionState({
       selectedProjectId: "project-1",
@@ -381,15 +314,9 @@ describe("AgentsView artifact pane", () => {
     renderAgentsView();
 
     await waitFor(() =>
-      expect(getAgentConversationRuntimeStatusesMock).toHaveBeenCalledWith([
-        "conversation-1",
-      ]),
+      expect(getWorkspaceReviewContextMock).toHaveBeenCalledWith("conversation-1"),
     );
-    await waitFor(() =>
-      expect(startWorkspaceReviewMock).toHaveBeenCalledWith("conversation-1", {
-        force: true,
-      }),
-    );
+    expect(startWorkspaceReviewMock).not.toHaveBeenCalled();
   });
 
   it("still allows manually opening the artifact pane when the conversation has nothing to show", async () => {

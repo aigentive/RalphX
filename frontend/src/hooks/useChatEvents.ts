@@ -643,6 +643,7 @@ export function useChatEvents({
         parent_tool_use_id?: string | null;
         seq?: number;
       }>("agent:tool_call", (payload) => {
+        const receivedAt = Date.now();
         const { tool_name, tool_id, arguments: args, result, diff_context, parent_tool_use_id } = payload;
 
         if (!isRelevant(payload)) return;
@@ -681,7 +682,7 @@ export function useChatEvents({
               if (result != null) {
                 applyToolCallResultPreview(updated, result, payload);
               }
-              return { type: "tool_use", toolCall: updated };
+              return { ...block, toolCall: updated };
             })
           );
 
@@ -791,7 +792,7 @@ export function useChatEvents({
               (block) => block.type === "task" && block.toolUseId === id,
             );
             if (alreadyHasMarker) return prev;
-            return [...prev, { type: "task", toolUseId: id }];
+            return [...prev, { type: "task", toolUseId: id, receivedAt }];
           });
           setStreamingTasks((prev) => {
             if (prev.has(id)) return prev;
@@ -925,7 +926,7 @@ export function useChatEvents({
               // Only add the marker once — deduplicate by toolUseId
               const alreadyHasMarker = prev.some((block) => block.type === "task" && block.toolUseId === id);
               if (alreadyHasMarker) return prev;
-              return [...prev, { type: "task", toolUseId: id }];
+              return [...prev, { type: "task", toolUseId: id, receivedAt }];
             });
           } else {
             setStreamingContentBlocks((prev) => {
@@ -948,13 +949,17 @@ export function useChatEvents({
                   if (diffContext) {
                     updated.diffContext = diffContext;
                   }
-                  // Preserve existing seq when updating block
+                  // Preserve existing seq/timestamp when updating block
                   const updatedBlock = { type: "tool_use" as const, toolCall: updated };
-                  return block.seq != null ? { ...updatedBlock, seq: block.seq } : updatedBlock;
+                  return {
+                    ...updatedBlock,
+                    ...(block.seq != null ? { seq: block.seq } : {}),
+                    ...(block.receivedAt != null ? { receivedAt: block.receivedAt } : {}),
+                  };
                 });
               }
               // New tool_use block — append
-              const newBlock = { type: "tool_use" as const, toolCall: entry };
+              const newBlock = { type: "tool_use" as const, toolCall: entry, receivedAt };
               return [...prev, payload.seq != null ? { ...newBlock, seq: payload.seq } : newBlock];
             });
           }
@@ -992,13 +997,14 @@ export function useChatEvents({
           context_type?: string;
           seq?: number;
         }>("agent:task_started", (payload) => {
+          const receivedAt = Date.now();
           if (!isRelevant(payload)) return;
           setStreamingContentBlocks((prev) => {
             const alreadyHasMarker = prev.some(
               (block) => block.type === "task" && block.toolUseId === payload.tool_use_id,
             );
             if (alreadyHasMarker) return prev;
-            return [...prev, { type: "task", toolUseId: payload.tool_use_id }];
+            return [...prev, { type: "task", toolUseId: payload.tool_use_id, receivedAt }];
           });
           setStreamingTasks((prev) => {
             const existing = prev.get(payload.tool_use_id);
@@ -1232,6 +1238,7 @@ export function useChatEvents({
           append_to_previous?: boolean;
         }>(
           "agent:chunk", (payload) => {
+            const receivedAt = Date.now();
             if (!isRelevant(payload)) return;
             setStreamingContentBlocks((prev) => {
               const lastBlock = prev[prev.length - 1];
@@ -1241,13 +1248,16 @@ export function useChatEvents({
               // append_to_previous=false to preserve live block boundaries.
               if (shouldAppend && lastBlock?.type === "text") {
                 const updated = [...prev];
-                // Preserve existing seq when appending to block (don't use latest chunk's seq)
-                const appendBlock = { type: "text" as const, text: lastBlock.text + payload.text };
-                updated[updated.length - 1] = lastBlock.seq != null ? { ...appendBlock, seq: lastBlock.seq } : appendBlock;
+                // Preserve existing seq/timestamp when appending to block.
+                const appendBlock = {
+                  ...lastBlock,
+                  text: lastBlock.text + payload.text,
+                };
+                updated[updated.length - 1] = appendBlock;
                 return updated;
               }
               // New text block: use seq from payload
-              const newBlock = { type: "text" as const, text: payload.text };
+              const newBlock = { type: "text" as const, text: payload.text, receivedAt };
               return [...prev, payload.seq != null ? { ...newBlock, seq: payload.seq } : newBlock];
             });
           }

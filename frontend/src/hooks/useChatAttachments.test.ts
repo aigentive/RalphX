@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { renderHook, act, waitFor } from "@testing-library/react";
 import { useChatAttachments, type ChatAttachment } from "./useChatAttachments";
 import { invoke } from "@tauri-apps/api/core";
+import { useChatStore } from "@/stores/chatStore";
 
 // Mock Tauri invoke
 vi.mock("@tauri-apps/api/core", () => ({
@@ -33,6 +34,24 @@ describe("useChatAttachments", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    useChatStore.setState({
+      messages: {},
+      context: null,
+      isLoading: false,
+      activeConversationIds: {},
+      activeAgentRunIds: {},
+      queuedMessages: {},
+      agentStatus: {},
+      agentActivityLabels: {},
+      isSending: {},
+      isTeamActive: {},
+      lastAgentEventTimestamp: {},
+      toolCallStartTimes: {},
+      lastToolCallCompletionTimestamp: {},
+      toolCallCompletionTimestamps: {},
+      effectiveModel: {},
+      composerDraftsByKey: {},
+    });
   });
 
   describe("uploadFiles", () => {
@@ -106,6 +125,36 @@ describe("useChatAttachments", () => {
 
       expect(result.current.attachments).toHaveLength(2);
       expect(mockInvoke).toHaveBeenCalledTimes(2);
+    });
+
+    it("should restore uploaded attachments from a composer draft key", async () => {
+      const mockAttachment: ChatAttachment = {
+        id: "att-draft",
+        conversationId,
+        fileName: "draft.txt",
+        filePath: "/path/to/draft.txt",
+        fileSize: 100,
+        createdAt: "2026-02-14T00:00:00Z",
+      };
+      mockInvoke.mockResolvedValueOnce(mockAttachment);
+
+      const first = renderHook(() =>
+        useChatAttachments(conversationId, { draftKey: "conversation:conv-123" }),
+      );
+      const file = createMockFile("draft", "draft.txt");
+
+      await act(async () => {
+        await first.result.current.uploadFiles([file]);
+      });
+      expect(first.result.current.attachments).toEqual([mockAttachment]);
+
+      first.unmount();
+
+      const second = renderHook(() =>
+        useChatAttachments(conversationId, { draftKey: "conversation:conv-123" }),
+      );
+
+      expect(second.result.current.attachments).toEqual([mockAttachment]);
     });
 
     it("should reject files exceeding size limit", async () => {

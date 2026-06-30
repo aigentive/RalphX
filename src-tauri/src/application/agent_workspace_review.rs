@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -12,9 +13,13 @@ use crate::application::chat_service::{ChatService, SendCallerContext, SendMessa
 use crate::application::git_service::git_cmd::{self, GitCommandLane};
 use crate::application::{AppState, GitService};
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentRunId, AgentRunStatus, AgentWorkspaceReviewMonitor,
-    AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewTargetScope, ChatContextType,
-    ChatConversation, ChatConversationId, Project,
+    AgentConversationWorkspace, AgentRunId, AgentRunStatus, AgentWorkspaceReviewGateStatus,
+    AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
+    AgentWorkspaceReviewTargetScope, ChatContextType, ChatConversation, ChatConversationId,
+    MessageRole, Project,
+};
+use crate::domain::services::{
+    ComposerArtifactReference, ComposerIntegrationReference, ComposerProjectReference,
 };
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::agent_names;
@@ -24,6 +29,9 @@ const WORKSPACE_REVIEW_RUN_POLL_INTERVAL_MS: u64 = 250;
 const WORKSPACE_REVIEW_LOG_TARGET: &str = "ralphx_lib::application::agent_workspace_review";
 const WORKSPACE_REVIEW_PATCH_EXCERPT_CHARS: usize = 42_000;
 const WORKSPACE_REVIEW_MAX_CHANGED_FILES: usize = 120;
+const WORKSPACE_REVIEW_MAX_INHERITED_PROJECT_REFERENCES: usize = 8;
+const WORKSPACE_REVIEW_MAX_INHERITED_INTEGRATION_REFERENCES: usize = 8;
+const WORKSPACE_REVIEW_MAX_INHERITED_ARTIFACT_REFERENCES: usize = 8;
 
 fn compact_log_fingerprint(value: Option<&str>) -> String {
     value
@@ -77,6 +85,13 @@ pub struct AgentWorkspaceReviewChangedFile {
     pub sources: Vec<String>,
 }
 
+#[derive(Debug, Default)]
+struct WorkspaceReviewInheritedReferences {
+    project_references: Vec<ComposerProjectReference>,
+    integration_references: Vec<ComposerIntegrationReference>,
+    artifact_references: Vec<ComposerArtifactReference>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentWorkspaceReviewContext {
     pub monitor: AgentWorkspaceReviewMonitor,
@@ -110,6 +125,7 @@ pub async fn load_agent_workspace_review_context(
     if target.is_none() && monitor.status != AgentWorkspaceReviewMonitorStatus::Reviewing {
         monitor.status = AgentWorkspaceReviewMonitorStatus::Idle;
     }
+    apply_review_gate_to_monitor(&mut monitor, target.as_ref());
     let monitor = state
         .agent_conversation_workspace_repo
         .upsert_workspace_review_monitor(monitor)
@@ -187,6 +203,9 @@ async fn start_agent_workspace_review_with_chat_service<S: ChatService + ?Sized>
 
     let Some(target) = target else {
         monitor.status = AgentWorkspaceReviewMonitorStatus::Idle;
+        monitor.review_outcome = AgentWorkspaceReviewOutcome::NoChanges;
+        monitor.review_gate_status = AgentWorkspaceReviewGateStatus::NotRequired;
+        clear_review_blocking_state(&mut monitor);
         monitor.last_error = None;
         let monitor = state
             .agent_conversation_workspace_repo
@@ -212,14 +231,14 @@ async fn start_agent_workspace_review_with_chat_service<S: ChatService + ?Sized>
     };
 
     if !force
-        && monitor.is_current_for_target(
+        && monitor.has_current_passing_review_for_target(
             target.scope,
             target.head_sha.as_deref(),
             &target.diff_fingerprint,
         )
-        && monitor.review_artifact_id.is_some()
     {
         monitor.status = AgentWorkspaceReviewMonitorStatus::Ready;
+        apply_review_gate_to_monitor(&mut monitor, Some(&target));
         let monitor = state
             .agent_conversation_workspace_repo
             .upsert_workspace_review_monitor(monitor)
@@ -251,6 +270,7 @@ async fn start_agent_workspace_review_with_chat_service<S: ChatService + ?Sized>
         && monitor.current_target_scope == Some(target.scope)
         && monitor.current_diff_fingerprint.as_deref() == Some(target.diff_fingerprint.as_str())
     {
+        apply_review_gate_to_monitor(&mut monitor, Some(&target));
         let monitor = state
             .agent_conversation_workspace_repo
             .upsert_workspace_review_monitor(monitor)
@@ -287,6 +307,8 @@ async fn start_agent_workspace_review_with_chat_service<S: ChatService + ?Sized>
         .get_latest_for_conversation(&workspace.conversation_id)
         .await?;
     let message = build_review_request_message(workspace, &target);
+    let inherited_references =
+        collect_workspace_review_inherited_references(&state, workspace).await?;
     let runtime = state
         .resolve_workspace_reviewer_runtime(&conversation, latest_run.as_ref())
         .await?;
@@ -339,6 +361,9 @@ async fn start_agent_workspace_review_with_chat_service<S: ChatService + ?Sized>
         sandbox_mode = %runtime_sandbox_mode,
         has_cli_override = runtime.cli_path_override.is_some(),
         working_directory = %target.working_directory.display(),
+        inherited_project_references = inherited_references.project_references.len(),
+        inherited_integration_references = inherited_references.integration_references.len(),
+        inherited_artifact_references = inherited_references.artifact_references.len(),
         "Resolved workspace Review child chat runtime"
     );
     let send_started = Instant::now();
@@ -357,7 +382,11 @@ async fn start_agent_workspace_review_with_chat_service<S: ChatService + ?Sized>
                 approval_policy_override: runtime.approval_policy,
                 sandbox_mode_override: runtime.sandbox_mode,
                 service_tier_override: runtime.service_tier,
+                composer_project_references: inherited_references.project_references,
+                composer_integration_references: inherited_references.integration_references,
+                composer_artifact_references: inherited_references.artifact_references,
                 force_new_provider_session: true,
+                metadata: Some(workspace_review_request_metadata()),
                 caller_context: SendCallerContext::UserInitiated,
                 ..Default::default()
             },
@@ -368,6 +397,9 @@ async fn start_agent_workspace_review_with_chat_service<S: ChatService + ?Sized>
         Err(error) => {
             let error = format!("failed to start workspace reviewer chat: {error}");
             monitor.status = AgentWorkspaceReviewMonitorStatus::Blocked;
+            monitor.review_outcome = AgentWorkspaceReviewOutcome::RunFailed;
+            monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Failed;
+            clear_review_blocking_state(&mut monitor);
             monitor.review_conversation_id = Some(review_conversation_id.clone());
             monitor.last_error = Some(error.clone());
             state
@@ -400,6 +432,9 @@ async fn start_agent_workspace_review_with_chat_service<S: ChatService + ?Sized>
     );
 
     monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
+    monitor.review_outcome = AgentWorkspaceReviewOutcome::None;
+    monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Reviewing;
+    clear_review_blocking_state(&mut monitor);
     monitor.review_conversation_id = Some(review_conversation_id.clone());
     monitor.last_run_id = Some(send_result.agent_run_id.clone());
     monitor.last_error = None;
@@ -474,6 +509,235 @@ fn workspace_review_conversation_title(target: &AgentWorkspaceReviewTarget) -> S
         }
         AgentWorkspaceReviewTargetScope::WorkspaceDelta => "Review workspace changes".to_string(),
     }
+}
+
+fn workspace_review_request_metadata() -> String {
+    serde_json::json!({
+        "hidden_from_ui": true,
+        "source": "workspace_review_request",
+    })
+    .to_string()
+}
+
+async fn collect_workspace_review_inherited_references(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+) -> AppResult<WorkspaceReviewInheritedReferences> {
+    let mut inherited = WorkspaceReviewInheritedReferences::default();
+    let mut project_seen = BTreeSet::new();
+    let mut integration_seen = BTreeSet::new();
+    let mut artifact_seen = BTreeSet::new();
+
+    let messages = state
+        .chat_message_repo
+        .get_by_conversation(&workspace.conversation_id)
+        .await?;
+    for message in messages {
+        if message.role != MessageRole::User {
+            continue;
+        }
+        merge_workspace_review_references_from_metadata(
+            message.metadata.as_deref(),
+            &mut inherited,
+            &mut project_seen,
+            &mut integration_seen,
+            &mut artifact_seen,
+        );
+    }
+
+    if let Some(link) = state
+        .agent_conversation_jira_issue_repo
+        .get_by_conversation_id(&workspace.conversation_id)
+        .await?
+    {
+        push_inherited_integration_reference(
+            &mut inherited.integration_references,
+            &mut integration_seen,
+            crate::application::agent_conversation_jira_issue::assigned_issue_to_composer_reference(
+                &link,
+            ),
+        );
+    }
+    if let Some(link) = state
+        .agent_conversation_linear_issue_repo
+        .get_by_conversation_id(&workspace.conversation_id)
+        .await?
+    {
+        push_inherited_integration_reference(
+            &mut inherited.integration_references,
+            &mut integration_seen,
+            crate::application::agent_conversation_linear_issue::assigned_issue_to_composer_reference(
+                &link,
+            ),
+        );
+    }
+    if let Some(link) = state
+        .agent_conversation_granola_note_repo
+        .get_by_conversation_id(&workspace.conversation_id)
+        .await?
+    {
+        push_inherited_integration_reference(
+            &mut inherited.integration_references,
+            &mut integration_seen,
+            crate::application::agent_conversation_granola_note::assigned_note_to_composer_reference(
+                &link,
+            ),
+        );
+    }
+
+    if let Some(plan_reference) = linked_workspace_plan_artifact_reference(state, workspace).await?
+    {
+        push_inherited_artifact_reference(
+            &mut inherited.artifact_references,
+            &mut artifact_seen,
+            plan_reference,
+        );
+    }
+
+    Ok(inherited)
+}
+
+fn merge_workspace_review_references_from_metadata(
+    metadata: Option<&str>,
+    inherited: &mut WorkspaceReviewInheritedReferences,
+    project_seen: &mut BTreeSet<String>,
+    integration_seen: &mut BTreeSet<String>,
+    artifact_seen: &mut BTreeSet<String>,
+) {
+    let Some(metadata) = metadata else {
+        return;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(metadata) else {
+        return;
+    };
+    let Some(object) = value.as_object() else {
+        return;
+    };
+
+    if let Some(references) = parse_workspace_review_metadata_references::<ComposerProjectReference>(
+        object.get("composer_project_references"),
+    ) {
+        for reference in references {
+            push_inherited_project_reference(
+                &mut inherited.project_references,
+                project_seen,
+                reference,
+            );
+        }
+    }
+    if let Some(references) = parse_workspace_review_metadata_references::<
+        ComposerIntegrationReference,
+    >(object.get("composer_integration_references"))
+    {
+        for reference in references {
+            push_inherited_integration_reference(
+                &mut inherited.integration_references,
+                integration_seen,
+                reference,
+            );
+        }
+    }
+    if let Some(references) = parse_workspace_review_metadata_references::<ComposerArtifactReference>(
+        object.get("composer_artifact_references"),
+    ) {
+        for reference in references {
+            push_inherited_artifact_reference(
+                &mut inherited.artifact_references,
+                artifact_seen,
+                reference,
+            );
+        }
+    }
+}
+
+fn parse_workspace_review_metadata_references<T>(
+    value: Option<&serde_json::Value>,
+) -> Option<Vec<T>>
+where
+    T: serde::de::DeserializeOwned,
+{
+    value
+        .cloned()
+        .and_then(|value| serde_json::from_value::<Vec<T>>(value).ok())
+}
+
+async fn linked_workspace_plan_artifact_reference(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+) -> AppResult<Option<ComposerArtifactReference>> {
+    let Some(session_id) = workspace.linked_ideation_session_id.as_ref() else {
+        return Ok(None);
+    };
+    let Some(session) = state.ideation_session_repo.get_by_id(session_id).await? else {
+        return Ok(None);
+    };
+    let Some(artifact_id) = session
+        .plan_artifact_id
+        .clone()
+        .or_else(|| session.inherited_plan_artifact_id.clone())
+    else {
+        return Ok(None);
+    };
+    let artifact = state.artifact_repo.get_by_id(&artifact_id).await?;
+    Ok(Some(ComposerArtifactReference {
+        artifact_id: artifact_id.as_str().to_string(),
+        kind: "plan".to_string(),
+        title: artifact.as_ref().map(|artifact| artifact.name.clone()),
+        session_id: Some(session.id.as_str().to_string()),
+        version: artifact.as_ref().map(|artifact| artifact.metadata.version),
+        status: None,
+    }))
+}
+
+fn push_inherited_project_reference(
+    references: &mut Vec<ComposerProjectReference>,
+    seen: &mut BTreeSet<String>,
+    reference: ComposerProjectReference,
+) {
+    if references.len() >= WORKSPACE_REVIEW_MAX_INHERITED_PROJECT_REFERENCES {
+        return;
+    }
+    let key = reference.path.trim();
+    if key.is_empty() || !seen.insert(key.to_string()) {
+        return;
+    }
+    references.push(reference);
+}
+
+fn push_inherited_integration_reference(
+    references: &mut Vec<ComposerIntegrationReference>,
+    seen: &mut BTreeSet<String>,
+    reference: ComposerIntegrationReference,
+) {
+    if references.len() >= WORKSPACE_REVIEW_MAX_INHERITED_INTEGRATION_REFERENCES {
+        return;
+    }
+    let key = format!(
+        "{}\n{}\n{}\n{}",
+        reference.provider.trim(),
+        reference.kind.trim(),
+        reference.id.trim(),
+        reference.key.as_deref().unwrap_or("").trim()
+    );
+    if key.trim().is_empty() || !seen.insert(key) {
+        return;
+    }
+    references.push(reference);
+}
+
+fn push_inherited_artifact_reference(
+    references: &mut Vec<ComposerArtifactReference>,
+    seen: &mut BTreeSet<String>,
+    reference: ComposerArtifactReference,
+) {
+    if references.len() >= WORKSPACE_REVIEW_MAX_INHERITED_ARTIFACT_REFERENCES {
+        return;
+    }
+    let key = reference.artifact_id.trim();
+    if key.is_empty() || !seen.insert(key.to_string()) {
+        return;
+    }
+    references.push(reference);
 }
 
 fn spawn_workspace_review_waiter(
@@ -576,7 +840,12 @@ fn spawn_workspace_review_waiter(
                         target.scope,
                         target.head_sha.as_deref(),
                         &target.diff_fingerprint,
-                    ) && monitor.review_artifact_id.is_some() =>
+                    ) && monitor.review_artifact_id.is_some()
+                        && matches!(
+                            monitor.review_outcome,
+                            AgentWorkspaceReviewOutcome::Passed
+                                | AgentWorkspaceReviewOutcome::Blocking
+                        ) =>
                 {
                     info!(
                         target: WORKSPACE_REVIEW_LOG_TARGET,
@@ -587,6 +856,8 @@ fn spawn_workspace_review_waiter(
                         run_id = %run_id,
                         elapsed_ms = wait_started.elapsed().as_millis(),
                         monitor_status = %monitor.status,
+                        review_outcome = %monitor.review_outcome,
+                        review_gate_status = %monitor.review_gate_status,
                         artifact_id = %monitor.review_artifact_id.as_ref().map(|id| id.as_str()).unwrap_or("none"),
                         artifact_version = monitor.review_artifact_version.unwrap_or_default(),
                         target_scope = %target.scope,
@@ -682,6 +953,9 @@ async fn mark_workspace_review_blocked(
             );
             apply_current_target_to_monitor(&mut monitor, Some(target));
             monitor.status = AgentWorkspaceReviewMonitorStatus::Blocked;
+            monitor.review_outcome = AgentWorkspaceReviewOutcome::RunFailed;
+            monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Failed;
+            clear_review_blocking_state(&mut monitor);
             monitor.last_run_id = Some(helper_id.to_string());
             monitor.last_error = Some(error);
             if let Err(error) = state
@@ -737,16 +1011,26 @@ pub async fn complete_agent_workspace_review_run(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
     outcome: Option<String>,
+    summary: Option<String>,
     blocker: Option<String>,
     created_by_run_id: Option<String>,
 ) -> AppResult<AgentWorkspaceReviewMonitor> {
     let started = Instant::now();
+    let normalized_outcome = outcome
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let summary = summary
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let blocker = blocker
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
     let has_outcome = outcome
         .as_ref()
         .is_some_and(|value| !value.trim().is_empty());
-    let has_blocker = blocker
-        .as_ref()
-        .is_some_and(|value| !value.trim().is_empty());
+    let has_blocker = blocker.is_some();
     let created_by_run_id_label = created_by_run_id.as_deref().unwrap_or("none").to_string();
     let target = resolve_review_target(
         workspace,
@@ -760,44 +1044,296 @@ pub async fn complete_agent_workspace_review_run(
     let mut monitor = load_or_create_monitor(state, workspace).await?;
     apply_current_target_to_monitor(&mut monitor, target.as_ref());
     monitor.last_run_id = created_by_run_id.or(monitor.last_run_id);
-    monitor.last_error = blocker;
-    monitor.status = if monitor.last_error.is_some() {
-        AgentWorkspaceReviewMonitorStatus::Blocked
-    } else if monitor.review_artifact_id.is_some() {
-        AgentWorkspaceReviewMonitorStatus::Ready
-    } else {
-        AgentWorkspaceReviewMonitorStatus::Idle
-    };
-    if let Some(outcome) = outcome.filter(|value| !value.trim().is_empty()) {
-        monitor.last_error = (monitor.status == AgentWorkspaceReviewMonitorStatus::Blocked)
-            .then_some(outcome)
-            .or(monitor.last_error);
+    let parsed_outcome = normalized_outcome
+        .as_deref()
+        .and_then(|value| AgentWorkspaceReviewOutcome::from_str(value).ok())
+        .unwrap_or_else(|| {
+            if target.is_none() {
+                AgentWorkspaceReviewOutcome::NoChanges
+            } else {
+                AgentWorkspaceReviewOutcome::RunFailed
+            }
+        });
+    let artifact_current = target.as_ref().is_some_and(|target| {
+        monitor.is_current_for_target(
+            target.scope,
+            target.head_sha.as_deref(),
+            &target.diff_fingerprint,
+        ) && monitor.review_artifact_id.is_some()
+    });
+    let previous_blocking_fingerprint = monitor.review_blocking_fingerprint.clone();
+    let previous_fixer_status = monitor.review_fixer_status.clone();
+
+    match parsed_outcome {
+        AgentWorkspaceReviewOutcome::Passed if artifact_current => {
+            monitor.status = AgentWorkspaceReviewMonitorStatus::Ready;
+            monitor.review_outcome = AgentWorkspaceReviewOutcome::Passed;
+            monitor.last_error = None;
+            clear_review_blocking_state(&mut monitor);
+        }
+        AgentWorkspaceReviewOutcome::Blocking if artifact_current => {
+            let blocking_summary = blocker.or(summary).ok_or_else(|| {
+                AppError::Validation(
+                    "blocking workspace Review completion requires a summary or blocker"
+                        .to_string(),
+                )
+            })?;
+            let blocking_fingerprint = target
+                .as_ref()
+                .map(|target| workspace_review_blocking_fingerprint(target, &blocking_summary));
+            let is_new_blocking_fingerprint =
+                previous_blocking_fingerprint.as_deref() != blocking_fingerprint.as_deref();
+            let should_route_fixer = blocking_fingerprint.is_some()
+                && (is_new_blocking_fingerprint || previous_fixer_status.is_none());
+            monitor.status = AgentWorkspaceReviewMonitorStatus::Ready;
+            monitor.review_outcome = AgentWorkspaceReviewOutcome::Blocking;
+            monitor.review_blocking_fingerprint = blocking_fingerprint;
+            monitor.review_blocking_summary = Some(blocking_summary);
+            monitor.last_error = None;
+            if should_route_fixer {
+                monitor.review_fixer_status = Some("routing".to_string());
+                monitor.review_fixer_run_id = None;
+                monitor.review_fixer_conversation_id = None;
+            }
+        }
+        AgentWorkspaceReviewOutcome::NoChanges if target.is_none() => {
+            monitor.status = AgentWorkspaceReviewMonitorStatus::Idle;
+            monitor.review_outcome = AgentWorkspaceReviewOutcome::NoChanges;
+            monitor.last_error = None;
+            clear_review_blocking_state(&mut monitor);
+        }
+        AgentWorkspaceReviewOutcome::RunFailed | AgentWorkspaceReviewOutcome::None => {
+            monitor.status = AgentWorkspaceReviewMonitorStatus::Blocked;
+            monitor.review_outcome = AgentWorkspaceReviewOutcome::RunFailed;
+            monitor.last_error = blocker.or(summary).or(normalized_outcome).or_else(|| {
+                Some("Workspace reviewer did not produce a passing Review".to_string())
+            });
+            clear_review_blocking_state(&mut monitor);
+        }
+        AgentWorkspaceReviewOutcome::Passed
+        | AgentWorkspaceReviewOutcome::Blocking
+        | AgentWorkspaceReviewOutcome::NoChanges => {
+            monitor.status = AgentWorkspaceReviewMonitorStatus::Blocked;
+            monitor.review_outcome = AgentWorkspaceReviewOutcome::RunFailed;
+            monitor.last_error = Some(
+                "Workspace reviewer completion did not match the current Review target".to_string(),
+            );
+            clear_review_blocking_state(&mut monitor);
+        }
     }
-    state
+    apply_review_gate_to_monitor(&mut monitor, target.as_ref());
+    let mut monitor = state
         .agent_conversation_workspace_repo
         .upsert_workspace_review_monitor(monitor)
+        .await?;
+    if monitor.review_outcome == AgentWorkspaceReviewOutcome::Blocking
+        && monitor.review_fixer_status.as_deref() == Some("routing")
+    {
+        monitor =
+            route_workspace_review_blocking_fixer(state, workspace, &monitor, target.as_ref())
+                .await?;
+    }
+    let scope = target_scope_label(target.as_ref());
+    let fingerprint = target_fingerprint_label(target.as_ref());
+    info!(
+        target: WORKSPACE_REVIEW_LOG_TARGET,
+        operation = "complete_tool",
+        conversation_id = %workspace.conversation_id,
+        project_id = %workspace.project_id,
+        branch = %workspace.branch_name,
+        elapsed_ms = started.elapsed().as_millis(),
+        monitor_status = %monitor.status,
+        review_outcome = %monitor.review_outcome,
+        review_gate_status = %monitor.review_gate_status,
+        review_fixer_status = %monitor.review_fixer_status.as_deref().unwrap_or("none"),
+        review_fixer_run_id = %monitor.review_fixer_run_id.as_deref().unwrap_or("none"),
+        target_scope = %scope,
+        diff_fingerprint = %fingerprint,
+        has_artifact = monitor.review_artifact_id.is_some(),
+        artifact_id = %monitor.review_artifact_id.as_ref().map(|id| id.as_str()).unwrap_or("none"),
+        created_by_run_id = %created_by_run_id_label,
+        has_outcome,
+        has_blocker,
+        "Completed workspace Review run"
+    );
+    Ok(monitor)
+}
+
+fn workspace_review_blocking_fingerprint(
+    target: &AgentWorkspaceReviewTarget,
+    blocking_summary: &str,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(target.scope.to_string().as_bytes());
+    hasher.update(b":");
+    hasher.update(target.diff_fingerprint.as_bytes());
+    hasher.update(b":");
+    hasher.update(blocking_summary.trim().as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+async fn route_workspace_review_blocking_fixer(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    monitor: &AgentWorkspaceReviewMonitor,
+    target: Option<&AgentWorkspaceReviewTarget>,
+) -> AppResult<AgentWorkspaceReviewMonitor> {
+    let Some(target) = target else {
+        return Ok(monitor.clone());
+    };
+    let Some(blocking_summary) = monitor.review_blocking_summary.as_deref() else {
+        return Ok(monitor.clone());
+    };
+    let message = build_workspace_review_blocking_repair_message(workspace, monitor, target);
+    let conversation = state
+        .chat_conversation_repo
+        .get_by_id(&workspace.conversation_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Conversation not found".to_string()))?;
+    let latest_run = state
+        .agent_run_repo
+        .get_latest_for_conversation(&workspace.conversation_id)
+        .await?;
+    let harness_override = conversation
+        .provider_session_ref()
+        .map(|session_ref| session_ref.harness)
+        .or_else(|| latest_run.as_ref().and_then(|run| run.harness));
+    let model_override = latest_run.as_ref().and_then(|run| {
+        run.logical_model
+            .clone()
+            .or_else(|| run.effective_model_id.clone())
+    });
+    let logical_effort_override = latest_run.as_ref().and_then(|run| run.logical_effort);
+    let chat_service = state.build_chat_service();
+    let mut next = monitor.clone();
+    match chat_service
+        .send_message(
+            ChatContextType::Project,
+            workspace.project_id.as_str(),
+            &message,
+            SendMessageOptions {
+                conversation_id_override: Some(workspace.conversation_id.clone()),
+                agent_name_override: Some(agent_names::AGENT_WORKSPACE_REPAIR.to_string()),
+                harness_override,
+                model_override,
+                logical_effort_override,
+                working_directory_override: Some(target.working_directory.clone()),
+                force_new_provider_session: true,
+                preserve_conversation_provider_session_ref: true,
+                metadata: Some(workspace_review_fixer_request_metadata(
+                    monitor.review_blocking_fingerprint.as_deref(),
+                )),
+                caller_context: SendCallerContext::UserInitiated,
+                ..Default::default()
+            },
+        )
         .await
-        .inspect(|monitor| {
-            let scope = target_scope_label(target.as_ref());
-            let fingerprint = target_fingerprint_label(target.as_ref());
+    {
+        Ok(result) => {
+            next.review_fixer_status = Some(if result.was_queued || result.queued_as_pending {
+                "queued".to_string()
+            } else {
+                "running".to_string()
+            });
+            next.review_fixer_run_id = if result.agent_run_id.trim().is_empty() {
+                None
+            } else {
+                Some(result.agent_run_id)
+            };
+            next.review_fixer_conversation_id =
+                Some(ChatConversationId::from_string(result.conversation_id));
             info!(
                 target: WORKSPACE_REVIEW_LOG_TARGET,
-                operation = "complete_tool",
+                operation = "blocking_fixer_sent",
                 conversation_id = %workspace.conversation_id,
                 project_id = %workspace.project_id,
                 branch = %workspace.branch_name,
-                elapsed_ms = started.elapsed().as_millis(),
-                monitor_status = %monitor.status,
-                target_scope = %scope,
-                diff_fingerprint = %fingerprint,
-                has_artifact = monitor.review_artifact_id.is_some(),
-                artifact_id = %monitor.review_artifact_id.as_ref().map(|id| id.as_str()).unwrap_or("none"),
-                created_by_run_id = %created_by_run_id_label,
-                has_outcome,
-                has_blocker,
-                "Completed workspace Review run"
+                target_scope = %target.scope,
+                diff_fingerprint = %compact_log_fingerprint(Some(&target.diff_fingerprint)),
+                review_artifact_id = %monitor.review_artifact_id.as_ref().map(|id| id.as_str()).unwrap_or("none"),
+                blocking_fingerprint = %monitor.review_blocking_fingerprint.as_deref().unwrap_or("none"),
+                fixer_run_id = %next.review_fixer_run_id.as_deref().unwrap_or("none"),
+                fixer_status = %next.review_fixer_status.as_deref().unwrap_or("none"),
+                "Routed blocking workspace Review findings to parent workspace fixer"
             );
-        })
+        }
+        Err(error) => {
+            next.review_fixer_status = Some("failed".to_string());
+            next.last_error = Some(format!("Failed to route Review fixer: {error}"));
+            warn!(
+                target: WORKSPACE_REVIEW_LOG_TARGET,
+                operation = "blocking_fixer_send_failed",
+                conversation_id = %workspace.conversation_id,
+                project_id = %workspace.project_id,
+                branch = %workspace.branch_name,
+                target_scope = %target.scope,
+                diff_fingerprint = %compact_log_fingerprint(Some(&target.diff_fingerprint)),
+                blocking_fingerprint = %monitor.review_blocking_fingerprint.as_deref().unwrap_or("none"),
+                blocking_summary,
+                error = %error,
+                "Failed to route blocking workspace Review findings to parent workspace fixer"
+            );
+        }
+    }
+    state
+        .agent_conversation_workspace_repo
+        .upsert_workspace_review_monitor(next)
+        .await
+}
+
+fn workspace_review_fixer_request_metadata(blocking_fingerprint: Option<&str>) -> String {
+    let fingerprint_json = blocking_fingerprint
+        .map(|value| format!("\"{}\"", value.replace('"', "\\\"")))
+        .unwrap_or_else(|| "null".to_string());
+    format!(
+        "{{\"source\":\"workspace_review_blocking_fixer\",\"blocking_fingerprint\":{fingerprint_json}}}"
+    )
+}
+
+fn build_workspace_review_blocking_repair_message(
+    workspace: &AgentConversationWorkspace,
+    monitor: &AgentWorkspaceReviewMonitor,
+    target: &AgentWorkspaceReviewTarget,
+) -> String {
+    let artifact = match (
+        monitor.review_artifact_id.as_ref(),
+        monitor.review_artifact_version,
+    ) {
+        (Some(id), Some(version)) => format!("{} v{}", id.as_str(), version),
+        (Some(id), None) => id.as_str().to_string(),
+        _ => "not recorded".to_string(),
+    };
+    [
+        "Workspace Review found blocking issues for this agent workspace.".to_string(),
+        String::new(),
+        "Please fix the workspace changes described by the Review. After the repair is complete, continue normally; RalphX will run a fresh local workspace Review before publishing can proceed.".to_string(),
+        String::new(),
+        format!("Conversation ID: {}", workspace.conversation_id),
+        format!("Workspace branch: {}", workspace.branch_name),
+        format!("Review artifact: {artifact}"),
+        format!("Review target scope: {}", target.scope),
+        format!("Review diff fingerprint: {}", target.diff_fingerprint),
+        format!(
+            "Review child conversation: {}",
+            monitor
+                .review_conversation_id
+                .as_ref()
+                .map(ChatConversationId::as_str)
+                .unwrap_or_else(|| "not recorded".to_string())
+        ),
+        format!(
+            "Review run ID: {}",
+            monitor.last_run_id.as_deref().unwrap_or("not recorded")
+        ),
+        String::new(),
+        "Blocking Review summary:".to_string(),
+        monitor
+            .review_blocking_summary
+            .as_deref()
+            .unwrap_or("The reviewer reported blocking issues without a summary.")
+            .to_string(),
+    ]
+    .join("\n")
 }
 
 pub async fn load_or_create_monitor(
@@ -828,7 +1364,15 @@ pub fn apply_review_artifact_to_monitor(
     artifact_created_at: chrono::DateTime<Utc>,
     previous_artifact_id: Option<crate::domain::entities::ArtifactId>,
 ) {
-    monitor.status = AgentWorkspaceReviewMonitorStatus::Ready;
+    if monitor.status != AgentWorkspaceReviewMonitorStatus::Reviewing {
+        monitor.status = AgentWorkspaceReviewMonitorStatus::Ready;
+    }
+    monitor.review_outcome = AgentWorkspaceReviewOutcome::None;
+    if monitor.status == AgentWorkspaceReviewMonitorStatus::Reviewing {
+        monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Reviewing;
+    } else {
+        monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Required;
+    }
     monitor.reviewed_target_scope = Some(target_scope);
     monitor.reviewed_head_sha = target_head_sha;
     monitor.reviewed_diff_fingerprint = Some(target_diff_fingerprint.clone());
@@ -838,15 +1382,17 @@ pub fn apply_review_artifact_to_monitor(
     monitor.review_artifact_version = Some(artifact_version);
     monitor.review_artifact_updated_at = Some(artifact_created_at);
     monitor.previous_version_id = previous_artifact_id;
+    clear_review_blocking_state(monitor);
     monitor.last_run_id = created_by_run_id.or(monitor.last_run_id.take());
     monitor.last_error = None;
 }
 
 fn build_context(
     workspace: &AgentConversationWorkspace,
-    monitor: AgentWorkspaceReviewMonitor,
+    mut monitor: AgentWorkspaceReviewMonitor,
     target: Option<AgentWorkspaceReviewTarget>,
 ) -> AgentWorkspaceReviewContext {
+    apply_review_gate_to_monitor(&mut monitor, target.as_ref());
     let is_current = target.as_ref().is_some_and(|target| {
         monitor.is_current_for_target(
             target.scope,
@@ -871,6 +1417,102 @@ fn build_context(
         is_outdated,
         should_show_tab,
     }
+}
+
+pub fn review_gate_allows_publish(status: AgentWorkspaceReviewGateStatus) -> bool {
+    matches!(
+        status,
+        AgentWorkspaceReviewGateStatus::NotRequired | AgentWorkspaceReviewGateStatus::Passed
+    )
+}
+
+pub fn review_gate_publish_blocker(context: &AgentWorkspaceReviewContext) -> Option<String> {
+    match context.monitor.review_gate_status {
+        AgentWorkspaceReviewGateStatus::NotRequired | AgentWorkspaceReviewGateStatus::Passed => {
+            None
+        }
+        AgentWorkspaceReviewGateStatus::Required => {
+            Some("Workspace Review is required before publishing".to_string())
+        }
+        AgentWorkspaceReviewGateStatus::Reviewing => {
+            Some("Workspace Review is still running".to_string())
+        }
+        AgentWorkspaceReviewGateStatus::Blocking => Some(
+            context
+                .monitor
+                .review_blocking_summary
+                .clone()
+                .unwrap_or_else(|| "Workspace Review found blocking changes".to_string()),
+        ),
+        AgentWorkspaceReviewGateStatus::Failed => {
+            Some(
+                context.monitor.last_error.clone().unwrap_or_else(|| {
+                    "Workspace Review failed; retry before publishing".to_string()
+                }),
+            )
+        }
+    }
+}
+
+pub async fn load_workspace_review_publish_blocker(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+) -> AppResult<Option<String>> {
+    let context = load_agent_workspace_review_context(state, workspace).await?;
+    Ok(review_gate_publish_blocker(&context))
+}
+
+fn apply_review_gate_to_monitor(
+    monitor: &mut AgentWorkspaceReviewMonitor,
+    target: Option<&AgentWorkspaceReviewTarget>,
+) {
+    let Some(target) = target else {
+        monitor.review_gate_status = AgentWorkspaceReviewGateStatus::NotRequired;
+        if monitor.status != AgentWorkspaceReviewMonitorStatus::Reviewing {
+            monitor.review_outcome = AgentWorkspaceReviewOutcome::NoChanges;
+            monitor.review_blocking_summary = None;
+            monitor.review_blocking_fingerprint = None;
+            monitor.review_fixer_run_id = None;
+            monitor.review_fixer_conversation_id = None;
+            monitor.review_fixer_status = None;
+        }
+        return;
+    };
+
+    let current_target_matches = monitor.current_target_scope == Some(target.scope)
+        && monitor.current_diff_fingerprint.as_deref() == Some(target.diff_fingerprint.as_str());
+    let artifact_current = monitor.is_current_for_target(
+        target.scope,
+        target.head_sha.as_deref(),
+        &target.diff_fingerprint,
+    ) && monitor.review_artifact_id.is_some();
+
+    monitor.review_gate_status = if monitor.status == AgentWorkspaceReviewMonitorStatus::Reviewing
+        && current_target_matches
+    {
+        AgentWorkspaceReviewGateStatus::Reviewing
+    } else if monitor.status == AgentWorkspaceReviewMonitorStatus::Blocked && current_target_matches
+    {
+        AgentWorkspaceReviewGateStatus::Failed
+    } else if artifact_current && monitor.review_outcome == AgentWorkspaceReviewOutcome::Passed {
+        AgentWorkspaceReviewGateStatus::Passed
+    } else if artifact_current && monitor.review_outcome == AgentWorkspaceReviewOutcome::Blocking {
+        AgentWorkspaceReviewGateStatus::Blocking
+    } else if current_target_matches
+        && monitor.review_outcome == AgentWorkspaceReviewOutcome::RunFailed
+    {
+        AgentWorkspaceReviewGateStatus::Failed
+    } else {
+        AgentWorkspaceReviewGateStatus::Required
+    };
+}
+
+fn clear_review_blocking_state(monitor: &mut AgentWorkspaceReviewMonitor) {
+    monitor.review_blocking_summary = None;
+    monitor.review_blocking_fingerprint = None;
+    monitor.review_fixer_run_id = None;
+    monitor.review_fixer_conversation_id = None;
+    monitor.review_fixer_status = None;
 }
 
 fn apply_current_target_to_monitor(
@@ -1447,10 +2089,10 @@ fn build_review_request_message(
          - Review packet: {files_changed} files changed, {insertions} insertions, {deletions} deletions\n\
          {pr_line}\
          - Workspace conversation: {conversation_id}\n\n\
-         This Review is running in a child chat, so pass conversation_id `{conversation_id}` explicitly to every workspace Review tool call. \
+         RalphX scopes workspace Review tools to this parent conversation from runtime context. \
          Use the `target.review_packet` returned by `get_workspace_review_context` as the primary diff input, then inspect only targeted files with read-only filesystem tools if needed. \
          Do not run shell commands, tests, linters, or validation suites. \
-         Write a concise reviewer-focused Markdown Review with the `write_workspace_review_artifact` tool, then call `complete_workspace_review_run`. Do not modify files.",
+         Write a concise reviewer-focused Markdown Review with the `write_workspace_review_artifact` tool, then call `complete_workspace_review_run` with outcome `passed`, `blocking`, `no_changes`, or `run_failed`. Do not modify files.",
         scope = target.scope,
         base_ref = target.base_ref,
         base_sha = target.base_sha.as_deref().unwrap_or("unknown"),
@@ -1491,8 +2133,10 @@ mod tests {
     use crate::application::chat_service::MockChatService;
     use crate::domain::agents::AgenticClient;
     use crate::domain::entities::{
-        AgentConversationWorkspaceMode, AgentRun, AgentWorkspaceSourcePullRequest, ArtifactId,
-        ChatConversation, ChatConversationId, IdeationAnalysisBaseRefKind,
+        AgentConversationWorkspaceMode, AgentRun, AgentWorkspaceReviewGateStatus,
+        AgentWorkspaceReviewOutcome, AgentWorkspaceSourcePullRequest, Artifact, ArtifactId,
+        ArtifactType, ChatConversation, ChatConversationId, ChatMessage,
+        IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow, IdeationSessionId,
     };
     use crate::infrastructure::MockAgenticClient;
     use std::process::Command;
@@ -1598,6 +2242,197 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
         panic!("monitor did not reach status {status}");
+    }
+
+    #[test]
+    fn inherited_reference_metadata_deduplicates_limits_and_ignores_invalid_payloads() {
+        let mut inherited = WorkspaceReviewInheritedReferences::default();
+        let mut project_seen = BTreeSet::new();
+        let mut integration_seen = BTreeSet::new();
+        let mut artifact_seen = BTreeSet::new();
+
+        merge_workspace_review_references_from_metadata(
+            None,
+            &mut inherited,
+            &mut project_seen,
+            &mut integration_seen,
+            &mut artifact_seen,
+        );
+        merge_workspace_review_references_from_metadata(
+            Some("not-json"),
+            &mut inherited,
+            &mut project_seen,
+            &mut integration_seen,
+            &mut artifact_seen,
+        );
+        merge_workspace_review_references_from_metadata(
+            Some("[]"),
+            &mut inherited,
+            &mut project_seen,
+            &mut integration_seen,
+            &mut artifact_seen,
+        );
+
+        let metadata = serde_json::json!({
+            "composer_project_references": [
+                { "path": "README.md", "kind": "file" },
+                { "path": "README.md", "kind": "file" },
+                { "path": "src", "kind": "directory" },
+                { "path": "docs", "kind": "directory" },
+                { "path": "frontend", "kind": "directory" },
+                { "path": "src-tauri", "kind": "directory" },
+                { "path": "package.json", "kind": "file" },
+                { "path": "Cargo.toml", "kind": "file" },
+                { "path": "CLAUDE.md", "kind": "file" },
+                { "path": "ignored-after-cap.md", "kind": "file" }
+            ],
+            "composer_integration_references": [
+                {
+                    "provider": "atlassian",
+                    "kind": "jira",
+                    "id": "RX-42",
+                    "key": "RX-42",
+                    "title": "Fix Review gate"
+                },
+                {
+                    "provider": "atlassian",
+                    "kind": "jira",
+                    "id": "RX-42",
+                    "key": "RX-42",
+                    "title": "Duplicate"
+                },
+                { "provider": "linear", "kind": "issue", "id": "LIN-1" },
+                { "provider": "clickup", "kind": "task", "id": "CU-1" },
+                { "provider": "granola", "kind": "note", "id": "GN-1" },
+                { "provider": "github", "kind": "issue", "id": "GH-1" },
+                { "provider": "sentry", "kind": "issue", "id": "SEN-1" },
+                { "provider": "notion", "kind": "page", "id": "NOT-1" },
+                { "provider": "slack", "kind": "thread", "id": "SL-1" },
+                { "provider": "ignored", "kind": "thread", "id": "IGN-1" }
+            ],
+            "composer_artifact_references": [
+                { "artifactId": "artifact-1", "kind": "plan", "title": "Plan" },
+                { "artifactId": "artifact-1", "kind": "plan", "title": "Duplicate" },
+                { "artifactId": "artifact-2", "kind": "design" },
+                { "artifactId": "artifact-3", "kind": "spec" },
+                { "artifactId": "artifact-4", "kind": "notes" },
+                { "artifactId": "artifact-5", "kind": "review" },
+                { "artifactId": "artifact-6", "kind": "diff" },
+                { "artifactId": "artifact-7", "kind": "trace" },
+                { "artifactId": "artifact-8", "kind": "context" },
+                { "artifactId": "artifact-9", "kind": "ignored" }
+            ]
+        })
+        .to_string();
+
+        merge_workspace_review_references_from_metadata(
+            Some(&metadata),
+            &mut inherited,
+            &mut project_seen,
+            &mut integration_seen,
+            &mut artifact_seen,
+        );
+
+        assert_eq!(inherited.project_references.len(), 8);
+        assert_eq!(inherited.project_references[0].path, "README.md");
+        assert_eq!(inherited.project_references[1].path, "src");
+        assert!(!inherited
+            .project_references
+            .iter()
+            .any(|reference| reference.path == "ignored-after-cap.md"));
+        assert_eq!(inherited.integration_references.len(), 8);
+        assert_eq!(
+            inherited.integration_references[0].key.as_deref(),
+            Some("RX-42")
+        );
+        assert!(!inherited
+            .integration_references
+            .iter()
+            .any(|reference| reference.id == "IGN-1"));
+        assert_eq!(inherited.artifact_references.len(), 8);
+        assert_eq!(inherited.artifact_references[0].artifact_id, "artifact-1");
+        assert!(!inherited
+            .artifact_references
+            .iter()
+            .any(|reference| reference.artifact_id == "artifact-9"));
+
+        merge_workspace_review_references_from_metadata(
+            Some(&metadata),
+            &mut inherited,
+            &mut project_seen,
+            &mut integration_seen,
+            &mut artifact_seen,
+        );
+        assert_eq!(inherited.project_references.len(), 8);
+        assert_eq!(inherited.integration_references.len(), 8);
+        assert_eq!(inherited.artifact_references.len(), 8);
+    }
+
+    #[tokio::test]
+    async fn linked_workspace_plan_reference_handles_missing_links_and_missing_artifact() {
+        let (_temp, repo, base_sha) = init_repo();
+        let state = AppState::new_test();
+        let project = seed_project(&state, &repo).await;
+        let mut workspace = workspace(
+            &project,
+            &repo,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main",
+            Some(base_sha),
+        );
+
+        assert!(linked_workspace_plan_artifact_reference(&state, &workspace)
+            .await
+            .expect("missing link should load")
+            .is_none());
+
+        workspace.linked_ideation_session_id =
+            Some(IdeationSessionId::from_string("missing-session"));
+        assert!(linked_workspace_plan_artifact_reference(&state, &workspace)
+            .await
+            .expect("missing session should load")
+            .is_none());
+
+        let empty_session = IdeationSession::builder()
+            .project_id(project.id.clone())
+            .session_flow(IdeationSessionFlow::Planning)
+            .build();
+        let empty_session = state
+            .ideation_session_repo
+            .create(empty_session)
+            .await
+            .expect("empty planning session should persist");
+        workspace.linked_ideation_session_id = Some(empty_session.id.clone());
+        assert!(linked_workspace_plan_artifact_reference(&state, &workspace)
+            .await
+            .expect("empty session should load")
+            .is_none());
+
+        let missing_artifact_id = ArtifactId::from_string("missing-plan-artifact");
+        let missing_artifact_session = IdeationSession::builder()
+            .project_id(project.id.clone())
+            .session_flow(IdeationSessionFlow::Planning)
+            .inherited_plan_artifact_id(missing_artifact_id.clone())
+            .build();
+        let missing_artifact_session = state
+            .ideation_session_repo
+            .create(missing_artifact_session)
+            .await
+            .expect("missing-artifact planning session should persist");
+        workspace.linked_ideation_session_id = Some(missing_artifact_session.id.clone());
+
+        let reference = linked_workspace_plan_artifact_reference(&state, &workspace)
+            .await
+            .expect("missing artifact reference should load")
+            .expect("missing artifact id should still produce a reference");
+        assert_eq!(reference.artifact_id, missing_artifact_id.as_str());
+        assert_eq!(
+            reference.session_id.as_deref(),
+            Some(missing_artifact_session.id.as_str())
+        );
+        assert_eq!(reference.kind, "plan");
+        assert_eq!(reference.title, None);
+        assert_eq!(reference.version, None);
     }
 
     #[test]
@@ -1976,6 +2811,7 @@ x
             "main",
             Some(base_sha),
         );
+        seed_conversation(&state, &workspace).await;
         let initial = load_agent_workspace_review_context(&state, &workspace)
             .await
             .expect("initial context should load");
@@ -2049,6 +2885,8 @@ x
             Utc::now(),
             None,
         );
+        current_monitor.review_outcome = AgentWorkspaceReviewOutcome::Passed;
+        current_monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Passed;
         state
             .agent_conversation_workspace_repo
             .upsert_workspace_review_monitor(current_monitor)
@@ -2092,14 +2930,77 @@ x
         let state = Arc::new(AppState::new_test().with_agent_client(agent_client));
         let chat_service = MockChatService::new();
         let project = seed_project(&state, &repo).await;
-        let workspace = workspace(
+        let mut workspace = workspace(
             &project,
             &repo,
             IdeationAnalysisBaseRefKind::ProjectDefault,
             "main",
             Some(base_sha),
         );
+        let mut plan_artifact = Artifact::new_inline(
+            "Approved implementation plan",
+            ArtifactType::Specification,
+            "# Plan\n\nUse the backend-owned Review gate.",
+            "ralphx-ideation",
+        );
+        plan_artifact.metadata.version = 4;
+        let plan_artifact = state
+            .artifact_repo
+            .create(plan_artifact)
+            .await
+            .expect("plan artifact should persist");
+        let planning_session = IdeationSession::builder()
+            .project_id(project.id.clone())
+            .session_flow(IdeationSessionFlow::Planning)
+            .plan_artifact_id(plan_artifact.id.clone())
+            .build();
+        let planning_session = state
+            .ideation_session_repo
+            .create(planning_session)
+            .await
+            .expect("planning session should persist");
+        workspace.linked_ideation_session_id = Some(planning_session.id.clone());
         seed_conversation(&state, &workspace).await;
+        let mut parent_message = ChatMessage::user_in_project(project.id.clone(), "Build it");
+        parent_message.conversation_id = Some(workspace.conversation_id.clone());
+        parent_message.metadata = Some(
+            serde_json::json!({
+                "composer_project_references": [
+                    { "path": "README.md", "kind": "file" }
+                ],
+                "composer_integration_references": [
+                    {
+                        "provider": "atlassian",
+                        "kind": "jira",
+                        "id": "RX-42",
+                        "key": "RX-42",
+                        "title": "Fix Review gate",
+                        "url": "https://jira.test/browse/RX-42"
+                    },
+                    {
+                        "provider": "clickup",
+                        "kind": "clickup",
+                        "id": "task-1",
+                        "key": "CU-1",
+                        "title": "ClickUp review task",
+                        "url": "https://clickup.test/t/task-1"
+                    }
+                ],
+                "composer_artifact_references": [
+                    {
+                        "artifactId": "design-artifact-1",
+                        "kind": "design",
+                        "title": "Design context"
+                    }
+                ]
+            })
+            .to_string(),
+        );
+        state
+            .chat_message_repo
+            .create(parent_message)
+            .await
+            .expect("parent message should persist");
 
         let start = start_agent_workspace_review_with_chat_service(
             Arc::clone(&state),
@@ -2147,6 +3048,7 @@ x
         assert!(review_prompt.contains("Create or refresh the Review"));
         assert!(review_prompt.contains("- Scope: workspace_delta"));
         assert!(review_prompt.contains(&workspace.conversation_id.as_str()));
+        assert!(!review_prompt.contains("pass conversation_id"));
 
         let sent_options = chat_service.get_sent_options().await;
         assert_eq!(sent_options.len(), 1);
@@ -2163,7 +3065,47 @@ x
             options.working_directory_override.as_deref(),
             Some(repo.as_path())
         );
+        assert_eq!(options.composer_project_references.len(), 1);
+        assert_eq!(options.composer_project_references[0].path, "README.md");
+        assert_eq!(options.composer_integration_references.len(), 2);
+        assert!(options
+            .composer_integration_references
+            .iter()
+            .any(|reference| reference.provider == "atlassian"
+                && reference.kind == "jira"
+                && reference.key.as_deref() == Some("RX-42")));
+        assert!(options
+            .composer_integration_references
+            .iter()
+            .any(|reference| reference.provider == "clickup"
+                && reference.kind == "clickup"
+                && reference.id == "task-1"));
+        assert_eq!(options.composer_artifact_references.len(), 2);
+        assert!(options
+            .composer_artifact_references
+            .iter()
+            .any(|reference| reference.artifact_id == "design-artifact-1"
+                && reference.kind == "design"));
+        assert!(options
+            .composer_artifact_references
+            .iter()
+            .any(
+                |reference| reference.artifact_id == plan_artifact.id.as_str()
+                    && reference.kind == "plan"
+                    && reference.session_id.as_deref() == Some(planning_session.id.as_str())
+                    && reference.title.as_deref() == Some("Approved implementation plan")
+                    && reference.version == Some(4)
+            ));
         assert!(options.force_new_provider_session);
+        let metadata: serde_json::Value = serde_json::from_str(
+            options
+                .metadata
+                .as_deref()
+                .expect("review kickoff should carry hidden message metadata"),
+        )
+        .expect("review kickoff metadata should be valid json");
+        assert_eq!(metadata["hidden_from_ui"], true);
+        assert_eq!(metadata["source"], "workspace_review_request");
 
         let mut blocked_monitor = None;
         for _ in 0..100 {
@@ -2325,6 +3267,8 @@ x
             Utc::now(),
             None,
         );
+        ready_monitor.review_outcome = AgentWorkspaceReviewOutcome::Passed;
+        ready_monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Passed;
         state
             .agent_conversation_workspace_repo
             .upsert_workspace_review_monitor(ready_monitor)
@@ -2355,7 +3299,7 @@ x
     }
 
     #[tokio::test]
-    async fn complete_review_run_sets_ready_idle_and_blocked_statuses() {
+    async fn complete_review_run_sets_typed_outcome_and_gate_statuses() {
         let (_temp, repo, base_sha) = init_repo();
         committed_workspace_delta(&repo);
 
@@ -2368,18 +3312,28 @@ x
             "main",
             Some(base_sha),
         );
+        seed_conversation(&state, &workspace).await;
 
-        let idle = complete_agent_workspace_review_run(
+        let failed = complete_agent_workspace_review_run(
             &state,
             &workspace,
-            Some("no_changes".to_string()),
+            Some("run_failed".to_string()),
+            Some("review failed".to_string()),
             None,
-            Some("run-idle".to_string()),
+            Some("run-failed".to_string()),
         )
         .await
-        .expect("idle completion should persist");
-        assert_eq!(idle.status, AgentWorkspaceReviewMonitorStatus::Idle);
-        assert_eq!(idle.last_run_id.as_deref(), Some("run-idle"));
+        .expect("failed completion should persist");
+        assert_eq!(failed.status, AgentWorkspaceReviewMonitorStatus::Blocked);
+        assert_eq!(
+            failed.review_outcome,
+            AgentWorkspaceReviewOutcome::RunFailed
+        );
+        assert_eq!(
+            failed.review_gate_status,
+            AgentWorkspaceReviewGateStatus::Failed
+        );
+        assert_eq!(failed.last_run_id.as_deref(), Some("run-failed"));
 
         let context = load_agent_workspace_review_context(&state, &workspace)
             .await
@@ -2402,24 +3356,56 @@ x
             .upsert_workspace_review_monitor(ready_monitor)
             .await
             .expect("ready monitor should persist");
-        let ready = complete_agent_workspace_review_run(&state, &workspace, None, None, None)
-            .await
-            .expect("ready completion should persist");
+        let ready = complete_agent_workspace_review_run(
+            &state,
+            &workspace,
+            Some("passed".to_string()),
+            Some("No blocking findings".to_string()),
+            None,
+            None,
+        )
+        .await
+        .expect("ready completion should persist");
         assert_eq!(ready.status, AgentWorkspaceReviewMonitorStatus::Ready);
+        assert_eq!(ready.review_outcome, AgentWorkspaceReviewOutcome::Passed);
+        assert_eq!(
+            ready.review_gate_status,
+            AgentWorkspaceReviewGateStatus::Passed
+        );
         assert_eq!(ready.review_artifact_version, Some(3));
 
         let blocked = complete_agent_workspace_review_run(
             &state,
             &workspace,
-            Some("blocked".to_string()),
-            Some("tool failed".to_string()),
+            Some("blocking".to_string()),
+            Some("Blocking issue summary".to_string()),
+            None,
             Some("run-blocked".to_string()),
         )
         .await
         .expect("blocked completion should persist");
-        assert_eq!(blocked.status, AgentWorkspaceReviewMonitorStatus::Blocked);
+        assert_eq!(blocked.status, AgentWorkspaceReviewMonitorStatus::Ready);
+        assert_eq!(
+            blocked.review_outcome,
+            AgentWorkspaceReviewOutcome::Blocking
+        );
+        assert_eq!(
+            blocked.review_gate_status,
+            AgentWorkspaceReviewGateStatus::Blocking
+        );
         assert_eq!(blocked.last_run_id.as_deref(), Some("run-blocked"));
-        assert_eq!(blocked.last_error.as_deref(), Some("blocked"));
+        assert_eq!(
+            blocked.review_blocking_summary.as_deref(),
+            Some("Blocking issue summary")
+        );
+        assert!(blocked.review_blocking_fingerprint.is_some());
+        assert_eq!(blocked.review_fixer_status.as_deref(), Some("failed"));
+        assert!(blocked.review_fixer_run_id.is_none());
+        assert!(blocked.review_fixer_conversation_id.is_none());
+        assert!(blocked
+            .last_error
+            .as_deref()
+            .is_some_and(|error| error.contains("Failed to route Review fixer")));
     }
 
     #[tokio::test]

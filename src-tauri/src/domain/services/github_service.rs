@@ -129,6 +129,13 @@ pub struct PrSearchResult {
     pub is_draft: bool,
     pub updated_at: Option<String>,
     pub author_login: Option<String>,
+    #[serde(default)]
+    pub assignee_logins: Vec<String>,
+    pub review_decision: Option<String>,
+    #[serde(default)]
+    pub latest_review_author_logins: Vec<String>,
+    #[serde(default)]
+    pub review_request_logins: Vec<String>,
     pub is_cross_repository: bool,
 }
 

@@ -158,6 +158,7 @@ impl ResolvedBackgroundAgentRuntime {
 
 /// Application state container for dependency injection
 /// Holds repository trait objects that can be swapped for testing vs production
+#[derive(Clone)]
 pub struct AppState {
     /// Task repository (SQLite in production, in-memory for tests)
     pub task_repo: Arc<dyn TaskRepository>,

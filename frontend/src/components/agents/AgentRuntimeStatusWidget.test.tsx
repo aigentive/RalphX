@@ -208,6 +208,42 @@ describe("AgentRuntimeStatusWidget", () => {
     expect(onViewWorkspaceReview).toHaveBeenCalledWith("review-conversation-1");
   });
 
+  it("does not duplicate the header for a single current workspace Review runtime", () => {
+    render(
+      <AgentRuntimeStatusWidget
+        status={runtimeStatus({
+          primarySource: "workspace_review",
+          summaryLabel: "Reviewing",
+          items: [
+            runtimeItem({
+              source: "workspace_review",
+              contextType: "project",
+              contextId: "review-conversation-1",
+              label: "Reviewing",
+              title: "Review PR #521",
+              taskId: null,
+              internalStatus: "reviewing",
+              conversationId: "review-conversation-1",
+            }),
+          ],
+        })}
+        currentFocus={{
+          type: "workspace_review",
+          conversationId: "review-conversation-1",
+        }}
+        onViewWorkspace={vi.fn()}
+        onViewIdeation={vi.fn()}
+        onViewVerification={vi.fn()}
+        onViewTaskRuntime={vi.fn()}
+        onViewWorkspaceReview={vi.fn()}
+      />,
+    );
+
+    expect(screen.getAllByText("Reviewing")).toHaveLength(1);
+    expect(screen.getAllByText("Review PR #521")).toHaveLength(1);
+    expect(screen.queryByTestId("agents-runtime-status-icon")).not.toBeInTheDocument();
+  });
+
   it("renders all waiting runtimes without active spinner presentation", () => {
     render(
       <AgentRuntimeStatusWidget

@@ -145,6 +145,9 @@ pub(crate) fn run_app_setup(
     );
 
     register_managed_state(app, app_state, service_team_tracker);
+    crate::commands::agent_workspace_auto_review::install_agent_workspace_auto_review_listeners(
+        app,
+    );
     crate::commands::agent_workspace_auto_publish::install_agent_workspace_auto_publish_listeners(
         app,
     );

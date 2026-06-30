@@ -13,10 +13,11 @@ use crate::domain::entities::{
     AgentWorkspacePrCommentEvidence, AgentWorkspacePrCommentEvidenceUpsert,
     AgentWorkspacePrDescription, AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
     AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
-    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewMonitor,
-    AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewTargetScope,
-    AgentWorkspaceSourcePullRequest, ArtifactId, ChatConversationId, IdeationAnalysisBaseRefKind,
-    IdeationSessionId, PlanBranchId, ProjectId, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewGateStatus,
+    AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
+    AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest, ArtifactId,
+    ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId, ProjectId,
+    DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::repositories::AgentConversationWorkspaceRepository;
 use crate::error::{AppError, AppResult};
@@ -208,6 +209,14 @@ fn row_to_workspace_review_monitor(
         project_id: ProjectId::from_string(row.get::<_, String>("project_id")?),
         status: AgentWorkspaceReviewMonitorStatus::from_str(&status)
             .unwrap_or(AgentWorkspaceReviewMonitorStatus::Idle),
+        review_outcome: row
+            .get::<_, Option<String>>("review_outcome")?
+            .and_then(|value| AgentWorkspaceReviewOutcome::from_str(&value).ok())
+            .unwrap_or(AgentWorkspaceReviewOutcome::None),
+        review_gate_status: row
+            .get::<_, Option<String>>("review_gate_status")?
+            .and_then(|value| AgentWorkspaceReviewGateStatus::from_str(&value).ok())
+            .unwrap_or(AgentWorkspaceReviewGateStatus::NotRequired),
         current_target_scope,
         reviewed_target_scope,
         review_conversation_id: row
@@ -237,6 +246,13 @@ fn row_to_workspace_review_monitor(
         previous_version_id: row
             .get::<_, Option<String>>("previous_version_id")?
             .map(ArtifactId::from_string),
+        review_blocking_summary: row.get("review_blocking_summary")?,
+        review_blocking_fingerprint: row.get("review_blocking_fingerprint")?,
+        review_fixer_run_id: row.get("review_fixer_run_id")?,
+        review_fixer_conversation_id: row
+            .get::<_, Option<String>>("review_fixer_conversation_id")?
+            .map(ChatConversationId::from_string),
+        review_fixer_status: row.get("review_fixer_status")?,
         last_run_id: row.get("last_run_id")?,
         last_error: row.get("last_error")?,
         created_at: parse_datetime(&created_at),
@@ -1595,6 +1611,8 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
         let conversation_id = monitor.conversation_id.as_str().to_string();
         let project_id = monitor.project_id.as_str().to_string();
         let status = monitor.status.to_string();
+        let review_outcome = monitor.review_outcome.to_string();
+        let review_gate_status = monitor.review_gate_status.to_string();
         let current_target_scope = monitor.current_target_scope.map(|scope| scope.to_string());
         let reviewed_target_scope = monitor.reviewed_target_scope.map(|scope| scope.to_string());
         let review_conversation_id = monitor
@@ -1625,6 +1643,14 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
             .previous_version_id
             .as_ref()
             .map(|id| id.as_str().to_string());
+        let review_blocking_summary = monitor.review_blocking_summary;
+        let review_blocking_fingerprint = monitor.review_blocking_fingerprint;
+        let review_fixer_run_id = monitor.review_fixer_run_id;
+        let review_fixer_conversation_id = monitor
+            .review_fixer_conversation_id
+            .as_ref()
+            .map(|id| id.as_str().to_string());
+        let review_fixer_status = monitor.review_fixer_status;
         let last_run_id = monitor.last_run_id;
         let last_error = monitor.last_error;
         let created_at = monitor.created_at.to_rfc3339();
@@ -1635,23 +1661,30 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
             .run(move |conn| {
                 conn.execute(
                     "INSERT INTO agent_workspace_review_monitors (
-                        conversation_id, project_id, status, current_target_scope,
-                        reviewed_target_scope, review_conversation_id, review_artifact_id,
+                        conversation_id, project_id, status, review_outcome,
+                        review_gate_status, current_target_scope, reviewed_target_scope,
+                        review_conversation_id, review_artifact_id,
                         review_artifact_version, review_artifact_updated_at,
                         reviewed_head_sha, reviewed_diff_fingerprint,
                         selected_source_base_ref, selected_source_base_sha,
                         selected_source_head_ref, selected_source_head_sha,
                         selected_source_pull_request_number, workspace_base_ref,
                         workspace_base_sha, workspace_head_ref, workspace_head_sha,
-                        current_diff_fingerprint, previous_version_id, last_run_id,
-                        last_error, created_at, updated_at
+                        current_diff_fingerprint, previous_version_id,
+                        review_blocking_summary, review_blocking_fingerprint,
+                        review_fixer_run_id, review_fixer_conversation_id,
+                        review_fixer_status, last_run_id, last_error, created_at,
+                        updated_at
                     ) VALUES (
                         ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-                        ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26
+                        ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25,
+                        ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33
                     )
                     ON CONFLICT(conversation_id) DO UPDATE SET
                         project_id = excluded.project_id,
                         status = excluded.status,
+                        review_outcome = excluded.review_outcome,
+                        review_gate_status = excluded.review_gate_status,
                         current_target_scope = excluded.current_target_scope,
                         reviewed_target_scope = excluded.reviewed_target_scope,
                         review_conversation_id = COALESCE(excluded.review_conversation_id, agent_workspace_review_monitors.review_conversation_id),
@@ -1671,6 +1704,11 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         workspace_head_sha = excluded.workspace_head_sha,
                         current_diff_fingerprint = excluded.current_diff_fingerprint,
                         previous_version_id = COALESCE(excluded.previous_version_id, agent_workspace_review_monitors.previous_version_id),
+                        review_blocking_summary = excluded.review_blocking_summary,
+                        review_blocking_fingerprint = excluded.review_blocking_fingerprint,
+                        review_fixer_run_id = excluded.review_fixer_run_id,
+                        review_fixer_conversation_id = excluded.review_fixer_conversation_id,
+                        review_fixer_status = excluded.review_fixer_status,
                         last_run_id = excluded.last_run_id,
                         last_error = excluded.last_error,
                         updated_at = excluded.updated_at",
@@ -1678,6 +1716,8 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         conversation_id,
                         project_id,
                         status,
+                        review_outcome,
+                        review_gate_status,
                         current_target_scope,
                         reviewed_target_scope,
                         review_conversation_id,
@@ -1697,6 +1737,11 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                         workspace_head_sha,
                         current_diff_fingerprint,
                         previous_version_id,
+                        review_blocking_summary,
+                        review_blocking_fingerprint,
+                        review_fixer_run_id,
+                        review_fixer_conversation_id,
+                        review_fixer_status,
                         last_run_id,
                         last_error,
                         created_at,

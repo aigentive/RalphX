@@ -1133,6 +1133,50 @@ describe("ChatMessageList - Scroll Behavior", () => {
       expect(screen.getByText(/Streaming assistant response/)).toBeInTheDocument();
     });
 
+    it("orders a mid-stream user message between live rows by send time", () => {
+      const messages: ChatMessageData[] = [
+        {
+          id: "user-mid-stream",
+          role: "user",
+          content: "Please also check the retry path",
+          createdAt: "2026-01-01T12:00:02.000Z",
+          toolCalls: null,
+          contentBlocks: null,
+        },
+      ];
+      const blocks = [
+        {
+          type: "text",
+          text: "Agent streamed before the user sent a follow-up",
+          receivedAt: Date.parse("2026-01-01T12:00:01.000Z"),
+        },
+        {
+          type: "text",
+          text: "Agent streamed after the user sent a follow-up",
+          receivedAt: Date.parse("2026-01-01T12:00:03.000Z"),
+        },
+      ] satisfies StreamingContentBlock[];
+
+      render(
+        <ChatMessageList
+          {...defaultProps}
+          messages={messages}
+          isSending={true}
+          streamingContentBlocks={blocks}
+        />
+      );
+
+      const transcript = screen.getByTestId("integrated-chat-messages");
+      const renderedText = transcript.textContent ?? "";
+      const beforeIndex = renderedText.indexOf("Agent streamed before");
+      const userIndex = renderedText.indexOf("Please also check");
+      const afterIndex = renderedText.indexOf("Agent streamed after");
+
+      expect(beforeIndex).toBeGreaterThanOrEqual(0);
+      expect(userIndex).toBeGreaterThan(beforeIndex);
+      expect(afterIndex).toBeGreaterThan(userIndex);
+    });
+
     it("auto-scrolls when agent is running without streaming content", () => {
       render(
         <ChatMessageList
@@ -7813,7 +7857,7 @@ describe("ChatMessageList - Virtuoso production render path", () => {
     expect(screen.getByTestId("integrated-chat-messages")).toBeInTheDocument();
   });
 
-  it("disables browser scroll anchoring on the Virtuoso scroller and message rows", () => {
+  it("disables browser scroll anchoring and rubber-band overscroll on the Virtuoso scroller", () => {
     render(<ChatMessageList {...defaultProps} messages={createMessages(3)} />);
 
     const scroller = screen.getByTestId("mock-virtuoso");
@@ -7821,6 +7865,7 @@ describe("ChatMessageList - Virtuoso production render path", () => {
     const firstMessageRow = firstRenderedItem?.querySelector(".px-3.w-full");
 
     expect(scroller.style.overflowAnchor).toBe("none");
+    expect(scroller.style.overscrollBehavior).toBe("none");
     expect(firstMessageRow).toBeInstanceOf(HTMLElement);
     expect((firstMessageRow as HTMLElement).style.overflowAnchor).toBe("none");
   });

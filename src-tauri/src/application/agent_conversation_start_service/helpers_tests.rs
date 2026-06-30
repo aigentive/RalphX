@@ -528,6 +528,10 @@ fn pr_search_result(
         is_draft: false,
         updated_at: None,
         author_login: Some("dev".to_string()),
+        assignee_logins: Vec::new(),
+        review_decision: None,
+        latest_review_author_logins: Vec::new(),
+        review_request_logins: Vec::new(),
         is_cross_repository,
     }
 }

@@ -835,7 +835,7 @@ describe("TicketingDashboardView", () => {
     mockConnectedDashboard();
     useTicketingStore.getState().setFilters({
       text: "",
-      assignee: "Ada",
+      assignees: ["Ada"],
       stateIds: [],
       labels: [],
       sprint: null,
@@ -1041,14 +1041,14 @@ describe("TicketingDashboardView", () => {
   it("forwards the selected assignee to the ticket query", () => {
     mockConnectedDashboard();
     useTicketingStore.setState({
-      filters: { text: "", assignee: "Someone Else", stateIds: [], labels: [], sprint: null, watcherMe: false },
+      filters: { text: "", assignees: ["Someone Else"], stateIds: [], labels: [], sprint: null, watcherMe: false },
     });
     renderDashboard();
 
     expect(screen.getByRole("combobox", { name: "Assignee" })).toHaveTextContent("Someone Else");
     expect(ticketingHooks.useTickets).toHaveBeenLastCalledWith(
       expect.objectContaining({
-        filters: expect.objectContaining({ assignee: "Someone Else" }),
+        filters: expect.objectContaining({ assignees: ["Someone Else"] }),
       }),
       { enabled: true },
     );
@@ -1067,7 +1067,7 @@ describe("TicketingDashboardView", () => {
       isFetchingNextPage: false,
     } as unknown as ReturnType<typeof ticketingHooks.useTickets>);
     useTicketingStore.setState({
-      filters: { text: "", assignee: null, stateIds: [], labels: [], sprint: null, watcherMe: false },
+      filters: { text: "", assignees: [], stateIds: [], labels: [], sprint: null, watcherMe: false },
     });
     renderDashboard();
 

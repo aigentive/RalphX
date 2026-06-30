@@ -523,7 +523,7 @@ async fn persist_timeline_snapshot_returns_empty_when_any_item_write_fails() {
 }
 
 #[tokio::test]
-async fn persist_message_text_timeline_item_skips_empty_and_recovery_context_messages() {
+async fn persist_message_text_timeline_item_skips_empty_and_hidden_messages() {
     let state = AppState::new_test();
     let conversation_id = ChatConversationId::new();
 
@@ -535,6 +535,11 @@ async fn persist_message_text_timeline_item_skips_empty_and_recovery_context_mes
     recovery.conversation_id = Some(conversation_id);
     recovery.metadata = Some(r#"{"recovery_context":true}"#.to_string());
     persist_message_text_timeline_item(&Some(state.chat_timeline_repo.clone()), &recovery).await;
+
+    let mut hidden = ChatMessage::user_in_session(IdeationSessionId::new(), "internal");
+    hidden.conversation_id = Some(conversation_id);
+    hidden.metadata = Some(r#"{"hidden_from_ui":true}"#.to_string());
+    persist_message_text_timeline_item(&Some(state.chat_timeline_repo.clone()), &hidden).await;
 
     let mut normal = ChatMessage::user_in_session(IdeationSessionId::new(), "hello");
     normal.conversation_id = Some(conversation_id);

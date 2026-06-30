@@ -3,6 +3,15 @@ import { immer } from "zustand/middleware/immer";
 
 export type GitHubBranchAssociationFilter = "all" | "pull_requests" | "tickets" | "rx";
 export type GitHubBranchPrStatusFilter = "all" | "open" | "draft" | "merged" | "closed" | "no_pr";
+export type GitHubBranchReviewFilter =
+  | "no_reviews"
+  | "review_required"
+  | "approved"
+  | "changes_requested"
+  | "reviewed_by_you"
+  | "not_reviewed_by_you"
+  | "awaiting_your_review"
+  | "awaiting_review";
 export type GranolaDashboardNoteFilter =
   | "all"
   | "with_summary"
@@ -14,6 +23,9 @@ export type GranolaDashboardNoteFilter =
 interface GitHubDashboardState {
   associationFilter: GitHubBranchAssociationFilter;
   statusFilter: GitHubBranchPrStatusFilter;
+  assigneeLogins: string[];
+  authorLogins: string[];
+  reviewFilters: GitHubBranchReviewFilter[];
   searchQuery: string;
   selectedBranchName: string | null;
 }
@@ -40,6 +52,9 @@ interface IntegrationDashboardActions {
 export const DEFAULT_GITHUB_DASHBOARD_STATE: GitHubDashboardState = {
   associationFilter: "pull_requests",
   statusFilter: "all",
+  assigneeLogins: [],
+  authorLogins: [],
+  reviewFilters: [],
   searchQuery: "",
   selectedBranchName: null,
 };
@@ -53,7 +68,13 @@ export const DEFAULT_GRANOLA_DASHBOARD_STATE: GranolaDashboardState = {
 function githubStateWithDefaults(
   state: GitHubDashboardState | undefined,
 ): GitHubDashboardState {
-  return state ?? DEFAULT_GITHUB_DASHBOARD_STATE;
+  return {
+    ...DEFAULT_GITHUB_DASHBOARD_STATE,
+    ...state,
+    assigneeLogins: state?.assigneeLogins ? [...state.assigneeLogins] : [],
+    authorLogins: state?.authorLogins ? [...state.authorLogins] : [],
+    reviewFilters: state?.reviewFilters ? [...state.reviewFilters] : [],
+  };
 }
 
 function granolaStateWithDefaults(
@@ -83,6 +104,9 @@ export const useIntegrationDashboardStore = create<
           ...githubStateWithDefaults(state.githubByProject[projectId]),
           associationFilter: DEFAULT_GITHUB_DASHBOARD_STATE.associationFilter,
           statusFilter: DEFAULT_GITHUB_DASHBOARD_STATE.statusFilter,
+          assigneeLogins: [...DEFAULT_GITHUB_DASHBOARD_STATE.assigneeLogins],
+          authorLogins: [...DEFAULT_GITHUB_DASHBOARD_STATE.authorLogins],
+          reviewFilters: [...DEFAULT_GITHUB_DASHBOARD_STATE.reviewFilters],
           searchQuery: DEFAULT_GITHUB_DASHBOARD_STATE.searchQuery,
         };
       }),

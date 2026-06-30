@@ -51,6 +51,7 @@ describe("useAgentSidebarRunningStates", () => {
       activeConversationIds: {},
       activeAgentRunIds: {},
       agentStatus: {},
+      agentActivityLabels: {},
     });
   });
 
@@ -168,10 +169,53 @@ describe("useAgentSidebarRunningStates", () => {
     expect(state.activeConversationIds[runningStoreKey]).toBe("conv-verifying");
   });
 
+  it("labels associated workspace Review runtime as reviewing", async () => {
+    const runningConversation = conversation("conv-reviewing");
+    mockGetAgentConversationRuntimeStatuses.mockResolvedValueOnce({
+      "conv-reviewing": {
+        conversationId: "conv-reviewing",
+        isRunning: true,
+        agentStatus: "generating",
+        primarySource: "workspace_review",
+        summaryLabel: "Reviewing",
+        items: [
+          {
+            source: "workspace_review",
+            contextType: "project",
+            contextId: "review-child",
+            label: "Reviewing",
+            title: "Review workspace changes",
+            agentStatus: "generating",
+            taskId: null,
+            internalStatus: "reviewing",
+            runningProcess: null,
+            ideationSession: null,
+            parentSessionId: null,
+            childSessionId: null,
+            conversationId: "review-child",
+          },
+        ],
+      },
+    });
+
+    renderHook(() =>
+      useAgentSidebarRunningStates([runningConversation], true)
+    );
+
+    await act(async () => {});
+
+    const runningStoreKey = getAgentConversationStoreKey(runningConversation);
+    const state = useChatStore.getState();
+    expect(state.agentStatus[runningStoreKey]).toBe("generating");
+    expect(state.activeConversationIds[runningStoreKey]).toBe("conv-reviewing");
+    expect(state.agentActivityLabels[runningStoreKey]).toBe("reviewing");
+  });
+
   it("clears stale sidebar status when runtime status says not running", async () => {
     const staleConversation = conversation("conv-stale");
     const storeKey = getAgentConversationStoreKey(staleConversation);
     useChatStore.getState().setAgentRunning(storeKey, true);
+    useChatStore.getState().setAgentActivityLabel(storeKey, "reviewing");
     mockGetAgentConversationRuntimeStatuses.mockResolvedValueOnce({
       "conv-stale": {
         conversationId: "conv-stale",
@@ -190,6 +234,7 @@ describe("useAgentSidebarRunningStates", () => {
     await act(async () => {});
 
     expect(useChatStore.getState().agentStatus[storeKey]).toBeUndefined();
+    expect(useChatStore.getState().agentActivityLabels[storeKey]).toBeUndefined();
   });
 
   it("does not poll while the sidebar is hidden", async () => {

@@ -7,6 +7,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import type { TicketingFilterState, TicketingViewMode } from "@/stores/ticketingStore";
 import { cn } from "@/lib/utils";
 
+import { TicketSearchableMultiSelect } from "./TicketSearchableMultiSelect";
 import { TicketSearchableSelect } from "./TicketSearchableSelect";
 import { hasActiveTicketFilters, UNASSIGNED_ASSIGNEE } from "./ticketing-read-state";
 import { categoryToken } from "./ticketing-utils";
@@ -152,17 +153,15 @@ export function TicketFilterBar({
 
       <label className="flex items-center gap-2 text-xs text-[var(--text-muted)]">
         Assignee
-        <TicketSearchableSelect
+        <TicketSearchableMultiSelect
           ariaLabel="Assignee"
           className="min-w-[130px] max-w-[200px]"
-          value={filters.assignee ?? ""}
-          onValueChange={(nextValue) => onFiltersChange({ assignee: nextValue || null })}
+          selectedValues={filters.assignees}
+          onSelectedValuesChange={(assignees) => onFiltersChange({ assignees })}
           placeholder="Everyone"
           searchPlaceholder="Search assignees..."
-          clearable
           clearLabel="Clear assignee filter"
           options={[
-            { value: "", label: "Everyone" },
             { value: UNASSIGNED_ASSIGNEE, label: "Unassigned" },
             ...assigneeOptions.map((name) => ({ value: name, label: name })),
           ]}

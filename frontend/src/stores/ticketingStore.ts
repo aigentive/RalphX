@@ -8,7 +8,7 @@ export type TicketingViewMode = "list" | "kanban";
 
 export interface TicketingFilterState {
   text: string;
-  assignee: string | null;
+  assignees: string[];
   stateIds: string[];
   labels: string[];
   sprint: string | null;
@@ -38,7 +38,7 @@ interface TicketingActions {
 
 const DEFAULT_FILTERS: TicketingFilterState = {
   text: "",
-  assignee: null,
+  assignees: [],
   stateIds: [],
   labels: [],
   sprint: null,
@@ -57,12 +57,47 @@ const INITIAL_STATE: TicketingState = {
 function cloneFilters(filters: TicketingFilterState): TicketingFilterState {
   return {
     text: filters.text,
-    assignee: filters.assignee,
+    assignees: [...filters.assignees],
     stateIds: [...filters.stateIds],
     labels: [...filters.labels],
     sprint: filters.sprint,
     watcherMe: filters.watcherMe,
   };
+}
+
+type PersistedTicketingFilters = Partial<TicketingFilterState> & {
+  assignee?: string | null | undefined;
+};
+
+function normalizeFilters(filters: PersistedTicketingFilters): TicketingFilterState {
+  const legacyAssignee = filters.assignee?.trim();
+  return {
+    text: filters.text ?? "",
+    assignees:
+      filters.assignees !== undefined
+        ? [...filters.assignees]
+        : legacyAssignee
+          ? [legacyAssignee]
+          : [],
+    stateIds: filters.stateIds !== undefined ? [...filters.stateIds] : [],
+    labels: filters.labels !== undefined ? [...filters.labels] : [],
+    sprint: filters.sprint ?? null,
+    watcherMe: filters.watcherMe ?? false,
+  };
+}
+
+function migrateTicketingState(persistedState: unknown): unknown {
+  if (!persistedState || typeof persistedState !== "object") {
+    return persistedState;
+  }
+  const state = persistedState as Partial<TicketingState>;
+  if (state.filters) {
+    return {
+      ...state,
+      filters: normalizeFilters(state.filters as PersistedTicketingFilters),
+    };
+  }
+  return state;
 }
 
 export const useTicketingStore = create<TicketingState & TicketingActions>()(
@@ -96,12 +131,7 @@ export const useTicketingStore = create<TicketingState & TicketingActions>()(
 
       setFilters: (filters) =>
         set((state) => {
-          state.filters = {
-            ...state.filters,
-            ...filters,
-            ...(filters.stateIds !== undefined && { stateIds: [...filters.stateIds] }),
-            ...(filters.labels !== undefined && { labels: [...filters.labels] }),
-          };
+          state.filters = normalizeFilters({ ...state.filters, ...filters });
         }),
 
       resetFilters: () =>
@@ -131,7 +161,8 @@ export const useTicketingStore = create<TicketingState & TicketingActions>()(
     })),
     {
       name: "ralphx-ticketing-store",
-      version: 1,
+      version: 2,
+      migrate: migrateTicketingState,
       partialize: (state) => ({
         activeProvider: state.activeProvider,
         activeContainerId: state.activeContainerId,

@@ -5,10 +5,11 @@ use crate::domain::entities::{
     AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription,
     AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
     AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
-    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewMonitor,
-    AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewTargetScope,
-    AgentWorkspaceSourcePullRequest, ArtifactId, ChatConversationId, IdeationAnalysisBaseRefKind,
-    IdeationSessionId, PlanBranchId, ProjectId, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewGateStatus,
+    AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
+    AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest, ArtifactId,
+    ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId, ProjectId,
+    DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::repositories::AgentConversationWorkspaceRepository;
 use crate::testing::SqliteTestDb;
@@ -509,6 +510,8 @@ async fn workspace_review_monitor_round_trips_and_preserves_versioned_artifacts(
         ProjectId::from_string("project-1".to_string()),
     );
     monitor.status = AgentWorkspaceReviewMonitorStatus::Ready;
+    monitor.review_outcome = AgentWorkspaceReviewOutcome::Blocking;
+    monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Blocking;
     monitor.current_target_scope = Some(AgentWorkspaceReviewTargetScope::SelectedSource);
     monitor.reviewed_target_scope = Some(AgentWorkspaceReviewTargetScope::SelectedSource);
     monitor.review_artifact_id = Some(ArtifactId::from_string("artifact-current"));
@@ -526,10 +529,22 @@ async fn workspace_review_monitor_round_trips_and_preserves_versioned_artifacts(
     monitor.selected_source_pull_request_number = Some(483);
     monitor.current_diff_fingerprint = Some("fingerprint".to_string());
     monitor.previous_version_id = Some(ArtifactId::from_string("artifact-previous"));
+    monitor.review_blocking_summary = Some("Fix the stale review state.".to_string());
+    monitor.review_blocking_fingerprint = Some("blocking-fingerprint".to_string());
+    monitor.review_fixer_run_id = Some("fixer-run-1".to_string());
+    monitor.review_fixer_conversation_id = Some(ChatConversationId::from_string(
+        "33333333-3333-3333-3333-333333333333",
+    ));
+    monitor.review_fixer_status = Some("running".to_string());
     monitor.last_run_id = Some("run-1".to_string());
 
     let saved = repo.upsert_workspace_review_monitor(monitor).await.unwrap();
     assert_eq!(saved.status, AgentWorkspaceReviewMonitorStatus::Ready);
+    assert_eq!(saved.review_outcome, AgentWorkspaceReviewOutcome::Blocking);
+    assert_eq!(
+        saved.review_gate_status,
+        AgentWorkspaceReviewGateStatus::Blocking
+    );
     assert_eq!(
         saved.current_target_scope,
         Some(AgentWorkspaceReviewTargetScope::SelectedSource)
@@ -551,6 +566,23 @@ async fn workspace_review_monitor_round_trips_and_preserves_versioned_artifacts(
         Some("artifact-previous")
     );
     assert_eq!(saved.selected_source_pull_request_number, Some(483));
+    assert_eq!(
+        saved.review_blocking_summary.as_deref(),
+        Some("Fix the stale review state.")
+    );
+    assert_eq!(
+        saved.review_blocking_fingerprint.as_deref(),
+        Some("blocking-fingerprint")
+    );
+    assert_eq!(saved.review_fixer_run_id.as_deref(), Some("fixer-run-1"));
+    assert_eq!(
+        saved
+            .review_fixer_conversation_id
+            .as_ref()
+            .map(ChatConversationId::as_str),
+        Some("33333333-3333-3333-3333-333333333333".to_string())
+    );
+    assert_eq!(saved.review_fixer_status.as_deref(), Some("running"));
     assert_eq!(saved.last_run_id.as_deref(), Some("run-1"));
 
     let mut update = AgentWorkspaceReviewMonitor::new(
@@ -558,6 +590,8 @@ async fn workspace_review_monitor_round_trips_and_preserves_versioned_artifacts(
         ProjectId::from_string("project-1".to_string()),
     );
     update.status = AgentWorkspaceReviewMonitorStatus::Blocked;
+    update.review_outcome = AgentWorkspaceReviewOutcome::RunFailed;
+    update.review_gate_status = AgentWorkspaceReviewGateStatus::Failed;
     update.current_target_scope = Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta);
     update.workspace_base_ref = Some("base-sha".to_string());
     update.workspace_head_ref = Some("HEAD".to_string());
@@ -567,6 +601,14 @@ async fn workspace_review_monitor_round_trips_and_preserves_versioned_artifacts(
 
     let updated = repo.upsert_workspace_review_monitor(update).await.unwrap();
     assert_eq!(updated.status, AgentWorkspaceReviewMonitorStatus::Blocked);
+    assert_eq!(
+        updated.review_outcome,
+        AgentWorkspaceReviewOutcome::RunFailed
+    );
+    assert_eq!(
+        updated.review_gate_status,
+        AgentWorkspaceReviewGateStatus::Failed
+    );
     assert_eq!(
         updated.current_target_scope,
         Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta)
@@ -597,6 +639,11 @@ async fn workspace_review_monitor_round_trips_and_preserves_versioned_artifacts(
     );
     assert_eq!(updated.last_run_id.as_deref(), Some("run-2"));
     assert_eq!(updated.last_error.as_deref(), Some("review failed"));
+    assert_eq!(updated.review_blocking_summary, None);
+    assert_eq!(updated.review_blocking_fingerprint, None);
+    assert_eq!(updated.review_fixer_run_id, None);
+    assert_eq!(updated.review_fixer_conversation_id, None);
+    assert_eq!(updated.review_fixer_status, None);
 
     let loaded = repo
         .get_workspace_review_monitor(&conversation_id)
