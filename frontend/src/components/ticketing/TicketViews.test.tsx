@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import type { TicketSummary } from "@/api/ticketing";
@@ -368,6 +368,34 @@ describe("TicketListView", () => {
     expect(onMoveTicket.mock.calls[0]?.[1]?.id).toBe("done");
     // Selecting a status still must not open the ticket detail.
     expect(onSelectTicket).not.toHaveBeenCalled();
+  });
+
+  it("uses configured column colors for list group status icons", () => {
+    render(
+      <TooltipProvider>
+        <TicketListView
+          tickets={[tickets[1]!]}
+          columns={[
+            {
+              id: "started",
+              name: "In Progress",
+              category: "in_progress",
+              color: "#ff6600",
+              order: 0,
+            },
+          ]}
+          hasNextPage={false}
+          isFetchingNextPage={false}
+          onLoadMore={vi.fn()}
+          onSelectTicket={vi.fn()}
+        />
+      </TooltipProvider>,
+    );
+
+    const groupHeader = screen.getByRole("button", { expanded: true });
+    expect(within(groupHeader).getByRole("img", { name: "Status: In Progress" })).toHaveStyle({
+      color: "#ff6600",
+    });
   });
 
   it("keeps the status icon read-only when ticket moves are not writable", () => {

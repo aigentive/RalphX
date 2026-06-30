@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::application::agent_conversation_start_service::StartAgentConversationInput;
 
@@ -49,6 +49,67 @@ pub struct TicketingColumnResponse {
     pub category: String,
     pub order: usize,
     pub color: Option<String>,
+    pub provider_color: Option<String>,
+    pub color_override: Option<String>,
+    pub provider_order: Option<i64>,
+    pub display_order: Option<i64>,
+    pub scope_kind: Option<String>,
+    pub scope_id: Option<String>,
+    pub is_visible: Option<bool>,
+    pub is_terminal: Option<bool>,
+    pub stale: Option<bool>,
+    pub last_seen_at: Option<String>,
+    pub stale_since: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TicketingStatusCatalogEntryResponse {
+    pub id: String,
+    pub provider: String,
+    pub scope_kind: String,
+    pub scope_id: String,
+    pub provider_status_id: String,
+    pub provider_status_name: String,
+    pub provider_category: String,
+    pub provider_color: Option<String>,
+    pub provider_order: Option<i64>,
+    pub display_order: i64,
+    pub color_override: Option<String>,
+    pub color: Option<String>,
+    pub is_visible: bool,
+    pub is_terminal: bool,
+    pub stale: bool,
+    pub last_seen_at: Option<String>,
+    pub stale_since: Option<String>,
+    pub updated_at: String,
+}
+
+fn deserialize_optional_nullable<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Ok(Some(Option::deserialize(deserializer)?))
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TicketingStatusPresentationPatchInput {
+    pub provider_status_id: String,
+    pub display_order: Option<i64>,
+    #[serde(default, deserialize_with = "deserialize_optional_nullable")]
+    pub color_override: Option<Option<String>>,
+    pub is_visible: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateTicketingStatusPresentationInput {
+    pub provider: String,
+    pub scope_kind: String,
+    pub scope_id: String,
+    pub patches: Vec<TicketingStatusPresentationPatchInput>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

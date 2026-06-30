@@ -32,6 +32,7 @@ use crate::application::QuestionState;
 use crate::application::ResumeValidator;
 use crate::application::TaskSchedulerService;
 use crate::application::TaskTransitionService;
+use crate::application::TicketingStatusCatalogService;
 use crate::application::UnavailableAtlassianApiClient;
 use crate::application::UnavailableClickUpApiClient;
 use crate::application::UnavailableGranolaApiClient;
@@ -94,7 +95,8 @@ use crate::infrastructure::memory::{
     MemoryTaskDependencyRepository, MemoryTaskProposalRepository, MemoryTaskQARepository,
     MemoryTaskRepository, MemoryTaskStepRepository, MemoryTeamMessageRepository,
     MemoryTeamSessionRepository, MemoryTicketCanonicalBranchRepository,
-    MemoryWebhookRegistrationRepository, MemoryWorkflowRepository,
+    MemoryTicketingStatusCatalogRepository, MemoryWebhookRegistrationRepository,
+    MemoryWorkflowRepository,
 };
 use crate::infrastructure::secret_store::MacosKeychainSecretStore;
 use crate::infrastructure::sqlite::ReviewIssueRepository;
@@ -126,7 +128,8 @@ use crate::infrastructure::sqlite::{
     SqliteTaskDependencyRepository, SqliteTaskProposalRepository, SqliteTaskQARepository,
     SqliteTaskRepository, SqliteTaskStepRepository, SqliteTeamMessageRepository,
     SqliteTeamSessionRepository, SqliteTicketCanonicalBranchRepository,
-    SqliteWebhookRegistrationRepository, SqliteWorkflowRepository,
+    SqliteTicketingStatusCatalogRepository, SqliteWebhookRegistrationRepository,
+    SqliteWorkflowRepository,
 };
 use crate::infrastructure::HyperAtlassianApiClient;
 use crate::infrastructure::HyperClickUpApiClient;
@@ -178,6 +181,8 @@ pub struct AppState {
     pub granola_integration_service: Arc<GranolaIntegrationService>,
     /// Provider-neutral external issue link and sync service.
     pub external_issue_link_service: Arc<ExternalIssueLinkService>,
+    /// Provider status catalog and per-scope presentation service.
+    pub ticketing_status_catalog_service: Arc<TicketingStatusCatalogService>,
     /// Agent profile repository (SQLite in production)
     pub agent_profile_repo: Arc<dyn AgentProfileRepository>,
     /// TaskQA repository for QA artifacts
@@ -476,6 +481,20 @@ impl AppState {
     fn memory_external_issue_link_service() -> Arc<ExternalIssueLinkService> {
         Arc::new(ExternalIssueLinkService::new(Arc::new(
             MemoryExternalIssueLinkRepository::new(),
+        )))
+    }
+
+    fn production_ticketing_status_catalog_service(
+        shared_conn: &Arc<Mutex<rusqlite::Connection>>,
+    ) -> Arc<TicketingStatusCatalogService> {
+        Arc::new(TicketingStatusCatalogService::new(Arc::new(
+            SqliteTicketingStatusCatalogRepository::from_shared(Arc::clone(shared_conn)),
+        )))
+    }
+
+    fn memory_ticketing_status_catalog_service() -> Arc<TicketingStatusCatalogService> {
+        Arc::new(TicketingStatusCatalogService::new(Arc::new(
+            MemoryTicketingStatusCatalogRepository::new(),
         )))
     }
 
@@ -1039,6 +1058,9 @@ impl AppState {
             clickup_integration_service: Self::production_clickup_integration_service(&shared_conn),
             granola_integration_service: Self::production_granola_integration_service(&shared_conn),
             external_issue_link_service: Self::production_external_issue_link_service(&shared_conn),
+            ticketing_status_catalog_service: Self::production_ticketing_status_catalog_service(
+                &shared_conn,
+            ),
             agent_profile_repo: Arc::new(SqliteAgentProfileRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
@@ -1278,6 +1300,9 @@ impl AppState {
             clickup_integration_service: Self::memory_clickup_integration_service(),
             granola_integration_service: Self::memory_granola_integration_service(),
             external_issue_link_service: Self::production_external_issue_link_service(&shared_conn),
+            ticketing_status_catalog_service: Self::production_ticketing_status_catalog_service(
+                &shared_conn,
+            ),
             agent_profile_repo: Arc::new(MemoryAgentProfileRepository::new()),
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
             review_repo: Arc::new(MemoryReviewRepository::new()),
@@ -1421,6 +1446,9 @@ impl AppState {
             clickup_integration_service: Self::memory_clickup_integration_service(),
             granola_integration_service: Self::memory_granola_integration_service(),
             external_issue_link_service: Self::production_external_issue_link_service(&shared_conn),
+            ticketing_status_catalog_service: Self::production_ticketing_status_catalog_service(
+                &shared_conn,
+            ),
             agent_profile_repo: Arc::new(MemoryAgentProfileRepository::new()),
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
             review_repo: Arc::new(MemoryReviewRepository::new()),
@@ -1574,6 +1602,9 @@ impl AppState {
             clickup_integration_service: Self::memory_clickup_integration_service(),
             granola_integration_service: Self::memory_granola_integration_service(),
             external_issue_link_service: Self::production_external_issue_link_service(&shared_conn),
+            ticketing_status_catalog_service: Self::production_ticketing_status_catalog_service(
+                &shared_conn,
+            ),
             agent_profile_repo: Arc::new(MemoryAgentProfileRepository::new()),
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
             review_repo: Arc::new(MemoryReviewRepository::new()),
@@ -1723,6 +1754,7 @@ impl AppState {
             clickup_integration_service: Self::memory_clickup_integration_service(),
             granola_integration_service: Self::memory_granola_integration_service(),
             external_issue_link_service: Self::memory_external_issue_link_service(),
+            ticketing_status_catalog_service: Self::memory_ticketing_status_catalog_service(),
             agent_profile_repo: Arc::new(MemoryAgentProfileRepository::new()),
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
             review_repo: Arc::new(MemoryReviewRepository::new()),
