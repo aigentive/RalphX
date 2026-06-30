@@ -322,40 +322,57 @@ pub(crate) fn spawn_auto_review_after_workspace_change(
 
     tauri::async_runtime::spawn(async move {
         let _guard = _guard;
-        match git_cmd::with_git_command_lane(git_cmd::GitCommandLane::Background, async {
+        let decision = git_cmd::with_git_command_lane(git_cmd::GitCommandLane::Background, async {
             maybe_start_auto_review(&state, execution_state.as_ref(), &workspace).await
         })
-        .await
-        {
-            Ok(AutoReviewDecision::Started) => {
-                if let Some(emit_workspace_changed) = workspace_changed_emitter.as_ref() {
-                    emit_workspace_changed(&conversation_id);
-                }
-                tracing::debug!(
-                    trigger = trigger.as_str(),
-                    conversation_id = conversation_id.as_str(),
-                    "Started agent workspace auto-review"
-                );
-            }
-            Ok(AutoReviewDecision::Skipped(reason)) => {
-                tracing::debug!(
-                    trigger = trigger.as_str(),
-                    conversation_id = conversation_id.as_str(),
-                    reason = reason.as_str(),
-                    "Skipped agent workspace auto-review"
-                );
-            }
-            Err(error) => {
-                tracing::warn!(
-                    trigger = trigger.as_str(),
-                    conversation_id = conversation_id.as_str(),
-                    error = %error,
-                    "Agent workspace auto-review failed"
-                );
-            }
-        }
+        .await;
+        handle_auto_review_workspace_change_result(
+            trigger,
+            &conversation_id,
+            decision,
+            workspace_changed_emitter.as_ref(),
+        );
     });
     true
+}
+
+pub(crate) fn handle_auto_review_workspace_change_result(
+    trigger: AutoReviewTrigger,
+    conversation_id: &ChatConversationId,
+    decision: Result<AutoReviewDecision, String>,
+    workspace_changed_emitter: Option<&WorkspaceChangedEmitter>,
+) -> bool {
+    match decision {
+        Ok(AutoReviewDecision::Started) => {
+            if let Some(emit_workspace_changed) = workspace_changed_emitter {
+                emit_workspace_changed(conversation_id);
+            }
+            tracing::debug!(
+                trigger = trigger.as_str(),
+                conversation_id = conversation_id.as_str(),
+                "Started agent workspace auto-review"
+            );
+            true
+        }
+        Ok(AutoReviewDecision::Skipped(reason)) => {
+            tracing::debug!(
+                trigger = trigger.as_str(),
+                conversation_id = conversation_id.as_str(),
+                reason = reason.as_str(),
+                "Skipped agent workspace auto-review"
+            );
+            false
+        }
+        Err(error) => {
+            tracing::warn!(
+                trigger = trigger.as_str(),
+                conversation_id = conversation_id.as_str(),
+                error = %error,
+                "Agent workspace auto-review failed"
+            );
+            false
+        }
+    }
 }
 
 pub(crate) async fn resolve_auto_review_start_action(

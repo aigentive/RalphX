@@ -8,12 +8,13 @@ use serde_json::json;
 use tauri::Emitter;
 
 use super::agent_workspace_auto_review::{
-    begin_auto_review, install_agent_workspace_auto_review_listeners, interactive_slot_key,
-    maybe_start_auto_review, maybe_start_auto_review_from_app_handle,
-    related_workspace_runtime_is_generating, resolve_auto_review_start_action,
-    resolve_workspace_conversation_id_for_review_event, spawn_auto_review_after_workspace_change,
-    spawn_auto_review_for_workspace, spawn_auto_review_from_completion_event, AutoReviewDecision,
-    AutoReviewSkipReason, AutoReviewStartAction, AutoReviewTrigger, WorkspaceChangedEmitter,
+    begin_auto_review, handle_auto_review_workspace_change_result,
+    install_agent_workspace_auto_review_listeners, interactive_slot_key, maybe_start_auto_review,
+    maybe_start_auto_review_from_app_handle, related_workspace_runtime_is_generating,
+    resolve_auto_review_start_action, resolve_workspace_conversation_id_for_review_event,
+    spawn_auto_review_after_workspace_change, spawn_auto_review_for_workspace,
+    spawn_auto_review_from_completion_event, AutoReviewDecision, AutoReviewSkipReason,
+    AutoReviewStartAction, AutoReviewTrigger, WorkspaceChangedEmitter,
 };
 use crate::application::agent_workspace_review::{
     apply_review_artifact_to_monitor, load_agent_workspace_review_context,
@@ -471,34 +472,48 @@ fn base_update_auto_review_trigger_dedupes_when_workspace_is_already_in_flight()
     drop(guard);
 }
 
-#[tokio::test]
-async fn base_update_auto_review_emits_workspace_changed_when_review_starts() {
-    let (_temp, repo, base_sha) = init_repo();
-    commit_workspace_delta(&repo);
-    let state = AppState::new_test();
-    let execution_state = Arc::new(ExecutionState::new());
-    let project = seed_project(&state, &repo).await;
-    let workspace = workspace(&project, &repo, Some(base_sha));
-    seed_workspace_conversation(&state, &workspace).await;
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+#[test]
+fn base_update_auto_review_emits_workspace_changed_when_review_starts() {
+    let conversation_id = ChatConversationId::new();
+    let (tx, rx) = std::sync::mpsc::channel();
     let emitter: WorkspaceChangedEmitter = Box::new(move |conversation_id| {
-        tx.send(conversation_id.as_str())
+        tx.send(conversation_id.as_str().to_string())
             .expect("workspace changed event should send");
     });
 
-    assert!(spawn_auto_review_after_workspace_change(
-        state,
-        execution_state,
-        workspace.clone(),
+    assert!(handle_auto_review_workspace_change_result(
         AutoReviewTrigger::BaseUpdate,
-        Some(emitter),
+        &conversation_id,
+        Ok(AutoReviewDecision::Started),
+        Some(&emitter),
     ));
 
-    let emitted_conversation_id = tokio::time::timeout(Duration::from_secs(10), rx.recv())
-        .await
-        .expect("workspace changed event should emit after review starts")
-        .expect("workspace changed event channel should remain open");
-    assert_eq!(emitted_conversation_id, workspace.conversation_id.as_str());
+    assert_eq!(
+        rx.recv_timeout(Duration::from_secs(1))
+            .expect("workspace changed event should emit after review starts"),
+        conversation_id.as_str()
+    );
+}
+
+#[test]
+fn base_update_auto_review_does_not_emit_workspace_changed_when_review_skips() {
+    let conversation_id = ChatConversationId::new();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let emitter: WorkspaceChangedEmitter = Box::new(move |conversation_id| {
+        tx.send(conversation_id.as_str().to_string())
+            .expect("workspace changed event should send");
+    });
+
+    assert!(!handle_auto_review_workspace_change_result(
+        AutoReviewTrigger::BaseUpdate,
+        &conversation_id,
+        Ok(AutoReviewDecision::Skipped(
+            AutoReviewSkipReason::GateNotRequired,
+        )),
+        Some(&emitter),
+    ));
+
+    assert!(rx.try_recv().is_err());
 }
 
 #[tokio::test]
