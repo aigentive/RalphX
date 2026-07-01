@@ -7,7 +7,10 @@ import type {
 } from "@/api/chat";
 
 import { conversationWorkspaceFixture } from "./agentsTestFixtures";
-import { prReviewContextForConversation } from "./agentWorkspaceQueries";
+import {
+  prReviewContextForConversation,
+  resolveWorkspaceReviewOwnerConversationId,
+} from "./agentWorkspaceQueries";
 
 const now = "2026-06-18T12:00:00.000Z";
 
@@ -137,5 +140,55 @@ describe("prReviewContextForConversation", () => {
     });
 
     expect(prReviewContextForConversation(context, "conversation-1")).toBeNull();
+  });
+});
+
+describe("resolveWorkspaceReviewOwnerConversationId", () => {
+  it("keeps the selected workspace as Review owner when it also has a parent conversation", () => {
+    expect(
+      resolveWorkspaceReviewOwnerConversationId({
+        activeConversationContextType: "project",
+        activeConversationId: "selected-workspace-conversation",
+        activeConversationParentId: "parent-conversation",
+        activeConversationMode: "edit",
+        activeWorkspaceConversationId: "selected-workspace-conversation",
+      }),
+    ).toBe("selected-workspace-conversation");
+  });
+
+  it("uses the parent owner for a project child conversation without its own workspace", () => {
+    expect(
+      resolveWorkspaceReviewOwnerConversationId({
+        activeConversationContextType: "project",
+        activeConversationId: "review-child-conversation",
+        activeConversationParentId: "parent-workspace-conversation",
+        activeConversationMode: null,
+        activeWorkspaceConversationId: null,
+      }),
+    ).toBe("parent-workspace-conversation");
+  });
+
+  it("uses the selected conversation for reviewable project workspaces without parents", () => {
+    expect(
+      resolveWorkspaceReviewOwnerConversationId({
+        activeConversationContextType: "project",
+        activeConversationId: "workspace-conversation",
+        activeConversationParentId: null,
+        activeConversationMode: "plan",
+        activeWorkspaceConversationId: "workspace-conversation",
+      }),
+    ).toBe("workspace-conversation");
+  });
+
+  it("returns null for non-project conversations", () => {
+    expect(
+      resolveWorkspaceReviewOwnerConversationId({
+        activeConversationContextType: "ideation",
+        activeConversationId: "ideation-conversation",
+        activeConversationParentId: null,
+        activeConversationMode: null,
+        activeWorkspaceConversationId: null,
+      }),
+    ).toBeNull();
   });
 });

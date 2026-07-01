@@ -4,6 +4,7 @@ import { chatApi } from "@/api/chat";
 import type {
   AgentConversationWorkspace,
   AgentConversationWorkspaceFreshnessScope,
+  AgentConversationWorkspaceMode,
   AgentWorkspacePrReviewContext,
   AgentWorkspaceReviewContext,
   StartAgentWorkspaceReviewResult,
@@ -125,6 +126,45 @@ export function prReviewContextForConversation(
 type WorkspaceReviewContextLike =
   | AgentWorkspaceReviewContext
   | StartAgentWorkspaceReviewResult;
+
+const WORKSPACE_REVIEW_OWNER_MODES: ReadonlySet<AgentConversationWorkspaceMode> =
+  new Set(["edit", "ideation", "plan", "review_pr"]);
+
+export interface WorkspaceReviewOwnerConversationInput {
+  activeConversationContextType: string | null | undefined;
+  activeConversationId: string | null | undefined;
+  activeConversationParentId: string | null | undefined;
+  activeConversationMode: AgentConversationWorkspaceMode | null | undefined;
+  activeWorkspaceConversationId: string | null | undefined;
+}
+
+export function resolveWorkspaceReviewOwnerConversationId({
+  activeConversationContextType,
+  activeConversationId,
+  activeConversationParentId,
+  activeConversationMode,
+  activeWorkspaceConversationId,
+}: WorkspaceReviewOwnerConversationInput): string | null {
+  if (activeConversationContextType !== "project" || !activeConversationId) {
+    return null;
+  }
+
+  const hasReviewableWorkspaceMode = activeConversationMode
+    ? WORKSPACE_REVIEW_OWNER_MODES.has(activeConversationMode)
+    : false;
+  if (
+    hasReviewableWorkspaceMode &&
+    activeWorkspaceConversationId === activeConversationId
+  ) {
+    return activeConversationId;
+  }
+
+  if (activeConversationParentId) {
+    return activeConversationParentId;
+  }
+
+  return hasReviewableWorkspaceMode ? activeConversationId : null;
+}
 
 export function workspaceReviewContextForConversation<
   T extends WorkspaceReviewContextLike,

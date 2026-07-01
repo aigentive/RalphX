@@ -47,6 +47,7 @@ import {
   invalidateWorkspaceQueries,
   preflightAgentWorkspaceFreshness,
   prReviewContextForConversation,
+  resolveWorkspaceReviewOwnerConversationId,
   workspaceReviewContextForConversation,
 } from "./agentWorkspaceQueries";
 import {
@@ -436,17 +437,13 @@ export function useAgentsViewController({
     prReviewContextQuery.data,
     prReviewConversationId,
   );
-  const activeParentWorkspaceConversationId =
-    activeConversation?.contextType === "project"
-      ? activeConversation.parentConversationId ?? null
-      : null;
-  const workspaceReviewConversationId =
-    activeConversation?.contextType === "project" &&
-    (activeParentWorkspaceConversationId ||
-      (activeConversationMode &&
-        ["edit", "ideation", "plan", "review_pr"].includes(activeConversationMode)))
-      ? activeParentWorkspaceConversationId ?? activeConversation.id
-      : null;
+  const workspaceReviewConversationId = resolveWorkspaceReviewOwnerConversationId({
+    activeConversationContextType: activeConversation?.contextType,
+    activeConversationId: activeConversation?.id,
+    activeConversationParentId: activeConversation?.parentConversationId,
+    activeConversationMode,
+    activeWorkspaceConversationId: activeWorkspace?.conversationId,
+  });
   const shouldLoadWorkspaceReviewContext = Boolean(workspaceReviewConversationId);
   const workspaceReviewContextQuery = useQuery({
     queryKey: agentWorkspaceKeys.workspaceReview(workspaceReviewConversationId ?? ""),
