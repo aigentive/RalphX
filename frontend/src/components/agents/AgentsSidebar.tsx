@@ -815,6 +815,7 @@ export function AgentsSidebar({
   const setProjectSort = useAgentSessionStore((s) => s.setProjectSort);
   const sidebarGroupBy = useAgentSessionStore((s) => s.sidebarGroupBy);
   const setSidebarGroupBy = useAgentSessionStore((s) => s.setSidebarGroupBy);
+  const expandedProjectIds = useAgentSessionStore((s) => s.expandedProjectIds);
   const sidebarProjectFilterIds = useAgentSessionStore(
     (s) => s.sidebarProjectFilterIds
   );
@@ -960,8 +961,27 @@ export function AgentsSidebar({
     return nextProjects.filter((project) => selectedProjectFilterSet.has(project.id));
   }, [projectSort, projects, selectedProjectFilterSet, latestProjectOrder]);
   const selectedPublicationStates = sidebarPublicationStateFilters;
-  const fillSingleProjectSidebar =
-    sidebarGroupBy === "project" && !showAllProjects && orderedProjects.length === 1;
+  const expandedProjectIdForFill = useMemo(() => {
+    if (sidebarGroupBy !== "project" || showAllProjects || normalizedSearch.length > 0) {
+      return null;
+    }
+    if (orderedProjects.length === 1) {
+      return orderedProjects[0]?.id ?? null;
+    }
+
+    const expandedProjects = orderedProjects.filter(
+      (project) => expandedProjectIds[project.id] ?? focusedProjectId === project.id
+    );
+    return expandedProjects.length === 1 ? expandedProjects[0]?.id ?? null : null;
+  }, [
+    expandedProjectIds,
+    focusedProjectId,
+    normalizedSearch.length,
+    orderedProjects,
+    showAllProjects,
+    sidebarGroupBy,
+  ]);
+  const fillFilteredProjectSidebar = expandedProjectIdForFill !== null;
 
   return (
     <aside
@@ -1109,7 +1129,7 @@ export function AgentsSidebar({
 
       <div
         className={
-          fillSingleProjectSidebar
+          fillFilteredProjectSidebar
             ? "flex min-h-0 flex-1 flex-col overflow-hidden px-3 pb-3 pt-0.5"
             : "flex-1 overflow-y-auto px-3 pb-3 pt-0.5"
         }
@@ -1176,7 +1196,7 @@ export function AgentsSidebar({
               showAllProjects={showAllProjects}
               showProjectHeader
               showProjectNameInMeta={false}
-              fillAvailableHeight={fillSingleProjectSidebar}
+              fillAvailableHeight={expandedProjectIdForFill === project.id}
             />
           ))
         )}
