@@ -120,7 +120,7 @@ jobs:
       MACOS_RUNNER_SIZE: ${{ github.event_name == 'workflow_dispatch' && inputs.macos_runner_size || 'standard' }}
     steps:
       - name: Checkout main
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: main
           fetch-depth: 0

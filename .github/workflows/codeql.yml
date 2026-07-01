@@ -28,7 +28,7 @@ jobs:
       run_javascript: ${{ steps.decide.outputs.run_javascript }}
       run_rust: ${{ steps.decide.outputs.run_rust }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -71,7 +71,7 @@ jobs:
     if: needs.changes.outputs.run_actions == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4
@@ -90,7 +90,7 @@ jobs:
     if: needs.changes.outputs.run_javascript == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4
@@ -109,7 +109,7 @@ jobs:
     if: needs.changes.outputs.run_rust == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4
