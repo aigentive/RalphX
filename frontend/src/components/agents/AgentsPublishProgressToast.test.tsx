@@ -91,9 +91,7 @@ describe("AgentsPublishProgressToast", () => {
     );
     vi.advanceTimersByTime(1_000);
 
-    expect(toastDismissMock).toHaveBeenCalledWith(
-      "agent-workspace-operation:conversation-1:publish",
-    );
+    expect(toastDismissMock).not.toHaveBeenCalled();
     expect(toastLoadingMock).toHaveBeenCalledTimes(loadingCallCount);
   });
 
@@ -138,8 +136,8 @@ describe("AgentsPublishProgressToast", () => {
     }
   });
 
-  it("dismisses toast correctly after conversation switch", () => {
-    const { rerender } = render(
+  it("keeps the operation toast visible after conversation switch and unmount", () => {
+    const { rerender, unmount } = render(
       <AgentsPublishProgressToast
         active
         conversationTitle="Checkout flow fix"
@@ -171,8 +169,8 @@ describe("AgentsPublishProgressToast", () => {
       />,
     );
 
-    expect(toastDismissMock).toHaveBeenCalledWith(
-      "agent-workspace-operation:conversation-1:publish",
-    );
+    unmount();
+
+    expect(toastDismissMock).not.toHaveBeenCalled();
   });
 });
