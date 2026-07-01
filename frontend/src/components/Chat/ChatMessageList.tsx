@@ -96,6 +96,7 @@ type ChatScrollBottomPinReason =
   | "manual-scroll-to-bottom"
   | "initial-conversation-load"
   | "new-timeline-item-appended"
+  | "latest-item-range-rendered"
   | "virtuoso-at-bottom-settle"
   | "scroll-drift-recovery"
   | "fallback-no-scroller";
@@ -1838,7 +1839,12 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         }
         rafRef.current = requestAnimationFrame(() => {
           rafRef.current = null;
-          if ((shouldRun?.() ?? true) && shouldKeepBottomPinned()) {
+          if (
+            (shouldRun?.() ?? true) &&
+            shouldKeepBottomPinned(scrollToTimestampRef.current, {
+              requireLastItemVisible: false,
+            })
+          ) {
             pinTrueBottom(reason, "auto");
           }
         });
@@ -1860,7 +1866,11 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       // Virtuoso/followOutput and the timeline-append bottom pin own it so we do
       // not write a stale DOM scroll position before the virtualizer settles.
       if (didTimelineAppendSinceLastEffect()) return;
-      if (shouldKeepBottomPinned(scrollToTimestamp)) {
+      if (
+        shouldKeepBottomPinned(scrollToTimestamp, {
+          requireLastItemVisible: false,
+        })
+      ) {
         pinTrueBottom("streaming-footer-growth", "auto");
       }
     }, [
@@ -2323,8 +2333,14 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
           }
           return;
         }
-        if (shouldKeepBottomPinned()) {
-          scheduleBottomPin("scroller-resized", "auto");
+        if (
+          shouldKeepBottomPinned(scrollToTimestampRef.current, {
+            requireLastItemVisible: false,
+          })
+        ) {
+          scheduleBottomPin("scroller-resized", "auto", {
+            requireLastItemVisible: false,
+          });
           return;
         }
         reconcileScrollerBottomState();
@@ -2683,13 +2699,25 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
     const handleRangeChanged = useCallback(
       (range: ListRange) => {
         if (timeline.length > 0 && range.endIndex >= range.startIndex) {
+          const wasLastItemVisible = isLastItemVisibleRef.current;
           const nextIsLastItemVisible = range.endIndex >= lastItemIndex;
           isLastItemVisibleRef.current = nextIsLastItemVisible;
           setIsLastItemVisible(nextIsLastItemVisible);
           scheduleInitialPaintReadyCheck();
+          if (
+            nextIsLastItemVisible &&
+            wasLastItemVisible === false &&
+            !scrollToTimestampRef.current &&
+            !isUserScrollingAwayFromBottomRef.current
+          ) {
+            scheduleBottomPin("latest-item-range-rendered", "auto", {
+              immediate: true,
+              requireLastItemVisible: false,
+            });
+          }
         }
       },
-      [lastItemIndex, scheduleInitialPaintReadyCheck, timeline.length],
+      [lastItemIndex, scheduleBottomPin, scheduleInitialPaintReadyCheck, timeline.length],
     );
 
     useEffect(() => {
