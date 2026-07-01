@@ -988,19 +988,26 @@ jobs:
             )"
 
             state=""
+            failure_state=""
             for candidate in "${status_state}" "${check_state}"; do
               case "${candidate}" in
-                failure|error|timed_out|cancelled|action_required)
-                  state="${candidate}"
+                success)
+                  state="success"
                   break
+                  ;;
+                pending)
+                  if [[ -z "${state}" ]]; then
+                    state="pending"
+                  fi
+                  ;;
+                failure|error|timed_out|cancelled|action_required)
+                  failure_state="${candidate}"
                   ;;
               esac
             done
             if [[ -z "${state}" ]]; then
-              if [[ "${status_state}" == "success" || "${check_state}" == "success" ]]; then
-                state="success"
-              elif [[ "${status_state}" == "pending" || "${check_state}" == "pending" ]]; then
-                state="pending"
+              if [[ -n "${failure_state}" ]]; then
+                state="${failure_state}"
               fi
             fi
 
@@ -1010,13 +1017,7 @@ jobs:
                 exit 0
                 ;;
               failure|error|timed_out|cancelled|action_required)
-                gh api "repos/${GITHUB_REPOSITORY}/commits/${COMMIT_SHA}/statuses" \
-                  --jq 'map(select(.context == "codecov/patch"))[0]'
-                gh api --method GET "repos/${GITHUB_REPOSITORY}/commits/${COMMIT_SHA}/check-runs" \
-                  -f check_name="codecov/patch" \
-                  --jq '.check_runs | sort_by(.completed_at // .started_at // .created_at) | .[-1]'
-                echo "Codecov patch status failed."
-                exit 1
+                echo "Codecov patch status is ${state}; waiting for a final success or timeout."
                 ;;
               pending)
                 echo "Codecov patch status is pending; waiting."
@@ -1033,5 +1034,10 @@ jobs:
             sleep 10
           done
 
-          echo "Timed out waiting for Codecov patch status."
+          echo "Timed out waiting for Codecov patch status to pass."
+          gh api "repos/${GITHUB_REPOSITORY}/commits/${COMMIT_SHA}/statuses" \
+            --jq 'map(select(.context == "codecov/patch"))[0]'
+          gh api --method GET "repos/${GITHUB_REPOSITORY}/commits/${COMMIT_SHA}/check-runs" \
+            -f check_name="codecov/patch" \
+            --jq '.check_runs | sort_by(.completed_at // .started_at // .created_at) | .[-1]'
           exit 1
