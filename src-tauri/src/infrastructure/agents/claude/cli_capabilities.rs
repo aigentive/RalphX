@@ -10,10 +10,12 @@ pub const CLAUDE_FABLE_API_MODEL_ID: &str = "claude-fable-5";
 pub const CLAUDE_FABLE_MIN_VERSION: (u64, u64, u64) = (2, 1, 170);
 pub const CLAUDE_SONNET_4_6_API_MODEL_ID: &str = "claude-sonnet-4-6";
 pub const CLAUDE_SONNET_5_API_MODEL_ID: &str = "claude-sonnet-5";
+pub const CLAUDE_SONNET_4_6_MIN_VERSION: (u64, u64, u64) = (2, 1, 197);
 pub const CLAUDE_SONNET_5_MIN_VERSION: (u64, u64, u64) = (2, 1, 197);
 
 const CLAUDE_XHIGH_MIN_VERSION: (u64, u64, u64) = (2, 1, 111);
 const CLAUDE_FABLE_MIN_VERSION_LABEL: &str = "2.1.170";
+const CLAUDE_SONNET_4_6_MIN_VERSION_LABEL: &str = "2.1.197";
 const CLAUDE_SONNET_5_MIN_VERSION_LABEL: &str = "2.1.197";
 const BASE_CLAUDE_MODEL_ALIASES: [&str; 3] = ["sonnet", "opus", "haiku"];
 const CLAUDE_EFFORT_ORDER: [LogicalEffort; 5] = [
@@ -174,6 +176,10 @@ pub fn is_claude_sonnet_5_model(model: &str) -> bool {
     normalize_model_alias(model) == CLAUDE_SONNET_5_API_MODEL_ID
 }
 
+pub fn is_claude_sonnet_4_6_model(model: &str) -> bool {
+    normalize_model_alias(model) == CLAUDE_SONNET_4_6_API_MODEL_ID
+}
+
 struct ClaudeModelVersionRequirement {
     required_alias: &'static str,
     display_name: &'static str,
@@ -196,6 +202,14 @@ fn claude_model_version_requirement(model: &str) -> Option<ClaudeModelVersionReq
             display_name: "Claude Sonnet 5",
             min_version_label: CLAUDE_SONNET_5_MIN_VERSION_LABEL,
             selection_hint: CLAUDE_SONNET_5_API_MODEL_ID,
+        });
+    }
+    if is_claude_sonnet_4_6_model(model) {
+        return Some(ClaudeModelVersionRequirement {
+            required_alias: CLAUDE_SONNET_4_6_API_MODEL_ID,
+            display_name: "Claude Sonnet 4.6",
+            min_version_label: CLAUDE_SONNET_4_6_MIN_VERSION_LABEL,
+            selection_hint: CLAUDE_SONNET_4_6_API_MODEL_ID,
         });
     }
     None
@@ -266,9 +280,14 @@ fn fallback_supported_model_aliases(version: Option<&str>) -> Vec<String> {
     }
     if version
         .and_then(parse_semver_triplet)
-        .is_some_and(|version| version >= CLAUDE_SONNET_5_MIN_VERSION)
+        .is_some_and(|version| version >= CLAUDE_SONNET_4_6_MIN_VERSION)
     {
         aliases.push(CLAUDE_SONNET_4_6_API_MODEL_ID.to_string());
+    }
+    if version
+        .and_then(parse_semver_triplet)
+        .is_some_and(|version| version >= CLAUDE_SONNET_5_MIN_VERSION)
+    {
         aliases.push(CLAUDE_SONNET_5_API_MODEL_ID.to_string());
     }
     aliases

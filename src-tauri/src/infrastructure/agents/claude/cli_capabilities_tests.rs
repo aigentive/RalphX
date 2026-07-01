@@ -312,6 +312,75 @@ esac
 
 #[cfg(unix)]
 #[test]
+fn validate_sonnet_4_6_model_for_cli_path_requires_supported_version() {
+    let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("env mutex");
+    clear_claude_cli_capability_cache();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let cli_path = temp.path().join("claude");
+    write_fake_claude_cli(
+        &cli_path,
+        r#"#!/bin/sh
+case "$1" in
+  --version)
+    echo "2.1.196 (Claude Code)"
+    ;;
+  --help)
+    echo "Options:"
+    echo "  --effort <level>  Effort level for the current session (low, medium, high, xhigh, max)"
+    ;;
+  *)
+    echo "unexpected $1" >&2
+    exit 2
+    ;;
+esac
+"#,
+    );
+
+    let error = validate_claude_model_for_cli_path(&cli_path, "claude-sonnet-4-6")
+        .expect_err("old CLI should reject Sonnet 4.6");
+    assert!(error.contains("v2.1.197"));
+    assert!(validate_claude_model_for_cli_path(&cli_path, "sonnet").is_ok());
+
+    clear_claude_cli_capability_cache();
+}
+
+#[cfg(unix)]
+#[test]
+fn validate_sonnet_4_6_model_for_cli_path_accepts_supported_version() {
+    let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("env mutex");
+    clear_claude_cli_capability_cache();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let cli_path = temp.path().join("claude");
+    write_fake_claude_cli(
+        &cli_path,
+        r#"#!/bin/sh
+case "$1" in
+  --version)
+    echo "2.1.197 (Claude Code)"
+    ;;
+  --help)
+    echo "Options:"
+    echo "  --effort <level>  Effort level for the current session (low, medium, high, xhigh, max)"
+    ;;
+  *)
+    echo "unexpected $1" >&2
+    exit 2
+    ;;
+esac
+"#,
+    );
+
+    assert!(validate_claude_model_for_cli_path(&cli_path, "claude-sonnet-4-6").is_ok());
+
+    clear_claude_cli_capability_cache();
+}
+
+#[cfg(unix)]
+#[test]
 fn validate_sonnet_5_model_for_cli_path_requires_supported_version() {
     let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
         .lock()
