@@ -458,6 +458,30 @@ describe("AgentsPublishInlineDiffs", () => {
       expect(screen.getByTestId("mock-file-diff-src-Bar.tsx")).toBeInTheDocument();
     });
 
+    it("renders backend-provided untracked files in workspace changes", () => {
+      const changes = [
+        makeFileChange("docs/untracked.md", {
+          status: "added",
+          additions: 2,
+          deletions: 0,
+        }),
+      ];
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+          />,
+        ),
+      );
+
+      expect(screen.getByTestId("mock-diff-filter")).toHaveAttribute("data-count", "1");
+      expect(screen.getByTestId("mock-file-diff-docs-untracked.md")).toBeInTheDocument();
+      expect(screen.queryByTestId("inline-diffs-empty")).toBeNull();
+    });
+
     it("renders file cards through the virtualized list", () => {
       const changes = [makeFileChange("src/Foo.tsx"), makeFileChange("src/Bar.tsx")];
       render(
@@ -1538,6 +1562,35 @@ describe("AgentsPublishInlineDiffs", () => {
       await waitFor(() =>
         expect(screen.getByTestId("mock-file-diff-src-UnstagedFile.tsx")).toBeInTheDocument(),
       );
+      expect(screen.queryByTestId("mock-file-diff-src-Foo.tsx")).toBeNull();
+    });
+
+    it("renders backend-provided untracked files in unstaged mode", async () => {
+      const user = userEvent.setup();
+      const untrackedFile = makeFileChange("docs/untracked.md", {
+        status: "added",
+        additions: 2,
+        deletions: 0,
+      });
+      mockGetUnstagedFiles.mockResolvedValue([untrackedFile]);
+
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview([makeFileChange("src/Foo.tsx")])}
+            commits={[]}
+            isLoading={false}
+          />,
+        ),
+      );
+
+      await user.click(screen.getByRole("button", { name: "Unstaged" }));
+      await waitFor(() =>
+        expect(screen.getByTestId("mock-file-diff-docs-untracked.md")).toBeInTheDocument(),
+      );
+      expect(screen.getByTestId("mock-diff-filter")).toHaveAttribute("data-unstaged-count", "1");
+      expect(screen.queryByTestId("inline-diffs-empty")).toBeNull();
       expect(screen.queryByTestId("mock-file-diff-src-Foo.tsx")).toBeNull();
     });
 

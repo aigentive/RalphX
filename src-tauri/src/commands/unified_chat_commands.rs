@@ -5479,6 +5479,22 @@ pub async fn update_agent_conversation_workspace_from_base_for_app_state(
         .map_err(|e| e.to_string())?
         .unwrap_or(workspace);
 
+    let workspace_changed_emitter = state.app_handle.clone().map(|app_handle| {
+        Box::new(move |conversation_id: &ChatConversationId| {
+            let _ = app_handle.emit(
+                "agent:workspace_changed",
+                serde_json::json!({ "conversation_id": conversation_id.as_str() }),
+            );
+        }) as crate::commands::agent_workspace_auto_review::WorkspaceChangedEmitter
+    });
+    crate::commands::agent_workspace_auto_review::spawn_auto_review_after_workspace_change(
+        state.clone(),
+        Arc::clone(execution_state),
+        refreshed.clone(),
+        crate::commands::agent_workspace_auto_review::AutoReviewTrigger::BaseUpdate,
+        workspace_changed_emitter,
+    );
+
     Ok(UpdateAgentConversationWorkspaceFromBaseResponse {
         workspace: agent_workspace_response_for_state(state, refreshed).await?,
         updated,
