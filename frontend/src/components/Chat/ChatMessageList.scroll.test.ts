@@ -319,7 +319,7 @@ describe("ChatMessageList scroll math", () => {
     ).toBe(true);
   });
 
-  it("does not recover large drift after ordinary user input without bottom intent", () => {
+  it("recovers large drift after ordinary user input when the user has not scrolled away", () => {
     expect(
       shouldRecoverScrollDriftToBottom({
         bottomDelta: 180,
@@ -332,7 +332,7 @@ describe("ChatMessageList scroll math", () => {
         stickyBottomThresholdPx: 150,
         wasVisuallyAtBottom: true,
       })
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it("does not recover drift during history targeting or manual scroll-away", () => {

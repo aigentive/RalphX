@@ -140,7 +140,6 @@ export function shouldRecoverScrollDriftToBottom({
   isUserScrollingAwayFromBottom,
   hasRecentBottomScrollIntent,
   stickyBottomThresholdPx,
-  hasUserScrollInput,
   isAtBottom,
   wasVisuallyAtBottom,
 }: ScrollDriftRecoveryState): boolean {
@@ -161,7 +160,7 @@ export function shouldRecoverScrollDriftToBottom({
     return false;
   }
 
-  return !hasUserScrollInput && (isAtBottom || wasVisuallyAtBottom);
+  return isAtBottom || wasVisuallyAtBottom;
 }
 
 export interface ScrollToBottomControlState {

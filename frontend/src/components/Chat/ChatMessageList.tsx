@@ -1686,8 +1686,22 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       setIsLastItemVisible(true);
     }, []);
 
+    const materializeLatestItemForBottomPin = useCallback((behavior: ScrollBehavior) => {
+      if (timeline.length === 0) {
+        return;
+      }
+
+      const virtuosoBehavior = behavior === "smooth" ? "smooth" : "auto";
+      virtuosoRef.current?.scrollToIndex({
+        index: lastItemIndex,
+        align: "end",
+        behavior: virtuosoBehavior,
+      });
+    }, [lastItemIndex, timeline.length]);
+
     const pinTrueBottom = useCallback(
       (reason: ChatScrollBottomPinReason, behavior: ScrollBehavior = "auto") => {
+        materializeLatestItemForBottomPin(behavior);
         const el = scrollerElRef.current;
         if (!el) {
           logger.debug("[ChatScroll] pinTrueBottom: no scroller ref yet, falling back to scrollToBottom hook", {
@@ -1725,6 +1739,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
         setIsVisuallyAtBottom,
         handleAtBottomStateChange,
         isAtBottomRef,
+        materializeLatestItemForBottomPin,
       ]
     );
 
