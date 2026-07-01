@@ -279,6 +279,7 @@ interface AgentsArtifactPaneProps {
   activeTab: AgentArtifactTab;
   taskMode: AgentTaskArtifactMode;
   onTabChange: (tab: AgentArtifactTab) => void;
+  onOpenPublish?: () => void;
   onTaskModeChange: (mode: AgentTaskArtifactMode) => void;
   onPublishWorkspace: ((conversationId: string) => Promise<void>) | undefined;
   isPublishingWorkspace?: boolean;
@@ -299,6 +300,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   activeTab,
   taskMode,
   onTabChange,
+  onOpenPublish,
   onTaskModeChange,
   onPublishWorkspace,
   isPublishingWorkspace = false,
@@ -753,8 +755,12 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     handleFocusWorkspaceReview();
   }, [handleFocusWorkspaceReview, onTabChange]);
   const handleOpenPublish = useCallback(() => {
+    if (onOpenPublish) {
+      onOpenPublish();
+      return;
+    }
     onTabChange("publish");
-  }, [onTabChange]);
+  }, [onOpenPublish, onTabChange]);
 
   return (
     <aside
