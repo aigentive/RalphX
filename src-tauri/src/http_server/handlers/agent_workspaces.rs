@@ -1,6 +1,6 @@
 //! Agent workspace HTTP handlers.
 
-use std::{str::FromStr, sync::Arc, time::Instant};
+use std::{future::Future, pin::Pin, str::FromStr, sync::Arc, time::Instant};
 
 use axum::{
     extract::{Path, Query, State},
@@ -16,7 +16,8 @@ use crate::application::agent_conversation_workspace::{
 use crate::application::agent_workspace_pr_description::validate_agent_workspace_pr_description_body;
 use crate::application::agent_workspace_review::{
     apply_review_artifact_to_monitor, load_agent_workspace_review_context,
-    review_gate_publish_blocker, start_agent_workspace_review, AgentWorkspaceReviewTarget,
+    review_gate_publish_blocker, start_agent_workspace_review, AgentWorkspaceReviewStart,
+    AgentWorkspaceReviewTarget,
 };
 use crate::application::publish_resilience::{
     inspect_publish_branch_freshness_for_source, push_publish_branch,
@@ -2267,6 +2268,102 @@ async fn start_workspace_review_for_pr_fix_if_required(
     workspace: &AgentConversationWorkspace,
     summary: &str,
 ) -> Result<Option<Json<CompleteAgentWorkspacePrFixResponse>>, JsonError> {
+    match workspace_review_action_after_fix_if_required(state, workspace).await? {
+        WorkspaceReviewAfterFixAction::Continue => Ok(None),
+        WorkspaceReviewAfterFixAction::Waiting { started } => {
+            let status = if started {
+                "workspace_review_started"
+            } else {
+                "workspace_reviewing"
+            };
+            let message = if started {
+                "PR fix completed; Workspace Review started before publishing resumes."
+            } else {
+                "PR fix completed; Workspace Review is already running before publishing resumes."
+            };
+            finish_pr_fix_waiting_for_workspace_review(
+                state,
+                conversation_id,
+                workspace,
+                message,
+                summary,
+                status,
+            )
+            .await
+            .map(Some)
+        }
+        WorkspaceReviewAfterFixAction::Blocked {
+            blocker,
+            classification,
+        } => finish_pr_fix_blocked_by_workspace_review(
+            state,
+            conversation_id,
+            workspace,
+            &blocker,
+            summary,
+            classification,
+        )
+        .await
+        .map(Some),
+    }
+}
+
+enum WorkspaceReviewAfterFixAction {
+    Continue,
+    Waiting {
+        started: bool,
+    },
+    Blocked {
+        blocker: String,
+        classification: &'static str,
+    },
+}
+
+type WorkspaceReviewStartFuture<'a> =
+    Pin<Box<dyn Future<Output = crate::error::AppResult<AgentWorkspaceReviewStart>> + Send + 'a>>;
+
+trait WorkspaceReviewStarter {
+    fn start<'a>(
+        &'a self,
+        state: Arc<AppState>,
+        workspace: &'a AgentConversationWorkspace,
+        force: bool,
+    ) -> WorkspaceReviewStartFuture<'a>;
+}
+
+struct DefaultWorkspaceReviewStarter;
+
+impl WorkspaceReviewStarter for DefaultWorkspaceReviewStarter {
+    fn start<'a>(
+        &'a self,
+        state: Arc<AppState>,
+        workspace: &'a AgentConversationWorkspace,
+        force: bool,
+    ) -> WorkspaceReviewStartFuture<'a> {
+        Box::pin(start_agent_workspace_review(state, workspace, force))
+    }
+}
+
+async fn workspace_review_action_after_fix_if_required(
+    state: &HttpServerState,
+    workspace: &AgentConversationWorkspace,
+) -> Result<WorkspaceReviewAfterFixAction, JsonError> {
+    workspace_review_action_after_fix_if_required_with_starter(
+        state,
+        workspace,
+        &DefaultWorkspaceReviewStarter,
+    )
+    .await
+}
+
+async fn workspace_review_action_after_fix_if_required_with_starter<S>(
+    state: &HttpServerState,
+    workspace: &AgentConversationWorkspace,
+    starter: &S,
+) -> Result<WorkspaceReviewAfterFixAction, JsonError>
+where
+    S: WorkspaceReviewStarter + ?Sized,
+{
     let review_settings = state
         .app_state
         .review_settings_repo
@@ -2274,7 +2371,7 @@ async fn start_workspace_review_for_pr_fix_if_required(
         .await
         .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
     if !review_settings.require_workspace_review {
-        return Ok(None);
+        return Ok(WorkspaceReviewAfterFixAction::Continue);
     }
 
     let review_context = load_agent_workspace_review_context(state.app_state.as_ref(), workspace)
@@ -2282,37 +2379,22 @@ async fn start_workspace_review_for_pr_fix_if_required(
         .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
     match review_context.monitor.review_gate_status {
         AgentWorkspaceReviewGateStatus::Required => {
-            let start =
-                start_agent_workspace_review(Arc::clone(&state.app_state), workspace, false)
-                    .await
-                    .map_err(|error| {
-                        json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
-                    })?;
+            let start = starter
+                .start(Arc::clone(&state.app_state), workspace, false)
+                .await
+                .map_err(|error| {
+                    json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
+                })?;
             match start.context.monitor.review_gate_status {
                 AgentWorkspaceReviewGateStatus::NotRequired
-                | AgentWorkspaceReviewGateStatus::Passed => Ok(None),
+                | AgentWorkspaceReviewGateStatus::Passed => {
+                    Ok(WorkspaceReviewAfterFixAction::Continue)
+                }
                 AgentWorkspaceReviewGateStatus::Reviewing
                 | AgentWorkspaceReviewGateStatus::Required => {
-                    let status = if start.started {
-                        "workspace_review_started"
-                    } else {
-                        "workspace_reviewing"
-                    };
-                    let message = if start.started {
-                        "PR fix completed; Workspace Review started before publishing resumes."
-                    } else {
-                        "PR fix completed; Workspace Review is already running before publishing resumes."
-                    };
-                    finish_pr_fix_waiting_for_workspace_review(
-                        state,
-                        conversation_id,
-                        workspace,
-                        message,
-                        summary,
-                        status,
-                    )
-                    .await
-                    .map(Some)
+                    Ok(WorkspaceReviewAfterFixAction::Waiting {
+                        started: start.started,
+                    })
                 }
                 AgentWorkspaceReviewGateStatus::Blocking
                 | AgentWorkspaceReviewGateStatus::Failed => {
@@ -2321,35 +2403,18 @@ async fn start_workspace_review_for_pr_fix_if_required(
                     );
                     let blocker = review_gate_publish_blocker(&start.context)
                         .unwrap_or_else(|| "Workspace Review blocks publishing".to_string());
-                    finish_pr_fix_blocked_by_workspace_review(
-                        state,
-                        conversation_id,
-                        workspace,
-                        &blocker,
-                        summary,
+                    Ok(WorkspaceReviewAfterFixAction::Blocked {
+                        blocker,
                         classification,
-                    )
-                    .await
-                    .map(Some)
+                    })
                 }
             }
         }
         AgentWorkspaceReviewGateStatus::Reviewing => {
-            let message =
-                "PR fix completed; Workspace Review is already running before publishing resumes.";
-            finish_pr_fix_waiting_for_workspace_review(
-                state,
-                conversation_id,
-                workspace,
-                message,
-                summary,
-                "workspace_reviewing",
-            )
-            .await
-            .map(Some)
+            Ok(WorkspaceReviewAfterFixAction::Waiting { started: false })
         }
         AgentWorkspaceReviewGateStatus::NotRequired | AgentWorkspaceReviewGateStatus::Passed => {
-            Ok(None)
+            Ok(WorkspaceReviewAfterFixAction::Continue)
         }
         AgentWorkspaceReviewGateStatus::Blocking | AgentWorkspaceReviewGateStatus::Failed => {
             let classification = pr_fix_workspace_review_block_classification(
@@ -2357,16 +2422,10 @@ async fn start_workspace_review_for_pr_fix_if_required(
             );
             let blocker = review_gate_publish_blocker(&review_context)
                 .unwrap_or_else(|| "Workspace Review blocks publishing".to_string());
-            finish_pr_fix_blocked_by_workspace_review(
-                state,
-                conversation_id,
-                workspace,
-                &blocker,
-                summary,
+            Ok(WorkspaceReviewAfterFixAction::Blocked {
+                blocker,
                 classification,
-            )
-            .await
-            .map(Some)
+            })
         }
     }
 }
@@ -2428,6 +2487,228 @@ fn pr_fix_workspace_review_block_classification(
         AgentWorkspaceReviewGateStatus::Failed => "workspace_review_failed",
         _ => "workspace_review_blocked",
     }
+}
+
+async fn complete_repair_workspace_review_response_if_required(
+    state: &HttpServerState,
+    conversation_id: &ChatConversationId,
+    workspace: &AgentConversationWorkspace,
+    base_commit: &str,
+    repair_commit_sha: &str,
+    summary: &str,
+) -> Result<Option<Json<CompleteAgentWorkspaceRepairResponse>>, JsonError> {
+    complete_repair_workspace_review_response_if_required_with_starter(
+        state,
+        conversation_id,
+        workspace,
+        base_commit,
+        repair_commit_sha,
+        summary,
+        &DefaultWorkspaceReviewStarter,
+    )
+    .await
+}
+
+async fn complete_repair_workspace_review_response_if_required_with_starter<S>(
+    state: &HttpServerState,
+    conversation_id: &ChatConversationId,
+    workspace: &AgentConversationWorkspace,
+    base_commit: &str,
+    repair_commit_sha: &str,
+    summary: &str,
+    starter: &S,
+) -> Result<Option<Json<CompleteAgentWorkspaceRepairResponse>>, JsonError>
+where
+    S: WorkspaceReviewStarter + ?Sized,
+{
+    let Some(existing_monitor) = state
+        .app_state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&workspace.conversation_id)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?
+    else {
+        return Ok(None);
+    };
+    if !workspace_repair_was_routed_from_workspace_review(&existing_monitor) {
+        return Ok(None);
+    }
+
+    match workspace_review_action_after_fix_if_required_with_starter(state, workspace, starter)
+        .await?
+    {
+        WorkspaceReviewAfterFixAction::Continue => Ok(None),
+        WorkspaceReviewAfterFixAction::Waiting { started } => {
+            let message = if started {
+                "Agent workspace repair verified; Workspace Review started before publishing resumes."
+            } else {
+                "Agent workspace repair verified; Workspace Review is already running before publishing resumes."
+            };
+            let classification = if started {
+                "workspace_review_started"
+            } else {
+                "workspace_reviewing"
+            };
+            finish_repair_waiting_for_workspace_review(
+                state,
+                conversation_id,
+                workspace,
+                message,
+                summary,
+                base_commit,
+                repair_commit_sha,
+                classification,
+            )
+            .await
+            .map(Some)
+        }
+        WorkspaceReviewAfterFixAction::Blocked {
+            blocker,
+            classification,
+        } => {
+            let message = format!(
+                "Agent workspace repair verified; Workspace Review blocks publishing: {blocker}"
+            );
+            finish_repair_blocked_by_workspace_review(
+                state,
+                conversation_id,
+                workspace,
+                &message,
+                summary,
+                base_commit,
+                repair_commit_sha,
+                &blocker,
+                classification,
+            )
+            .await
+            .map(Some)
+        }
+    }
+}
+
+fn workspace_repair_was_routed_from_workspace_review(
+    monitor: &AgentWorkspaceReviewMonitor,
+) -> bool {
+    monitor.review_fixer_status.is_some()
+        || monitor.review_fixer_run_id.is_some()
+        || monitor.review_fixer_conversation_id.is_some()
+}
+
+async fn repair_workspace_review_response(
+    state: &HttpServerState,
+    conversation_id: &ChatConversationId,
+    message: &str,
+    base_commit: &str,
+    repair_commit_sha: &str,
+    auto_publish_status: &str,
+    auto_publish_error: Option<String>,
+) -> Result<Json<CompleteAgentWorkspaceRepairResponse>, JsonError> {
+    let workspace_response =
+        load_agent_workspace_response(state.app_state.as_ref(), conversation_id).await?;
+    let pr_number = workspace_response.publication_pr_number;
+    let pr_url = workspace_response.publication_pr_url.clone();
+    Ok(Json(CompleteAgentWorkspaceRepairResponse {
+        success: true,
+        message: message.to_string(),
+        new_status: "refreshed".to_string(),
+        base_commit: base_commit.to_string(),
+        repair_commit_sha: repair_commit_sha.to_string(),
+        auto_publish_status: Some(auto_publish_status.to_string()),
+        auto_publish_error,
+        pr_number,
+        pr_url,
+    }))
+}
+
+async fn finish_repair_waiting_for_workspace_review(
+    state: &HttpServerState,
+    conversation_id: &ChatConversationId,
+    workspace: &AgentConversationWorkspace,
+    message: &str,
+    summary: &str,
+    base_commit: &str,
+    repair_commit_sha: &str,
+    classification: &str,
+) -> Result<Json<CompleteAgentWorkspaceRepairResponse>, JsonError> {
+    state
+        .app_state
+        .agent_conversation_workspace_repo
+        .update_pr_auto_merge_state(
+            conversation_id,
+            workspace.pr_auto_merge_current,
+            Some("reviewing"),
+            Some(message),
+        )
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    state
+        .app_state
+        .agent_conversation_workspace_repo
+        .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+            conversation_id.clone(),
+            "repair_workspace_review",
+            "reviewing",
+            format!("{message} Repair summary: {summary}"),
+            Some(classification.to_string()),
+        ))
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    repair_workspace_review_response(
+        state,
+        conversation_id,
+        message,
+        base_commit,
+        repair_commit_sha,
+        "waiting_for_workspace_review",
+        None,
+    )
+    .await
+}
+
+async fn finish_repair_blocked_by_workspace_review(
+    state: &HttpServerState,
+    conversation_id: &ChatConversationId,
+    workspace: &AgentConversationWorkspace,
+    message: &str,
+    summary: &str,
+    base_commit: &str,
+    repair_commit_sha: &str,
+    blocker: &str,
+    classification: &str,
+) -> Result<Json<CompleteAgentWorkspaceRepairResponse>, JsonError> {
+    state
+        .app_state
+        .agent_conversation_workspace_repo
+        .update_pr_auto_merge_state(
+            conversation_id,
+            workspace.pr_auto_merge_current,
+            Some("blocked"),
+            Some(message),
+        )
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    state
+        .app_state
+        .agent_conversation_workspace_repo
+        .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+            conversation_id.clone(),
+            "repair_workspace_review",
+            "blocked",
+            format!("{message} Repair summary: {summary}"),
+            Some(classification.to_string()),
+        ))
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    repair_workspace_review_response(
+        state,
+        conversation_id,
+        message,
+        base_commit,
+        repair_commit_sha,
+        "blocked_by_workspace_review",
+        Some(blocker.to_string()),
+    )
+    .await
 }
 
 async fn finish_pr_fix_blocked_by_workspace_review(
@@ -3393,7 +3674,7 @@ pub async fn complete_agent_workspace_repair(
     state
         .app_state
         .agent_conversation_workspace_repo
-        .create_or_update(updated_workspace)
+        .create_or_update(updated_workspace.clone())
         .await
         .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
     state
@@ -3408,6 +3689,18 @@ pub async fn complete_agent_workspace_repair(
         ))
         .await
         .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    if let Some(response) = complete_repair_workspace_review_response_if_required(
+        &state,
+        &conversation_id,
+        &updated_workspace,
+        &freshness.target_base_commit,
+        &req.repair_commit_sha,
+        &req.summary,
+    )
+    .await?
+    {
+        return Ok(response);
+    }
     let publication_events = state
         .app_state
         .agent_conversation_workspace_repo
@@ -4055,12 +4348,15 @@ mod tests {
     use std::path::{Path as StdPath, PathBuf};
     use std::pin::Pin;
     use std::process::Command;
-    use std::sync::Arc;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
 
     use crate::application::agent_conversation_workspace::resolve_agent_conversation_workspace_path;
     use crate::application::agent_workspace_review::{
-        AgentWorkspaceReviewChangedFile, AgentWorkspaceReviewDiffSummary,
-        AgentWorkspaceReviewPacket,
+        AgentWorkspaceReviewChangedFile, AgentWorkspaceReviewContext,
+        AgentWorkspaceReviewDiffSummary, AgentWorkspaceReviewPacket,
     };
     use crate::application::{AppState, TeamService, TeamStateTracker};
     use crate::commands::ExecutionState;
@@ -4110,6 +4406,69 @@ mod tests {
             team_tracker: tracker,
             team_service,
             delegation_service: Default::default(),
+        }
+    }
+
+    struct RecordingWorkspaceReviewStarter {
+        calls: AtomicUsize,
+    }
+
+    impl RecordingWorkspaceReviewStarter {
+        fn new() -> Self {
+            Self {
+                calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn call_count(&self) -> usize {
+            self.calls.load(Ordering::SeqCst)
+        }
+    }
+
+    impl WorkspaceReviewStarter for RecordingWorkspaceReviewStarter {
+        fn start<'a>(
+            &'a self,
+            state: Arc<AppState>,
+            workspace: &'a AgentConversationWorkspace,
+            force: bool,
+        ) -> WorkspaceReviewStartFuture<'a> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move {
+                assert!(!force, "repair completion should start a normal refresh");
+                let context =
+                    load_agent_workspace_review_context(state.as_ref(), workspace).await?;
+                let target = context.target;
+                assert!(
+                    target.is_some(),
+                    "repair refresh should still have reviewable changes"
+                );
+                let mut monitor = context.monitor;
+                monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
+                monitor.review_outcome = AgentWorkspaceReviewOutcome::None;
+                monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Reviewing;
+                monitor.review_blocking_summary = None;
+                monitor.review_blocking_fingerprint = None;
+                monitor.review_fixer_run_id = None;
+                monitor.review_fixer_conversation_id = None;
+                monitor.review_fixer_status = None;
+                monitor.last_run_id = Some("workspace-review-run-after-repair".to_string());
+                let monitor = state
+                    .agent_conversation_workspace_repo
+                    .upsert_workspace_review_monitor(monitor)
+                    .await?;
+                Ok(AgentWorkspaceReviewStart {
+                    context: AgentWorkspaceReviewContext {
+                        monitor,
+                        target,
+                        is_current: false,
+                        is_outdated: false,
+                        should_show_tab: true,
+                    },
+                    started: true,
+                    skipped_reason: None,
+                    was_queued: false,
+                })
+            })
         }
     }
 
@@ -5359,6 +5718,204 @@ mod tests {
             event.step == "pr_autofix_workspace_review"
                 && event.classification.as_deref() == Some("workspace_reviewing")
         }));
+    }
+
+    #[tokio::test]
+    async fn complete_repair_starts_fresh_workspace_review_when_blocking_review_is_stale() {
+        let repo = tempfile::TempDir::new().expect("repo tempdir");
+        let worktrees = tempfile::TempDir::new().expect("worktree tempdir");
+        git(repo.path(), &["init", "-b", "main"]);
+        git(repo.path(), &["config", "user.email", "test@example.com"]);
+        git(repo.path(), &["config", "user.name", "RalphX Test"]);
+        std::fs::write(repo.path().join("README.md"), "base\n").expect("write base file");
+        git(repo.path(), &["add", "README.md"]);
+        git(repo.path(), &["commit", "-m", "base"]);
+        let base_sha = git(repo.path(), &["rev-parse", "HEAD"]);
+
+        let app_state = Arc::new(AppState::new_test());
+        app_state
+            .review_settings_repo
+            .update_settings(&ReviewSettings {
+                require_workspace_review: true,
+                ..ReviewSettings::default()
+            })
+            .await
+            .expect("review settings should update");
+        let conversation_id = ChatConversationId::new();
+        let mut project = Project::new(
+            "Repair Review Refresh".to_string(),
+            repo.path().to_string_lossy().to_string(),
+        );
+        project.base_branch = Some("main".to_string());
+        project.worktree_parent_directory = Some(worktrees.path().to_string_lossy().to_string());
+        app_state
+            .project_repo
+            .create(project.clone())
+            .await
+            .expect("seed project");
+
+        let mut conversation = ChatConversation::new_project(project.id.clone());
+        conversation.id = conversation_id.clone();
+        conversation.context_type = ChatContextType::Project;
+        conversation.context_id = project.id.as_str().to_string();
+        app_state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .expect("seed conversation");
+
+        let workspace_path = resolve_agent_conversation_workspace_path(&project, &conversation_id)
+            .expect("workspace path");
+        let branch_name = "ralphx/test/repair-review-refresh";
+        git(
+            repo.path(),
+            &[
+                "worktree",
+                "add",
+                "-b",
+                branch_name,
+                workspace_path.to_str().unwrap(),
+                "main",
+            ],
+        );
+        std::fs::write(workspace_path.join("reviewed.txt"), "blocking\n")
+            .expect("write reviewed change");
+        git(&workspace_path, &["add", "reviewed.txt"]);
+        git(
+            &workspace_path,
+            &["commit", "-m", "reviewed blocking change"],
+        );
+
+        let mut workspace = AgentConversationWorkspace::new(
+            conversation_id.clone(),
+            project.id.clone(),
+            AgentConversationWorkspaceMode::Edit,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main".to_string(),
+            Some("Project default (main)".to_string()),
+            Some(base_sha.clone()),
+            branch_name.to_string(),
+            workspace_path.to_string_lossy().to_string(),
+        );
+        workspace.publication_push_status = Some("refreshed".to_string());
+        app_state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace.clone())
+            .await
+            .expect("seed workspace");
+
+        let initial_review = load_agent_workspace_review_context(app_state.as_ref(), &workspace)
+            .await
+            .expect("initial review context should load");
+        let initial_target = initial_review.target.expect("review target should exist");
+        let mut monitor = initial_review.monitor;
+        apply_review_artifact_to_monitor(
+            &mut monitor,
+            initial_target.scope,
+            initial_target.head_sha,
+            initial_target.diff_fingerprint,
+            Some("review-run-blocking".to_string()),
+            ArtifactId::from_string("artifact-blocking-review"),
+            1,
+            chrono::Utc::now(),
+            None,
+        );
+        monitor.status = AgentWorkspaceReviewMonitorStatus::Ready;
+        monitor.review_outcome = AgentWorkspaceReviewOutcome::Blocking;
+        monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Blocking;
+        monitor.review_blocking_summary = Some("Blocking review finding".to_string());
+        monitor.review_blocking_fingerprint = Some("blocking-fingerprint".to_string());
+        monitor.review_fixer_status = Some("running".to_string());
+        monitor.review_fixer_run_id = Some("fixer-run".to_string());
+        monitor.review_fixer_conversation_id = Some(conversation_id.clone());
+        app_state
+            .agent_conversation_workspace_repo
+            .upsert_workspace_review_monitor(monitor)
+            .await
+            .expect("blocking review monitor should persist");
+
+        std::fs::write(workspace_path.join("reviewed.txt"), "fixed\n").expect("write repair");
+        git(&workspace_path, &["add", "reviewed.txt"]);
+        git(&workspace_path, &["commit", "-m", "repair blocking review"]);
+        let repair_sha = git(&workspace_path, &["rev-parse", "HEAD"]);
+
+        let stale_context = load_agent_workspace_review_context(app_state.as_ref(), &workspace)
+            .await
+            .expect("stale review context should load");
+        assert_eq!(
+            stale_context.monitor.review_gate_status,
+            AgentWorkspaceReviewGateStatus::Required
+        );
+
+        let state = test_http_state(Arc::clone(&app_state));
+        let starter = RecordingWorkspaceReviewStarter::new();
+        let response = complete_repair_workspace_review_response_if_required_with_starter(
+            &state,
+            &conversation_id,
+            &workspace,
+            &base_sha,
+            &repair_sha,
+            "fixed the blocking review finding",
+            &starter,
+        )
+        .await
+        .expect("repair review response should succeed")
+        .expect("stale required review should pause publish")
+        .0;
+
+        assert_eq!(starter.call_count(), 1);
+        assert_eq!(response.new_status, "refreshed");
+        assert_eq!(
+            response.auto_publish_status.as_deref(),
+            Some("waiting_for_workspace_review")
+        );
+        assert_eq!(response.auto_publish_error, None);
+        let updated_workspace = app_state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace should load")
+            .expect("workspace should exist");
+        assert_eq!(
+            updated_workspace.pr_supervision_status.as_deref(),
+            Some("reviewing"),
+            "repair completion should persist the paused workspace-review supervision state"
+        );
+        assert_eq!(
+            updated_workspace.pr_supervision_summary.as_deref(),
+            Some(
+                "Agent workspace repair verified; Workspace Review started before publishing resumes."
+            )
+        );
+        let events = app_state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&conversation_id)
+            .await
+            .expect("publication events should load");
+        assert!(
+            events.iter().any(|event| {
+                event.step == "repair_workspace_review"
+                    && event.status == "reviewing"
+                    && event.classification.as_deref() == Some("workspace_review_started")
+                    && event.summary.contains("fixed the blocking review finding")
+            }),
+            "repair completion should append a durable workspace-review pause event"
+        );
+        let refreshed_review = load_agent_workspace_review_context(app_state.as_ref(), &workspace)
+            .await
+            .expect("refreshed review context should load");
+        assert_eq!(
+            refreshed_review.monitor.status,
+            AgentWorkspaceReviewMonitorStatus::Reviewing
+        );
+        assert_eq!(
+            refreshed_review.monitor.review_gate_status,
+            AgentWorkspaceReviewGateStatus::Reviewing
+        );
+        assert_eq!(
+            refreshed_review.monitor.review_fixer_status, None,
+            "repair completion should clear stale fixer state before the fresh review"
+        );
     }
 
     #[tokio::test]

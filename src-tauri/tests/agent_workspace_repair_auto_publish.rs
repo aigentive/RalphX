@@ -14,6 +14,7 @@ use ralphx_lib::domain::entities::{
     ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranch, PlanBranchId,
     Project, ProjectId,
 };
+use ralphx_lib::domain::review::ReviewSettings;
 use ralphx_lib::domain::services::github_service::GithubServiceTrait;
 use ralphx_lib::http_server::handlers::agent_workspaces::{
     complete_agent_workspace_repair, CompleteAgentWorkspaceRepairRequest,
@@ -45,6 +46,17 @@ fn make_http_state(app_state: AppState) -> HttpServerState {
         team_service: Arc::new(TeamService::new_without_events(Arc::new(team_tracker))),
         delegation_service: Default::default(),
     }
+}
+
+async fn disable_workspace_review_gate(app_state: &AppState) {
+    app_state
+        .review_settings_repo
+        .update_settings(&ReviewSettings {
+            require_workspace_review: false,
+            ..ReviewSettings::default()
+        })
+        .await
+        .expect("disable workspace review policy for auto-publish fixture");
 }
 
 #[tokio::test]
@@ -121,6 +133,7 @@ async fn complete_repair_attempts_publish_without_waiting_for_user_click() {
         .create_or_update(workspace)
         .await
         .expect("seed workspace");
+    disable_workspace_review_gate(&app_state).await;
 
     let state = make_http_state(app_state);
     let response = complete_agent_workspace_repair(
@@ -264,6 +277,7 @@ async fn complete_update_only_repair_auto_publishes_when_enabled() {
         ))
         .await
         .expect("seed update-only repair request");
+    disable_workspace_review_gate(&app_state).await;
 
     let state = make_http_state(app_state);
     let response = complete_agent_workspace_repair(
