@@ -19,6 +19,35 @@ fn built_in_registry_tracks_provider_model_effort_compatibility() {
     );
     assert_eq!(opus.default_effort, LogicalEffort::XHigh);
 
+    let sonnet_5 = snapshot
+        .find_enabled(AgentHarnessKind::Claude, "claude-sonnet-5")
+        .expect("Sonnet 5 should be registered");
+    assert_eq!(
+        sonnet_5.supported_efforts,
+        vec![
+            LogicalEffort::Low,
+            LogicalEffort::Medium,
+            LogicalEffort::High,
+            LogicalEffort::XHigh,
+            LogicalEffort::Max,
+        ]
+    );
+    assert_eq!(sonnet_5.default_effort, LogicalEffort::High);
+
+    let sonnet_4_6 = snapshot
+        .find_enabled(AgentHarnessKind::Claude, "claude-sonnet-4-6")
+        .expect("Sonnet 4.6 should be registered");
+    assert_eq!(
+        sonnet_4_6.supported_efforts,
+        vec![
+            LogicalEffort::Low,
+            LogicalEffort::Medium,
+            LogicalEffort::High,
+            LogicalEffort::Max,
+        ]
+    );
+    assert_eq!(sonnet_4_6.default_effort, LogicalEffort::High);
+
     let fable = snapshot
         .find_enabled(AgentHarnessKind::Claude, "fable")
         .expect("fable should be registered");
@@ -76,7 +105,7 @@ fn custom_models_override_built_ins() {
 fn built_in_registry_exposes_expected_defaults_for_each_provider() {
     let models = built_in_agent_models();
 
-    assert_eq!(models.len(), 9);
+    assert_eq!(models.len(), 11);
     assert_eq!(default_model_for_provider(AgentHarnessKind::Claude), "sonnet");
     assert_eq!(default_model_for_provider(AgentHarnessKind::Codex), "gpt-5.5");
     assert_eq!(lightweight_model_for_provider(AgentHarnessKind::Claude), "haiku");
@@ -120,7 +149,17 @@ fn built_in_registry_exposes_expected_defaults_for_each_provider() {
         .map(|model| model.model_id.as_str())
         .collect();
 
-    assert_eq!(claude_models, vec!["sonnet", "opus", "haiku", "fable"]);
+    assert_eq!(
+        claude_models,
+        vec![
+            "sonnet",
+            "claude-sonnet-4-6",
+            "claude-sonnet-5",
+            "opus",
+            "haiku",
+            "fable",
+        ]
+    );
     assert_eq!(
         codex_models,
         vec![

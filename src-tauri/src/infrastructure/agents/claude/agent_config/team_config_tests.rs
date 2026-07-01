@@ -13,6 +13,8 @@ fn test_model_within_cap_haiku_under_sonnet() {
 #[test]
 fn test_model_within_cap_sonnet_equals_sonnet() {
     assert!(model_within_cap("sonnet", "sonnet"));
+    assert!(model_within_cap("claude-sonnet-4-6", "sonnet"));
+    assert!(model_within_cap("claude-sonnet-5", "sonnet"));
 }
 
 #[test]

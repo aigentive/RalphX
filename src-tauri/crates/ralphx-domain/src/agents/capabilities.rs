@@ -6,9 +6,9 @@ use super::{harness::AgentHarnessKind, model_registry::built_in_agent_models, ty
 /// Information about a model available to a client
 #[derive(Debug, Clone)]
 pub struct ModelInfo {
-    /// Model identifier (e.g., "claude-sonnet-4-5-20250929")
+    /// Model identifier (e.g., "claude-sonnet-5")
     pub id: String,
-    /// Human-readable model name (e.g., "Claude Sonnet 4.5")
+    /// Human-readable model name (e.g., "Claude Sonnet 5")
     pub name: String,
     /// Maximum tokens the model can generate
     pub max_tokens: u32,
@@ -53,9 +53,10 @@ impl ClientCapabilities {
             supports_filesystem: true,
             supports_streaming: true,
             supports_mcp: true,
-            max_context_tokens: 200_000,
+            max_context_tokens: 1_000_000,
             models: vec![
-                ModelInfo::new("claude-sonnet-4-5-20250929", "Claude Sonnet 4.5", 64_000),
+                ModelInfo::new("claude-sonnet-4-6", "Claude Sonnet 4.6", 128_000),
+                ModelInfo::new("claude-sonnet-5", "Claude Sonnet 5", 128_000),
                 ModelInfo::new("claude-opus-4-5-20251101", "Claude Opus 4.5", 32_000),
                 ModelInfo::new("claude-haiku-4-5-20251001", "Claude Haiku 4.5", 32_000),
             ],

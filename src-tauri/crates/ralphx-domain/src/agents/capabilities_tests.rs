@@ -32,8 +32,8 @@ fn test_claude_code_capabilities() {
     assert!(caps.supports_filesystem);
     assert!(caps.supports_streaming);
     assert!(caps.supports_mcp);
-    assert_eq!(caps.max_context_tokens, 200_000);
-    assert_eq!(caps.models.len(), 3);
+    assert_eq!(caps.max_context_tokens, 1_000_000);
+    assert_eq!(caps.models.len(), 4);
 }
 
 #[test]
@@ -65,7 +65,8 @@ fn test_codex_capabilities_include_current_model_family() {
 #[test]
 fn test_has_model_true() {
     let caps = ClientCapabilities::claude_code();
-    assert!(caps.has_model("claude-sonnet-4-5-20250929"));
+    assert!(caps.has_model("claude-sonnet-4-6"));
+    assert!(caps.has_model("claude-sonnet-5"));
     assert!(caps.has_model("claude-opus-4-5-20251101"));
 }
 
@@ -79,7 +80,7 @@ fn test_has_model_false() {
 fn test_default_model() {
     let caps = ClientCapabilities::claude_code();
     let default = caps.default_model().unwrap();
-    assert_eq!(default.id, "claude-sonnet-4-5-20250929");
+    assert_eq!(default.id, "claude-sonnet-4-6");
 }
 
 #[test]
@@ -107,7 +108,8 @@ fn test_capabilities_clone() {
 fn test_claude_models_have_correct_ids() {
     let caps = ClientCapabilities::claude_code();
     let model_ids: Vec<&str> = caps.models.iter().map(|m| m.id.as_str()).collect();
-    assert!(model_ids.contains(&"claude-sonnet-4-5-20250929"));
+    assert!(model_ids.contains(&"claude-sonnet-4-6"));
+    assert!(model_ids.contains(&"claude-sonnet-5"));
     assert!(model_ids.contains(&"claude-opus-4-5-20251101"));
     assert!(model_ids.contains(&"claude-haiku-4-5-20251001"));
 }

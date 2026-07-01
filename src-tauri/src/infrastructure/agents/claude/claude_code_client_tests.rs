@@ -145,14 +145,15 @@ fn test_capabilities_claude_code() {
     assert!(caps.supports_filesystem);
     assert!(caps.supports_streaming);
     assert!(caps.supports_mcp);
-    assert_eq!(caps.max_context_tokens, 200_000);
+    assert_eq!(caps.max_context_tokens, 1_000_000);
 }
 
 #[test]
 fn test_capabilities_has_models() {
     let client = ClaudeCodeClient::new();
     let caps = client.capabilities();
-    assert!(caps.has_model("claude-sonnet-4-5-20250929"));
+    assert!(caps.has_model("claude-sonnet-4-6"));
+    assert!(caps.has_model("claude-sonnet-5"));
     assert!(caps.has_model("claude-opus-4-5-20251101"));
     assert!(caps.has_model("claude-haiku-4-5-20251001"));
 }
