@@ -79,6 +79,7 @@ describe("useAgentConversationRuntimeStatus", () => {
       activeAgentRunIds: {},
       agentStatus: {},
       agentActivityLabels: {},
+      isSending: {},
     });
   });
 
@@ -127,5 +128,35 @@ describe("useAgentConversationRuntimeStatus", () => {
     expect(
       useChatStore.getState().agentActivityLabels[storeKey],
     ).toBeUndefined();
+  });
+
+  it("keeps optimistic start state while the seed message is sending", async () => {
+    const storeKey = buildStoreKey("project", "conversation-1");
+    useChatStore.getState().setAgentRunning(storeKey, true);
+    useChatStore.getState().setSending(storeKey, true);
+    useChatStore
+      .getState()
+      .setAgentActivityLabel(storeKey, "Setup workspace");
+    mockGetAgentConversationRuntimeStatuses.mockResolvedValueOnce({
+      "conversation-1": runtimeStatus({
+        isRunning: false,
+        agentStatus: "idle",
+        primarySource: null,
+        summaryLabel: null,
+        items: [],
+      }),
+    });
+
+    renderHook(() => useAgentConversationRuntimeStatus("conversation-1"), {
+      wrapper: createWrapper(),
+    });
+
+    await waitFor(() => {
+      expect(useChatStore.getState().agentStatus[storeKey]).toBe("generating");
+    });
+    expect(useChatStore.getState().isSending[storeKey]).toBe(true);
+    expect(useChatStore.getState().agentActivityLabels[storeKey]).toBe(
+      "Setup workspace",
+    );
   });
 });

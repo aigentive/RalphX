@@ -53,6 +53,10 @@ export function reconcileAgentConversationRuntimeStatus(
     return;
   }
 
+  if (chatState.isSending[storeKey]) {
+    return;
+  }
+
   if (currentStatus !== "idle") {
     chatState.setAgentRunning(storeKey, false);
   } else {
