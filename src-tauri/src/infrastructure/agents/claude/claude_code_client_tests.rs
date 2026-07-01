@@ -152,7 +152,8 @@ fn test_capabilities_claude_code() {
 fn test_capabilities_has_models() {
     let client = ClaudeCodeClient::new();
     let caps = client.capabilities();
-    assert!(caps.has_model("claude-sonnet-4-5-20250929"));
+    assert!(caps.has_model("claude-sonnet-4-6"));
+    assert!(caps.has_model("claude-sonnet-5"));
     assert!(caps.has_model("claude-opus-4-5-20251101"));
     assert!(caps.has_model("claude-haiku-4-5-20251001"));
 }

@@ -9715,7 +9715,14 @@ mod tests {
     #[tokio::test]
     async fn normalize_agent_runtime_falls_back_when_provider_models_disabled() {
         let state = AppState::new_test();
-        for model_id in ["sonnet", "opus", "haiku", "fable"] {
+        for model_id in [
+            "sonnet",
+            "claude-sonnet-4-6",
+            "claude-sonnet-5",
+            "opus",
+            "haiku",
+            "fable",
+        ] {
             state
                 .agent_model_registry_repo
                 .upsert_custom_model(&AgentModelDefinition::custom(
