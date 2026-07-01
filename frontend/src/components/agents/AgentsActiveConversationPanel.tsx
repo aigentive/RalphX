@@ -583,6 +583,7 @@ interface AgentsActiveConversationPanelProps {
   onToggleArtifacts: (conversationId: string) => void;
   onSelectChatFocus: (type: AgentsChatFocusType) => void;
   publishShortcutLabel: string;
+  promotePublishShortcut?: boolean;
   publishingConversationId: string | null;
   selectedConversationId: string;
   selectedTaskArtifactId: string | null;
@@ -630,6 +631,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   onToggleArtifacts,
   onSelectChatFocus,
   publishShortcutLabel,
+  promotePublishShortcut = false,
   publishingConversationId,
   selectedConversationId,
   selectedTaskArtifactId,
@@ -2450,6 +2452,10 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                 onOpenPublishPane={onOpenPublishPane}
                 onPreloadArtifacts={onPreloadArtifacts}
                 publishShortcutLabel={publishShortcutLabel}
+                publishShortcutWorkspace={
+                  promotePublishShortcut ? activeWorkspace : null
+                }
+                promotePublishShortcut={promotePublishShortcut}
                 isPublishingWorkspace={publishingConversationId === selectedConversationId}
                 onToggleArtifacts={onToggleArtifacts}
                 onSelectArtifact={onSelectArtifact}

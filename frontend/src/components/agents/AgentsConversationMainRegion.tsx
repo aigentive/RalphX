@@ -52,6 +52,7 @@ interface AgentsConversationMainRegionProps {
   onSelectChatFocus: ActiveConversationPanelProps["onSelectChatFocus"];
   projects: StartConversationPanelProps["projects"];
   publishShortcutLabel: ActiveConversationPanelProps["publishShortcutLabel"];
+  promotePublishShortcut?: ActiveConversationPanelProps["promotePublishShortcut"];
   publishingConversationId: ActiveConversationPanelProps["publishingConversationId"];
   selectedConversationId: string | null;
   selectedTaskArtifactId: ActiveConversationPanelProps["selectedTaskArtifactId"];
@@ -107,6 +108,7 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
   onSelectChatFocus,
   projects,
   publishShortcutLabel,
+  promotePublishShortcut = false,
   publishingConversationId,
   selectedConversationId,
   selectedTaskArtifactId,
@@ -155,6 +157,7 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
         onToggleArtifacts={onToggleArtifacts}
         onSelectChatFocus={onSelectChatFocus}
         publishShortcutLabel={publishShortcutLabel}
+        promotePublishShortcut={promotePublishShortcut}
         publishingConversationId={publishingConversationId}
         selectedConversationId={selectedConversationId}
         selectedTaskArtifactId={selectedTaskArtifactId}

@@ -1,4 +1,11 @@
-import { AlertCircle, CheckCircle2, Loader2, RefreshCw } from "lucide-react";
+import {
+  AlertCircle,
+  CheckCircle2,
+  GitPullRequestArrow,
+  Loader2,
+  MoreVertical,
+  RefreshCw,
+} from "lucide-react";
 import { lazy, Suspense, useEffect, useMemo, useState, type ElementType } from "react";
 
 import type {
@@ -6,6 +13,17 @@ import type {
   StartAgentWorkspaceReviewResult,
 } from "@/api/chat";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { withAlpha } from "@/lib/theme-colors";
 import type { Artifact } from "@/types/artifact";
 
@@ -43,6 +61,8 @@ interface AgentReviewPanelProps {
   isReviewLoading: boolean;
   isReviewActionPending: boolean;
   isWorkspaceRuntimeGenerating?: boolean;
+  isPublishingWorkspace?: boolean;
+  onOpenPublish?: () => void;
   onStartReview: (force: boolean) => void;
 }
 
@@ -188,6 +208,8 @@ export function AgentReviewPanel({
   isReviewLoading,
   isReviewActionPending,
   isWorkspaceRuntimeGenerating = false,
+  isPublishingWorkspace = false,
+  onOpenPublish,
   onStartReview,
 }: AgentReviewPanelProps) {
   const [isReviewExpanded, setIsReviewExpanded] = useState(true);
@@ -246,6 +268,72 @@ export function AgentReviewPanel({
     if (!action) return null;
     const isActionDisabled =
       isReviewActionPending || isWorkspaceRuntimeGenerating;
+    const shouldPromotePublish =
+      action.label === "Run again" &&
+      Boolean(onOpenPublish) &&
+      Boolean(displayContext?.isCurrent) &&
+      !displayContext?.isOutdated &&
+      hasPassedWorkspaceReview(displayContext);
+    if (shouldPromotePublish) {
+      return (
+        <div className="flex items-center gap-1.5">
+          <Button
+            type="button"
+            size="sm"
+            onClick={() => onOpenPublish?.()}
+            disabled={isPublishingWorkspace}
+            className="h-8 gap-1.5 bg-[var(--accent-primary)] text-white hover:bg-[var(--accent-hover)]"
+            data-testid="agents-review-open-publish"
+          >
+            {isPublishingWorkspace ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <GitPullRequestArrow className="h-4 w-4" />
+            )}
+            Commit &amp; Publish
+          </Button>
+          <DropdownMenu>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="inline-flex">
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-8 w-7 border-0 bg-transparent p-0 hover:bg-[var(--bg-hover)]"
+                      disabled={isActionDisabled}
+                      aria-label="Review actions"
+                      data-testid="agents-review-actions-menu"
+                    >
+                      {isReviewActionPending ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <MoreVertical className="h-3.5 w-3.5" />
+                      )}
+                    </Button>
+                  </DropdownMenuTrigger>
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="top">Review actions</TooltipContent>
+            </Tooltip>
+            <DropdownMenuContent align="end" className="min-w-[160px]">
+              <DropdownMenuItem
+                data-testid="agents-review-rerun"
+                onSelect={(event) => {
+                  event.preventDefault();
+                  onStartReview(action.force);
+                }}
+                disabled={isActionDisabled}
+              >
+                <RefreshCw className="h-3.5 w-3.5" />
+                Run again
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      );
+    }
     return (
       <Button
         type="button"
@@ -262,9 +350,12 @@ export function AgentReviewPanel({
     ActionIcon,
     action,
     actionIconClassName,
+    displayContext,
     isReviewActionPending,
+    isPublishingWorkspace,
     isWorkspaceRuntimeGenerating,
     isRunning,
+    onOpenPublish,
     onStartReview,
   ]);
 

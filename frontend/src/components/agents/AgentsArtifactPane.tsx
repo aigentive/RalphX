@@ -279,6 +279,7 @@ interface AgentsArtifactPaneProps {
   activeTab: AgentArtifactTab;
   taskMode: AgentTaskArtifactMode;
   onTabChange: (tab: AgentArtifactTab) => void;
+  onOpenPublish?: () => void;
   onTaskModeChange: (mode: AgentTaskArtifactMode) => void;
   onPublishWorkspace: ((conversationId: string) => Promise<void>) | undefined;
   isPublishingWorkspace?: boolean;
@@ -299,6 +300,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   activeTab,
   taskMode,
   onTabChange,
+  onOpenPublish,
   onTaskModeChange,
   onPublishWorkspace,
   isPublishingWorkspace = false,
@@ -752,6 +754,13 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     onTabChange("review");
     handleFocusWorkspaceReview();
   }, [handleFocusWorkspaceReview, onTabChange]);
+  const handleOpenPublish = useCallback(() => {
+    if (onOpenPublish) {
+      onOpenPublish();
+      return;
+    }
+    onTabChange("publish");
+  }, [onOpenPublish, onTabChange]);
 
   return (
     <aside
@@ -985,6 +994,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
           verificationState={verificationState}
           verificationInProgress={verificationInProgress}
           onOpenReview={handleOpenReview}
+          onOpenPublish={handleOpenPublish}
           onOpenVerification={() => onTabChange("verification")}
           taskArtifactSelectedId={taskArtifactSelectedId}
           onTaskArtifactSelectedIdChange={setTaskArtifactSelectedId}
@@ -1031,6 +1041,7 @@ type ArtifactContentProps = {
   verificationState: VerificationStatus | null;
   verificationInProgress: boolean;
   onOpenReview: () => void;
+  onOpenPublish: () => void;
   onOpenVerification: () => void;
   taskArtifactSelectedId: string | null;
   onTaskArtifactSelectedIdChange: (id: string | null) => void;
@@ -1070,6 +1081,7 @@ function ArtifactContent({
   verificationState,
   verificationInProgress,
   onOpenReview,
+  onOpenPublish,
   onOpenVerification,
   taskArtifactSelectedId,
   onTaskArtifactSelectedIdChange,
@@ -1187,6 +1199,8 @@ function ArtifactContent({
         isReviewLoading={isReviewLoading}
         isReviewActionPending={isReviewActionPending}
         isWorkspaceRuntimeGenerating={isWorkspaceRuntimeGenerating}
+        isPublishingWorkspace={isPublishingWorkspace}
+        onOpenPublish={onOpenPublish}
         onStartReview={onStartReview}
       />
     );

@@ -1771,7 +1771,14 @@ describe("AgentsArtifactPane", () => {
     renderPane("review", workspace({ mode: "edit" }), vi.fn(), false, conversation());
 
     expect(await screen.findByText("Review passed")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Run again" }));
+    expect(screen.getByTestId("agents-review-open-publish")).toHaveTextContent(
+      "Commit & Publish",
+    );
+    fireEvent.pointerDown(screen.getByTestId("agents-review-actions-menu"), {
+      button: 0,
+      ctrlKey: false,
+    });
+    fireEvent.click(screen.getByTestId("agents-review-rerun"));
 
     await waitFor(() =>
       expect(startWorkspaceReviewMock).toHaveBeenCalledWith("conversation-1", {
@@ -1781,6 +1788,44 @@ describe("AgentsArtifactPane", () => {
     expect(toastMessageMock).not.toHaveBeenCalled();
     expect(toastInfoMock).not.toHaveBeenCalled();
     expect(toastSuccessMock).not.toHaveBeenCalled();
+  });
+
+  it("routes the promoted Review publish CTA through the parent publish opener", async () => {
+    const openPublish = vi.fn();
+    const tabChange = vi.fn();
+    getWorkspaceReviewContextMock.mockResolvedValue(
+      workspaceReviewContext({
+        target: workspaceReviewTarget,
+        status: "ready",
+        reviewArtifactId: "review-artifact-1",
+        reviewArtifactVersion: 2,
+        reviewGateStatus: "passed",
+        isCurrent: true,
+        isOutdated: false,
+        shouldShowTab: true,
+      }),
+    );
+    getArtifactMock.mockResolvedValue({
+      ...workspaceReviewArtifact(2),
+      id: "review-artifact-1",
+    });
+
+    renderPane(
+      "review",
+      workspace({ mode: "edit" }),
+      vi.fn(),
+      false,
+      conversation(),
+      {
+        onOpenPublish: openPublish,
+        onTabChange: tabChange,
+      },
+    );
+
+    fireEvent.click(await screen.findByTestId("agents-review-open-publish"));
+
+    expect(openPublish).toHaveBeenCalledTimes(1);
+    expect(tabChange).not.toHaveBeenCalledWith("publish");
   });
 
   it("does not let stale completed start data override the current Review context", async () => {
@@ -1825,7 +1870,11 @@ describe("AgentsArtifactPane", () => {
     renderPane("review", workspace({ mode: "edit" }), vi.fn(), false, conversation());
 
     expect(await screen.findByText("Review passed")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Run again" }));
+    fireEvent.pointerDown(screen.getByTestId("agents-review-actions-menu"), {
+      button: 0,
+      ctrlKey: false,
+    });
+    fireEvent.click(screen.getByTestId("agents-review-rerun"));
 
     await waitFor(() =>
       expect(startWorkspaceReviewMock).toHaveBeenCalledWith("conversation-1", {
