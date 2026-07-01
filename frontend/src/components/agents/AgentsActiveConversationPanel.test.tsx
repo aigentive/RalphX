@@ -61,6 +61,7 @@ vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
     planApprovalAction,
     onQuestionAnswered,
     renderComposer,
+    sendOptions,
     storeContextKeyOverride,
   }: {
     additionalQuestionSessionIds?: string[];
@@ -79,6 +80,10 @@ vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
       result: Record<string, unknown>,
     ) => void | Promise<void>;
     renderComposer: (props: Record<string, unknown>) => ReactNode;
+    sendOptions?: {
+      conversationId?: string;
+      codexFastMode?: boolean | null;
+    };
     storeContextKeyOverride?: string;
   }) => (
     <div
@@ -86,6 +91,12 @@ vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
       data-question-session-ids={additionalQuestionSessionIds?.join(",") ?? ""}
       data-agent-process-context-id={agentProcessContextIdOverride ?? ""}
       data-conversation-id={conversationIdOverride ?? ""}
+      data-send-codex-fast-mode={
+        sendOptions?.codexFastMode === undefined
+          ? ""
+          : String(sendOptions.codexFastMode)
+      }
+      data-send-conversation-id={sendOptions?.conversationId ?? ""}
       data-store-context-key={storeContextKeyOverride ?? ""}
     >
       {planApprovalAction && (
@@ -1144,6 +1155,34 @@ describe("AgentsActiveConversationPanel", () => {
       "data-store-context-key",
       "project:review-conversation-1",
     );
+  });
+
+  it("does not inherit parent Codex fast mode while focused on workspace Review", () => {
+    renderPanel({
+      activeConversation: {
+        ...projectConversation(),
+        providerHarness: "codex",
+        logicalModel: "gpt-5.5",
+        logicalEffort: "high",
+        serviceTier: "fast",
+      },
+      chatFocus: {
+        type: "workspace_review",
+        conversationId: "review-conversation-1",
+      },
+      normalizedActiveRuntime: {
+        provider: "codex",
+        modelId: "gpt-5.5",
+        effort: "high",
+      },
+    });
+
+    const panel = screen.getByTestId("integrated-chat-panel");
+    expect(panel).toHaveAttribute(
+      "data-send-conversation-id",
+      "review-conversation-1",
+    );
+    expect(panel).toHaveAttribute("data-send-codex-fast-mode", "false");
   });
 
   it("returns from child chat focus to the workspace chat from the header", async () => {

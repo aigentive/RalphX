@@ -8,6 +8,8 @@ import {
   getAgentTerminalArchivedReason,
   getAgentTerminalUnavailableReason,
   runtimeFromConversation,
+  runtimeForWorkspaceReviewFocus,
+  workspaceReviewUtilityRuntimeForProvider,
 } from "./agentConversationRuntime";
 
 function projectConversation(
@@ -220,5 +222,73 @@ describe("runtimeFromConversation", () => {
         }),
       ),
     ).toEqual(DEFAULT_AGENT_RUNTIME);
+  });
+});
+
+describe("workspace review utility runtime", () => {
+  it("inherits only the provider from the workspace runtime", () => {
+    expect(
+      runtimeForWorkspaceReviewFocus(
+        {
+          provider: "codex",
+          modelId: "gpt-5.5",
+          effort: "xhigh",
+        },
+        null,
+      ),
+    ).toEqual({
+      provider: "codex",
+      modelId: "gpt-5.4-mini",
+      effort: "medium",
+    });
+
+    expect(
+      runtimeForWorkspaceReviewFocus(
+        {
+          provider: "claude",
+          modelId: "opus",
+          effort: "max",
+        },
+        null,
+      ),
+    ).toEqual({
+      provider: "claude",
+      modelId: "haiku",
+      effort: "medium",
+    });
+  });
+
+  it("preserves explicit review composer overrides", () => {
+    expect(
+      runtimeForWorkspaceReviewFocus(
+        {
+          provider: "codex",
+          modelId: "gpt-5.5",
+          effort: "xhigh",
+        },
+        {
+          provider: "claude",
+          modelId: "sonnet",
+          effort: "high",
+        },
+      ),
+    ).toEqual({
+      provider: "claude",
+      modelId: "sonnet",
+      effort: "high",
+    });
+  });
+
+  it("uses utility-tier defaults when switching review provider", () => {
+    expect(workspaceReviewUtilityRuntimeForProvider("codex")).toEqual({
+      provider: "codex",
+      modelId: "gpt-5.4-mini",
+      effort: "medium",
+    });
+    expect(workspaceReviewUtilityRuntimeForProvider("claude")).toEqual({
+      provider: "claude",
+      modelId: "haiku",
+      effort: "medium",
+    });
   });
 });
