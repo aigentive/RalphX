@@ -288,7 +288,9 @@ export function useAgentsViewController({
     [],
   );
   const handleReturnToWorkspaceChat = useCallback(() => {
-    setChatFocus({ type: "workspace" });
+    setChatFocus((current) =>
+      current.type === "workspace" ? current : { type: "workspace" },
+    );
   }, []);
   const focusedWorkspaceReviewRuntimeConversationId =
     chatFocus.type === "workspace_review" ? chatFocus.conversationId : null;
