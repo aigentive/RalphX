@@ -159,4 +159,52 @@ describe("chat-active-state helpers", () => {
       { type: "task", toolUseId: "toolu_delegate" },
     ]);
   });
+
+  it("restores active-state text when the first post-remount chunk arrived before hydration", () => {
+    const previous: StreamingContentBlock[] = [
+      { type: "text", text: "now checking the event merge" },
+    ];
+
+    const next = mergeActiveStreamingContentBlocks(previous, {
+      partial_text: "I read the existing chat hooks and now checking the event merge",
+      streaming_tasks: [],
+      tool_calls: [],
+    });
+
+    expect(next).toEqual([
+      { type: "text", text: "I read the existing chat hooks and now checking the event merge" },
+    ]);
+  });
+
+  it("keeps the first post-remount chunk when hydration returns an older active-state prefix", () => {
+    const previous: StreamingContentBlock[] = [
+      { type: "text", text: "now checking the event merge" },
+    ];
+
+    const next = mergeActiveStreamingContentBlocks(previous, {
+      partial_text: "I read the existing chat hooks and ",
+      streaming_tasks: [],
+      tool_calls: [],
+    });
+
+    expect(next).toEqual([
+      { type: "text", text: "I read the existing chat hooks and now checking the event merge" },
+    ]);
+  });
+
+  it("keeps chronological text when the live chunk precedes the active-state suffix", () => {
+    const previous: StreamingContentBlock[] = [
+      { type: "text", text: "I read the existing chat hooks and now checking the event merge" },
+    ];
+
+    const next = mergeActiveStreamingContentBlocks(previous, {
+      partial_text: "event merge before patching",
+      streaming_tasks: [],
+      tool_calls: [],
+    });
+
+    expect(next).toEqual([
+      { type: "text", text: "I read the existing chat hooks and now checking the event merge before patching" },
+    ]);
+  });
 });

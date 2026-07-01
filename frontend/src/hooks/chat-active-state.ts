@@ -199,14 +199,50 @@ function mergePartialTextBlock(
   }
 
   const existing = next[textIndex];
-  if (
-    existing?.type === "text" &&
-    partialText.length > existing.text.length &&
-    partialText.startsWith(existing.text)
-  ) {
-    next[textIndex] = { ...existing, text: partialText };
+  if (existing?.type !== "text") {
+    return next;
+  }
+
+  const mergedText = mergeStreamingTextSnapshot(partialText, existing.text);
+  if (mergedText !== existing.text) {
+    next[textIndex] = { ...existing, text: mergedText };
   }
   return next;
+}
+
+function mergeStreamingTextSnapshot(snapshotText: string, liveText: string): string {
+  if (snapshotText.length === 0) {
+    return liveText;
+  }
+  if (liveText.length === 0) {
+    return snapshotText;
+  }
+  if (snapshotText === liveText) {
+    return liveText;
+  }
+  if (snapshotText.startsWith(liveText) || snapshotText.endsWith(liveText)) {
+    return snapshotText;
+  }
+  if (liveText.startsWith(snapshotText) || liveText.endsWith(snapshotText)) {
+    return liveText;
+  }
+
+  const snapshotThenLiveOverlap = longestSuffixPrefixOverlap(snapshotText, liveText);
+  const liveThenSnapshotOverlap = longestSuffixPrefixOverlap(liveText, snapshotText);
+  if (liveThenSnapshotOverlap > snapshotThenLiveOverlap) {
+    return liveText + snapshotText.slice(liveThenSnapshotOverlap);
+  }
+  return snapshotText + liveText.slice(snapshotThenLiveOverlap);
+}
+
+function longestSuffixPrefixOverlap(left: string, right: string): number {
+  const maxLength = Math.min(left.length, right.length);
+  for (let length = maxLength; length > 0; length -= 1) {
+    if (left.endsWith(right.slice(0, length))) {
+      return length;
+    }
+  }
+  return 0;
 }
 
 function mergeTaskMarker(
