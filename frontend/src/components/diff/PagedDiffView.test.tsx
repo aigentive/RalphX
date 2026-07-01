@@ -138,6 +138,13 @@ async function triggerObservedSentinel(testId: string) {
   });
 }
 
+function countPageFetches(offset: number): number {
+  return mockGetDiffPage.mock.calls.filter(([args]) => {
+    const pageArgs = args as { offset?: number };
+    return pageArgs.offset === offset;
+  }).length;
+}
+
 describe("PagedDiffView", () => {
   beforeEach(() => {
     latestRangeChanged = undefined;
@@ -180,6 +187,14 @@ describe("PagedDiffView", () => {
       "data-scroll-container",
       "false"
     );
+    expect(screen.getByTestId("paged-diff-view")).toHaveAttribute(
+      "data-loaded-page-count",
+      "1"
+    );
+    expect(screen.getByTestId("paged-diff-view")).toHaveAttribute(
+      "data-mounted-page-count",
+      "1"
+    );
     expect(screen.queryByTestId("paged-diff-virtual-list")).not.toBeInTheDocument();
     expect(screen.getByTestId("paged-diff-inline-list")).toBeInTheDocument();
     expect(screen.getByText("@@ -1,260 +1,260 @@")).toBeInTheDocument();
@@ -211,9 +226,17 @@ describe("PagedDiffView", () => {
       })
     );
     expect(await screen.findByText("line 120")).toBeInTheDocument();
+    expect(screen.getByTestId("paged-diff-view")).toHaveAttribute(
+      "data-loaded-page-count",
+      "2"
+    );
+    expect(screen.getByTestId("paged-diff-view")).toHaveAttribute(
+      "data-mounted-page-count",
+      "2"
+    );
   });
 
-  it("unmounts old inline pages as deeper pages load", async () => {
+  it("keeps only the inline mounted page window rendered as deeper pages load", async () => {
     mockGetDiffPage.mockImplementation(({ offset, limit }) =>
       Promise.resolve(makePage(offset as number, limit as number, 500))
     );
@@ -241,6 +264,10 @@ describe("PagedDiffView", () => {
     await waitFor(() => {
       expect(screen.getByTestId("paged-diff-view")).toHaveAttribute(
         "data-loaded-page-count",
+        "4"
+      );
+      expect(screen.getByTestId("paged-diff-view")).toHaveAttribute(
+        "data-mounted-page-count",
         "2"
       );
     });
@@ -248,11 +275,15 @@ describe("PagedDiffView", () => {
     expect(screen.queryByText("line 120")).toBeNull();
     expect(screen.getByText("line 220")).toBeInTheDocument();
     expect(screen.getByText("line 320")).toBeInTheDocument();
-    expect(screen.getByTestId("paged-diff-top-spacer")).toBeInTheDocument();
-    expect(screen.getByTestId("paged-diff-bottom-spacer")).toBeInTheDocument();
+    expect(screen.getByTestId("paged-diff-top-spacer")).toHaveStyle({
+      height: "4000px",
+    });
+    expect(screen.getByTestId("paged-diff-bottom-spacer")).toHaveStyle({
+      height: "2000px",
+    });
   });
 
-  it("can page backward after pruning older inline pages", async () => {
+  it("can page backward from cached inline pages outside the mounted window", async () => {
     mockGetDiffPage.mockImplementation(({ offset, limit }) =>
       Promise.resolve(makePage(offset as number, limit as number, 500))
     );
@@ -277,19 +308,24 @@ describe("PagedDiffView", () => {
     await triggerObservedSentinel("paged-diff-next-sentinel");
     expect(await screen.findByText("line 320")).toBeInTheDocument();
     expect(screen.queryByText("line 120")).toBeNull();
+    expect(screen.getByTestId("paged-diff-view")).toHaveAttribute(
+      "data-loaded-page-count",
+      "4"
+    );
+    expect(countPageFetches(100)).toBe(1);
 
     await triggerObservedSentinel("paged-diff-previous-sentinel");
 
-    await waitFor(() =>
-      expect(mockGetDiffPage).toHaveBeenCalledWith({
-        conversationId: "conv-1",
-        path: "src/Huge.tsx",
-        refKind: { kind: "head" },
-        offset: 100,
-        limit: 100,
-      })
-    );
     expect(await screen.findByText("line 120")).toBeInTheDocument();
+    expect(countPageFetches(100)).toBe(1);
+    expect(screen.getByTestId("paged-diff-view")).toHaveAttribute(
+      "data-loaded-page-count",
+      "4"
+    );
+    expect(screen.getByTestId("paged-diff-view")).toHaveAttribute(
+      "data-mounted-page-count",
+      "3"
+    );
     expect(screen.getByText("line 220")).toBeInTheDocument();
     expect(screen.queryByText("line 320")).toBeNull();
   });

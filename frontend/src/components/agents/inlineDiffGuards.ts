@@ -1,15 +1,28 @@
-import type { FileChange } from "@/api/diff";
-
-export const INLINE_DIFF_SHOW_ANYWAY_CHANGE_THRESHOLD = 1_000;
-
-export function isLargeInlineDiff(
-  file: Pick<FileChange, "additions" | "deletions">,
-): boolean {
-  return file.additions + file.deletions >= INLINE_DIFF_SHOW_ANYWAY_CHANGE_THRESHOLD;
-}
+import type { DiffRefKind, FileChange } from "@/api/diff";
 
 export function requiresExplicitDiffHydration(
   file: Pick<FileChange, "additions" | "deletions" | "isGenerated">,
 ): boolean {
   return file.isGenerated;
+}
+
+export function canUsePagedInlineDiff({
+  file,
+  isConflictMode,
+  conversationId,
+  diffPageRefKind,
+  isShowAnywayOverridden,
+}: {
+  file: Pick<FileChange, "additions" | "deletions" | "isGenerated">;
+  isConflictMode: boolean;
+  conversationId?: string | undefined;
+  diffPageRefKind?: DiffRefKind | undefined;
+  isShowAnywayOverridden: boolean;
+}): boolean {
+  return (
+    !isConflictMode &&
+    conversationId !== undefined &&
+    diffPageRefKind !== undefined &&
+    (!requiresExplicitDiffHydration(file) || isShowAnywayOverridden)
+  );
 }

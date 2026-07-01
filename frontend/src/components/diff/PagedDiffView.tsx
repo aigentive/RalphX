@@ -52,27 +52,8 @@ function rowAtIndex(
   return pages.get(offset)?.rows[index - offset];
 }
 
-function prunePagesToOffsetRange(
-  pages: Map<number, FileDiffPage>,
-  firstKeptOffset: number,
-  lastKeptOffset: number
-): boolean {
-  let changed = false;
-  for (const offset of pages.keys()) {
-    if (offset < firstKeptOffset || offset > lastKeptOffset) {
-      pages.delete(offset);
-      changed = true;
-    }
-  }
-  return changed;
-}
-
 type LoadPageOptions = {
   generation?: number;
-  keepOffsetRange?: {
-    first: number;
-    last: number;
-  };
 };
 
 export function PagedDiffView({
@@ -93,6 +74,7 @@ export function PagedDiffView({
   const [totalRows, setTotalRows] = useState<number | null>(null);
   const [initialError, setInitialError] = useState<Error | null>(null);
   const [isInitialLoading, setIsInitialLoading] = useState(true);
+  const [mountedCenterOffset, setMountedCenterOffset] = useState(0);
   const [wrapLines, setWrapLines] = useState(defaultWrapLines);
   const annotationIndex = useMemo(() => buildAnnotationIndex(annotations), [annotations]);
   const cacheKey = refKindCacheKey(refKind);
@@ -102,16 +84,6 @@ export function PagedDiffView({
       const generation = options.generation ?? generationRef.current;
       const offset = pageOffsetForIndex(requestedOffset, pageSize);
       if (pagesRef.current.has(offset)) {
-        if (
-          options.keepOffsetRange &&
-          prunePagesToOffsetRange(
-            pagesRef.current,
-            options.keepOffsetRange.first,
-            options.keepOffsetRange.last
-          )
-        ) {
-          setPages(new Map(pagesRef.current));
-        }
         return;
       }
       if (loadingOffsetsRef.current.has(offset)) {
@@ -135,13 +107,6 @@ export function PagedDiffView({
           return;
         }
         pagesRef.current.set(page.offset, page);
-        if (options.keepOffsetRange) {
-          prunePagesToOffsetRange(
-            pagesRef.current,
-            options.keepOffsetRange.first,
-            options.keepOffsetRange.last
-          );
-        }
         setPages(new Map(pagesRef.current));
         setTotalRows(page.totalRows);
         setInitialError(null);
@@ -170,6 +135,7 @@ export function PagedDiffView({
     setTotalRows(null);
     setInitialError(null);
     setIsInitialLoading(true);
+    setMountedCenterOffset(0);
     void loadPage(0, { generation });
   }, [cacheKey, conversationId, filePath, loadPage]);
 
@@ -213,13 +179,32 @@ export function PagedDiffView({
     () => [...pages.keys()].sort((a, b) => a - b),
     [pages]
   );
+  const mountedWindowFirstOffset = Math.max(
+    0,
+    mountedCenterOffset - PAGE_WINDOW_RADIUS * pageSize
+  );
+  const mountedWindowLastOffset =
+    mountedCenterOffset + PAGE_WINDOW_RADIUS * pageSize;
+  const mountedPageOffsets = useMemo(
+    () =>
+      scrollContainer
+        ? sortedPageOffsets
+        : sortedPageOffsets.filter(
+            (offset) =>
+              offset >= mountedWindowFirstOffset && offset <= mountedWindowLastOffset
+          ),
+    [mountedWindowFirstOffset, mountedWindowLastOffset, scrollContainer, sortedPageOffsets]
+  );
   const firstLoadedOffset = sortedPageOffsets[0] ?? 0;
   const lastLoadedOffset = sortedPageOffsets[sortedPageOffsets.length - 1] ?? 0;
-  const lastLoadedPage = pages.get(lastLoadedOffset);
-  const previousOffset = firstLoadedOffset > 0
-    ? Math.max(0, firstLoadedOffset - pageSize)
+  const firstMountedOffset = mountedPageOffsets[0] ?? firstLoadedOffset;
+  const lastMountedOffset =
+    mountedPageOffsets[mountedPageOffsets.length - 1] ?? lastLoadedOffset;
+  const lastMountedPage = pages.get(lastMountedOffset);
+  const previousOffset = firstMountedOffset > 0
+    ? Math.max(0, firstMountedOffset - pageSize)
     : null;
-  const nextOffset = lastLoadedPage?.nextOffset ?? null;
+  const nextOffset = lastMountedPage?.nextOffset ?? null;
 
   useEffect(() => {
     if (scrollContainer || typeof IntersectionObserver === "undefined") {
@@ -231,20 +216,12 @@ export function PagedDiffView({
         for (const entry of entries) {
           if (!entry.isIntersecting) continue;
           if (entry.target === previousSentinelRef.current && previousOffset !== null) {
-            void loadPage(previousOffset, {
-              keepOffsetRange: {
-                first: previousOffset,
-                last: previousOffset + pageSize,
-              },
-            });
+            setMountedCenterOffset(previousOffset);
+            void loadPage(previousOffset);
           }
           if (entry.target === nextSentinelRef.current && nextOffset !== null) {
-            void loadPage(nextOffset, {
-              keepOffsetRange: {
-                first: Math.max(0, nextOffset - pageSize),
-                last: nextOffset,
-              },
-            });
+            setMountedCenterOffset(nextOffset);
+            void loadPage(nextOffset);
           }
         }
       },
@@ -338,13 +315,13 @@ export function PagedDiffView({
     );
   };
 
-  const topSpacerHeight = firstLoadedOffset * DIFF_ROW_ESTIMATED_HEIGHT;
-  const lastLoadedRowEnd =
-    lastLoadedPage !== undefined
-      ? lastLoadedOffset + lastLoadedPage.rows.length
+  const topSpacerHeight = firstMountedOffset * DIFF_ROW_ESTIMATED_HEIGHT;
+  const lastMountedRowEnd =
+    lastMountedPage !== undefined
+      ? lastMountedOffset + lastMountedPage.rows.length
       : 0;
   const bottomSpacerHeight =
-    Math.max(0, rowCount - lastLoadedRowEnd) * DIFF_ROW_ESTIMATED_HEIGHT;
+    Math.max(0, rowCount - lastMountedRowEnd) * DIFF_ROW_ESTIMATED_HEIGHT;
 
   return (
     <div className={scrollContainer ? "h-full overflow-hidden" : "w-full overflow-hidden"}>
@@ -352,6 +329,7 @@ export function PagedDiffView({
         className="font-mono text-[0.8125rem] leading-[20px]"
         data-testid="paged-diff-view"
         data-loaded-page-count={pages.size}
+        data-mounted-page-count={scrollContainer ? pages.size : mountedPageOffsets.length}
         data-scroll-container={String(scrollContainer)}
         data-total-rows={rowCount}
         data-wrap-lines={wrapLines}
@@ -417,7 +395,7 @@ export function PagedDiffView({
                 className="h-px"
               />
             )}
-            {sortedPageOffsets.flatMap((offset) =>
+            {mountedPageOffsets.flatMap((offset) =>
               (pages.get(offset)?.rows ?? []).map((row, index) => {
                 const absoluteIndex = offset + index;
                 return (

@@ -10,11 +10,11 @@
  *                             default view selection; file diffs still hydrate lazily
  *   - Commit mode: file list via getAgentConversationWorkspaceCommitFileChanges,
  *                  then per-file diff via getAgentConversationWorkspaceCommitFileDiff
- *   - Normal diffs fetched for hydrated expanded files only; large diffs fetch row pages.
+ *   - Normal diffs fetched for hydrated expanded fallback files only; page-capable diffs fetch row pages.
  *
  * Performance contract (frontend-interaction-performance.md):
  *   - Sticky bar always renders synchronously.
- *   - File cards receive normal diff state as prop; large explicit diffs page their own rows.
+ *   - File cards receive fallback diff state as prop; page-capable diffs page their own rows.
  *
  * WKWebView CSS: explicit background-color / border-color with shallow-chain tokens.
  */
@@ -41,7 +41,10 @@ import { AgentsPublishDiffFilter } from "./AgentsPublishDiffFilter";
 import type { DiffFilterMode } from "./AgentsPublishDiffFilter";
 import { AgentsPublishFileDiff } from "./AgentsPublishFileDiff";
 import type { ConflictDiffState, DiffState } from "./AgentsPublishFileDiff";
-import { isLargeInlineDiff } from "./inlineDiffGuards";
+import {
+  canUsePagedInlineDiff,
+  requiresExplicitDiffHydration,
+} from "./inlineDiffGuards";
 import {
   AGENT_WORKSPACE_STALE_MS,
   agentWorkspaceKeys,
@@ -143,6 +146,20 @@ function findFirstRenderedAnnotationRow(
   return null;
 }
 
+function resolveDiffPageRefKind({
+  refKind,
+  repairMode,
+  isStagedMode,
+  isUnstagedMode,
+}: {
+  refKind: DiffRefKind;
+  repairMode: boolean;
+  isStagedMode: boolean;
+  isUnstagedMode: boolean;
+}): DiffRefKind | undefined {
+  return !repairMode || isStagedMode || isUnstagedMode ? refKind : undefined;
+}
+
 interface AgentsPublishVirtualFileRowProps {
   file: FileChange;
   diff: DiffState;
@@ -155,6 +172,7 @@ interface AgentsPublishVirtualFileRowProps {
   conversationId: string;
   refKind?: DiffRefKind | undefined;
   diffPageRefKind?: DiffRefKind | undefined;
+  diffPageReloadKey?: string | undefined;
   shouldHydrate: boolean;
   annotations: PrDiffAnnotation[];
   isShowAnywayOverridden: boolean;
@@ -174,6 +192,7 @@ const AgentsPublishVirtualFileRow = memo(function AgentsPublishVirtualFileRow({
   conversationId,
   refKind,
   diffPageRefKind,
+  diffPageReloadKey,
   shouldHydrate,
   annotations,
   isShowAnywayOverridden,
@@ -201,6 +220,7 @@ const AgentsPublishVirtualFileRow = memo(function AgentsPublishVirtualFileRow({
       conversationId={conversationId}
       refKind={refKind}
       diffPageRefKind={diffPageRefKind}
+      diffPageReloadKey={diffPageReloadKey}
       shouldHydrate={shouldHydrate}
       annotations={annotations}
       isShowAnywayOverridden={isShowAnywayOverridden}
@@ -280,6 +300,20 @@ export function AgentsPublishInlineDiffs({
   const repairDiffQuerySignature = repairMode
     ? (repairChangeSignature ?? "repair:none")
     : undefined;
+  const diffPageRefKind = useMemo(
+    () =>
+      resolveDiffPageRefKind({
+        refKind,
+        repairMode,
+        isStagedMode,
+        isUnstagedMode,
+      }),
+    [isStagedMode, isUnstagedMode, refKind, repairMode],
+  );
+  const diffPageReloadKey =
+    repairMode && (isStagedMode || isUnstagedMode)
+      ? repairDiffQuerySignature
+      : undefined;
   const canRenderPrAnnotations =
     !isConflictedMode && (refKind.kind === "head" || refKind.kind === "cumulative_head");
   const annotationsByPath = useMemo(() => {
@@ -417,7 +451,7 @@ export function AgentsPublishInlineDiffs({
     hydrateVisibleRange(visibleRange);
   }, [currentFiles, hydrateVisibleRange, visibleRange]);
 
-  // Only fetch diffs for visible expanded files — collapsed/off-range cards pay no query cost.
+  // Only fetch fallback diffs for visible expanded files — collapsed/off-range/page-capable cards pay no query cost.
   const expandedFiles = useMemo(
     () => currentFiles.filter((f) => !effectiveCollapsedPaths.has(f.path)),
     [currentFiles, effectiveCollapsedPaths],
@@ -425,13 +459,28 @@ export function AgentsPublishInlineDiffs({
 
   const fetchableFiles = useMemo(
     () =>
-      expandedFiles.filter(
-        (file) =>
+      expandedFiles.filter((file) => {
+        const isShowAnywayOverridden = userShowAnywayPaths.has(file.path);
+        return (
           bufferedVisiblePathSet.has(file.path) &&
-          !isLargeInlineDiff(file) &&
-          (!file.isGenerated || userShowAnywayPaths.has(file.path)),
-      ),
-    [bufferedVisiblePathSet, expandedFiles, userShowAnywayPaths],
+          !canUsePagedInlineDiff({
+            file,
+            isConflictMode: isConflictedMode,
+            conversationId,
+            diffPageRefKind,
+            isShowAnywayOverridden,
+          }) &&
+          (!requiresExplicitDiffHydration(file) || isShowAnywayOverridden)
+        );
+      }),
+    [
+      bufferedVisiblePathSet,
+      conversationId,
+      diffPageRefKind,
+      expandedFiles,
+      isConflictedMode,
+      userShowAnywayPaths,
+    ],
   );
 
   // ── Workspace-change diffs ─────────────────────────────────────────────
@@ -757,9 +806,8 @@ export function AgentsPublishInlineDiffs({
           onOpenFullscreenPath={handleOpenFullscreen}
           conversationId={conversationId}
           refKind={repairMode ? undefined : rangeRefKind}
-          diffPageRefKind={
-            !repairMode || isStagedMode || isUnstagedMode ? refKind : undefined
-          }
+          diffPageRefKind={diffPageRefKind}
+          diffPageReloadKey={diffPageReloadKey}
           shouldHydrate={hydratedPaths.has(fileChange.path)}
           annotations={annotationsByPath.get(fileChange.path) ?? EMPTY_PR_DIFF_ANNOTATIONS}
           isShowAnywayOverridden={userShowAnywayPaths.has(fileChange.path)}
@@ -781,10 +829,9 @@ export function AgentsPublishInlineDiffs({
       handleToggle,
       hydratedPaths,
       isConflictedMode,
-      isStagedMode,
-      isUnstagedMode,
+      diffPageRefKind,
+      diffPageReloadKey,
       focusTargetPath,
-      refKind,
       rangeRefKind,
       repairMode,
       userShowAnywayPaths,

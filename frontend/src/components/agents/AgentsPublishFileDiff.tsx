@@ -2,7 +2,7 @@
  * AgentsPublishFileDiff
  *
  * Per-file collapsible card in the inline diff view.
- * Parent manages normal diff fetching via `diff`; large explicit diffs use paged row fetching.
+ * Parent manages fallback diff fetching via `diff`; page-capable diffs fetch rows lazily.
  *
  * Performance contract (frontend-interaction-performance.md):
  * - Header (file path, status badge, +/−, buttons) paints synchronously.
@@ -29,7 +29,7 @@ import type {
   PrDiffAnnotation,
 } from "@/api/diff";
 import {
-  isLargeInlineDiff,
+  canUsePagedInlineDiff,
   requiresExplicitDiffHydration,
 } from "./inlineDiffGuards";
 
@@ -50,8 +50,10 @@ export interface AgentsPublishFileDiffProps {
   conversationId?: string | undefined;
   /** Which diff reference to use for range fetches. */
   refKind?: DiffRefKind | undefined;
-  /** Which diff reference to use for paged large-file fetching. */
+  /** Which diff reference to use for paged row fetching. */
   diffPageRefKind?: DiffRefKind | undefined;
+  /** Optional remount key for paged rows when same-ref content changes. */
+  diffPageReloadKey?: string | undefined;
   /** Whether this file is in the viewport (±200px) — controls body hydration. */
   shouldHydrate: boolean;
   /** GitHub PR review/check annotations for this file. */
@@ -99,6 +101,7 @@ export function AgentsPublishFileDiff({
   conversationId,
   refKind,
   diffPageRefKind,
+  diffPageReloadKey,
   shouldHydrate,
   annotations = [],
   isShowAnywayOverridden,
@@ -110,11 +113,13 @@ export function AgentsPublishFileDiff({
     conflictDiff !== "loading" && conflictDiff !== "error" ? conflictDiff : undefined;
   const showExplicitPlaceholder =
     !isConflictMode && requiresExplicitDiffHydration(file) && !isShowAnywayOverridden;
-  const usePagedDiff =
-    !isConflictMode &&
-    isLargeInlineDiff(file) &&
-    conversationId !== undefined &&
-    diffPageRefKind !== undefined;
+  const usePagedDiff = canUsePagedInlineDiff({
+    file,
+    isConflictMode,
+    conversationId,
+    diffPageRefKind,
+    isShowAnywayOverridden,
+  });
   const pathButtonRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
@@ -367,6 +372,7 @@ export function AgentsPublishFileDiff({
 
               {usePagedDiff && (
                 <PagedDiffView
+                  key={diffPageReloadKey ?? "stable"}
                   conversationId={conversationId!}
                   filePath={file.path}
                   refKind={diffPageRefKind!}
@@ -386,6 +392,7 @@ export function AgentsPublishFileDiff({
                   filePath={file.path}
                   refKind={refKind}
                   scrollContainer={false}
+                  stickyGutter={false}
                   annotations={annotations}
                 />
               )}
