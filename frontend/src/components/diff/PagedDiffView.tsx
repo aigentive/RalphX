@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { Virtuoso, type ListRange } from "react-virtuoso";
 import { diffApi } from "@/api/diff";
 import type { DiffPageRow, DiffRefKind, FileDiffPage, PrDiffAnnotation } from "@/api/diff";
@@ -56,6 +64,51 @@ type LoadPageOptions = {
   generation?: number;
 };
 
+interface MeasuredPageBlockProps {
+  offset: number;
+  children: ReactNode;
+  onHeightChange: (offset: number, height: number) => void;
+}
+
+function MeasuredPageBlock({
+  offset,
+  children,
+  onHeightChange,
+}: MeasuredPageBlockProps) {
+  const pageRef = useRef<HTMLDivElement | null>(null);
+
+  useLayoutEffect(() => {
+    const element = pageRef.current;
+    if (!element) {
+      return undefined;
+    }
+
+    const reportHeight = (height: number) => {
+      if (height > 0) {
+        onHeightChange(offset, height);
+      }
+    };
+    reportHeight(element.getBoundingClientRect().height);
+
+    if (typeof ResizeObserver === "undefined") {
+      return undefined;
+    }
+
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      reportHeight(entry?.contentRect.height ?? element.getBoundingClientRect().height);
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [offset, onHeightChange]);
+
+  return (
+    <div ref={pageRef} data-testid="paged-diff-page" data-page-offset={offset}>
+      {children}
+    </div>
+  );
+}
+
 export function PagedDiffView({
   conversationId,
   filePath,
@@ -75,6 +128,9 @@ export function PagedDiffView({
   const [initialError, setInitialError] = useState<Error | null>(null);
   const [isInitialLoading, setIsInitialLoading] = useState(true);
   const [mountedCenterOffset, setMountedCenterOffset] = useState(0);
+  const [pageHeights, setPageHeights] = useState<Map<number, number>>(
+    () => new Map()
+  );
   const [wrapLines, setWrapLines] = useState(defaultWrapLines);
   const annotationIndex = useMemo(() => buildAnnotationIndex(annotations), [annotations]);
   const cacheKey = refKindCacheKey(refKind);
@@ -136,8 +192,24 @@ export function PagedDiffView({
     setInitialError(null);
     setIsInitialLoading(true);
     setMountedCenterOffset(0);
+    setPageHeights(new Map());
     void loadPage(0, { generation });
   }, [cacheKey, conversationId, filePath, loadPage]);
+
+  const recordPageHeight = useCallback((offset: number, height: number) => {
+    setPageHeights((previous) => {
+      const previousHeight = previous.get(offset);
+      if (
+        previousHeight !== undefined &&
+        Math.abs(previousHeight - height) < 1
+      ) {
+        return previous;
+      }
+      const next = new Map(previous);
+      next.set(offset, height);
+      return next;
+    });
+  }, []);
 
   const prunePagesAroundRange = useCallback(
     (range: ListRange) => {
@@ -315,13 +387,33 @@ export function PagedDiffView({
     );
   };
 
-  const topSpacerHeight = firstMountedOffset * DIFF_ROW_ESTIMATED_HEIGHT;
   const lastMountedRowEnd =
     lastMountedPage !== undefined
       ? lastMountedOffset + lastMountedPage.rows.length
       : 0;
-  const bottomSpacerHeight =
-    Math.max(0, rowCount - lastMountedRowEnd) * DIFF_ROW_ESTIMATED_HEIGHT;
+  const spacerHeightForRowRange = (startIndex: number, endIndex: number) => {
+    const start = Math.max(0, Math.min(startIndex, rowCount));
+    const end = Math.max(start, Math.min(endIndex, rowCount));
+    let height = 0;
+    let cursor = start;
+    while (cursor < end) {
+      const pageOffset = pageOffsetForIndex(cursor, pageSize);
+      const pageStart = pageOffset;
+      const pageEnd = Math.min(rowCount, pageOffset + pageSize);
+      const rangeEnd = Math.min(end, pageEnd);
+      const coversWholePage = cursor === pageStart && rangeEnd === pageEnd;
+      const measuredHeight = coversWholePage
+        ? pageHeights.get(pageOffset)
+        : undefined;
+      height +=
+        measuredHeight ?? (rangeEnd - cursor) * DIFF_ROW_ESTIMATED_HEIGHT;
+      cursor = rangeEnd;
+    }
+    return height;
+  };
+
+  const topSpacerHeight = spacerHeightForRowRange(0, firstMountedOffset);
+  const bottomSpacerHeight = spacerHeightForRowRange(lastMountedRowEnd, rowCount);
 
   return (
     <div className={scrollContainer ? "h-full overflow-hidden" : "w-full overflow-hidden"}>
@@ -395,16 +487,22 @@ export function PagedDiffView({
                 className="h-px"
               />
             )}
-            {mountedPageOffsets.flatMap((offset) =>
-              (pages.get(offset)?.rows ?? []).map((row, index) => {
-                const absoluteIndex = offset + index;
-                return (
-                  <div key={`${offset}-${index}`}>
-                    {renderRow(row, absoluteIndex)}
-                  </div>
-                );
-              })
-            )}
+            {mountedPageOffsets.map((offset) => (
+              <MeasuredPageBlock
+                key={offset}
+                offset={offset}
+                onHeightChange={recordPageHeight}
+              >
+                {(pages.get(offset)?.rows ?? []).map((row, index) => {
+                  const absoluteIndex = offset + index;
+                  return (
+                    <div key={`${offset}-${index}`}>
+                      {renderRow(row, absoluteIndex)}
+                    </div>
+                  );
+                })}
+              </MeasuredPageBlock>
+            ))}
             {nextOffset !== null && (
               <div
                 ref={nextSentinelRef}

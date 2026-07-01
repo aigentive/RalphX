@@ -8,6 +8,8 @@ let latestRangeChanged:
   | ((range: { startIndex: number; endIndex: number }) => void)
   | undefined;
 const intersectionObservers: MockIntersectionObserver[] = [];
+const resizeObservers: MockResizeObserver[] = [];
+let measuredPageHeights = new Map<number, number>();
 
 class MockIntersectionObserver {
   readonly callback: IntersectionObserverCallback;
@@ -42,6 +44,41 @@ class MockIntersectionObserver {
       }
     }
   }
+}
+
+class MockResizeObserver {
+  readonly callback: ResizeObserverCallback;
+  readonly elements = new Set<Element>();
+
+  constructor(callback: ResizeObserverCallback) {
+    this.callback = callback;
+    resizeObservers.push(this);
+  }
+
+  observe = (element: Element) => {
+    this.elements.add(element);
+    const offset = Number((element as HTMLElement).dataset.pageOffset);
+    const height = measuredPageHeights.get(offset) ?? 0;
+    if (height > 0) {
+      this.callback(
+        [
+          {
+            target: element,
+            contentRect: { height },
+          } as ResizeObserverEntry,
+        ],
+        this as unknown as ResizeObserver,
+      );
+    }
+  };
+
+  unobserve = (element: Element) => {
+    this.elements.delete(element);
+  };
+
+  disconnect = () => {
+    this.elements.clear();
+  };
 }
 
 vi.mock("@/api/diff", () => ({
@@ -149,7 +186,10 @@ describe("PagedDiffView", () => {
   beforeEach(() => {
     latestRangeChanged = undefined;
     intersectionObservers.length = 0;
+    resizeObservers.length = 0;
+    measuredPageHeights = new Map();
     vi.stubGlobal("IntersectionObserver", MockIntersectionObserver);
+    vi.stubGlobal("ResizeObserver", MockResizeObserver);
     mockGetDiffPage.mockReset();
     mockGetDiffPage.mockImplementation(({ offset, limit }) =>
       Promise.resolve(makePage(offset as number, limit as number))
@@ -281,6 +321,50 @@ describe("PagedDiffView", () => {
     expect(screen.getByTestId("paged-diff-bottom-spacer")).toHaveStyle({
       height: "2000px",
     });
+  });
+
+  it("uses measured cached page heights for inline spacers when pages unmount", async () => {
+    measuredPageHeights = new Map([
+      [0, 2600],
+      [100, 5200],
+      [200, 4400],
+      [300, 4600],
+    ]);
+    mockGetDiffPage.mockImplementation(({ offset, limit }) =>
+      Promise.resolve(makePage(offset as number, limit as number, 500))
+    );
+
+    render(
+      <PagedDiffView
+        conversationId="conv-1"
+        filePath="src/Huge.tsx"
+        refKind={{ kind: "head" }}
+        pageSize={100}
+      />
+    );
+
+    await screen.findByText("line 1");
+
+    await triggerObservedSentinel("paged-diff-next-sentinel");
+    expect(await screen.findByText("line 120")).toBeInTheDocument();
+
+    await triggerObservedSentinel("paged-diff-next-sentinel");
+    expect(await screen.findByText("line 220")).toBeInTheDocument();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("paged-diff-top-spacer")).toHaveStyle({
+        height: "2600px",
+      })
+    );
+
+    await triggerObservedSentinel("paged-diff-next-sentinel");
+    expect(await screen.findByText("line 320")).toBeInTheDocument();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("paged-diff-top-spacer")).toHaveStyle({
+        height: "7800px",
+      })
+    );
   });
 
   it("can page backward from cached inline pages outside the mounted window", async () => {
