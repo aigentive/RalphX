@@ -153,6 +153,66 @@ export const AGENT_WORKSPACE_TOOLS = [
                     type: "string",
                     description: "Optional RalphX run id that produced this review artifact.",
                 },
+                hunk_annotations: {
+                    type: "array",
+                    description: "Optional structured hunk-level review notes. Use only hunk anchors returned in target.review_packet.hunk_anchors; omit anchors you cannot describe confidently.",
+                    items: {
+                        type: "object",
+                        properties: {
+                            path: {
+                                type: "string",
+                                description: "Reviewed file path from the hunk anchor.",
+                            },
+                            source: {
+                                type: "string",
+                                description: "Diff source from the hunk anchor, such as selected_source, committed, staged, or unstaged.",
+                            },
+                            hunk_header: {
+                                type: "string",
+                                description: "Exact @@ hunk header from the hunk anchor.",
+                            },
+                            old_start: {
+                                type: "number",
+                                description: "Old-file start line from the hunk anchor.",
+                            },
+                            old_lines: {
+                                type: "number",
+                                description: "Old-file line count from the hunk anchor.",
+                            },
+                            new_start: {
+                                type: "number",
+                                description: "New-file start line from the hunk anchor.",
+                            },
+                            new_lines: {
+                                type: "number",
+                                description: "New-file line count from the hunk anchor.",
+                            },
+                            title: {
+                                type: "string",
+                                description: "Optional short label for the hunk note.",
+                            },
+                            message: {
+                                type: "string",
+                                description: "Concise explanation of what changed in this hunk and why it matters.",
+                            },
+                            level: {
+                                type: "string",
+                                enum: ["info", "notice", "warning"],
+                                description: "Informational severity for the hunk note. Use warning only for noteworthy risk.",
+                            },
+                        },
+                        required: [
+                            "path",
+                            "source",
+                            "hunk_header",
+                            "old_start",
+                            "old_lines",
+                            "new_start",
+                            "new_lines",
+                            "message",
+                        ],
+                    },
+                },
             },
             required: ["content"],
         },
@@ -498,6 +558,7 @@ export async function callWriteWorkspaceReviewArtifactTool(callTauri, args, runt
         head_sha: artifactArgs.head_sha,
         diff_fingerprint: artifactArgs.diff_fingerprint,
         created_by_run_id: artifactArgs.created_by_run_id,
+        hunk_annotations: artifactArgs.hunk_annotations,
     });
 }
 export async function callCompleteWorkspaceReviewRunTool(callTauri, args, runtimeContext) {

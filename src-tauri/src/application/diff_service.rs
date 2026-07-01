@@ -78,8 +78,16 @@ pub struct FileDiffPage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DiffPageRow {
-    HunkHeader { header: String },
-    Line { line: DiffLine },
+    HunkHeader {
+        header: String,
+        old_start: u32,
+        old_lines: u32,
+        new_start: u32,
+        new_lines: u32,
+    },
+    Line {
+        line: DiffLine,
+    },
 }
 
 // =========================================================================
@@ -193,6 +201,10 @@ impl DiffService {
         for hunk in diff.hunks {
             rows.push(DiffPageRow::HunkHeader {
                 header: hunk.header,
+                old_start: hunk.old_start,
+                old_lines: hunk.old_lines,
+                new_start: hunk.new_start,
+                new_lines: hunk.new_lines,
             });
             rows.extend(
                 hunk.lines

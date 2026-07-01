@@ -66,9 +66,10 @@ pub use agent_conversation_workspace::{
     AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription,
     AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
     AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
-    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewMonitor,
-    AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitorStatus,
-    AgentWorkspaceReviewOutcome, AgentWorkspaceReviewTargetScope,
+    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewHunkAnnotation,
+    AgentWorkspaceReviewMonitor, AgentWorkspaceReviewGateStatus,
+    AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
+    AgentWorkspaceReviewTargetScope,
     AgentWorkspaceSourcePullRequest, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 pub use agent_run::{

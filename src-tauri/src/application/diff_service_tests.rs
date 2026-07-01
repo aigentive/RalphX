@@ -1009,7 +1009,16 @@ fn file_diff_page_limits_rows_and_reports_next_offset() {
     assert_eq!(page.total_rows, 7);
     assert_eq!(page.next_offset, Some(3));
     assert_eq!(page.rows.len(), 3);
-    assert!(matches!(page.rows[0], DiffPageRow::HunkHeader { .. }));
+    assert!(matches!(
+        page.rows[0],
+        DiffPageRow::HunkHeader {
+            old_start: 1,
+            old_lines: 2,
+            new_start: 1,
+            new_lines: 2,
+            ..
+        }
+    ));
     assert!(matches!(page.rows[1], DiffPageRow::Line { .. }));
     assert!(matches!(page.rows[2], DiffPageRow::Line { .. }));
 

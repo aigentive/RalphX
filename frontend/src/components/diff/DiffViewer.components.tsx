@@ -21,7 +21,11 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
 import { Skeleton } from "@/components/ui/skeleton";
 import { SimpleDiffView } from "./SimpleDiffView";
-import type { DiffRefKind, PrDiffAnnotation } from "@/api/diff";
+import type {
+  DiffRefKind,
+  PrDiffAnnotation,
+  WorkspaceReviewHunkAnnotation,
+} from "@/api/diff";
 
 import {
   type FileChange,
@@ -300,6 +304,7 @@ interface DiffPanelProps {
   conversationId?: string;
   refKind?: DiffRefKind;
   annotations?: PrDiffAnnotation[];
+  hunkAnnotations?: WorkspaceReviewHunkAnnotation[];
 }
 
 export function DiffPanel({
@@ -310,6 +315,7 @@ export function DiffPanel({
   conversationId,
   refKind,
   annotations = [],
+  hunkAnnotations = [],
 }: DiffPanelProps) {
   if (isLoading) {
     return (
@@ -408,6 +414,7 @@ export function DiffPanel({
             refKind,
           })}
           annotations={annotations}
+          hunkAnnotations={hunkAnnotations}
         />
       </div>
     </div>
@@ -431,6 +438,7 @@ interface CommitDiffPanelProps {
   onOpenInIDE?: ((path: string) => void) | undefined;
   conversationId?: string;
   refKind?: DiffRefKind;
+  hunkAnnotations?: WorkspaceReviewHunkAnnotation[];
 }
 
 export function CommitDiffPanel({
@@ -446,6 +454,7 @@ export function CommitDiffPanel({
   onOpenInIDE,
   conversationId,
   refKind,
+  hunkAnnotations = [],
 }: CommitDiffPanelProps) {
   if (!commit) {
     return (
@@ -503,6 +512,7 @@ export function CommitDiffPanel({
           {...(onOpenInIDE !== undefined && { onOpenInIDE })}
           {...(conversationId !== undefined && { conversationId })}
           {...(refKind !== undefined && { refKind })}
+          hunkAnnotations={hunkAnnotations}
         />
       </div>
     </div>

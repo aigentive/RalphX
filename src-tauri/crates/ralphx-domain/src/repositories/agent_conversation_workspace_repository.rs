@@ -6,8 +6,8 @@ use crate::entities::{
     AgentConversationWorkspaceStatus, AgentWorkspaceFollowupProvenance,
     AgentWorkspacePrCommentEvidence, AgentWorkspacePrCommentEvidenceUpsert,
     AgentWorkspacePrDescription, AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionStatus,
-    AgentWorkspacePrReviewMonitor, AgentWorkspaceReviewMonitor, ChatConversationId,
-    IdeationSessionId, PlanBranchId, ProjectId,
+    AgentWorkspacePrReviewMonitor, AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor,
+    ChatConversationId, IdeationSessionId, PlanBranchId, ProjectId,
 };
 use crate::error::AppResult;
 
@@ -320,6 +320,23 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
     async fn list_reviewing_workspace_review_monitors(
         &self,
     ) -> AppResult<Vec<AgentWorkspaceReviewMonitor>> {
+        Ok(Vec::new())
+    }
+
+    async fn replace_workspace_review_hunk_annotations(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _artifact_id: &crate::entities::ArtifactId,
+        _annotations: Vec<AgentWorkspaceReviewHunkAnnotation>,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn list_workspace_review_hunk_annotations(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _artifact_id: &crate::entities::ArtifactId,
+    ) -> AppResult<Vec<AgentWorkspaceReviewHunkAnnotation>> {
         Ok(Vec::new())
     }
 

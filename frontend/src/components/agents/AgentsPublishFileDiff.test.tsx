@@ -20,16 +20,19 @@ vi.mock("@/components/diff/SimpleDiffView", () => ({
     hunks,
     isBinary,
     stickyGutter,
+    hunkAnnotations,
   }: {
     hunks: unknown[];
     isBinary?: boolean;
     stickyGutter?: boolean;
+    hunkAnnotations?: unknown[];
   }) => (
     <div
       data-testid="simple-diff-view"
       data-hunk-count={hunks.length}
       data-binary={String(isBinary ?? false)}
       data-sticky-gutter={String(stickyGutter ?? true)}
+      data-hunk-annotation-count={String(hunkAnnotations?.length ?? 0)}
     >
       SimpleDiffView
     </div>
@@ -54,6 +57,7 @@ vi.mock("@/components/diff/PagedDiffView", () => ({
     defaultWrapLines,
     initialTotalRows,
     initialIsBinary,
+    hunkAnnotations,
   }: {
     conversationId: string;
     filePath: string;
@@ -63,6 +67,7 @@ vi.mock("@/components/diff/PagedDiffView", () => ({
     defaultWrapLines?: boolean;
     initialTotalRows?: number;
     initialIsBinary?: boolean;
+    hunkAnnotations?: unknown[];
   }) => (
     <div
       data-testid="paged-diff-view"
@@ -74,6 +79,7 @@ vi.mock("@/components/diff/PagedDiffView", () => ({
       data-default-wrap-lines={String(defaultWrapLines ?? true)}
       data-initial-total-rows={initialTotalRows ?? ""}
       data-initial-is-binary={String(initialIsBinary ?? false)}
+      data-hunk-annotation-count={String(hunkAnnotations?.length ?? 0)}
     >
       PagedDiffView
     </div>
@@ -81,7 +87,13 @@ vi.mock("@/components/diff/PagedDiffView", () => ({
 }));
 
 import { AgentsPublishFileDiff } from "./AgentsPublishFileDiff";
-import type { ConflictDiff, FileChange, FileDiff, PrDiffAnnotation } from "@/api/diff";
+import type {
+  ConflictDiff,
+  FileChange,
+  FileDiff,
+  PrDiffAnnotation,
+  WorkspaceReviewHunkAnnotation,
+} from "@/api/diff";
 
 function withProviders(node: React.ReactNode) {
   return <TooltipProvider delayDuration={0}>{node}</TooltipProvider>;
@@ -147,6 +159,32 @@ const makeAnnotation = (overrides: Partial<PrDiffAnnotation> = {}): PrDiffAnnota
   url: null,
   isOutdated: false,
   createdAt: null,
+  ...overrides,
+});
+
+const makeHunkAnnotation = (
+  overrides: Partial<WorkspaceReviewHunkAnnotation> = {},
+): WorkspaceReviewHunkAnnotation => ({
+  id: "workspace-review-hunk-1",
+  conversationId: "conv-1",
+  projectId: "project-1",
+  artifactId: "artifact-1",
+  artifactVersion: 1,
+  targetScope: "selected_source",
+  headSha: "head-sha",
+  diffFingerprint: "fingerprint-1",
+  path: "src/components/Foo.tsx",
+  diffSource: "selected_source",
+  hunkHeader: "@@ -1,1 +1,1 @@",
+  oldStart: 1,
+  oldLines: 1,
+  newStart: 1,
+  newLines: 1,
+  title: "Review summary",
+  message: "This hunk updates the file diff card.",
+  level: "notice",
+  createdByRunId: "run-1",
+  createdAt: "2026-07-01T00:00:00Z",
   ...overrides,
 });
 
@@ -318,6 +356,32 @@ describe("AgentsPublishFileDiff", () => {
       );
 
       expect(screen.getByTestId("file-diff-annotation-count")).toHaveTextContent("2");
+    });
+
+    it("renders workspace review hunk annotation count immediately", () => {
+      render(
+        withProviders(
+          <AgentsPublishFileDiff
+            file={makeFileChange()}
+            diff={undefined}
+            isExpanded={false}
+            onToggle={onToggle}
+            onCopyPath={onCopyPath}
+            onOpenFullscreen={onOpenFullscreen}
+            shouldHydrate={true}
+            hunkAnnotations={[
+              makeHunkAnnotation(),
+              makeHunkAnnotation({ id: "workspace-review-hunk-2" }),
+            ]}
+            isShowAnywayOverridden={false}
+            onShowAnyway={onShowAnyway}
+          />,
+        ),
+      );
+
+      expect(screen.getByTestId("file-diff-hunk-annotation-count")).toHaveTextContent(
+        "2 review",
+      );
     });
 
     it("copy-path button calls onCopyPath with file path", async () => {
@@ -528,6 +592,30 @@ describe("AgentsPublishFileDiff", () => {
         "false",
       );
       expect(screen.queryByTestId("paged-diff-view")).toBeNull();
+    });
+
+    it("passes workspace review hunk annotations into SimpleDiffView", () => {
+      render(
+        withProviders(
+          <AgentsPublishFileDiff
+            file={makeFileChange()}
+            diff={makeDiff()}
+            isExpanded={true}
+            onToggle={onToggle}
+            onCopyPath={onCopyPath}
+            onOpenFullscreen={onOpenFullscreen}
+            shouldHydrate={true}
+            hunkAnnotations={[makeHunkAnnotation()]}
+            isShowAnywayOverridden={false}
+            onShowAnyway={onShowAnyway}
+          />,
+        ),
+      );
+
+      expect(screen.getByTestId("simple-diff-view")).toHaveAttribute(
+        "data-hunk-annotation-count",
+        "1",
+      );
     });
 
     it("mounts PagedDiffView for a medium hydrated diff when page refs are available", () => {
@@ -875,6 +963,32 @@ describe("AgentsPublishFileDiff", () => {
       );
       expect(screen.queryByTestId("simple-diff-view")).toBeNull();
       expect(screen.queryByTestId("file-diff-large-placeholder")).toBeNull();
+    });
+
+    it("passes workspace review hunk annotations into PagedDiffView", () => {
+      render(
+        withProviders(
+          <AgentsPublishFileDiff
+            file={makeFileChange({ additions: 1_250, deletions: 25 })}
+            diff={undefined}
+            isExpanded={true}
+            onToggle={onToggle}
+            onCopyPath={onCopyPath}
+            onOpenFullscreen={onOpenFullscreen}
+            conversationId="conv-1"
+            diffPageRefKind={{ kind: "head" }}
+            shouldHydrate={true}
+            hunkAnnotations={[makeHunkAnnotation()]}
+            isShowAnywayOverridden={false}
+            onShowAnyway={onShowAnyway}
+          />,
+        ),
+      );
+
+      expect(screen.getByTestId("paged-diff-view")).toHaveAttribute(
+        "data-hunk-annotation-count",
+        "1",
+      );
     });
 
     it("defers a large paged diff until the file row is hydrated", () => {

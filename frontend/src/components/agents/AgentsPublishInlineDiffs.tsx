@@ -34,6 +34,7 @@ import type {
   FileChange,
   DiffRefKind,
   PrDiffAnnotation,
+  WorkspaceReviewHunkAnnotation,
 } from "@/api/diff";
 import type { Commit as DiffViewerCommit } from "@/components/diff";
 import { cn } from "@/lib/utils";
@@ -57,6 +58,7 @@ import type { AgentPublishFocusRequest } from "./agentPublishFocus";
 import { useAgentWorkspaceChangeSummary } from "./useAgentWorkspaceChangeSummary";
 
 const EMPTY_PR_DIFF_ANNOTATIONS: PrDiffAnnotation[] = [];
+const EMPTY_WORKSPACE_REVIEW_HUNK_ANNOTATIONS: WorkspaceReviewHunkAnnotation[] = [];
 const DIFF_ROW_COUNT_SUMMARY_LIMIT = 1;
 const VIRTUAL_RANGE_OVERSCAN_FILES = 0;
 const PATCH_BACKED_HEAD_REF_PREFIX = "github-pr-diff/";
@@ -69,6 +71,7 @@ export interface AgentsPublishInlineDiffsProps {
   commits: DiffViewerCommit[];
   isLoading: boolean;
   annotations?: PrDiffAnnotation[] | undefined;
+  hunkAnnotations?: WorkspaceReviewHunkAnnotation[] | undefined;
   error?: unknown;
   onOpenInDialog?: ((filePath?: string) => void) | undefined;
   focusRequest?: AgentPublishFocusRequest | null | undefined;
@@ -147,7 +150,9 @@ function findFirstRenderedAnnotationRow(
     if (row.dataset.publishFilePath !== filePath) {
       continue;
     }
-    return row.querySelector<HTMLElement>('[data-testid="diff-annotation-row"]');
+    return row.querySelector<HTMLElement>(
+      '[data-testid="diff-annotation-row"], [data-testid="diff-hunk-annotation-row"]',
+    );
   }
   return null;
 }
@@ -198,6 +203,23 @@ function resolveDiffPageRefKind({
   return !repairMode || isStagedMode || isUnstagedMode ? refKind : undefined;
 }
 
+function workspaceReviewHunkAnnotationMatchesMode(
+  annotation: WorkspaceReviewHunkAnnotation,
+  mode: DiffFilterMode,
+  repairMode: boolean,
+): boolean {
+  if (repairMode || mode === "conflicted") {
+    return false;
+  }
+  if (mode === "staged") {
+    return annotation.diffSource === "staged";
+  }
+  if (mode === "unstaged") {
+    return annotation.diffSource === "unstaged";
+  }
+  return annotation.diffSource === "committed" || annotation.diffSource === "selected_source";
+}
+
 interface AgentsPublishVirtualFileRowProps {
   file: FileChange;
   diff: DiffState;
@@ -215,6 +237,7 @@ interface AgentsPublishVirtualFileRowProps {
   diffPageSummary?: DiffPageSummary | undefined;
   shouldHydrate: boolean;
   annotations: PrDiffAnnotation[];
+  hunkAnnotations: WorkspaceReviewHunkAnnotation[];
   isShowAnywayOverridden: boolean;
   onShowAnywayPath: (path: string) => void;
   isFocusTarget: boolean;
@@ -237,6 +260,7 @@ const AgentsPublishVirtualFileRow = memo(function AgentsPublishVirtualFileRow({
   diffPageSummary,
   shouldHydrate,
   annotations,
+  hunkAnnotations,
   isShowAnywayOverridden,
   onShowAnywayPath,
   isFocusTarget,
@@ -267,6 +291,7 @@ const AgentsPublishVirtualFileRow = memo(function AgentsPublishVirtualFileRow({
       diffPageSummary={diffPageSummary}
       shouldHydrate={shouldHydrate}
       annotations={annotations}
+      hunkAnnotations={hunkAnnotations}
       isShowAnywayOverridden={isShowAnywayOverridden}
       onShowAnyway={handleShowAnyway}
       isFocusTarget={isFocusTarget}
@@ -280,6 +305,7 @@ export function AgentsPublishInlineDiffs({
   commits,
   isLoading,
   annotations = [],
+  hunkAnnotations = [],
   error,
   onOpenInDialog,
   focusRequest,
@@ -381,21 +407,44 @@ export function AgentsPublishInlineDiffs({
     }
     return map;
   }, [annotations, canRenderPrAnnotations]);
+  const hunkAnnotationsByPath = useMemo(() => {
+    const map = new Map<string, WorkspaceReviewHunkAnnotation[]>();
+    for (const annotation of hunkAnnotations) {
+      if (
+        !workspaceReviewHunkAnnotationMatchesMode(
+          annotation,
+          effectiveMode,
+          repairMode,
+        )
+      ) {
+        continue;
+      }
+      const existing = map.get(annotation.path);
+      if (existing) {
+        existing.push(annotation);
+      } else {
+        map.set(annotation.path, [annotation]);
+      }
+    }
+    return map;
+  }, [effectiveMode, hunkAnnotations, repairMode]);
   const firstAnnotatedFilePath = useMemo(() => {
-    if (!canRenderPrAnnotations || annotationsByPath.size === 0) {
+    if (annotationsByPath.size === 0 && hunkAnnotationsByPath.size === 0) {
       return null;
     }
     return (
       currentFiles.find(
-        (file) => (annotationsByPath.get(file.path)?.length ?? 0) > 0,
+        (file) =>
+          (annotationsByPath.get(file.path)?.length ?? 0) > 0 ||
+          (hunkAnnotationsByPath.get(file.path)?.length ?? 0) > 0,
       )?.path ?? null
     );
-  }, [annotationsByPath, canRenderPrAnnotations, currentFiles]);
+  }, [annotationsByPath, currentFiles, hunkAnnotationsByPath]);
   const annotationAutoScrollKey = useMemo(() => {
     if (!firstAnnotatedFilePath) {
       return null;
     }
-    const parts = annotations.flatMap((annotation) => {
+    const prParts = annotations.flatMap((annotation) => {
       if (!annotation.path || !annotationsByPath.has(annotation.path)) {
         return [];
       }
@@ -409,6 +458,23 @@ export function AgentsPublishInlineDiffs({
         ].join(":"),
       ];
     });
+    const hunkParts = hunkAnnotations.flatMap((annotation) => {
+      if (!hunkAnnotationsByPath.has(annotation.path)) {
+        return [];
+      }
+      return [
+        [
+          annotation.id,
+          annotation.path,
+          annotation.diffSource,
+          annotation.oldStart,
+          annotation.oldLines,
+          annotation.newStart,
+          annotation.newLines,
+        ].join(":"),
+      ];
+    });
+    const parts = [...prParts, ...hunkParts];
     if (parts.length === 0) {
       return null;
     }
@@ -419,6 +485,8 @@ export function AgentsPublishInlineDiffs({
     conversationId,
     effectiveMode,
     firstAnnotatedFilePath,
+    hunkAnnotations,
+    hunkAnnotationsByPath,
   ]);
 
   // ── Conversation/mode changes reset hydrated paths; keep same-list viewport ranges ──
@@ -1031,6 +1099,10 @@ export function AgentsPublishInlineDiffs({
           diffPageSummary={diffPageSummaryByPath.get(fileChange.path)}
           shouldHydrate={hydratedPaths.has(fileChange.path)}
           annotations={annotationsByPath.get(fileChange.path) ?? EMPTY_PR_DIFF_ANNOTATIONS}
+          hunkAnnotations={
+            hunkAnnotationsByPath.get(fileChange.path) ??
+            EMPTY_WORKSPACE_REVIEW_HUNK_ANNOTATIONS
+          }
           isShowAnywayOverridden={userShowAnywayPaths.has(fileChange.path)}
           onShowAnywayPath={handleShowAnyway}
           isFocusTarget={focusTargetPath === fileChange.path}
@@ -1048,6 +1120,7 @@ export function AgentsPublishInlineDiffs({
       handleOpenFullscreen,
       handleShowAnyway,
       handleToggle,
+      hunkAnnotationsByPath,
       hydratedPaths,
       inlineDiffScrollParent,
       isConflictedMode,

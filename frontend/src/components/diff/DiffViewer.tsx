@@ -22,7 +22,11 @@ import {
 import { cn } from "@/lib/utils";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import type { DiffRefKind, PrDiffAnnotation } from "@/api/diff";
+import type {
+  DiffRefKind,
+  PrDiffAnnotation,
+  WorkspaceReviewHunkAnnotation,
+} from "@/api/diff";
 
 // Import types and utilities from separate file
 import {
@@ -54,6 +58,7 @@ export function DiffViewer({
   commits,
   commitFiles: commitFilesProp = [],
   annotations = [],
+  hunkAnnotations = [],
   onFetchDiff,
   onFetchCommitFiles,
   onOpenInIDE,
@@ -100,6 +105,24 @@ export function DiffViewer({
     }
     return map;
   }, [annotations]);
+  const hunkAnnotationsByPath = useMemo(() => {
+    const map = new Map<string, WorkspaceReviewHunkAnnotation[]>();
+    for (const annotation of hunkAnnotations) {
+      if (
+        annotation.diffSource !== "committed" &&
+        annotation.diffSource !== "selected_source"
+      ) {
+        continue;
+      }
+      const existing = map.get(annotation.path);
+      if (existing) {
+        existing.push(annotation);
+      } else {
+        map.set(annotation.path, [annotation]);
+      }
+    }
+    return map;
+  }, [hunkAnnotations]);
 
   // Handle tab change
   const handleTabChange = useCallback((value: string) => {
@@ -307,6 +330,9 @@ export function DiffViewer({
               annotations={
                 selectedFilePath ? annotationsByPath.get(selectedFilePath) ?? [] : []
               }
+              hunkAnnotations={
+                selectedFilePath ? hunkAnnotationsByPath.get(selectedFilePath) ?? [] : []
+              }
             />
           </div>
         </TabsContent>
@@ -351,6 +377,11 @@ export function DiffViewer({
                 conversationId,
                 refKind: historyTabRefKind,
               })}
+              hunkAnnotations={
+                commitSelectedFile
+                  ? hunkAnnotationsByPath.get(commitSelectedFile) ?? []
+                  : []
+              }
             />
           </div>
         </TabsContent>

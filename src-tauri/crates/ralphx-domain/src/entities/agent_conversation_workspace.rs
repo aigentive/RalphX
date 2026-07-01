@@ -235,6 +235,30 @@ impl FromStr for AgentWorkspaceReviewTargetScope {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentWorkspaceReviewHunkAnnotation {
+    pub id: String,
+    pub conversation_id: ChatConversationId,
+    pub project_id: ProjectId,
+    pub artifact_id: ArtifactId,
+    pub artifact_version: u32,
+    pub target_scope: AgentWorkspaceReviewTargetScope,
+    pub head_sha: Option<String>,
+    pub diff_fingerprint: String,
+    pub path: String,
+    pub diff_source: String,
+    pub hunk_header: String,
+    pub old_start: u32,
+    pub old_lines: u32,
+    pub new_start: u32,
+    pub new_lines: u32,
+    pub title: Option<String>,
+    pub message: String,
+    pub level: String,
+    pub created_by_run_id: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
 impl std::fmt::Display for AgentWorkspacePrReviewMonitorStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

@@ -11,6 +11,7 @@ import {
   AgentWorkspaceChangeSummaryResponseSchema,
   AgentWorkspaceReviewResponseSchema,
   PrDiffAnnotationsResponseSchema,
+  WorkspaceReviewHunkAnnotationsResponseSchema,
   RangeFetchResponseSchema,
 } from "./diff.schemas";
 import {
@@ -22,6 +23,7 @@ import {
   transformAgentWorkspaceChangeSummary,
   transformAgentWorkspaceReview,
   transformPrDiffAnnotationsResponse,
+  transformWorkspaceReviewHunkAnnotationsResponse,
   transformRangeLine,
 } from "./diff.transforms";
 import type {
@@ -34,6 +36,7 @@ import type {
   CommitInfo,
   DiffRefKind,
   PrDiffAnnotationsResponse,
+  WorkspaceReviewHunkAnnotationsResponse,
   RangeLine,
 } from "./diff.types";
 import { backendApiUrl } from "./backend";
@@ -59,6 +62,8 @@ export type {
   PrDiffAnnotation,
   PrAnnotationSourceUnavailable,
   PrDiffAnnotationsResponse,
+  WorkspaceReviewHunkAnnotation,
+  WorkspaceReviewHunkAnnotationsResponse,
   RangeLine,
 } from "./diff.types";
 
@@ -85,6 +90,8 @@ export {
   PrDiffAnnotationSchema,
   PrAnnotationSourceUnavailableSchema,
   PrDiffAnnotationsResponseSchema,
+  WorkspaceReviewHunkAnnotationSchema,
+  WorkspaceReviewHunkAnnotationsResponseSchema,
   RangeLineSchema,
   RangeFetchResponseSchema,
 } from "./diff.schemas";
@@ -104,6 +111,8 @@ export {
   transformPrDiffAnnotation,
   transformPrAnnotationSourceUnavailable,
   transformPrDiffAnnotationsResponse,
+  transformWorkspaceReviewHunkAnnotation,
+  transformWorkspaceReviewHunkAnnotationsResponse,
   transformRangeLine,
 } from "./diff.transforms";
 
@@ -251,6 +260,16 @@ export const diffApi = {
       { conversationId },
       PrDiffAnnotationsResponseSchema,
       transformPrDiffAnnotationsResponse
+    ),
+
+  getAgentConversationWorkspaceReviewHunkAnnotations: (
+    conversationId: string
+  ): Promise<WorkspaceReviewHunkAnnotationsResponse> =>
+    typedInvokeWithTransform(
+      "get_agent_conversation_workspace_review_hunk_annotations",
+      { conversationId },
+      WorkspaceReviewHunkAnnotationsResponseSchema,
+      transformWorkspaceReviewHunkAnnotationsResponse
     ),
 
   getAgentConversationWorkspaceFileDiff: (

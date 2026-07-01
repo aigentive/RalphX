@@ -424,7 +424,14 @@ describe("diff api", () => {
       file_path: "src/lib.rs",
       language: "rust",
       rows: [
-        { kind: "hunk_header", header: "@@ -1,2 +1,2 @@" },
+        {
+          kind: "hunk_header",
+          header: "@@ -1,2 +1,2 @@",
+          old_start: 1,
+          old_lines: 2,
+          new_start: 1,
+          new_lines: 2,
+        },
         {
           kind: "line",
           line: {
@@ -478,7 +485,14 @@ describe("diff api", () => {
         filePath: "src/lib.rs",
         language: "rust",
         rows: [
-          { kind: "hunk_header", header: "@@ -1,2 +1,2 @@" },
+          {
+            kind: "hunk_header",
+            header: "@@ -1,2 +1,2 @@",
+            oldStart: 1,
+            oldLines: 2,
+            newStart: 1,
+            newLines: 2,
+          },
           {
             kind: "line",
             line: {

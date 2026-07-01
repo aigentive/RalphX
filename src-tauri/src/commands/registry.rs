@@ -380,6 +380,7 @@ macro_rules! register_tauri_commands {
             commands::diff_commands::get_agent_conversation_workspace_change_summary,
             commands::diff_commands::get_agent_conversation_workspace_repair_change_summary,
             commands::diff_commands::get_agent_conversation_workspace_pr_annotations,
+            commands::diff_commands::get_agent_conversation_workspace_review_hunk_annotations,
             commands::diff_commands::get_agent_conversation_workspace_file_changes,
             commands::diff_commands::get_agent_conversation_workspace_file_diff,
             commands::diff_commands::get_agent_conversation_workspace_commits,

@@ -11,8 +11,10 @@ use crate::domain::entities::{
     AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription,
     AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionStatus,
     AgentWorkspacePrReviewMonitor, AgentWorkspacePrReviewMonitorStatus,
-    AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus, ChatConversationId,
-    IdeationSessionId, PlanBranchId, ProjectId, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+    AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor,
+    AgentWorkspaceReviewMonitorStatus, ArtifactId, ChatConversationId, IdeationSessionId,
+    PlanBranchId, ProjectId,
+    DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::repositories::AgentConversationWorkspaceRepository;
 use crate::error::AppResult;
@@ -26,6 +28,8 @@ pub struct MemoryAgentConversationWorkspaceRepository {
     pr_comment_evidence: RwLock<HashMap<(String, i64, String), AgentWorkspacePrCommentEvidence>>,
     pr_review_monitors: RwLock<HashMap<ChatConversationId, AgentWorkspacePrReviewMonitor>>,
     workspace_review_monitors: RwLock<HashMap<ChatConversationId, AgentWorkspaceReviewMonitor>>,
+    workspace_review_hunk_annotations:
+        RwLock<HashMap<(ChatConversationId, ArtifactId), Vec<AgentWorkspaceReviewHunkAnnotation>>>,
     pr_review_actions: RwLock<HashMap<String, AgentWorkspacePrReviewAction>>,
 }
 
@@ -39,6 +43,7 @@ impl MemoryAgentConversationWorkspaceRepository {
             pr_comment_evidence: RwLock::new(HashMap::new()),
             pr_review_monitors: RwLock::new(HashMap::new()),
             workspace_review_monitors: RwLock::new(HashMap::new()),
+            workspace_review_hunk_annotations: RwLock::new(HashMap::new()),
             pr_review_actions: RwLock::new(HashMap::new()),
         }
     }
@@ -668,6 +673,33 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             .collect::<Vec<_>>();
         monitors.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
         Ok(monitors)
+    }
+
+    async fn replace_workspace_review_hunk_annotations(
+        &self,
+        conversation_id: &ChatConversationId,
+        artifact_id: &ArtifactId,
+        annotations: Vec<AgentWorkspaceReviewHunkAnnotation>,
+    ) -> AppResult<()> {
+        self.workspace_review_hunk_annotations
+            .write()
+            .await
+            .insert((conversation_id.clone(), artifact_id.clone()), annotations);
+        Ok(())
+    }
+
+    async fn list_workspace_review_hunk_annotations(
+        &self,
+        conversation_id: &ChatConversationId,
+        artifact_id: &ArtifactId,
+    ) -> AppResult<Vec<AgentWorkspaceReviewHunkAnnotation>> {
+        Ok(self
+            .workspace_review_hunk_annotations
+            .read()
+            .await
+            .get(&(conversation_id.clone(), artifact_id.clone()))
+            .cloned()
+            .unwrap_or_default())
     }
 
     async fn create_or_update_pr_review_action(

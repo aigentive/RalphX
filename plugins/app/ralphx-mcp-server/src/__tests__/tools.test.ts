@@ -1757,6 +1757,20 @@ describe('agent workspace publish tool transport', () => {
           head_sha: 'abc123',
           diff_fingerprint: 'fingerprint-1',
           created_by_run_id: 'run-1',
+          hunk_annotations: [
+            {
+              path: 'src/lib.rs',
+              source: 'committed',
+              hunk_header: '@@ -1,1 +1,2 @@',
+              old_start: 1,
+              old_lines: 1,
+              new_start: 1,
+              new_lines: 2,
+              title: 'Updates lib',
+              message: 'Explains the changed hunk.',
+              level: 'notice',
+            },
+          ],
         },
         { parentConversationId: 'conversation-from-runtime' }
       )
@@ -1771,6 +1785,20 @@ describe('agent workspace publish tool transport', () => {
         head_sha: 'abc123',
         diff_fingerprint: 'fingerprint-1',
         created_by_run_id: 'run-1',
+        hunk_annotations: [
+          {
+            path: 'src/lib.rs',
+            source: 'committed',
+            hunk_header: '@@ -1,1 +1,2 @@',
+            old_start: 1,
+            old_lines: 1,
+            new_start: 1,
+            new_lines: 2,
+            title: 'Updates lib',
+            message: 'Explains the changed hunk.',
+            level: 'notice',
+          },
+        ],
       }
     );
   });
