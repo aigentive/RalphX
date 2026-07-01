@@ -2476,15 +2476,7 @@ async fn resume_pr_fix_publish_after_workspace_review(
     workspace: &AgentConversationWorkspace,
     monitor: &AgentWorkspaceReviewMonitor,
 ) -> Result<(), JsonError> {
-    if monitor.review_gate_status != AgentWorkspaceReviewGateStatus::Passed
-        || workspace.pr_supervision_status.as_deref() != Some("reviewing")
-        || !workspace.auto_publish_enabled
-        || workspace.publication_pr_number.is_none()
-        || workspace.has_terminal_publication_pr_status()
-        || (!workspace.pr_autofix_enabled
-            && !workspace.pr_auto_merge_desired
-            && workspace.pr_auto_merge_current.is_none())
-    {
+    if !pr_fix_publish_can_resume_after_workspace_review(workspace, monitor) {
         return Ok(());
     }
 
@@ -2579,6 +2571,35 @@ async fn resume_pr_fix_publish_after_workspace_review(
     }
 
     Ok(())
+}
+
+fn pr_fix_publish_can_resume_after_workspace_review(
+    workspace: &AgentConversationWorkspace,
+    monitor: &AgentWorkspaceReviewMonitor,
+) -> bool {
+    monitor.review_gate_status == AgentWorkspaceReviewGateStatus::Passed
+        && workspace.auto_publish_enabled
+        && workspace.publication_pr_number.is_some()
+        && !workspace.has_terminal_publication_pr_status()
+        && (workspace.pr_autofix_enabled
+            || workspace.pr_auto_merge_desired
+            || workspace.pr_auto_merge_current.is_some())
+        && match workspace.pr_supervision_status.as_deref() {
+            Some("reviewing") => true,
+            Some("blocked") => pr_supervision_block_is_workspace_review_gate(workspace),
+            _ => false,
+        }
+}
+
+fn pr_supervision_block_is_workspace_review_gate(workspace: &AgentConversationWorkspace) -> bool {
+    let Some(summary) = workspace.pr_supervision_summary.as_deref() else {
+        return false;
+    };
+    let summary = summary.trim();
+    summary == "Workspace Review is required before publishing"
+        || summary == "Workspace Review is still running"
+        || summary == "PR fix publish failed: Workspace Review is required before publishing"
+        || summary == "PR fix publish failed: Workspace Review is still running"
 }
 
 async fn complete_pr_fix_for_terminal_pr(
@@ -4022,6 +4043,7 @@ pub async fn get_agent_workspace_file_diff_page(
 mod tests {
     use super::*;
     use std::path::{Path as StdPath, PathBuf};
+    use std::pin::Pin;
     use std::process::Command;
     use std::sync::Arc;
 
@@ -4032,19 +4054,26 @@ mod tests {
     };
     use crate::application::{AppState, TeamService, TeamStateTracker};
     use crate::commands::ExecutionState;
+    use crate::domain::agents::{
+        AgentConfig, AgentHandle, AgentOutput, AgentResponse, AgentResult, AgenticClient,
+        ClientCapabilities, ResponseChunk,
+    };
     use crate::domain::entities::{
         AgentConversationWorkspace, AgentConversationWorkspaceMode,
-        AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspaceReviewGateStatus,
-        AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
-        AgentWorkspaceSourcePullRequest, ArtifactId, ChatContextType, ChatConversation,
-        IdeationAnalysisBaseRefKind, Project, ProjectId,
+        AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription,
+        AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitorStatus,
+        AgentWorkspaceReviewOutcome, AgentWorkspaceSourcePullRequest, ArtifactId, ChatContextType,
+        ChatConversation, IdeationAnalysisBaseRefKind, Project, ProjectId,
     };
+    use crate::domain::repositories::AgentConversationWorkspaceRepository;
     use crate::domain::review::ReviewSettings;
     use crate::domain::services::github_service::{
         GithubServiceTrait, PrHealth, PrIssueCommentSummary, PrReviewSubmissionEvent, PrStatus,
         PrSyncState,
     };
     use crate::tests::mock_github_service::MockGithubService;
+    use async_trait::async_trait;
+    use futures::{stream, Stream};
 
     fn git(repo: impl AsRef<StdPath>, args: &[&str]) -> String {
         let output = Command::new("git")
@@ -4071,6 +4100,73 @@ mod tests {
             team_tracker: tracker,
             team_service,
             delegation_service: Default::default(),
+        }
+    }
+
+    struct SubmittingPrDescriptionClient {
+        repo: Arc<dyn AgentConversationWorkspaceRepository>,
+        conversation_id: ChatConversationId,
+    }
+
+    impl SubmittingPrDescriptionClient {
+        fn new(
+            repo: Arc<dyn AgentConversationWorkspaceRepository>,
+            conversation_id: ChatConversationId,
+        ) -> Self {
+            Self {
+                repo,
+                conversation_id,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl AgenticClient for SubmittingPrDescriptionClient {
+        async fn spawn_agent(&self, config: AgentConfig) -> AgentResult<AgentHandle> {
+            Ok(AgentHandle::mock(config.role))
+        }
+
+        async fn stop_agent(&self, _handle: &AgentHandle) -> AgentResult<()> {
+            Ok(())
+        }
+
+        async fn wait_for_completion(&self, _handle: &AgentHandle) -> AgentResult<AgentOutput> {
+            self.repo
+                .save_pr_description(
+                    &self.conversation_id,
+                    AgentWorkspacePrDescription::new(
+                        Some("Cached publication title".to_string()),
+                        "## Summary\n\nReady to publish.".to_string(),
+                    ),
+                )
+                .await
+                .expect("test PR description should save");
+            Ok(AgentOutput::success("submitted"))
+        }
+
+        async fn send_prompt(
+            &self,
+            _handle: &AgentHandle,
+            _prompt: &str,
+        ) -> AgentResult<AgentResponse> {
+            Ok(AgentResponse::new(""))
+        }
+
+        fn stream_response(
+            &self,
+            _handle: &AgentHandle,
+            _prompt: &str,
+        ) -> Pin<Box<dyn Stream<Item = AgentResult<ResponseChunk>> + Send>> {
+            Box::pin(stream::empty())
+        }
+
+        fn capabilities(&self) -> &ClientCapabilities {
+            static CAPS: std::sync::OnceLock<ClientCapabilities> = std::sync::OnceLock::new();
+            CAPS.get_or_init(ClientCapabilities::mock)
+        }
+
+        async fn is_available(&self) -> AgentResult<bool> {
+            Ok(true)
         }
     }
 
@@ -4254,6 +4350,32 @@ mod tests {
             "feature/pr-description".to_string(),
             "/tmp/pr-description-worktree".to_string(),
         )
+    }
+
+    #[test]
+    fn review_completion_resume_predicate_only_allows_review_gate_blocks() {
+        let conversation_id = ChatConversationId::new();
+        let mut workspace = test_workspace(conversation_id.clone());
+        workspace.publication_pr_number = Some(267);
+        workspace.publication_pr_status = Some("open".to_string());
+        workspace.auto_publish_enabled = true;
+        workspace.pr_autofix_enabled = true;
+        workspace.pr_supervision_status = Some("blocked".to_string());
+        workspace.pr_supervision_summary =
+            Some("Workspace Review is required before publishing".to_string());
+        let mut monitor =
+            AgentWorkspaceReviewMonitor::new(conversation_id, workspace.project_id.clone());
+        monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Passed;
+
+        assert!(pr_fix_publish_can_resume_after_workspace_review(
+            &workspace, &monitor
+        ));
+
+        workspace.pr_supervision_summary = Some("Required checks are still pending.".to_string());
+
+        assert!(!pr_fix_publish_can_resume_after_workspace_review(
+            &workspace, &monitor
+        ));
     }
 
     fn test_freshness(
@@ -5329,6 +5451,164 @@ mod tests {
             .as_deref()
             .unwrap()
             .contains("Workspace Review failed"));
+    }
+
+    #[tokio::test]
+    async fn passed_workspace_review_resumes_blocked_pr_fix_publish() {
+        let repo = tempfile::TempDir::new().expect("repo tempdir");
+        let worktrees = tempfile::TempDir::new().expect("worktree tempdir");
+        git(repo.path(), &["init", "-b", "main"]);
+        git(repo.path(), &["config", "user.email", "test@example.com"]);
+        git(repo.path(), &["config", "user.name", "RalphX Test"]);
+        std::fs::write(repo.path().join("README.md"), "base\n").expect("write base file");
+        git(repo.path(), &["add", "README.md"]);
+        git(repo.path(), &["commit", "-m", "base"]);
+        let base_sha = git(repo.path(), &["rev-parse", "HEAD"]);
+
+        let github = Arc::new(MockGithubService::new());
+        let conversation_id = ChatConversationId::new();
+        let mut state = AppState::new_test();
+        state.github_service = Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>);
+        let client = Arc::new(SubmittingPrDescriptionClient::new(
+            Arc::clone(&state.agent_conversation_workspace_repo),
+            conversation_id.clone(),
+        ));
+        let state = state.with_agent_client(client);
+        let app_state = Arc::new(state);
+        let mut project = Project::new(
+            "Blocked PR Fix Review Resume".to_string(),
+            repo.path().to_string_lossy().to_string(),
+        );
+        project.base_branch = Some("main".to_string());
+        project.worktree_parent_directory = Some(worktrees.path().to_string_lossy().to_string());
+        app_state
+            .project_repo
+            .create(project.clone())
+            .await
+            .expect("seed project");
+
+        let mut conversation = ChatConversation::new_project(project.id.clone());
+        conversation.id = conversation_id.clone();
+        conversation.context_type = ChatContextType::Project;
+        conversation.context_id = project.id.as_str().to_string();
+        conversation.title = Some("Fix blocked review autopilot".to_string());
+        app_state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .expect("seed conversation");
+
+        let workspace_path = resolve_agent_conversation_workspace_path(&project, &conversation_id)
+            .expect("workspace path");
+        let branch_name = "ralphx/test/blocked-pr-fix-review-resume";
+        git(
+            repo.path(),
+            &[
+                "worktree",
+                "add",
+                "-b",
+                branch_name,
+                workspace_path.to_str().unwrap(),
+                "main",
+            ],
+        );
+        std::fs::write(workspace_path.join("fix.txt"), "ci fix\n").expect("write workspace change");
+        let mut workspace = AgentConversationWorkspace::new(
+            conversation_id.clone(),
+            project.id.clone(),
+            AgentConversationWorkspaceMode::Edit,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main".to_string(),
+            Some("Project default (main)".to_string()),
+            Some(base_sha),
+            branch_name.to_string(),
+            workspace_path.to_string_lossy().to_string(),
+        );
+        workspace.publication_pr_number = Some(267);
+        workspace.publication_pr_url = Some("https://github.com/owner/repo/pull/267".to_string());
+        workspace.publication_pr_status = Some("open".to_string());
+        workspace.publication_push_status = Some("needs_agent".to_string());
+        workspace.auto_publish_enabled = true;
+        workspace.pr_supervision_status = Some("blocked".to_string());
+        workspace.pr_supervision_summary =
+            Some("Workspace Review is required before publishing".to_string());
+        workspace.pr_autofix_enabled = true;
+        workspace.pr_auto_merge_desired = true;
+        app_state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace.clone())
+            .await
+            .expect("seed workspace");
+
+        let review_context = load_agent_workspace_review_context(app_state.as_ref(), &workspace)
+            .await
+            .expect("review context should load");
+        let target = review_context.target.expect("review target should exist");
+        let mut monitor = review_context.monitor;
+        monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
+        apply_review_artifact_to_monitor(
+            &mut monitor,
+            target.scope,
+            target.head_sha,
+            target.diff_fingerprint,
+            Some("review-run".to_string()),
+            ArtifactId::from_string("review-artifact-blocked-resume"),
+            1,
+            chrono::Utc::now(),
+            None,
+        );
+        monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
+        monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Reviewing;
+        app_state
+            .agent_conversation_workspace_repo
+            .upsert_workspace_review_monitor(monitor)
+            .await
+            .expect("review monitor should persist");
+
+        let state = test_http_state(Arc::clone(&app_state));
+        let Json(response) = complete_agent_workspace_review_run(
+            State(state),
+            Path(conversation_id.to_string()),
+            Json(CompleteAgentWorkspaceReviewRunRequest {
+                outcome: Some("passed".to_string()),
+                summary: "Review passed".to_string(),
+                blocker: None,
+                created_by_run_id: Some("review-run".to_string()),
+            }),
+        )
+        .await
+        .expect("passed workspace review should complete");
+
+        assert_eq!(response.monitor.review_gate_status, "passed");
+        let github_state = github.state();
+        assert_eq!(github_state.push_branch_calls, 1);
+        assert_eq!(
+            github_state.last_push_branch_name.as_deref(),
+            Some(branch_name)
+        );
+        assert_eq!(github_state.enable_pr_auto_merge_calls, 1);
+        drop(github_state);
+        let updated = app_state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.pr_supervision_status.as_deref(), Some("monitoring"));
+        assert_eq!(updated.publication_push_status.as_deref(), Some("pushed"));
+        let events = app_state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&conversation_id)
+            .await
+            .unwrap();
+        assert!(events.iter().any(|event| {
+            event.step == "pr_autofix_workspace_review_passed"
+                && event.status == "publishing"
+                && event.classification.as_deref() == Some("workspace_review_passed")
+        }));
+        assert!(events
+            .iter()
+            .any(|event| event.step == "published" && event.status == "succeeded"));
     }
 
     #[tokio::test]
