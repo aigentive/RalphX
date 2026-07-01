@@ -2742,6 +2742,73 @@ x
         assert!(ranked.sources.contains("ignored"));
     }
 
+    #[test]
+    fn git_path_output_rejects_empty_and_resolves_git_paths() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let empty_error =
+            git_path_output(temp.path(), " \n").expect_err("empty git path should fail");
+        match empty_error {
+            AppError::GitOperation(message) => assert!(message.contains("empty path")),
+            other => panic!("expected GitOperation, got {other:?}"),
+        }
+
+        let relative = git_path_output(temp.path(), ".git/objects\n")
+            .expect("relative git path should resolve");
+        assert_eq!(relative, temp.path().join(".git/objects"));
+
+        let absolute_dir = temp.path().join("objects");
+        let absolute = git_path_output(temp.path(), &format!("{}\n", absolute_dir.display()))
+            .expect("absolute git path should pass through");
+        assert_eq!(absolute, absolute_dir);
+    }
+
+    #[tokio::test]
+    async fn git_stdout_lossy_with_env_reports_git_failures() {
+        let (_temp, repo, _base_sha) = init_repo();
+
+        let error =
+            git_stdout_lossy_with_env(&["rev-parse", "--verify", "refs/heads/missing"], &repo, &[])
+                .await
+                .expect_err("failed git command should return an error");
+
+        match error {
+            AppError::GitOperation(message) => assert!(!message.trim().is_empty()),
+            other => panic!("expected GitOperation, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn workspace_delta_content_fingerprint_tracks_content_not_head_provenance() {
+        let (_temp, repo, base_sha) = init_repo();
+        std::fs::write(repo.join("README.md"), "base\nupdated\n")
+            .expect("tracked file should be changed");
+        std::fs::write(repo.join("untracked.rs"), "pub fn added() {}\n")
+            .expect("untracked file should be written");
+
+        let uncommitted_fingerprint = workspace_delta_content_fingerprint(&repo, &base_sha)
+            .await
+            .expect("uncommitted content should fingerprint");
+
+        git(&repo, &["add", "-A"]);
+        git(&repo, &["commit", "-m", "commit equivalent content"]);
+        let committed_fingerprint = workspace_delta_content_fingerprint(&repo, &base_sha)
+            .await
+            .expect("committed content should fingerprint");
+
+        assert_eq!(committed_fingerprint, uncommitted_fingerprint);
+
+        std::fs::write(
+            repo.join("untracked.rs"),
+            "pub fn added() { println!(\"changed\"); }\n",
+        )
+        .expect("content should change");
+        let changed_fingerprint = workspace_delta_content_fingerprint(&repo, &base_sha)
+            .await
+            .expect("changed content should fingerprint");
+
+        assert_ne!(changed_fingerprint, uncommitted_fingerprint);
+    }
+
     #[tokio::test]
     async fn load_context_resolves_workspace_delta_and_monitor_fields() {
         let (_temp, repo, base_sha) = init_repo();
