@@ -10,8 +10,8 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use ralphx_lib::domain::services::github_service::{
-    GithubServiceTrait, PrDetail, PrMergeStateStatus, PrMergeableState, PrReviewFeedback, PrStatus,
-    PrReviewThread, PrSyncState,
+    GithubServiceTrait, PrDetail, PrMergeStateStatus, PrMergeableState, PrReviewFeedback,
+    PrReviewThread, PrStatus, PrSyncState,
 };
 use ralphx_lib::{AppError, AppResult};
 
@@ -230,11 +230,15 @@ impl GithubServiceTrait for MockGithubService {
 
     async fn fetch_pr_detail(&self, _wd: &Path, _pr_number: i64) -> AppResult<PrDetail> {
         *self.fetch_pr_detail_calls.lock().unwrap() += 1;
-        self.fetch_pr_detail_result.lock().unwrap().take().unwrap_or_else(|| {
-            Err(AppError::Infrastructure(
-                "MockGithubService::fetch_pr_detail not configured".to_string(),
-            ))
-        })
+        self.fetch_pr_detail_result
+            .lock()
+            .unwrap()
+            .take()
+            .unwrap_or_else(|| {
+                Err(AppError::Infrastructure(
+                    "MockGithubService::fetch_pr_detail not configured".to_string(),
+                ))
+            })
     }
 
     async fn fetch_pr_review_thread(
