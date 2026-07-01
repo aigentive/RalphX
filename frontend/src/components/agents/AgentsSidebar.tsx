@@ -965,6 +965,9 @@ export function AgentsSidebar({
     if (sidebarGroupBy !== "project" || showAllProjects || normalizedSearch.length > 0) {
       return null;
     }
+    if (orderedProjects.length === 1) {
+      return orderedProjects[0]?.id ?? null;
+    }
 
     const expandedProjects = orderedProjects.filter(
       (project) => expandedProjectIds[project.id] ?? focusedProjectId === project.id

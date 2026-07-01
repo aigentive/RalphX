@@ -2099,6 +2099,51 @@ describe("AgentsSidebar", () => {
     expect(screen.queryByTestId("agents-project-project-3")).not.toBeInTheDocument();
   });
 
+  it("fills a single visible project when expansion state is unset and focus is elsewhere", () => {
+    const visibleProject = project({ id: "project-1", name: "alpha" });
+    const focusedElsewhere = project({ id: "project-2", name: "beta" });
+    useAgentSessionStore.setState({
+      expandedProjectIds: {},
+      showAllProjects: false,
+      sidebarProjectFilterIds: ["project-1"],
+      projectSort: "latest",
+    });
+    conversationsByProject.set("project-1", {
+      data: [conversation({ id: "conversation-1", title: "First run" })],
+      total: 1,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+    conversationsByProject.set("project-2", {
+      data: [
+        conversation({
+          id: "conversation-2",
+          title: "Second run",
+          projectId: "project-2",
+          contextId: "project-2",
+        }),
+      ],
+      total: 1,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+
+    renderSidebar([visibleProject, focusedElsewhere], {
+      focusedProjectId: "project-2",
+    });
+
+    const visibleProjectGroup = screen.getByTestId("agents-project-project-1");
+    const projectList = visibleProjectGroup.parentElement;
+
+    expect(projectList).toHaveClass("flex", "min-h-0", "flex-1", "overflow-hidden");
+    expect(visibleProjectGroup).toHaveClass("flex-1", "min-h-0");
+    expect(screen.queryByTestId("agents-project-project-2")).not.toBeInTheDocument();
+  });
+
   it("searches conversations on the backend across projects without matching project names", async () => {
     const focused = project({ id: "project-1", name: "alpha" });
     const idle = project({ id: "project-2", name: "beta" });
