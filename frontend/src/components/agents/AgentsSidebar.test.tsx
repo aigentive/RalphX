@@ -1015,6 +1015,45 @@ describe("AgentsSidebar", () => {
     expect(within(row).queryByText("running")).not.toBeInTheDocument();
   });
 
+  it("shows reviewing ahead of blocked PR supervision for a running workspace Review", () => {
+    const reviewingConversation = conversation({
+      id: "conversation-reviewing-blocked",
+      title: "Reviewing blocked workspace",
+    });
+    const reviewingStoreKey = getAgentConversationStoreKey(reviewingConversation);
+    conversationsByProject.set("project-1", {
+      data: [reviewingConversation],
+      total: 1,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+    workspacesByProject.set("project-1", [
+      workspace({
+        conversationId: reviewingConversation.id,
+        publicationPrNumber: 556,
+        publicationPushStatus: "pushed",
+        prSupervisionStatus: "blocked",
+      }),
+    ]);
+    useChatStore.setState({
+      activeConversationIds: {
+        [reviewingStoreKey]: reviewingConversation.id,
+      },
+      agentStatus: { [reviewingStoreKey]: "generating" },
+      agentActivityLabels: { [reviewingStoreKey]: "reviewing" },
+    });
+
+    renderSidebar();
+
+    const row = within(screen.getByTestId("agents-session-conversation-reviewing-blocked"));
+    expect(row.getByText("PR #556")).toBeInTheDocument();
+    expect(row.getByText("reviewing")).toBeInTheDocument();
+    expect(row.queryByText("blocked")).not.toBeInTheDocument();
+    expect(row.queryByText("running")).not.toBeInTheDocument();
+  });
+
   it("uses fixing publication label instead of generic running text", () => {
     const fixingConversation = conversation({
       id: "conversation-fixing",

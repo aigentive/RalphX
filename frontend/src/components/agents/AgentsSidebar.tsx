@@ -1889,9 +1889,14 @@ function PublicationStateGroup({
         isActiveRuntime,
         agentStatus
       );
+      const publicationLabel = getVisiblePublicationLabel(
+        row.publicationLabel,
+        runtimeState,
+        runtimeLabel
+      );
       const showRuntimeState = shouldShowSessionRuntimeLabel(
         runtimeState,
-        row.publicationLabel
+        publicationLabel
       );
       const sessionActionsOpen = openSessionActionsId === conversation.id;
 
@@ -1903,7 +1908,7 @@ function PublicationStateGroup({
           refKind={row.refKind}
           refLabel={row.refLabel}
           publicationState={row.publicationState}
-          publicationLabel={row.publicationLabel}
+          publicationLabel={publicationLabel}
           isSelected={isSelected}
           isPinned={isPinned}
           runtimeState={runtimeState}
@@ -2557,9 +2562,14 @@ function ProjectSessionGroup({
         isActiveRuntime,
         agentStatus
       );
+      const publicationLabel = getVisiblePublicationLabel(
+        row.publicationLabel,
+        runtimeState,
+        runtimeLabel
+      );
       const showRuntimeState = shouldShowSessionRuntimeLabel(
         runtimeState,
-        row.publicationLabel
+        publicationLabel
       );
       const sessionActionsOpen = openSessionActionsId === conversation.id;
 
@@ -2571,7 +2581,7 @@ function ProjectSessionGroup({
           refKind={row.refKind}
           refLabel={row.refLabel}
           publicationState={row.publicationState}
-          publicationLabel={row.publicationLabel}
+          publicationLabel={publicationLabel}
           isSelected={isSelected}
           isPinned={isPinned}
           runtimeState={runtimeState}
@@ -3040,6 +3050,25 @@ function getSessionRuntimeState(
   }
 
   return "running";
+}
+
+function getVisiblePublicationLabel(
+  publicationLabel: string | null,
+  state: SessionRuntimeState,
+  runtimeLabel: string | null
+) {
+  const normalizedPublicationLabel =
+    publicationLabel?.trim().toLowerCase() ?? null;
+  const normalizedRuntimeLabel = runtimeLabel?.trim().toLowerCase() ?? null;
+  if (
+    state === "running" &&
+    normalizedPublicationLabel === "blocked" &&
+    normalizedRuntimeLabel === "reviewing"
+  ) {
+    return null;
+  }
+
+  return publicationLabel;
 }
 
 function shouldShowSessionRuntimeLabel(
