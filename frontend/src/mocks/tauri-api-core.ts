@@ -441,6 +441,21 @@ function mockAgentHarnessAvailability(projectId: string | null) {
   }));
 }
 
+const mockWorkspaceReviewRuntimeSettings: Record<
+  string,
+  Array<{
+    projectId: string | null;
+    provider: string;
+    model: string | null;
+    effort: string | null;
+    updatedAt: string;
+  }>
+> = {};
+
+function workspaceReviewScopeKey(projectId: string | null) {
+  return projectId ?? "__global__";
+}
+
 function toSnakeConversation(conversation: ChatConversation) {
   return {
     id: conversation.id,
@@ -1576,6 +1591,39 @@ const commandHandlers: Record<
       sandboxMode: input.sandboxMode ?? null,
       updatedAt: "2026-05-08T00:00:00Z",
     };
+  },
+  get_workspace_review_runtime_settings: async (args) => {
+    const projectId = (args.projectId as string | null | undefined) ?? null;
+    return [
+      ...(mockWorkspaceReviewRuntimeSettings[
+        workspaceReviewScopeKey(projectId)
+      ] ?? []),
+    ];
+  },
+  update_workspace_review_runtime_settings: async (args) => {
+    const input = args.input as {
+      projectId?: string | null;
+      provider: string;
+      model?: string | null;
+      effort?: string | null;
+    };
+    const projectId = input.projectId ?? null;
+    const scopeKey = workspaceReviewScopeKey(projectId);
+    const rows = (mockWorkspaceReviewRuntimeSettings[scopeKey] ??= []);
+    const existing = rows.find((row) => row.provider === input.provider);
+    const row = {
+      projectId,
+      provider: input.provider,
+      model: input.model ?? null,
+      effort: input.effort ?? null,
+      updatedAt: "2026-05-08T00:00:00Z",
+    };
+    if (existing) {
+      Object.assign(existing, row);
+      return existing;
+    }
+    rows.push(row);
+    return row;
   },
   get_project: async (args) => mockProjectsApi.get(args.projectId as string),
   get_git_branches: async (args) =>

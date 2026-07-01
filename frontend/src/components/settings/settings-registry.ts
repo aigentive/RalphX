@@ -4,6 +4,7 @@ export type SettingsSectionId =
   | "execution-harnesses"
   | "models"
   | "global-execution"
+  | "workspace-review"
   | "review"
   | "autonomy"
   | "repository"
@@ -54,6 +55,7 @@ export const SETTINGS_SECTIONS: SettingsSectionMeta[] = [
   { id: "execution", groupId: "general", label: "Execution" },
   { id: "execution-harnesses", groupId: "general", label: "Execution Agents" },
   { id: "global-execution", groupId: "general", label: "Global Capacity" },
+  { id: "workspace-review", groupId: "general", label: "Workspace Review" },
   { id: "review", groupId: "general", label: "Review Policy" },
   { id: "autonomy", groupId: "general", label: "Autonomy Policy" },
   { id: "ideation-workflow", groupId: "ideation", label: "Planning & Verification" },

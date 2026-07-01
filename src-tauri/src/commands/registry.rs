@@ -129,6 +129,8 @@ macro_rules! register_tauri_commands {
             // Review settings commands
             commands::review_commands::get_review_settings,
             commands::review_commands::update_review_settings,
+            commands::workspace_review_settings_commands::get_workspace_review_runtime_settings,
+            commands::workspace_review_settings_commands::update_workspace_review_runtime_settings,
             commands::execution_commands::get_execution_status,
             commands::execution_commands::pause_execution,
             commands::execution_commands::resume_execution,

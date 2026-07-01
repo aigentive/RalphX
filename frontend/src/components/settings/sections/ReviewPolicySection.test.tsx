@@ -40,10 +40,10 @@ describe("ReviewPolicySection", () => {
         };
       }
       if (command === "update_review_settings") {
-        const input = (args as { input: { requireWorkspaceReview?: boolean } }).input;
+        const input = (args as { input: { requireHumanReview?: boolean } }).input;
         return {
-          require_human_review: false,
-          require_workspace_review: input.requireWorkspaceReview ?? true,
+          require_human_review: input.requireHumanReview ?? false,
+          require_workspace_review: true,
           max_fix_attempts: 3,
           max_revision_cycles: 5,
           ai_review_enabled: true,
@@ -56,15 +56,15 @@ describe("ReviewPolicySection", () => {
     });
   });
 
-  it("updates the workspace Review publish-gate setting", async () => {
+  it("updates the human review setting", async () => {
     const user = userEvent.setup();
     renderSection();
 
-    await user.click(await screen.findByTestId("require-workspace-review"));
+    await user.click(await screen.findByTestId("require-human-review"));
 
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith("update_review_settings", {
-        input: { requireWorkspaceReview: false },
+        input: { requireHumanReview: true },
       }),
     );
   });

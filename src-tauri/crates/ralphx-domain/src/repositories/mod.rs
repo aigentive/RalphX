@@ -55,6 +55,7 @@ pub mod team_session_repository;
 pub mod ticket_canonical_branch_repository;
 pub mod webhook_registration_repository;
 pub mod workflow_repository;
+pub mod workspace_review_runtime_settings_repository;
 
 pub use active_plan_repository::ActivePlanRepository;
 pub use activity_event_repository::{
@@ -118,3 +119,4 @@ pub use team_session_repository::TeamSessionRepository;
 pub use ticket_canonical_branch_repository::TicketCanonicalBranchRepository;
 pub use webhook_registration_repository::{WebhookRegistration, WebhookRegistrationRepository};
 pub use workflow_repository::WorkflowRepository;
+pub use workspace_review_runtime_settings_repository::WorkspaceReviewRuntimeSettingsRepository;
