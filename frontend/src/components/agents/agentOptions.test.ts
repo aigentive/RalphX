@@ -175,6 +175,38 @@ describe("agentOptions", () => {
         (option) => option.id,
       ),
     ).toEqual(["sonnet", "opus", "haiku", "fable"]);
+    expect(
+      agentModelOptions("claude", undefined, [
+        "sonnet",
+        "opus",
+        "haiku",
+        "claude-sonnet-4-6",
+      ]).map((option) => option.id),
+    ).toEqual(["sonnet", "opus", "haiku"]);
+  });
+
+  it("progressively exposes Sonnet 5 only when Claude reports the model id", () => {
+    expect(agentModelOptions("claude").map((option) => option.id)).toEqual([
+      "sonnet",
+      "opus",
+      "haiku",
+    ]);
+    expect(
+      agentModelOptions("claude", undefined, [
+        "sonnet",
+        "opus",
+        "haiku",
+        "fable",
+        "claude-sonnet-5",
+      ]).map((option) => option.id),
+    ).toEqual([
+      "sonnet",
+      "claude-sonnet-4-6",
+      "claude-sonnet-5",
+      "opus",
+      "haiku",
+      "fable",
+    ]);
   });
 
   it("falls back from Fable only when provider model aliases are known unsupported", () => {
@@ -199,12 +231,81 @@ describe("agentOptions", () => {
         },
         undefined,
         null,
-        ["sonnet", "opus", "haiku"],
+        ["sonnet", "opus", "haiku", "claude-sonnet-4-6"],
       ),
     ).toEqual({
       provider: "claude",
       modelId: "sonnet",
       effort: "medium",
+    });
+  });
+
+  it("falls back from Sonnet 5 only when provider model aliases are known unsupported", () => {
+    expect(
+      normalizeRuntimeSelection({
+        provider: "claude",
+        modelId: "claude-sonnet-5",
+        effort: "xhigh",
+      }),
+    ).toEqual({
+      provider: "claude",
+      modelId: "claude-sonnet-5",
+      effort: "xhigh",
+    });
+
+    expect(
+      normalizeRuntimeSelection(
+        {
+          provider: "claude",
+          modelId: "claude-sonnet-5",
+          effort: "xhigh",
+        },
+        undefined,
+        null,
+        ["sonnet", "opus", "haiku", "fable"],
+      ),
+    ).toEqual({
+      provider: "claude",
+      modelId: "sonnet",
+      effort: "medium",
+    });
+  });
+
+  it("falls back from explicit Sonnet 4.6 while Sonnet latest is still only an alias", () => {
+    expect(
+      normalizeRuntimeSelection(
+        {
+          provider: "claude",
+          modelId: "claude-sonnet-4-6",
+          effort: "max",
+        },
+        undefined,
+        null,
+        ["sonnet", "opus", "haiku"],
+      ),
+    ).toEqual({
+      provider: "claude",
+      modelId: "sonnet",
+      effort: "max",
+    });
+  });
+
+  it("keeps explicit Sonnet 4.6 selectable once Sonnet 5 is available", () => {
+    expect(
+      normalizeRuntimeSelection(
+        {
+          provider: "claude",
+          modelId: "claude-sonnet-4-6",
+          effort: "max",
+        },
+        undefined,
+        null,
+        ["sonnet", "opus", "haiku", "claude-sonnet-5"],
+      ),
+    ).toEqual({
+      provider: "claude",
+      modelId: "claude-sonnet-4-6",
+      effort: "max",
     });
   });
 

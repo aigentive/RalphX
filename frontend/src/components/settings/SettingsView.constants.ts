@@ -14,7 +14,7 @@ export const MODEL_OPTIONS: { value: Model; label: string; description: string }
   },
   {
     value: "sonnet",
-    label: "Claude Sonnet 4.5",
+    label: "Claude Sonnet",
     description: "Best balance of speed and quality",
   },
   {

@@ -133,15 +133,19 @@ fn refresh_supported_harnesses_reprobes_claude_aliases_after_cli_update() {
     let initial_probe = refresh_harness_runtime_probe(AgentHarnessKind::Claude);
     assert_eq!(initial_probe.cli_version.as_deref(), Some("2.1.146"));
     assert!(!model_aliases(&initial_probe).contains(&"fable".to_string()));
+    assert!(!model_aliases(&initial_probe).contains(&"claude-sonnet-4-6".to_string()));
+    assert!(!model_aliases(&initial_probe).contains(&"claude-sonnet-5".to_string()));
 
-    write_fake_claude(&claude_cli, "2.1.177");
+    write_fake_claude(&claude_cli, "2.1.197");
     let cached_probe = claude_probe(&mut probe_supported_harnesses());
     assert_eq!(cached_probe.cli_version.as_deref(), Some("2.1.146"));
     assert!(!model_aliases(&cached_probe).contains(&"fable".to_string()));
 
     let refreshed_probe = claude_probe(&mut refresh_supported_harnesses());
-    assert_eq!(refreshed_probe.cli_version.as_deref(), Some("2.1.177"));
+    assert_eq!(refreshed_probe.cli_version.as_deref(), Some("2.1.197"));
     assert!(model_aliases(&refreshed_probe).contains(&"fable".to_string()));
+    assert!(model_aliases(&refreshed_probe).contains(&"claude-sonnet-4-6".to_string()));
+    assert!(model_aliases(&refreshed_probe).contains(&"claude-sonnet-5".to_string()));
 
     clear_harness_runtime_caches_for_tests(AgentHarnessKind::Claude);
     clear_harness_runtime_caches_for_tests(AgentHarnessKind::Codex);
