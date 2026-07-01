@@ -3,6 +3,7 @@ import { useEffect, useMemo } from "react";
 import { chatApi } from "@/api/chat";
 
 import {
+  getAgentConversationStoreKey,
   type AgentConversation,
 } from "./agentConversations";
 import { reconcileAgentConversationRuntimeStatus } from "./agentConversationRuntimeStore";
@@ -49,7 +50,8 @@ export function useAgentSidebarRunningStates(
           for (const conversation of projectConversations) {
             reconcileAgentConversationRuntimeStatus(
               conversation.id,
-              runtimeStatuses[conversation.id]
+              runtimeStatuses[conversation.id],
+              { storeKey: getAgentConversationStoreKey(conversation) }
             );
           }
         })

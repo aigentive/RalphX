@@ -159,4 +159,57 @@ describe("useAgentConversationRuntimeStatus", () => {
       "Setup workspace",
     );
   });
+
+  it("reconciles runtime status into the caller store key for non-project conversations", async () => {
+    mockGetAgentConversationRuntimeStatuses.mockResolvedValueOnce({
+      "review-conversation-1": runtimeStatus({
+        conversationId: "review-conversation-1",
+        primarySource: "review",
+        summaryLabel: "Reviewing",
+        items: [
+          {
+            source: "review",
+            contextType: "review",
+            contextId: "task-1",
+            label: "Reviewing",
+            title: "Review task",
+            agentStatus: "generating",
+            taskId: "task-1",
+            internalStatus: "reviewing",
+            runningProcess: null,
+            ideationSession: null,
+            parentSessionId: null,
+            childSessionId: null,
+            conversationId: "review-conversation-1",
+          },
+        ],
+      }),
+    });
+
+    renderHook(
+      () =>
+        useAgentConversationRuntimeStatus("review-conversation-1", {
+          storeKey: buildStoreKey("review", "task-1"),
+        }),
+      {
+        wrapper: createWrapper(),
+      },
+    );
+
+    const reviewStoreKey = buildStoreKey("review", "task-1");
+    const projectStoreKey = buildStoreKey("project", "review-conversation-1");
+
+    await waitFor(() => {
+      expect(useChatStore.getState().agentStatus[reviewStoreKey]).toBe(
+        "generating",
+      );
+    });
+
+    const state = useChatStore.getState();
+    expect(state.activeConversationIds[reviewStoreKey]).toBe(
+      "review-conversation-1",
+    );
+    expect(state.agentStatus[projectStoreKey]).toBeUndefined();
+    expect(state.activeConversationIds[projectStoreKey]).toBeUndefined();
+  });
 });

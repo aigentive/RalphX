@@ -819,10 +819,14 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     !isFocusedChildChat || chatFocus.type === "workspace_review";
   const runtimeStatusConversationId =
     activeConversation.parentConversationId ?? selectedConversationId;
+  const runtimeStatusStoreKey = runtimeStatusConversationId
+    ? buildStoreKey("project", runtimeStatusConversationId)
+    : null;
   const runtimeStatusQuery = useAgentConversationRuntimeStatus(
     runtimeStatusConversationId,
     {
       enabled: activeConversation.contextType === "project",
+      storeKey: runtimeStatusStoreKey,
     },
   );
   const runtimeStatusForWidget = useMemo(

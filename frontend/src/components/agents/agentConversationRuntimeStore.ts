@@ -36,8 +36,9 @@ export function agentConversationRuntimeActivityLabel(
 export function reconcileAgentConversationRuntimeStatus(
   conversationId: string,
   status: AgentConversationRuntimeStatus | null | undefined,
+  options: { storeKey?: string | null | undefined } = {},
 ) {
-  const storeKey = buildStoreKey("project", conversationId);
+  const storeKey = options.storeKey ?? buildStoreKey("project", conversationId);
   const chatState = useChatStore.getState();
   const { isRunning, agentStatus } =
     normalizeAgentConversationRuntimeStatus(status);

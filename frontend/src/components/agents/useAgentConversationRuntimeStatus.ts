@@ -15,6 +15,7 @@ export const agentConversationRuntimeStatusKeys = {
 
 interface UseAgentConversationRuntimeStatusOptions {
   enabled?: boolean;
+  storeKey?: string | null | undefined;
 }
 
 export function useAgentConversationRuntimeStatus(
@@ -75,8 +76,10 @@ export function useAgentConversationRuntimeStatus(
       return;
     }
 
-    reconcileAgentConversationRuntimeStatus(conversationId, query.data);
-  }, [conversationId, enabled, query.data, query.isSuccess]);
+    reconcileAgentConversationRuntimeStatus(conversationId, query.data, {
+      storeKey: options.storeKey,
+    });
+  }, [conversationId, enabled, options.storeKey, query.data, query.isSuccess]);
 
   return query;
 }
