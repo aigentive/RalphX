@@ -369,6 +369,11 @@ function currentWorkspaceConversationId(args: ProposePlanModeArgs): string {
     return explicit;
   }
 
+  const runtimeConversationId = process.env.RALPHX_CONVERSATION_ID?.trim();
+  if (runtimeConversationId) {
+    return runtimeConversationId;
+  }
+
   const parentConversationId = process.env.RALPHX_PARENT_CONVERSATION_ID?.trim();
   if (parentConversationId) {
     return parentConversationId;
