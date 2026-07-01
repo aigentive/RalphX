@@ -10,6 +10,26 @@ import {
 } from "./chat-active-state";
 
 describe("chat-active-state helpers", () => {
+  it("keeps previous streaming tasks and tool calls when active-state inputs are empty", () => {
+    const task: StreamingTask = {
+      toolUseId: "toolu_task",
+      toolName: "Agent",
+      description: "existing task",
+      subagentType: "Explore",
+      model: "existing-model",
+      status: "running",
+      startedAt: 123,
+      childToolCalls: [],
+    };
+    const tasks = new Map([["toolu_task", task]]);
+    const toolCalls: ToolCall[] = [
+      { id: "toolu_read", name: "Read", arguments: { file_path: "src/main.ts" } },
+    ];
+
+    expect(mergeActiveStreamingTasks(tasks, [])).toBe(tasks);
+    expect(mergeActiveStreamingToolCalls(toolCalls, [])).toBe(toolCalls);
+  });
+
   it("preserves existing task metadata when the active-state task only has live status", () => {
     const childToolCall: ToolCall = {
       id: "toolu_child",
@@ -160,6 +180,78 @@ describe("chat-active-state helpers", () => {
     ]);
   });
 
+  it("leaves content unchanged when active-state has no partial text", () => {
+    const previous: StreamingContentBlock[] = [
+      { type: "text", text: "Already visible" },
+    ];
+
+    const next = mergeActiveStreamingContentBlocks(previous, {
+      partial_text: "   ",
+      streaming_tasks: [],
+      tool_calls: [],
+    });
+
+    expect(next).toBe(previous);
+  });
+
+  it("adds active-state text when no live text block exists yet", () => {
+    const next = mergeActiveStreamingContentBlocks([], {
+      partial_text: "Recovered active text",
+      streaming_tasks: [],
+      tool_calls: [],
+    });
+
+    expect(next).toEqual([
+      { type: "text", text: "Recovered active text" },
+    ]);
+  });
+
+  it("does not duplicate active-state task markers", () => {
+    const previous: StreamingContentBlock[] = [
+      { type: "task", toolUseId: "toolu_delegate" },
+    ];
+
+    const next = mergeActiveStreamingContentBlocks(previous, {
+      partial_text: "",
+      streaming_tasks: [
+        {
+          tool_use_id: "toolu_delegate",
+          status: "running",
+        },
+      ],
+      tool_calls: [],
+    });
+
+    expect(next).toEqual([
+      { type: "task", toolUseId: "toolu_delegate" },
+    ]);
+  });
+
+  it("adds active-state tool calls when no matching live block exists", () => {
+    const next = mergeActiveStreamingContentBlocks([], {
+      partial_text: "",
+      streaming_tasks: [],
+      tool_calls: [
+        {
+          id: "toolu_shell",
+          name: "bash",
+          arguments: { command: "pwd" },
+        },
+      ],
+    });
+
+    expect(next).toEqual([
+      {
+        type: "tool_use",
+        toolCall: {
+          id: "toolu_shell",
+          name: "bash",
+          arguments: { command: "pwd" },
+        },
+      },
+    ]);
+  });
+
   it("restores active-state text when the first post-remount chunk arrived before hydration", () => {
     const previous: StreamingContentBlock[] = [
       { type: "text", text: "now checking the event merge" },
@@ -205,6 +297,47 @@ describe("chat-active-state helpers", () => {
 
     expect(next).toEqual([
       { type: "text", text: "I read the existing chat hooks and now checking the event merge before patching" },
+    ]);
+  });
+
+  it("hydrates an empty live text block from active-state text", () => {
+    const next = mergeActiveStreamingContentBlocks(
+      [{ type: "text", text: "" }],
+      {
+        partial_text: "Hydrated active-state text",
+        streaming_tasks: [],
+        tool_calls: [],
+      },
+    );
+
+    expect(next).toEqual([
+      { type: "text", text: "Hydrated active-state text" },
+    ]);
+  });
+
+  it("keeps live text when it already contains the active-state snapshot", () => {
+    const exact = mergeActiveStreamingContentBlocks(
+      [{ type: "text", text: "already synced" }],
+      {
+        partial_text: "already synced",
+        streaming_tasks: [],
+        tool_calls: [],
+      },
+    );
+    const prefix = mergeActiveStreamingContentBlocks(
+      [{ type: "text", text: "I read the existing chat hooks and kept streaming" }],
+      {
+        partial_text: "I read the existing chat hooks",
+        streaming_tasks: [],
+        tool_calls: [],
+      },
+    );
+
+    expect(exact).toEqual([
+      { type: "text", text: "already synced" },
+    ]);
+    expect(prefix).toEqual([
+      { type: "text", text: "I read the existing chat hooks and kept streaming" },
     ]);
   });
 });

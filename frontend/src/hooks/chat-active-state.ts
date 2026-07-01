@@ -198,10 +198,7 @@ function mergePartialTextBlock(
     return [...next, { type: "text", text: partialText }];
   }
 
-  const existing = next[textIndex];
-  if (existing?.type !== "text") {
-    return next;
-  }
+  const existing = next[textIndex] as Extract<StreamingContentBlock, { type: "text" }>;
 
   const mergedText = mergeStreamingTextSnapshot(partialText, existing.text);
   if (mergedText !== existing.text) {
@@ -211,9 +208,6 @@ function mergePartialTextBlock(
 }
 
 function mergeStreamingTextSnapshot(snapshotText: string, liveText: string): string {
-  if (snapshotText.length === 0) {
-    return liveText;
-  }
   if (liveText.length === 0) {
     return snapshotText;
   }
