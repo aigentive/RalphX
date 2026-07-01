@@ -4,6 +4,7 @@ use std::path::PathBuf;
 pub struct McpRuntimeContext {
     pub context_type: Option<String>,
     pub context_id: Option<String>,
+    pub conversation_id: Option<String>,
     pub task_id: Option<String>,
     pub project_id: Option<String>,
     pub working_directory: Option<PathBuf>,
@@ -23,6 +24,9 @@ pub fn append_mcp_runtime_query(url: &mut String, runtime_context: Option<&McpRu
     }
     if let Some(context_id) = runtime_context.context_id.as_deref() {
         params.push(("context_id", context_id));
+    }
+    if let Some(conversation_id) = runtime_context.conversation_id.as_deref() {
+        params.push(("conversation_id", conversation_id));
     }
     if let Some(project_id) = runtime_context.project_id.as_deref() {
         params.push(("project_id", project_id));
@@ -61,6 +65,10 @@ pub fn append_mcp_runtime_args(
     if let Some(context_id) = runtime_context.context_id.as_deref() {
         args.push("--context-id".to_string());
         args.push(context_id.to_string());
+    }
+    if let Some(conversation_id) = runtime_context.conversation_id.as_deref() {
+        args.push("--conversation-id".to_string());
+        args.push(conversation_id.to_string());
     }
     if let Some(task_id) = runtime_context.task_id.as_deref() {
         args.push("--task-id".to_string());

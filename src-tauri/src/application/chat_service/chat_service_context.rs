@@ -1983,6 +1983,7 @@ fn build_codex_cli_config(
 fn build_mcp_runtime_context(
     context_type: ChatContextType,
     context_id: &str,
+    conversation_id: Option<String>,
     working_directory: &Path,
     project_id: Option<&str>,
     filesystem_read_roots: &[PathBuf],
@@ -2000,6 +2001,7 @@ fn build_mcp_runtime_context(
     McpRuntimeContext {
         context_type: Some(context_type.to_string()),
         context_id: Some(context_id.to_string()),
+        conversation_id,
         task_id,
         project_id: project_id.map(str::to_string),
         working_directory: Some(working_directory.to_path_buf()),
@@ -2189,6 +2191,7 @@ async fn build_command_from_resolved_settings(
     let mcp_runtime_context = build_mcp_runtime_context(
         conversation.context_type,
         &conversation.context_id,
+        Some(conversation.id.as_str()),
         working_directory,
         project_id,
         filesystem_read_roots,
@@ -2269,6 +2272,7 @@ async fn build_recovery_command_from_resolved_settings(
     let mcp_runtime_context = build_mcp_runtime_context(
         context_type,
         context_id,
+        None,
         working_directory,
         project_id,
         filesystem_read_roots,
@@ -2426,6 +2430,7 @@ pub async fn build_codex_command(
     let runtime_context = build_mcp_runtime_context(
         conversation.context_type,
         &conversation.context_id,
+        Some(conversation.id.as_str()),
         working_directory,
         project_id,
         filesystem_read_roots,
@@ -2765,6 +2770,7 @@ pub async fn build_interactive_command(
     let mcp_runtime_context = build_mcp_runtime_context(
         conversation.context_type,
         &conversation.context_id,
+        Some(conversation.id.as_str()),
         working_directory,
         project_id,
         filesystem_read_roots,
@@ -3004,6 +3010,7 @@ async fn build_resume_command_from_resolved_settings(
             let mcp_runtime_context = build_mcp_runtime_context(
                 context_type,
                 context_id,
+                None,
                 working_directory,
                 project_id,
                 filesystem_read_roots,
@@ -3107,6 +3114,7 @@ pub async fn build_codex_resume_command(
     let runtime_context = build_mcp_runtime_context(
         context_type,
         context_id,
+        None,
         working_directory,
         project_id,
         filesystem_read_roots,
@@ -4344,7 +4352,7 @@ exit 0
     }
 
     #[tokio::test]
-    async fn project_child_launch_plans_scope_mcp_workspace_tools_to_parent_conversation() {
+    async fn project_child_launch_plans_pass_parent_and_current_conversation_ids_to_mcp() {
         let temp = tempfile::tempdir().expect("tempdir");
         let plugin_dir = repo_plugin_dir();
         let project_id = ProjectId::new();
@@ -4419,8 +4427,8 @@ exit 0
                 "{harness} child project launch should scope MCP workspace tools to parent conversation: {mcp_args}"
             );
             assert!(
-                !mcp_args.contains(&child_conversation_id),
-                "{harness} child project launch must not scope workspace MCP tools to child conversation: {mcp_args}"
+                mcp_args.contains("--conversation-id") && mcp_args.contains(&child_conversation_id),
+                "{harness} child project launch should also pass current conversation for question UI routing: {mcp_args}"
             );
         }
     }

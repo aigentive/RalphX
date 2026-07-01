@@ -18,6 +18,8 @@ describe("hydrateRalphxRuntimeEnvFromCli", () => {
             "ideation",
             "--context-id",
             "session-123",
+            "--conversation-id",
+            "conversation-current",
             "--parent-conversation-id",
             "conversation-789",
             "--project-id",
@@ -35,6 +37,7 @@ describe("hydrateRalphxRuntimeEnvFromCli", () => {
         expect(runtimeContext.agentType).toBe("ralphx-plan-verifier");
         expect(runtimeContext.contextType).toBe("ideation");
         expect(runtimeContext.contextId).toBe("session-123");
+        expect(runtimeContext.conversationId).toBe("conversation-current");
         expect(runtimeContext.parentConversationId).toBe("conversation-789");
         expect(runtimeContext.projectId).toBe("project-456");
         expect(runtimeContext.workingDirectory).toBe("/tmp/workspace");
@@ -44,6 +47,7 @@ describe("hydrateRalphxRuntimeEnvFromCli", () => {
         expect(env.RALPHX_AGENT_TYPE).toBe("ralphx-plan-verifier");
         expect(env.RALPHX_CONTEXT_TYPE).toBe("ideation");
         expect(env.RALPHX_CONTEXT_ID).toBe("session-123");
+        expect(env.RALPHX_CONVERSATION_ID).toBe("conversation-current");
         expect(env.RALPHX_PARENT_CONVERSATION_ID).toBe("conversation-789");
         expect(env.RALPHX_PROJECT_ID).toBe("project-456");
         expect(env.RALPHX_WORKING_DIRECTORY).toBe("/tmp/workspace");
