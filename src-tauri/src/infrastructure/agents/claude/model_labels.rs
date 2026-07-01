@@ -23,7 +23,7 @@
 pub(crate) fn model_id_to_label(id: &str) -> String {
     match id {
         // Short aliases used in config/ralphx.yaml and YAML agent configs
-        "sonnet" => "Sonnet 4.6",
+        "sonnet" => "Sonnet",
         "opus" => "Opus 4.6",
         "haiku" => "Haiku 4.5",
         "fable" => "Fable 5",
@@ -34,6 +34,7 @@ pub(crate) fn model_id_to_label(id: &str) -> String {
         "gpt-5.3-codex-spark" => "GPT-5.3 Codex Spark",
         "gpt-4.5" => "GPT-4.5",
         // Full model IDs (Claude API format)
+        "claude-sonnet-5" => "Sonnet 5",
         "claude-sonnet-4-6" => "Sonnet 4.6",
         "claude-opus-4-6" => "Opus 4.6",
         "claude-haiku-4-5-20251001" => "Haiku 4.5",
@@ -53,7 +54,7 @@ mod tests {
 
     #[test]
     fn test_short_alias_labels() {
-        assert_eq!(model_id_to_label("sonnet"), "Sonnet 4.6");
+        assert_eq!(model_id_to_label("sonnet"), "Sonnet");
         assert_eq!(model_id_to_label("opus"), "Opus 4.6");
         assert_eq!(model_id_to_label("haiku"), "Haiku 4.5");
         assert_eq!(model_id_to_label("fable"), "Fable 5");
@@ -70,6 +71,7 @@ mod tests {
 
     #[test]
     fn test_full_model_id_labels() {
+        assert_eq!(model_id_to_label("claude-sonnet-5"), "Sonnet 5");
         assert_eq!(model_id_to_label("claude-sonnet-4-6"), "Sonnet 4.6");
         assert_eq!(model_id_to_label("claude-opus-4-6"), "Opus 4.6");
         assert_eq!(model_id_to_label("claude-haiku-4-5-20251001"), "Haiku 4.5");

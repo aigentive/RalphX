@@ -62,7 +62,7 @@ fn test_model_display() {
 #[test]
 fn test_model_id() {
     assert_eq!(Model::Opus.model_id(), "claude-opus-4-5-20251101");
-    assert_eq!(Model::Sonnet.model_id(), "claude-sonnet-4-5-20250929");
+    assert_eq!(Model::Sonnet.model_id(), "claude-sonnet-4-6");
     assert_eq!(Model::Haiku.model_id(), "claude-haiku-4-5-20251001");
 }
 

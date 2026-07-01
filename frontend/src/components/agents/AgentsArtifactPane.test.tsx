@@ -4432,6 +4432,47 @@ describe("AgentsArtifactPane", () => {
     expect(publish).not.toHaveBeenCalled();
   });
 
+  it("disables publish once a refreshed workspace branch is current with its PR", async () => {
+    const publish = vi.fn().mockResolvedValue(undefined);
+    getWorkspaceFreshnessMock.mockResolvedValue(
+      workspaceFreshness({
+        freshnessScope: "full",
+        baseRef: "feature/agent-screen",
+        baseDisplayName: "Current branch (feature/agent-screen)",
+        targetRef: "origin/feature/agent-screen",
+        capturedBaseCommit: "base-sha",
+        targetBaseCommit: "base-sha",
+        isBaseAhead: false,
+        hasUncommittedChanges: false,
+        unpublishedCommitCount: 0,
+        remoteRefreshed: true,
+        worktreeStatusChecked: true,
+      }),
+    );
+
+    renderPane(
+      "publish",
+      workspace({
+        mode: "edit",
+        baseRef: "feature/agent-screen",
+        baseDisplayName: "Current branch (feature/agent-screen)",
+        publicationPushStatus: "refreshed",
+        publicationPrNumber: 78,
+        publicationPrUrl: "https://github.com/mock/project/pull/78",
+        publicationPrStatus: "open",
+      }),
+      publish,
+    );
+
+    const publishButton = await screen.findByTestId("agents-publish-confirm");
+    await waitFor(() => expect(publishButton).toHaveTextContent("PR is up to date"));
+    expect(publishButton).toBeDisabled();
+
+    fireEvent.click(publishButton);
+
+    expect(publish).not.toHaveBeenCalled();
+  });
+
   it("keeps the inline review diff visible after a PR has been opened", async () => {
     getWorkspaceReviewMock.mockResolvedValue({
       changes: [

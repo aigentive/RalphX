@@ -16,7 +16,7 @@ export type ProfileRole = z.infer<typeof ProfileRoleSchema>;
 /**
  * Model short forms for Claude models
  * - opus: claude-opus-4-5-20251101
- * - sonnet: claude-sonnet-4-5-20250929
+ * - sonnet: claude-sonnet-4-6
  * - haiku: claude-haiku-4-5-20251001
  * - fable: claude-fable-5
  */
@@ -32,7 +32,7 @@ export function getModelId(model: Model): string {
     case 'opus':
       return 'claude-opus-4-5-20251101';
     case 'sonnet':
-      return 'claude-sonnet-4-5-20250929';
+      return 'claude-sonnet-4-6';
     case 'haiku':
       return 'claude-haiku-4-5-20251001';
     case 'fable':

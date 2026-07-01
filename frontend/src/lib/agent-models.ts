@@ -80,6 +80,22 @@ const CLAUDE_MODEL_CATALOG = [
     description: "Claude Sonnet model alias.",
   },
   {
+    id: "claude-sonnet-4-6",
+    label: "Claude Sonnet 4.6",
+    menuLabel: "Claude Sonnet 4.6",
+    defaultEffort: "high",
+    supportedEfforts: ["low", "medium", "high", "max"],
+    description: "Exact Claude Sonnet 4.6 model id.",
+  },
+  {
+    id: "claude-sonnet-5",
+    label: "Claude Sonnet 5",
+    menuLabel: "Claude Sonnet 5",
+    defaultEffort: "high",
+    supportedEfforts: ["low", "medium", "high", "xhigh", "max"],
+    description: "Exact Claude Sonnet 5 model id; requires Claude Code 2.1.197 or newer.",
+  },
+  {
     id: "opus",
     label: "opus",
     menuLabel: "opus",
@@ -242,12 +258,41 @@ export function isClaudeFableModelId(modelId: string): boolean {
   return normalized === "fable" || normalized === "claude-fable-5";
 }
 
+export function isClaudeSonnet5ModelId(modelId: string): boolean {
+  return normalizeModelId(modelId) === "claude-sonnet-5";
+}
+
+export function isClaudeSonnet46ModelId(modelId: string): boolean {
+  return normalizeModelId(modelId) === "claude-sonnet-4-6";
+}
+
+function isClaudeCapabilityGatedModelId(modelId: string): boolean {
+  return (
+    isClaudeFableModelId(modelId) ||
+    isClaudeSonnet46ModelId(modelId) ||
+    isClaudeSonnet5ModelId(modelId)
+  );
+}
+
+function isClaudeGatedModelSupportedByAlias(modelId: string, alias: string): boolean {
+  if (isClaudeFableModelId(modelId)) {
+    return isClaudeFableModelId(alias);
+  }
+  if (isClaudeSonnet46ModelId(modelId)) {
+    return isClaudeSonnet5ModelId(alias);
+  }
+  if (isClaudeSonnet5ModelId(modelId)) {
+    return isClaudeSonnet5ModelId(alias);
+  }
+  return false;
+}
+
 export function isAgentModelSelectableForProvider(
   provider: AgentProvider,
   modelId: string,
   providerSupportedModelAliases?: readonly unknown[] | null
 ): boolean {
-  if (provider !== "claude" || !isClaudeFableModelId(modelId)) {
+  if (provider !== "claude" || !isClaudeCapabilityGatedModelId(modelId)) {
     return true;
   }
 
@@ -256,7 +301,9 @@ export function isAgentModelSelectableForProvider(
   }
 
   return providerSupportedModelAliases.some(
-    (alias) => typeof alias === "string" && isClaudeFableModelId(alias)
+    (alias) =>
+      typeof alias === "string" &&
+      isClaudeGatedModelSupportedByAlias(modelId, alias)
   );
 }
 

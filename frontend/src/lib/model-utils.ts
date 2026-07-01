@@ -8,7 +8,7 @@
 
 const MODEL_LABEL_MAP: Record<string, string> = {
   // Short aliases used in ralphx.yaml and YAML agent configs
-  sonnet: "Sonnet 4.6",
+  sonnet: "Sonnet",
   opus: "Opus 4.6",
   haiku: "Haiku 4.5",
   fable: "Fable 5",
@@ -19,6 +19,7 @@ const MODEL_LABEL_MAP: Record<string, string> = {
   "gpt-5.3-codex-spark": "GPT-5.3 Codex Spark",
   "gpt-4.5": "GPT-4.5",
   // Full model IDs (Claude API format)
+  "claude-sonnet-5": "Sonnet 5",
   "claude-sonnet-4-6": "Sonnet 4.6",
   "claude-opus-4-6": "Opus 4.6",
   "claude-haiku-4-5-20251001": "Haiku 4.5",
