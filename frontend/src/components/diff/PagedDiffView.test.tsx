@@ -414,6 +414,71 @@ describe("PagedDiffView", () => {
     expect(screen.queryByText("line 320")).toBeNull();
   });
 
+  it("keeps the current page visually anchored when mounting cached pages above", async () => {
+    measuredPageHeights = new Map([
+      [0, 2600],
+      [100, 5200],
+      [200, 4400],
+      [300, 4600],
+    ]);
+    const pageTopQueues = new Map<number, number[]>();
+    const rectSpy = vi
+      .spyOn(Element.prototype, "getBoundingClientRect")
+      .mockImplementation(function getMockRect() {
+        const offset = Number((this as HTMLElement).dataset.pageOffset);
+        const queue = pageTopQueues.get(offset);
+        const top =
+          queue && queue.length > 1
+            ? queue.shift()!
+            : queue?.[0] ?? 0;
+        const height = measuredPageHeights.get(offset) ?? 0;
+        return {
+          x: 0,
+          y: top,
+          top,
+          right: 0,
+          bottom: top + height,
+          left: 0,
+          width: 0,
+          height,
+          toJSON: () => ({}),
+        } as DOMRect;
+      });
+    const scrollBySpy = vi
+      .spyOn(window, "scrollBy")
+      .mockImplementation(() => undefined);
+    mockGetDiffPage.mockImplementation(({ offset, limit }) =>
+      Promise.resolve(makePage(offset as number, limit as number, 500))
+    );
+
+    try {
+      render(
+        <PagedDiffView
+          conversationId="conv-1"
+          filePath="src/Huge.tsx"
+          refKind={{ kind: "head" }}
+          pageSize={100}
+        />
+      );
+
+      await screen.findByText("line 1");
+      await triggerObservedSentinel("paged-diff-next-sentinel");
+      expect(await screen.findByText("line 120")).toBeInTheDocument();
+      await triggerObservedSentinel("paged-diff-next-sentinel");
+      expect(await screen.findByText("line 220")).toBeInTheDocument();
+      await triggerObservedSentinel("paged-diff-next-sentinel");
+      expect(await screen.findByText("line 320")).toBeInTheDocument();
+
+      pageTopQueues.set(200, [100, 5300]);
+      await triggerObservedSentinel("paged-diff-previous-sentinel");
+
+      await waitFor(() => expect(scrollBySpy).toHaveBeenCalledWith(0, 5200));
+    } finally {
+      scrollBySpy.mockRestore();
+      rectSpy.mockRestore();
+    }
+  });
+
   it("renders terminal binary and empty page states without mounting rows", async () => {
     mockGetDiffPage.mockResolvedValueOnce({
       ...makePage(0, 100, 0),

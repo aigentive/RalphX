@@ -64,6 +64,14 @@ type LoadPageOptions = {
   generation?: number;
 };
 
+type ScrollContainer = HTMLElement | Window;
+
+interface PendingScrollAnchor {
+  offset: number;
+  top: number;
+  scrollContainer: ScrollContainer;
+}
+
 interface MeasuredPageBlockProps {
   offset: number;
   children: ReactNode;
@@ -109,6 +117,39 @@ function MeasuredPageBlock({
   );
 }
 
+function findScrollContainer(element: HTMLElement): ScrollContainer {
+  let current = element.parentElement;
+  while (current) {
+    const overflowY = window.getComputedStyle(current).overflowY;
+    const canScroll =
+      overflowY === "auto" ||
+      overflowY === "scroll" ||
+      overflowY === "overlay";
+    if (canScroll && current.scrollHeight > current.clientHeight) {
+      return current;
+    }
+    current = current.parentElement;
+  }
+  return window;
+}
+
+function scrollByDelta(scrollContainer: ScrollContainer, delta: number) {
+  if (Math.abs(delta) < 1) {
+    return;
+  }
+  if (isWindowScrollContainer(scrollContainer)) {
+    window.scrollBy(0, delta);
+    return;
+  }
+  scrollContainer.scrollTop += delta;
+}
+
+function isWindowScrollContainer(
+  scrollContainer: ScrollContainer
+): scrollContainer is Window {
+  return scrollContainer === window;
+}
+
 export function PagedDiffView({
   conversationId,
   filePath,
@@ -123,6 +164,9 @@ export function PagedDiffView({
   const generationRef = useRef(0);
   const previousSentinelRef = useRef<HTMLDivElement | null>(null);
   const nextSentinelRef = useRef<HTMLDivElement | null>(null);
+  const inlineListRef = useRef<HTMLDivElement | null>(null);
+  const firstMountedOffsetRef = useRef(0);
+  const pendingScrollAnchorRef = useRef<PendingScrollAnchor | null>(null);
   const [pages, setPages] = useState<Map<number, FileDiffPage>>(() => new Map());
   const [totalRows, setTotalRows] = useState<number | null>(null);
   const [initialError, setInitialError] = useState<Error | null>(null);
@@ -134,6 +178,26 @@ export function PagedDiffView({
   const [wrapLines, setWrapLines] = useState(defaultWrapLines);
   const annotationIndex = useMemo(() => buildAnnotationIndex(annotations), [annotations]);
   const cacheKey = refKindCacheKey(refKind);
+
+  const captureInlineScrollAnchor = useCallback(
+    (anchorOffset: number) => {
+      if (scrollContainer) {
+        return;
+      }
+      const anchorElement = inlineListRef.current?.querySelector<HTMLElement>(
+        `[data-page-offset="${anchorOffset}"]`
+      );
+      if (!anchorElement) {
+        return;
+      }
+      pendingScrollAnchorRef.current = {
+        offset: anchorOffset,
+        top: anchorElement.getBoundingClientRect().top,
+        scrollContainer: findScrollContainer(anchorElement),
+      };
+    },
+    [scrollContainer]
+  );
 
   const loadPage = useCallback(
     async (requestedOffset: number, options: LoadPageOptions = {}) => {
@@ -162,6 +226,9 @@ export function PagedDiffView({
         if (generation !== generationRef.current) {
           return;
         }
+        if (!scrollContainer && offset < firstMountedOffsetRef.current) {
+          captureInlineScrollAnchor(firstMountedOffsetRef.current);
+        }
         pagesRef.current.set(page.offset, page);
         setPages(new Map(pagesRef.current));
         setTotalRows(page.totalRows);
@@ -179,7 +246,7 @@ export function PagedDiffView({
         }
       }
     },
-    [conversationId, filePath, pageSize, refKind]
+    [captureInlineScrollAnchor, conversationId, filePath, pageSize, refKind, scrollContainer]
   );
 
   useEffect(() => {
@@ -278,6 +345,10 @@ export function PagedDiffView({
     : null;
   const nextOffset = lastMountedPage?.nextOffset ?? null;
 
+  useLayoutEffect(() => {
+    firstMountedOffsetRef.current = firstMountedOffset;
+  }, [firstMountedOffset]);
+
   useEffect(() => {
     if (scrollContainer || typeof IntersectionObserver === "undefined") {
       return;
@@ -288,6 +359,7 @@ export function PagedDiffView({
         for (const entry of entries) {
           if (!entry.isIntersecting) continue;
           if (entry.target === previousSentinelRef.current && previousOffset !== null) {
+            captureInlineScrollAnchor(firstMountedOffset);
             setMountedCenterOffset(previousOffset);
             void loadPage(previousOffset);
           }
@@ -310,7 +382,31 @@ export function PagedDiffView({
     }
 
     return () => observer.disconnect();
-  }, [loadPage, nextOffset, pageSize, previousOffset, scrollContainer]);
+  }, [
+    captureInlineScrollAnchor,
+    firstMountedOffset,
+    loadPage,
+    nextOffset,
+    pageSize,
+    previousOffset,
+    scrollContainer,
+  ]);
+
+  useLayoutEffect(() => {
+    const anchor = pendingScrollAnchorRef.current;
+    if (!anchor) {
+      return;
+    }
+    pendingScrollAnchorRef.current = null;
+    const anchorElement = inlineListRef.current?.querySelector<HTMLElement>(
+      `[data-page-offset="${anchor.offset}"]`
+    );
+    if (!anchorElement) {
+      return;
+    }
+    const nextTop = anchorElement.getBoundingClientRect().top;
+    scrollByDelta(anchor.scrollContainer, nextTop - anchor.top);
+  });
 
   if (initialError && !hasAnyPage) {
     return (
@@ -471,7 +567,11 @@ export function PagedDiffView({
             }}
           />
         ) : (
-          <div data-testid="paged-diff-inline-list" className="overflow-x-auto">
+          <div
+            ref={inlineListRef}
+            data-testid="paged-diff-inline-list"
+            className="overflow-x-auto"
+          >
             {topSpacerHeight > 0 && (
               <div
                 data-testid="paged-diff-top-spacer"
