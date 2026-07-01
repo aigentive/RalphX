@@ -1551,6 +1551,17 @@ pub async fn load_workspace_review_publish_blocker(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
 ) -> AppResult<Option<String>> {
+    let review_settings = state
+        .review_settings_repo
+        .get_settings()
+        .await
+        .map_err(|error| {
+            AppError::Infrastructure(format!("Failed to load review settings: {error}"))
+        })?;
+    if !review_settings.require_workspace_review {
+        return Ok(None);
+    }
+
     let context = load_agent_workspace_review_context(state, workspace).await?;
     Ok(review_gate_publish_blocker(&context))
 }

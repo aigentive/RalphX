@@ -9131,6 +9131,7 @@ mod tests {
     };
     use crate::domain::execution::ExecutionSettings;
     use crate::domain::repositories::AgentConversationWorkspaceRepository;
+    use crate::domain::review::ReviewSettings;
     use crate::domain::services::github_service::PrHealth;
     use crate::domain::services::{
         GithubServiceTrait, MemoryRunningAgentRegistry, PrBranchMatch, PrMergeStateStatus,
@@ -13435,6 +13436,74 @@ mod tests {
         assert_eq!(error, "Workspace Review is required before publishing");
         assert_eq!(github.state().push_branch_calls, 0);
         assert_eq!(github.state().update_pr_base_calls, 0);
+    }
+
+    #[tokio::test]
+    async fn publish_workspace_allows_required_review_gate_when_policy_is_disabled() {
+        let (_temp, state, conversation_id, github) = setup_publish_command_state(
+            "review-disabled",
+            true,
+            Some(323),
+            Arc::new(MockGithubService::new()),
+        )
+        .await;
+        state
+            .review_settings_repo
+            .update_settings(&ReviewSettings {
+                require_workspace_review: false,
+                ..ReviewSettings::default()
+            })
+            .await
+            .expect("review settings should update");
+        let project = state
+            .project_repo
+            .get_all()
+            .await
+            .expect("projects load")
+            .into_iter()
+            .next()
+            .expect("project exists");
+        git(
+            Path::new(&project.working_directory),
+            &["remote", "add", "origin", &project.working_directory],
+        );
+        let workspace = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        std::fs::write(
+            Path::new(&workspace.worktree_path).join("implementation.txt"),
+            "change that would otherwise require review\n",
+        )
+        .expect("workspace change should be written");
+        let client = Arc::new(SubmittingPrDescriptionClient::new(
+            Arc::clone(&state.agent_conversation_workspace_repo),
+            conversation_id.clone(),
+        ));
+        let state = state.with_agent_client(client);
+        let execution_state = Arc::new(ExecutionState::new());
+
+        let response = publish_agent_conversation_workspace_for_app_state(
+            &state,
+            &execution_state,
+            None,
+            conversation_id.clone(),
+            false,
+        )
+        .await
+        .expect("publish should succeed when workspace review policy is disabled");
+        state
+            .pr_poller_registry
+            .stop_agent_workspace_polling(&conversation_id);
+
+        assert_eq!(
+            response.workspace.publication_push_status.as_deref(),
+            Some("pushed")
+        );
+        assert_eq!(github.state().push_branch_calls, 1);
+        assert_eq!(github.state().update_pr_base_calls, 1);
     }
 
     #[tokio::test]
