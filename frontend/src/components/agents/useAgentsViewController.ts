@@ -3,6 +3,7 @@ import { useQuery, useQueryClient, type InfiniteData } from "@tanstack/react-que
 
 import {
   chatApi,
+  type AgentConversationRuntimeStatus,
   type AgentConversationWorkspace,
   type AgentConversationWorkspaceMode,
   type ComposerIntegrationReference,
@@ -550,6 +551,44 @@ export function useAgentsViewController({
         : null,
     [workspaceReviewChildConversationId],
   );
+  const workspaceReviewRuntimeStatus = useMemo<AgentConversationRuntimeStatus | null>(() => {
+    if (
+      !workspaceReviewConversationId ||
+      workspaceReviewContext?.monitor.status !== "reviewing" ||
+      !workspaceReviewChildConversationId
+    ) {
+      return null;
+    }
+
+    return {
+      conversationId: workspaceReviewConversationId,
+      isRunning: true,
+      agentStatus: "generating",
+      primarySource: "workspace_review",
+      summaryLabel: "Reviewing",
+      items: [
+        {
+          source: "workspace_review",
+          contextType: "project",
+          contextId: workspaceReviewChildConversationId,
+          label: "Reviewing",
+          title: "Review workspace changes",
+          agentStatus: "generating",
+          taskId: null,
+          internalStatus: "reviewing",
+          runningProcess: null,
+          ideationSession: null,
+          parentSessionId: null,
+          childSessionId: null,
+          conversationId: workspaceReviewChildConversationId,
+        },
+      ],
+    };
+  }, [
+    workspaceReviewChildConversationId,
+    workspaceReviewContext?.monitor.status,
+    workspaceReviewConversationId,
+  ]);
   useEffect(() => {
     if (
       workspaceReviewContext?.monitor.status !== "reviewing" ||
@@ -1096,6 +1135,7 @@ export function useAgentsViewController({
       isLoadingProjects,
       modelRegistry,
       normalizedActiveRuntime,
+      workspaceReviewRuntimeStatus,
       onActiveConversationModeChange: handleActiveConversationModeChange,
       onActiveConversationModeMenuOpen: handleActiveConversationModeMenuOpen,
       onActiveEffortChange: handleActiveEffortChange,

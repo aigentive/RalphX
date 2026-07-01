@@ -54,7 +54,10 @@ import type { IdeationSession, TaskProposal, VerificationStatus } from "@/types/
 import type {
   DependencyGraphResponse,
 } from "@/api/ideation.types";
-import type { AgentConversation } from "./agentConversations";
+import {
+  getAgentConversationStoreKey,
+  type AgentConversation,
+} from "./agentConversations";
 import { AgentReviewPanel } from "./AgentReviewPanel";
 import {
   getVisibleIdeationArtifactTabs,
@@ -607,8 +610,12 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     visibleTabs.some((tab) => tab.id === activeTab)
       ? activeTab
       : fallbackActiveTab;
+  const runtimeStatusStoreKey = conversation
+    ? getAgentConversationStoreKey(conversation)
+    : null;
   const runtimeStatusQuery = useAgentConversationRuntimeStatus(conversationId, {
     enabled: Boolean(conversationId && effectiveActiveTab === "review"),
+    storeKey: runtimeStatusStoreKey,
   });
   const isWorkspaceRuntimeGenerating = hasGeneratingConversationRuntime(
     runtimeStatusQuery.data,

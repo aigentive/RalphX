@@ -5,6 +5,8 @@ import { chatApi, type AgentConversationRuntimeStatus } from "@/api/chat";
 import type { Unsubscribe } from "@/lib/event-bus";
 import { useEventBus } from "@/providers/EventProvider";
 
+import { reconcileAgentConversationRuntimeStatus } from "./agentConversationRuntimeStore";
+
 export const agentConversationRuntimeStatusKeys = {
   all: ["agents", "conversation-runtime-status"] as const,
   detail: (conversationId: string | null | undefined) =>
@@ -13,6 +15,7 @@ export const agentConversationRuntimeStatusKeys = {
 
 interface UseAgentConversationRuntimeStatusOptions {
   enabled?: boolean;
+  storeKey?: string | null | undefined;
 }
 
 export function useAgentConversationRuntimeStatus(
@@ -67,6 +70,16 @@ export function useAgentConversationRuntimeStatus(
       unsubscribes.forEach((unsubscribe) => unsubscribe());
     };
   }, [bus, enabled, queryClient, queryKey]);
+
+  useEffect(() => {
+    if (!enabled || !conversationId || !query.isSuccess) {
+      return;
+    }
+
+    reconcileAgentConversationRuntimeStatus(conversationId, query.data, {
+      storeKey: options.storeKey,
+    });
+  }, [conversationId, enabled, options.storeKey, query.data, query.isSuccess]);
 
   return query;
 }

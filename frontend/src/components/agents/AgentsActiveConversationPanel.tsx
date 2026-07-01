@@ -15,6 +15,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
 import type {
+  AgentConversationRuntimeStatus,
   AgentConversationWorkspace,
   AgentConversationWorkspaceFreshness,
   AgentConversationWorkspaceMode,
@@ -194,6 +195,46 @@ function buildPlanModeProposalContinuationMessage(
 function isRunningModeSwitchError(err: unknown): boolean {
   const message = err instanceof Error ? err.message : String(err);
   return message.includes("Cannot change mode while the agent is running");
+}
+
+function hasWorkspaceReviewRuntime(
+  status: AgentConversationRuntimeStatus | null | undefined,
+): boolean {
+  return (
+    status?.items.some((item) => item.source === "workspace_review") ?? false
+  );
+}
+
+function mergeWorkspaceReviewRuntimeFallback(
+  status: AgentConversationRuntimeStatus | null | undefined,
+  workspaceReviewRuntimeStatus: AgentConversationRuntimeStatus | null | undefined,
+): AgentConversationRuntimeStatus | null | undefined {
+  if (
+    !workspaceReviewRuntimeStatus?.isRunning ||
+    workspaceReviewRuntimeStatus.items.length === 0 ||
+    hasWorkspaceReviewRuntime(status)
+  ) {
+    return status;
+  }
+
+  if (!status?.isRunning || status.items.length === 0) {
+    return workspaceReviewRuntimeStatus;
+  }
+
+  const agentStatus =
+    status.agentStatus === "generating" ||
+    workspaceReviewRuntimeStatus.agentStatus === "generating"
+      ? "generating"
+      : "waiting_for_input";
+
+  return {
+    ...status,
+    isRunning: true,
+    agentStatus,
+    primarySource: workspaceReviewRuntimeStatus.primarySource ?? status.primarySource,
+    summaryLabel: workspaceReviewRuntimeStatus.summaryLabel ?? status.summaryLabel,
+    items: [...status.items, ...workspaceReviewRuntimeStatus.items],
+  };
 }
 
 function parseForkCommand(message: string): string | null {
@@ -491,6 +532,7 @@ interface AgentsActiveConversationPanelProps {
   chatFocusOptions: readonly AgentsChatFocusSwitchOption[];
   hasAutoOpenArtifacts: boolean;
   normalizedActiveRuntime: AgentRuntimeSelection;
+  workspaceReviewRuntimeStatus?: AgentConversationRuntimeStatus | null;
   onActiveConversationModeChange: (mode: AgentConversationWorkspaceMode) => void;
   onActiveConversationModeMenuOpen: () => void;
   onActiveEffortChange: (
@@ -564,6 +606,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   chatFocusOptions,
   hasAutoOpenArtifacts,
   normalizedActiveRuntime,
+  workspaceReviewRuntimeStatus = null,
   onActiveConversationModeChange,
   onActiveConversationModeMenuOpen,
   onActiveEffortChange,
@@ -776,11 +819,23 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     !isFocusedChildChat || chatFocus.type === "workspace_review";
   const runtimeStatusConversationId =
     activeConversation.parentConversationId ?? selectedConversationId;
+  const runtimeStatusStoreKey = runtimeStatusConversationId
+    ? buildStoreKey("project", runtimeStatusConversationId)
+    : null;
   const runtimeStatusQuery = useAgentConversationRuntimeStatus(
     runtimeStatusConversationId,
     {
       enabled: activeConversation.contextType === "project",
+      storeKey: runtimeStatusStoreKey,
     },
+  );
+  const runtimeStatusForWidget = useMemo(
+    () =>
+      mergeWorkspaceReviewRuntimeFallback(
+        runtimeStatusQuery.data,
+        workspaceReviewRuntimeStatus,
+      ),
+    [runtimeStatusQuery.data, workspaceReviewRuntimeStatus],
   );
   const hasLinkedChatFocusTargets = chatFocusOptions.some(
     (option) => option.type !== "workspace",
@@ -2098,7 +2153,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                     onPreloadPublishPane={onPreloadArtifacts}
                   />
                   <AgentRuntimeStatusWidget
-                    status={runtimeStatusQuery.data}
+                    status={runtimeStatusForWidget}
                     showSingleWorkspaceRuntime={
                       activeWorkspace?.mode === "ideation" &&
                       hasLinkedChatFocusTargets

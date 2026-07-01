@@ -353,16 +353,70 @@ vi.mock("@/hooks/useHarnessProviders", () => ({
   }),
 }));
 
-vi.mock("@/stores/chatStore", () => ({
-  selectQueuedMessages: () => () => [],
-  useChatStore: (
-    selector?: (state: {
-      agentStatus: Record<string, string>;
-      isSending: Record<string, boolean>;
-    }) => unknown,
-  ) =>
-    selector ? selector({ agentStatus: {}, isSending: {} }) : [],
-}));
+vi.mock("@/stores/chatStore", () => {
+  type ChatStoreMockState = {
+    activeConversationIds: Record<string, string | null>;
+    activeAgentRunIds: Record<string, string>;
+    agentStatus: Record<string, string>;
+    agentActivityLabels: Record<string, string>;
+    isSending: Record<string, boolean>;
+    setActiveConversation: (
+      contextKey: string,
+      conversationId: string | null,
+    ) => void;
+    setAgentRunning: (contextKey: string, isRunning: boolean) => void;
+    setAgentStatus: (contextKey: string, status: string) => void;
+    setAgentActivityLabel: (contextKey: string, label: string | null) => void;
+  };
+  const chatState: ChatStoreMockState = {
+    activeConversationIds: {},
+    activeAgentRunIds: {},
+    agentStatus: {},
+    agentActivityLabels: {},
+    isSending: {},
+    setActiveConversation: vi.fn((contextKey, conversationId) => {
+      if (conversationId == null) {
+        delete chatState.activeConversationIds[contextKey];
+        return;
+      }
+      chatState.activeConversationIds[contextKey] = conversationId;
+    }),
+    setAgentRunning: vi.fn((contextKey, isRunning) => {
+      if (isRunning) {
+        chatState.agentStatus[contextKey] = "generating";
+        return;
+      }
+      delete chatState.agentStatus[contextKey];
+      delete chatState.activeAgentRunIds[contextKey];
+      delete chatState.agentActivityLabels[contextKey];
+    }),
+    setAgentStatus: vi.fn((contextKey, status) => {
+      chatState.agentStatus[contextKey] = status;
+    }),
+    setAgentActivityLabel: vi.fn((contextKey, label) => {
+      if (label == null) {
+        delete chatState.agentActivityLabels[contextKey];
+        return;
+      }
+      chatState.agentActivityLabels[contextKey] = label;
+    }),
+  };
+  const useChatStore = Object.assign(
+    (selector?: (state: ChatStoreMockState) => unknown) =>
+      selector ? selector(chatState) : [],
+    {
+      getState: () => chatState,
+      setState: (partial: Partial<ChatStoreMockState>) => {
+        Object.assign(chatState, partial);
+      },
+    },
+  );
+
+  return {
+    selectQueuedMessages: () => () => [],
+    useChatStore,
+  };
+});
 
 vi.mock("@/stores/uiStore", () => ({
   useUiStore: (selector: (state: { openModal: () => void; executionStatus: { isPaused: boolean } }) => unknown) =>
@@ -993,6 +1047,53 @@ describe("AgentsActiveConversationPanel", () => {
     renderPanel({ onFocusWorkspaceReview });
 
     fireEvent.click(await screen.findByRole("button", { name: "View Review" }));
+
+    expect(onFocusWorkspaceReview).toHaveBeenCalledWith("review-conversation-1");
+  });
+
+  it("shows the workspace Review runtime widget from monitor fallback while workspace chat is focused", async () => {
+    const onFocusWorkspaceReview = vi.fn();
+    getAgentConversationRuntimeStatusesMock.mockResolvedValue({
+      "conversation-1": workspaceRuntimeStatus({
+        isRunning: false,
+        agentStatus: "idle",
+        primarySource: null,
+        summaryLabel: null,
+        items: [],
+      }),
+    });
+
+    renderPanel({
+      chatFocus: { type: "workspace" },
+      onFocusWorkspaceReview,
+      workspaceReviewRuntimeStatus: workspaceRuntimeStatus({
+        primarySource: "workspace_review",
+        summaryLabel: "Reviewing",
+        items: [
+          {
+            source: "workspace_review",
+            contextType: "project",
+            contextId: "review-conversation-1",
+            label: "Reviewing",
+            title: "Review workspace changes",
+            agentStatus: "generating",
+            taskId: null,
+            internalStatus: "reviewing",
+            runningProcess: null,
+            ideationSession: null,
+            parentSessionId: null,
+            childSessionId: null,
+            conversationId: "review-conversation-1",
+          },
+        ],
+      }),
+    });
+
+    expect(
+      await screen.findByTestId("agents-runtime-status-widget"),
+    ).toHaveTextContent("Review workspace changes");
+
+    fireEvent.click(screen.getByRole("button", { name: "View Review" }));
 
     expect(onFocusWorkspaceReview).toHaveBeenCalledWith("review-conversation-1");
   });
