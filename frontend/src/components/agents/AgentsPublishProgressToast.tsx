@@ -32,7 +32,9 @@ export function AgentsPublishProgressToast({
 
   useEffect(() => {
     if (!active || !toastId) {
-      progressToastRef.current?.dismiss();
+      // Keep the visible operation toast alive when this scoped updater unmounts
+      // or stops matching the selected pane; terminal publish handling replaces it.
+      progressToastRef.current?.dispose();
       progressToastRef.current = null;
       capturedRef.current = null;
       return;
@@ -64,7 +66,7 @@ export function AgentsPublishProgressToast({
 
   useEffect(
     () => () => {
-      progressToastRef.current?.dismiss();
+      progressToastRef.current?.dispose();
       progressToastRef.current = null;
     },
     [],
