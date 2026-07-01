@@ -8,6 +8,7 @@ import {
   getAgentWorkspacePrConflictSummary,
   isAgentWorkspaceAutoMergeDeferred,
   isAgentWorkspaceAutoMergeRequestPending,
+  isAgentWorkspacePublishCurrent,
   shouldAutoRefreshCleanAgentWorkspaceFromBase,
   shouldShowAgentWorkspacePublishSurface,
 } from "./agentWorkspacePublishState";
@@ -72,6 +73,51 @@ const base = {
   publicationPushStatus: "pushed",
   terminalPublicationStatus: null as string | null,
 };
+
+describe("isAgentWorkspacePublishCurrent", () => {
+  const currentFreshness = () =>
+    freshness({
+      isBaseAhead: false,
+      hasUncommittedChanges: false,
+      unpublishedCommitCount: 0,
+    });
+
+  it("treats pushed published workspaces with no remaining changes as current", () => {
+    expect(
+      isAgentWorkspacePublishCurrent(
+        workspace({
+          publicationPrNumber: 78,
+          publicationPushStatus: "pushed",
+        }),
+        currentFreshness(),
+      ),
+    ).toBe(true);
+  });
+
+  it("treats refreshed published workspaces with no remaining changes as current", () => {
+    expect(
+      isAgentWorkspacePublishCurrent(
+        workspace({
+          publicationPrNumber: 78,
+          publicationPushStatus: "refreshed",
+        }),
+        currentFreshness(),
+      ),
+    ).toBe(true);
+  });
+
+  it("rejects pending publication statuses even when freshness is clean", () => {
+    expect(
+      isAgentWorkspacePublishCurrent(
+        workspace({
+          publicationPrNumber: 78,
+          publicationPushStatus: "checking",
+        }),
+        currentFreshness(),
+      ),
+    ).toBe(false);
+  });
+});
 
 describe("isAgentWorkspaceAutoMergeRequestPending", () => {
   it("returns true when supervision status is null (active publish in progress)", () => {
