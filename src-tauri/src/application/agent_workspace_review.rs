@@ -1948,17 +1948,7 @@ async fn resolve_workspace_delta_target(
 
     let base_sha = rev_parse(&worktree_path, &base_ref).await.ok();
     let head_sha = rev_parse(&worktree_path, &head_ref).await.ok();
-    let fingerprint = fingerprint_parts([
-        "workspace_delta",
-        &base_ref,
-        base_sha.as_deref().unwrap_or(""),
-        &head_ref,
-        head_sha.as_deref().unwrap_or(""),
-        &committed_diff,
-        &staged_diff,
-        &unstaged_diff,
-        &status,
-    ]);
+    let fingerprint = workspace_delta_content_fingerprint(&worktree_path, &base_ref).await?;
     let review_packet =
         build_workspace_delta_review_packet(&committed_diff, &staged_diff, &unstaged_diff, &status);
 
@@ -1973,6 +1963,76 @@ async fn resolve_workspace_delta_target(
         source_pull_request_number: None,
         review_packet,
     }))
+}
+
+async fn workspace_delta_content_fingerprint(repo: &Path, base_ref: &str) -> AppResult<String> {
+    let base_tree = rev_parse(repo, &format!("{base_ref}^{{tree}}")).await?;
+    let object_dir = git_stdout_lossy(&["rev-parse", "--git-path", "objects"], repo).await?;
+    let object_dir = git_path_output(repo, &object_dir)?;
+    let temp_index_dir = tempfile::Builder::new()
+        .prefix("ralphx-workspace-review-index-")
+        .tempdir()
+        .map_err(|error| {
+            AppError::GitOperation(format!(
+                "failed to create temporary workspace Review index: {error}"
+            ))
+        })?;
+    let temp_index_path = temp_index_dir.path().join("index");
+    let temp_index = temp_index_path.to_str().ok_or_else(|| {
+        AppError::GitOperation(
+            "temporary workspace Review index path is not valid UTF-8".to_string(),
+        )
+    })?;
+    let temp_object_dir = temp_index_dir.path().join("objects");
+    std::fs::create_dir(&temp_object_dir).map_err(|error| {
+        AppError::GitOperation(format!(
+            "failed to create temporary workspace Review object directory: {error}"
+        ))
+    })?;
+    let temp_object_dir = temp_object_dir.to_str().ok_or_else(|| {
+        AppError::GitOperation(
+            "temporary workspace Review object path is not valid UTF-8".to_string(),
+        )
+    })?;
+    let object_dir = object_dir.to_str().ok_or_else(|| {
+        AppError::GitOperation("workspace Review object path is not valid UTF-8".to_string())
+    })?;
+    let env = [
+        ("GIT_INDEX_FILE", temp_index),
+        ("GIT_OBJECT_DIRECTORY", temp_object_dir),
+        ("GIT_ALTERNATE_OBJECT_DIRECTORIES", object_dir),
+    ];
+
+    git_stdout_lossy_with_env(&["read-tree", "HEAD"], repo, &env).await?;
+    git_stdout_lossy_with_env(&["add", "-A", "--", "."], repo, &env).await?;
+    let target_tree = git_stdout_lossy_with_env(&["write-tree"], repo, &env).await?;
+    let target_tree = target_tree.trim();
+    if target_tree.is_empty() {
+        return Err(AppError::GitOperation(
+            "git write-tree returned an empty workspace Review tree".to_string(),
+        ));
+    }
+
+    Ok(fingerprint_parts([
+        "workspace_delta_content_v1",
+        &base_tree,
+        target_tree,
+    ]))
+}
+
+fn git_path_output(repo: &Path, output: &str) -> AppResult<PathBuf> {
+    let value = output.trim();
+    if value.is_empty() {
+        return Err(AppError::GitOperation(
+            "git path command returned an empty path".to_string(),
+        ));
+    }
+    let path = PathBuf::from(value);
+    if path.is_absolute() {
+        Ok(path)
+    } else {
+        Ok(repo.join(path))
+    }
 }
 
 async fn resolve_selected_source_target(
@@ -2156,6 +2216,23 @@ async fn git_success(args: &[&str], cwd: &Path) -> bool {
 async fn git_stdout_lossy(args: &[&str], cwd: &Path) -> AppResult<String> {
     let output = git_cmd::with_git_command_lane(GitCommandLane::Background, async {
         git_cmd::run(args, cwd).await
+    })
+    .await?;
+    if !output.status.success() {
+        return Err(AppError::GitOperation(
+            String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+async fn git_stdout_lossy_with_env(
+    args: &[&str],
+    cwd: &Path,
+    env: &[(&str, &str)],
+) -> AppResult<String> {
+    let output = git_cmd::with_git_command_lane(GitCommandLane::Background, async {
+        git_cmd::run_with_env(args, cwd, env).await
     })
     .await?;
     if !output.status.success() {
@@ -2676,6 +2753,73 @@ x
         assert!(ranked.sources.contains("ignored"));
     }
 
+    #[test]
+    fn git_path_output_rejects_empty_and_resolves_git_paths() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let empty_error =
+            git_path_output(temp.path(), " \n").expect_err("empty git path should fail");
+        match empty_error {
+            AppError::GitOperation(message) => assert!(message.contains("empty path")),
+            other => panic!("expected GitOperation, got {other:?}"),
+        }
+
+        let relative = git_path_output(temp.path(), ".git/objects\n")
+            .expect("relative git path should resolve");
+        assert_eq!(relative, temp.path().join(".git/objects"));
+
+        let absolute_dir = temp.path().join("objects");
+        let absolute = git_path_output(temp.path(), &format!("{}\n", absolute_dir.display()))
+            .expect("absolute git path should pass through");
+        assert_eq!(absolute, absolute_dir);
+    }
+
+    #[tokio::test]
+    async fn git_stdout_lossy_with_env_reports_git_failures() {
+        let (_temp, repo, _base_sha) = init_repo();
+
+        let error =
+            git_stdout_lossy_with_env(&["rev-parse", "--verify", "refs/heads/missing"], &repo, &[])
+                .await
+                .expect_err("failed git command should return an error");
+
+        match error {
+            AppError::GitOperation(message) => assert!(!message.trim().is_empty()),
+            other => panic!("expected GitOperation, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn workspace_delta_content_fingerprint_tracks_content_not_head_provenance() {
+        let (_temp, repo, base_sha) = init_repo();
+        std::fs::write(repo.join("README.md"), "base\nupdated\n")
+            .expect("tracked file should be changed");
+        std::fs::write(repo.join("untracked.rs"), "pub fn added() {}\n")
+            .expect("untracked file should be written");
+
+        let uncommitted_fingerprint = workspace_delta_content_fingerprint(&repo, &base_sha)
+            .await
+            .expect("uncommitted content should fingerprint");
+
+        git(&repo, &["add", "-A"]);
+        git(&repo, &["commit", "-m", "commit equivalent content"]);
+        let committed_fingerprint = workspace_delta_content_fingerprint(&repo, &base_sha)
+            .await
+            .expect("committed content should fingerprint");
+
+        assert_eq!(committed_fingerprint, uncommitted_fingerprint);
+
+        std::fs::write(
+            repo.join("untracked.rs"),
+            "pub fn added() { println!(\"changed\"); }\n",
+        )
+        .expect("content should change");
+        let changed_fingerprint = workspace_delta_content_fingerprint(&repo, &base_sha)
+            .await
+            .expect("changed content should fingerprint");
+
+        assert_ne!(changed_fingerprint, uncommitted_fingerprint);
+    }
+
     #[tokio::test]
     async fn load_context_resolves_workspace_delta_and_monitor_fields() {
         let (_temp, repo, base_sha) = init_repo();
@@ -2978,6 +3122,101 @@ x
     }
 
     #[tokio::test]
+    async fn passing_workspace_review_survives_equivalent_commit_then_invalidates_on_content_change(
+    ) {
+        let (_temp, repo, base_sha) = init_repo();
+        std::fs::write(repo.join("README.md"), "base\nupdated\n")
+            .expect("tracked file should be changed");
+        std::fs::write(repo.join("new_file.rs"), "pub fn new_file() {}\n")
+            .expect("untracked file should be written");
+
+        let state = AppState::new_test();
+        let project = seed_project(&state, &repo).await;
+        let workspace = workspace(
+            &project,
+            &repo,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main",
+            Some(base_sha),
+        );
+        seed_conversation(&state, &workspace).await;
+        let initial = load_agent_workspace_review_context(&state, &workspace)
+            .await
+            .expect("initial context should load");
+        let target = initial.target.expect("initial target should exist");
+        let reviewed_head_sha = target.head_sha.clone();
+        let mut monitor = initial.monitor;
+        apply_review_artifact_to_monitor(
+            &mut monitor,
+            target.scope,
+            target.head_sha.clone(),
+            target.diff_fingerprint.clone(),
+            Some("run-equivalent".to_string()),
+            ArtifactId::from_string("artifact-equivalent"),
+            1,
+            Utc::now(),
+            None,
+        );
+        monitor.review_outcome = AgentWorkspaceReviewOutcome::Passed;
+        monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Passed;
+        state
+            .agent_conversation_workspace_repo
+            .upsert_workspace_review_monitor(monitor)
+            .await
+            .expect("monitor should persist");
+
+        let before_commit = load_agent_workspace_review_context(&state, &workspace)
+            .await
+            .expect("pre-commit context should load");
+        assert!(before_commit.is_current);
+        assert!(!before_commit.is_outdated);
+
+        git(&repo, &["add", "-A"]);
+        git(&repo, &["commit", "-m", "publish equivalent content"]);
+        let committed_head_sha = git(&repo, &["rev-parse", "HEAD"]);
+
+        let after_commit = load_agent_workspace_review_context(&state, &workspace)
+            .await
+            .expect("post-commit context should load");
+        let after_commit_target = after_commit
+            .target
+            .as_ref()
+            .expect("post-commit target should exist");
+        assert_ne!(
+            reviewed_head_sha.as_deref(),
+            Some(committed_head_sha.as_str())
+        );
+        assert_eq!(
+            after_commit_target.head_sha.as_deref(),
+            Some(committed_head_sha.as_str())
+        );
+        assert!(
+            after_commit.is_current,
+            "equivalent committed content should not invalidate the Review"
+        );
+        assert!(!after_commit.is_outdated);
+        assert_eq!(
+            after_commit.monitor.review_gate_status,
+            AgentWorkspaceReviewGateStatus::Passed
+        );
+
+        std::fs::write(
+            repo.join("new_file.rs"),
+            "pub fn new_file() { println!(\"changed\"); }\n",
+        )
+        .expect("reviewed file should change after commit");
+        let changed = load_agent_workspace_review_context(&state, &workspace)
+            .await
+            .expect("changed context should load");
+        assert!(!changed.is_current);
+        assert!(changed.is_outdated);
+        assert_eq!(
+            changed.monitor.review_gate_status,
+            AgentWorkspaceReviewGateStatus::Required
+        );
+    }
+
+    #[tokio::test]
     async fn start_review_skips_current_and_already_reviewing_targets() {
         let (_temp, repo, base_sha) = init_repo();
         committed_workspace_delta(&repo);
@@ -3170,8 +3409,9 @@ x
         let review_prompt = &sent_messages[0];
         assert!(review_prompt.contains("Create or refresh the Review"));
         assert!(review_prompt.contains("- Scope: workspace_delta"));
-        assert!(review_prompt
-            .contains("Keep base/head/fingerprint provenance in tool arguments only"));
+        assert!(
+            review_prompt.contains("Keep base/head/fingerprint provenance in tool arguments only")
+        );
         assert!(review_prompt.contains(&workspace.conversation_id.as_str()));
         assert!(!review_prompt.contains("pass conversation_id"));
 
