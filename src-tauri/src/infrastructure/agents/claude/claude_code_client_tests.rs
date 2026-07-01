@@ -145,7 +145,7 @@ fn test_capabilities_claude_code() {
     assert!(caps.supports_filesystem);
     assert!(caps.supports_streaming);
     assert!(caps.supports_mcp);
-    assert_eq!(caps.max_context_tokens, 200_000);
+    assert_eq!(caps.max_context_tokens, 1_000_000);
 }
 
 #[test]
