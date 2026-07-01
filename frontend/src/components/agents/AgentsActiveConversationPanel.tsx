@@ -643,6 +643,8 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   const focusedChatSessionId = getFocusedChatSessionId(chatFocus);
   const focusedWorkspaceReviewConversationId =
     getFocusedWorkspaceReviewConversationId(chatFocus);
+  const runtimeControlConversationId =
+    focusedWorkspaceReviewConversationId ?? selectedConversationId;
   const { registry: modelRegistry } = useAgentModels();
   const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
   const openModal = useUiStore((s) => s.openModal);
@@ -742,17 +744,21 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       : conversationServiceTier === "standard"
         ? false
         : codexProviderFastMode;
+  const runtimeControlFastModeFallback =
+    activeConversation.id === runtimeControlConversationId
+      ? conversationFastMode
+      : codexProviderFastMode;
   const activeCodexFastMode =
-    codexFastModeByConversationId[selectedConversationId] ??
-    conversationFastMode;
+    codexFastModeByConversationId[runtimeControlConversationId] ??
+    runtimeControlFastModeFallback;
   const handleActiveCodexFastModeChange = useCallback(
     (value: boolean) => {
       setCodexFastModeByConversationId((current) => ({
         ...current,
-        [selectedConversationId]: value,
+        [runtimeControlConversationId]: value,
       }));
     },
-    [selectedConversationId],
+    [runtimeControlConversationId],
   );
   const workspaceProviderSupportedEfforts = useMemo(
     () =>

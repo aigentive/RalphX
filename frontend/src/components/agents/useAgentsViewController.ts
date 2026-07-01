@@ -267,6 +267,10 @@ export function useAgentsViewController({
   const handleReturnToWorkspaceChat = useCallback(() => {
     setChatFocus({ type: "workspace" });
   }, []);
+  const focusedWorkspaceReviewRuntimeConversationId =
+    chatFocus.type === "workspace_review" ? chatFocus.conversationId : null;
+  const activeRuntimeConversationId =
+    focusedWorkspaceReviewRuntimeConversationId ?? selectedConversationId;
   const {
     activeConversationMode,
     activeConversationModeLocked,
@@ -278,6 +282,8 @@ export function useAgentsViewController({
     terminalUnavailableReason,
   } = useAgentsWorkspaceModel({
     activeConversation,
+    focusedWorkspaceReviewConversationId:
+      focusedWorkspaceReviewRuntimeConversationId,
     modelRegistry,
     optimisticWorkspacesByConversationId,
     runtimeByConversationId,
@@ -1091,6 +1097,10 @@ export function useAgentsViewController({
     normalizedActiveRuntime,
     projects,
     queryClient,
+    runtimeConversationId: activeRuntimeConversationId,
+    runtimeDefaultPolicy: focusedWorkspaceReviewRuntimeConversationId
+      ? "workspace_review_utility"
+      : "provider_default",
     runtimeByConversationId,
     selectedConversationId,
     setRuntimeForConversation,

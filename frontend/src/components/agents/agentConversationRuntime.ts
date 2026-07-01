@@ -1,6 +1,7 @@
 import type { AgentConversationWorkspace } from "@/api/chat";
 import type {
   AgentEffort,
+  AgentProvider,
   AgentRuntimeSelection,
 } from "@/stores/agentSessionStore";
 
@@ -15,6 +16,11 @@ const AGENT_EFFORTS = new Set<AgentEffort>([
   "xhigh",
   "max",
 ]);
+
+const WORKSPACE_REVIEW_UTILITY_MODEL_BY_PROVIDER: Record<AgentProvider, string> = {
+  claude: "haiku",
+  codex: "gpt-5.4-mini",
+};
 
 export function getAgentTerminalUnavailableReason(
   conversation: AgentConversation | null,
@@ -103,6 +109,29 @@ export function runtimeFromConversation(
   }
 
   return null;
+}
+
+export function workspaceReviewUtilityRuntimeForProvider(
+  provider: AgentProvider
+): AgentRuntimeSelection {
+  return {
+    provider,
+    modelId: WORKSPACE_REVIEW_UTILITY_MODEL_BY_PROVIDER[provider],
+    effort: "medium",
+  };
+}
+
+export function runtimeForWorkspaceReviewFocus(
+  workspaceRuntime: AgentRuntimeSelection | null,
+  reviewRuntime: AgentRuntimeSelection | null
+): AgentRuntimeSelection | null {
+  if (reviewRuntime) {
+    return reviewRuntime;
+  }
+  if (!workspaceRuntime) {
+    return null;
+  }
+  return workspaceReviewUtilityRuntimeForProvider(workspaceRuntime.provider);
 }
 
 function effortFromConversation(
