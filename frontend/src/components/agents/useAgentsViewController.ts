@@ -6,6 +6,7 @@ import {
   type AgentConversationRuntimeStatus,
   type AgentConversationWorkspace,
   type AgentConversationWorkspaceMode,
+  type AgentWorkspaceReviewContext,
   type ComposerIntegrationReference,
   type ConversationListPageResponse,
 } from "@/api/chat";
@@ -14,6 +15,11 @@ import { chatKeys } from "@/hooks/useChat";
 import { useAgentModels } from "@/hooks/useAgentModels";
 import { useProjects } from "@/hooks/useProjects";
 import { useEventBus } from "@/providers/EventProvider";
+import type {
+  AgentArtifactTab,
+  AgentRuntimeSelection,
+} from "@/stores/agentSessionStore";
+import type { ChatConversation } from "@/types/chat-conversation";
 import { PlanArtifactEventSchema } from "@/types/events";
 import { useAgentArtifactController } from "./useAgentArtifactController";
 import { useAgentConversationTitleEvents } from "./useAgentConversationTitleEvents";
@@ -72,8 +78,6 @@ import {
   type AgentsChatFocus,
   type AgentsChatFocusType,
 } from "./agentChatFocus";
-import type { AgentRuntimeSelection } from "@/stores/agentSessionStore";
-import type { ChatConversation } from "@/types/chat-conversation";
 
 interface UseAgentsViewControllerParams {
   projectId: string;
@@ -99,6 +103,24 @@ type AgentConversationLifecyclePayload = {
   conversationId?: string;
   conversation_id?: string;
 };
+
+type WorkspaceReviewPublishPromotionState = Pick<
+  AgentWorkspaceReviewContext,
+  "monitor" | "isCurrent" | "isOutdated"
+>;
+
+function hasCurrentPassedWorkspaceReview(
+  context: WorkspaceReviewPublishPromotionState | null,
+): boolean {
+  if (!context?.isCurrent || context.isOutdated) {
+    return false;
+  }
+  const gateStatus = context.monitor.reviewGateStatus ?? null;
+  if (gateStatus) {
+    return gateStatus === "passed";
+  }
+  return context.monitor.reviewOutcome === "passed";
+}
 
 export function useAgentsViewController({
   projectId,
@@ -266,7 +288,9 @@ export function useAgentsViewController({
     [],
   );
   const handleReturnToWorkspaceChat = useCallback(() => {
-    setChatFocus({ type: "workspace" });
+    setChatFocus((current) =>
+      current.type === "workspace" ? current : { type: "workspace" },
+    );
   }, []);
   const focusedWorkspaceReviewRuntimeConversationId =
     chatFocus.type === "workspace_review" ? chatFocus.conversationId : null;
@@ -458,6 +482,11 @@ export function useAgentsViewController({
     workspaceReviewContextQuery.data,
     workspaceReviewConversationId,
   );
+  const isWorkspaceReviewRunning =
+    workspaceReviewContext?.monitor.status === "reviewing" ||
+    workspaceReviewContext?.monitor.reviewGateStatus === "reviewing";
+  const promoteWorkspaceReviewPublishShortcut =
+    hasCurrentPassedWorkspaceReview(workspaceReviewContext);
   const workspaceReviewArtifactId =
     workspaceReviewContext?.monitor.reviewArtifactId ?? null;
   const reviewArtifactId =
@@ -1005,6 +1034,9 @@ export function useAgentsViewController({
       if (!selectedConversationId) {
         return;
       }
+      if (!isWorkspaceReviewRunning) {
+        handleReturnToWorkspaceChat();
+      }
       setPublishFocusRequest((current) => ({
         conversationId: selectedConversationId,
         filePath,
@@ -1013,12 +1045,32 @@ export function useAgentsViewController({
       }));
       openArtifactTab(selectedConversationId, "publish");
     },
-    [openArtifactTab, selectedConversationId],
+    [
+      handleReturnToWorkspaceChat,
+      isWorkspaceReviewRunning,
+      openArtifactTab,
+      selectedConversationId,
+    ],
   );
-  // Switching artifact tabs no longer touches the chat focus. The user
-  // toggles between workspace and child chats explicitly via the composer
-  // chat-focus pill.
-  const handleSelectArtifactWithChatFocus = handleSelectArtifact;
+  const handleOpenPublishPaneWithChatFocus = useCallback(() => {
+    if (!isWorkspaceReviewRunning) {
+      handleReturnToWorkspaceChat();
+    }
+    handleOpenPublishPane();
+  }, [
+    handleOpenPublishPane,
+    handleReturnToWorkspaceChat,
+    isWorkspaceReviewRunning,
+  ]);
+  const handleSelectArtifactWithChatFocus = useCallback(
+    (tab: AgentArtifactTab) => {
+      if (tab !== "review" && !isWorkspaceReviewRunning) {
+        handleReturnToWorkspaceChat();
+      }
+      handleSelectArtifact(tab);
+    },
+    [handleReturnToWorkspaceChat, handleSelectArtifact, isWorkspaceReviewRunning],
+  );
 
   const handleAgentUserMessageAutoTitle = useAgentUserMessageAutoTitle({
     activeProjectId,
@@ -1158,7 +1210,7 @@ export function useAgentsViewController({
       onOpenTaskArtifact: handleOpenTaskArtifact,
       onForkConversation: handleForkConversation,
       onOpenPlanArtifact: handleOpenPlanArtifact,
-      onOpenPublishPane: handleOpenPublishPane,
+      onOpenPublishPane: handleOpenPublishPaneWithChatFocus,
       onOpenPublishFile: handleOpenPublishFile,
       onPreloadArtifacts: handlePreloadArtifacts,
       onPublishWorkspace: handlePublishWorkspace,
@@ -1170,6 +1222,7 @@ export function useAgentsViewController({
       onSelectChatFocus: handleSelectChatFocus,
       projects,
       publishShortcutLabel,
+      promotePublishShortcut: promoteWorkspaceReviewPublishShortcut,
       publishingConversationId,
       selectedConversationId,
       selectedTaskArtifactId,
@@ -1211,6 +1264,7 @@ export function useAgentsViewController({
       terminalUnavailableReason,
       onFocusVerificationSession: handleFocusVerificationSession,
       onFocusWorkspaceReview: handleFocusWorkspaceReview,
+      onOpenPublish: handleOpenPublishPaneWithChatFocus,
       onTaskArtifactSelectionChange: handleTaskArtifactSelectionChange,
       onPublishWorkspace: handlePublishWorkspace,
       onResizeReset: handleArtifactResizeReset,

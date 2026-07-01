@@ -128,6 +128,8 @@ export interface AgentsChatHeaderProps {
   onOpenWorkspaceTarget?: (targetId: string) => void;
   onPreloadArtifacts?: () => void;
   publishShortcutLabel?: string;
+  publishShortcutWorkspace?: AgentConversationWorkspace | null;
+  promotePublishShortcut?: boolean;
   isPublishingWorkspace?: boolean;
   onToggleTerminal?: () => void;
   onPreloadTerminal?: () => void;
@@ -306,6 +308,8 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
   onOpenWorkspaceTarget,
   onPreloadArtifacts,
   publishShortcutLabel = "Commit & Publish",
+  publishShortcutWorkspace = null,
+  promotePublishShortcut = false,
   isPublishingWorkspace = false,
   onToggleTerminal,
   onPreloadTerminal,
@@ -359,13 +363,16 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
       visibleHeaderArtifactTabs.length > 0) ||
     (conversationMode === "plan" && visibleHeaderArtifactTabs.length > 0) ||
     (conversationMode === "review_pr" && visibleHeaderArtifactTabs.length > 0);
-  // Hide the publish shortcut whenever any artifact pane is open — the user
-  // can already reach Commit & Publish via the artifact tab bar, so the
-  // header CTA is redundant (and visually crowds the Update-from-base label).
+  const showPromotedPublishShortcut =
+    promotePublishShortcut && artifactOpen && activeArtifactTab === "review";
+  const effectivePublishWorkspace = publishShortcutWorkspace ?? workspace;
+  // Hide the publish shortcut whenever most artifact panes are open because the
+  // tab bar already exposes it. A current passed Review promotes publishing so
+  // the user does not have to switch tabs just to reach the publish flow.
   const showPublishShortcut = Boolean(
     conversation &&
-      shouldShowAgentWorkspacePublishSurface(workspace) &&
-      !artifactOpen,
+      shouldShowAgentWorkspacePublishSurface(effectivePublishWorkspace) &&
+      (!artifactOpen || showPromotedPublishShortcut),
   );
   const showWorkspaceOpenControl = Boolean(
     workspace && workspaceOpenTargets.length > 0 && onOpenWorkspaceTarget,
@@ -599,7 +606,8 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
                   !onPublishWorkspace ||
                   !onOpenPublishPane ||
                   isPublishingWorkspace ||
-                  (workspace?.mode === "edit" && workspace?.status === "missing")
+                  (effectivePublishWorkspace?.mode === "edit" &&
+                    effectivePublishWorkspace?.status === "missing")
                 }
                 aria-label={`Open workspace publish panel: ${publishShortcutLabel}`}
                 data-testid="agents-publish-workspace"
