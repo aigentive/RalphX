@@ -499,9 +499,18 @@ impl AgentWorkspaceReviewMonitor {
         head_sha: Option<&str>,
         diff_fingerprint: &str,
     ) -> bool {
-        self.reviewed_target_scope == Some(target_scope)
-            && self.reviewed_head_sha.as_deref() == head_sha
-            && self.reviewed_diff_fingerprint.as_deref() == Some(diff_fingerprint)
+        if self.reviewed_target_scope != Some(target_scope)
+            || self.reviewed_diff_fingerprint.as_deref() != Some(diff_fingerprint)
+        {
+            return false;
+        }
+
+        match target_scope {
+            AgentWorkspaceReviewTargetScope::WorkspaceDelta => true,
+            AgentWorkspaceReviewTargetScope::SelectedSource => {
+                self.reviewed_head_sha.as_deref() == head_sha
+            }
+        }
     }
 
     pub fn has_current_passing_review_for_target(
@@ -1284,6 +1293,16 @@ mod workspace_review_monitor_tests {
             Some("head"),
             "fingerprint"
         ));
+        assert!(monitor.is_current_for_target(
+            AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+            Some("different-head"),
+            "fingerprint"
+        ));
+        assert!(monitor.has_current_passing_review_for_target(
+            AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+            Some("different-head"),
+            "fingerprint"
+        ));
         assert!(!monitor.is_current_for_target(
             AgentWorkspaceReviewTargetScope::SelectedSource,
             Some("head"),
@@ -1291,13 +1310,20 @@ mod workspace_review_monitor_tests {
         ));
         assert!(!monitor.is_current_for_target(
             AgentWorkspaceReviewTargetScope::WorkspaceDelta,
-            Some("different-head"),
+            Some("head"),
+            "different-fingerprint"
+        ));
+
+        monitor.reviewed_target_scope = Some(AgentWorkspaceReviewTargetScope::SelectedSource);
+        assert!(monitor.is_current_for_target(
+            AgentWorkspaceReviewTargetScope::SelectedSource,
+            Some("head"),
             "fingerprint"
         ));
         assert!(!monitor.is_current_for_target(
-            AgentWorkspaceReviewTargetScope::WorkspaceDelta,
-            Some("head"),
-            "different-fingerprint"
+            AgentWorkspaceReviewTargetScope::SelectedSource,
+            Some("different-head"),
+            "fingerprint"
         ));
     }
 }
