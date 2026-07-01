@@ -16,6 +16,7 @@ import {
   conversationFixture as conversation,
   conversationWorkspaceFixture as conversationWorkspace,
 } from "./agentsTestFixtures";
+import { useAgentArtifactUiStore } from "./agentArtifactUiStore";
 
 const {
   getAgentConversationWorkspaceMock,
@@ -36,6 +37,8 @@ const workspaceReviewTarget = {
 function workspaceReviewContext(overrides: {
   conversationId?: string;
   status?: "idle" | "ready" | "reviewing" | "blocked";
+  reviewOutcome?: "none" | "passed" | "failed";
+  reviewGateStatus?: "none" | "reviewing" | "passed" | "failed";
   isOutdated?: boolean;
   isCurrent?: boolean;
   shouldShowTab?: boolean;
@@ -52,6 +55,10 @@ function workspaceReviewContext(overrides: {
       status: overrides.status ?? "ready",
       currentTargetScope: "workspace_delta",
       reviewedTargetScope: "workspace_delta",
+      reviewOutcome:
+        overrides.reviewOutcome ??
+        (overrides.reviewGateStatus === "passed" ? "passed" : "none"),
+      reviewGateStatus: overrides.reviewGateStatus ?? null,
       reviewConversationId: "review-conversation-1",
       reviewArtifactId: "review-artifact-1",
       reviewArtifactVersion: 1,
@@ -261,6 +268,47 @@ describe("AgentsView artifact pane", () => {
       expect(screen.getByTestId("agents-artifact-pane")).toHaveAttribute(
         "data-active-tab",
         "review",
+      ),
+    );
+  });
+
+  it("promotes Commit & Publish in the header when the open Review is passed and current", async () => {
+    mockAgentViewData(conversation({ agentMode: "edit" }));
+    getAgentConversationWorkspaceMock.mockResolvedValue(conversationWorkspace({ mode: "edit" }));
+    getWorkspaceReviewContextMock.mockResolvedValue(
+      workspaceReviewContext({
+        reviewGateStatus: "passed",
+        isCurrent: true,
+        isOutdated: false,
+        shouldShowTab: true,
+      }),
+    );
+    resetAgentSessionState({
+      selectedProjectId: "project-1",
+      selectedConversationId: "conversation-1",
+      artifactByConversationId: {
+        "conversation-1": {
+          isOpen: true,
+          activeTab: "review",
+          taskMode: "graph",
+        },
+      },
+    });
+    useAgentArtifactUiStore.setState({
+      artifactByConversationId: {
+        "conversation-1": {
+          isOpen: true,
+          activeTab: "review",
+          taskMode: "graph",
+        },
+      },
+    });
+
+    renderAgentsView();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-publish-workspace")).toHaveTextContent(
+        "Commit & Publish",
       ),
     );
   });

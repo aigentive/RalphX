@@ -1771,7 +1771,14 @@ describe("AgentsArtifactPane", () => {
     renderPane("review", workspace({ mode: "edit" }), vi.fn(), false, conversation());
 
     expect(await screen.findByText("Review passed")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Run again" }));
+    expect(screen.getByTestId("agents-review-open-publish")).toHaveTextContent(
+      "Commit & Publish",
+    );
+    fireEvent.pointerDown(screen.getByTestId("agents-review-actions-menu"), {
+      button: 0,
+      ctrlKey: false,
+    });
+    fireEvent.click(screen.getByTestId("agents-review-rerun"));
 
     await waitFor(() =>
       expect(startWorkspaceReviewMock).toHaveBeenCalledWith("conversation-1", {
@@ -1825,7 +1832,11 @@ describe("AgentsArtifactPane", () => {
     renderPane("review", workspace({ mode: "edit" }), vi.fn(), false, conversation());
 
     expect(await screen.findByText("Review passed")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Run again" }));
+    fireEvent.pointerDown(screen.getByTestId("agents-review-actions-menu"), {
+      button: 0,
+      ctrlKey: false,
+    });
+    fireEvent.click(screen.getByTestId("agents-review-rerun"));
 
     await waitFor(() =>
       expect(startWorkspaceReviewMock).toHaveBeenCalledWith("conversation-1", {
