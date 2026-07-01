@@ -789,6 +789,7 @@ fn build_codex_mcp_overrides_passes_runtime_context_over_cli_args() {
     let runtime_context = CodexMcpRuntimeContext {
         context_type: Some("ideation".to_string()),
         context_id: Some("session-123".to_string()),
+        conversation_id: Some("conversation-current".to_string()),
         task_id: None,
         project_id: Some("project-456".to_string()),
         working_directory: Some(root.join("workspace")),
@@ -841,6 +842,14 @@ fn build_codex_mcp_overrides_passes_runtime_context_over_cli_args() {
     assert!(
         args_override.contains("session-123"),
         "expected context-id value in overrides: {args_override}"
+    );
+    assert!(
+        args_override.contains("--conversation-id"),
+        "expected conversation-id CLI arg in overrides: {args_override}"
+    );
+    assert!(
+        args_override.contains("conversation-current"),
+        "expected conversation-id value in overrides: {args_override}"
     );
     assert!(
         args_override.contains("--project-id"),
@@ -1116,6 +1125,7 @@ harnesses:
     let runtime_context = CodexMcpRuntimeContext {
         context_type: Some("project".to_string()),
         context_id: Some("project-123".to_string()),
+        conversation_id: Some("conversation current".to_string()),
         task_id: None,
         project_id: Some("project-123".to_string()),
         working_directory: Some(root.join("workspace")),
@@ -1144,6 +1154,10 @@ harnesses:
     assert!(
         url_override.contains("project_id=project-123"),
         "external MCP URL should include project id: {url_override}"
+    );
+    assert!(
+        url_override.contains("conversation_id=conversation%20current"),
+        "external MCP URL should include encoded conversation id: {url_override}"
     );
     assert!(
         url_override.contains("parent_conversation_id=conversation%20456"),

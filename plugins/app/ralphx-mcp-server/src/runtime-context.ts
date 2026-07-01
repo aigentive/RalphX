@@ -6,6 +6,7 @@ type RuntimeContextKey =
   | "filesystemReadRoots"
   | "contextType"
   | "contextId"
+  | "conversationId"
   | "parentConversationId"
   | "leadSessionId"
   | "tauriApiUrl"
@@ -24,6 +25,7 @@ const RUNTIME_ARG_ENV_MAPPINGS: Array<{
   { key: "workingDirectory", argName: "working-directory", envName: "RALPHX_WORKING_DIRECTORY" },
   { key: "contextType", argName: "context-type", envName: "RALPHX_CONTEXT_TYPE" },
   { key: "contextId", argName: "context-id", envName: "RALPHX_CONTEXT_ID" },
+  { key: "conversationId", argName: "conversation-id", envName: "RALPHX_CONVERSATION_ID" },
   {
     key: "parentConversationId",
     argName: "parent-conversation-id",

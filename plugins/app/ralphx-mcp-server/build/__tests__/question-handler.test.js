@@ -13,6 +13,7 @@ describe("handleAskUserQuestion", () => {
     afterEach(() => {
         vi.unstubAllGlobals();
         vi.restoreAllMocks();
+        delete process.env.RALPHX_CONVERSATION_ID;
         delete process.env.RALPHX_PARENT_CONVERSATION_ID;
         delete process.env.RALPHX_CONTEXT_ID;
     });
@@ -236,6 +237,7 @@ describe("handleProposePlanMode", () => {
     afterEach(() => {
         vi.unstubAllGlobals();
         vi.restoreAllMocks();
+        delete process.env.RALPHX_CONVERSATION_ID;
         delete process.env.RALPHX_PARENT_CONVERSATION_ID;
         delete process.env.RALPHX_CONTEXT_ID;
     });
@@ -284,6 +286,39 @@ describe("handleProposePlanMode", () => {
                 description: "Use the planning workflow before execution.",
             },
         ]);
+    });
+    it("prefers the current MCP conversation id over the parent workspace conversation id", async () => {
+        process.env.RALPHX_CONVERSATION_ID = "conversation-current";
+        process.env.RALPHX_PARENT_CONVERSATION_ID = "conversation-parent";
+        process.env.RALPHX_CONTEXT_ID = "project-1";
+        const fetchMock = vi
+            .fn()
+            .mockResolvedValueOnce(jsonResponse({ request_id: "req-plan" }))
+            .mockResolvedValueOnce(jsonResponse({
+            selected_options: ["switch_to_plan"],
+            text: null,
+            skipped: false,
+        }));
+        vi.stubGlobal("fetch", fetchMock);
+        const result = await handleProposePlanMode({
+            current_mode: "edit",
+            reason: "This needs a structured requirements pass.",
+        });
+        expect(parsedToolText(result)).toMatchObject({
+            type: "plan_mode_proposal",
+            conversation_id: "conversation-current",
+            accepted: true,
+            status: "accepted",
+        });
+        const requestBody = JSON.parse(fetchMock.mock.calls[0]?.[1]?.body);
+        expect(requestBody).toMatchObject({
+            session_id: "conversation-current",
+            metadata: {
+                kind: "plan_mode_proposal",
+                conversation_id: "conversation-current",
+                current_mode: "edit",
+            },
+        });
     });
     it("returns skipped status without accepting plan mode", async () => {
         const fetchMock = vi
