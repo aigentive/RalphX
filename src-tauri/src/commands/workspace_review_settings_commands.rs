@@ -108,6 +108,14 @@ pub async fn update_workspace_review_runtime_settings(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tauri::Manager;
+
+    fn test_app() -> tauri::App<tauri::test::MockRuntime> {
+        tauri::test::mock_builder()
+            .manage(AppState::new_test())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("mock app should build")
+    }
 
     #[test]
     fn parse_helpers_validate_expected_values() {
@@ -122,5 +130,94 @@ mod tests {
     fn parse_helpers_reject_invalid_values() {
         assert!(parse_provider("gemini").is_err());
         assert!(parse_effort(Some("turbo")).is_err());
+    }
+
+    #[tokio::test]
+    async fn commands_round_trip_global_and_project_runtime_settings() {
+        let app = test_app();
+
+        let empty_global = get_workspace_review_runtime_settings(None, app.state::<AppState>())
+            .await
+            .expect("global settings should load");
+        assert!(empty_global.is_empty());
+
+        let saved_global = update_workspace_review_runtime_settings(
+            UpdateWorkspaceReviewRuntimeSettingsInput {
+                project_id: None,
+                provider: "codex".to_string(),
+                model: Some("gpt-5.4".to_string()),
+                effort: Some("high".to_string()),
+            },
+            app.state::<AppState>(),
+        )
+        .await
+        .expect("global settings should save");
+        assert_eq!(saved_global.project_id, None);
+        assert_eq!(saved_global.provider, "codex");
+        assert_eq!(saved_global.model.as_deref(), Some("gpt-5.4"));
+        assert_eq!(saved_global.effort.as_deref(), Some("high"));
+        assert!(!saved_global.updated_at.is_empty());
+
+        let global_rows = get_workspace_review_runtime_settings(None, app.state::<AppState>())
+            .await
+            .expect("saved global settings should load");
+        assert_eq!(global_rows.len(), 1);
+        assert_eq!(global_rows[0].provider, "codex");
+
+        let saved_project = update_workspace_review_runtime_settings(
+            UpdateWorkspaceReviewRuntimeSettingsInput {
+                project_id: Some("project-1".to_string()),
+                provider: "claude".to_string(),
+                model: None,
+                effort: Some("medium".to_string()),
+            },
+            app.state::<AppState>(),
+        )
+        .await
+        .expect("project settings should save");
+        assert_eq!(saved_project.project_id.as_deref(), Some("project-1"));
+        assert_eq!(saved_project.provider, "claude");
+        assert_eq!(saved_project.model, None);
+        assert_eq!(saved_project.effort.as_deref(), Some("medium"));
+
+        let project_rows = get_workspace_review_runtime_settings(
+            Some("project-1".to_string()),
+            app.state::<AppState>(),
+        )
+        .await
+        .expect("saved project settings should load");
+        assert_eq!(project_rows.len(), 1);
+        assert_eq!(project_rows[0].project_id.as_deref(), Some("project-1"));
+    }
+
+    #[tokio::test]
+    async fn update_command_rejects_invalid_runtime_values() {
+        let app = test_app();
+
+        let provider_error = update_workspace_review_runtime_settings(
+            UpdateWorkspaceReviewRuntimeSettingsInput {
+                project_id: None,
+                provider: "gemini".to_string(),
+                model: None,
+                effort: None,
+            },
+            app.state::<AppState>(),
+        )
+        .await
+        .expect_err("invalid provider should fail");
+        assert!(provider_error.contains("Invalid provider"));
+
+        let effort_error = update_workspace_review_runtime_settings(
+            UpdateWorkspaceReviewRuntimeSettingsInput {
+                project_id: None,
+                provider: "codex".to_string(),
+                model: None,
+                effort: Some("turbo".to_string()),
+            },
+            app.state::<AppState>(),
+        )
+        .await
+        .expect_err("invalid effort should fail");
+        assert!(effort_error.contains("Invalid effort"));
     }
 }

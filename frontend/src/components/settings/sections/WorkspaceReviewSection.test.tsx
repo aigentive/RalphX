@@ -43,6 +43,7 @@ vi.mock("@/stores/uiStore", () => ({
 const providerUpdatedAt = new Date().toISOString();
 const updateRuntimeSettings = vi.fn();
 const updateReviewSettings = vi.fn();
+const openModal = vi.fn();
 
 const enabledProviderSettings: AgentProvidersSettingsResponse = {
   providers: [
@@ -201,7 +202,7 @@ describe("WorkspaceReviewSection", () => {
       name: "Project One",
     });
     vi.mocked(useUiStore).mockImplementation((selector) =>
-      selector({ openModal: vi.fn() }),
+      selector({ openModal }),
     );
   });
 
@@ -264,5 +265,104 @@ describe("WorkspaceReviewSection", () => {
       ),
     );
     expect(useWorkspaceReviewRuntimeSettings).toHaveBeenCalledWith("project-1");
+  });
+
+  it("renders custom saved models in the model selector", async () => {
+    vi.mocked(useWorkspaceReviewRuntimeSettings).mockImplementation((projectId) => ({
+      rows:
+        projectId === null
+          ? [
+              {
+                projectId: null,
+                provider: "codex",
+                model: "gpt-local-review",
+                effort: null,
+                updatedAt: providerUpdatedAt,
+              },
+            ]
+          : [],
+      isLoading: false,
+      isPlaceholderData: false,
+      isError: false,
+      error: null,
+      updateSettings: updateRuntimeSettings,
+      isUpdating: false,
+      saveError: null,
+    }));
+
+    render(<WorkspaceReviewSection />);
+
+    expect(screen.getByText("Effective: gpt-local-review · Medium")).toBeInTheDocument();
+    openSelect("workspace-review-model-codex");
+
+    expect(await screen.findByText("Custom model")).toBeInTheDocument();
+    expect(screen.getAllByText("gpt-local-review").length).toBeGreaterThan(0);
+  });
+
+  it("shows runtime save errors from provider rows", async () => {
+    updateRuntimeSettings.mockImplementation((_input, options) => {
+      options?.onError?.();
+    });
+    vi.mocked(useWorkspaceReviewRuntimeSettings).mockReturnValue({
+      rows: [],
+      isLoading: false,
+      isPlaceholderData: false,
+      isError: false,
+      error: null,
+      updateSettings: updateRuntimeSettings,
+      isUpdating: false,
+      saveError: new Error("Failed to save Workspace Review runtime"),
+    } as ReturnType<typeof useWorkspaceReviewRuntimeSettings>);
+
+    const user = userEvent.setup();
+    render(<WorkspaceReviewSection />);
+
+    openSelect("workspace-review-model-codex");
+    await user.click(await screen.findByText("gpt-5.4"));
+
+    expect(
+      await screen.findByText("Failed to save Workspace Review runtime"),
+    ).toBeInTheDocument();
+  });
+
+  it("shows provider setup notice and opens provider settings", async () => {
+    const user = userEvent.setup();
+    vi.mocked(useHarnessProviders).mockReturnValue({
+      settings: {
+        providers: [],
+        defaultProvider: null,
+        requiresOnboarding: true,
+      },
+      providers: [],
+      isLoading: false,
+      isPlaceholderData: false,
+      isError: false,
+      error: null,
+      refetchProviders: vi.fn(),
+      updateProviderAsync: vi.fn(),
+      isUpdating: false,
+      updateError: null,
+    } as ReturnType<typeof useHarnessProviders>);
+
+    render(<WorkspaceReviewSection />);
+
+    expect(screen.getByText("Provider Setup Required")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /open providers/i }));
+
+    expect(openModal).toHaveBeenCalledWith("settings", { section: "providers" });
+  });
+
+  it("shows disabled project override copy when no project is active", async () => {
+    const user = userEvent.setup();
+    vi.mocked(useProjectStore).mockReturnValue(null);
+
+    render(<WorkspaceReviewSection />);
+    await user.click(screen.getByRole("tab", { name: "Project Overrides" }));
+
+    expect(
+      screen.getByText(
+        "Select a project to override Workspace Review defaults for a specific project.",
+      ),
+    ).toBeInTheDocument();
   });
 });
