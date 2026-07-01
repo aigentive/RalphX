@@ -79,7 +79,7 @@ pub struct AgentConfig {
     pub plugin_dir: Option<PathBuf>,
     /// Optional agent name to use (resolved via plugin_dir)
     pub agent: Option<String>,
-    /// Optional model override (e.g., "claude-sonnet-4-5-20250929")
+    /// Optional model override (e.g., "claude-sonnet-5")
     pub model: Option<String>,
     /// Optional provider harness override for the spawn.
     pub harness: Option<AgentHarnessKind>,

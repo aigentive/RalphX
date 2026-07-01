@@ -304,7 +304,7 @@ impl std::error::Error for TeamConstraintError {}
 fn model_tier(model: &str) -> u8 {
     match model.to_lowercase().as_str() {
         "haiku" => 1,
-        "sonnet" => 2,
+        "sonnet" | "claude-sonnet-4-6" | "claude-sonnet-5" => 2,
         "opus" => 3,
         "fable" | "claude-fable-5" => 4,
         _ => 0, // unknown models get lowest tier

@@ -40,9 +40,10 @@ pub use claude_code_client::{
     TeammateSpawnResult,
 };
 pub use cli_capabilities::{
-    clear_claude_cli_capability_cache, normalize_claude_effort_for_cli_path,
-    parse_claude_cli_capabilities, parse_claude_version, probe_claude_cli,
-    probe_claude_cli_cached, validate_claude_model_for_cli_path, ClaudeCliCapabilities,
+    clear_claude_cli_capability_cache, is_claude_sonnet_5_model,
+    normalize_claude_effort_for_cli_path, parse_claude_cli_capabilities, parse_claude_version,
+    probe_claude_cli, probe_claude_cli_cached, validate_claude_model_for_cli_path,
+    ClaudeCliCapabilities, CLAUDE_SONNET_5_API_MODEL_ID, CLAUDE_SONNET_5_MIN_VERSION,
 };
 
 // Re-export stream processor types for use by services

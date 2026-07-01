@@ -8,8 +8,15 @@ use crate::domain::agents::LogicalEffort;
 pub const CLAUDE_FABLE_MODEL_ALIAS: &str = "fable";
 pub const CLAUDE_FABLE_API_MODEL_ID: &str = "claude-fable-5";
 pub const CLAUDE_FABLE_MIN_VERSION: (u64, u64, u64) = (2, 1, 170);
+pub const CLAUDE_SONNET_4_6_API_MODEL_ID: &str = "claude-sonnet-4-6";
+pub const CLAUDE_SONNET_5_API_MODEL_ID: &str = "claude-sonnet-5";
+pub const CLAUDE_SONNET_4_6_MIN_VERSION: (u64, u64, u64) = (2, 1, 197);
+pub const CLAUDE_SONNET_5_MIN_VERSION: (u64, u64, u64) = (2, 1, 197);
 
 const CLAUDE_XHIGH_MIN_VERSION: (u64, u64, u64) = (2, 1, 111);
+const CLAUDE_FABLE_MIN_VERSION_LABEL: &str = "2.1.170";
+const CLAUDE_SONNET_4_6_MIN_VERSION_LABEL: &str = "2.1.197";
+const CLAUDE_SONNET_5_MIN_VERSION_LABEL: &str = "2.1.197";
 const BASE_CLAUDE_MODEL_ALIASES: [&str; 3] = ["sonnet", "opus", "haiku"];
 const CLAUDE_EFFORT_ORDER: [LogicalEffort; 5] = [
     LogicalEffort::Low,
@@ -133,16 +140,17 @@ pub fn normalize_claude_effort_for_capabilities(
 }
 
 pub fn validate_claude_model_for_cli_path(cli_path: &Path, model: &str) -> Result<(), String> {
-    if !is_claude_fable_model(model) {
+    let Some(requirement) = claude_model_version_requirement(model) else {
         return Ok(());
-    }
+    };
 
     let capabilities = probe_claude_cli_cached(cli_path).map_err(|error| {
         format!(
-            "Cannot verify Claude Code supports Fable 5 before launching with --model {model:?}: {error}"
+            "Cannot verify Claude Code supports {} before launching with --model {model:?}: {error}",
+            requirement.display_name
         )
     })?;
-    if capabilities.supports_fable_model() {
+    if capabilities.supports_model_alias(requirement.required_alias) {
         return Ok(());
     }
 
@@ -152,7 +160,8 @@ pub fn validate_claude_model_for_cli_path(cli_path: &Path, model: &str) -> Resul
         .map(|version| format!("Installed Claude Code version is {version}. "))
         .unwrap_or_default();
     Err(format!(
-        "Claude Fable 5 requires Claude Code v2.1.170 or newer. {installed_version}Upgrade Claude Code before selecting --model fable."
+        "{} requires Claude Code v{} or newer. {installed_version}Upgrade Claude Code before selecting --model {}.",
+        requirement.display_name, requirement.min_version_label, requirement.selection_hint
     ))
 }
 
@@ -161,6 +170,49 @@ pub fn is_claude_fable_model(model: &str) -> bool {
         normalize_model_alias(model).as_str(),
         CLAUDE_FABLE_MODEL_ALIAS | CLAUDE_FABLE_API_MODEL_ID
     )
+}
+
+pub fn is_claude_sonnet_5_model(model: &str) -> bool {
+    normalize_model_alias(model) == CLAUDE_SONNET_5_API_MODEL_ID
+}
+
+pub fn is_claude_sonnet_4_6_model(model: &str) -> bool {
+    normalize_model_alias(model) == CLAUDE_SONNET_4_6_API_MODEL_ID
+}
+
+struct ClaudeModelVersionRequirement {
+    required_alias: &'static str,
+    display_name: &'static str,
+    min_version_label: &'static str,
+    selection_hint: &'static str,
+}
+
+fn claude_model_version_requirement(model: &str) -> Option<ClaudeModelVersionRequirement> {
+    if is_claude_fable_model(model) {
+        return Some(ClaudeModelVersionRequirement {
+            required_alias: CLAUDE_FABLE_MODEL_ALIAS,
+            display_name: "Claude Fable 5",
+            min_version_label: CLAUDE_FABLE_MIN_VERSION_LABEL,
+            selection_hint: CLAUDE_FABLE_MODEL_ALIAS,
+        });
+    }
+    if is_claude_sonnet_5_model(model) {
+        return Some(ClaudeModelVersionRequirement {
+            required_alias: CLAUDE_SONNET_5_API_MODEL_ID,
+            display_name: "Claude Sonnet 5",
+            min_version_label: CLAUDE_SONNET_5_MIN_VERSION_LABEL,
+            selection_hint: CLAUDE_SONNET_5_API_MODEL_ID,
+        });
+    }
+    if is_claude_sonnet_4_6_model(model) {
+        return Some(ClaudeModelVersionRequirement {
+            required_alias: CLAUDE_SONNET_4_6_API_MODEL_ID,
+            display_name: "Claude Sonnet 4.6",
+            min_version_label: CLAUDE_SONNET_4_6_MIN_VERSION_LABEL,
+            selection_hint: CLAUDE_SONNET_4_6_API_MODEL_ID,
+        });
+    }
+    None
 }
 
 fn normalize_claude_effort_for_supported(effort: &str, supported: &[LogicalEffort]) -> String {
@@ -225,6 +277,18 @@ fn fallback_supported_model_aliases(version: Option<&str>) -> Vec<String> {
         .is_some_and(|version| version >= CLAUDE_FABLE_MIN_VERSION)
     {
         aliases.push(CLAUDE_FABLE_MODEL_ALIAS.to_string());
+    }
+    if version
+        .and_then(parse_semver_triplet)
+        .is_some_and(|version| version >= CLAUDE_SONNET_4_6_MIN_VERSION)
+    {
+        aliases.push(CLAUDE_SONNET_4_6_API_MODEL_ID.to_string());
+    }
+    if version
+        .and_then(parse_semver_triplet)
+        .is_some_and(|version| version >= CLAUDE_SONNET_5_MIN_VERSION)
+    {
+        aliases.push(CLAUDE_SONNET_5_API_MODEL_ID.to_string());
     }
     aliases
 }

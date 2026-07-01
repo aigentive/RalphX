@@ -2944,7 +2944,25 @@ mod ipc_contract {
     #[test]
     fn agent_model_registry_ipc_contract_covers_provider_defaults() {
         let built_ins = built_in_agent_models();
-        assert_eq!(built_ins.len(), 9);
+        assert_eq!(built_ins.len(), 11);
+        let sonnet_4_6 = built_ins
+            .iter()
+            .find(|model| {
+                model.provider == AgentHarnessKind::Claude
+                    && model.model_id == "claude-sonnet-4-6"
+            })
+            .expect("Sonnet 4.6 should be exposed as a built-in Claude model");
+        assert_eq!(sonnet_4_6.source, AgentModelSource::BuiltIn);
+        assert_eq!(sonnet_4_6.default_effort, LogicalEffort::High);
+        let sonnet_5 = built_ins
+            .iter()
+            .find(|model| {
+                model.provider == AgentHarnessKind::Claude
+                    && model.model_id == "claude-sonnet-5"
+            })
+            .expect("Sonnet 5 should be exposed as a built-in Claude model");
+        assert_eq!(sonnet_5.source, AgentModelSource::BuiltIn);
+        assert_eq!(sonnet_5.default_effort, LogicalEffort::High);
         let fable = built_ins
             .iter()
             .find(|model| {
