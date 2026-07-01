@@ -41,7 +41,8 @@ use crate::commands::ExecutionState;
 use crate::domain::agents::{
     default_approval_policy_for_harness, default_sandbox_mode_for_harness,
     lightweight_model_for_provider, AgentHarnessKind, AgentProviderCliManagementMode,
-    AgentProviderSettings, AgenticClient, LogicalEffort, DEFAULT_AGENT_HARNESS,
+    AgentProviderSettings, AgenticClient, LogicalEffort, WorkspaceReviewRuntimeSettings,
+    DEFAULT_AGENT_HARNESS,
 };
 use crate::domain::entities::{AgentRun, ChatContextType, ChatConversation, IdeationSession};
 use crate::domain::qa::QASettings;
@@ -63,7 +64,7 @@ use crate::domain::repositories::{
     ReviewSettingsRepository, SessionLinkRepository, TaskDependencyRepository,
     TaskProposalRepository, TaskQARepository, TaskRepository, TaskStepRepository,
     TeamMessageRepository, TeamSessionRepository, TicketCanonicalBranchRepository,
-    WebhookRegistrationRepository, WorkflowRepository,
+    WebhookRegistrationRepository, WorkflowRepository, WorkspaceReviewRuntimeSettingsRepository,
 };
 use crate::domain::services::{
     GithubServiceTrait, MemoryRunningAgentRegistry, MessageQueue, RunningAgentRegistry,
@@ -96,7 +97,7 @@ use crate::infrastructure::memory::{
     MemoryTaskRepository, MemoryTaskStepRepository, MemoryTeamMessageRepository,
     MemoryTeamSessionRepository, MemoryTicketCanonicalBranchRepository,
     MemoryTicketingStatusCatalogRepository, MemoryWebhookRegistrationRepository,
-    MemoryWorkflowRepository,
+    MemoryWorkflowRepository, MemoryWorkspaceReviewRuntimeSettingsRepository,
 };
 use crate::infrastructure::secret_store::MacosKeychainSecretStore;
 use crate::infrastructure::sqlite::ReviewIssueRepository;
@@ -129,7 +130,7 @@ use crate::infrastructure::sqlite::{
     SqliteTaskRepository, SqliteTaskStepRepository, SqliteTeamMessageRepository,
     SqliteTeamSessionRepository, SqliteTicketCanonicalBranchRepository,
     SqliteTicketingStatusCatalogRepository, SqliteWebhookRegistrationRepository,
-    SqliteWorkflowRepository,
+    SqliteWorkflowRepository, SqliteWorkspaceReviewRuntimeSettingsRepository,
 };
 use crate::infrastructure::HyperAtlassianApiClient;
 use crate::infrastructure::HyperClickUpApiClient;
@@ -191,6 +192,8 @@ pub struct AppState {
     pub review_repo: Arc<dyn ReviewRepository>,
     /// Review settings repository
     pub review_settings_repo: Arc<dyn ReviewSettingsRepository>,
+    /// Provider-keyed Workspace Review runtime defaults repository
+    pub workspace_review_runtime_settings_repo: Arc<dyn WorkspaceReviewRuntimeSettingsRepository>,
     /// Review issue repository for tracking structured issues from reviews
     pub review_issue_repo: Arc<dyn ReviewIssueRepository>,
     /// Provider-neutral agent clients used by runtime construction and harness routing.
@@ -538,6 +541,51 @@ impl AppState {
             logical_effort: Some(LogicalEffort::Medium),
             ..runtime
         }
+    }
+
+    fn apply_workspace_review_runtime_settings(
+        runtime: ResolvedBackgroundAgentRuntime,
+        settings: WorkspaceReviewRuntimeSettings,
+    ) -> ResolvedBackgroundAgentRuntime {
+        ResolvedBackgroundAgentRuntime {
+            model: settings.model,
+            logical_effort: settings.effort,
+            ..runtime
+        }
+    }
+
+    fn workspace_review_project_id(conversation: &ChatConversation) -> Option<&str> {
+        if conversation.context_type == ChatContextType::Project {
+            Some(conversation.context_id.as_str())
+        } else {
+            None
+        }
+    }
+
+    async fn resolve_workspace_review_runtime_settings(
+        &self,
+        project_id: Option<&str>,
+        provider: AgentHarnessKind,
+    ) -> AppResult<WorkspaceReviewRuntimeSettings> {
+        let global_row = self
+            .workspace_review_runtime_settings_repo
+            .get_global(provider)
+            .await
+            .map_err(|error| AppError::Infrastructure(error.to_string()))?;
+        let project_row = if let Some(project_id) = project_id {
+            self.workspace_review_runtime_settings_repo
+                .get_for_project(project_id, provider)
+                .await
+                .map_err(|error| AppError::Infrastructure(error.to_string()))?
+        } else {
+            None
+        };
+
+        Ok(WorkspaceReviewRuntimeSettings::resolve_effective(
+            provider,
+            global_row.as_ref().map(|row| &row.settings),
+            project_row.as_ref().map(|row| &row.settings),
+        ))
     }
 
     fn with_runtime_service_tier(
@@ -939,6 +987,34 @@ impl AppState {
         conversation: &ChatConversation,
         latest_run: Option<&AgentRun>,
     ) -> AppResult<ResolvedBackgroundAgentRuntime> {
+        self.resolve_workspace_reviewer_runtime_with_project_scope(
+            conversation,
+            latest_run,
+            Self::workspace_review_project_id(conversation),
+        )
+        .await
+    }
+
+    pub(crate) async fn resolve_workspace_reviewer_runtime_for_project(
+        &self,
+        conversation: &ChatConversation,
+        latest_run: Option<&AgentRun>,
+        project_id: &str,
+    ) -> AppResult<ResolvedBackgroundAgentRuntime> {
+        self.resolve_workspace_reviewer_runtime_with_project_scope(
+            conversation,
+            latest_run,
+            Some(project_id),
+        )
+        .await
+    }
+
+    async fn resolve_workspace_reviewer_runtime_with_project_scope(
+        &self,
+        conversation: &ChatConversation,
+        latest_run: Option<&AgentRun>,
+        project_id: Option<&str>,
+    ) -> AppResult<ResolvedBackgroundAgentRuntime> {
         let requested_harness = latest_run
             .and_then(|run| run.harness)
             .or(conversation.provider_harness);
@@ -962,12 +1038,17 @@ impl AppState {
             )
             .await?
         };
+        let harness = runtime.harness.unwrap_or(DEFAULT_AGENT_HARNESS);
+        let settings = self
+            .resolve_workspace_review_runtime_settings(project_id, harness)
+            .await?;
 
-        Ok(Self::lock_utility_agent_runtime_model(
+        Ok(Self::apply_workspace_review_runtime_settings(
             Self::with_runtime_service_tier(
                 runtime,
                 latest_run.and_then(|run| run.service_tier.clone()),
             ),
+            settings,
         ))
     }
 
@@ -1073,6 +1154,11 @@ impl AppState {
             review_settings_repo: Arc::new(SqliteReviewSettingsRepository::from_shared(
                 Arc::clone(&shared_conn),
             )),
+            workspace_review_runtime_settings_repo: Arc::new(
+                SqliteWorkspaceReviewRuntimeSettingsRepository::from_shared(Arc::clone(
+                    &shared_conn,
+                )),
+            ),
             review_issue_repo: Arc::new(SqliteReviewIssueRepository::from_shared(Arc::clone(
                 &shared_conn,
             ))),
@@ -1307,6 +1393,9 @@ impl AppState {
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
             review_repo: Arc::new(MemoryReviewRepository::new()),
             review_settings_repo: Arc::new(MemoryReviewSettingsRepository::new()),
+            workspace_review_runtime_settings_repo: Arc::new(
+                MemoryWorkspaceReviewRuntimeSettingsRepository::new(),
+            ),
             review_issue_repo: Arc::new(MemoryReviewIssueRepository::new()),
             agent_clients: Self::mock_agent_clients(),
             qa_settings: Arc::new(tokio::sync::RwLock::new(QASettings::default())),
@@ -1453,6 +1542,9 @@ impl AppState {
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
             review_repo: Arc::new(MemoryReviewRepository::new()),
             review_settings_repo: Arc::new(MemoryReviewSettingsRepository::new()),
+            workspace_review_runtime_settings_repo: Arc::new(
+                MemoryWorkspaceReviewRuntimeSettingsRepository::new(),
+            ),
             review_issue_repo: Arc::new(MemoryReviewIssueRepository::new()),
             agent_clients: Self::mock_agent_clients(),
             qa_settings: Arc::new(tokio::sync::RwLock::new(QASettings::default())),
@@ -1609,6 +1701,9 @@ impl AppState {
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
             review_repo: Arc::new(MemoryReviewRepository::new()),
             review_settings_repo: Arc::new(MemoryReviewSettingsRepository::new()),
+            workspace_review_runtime_settings_repo: Arc::new(
+                MemoryWorkspaceReviewRuntimeSettingsRepository::new(),
+            ),
             review_issue_repo: Arc::new(MemoryReviewIssueRepository::new()),
             agent_clients: Self::mock_agent_clients(),
             qa_settings: Arc::new(tokio::sync::RwLock::new(QASettings::default())),
@@ -1759,6 +1854,9 @@ impl AppState {
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
             review_repo: Arc::new(MemoryReviewRepository::new()),
             review_settings_repo: Arc::new(MemoryReviewSettingsRepository::new()),
+            workspace_review_runtime_settings_repo: Arc::new(
+                MemoryWorkspaceReviewRuntimeSettingsRepository::new(),
+            ),
             review_issue_repo: Arc::new(MemoryReviewIssueRepository::new()),
             agent_clients: Self::mock_agent_clients(),
             qa_settings: Arc::new(tokio::sync::RwLock::new(QASettings::default())),

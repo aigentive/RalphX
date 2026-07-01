@@ -315,7 +315,11 @@ async fn start_agent_workspace_review_with_chat_service<S: ChatService + ?Sized>
     let inherited_references =
         collect_workspace_review_inherited_references(&state, workspace).await?;
     let runtime = state
-        .resolve_workspace_reviewer_runtime(&conversation, latest_run.as_ref())
+        .resolve_workspace_reviewer_runtime_for_project(
+            &conversation,
+            latest_run.as_ref(),
+            workspace.project_id.as_str(),
+        )
         .await?;
     let review_conversation_id =
         create_workspace_review_conversation(&state, workspace, &target).await?;
@@ -2313,13 +2317,15 @@ fn review_started_summary(target: &AgentWorkspaceReviewTarget) -> String {
 mod tests {
     use super::*;
     use crate::application::chat_service::MockChatService;
-    use crate::domain::agents::AgenticClient;
+    use crate::domain::agents::{
+        AgentHarnessKind, AgenticClient, LogicalEffort, WorkspaceReviewRuntimeSettings,
+    };
     use crate::domain::entities::{
         AgentConversationWorkspaceMode, AgentRun, AgentWorkspaceReviewGateStatus,
         AgentWorkspaceReviewOutcome, AgentWorkspaceSourcePullRequest, Artifact, ArtifactId,
         ArtifactType, ChatConversation, ChatConversationId, ChatMessage,
         IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow, IdeationSessionId,
-        ProjectId,
+        ProjectId, TaskId,
     };
     use crate::infrastructure::MockAgenticClient;
     use std::process::Command;
@@ -3553,6 +3559,87 @@ x
             Some(
                 "failed to start workspace reviewer chat: Agent not available: Mock agent not available"
             )
+        );
+    }
+
+    #[tokio::test]
+    async fn start_review_uses_workspace_project_runtime_scope_for_non_project_owner() {
+        let (_temp, repo, base_sha) = init_repo();
+        committed_workspace_delta(&repo);
+
+        let default_client: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
+        let codex_client: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
+        let state = Arc::new(
+            AppState::new_test()
+                .with_agent_client(default_client)
+                .with_harness_agent_client(AgentHarnessKind::Codex, codex_client),
+        );
+        let chat_service = MockChatService::new();
+        chat_service.set_available(false).await;
+        let project = seed_project(&state, &repo).await;
+        state
+            .workspace_review_runtime_settings_repo
+            .upsert_global(
+                AgentHarnessKind::Codex,
+                &WorkspaceReviewRuntimeSettings {
+                    model: Some("gpt-global-review".to_string()),
+                    effort: Some(LogicalEffort::Low),
+                },
+            )
+            .await
+            .unwrap();
+        state
+            .workspace_review_runtime_settings_repo
+            .upsert_for_project(
+                project.id.as_str(),
+                AgentHarnessKind::Codex,
+                &WorkspaceReviewRuntimeSettings {
+                    model: Some("gpt-project-review".to_string()),
+                    effort: Some(LogicalEffort::High),
+                },
+            )
+            .await
+            .unwrap();
+        let workspace = workspace(
+            &project,
+            &repo,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main",
+            Some(base_sha),
+        );
+        let mut conversation =
+            ChatConversation::new_task(TaskId::from_string("workspace-owner-task".to_string()));
+        conversation.id = workspace.conversation_id.clone();
+        conversation.agent_mode = Some(workspace.mode);
+        conversation.provider_harness = Some(AgentHarnessKind::Codex);
+        state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .expect("non-project owner conversation should persist");
+
+        start_agent_workspace_review_with_chat_service(
+            Arc::clone(&state),
+            &workspace,
+            true,
+            &chat_service,
+        )
+        .await
+        .expect_err("review child chat send should fail after options are recorded");
+
+        let sent_options = chat_service.get_sent_options().await;
+        assert_eq!(sent_options.len(), 1);
+        assert_eq!(
+            sent_options[0].harness_override,
+            Some(AgentHarnessKind::Codex)
+        );
+        assert_eq!(
+            sent_options[0].model_override.as_deref(),
+            Some("gpt-project-review")
+        );
+        assert_eq!(
+            sent_options[0].logical_effort_override,
+            Some(LogicalEffort::High)
         );
     }
 

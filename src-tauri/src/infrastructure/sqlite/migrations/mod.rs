@@ -390,6 +390,12 @@ mod v20260630120000_ticketing_status_catalog_tests;
 mod v20260630123000_workspace_review_policy_setting;
 #[cfg(test)]
 mod v20260630123000_workspace_review_policy_setting_tests;
+mod v20260701143000_workspace_review_runtime_settings;
+#[cfg(test)]
+mod v20260701143000_workspace_review_runtime_settings_tests;
+mod v20260701152000_workspace_review_runtime_global_scope;
+#[cfg(test)]
+mod v20260701152000_workspace_review_runtime_global_scope_tests;
 #[cfg(test)]
 mod v20_merge_validation_mode_tests;
 #[cfg(test)]
@@ -480,7 +486,7 @@ mod v8_task_git_fields_tests;
 mod v9_project_git_fields_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260630123000;
+pub const SCHEMA_VERSION: i64 = 20260701152000;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -1334,6 +1340,16 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260630123000,
         name: "workspace_review_policy_setting",
         migrate: v20260630123000_workspace_review_policy_setting::migrate,
+    },
+    Migration {
+        version: 20260701143000,
+        name: "workspace_review_runtime_settings",
+        migrate: v20260701143000_workspace_review_runtime_settings::migrate,
+    },
+    Migration {
+        version: 20260701152000,
+        name: "workspace_review_runtime_global_scope",
+        migrate: v20260701152000_workspace_review_runtime_global_scope::migrate,
     },
 ];
 

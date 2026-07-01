@@ -26,6 +26,9 @@ const LazyAgentModelsSection = lazy(() =>
 const LazyReviewPolicySection = lazy(() =>
   import("./sections/ReviewPolicySection"),
 );
+const LazyWorkspaceReviewSection = lazy(() =>
+  import("./sections/WorkspaceReviewSection"),
+);
 const LazyAutonomyPolicySection = lazy(() =>
   import("./sections/AutonomyPolicySection"),
 );
@@ -142,6 +145,7 @@ export function SettingsSectionContent({
       {section === "execution-harnesses" && <LazyExecutionHarnessSection />}
       {section === "models" && <LazyAgentModelsSection />}
       {section === "global-execution" && <LazyGlobalExecutionSection />}
+      {section === "workspace-review" && <LazyWorkspaceReviewSection />}
       {section === "review" && <LazyReviewPolicySection />}
       {section === "autonomy" && <LazyAutonomyPolicySection />}
       {section === "repository" && <LazyRepositorySettingsSection />}

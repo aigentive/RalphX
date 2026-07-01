@@ -13,6 +13,7 @@ export const sectionModuleLoaders: Record<SettingsSectionId, () => Promise<unkno
   "execution-harnesses": () => import("./IdeationHarnessSection"),
   models: () => import("./AgentModelsSection"),
   "global-execution": () => import("./sections/GlobalExecutionSection"),
+  "workspace-review": () => import("./sections/WorkspaceReviewSection"),
   review: () => import("./sections/ReviewPolicySection"),
   autonomy: () => import("./sections/AutonomyPolicySection"),
   repository: () => import("./RepositorySettingsSection"),

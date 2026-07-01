@@ -289,6 +289,52 @@ impl AgentLaneSettings {
     }
 }
 
+/// Provider-keyed default runtime settings for Workspace Review.
+///
+/// The Workspace Review provider is inherited from the owning chat/run, so this
+/// stores only the configurable defaults applied after provider resolution.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceReviewRuntimeSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<LogicalEffort>,
+}
+
+impl WorkspaceReviewRuntimeSettings {
+    pub fn new(model: Option<String>, effort: Option<LogicalEffort>) -> Self {
+        Self { model, effort }
+    }
+
+    pub fn utility_defaults(provider: AgentHarnessKind) -> Self {
+        Self {
+            model: Some(
+                super::model_registry::lightweight_model_for_provider(provider).to_string(),
+            ),
+            effort: Some(LogicalEffort::Medium),
+        }
+    }
+
+    pub fn resolve_effective(
+        provider: AgentHarnessKind,
+        global: Option<&WorkspaceReviewRuntimeSettings>,
+        project: Option<&WorkspaceReviewRuntimeSettings>,
+    ) -> Self {
+        let defaults = Self::utility_defaults(provider);
+        Self {
+            model: project
+                .and_then(|settings| settings.model.clone())
+                .or_else(|| global.and_then(|settings| settings.model.clone()))
+                .or(defaults.model),
+            effort: project
+                .and_then(|settings| settings.effort)
+                .or_else(|| global.and_then(|settings| settings.effort))
+                .or(defaults.effort),
+        }
+    }
+}
+
 pub fn generic_harness_lane_defaults(
     harness: AgentHarnessKind,
     lane: AgentLane,
@@ -390,6 +436,18 @@ pub struct StoredAgentLaneSettings {
     pub project_id: Option<String>,
     pub lane: AgentLane,
     pub settings: AgentLaneSettings,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Persisted Workspace Review runtime settings row scoped globally or per project.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoredWorkspaceReviewRuntimeSettings {
+    pub id: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    pub provider: AgentHarnessKind,
+    pub settings: WorkspaceReviewRuntimeSettings,
     pub updated_at: DateTime<Utc>,
 }
 

@@ -65,6 +65,7 @@ pub mod memory_ticket_canonical_branch_repo;
 pub mod memory_ticketing_status_catalog_repo;
 pub mod memory_webhook_registration_repo;
 pub mod memory_workflow_repo;
+pub mod memory_workspace_review_runtime_settings_repo;
 
 // Re-exports for convenience
 pub use memory_active_plan_repo::MemoryActivePlanRepository;
@@ -133,3 +134,4 @@ pub use memory_ticket_canonical_branch_repo::MemoryTicketCanonicalBranchReposito
 pub use memory_ticketing_status_catalog_repo::MemoryTicketingStatusCatalogRepository;
 pub use memory_webhook_registration_repo::MemoryWebhookRegistrationRepository;
 pub use memory_workflow_repo::MemoryWorkflowRepository;
+pub use memory_workspace_review_runtime_settings_repo::MemoryWorkspaceReviewRuntimeSettingsRepository;
