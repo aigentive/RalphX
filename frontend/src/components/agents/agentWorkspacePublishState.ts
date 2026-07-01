@@ -145,9 +145,10 @@ export function isAgentWorkspacePublishCurrent(
   const freshnessScope = freshness?.freshnessScope ?? "full";
   const remoteRefreshed = freshness?.remoteRefreshed ?? true;
   const worktreeStatusChecked = freshness?.worktreeStatusChecked ?? true;
+  const pushStatus = normalizePublicationStatus(workspace?.publicationPushStatus);
   return (
     hasPublishedWorkspacePr(workspace) &&
-    workspace?.publicationPushStatus === "pushed" &&
+    (pushStatus === "pushed" || pushStatus === "refreshed") &&
     freshness !== undefined &&
     freshnessScope === "full" &&
     remoteRefreshed &&
