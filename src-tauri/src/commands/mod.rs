@@ -73,6 +73,7 @@ pub mod ui_commands;
 pub mod unified_chat_commands;
 pub mod workflow_commands;
 pub mod workspace_open_commands;
+pub mod workspace_review_settings_commands;
 
 // Re-export commands for registration
 pub use activity_commands::{
@@ -269,6 +270,10 @@ pub use workflow_commands::{
     get_workflow, get_workflows, seed_builtin_workflows, set_default_workflow, update_workflow,
     CreateWorkflowInput, UpdateWorkflowInput, WorkflowColumnInput, WorkflowColumnResponse,
     WorkflowResponse,
+};
+pub use workspace_review_settings_commands::{
+    get_workspace_review_runtime_settings, update_workspace_review_runtime_settings,
+    UpdateWorkspaceReviewRuntimeSettingsInput, WorkspaceReviewRuntimeSettingsResponse,
 };
 // Team commands (agent teams collaboration)
 pub use team_commands::{

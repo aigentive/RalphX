@@ -4,11 +4,11 @@ use crate::domain::agents::{
     AgentConfig, AgentError, AgentHandle, AgentHarnessKind, AgentLane, AgentLaneSettings,
     AgentOutput, AgentProviderCliManagementMode, AgentProviderSettings, AgentResponse, AgentResult,
     AgenticClient, ClientCapabilities, ClientType, LogicalEffort, ResponseChunk,
-    CODEX_DEFAULT_APPROVAL_POLICY, CODEX_DEFAULT_SANDBOX_MODE,
+    WorkspaceReviewRuntimeSettings, CODEX_DEFAULT_APPROVAL_POLICY, CODEX_DEFAULT_SANDBOX_MODE,
 };
 use crate::domain::entities::{
     AgentRun, ChatConversation, ChatMessage, IdeationSession, InternalStatus, Priority, Project,
-    ProjectId, ProposalCategory, Task, TaskProposal,
+    ProjectId, ProposalCategory, Task, TaskId, TaskProposal,
 };
 use crate::infrastructure::{MockAgenticClient, MockCallType};
 use futures::Stream;
@@ -932,6 +932,141 @@ async fn test_resolve_workspace_reviewer_runtime_uses_default_provider_without_r
     assert_eq!(runtime.harness, Some(AgentHarnessKind::Claude));
     assert_eq!(runtime.model.as_deref(), Some("haiku"));
     assert_eq!(runtime.logical_effort, Some(LogicalEffort::Medium));
+}
+
+#[tokio::test]
+async fn test_resolve_workspace_reviewer_runtime_uses_global_provider_review_defaults() {
+    let default_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
+    let codex_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
+    let state = AppState::new_test()
+        .with_agent_client(default_mock)
+        .with_harness_agent_client(AgentHarnessKind::Codex, codex_mock.clone());
+
+    state
+        .workspace_review_runtime_settings_repo
+        .upsert_global(
+            AgentHarnessKind::Codex,
+            &WorkspaceReviewRuntimeSettings {
+                model: Some("gpt-5.4".to_string()),
+                effort: Some(LogicalEffort::High),
+            },
+        )
+        .await
+        .unwrap();
+
+    let project = Project::new("Codex Review Defaults".to_string(), "/tmp".to_string());
+    let mut conversation = ChatConversation::new_project(project.id);
+    conversation.provider_harness = Some(AgentHarnessKind::Codex);
+
+    let runtime = state
+        .resolve_workspace_reviewer_runtime(&conversation, None)
+        .await
+        .expect("workspace reviewer should resolve from configured review defaults");
+
+    assert!(Arc::ptr_eq(&runtime.client, &codex_mock));
+    assert_eq!(runtime.harness, Some(AgentHarnessKind::Codex));
+    assert_eq!(runtime.model.as_deref(), Some("gpt-5.4"));
+    assert_eq!(runtime.logical_effort, Some(LogicalEffort::High));
+}
+
+#[tokio::test]
+async fn test_resolve_workspace_reviewer_runtime_uses_project_provider_review_defaults() {
+    let default_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
+    let codex_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
+    let state = AppState::new_test()
+        .with_agent_client(default_mock)
+        .with_harness_agent_client(AgentHarnessKind::Codex, codex_mock.clone());
+
+    state
+        .workspace_review_runtime_settings_repo
+        .upsert_global(
+            AgentHarnessKind::Codex,
+            &WorkspaceReviewRuntimeSettings {
+                model: Some("gpt-5.4".to_string()),
+                effort: Some(LogicalEffort::High),
+            },
+        )
+        .await
+        .unwrap();
+
+    let project = Project::new("Project Review Defaults".to_string(), "/tmp".to_string());
+    let project_id = project.id.as_str().to_string();
+    state
+        .workspace_review_runtime_settings_repo
+        .upsert_for_project(
+            &project_id,
+            AgentHarnessKind::Codex,
+            &WorkspaceReviewRuntimeSettings {
+                model: Some("gpt-5.3-codex".to_string()),
+                effort: None,
+            },
+        )
+        .await
+        .unwrap();
+    let mut conversation = ChatConversation::new_project(project.id);
+    conversation.provider_harness = Some(AgentHarnessKind::Codex);
+
+    let runtime = state
+        .resolve_workspace_reviewer_runtime(&conversation, None)
+        .await
+        .expect("workspace reviewer should resolve from project review defaults");
+
+    assert!(Arc::ptr_eq(&runtime.client, &codex_mock));
+    assert_eq!(runtime.harness, Some(AgentHarnessKind::Codex));
+    assert_eq!(runtime.model.as_deref(), Some("gpt-5.3-codex"));
+    assert_eq!(
+        runtime.logical_effort,
+        Some(LogicalEffort::High),
+        "project rows inherit global effort when they only override model"
+    );
+}
+
+#[tokio::test]
+async fn test_resolve_workspace_reviewer_runtime_uses_explicit_workspace_project_scope() {
+    let default_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
+    let codex_mock: Arc<dyn AgenticClient> = Arc::new(MockAgenticClient::new());
+    let state = AppState::new_test()
+        .with_agent_client(default_mock)
+        .with_harness_agent_client(AgentHarnessKind::Codex, codex_mock.clone());
+
+    let project_id = ProjectId::from_string("workspace-review-project".to_string());
+    state
+        .workspace_review_runtime_settings_repo
+        .upsert_global(
+            AgentHarnessKind::Codex,
+            &WorkspaceReviewRuntimeSettings {
+                model: Some("gpt-global-review".to_string()),
+                effort: Some(LogicalEffort::Low),
+            },
+        )
+        .await
+        .unwrap();
+    state
+        .workspace_review_runtime_settings_repo
+        .upsert_for_project(
+            project_id.as_str(),
+            AgentHarnessKind::Codex,
+            &WorkspaceReviewRuntimeSettings {
+                model: Some("gpt-project-review".to_string()),
+                effort: Some(LogicalEffort::High),
+            },
+        )
+        .await
+        .unwrap();
+
+    let mut conversation =
+        ChatConversation::new_task(TaskId::from_string("workspace-owner-task".to_string()));
+    conversation.provider_harness = Some(AgentHarnessKind::Codex);
+
+    let runtime = state
+        .resolve_workspace_reviewer_runtime_for_project(&conversation, None, project_id.as_str())
+        .await
+        .expect("workspace reviewer should resolve from explicit project scope");
+
+    assert!(Arc::ptr_eq(&runtime.client, &codex_mock));
+    assert_eq!(runtime.harness, Some(AgentHarnessKind::Codex));
+    assert_eq!(runtime.model.as_deref(), Some("gpt-project-review"));
+    assert_eq!(runtime.logical_effort, Some(LogicalEffort::High));
 }
 
 #[tokio::test]

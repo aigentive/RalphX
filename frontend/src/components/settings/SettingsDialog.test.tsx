@@ -45,6 +45,12 @@ vi.mock("./sections/ReviewPolicySection", () => ({
   default: () => <div data-testid="review-policy-section">Review Policy</div>,
 }));
 
+vi.mock("./sections/WorkspaceReviewSection", () => ({
+  default: () => (
+    <div data-testid="workspace-review-section">Workspace Review</div>
+  ),
+}));
+
 vi.mock("./sections/AutonomyPolicySection", () => ({
   default: () => (
     <div data-testid="autonomy-policy-section">Autonomy Policy</div>

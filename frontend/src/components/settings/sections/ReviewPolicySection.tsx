@@ -34,18 +34,6 @@ export default function ReviewPolicySection() {
           updateSettings({ requireHumanReview: !settings.require_human_review })
         }
       />
-      <ToggleSettingRow
-        id="require-workspace-review"
-        label="Require Workspace Review before publishing"
-        description="Block Commit & Publish until the workspace Review passes"
-        checked={settings.require_workspace_review}
-        disabled={disabled}
-        onChange={() =>
-          updateSettings({
-            requireWorkspaceReview: !settings.require_workspace_review,
-          })
-        }
-      />
       <NumberSettingRow
         id="max-fix-attempts"
         label="Max Fix Attempts"

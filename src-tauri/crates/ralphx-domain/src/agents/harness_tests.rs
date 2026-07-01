@@ -112,6 +112,32 @@ fn test_agent_lane_settings_serialization_omits_empty_optionals() {
 }
 
 #[test]
+fn test_workspace_review_runtime_settings_resolve_effective() {
+    let global = WorkspaceReviewRuntimeSettings {
+        model: Some("gpt-5.4".to_string()),
+        effort: Some(LogicalEffort::High),
+    };
+    let project = WorkspaceReviewRuntimeSettings {
+        model: Some("gpt-5.3-codex".to_string()),
+        effort: None,
+    };
+
+    let resolved = WorkspaceReviewRuntimeSettings::resolve_effective(
+        AgentHarnessKind::Codex,
+        Some(&global),
+        Some(&project),
+    );
+
+    assert_eq!(resolved.model.as_deref(), Some("gpt-5.3-codex"));
+    assert_eq!(resolved.effort, Some(LogicalEffort::High));
+
+    let fallback =
+        WorkspaceReviewRuntimeSettings::resolve_effective(AgentHarnessKind::Claude, None, None);
+    assert_eq!(fallback.model.as_deref(), Some("haiku"));
+    assert_eq!(fallback.effort, Some(LogicalEffort::Medium));
+}
+
+#[test]
 fn test_generic_harness_lane_defaults_for_codex_primary() {
     let settings =
         generic_harness_lane_defaults(AgentHarnessKind::Codex, AgentLane::IdeationPrimary);

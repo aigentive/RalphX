@@ -24,6 +24,10 @@ vi.mock("@/providers/EventProvider", () => ({
   }),
 }));
 
+vi.mock("./sections/WorkspaceReviewSection", () => ({
+  default: () => <div data-testid="workspace-review-section">Workspace Review</div>,
+}));
+
 const createTestQueryClient = () =>
   new QueryClient({
     defaultOptions: {
