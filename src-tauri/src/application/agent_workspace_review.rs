@@ -2185,7 +2185,8 @@ fn build_review_request_message(
          RalphX scopes workspace Review tools to this parent conversation from runtime context. \
          Use the `target.review_packet` returned by `get_workspace_review_context` as the primary diff input, then inspect only targeted files with read-only filesystem tools if needed. \
          Do not run shell commands, tests, linters, or validation suites. \
-         Write a concise reviewer-focused Markdown Review with the `write_workspace_review_artifact` tool, then call `complete_workspace_review_run` with outcome `passed`, `blocking`, `no_changes`, or `run_failed`. Do not modify files.",
+         Write a concise reviewer-focused Markdown Review with the `write_workspace_review_artifact` tool, then call `complete_workspace_review_run` with outcome `passed`, `blocking`, `no_changes`, or `run_failed`. \
+         Keep base/head/fingerprint provenance in tool arguments only; do not repeat it as artifact body prose. Do not modify files.",
         scope = target.scope,
         base_ref = target.base_ref,
         base_sha = target.base_sha.as_deref().unwrap_or("unknown"),
@@ -3158,6 +3159,8 @@ x
         let review_prompt = &sent_messages[0];
         assert!(review_prompt.contains("Create or refresh the Review"));
         assert!(review_prompt.contains("- Scope: workspace_delta"));
+        assert!(review_prompt
+            .contains("Keep base/head/fingerprint provenance in tool arguments only"));
         assert!(review_prompt.contains(&workspace.conversation_id.as_str()));
         assert!(!review_prompt.contains("pass conversation_id"));
 
