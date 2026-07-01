@@ -2267,6 +2267,16 @@ async fn start_workspace_review_for_pr_fix_if_required(
     workspace: &AgentConversationWorkspace,
     summary: &str,
 ) -> Result<Option<Json<CompleteAgentWorkspacePrFixResponse>>, JsonError> {
+    let review_settings = state
+        .app_state
+        .review_settings_repo
+        .get_settings()
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    if !review_settings.require_workspace_review {
+        return Ok(None);
+    }
+
     let review_context = load_agent_workspace_review_context(state.app_state.as_ref(), workspace)
         .await
         .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
@@ -5405,6 +5415,52 @@ mod tests {
         assert!(!events
             .iter()
             .any(|event| event.step == "pr_autofix_publish_failed"));
+    }
+
+    #[tokio::test]
+    async fn pr_fix_workspace_review_gate_is_skipped_when_policy_is_disabled() {
+        let fixture = setup_pr_fix_workspace_with_review_gate(
+            "policy-disabled",
+            AgentWorkspaceReviewGateStatus::Blocking,
+        )
+        .await;
+        fixture
+            .app_state
+            .review_settings_repo
+            .update_settings(&ReviewSettings {
+                require_workspace_review: false,
+                ..ReviewSettings::default()
+            })
+            .await
+            .expect("review settings should update");
+        let state = test_http_state(Arc::clone(&fixture.app_state));
+        let workspace = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&fixture.conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+
+        let result = start_workspace_review_for_pr_fix_if_required(
+            &state,
+            &fixture.conversation_id,
+            &workspace,
+            "Fixed failing CI check",
+        )
+        .await
+        .expect("disabled policy should skip workspace review gate");
+
+        assert!(result.is_none());
+        let events = fixture
+            .app_state
+            .agent_conversation_workspace_repo
+            .list_publication_events(&fixture.conversation_id)
+            .await
+            .unwrap();
+        assert!(!events
+            .iter()
+            .any(|event| event.step == "pr_autofix_workspace_review"));
     }
 
     #[tokio::test]
