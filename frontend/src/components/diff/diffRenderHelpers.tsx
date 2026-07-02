@@ -18,6 +18,39 @@ export interface RenderDiffLineOptions {
 }
 
 export type HunkAnnotationIndex = Map<string, WorkspaceReviewHunkAnnotation[]>;
+export interface DiffAnnotationLegendItem {
+  label: string;
+  levels: string;
+  color: string;
+  description: string;
+}
+
+export const DIFF_ANNOTATION_LEVEL_LEGEND: DiffAnnotationLegendItem[] = [
+  {
+    label: "Blocking",
+    levels: "failure, error, critical, high",
+    color: "var(--status-error)",
+    description: "Needs attention before this change should ship.",
+  },
+  {
+    label: "Warning",
+    levels: "medium, warning",
+    color: "var(--status-warning)",
+    description: "Worth reviewing, but not always a hard blocker.",
+  },
+  {
+    label: "Notice",
+    levels: "low, notice",
+    color: "var(--status-info)",
+    description: "Context or low-risk reviewer guidance.",
+  },
+  {
+    label: "Other",
+    levels: "unclassified",
+    color: "var(--accent-primary)",
+    description: "No recognized severity was provided.",
+  },
+];
 
 function getLineBackground(kind: DiffLine["kind"], variant: Variant): string {
   switch (kind) {
@@ -72,7 +105,7 @@ function annotationSide(annotation: PrDiffAnnotation): AnnotationSide {
   return side === "left" || side === "old" ? "old" : "new";
 }
 
-function annotationLevelColor(level: string): string {
+export function annotationLevelColor(level: string): string {
   switch (level.toLowerCase()) {
     case "failure":
     case "error":
@@ -90,7 +123,7 @@ function annotationLevelColor(level: string): string {
   }
 }
 
-function annotationSourceLabel(source: string): string {
+export function annotationSourceLabel(source: string): string {
   switch (source) {
     case "code_scanning":
       return "Code scanning";
@@ -177,7 +210,7 @@ export function hunkAnnotationsForHunk(
   return index.get(hunkAnnotationKey(hunk)) ?? [];
 }
 
-function renderAnnotationRows(
+export function renderAnnotationRows(
   annotations: PrDiffAnnotation[],
   wrapLines: boolean,
   variant: Variant
