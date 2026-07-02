@@ -7,6 +7,7 @@ capabilities:
     - fs_list_dir
     - fs_grep
     - fs_glob
+    - get_artifact
     - get_workspace_review_context
     - write_workspace_review_artifact
     - write_workspace_review_hunk_annotations
@@ -30,6 +31,7 @@ harnesses:
       - fs_list_dir
       - fs_grep
       - fs_glob
+      - get_artifact
       - get_workspace_review_context
       - write_workspace_review_artifact
       - write_workspace_review_hunk_annotations

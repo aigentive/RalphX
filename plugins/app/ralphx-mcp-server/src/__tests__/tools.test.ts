@@ -1212,6 +1212,7 @@ describe('getAllowedToolNames - CLI arg priority chain', () => {
     expect(tools).toContain('fs_list_dir');
     expect(tools).toContain('fs_grep');
     expect(tools).toContain('fs_glob');
+    expect(tools).toContain('get_artifact');
     expect(tools).toContain('get_workspace_review_context');
     expect(tools).toContain('write_workspace_review_artifact');
     expect(tools).toContain('write_workspace_review_hunk_annotations');
@@ -1850,7 +1851,7 @@ describe('agent workspace publish tool transport', () => {
       callCompleteWorkspaceReviewRunTool(
         callTauri,
         {
-          outcome: 'reviewed',
+          outcome: 'passed',
           summary: 'Review completed',
           blocker: undefined,
           created_by_run_id: 'run-1',
@@ -1862,7 +1863,7 @@ describe('agent workspace publish tool transport', () => {
     expect(callTauri).toHaveBeenCalledWith(
       'agent-workspaces/conversation-from-runtime/complete-workspace-review-run',
       {
-        outcome: 'reviewed',
+        outcome: 'passed',
         summary: 'Review completed',
         blocker: undefined,
         created_by_run_id: 'run-1',
@@ -2027,7 +2028,13 @@ describe('agent workspace publish tool transport', () => {
         'write_workspace_review_artifact',
         callTauri,
         callTauriGet,
-        { content: '## Summary', target_scope: 'selected_source' },
+        {
+          content: '## Summary',
+          target_scope: 'selected_source',
+          head_sha: 'head-sha',
+          diff_fingerprint: 'fingerprint-1',
+          created_by_run_id: 'run-1',
+        },
         { parentConversationId: 'conversation-from-runtime' }
       )
     ).resolves.toEqual({ success: true });
@@ -2036,7 +2043,13 @@ describe('agent workspace publish tool transport', () => {
         'write_workspace_review_hunk_annotations',
         callTauri,
         callTauriGet,
-        { annotations: [] },
+        {
+          target_scope: 'selected_source',
+          head_sha: 'head-sha',
+          diff_fingerprint: 'fingerprint-1',
+          created_by_run_id: 'run-1',
+          annotations: [],
+        },
         { parentConversationId: 'conversation-from-runtime' }
       )
     ).resolves.toEqual({ success: true });
@@ -2045,7 +2058,7 @@ describe('agent workspace publish tool transport', () => {
         'complete_workspace_review_run',
         callTauri,
         callTauriGet,
-        { summary: 'Done', outcome: 'reviewed' },
+        { summary: 'Done', outcome: 'passed', created_by_run_id: 'run-1' },
         { parentConversationId: 'conversation-from-runtime' }
       )
     ).resolves.toEqual({ success: true });
@@ -2092,28 +2105,28 @@ describe('agent workspace publish tool transport', () => {
         title: undefined,
         content: '## Summary',
         target_scope: 'selected_source',
-        head_sha: undefined,
-        diff_fingerprint: undefined,
-        created_by_run_id: undefined,
+        head_sha: 'head-sha',
+        diff_fingerprint: 'fingerprint-1',
+        created_by_run_id: 'run-1',
       }
     );
     expect(callTauri).toHaveBeenCalledWith(
       'agent-workspaces/conversation-from-runtime/workspace-review-hunk-annotations',
       {
-        target_scope: undefined,
-        head_sha: undefined,
-        diff_fingerprint: undefined,
-        created_by_run_id: undefined,
+        target_scope: 'selected_source',
+        head_sha: 'head-sha',
+        diff_fingerprint: 'fingerprint-1',
+        created_by_run_id: 'run-1',
         annotations: [],
       }
     );
     expect(callTauri).toHaveBeenCalledWith(
       'agent-workspaces/conversation-from-runtime/complete-workspace-review-run',
       {
-        outcome: 'reviewed',
+        outcome: 'passed',
         summary: 'Done',
         blocker: undefined,
-        created_by_run_id: undefined,
+        created_by_run_id: 'run-1',
       }
     );
   });
@@ -2218,7 +2231,7 @@ describe('agent workspace publish tool transport', () => {
       'post',
       'agent-workspaces/conversation-1/complete-workspace-review-run',
       {
-        outcome: 'reviewed',
+        outcome: 'passed',
         summary: 'Resolved conflicts',
         blocker: 'Needs maintainer decision',
         created_by_run_id: 'run-1',
@@ -2275,7 +2288,7 @@ describe('agent workspace publish tool transport', () => {
         target_scope: 'workspace_delta',
         head_sha: 'head-sha',
         diff_fingerprint: 'fingerprint-1',
-        outcome: 'reviewed',
+        outcome: 'passed',
         created_by_run_id: 'run-1',
       };
 

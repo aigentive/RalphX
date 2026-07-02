@@ -143,7 +143,7 @@ export const AGENT_WORKSPACE_TOOLS = [
                 },
                 head_sha: {
                     type: "string",
-                    description: "Optional target head SHA covered by this artifact.",
+                    description: "Target head SHA from get_workspace_review_context.",
                 },
                 diff_fingerprint: {
                     type: "string",
@@ -151,10 +151,10 @@ export const AGENT_WORKSPACE_TOOLS = [
                 },
                 created_by_run_id: {
                     type: "string",
-                    description: "Optional RalphX run id that produced this review artifact.",
+                    description: "monitor.last_run_id from get_workspace_review_context.",
                 },
             },
-            required: ["content"],
+            required: ["content", "target_scope", "head_sha", "diff_fingerprint", "created_by_run_id"],
         },
     },
     {
@@ -175,7 +175,7 @@ export const AGENT_WORKSPACE_TOOLS = [
                 },
                 head_sha: {
                     type: "string",
-                    description: "Optional target head SHA covered by these hunk descriptions.",
+                    description: "Target head SHA from get_workspace_review_context.",
                 },
                 diff_fingerprint: {
                     type: "string",
@@ -183,7 +183,7 @@ export const AGENT_WORKSPACE_TOOLS = [
                 },
                 created_by_run_id: {
                     type: "string",
-                    description: "Optional RalphX run id that produced these hunk descriptions.",
+                    description: "monitor.last_run_id from get_workspace_review_context.",
                 },
                 annotations: {
                     type: "array",
@@ -246,7 +246,7 @@ export const AGENT_WORKSPACE_TOOLS = [
                     },
                 },
             },
-            required: ["annotations"],
+            required: ["target_scope", "head_sha", "diff_fingerprint", "created_by_run_id", "annotations"],
         },
     },
     {
@@ -274,10 +274,10 @@ export const AGENT_WORKSPACE_TOOLS = [
                 },
                 created_by_run_id: {
                     type: "string",
-                    description: "Optional RalphX run id that produced this outcome.",
+                    description: "monitor.last_run_id from get_workspace_review_context.",
                 },
             },
-            required: ["summary"],
+            required: ["summary", "created_by_run_id"],
         },
     },
     {
