@@ -1,5 +1,6 @@
 const RUNTIME_ARG_ENV_MAPPINGS = [
     { key: "agentType", argName: "agent-type", envName: "RALPHX_AGENT_TYPE" },
+    { key: "agentProfile", argName: "agent-profile", envName: "RALPHX_AGENT_PROFILE" },
     { key: "taskId", argName: "task-id", envName: "RALPHX_TASK_ID" },
     { key: "projectId", argName: "project-id", envName: "RALPHX_PROJECT_ID" },
     { key: "workingDirectory", argName: "working-directory", envName: "RALPHX_WORKING_DIRECTORY" },

@@ -11,6 +11,14 @@ type CanonicalAgentDefinition = {
   capabilities?: {
     mcp_tools?: string[];
   };
+  profiles?: Record<string, {
+    delegation?: {
+      allowed_targets?: string[];
+    };
+    capabilities?: {
+      mcp_tools?: string[];
+    };
+  }>;
 };
 
 const canonicalAgentDefinitionCache = new Map<string, CanonicalAgentDefinition | null>();
@@ -151,8 +159,39 @@ export function loadCanonicalAgentDefinition(agentType: string): CanonicalAgentD
   }
 }
 
-export function loadCanonicalMcpTools(agentType: string): string[] | undefined {
+export function loadCanonicalAgentDefinitionForProfile(
+  agentType: string,
+  agentProfile?: string
+): CanonicalAgentDefinition | null {
   const definition = loadCanonicalAgentDefinition(agentType);
+  if (!definition || !agentProfile) {
+    return definition;
+  }
+  if (!SAFE_CANONICAL_AGENT_NAME.test(agentProfile)) {
+    return null;
+  }
+  const profile = definition.profiles?.[agentProfile];
+  if (!profile) {
+    return null;
+  }
+
+  const profileTools = profile.capabilities?.mcp_tools;
+  return {
+    ...definition,
+    capabilities: profileTools && profileTools.length > 0
+      ? { ...definition.capabilities, mcp_tools: [...profileTools] }
+      : definition.capabilities,
+    delegation: profile.delegation
+      ? { allowed_targets: [...(profile.delegation.allowed_targets ?? [])] }
+      : definition.delegation,
+  };
+}
+
+export function loadCanonicalMcpTools(
+  agentType: string,
+  agentProfile?: string
+): string[] | undefined {
+  const definition = loadCanonicalAgentDefinitionForProfile(agentType, agentProfile);
   const tools = definition?.capabilities?.mcp_tools;
   return tools ? [...tools] : undefined;
 }

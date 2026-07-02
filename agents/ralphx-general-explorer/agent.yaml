@@ -9,6 +9,9 @@ capabilities:
     - fs_glob
     - get_artifact
     - propose_plan_mode
+    - delegate_start
+    - delegate_wait
+    - delegate_cancel
     - get_agent_task
     - list_agent_tasks
     - search_memories
@@ -27,3 +30,6 @@ harnesses:
   codex:
     runtime_features:
       shell_tool: false
+delegation:
+  allowed_targets:
+    - ralphx-general-explorer

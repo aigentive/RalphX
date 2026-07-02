@@ -1,7 +1,7 @@
 import { applyDelegationToolPolicy } from "./delegation-policy.js";
 import { loadCanonicalMcpTools } from "./canonical-agent-metadata.js";
 import { safeError } from "./redact.js";
-import { ORCHESTRATOR_IDEATION, ORCHESTRATOR_IDEATION_READONLY, CHAT_TASK, CHAT_PROJECT, REVIEWER, REVIEW_CHAT, REVIEW_HISTORY, WORKER, GENERAL_EXPLORER, GENERAL_WORKER, AGENT_WORKSPACE_REPAIR, CODER, SESSION_NAMER, PR_DESCRIBER, WORKSPACE_REVIEWER, PLAN_COMPLEXITY_ASSESSOR, MERGER, PROJECT_ANALYZER, QA_PREP, QA_TESTER, ORCHESTRATOR, DEEP_RESEARCHER, MEMORY_MAINTAINER, MEMORY_CAPTURE, PLAN_CRITIC_COMPLETENESS, PLAN_CRITIC_IMPLEMENTATION_FEASIBILITY, PLAN_VERIFIER, IDEATION_TEAM_LEAD, IDEATION_TEAM_MEMBER, WORKER_TEAM_LEAD, WORKER_TEAM_MEMBER, IDEATION_SPECIALIST_BACKEND, IDEATION_SPECIALIST_FRONTEND, IDEATION_SPECIALIST_INFRA, IDEATION_SPECIALIST_UX, IDEATION_SPECIALIST_CODE_QUALITY, IDEATION_SPECIALIST_PROMPT_QUALITY, IDEATION_SPECIALIST_INTENT, IDEATION_SPECIALIST_PIPELINE_SAFETY, IDEATION_SPECIALIST_STATE_MACHINE, IDEATION_CRITIC, IDEATION_ADVOCATE, } from "./agentNames.js";
+import { ORCHESTRATOR_IDEATION, ORCHESTRATOR_IDEATION_READONLY, CHAT_TASK, CHAT_PROJECT, REVIEWER, REVIEW_CHAT, REVIEW_HISTORY, WORKER, GENERAL_EXPLORER, GENERAL_WORKER, PR_REVIEWER, AGENT_WORKSPACE_REPAIR, CODER, SESSION_NAMER, PR_DESCRIBER, WORKSPACE_REVIEWER, PLAN_COMPLEXITY_ASSESSOR, MERGER, PROJECT_ANALYZER, QA_PREP, QA_TESTER, ORCHESTRATOR, DEEP_RESEARCHER, MEMORY_MAINTAINER, MEMORY_CAPTURE, PLAN_CRITIC_COMPLETENESS, PLAN_CRITIC_IMPLEMENTATION_FEASIBILITY, PLAN_VERIFIER, IDEATION_TEAM_LEAD, IDEATION_TEAM_MEMBER, WORKER_TEAM_LEAD, WORKER_TEAM_MEMBER, IDEATION_SPECIALIST_BACKEND, IDEATION_SPECIALIST_FRONTEND, IDEATION_SPECIALIST_INFRA, IDEATION_SPECIALIST_UX, IDEATION_SPECIALIST_CODE_QUALITY, IDEATION_SPECIALIST_PROMPT_QUALITY, IDEATION_SPECIALIST_INTENT, IDEATION_SPECIALIST_PIPELINE_SAFETY, IDEATION_SPECIALIST_STATE_MACHINE, IDEATION_CRITIC, IDEATION_ADVOCATE, } from "./agentNames.js";
 const CANONICAL_TOOL_ALLOWLIST_AGENTS = [
     ORCHESTRATOR_IDEATION,
     ORCHESTRATOR_IDEATION_READONLY,
@@ -13,6 +13,7 @@ const CANONICAL_TOOL_ALLOWLIST_AGENTS = [
     WORKER,
     GENERAL_EXPLORER,
     GENERAL_WORKER,
+    PR_REVIEWER,
     AGENT_WORKSPACE_REPAIR,
     CODER,
     SESSION_NAMER,
@@ -65,6 +66,10 @@ export function setAgentType(agentType) {
 export function getAgentType() {
     return currentAgentType || process.env.RALPHX_AGENT_TYPE || "";
 }
+export function getAgentProfile() {
+    const profile = process.env.RALPHX_AGENT_PROFILE;
+    return profile && profile.length > 0 ? profile : undefined;
+}
 const TOOL_NAME_PATTERN = /^[a-z][a-z0-9_]*$/;
 export function parseAllowedToolsFromArgs(knownToolNames) {
     for (const arg of process.argv) {
@@ -95,24 +100,25 @@ export function parseAllowedToolsFromArgs(knownToolNames) {
 }
 export function getAllowedToolNames(knownToolNames) {
     const agentType = getAgentType();
+    const agentProfile = getAgentProfile();
     const envAllowedTools = process.env.RALPHX_ALLOWED_MCP_TOOLS;
     if (envAllowedTools) {
         const tools = envAllowedTools.split(",").map((t) => t.trim()).filter((t) => t.length > 0);
-        return applyDelegationToolPolicy(tools, agentType);
+        return applyDelegationToolPolicy(tools, agentType, agentProfile);
     }
     const cliTools = parseAllowedToolsFromArgs(knownToolNames);
     if (cliTools !== undefined) {
-        return applyDelegationToolPolicy(cliTools, agentType);
+        return applyDelegationToolPolicy(cliTools, agentType, agentProfile);
     }
-    const canonicalTools = loadCanonicalMcpTools(agentType);
+    const canonicalTools = loadCanonicalMcpTools(agentType, agentProfile);
     if (canonicalTools !== undefined) {
         console.error(`[RalphX MCP] WARN: --allowed-tools not provided, using canonical agent capabilities`);
-        return applyDelegationToolPolicy(canonicalTools, agentType);
+        return applyDelegationToolPolicy(canonicalTools, agentType, agentProfile);
     }
     const legacyTools = LEGACY_TOOL_ALLOWLIST[agentType];
     if (legacyTools) {
         console.error(`[RalphX MCP] WARN: --allowed-tools not provided, using fallback TOOL_ALLOWLIST (legacy only)`);
-        return applyDelegationToolPolicy(legacyTools, agentType);
+        return applyDelegationToolPolicy(legacyTools, agentType, agentProfile);
     }
     return [];
 }

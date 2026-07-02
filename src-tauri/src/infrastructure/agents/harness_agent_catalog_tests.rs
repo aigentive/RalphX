@@ -55,6 +55,8 @@ const CODEX_PILOT_AGENTS: &[&str] = &[
     "ralphx-workspace-reviewer",
 ];
 const CODEX_DELEGATION_GUIDE_AGENTS: &[&str] = &[
+    "ralphx-general-explorer",
+    "ralphx-general-worker",
     "ralphx-chat-task",
     "ralphx-chat-project",
     "ralphx-ideation",
@@ -70,6 +72,7 @@ const CODEX_DELEGATION_GUIDE_AGENTS: &[&str] = &[
     "ralphx-qa-executor",
     "ralphx-research-deep-researcher",
 ];
+const CLAUDE_DELEGATION_GUIDE_AGENTS: &[&str] = &["ralphx-pr-reviewer"];
 const CLAUDE_ONLY_CANONICAL_AGENTS: &[(&str, &str, &str)] = &[
     (
         "ralphx-execution-team-lead",
@@ -875,7 +878,10 @@ fn plan_mode_uses_orchestrator_prompt_with_constrained_plan_tools() {
         "Plan profile runtime MCP grants should be sourced from canonical capabilities"
     );
     assert_eq!(definition.role, "plan_chat");
-    assert_eq!(definition.delegation.allowed_targets, Vec::<String>::new());
+    assert_eq!(
+        definition.delegation.allowed_targets,
+        vec!["ralphx-general-explorer".to_string()]
+    );
     assert_eq!(
         claude_metadata.tools.and_then(|tools| tools.extends),
         Some("readonly_tools".to_string())
@@ -912,6 +918,9 @@ fn plan_mode_uses_orchestrator_prompt_with_constrained_plan_tools() {
         "get_session_plan",
         "get_plan_verification",
         "stop_verification",
+        "delegate_start",
+        "delegate_wait",
+        "delegate_cancel",
     ] {
         assert!(
             definition
@@ -958,6 +967,8 @@ fn plan_mode_uses_orchestrator_prompt_with_constrained_plan_tools() {
 
     for prompt in [claude_prompt, codex_prompt] {
         assert!(prompt.contains("Agent Conversation Plan Mode"));
+        assert!(prompt.contains("## RalphX Delegation Policy (AUTO-GENERATED)"));
+        assert!(prompt.contains("`ralphx-general-explorer`"));
         assert!(prompt.contains("<plan_mode_context>"));
         assert!(prompt.contains("<planning_session_id>"));
         assert!(prompt.contains("do not invent a session id"));
@@ -993,7 +1004,6 @@ fn plan_mode_uses_orchestrator_prompt_with_constrained_plan_tools() {
             "Plan profile prompt must not mention off-surface Agent-conversation follow-up tools"
         );
         assert!(!prompt.contains("<agent_task_ledger_contract>"));
-        assert!(!prompt.contains("## RalphX Delegation Policy"));
     }
 }
 
@@ -2051,6 +2061,23 @@ fn codex_spawn_capable_prompts_reference_explicit_delegation_tools() {
             "codex prompt for {agent_name} should mention delegate_cancel"
         );
     }
+
+    for agent_name in CLAUDE_DELEGATION_GUIDE_AGENTS {
+        let prompt = load_harness_agent_prompt(&root, agent_name, AgentPromptHarness::Claude)
+            .unwrap_or_else(|| panic!("missing claude prompt for {agent_name}"));
+        assert!(
+            prompt.contains("delegate_start"),
+            "claude prompt for {agent_name} should mention delegate_start"
+        );
+        assert!(
+            prompt.contains("delegate_wait"),
+            "claude prompt for {agent_name} should mention delegate_wait"
+        );
+        assert!(
+            prompt.contains("delegate_cancel"),
+            "claude prompt for {agent_name} should mention delegate_cancel"
+        );
+    }
 }
 
 #[test]
@@ -2063,6 +2090,15 @@ fn canonical_delegation_policy_appendix_is_injected_only_for_delegating_agents()
         assert!(
             prompt.contains("## RalphX Delegation Policy (AUTO-GENERATED)"),
             "delegating codex prompt for {agent_name} should include the generated delegation appendix"
+        );
+    }
+
+    for agent_name in CLAUDE_DELEGATION_GUIDE_AGENTS {
+        let prompt = load_harness_agent_prompt(&root, agent_name, AgentPromptHarness::Claude)
+            .unwrap_or_else(|| panic!("missing claude prompt for {agent_name}"));
+        assert!(
+            prompt.contains("## RalphX Delegation Policy (AUTO-GENERATED)"),
+            "delegating claude prompt for {agent_name} should include the generated delegation appendix"
         );
     }
 
@@ -2209,6 +2245,8 @@ fn generated_delegation_appendix_describes_general_explorer_usage_for_general_ex
     let root = project_root();
 
     for agent_name in [
+        "ralphx-general-explorer",
+        "ralphx-general-worker",
         "ralphx-chat-task",
         "ralphx-chat-project",
         "ralphx-ideation",
@@ -2235,6 +2273,27 @@ fn generated_delegation_appendix_describes_general_explorer_usage_for_general_ex
             "delegation appendix for {agent_name} should explain when to use the general explorer"
         );
     }
+
+    let pr_reviewer_prompt =
+        load_harness_agent_prompt(&root, "ralphx-pr-reviewer", AgentPromptHarness::Claude)
+            .expect("missing claude prompt for ralphx-pr-reviewer");
+    assert!(
+        pr_reviewer_prompt.contains("`ralphx-general-explorer`: read-only exploration delegate"),
+        "delegation appendix for ralphx-pr-reviewer should describe the general explorer target"
+    );
+    assert!(
+        pr_reviewer_prompt
+            .contains("bounded file inspection, pattern search, or evidence gathering without edits"),
+        "delegation appendix for ralphx-pr-reviewer should explain when to use the general explorer"
+    );
+
+    let general_worker_prompt =
+        load_harness_agent_prompt(&root, "ralphx-general-worker", AgentPromptHarness::Codex)
+            .expect("missing codex prompt for ralphx-general-worker");
+    assert!(
+        general_worker_prompt.contains("`ralphx-general-worker`: bounded implementation delegate"),
+        "delegation appendix for ralphx-general-worker should describe its implementation delegate target"
+    );
 }
 
 #[test]

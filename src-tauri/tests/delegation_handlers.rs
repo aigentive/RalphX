@@ -230,6 +230,7 @@ async fn test_delegate_start_creates_delegated_session_and_completes_with_mock_c
         State(state.clone()),
         Json(DelegateStartRequest {
             caller_agent_name: Some("ralphx-ideation".to_string()),
+            caller_agent_profile: None,
             caller_context_type: Some("ideation".to_string()),
             caller_context_id: Some(parent.id.as_str().to_string()),
             parent_session_id: Some(parent.id.as_str().to_string()),
@@ -383,6 +384,7 @@ async fn test_get_delegated_session_status_exposes_parent_context() {
         State(state.clone()),
         Json(DelegateStartRequest {
             caller_agent_name: Some("ralphx-plan-verifier".to_string()),
+            caller_agent_profile: None,
             caller_context_type: Some("ideation".to_string()),
             caller_context_id: Some(parent.id.as_str().to_string()),
             parent_session_id: Some(parent.id.as_str().to_string()),
@@ -433,6 +435,7 @@ async fn test_delegate_start_uses_verifier_subagent_lane_model_when_model_is_omi
         State(state.clone()),
         Json(DelegateStartRequest {
             caller_agent_name: Some("ralphx-plan-verifier".to_string()),
+            caller_agent_profile: None,
             caller_context_type: Some("ideation".to_string()),
             caller_context_id: Some(parent.id.as_str().to_string()),
             parent_session_id: Some(parent.id.as_str().to_string()),
@@ -504,6 +507,7 @@ async fn test_delegate_start_rejects_unknown_agent_name() {
         State(state),
         Json(DelegateStartRequest {
             caller_agent_name: Some("ralphx-ideation".to_string()),
+            caller_agent_profile: None,
             caller_context_type: Some("ideation".to_string()),
             caller_context_id: Some(parent.id.as_str().to_string()),
             parent_session_id: Some(parent.id.as_str().to_string()),
@@ -543,6 +547,7 @@ async fn test_delegate_start_rejects_missing_caller_agent_name() {
         State(state),
         Json(DelegateStartRequest {
             caller_agent_name: None,
+            caller_agent_profile: None,
             caller_context_type: Some("ideation".to_string()),
             caller_context_id: Some(parent.id.as_str().to_string()),
             parent_session_id: Some(parent.id.as_str().to_string()),
@@ -582,6 +587,47 @@ async fn test_delegate_start_rejects_disallowed_target_for_caller() {
         State(state),
         Json(DelegateStartRequest {
             caller_agent_name: Some("ralphx-execution-worker".to_string()),
+            caller_agent_profile: None,
+            caller_context_type: Some("ideation".to_string()),
+            caller_context_id: Some(parent.id.as_str().to_string()),
+            parent_session_id: Some(parent.id.as_str().to_string()),
+            parent_turn_id: None,
+            parent_message_id: None,
+            parent_conversation_id: None,
+            parent_tool_use_id: None,
+            delegated_session_id: None,
+            child_session_id: None,
+            agent_name: "ralphx-ideation-specialist-backend".to_string(),
+            prompt: "noop".to_string(),
+            title: None,
+            inherit_context: true,
+            harness: Some(AgentHarnessKind::Codex),
+            model: None,
+            logical_effort: None,
+            approval_policy: None,
+            sandbox_mode: None,
+        }),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.0, axum::http::StatusCode::FORBIDDEN);
+    assert!(error.1 .0["error"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("may not delegate"));
+}
+
+#[tokio::test]
+async fn test_delegate_start_enforces_profile_specific_allowed_targets() {
+    let state = build_state(Arc::new(AppState::new_sqlite_test()));
+    let parent = create_parent_session(&state).await;
+
+    let error = start_delegate(
+        State(state),
+        Json(DelegateStartRequest {
+            caller_agent_name: Some("ralphx-ideation".to_string()),
+            caller_agent_profile: Some("plan".to_string()),
             caller_context_type: Some("ideation".to_string()),
             caller_context_id: Some(parent.id.as_str().to_string()),
             parent_session_id: Some(parent.id.as_str().to_string()),
@@ -639,6 +685,7 @@ async fn test_delegate_start_infers_parent_session_from_verification_child_conte
         State(state.clone()),
         Json(DelegateStartRequest {
             caller_agent_name: Some("ralphx-plan-verifier".to_string()),
+            caller_agent_profile: None,
             caller_context_type: Some("ideation".to_string()),
             caller_context_id: Some(verification_child.id.as_str().to_string()),
             parent_session_id: None,
@@ -703,6 +750,7 @@ async fn test_delegate_start_verifier_context_survives_external_generated_plugin
         State(state.clone()),
         Json(DelegateStartRequest {
             caller_agent_name: Some("ralphx-plan-verifier".to_string()),
+            caller_agent_profile: None,
             caller_context_type: Some("ideation".to_string()),
             caller_context_id: Some(verification_child.id.as_str().to_string()),
             parent_session_id: None,
@@ -777,6 +825,7 @@ async fn test_delegate_start_uses_verifier_subagent_harness_when_harness_is_omit
         State(state.clone()),
         Json(DelegateStartRequest {
             caller_agent_name: Some("ralphx-plan-verifier".to_string()),
+            caller_agent_profile: None,
             caller_context_type: Some("ideation".to_string()),
             caller_context_id: Some(verification_child.id.as_str().to_string()),
             parent_session_id: None,
@@ -894,6 +943,7 @@ async fn test_delegate_start_uses_ideation_subagent_harness_when_harness_is_omit
         State(state.clone()),
         Json(DelegateStartRequest {
             caller_agent_name: Some("ralphx-ideation".to_string()),
+            caller_agent_profile: None,
             caller_context_type: Some("ideation".to_string()),
             caller_context_id: Some(parent.id.as_str().to_string()),
             parent_session_id: None,
@@ -1012,6 +1062,7 @@ async fn test_delegate_start_links_parent_conversation_to_verification_child_cha
         State(state),
         Json(DelegateStartRequest {
             caller_agent_name: Some("ralphx-plan-verifier".to_string()),
+            caller_agent_profile: None,
             caller_context_type: Some("ideation".to_string()),
             caller_context_id: Some(verification_child.id.as_str().to_string()),
             parent_session_id: None,
@@ -1070,6 +1121,7 @@ async fn test_delegate_start_rejects_parent_session_mismatch_against_verificatio
         State(state),
         Json(DelegateStartRequest {
             caller_agent_name: Some("ralphx-plan-verifier".to_string()),
+            caller_agent_profile: None,
             caller_context_type: Some("ideation".to_string()),
             caller_context_id: Some(verification_child.id.as_str().to_string()),
             parent_session_id: Some(other_parent.id.as_str().to_string()),

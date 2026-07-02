@@ -257,6 +257,11 @@ fn build_codex_internal_mcp_overrides(
             .into_owned(),
     ];
 
+    if let Some(agent_profile) = agent_profile {
+        mcp_args.push("--agent-profile".to_string());
+        mcp_args.push(agent_profile.to_string());
+    }
+
     append_mcp_runtime_args(&mut mcp_args, runtime_context);
 
     let enabled_tools = if let Some(tools) = explicit_allowed_tools {

@@ -176,6 +176,7 @@ if (cliAgentType) {
 const RALPHX_TASK_ID = runtimeContext.taskId;
 const RALPHX_PROJECT_ID = runtimeContext.projectId;
 const RALPHX_WORKING_DIRECTORY = runtimeContext.workingDirectory;
+const RALPHX_AGENT_PROFILE = runtimeContext.agentProfile;
 const RALPHX_CONTEXT_TYPE = runtimeContext.contextType;
 const RALPHX_CONTEXT_ID = runtimeContext.contextId;
 const RALPHX_PARENT_CONVERSATION_ID = runtimeContext.parentConversationId;
@@ -917,6 +918,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       result = await callTauri("coordination/delegate/start", {
         ...(args as Record<string, unknown>),
         caller_agent_name: AGENT_TYPE,
+        caller_agent_profile: RALPHX_AGENT_PROFILE,
         caller_context_type: RALPHX_CONTEXT_TYPE,
         caller_context_id: RALPHX_CONTEXT_ID,
       });

@@ -64,6 +64,7 @@ import {
   REVIEWER,
   GENERAL_EXPLORER,
   GENERAL_WORKER,
+  PR_REVIEWER,
   AGENT_WORKSPACE_REPAIR,
   AGENT_WORKSPACE_PR_FIXER,
   PLAN_COMPLEXITY_ASSESSOR,
@@ -92,11 +93,13 @@ describe('getAllowedToolNames', () => {
   beforeEach(() => {
     // Clear env var before each test
     delete process.env.RALPHX_ALLOWED_MCP_TOOLS;
+    delete process.env.RALPHX_AGENT_PROFILE;
   });
 
   afterEach(() => {
     // Clean up env var after each test
     delete process.env.RALPHX_ALLOWED_MCP_TOOLS;
+    delete process.env.RALPHX_AGENT_PROFILE;
   });
 
   it('should return parsed list when RALPHX_ALLOWED_MCP_TOOLS env var is set', () => {
@@ -172,8 +175,22 @@ describe('getAllowedToolNames', () => {
     expect(tools).toContain('fs_grep');
   });
 
+  it('uses profile-specific canonical mcp_tools when RALPHX_AGENT_PROFILE is set', () => {
+    setAgentType(ORCHESTRATOR_IDEATION);
+    process.env.RALPHX_AGENT_PROFILE = 'plan';
+
+    const tools = getAllowedToolNames();
+
+    expect(tools).toEqual(loadCanonicalMcpTools(ORCHESTRATOR_IDEATION, 'plan'));
+    expect(tools).toContain('delegate_start');
+    expect(tools).toContain('get_conversation_transcript');
+    expect(tools).not.toContain('create_task_proposal');
+    expect(tools).not.toContain('finalize_proposals');
+  });
+
   it('rejects canonical agent path traversal attempts', () => {
     expect(loadCanonicalMcpTools('../secrets')).toBeUndefined();
+    expect(loadCanonicalMcpTools(ORCHESTRATOR_IDEATION, '../secrets')).toBeUndefined();
   });
 
   it('treats delegation-only canonical mcp_tools as canonical instead of missing', () => {
@@ -532,6 +549,9 @@ describe('getFilteredTools', () => {
     const toolNames = tools.map((t) => t.name);
 
     expect(toolNames).toContain('propose_plan_mode');
+    expect(toolNames).toContain('delegate_start');
+    expect(toolNames).toContain('delegate_wait');
+    expect(toolNames).toContain('delegate_cancel');
     expect(toolNames).not.toContain('publish_agent_workspace');
     expect(toolNames).not.toContain('update_agent_workspace_from_base');
     expect(toolNames).not.toContain('start_ideation_session');
@@ -546,6 +566,9 @@ describe('getFilteredTools', () => {
     const toolNames = tools.map((t) => t.name);
 
     expect(toolNames).toContain('propose_plan_mode');
+    expect(toolNames).toContain('delegate_start');
+    expect(toolNames).toContain('delegate_wait');
+    expect(toolNames).toContain('delegate_cancel');
     expect(toolNames).not.toContain('start_ideation_session');
     expect(toolNames).not.toContain('create_child_session');
     expect(toolNames).not.toContain('create_task_proposal');
@@ -2339,7 +2362,13 @@ describe('delegation bridge tools', () => {
     expect(tool?.inputSchema.properties).toHaveProperty('message_limit');
   });
 
-  it.each([ORCHESTRATOR_IDEATION, ORCHESTRATOR_IDEATION_READONLY])(
+  it.each([
+    ORCHESTRATOR_IDEATION,
+    ORCHESTRATOR_IDEATION_READONLY,
+    GENERAL_EXPLORER,
+    GENERAL_WORKER,
+    PR_REVIEWER,
+  ])(
     '%s should expose delegation bridge tools',
     (agent) => {
       expect(toolsByAgent()[agent]).toContain('delegate_start');
@@ -2357,7 +2386,16 @@ describe('delegation bridge tools', () => {
     }
   );
 
-  it.each([ORCHESTRATOR_IDEATION, ORCHESTRATOR_IDEATION_READONLY, WORKER, REVIEWER, MERGER])(
+  it.each([
+    ORCHESTRATOR_IDEATION,
+    ORCHESTRATOR_IDEATION_READONLY,
+    GENERAL_EXPLORER,
+    GENERAL_WORKER,
+    PR_REVIEWER,
+    WORKER,
+    REVIEWER,
+    MERGER,
+  ])(
     '%s should return delegate_start from getFilteredTools',
     (agent) => {
       setAgentType(agent);
