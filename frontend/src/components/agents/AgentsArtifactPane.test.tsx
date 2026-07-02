@@ -1542,8 +1542,9 @@ describe("AgentsArtifactPane", () => {
     expect(toastSuccessMock).not.toHaveBeenCalled();
   });
 
-  it("hydrates the shared Review context and invalidates the review child transcript after starting", async () => {
+  it("hydrates the shared Review context, focuses the child chat, and invalidates the transcript after starting", async () => {
     const queryClient = createTestQueryClient();
+    const onFocusWorkspaceReview = vi.fn();
     const initialContext = workspaceReviewContext({
       target: workspaceReviewTarget,
       shouldShowTab: true,
@@ -1567,7 +1568,7 @@ describe("AgentsArtifactPane", () => {
       vi.fn(),
       false,
       conversation(),
-      {},
+      { onFocusWorkspaceReview },
       queryClient,
     );
 
@@ -1581,6 +1582,7 @@ describe("AgentsArtifactPane", () => {
     expect(invalidateQueriesSpy).toHaveBeenCalledWith({
       queryKey: chatKeys.conversationTimeline("review-conversation-1"),
     });
+    expect(onFocusWorkspaceReview).toHaveBeenCalledWith("review-conversation-1");
   });
 
   it("runs a forced update for an outdated Review artifact", async () => {

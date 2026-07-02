@@ -253,6 +253,11 @@ describe("GranolaDashboardView", () => {
 
     fireEvent.click(row);
     expect(await screen.findByRole("heading", { name: "Release priorities" })).toBeInTheDocument();
+    const markdown = await screen.findByTestId("granola-dashboard-note-markdown");
+    expect(markdown).toHaveClass("theme-aware-prose");
+    expect(
+      within(markdown).getByRole("heading", { name: "Release priorities" }),
+    ).toBeInTheDocument();
     expect(await screen.findByText("We should finish the standalone Granola dashboard.")).toBeInTheDocument();
     expect(granolaApi.getNoteDetail).toHaveBeenCalledWith({
       noteId: granolaNote.id,
