@@ -24,7 +24,7 @@ use crate::application::agent_workspace_pr_description::validate_agent_workspace
 use crate::application::agent_workspace_review::{
     apply_review_artifact_to_monitor, load_agent_workspace_review_context,
     review_gate_publish_blocker, start_agent_workspace_review, AgentWorkspaceReviewHunkAnchor,
-    AgentWorkspaceReviewStart, AgentWorkspaceReviewTarget,
+    AgentWorkspaceReviewGoalContext, AgentWorkspaceReviewStart, AgentWorkspaceReviewTarget,
 };
 use crate::application::publish_resilience::{
     inspect_publish_branch_freshness_for_source, push_publish_branch,
@@ -48,9 +48,9 @@ use crate::domain::entities::{
     AgentWorkspacePrDescription, AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
     AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
     AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewGateStatus,
-    AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor, AgentWorkspaceReviewOutcome,
-    AgentWorkspaceReviewTargetScope, Artifact, ArtifactId, ArtifactType, ChatConversationId,
-    IdeationAnalysisBaseRefKind, ProjectId,
+    AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor,
+    AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome, AgentWorkspaceReviewTargetScope,
+    Artifact, ArtifactId, ArtifactType, ChatConversationId, IdeationAnalysisBaseRefKind, ProjectId,
 };
 use crate::domain::services::github_service::{
     GithubServiceTrait, PrHealth, PrReviewFeedback, PrReviewSubmissionEvent, PrStatus,
@@ -573,6 +573,7 @@ pub struct AgentWorkspaceReviewContextResponse {
     pub events: Vec<AgentConversationWorkspacePublicationEventResponse>,
     pub target: Option<AgentWorkspaceReviewTargetResponse>,
     pub monitor: AgentWorkspaceReviewMonitorResponse,
+    pub goal_context: AgentWorkspaceReviewGoalContext,
     pub is_current: bool,
     pub is_outdated: bool,
     pub should_show_tab: bool,
@@ -593,6 +594,7 @@ pub struct StartAgentWorkspaceReviewResponse {
     pub success: bool,
     pub target: Option<AgentWorkspaceReviewTargetResponse>,
     pub monitor: AgentWorkspaceReviewMonitorResponse,
+    pub goal_context: AgentWorkspaceReviewGoalContext,
     pub is_current: bool,
     pub is_outdated: bool,
     pub should_show_tab: bool,
@@ -1195,6 +1197,7 @@ pub async fn get_agent_workspace_review_context(
             )
         }),
         monitor: AgentWorkspaceReviewMonitorResponse::from(context.monitor),
+        goal_context: context.goal_context,
         is_current: context.is_current,
         is_outdated: context.is_outdated,
         should_show_tab: context.should_show_tab,
@@ -1256,6 +1259,7 @@ pub async fn start_agent_workspace_review_run(
             .target
             .map(AgentWorkspaceReviewTargetResponse::from),
         monitor: AgentWorkspaceReviewMonitorResponse::from(start.context.monitor),
+        goal_context: start.context.goal_context,
         is_current: start.context.is_current,
         is_outdated: start.context.is_outdated,
         should_show_tab: start.context.should_show_tab,
@@ -1285,38 +1289,26 @@ pub async fn write_agent_workspace_review_artifact(
         .await
         .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
     let mut monitor = context.monitor;
-    let target_scope = parse_workspace_review_target_scope(req.target_scope.as_deref())
-        .or_else(|| context.target.as_ref().map(|target| target.scope))
-        .or(monitor.current_target_scope)
-        .ok_or_else(|| {
-            json_error(
-                StatusCode::BAD_REQUEST,
-                "workspace review target scope is required",
-                None,
-            )
-        })?;
-    let target_head_sha = req.head_sha.or_else(|| {
-        context
-            .target
-            .as_ref()
-            .and_then(|target| target.head_sha.clone())
-    });
-    let target_diff_fingerprint = req
-        .diff_fingerprint
-        .or_else(|| {
-            context
-                .target
-                .as_ref()
-                .map(|target| target.diff_fingerprint.clone())
-        })
-        .or_else(|| monitor.current_diff_fingerprint.clone())
-        .ok_or_else(|| {
-            json_error(
-                StatusCode::BAD_REQUEST,
-                "workspace review diff_fingerprint is required",
-                None,
-            )
-        })?;
+    let created_by_run_id = validate_workspace_review_tool_run_id(
+        &monitor,
+        created_by_run_id.as_deref(),
+        "workspace Review artifact write",
+    )?;
+    let target = context.target.as_ref().ok_or_else(|| {
+        json_error(
+            StatusCode::BAD_REQUEST,
+            "workspace Review artifact writes require a current review target",
+            None,
+        )
+    })?;
+    let (target_scope, target_head_sha, target_diff_fingerprint) =
+        validate_workspace_review_tool_target_metadata(
+            target,
+            req.target_scope.as_deref(),
+            req.head_sha.as_deref(),
+            req.diff_fingerprint.as_deref(),
+            "workspace Review artifact write",
+        )?;
 
     let previous_artifact = match monitor.review_artifact_id.clone() {
         Some(artifact_id) => {
@@ -1507,12 +1499,19 @@ pub async fn write_agent_workspace_review_hunk_annotations(
             None,
         )
     })?;
-    let target_scope =
-        parse_workspace_review_target_scope(req.target_scope.as_deref()).unwrap_or(target.scope);
-    let target_head_sha = req.head_sha.or_else(|| target.head_sha.clone());
-    let target_diff_fingerprint = req
-        .diff_fingerprint
-        .unwrap_or_else(|| target.diff_fingerprint.clone());
+    let created_by_run_id = validate_workspace_review_tool_run_id(
+        &monitor,
+        created_by_run_id.as_deref(),
+        "workspace Review hunk annotations write",
+    )?;
+    let (target_scope, target_head_sha, target_diff_fingerprint) =
+        validate_workspace_review_tool_target_metadata(
+            target,
+            req.target_scope.as_deref(),
+            req.head_sha.as_deref(),
+            req.diff_fingerprint.as_deref(),
+            "workspace Review hunk annotations write",
+        )?;
     let validation = validate_workspace_review_hunk_annotation_requests(
         req.annotations,
         Some(target),
@@ -1640,6 +1639,14 @@ pub async fn complete_agent_workspace_review_run(
     let created_by_run_id = req.created_by_run_id.clone();
     let conversation_id = ChatConversationId::from_string(conversation_id);
     let workspace = load_agent_workspace_entity(state.app_state.as_ref(), &conversation_id).await?;
+    let context = load_agent_workspace_review_context(state.app_state.as_ref(), &workspace)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    let created_by_run_id = validate_workspace_review_tool_run_id(
+        &context.monitor,
+        created_by_run_id.as_deref(),
+        "workspace Review completion",
+    )?;
     ensure_workspace_review_hunk_annotation_coverage_for_completion(
         state.app_state.as_ref(),
         &workspace,
@@ -1652,7 +1659,7 @@ pub async fn complete_agent_workspace_review_run(
         outcome,
         Some(summary),
         blocker,
-        req.created_by_run_id,
+        created_by_run_id.clone(),
     )
     .await
     .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
@@ -3520,6 +3527,84 @@ fn parse_workspace_review_target_scope(
     value.and_then(|value| AgentWorkspaceReviewTargetScope::from_str(value.trim()).ok())
 }
 
+fn validate_workspace_review_tool_run_id(
+    monitor: &AgentWorkspaceReviewMonitor,
+    created_by_run_id: Option<&str>,
+    operation: &str,
+) -> Result<Option<String>, JsonError> {
+    let created_by_run_id = created_by_run_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    if monitor.status != AgentWorkspaceReviewMonitorStatus::Reviewing {
+        return Ok(created_by_run_id);
+    }
+    let Some(active_run_id) = monitor.last_run_id.as_deref() else {
+        return Err(json_error(
+            StatusCode::CONFLICT,
+            format!("{operation} requires an active workspace Review run id"),
+            None,
+        ));
+    };
+    match created_by_run_id.as_deref() {
+        Some(run_id) if run_id == active_run_id => Ok(created_by_run_id),
+        Some(_) => Err(json_error(
+            StatusCode::CONFLICT,
+            format!("{operation} run id does not match the active workspace Review run"),
+            None,
+        )),
+        None => Err(json_error(
+            StatusCode::BAD_REQUEST,
+            format!("{operation} requires created_by_run_id for the active workspace Review run"),
+            None,
+        )),
+    }
+}
+
+fn validate_workspace_review_tool_target_metadata(
+    target: &AgentWorkspaceReviewTarget,
+    target_scope: Option<&str>,
+    head_sha: Option<&str>,
+    diff_fingerprint: Option<&str>,
+    operation: &str,
+) -> Result<(AgentWorkspaceReviewTargetScope, Option<String>, String), JsonError> {
+    let target_scope = parse_workspace_review_target_scope(target_scope).ok_or_else(|| {
+        json_error(
+            StatusCode::BAD_REQUEST,
+            format!("{operation} requires target_scope from get_workspace_review_context"),
+            None,
+        )
+    })?;
+    let head_sha = head_sha
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let diff_fingerprint = diff_fingerprint
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| {
+            json_error(
+                StatusCode::BAD_REQUEST,
+                format!("{operation} requires diff_fingerprint from get_workspace_review_context"),
+                None,
+            )
+        })?;
+
+    if target.scope != target_scope
+        || target.head_sha.as_deref() != head_sha.as_deref()
+        || target.diff_fingerprint != diff_fingerprint
+    {
+        return Err(json_error(
+            StatusCode::CONFLICT,
+            format!("{operation} target metadata does not match the current workspace Review target"),
+            None,
+        ));
+    }
+
+    Ok((target_scope, head_sha, diff_fingerprint))
+}
+
 const WORKSPACE_REVIEW_MAX_HUNK_ANNOTATIONS: usize = 600;
 const WORKSPACE_REVIEW_HUNK_ANNOTATION_MAX_PATH_CHARS: usize = 512;
 const WORKSPACE_REVIEW_HUNK_ANNOTATION_MAX_SOURCE_CHARS: usize = 64;
@@ -5164,6 +5249,7 @@ mod tests {
                     context: AgentWorkspaceReviewContext {
                         monitor,
                         target,
+                        goal_context: AgentWorkspaceReviewGoalContext::default(),
                         is_current: false,
                         is_outdated: false,
                         should_show_tab: true,
@@ -5347,6 +5433,99 @@ mod tests {
             packet_response.patch_excerpt,
             "diff --git a/src/lib.rs b/src/lib.rs"
         );
+    }
+
+    #[test]
+    fn workspace_review_tool_target_metadata_requires_current_target() {
+        let target = crate::application::agent_workspace_review::AgentWorkspaceReviewTarget {
+            scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+            base_ref: "main".to_string(),
+            base_sha: Some("base".to_string()),
+            head_ref: "HEAD".to_string(),
+            head_sha: Some("head".to_string()),
+            diff_fingerprint: "fingerprint".to_string(),
+            working_directory: PathBuf::from("/tmp/worktree"),
+            source_pull_request_number: None,
+            review_packet: AgentWorkspaceReviewPacket::default(),
+        };
+
+        let accepted = validate_workspace_review_tool_target_metadata(
+            &target,
+            Some("workspace_delta"),
+            Some("head"),
+            Some("fingerprint"),
+            "workspace Review artifact write",
+        )
+        .expect("matching target metadata should be accepted");
+        assert_eq!(accepted.0, AgentWorkspaceReviewTargetScope::WorkspaceDelta);
+        assert_eq!(accepted.1.as_deref(), Some("head"));
+        assert_eq!(accepted.2, "fingerprint");
+
+        assert!(validate_workspace_review_tool_target_metadata(
+            &target,
+            Some("workspace_delta"),
+            None,
+            Some("fingerprint"),
+            "workspace Review artifact write",
+        )
+        .is_err());
+        assert!(validate_workspace_review_tool_target_metadata(
+            &target,
+            Some("workspace_delta"),
+            Some("head"),
+            Some("stale-fingerprint"),
+            "workspace Review artifact write",
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn workspace_review_tool_run_id_requires_active_review_run_match() {
+        let conversation_id = ChatConversationId::new();
+        let mut monitor =
+            AgentWorkspaceReviewMonitor::new(conversation_id.clone(), ProjectId::new());
+        monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
+        monitor.last_run_id = Some("run-current".to_string());
+
+        assert_eq!(
+            validate_workspace_review_tool_run_id(
+                &monitor,
+                Some("run-current"),
+                "workspace Review completion",
+            )
+            .expect("matching run id should be accepted")
+            .as_deref(),
+            Some("run-current")
+        );
+        assert!(validate_workspace_review_tool_run_id(
+            &monitor,
+            Some("run-stale"),
+            "workspace Review completion",
+        )
+        .is_err());
+        assert!(validate_workspace_review_tool_run_id(
+            &monitor,
+            None,
+            "workspace Review completion",
+        )
+        .is_err());
+
+        monitor.last_run_id = None;
+        assert!(validate_workspace_review_tool_run_id(
+            &monitor,
+            Some("run-current"),
+            "workspace Review completion",
+        )
+        .is_err());
+
+        monitor.status = AgentWorkspaceReviewMonitorStatus::Ready;
+        assert!(validate_workspace_review_tool_run_id(
+            &monitor,
+            None,
+            "workspace Review completion",
+        )
+        .expect("idle monitor should not require an active child run id")
+        .is_none());
     }
 
     #[test]
