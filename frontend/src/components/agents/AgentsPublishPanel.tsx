@@ -275,6 +275,18 @@ export function AgentPublishPanel({
     staleTime: 30_000,
     refetchInterval: isPublishingWorkspace || localPublishInFlight ? 5_000 : false,
   });
+  const workspaceReviewHunkAnnotationsQuery = useQuery({
+    queryKey: agentWorkspaceKeys.workspaceReviewHunkAnnotations(conversationId),
+    queryFn: () =>
+      diffApi.getAgentConversationWorkspaceReviewHunkAnnotations(conversationId!),
+    enabled:
+      canHydratePublishFacts &&
+      !!conversationId &&
+      !isRepairPending &&
+      (reviewOpen || inlineDiffsCandidate),
+    staleTime: 2_000,
+    refetchInterval: isPublishingWorkspace || localPublishInFlight ? 5_000 : false,
+  });
   const terminalPublicationStatus =
     getAgentWorkspaceTerminalPublicationStatus(workspace);
   const terminalPublicationLabel =
@@ -476,6 +488,8 @@ export function AgentPublishPanel({
   );
   const publicationEvents = publicationEventsQuery.data ?? [];
   const prAnnotations = prAnnotationsQuery.data?.annotations ?? [];
+  const workspaceReviewHunkAnnotations =
+    workspaceReviewHunkAnnotationsQuery.data?.annotations ?? [];
   const prAnnotationSourcesUnavailable =
     prAnnotationsQuery.data?.sourcesUnavailable ?? [];
   const prAnnotationSummary =
@@ -486,6 +500,10 @@ export function AgentPublishPanel({
         : prAnnotationsQuery.isLoading && hasPublishedPr
           ? "Checking GitHub annotations..."
           : null;
+  const workspaceReviewHunkAnnotationSummary =
+    workspaceReviewHunkAnnotations.length > 0
+      ? `${workspaceReviewHunkAnnotations.length} workspace review note${workspaceReviewHunkAnnotations.length === 1 ? "" : "s"} synced`
+      : null;
   const isChangesLoading =
     Boolean(conversationId) && reviewOpen && (!canHydratePublishFacts || reviewQuery.isLoading);
   const isPublicationEventsLoading =
@@ -1366,6 +1384,19 @@ export function AgentPublishPanel({
               {prAnnotationSummary}
             </div>
           )}
+          {workspaceReviewHunkAnnotationSummary && (
+            <div
+              className="mt-2 rounded-md border px-2.5 py-1.5 text-[0.6875rem]"
+              data-testid="agents-workspace-review-hunk-annotations-summary"
+              style={{
+                backgroundColor: "var(--bg-subtle)",
+                borderColor: "var(--status-info-border)",
+                color: "var(--text-secondary)",
+              }}
+            >
+              {workspaceReviewHunkAnnotationSummary}
+            </div>
+          )}
           {shouldShowPublishPipeline && (
             <PublishPipelineSteps
               autoMergeCurrent={prAutoMergeCurrent}
@@ -1406,6 +1437,7 @@ export function AgentPublishPanel({
               commits={commits}
               isLoading={Boolean(conversationId) && (!canHydratePublishFacts || reviewQuery.isLoading)}
               annotations={prAnnotations}
+              hunkAnnotations={workspaceReviewHunkAnnotations}
               error={reviewQuery.error}
               onOpenInDialog={() => setReviewOpen(true)}
               focusRequest={publishFocusRequest}
@@ -1445,6 +1477,7 @@ export function AgentPublishPanel({
                 } : {})}
                 commitFiles={commitFiles}
                 annotations={prAnnotations}
+                hunkAnnotations={workspaceReviewHunkAnnotations}
                 onFetchDiff={async (filePath, commitSha) => {
                   if (!conversationId) {
                     return null;

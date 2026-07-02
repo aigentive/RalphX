@@ -14,7 +14,8 @@ use crate::domain::entities::{
     AgentWorkspacePrDescription, AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
     AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
     AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewGateStatus,
-    AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
+    AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor,
+    AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
     AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest, ArtifactId,
     ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId, ProjectId,
     DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
@@ -257,6 +258,61 @@ fn row_to_workspace_review_monitor(
         last_error: row.get("last_error")?,
         created_at: parse_datetime(&created_at),
         updated_at: parse_datetime(&updated_at),
+    })
+}
+
+fn row_to_workspace_review_hunk_annotation(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<AgentWorkspaceReviewHunkAnnotation> {
+    let target_scope: String = row.get("target_scope")?;
+    let created_at: String = row.get("created_at")?;
+    let artifact_version = row
+        .get::<_, i64>("artifact_version")
+        .ok()
+        .and_then(|value| u32::try_from(value).ok())
+        .unwrap_or(1);
+    let old_start = row
+        .get::<_, i64>("old_start")
+        .ok()
+        .and_then(|value| u32::try_from(value).ok())
+        .unwrap_or(0);
+    let old_lines = row
+        .get::<_, i64>("old_lines")
+        .ok()
+        .and_then(|value| u32::try_from(value).ok())
+        .unwrap_or(0);
+    let new_start = row
+        .get::<_, i64>("new_start")
+        .ok()
+        .and_then(|value| u32::try_from(value).ok())
+        .unwrap_or(0);
+    let new_lines = row
+        .get::<_, i64>("new_lines")
+        .ok()
+        .and_then(|value| u32::try_from(value).ok())
+        .unwrap_or(0);
+    Ok(AgentWorkspaceReviewHunkAnnotation {
+        id: row.get("id")?,
+        conversation_id: ChatConversationId::from_string(row.get::<_, String>("conversation_id")?),
+        project_id: ProjectId::from_string(row.get::<_, String>("project_id")?),
+        artifact_id: ArtifactId::from_string(row.get::<_, String>("artifact_id")?),
+        artifact_version,
+        target_scope: AgentWorkspaceReviewTargetScope::from_str(&target_scope)
+            .unwrap_or(AgentWorkspaceReviewTargetScope::WorkspaceDelta),
+        head_sha: row.get("head_sha")?,
+        diff_fingerprint: row.get("diff_fingerprint")?,
+        path: row.get("path")?,
+        diff_source: row.get("diff_source")?,
+        hunk_header: row.get("hunk_header")?,
+        old_start,
+        old_lines,
+        new_start,
+        new_lines,
+        title: row.get("title")?,
+        message: row.get("message")?,
+        level: row.get("level")?,
+        created_by_run_id: row.get("created_by_run_id")?,
+        created_at: parse_datetime(&created_at),
     })
 }
 
@@ -1796,6 +1852,89 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
                     monitors.push(row?);
                 }
                 Ok(monitors)
+            })
+            .await
+    }
+
+    async fn replace_workspace_review_hunk_annotations(
+        &self,
+        conversation_id: &ChatConversationId,
+        artifact_id: &ArtifactId,
+        annotations: Vec<AgentWorkspaceReviewHunkAnnotation>,
+    ) -> AppResult<()> {
+        let conversation_id = conversation_id.as_str().to_string();
+        let artifact_id = artifact_id.as_str().to_string();
+        self.db
+            .run_transaction(move |conn| {
+                conn.execute(
+                    "DELETE FROM agent_workspace_review_hunk_annotations
+                     WHERE conversation_id = ?1 AND artifact_id = ?2",
+                    rusqlite::params![conversation_id, artifact_id],
+                )?;
+
+                let mut stmt = conn.prepare(
+                    "INSERT INTO agent_workspace_review_hunk_annotations (
+                        id, conversation_id, project_id, artifact_id, artifact_version,
+                        target_scope, head_sha, diff_fingerprint, path, diff_source,
+                        hunk_header, old_start, old_lines, new_start, new_lines,
+                        title, message, level, created_by_run_id, created_at
+                    ) VALUES (
+                        ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
+                        ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20
+                    )",
+                )?;
+                for annotation in annotations {
+                    stmt.execute(rusqlite::params![
+                        annotation.id,
+                        annotation.conversation_id.as_str(),
+                        annotation.project_id.as_str(),
+                        annotation.artifact_id.as_str(),
+                        i64::from(annotation.artifact_version),
+                        annotation.target_scope.to_string(),
+                        annotation.head_sha,
+                        annotation.diff_fingerprint,
+                        annotation.path,
+                        annotation.diff_source,
+                        annotation.hunk_header,
+                        i64::from(annotation.old_start),
+                        i64::from(annotation.old_lines),
+                        i64::from(annotation.new_start),
+                        i64::from(annotation.new_lines),
+                        annotation.title,
+                        annotation.message,
+                        annotation.level,
+                        annotation.created_by_run_id,
+                        annotation.created_at.to_rfc3339(),
+                    ])?;
+                }
+                Ok(())
+            })
+            .await
+    }
+
+    async fn list_workspace_review_hunk_annotations(
+        &self,
+        conversation_id: &ChatConversationId,
+        artifact_id: &ArtifactId,
+    ) -> AppResult<Vec<AgentWorkspaceReviewHunkAnnotation>> {
+        let conversation_id = conversation_id.as_str().to_string();
+        let artifact_id = artifact_id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT * FROM agent_workspace_review_hunk_annotations
+                     WHERE conversation_id = ?1 AND artifact_id = ?2
+                     ORDER BY path ASC, diff_source ASC, old_start ASC, new_start ASC, id ASC",
+                )?;
+                let rows = stmt.query_map(
+                    rusqlite::params![conversation_id, artifact_id],
+                    row_to_workspace_review_hunk_annotation,
+                )?;
+                let mut annotations = Vec::new();
+                for row in rows {
+                    annotations.push(row?);
+                }
+                Ok(annotations)
             })
             .await
     }

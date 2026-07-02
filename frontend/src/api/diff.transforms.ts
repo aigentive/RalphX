@@ -15,6 +15,8 @@ import type {
   PrDiffAnnotationSchema,
   PrAnnotationSourceUnavailableSchema,
   PrDiffAnnotationsResponseSchema,
+  WorkspaceReviewHunkAnnotationSchema,
+  WorkspaceReviewHunkAnnotationsResponseSchema,
   RangeLineSchema,
 } from "./diff.schemas";
 import type {
@@ -32,6 +34,8 @@ import type {
   PrDiffAnnotation,
   PrAnnotationSourceUnavailable,
   PrDiffAnnotationsResponse,
+  WorkspaceReviewHunkAnnotation,
+  WorkspaceReviewHunkAnnotationsResponse,
   RangeLine,
 } from "./diff.types";
 
@@ -46,6 +50,12 @@ type RawCommitInfo = z.infer<typeof CommitInfoSchema>;
 type RawPrDiffAnnotation = z.infer<typeof PrDiffAnnotationSchema>;
 type RawPrAnnotationSourceUnavailable = z.infer<typeof PrAnnotationSourceUnavailableSchema>;
 type RawPrDiffAnnotationsResponse = z.infer<typeof PrDiffAnnotationsResponseSchema>;
+type RawWorkspaceReviewHunkAnnotation = z.infer<
+  typeof WorkspaceReviewHunkAnnotationSchema
+>;
+type RawWorkspaceReviewHunkAnnotationsResponse = z.infer<
+  typeof WorkspaceReviewHunkAnnotationsResponseSchema
+>;
 type RawRangeLine = z.infer<typeof RangeLineSchema>;
 type RawAgentWorkspaceReview = z.infer<typeof AgentWorkspaceReviewResponseSchema>;
 type RawAgentWorkspaceChangeSummary = z.infer<
@@ -109,6 +119,10 @@ export function transformDiffPageRow(raw: RawDiffPageRow): DiffPageRow {
     return {
       kind: raw.kind,
       header: raw.header,
+      oldStart: raw.old_start,
+      oldLines: raw.old_lines,
+      newStart: raw.new_start,
+      newLines: raw.new_lines,
     };
   }
   return {
@@ -188,6 +202,46 @@ export function transformPrDiffAnnotationsResponse(
     headSha: raw.head_sha,
     annotations: raw.annotations.map(transformPrDiffAnnotation),
     sourcesUnavailable: raw.sources_unavailable.map(transformPrAnnotationSourceUnavailable),
+  };
+}
+
+export function transformWorkspaceReviewHunkAnnotation(
+  raw: RawWorkspaceReviewHunkAnnotation
+): WorkspaceReviewHunkAnnotation {
+  return {
+    id: raw.id,
+    conversationId: raw.conversation_id,
+    projectId: raw.project_id,
+    artifactId: raw.artifact_id,
+    artifactVersion: raw.artifact_version,
+    targetScope: raw.target_scope,
+    headSha: raw.head_sha,
+    diffFingerprint: raw.diff_fingerprint,
+    path: raw.path,
+    diffSource: raw.diff_source,
+    hunkHeader: raw.hunk_header,
+    oldStart: raw.old_start,
+    oldLines: raw.old_lines,
+    newStart: raw.new_start,
+    newLines: raw.new_lines,
+    title: raw.title,
+    message: raw.message,
+    level: raw.level,
+    createdByRunId: raw.created_by_run_id,
+    createdAt: raw.created_at,
+  };
+}
+
+export function transformWorkspaceReviewHunkAnnotationsResponse(
+  raw: RawWorkspaceReviewHunkAnnotationsResponse
+): WorkspaceReviewHunkAnnotationsResponse {
+  return {
+    artifactId: raw.artifact_id,
+    artifactVersion: raw.artifact_version,
+    targetScope: raw.target_scope,
+    headSha: raw.head_sha,
+    diffFingerprint: raw.diff_fingerprint,
+    annotations: raw.annotations.map(transformWorkspaceReviewHunkAnnotation),
   };
 }
 

@@ -77,6 +77,11 @@ export const agentWorkspaceKeys = {
     "workspace-pr-annotations",
     conversationId,
   ] as const,
+  workspaceReviewHunkAnnotations: (conversationId: string | null | undefined) => [
+    "agents",
+    "workspace-review-hunk-annotations",
+    conversationId,
+  ] as const,
   prReview: (conversationId: string | null | undefined) => [
     "agents",
     "workspace-pr-review",
@@ -265,6 +270,9 @@ export function invalidateWorkspaceQueries(
     }),
     queryClient.invalidateQueries({
       queryKey: agentWorkspaceKeys.prAnnotations(conversationId),
+    }),
+    queryClient.invalidateQueries({
+      queryKey: agentWorkspaceKeys.workspaceReviewHunkAnnotations(conversationId),
     }),
     queryClient.invalidateQueries({
       queryKey: agentWorkspaceKeys.prReview(conversationId),

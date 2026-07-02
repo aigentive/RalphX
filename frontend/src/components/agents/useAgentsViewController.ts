@@ -781,6 +781,9 @@ export function useAgentsViewController({
       void queryClient.invalidateQueries({
         queryKey: agentWorkspaceKeys.workspaceReview(conversationId),
       });
+      void queryClient.invalidateQueries({
+        queryKey: agentWorkspaceKeys.workspaceReviewHunkAnnotations(conversationId),
+      });
       const artifactId = payload.artifact?.id;
       if (artifactId) {
         void queryClient.invalidateQueries({

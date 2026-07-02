@@ -6,7 +6,8 @@ use crate::domain::entities::{
     AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
     AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
     AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewGateStatus,
-    AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
+    AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor,
+    AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
     AgentWorkspaceReviewTargetScope, AgentWorkspaceSourcePullRequest, ArtifactId,
     ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranchId, ProjectId,
     DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
@@ -38,6 +39,21 @@ fn seed_conversation(db: &SqliteTestDb, conversation_id: &ChatConversationId) {
                 '2026-04-26T09:00:00Z', '2026-04-26T09:00:00Z'
              )",
             rusqlite::params![conversation_id.as_str()],
+        )
+        .unwrap();
+    });
+}
+
+fn seed_artifact(db: &SqliteTestDb, artifact_id: &ArtifactId, version: u32) {
+    db.with_connection(|conn| {
+        conn.execute(
+            "INSERT INTO artifacts (
+                id, type, name, content_type, content_text, created_by, version, created_at
+             ) VALUES (
+                ?1, 'pr_review', 'Workspace Review', 'inline', 'Review body',
+                'ralphx-workspace-reviewer', ?2, '2026-04-26T09:00:00Z'
+             )",
+            rusqlite::params![artifact_id.as_str(), i64::from(version)],
         )
         .unwrap();
     });
@@ -694,6 +710,65 @@ async fn list_reviewing_workspace_review_monitors_returns_only_running_reviews()
         monitors[0].status,
         AgentWorkspaceReviewMonitorStatus::Reviewing
     );
+}
+
+#[tokio::test]
+async fn workspace_review_hunk_annotations_replace_per_artifact_version() {
+    let (db, repo, conversation_id) = setup_repo();
+    repo.create_or_update(make_workspace(conversation_id.clone()))
+        .await
+        .unwrap();
+    let artifact_id = ArtifactId::from_string("artifact-current");
+    seed_artifact(&db, &artifact_id, 2);
+
+    let annotation = AgentWorkspaceReviewHunkAnnotation {
+        id: "annotation-1".to_string(),
+        conversation_id: conversation_id.clone(),
+        project_id: ProjectId::from_string("project-1".to_string()),
+        artifact_id: artifact_id.clone(),
+        artifact_version: 2,
+        target_scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+        head_sha: Some("head-sha".to_string()),
+        diff_fingerprint: "fingerprint".to_string(),
+        path: "src/lib.rs".to_string(),
+        diff_source: "committed".to_string(),
+        hunk_header: "@@ -1,1 +1,2 @@".to_string(),
+        old_start: 1,
+        old_lines: 1,
+        new_start: 1,
+        new_lines: 2,
+        title: Some("Updates lib".to_string()),
+        message: "Explains the changed hunk.".to_string(),
+        level: "notice".to_string(),
+        created_by_run_id: Some("run-1".to_string()),
+        created_at: chrono::Utc::now(),
+    };
+
+    repo.replace_workspace_review_hunk_annotations(
+        &conversation_id,
+        &artifact_id,
+        vec![annotation.clone()],
+    )
+    .await
+    .unwrap();
+    let saved = repo
+        .list_workspace_review_hunk_annotations(&conversation_id, &artifact_id)
+        .await
+        .unwrap();
+    assert_eq!(saved.len(), 1);
+    assert_eq!(saved[0].id, annotation.id);
+    assert_eq!(saved[0].path, "src/lib.rs");
+    assert_eq!(saved[0].diff_source, "committed");
+    assert_eq!(saved[0].artifact_version, 2);
+
+    repo.replace_workspace_review_hunk_annotations(&conversation_id, &artifact_id, Vec::new())
+        .await
+        .unwrap();
+    let replaced = repo
+        .list_workspace_review_hunk_annotations(&conversation_id, &artifact_id)
+        .await
+        .unwrap();
+    assert!(replaced.is_empty());
 }
 
 #[tokio::test]

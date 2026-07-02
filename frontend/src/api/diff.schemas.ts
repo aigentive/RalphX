@@ -54,6 +54,10 @@ export const DiffPageRowSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("hunk_header"),
     header: z.string(),
+    old_start: z.number(),
+    old_lines: z.number(),
+    new_start: z.number(),
+    new_lines: z.number(),
   }),
   z.object({
     kind: z.literal("line"),
@@ -106,6 +110,40 @@ export const PrDiffAnnotationsResponseSchema = z.object({
   head_sha: z.string().nullable(),
   annotations: z.array(PrDiffAnnotationSchema),
   sources_unavailable: z.array(PrAnnotationSourceUnavailableSchema),
+});
+
+// ── Workspace review hunk annotation schemas ──────────────────────────────
+
+export const WorkspaceReviewHunkAnnotationSchema = z.object({
+  id: z.string(),
+  conversation_id: z.string(),
+  project_id: z.string(),
+  artifact_id: z.string(),
+  artifact_version: z.number(),
+  target_scope: z.enum(["selected_source", "workspace_delta"]),
+  head_sha: z.string().nullable(),
+  diff_fingerprint: z.string(),
+  path: z.string(),
+  diff_source: z.string(),
+  hunk_header: z.string(),
+  old_start: z.number(),
+  old_lines: z.number(),
+  new_start: z.number(),
+  new_lines: z.number(),
+  title: z.string().nullable(),
+  message: z.string(),
+  level: z.string(),
+  created_by_run_id: z.string().nullable(),
+  created_at: z.string(),
+});
+
+export const WorkspaceReviewHunkAnnotationsResponseSchema = z.object({
+  artifact_id: z.string().nullable(),
+  artifact_version: z.number().nullable(),
+  target_scope: z.string().nullable(),
+  head_sha: z.string().nullable(),
+  diff_fingerprint: z.string().nullable(),
+  annotations: z.array(WorkspaceReviewHunkAnnotationSchema),
 });
 
 // ── DiffRefKind — tagged enum from backend ────────────────────────────────

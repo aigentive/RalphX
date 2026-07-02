@@ -32,6 +32,7 @@ const WORKSPACE_REVIEW_RUN_POLL_INTERVAL_MS: u64 = 250;
 const WORKSPACE_REVIEW_LOG_TARGET: &str = "ralphx_lib::application::agent_workspace_review";
 const WORKSPACE_REVIEW_PATCH_EXCERPT_CHARS: usize = 42_000;
 const WORKSPACE_REVIEW_MAX_CHANGED_FILES: usize = 120;
+const WORKSPACE_REVIEW_MAX_HUNK_ANCHORS: usize = 600;
 const WORKSPACE_REVIEW_MAX_INHERITED_PROJECT_REFERENCES: usize = 8;
 const WORKSPACE_REVIEW_MAX_INHERITED_INTEGRATION_REFERENCES: usize = 8;
 const WORKSPACE_REVIEW_MAX_INHERITED_ARTIFACT_REFERENCES: usize = 8;
@@ -76,6 +77,7 @@ pub struct AgentWorkspaceReviewTarget {
 pub struct AgentWorkspaceReviewPacket {
     pub summary: AgentWorkspaceReviewDiffSummary,
     pub changed_files: Vec<AgentWorkspaceReviewChangedFile>,
+    pub hunk_anchors: Vec<AgentWorkspaceReviewHunkAnchor>,
     pub patch_excerpt: String,
     pub patch_excerpt_truncated: bool,
     pub notes: Vec<String>,
@@ -93,6 +95,17 @@ pub struct AgentWorkspaceReviewChangedFile {
     pub path: String,
     pub status: String,
     pub sources: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentWorkspaceReviewHunkAnchor {
+    pub path: String,
+    pub source: String,
+    pub hunk_header: String,
+    pub old_start: u32,
+    pub old_lines: u32,
+    pub new_start: u32,
+    pub new_lines: u32,
 }
 
 #[derive(Debug, Default)]
@@ -1904,6 +1917,8 @@ fn build_review_packet(
     diff_sources: &[(&str, &str)],
 ) -> AgentWorkspaceReviewPacket {
     let mut files = BTreeMap::<String, ChangedFileAccumulator>::new();
+    let mut hunk_anchors = Vec::new();
+    let mut hunk_anchors_truncated = false;
     let mut insertions = 0u32;
     let mut deletions = 0u32;
 
@@ -1912,6 +1927,9 @@ fn build_review_packet(
         insertions = insertions.saturating_add(added);
         deletions = deletions.saturating_add(removed);
         collect_diff_changed_files(diff, source, &mut files);
+        if collect_diff_hunk_anchors(diff, source, &mut hunk_anchors) {
+            hunk_anchors_truncated = true;
+        }
     }
     if let Some(status) = status {
         collect_status_changed_files(status, &mut files);
@@ -1928,6 +1946,11 @@ fn build_review_packet(
     if files_count > WORKSPACE_REVIEW_MAX_CHANGED_FILES {
         notes.push(format!(
             "Changed file list is limited to the first {WORKSPACE_REVIEW_MAX_CHANGED_FILES} paths."
+        ));
+    }
+    if hunk_anchors_truncated {
+        notes.push(format!(
+            "Review hunk anchors are limited to the first {WORKSPACE_REVIEW_MAX_HUNK_ANCHORS} hunks; describe only anchors present in target.review_packet.hunk_anchors."
         ));
     }
 
@@ -1954,10 +1977,51 @@ fn build_review_packet(
             deletions,
         },
         changed_files,
+        hunk_anchors,
         patch_excerpt,
         patch_excerpt_truncated,
         notes,
     }
+}
+
+fn collect_diff_hunk_anchors(
+    diff: &str,
+    source: &str,
+    hunk_anchors: &mut Vec<AgentWorkspaceReviewHunkAnchor>,
+) -> bool {
+    let mut current_path: Option<String> = None;
+    let mut truncated = false;
+    for line in diff.lines() {
+        if let Some(path) = parse_diff_git_new_path(line) {
+            current_path = Some(path);
+            continue;
+        }
+        let Some(path) = current_path.as_deref() else {
+            continue;
+        };
+        if !line.starts_with("@@ ") {
+            continue;
+        }
+        let Some((old_start, old_lines, new_start, new_lines)) =
+            parse_review_hunk_header_ranges(line)
+        else {
+            continue;
+        };
+        if hunk_anchors.len() >= WORKSPACE_REVIEW_MAX_HUNK_ANCHORS {
+            truncated = true;
+            continue;
+        }
+        hunk_anchors.push(AgentWorkspaceReviewHunkAnchor {
+            path: path.to_string(),
+            source: source.to_string(),
+            hunk_header: line.to_string(),
+            old_start,
+            old_lines,
+            new_start,
+            new_lines,
+        });
+    }
+    truncated
 }
 
 fn collect_diff_changed_files(
@@ -2080,6 +2144,26 @@ fn diff_line_counts(diff: &str) -> (u32, u32) {
         }
     }
     (insertions, deletions)
+}
+
+fn parse_review_hunk_header_ranges(line: &str) -> Option<(u32, u32, u32, u32)> {
+    let after_prefix = line.strip_prefix("@@ ")?;
+    let close_pos = after_prefix.find(" @@")?;
+    let ranges = &after_prefix[..close_pos];
+    let mut parts = ranges.split(' ');
+    let old_range = parts.next()?.strip_prefix('-')?;
+    let new_range = parts.next()?.strip_prefix('+')?;
+    let (old_start, old_lines) = parse_review_hunk_range(old_range)?;
+    let (new_start, new_lines) = parse_review_hunk_range(new_range)?;
+    Some((old_start, old_lines, new_start, new_lines))
+}
+
+fn parse_review_hunk_range(value: &str) -> Option<(u32, u32)> {
+    if let Some((start, lines)) = value.split_once(',') {
+        Some((start.parse().ok()?, lines.parse().ok()?))
+    } else {
+        Some((value.parse().ok()?, 1))
+    }
 }
 
 fn build_patch_excerpt(patch_sections: &[(&str, &str)], status: Option<&str>) -> (String, bool) {
@@ -2487,7 +2571,7 @@ fn build_review_request_message(
          RalphX scopes workspace Review tools to this parent conversation from runtime context. \
          Use the `target.review_packet` returned by `get_workspace_review_context` as the primary diff input, then inspect only targeted files with read-only filesystem tools if needed. \
          Do not run shell commands, tests, linters, or validation suites. \
-         Write a concise reviewer-focused Markdown Review with the `write_workspace_review_artifact` tool, then call `complete_workspace_review_run` with outcome `passed`, `blocking`, `no_changes`, or `run_failed`. \
+         Write a concise reviewer-focused Markdown Review with the `write_workspace_review_artifact` tool, write hunk descriptions with `write_workspace_review_hunk_annotations`, then call `complete_workspace_review_run` with outcome `passed`, `blocking`, `no_changes`, or `run_failed`. \
          Keep base/head/fingerprint provenance in tool arguments only; do not repeat it as artifact body prose. Do not modify files.",
         scope = target.scope,
         base_ref = target.base_ref,
@@ -5190,5 +5274,34 @@ x
             review_started_summary(&workspace_delta),
             "Reviewing current workspace changes."
         );
+    }
+
+    #[test]
+    fn selected_source_review_packet_includes_hunk_anchors() {
+        let diff = [
+            "diff --git a/src/lib.rs b/src/lib.rs",
+            "index 1111111..2222222 100644",
+            "--- a/src/lib.rs",
+            "+++ b/src/lib.rs",
+            "@@ -1,2 +1,3 @@",
+            " fn main() {",
+            "-    old();",
+            "+    new();",
+            "+    more();",
+            " }",
+        ]
+        .join("\n");
+
+        let packet = build_selected_source_review_packet(&diff);
+
+        assert_eq!(packet.hunk_anchors.len(), 1);
+        let anchor = &packet.hunk_anchors[0];
+        assert_eq!(anchor.path, "src/lib.rs");
+        assert_eq!(anchor.source, "selected_source");
+        assert_eq!(anchor.hunk_header, "@@ -1,2 +1,3 @@");
+        assert_eq!(anchor.old_start, 1);
+        assert_eq!(anchor.old_lines, 2);
+        assert_eq!(anchor.new_start, 1);
+        assert_eq!(anchor.new_lines, 3);
     }
 }

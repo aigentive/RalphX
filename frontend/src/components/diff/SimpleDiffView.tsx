@@ -12,12 +12,22 @@ import * as ScrollAreaPrimitive from "@radix-ui/react-scroll-area";
 import { Virtuoso } from "react-virtuoso";
 import { Button } from "@/components/ui/button";
 import { diffApi } from "@/api/diff";
-import type { DiffHunk, DiffLine, DiffRefKind, PrDiffAnnotation, RangeLine } from "@/api/diff";
+import type {
+  DiffHunk,
+  DiffLine,
+  DiffRefKind,
+  PrDiffAnnotation,
+  RangeLine,
+  WorkspaceReviewHunkAnnotation,
+} from "@/api/diff";
 import {
   annotationsForLine,
   buildAnnotationIndex,
+  buildHunkAnnotationIndex,
+  hunkAnnotationsForHunk,
   renderDiffLine,
   renderHunkHeader,
+  renderHunkAnnotationRows,
   type AnnotationIndex,
   type DiffRenderVariant,
 } from "./diffRenderHelpers";
@@ -40,6 +50,8 @@ export interface SimpleDiffViewProps {
   scrollContainer?: boolean | undefined;
   /** GitHub review/check annotations already filtered to this file. */
   annotations?: PrDiffAnnotation[] | undefined;
+  /** Workspace Review hunk notes already filtered to this file and ref/source. */
+  hunkAnnotations?: WorkspaceReviewHunkAnnotation[] | undefined;
   /** Compact density for embedded chat widgets; default keeps repository diff views unchanged. */
   density?: "standard" | "compact" | undefined;
   /** Initial line wrapping state. */
@@ -67,7 +79,15 @@ type GapRowBase = {
 };
 
 type DiffVirtualRow =
-  | { type: "hunk-header"; key: string; header: string }
+  | {
+      type: "hunk-header";
+      key: string;
+      header: string;
+      oldStart: number;
+      oldLines: number;
+      newStart: number;
+      newLines: number;
+    }
   | { type: "line"; key: string; line: DiffLine }
   | { type: "range-line"; key: string; line: DiffLine }
   | ({ type: "gap-collapsed" | "gap-loading" | "gap-error" | "gap-hide"; key: string } & GapRowBase);
@@ -197,6 +217,10 @@ function buildDiffVirtualRows(
       type: "hunk-header",
       key: `hunk-${hunkIdx}-header`,
       header: hunk.header,
+      oldStart: hunk.oldStart,
+      oldLines: hunk.oldLines,
+      newStart: hunk.newStart,
+      newLines: hunk.newLines,
     });
     hunk.lines.forEach((line, lineIdx) => {
       rows.push({
@@ -249,6 +273,7 @@ export function SimpleDiffView({
   showWrapToggle = true,
   showContextGaps = true,
   stickyGutter = true,
+  hunkAnnotations = [],
 }: SimpleDiffViewProps) {
   const [wrapLines, setWrapLines] = useState(defaultWrapLines);
   // gapCache state drives rendering; gapCacheRef mirrors it so callbacks
@@ -264,6 +289,10 @@ export function SimpleDiffView({
     filePath !== undefined &&
     refKind !== undefined;
   const annotationIndex = useMemo(() => buildAnnotationIndex(annotations), [annotations]);
+  const hunkAnnotationIndex = useMemo(
+    () => buildHunkAnnotationIndex(hunkAnnotations),
+    [hunkAnnotations]
+  );
   const bodyTextClass =
     density === "compact"
       ? "font-mono text-[0.6875rem] leading-[18px]"
@@ -652,7 +681,19 @@ export function SimpleDiffView({
 
   function renderVirtualRow(_index: number, row: DiffVirtualRow) {
     if (row.type === "hunk-header") {
-      return renderHunkHeader(row.header);
+      const matchedHunkAnnotations = hunkAnnotationsForHunk(hunkAnnotationIndex, {
+        header: row.header,
+        oldStart: row.oldStart,
+        oldLines: row.oldLines,
+        newStart: row.newStart,
+        newLines: row.newLines,
+      });
+      return (
+        <>
+          {renderHunkHeader(row.header)}
+          {renderHunkAnnotationRows(matchedHunkAnnotations, wrapLines, variant)}
+        </>
+      );
     }
     if (row.type === "line" || row.type === "range-line") {
       return renderDiffLine(
@@ -774,6 +815,11 @@ export function SimpleDiffView({
                 style={{ borderColor: "var(--overlay-faint)" }}
               >
                 {renderHunkHeader(hunk.header)}
+                {renderHunkAnnotationRows(
+                  hunkAnnotationsForHunk(hunkAnnotationIndex, hunk),
+                  wrapLines,
+                  variant,
+                )}
                 <ScrollAreaPrimitive.Root className="w-full overflow-hidden">
                   <ScrollAreaPrimitive.Viewport className="w-full overflow-x-auto">
                     <div style={{ minWidth: wrapLines ? "auto" : "max-content" }}>

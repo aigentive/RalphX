@@ -2,7 +2,12 @@ import { ExternalLink } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { withAlpha } from "@/lib/theme-colors";
-import type { DiffLine, PrDiffAnnotation } from "@/api/diff";
+import type {
+  DiffHunk,
+  DiffLine,
+  PrDiffAnnotation,
+  WorkspaceReviewHunkAnnotation,
+} from "@/api/diff";
 
 export type DiffRenderVariant = "standard" | "conflict";
 type Variant = DiffRenderVariant;
@@ -11,6 +16,8 @@ export type AnnotationIndex = Map<string, PrDiffAnnotation[]>;
 export interface RenderDiffLineOptions {
   stickyGutter?: boolean | undefined;
 }
+
+export type HunkAnnotationIndex = Map<string, WorkspaceReviewHunkAnnotation[]>;
 
 function getLineBackground(kind: DiffLine["kind"], variant: Variant): string {
   switch (kind) {
@@ -131,6 +138,45 @@ export function annotationsForLine(
   return [...new Map(annotations.map((annotation) => [annotation.id, annotation])).values()];
 }
 
+function hunkAnnotationKey(hunk: Pick<DiffHunk, "header" | "oldStart" | "oldLines" | "newStart" | "newLines">): string {
+  return [
+    hunk.header,
+    hunk.oldStart,
+    hunk.oldLines,
+    hunk.newStart,
+    hunk.newLines,
+  ].join("\u0000");
+}
+
+export function buildHunkAnnotationIndex(
+  annotations: WorkspaceReviewHunkAnnotation[]
+): HunkAnnotationIndex {
+  const index: HunkAnnotationIndex = new Map();
+  for (const annotation of annotations) {
+    const key = hunkAnnotationKey({
+      header: annotation.hunkHeader,
+      oldStart: annotation.oldStart,
+      oldLines: annotation.oldLines,
+      newStart: annotation.newStart,
+      newLines: annotation.newLines,
+    });
+    const existing = index.get(key);
+    if (existing) {
+      existing.push(annotation);
+    } else {
+      index.set(key, [annotation]);
+    }
+  }
+  return index;
+}
+
+export function hunkAnnotationsForHunk(
+  index: HunkAnnotationIndex,
+  hunk: Pick<DiffHunk, "header" | "oldStart" | "oldLines" | "newStart" | "newLines">
+): WorkspaceReviewHunkAnnotation[] {
+  return index.get(hunkAnnotationKey(hunk)) ?? [];
+}
+
 function renderAnnotationRows(
   annotations: PrDiffAnnotation[],
   wrapLines: boolean,
@@ -217,6 +263,61 @@ function renderAnnotationRows(
               </TooltipProvider>
             )}
           </div>
+        </div>
+      </div>
+    );
+  });
+}
+
+export function renderHunkAnnotationRows(
+  annotations: WorkspaceReviewHunkAnnotation[],
+  wrapLines: boolean,
+  variant: Variant
+) {
+  if (annotations.length === 0) return null;
+  return annotations.map((annotation) => {
+    const summary = annotation.title ?? annotation.message;
+    const detail =
+      annotation.title && annotation.message && annotation.title !== annotation.message
+        ? annotation.message
+        : null;
+    return (
+      <div
+        key={annotation.id}
+        className="flex"
+        data-testid="diff-hunk-annotation-row"
+        style={{ backgroundColor: variant === "conflict" ? "var(--status-info-muted)" : "var(--bg-subtle)" }}
+      >
+        <div className="w-12 shrink-0" style={{ backgroundColor: "var(--bg-surface)" }} />
+        <div className="w-12 shrink-0 border-r" style={{ backgroundColor: "var(--bg-surface)", borderColor: "var(--border-subtle)" }} />
+        <div className="w-6 shrink-0" style={{ backgroundColor: "var(--bg-surface)" }} />
+        <div
+          className={`flex-1 min-w-0 border-l-2 px-2 py-1 text-[0.6875rem] ${
+            wrapLines ? "whitespace-normal break-words" : "whitespace-nowrap"
+          }`}
+          style={{
+            borderColor: annotationLevelColor(annotation.level),
+            color: "var(--text-secondary)",
+          }}
+        >
+          <span
+            className="mr-1 rounded px-1 font-semibold uppercase"
+            style={{
+              backgroundColor: "var(--overlay-weak)",
+              color: annotationLevelColor(annotation.level),
+            }}
+          >
+            Workspace review
+          </span>
+          <span className="mr-1" style={{ color: "var(--text-muted)" }}>
+            {annotation.diffSource.replace(/_/g, " ")}
+          </span>
+          <span>{summary}</span>
+          {detail && (
+            <div className="mt-0.5" style={{ color: "var(--text-muted)" }}>
+              {detail}
+            </div>
+          )}
         </div>
       </div>
     );

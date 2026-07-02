@@ -13,13 +13,22 @@ import {
   type ScrollSeekConfiguration,
 } from "react-virtuoso";
 import { diffApi } from "@/api/diff";
-import type { DiffPageRow, DiffRefKind, FileDiffPage, PrDiffAnnotation } from "@/api/diff";
+import type {
+  DiffPageRow,
+  DiffRefKind,
+  FileDiffPage,
+  PrDiffAnnotation,
+  WorkspaceReviewHunkAnnotation,
+} from "@/api/diff";
 import { Button } from "@/components/ui/button";
 import {
   annotationsForLine,
   buildAnnotationIndex,
+  buildHunkAnnotationIndex,
+  hunkAnnotationsForHunk,
   renderDiffLine,
   renderHunkHeader,
+  renderHunkAnnotationRows,
 } from "./diffRenderHelpers";
 
 export const DIFF_PAGE_SIZE = 200;
@@ -37,6 +46,7 @@ export interface PagedDiffViewProps {
   filePath: string;
   refKind: DiffRefKind;
   annotations?: PrDiffAnnotation[] | undefined;
+  hunkAnnotations?: WorkspaceReviewHunkAnnotation[] | undefined;
   pageSize?: number | undefined;
   scrollContainer?: boolean | undefined;
   inlineScrollParent?: ScrollContainer | null | undefined;
@@ -111,6 +121,7 @@ export function PagedDiffView({
   filePath,
   refKind,
   annotations = [],
+  hunkAnnotations = [],
   pageSize = DIFF_PAGE_SIZE,
   scrollContainer = false,
   inlineScrollParent,
@@ -134,6 +145,10 @@ export function PagedDiffView({
   const [renderedRange, setRenderedRange] = useState<ListRange | null>(null);
   const [wrapLines, setWrapLines] = useState(defaultWrapLines);
   const annotationIndex = useMemo(() => buildAnnotationIndex(annotations), [annotations]);
+  const hunkAnnotationIndex = useMemo(
+    () => buildHunkAnnotationIndex(hunkAnnotations),
+    [hunkAnnotations]
+  );
   const cacheKey = refKindCacheKey(refKind);
   const firstPage = pages.get(0);
   const rowCount = totalRows ?? firstPage?.totalRows ?? 0;
@@ -370,7 +385,19 @@ export function PagedDiffView({
 
   const renderRow = (row: DiffPageRow, index: number) => {
     if (row.kind === "hunk_header") {
-      return renderHunkHeader(row.header);
+      const matchedHunkAnnotations = hunkAnnotationsForHunk(hunkAnnotationIndex, {
+        header: row.header,
+        oldStart: row.oldStart,
+        oldLines: row.oldLines,
+        newStart: row.newStart,
+        newLines: row.newLines,
+      });
+      return (
+        <>
+          {renderHunkHeader(row.header)}
+          {renderHunkAnnotationRows(matchedHunkAnnotations, wrapLines, "standard")}
+        </>
+      );
     }
     return renderDiffLine(
       row.line,

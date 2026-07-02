@@ -8,12 +8,14 @@ use crate::application::{
         resolve_agent_conversation_workspace_path_for_send,
         resolve_valid_agent_conversation_workspace_path,
     },
+    agent_workspace_review::load_agent_workspace_review_context,
     AppState, ConflictDiff, DiffRefKind, DiffService, DiffSide, FileChange, FileDiff, FileDiffPage,
     GitService, RangeLine,
 };
 use crate::commands::git_commands::{CommitInfoResponse, TaskCommitsResponse};
 use crate::domain::entities::{
-    AgentConversationWorkspace, ChatConversationId, PlanBranch, Project, Task, TaskId,
+    AgentConversationWorkspace, AgentWorkspaceReviewHunkAnnotation, ChatConversationId, PlanBranch,
+    Project, Task, TaskId,
 };
 use crate::domain::services::github_service::{PrAnnotationSourceUnavailable, PrDiffAnnotations};
 use crate::error::{AppError, AppResult};
@@ -246,6 +248,29 @@ pub struct AgentWorkspaceReviewResponse {
     pub base_ref: String,
     pub head_ref: String,
     pub supports_worktree_modes: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentWorkspaceReviewHunkAnnotationsResponse {
+    pub artifact_id: Option<String>,
+    pub artifact_version: Option<u32>,
+    pub target_scope: Option<String>,
+    pub head_sha: Option<String>,
+    pub diff_fingerprint: Option<String>,
+    pub annotations: Vec<AgentWorkspaceReviewHunkAnnotation>,
+}
+
+impl AgentWorkspaceReviewHunkAnnotationsResponse {
+    fn empty() -> Self {
+        Self {
+            artifact_id: None,
+            artifact_version: None,
+            target_scope: None,
+            head_sha: None,
+            diff_fingerprint: None,
+            annotations: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1153,6 +1178,106 @@ pub async fn get_agent_conversation_workspace_pr_annotations(
         ),
     }
     result.map(|(payload, _)| payload)
+}
+
+#[tauri::command]
+pub async fn get_agent_conversation_workspace_review_hunk_annotations(
+    app_state: State<'_, AppState>,
+    conversation_id: String,
+) -> AppResult<AgentWorkspaceReviewHunkAnnotationsResponse> {
+    let started = Instant::now();
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    let result = get_agent_conversation_workspace_review_hunk_annotations_for_state(
+        app_state.inner(),
+        &conversation_id,
+    )
+    .await;
+    match &result {
+        Ok(payload) => info!(
+            target: "ralphx_lib::commands::agent_workspace_diff",
+            operation = "workspace_review_hunk_annotations",
+            conversation_id = %conversation_id,
+            elapsed_ms = started.elapsed().as_millis(),
+            annotations = payload.annotations.len(),
+            artifact_id = %payload.artifact_id.as_deref().unwrap_or("none"),
+            diff_fingerprint = %payload
+                .diff_fingerprint
+                .as_deref()
+                .map(|value| value.chars().take(12).collect::<String>())
+                .unwrap_or_else(|| "none".to_string()),
+            "Loaded workspace Review hunk annotations"
+        ),
+        Err(error) => warn!(
+            target: "ralphx_lib::commands::agent_workspace_diff",
+            operation = "workspace_review_hunk_annotations",
+            conversation_id = %conversation_id,
+            elapsed_ms = started.elapsed().as_millis(),
+            error = %error,
+            "Failed to load workspace Review hunk annotations"
+        ),
+    }
+    result
+}
+
+async fn get_agent_conversation_workspace_review_hunk_annotations_for_state(
+    app_state: &AppState,
+    conversation_id: &ChatConversationId,
+) -> AppResult<AgentWorkspaceReviewHunkAnnotationsResponse> {
+    let workspace = app_state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(conversation_id)
+        .await?
+        .ok_or_else(|| {
+            AppError::Validation(format!(
+                "Agent conversation workspace not found for conversation {}",
+                conversation_id
+            ))
+        })?;
+    let context = load_agent_workspace_review_context(app_state, &workspace).await?;
+    let Some(target) = context.target.as_ref() else {
+        return Ok(AgentWorkspaceReviewHunkAnnotationsResponse::empty());
+    };
+    if !context.is_current {
+        return Ok(AgentWorkspaceReviewHunkAnnotationsResponse {
+            artifact_id: context
+                .monitor
+                .review_artifact_id
+                .as_ref()
+                .map(|id| id.as_str().to_string()),
+            artifact_version: context.monitor.review_artifact_version,
+            target_scope: Some(target.scope.to_string()),
+            head_sha: target.head_sha.clone(),
+            diff_fingerprint: Some(target.diff_fingerprint.clone()),
+            annotations: Vec::new(),
+        });
+    }
+    let Some(artifact_id) = context.monitor.review_artifact_id.as_ref() else {
+        return Ok(AgentWorkspaceReviewHunkAnnotationsResponse::empty());
+    };
+    let annotations = app_state
+        .agent_conversation_workspace_repo
+        .list_workspace_review_hunk_annotations(conversation_id, artifact_id)
+        .await?
+        .into_iter()
+        .filter(|annotation| {
+            annotation.target_scope == target.scope
+                && annotation.diff_fingerprint == target.diff_fingerprint
+                && annotation.artifact_id == *artifact_id
+                && annotation.artifact_version
+                    == context.monitor.review_artifact_version.unwrap_or(0)
+                && (target.scope
+                    != crate::domain::entities::AgentWorkspaceReviewTargetScope::SelectedSource
+                    || annotation.head_sha.as_deref() == target.head_sha.as_deref())
+        })
+        .collect();
+    Ok(AgentWorkspaceReviewHunkAnnotationsResponse {
+        artifact_id: Some(artifact_id.as_str().to_string()),
+        artifact_version: context.monitor.review_artifact_version,
+        target_scope: Some(target.scope.to_string()),
+        head_sha: target.head_sha.clone(),
+        diff_fingerprint: Some(target.diff_fingerprint.clone()),
+        annotations,
+    })
 }
 
 async fn get_agent_conversation_workspace_pr_annotations_cached(

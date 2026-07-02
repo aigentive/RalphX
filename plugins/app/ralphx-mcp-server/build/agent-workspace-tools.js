@@ -158,9 +158,101 @@ export const AGENT_WORKSPACE_TOOLS = [
         },
     },
     {
+        name: "write_workspace_review_hunk_annotations",
+        description: "Write structured hunk-level descriptions for the current workspace Review artifact. " +
+            "Call this after write_workspace_review_artifact and before complete_workspace_review_run. The backend accepts valid hunks and reports rejected or missing hunks independently.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                conversation_id: {
+                    type: "string",
+                    description: "Optional agent workspace conversation ID. Omit when calling from the current workspace Review conversation.",
+                },
+                target_scope: {
+                    type: "string",
+                    enum: ["selected_source", "workspace_delta"],
+                    description: "Review target scope from get_workspace_review_context.",
+                },
+                head_sha: {
+                    type: "string",
+                    description: "Optional target head SHA covered by these hunk descriptions.",
+                },
+                diff_fingerprint: {
+                    type: "string",
+                    description: "Target diff fingerprint from get_workspace_review_context.",
+                },
+                created_by_run_id: {
+                    type: "string",
+                    description: "Optional RalphX run id that produced these hunk descriptions.",
+                },
+                annotations: {
+                    type: "array",
+                    description: "Structured hunk-level review notes. Use one item per hunk anchor returned in target.review_packet.hunk_anchors.",
+                    items: {
+                        type: "object",
+                        properties: {
+                            path: {
+                                type: "string",
+                                description: "Reviewed file path from the hunk anchor.",
+                            },
+                            source: {
+                                type: "string",
+                                description: "Diff source from the hunk anchor, such as selected_source, committed, staged, or unstaged.",
+                            },
+                            hunk_header: {
+                                type: "string",
+                                description: "Exact @@ hunk header from the hunk anchor.",
+                            },
+                            old_start: {
+                                type: "number",
+                                description: "Old-file start line from the hunk anchor.",
+                            },
+                            old_lines: {
+                                type: "number",
+                                description: "Old-file line count from the hunk anchor.",
+                            },
+                            new_start: {
+                                type: "number",
+                                description: "New-file start line from the hunk anchor.",
+                            },
+                            new_lines: {
+                                type: "number",
+                                description: "New-file line count from the hunk anchor.",
+                            },
+                            title: {
+                                type: "string",
+                                description: "Optional short label for the hunk note.",
+                            },
+                            message: {
+                                type: "string",
+                                description: "Concise explanation of what changed in this hunk and why it matters.",
+                            },
+                            level: {
+                                type: "string",
+                                enum: ["info", "notice", "warning"],
+                                description: "Informational severity for the hunk note. Use warning only for noteworthy risk.",
+                            },
+                        },
+                        required: [
+                            "path",
+                            "source",
+                            "hunk_header",
+                            "old_start",
+                            "old_lines",
+                            "new_start",
+                            "new_lines",
+                            "message",
+                        ],
+                    },
+                },
+            },
+            required: ["annotations"],
+        },
+    },
+    {
         name: "complete_workspace_review_run",
         description: "Record that a general workspace Review run completed or is blocked. " +
-            "Call this after writing the Review artifact, or with blocker when the review could not be completed.",
+            "Call this after writing the Review artifact and hunk annotations, or with blocker when the review could not be completed.",
         inputSchema: {
             type: "object",
             properties: {
@@ -170,7 +262,7 @@ export const AGENT_WORKSPACE_TOOLS = [
                 },
                 outcome: {
                     type: "string",
-                    description: "Optional normalized outcome such as reviewed, no_changes, or blocked.",
+                    description: "Optional normalized outcome: passed, blocking, no_changes, or run_failed.",
                 },
                 summary: {
                     type: "string",
@@ -419,6 +511,8 @@ export async function callAgentWorkspaceTool(name, callTauri, callTauriGet, args
             return callGetWorkspaceReviewContextTool(callTauriGet, args, runtimeContext);
         case "write_workspace_review_artifact":
             return callWriteWorkspaceReviewArtifactTool(callTauri, args, runtimeContext);
+        case "write_workspace_review_hunk_annotations":
+            return callWriteWorkspaceReviewHunkAnnotationsTool(callTauri, args, runtimeContext);
         case "complete_workspace_review_run":
             return callCompleteWorkspaceReviewRunTool(callTauri, args, runtimeContext);
         case "propose_pr_review_action":
@@ -498,6 +592,17 @@ export async function callWriteWorkspaceReviewArtifactTool(callTauri, args, runt
         head_sha: artifactArgs.head_sha,
         diff_fingerprint: artifactArgs.diff_fingerprint,
         created_by_run_id: artifactArgs.created_by_run_id,
+    });
+}
+export async function callWriteWorkspaceReviewHunkAnnotationsTool(callTauri, args, runtimeContext) {
+    const conversation_id = resolveAgentWorkspaceConversationId("write_workspace_review_hunk_annotations", args, runtimeContext);
+    const annotationArgs = (args && typeof args === "object" ? args : {});
+    return callTauri(`agent-workspaces/${conversation_id}/workspace-review-hunk-annotations`, {
+        target_scope: annotationArgs.target_scope,
+        head_sha: annotationArgs.head_sha,
+        diff_fingerprint: annotationArgs.diff_fingerprint,
+        created_by_run_id: annotationArgs.created_by_run_id,
+        annotations: annotationArgs.annotations,
     });
 }
 export async function callCompleteWorkspaceReviewRunTool(callTauri, args, runtimeContext) {

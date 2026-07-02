@@ -153,6 +153,7 @@ vi.mock("./AgentsPublishFileDiff", () => ({
     conversationId,
     shouldHydrate,
     annotations,
+    hunkAnnotations,
     isShowAnywayOverridden,
     onShowAnyway,
     isFocusTarget,
@@ -173,6 +174,7 @@ vi.mock("./AgentsPublishFileDiff", () => ({
     conversationId?: string;
     shouldHydrate: boolean;
     annotations?: unknown[];
+    hunkAnnotations?: unknown[];
     isShowAnywayOverridden: boolean;
     onShowAnyway: () => void;
     isFocusTarget?: boolean;
@@ -193,6 +195,7 @@ vi.mock("./AgentsPublishFileDiff", () => ({
       data-conversation-id={conversationId}
       data-should-hydrate={String(shouldHydrate)}
       data-annotation-count={String(annotations?.length ?? 0)}
+      data-hunk-annotation-count={String(hunkAnnotations?.length ?? 0)}
       data-show-anyway-overridden={String(isShowAnywayOverridden)}
       data-focus-target={String(isFocusTarget)}
     >
@@ -212,6 +215,30 @@ vi.mock("./AgentsPublishFileDiff", () => ({
       </button>
       {shouldHydrate && (annotations?.length ?? 0) > 0 && (
         <div data-testid="diff-annotation-row">annotation</div>
+      )}
+      {shouldHydrate &&
+        (hunkAnnotations?.length ?? 0) > 0 &&
+        file.path.includes("Paged") && (
+          <div
+            data-testid="delayed-paged-hunk-annotation-host"
+            ref={(node: HTMLDivElement | null) => {
+              if (!node || node.dataset.hunkAnnotationScheduled === "true") {
+                return;
+              }
+              node.dataset.hunkAnnotationScheduled = "true";
+              window.setTimeout(() => {
+                const row = document.createElement("div");
+                row.dataset.testid = "diff-hunk-annotation-row";
+                row.textContent = "hunk annotation";
+                node.appendChild(row);
+              }, 20);
+            }}
+          />
+        )}
+      {shouldHydrate &&
+        (hunkAnnotations?.length ?? 0) > 0 &&
+        !file.path.includes("Paged") && (
+        <div data-testid="diff-hunk-annotation-row">hunk annotation</div>
       )}
       {file.path}
     </div>
@@ -278,7 +305,11 @@ function fireVirtualRange(startIndex: number, endIndex: number) {
 }
 
 import { AgentsPublishInlineDiffs } from "./AgentsPublishInlineDiffs";
-import type { FileChange, PrDiffAnnotation } from "@/api/diff";
+import type {
+  FileChange,
+  PrDiffAnnotation,
+  WorkspaceReviewHunkAnnotation,
+} from "@/api/diff";
 import type { Commit as DiffViewerCommit } from "@/components/diff";
 import type { AgentWorkspaceReview } from "@/api/diff";
 import { agentWorkspaceKeys } from "./agentWorkspaceQueries";
@@ -343,6 +374,33 @@ const makeAnnotation = (
   url: null,
   isOutdated: false,
   createdAt: null,
+  ...overrides,
+});
+
+const makeHunkAnnotation = (
+  path: string,
+  overrides: Partial<WorkspaceReviewHunkAnnotation> = {},
+): WorkspaceReviewHunkAnnotation => ({
+  id: `workspace-review-hunk-${path}`,
+  conversationId: "conv-1",
+  projectId: "project-1",
+  artifactId: "artifact-1",
+  artifactVersion: 1,
+  targetScope: "selected_source",
+  headSha: "head-sha",
+  diffFingerprint: "fingerprint-1",
+  path,
+  diffSource: "selected_source",
+  hunkHeader: "@@ -1,1 +1,1 @@",
+  oldStart: 1,
+  oldLines: 1,
+  newStart: 1,
+  newLines: 1,
+  title: "Review summary",
+  message: "This hunk updates inline diffs.",
+  level: "notice",
+  createdByRunId: "run-1",
+  createdAt: "2026-07-01T00:00:00Z",
   ...overrides,
 });
 
@@ -1307,6 +1365,70 @@ describe("AgentsPublishInlineDiffs", () => {
       );
     });
 
+    it("passes matching workspace review hunk annotations to head-mode file cards", () => {
+      const changes = [makeFileChange("src/Foo.tsx"), makeFileChange("src/Bar.tsx")];
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+            hunkAnnotations={[
+              makeHunkAnnotation("src/Foo.tsx"),
+              makeHunkAnnotation("src/Other.tsx"),
+            ]}
+          />,
+        ),
+      );
+
+      expect(screen.getByTestId("mock-file-diff-src-Foo.tsx")).toHaveAttribute(
+        "data-hunk-annotation-count",
+        "1",
+      );
+      expect(screen.getByTestId("mock-file-diff-src-Bar.tsx")).toHaveAttribute(
+        "data-hunk-annotation-count",
+        "0",
+      );
+    });
+
+    it("passes staged and unstaged workspace review hunk annotations to default workspace file cards", () => {
+      const changes = [makeFileChange("src/Foo.tsx"), makeFileChange("src/Bar.tsx")];
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+            hunkAnnotations={[
+              makeHunkAnnotation("src/Foo.tsx", {
+                id: "workspace-review-hunk-staged",
+                diffSource: "staged",
+              }),
+              makeHunkAnnotation("src/Foo.tsx", {
+                id: "workspace-review-hunk-unstaged",
+                diffSource: "unstaged",
+              }),
+              makeHunkAnnotation("src/Other.tsx", {
+                id: "workspace-review-hunk-other",
+                diffSource: "staged",
+              }),
+            ]}
+          />,
+        ),
+      );
+
+      expect(screen.getByTestId("mock-file-diff-src-Foo.tsx")).toHaveAttribute(
+        "data-hunk-annotation-count",
+        "2",
+      );
+      expect(screen.getByTestId("mock-file-diff-src-Bar.tsx")).toHaveAttribute(
+        "data-hunk-annotation-count",
+        "0",
+      );
+    });
+
     it("auto-scrolls to the first synced GitHub annotation after annotations arrive", async () => {
       const changes = [
         makeFileChange("src/Foo.tsx"),
@@ -1389,6 +1511,194 @@ describe("AgentsPublishInlineDiffs", () => {
       expect(virtuosoMockState.scrollToIndex).not.toHaveBeenCalled();
       expect(annotationScrollIntoViewMock).not.toHaveBeenCalled();
     });
+
+    it("auto-scrolls to the first synced workspace review hunk annotation", async () => {
+      const changes = [
+        makeFileChange("src/Foo.tsx"),
+        makeFileChange("src/Bar.tsx"),
+        makeFileChange("src/Baz.tsx"),
+      ];
+      const client = makeQueryClient();
+      const { rerender } = render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+            hunkAnnotations={[]}
+          />,
+          client,
+        ),
+      );
+
+      expect(virtuosoMockState.scrollToIndex).not.toHaveBeenCalled();
+
+      rerender(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+            hunkAnnotations={[
+              makeHunkAnnotation("src/Baz.tsx", {
+                id: "workspace-review-hunk-baz",
+              }),
+              makeHunkAnnotation("src/Bar.tsx", {
+                id: "workspace-review-hunk-bar",
+              }),
+            ]}
+          />,
+          client,
+        ),
+      );
+
+      await waitFor(() =>
+        expect(virtuosoMockState.scrollToIndex).toHaveBeenCalledWith({
+          align: "start",
+          behavior: "auto",
+          index: 1,
+        }),
+      );
+      await waitFor(() =>
+        expect(screen.getByTestId("mock-file-diff-src-Bar.tsx")).toHaveAttribute(
+          "data-focus-target",
+          "true",
+        ),
+      );
+      await waitFor(() =>
+        expect(annotationScrollIntoViewMock).toHaveBeenCalledWith({
+          block: "center",
+          behavior: "auto",
+          inline: "nearest",
+        }),
+      );
+    });
+
+    it("retries hunk annotation auto-scroll after a paged diff hydrates the row", async () => {
+      const changes = [
+        makeFileChange("src/Foo.tsx"),
+        makeFileChange("src/Paged.tsx", { additions: 1_250, deletions: 25 }),
+        makeFileChange("src/Baz.tsx"),
+      ];
+      const client = makeQueryClient();
+      const { rerender } = render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+            hunkAnnotations={[]}
+          />,
+          client,
+        ),
+      );
+
+      expect(virtuosoMockState.scrollToIndex).not.toHaveBeenCalled();
+
+      rerender(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+            hunkAnnotations={[
+              makeHunkAnnotation("src/Paged.tsx", {
+                id: "workspace-review-hunk-paged",
+              }),
+            ]}
+          />,
+          client,
+        ),
+      );
+
+      await waitFor(() =>
+        expect(virtuosoMockState.scrollToIndex).toHaveBeenCalledWith({
+          align: "start",
+          behavior: "auto",
+          index: 1,
+        }),
+      );
+      await waitFor(() =>
+        expect(screen.getByTestId("diff-hunk-annotation-row")).toBeInTheDocument(),
+      );
+      await waitFor(() =>
+        expect(annotationScrollIntoViewMock).toHaveBeenCalledWith({
+          block: "center",
+          behavior: "auto",
+          inline: "nearest",
+        }),
+      );
+    });
+
+    it("auto-scrolls to the first synced staged or unstaged workspace review hunk annotation", async () => {
+      const changes = [
+        makeFileChange("src/Foo.tsx"),
+        makeFileChange("src/Bar.tsx"),
+        makeFileChange("src/Baz.tsx"),
+      ];
+      const client = makeQueryClient();
+      const { rerender } = render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+            hunkAnnotations={[]}
+          />,
+          client,
+        ),
+      );
+
+      expect(virtuosoMockState.scrollToIndex).not.toHaveBeenCalled();
+
+      rerender(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+            hunkAnnotations={[
+              makeHunkAnnotation("src/Baz.tsx", {
+                id: "workspace-review-hunk-baz-unstaged",
+                diffSource: "unstaged",
+              }),
+              makeHunkAnnotation("src/Bar.tsx", {
+                id: "workspace-review-hunk-bar-staged",
+                diffSource: "staged",
+              }),
+            ]}
+          />,
+          client,
+        ),
+      );
+
+      await waitFor(() =>
+        expect(virtuosoMockState.scrollToIndex).toHaveBeenCalledWith({
+          align: "start",
+          behavior: "auto",
+          index: 1,
+        }),
+      );
+      await waitFor(() =>
+        expect(screen.getByTestId("mock-file-diff-src-Bar.tsx")).toHaveAttribute(
+          "data-focus-target",
+          "true",
+        ),
+      );
+      await waitFor(() =>
+        expect(annotationScrollIntoViewMock).toHaveBeenCalledWith({
+          block: "center",
+          behavior: "auto",
+          inline: "nearest",
+        }),
+      );
+    });
   });
 
   describe("mode=commit — diff fetching", () => {
@@ -1455,6 +1765,38 @@ describe("AgentsPublishInlineDiffs", () => {
       );
       // Workspace-change file no longer shown
       expect(screen.queryByTestId("mock-file-diff-src-Foo.tsx")).toBeNull();
+    });
+
+    it("passes workspace review hunk annotations to specific commit file cards", async () => {
+      const user = userEvent.setup();
+      mockGetCommitFiles.mockResolvedValue([makeFileChange("src/CommitOnly.tsx")]);
+      const changes = [makeFileChange("src/Foo.tsx")];
+      const commits = [makeCommit("sha-abc-full")];
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={commits}
+            isLoading={false}
+            hunkAnnotations={[
+              makeHunkAnnotation("src/CommitOnly.tsx", {
+                id: "workspace-review-hunk-commit",
+                diffSource: "committed",
+              }),
+            ]}
+          />,
+        ),
+      );
+
+      await user.click(screen.getByRole("button", { name: "Commit sha-abc" }));
+
+      await waitFor(() =>
+        expect(screen.getByTestId("mock-file-diff-src-CommitOnly.tsx")).toHaveAttribute(
+          "data-hunk-annotation-count",
+          "1",
+        ),
+      );
     });
 
     it("shows file count from commit file list in sticky bar", async () => {
@@ -1648,6 +1990,45 @@ describe("AgentsPublishInlineDiffs", () => {
         expect(screen.getByTestId("mock-file-diff-src-Foo.tsx")).toHaveAttribute(
           "data-annotation-count",
           "0",
+        ),
+      );
+    });
+
+    it("passes staged workspace review hunk annotations only to staged file cards", async () => {
+      const user = userEvent.setup();
+      const changes = [makeFileChange("src/Foo.tsx")];
+      mockGetStagedFiles.mockResolvedValue([makeFileChange("src/Foo.tsx")]);
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+            hunkAnnotations={[
+              makeHunkAnnotation("src/Foo.tsx", {
+                id: "workspace-review-hunk-staged",
+                diffSource: "staged",
+              }),
+              makeHunkAnnotation("src/Foo.tsx", {
+                id: "workspace-review-hunk-unstaged",
+                diffSource: "unstaged",
+              }),
+              makeHunkAnnotation("src/Other.tsx", {
+                id: "workspace-review-hunk-other",
+                diffSource: "staged",
+              }),
+            ]}
+          />,
+        ),
+      );
+
+      await user.click(screen.getByRole("button", { name: "Staged" }));
+
+      await waitFor(() =>
+        expect(screen.getByTestId("mock-file-diff-src-Foo.tsx")).toHaveAttribute(
+          "data-hunk-annotation-count",
+          "1",
         ),
       );
     });
@@ -1998,6 +2379,41 @@ describe("AgentsPublishInlineDiffs", () => {
       await waitFor(() =>
         expect(screen.getByTestId("mock-file-diff-src-Foo.tsx")).toHaveAttribute(
           "data-annotation-count",
+          "1",
+        ),
+      );
+    });
+
+    it("passes committed workspace review hunk annotations to cumulative file cards", async () => {
+      const user = userEvent.setup();
+      const changes = [makeFileChange("src/Foo.tsx")];
+      mockGetCumulativeFiles.mockResolvedValue([makeFileChange("src/Foo.tsx")]);
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[makeCommit("sha-abc")]}
+            isLoading={false}
+            hunkAnnotations={[
+              makeHunkAnnotation("src/Foo.tsx", {
+                id: "workspace-review-hunk-committed",
+                diffSource: "committed",
+              }),
+              makeHunkAnnotation("src/Foo.tsx", {
+                id: "workspace-review-hunk-staged",
+                diffSource: "staged",
+              }),
+            ]}
+          />,
+        ),
+      );
+
+      await user.click(screen.getByRole("button", { name: "All commits" }));
+
+      await waitFor(() =>
+        expect(screen.getByTestId("mock-file-diff-src-Foo.tsx")).toHaveAttribute(
+          "data-hunk-annotation-count",
           "1",
         ),
       );

@@ -28,6 +28,7 @@ import type {
   FileDiffPage,
   DiffRefKind,
   PrDiffAnnotation,
+  WorkspaceReviewHunkAnnotation,
 } from "@/api/diff";
 import {
   canUsePagedInlineDiff,
@@ -64,6 +65,8 @@ export interface AgentsPublishFileDiffProps {
   shouldHydrate: boolean;
   /** GitHub PR review/check annotations for this file. */
   annotations?: PrDiffAnnotation[] | undefined;
+  /** Workspace Review hunk notes for this file/ref. */
+  hunkAnnotations?: WorkspaceReviewHunkAnnotation[] | undefined;
   /** Whether the user has clicked "Show anyway" for a generated file. */
   isShowAnywayOverridden: boolean;
   /** Called when the user clicks "Show anyway" on a generated-file placeholder. */
@@ -112,6 +115,7 @@ export function AgentsPublishFileDiff({
   diffPageSummary,
   shouldHydrate,
   annotations = [],
+  hunkAnnotations = [],
   isShowAnywayOverridden,
   onShowAnyway,
   isFocusTarget = false,
@@ -251,6 +255,18 @@ export function AgentsPublishFileDiff({
             {annotations.length}
           </span>
         )}
+        {hunkAnnotations.length > 0 && (
+          <span
+            data-testid="file-diff-hunk-annotation-count"
+            className="shrink-0 rounded border px-1.5 py-0.5 text-[0.6875rem] font-medium"
+            style={{
+              borderColor: "var(--status-info-border)",
+              color: "var(--status-info)",
+            }}
+          >
+            {hunkAnnotations.length} review
+          </span>
+        )}
 
         {/* Open fullscreen */}
         <Tooltip>
@@ -385,6 +401,7 @@ export function AgentsPublishFileDiff({
                   filePath={file.path}
                   refKind={diffPageRefKind!}
                   annotations={annotations}
+                  hunkAnnotations={hunkAnnotations}
                   scrollContainer={false}
                   inlineScrollParent={inlineDiffScrollParent}
                   defaultWrapLines={false}
@@ -406,6 +423,7 @@ export function AgentsPublishFileDiff({
                   scrollContainer={false}
                   stickyGutter={false}
                   annotations={annotations}
+                  hunkAnnotations={hunkAnnotations}
                 />
               )}
 

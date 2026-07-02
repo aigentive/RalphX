@@ -114,7 +114,14 @@ function makePage(offset: number, limit: number, totalRows = 260): FileDiffPage 
     rows: Array.from({ length: rowCount }).map((_, index) => {
       const rowIndex = offset + index;
       if (rowIndex === 0) {
-        return { kind: "hunk_header" as const, header: "@@ -1,260 +1,260 @@" };
+        return {
+          kind: "hunk_header" as const,
+          header: "@@ -1,260 +1,260 @@",
+          oldStart: 1,
+          oldLines: 260,
+          newStart: 1,
+          newLines: 260,
+        };
       }
       return {
         kind: "line" as const,
@@ -225,6 +232,46 @@ describe("PagedDiffView", () => {
     expect(screen.getByText("@@ -1,260 +1,260 @@")).toBeInTheDocument();
     expect(screen.getByText("line 1")).toBeInTheDocument();
     expect(screen.queryByText("line 120")).toBeNull();
+  });
+
+  it("renders workspace review hunk annotations below matching paged hunk headers", async () => {
+    render(
+      <PagedDiffView
+        conversationId="conv-1"
+        filePath="src/Huge.tsx"
+        refKind={{ kind: "head" }}
+        pageSize={100}
+        hunkAnnotations={[
+          {
+            id: "workspace-review-hunk-1",
+            conversationId: "conv-1",
+            projectId: "project-1",
+            artifactId: "artifact-1",
+            artifactVersion: 1,
+            targetScope: "selected_source",
+            headSha: "head-sha",
+            diffFingerprint: "fingerprint-1",
+            path: "src/Huge.tsx",
+            diffSource: "selected_source",
+            hunkHeader: "@@ -1,260 +1,260 @@",
+            oldStart: 1,
+            oldLines: 260,
+            newStart: 1,
+            newLines: 260,
+            title: "Review summary",
+            message: "This hunk wires the paged renderer.",
+            level: "notice",
+            createdByRunId: "run-1",
+            createdAt: "2026-07-01T00:00:00Z",
+          },
+        ]}
+      />
+    );
+
+    expect(await screen.findByTestId("diff-hunk-annotation-row")).toBeInTheDocument();
+    expect(screen.getByText("Workspace review")).toBeInTheDocument();
+    expect(screen.getByText("Review summary")).toBeInTheDocument();
+    expect(screen.getByText("This hunk wires the paged renderer.")).toBeInTheDocument();
   });
 
   it("waits for an explicit inline scroll parent instead of falling back to window scroll", async () => {
