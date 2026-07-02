@@ -278,4 +278,45 @@ mod tests {
         );
         assert!(reason.unwrap().user_message().contains("checked manually"));
     }
+
+    #[test]
+    fn continuation_block_codes_and_messages_cover_all_variants() {
+        let cases = [
+            (
+                AgentWorkspaceContinuationBlock::ArchivedWorkspace,
+                "archived_workspace",
+                "archived",
+            ),
+            (
+                AgentWorkspaceContinuationBlock::TerminalWorkspace,
+                "terminal_workspace",
+                "terminal PR state",
+            ),
+            (
+                AgentWorkspaceContinuationBlock::CleanedAfterTerminal,
+                "cleaned_after_terminal",
+                "cleaned",
+            ),
+            (
+                AgentWorkspaceContinuationBlock::LocalWorkspaceMissing,
+                "local_workspace_missing",
+                "missing locally",
+            ),
+            (
+                AgentWorkspaceContinuationBlock::UnknownRequiresManualCheck(
+                    "repository unavailable".to_string(),
+                ),
+                "unknown_requires_manual_check",
+                "repository unavailable",
+            ),
+        ];
+
+        for (reason, code, message_part) in cases {
+            assert_eq!(reason.code(), code);
+            assert!(
+                reason.user_message().contains(message_part),
+                "message for {code} should include {message_part:?}"
+            );
+        }
+    }
 }
