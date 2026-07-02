@@ -26,7 +26,7 @@ describe("filesystem tools", () => {
         process.chdir(canonicalDir);
         return canonicalDir;
     }
-    it("reads a relative file within the allowed root", async () => {
+    it("reads a relative file from the current working directory", async () => {
         const root = makeWorkspace();
         const target = path.join(root, "src", "sample.ts");
         fs.mkdirSync(path.dirname(target), { recursive: true });
@@ -42,11 +42,11 @@ describe("filesystem tools", () => {
         expect(text).toContain("2| line two");
         expect(text).toContain("3| line three");
     });
-    it("reads and lists absolute paths from a configured extra read root", async () => {
+    it("reads and lists absolute paths outside the workspace without extra read roots", async () => {
         makeWorkspace();
         const projectRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ralphx-fs-project-")));
         tempDirs.push(projectRoot);
-        process.env.RALPHX_FILESYSTEM_READ_ROOTS = JSON.stringify([projectRoot]);
+        delete process.env.RALPHX_FILESYSTEM_READ_ROOTS;
         const target = path.join(projectRoot, ".artifacts", "specs", "ralphx-cli", "tracker.md");
         fs.mkdirSync(path.dirname(target), { recursive: true });
         fs.writeFileSync(target, "# CLI tracker\n\nreadable from project checkout\n");
@@ -81,46 +81,54 @@ describe("filesystem tools", () => {
         expect(text).not.toContain("secret.log");
         expect(text).not.toContain(".env");
     });
-    it("rejects traversal outside the allowed root", async () => {
+    it("reads relative paths that resolve outside the workspace", async () => {
         const root = makeWorkspace();
         const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "ralphx-fs-outside-"));
         tempDirs.push(outsideDir);
         const outsideFile = path.join(outsideDir, "secret.txt");
-        fs.writeFileSync(outsideFile, "secret\n");
-        await expect(handleFilesystemToolCall("fs_read_file", {
+        fs.writeFileSync(outsideFile, "external context\n");
+        const result = await handleFilesystemToolCall("fs_read_file", {
             path: path.relative(root, outsideFile),
-        })).rejects.toThrow("outside the allowed filesystem roots");
+        });
+        const text = result.content[0]?.text ?? "";
+        expect(text).toContain(`FILE: ${outsideFile}`);
+        expect(text).toContain("external context");
     });
-    it("rejects symlinked file paths that escape the allowed root", async () => {
+    it("reads symlinked file paths that point outside the workspace", async () => {
         const root = makeWorkspace();
         const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "ralphx-fs-link-outside-"));
         tempDirs.push(outsideDir);
         const outsideFile = path.join(outsideDir, "secret.txt");
-        fs.writeFileSync(outsideFile, "secret\n");
+        fs.writeFileSync(outsideFile, "symlinked context\n");
         const symlinkPath = path.join(root, "src", "escape.txt");
         fs.mkdirSync(path.dirname(symlinkPath), { recursive: true });
         fs.symlinkSync(outsideFile, symlinkPath);
-        await expect(handleFilesystemToolCall("fs_read_file", {
+        const result = await handleFilesystemToolCall("fs_read_file", {
             path: "src/escape.txt",
-        })).rejects.toThrow("outside the allowed filesystem roots");
+        });
+        const text = result.content[0]?.text ?? "";
+        expect(text).toContain(`FILE: ${symlinkPath}`);
+        expect(text).toContain("symlinked context");
     });
-    it("rejects symlinked base paths that escape the allowed root", async () => {
+    it("globs symlinked base paths that point outside the workspace", async () => {
         const root = makeWorkspace();
         const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "ralphx-fs-base-outside-"));
         tempDirs.push(outsideDir);
         fs.writeFileSync(path.join(outsideDir, "secret.ts"), "export const secret = true;\n");
         const symlinkPath = path.join(root, "linked");
         fs.symlinkSync(outsideDir, symlinkPath);
-        await expect(handleFilesystemToolCall("fs_glob", {
+        const result = await handleFilesystemToolCall("fs_glob", {
             base_path: "linked",
             pattern: "**/*.ts",
-        })).rejects.toThrow("outside the allowed filesystem roots");
+        });
+        const text = result.content[0]?.text ?? "";
+        expect(text).toContain(`ROOT: ${path.join(root, "linked")}`);
+        expect(text).toContain("secret.ts");
     });
-    it("greps and globs absolute base paths from a configured extra read root", async () => {
+    it("greps and globs absolute base paths outside the workspace", async () => {
         makeWorkspace();
         const projectRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ralphx-fs-search-project-")));
         tempDirs.push(projectRoot);
-        process.env.RALPHX_FILESYSTEM_READ_ROOTS = JSON.stringify([projectRoot]);
         const sourceFile = path.join(projectRoot, "service", "index.ts");
         fs.mkdirSync(path.dirname(sourceFile), { recursive: true });
         fs.writeFileSync(sourceFile, "export const externalNeedle = true;\n");
@@ -140,24 +148,7 @@ describe("filesystem tools", () => {
         expect(globText).toContain(`ROOT: ${projectRoot}`);
         expect(globText).toContain("service/index.ts");
     });
-    it("rejects unconfigured absolute base paths outside the allowed roots", async () => {
-        makeWorkspace();
-        const projectRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ralphx-fs-unconfigured-project-")));
-        tempDirs.push(projectRoot);
-        const sourceFile = path.join(projectRoot, "service", "index.ts");
-        fs.mkdirSync(path.dirname(sourceFile), { recursive: true });
-        fs.writeFileSync(sourceFile, "export const externalNeedle = true;\n");
-        await expect(handleFilesystemToolCall("fs_grep", {
-            pattern: "externalNeedle",
-            base_path: projectRoot,
-            file_pattern: "**/*.ts",
-        })).rejects.toThrow("outside the allowed filesystem roots");
-        await expect(handleFilesystemToolCall("fs_glob", {
-            base_path: projectRoot,
-            pattern: "**/*.ts",
-        })).rejects.toThrow("outside the allowed filesystem roots");
-    });
-    it("greps within the allowed root using a file pattern", async () => {
+    it("greps within the current working directory using a file pattern", async () => {
         const root = makeWorkspace();
         const rustFile = path.join(root, "src-tauri", "src", "main.rs");
         fs.mkdirSync(path.dirname(rustFile), { recursive: true });
@@ -176,7 +167,7 @@ describe("filesystem tools", () => {
         expect(text).not.toContain("README.md");
         expect(text).not.toContain("ignored.rs");
     });
-    it("globs within the allowed root", async () => {
+    it("globs within the current working directory", async () => {
         const root = makeWorkspace();
         const first = path.join(root, "agents", "one", "codex", "prompt.md");
         const second = path.join(root, "agents", "two", "codex", "prompt.md");
@@ -220,12 +211,12 @@ describe("filesystem tools", () => {
         const text = result.content[0]?.text ?? "";
         expect(text).toContain("TRUNCATED: true");
     });
-    it("formats tool errors with the allowed root", () => {
+    it("formats tool errors with the relative path resolution root", () => {
         const root = makeWorkspace();
         const result = formatFilesystemToolError(new Error("boom"));
         const text = result.content[0]?.text ?? "";
         expect(text).toContain("ERROR: boom");
-        expect(text).toContain("Allowed filesystem roots:");
+        expect(text).toContain("Path resolution:");
         expect(text).toContain(`- ${root}`);
         expect(result.isError).toBe(true);
     });
