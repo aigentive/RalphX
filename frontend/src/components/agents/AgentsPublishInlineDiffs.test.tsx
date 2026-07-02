@@ -28,6 +28,7 @@ vi.mock("react-virtuoso", async () => {
     itemContent?: (index: number, item: unknown) => React.ReactNode;
     computeItemKey?: (index: number, item: unknown) => React.Key;
     rangeChanged?: (range: MockListRange) => void;
+    scrollerRef?: (ref: HTMLElement | Window | null) => void;
     className?: string;
     style?: React.CSSProperties;
     "data-testid"?: string;
@@ -37,7 +38,9 @@ vi.mock("react-virtuoso", async () => {
     props,
     ref,
   ) {
+    const { scrollerRef: onScrollerRef } = props;
     const data = props.data ?? [];
+    const scrollerElementRef = React.useRef<HTMLDivElement | null>(null);
     const startIndex = virtuosoMockState.range?.startIndex ?? 0;
     const endIndex = virtuosoMockState.range?.endIndex ?? data.length - 1;
     const visibleItems = data
@@ -61,8 +64,14 @@ vi.mock("react-virtuoso", async () => {
       };
     }, [props.rangeChanged]);
 
+    React.useEffect(() => {
+      onScrollerRef?.(scrollerElementRef.current);
+      return () => onScrollerRef?.(null);
+    }, [onScrollerRef]);
+
     return (
       <div
+        ref={scrollerElementRef}
         data-testid={props["data-testid"] ?? "mock-virtuoso"}
         data-count={data.length}
         className={props.className}
@@ -128,13 +137,6 @@ vi.mock("./AgentsPublishDiffFilter", () => ({
 }));
 
 vi.mock("./AgentsPublishFileDiff", () => ({
-  isLargeInlineDiff: (file: { additions: number; deletions: number }) =>
-    file.additions + file.deletions >= 1_000,
-  requiresExplicitDiffHydration: (file: {
-    additions: number;
-    deletions: number;
-    isGenerated: boolean;
-  }) => file.isGenerated,
   AgentsPublishFileDiff: ({
     file,
     diff,
@@ -145,6 +147,9 @@ vi.mock("./AgentsPublishFileDiff", () => ({
     onOpenFullscreen,
     refKind,
     diffPageRefKind,
+    diffPageReloadKey,
+    inlineDiffScrollParent,
+    diffPageSummary,
     conversationId,
     shouldHydrate,
     annotations,
@@ -162,6 +167,9 @@ vi.mock("./AgentsPublishFileDiff", () => ({
     onRetry?: () => void;
     refKind?: { kind: string };
     diffPageRefKind?: { kind: string };
+    diffPageReloadKey?: string;
+    inlineDiffScrollParent?: HTMLElement | null;
+    diffPageSummary?: { totalRows: number; isBinary: boolean };
     conversationId?: string;
     shouldHydrate: boolean;
     annotations?: unknown[];
@@ -178,6 +186,10 @@ vi.mock("./AgentsPublishFileDiff", () => ({
       }
       data-ref-kind={refKind?.kind}
       data-diff-page-ref-kind={diffPageRefKind?.kind}
+      data-diff-page-reload-key={diffPageReloadKey}
+      data-inline-scroll-parent={String(Boolean(inlineDiffScrollParent))}
+      data-diff-page-total-rows={diffPageSummary?.totalRows ?? ""}
+      data-diff-page-is-binary={String(diffPageSummary?.isBinary ?? false)}
       data-conversation-id={conversationId}
       data-should-hydrate={String(shouldHydrate)}
       data-annotation-count={String(annotations?.length ?? 0)}
@@ -221,6 +233,7 @@ const mockGetRepairStagedFiles = vi.fn();
 const mockGetRepairUnstagedFiles = vi.fn();
 const mockGetRepairStagedFileDiff = vi.fn();
 const mockGetRepairUnstagedFileDiff = vi.fn();
+const mockGetDiffPage = vi.fn();
 
 vi.mock("@/api/diff", () => ({
   diffApi: {
@@ -252,6 +265,8 @@ vi.mock("@/api/diff", () => ({
       mockGetCumulativeFileDiff(...args),
     getAgentConversationWorkspaceRepairConflictFileDiff: (...args: unknown[]) =>
       mockGetRepairConflictFileDiff(...args),
+    getAgentConversationWorkspaceFileDiffPage: (...args: unknown[]) =>
+      mockGetDiffPage(...args),
   },
 }));
 
@@ -382,6 +397,18 @@ describe("AgentsPublishInlineDiffs", () => {
     mockGetRepairUnstagedFileDiff.mockResolvedValue(makeHunkDiff("src/UnstagedFile.tsx"));
     mockGetCumulativeFileDiff.mockResolvedValue(makeHunkDiff("src/CumulativeFile.tsx"));
     mockGetRepairConflictFileDiff.mockResolvedValue(makeConflictDiff("src/Conflict.tsx"));
+    mockGetDiffPage.mockResolvedValue({
+      filePath: "src/Foo.tsx",
+      language: "typescript",
+      rows: [{ kind: "hunk_header", header: "@@ -1,1 +1,1 @@" }],
+      offset: 0,
+      limit: 1,
+      nextOffset: 1,
+      totalRows: 719,
+      oldTotalLines: 0,
+      newTotalLines: 719,
+      isBinary: false,
+    });
   });
 
   describe("rendering", () => {
@@ -689,9 +716,9 @@ describe("AgentsPublishInlineDiffs", () => {
       expect(mockGetStagedFiles).not.toHaveBeenCalled();
     });
 
-    it("uses paged staged loading for large repair staged diffs", async () => {
+    it("uses paged staged loading for medium repair staged diffs", async () => {
       mockGetRepairStagedFiles.mockResolvedValue([
-        makeFileChange("src/HugeRepair.tsx", { additions: 3_307, deletions: 9 }),
+        makeFileChange("src/MediumRepair.tsx", { additions: 647, deletions: 72 }),
       ]);
 
       render(
@@ -704,7 +731,7 @@ describe("AgentsPublishInlineDiffs", () => {
             repairMode
             liveSummary={{
               supportsWorktreeModes: true,
-              staged: { fileCount: 1, additions: 3_307, deletions: 9 },
+              staged: { fileCount: 1, additions: 647, deletions: 72 },
               unstaged: { fileCount: 0, additions: 0, deletions: 0 },
               conflicted: { fileCount: 0, files: [] },
             }}
@@ -716,16 +743,54 @@ describe("AgentsPublishInlineDiffs", () => {
         expect(screen.getByTestId("mock-diff-filter")).toHaveAttribute("data-mode", "staged"),
       );
       await waitFor(() =>
-        expect(screen.getByTestId("mock-file-diff-src-HugeRepair.tsx")).toBeInTheDocument(),
+        expect(screen.getByTestId("mock-file-diff-src-MediumRepair.tsx")).toBeInTheDocument(),
       );
       fireVirtualRange(0, 0);
 
-      const card = screen.getByTestId("mock-file-diff-src-HugeRepair.tsx");
+      const card = screen.getByTestId("mock-file-diff-src-MediumRepair.tsx");
       expect(card).toHaveAttribute("data-diff-page-ref-kind", "staged");
       expect(mockGetRepairStagedFileDiff).not.toHaveBeenCalled();
     });
 
-    it("keeps unchanged repair summary rerenders on the same diff and refetches after the repair signature changes", async () => {
+    it("uses paged unstaged loading for medium repair unstaged diffs", async () => {
+      mockGetRepairUnstagedFiles.mockResolvedValue([
+        makeFileChange("src/MediumUnstagedRepair.tsx", { additions: 647, deletions: 72 }),
+      ]);
+
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={null}
+            commits={[]}
+            isLoading={false}
+            repairMode
+            liveSummary={{
+              supportsWorktreeModes: true,
+              staged: { fileCount: 0, additions: 0, deletions: 0 },
+              unstaged: { fileCount: 1, additions: 647, deletions: 72 },
+              conflicted: { fileCount: 0, files: [] },
+            }}
+          />,
+        ),
+      );
+
+      await waitFor(() =>
+        expect(screen.getByTestId("mock-diff-filter")).toHaveAttribute("data-mode", "unstaged"),
+      );
+      await waitFor(() =>
+        expect(
+          screen.getByTestId("mock-file-diff-src-MediumUnstagedRepair.tsx"),
+        ).toBeInTheDocument(),
+      );
+      fireVirtualRange(0, 0);
+
+      const card = screen.getByTestId("mock-file-diff-src-MediumUnstagedRepair.tsx");
+      expect(card).toHaveAttribute("data-diff-page-ref-kind", "unstaged");
+      expect(mockGetRepairUnstagedFileDiff).not.toHaveBeenCalled();
+    });
+
+    it("updates the paged staged reload key after the repair signature changes", async () => {
       const baseSummary = {
         supportsWorktreeModes: true,
         staged: { fileCount: 1, additions: 5, deletions: 2 },
@@ -760,9 +825,11 @@ describe("AgentsPublishInlineDiffs", () => {
           "true",
         ),
       );
-      await waitFor(() =>
-        expect(mockGetRepairStagedFileDiff).toHaveBeenCalledTimes(1),
-      );
+      const initialReloadKey = screen
+        .getByTestId("mock-file-diff-src-StagedFile.tsx")
+        .getAttribute("data-diff-page-reload-key");
+      expect(initialReloadKey).toBeTruthy();
+      expect(mockGetRepairStagedFileDiff).not.toHaveBeenCalled();
 
       rerender(
         withProviders(
@@ -782,7 +849,12 @@ describe("AgentsPublishInlineDiffs", () => {
         ),
       );
       await new Promise((resolve) => setTimeout(resolve, 10));
-      expect(mockGetRepairStagedFileDiff).toHaveBeenCalledTimes(1);
+      expect(
+        screen
+          .getByTestId("mock-file-diff-src-StagedFile.tsx")
+          .getAttribute("data-diff-page-reload-key"),
+      ).toBe(initialReloadKey);
+      expect(mockGetRepairStagedFileDiff).not.toHaveBeenCalled();
 
       rerender(
         withProviders(
@@ -802,8 +874,13 @@ describe("AgentsPublishInlineDiffs", () => {
         ),
       );
       await waitFor(() =>
-        expect(mockGetRepairStagedFileDiff).toHaveBeenCalledTimes(2),
+        expect(
+          screen
+            .getByTestId("mock-file-diff-src-StagedFile.tsx")
+            .getAttribute("data-diff-page-reload-key"),
+        ).not.toBe(initialReloadKey),
       );
+      expect(mockGetRepairStagedFileDiff).not.toHaveBeenCalled();
     });
 
     it("hydrates published workspace diffs after unstaged changes are published", async () => {
@@ -876,11 +953,13 @@ describe("AgentsPublishInlineDiffs", () => {
           "true",
         ),
       );
-      await waitFor(() =>
-        expect(mockGetUncommittedDiff).toHaveBeenCalledWith(
-          "conv-1",
-          "src/Published.tsx",
-        ),
+      expect(screen.getByTestId("mock-file-diff-src-Published.tsx")).toHaveAttribute(
+        "data-diff-page-ref-kind",
+        "head",
+      );
+      expect(mockGetUncommittedDiff).not.toHaveBeenCalledWith(
+        "conv-1",
+        "src/Published.tsx",
       );
     });
 
@@ -1109,8 +1188,8 @@ describe("AgentsPublishInlineDiffs", () => {
       expect(mockGetUncommittedDiff).not.toHaveBeenCalled();
     });
 
-    it("fetches workspace diff for each hydrated expanded file", async () => {
-      const changes = [makeFileChange("src/Foo.tsx")];
+    it("skips workspace full-diff fetching for a page-capable hydrated file", async () => {
+      const changes = [makeFileChange("src/Foo.tsx", { additions: 647, deletions: 72 })];
       render(
         withProviders(
           <AgentsPublishInlineDiffs
@@ -1123,7 +1202,38 @@ describe("AgentsPublishInlineDiffs", () => {
       );
       fireVirtualRange(0, 0);
       await waitFor(() =>
-        expect(mockGetUncommittedDiff).toHaveBeenCalledWith("conv-42", "src/Foo.tsx"),
+        expect(screen.getByTestId("mock-file-diff-src-Foo.tsx")).toHaveAttribute(
+          "data-should-hydrate",
+          "true",
+        ),
+      );
+      expect(screen.getByTestId("mock-file-diff-src-Foo.tsx")).toHaveAttribute(
+        "data-diff-page-ref-kind",
+        "head",
+      );
+      await new Promise((r) => setTimeout(r, 10));
+      expect(mockGetUncommittedDiff).not.toHaveBeenCalledWith("conv-42", "src/Foo.tsx");
+    });
+
+    it("fetches workspace diff for hydrated expanded files when page refs are omitted", async () => {
+      const changes = [makeFileChange("src/Fallback.tsx")];
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-42"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+            repairMode
+          />,
+        ),
+      );
+      fireVirtualRange(0, 0);
+      await waitFor(() =>
+        expect(mockGetUncommittedDiff).toHaveBeenCalledWith("conv-42", "src/Fallback.tsx"),
+      );
+      expect(screen.getByTestId("mock-file-diff-src-Fallback.tsx")).not.toHaveAttribute(
+        "data-diff-page-ref-kind",
       );
     });
 
@@ -1136,6 +1246,7 @@ describe("AgentsPublishInlineDiffs", () => {
             review={makeReview(changes)}
             commits={[]}
             isLoading={false}
+            repairMode
           />,
         ),
       );
@@ -1146,7 +1257,7 @@ describe("AgentsPublishInlineDiffs", () => {
       expect(mockGetUncommittedDiff).not.toHaveBeenCalledWith("conv-42", "src/Bar.tsx");
     });
 
-    it("passes diff data to file card after fetch", async () => {
+    it("passes fallback diff data to file card after fetch", async () => {
       const changes = [makeFileChange("src/Foo.tsx")];
       render(
         withProviders(
@@ -1155,6 +1266,7 @@ describe("AgentsPublishInlineDiffs", () => {
             review={makeReview(changes)}
             commits={[]}
             isLoading={false}
+            repairMode
           />,
         ),
       );
@@ -1280,7 +1392,7 @@ describe("AgentsPublishInlineDiffs", () => {
   });
 
   describe("mode=commit — diff fetching", () => {
-    it("fetches commit diff when mode switches to a commit SHA", async () => {
+    it("skips commit full-diff fetching when page refs are available", async () => {
       const user = userEvent.setup();
       const changes = [makeFileChange("src/Foo.tsx")];
       const commits = [makeCommit("sha-abc-full")];
@@ -1304,11 +1416,20 @@ describe("AgentsPublishInlineDiffs", () => {
       );
       fireVirtualRange(0, 0);
       await waitFor(() =>
-        expect(mockGetCommitDiff).toHaveBeenCalledWith(
-          "conv-1",
-          "sha-abc",
-          "src/CommitOnly.tsx",
+        expect(screen.getByTestId("mock-file-diff-src-CommitOnly.tsx")).toHaveAttribute(
+          "data-should-hydrate",
+          "true",
         ),
+      );
+      expect(screen.getByTestId("mock-file-diff-src-CommitOnly.tsx")).toHaveAttribute(
+        "data-diff-page-ref-kind",
+        "commit",
+      );
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(mockGetCommitDiff).not.toHaveBeenCalledWith(
+        "conv-1",
+        "sha-abc",
+        "src/CommitOnly.tsx",
       );
     });
 
@@ -1452,7 +1573,7 @@ describe("AgentsPublishInlineDiffs", () => {
       expect(screen.getByTestId("inline-diffs-deletions")).toHaveTextContent("−4");
     });
 
-    it("fetches staged diff for each expanded staged file", async () => {
+    it("skips staged full-diff fetching when page refs are available", async () => {
       const user = userEvent.setup();
       const changes = [makeFileChange("src/Foo.tsx")];
       render(
@@ -1471,8 +1592,17 @@ describe("AgentsPublishInlineDiffs", () => {
       );
       fireVirtualRange(0, 0);
       await waitFor(() =>
-        expect(mockGetStagedFileDiff).toHaveBeenCalledWith("conv-1", "src/StagedFile.tsx"),
+        expect(screen.getByTestId("mock-file-diff-src-StagedFile.tsx")).toHaveAttribute(
+          "data-should-hydrate",
+          "true",
+        ),
       );
+      expect(screen.getByTestId("mock-file-diff-src-StagedFile.tsx")).toHaveAttribute(
+        "data-diff-page-ref-kind",
+        "staged",
+      );
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(mockGetStagedFileDiff).not.toHaveBeenCalledWith("conv-1", "src/StagedFile.tsx");
     });
 
     it("passes refKind { kind: 'staged' } to file diff cards in staged mode", async () => {
@@ -1617,7 +1747,7 @@ describe("AgentsPublishInlineDiffs", () => {
       expect(screen.getByTestId("inline-diffs-deletions")).toHaveTextContent("−1");
     });
 
-    it("fetches unstaged diff for each expanded unstaged file", async () => {
+    it("skips unstaged full-diff fetching when page refs are available", async () => {
       const user = userEvent.setup();
       const changes = [makeFileChange("src/Foo.tsx")];
       render(
@@ -1636,7 +1766,19 @@ describe("AgentsPublishInlineDiffs", () => {
       );
       fireVirtualRange(0, 0);
       await waitFor(() =>
-        expect(mockGetUnstagedFileDiff).toHaveBeenCalledWith("conv-1", "src/UnstagedFile.tsx"),
+        expect(screen.getByTestId("mock-file-diff-src-UnstagedFile.tsx")).toHaveAttribute(
+          "data-should-hydrate",
+          "true",
+        ),
+      );
+      expect(screen.getByTestId("mock-file-diff-src-UnstagedFile.tsx")).toHaveAttribute(
+        "data-diff-page-ref-kind",
+        "unstaged",
+      );
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(mockGetUnstagedFileDiff).not.toHaveBeenCalledWith(
+        "conv-1",
+        "src/UnstagedFile.tsx",
       );
     });
   });
@@ -1751,7 +1893,7 @@ describe("AgentsPublishInlineDiffs", () => {
       expect(screen.getByTestId("inline-diffs-deletions")).toHaveTextContent("−5");
     });
 
-    it("fetches cumulative diff for each expanded cumulative file", async () => {
+    it("skips cumulative full-diff fetching when page refs are available", async () => {
       const user = userEvent.setup();
       const changes = [makeFileChange("src/Foo.tsx")];
       render(
@@ -1770,7 +1912,19 @@ describe("AgentsPublishInlineDiffs", () => {
       );
       fireVirtualRange(0, 0);
       await waitFor(() =>
-        expect(mockGetCumulativeFileDiff).toHaveBeenCalledWith("conv-1", "src/CumulativeFile.tsx"),
+        expect(screen.getByTestId("mock-file-diff-src-CumulativeFile.tsx")).toHaveAttribute(
+          "data-should-hydrate",
+          "true",
+        ),
+      );
+      expect(screen.getByTestId("mock-file-diff-src-CumulativeFile.tsx")).toHaveAttribute(
+        "data-diff-page-ref-kind",
+        "cumulative_head",
+      );
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(mockGetCumulativeFileDiff).not.toHaveBeenCalledWith(
+        "conv-1",
+        "src/CumulativeFile.tsx",
       );
     });
 
@@ -2071,6 +2225,168 @@ describe("AgentsPublishInlineDiffs", () => {
         behavior: "auto",
         index: 1,
       });
+      await waitFor(() =>
+        expect(annotationScrollIntoViewMock).toHaveBeenCalledWith({
+          block: "start",
+          behavior: "auto",
+          inline: "nearest",
+        }),
+      );
+      expect(screen.getByTestId("mock-file-diff-src-Bar.tsx")).toHaveAttribute(
+        "data-focus-target",
+        "true",
+      );
+    });
+
+    it("keeps the selected jump file aligned while the row resizes", async () => {
+      const user = userEvent.setup();
+      const changes = [makeFileChange("src/Foo.tsx"), makeFileChange("src/Bar.tsx")];
+      const originalResizeObserver = globalThis.ResizeObserver;
+      const originalWindowResizeObserver = window.ResizeObserver;
+      const resizeCallbacks: ResizeObserverCallback[] = [];
+
+      class TestResizeObserver {
+        constructor(callback: ResizeObserverCallback) {
+          resizeCallbacks.push(callback);
+        }
+
+        observe = vi.fn();
+        unobserve = vi.fn();
+        disconnect = vi.fn();
+      }
+
+      vi.stubGlobal("ResizeObserver", TestResizeObserver);
+      Object.defineProperty(window, "ResizeObserver", {
+        configurable: true,
+        writable: true,
+        value: TestResizeObserver,
+      });
+      try {
+        render(
+          withProviders(
+            <AgentsPublishInlineDiffs
+              conversationId="conv-1"
+              review={makeReview(changes)}
+              commits={[]}
+              isLoading={false}
+            />,
+          ),
+        );
+        await user.click(screen.getByTestId("inline-diffs-jump-to-file"));
+        await user.click(screen.getByTestId("jump-to-file-item-src/Bar.tsx"));
+        await waitFor(() =>
+          expect(annotationScrollIntoViewMock).toHaveBeenCalledWith({
+            block: "start",
+            behavior: "auto",
+            inline: "nearest",
+          }),
+        );
+
+        annotationScrollIntoViewMock.mockClear();
+        expect(resizeCallbacks.length).toBeGreaterThan(0);
+        act(() => {
+          for (const resizeCallback of resizeCallbacks) {
+            resizeCallback([], {} as ResizeObserver);
+          }
+        });
+
+        expect(annotationScrollIntoViewMock).toHaveBeenCalledWith({
+          block: "start",
+          behavior: "auto",
+          inline: "nearest",
+        });
+      } finally {
+        vi.stubGlobal("ResizeObserver", originalResizeObserver);
+        Object.defineProperty(window, "ResizeObserver", {
+          configurable: true,
+          writable: true,
+          value: originalWindowResizeObserver,
+        });
+      }
+    });
+
+    it("keeps the selected jump file aligned during settle frames and releases on user input", async () => {
+      const user = userEvent.setup();
+      const changes = [makeFileChange("src/Foo.tsx"), makeFileChange("src/Bar.tsx")];
+      const originalRequestAnimationFrame = window.requestAnimationFrame;
+      const originalCancelAnimationFrame = window.cancelAnimationFrame;
+      const frameCallbacks: Array<{ callback: FrameRequestCallback; id: number }> = [];
+      const cancelledFrames = new Set<number>();
+      let nextFrameId = 1;
+
+      Object.defineProperty(window, "requestAnimationFrame", {
+        configurable: true,
+        writable: true,
+        value: (callback: FrameRequestCallback) => {
+          const id = nextFrameId++;
+          frameCallbacks.push({ callback, id });
+          return id;
+        },
+      });
+      Object.defineProperty(window, "cancelAnimationFrame", {
+        configurable: true,
+        writable: true,
+        value: (id: number) => {
+          cancelledFrames.add(id);
+        },
+      });
+
+      try {
+        render(
+          withProviders(
+            <AgentsPublishInlineDiffs
+              conversationId="conv-1"
+              review={makeReview(changes)}
+              commits={[]}
+              isLoading={false}
+            />,
+          ),
+        );
+        await user.click(screen.getByTestId("inline-diffs-jump-to-file"));
+        await user.click(screen.getByTestId("jump-to-file-item-src/Bar.tsx"));
+        await waitFor(() =>
+          expect(annotationScrollIntoViewMock).toHaveBeenCalledWith({
+            block: "start",
+            behavior: "auto",
+            inline: "nearest",
+          }),
+        );
+
+        annotationScrollIntoViewMock.mockClear();
+        const firstFrame = frameCallbacks.shift();
+        expect(firstFrame).toBeDefined();
+        act(() => {
+          firstFrame?.callback(performance.now());
+        });
+        expect(annotationScrollIntoViewMock).toHaveBeenCalledWith({
+          block: "start",
+          behavior: "auto",
+          inline: "nearest",
+        });
+
+        annotationScrollIntoViewMock.mockClear();
+        act(() => {
+          window.dispatchEvent(new Event("wheel"));
+        });
+        const cancelledFrame = frameCallbacks.shift();
+        expect(cancelledFrame).toBeDefined();
+        expect(cancelledFrames.has(cancelledFrame!.id)).toBe(true);
+        act(() => {
+          cancelledFrame?.callback(performance.now());
+        });
+        expect(annotationScrollIntoViewMock).not.toHaveBeenCalled();
+      } finally {
+        Object.defineProperty(window, "requestAnimationFrame", {
+          configurable: true,
+          writable: true,
+          value: originalRequestAnimationFrame,
+        });
+        Object.defineProperty(window, "cancelAnimationFrame", {
+          configurable: true,
+          writable: true,
+          value: originalCancelAnimationFrame,
+        });
+      }
     });
 
     it("scrolls and expands a file from an external focus request", async () => {
@@ -2290,7 +2606,7 @@ describe("AgentsPublishInlineDiffs", () => {
       });
     });
 
-    it("does not fetch a generated file diff until Show anyway is selected", async () => {
+    it("does not fetch page-capable generated full diffs before or after Show anyway", async () => {
       const user = userEvent.setup();
       const changes = [makeFileChange("src/Foo.tsx", { isGenerated: true })];
       render(
@@ -2311,8 +2627,17 @@ describe("AgentsPublishInlineDiffs", () => {
       await user.click(screen.getByTestId("show-anyway-src-Foo.tsx"));
 
       await waitFor(() =>
-        expect(mockGetUncommittedDiff).toHaveBeenCalledWith("conv-1", "src/Foo.tsx"),
+        expect(screen.getByTestId("mock-file-diff-src-Foo.tsx")).toHaveAttribute(
+          "data-show-anyway-overridden",
+          "true",
+        ),
       );
+      expect(screen.getByTestId("mock-file-diff-src-Foo.tsx")).toHaveAttribute(
+        "data-diff-page-ref-kind",
+        "head",
+      );
+      await new Promise((r) => setTimeout(r, 10));
+      expect(mockGetUncommittedDiff).not.toHaveBeenCalledWith("conv-1", "src/Foo.tsx");
     });
 
     it("keeps large file diffs off the full-diff fetch path without Show anyway", async () => {
@@ -2341,9 +2666,30 @@ describe("AgentsPublishInlineDiffs", () => {
         "data-diff-page-ref-kind",
         "head",
       );
+      await waitFor(() =>
+        expect(mockGetDiffPage).toHaveBeenCalledWith({
+          conversationId: "conv-1",
+          path: "src/Huge.tsx",
+          refKind: { kind: "head" },
+          offset: 0,
+          limit: 1,
+        }),
+      );
+      await waitFor(() =>
+        expect(screen.getByTestId("mock-file-diff-src-Huge.tsx")).toHaveAttribute(
+          "data-diff-page-total-rows",
+          "719",
+        ),
+      );
+      await waitFor(() =>
+        expect(screen.getByTestId("mock-file-diff-src-Huge.tsx")).toHaveAttribute(
+          "data-inline-scroll-parent",
+          "true",
+        ),
+      );
     });
 
-    it("still fetches generated non-large file diffs after Show anyway", async () => {
+    it("fetches generated fallback file diffs after Show anyway when page refs are omitted", async () => {
       const user = userEvent.setup();
       const changes = [
         makeFileChange("src/generated.ts", {
@@ -2359,6 +2705,7 @@ describe("AgentsPublishInlineDiffs", () => {
             review={makeReview(changes)}
             commits={[]}
             isLoading={false}
+            repairMode
           />,
         ),
       );
@@ -2375,6 +2722,9 @@ describe("AgentsPublishInlineDiffs", () => {
       expect(screen.getByTestId("mock-file-diff-src-generated.ts")).toHaveAttribute(
         "data-show-anyway-overridden",
         "true",
+      );
+      expect(screen.getByTestId("mock-file-diff-src-generated.ts")).not.toHaveAttribute(
+        "data-diff-page-ref-kind",
       );
     });
 

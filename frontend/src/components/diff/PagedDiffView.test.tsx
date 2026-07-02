@@ -4,45 +4,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FileDiffPage } from "@/api/diff";
 
 const mockGetDiffPage = vi.fn();
-let latestRangeChanged:
+let latestSetVirtuosoRange:
   | ((range: { startIndex: number; endIndex: number }) => void)
   | undefined;
-const intersectionObservers: MockIntersectionObserver[] = [];
-
-class MockIntersectionObserver {
-  readonly callback: IntersectionObserverCallback;
-  readonly elements = new Set<Element>();
-
-  constructor(callback: IntersectionObserverCallback) {
-    this.callback = callback;
-    intersectionObservers.push(this);
-  }
-
-  observe = (element: Element) => {
-    this.elements.add(element);
-  };
-
-  unobserve = (element: Element) => {
-    this.elements.delete(element);
-  };
-
-  disconnect = () => {
-    this.elements.clear();
-  };
-
-  takeRecords = () => [];
-
-  trigger(testId: string) {
-    for (const element of this.elements) {
-      if (element.getAttribute("data-testid") === testId) {
-        this.callback(
-          [{ isIntersecting: true, target: element } as IntersectionObserverEntry],
-          this as unknown as IntersectionObserver,
-        );
-      }
-    }
-  }
-}
 
 vi.mock("@/api/diff", () => ({
   diffApi: {
@@ -60,26 +24,79 @@ vi.mock("react-virtuoso", async () => {
     rangeChanged?: (range: { startIndex: number; endIndex: number }) => void;
     computeItemKey?: (index: number) => React.Key;
     style?: React.CSSProperties;
+    customScrollParent?: HTMLElement;
+    useWindowScroll?: boolean;
+    defaultItemHeight?: number;
+    components?: unknown;
+    increaseViewportBy?: number | { top?: number; bottom?: number };
+    scrollSeekConfiguration?: unknown;
     "data-testid"?: string;
   };
 
   function Virtuoso(props: VirtuosoMockProps) {
-    latestRangeChanged = props.rangeChanged;
+    const { rangeChanged } = props;
+    const initialEnd = Math.max(0, Math.min((props.totalCount ?? 0) - 1, 23));
+    const [range, setRange] = React.useState({
+      startIndex: 0,
+      endIndex: initialEnd,
+    });
+    const rangeChangedRef = React.useRef(rangeChanged);
+    rangeChangedRef.current = rangeChanged;
+
     React.useEffect(() => {
-      props.rangeChanged?.({ startIndex: 0, endIndex: 23 });
-    }, [props]);
+      rangeChanged?.(range);
+    }, [rangeChanged, range]);
+
+    React.useEffect(() => {
+      latestSetVirtuosoRange = (nextRange) => {
+        setRange(nextRange);
+        rangeChangedRef.current?.(nextRange);
+      };
+      return () => {
+        latestSetVirtuosoRange = undefined;
+      };
+    }, []);
+
     const totalCount = props.totalCount ?? 0;
+    const startIndex = Math.max(0, Math.min(range.startIndex, totalCount));
+    const endIndex = Math.max(
+      startIndex - 1,
+      Math.min(range.endIndex, totalCount - 1)
+    );
+    const increaseViewportBy = props.increaseViewportBy;
+    const increaseTop =
+      typeof increaseViewportBy === "number"
+        ? increaseViewportBy
+        : increaseViewportBy?.top ?? 0;
+    const increaseBottom =
+      typeof increaseViewportBy === "number"
+        ? increaseViewportBy
+        : increaseViewportBy?.bottom ?? 0;
+
     return (
       <div
         data-testid={props["data-testid"] ?? "mock-virtuoso"}
         data-count={totalCount}
+        data-custom-scroll-parent={props.customScrollParent ? "true" : "false"}
+        data-default-item-height={props.defaultItemHeight ?? ""}
+        data-has-scroll-seek={String(Boolean(props.scrollSeekConfiguration))}
+        data-increase-viewport-bottom={increaseBottom}
+        data-increase-viewport-top={increaseTop}
+        data-rendered-end={endIndex}
+        data-rendered-start={startIndex}
+        data-use-window-scroll={String(Boolean(props.useWindowScroll))}
         style={props.style}
       >
-        {Array.from({ length: Math.min(totalCount, 24) }).map((_, index) => (
-          <div key={props.computeItemKey?.(index) ?? index}>
-            {props.itemContent?.(index)}
-          </div>
-        ))}
+        {Array.from({ length: Math.max(0, endIndex - startIndex + 1) }).map(
+          (_, rangeIndex) => {
+            const index = startIndex + rangeIndex;
+            return (
+              <div key={props.computeItemKey?.(index) ?? index}>
+                {props.itemContent?.(index)}
+              </div>
+            );
+          }
+        )}
       </div>
     );
   }
@@ -119,30 +136,32 @@ function makePage(offset: number, limit: number, totalRows = 260): FileDiffPage 
   };
 }
 
-async function triggerObservedSentinel(testId: string) {
-  await screen.findByTestId(testId);
-  await waitFor(() => {
-    expect(
-      intersectionObservers.some((observer) =>
-        Array.from(observer.elements).some(
-          (element) => element.getAttribute("data-testid") === testId
-        )
-      )
-    ).toBe(true);
+function createDeferredPage() {
+  let resolve!: (page: FileDiffPage) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<FileDiffPage>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
   });
+  return { promise, reject, resolve };
+}
 
+async function setVirtuosoRange(startIndex: number, endIndex: number) {
   await act(async () => {
-    for (const observer of intersectionObservers) {
-      observer.trigger(testId);
-    }
+    latestSetVirtuosoRange?.({ startIndex, endIndex });
   });
+}
+
+function countPageFetches(offset: number): number {
+  return mockGetDiffPage.mock.calls.filter(([args]) => {
+    const pageArgs = args as { offset?: number };
+    return pageArgs.offset === offset;
+  }).length;
 }
 
 describe("PagedDiffView", () => {
   beforeEach(() => {
-    latestRangeChanged = undefined;
-    intersectionObservers.length = 0;
-    vi.stubGlobal("IntersectionObserver", MockIntersectionObserver);
+    latestSetVirtuosoRange = undefined;
     mockGetDiffPage.mockReset();
     mockGetDiffPage.mockImplementation(({ offset, limit }) =>
       Promise.resolve(makePage(offset as number, limit as number))
@@ -153,14 +172,16 @@ describe("PagedDiffView", () => {
     vi.unstubAllGlobals();
   });
 
-  it("fetches and renders only the first page initially without owning a vertical scroller", async () => {
+  it("renders inline rows through Virtuoso attached to the outer scroll parent", async () => {
     render(
-      <PagedDiffView
-        conversationId="conv-1"
-        filePath="src/Huge.tsx"
-        refKind={{ kind: "head" }}
-        pageSize={100}
-      />
+      <div data-testid="outer-scroll" style={{ overflowY: "auto" }}>
+        <PagedDiffView
+          conversationId="conv-1"
+          filePath="src/Huge.tsx"
+          refKind={{ kind: "head" }}
+          pageSize={100}
+        />
+      </div>
     );
 
     await waitFor(() =>
@@ -180,79 +201,100 @@ describe("PagedDiffView", () => {
       "data-scroll-container",
       "false"
     );
-    expect(screen.queryByTestId("paged-diff-virtual-list")).not.toBeInTheDocument();
+    expect(screen.getByTestId("paged-diff-view")).toHaveAttribute(
+      "data-loaded-page-count",
+      "2"
+    );
+    expect(screen.getByTestId("paged-diff-view")).toHaveAttribute(
+      "data-mounted-page-count",
+      "1"
+    );
     expect(screen.getByTestId("paged-diff-inline-list")).toBeInTheDocument();
+    expect(screen.getByTestId("paged-diff-virtual-list")).toHaveAttribute(
+      "data-custom-scroll-parent",
+      "true"
+    );
+    expect(screen.getByTestId("paged-diff-virtual-list")).toHaveAttribute(
+      "data-use-window-scroll",
+      "false"
+    );
+    expect(screen.getByTestId("paged-diff-virtual-list")).toHaveAttribute(
+      "data-has-scroll-seek",
+      "true"
+    );
     expect(screen.getByText("@@ -1,260 +1,260 @@")).toBeInTheDocument();
     expect(screen.getByText("line 1")).toBeInTheDocument();
     expect(screen.queryByText("line 120")).toBeNull();
   });
 
-  it("loads the next inline page when the bottom sentinel reaches the outer scroll", async () => {
+  it("waits for an explicit inline scroll parent instead of falling back to window scroll", async () => {
     render(
       <PagedDiffView
         conversationId="conv-1"
         filePath="src/Huge.tsx"
         refKind={{ kind: "head" }}
         pageSize={100}
+        inlineScrollParent={null}
+        initialTotalRows={260}
       />
     );
 
-    await screen.findByTestId("paged-diff-view");
-
-    await triggerObservedSentinel("paged-diff-next-sentinel");
-
-    await waitFor(() =>
-      expect(mockGetDiffPage).toHaveBeenCalledWith({
-        conversationId: "conv-1",
-        path: "src/Huge.tsx",
-        refKind: { kind: "head" },
-        offset: 100,
-        limit: 100,
-      })
-    );
-    expect(await screen.findByText("line 120")).toBeInTheDocument();
-  });
-
-  it("unmounts old inline pages as deeper pages load", async () => {
-    mockGetDiffPage.mockImplementation(({ offset, limit }) =>
-      Promise.resolve(makePage(offset as number, limit as number, 500))
-    );
-
-    render(
-      <PagedDiffView
-        conversationId="conv-1"
-        filePath="src/Huge.tsx"
-        refKind={{ kind: "head" }}
-        pageSize={100}
-      />
-    );
-
-    await screen.findByText("line 1");
-
-    await triggerObservedSentinel("paged-diff-next-sentinel");
-    expect(await screen.findByText("line 120")).toBeInTheDocument();
-
-    await triggerObservedSentinel("paged-diff-next-sentinel");
-    expect(await screen.findByText("line 220")).toBeInTheDocument();
-
-    await triggerObservedSentinel("paged-diff-next-sentinel");
-    expect(await screen.findByText("line 320")).toBeInTheDocument();
-
-    await waitFor(() => {
-      expect(screen.getByTestId("paged-diff-view")).toHaveAttribute(
-        "data-loaded-page-count",
-        "2"
-      );
+    expect(await screen.findByTestId("paged-diff-scroll-parent-pending")).toHaveStyle({
+      height: `${260 * 20}px`,
     });
-    expect(screen.queryByText("line 1")).toBeNull();
-    expect(screen.queryByText("line 120")).toBeNull();
-    expect(screen.getByText("line 220")).toBeInTheDocument();
-    expect(screen.getByText("line 320")).toBeInTheDocument();
-    expect(screen.getByTestId("paged-diff-top-spacer")).toBeInTheDocument();
-    expect(screen.getByTestId("paged-diff-bottom-spacer")).toBeInTheDocument();
+    expect(screen.queryByTestId("paged-diff-virtual-list")).toBeNull();
   });
 
-  it("can page backward after pruning older inline pages", async () => {
+  it("renders full-height placeholder slots from a row-count hint before the first page resolves", async () => {
+    const delayedPage = createDeferredPage();
+    mockGetDiffPage.mockImplementation(() => delayedPage.promise);
+
+    render(
+      <PagedDiffView
+        conversationId="conv-1"
+        filePath="src/Huge.tsx"
+        refKind={{ kind: "head" }}
+        pageSize={100}
+        inlineScrollParent={document.createElement("div")}
+        initialTotalRows={260}
+      />
+    );
+
+    expect(await screen.findByTestId("paged-diff-view")).toHaveAttribute(
+      "data-total-rows",
+      "260"
+    );
+    expect(screen.queryByTestId("paged-diff-loading")).toBeNull();
+    expect(screen.getByTestId("paged-diff-virtual-list")).toHaveAttribute(
+      "data-count",
+      "260"
+    );
+    expect(await screen.findAllByTestId("paged-diff-placeholder-row")).toHaveLength(24);
+  });
+
+  it("uses window scrolling when no outer scroll parent is present", async () => {
+    render(
+      <PagedDiffView
+        conversationId="conv-1"
+        filePath="src/Huge.tsx"
+        refKind={{ kind: "head" }}
+        pageSize={100}
+      />
+    );
+
+    await screen.findByText("line 1");
+
+    expect(screen.getByTestId("paged-diff-virtual-list")).toHaveAttribute(
+      "data-custom-scroll-parent",
+      "false"
+    );
+    expect(screen.getByTestId("paged-diff-virtual-list")).toHaveAttribute(
+      "data-use-window-scroll",
+      "true"
+    );
+  });
+
+  it("loads inline pages from the visible virtual range while keeping off-range rows unmounted", async () => {
     mockGetDiffPage.mockImplementation(({ offset, limit }) =>
       Promise.resolve(makePage(offset as number, limit as number, 500))
     );
@@ -268,30 +310,105 @@ describe("PagedDiffView", () => {
 
     await screen.findByText("line 1");
 
-    await triggerObservedSentinel("paged-diff-next-sentinel");
-    expect(await screen.findByText("line 120")).toBeInTheDocument();
-
-    await triggerObservedSentinel("paged-diff-next-sentinel");
-    expect(await screen.findByText("line 220")).toBeInTheDocument();
-
-    await triggerObservedSentinel("paged-diff-next-sentinel");
-    expect(await screen.findByText("line 320")).toBeInTheDocument();
-    expect(screen.queryByText("line 120")).toBeNull();
-
-    await triggerObservedSentinel("paged-diff-previous-sentinel");
+    await setVirtuosoRange(220, 240);
 
     await waitFor(() =>
       expect(mockGetDiffPage).toHaveBeenCalledWith({
         conversationId: "conv-1",
         path: "src/Huge.tsx",
         refKind: { kind: "head" },
-        offset: 100,
+        offset: 200,
         limit: 100,
       })
     );
+    expect(await screen.findByText("line 220")).toBeInTheDocument();
+    expect(countPageFetches(100)).toBe(1);
+    expect(countPageFetches(300)).toBe(1);
+    expect(screen.queryByText("line 1")).toBeNull();
+    expect(screen.getByTestId("paged-diff-view")).toHaveAttribute(
+      "data-loaded-page-count",
+      "4"
+    );
+    expect(screen.getByTestId("paged-diff-view")).toHaveAttribute(
+      "data-mounted-page-count",
+      "1"
+    );
+
+    await setVirtuosoRange(420, 440);
+
+    expect(await screen.findByText("line 420")).toBeInTheDocument();
+    expect(screen.queryByText("line 220")).toBeNull();
+    expect(screen.getByTestId("paged-diff-view")).toHaveAttribute(
+      "data-loaded-page-count",
+      "5"
+    );
+    expect(screen.getByTestId("paged-diff-view")).toHaveAttribute(
+      "data-mounted-page-count",
+      "1"
+    );
+  });
+
+  it("renders placeholder slots for unloaded visible rows and replaces them after the page resolves", async () => {
+    const delayedPage = createDeferredPage();
+    mockGetDiffPage.mockImplementation(({ offset, limit }) => {
+      if (offset === 100) {
+        return delayedPage.promise;
+      }
+      return Promise.resolve(makePage(offset as number, limit as number, 260));
+    });
+
+    render(
+      <PagedDiffView
+        conversationId="conv-1"
+        filePath="src/Huge.tsx"
+        refKind={{ kind: "head" }}
+        pageSize={100}
+      />
+    );
+
+    await screen.findByText("line 1");
+
+    await setVirtuosoRange(120, 122);
+
+    expect(await screen.findAllByTestId("paged-diff-placeholder-row")).toHaveLength(3);
+    expect(screen.queryByText("line 120")).toBeNull();
+
+    await act(async () => {
+      delayedPage.resolve(makePage(100, 100, 260));
+      await delayedPage.promise;
+    });
+
     expect(await screen.findByText("line 120")).toBeInTheDocument();
-    expect(screen.getByText("line 220")).toBeInTheDocument();
-    expect(screen.queryByText("line 320")).toBeNull();
+    expect(screen.queryAllByTestId("paged-diff-placeholder-row")).toHaveLength(0);
+  });
+
+  it("keeps fetched inline pages cached when their rows leave the virtual range", async () => {
+    mockGetDiffPage.mockImplementation(({ offset, limit }) =>
+      Promise.resolve(makePage(offset as number, limit as number, 500))
+    );
+
+    render(
+      <PagedDiffView
+        conversationId="conv-1"
+        filePath="src/Huge.tsx"
+        refKind={{ kind: "head" }}
+        pageSize={100}
+      />
+    );
+
+    await screen.findByText("line 1");
+
+    await setVirtuosoRange(120, 140);
+    expect(await screen.findByText("line 120")).toBeInTheDocument();
+    expect(countPageFetches(100)).toBe(1);
+
+    await setVirtuosoRange(420, 440);
+    expect(await screen.findByText("line 420")).toBeInTheDocument();
+    expect(screen.queryByText("line 120")).toBeNull();
+
+    await setVirtuosoRange(120, 140);
+    expect(await screen.findByText("line 120")).toBeInTheDocument();
+    expect(countPageFetches(100)).toBe(1);
   });
 
   it("renders terminal binary and empty page states without mounting rows", async () => {
@@ -354,10 +471,15 @@ describe("PagedDiffView", () => {
     await user.click(screen.getByRole("button", { name: /retry loading diff rows/i }));
 
     expect(await screen.findByText("line 1")).toBeInTheDocument();
-    expect(mockGetDiffPage).toHaveBeenCalledTimes(2);
+    expect(countPageFetches(0)).toBe(2);
+    expect(countPageFetches(100)).toBe(1);
   });
 
   it("loads visible pages and prunes distant loaded pages in contained scroll mode", async () => {
+    mockGetDiffPage.mockImplementation(({ offset, limit }) =>
+      Promise.resolve(makePage(offset as number, limit as number, 500))
+    );
+
     render(
       <PagedDiffView
         conversationId="conv-1"
@@ -374,10 +496,12 @@ describe("PagedDiffView", () => {
       "true"
     );
     expect(screen.getByTestId("paged-diff-virtual-list")).toBeInTheDocument();
+    expect(screen.getByTestId("paged-diff-virtual-list")).toHaveAttribute(
+      "data-increase-viewport-top",
+      "320"
+    );
 
-    await act(async () => {
-      latestRangeChanged?.({ startIndex: 220, endIndex: 240 });
-    });
+    await setVirtuosoRange(220, 240);
     await waitFor(() =>
       expect(mockGetDiffPage).toHaveBeenCalledWith({
         conversationId: "conv-1",
@@ -388,9 +512,7 @@ describe("PagedDiffView", () => {
       })
     );
 
-    await act(async () => {
-      latestRangeChanged?.({ startIndex: 450, endIndex: 470 });
-    });
+    await setVirtuosoRange(450, 470);
     await waitFor(() =>
       expect(mockGetDiffPage).toHaveBeenCalledWith({
         conversationId: "conv-1",
@@ -404,7 +526,7 @@ describe("PagedDiffView", () => {
       const loadedPageCount = Number(
         screen.getByTestId("paged-diff-view").getAttribute("data-loaded-page-count")
       );
-      expect(loadedPageCount).toBeLessThanOrEqual(2);
+      expect(loadedPageCount).toBeLessThanOrEqual(3);
     });
   });
 });

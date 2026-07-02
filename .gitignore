@@ -8,6 +8,8 @@ backups/
 # When backing up, copy .db + .db-wal + .db-shm together, or run PRAGMA wal_checkpoint(TRUNCATE) first
 *.db-wal
 *.db-shm
+*.db-journal
+*.db.tmp*
 
 # Logs (keep activity.md and code-quality files)
 logs/*

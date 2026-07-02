@@ -10,11 +10,11 @@
  *                             default view selection; file diffs still hydrate lazily
  *   - Commit mode: file list via getAgentConversationWorkspaceCommitFileChanges,
  *                  then per-file diff via getAgentConversationWorkspaceCommitFileDiff
- *   - Normal diffs fetched for hydrated expanded files only; large diffs fetch row pages.
+ *   - Normal diffs fetched for hydrated expanded fallback files only; page-capable diffs fetch row pages.
  *
  * Performance contract (frontend-interaction-performance.md):
  *   - Sticky bar always renders synchronously.
- *   - File cards receive normal diff state as prop; large explicit diffs page their own rows.
+ *   - File cards receive fallback diff state as prop; page-capable diffs page their own rows.
  *
  * WKWebView CSS: explicit background-color / border-color with shallow-chain tokens.
  */
@@ -40,8 +40,15 @@ import { cn } from "@/lib/utils";
 import { AgentsPublishDiffFilter } from "./AgentsPublishDiffFilter";
 import type { DiffFilterMode } from "./AgentsPublishDiffFilter";
 import { AgentsPublishFileDiff } from "./AgentsPublishFileDiff";
-import type { ConflictDiffState, DiffState } from "./AgentsPublishFileDiff";
-import { isLargeInlineDiff } from "./inlineDiffGuards";
+import type {
+  ConflictDiffState,
+  DiffPageSummary,
+  DiffState,
+} from "./AgentsPublishFileDiff";
+import {
+  canUsePagedInlineDiff,
+  requiresExplicitDiffHydration,
+} from "./inlineDiffGuards";
 import {
   AGENT_WORKSPACE_STALE_MS,
   agentWorkspaceKeys,
@@ -50,8 +57,10 @@ import type { AgentPublishFocusRequest } from "./agentPublishFocus";
 import { useAgentWorkspaceChangeSummary } from "./useAgentWorkspaceChangeSummary";
 
 const EMPTY_PR_DIFF_ANNOTATIONS: PrDiffAnnotation[] = [];
+const DIFF_ROW_COUNT_SUMMARY_LIMIT = 1;
 const VIRTUAL_RANGE_OVERSCAN_FILES = 0;
 const PATCH_BACKED_HEAD_REF_PREFIX = "github-pr-diff/";
+const FILE_JUMP_STABILIZE_FRAMES = 2;
 type BulkExpansionPreference = "expanded" | "collapsed" | "custom";
 
 export interface AgentsPublishInlineDiffsProps {
@@ -143,6 +152,52 @@ function findFirstRenderedAnnotationRow(
   return null;
 }
 
+function findRenderedFileRow(root: HTMLElement, filePath: string): HTMLElement | null {
+  const fileRows = root.querySelectorAll<HTMLElement>("[data-publish-file-path]");
+  for (const row of fileRows) {
+    if (row.dataset.publishFilePath === filePath) {
+      return row;
+    }
+  }
+  return null;
+}
+
+function requestFileJumpFrame(callback: FrameRequestCallback): number {
+  if (typeof window.requestAnimationFrame === "function") {
+    return window.requestAnimationFrame(callback);
+  }
+  return window.setTimeout(() => callback(performance.now()), 16);
+}
+
+function cancelFileJumpFrame(frame: number) {
+  if (typeof window.cancelAnimationFrame === "function") {
+    window.cancelAnimationFrame(frame);
+    return;
+  }
+  window.clearTimeout(frame);
+}
+
+function diffRefKindKey(refKind: DiffRefKind | undefined): string {
+  if (!refKind) {
+    return "none";
+  }
+  return refKind.kind === "commit" ? `${refKind.kind}:${refKind.sha}` : refKind.kind;
+}
+
+function resolveDiffPageRefKind({
+  refKind,
+  repairMode,
+  isStagedMode,
+  isUnstagedMode,
+}: {
+  refKind: DiffRefKind;
+  repairMode: boolean;
+  isStagedMode: boolean;
+  isUnstagedMode: boolean;
+}): DiffRefKind | undefined {
+  return !repairMode || isStagedMode || isUnstagedMode ? refKind : undefined;
+}
+
 interface AgentsPublishVirtualFileRowProps {
   file: FileChange;
   diff: DiffState;
@@ -155,6 +210,9 @@ interface AgentsPublishVirtualFileRowProps {
   conversationId: string;
   refKind?: DiffRefKind | undefined;
   diffPageRefKind?: DiffRefKind | undefined;
+  diffPageReloadKey?: string | undefined;
+  inlineDiffScrollParent: HTMLElement | null;
+  diffPageSummary?: DiffPageSummary | undefined;
   shouldHydrate: boolean;
   annotations: PrDiffAnnotation[];
   isShowAnywayOverridden: boolean;
@@ -174,6 +232,9 @@ const AgentsPublishVirtualFileRow = memo(function AgentsPublishVirtualFileRow({
   conversationId,
   refKind,
   diffPageRefKind,
+  diffPageReloadKey,
+  inlineDiffScrollParent,
+  diffPageSummary,
   shouldHydrate,
   annotations,
   isShowAnywayOverridden,
@@ -201,6 +262,9 @@ const AgentsPublishVirtualFileRow = memo(function AgentsPublishVirtualFileRow({
       conversationId={conversationId}
       refKind={refKind}
       diffPageRefKind={diffPageRefKind}
+      diffPageReloadKey={diffPageReloadKey}
+      inlineDiffScrollParent={inlineDiffScrollParent}
+      diffPageSummary={diffPageSummary}
       shouldHydrate={shouldHydrate}
       annotations={annotations}
       isShowAnywayOverridden={isShowAnywayOverridden}
@@ -233,6 +297,8 @@ export function AgentsPublishInlineDiffs({
   const [jumpSearch, setJumpSearch] = useState("");
   const inlineDiffsRootRef = useRef<HTMLDivElement | null>(null);
   const virtuosoRef = useRef<VirtuosoHandle>(null);
+  const [inlineDiffScrollParent, setInlineDiffScrollParent] =
+    useState<HTMLElement | null>(null);
   const [visibleRange, setVisibleRange] = useState<ListRange | null>(null);
   // Lazy hydration tracks which file paths have entered the virtual range.
   // Paths are added on first range entry and never removed, so body teardown does not thrash.
@@ -242,6 +308,9 @@ export function AgentsPublishInlineDiffs({
   const [pendingFocusRequest, setPendingFocusRequest] =
     useState<AgentPublishFocusRequest | null>(null);
   const [focusTargetPath, setFocusTargetPath] = useState<string | null>(null);
+  const [pendingFileScrollPath, setPendingFileScrollPath] = useState<string | null>(
+    null,
+  );
   const [pendingAnnotationScrollPath, setPendingAnnotationScrollPath] =
     useState<string | null>(null);
   const autoScrolledAnnotationKeyRef = useRef<string | null>(null);
@@ -280,6 +349,20 @@ export function AgentsPublishInlineDiffs({
   const repairDiffQuerySignature = repairMode
     ? (repairChangeSignature ?? "repair:none")
     : undefined;
+  const diffPageRefKind = useMemo(
+    () =>
+      resolveDiffPageRefKind({
+        refKind,
+        repairMode,
+        isStagedMode,
+        isUnstagedMode,
+      }),
+    [isStagedMode, isUnstagedMode, refKind, repairMode],
+  );
+  const diffPageReloadKey =
+    repairMode && (isStagedMode || isUnstagedMode)
+      ? repairDiffQuerySignature
+      : undefined;
   const canRenderPrAnnotations =
     !isConflictedMode && (refKind.kind === "head" || refKind.kind === "cumulative_head");
   const annotationsByPath = useMemo(() => {
@@ -343,12 +426,14 @@ export function AgentsPublishInlineDiffs({
     setHydratedPaths(new Set());
     setVisibleRange(null);
     setFocusTargetPath(null);
+    setPendingFileScrollPath(null);
     setPendingAnnotationScrollPath(null);
   }, [conversationId]);
 
   useEffect(() => {
     setHydratedPaths(new Set());
     setFocusTargetPath(null);
+    setPendingFileScrollPath(null);
     setPendingAnnotationScrollPath(null);
   }, [conversationId, effectiveMode]);
 
@@ -410,6 +495,16 @@ export function AgentsPublishInlineDiffs({
     [currentFiles],
   );
 
+  const handleInlineDiffScrollerRef = useCallback(
+    (ref: HTMLElement | Window | null) => {
+      setInlineDiffScrollParent((current) => {
+        const next = ref instanceof HTMLElement ? ref : null;
+        return current === next ? current : next;
+      });
+    },
+    [],
+  );
+
   useEffect(() => {
     if (!visibleRange || currentFiles.length === 0) {
       return;
@@ -417,7 +512,7 @@ export function AgentsPublishInlineDiffs({
     hydrateVisibleRange(visibleRange);
   }, [currentFiles, hydrateVisibleRange, visibleRange]);
 
-  // Only fetch diffs for visible expanded files — collapsed/off-range cards pay no query cost.
+  // Only fetch fallback diffs for visible expanded files — collapsed/off-range/page-capable cards pay no query cost.
   const expandedFiles = useMemo(
     () => currentFiles.filter((f) => !effectiveCollapsedPaths.has(f.path)),
     [currentFiles, effectiveCollapsedPaths],
@@ -425,14 +520,89 @@ export function AgentsPublishInlineDiffs({
 
   const fetchableFiles = useMemo(
     () =>
-      expandedFiles.filter(
-        (file) =>
+      expandedFiles.filter((file) => {
+        const isShowAnywayOverridden = userShowAnywayPaths.has(file.path);
+        return (
           bufferedVisiblePathSet.has(file.path) &&
-          !isLargeInlineDiff(file) &&
-          (!file.isGenerated || userShowAnywayPaths.has(file.path)),
-      ),
-    [bufferedVisiblePathSet, expandedFiles, userShowAnywayPaths],
+          !canUsePagedInlineDiff({
+            file,
+            isConflictMode: isConflictedMode,
+            conversationId,
+            diffPageRefKind,
+            isShowAnywayOverridden,
+          }) &&
+          (!requiresExplicitDiffHydration(file) || isShowAnywayOverridden)
+        );
+      }),
+    [
+      bufferedVisiblePathSet,
+      conversationId,
+      diffPageRefKind,
+      expandedFiles,
+      isConflictedMode,
+      userShowAnywayPaths,
+    ],
   );
+
+  const diffPageRefKindKey = diffRefKindKey(diffPageRefKind);
+  const pageSummaryFiles = useMemo(
+    () =>
+      expandedFiles.filter((file) => {
+        const isShowAnywayOverridden = userShowAnywayPaths.has(file.path);
+        return canUsePagedInlineDiff({
+          file,
+          isConflictMode: isConflictedMode,
+          conversationId,
+          diffPageRefKind,
+          isShowAnywayOverridden,
+        });
+      }),
+    [
+      conversationId,
+      diffPageRefKind,
+      expandedFiles,
+      isConflictedMode,
+      userShowAnywayPaths,
+    ],
+  );
+
+  const pageSummaryQueries = useQueries({
+    queries:
+      diffPageRefKind === undefined
+        ? []
+        : pageSummaryFiles.map((file) => ({
+            queryKey: [
+              ...agentWorkspaceKeys.diff(conversationId),
+              "page-summary",
+              diffPageRefKindKey,
+              diffPageReloadKey ?? "stable",
+              file.path,
+            ],
+            queryFn: () =>
+              diffApi.getAgentConversationWorkspaceFileDiffPage({
+                conversationId,
+                path: file.path,
+                refKind: diffPageRefKind,
+                offset: 0,
+                limit: DIFF_ROW_COUNT_SUMMARY_LIMIT,
+              }),
+            staleTime: AGENT_WORKSPACE_STALE_MS,
+          })),
+  });
+
+  const diffPageSummaryByPath = useMemo(() => {
+    const map = new Map<string, DiffPageSummary>();
+    pageSummaryFiles.forEach((file, idx) => {
+      const page = pageSummaryQueries[idx]?.data;
+      if (page !== undefined) {
+        map.set(file.path, {
+          totalRows: page.totalRows,
+          isBinary: page.isBinary,
+        });
+      }
+    });
+    return map;
+  }, [pageSummaryFiles, pageSummaryQueries]);
 
   // ── Workspace-change diffs ─────────────────────────────────────────────
   const uncommittedDiffQueries = useQueries({
@@ -673,6 +843,8 @@ export function AgentsPublishInlineDiffs({
       align: "start",
       behavior: "auto",
     });
+    setFocusTargetPath(path);
+    setPendingFileScrollPath(path);
   }, [currentFiles, hydrateVisibleRange]);
 
   useEffect(() => {
@@ -719,6 +891,7 @@ export function AgentsPublishInlineDiffs({
       behavior: "auto",
     });
     setFocusTargetPath(pendingFocusRequest.filePath);
+    setPendingFileScrollPath(pendingFocusRequest.filePath);
     setPendingFocusRequest(null);
   }, [
     conversationId,
@@ -729,6 +902,101 @@ export function AgentsPublishInlineDiffs({
     isLoading,
     pendingFocusRequest,
   ]);
+
+  useEffect(() => {
+    if (!pendingFileScrollPath) {
+      return;
+    }
+    const root = inlineDiffsRootRef.current;
+    if (!root) {
+      return;
+    }
+    const fileRow = findRenderedFileRow(root, pendingFileScrollPath);
+    if (!fileRow) {
+      return;
+    }
+    const targetFileRow = fileRow;
+
+    let isCancelled = false;
+    let frame: number | null = null;
+    let resizeObserver: ResizeObserver | null = null;
+    let remainingAlignmentFrames = FILE_JUMP_STABILIZE_FRAMES;
+    const userInputOptions: AddEventListenerOptions = {
+      capture: true,
+      passive: true,
+    };
+    function scrollToFileRow() {
+      if (isCancelled) {
+        return;
+      }
+      targetFileRow.scrollIntoView({
+        block: "start",
+        behavior: "auto",
+        inline: "nearest",
+      });
+    }
+    function scheduleAlignmentFrame() {
+      if (isCancelled || frame !== null) {
+        return;
+      }
+      if (remainingAlignmentFrames <= 0) {
+        stopStabilizing(true);
+        return;
+      }
+      frame = requestFileJumpFrame(() => {
+        frame = null;
+        remainingAlignmentFrames -= 1;
+        scrollToFileRow();
+        if (!isCancelled && remainingAlignmentFrames > 0) {
+          scheduleAlignmentFrame();
+        } else {
+          stopStabilizing(true);
+        }
+      });
+    }
+    function stopForUserInput() {
+      stopStabilizing(true);
+    }
+    function stopStabilizing(clearPendingPath: boolean) {
+      if (isCancelled) {
+        return;
+      }
+      isCancelled = true;
+      if (frame !== null) {
+        cancelFileJumpFrame(frame);
+        frame = null;
+      }
+      resizeObserver?.disconnect();
+      window.removeEventListener("wheel", stopForUserInput, userInputOptions);
+      window.removeEventListener("touchmove", stopForUserInput, userInputOptions);
+      window.removeEventListener("pointerdown", stopForUserInput, userInputOptions);
+      window.removeEventListener("keydown", stopForUserInput, userInputOptions);
+      if (clearPendingPath) {
+        setPendingFileScrollPath((current) =>
+          current === pendingFileScrollPath ? null : current,
+        );
+      }
+    }
+
+    resizeObserver =
+      typeof ResizeObserver !== "undefined"
+        ? new ResizeObserver(() => {
+            scrollToFileRow();
+            scheduleAlignmentFrame();
+          })
+        : null;
+    resizeObserver?.observe(targetFileRow);
+    window.addEventListener("wheel", stopForUserInput, userInputOptions);
+    window.addEventListener("touchmove", stopForUserInput, userInputOptions);
+    window.addEventListener("pointerdown", stopForUserInput, userInputOptions);
+    window.addEventListener("keydown", stopForUserInput, userInputOptions);
+    scrollToFileRow();
+    scheduleAlignmentFrame();
+
+    return () => {
+      stopStabilizing(false);
+    };
+  }, [pendingFileScrollPath, visibleRange]);
 
   const computeFileKey = useCallback(
     (_index: number, file: FileChange) => file.path,
@@ -757,9 +1025,10 @@ export function AgentsPublishInlineDiffs({
           onOpenFullscreenPath={handleOpenFullscreen}
           conversationId={conversationId}
           refKind={repairMode ? undefined : rangeRefKind}
-          diffPageRefKind={
-            !repairMode || isStagedMode || isUnstagedMode ? refKind : undefined
-          }
+          diffPageRefKind={diffPageRefKind}
+          diffPageReloadKey={diffPageReloadKey}
+          inlineDiffScrollParent={inlineDiffScrollParent}
+          diffPageSummary={diffPageSummaryByPath.get(fileChange.path)}
           shouldHydrate={hydratedPaths.has(fileChange.path)}
           annotations={annotationsByPath.get(fileChange.path) ?? EMPTY_PR_DIFF_ANNOTATIONS}
           isShowAnywayOverridden={userShowAnywayPaths.has(fileChange.path)}
@@ -780,11 +1049,12 @@ export function AgentsPublishInlineDiffs({
       handleShowAnyway,
       handleToggle,
       hydratedPaths,
+      inlineDiffScrollParent,
       isConflictedMode,
-      isStagedMode,
-      isUnstagedMode,
+      diffPageRefKind,
+      diffPageReloadKey,
+      diffPageSummaryByPath,
       focusTargetPath,
-      refKind,
       rangeRefKind,
       repairMode,
       userShowAnywayPaths,
@@ -1092,6 +1362,7 @@ export function AgentsPublishInlineDiffs({
           style={{ height: "100%", overflowX: "hidden", scrollbarGutter: "stable" }}
           computeItemKey={computeFileKey}
           rangeChanged={hydrateVisibleRange}
+          scrollerRef={handleInlineDiffScrollerRef}
           increaseViewportBy={{ top: 240, bottom: 480 }}
           itemContent={renderFileRow}
         />

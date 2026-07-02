@@ -877,6 +877,7 @@ async fn test_resolve_workspace_reviewer_runtime_uses_latest_run_harness_with_ut
         .with_harness_agent_client(AgentHarnessKind::Codex, codex_mock.clone());
 
     let project = Project::new("Codex Review Project".to_string(), "/tmp".to_string());
+    let project_id = project.id.as_str().to_string();
     let mut conversation = ChatConversation::new_project(project.id);
     conversation.provider_harness = Some(AgentHarnessKind::Claude);
 
@@ -888,7 +889,11 @@ async fn test_resolve_workspace_reviewer_runtime_uses_latest_run_harness_with_ut
     latest_run.sandbox_mode = Some("workspace-write".to_string());
 
     let runtime = state
-        .resolve_workspace_reviewer_runtime(&conversation, Some(&latest_run))
+        .resolve_workspace_reviewer_runtime_for_project(
+            &conversation,
+            Some(&latest_run),
+            project_id.as_str(),
+        )
         .await
         .expect("workspace reviewer should resolve from latest run harness");
 
@@ -918,10 +923,11 @@ async fn test_resolve_workspace_reviewer_runtime_uses_default_provider_without_r
         .with_harness_agent_client(AgentHarnessKind::Codex, codex_mock);
 
     let project = Project::new("Legacy Review Project".to_string(), "/tmp".to_string());
+    let project_id = project.id.as_str().to_string();
     let conversation = ChatConversation::new_project(project.id);
 
     let runtime = state
-        .resolve_workspace_reviewer_runtime(&conversation, None)
+        .resolve_workspace_reviewer_runtime_for_project(&conversation, None, project_id.as_str())
         .await
         .expect("workspace reviewer should resolve from default provider");
 
@@ -955,11 +961,12 @@ async fn test_resolve_workspace_reviewer_runtime_uses_global_provider_review_def
         .unwrap();
 
     let project = Project::new("Codex Review Defaults".to_string(), "/tmp".to_string());
+    let project_id = project.id.as_str().to_string();
     let mut conversation = ChatConversation::new_project(project.id);
     conversation.provider_harness = Some(AgentHarnessKind::Codex);
 
     let runtime = state
-        .resolve_workspace_reviewer_runtime(&conversation, None)
+        .resolve_workspace_reviewer_runtime_for_project(&conversation, None, project_id.as_str())
         .await
         .expect("workspace reviewer should resolve from configured review defaults");
 
@@ -1007,7 +1014,7 @@ async fn test_resolve_workspace_reviewer_runtime_uses_project_provider_review_de
     conversation.provider_harness = Some(AgentHarnessKind::Codex);
 
     let runtime = state
-        .resolve_workspace_reviewer_runtime(&conversation, None)
+        .resolve_workspace_reviewer_runtime_for_project(&conversation, None, project_id.as_str())
         .await
         .expect("workspace reviewer should resolve from project review defaults");
 

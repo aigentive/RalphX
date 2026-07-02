@@ -19,16 +19,27 @@ vi.mock("@/components/diff/SimpleDiffView", () => ({
   SimpleDiffView: ({
     hunks,
     isBinary,
+    stickyGutter,
   }: {
     hunks: unknown[];
     isBinary?: boolean;
+    stickyGutter?: boolean;
   }) => (
     <div
       data-testid="simple-diff-view"
       data-hunk-count={hunks.length}
       data-binary={String(isBinary ?? false)}
+      data-sticky-gutter={String(stickyGutter ?? true)}
     >
       SimpleDiffView
+    </div>
+  ),
+}));
+
+vi.mock("@/components/diff/ConflictDiffViewer", () => ({
+  ConflictDiffViewer: ({ conflictDiff }: { conflictDiff: { filePath: string } }) => (
+    <div data-testid="conflict-diff-viewer" data-file-path={conflictDiff.filePath}>
+      ConflictDiffViewer
     </div>
   ),
 }));
@@ -39,11 +50,19 @@ vi.mock("@/components/diff/PagedDiffView", () => ({
     filePath,
     refKind,
     scrollContainer,
+    inlineScrollParent,
+    defaultWrapLines,
+    initialTotalRows,
+    initialIsBinary,
   }: {
     conversationId: string;
     filePath: string;
     refKind: { kind: string };
     scrollContainer?: boolean;
+    inlineScrollParent?: HTMLElement | null;
+    defaultWrapLines?: boolean;
+    initialTotalRows?: number;
+    initialIsBinary?: boolean;
   }) => (
     <div
       data-testid="paged-diff-view"
@@ -51,6 +70,10 @@ vi.mock("@/components/diff/PagedDiffView", () => ({
       data-file-path={filePath}
       data-ref-kind={refKind.kind}
       data-scroll-container={String(scrollContainer ?? false)}
+      data-inline-scroll-parent={String(Boolean(inlineScrollParent))}
+      data-default-wrap-lines={String(defaultWrapLines ?? true)}
+      data-initial-total-rows={initialTotalRows ?? ""}
+      data-initial-is-binary={String(initialIsBinary ?? false)}
     >
       PagedDiffView
     </div>
@@ -58,7 +81,7 @@ vi.mock("@/components/diff/PagedDiffView", () => ({
 }));
 
 import { AgentsPublishFileDiff } from "./AgentsPublishFileDiff";
-import type { FileChange, FileDiff, PrDiffAnnotation } from "@/api/diff";
+import type { ConflictDiff, FileChange, FileDiff, PrDiffAnnotation } from "@/api/diff";
 
 function withProviders(node: React.ReactNode) {
   return <TooltipProvider delayDuration={0}>{node}</TooltipProvider>;
@@ -91,6 +114,18 @@ const makeDiff = (overrides: Partial<FileDiff> = {}): FileDiff => ({
   oldTotalLines: 1,
   newTotalLines: 1,
   isBinary: false,
+  ...overrides,
+});
+
+const makeConflictDiff = (
+  overrides: Partial<ConflictDiff> = {},
+): ConflictDiff => ({
+  filePath: "src/components/Foo.tsx",
+  baseContent: "base\n",
+  oursContent: "ours\n",
+  theirsContent: "theirs\n",
+  mergedWithMarkers: "<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> branch\n",
+  language: "typescript",
   ...overrides,
 });
 
@@ -469,6 +504,121 @@ describe("AgentsPublishFileDiff", () => {
       );
       expect(screen.getByTestId("simple-diff-view")).toBeInTheDocument();
     });
+
+    it("passes non-sticky gutters to embedded SimpleDiffView fallback", () => {
+      render(
+        withProviders(
+          <AgentsPublishFileDiff
+            file={makeFileChange({ additions: 647, deletions: 72 })}
+            diff={makeDiff()}
+            isExpanded={true}
+            onToggle={onToggle}
+            onCopyPath={onCopyPath}
+            onOpenFullscreen={onOpenFullscreen}
+            conversationId="conv-1"
+            shouldHydrate={true}
+            isShowAnywayOverridden={false}
+            onShowAnyway={onShowAnyway}
+          />,
+        ),
+      );
+
+      expect(screen.getByTestId("simple-diff-view")).toHaveAttribute(
+        "data-sticky-gutter",
+        "false",
+      );
+      expect(screen.queryByTestId("paged-diff-view")).toBeNull();
+    });
+
+    it("mounts PagedDiffView for a medium hydrated diff when page refs are available", () => {
+      render(
+        withProviders(
+          <AgentsPublishFileDiff
+            file={makeFileChange({ additions: 647, deletions: 72 })}
+            diff={undefined}
+            isExpanded={true}
+            onToggle={onToggle}
+            onCopyPath={onCopyPath}
+            onOpenFullscreen={onOpenFullscreen}
+            conversationId="conv-1"
+            diffPageRefKind={{ kind: "head" }}
+            diffPageSummary={{ totalRows: 719, isBinary: false }}
+            shouldHydrate={true}
+            isShowAnywayOverridden={false}
+            onShowAnyway={onShowAnyway}
+          />,
+        ),
+      );
+
+      expect(screen.getByTestId("paged-diff-view")).toHaveAttribute(
+        "data-file-path",
+        "src/components/Foo.tsx",
+      );
+      expect(screen.getByTestId("paged-diff-view")).toHaveAttribute(
+        "data-ref-kind",
+        "head",
+      );
+      expect(screen.getByTestId("paged-diff-view")).toHaveAttribute(
+        "data-default-wrap-lines",
+        "false",
+      );
+      expect(screen.getByTestId("paged-diff-view")).toHaveAttribute(
+        "data-initial-total-rows",
+        "719",
+      );
+      expect(screen.getByTestId("paged-diff-view")).toHaveAttribute(
+        "data-initial-is-binary",
+        "false",
+      );
+      expect(screen.queryByTestId("simple-diff-view")).toBeNull();
+    });
+
+    it("falls back to SimpleDiffView for a medium diff without page refs", () => {
+      render(
+        withProviders(
+          <AgentsPublishFileDiff
+            file={makeFileChange({ additions: 647, deletions: 72 })}
+            diff={makeDiff()}
+            isExpanded={true}
+            onToggle={onToggle}
+            onCopyPath={onCopyPath}
+            onOpenFullscreen={onOpenFullscreen}
+            conversationId="conv-1"
+            shouldHydrate={true}
+            isShowAnywayOverridden={false}
+            onShowAnyway={onShowAnyway}
+          />,
+        ),
+      );
+
+      expect(screen.getByTestId("simple-diff-view")).toBeInTheDocument();
+      expect(screen.queryByTestId("paged-diff-view")).toBeNull();
+    });
+
+    it("does not render PagedDiffView for conflict diffs", () => {
+      render(
+        withProviders(
+          <AgentsPublishFileDiff
+            file={makeFileChange({ additions: 647, deletions: 72 })}
+            diff={undefined}
+            conflictDiff={makeConflictDiff()}
+            isConflictMode={true}
+            isExpanded={true}
+            onToggle={onToggle}
+            onCopyPath={onCopyPath}
+            onOpenFullscreen={onOpenFullscreen}
+            conversationId="conv-1"
+            diffPageRefKind={{ kind: "head" }}
+            shouldHydrate={true}
+            isShowAnywayOverridden={false}
+            onShowAnyway={onShowAnyway}
+          />,
+        ),
+      );
+
+      expect(screen.getByTestId("conflict-diff-viewer")).toBeInTheDocument();
+      expect(screen.queryByTestId("paged-diff-view")).toBeNull();
+    });
   });
 
   describe("expanded + error", () => {
@@ -625,6 +775,8 @@ describe("AgentsPublishFileDiff", () => {
             onToggle={onToggle}
             onCopyPath={onCopyPath}
             onOpenFullscreen={onOpenFullscreen}
+            conversationId="conv-1"
+            diffPageRefKind={{ kind: "head" }}
             shouldHydrate={true}
             isShowAnywayOverridden={false}
             onShowAnyway={onShowAnyway}
@@ -633,6 +785,7 @@ describe("AgentsPublishFileDiff", () => {
       );
       expect(screen.getByTestId("file-diff-generated-placeholder")).toBeInTheDocument();
       expect(screen.queryByTestId("simple-diff-view")).toBeNull();
+      expect(screen.queryByTestId("paged-diff-view")).toBeNull();
     });
 
     it("shows +N and -M counts in generated placeholder", () => {
