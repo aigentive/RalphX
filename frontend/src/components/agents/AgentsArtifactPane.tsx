@@ -451,6 +451,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       const reviewConversationId = result.monitor.reviewConversationId;
       if (reviewConversationId) {
         invalidateConversationDataQueries(queryClient, reviewConversationId);
+        onFocusWorkspaceReview?.(reviewConversationId);
       }
       const artifactId = result.monitor.reviewArtifactId;
       if (artifactId) {
