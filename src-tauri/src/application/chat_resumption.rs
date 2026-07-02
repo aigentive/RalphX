@@ -16,6 +16,9 @@ use std::sync::Arc;
 use tauri::{AppHandle, Runtime};
 use tracing::{info, warn};
 
+use crate::application::agent_workspace_continuation::{
+    classify_agent_workspace_continuation, AgentWorkspaceContinuationBlock,
+};
 use crate::application::chat_service::{
     should_recover_silent_completion, silent_completion_recovery_attempt,
     silent_completion_recovery_backoff_ms, silent_completion_recovery_max_attempts,
@@ -28,7 +31,8 @@ use crate::application::runtime_factory::{
 use crate::application::{AppChatService, ChatService, InteractiveProcessRegistry};
 use crate::commands::execution_commands::{ExecutionState, AGENT_ACTIVE_STATUSES};
 use crate::domain::entities::{
-    AgentRunStatus, ChatContextType, ChatMessage, InterruptedConversation, MessageRole, TaskId,
+    AgentRunStatus, ChatContextType, ChatConversation, ChatMessage, InterruptedConversation,
+    MessageRole, TaskId,
 };
 use crate::domain::repositories::{
     AgentLaneSettingsRepository, AgentProviderSettingsRepository, AgentRunRepository,
@@ -167,6 +171,19 @@ impl<R: Runtime> ChatResumptionRunner<R> {
                     );
                     continue;
                 }
+                if let Some(reason) = self
+                    .blocked_agent_workspace_resume_reason(&conv.conversation)
+                    .await
+                {
+                    info!(
+                        conversation_id = conv.conversation.id.as_str(),
+                        context_type = %conv.conversation.context_type,
+                        context_id = %conv.conversation.context_id,
+                        reason = reason.code(),
+                        "[CHAT_RESUMPTION] Skipping non-resumable agent workspace conversation"
+                    );
+                    continue;
+                }
 
                 info!(
                     conversation_id = conv.conversation.id.as_str(),
@@ -182,7 +199,7 @@ impl<R: Runtime> ChatResumptionRunner<R> {
                         conv.conversation.context_type,
                         &conv.conversation.context_id,
                         "Continue where you left off.",
-                        Default::default(),
+                        startup_resumption_send_options(&conv.conversation),
                     )
                     .await
                 {
@@ -243,6 +260,17 @@ impl<R: Runtime> ChatResumptionRunner<R> {
                 info!(
                     conversation_id = conversation.id.as_str(),
                     "[CHAT_RESUMPTION] Skipping durable silent-completion recovery; runtime already active"
+                );
+                continue;
+            }
+            if let Some(reason) = self
+                .blocked_agent_workspace_resume_reason(&conversation)
+                .await
+            {
+                info!(
+                    conversation_id = conversation.id.as_str(),
+                    reason = reason.code(),
+                    "[CHAT_RESUMPTION] Skipping durable silent-completion recovery for non-resumable agent workspace"
                 );
                 continue;
             }
@@ -355,6 +383,68 @@ impl<R: Runtime> ChatResumptionRunner<R> {
             }
         }
         recovered
+    }
+
+    async fn blocked_agent_workspace_resume_reason(
+        &self,
+        conversation: &ChatConversation,
+    ) -> Option<AgentWorkspaceContinuationBlock> {
+        if conversation.context_type != ChatContextType::Project {
+            return None;
+        }
+        let workspace_repo = self
+            .chat_runtime_deps
+            .agent_conversation_workspace_repo
+            .as_ref()?;
+        let workspace = match workspace_repo
+            .get_by_conversation_id(&conversation.id)
+            .await
+        {
+            Ok(Some(workspace)) => workspace,
+            Ok(None) => return None,
+            Err(error) => {
+                warn!(
+                    conversation_id = conversation.id.as_str(),
+                    error = %error,
+                    "[CHAT_RESUMPTION] Failed to load agent workspace for resume candidate; skipping"
+                );
+                return Some(AgentWorkspaceContinuationBlock::UnknownRequiresManualCheck(
+                    error.to_string(),
+                ));
+            }
+        };
+        let project = match self
+            .chat_runtime_deps
+            .project_repo
+            .get_by_id(&workspace.project_id)
+            .await
+        {
+            Ok(Some(project)) => project,
+            Ok(None) => {
+                warn!(
+                    conversation_id = conversation.id.as_str(),
+                    project_id = workspace.project_id.as_str(),
+                    "[CHAT_RESUMPTION] Agent workspace project not found for resume candidate; skipping"
+                );
+                return Some(AgentWorkspaceContinuationBlock::UnknownRequiresManualCheck(
+                    "project not found".to_string(),
+                ));
+            }
+            Err(error) => {
+                warn!(
+                    conversation_id = conversation.id.as_str(),
+                    error = %error,
+                    "[CHAT_RESUMPTION] Failed to load agent workspace project for resume candidate; skipping"
+                );
+                return Some(AgentWorkspaceContinuationBlock::UnknownRequiresManualCheck(
+                    error.to_string(),
+                ));
+            }
+        };
+
+        classify_agent_workspace_continuation(&project, &workspace)
+            .blocked_reason()
+            .cloned()
     }
 
     async fn has_active_runtime_for_context(
@@ -568,6 +658,13 @@ fn context_type_priority(context_type: ChatContextType) -> u8 {
         ChatContextType::Ideation => 4,
         ChatContextType::Delegation => 5,
         ChatContextType::Project => 6, // Lowest priority
+    }
+}
+
+fn startup_resumption_send_options(conversation: &ChatConversation) -> SendMessageOptions {
+    SendMessageOptions {
+        conversation_id_override: Some(conversation.id),
+        ..Default::default()
     }
 }
 
