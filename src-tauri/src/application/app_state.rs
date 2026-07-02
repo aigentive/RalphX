@@ -745,6 +745,7 @@ impl AppState {
 
         let drafter =
             crate::application::plan_pr_description::build_app_state_plan_pr_description_drafter(
+                Arc::clone(&self.chat_conversation_repo),
                 Arc::clone(&self.agent_conversation_workspace_repo),
                 Arc::clone(&self.agent_provider_settings_repo),
                 self.agent_clients.clone(),

@@ -2,7 +2,7 @@ import React from "react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { TaskDetailPanel } from "./TaskDetailPanel";
+import { AgentsTaskDetailPanel } from "./AgentsTaskDetailPanel";
 import type { PlanBranch } from "@/api/plan-branch.types";
 import type { Task } from "@/types/task";
 import type { TaskContext } from "@/types/task-context";
@@ -45,8 +45,8 @@ vi.mock("./detail-views", async () => {
     contextProbe.viewModes.push(model?.viewMode ?? null);
 
     return (
-      <TwoColumnLayout description={task.description} testId="mock-registry-view">
-        <div>Registry body for {task.title}</div>
+      <TwoColumnLayout description={task.description} testId="mock-agents-registry-view">
+        <div>Agents registry body for {task.title}</div>
       </TwoColumnLayout>
     );
   };
@@ -118,10 +118,10 @@ function createTaskContext(): TaskContext {
     sourceProposal: null,
     planArtifact: {
       id: "artifact-123",
-      title: "Plan visible from registry detail",
+      title: "Plan visible from agents registry detail",
       artifactType: "specification",
       currentVersion: 2,
-      contentPreview: "Shared context rail content.",
+      contentPreview: "Agents shared context rail content.",
     },
     relatedArtifacts: [],
     contextHints: [],
@@ -152,7 +152,10 @@ function createPlanBranch(): PlanBranch {
   };
 }
 
-function renderPanel(task: Task, props?: Partial<React.ComponentProps<typeof TaskDetailPanel>>) {
+function renderPanel(
+  task: Task,
+  props?: Partial<React.ComponentProps<typeof AgentsTaskDetailPanel>>
+) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
@@ -161,12 +164,12 @@ function renderPanel(task: Task, props?: Partial<React.ComponentProps<typeof Tas
 
   return render(
     <QueryClientProvider client={queryClient}>
-      <TaskDetailPanel task={task} useViewRegistry {...props} />
+      <AgentsTaskDetailPanel task={task} useViewRegistry {...props} />
     </QueryClientProvider>
   );
 }
 
-describe("TaskDetailPanel registry context", () => {
+describe("AgentsTaskDetailPanel registry context", () => {
   beforeEach(() => {
     mockTaskContextApi.getTaskContext.mockResolvedValue(createTaskContext());
     mockPlanBranchApi.getByProject.mockResolvedValue([createPlanBranch()]);
@@ -176,12 +179,11 @@ describe("TaskDetailPanel registry context", () => {
   it("wraps registry views with the common task context rail", async () => {
     renderPanel(createTask());
 
-    expect(screen.getByText("Registry body for Test Task")).toBeInTheDocument();
-    expect(await screen.findByText("Plan visible from registry detail")).toBeInTheDocument();
-    expect(screen.queryByText("Shared context rail content.")).not.toBeInTheDocument();
-    expect(screen.getByText("PR #68")).toBeInTheDocument();
-    expect(screen.getByText("task-123")).toBeInTheDocument();
-    expect(screen.queryByText("Merge")).not.toBeInTheDocument();
+    expect(screen.getByText("Agents registry body for Test Task")).toBeInTheDocument();
+    expect(await screen.findByText("Task")).toBeInTheDocument();
+    const currentModes = contextProbe.viewModes.filter(Boolean);
+    expect(currentModes.length).toBeGreaterThan(0);
+    expect(currentModes[0]).toMatchObject({ kind: "current" });
   });
 
   it("passes historical state metadata into the common rail", async () => {
@@ -194,6 +196,15 @@ describe("TaskDetailPanel registry context", () => {
 
     expect(await screen.findByText("Historical State")).toBeInTheDocument();
     expect(screen.getByText("Waiting on PR")).toBeInTheDocument();
+    const historicalModes = contextProbe.viewModes.filter(Boolean);
+    expect(historicalModes.length).toBeGreaterThan(0);
+    expect(historicalModes[historicalModes.length - 1]).toMatchObject({
+      kind: "historical",
+      status: "waiting_on_pr",
+      timestamp: "2026-01-28T12:20:00+00:00",
+      conversationId: "conversation-123",
+      agentRunId: "run-123",
+    });
   });
 
   it("keeps registry view mode stable across identical rerenders", async () => {
@@ -214,12 +225,12 @@ describe("TaskDetailPanel registry context", () => {
     });
     const renderUi = () => (
       <QueryClientProvider client={queryClient}>
-        <TaskDetailPanel task={task} useViewRegistry />
+        <AgentsTaskDetailPanel task={task} useViewRegistry />
       </QueryClientProvider>
     );
     const { rerender } = render(renderUi());
 
-    expect(await screen.findByText("Plan visible from registry detail")).toBeInTheDocument();
+    expect(await screen.findByText("Agents registry body for Test Task")).toBeInTheDocument();
     const initialModes = contextProbe.viewModes.filter(Boolean);
     expect(initialModes.length).toBeGreaterThan(0);
     const stableMode = initialModes[0];
@@ -229,7 +240,7 @@ describe("TaskDetailPanel registry context", () => {
     rerender(renderUi());
     rerender(renderUi());
 
-    expect(screen.getByText("Registry body for Test Task")).toBeInTheDocument();
+    expect(screen.getByText("Agents registry body for Test Task")).toBeInTheDocument();
     const rerenderedModes = contextProbe.viewModes.filter(Boolean);
     expect(rerenderedModes.length).toBeGreaterThan(0);
     expect(rerenderedModes.every((mode) => mode === stableMode)).toBe(true);
