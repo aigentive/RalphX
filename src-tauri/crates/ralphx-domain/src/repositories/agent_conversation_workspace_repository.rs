@@ -317,6 +317,12 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         Ok(None)
     }
 
+    async fn list_reviewing_workspace_review_monitors(
+        &self,
+    ) -> AppResult<Vec<AgentWorkspaceReviewMonitor>> {
+        Ok(Vec::new())
+    }
+
     async fn create_or_update_pr_review_action(
         &self,
         action: AgentWorkspacePrReviewAction,

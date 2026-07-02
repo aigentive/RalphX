@@ -1780,6 +1780,26 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
             .await
     }
 
+    async fn list_reviewing_workspace_review_monitors(
+        &self,
+    ) -> AppResult<Vec<AgentWorkspaceReviewMonitor>> {
+        self.db
+            .run(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT * FROM agent_workspace_review_monitors
+                     WHERE status = 'reviewing'
+                     ORDER BY updated_at DESC",
+                )?;
+                let rows = stmt.query_map([], row_to_workspace_review_monitor)?;
+                let mut monitors = Vec::new();
+                for row in rows {
+                    monitors.push(row?);
+                }
+                Ok(monitors)
+            })
+            .await
+    }
+
     async fn create_or_update_pr_review_action(
         &self,
         action: AgentWorkspacePrReviewAction,

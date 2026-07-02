@@ -2,7 +2,7 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::application::agent_workspace_bridge::AgentWorkspaceBridgeDeps;
 use crate::application::agent_workspace_publish_recovery::recover_stale_agent_workspace_publish_repairs_on_startup;
@@ -528,6 +528,29 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
     let phase_started_at = startup_phase_started("startup_job_runner");
     let startup_ideation_recovery_claims = runner.run().await;
     startup_phase_completed("startup_job_runner", phase_started_at);
+
+    let phase_started_at = startup_phase_started("workspace_review_startup_reconciliation");
+    match crate::application::agent_workspace_review::reconcile_interrupted_agent_workspace_reviews_on_startup(
+        Arc::clone(&agent_conversation_workspace_repo),
+        Arc::clone(&agent_run_repo),
+    )
+    .await
+    {
+        Ok(count) if count > 0 => {
+            info!(
+                count,
+                "Startup reconciled interrupted workspace Review monitors"
+            );
+        }
+        Ok(_) => {}
+        Err(error) => {
+            warn!(
+                error = %error,
+                "Startup workspace Review monitor reconciliation failed"
+            );
+        }
+    }
+    startup_phase_completed("workspace_review_startup_reconciliation", phase_started_at);
 
     let phase_started_at = startup_phase_started("stale_workspace_publish_repair");
     recover_stale_agent_workspace_publish_repairs_on_startup(

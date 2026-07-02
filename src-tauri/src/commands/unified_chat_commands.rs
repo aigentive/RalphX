@@ -8781,8 +8781,10 @@ async fn add_workspace_review_runtime_item(
                 .get_by_id(&AgentRunId::from_string(run_id))
                 .await
                 .map_err(|error| error.to_string())?
-                .map(|run| running_state_from_run_status_and_idle(Some(run.status), false))
-                .filter(|state| state.is_running),
+                .and_then(|run| {
+                    (run.status == AgentRunStatus::Running)
+                        .then(|| running_state_from_run_status_and_idle(Some(run.status), false))
+                }),
             None => None,
         },
     };
@@ -9345,6 +9347,61 @@ mod tests {
         );
         assert_eq!(item.title, "Review workspace changes");
         assert!(item.task_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn agent_conversation_runtime_status_ignores_terminal_workspace_review_child_run() {
+        let state = AppState::new_sqlite_test();
+        let execution_state = Arc::new(ExecutionState::new());
+        let project_id =
+            ProjectId::from_string("project-workspace-review-terminal-runtime".to_string());
+        let conversation_id = ChatConversationId::new();
+        let review_conversation_id = ChatConversationId::new();
+
+        let workspace = workspace_for_runtime_test(&conversation_id, &project_id);
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .unwrap();
+
+        let mut review_conversation = ChatConversation::new_project(project_id.clone());
+        review_conversation.id = review_conversation_id.clone();
+        review_conversation.parent_conversation_id = Some(conversation_id.as_str());
+        review_conversation.title = Some("Review workspace changes".to_string());
+        state
+            .chat_conversation_repo
+            .create(review_conversation)
+            .await
+            .unwrap();
+
+        let mut review_run = AgentRun::new(review_conversation_id.clone());
+        let review_run_id = review_run.id;
+        review_run.fail("Workspace reviewer stopped by user");
+        state.agent_run_repo.create(review_run).await.unwrap();
+
+        let mut monitor =
+            AgentWorkspaceReviewMonitor::new(conversation_id.clone(), project_id.clone());
+        monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
+        monitor.review_conversation_id = Some(review_conversation_id);
+        monitor.last_run_id = Some(review_run_id.as_str().to_string());
+        state
+            .agent_conversation_workspace_repo
+            .upsert_workspace_review_monitor(monitor)
+            .await
+            .unwrap();
+
+        let statuses = get_agent_conversation_runtime_statuses_for_app_state(
+            &state,
+            execution_state,
+            vec![conversation_id.as_str().to_string()],
+        )
+        .await
+        .unwrap();
+        let runtime = statuses.get(&conversation_id.as_str()).unwrap();
+
+        assert!(!runtime.is_running);
+        assert!(runtime.items.is_empty());
     }
 
     #[tokio::test]

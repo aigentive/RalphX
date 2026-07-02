@@ -654,6 +654,49 @@ async fn workspace_review_monitor_round_trips_and_preserves_versioned_artifacts(
 }
 
 #[tokio::test]
+async fn list_reviewing_workspace_review_monitors_returns_only_running_reviews() {
+    let (db, repo, conversation_id) = setup_repo();
+    repo.create_or_update(make_workspace(conversation_id.clone()))
+        .await
+        .unwrap();
+
+    let ready_id = ChatConversationId::from_string("22222222-2222-2222-2222-222222222222");
+    seed_conversation(&db, &ready_id);
+    repo.create_or_update(make_workspace(ready_id.clone()))
+        .await
+        .unwrap();
+
+    let mut reviewing = AgentWorkspaceReviewMonitor::new(
+        conversation_id.clone(),
+        ProjectId::from_string("project-1".to_string()),
+    );
+    reviewing.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
+    reviewing.review_gate_status = AgentWorkspaceReviewGateStatus::Reviewing;
+    repo.upsert_workspace_review_monitor(reviewing)
+        .await
+        .unwrap();
+
+    let mut ready =
+        AgentWorkspaceReviewMonitor::new(ready_id, ProjectId::from_string("project-1".to_string()));
+    ready.status = AgentWorkspaceReviewMonitorStatus::Ready;
+    ready.review_outcome = AgentWorkspaceReviewOutcome::Passed;
+    ready.review_gate_status = AgentWorkspaceReviewGateStatus::Passed;
+    repo.upsert_workspace_review_monitor(ready).await.unwrap();
+
+    let monitors = repo
+        .list_reviewing_workspace_review_monitors()
+        .await
+        .unwrap();
+
+    assert_eq!(monitors.len(), 1);
+    assert_eq!(monitors[0].conversation_id, conversation_id);
+    assert_eq!(
+        monitors[0].status,
+        AgentWorkspaceReviewMonitorStatus::Reviewing
+    );
+}
+
+#[tokio::test]
 async fn publication_events_round_trip_in_created_order() {
     let (_db, repo, conversation_id) = setup_repo();
     repo.create_or_update(make_workspace(conversation_id))
