@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import ignore from "ignore";
 import picomatch from "picomatch";
-import { getAllowedFilesystemRoots, getPrimaryFilesystemRoot, isWithin, normalizePathLike, } from "./path-policy.js";
+import { getPrimaryFilesystemRoot, normalizePathLike, } from "./path-policy.js";
 const DEFAULT_MAX_READ_BYTES = 64 * 1024;
 const MAX_READ_BYTES_CAP = 256 * 1024;
 const DEFAULT_MAX_LIST_ENTRIES = 200;
@@ -25,13 +25,13 @@ export const FILESYSTEM_TOOL_NAMES = [
 export const FILESYSTEM_TOOLS = [
     {
         name: "fs_read_file",
-        description: "Read a local text file from the allowed filesystem roots. Use this for direct source inspection without shell access. Relative paths resolve from the canonical RalphX working directory.",
+        description: "Read a local text file. Use this for direct source inspection without shell access. Absolute paths are accepted; relative paths resolve from the current MCP working directory.",
         inputSchema: {
             type: "object",
             properties: {
                 path: {
                     type: "string",
-                    description: "Absolute path or path relative to the RalphX working directory.",
+                    description: "Absolute path or path relative to the current MCP working directory.",
                 },
                 start_line: {
                     type: "integer",
@@ -58,13 +58,13 @@ export const FILESYSTEM_TOOLS = [
     },
     {
         name: "fs_list_dir",
-        description: "List entries in a local directory under the allowed filesystem roots. Defaults to ignoring gitignored and hidden entries so the result stays high-signal in large repos.",
+        description: "List entries in a local directory. Defaults to ignoring gitignored and hidden entries so the result stays high-signal in large repos.",
         inputSchema: {
             type: "object",
             properties: {
                 path: {
                     type: "string",
-                    description: "Directory to inspect. Absolute path or path relative to the RalphX working directory. Defaults to '.'.",
+                    description: "Directory to inspect. Absolute path or path relative to the current MCP working directory. Defaults to '.'.",
                 },
                 include_hidden: {
                     type: "boolean",
@@ -93,7 +93,7 @@ export const FILESYSTEM_TOOLS = [
     },
     {
         name: "fs_grep",
-        description: "Search text content within files under the allowed filesystem roots. Uses ignore-aware traversal and bounded reads so it remains useful when shell access is disabled.",
+        description: "Search text content within local files. Uses ignore-aware traversal and bounded reads so it remains useful when shell access is disabled.",
         inputSchema: {
             type: "object",
             properties: {
@@ -103,7 +103,7 @@ export const FILESYSTEM_TOOLS = [
                 },
                 base_path: {
                     type: "string",
-                    description: "Optional directory root for the search. Defaults to the RalphX working directory.",
+                    description: "Optional directory root for the search. Defaults to the current MCP working directory.",
                 },
                 file_pattern: {
                     type: "string",
@@ -151,7 +151,7 @@ export const FILESYSTEM_TOOLS = [
     },
     {
         name: "fs_glob",
-        description: "List files under the allowed filesystem roots using production-grade glob matching. Defaults to ignoring gitignored and hidden paths so results stay close to ripgrep expectations.",
+        description: "List local files using production-grade glob matching. Defaults to ignoring gitignored and hidden paths so results stay close to ripgrep expectations.",
         inputSchema: {
             type: "object",
             properties: {
@@ -161,7 +161,7 @@ export const FILESYSTEM_TOOLS = [
                 },
                 base_path: {
                     type: "string",
-                    description: "Optional directory root for the glob. Defaults to the RalphX working directory.",
+                    description: "Optional directory root for the glob. Defaults to the current MCP working directory.",
                 },
                 include_hidden: {
                     type: "boolean",
@@ -219,28 +219,12 @@ function clampNonNegative(value, fallback) {
     const normalized = Number.isFinite(value) && value >= 0 ? Math.trunc(value) : fallback;
     return normalized;
 }
-async function canonicalizeAllowedRoot(root) {
-    try {
-        return await fs.realpath(root);
-    }
-    catch {
-        return normalizePathLike(root);
-    }
-}
-async function resolveAllowedExistingPath(inputPath, basePath) {
+async function resolveReadOnlyExistingPath(inputPath, basePath) {
     const baseRoot = normalizePathLike(basePath ?? getPrimaryFilesystemRoot());
     const displayPath = path.isAbsolute(inputPath) || inputPath.startsWith("~")
         ? normalizePathLike(inputPath)
         : path.resolve(baseRoot, inputPath);
-    const allowedRoots = getAllowedFilesystemRoots();
-    if (!allowedRoots.some((root) => isWithin(root, displayPath))) {
-        throw new Error(`Path "${inputPath}" resolves outside the allowed filesystem roots.`);
-    }
     const safePath = await fs.realpath(displayPath);
-    const canonicalAllowedRoots = await Promise.all(allowedRoots.map((root) => canonicalizeAllowedRoot(root)));
-    if (!canonicalAllowedRoots.some((root) => isWithin(root, safePath))) {
-        throw new Error(`Path "${inputPath}" resolves outside the allowed filesystem roots.`);
-    }
     return {
         displayPath,
         safePath,
@@ -436,7 +420,7 @@ async function handleReadFile(args) {
         throw new Error("fs_read_file requires a non-empty path.");
     }
     const maxBytes = clampPositive(getIntegerArg(args, "max_bytes", DEFAULT_MAX_READ_BYTES), DEFAULT_MAX_READ_BYTES, MAX_READ_BYTES_CAP);
-    const { displayPath, safePath } = await resolveAllowedExistingPath(requestedPath);
+    const { displayPath, safePath } = await resolveReadOnlyExistingPath(requestedPath);
     const stat = await fs.stat(safePath);
     if (!stat.isFile()) {
         throw new Error(`Path "${requestedPath}" is not a file.`);
@@ -464,7 +448,7 @@ async function handleReadFile(args) {
 }
 async function handleListDir(args) {
     const requestedPath = getStringArg(args, "path") ?? ".";
-    const { displayPath, safePath } = await resolveAllowedExistingPath(requestedPath);
+    const { displayPath, safePath } = await resolveReadOnlyExistingPath(requestedPath);
     const stat = await fs.stat(safePath);
     if (!stat.isDirectory()) {
         throw new Error(`Path "${requestedPath}" is not a directory.`);
@@ -512,7 +496,7 @@ async function handleGlob(args) {
         throw new Error("fs_glob requires a non-empty pattern.");
     }
     const basePath = getStringArg(args, "base_path") ?? ".";
-    const { displayPath: displayRoot, safePath: safeRoot } = await resolveAllowedExistingPath(basePath);
+    const { displayPath: displayRoot, safePath: safeRoot } = await resolveReadOnlyExistingPath(basePath);
     const rootStat = await fs.stat(safeRoot);
     if (!rootStat.isDirectory()) {
         throw new Error(`Base path "${basePath}" is not a directory.`);
@@ -557,7 +541,7 @@ async function handleGrep(args) {
     const options = readOnlyTraversalOptions(args);
     const maxResults = clampPositive(getIntegerArg(args, "max_results", DEFAULT_MAX_GREP_RESULTS), DEFAULT_MAX_GREP_RESULTS, MAX_GREP_RESULTS_CAP);
     const maxFileBytes = clampPositive(getIntegerArg(args, "max_file_bytes", DEFAULT_MAX_FILE_BYTES_FOR_SEARCH), DEFAULT_MAX_FILE_BYTES_FOR_SEARCH, MAX_FILE_BYTES_FOR_SEARCH_CAP);
-    const { displayPath: displayRoot, safePath: safeRoot } = await resolveAllowedExistingPath(basePath);
+    const { displayPath: displayRoot, safePath: safeRoot } = await resolveReadOnlyExistingPath(basePath);
     const rootStat = await fs.stat(safeRoot);
     if (!rootStat.isDirectory()) {
         throw new Error(`Base path "${basePath}" is not a directory.`);
@@ -635,15 +619,16 @@ export async function handleFilesystemToolCall(name, rawArgs) {
 }
 export function formatFilesystemToolError(error) {
     const message = error instanceof Error ? error.message : String(error);
-    const roots = getAllowedFilesystemRoots()
-        .map((root) => normalizePathLike(root))
-        .map((root) => `- ${root}`)
-        .join("\n");
+    const primaryRoot = normalizePathLike(getPrimaryFilesystemRoot());
     return {
         content: [
             {
                 type: "text",
-                text: `ERROR: ${message}\nAllowed filesystem roots:\n${roots}`,
+                text: [
+                    `ERROR: ${message}`,
+                    "Path resolution: absolute paths are read directly; relative paths resolve from:",
+                    `- ${primaryRoot}`,
+                ].join("\n"),
             },
         ],
         isError: true,
