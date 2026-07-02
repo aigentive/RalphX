@@ -217,6 +217,14 @@ function workspaceReviewHunkAnnotationMatchesMode(
   if (mode === "unstaged") {
     return annotation.diffSource === "unstaged";
   }
+  if (mode === "uncommitted") {
+    return (
+      annotation.diffSource === "committed" ||
+      annotation.diffSource === "selected_source" ||
+      annotation.diffSource === "staged" ||
+      annotation.diffSource === "unstaged"
+    );
+  }
   return annotation.diffSource === "committed" || annotation.diffSource === "selected_source";
 }
 

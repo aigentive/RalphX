@@ -49,6 +49,39 @@ import {
 // Re-export types for external use
 export type { DiffViewTab, FileChange, Commit, DiffData, DiffViewerProps };
 
+function hunkAnnotationMatchesRefKind(
+  annotation: WorkspaceReviewHunkAnnotation,
+  refKind: DiffRefKind,
+): boolean {
+  if (refKind.kind === "staged") {
+    return annotation.diffSource === "staged";
+  }
+  if (refKind.kind === "unstaged") {
+    return annotation.diffSource === "unstaged";
+  }
+  if (refKind.kind === "head") {
+    return (
+      annotation.diffSource === "committed" ||
+      annotation.diffSource === "selected_source" ||
+      annotation.diffSource === "staged" ||
+      annotation.diffSource === "unstaged"
+    );
+  }
+  return annotation.diffSource === "committed" || annotation.diffSource === "selected_source";
+}
+
+function hunkAnnotationsForRefKind(
+  annotations: WorkspaceReviewHunkAnnotation[],
+  refKind: DiffRefKind | undefined,
+): WorkspaceReviewHunkAnnotation[] {
+  if (!refKind) {
+    return [];
+  }
+  return annotations.filter((annotation) =>
+    hunkAnnotationMatchesRefKind(annotation, refKind),
+  );
+}
+
 // ============================================================================
 // Main Component
 // ============================================================================
@@ -108,12 +141,6 @@ export function DiffViewer({
   const hunkAnnotationsByPath = useMemo(() => {
     const map = new Map<string, WorkspaceReviewHunkAnnotation[]>();
     for (const annotation of hunkAnnotations) {
-      if (
-        annotation.diffSource !== "committed" &&
-        annotation.diffSource !== "selected_source"
-      ) {
-        continue;
-      }
       const existing = map.get(annotation.path);
       if (existing) {
         existing.push(annotation);
@@ -331,7 +358,12 @@ export function DiffViewer({
                 selectedFilePath ? annotationsByPath.get(selectedFilePath) ?? [] : []
               }
               hunkAnnotations={
-                selectedFilePath ? hunkAnnotationsByPath.get(selectedFilePath) ?? [] : []
+                selectedFilePath
+                  ? hunkAnnotationsForRefKind(
+                      hunkAnnotationsByPath.get(selectedFilePath) ?? [],
+                      changesTabRefKind,
+                    )
+                  : []
               }
             />
           </div>
@@ -379,7 +411,10 @@ export function DiffViewer({
               })}
               hunkAnnotations={
                 commitSelectedFile
-                  ? hunkAnnotationsByPath.get(commitSelectedFile) ?? []
+                  ? hunkAnnotationsForRefKind(
+                      hunkAnnotationsByPath.get(commitSelectedFile) ?? [],
+                      historyTabRefKind,
+                    )
                   : []
               }
             />

@@ -401,6 +401,38 @@ describe("DiffViewer", () => {
       expect(screen.queryByText("Other file annotation.")).not.toBeInTheDocument();
     });
 
+    it("renders staged workspace review hunk annotations for staged changes", async () => {
+      const diffData = createDiffData({ filePath: "plan.txt" });
+      const onFetchDiff = vi.fn().mockResolvedValue(diffData);
+      const changes = [createFileChange({ path: "plan.txt" })];
+
+      render(
+        <DiffViewer
+          {...defaultProps}
+          changes={changes}
+          changesRefKind={{ kind: "staged" }}
+          onFetchDiff={onFetchDiff}
+          hunkAnnotations={[
+            createHunkAnnotation({
+              diffSource: "staged",
+              title: "Staged review summary",
+              message: "This staged hunk has workspace review context.",
+            }),
+            createHunkAnnotation({
+              id: "workspace-review-hunk-unstaged",
+              diffSource: "unstaged",
+              title: "Unstaged review summary",
+              message: "This unstaged hunk should not render in staged mode.",
+            }),
+          ]}
+        />
+      );
+
+      expect(await screen.findByTestId("diff-hunk-annotation-row")).toBeInTheDocument();
+      expect(screen.getByText("Staged review summary")).toBeInTheDocument();
+      expect(screen.queryByText("Unstaged review summary")).not.toBeInTheDocument();
+    });
+
     it("shows error state when diff fetch fails", async () => {
       const onFetchDiff = vi.fn().mockResolvedValue(null);
       const changes = [createFileChange({ path: "test.ts" })];

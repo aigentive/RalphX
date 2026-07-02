@@ -1371,6 +1371,43 @@ describe("AgentsPublishInlineDiffs", () => {
       );
     });
 
+    it("passes staged and unstaged workspace review hunk annotations to default workspace file cards", () => {
+      const changes = [makeFileChange("src/Foo.tsx"), makeFileChange("src/Bar.tsx")];
+      render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+            hunkAnnotations={[
+              makeHunkAnnotation("src/Foo.tsx", {
+                id: "workspace-review-hunk-staged",
+                diffSource: "staged",
+              }),
+              makeHunkAnnotation("src/Foo.tsx", {
+                id: "workspace-review-hunk-unstaged",
+                diffSource: "unstaged",
+              }),
+              makeHunkAnnotation("src/Other.tsx", {
+                id: "workspace-review-hunk-other",
+                diffSource: "staged",
+              }),
+            ]}
+          />,
+        ),
+      );
+
+      expect(screen.getByTestId("mock-file-diff-src-Foo.tsx")).toHaveAttribute(
+        "data-hunk-annotation-count",
+        "2",
+      );
+      expect(screen.getByTestId("mock-file-diff-src-Bar.tsx")).toHaveAttribute(
+        "data-hunk-annotation-count",
+        "0",
+      );
+    });
+
     it("auto-scrolls to the first synced GitHub annotation after annotations arrive", async () => {
       const changes = [
         makeFileChange("src/Foo.tsx"),
@@ -1489,6 +1526,72 @@ describe("AgentsPublishInlineDiffs", () => {
               }),
               makeHunkAnnotation("src/Bar.tsx", {
                 id: "workspace-review-hunk-bar",
+              }),
+            ]}
+          />,
+          client,
+        ),
+      );
+
+      await waitFor(() =>
+        expect(virtuosoMockState.scrollToIndex).toHaveBeenCalledWith({
+          align: "start",
+          behavior: "auto",
+          index: 1,
+        }),
+      );
+      await waitFor(() =>
+        expect(screen.getByTestId("mock-file-diff-src-Bar.tsx")).toHaveAttribute(
+          "data-focus-target",
+          "true",
+        ),
+      );
+      await waitFor(() =>
+        expect(annotationScrollIntoViewMock).toHaveBeenCalledWith({
+          block: "center",
+          behavior: "auto",
+          inline: "nearest",
+        }),
+      );
+    });
+
+    it("auto-scrolls to the first synced staged or unstaged workspace review hunk annotation", async () => {
+      const changes = [
+        makeFileChange("src/Foo.tsx"),
+        makeFileChange("src/Bar.tsx"),
+        makeFileChange("src/Baz.tsx"),
+      ];
+      const client = makeQueryClient();
+      const { rerender } = render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+            hunkAnnotations={[]}
+          />,
+          client,
+        ),
+      );
+
+      expect(virtuosoMockState.scrollToIndex).not.toHaveBeenCalled();
+
+      rerender(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+            hunkAnnotations={[
+              makeHunkAnnotation("src/Baz.tsx", {
+                id: "workspace-review-hunk-baz-unstaged",
+                diffSource: "unstaged",
+              }),
+              makeHunkAnnotation("src/Bar.tsx", {
+                id: "workspace-review-hunk-bar-staged",
+                diffSource: "staged",
               }),
             ]}
           />,
