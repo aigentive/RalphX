@@ -1,9 +1,11 @@
 use super::*;
+use crate::application::agent_conversation_workspace::resolve_agent_conversation_workspace_path;
 use crate::application::AppState;
 use crate::domain::agents::{AgentHarnessKind, ProviderSessionRef};
 use crate::domain::entities::{
-    AgentConversationWorkspaceMode, AgentRun, AgentRunAttribution, AgentRunId, AgentRunStatus,
-    AgentRunUsage, ChatConversation, ChatConversationId, InternalStatus, Project, Task,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunAttribution,
+    AgentRunId, AgentRunStatus, AgentRunUsage, ChatConversation, ChatConversationId,
+    IdeationAnalysisBaseRefKind, InternalStatus, Project, Task,
 };
 use crate::domain::repositories::AgentRunRepository;
 use crate::domain::services::{QueuedMessage, RunningAgentKey};
@@ -62,7 +64,10 @@ fn build_runner_with_agent_run_repo(
             Arc::clone(&app_state.message_queue),
             Arc::clone(&app_state.running_agent_registry),
             Arc::clone(&app_state.memory_event_repo),
-        ),
+        )
+        .with_agent_conversation_workspace_repo(Some(Arc::clone(
+            &app_state.agent_conversation_workspace_repo,
+        ))),
     )
 }
 
@@ -316,6 +321,57 @@ fn startup_resumption_send_options_preserves_interrupted_agent_conversation_for_
             "startup resumption must resume the exact interrupted conversation for {mode:?} mode so agent_mode/workspace linkage are preserved"
         );
     }
+}
+
+#[tokio::test]
+async fn blocked_agent_workspace_resume_reason_blocks_cleaned_terminal_workspace() {
+    let (execution_state, app_state) = setup_test_state().await;
+    let temp = tempfile::tempdir().expect("temp dir should be created");
+    let project_root = temp.path().join("project-root");
+    std::fs::create_dir_all(&project_root).expect("project root should be created");
+    let mut project = Project::new(
+        "Cleaned Agent Workspace".to_string(),
+        project_root.to_string_lossy().to_string(),
+    );
+    project.worktree_parent_directory =
+        Some(temp.path().join("worktrees").to_string_lossy().to_string());
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+
+    let mut conversation = ChatConversation::new_project(project.id.clone());
+    conversation.set_agent_mode(Some(AgentConversationWorkspaceMode::Plan));
+    let expected_path = resolve_agent_conversation_workspace_path(&project, &conversation.id)
+        .expect("expected workspace path should resolve");
+    let mut workspace = AgentConversationWorkspace::new(
+        conversation.id,
+        project.id.clone(),
+        AgentConversationWorkspaceMode::Plan,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("main".to_string()),
+        Some("base-sha".to_string()),
+        "ralphx/cleaned/agent-workspace".to_string(),
+        expected_path.to_string_lossy().to_string(),
+    );
+    workspace.publication_pr_status = Some("merged".to_string());
+    app_state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .unwrap();
+
+    let runner = build_runner(&app_state, &execution_state);
+    let reason = runner
+        .blocked_agent_workspace_resume_reason(&conversation)
+        .await;
+
+    assert_eq!(
+        reason,
+        Some(AgentWorkspaceContinuationBlock::CleanedAfterTerminal)
+    );
 }
 
 #[tokio::test]
