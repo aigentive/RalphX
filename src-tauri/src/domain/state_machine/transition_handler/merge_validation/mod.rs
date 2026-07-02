@@ -37,7 +37,9 @@ use crate::domain::entities::{
     Project, Task,
 };
 
-use crate::infrastructure::tool_paths::resolve_shell_cli_path;
+use crate::infrastructure::tool_paths::{
+    agent_subprocess_env_path, prepend_resolved_node_bin_to_path, resolve_shell_cli_path,
+};
 use crate::utils::truncate_str;
 
 pub(crate) use metadata::format_validation_error_metadata;
@@ -85,7 +87,12 @@ pub(crate) async fn spawn_cancellable_command(
     cancel: &CancellationToken,
 ) -> CancellableCommandResult {
     let started = Instant::now();
-    let mut child = match tokio::process::Command::new(resolve_shell_cli_path())
+    let mut command = tokio::process::Command::new(resolve_shell_cli_path());
+    crate::infrastructure::login_shell_env::apply_to(&mut command);
+    command.env("PATH", agent_subprocess_env_path());
+    prepend_resolved_node_bin_to_path(command.as_std_mut());
+
+    let mut child = match command
         .arg("-c")
         .arg(cmd)
         .current_dir(cwd)
