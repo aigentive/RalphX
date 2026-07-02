@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { AgentConversationRuntimeStatus } from "@/api/chat";
@@ -7,6 +7,21 @@ import { AgentRuntimeStatusWidget } from "./AgentRuntimeStatusWidget";
 type RuntimeItem = AgentConversationRuntimeStatus["items"][number];
 
 const scrollIntoViewMock = vi.fn();
+
+function testRect(overrides: Partial<DOMRect> = {}): DOMRect {
+  return {
+    x: 0,
+    y: 0,
+    width: 0,
+    height: 0,
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    toJSON: () => ({}),
+    ...overrides,
+  } as DOMRect;
+}
 
 function runtimeItem(overrides: Partial<RuntimeItem> = {}): RuntimeItem {
   return {
@@ -208,6 +223,94 @@ describe("AgentRuntimeStatusWidget", () => {
     expect(onViewWorkspaceReview).toHaveBeenCalledWith("review-conversation-1");
   });
 
+  it("keeps runtime target reveal local instead of calling ancestor scrollIntoView", () => {
+    vi.useFakeTimers();
+    try {
+      render(
+        <AgentRuntimeStatusWidget
+          status={runtimeStatus({
+            primarySource: "workspace_review",
+            summaryLabel: "Reviewing",
+            items: [
+              runtimeItem({
+                source: "workspace",
+                contextType: "project",
+                contextId: "conversation-1",
+                label: "Agent running",
+                title: "Workspace chat",
+                agentStatus: "waiting_for_input",
+                taskId: null,
+                internalStatus: null,
+                conversationId: "conversation-1",
+              }),
+              runtimeItem({
+                source: "workspace_review",
+                contextType: "project",
+                contextId: "review-conversation-1",
+                label: "Reviewing",
+                title: "Review workspace changes",
+                taskId: null,
+                internalStatus: "reviewing",
+                conversationId: "review-conversation-1",
+              }),
+            ],
+          })}
+          onViewWorkspace={vi.fn()}
+          onViewIdeation={vi.fn()}
+          onViewVerification={vi.fn()}
+          onViewTaskRuntime={vi.fn()}
+          onViewWorkspaceReview={vi.fn()}
+        />,
+      );
+
+      act(() => {
+        vi.runOnlyPendingTimers();
+      });
+
+      expect(scrollIntoViewMock).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not repeat runtime target reveal for semantically unchanged items", () => {
+    vi.useFakeTimers();
+    try {
+      const firstStatus = runtimeStatus();
+      const { rerender } = render(
+        <AgentRuntimeStatusWidget
+          status={firstStatus}
+          onViewWorkspace={vi.fn()}
+          onViewIdeation={vi.fn()}
+          onViewVerification={vi.fn()}
+          onViewTaskRuntime={vi.fn()}
+        />,
+      );
+
+      act(() => {
+        vi.runOnlyPendingTimers();
+      });
+
+      rerender(
+        <AgentRuntimeStatusWidget
+          status={runtimeStatus({ items: [...firstStatus.items] })}
+          onViewWorkspace={vi.fn()}
+          onViewIdeation={vi.fn()}
+          onViewVerification={vi.fn()}
+          onViewTaskRuntime={vi.fn()}
+        />,
+      );
+
+      act(() => {
+        vi.runOnlyPendingTimers();
+      });
+
+      expect(scrollIntoViewMock).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("does not duplicate the header for a single current workspace Review runtime", () => {
     render(
       <AgentRuntimeStatusWidget
@@ -336,116 +439,145 @@ describe("AgentRuntimeStatusWidget", () => {
     );
   });
 
-  it("matches composer tray width and caps the runtime list to three scrollable rows", async () => {
-    render(
-      <AgentRuntimeStatusWidget
-        status={runtimeStatus({
-          primarySource: "verification",
-          summaryLabel: "Runtime activity",
-          items: [
-            runtimeItem({
-              source: "workspace",
-              contextType: "project",
-              contextId: "conversation-1",
-              label: "Workspace waiting",
-              title: "Workspace chat",
-              agentStatus: "waiting_for_input",
-              taskId: null,
-              internalStatus: null,
-              conversationId: "conversation-1",
-            }),
-            runtimeItem({
-              source: "review",
-              contextType: "review",
-              contextId: "task-2",
-              label: "Review waiting",
-              title: "Review task",
-              agentStatus: "waiting_for_input",
-              taskId: "task-2",
-              internalStatus: "reviewing",
-            }),
-            runtimeItem({
-              source: "verification",
-              contextType: "ideation",
-              contextId: "verification-child",
-              label: "Verifying",
-              title: "Verification run",
-              parentSessionId: "parent-session",
-              childSessionId: "verification-child",
-            }),
-            runtimeItem({
-              source: "task_execution",
-              contextType: "task_execution",
-              contextId: "task-4",
-              label: "Executing",
-              title: "Execution task",
-              taskId: "task-4",
-            }),
-          ],
-        })}
-        onViewWorkspace={vi.fn()}
-        onViewIdeation={vi.fn()}
-        onViewVerification={vi.fn()}
-        onViewTaskRuntime={vi.fn()}
-      />,
-    );
+  it("matches composer tray width and caps the runtime list to three scrollable rows", () => {
+    vi.useFakeTimers();
+    try {
+      render(
+        <AgentRuntimeStatusWidget
+          status={runtimeStatus({
+            primarySource: "verification",
+            summaryLabel: "Runtime activity",
+            items: [
+              runtimeItem({
+                source: "workspace",
+                contextType: "project",
+                contextId: "conversation-1",
+                label: "Workspace waiting",
+                title: "Workspace chat",
+                agentStatus: "waiting_for_input",
+                taskId: null,
+                internalStatus: null,
+                conversationId: "conversation-1",
+              }),
+              runtimeItem({
+                source: "review",
+                contextType: "review",
+                contextId: "task-2",
+                label: "Review waiting",
+                title: "Review task",
+                agentStatus: "waiting_for_input",
+                taskId: "task-2",
+                internalStatus: "reviewing",
+              }),
+              runtimeItem({
+                source: "verification",
+                contextType: "ideation",
+                contextId: "verification-child",
+                label: "Verifying",
+                title: "Verification run",
+                parentSessionId: "parent-session",
+                childSessionId: "verification-child",
+              }),
+              runtimeItem({
+                source: "task_execution",
+                contextType: "task_execution",
+                contextId: "task-4",
+                label: "Executing",
+                title: "Execution task",
+                taskId: "task-4",
+              }),
+            ],
+          })}
+          onViewWorkspace={vi.fn()}
+          onViewIdeation={vi.fn()}
+          onViewVerification={vi.fn()}
+          onViewTaskRuntime={vi.fn()}
+        />,
+      );
 
-    expect(screen.getByTestId("agents-runtime-status-widget")).toHaveClass(
-      "mx-1",
-      "mb-1.5",
-    );
-    const list = screen.getByTestId("agents-runtime-status-list");
-    expect(list).toHaveClass("overflow-y-auto", "overscroll-contain");
-    expect(list).toHaveStyle({ maxHeight: "108px" });
+      expect(screen.getByTestId("agents-runtime-status-widget")).toHaveClass(
+        "mx-1",
+        "mb-1.5",
+      );
+      const list = screen.getByTestId("agents-runtime-status-list");
+      expect(list).toHaveClass("overflow-y-auto", "overscroll-contain");
+      expect(list).toHaveStyle({ maxHeight: "108px" });
 
-    await waitFor(() => expect(scrollIntoViewMock).toHaveBeenCalledTimes(1));
-    expect(scrollIntoViewMock).toHaveBeenCalledWith(
-      screen.getByTestId("agents-runtime-status-item-verification"),
-      { block: "nearest", inline: "nearest", behavior: "smooth" },
-    );
+      vi.spyOn(list, "getBoundingClientRect").mockReturnValue(
+        testRect({ top: 0, bottom: 108 }),
+      );
+      vi.spyOn(
+        screen.getByTestId("agents-runtime-status-item-verification"),
+        "getBoundingClientRect",
+      ).mockReturnValue(testRect({ top: 120, bottom: 152 }));
+
+      act(() => {
+        vi.runOnlyPendingTimers();
+      });
+
+      expect(list.scrollTop).toBe(44);
+      expect(scrollIntoViewMock).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
-  it("scrolls the selected task runtime row before the first running row", async () => {
-    render(
-      <AgentRuntimeStatusWidget
-        status={runtimeStatus({
-          primarySource: "verification",
-          summaryLabel: "Runtime activity",
-          items: [
-            runtimeItem({
-              source: "verification",
-              contextType: "ideation",
-              contextId: "verification-child",
-              label: "Verifying",
-              title: "Verification run",
-              parentSessionId: "parent-session",
-              childSessionId: "verification-child",
-            }),
-            runtimeItem({
-              source: "review",
-              contextType: "review",
-              contextId: "task-2",
-              label: "Reviewing",
-              title: "Review task",
-              taskId: "task-2",
-              internalStatus: "reviewing",
-              agentStatus: "waiting_for_input",
-            }),
-          ],
-        })}
-        selectedTaskId="task-2"
-        onViewWorkspace={vi.fn()}
-        onViewIdeation={vi.fn()}
-        onViewVerification={vi.fn()}
-        onViewTaskRuntime={vi.fn()}
-      />,
-    );
+  it("scrolls the selected task runtime row before the first running row", () => {
+    vi.useFakeTimers();
+    try {
+      render(
+        <AgentRuntimeStatusWidget
+          status={runtimeStatus({
+            primarySource: "verification",
+            summaryLabel: "Runtime activity",
+            items: [
+              runtimeItem({
+                source: "verification",
+                contextType: "ideation",
+                contextId: "verification-child",
+                label: "Verifying",
+                title: "Verification run",
+                parentSessionId: "parent-session",
+                childSessionId: "verification-child",
+              }),
+              runtimeItem({
+                source: "review",
+                contextType: "review",
+                contextId: "task-2",
+                label: "Reviewing",
+                title: "Review task",
+                taskId: "task-2",
+                internalStatus: "reviewing",
+                agentStatus: "waiting_for_input",
+              }),
+            ],
+          })}
+          selectedTaskId="task-2"
+          onViewWorkspace={vi.fn()}
+          onViewIdeation={vi.fn()}
+          onViewVerification={vi.fn()}
+          onViewTaskRuntime={vi.fn()}
+        />,
+      );
 
-    await waitFor(() => expect(scrollIntoViewMock).toHaveBeenCalledTimes(1));
-    expect(scrollIntoViewMock).toHaveBeenCalledWith(
-      screen.getByTestId("agents-runtime-status-item-review"),
-      { block: "nearest", inline: "nearest", behavior: "smooth" },
-    );
+      const list = screen.getByTestId("agents-runtime-status-list");
+      vi.spyOn(list, "getBoundingClientRect").mockReturnValue(
+        testRect({ top: 0, bottom: 32 }),
+      );
+      vi.spyOn(
+        screen.getByTestId("agents-runtime-status-item-review"),
+        "getBoundingClientRect",
+      ).mockReturnValue(testRect({ top: 42, bottom: 74 }));
+
+      act(() => {
+        vi.runOnlyPendingTimers();
+      });
+
+      expect(list.scrollTop).toBe(42);
+      expect(scrollIntoViewMock).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("routes verification CTA with parent and child session ids", () => {
