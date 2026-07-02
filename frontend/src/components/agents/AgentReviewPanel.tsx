@@ -119,6 +119,27 @@ function reviewActionForState({
   return { label: "Run review", force: true };
 }
 
+function reviewActionDisabledReason({
+  isReviewActionPending,
+  isWorkspaceRuntimeGenerating,
+  isPublishingWorkspace,
+}: {
+  isReviewActionPending: boolean;
+  isWorkspaceRuntimeGenerating: boolean;
+  isPublishingWorkspace: boolean;
+}): string | null {
+  if (isReviewActionPending) {
+    return "Review is starting. Wait for this request to finish.";
+  }
+  if (isWorkspaceRuntimeGenerating) {
+    return "Review is available after the current agent run finishes.";
+  }
+  if (isPublishingWorkspace) {
+    return "Review actions are unavailable while Commit & Publish is running.";
+  }
+  return null;
+}
+
 function reviewStatusForState({
   context,
   hasArtifact,
@@ -250,6 +271,16 @@ export function AgentReviewPanel({
   const reviewUpdatedAt = displayContext?.monitor.reviewArtifactUpdatedAt
     ? new Date(displayContext.monitor.reviewArtifactUpdatedAt).toLocaleString()
     : null;
+  const actionDisabledReason = action
+    ? reviewActionDisabledReason({
+        isReviewActionPending,
+        isWorkspaceRuntimeGenerating,
+        isPublishingWorkspace,
+      })
+    : null;
+  const actionDisabledReasonId = actionDisabledReason
+    ? "agents-review-action-disabled-reason"
+    : undefined;
   const actionButton = useMemo(() => {
     if (isRunning && !action) {
       return (
@@ -266,8 +297,7 @@ export function AgentReviewPanel({
       );
     }
     if (!action) return null;
-    const isActionDisabled =
-      isReviewActionPending || isWorkspaceRuntimeGenerating;
+    const isActionDisabled = actionDisabledReason !== null;
     const shouldPromotePublish =
       action.label === "Run again" &&
       Boolean(onOpenPublish) &&
@@ -303,6 +333,9 @@ export function AgentReviewPanel({
                       size="sm"
                       className="h-8 w-7 border-0 bg-transparent p-0 hover:bg-[var(--bg-hover)]"
                       disabled={isActionDisabled}
+                      {...(actionDisabledReasonId !== undefined && {
+                        "aria-describedby": actionDisabledReasonId,
+                      })}
                       aria-label="Review actions"
                       data-testid="agents-review-actions-menu"
                     >
@@ -315,7 +348,9 @@ export function AgentReviewPanel({
                   </DropdownMenuTrigger>
                 </span>
               </TooltipTrigger>
-              <TooltipContent side="top">Review actions</TooltipContent>
+              <TooltipContent side="top">
+                {actionDisabledReason ?? "Review actions"}
+              </TooltipContent>
             </Tooltip>
             <DropdownMenuContent align="end" className="min-w-[160px]">
               <DropdownMenuItem
@@ -325,6 +360,9 @@ export function AgentReviewPanel({
                   onStartReview(action.force);
                 }}
                 disabled={isActionDisabled}
+                {...(actionDisabledReasonId !== undefined && {
+                  "aria-describedby": actionDisabledReasonId,
+                })}
               >
                 <RefreshCw className="h-3.5 w-3.5" />
                 Run again
@@ -334,26 +372,41 @@ export function AgentReviewPanel({
         </div>
       );
     }
-    return (
+    const button = (
       <Button
         type="button"
         size="sm"
         onClick={() => onStartReview(action.force)}
         disabled={isActionDisabled}
+        {...(actionDisabledReasonId !== undefined && {
+          "aria-describedby": actionDisabledReasonId,
+        })}
         className="h-8 gap-1.5 bg-[var(--accent-primary)] text-white hover:bg-[var(--accent-hover)]"
       >
         <ActionIcon className={`h-4 w-4 ${actionIconClassName}`} />
         {action.label}
       </Button>
     );
+    if (!actionDisabledReason) {
+      return button;
+    }
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span className="inline-flex">{button}</span>
+        </TooltipTrigger>
+        <TooltipContent side="top">{actionDisabledReason}</TooltipContent>
+      </Tooltip>
+    );
   }, [
     ActionIcon,
     action,
+    actionDisabledReason,
+    actionDisabledReasonId,
     actionIconClassName,
     displayContext,
     isReviewActionPending,
     isPublishingWorkspace,
-    isWorkspaceRuntimeGenerating,
     isRunning,
     onOpenPublish,
     onStartReview,
@@ -437,6 +490,24 @@ export function AgentReviewPanel({
           </div>
           <div className="shrink-0">{actionButton}</div>
         </div>
+
+        {actionDisabledReason && (
+          <div
+            id={actionDisabledReasonId}
+            className="mt-3 rounded-md px-3 py-2 text-xs"
+            data-testid="agents-review-action-disabled-reason"
+            role="status"
+            style={{
+              backgroundColor: "var(--bg-sunken)",
+              borderColor: "var(--border-subtle)",
+              borderWidth: 1,
+              borderStyle: "solid",
+              color: "var(--text-secondary)",
+            }}
+          >
+            {actionDisabledReason}
+          </div>
+        )}
 
         {skippedReason === "conversation_active" && (
           <div
