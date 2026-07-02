@@ -744,7 +744,10 @@ function GranolaFilterButton({
 
 function GranolaMarkdownBlock({ markdown }: { markdown: string }) {
   return (
-    <div className="prose prose-sm max-w-none text-sm leading-6 dark:prose-invert">
+    <div
+      className="theme-aware-prose prose prose-sm max-w-none text-sm leading-6"
+      data-testid="granola-dashboard-note-markdown"
+    >
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
         {markdown}
       </ReactMarkdown>

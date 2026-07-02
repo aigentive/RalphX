@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -129,5 +129,20 @@ describe("AgentsGranolaNotePanel", () => {
         includeTranscript: true,
       }),
     );
+  });
+
+  it("uses theme-aware prose colors for bound note markdown", async () => {
+    getNoteMock.mockResolvedValue({
+      ...boundNote(),
+      summaryMarkdown: "### Progress\n\n- Ship Granola note browsing.",
+    });
+
+    renderPanel();
+
+    const markdown = await screen.findByTestId("agent-granola-note-markdown");
+    expect(markdown).toHaveClass("theme-aware-prose");
+    expect(
+      within(markdown).getByRole("heading", { name: "Progress" }),
+    ).toBeInTheDocument();
   });
 });
