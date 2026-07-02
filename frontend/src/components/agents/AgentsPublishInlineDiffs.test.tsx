@@ -216,7 +216,28 @@ vi.mock("./AgentsPublishFileDiff", () => ({
       {shouldHydrate && (annotations?.length ?? 0) > 0 && (
         <div data-testid="diff-annotation-row">annotation</div>
       )}
-      {shouldHydrate && (hunkAnnotations?.length ?? 0) > 0 && (
+      {shouldHydrate &&
+        (hunkAnnotations?.length ?? 0) > 0 &&
+        file.path.includes("Paged") && (
+          <div
+            data-testid="delayed-paged-hunk-annotation-host"
+            ref={(node: HTMLDivElement | null) => {
+              if (!node || node.dataset.hunkAnnotationScheduled === "true") {
+                return;
+              }
+              node.dataset.hunkAnnotationScheduled = "true";
+              window.setTimeout(() => {
+                const row = document.createElement("div");
+                row.dataset.testid = "diff-hunk-annotation-row";
+                row.textContent = "hunk annotation";
+                node.appendChild(row);
+              }, 20);
+            }}
+          />
+        )}
+      {shouldHydrate &&
+        (hunkAnnotations?.length ?? 0) > 0 &&
+        !file.path.includes("Paged") && (
         <div data-testid="diff-hunk-annotation-row">hunk annotation</div>
       )}
       {file.path}
@@ -1545,6 +1566,64 @@ describe("AgentsPublishInlineDiffs", () => {
           "data-focus-target",
           "true",
         ),
+      );
+      await waitFor(() =>
+        expect(annotationScrollIntoViewMock).toHaveBeenCalledWith({
+          block: "center",
+          behavior: "auto",
+          inline: "nearest",
+        }),
+      );
+    });
+
+    it("retries hunk annotation auto-scroll after a paged diff hydrates the row", async () => {
+      const changes = [
+        makeFileChange("src/Foo.tsx"),
+        makeFileChange("src/Paged.tsx", { additions: 1_250, deletions: 25 }),
+        makeFileChange("src/Baz.tsx"),
+      ];
+      const client = makeQueryClient();
+      const { rerender } = render(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+            hunkAnnotations={[]}
+          />,
+          client,
+        ),
+      );
+
+      expect(virtuosoMockState.scrollToIndex).not.toHaveBeenCalled();
+
+      rerender(
+        withProviders(
+          <AgentsPublishInlineDiffs
+            conversationId="conv-1"
+            review={makeReview(changes)}
+            commits={[]}
+            isLoading={false}
+            hunkAnnotations={[
+              makeHunkAnnotation("src/Paged.tsx", {
+                id: "workspace-review-hunk-paged",
+              }),
+            ]}
+          />,
+          client,
+        ),
+      );
+
+      await waitFor(() =>
+        expect(virtuosoMockState.scrollToIndex).toHaveBeenCalledWith({
+          align: "start",
+          behavior: "auto",
+          index: 1,
+        }),
+      );
+      await waitFor(() =>
+        expect(screen.getByTestId("diff-hunk-annotation-row")).toBeInTheDocument(),
       );
       await waitFor(() =>
         expect(annotationScrollIntoViewMock).toHaveBeenCalledWith({

@@ -63,6 +63,8 @@ const DIFF_ROW_COUNT_SUMMARY_LIMIT = 1;
 const VIRTUAL_RANGE_OVERSCAN_FILES = 0;
 const PATCH_BACKED_HEAD_REF_PREFIX = "github-pr-diff/";
 const FILE_JUMP_STABILIZE_FRAMES = 2;
+const ANNOTATION_SCROLL_RETRY_DELAY_MS = 50;
+const ANNOTATION_SCROLL_RETRY_LIMIT = 60;
 type BulkExpansionPreference = "expanded" | "collapsed" | "custom";
 
 export interface AgentsPublishInlineDiffsProps {
@@ -347,6 +349,7 @@ export function AgentsPublishInlineDiffs({
   );
   const [pendingAnnotationScrollPath, setPendingAnnotationScrollPath] =
     useState<string | null>(null);
+  const [annotationScrollAttempt, setAnnotationScrollAttempt] = useState(0);
   const autoScrolledAnnotationKeyRef = useRef<string | null>(null);
   const {
     commitSha,
@@ -504,6 +507,7 @@ export function AgentsPublishInlineDiffs({
     setFocusTargetPath(null);
     setPendingFileScrollPath(null);
     setPendingAnnotationScrollPath(null);
+    setAnnotationScrollAttempt(0);
   }, [conversationId]);
 
   useEffect(() => {
@@ -511,6 +515,7 @@ export function AgentsPublishInlineDiffs({
     setFocusTargetPath(null);
     setPendingFileScrollPath(null);
     setPendingAnnotationScrollPath(null);
+    setAnnotationScrollAttempt(0);
   }, [conversationId, effectiveMode]);
 
   const bufferedVisiblePathSet = useMemo(() => {
@@ -1186,6 +1191,7 @@ export function AgentsPublishInlineDiffs({
     });
     setFocusTargetPath(firstAnnotatedFilePath);
     setPendingAnnotationScrollPath(firstAnnotatedFilePath);
+    setAnnotationScrollAttempt(0);
     autoScrolledAnnotationKeyRef.current = annotationAutoScrollKey;
   }, [
     annotationAutoScrollKey,
@@ -1209,7 +1215,15 @@ export function AgentsPublishInlineDiffs({
       pendingAnnotationScrollPath,
     );
     if (!annotationRow) {
-      return;
+      if (annotationScrollAttempt >= ANNOTATION_SCROLL_RETRY_LIMIT) {
+        setPendingAnnotationScrollPath(null);
+        setAnnotationScrollAttempt(0);
+        return;
+      }
+      const retryTimer = window.setTimeout(() => {
+        setAnnotationScrollAttempt((attempt) => attempt + 1);
+      }, ANNOTATION_SCROLL_RETRY_DELAY_MS);
+      return () => window.clearTimeout(retryTimer);
     }
     annotationRow.scrollIntoView({
       block: "center",
@@ -1217,7 +1231,9 @@ export function AgentsPublishInlineDiffs({
       inline: "nearest",
     });
     setPendingAnnotationScrollPath(null);
-  }, [diffByPath, pendingAnnotationScrollPath, visibleRange]);
+    setAnnotationScrollAttempt(0);
+    return undefined;
+  }, [annotationScrollAttempt, diffByPath, pendingAnnotationScrollPath, visibleRange]);
 
   return (
     <div
