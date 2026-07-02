@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { renderHook, waitFor } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -13,6 +13,8 @@ const { mockGetAgentConversationRuntimeStatuses } = vi.hoisted(() => ({
   mockGetAgentConversationRuntimeStatuses: vi.fn(),
 }));
 
+const eventHandlers = new Map<string, Set<(payload: unknown) => void>>();
+
 vi.mock("@/api/chat", () => ({
   chatApi: {
     getAgentConversationRuntimeStatuses: mockGetAgentConversationRuntimeStatuses,
@@ -21,9 +23,28 @@ vi.mock("@/api/chat", () => ({
 
 vi.mock("@/providers/EventProvider", () => ({
   useEventBus: () => ({
-    subscribe: vi.fn(() => vi.fn()),
+    subscribe: vi.fn((event: string, handler: (payload: unknown) => void) => {
+      const handlers =
+        eventHandlers.get(event) ?? new Set<(payload: unknown) => void>();
+      handlers.add(handler);
+      eventHandlers.set(event, handlers);
+      return () => {
+        handlers.delete(handler);
+        if (handlers.size === 0) {
+          eventHandlers.delete(event);
+        }
+      };
+    }),
   }),
 }));
+
+function emitEvent(event: string, payload: unknown) {
+  act(() => {
+    eventHandlers.get(event)?.forEach((handler) => {
+      handler(payload);
+    });
+  });
+}
 
 function runtimeStatus(
   overrides: Partial<AgentConversationRuntimeStatus> = {},
@@ -74,6 +95,7 @@ function createWrapper() {
 describe("useAgentConversationRuntimeStatus", () => {
   beforeEach(() => {
     mockGetAgentConversationRuntimeStatuses.mockReset();
+    eventHandlers.clear();
     useChatStore.setState({
       activeConversationIds: {},
       activeAgentRunIds: {},
@@ -211,5 +233,122 @@ describe("useAgentConversationRuntimeStatus", () => {
     );
     expect(state.agentStatus[projectStoreKey]).toBeUndefined();
     expect(state.activeConversationIds[projectStoreKey]).toBeUndefined();
+  });
+
+  it("ignores lifecycle invalidations for unrelated conversations", async () => {
+    mockGetAgentConversationRuntimeStatuses.mockResolvedValue({
+      "conversation-1": runtimeStatus(),
+    });
+
+    const { result } = renderHook(
+      () => useAgentConversationRuntimeStatus("conversation-1"),
+      {
+        wrapper: createWrapper(),
+      },
+    );
+
+    await waitFor(() => {
+      expect(result.current.data?.conversationId).toBe("conversation-1");
+    });
+    expect(mockGetAgentConversationRuntimeStatuses).toHaveBeenCalledTimes(1);
+
+    emitEvent("agent:run_completed", {
+      conversation_id: "other-conversation",
+      context_type: "project",
+      context_id: "other-conversation",
+    });
+
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+    expect(mockGetAgentConversationRuntimeStatuses).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps lifecycle invalidations for known runtime child conversations", async () => {
+    mockGetAgentConversationRuntimeStatuses.mockResolvedValue({
+      "conversation-1": runtimeStatus(),
+    });
+
+    const { result } = renderHook(
+      () => useAgentConversationRuntimeStatus("conversation-1"),
+      {
+        wrapper: createWrapper(),
+      },
+    );
+
+    await waitFor(() => {
+      expect(result.current.data?.conversationId).toBe("conversation-1");
+    });
+    expect(mockGetAgentConversationRuntimeStatuses).toHaveBeenCalledTimes(1);
+
+    emitEvent("agent:run_completed", {
+      conversation_id: "review-conversation-1",
+      context_type: "project",
+      context_id: "review-conversation-1",
+    });
+
+    await waitFor(() => {
+      expect(mockGetAgentConversationRuntimeStatuses).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it("refreshes lifecycle starts that may introduce uncached child conversations", async () => {
+    mockGetAgentConversationRuntimeStatuses.mockResolvedValue({
+      "conversation-1": runtimeStatus({
+        items: [],
+      }),
+    });
+
+    const { result } = renderHook(
+      () => useAgentConversationRuntimeStatus("conversation-1"),
+      {
+        wrapper: createWrapper(),
+      },
+    );
+
+    await waitFor(() => {
+      expect(result.current.data?.conversationId).toBe("conversation-1");
+    });
+    expect(mockGetAgentConversationRuntimeStatuses).toHaveBeenCalledTimes(1);
+
+    emitEvent("agent:run_started", {
+      run_id: "run-1",
+      conversation_id: "review-conversation-2",
+      context_type: "project",
+      context_id: "review-conversation-2",
+    });
+
+    await waitFor(() => {
+      expect(mockGetAgentConversationRuntimeStatuses).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it("refreshes task status changes that may introduce uncached task runtime", async () => {
+    mockGetAgentConversationRuntimeStatuses.mockResolvedValue({
+      "conversation-1": runtimeStatus({
+        items: [],
+      }),
+    });
+
+    const { result } = renderHook(
+      () => useAgentConversationRuntimeStatus("conversation-1"),
+      {
+        wrapper: createWrapper(),
+      },
+    );
+
+    await waitFor(() => {
+      expect(result.current.data?.conversationId).toBe("conversation-1");
+    });
+    expect(mockGetAgentConversationRuntimeStatuses).toHaveBeenCalledTimes(1);
+
+    emitEvent("task:status_changed", {
+      task_id: "task-2",
+      old_status: "ready",
+      new_status: "executing",
+    });
+
+    await waitFor(() => {
+      expect(mockGetAgentConversationRuntimeStatuses).toHaveBeenCalledTimes(2);
+    });
   });
 });

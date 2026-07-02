@@ -68,6 +68,18 @@ function runtimeItemKey(item: AgentConversationRuntimeItem): string {
   return `${item.source}:${item.contextType}:${item.contextId}`;
 }
 
+function scrollItemIntoListView(container: HTMLElement, item: HTMLElement) {
+  const containerRect = container.getBoundingClientRect();
+  const itemRect = item.getBoundingClientRect();
+  if (itemRect.top < containerRect.top) {
+    container.scrollTop -= containerRect.top - itemRect.top;
+    return;
+  }
+  if (itemRect.bottom > containerRect.bottom) {
+    container.scrollTop += itemRect.bottom - containerRect.bottom;
+  }
+}
+
 function isCurrentRuntimeItem(
   item: AgentConversationRuntimeItem,
   currentFocus: AgentRuntimeStatusCurrentFocus | null | undefined,
@@ -129,7 +141,9 @@ export function AgentRuntimeStatusWidget({
   onViewVerification,
   onViewTaskRuntime,
 }: AgentRuntimeStatusWidgetProps) {
+  const listRef = useRef<HTMLDivElement>(null);
   const itemRowRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const lastRevealedRuntimeKeyRef = useRef<string | null>(null);
   const items = status?.items ?? EMPTY_RUNTIME_ITEMS;
   const [singleItem] = items;
   const hasGeneratingItem = items.some(
@@ -147,36 +161,37 @@ export function AgentRuntimeStatusWidget({
         !showSingleWorkspaceRuntime
       ),
   );
+  const selectedTaskItem = selectedTaskId
+    ? items.find((item) => item.taskId === selectedTaskId)
+    : undefined;
+  const firstRunningItem = items.find(
+    (item) => item.agentStatus === "generating",
+  );
+  const scrollTargetItem = selectedTaskItem ?? firstRunningItem;
+  const scrollTargetKey = scrollTargetItem
+    ? runtimeItemKey(scrollTargetItem)
+    : null;
 
   useEffect(() => {
-    if (!shouldRender) {
+    if (!shouldRender || !scrollTargetKey) {
+      lastRevealedRuntimeKeyRef.current = null;
       return;
     }
-
-    const selectedTaskItem = selectedTaskId
-      ? items.find((item) => item.taskId === selectedTaskId)
-      : undefined;
-    const firstRunningItem = items.find(
-      (item) => item.agentStatus === "generating",
-    );
-    const scrollTargetItem = selectedTaskItem ?? firstRunningItem;
-    if (!scrollTargetItem) {
+    if (lastRevealedRuntimeKeyRef.current === scrollTargetKey) {
       return;
     }
+    lastRevealedRuntimeKeyRef.current = scrollTargetKey;
 
     const scrollTimer = window.setTimeout(() => {
-      const node = itemRowRefs.current.get(runtimeItemKey(scrollTargetItem));
-      if (typeof node?.scrollIntoView === "function") {
-        node.scrollIntoView({
-          block: "nearest",
-          inline: "nearest",
-          behavior: "smooth",
-        });
+      const list = listRef.current;
+      const node = itemRowRefs.current.get(scrollTargetKey);
+      if (list && node) {
+        scrollItemIntoListView(list, node);
       }
     }, 0);
 
     return () => window.clearTimeout(scrollTimer);
-  }, [items, selectedTaskId, shouldRender]);
+  }, [scrollTargetKey, shouldRender]);
 
   if (!shouldRender) {
     return null;
@@ -267,6 +282,7 @@ export function AgentRuntimeStatusWidget({
         </div>
       )}
       <div
+        ref={listRef}
         className={`${suppressHeader ? "" : "mt-2 "}flex flex-col gap-1.5 overflow-y-auto overscroll-contain pr-1`}
         data-testid="agents-runtime-status-list"
         style={{ maxHeight: `${RUNTIME_STATUS_LIST_MAX_HEIGHT_PX}px` }}
