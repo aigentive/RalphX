@@ -2,8 +2,8 @@ use super::*;
 use crate::application::AppState;
 use crate::domain::agents::{AgentHarnessKind, ProviderSessionRef};
 use crate::domain::entities::{
-    AgentRun, AgentRunAttribution, AgentRunId, AgentRunStatus, AgentRunUsage, ChatConversation,
-    ChatConversationId, InternalStatus, Project, Task,
+    AgentConversationWorkspaceMode, AgentRun, AgentRunAttribution, AgentRunId, AgentRunStatus,
+    AgentRunUsage, ChatConversation, ChatConversationId, InternalStatus, Project, Task,
 };
 use crate::domain::repositories::AgentRunRepository;
 use crate::domain::services::{QueuedMessage, RunningAgentKey};
@@ -292,6 +292,30 @@ fn test_prioritize_resumptions_sorts_correctly() {
         sorted[6].conversation.context_type,
         ChatContextType::Project
     );
+}
+
+#[test]
+fn startup_resumption_send_options_preserves_interrupted_agent_conversation_for_all_modes() {
+    let project_id =
+        crate::domain::entities::ProjectId::from_string("project-resume-options".to_string());
+    for mode in [
+        AgentConversationWorkspaceMode::Chat,
+        AgentConversationWorkspaceMode::Edit,
+        AgentConversationWorkspaceMode::Plan,
+        AgentConversationWorkspaceMode::Ideation,
+        AgentConversationWorkspaceMode::ReviewPr,
+    ] {
+        let mut conversation = ChatConversation::new_project(project_id.clone());
+        conversation.set_agent_mode(Some(mode));
+
+        let options = startup_resumption_send_options(&conversation);
+
+        assert_eq!(
+            options.conversation_id_override,
+            Some(conversation.id),
+            "startup resumption must resume the exact interrupted conversation for {mode:?} mode so agent_mode/workspace linkage are preserved"
+        );
+    }
 }
 
 #[tokio::test]

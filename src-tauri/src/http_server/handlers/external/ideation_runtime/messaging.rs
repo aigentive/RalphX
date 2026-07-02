@@ -1,4 +1,7 @@
 use super::*;
+use crate::application::agent_workspace_continuation::{
+    classify_agent_workspace_continuation, AgentWorkspaceContinuationBlock,
+};
 use crate::application::harness_runtime_registry::default_external_mcp_message_queue_cap;
 use crate::domain::services::QueueKey;
 use std::collections::HashSet;
@@ -71,6 +74,7 @@ pub async fn ideation_message_http(
             Json(serde_json::json!({"error": "Session is not active"})),
         ));
     }
+    ensure_linked_agent_workspace_continuable(&state, &session_id).await?;
 
     let session_id_str = session_id.as_str().to_string();
     let current_phase = session.external_activity_phase.clone();
@@ -324,4 +328,85 @@ pub async fn ideation_message_http(
             "Wait for agent to respond. Poll v1_get_ideation_status (5-10s interval)".to_string(),
         ),
     }))
+}
+
+async fn ensure_linked_agent_workspace_continuable(
+    state: &HttpServerState,
+    session_id: &IdeationSessionId,
+) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    let workspace = state
+        .app_state
+        .agent_conversation_workspace_repo
+        .get_by_linked_ideation_session_id(session_id)
+        .await
+        .map_err(|error| {
+            error!(
+                session_id = %session_id.as_str(),
+                error = %error,
+                "Failed to load linked agent workspace for ideation message preflight"
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": "Failed to check linked agent workspace"
+                })),
+            )
+        })?;
+    let Some(workspace) = workspace else {
+        return Ok(());
+    };
+
+    let project = state
+        .app_state
+        .project_repo
+        .get_by_id(&workspace.project_id)
+        .await
+        .map_err(|error| {
+            error!(
+                session_id = %session_id.as_str(),
+                conversation_id = %workspace.conversation_id.as_str(),
+                error = %error,
+                "Failed to load project for linked agent workspace preflight"
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": "Failed to check linked agent workspace project"
+                })),
+            )
+        })?
+        .ok_or_else(|| {
+            let reason = AgentWorkspaceContinuationBlock::UnknownRequiresManualCheck(
+                "project not found".to_string(),
+            );
+            non_resumable_ideation_response(session_id, &workspace, &reason)
+        })?;
+
+    if let Some(reason) =
+        classify_agent_workspace_continuation(&project, &workspace).blocked_reason()
+    {
+        return Err(non_resumable_ideation_response(
+            session_id, &workspace, reason,
+        ));
+    }
+
+    Ok(())
+}
+
+fn non_resumable_ideation_response(
+    session_id: &IdeationSessionId,
+    workspace: &crate::domain::entities::AgentConversationWorkspace,
+    reason: &AgentWorkspaceContinuationBlock,
+) -> (StatusCode, Json<serde_json::Value>) {
+    (
+        StatusCode::CONFLICT,
+        Json(serde_json::json!({
+            "error": "agent_workspace_non_resumable",
+            "reason": reason.code(),
+            "session_id": session_id.as_str(),
+            "conversation_id": workspace.conversation_id.as_str(),
+            "next_action": "start_fresh_agent_conversation",
+            "hint": reason.user_message(),
+        })),
+    )
 }
