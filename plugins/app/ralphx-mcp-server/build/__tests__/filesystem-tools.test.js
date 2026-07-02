@@ -116,6 +116,47 @@ describe("filesystem tools", () => {
             pattern: "**/*.ts",
         })).rejects.toThrow("outside the allowed filesystem roots");
     });
+    it("greps and globs absolute base paths from a configured extra read root", async () => {
+        makeWorkspace();
+        const projectRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ralphx-fs-search-project-")));
+        tempDirs.push(projectRoot);
+        process.env.RALPHX_FILESYSTEM_READ_ROOTS = JSON.stringify([projectRoot]);
+        const sourceFile = path.join(projectRoot, "service", "index.ts");
+        fs.mkdirSync(path.dirname(sourceFile), { recursive: true });
+        fs.writeFileSync(sourceFile, "export const externalNeedle = true;\n");
+        const grepResult = await handleFilesystemToolCall("fs_grep", {
+            pattern: "externalNeedle",
+            base_path: projectRoot,
+            file_pattern: "**/*.ts",
+        });
+        const grepText = grepResult.content[0]?.text ?? "";
+        expect(grepText).toContain(`ROOT: ${projectRoot}`);
+        expect(grepText).toContain("service/index.ts:1: export const externalNeedle = true;");
+        const globResult = await handleFilesystemToolCall("fs_glob", {
+            base_path: projectRoot,
+            pattern: "**/*.ts",
+        });
+        const globText = globResult.content[0]?.text ?? "";
+        expect(globText).toContain(`ROOT: ${projectRoot}`);
+        expect(globText).toContain("service/index.ts");
+    });
+    it("rejects unconfigured absolute base paths outside the allowed roots", async () => {
+        makeWorkspace();
+        const projectRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ralphx-fs-unconfigured-project-")));
+        tempDirs.push(projectRoot);
+        const sourceFile = path.join(projectRoot, "service", "index.ts");
+        fs.mkdirSync(path.dirname(sourceFile), { recursive: true });
+        fs.writeFileSync(sourceFile, "export const externalNeedle = true;\n");
+        await expect(handleFilesystemToolCall("fs_grep", {
+            pattern: "externalNeedle",
+            base_path: projectRoot,
+            file_pattern: "**/*.ts",
+        })).rejects.toThrow("outside the allowed filesystem roots");
+        await expect(handleFilesystemToolCall("fs_glob", {
+            base_path: projectRoot,
+            pattern: "**/*.ts",
+        })).rejects.toThrow("outside the allowed filesystem roots");
+    });
     it("greps within the allowed root using a file pattern", async () => {
         const root = makeWorkspace();
         const rustFile = path.join(root, "src-tauri", "src", "main.rs");
