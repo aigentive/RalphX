@@ -554,14 +554,6 @@ impl AppState {
         }
     }
 
-    fn workspace_review_project_id(conversation: &ChatConversation) -> Option<&str> {
-        if conversation.context_type == ChatContextType::Project {
-            Some(conversation.context_id.as_str())
-        } else {
-            None
-        }
-    }
-
     async fn resolve_workspace_review_runtime_settings(
         &self,
         project_id: Option<&str>,
@@ -980,19 +972,6 @@ impl AppState {
             )
             .await?;
         Ok(Self::lock_utility_agent_runtime_model(runtime))
-    }
-
-    pub(crate) async fn resolve_workspace_reviewer_runtime(
-        &self,
-        conversation: &ChatConversation,
-        latest_run: Option<&AgentRun>,
-    ) -> AppResult<ResolvedBackgroundAgentRuntime> {
-        self.resolve_workspace_reviewer_runtime_with_project_scope(
-            conversation,
-            latest_run,
-            Self::workspace_review_project_id(conversation),
-        )
-        .await
     }
 
     pub(crate) async fn resolve_workspace_reviewer_runtime_for_project(

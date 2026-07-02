@@ -1,5 +1,17 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Virtuoso, type ListRange } from "react-virtuoso";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import {
+  Virtuoso,
+  type Components,
+  type ListRange,
+  type ScrollSeekConfiguration,
+} from "react-virtuoso";
 import { diffApi } from "@/api/diff";
 import type { DiffPageRow, DiffRefKind, FileDiffPage, PrDiffAnnotation } from "@/api/diff";
 import { Button } from "@/components/ui/button";
@@ -12,8 +24,13 @@ import {
 
 export const DIFF_PAGE_SIZE = 200;
 const PAGE_WINDOW_RADIUS = 1;
+const PAGE_FETCH_RADIUS = 1;
 const DIFF_ROW_ESTIMATED_HEIGHT = 20;
+const CONTAINED_VIEWPORT_INCREASE = { top: 320, bottom: 640 };
+const INLINE_VIEWPORT_INCREASE = { top: 800, bottom: 1200 };
 const PLACEHOLDER_ROWS = 12;
+const SCROLL_SEEK_ENTER_VELOCITY = 900;
+const SCROLL_SEEK_EXIT_VELOCITY = 120;
 
 export interface PagedDiffViewProps {
   conversationId: string;
@@ -22,7 +39,10 @@ export interface PagedDiffViewProps {
   annotations?: PrDiffAnnotation[] | undefined;
   pageSize?: number | undefined;
   scrollContainer?: boolean | undefined;
+  inlineScrollParent?: ScrollContainer | null | undefined;
   defaultWrapLines?: boolean | undefined;
+  initialTotalRows?: number | undefined;
+  initialIsBinary?: boolean | undefined;
 }
 
 function refKindCacheKey(refKind: DiffRefKind): string {
@@ -52,28 +72,39 @@ function rowAtIndex(
   return pages.get(offset)?.rows[index - offset];
 }
 
-function prunePagesToOffsetRange(
-  pages: Map<number, FileDiffPage>,
-  firstKeptOffset: number,
-  lastKeptOffset: number
-): boolean {
-  let changed = false;
-  for (const offset of pages.keys()) {
-    if (offset < firstKeptOffset || offset > lastKeptOffset) {
-      pages.delete(offset);
-      changed = true;
-    }
-  }
-  return changed;
-}
-
 type LoadPageOptions = {
   generation?: number;
-  keepOffsetRange?: {
-    first: number;
-    last: number;
-  };
 };
+
+type ScrollContainer = HTMLElement | Window;
+
+function findScrollContainer(element: HTMLElement): ScrollContainer {
+  let current = element.parentElement;
+  while (current) {
+    const overflowY = window.getComputedStyle(current).overflowY;
+    const explicitOverflowY = current.style.overflowY;
+    const canScroll =
+      overflowY === "auto" ||
+      overflowY === "scroll" ||
+      overflowY === "overlay";
+    const hasExplicitScrollY =
+      explicitOverflowY === "auto" ||
+      explicitOverflowY === "scroll" ||
+      explicitOverflowY === "overlay";
+    const hasScrollableContent = current.scrollHeight > current.clientHeight;
+    if (canScroll && (hasExplicitScrollY || hasScrollableContent)) {
+      return current;
+    }
+    current = current.parentElement;
+  }
+  return window;
+}
+
+function isWindowScrollContainer(
+  scrollContainer: ScrollContainer
+): scrollContainer is Window {
+  return scrollContainer === window;
+}
 
 export function PagedDiffView({
   conversationId,
@@ -82,36 +113,70 @@ export function PagedDiffView({
   annotations = [],
   pageSize = DIFF_PAGE_SIZE,
   scrollContainer = false,
+  inlineScrollParent,
   defaultWrapLines = true,
+  initialTotalRows,
+  initialIsBinary,
 }: PagedDiffViewProps) {
   const pagesRef = useRef<Map<number, FileDiffPage>>(new Map());
   const loadingOffsetsRef = useRef<Set<number>>(new Set());
   const generationRef = useRef(0);
-  const previousSentinelRef = useRef<HTMLDivElement | null>(null);
-  const nextSentinelRef = useRef<HTMLDivElement | null>(null);
+  const inlineListRef = useRef<HTMLDivElement | null>(null);
+  const initialTotalRowsRef = useRef(initialTotalRows);
   const [pages, setPages] = useState<Map<number, FileDiffPage>>(() => new Map());
-  const [totalRows, setTotalRows] = useState<number | null>(null);
+  const [totalRows, setTotalRows] = useState<number | null>(
+    () => initialTotalRows ?? null
+  );
   const [initialError, setInitialError] = useState<Error | null>(null);
   const [isInitialLoading, setIsInitialLoading] = useState(true);
+  const [inlineScrollContainer, setInlineScrollContainer] =
+    useState<ScrollContainer | null>(null);
+  const [renderedRange, setRenderedRange] = useState<ListRange | null>(null);
   const [wrapLines, setWrapLines] = useState(defaultWrapLines);
   const annotationIndex = useMemo(() => buildAnnotationIndex(annotations), [annotations]);
   const cacheKey = refKindCacheKey(refKind);
+  const firstPage = pages.get(0);
+  const rowCount = totalRows ?? firstPage?.totalRows ?? 0;
+  const isBinary = firstPage?.isBinary ?? initialIsBinary === true;
+  const hasAnyPage = pages.size > 0;
+  const hasExplicitInlineScrollParent = inlineScrollParent !== undefined;
+  const resolvedInlineScrollContainer = hasExplicitInlineScrollParent
+    ? inlineScrollParent
+    : inlineScrollContainer;
+  const virtuosoComponents = useMemo<Components>(
+    () => ({
+      ScrollSeekPlaceholder: ({ height }) => (
+        <div
+          data-testid="paged-diff-scroll-seek-placeholder-row"
+          style={{
+            height: Math.max(height, DIFF_ROW_ESTIMATED_HEIGHT),
+            backgroundColor: "var(--bg-base)",
+          }}
+        />
+      ),
+    }),
+    [],
+  );
+  const scrollSeekConfiguration = useMemo<ScrollSeekConfiguration>(
+    () => ({
+      enter: (velocity) => Math.abs(velocity) > SCROLL_SEEK_ENTER_VELOCITY,
+      exit: (velocity) => Math.abs(velocity) < SCROLL_SEEK_EXIT_VELOCITY,
+    }),
+    [],
+  );
+
+  useEffect(() => {
+    initialTotalRowsRef.current = initialTotalRows;
+    if (initialTotalRows !== undefined) {
+      setTotalRows((current) => current ?? initialTotalRows);
+    }
+  }, [initialTotalRows]);
 
   const loadPage = useCallback(
     async (requestedOffset: number, options: LoadPageOptions = {}) => {
       const generation = options.generation ?? generationRef.current;
       const offset = pageOffsetForIndex(requestedOffset, pageSize);
       if (pagesRef.current.has(offset)) {
-        if (
-          options.keepOffsetRange &&
-          prunePagesToOffsetRange(
-            pagesRef.current,
-            options.keepOffsetRange.first,
-            options.keepOffsetRange.last
-          )
-        ) {
-          setPages(new Map(pagesRef.current));
-        }
         return;
       }
       if (loadingOffsetsRef.current.has(offset)) {
@@ -135,13 +200,6 @@ export function PagedDiffView({
           return;
         }
         pagesRef.current.set(page.offset, page);
-        if (options.keepOffsetRange) {
-          prunePagesToOffsetRange(
-            pagesRef.current,
-            options.keepOffsetRange.first,
-            options.keepOffsetRange.last
-          );
-        }
         setPages(new Map(pagesRef.current));
         setTotalRows(page.totalRows);
         setInitialError(null);
@@ -167,11 +225,21 @@ export function PagedDiffView({
     pagesRef.current = new Map();
     loadingOffsetsRef.current = new Set();
     setPages(new Map());
-    setTotalRows(null);
+    setTotalRows(initialTotalRowsRef.current ?? null);
     setInitialError(null);
     setIsInitialLoading(true);
+    if (!hasExplicitInlineScrollParent) {
+      setInlineScrollContainer(null);
+    }
+    setRenderedRange(null);
     void loadPage(0, { generation });
-  }, [cacheKey, conversationId, filePath, loadPage]);
+  }, [
+    cacheKey,
+    conversationId,
+    filePath,
+    hasExplicitInlineScrollParent,
+    loadPage,
+  ]);
 
   const prunePagesAroundRange = useCallback(
     (range: ListRange) => {
@@ -198,70 +266,46 @@ export function PagedDiffView({
 
   const handleRangeChanged = useCallback(
     (range: ListRange) => {
-      prunePagesAroundRange(range);
-      for (const offset of pageOffsetsForRange(range, pageSize)) {
+      setRenderedRange((current) =>
+        current?.startIndex === range.startIndex &&
+        current.endIndex === range.endIndex
+          ? current
+          : range
+      );
+      if (scrollContainer) {
+        prunePagesAroundRange(range);
+      }
+      if (rowCount === 0) {
+        return;
+      }
+      const expandedRange = {
+        startIndex: Math.max(0, range.startIndex - PAGE_FETCH_RADIUS * pageSize),
+        endIndex: Math.min(
+          rowCount - 1,
+          range.endIndex + PAGE_FETCH_RADIUS * pageSize
+        ),
+      };
+      for (const offset of pageOffsetsForRange(expandedRange, pageSize)) {
         void loadPage(offset);
       }
     },
-    [loadPage, pageSize, prunePagesAroundRange]
+    [loadPage, pageSize, prunePagesAroundRange, rowCount, scrollContainer]
   );
 
-  const firstPage = pages.get(0);
-  const rowCount = totalRows ?? firstPage?.totalRows ?? 0;
-  const hasAnyPage = pages.size > 0;
-  const sortedPageOffsets = useMemo(
-    () => [...pages.keys()].sort((a, b) => a - b),
-    [pages]
-  );
-  const firstLoadedOffset = sortedPageOffsets[0] ?? 0;
-  const lastLoadedOffset = sortedPageOffsets[sortedPageOffsets.length - 1] ?? 0;
-  const lastLoadedPage = pages.get(lastLoadedOffset);
-  const previousOffset = firstLoadedOffset > 0
-    ? Math.max(0, firstLoadedOffset - pageSize)
-    : null;
-  const nextOffset = lastLoadedPage?.nextOffset ?? null;
-
-  useEffect(() => {
-    if (scrollContainer || typeof IntersectionObserver === "undefined") {
+  useLayoutEffect(() => {
+    if (scrollContainer || hasExplicitInlineScrollParent) {
+      setInlineScrollContainer(null);
       return;
     }
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          if (!entry.isIntersecting) continue;
-          if (entry.target === previousSentinelRef.current && previousOffset !== null) {
-            void loadPage(previousOffset, {
-              keepOffsetRange: {
-                first: previousOffset,
-                last: previousOffset + pageSize,
-              },
-            });
-          }
-          if (entry.target === nextSentinelRef.current && nextOffset !== null) {
-            void loadPage(nextOffset, {
-              keepOffsetRange: {
-                first: Math.max(0, nextOffset - pageSize),
-                last: nextOffset,
-              },
-            });
-          }
-        }
-      },
-      { root: null, rootMargin: "640px 0px 640px 0px" }
+    const element = inlineListRef.current;
+    if (!element) {
+      return;
+    }
+    const nextScrollContainer = findScrollContainer(element);
+    setInlineScrollContainer((current) =>
+      current === nextScrollContainer ? current : nextScrollContainer
     );
-
-    const previousSentinel = previousSentinelRef.current;
-    const nextSentinel = nextSentinelRef.current;
-    if (previousOffset !== null && previousSentinel) {
-      observer.observe(previousSentinel);
-    }
-    if (nextOffset !== null && nextSentinel) {
-      observer.observe(nextSentinel);
-    }
-
-    return () => observer.disconnect();
-  }, [loadPage, nextOffset, pageSize, previousOffset, scrollContainer]);
+  }, [hasExplicitInlineScrollParent, rowCount, scrollContainer]);
 
   if (initialError && !hasAnyPage) {
     return (
@@ -284,7 +328,18 @@ export function PagedDiffView({
     );
   }
 
-  if (isInitialLoading && !firstPage) {
+  if (isBinary) {
+    return (
+      <div
+        className="flex items-center justify-center py-8"
+        style={{ color: "var(--text-muted)" }}
+      >
+        <p className="text-sm">Binary file — diff not shown</p>
+      </div>
+    );
+  }
+
+  if (isInitialLoading && !firstPage && totalRows === null) {
     return (
       <div
         data-testid="paged-diff-loading"
@@ -298,17 +353,6 @@ export function PagedDiffView({
             style={{ backgroundColor: "var(--bg-subtle)" }}
           />
         ))}
-      </div>
-    );
-  }
-
-  if (firstPage?.isBinary) {
-    return (
-      <div
-        className="flex items-center justify-center py-8"
-        style={{ color: "var(--text-muted)" }}
-      >
-        <p className="text-sm">Binary file — diff not shown</p>
       </div>
     );
   }
@@ -338,13 +382,71 @@ export function PagedDiffView({
     );
   };
 
-  const topSpacerHeight = firstLoadedOffset * DIFF_ROW_ESTIMATED_HEIGHT;
-  const lastLoadedRowEnd =
-    lastLoadedPage !== undefined
-      ? lastLoadedOffset + lastLoadedPage.rows.length
-      : 0;
-  const bottomSpacerHeight =
-    Math.max(0, rowCount - lastLoadedRowEnd) * DIFF_ROW_ESTIMATED_HEIGHT;
+  const mountedPageCount = renderedRange
+    ? pageOffsetsForRange(
+        {
+          startIndex: Math.max(0, Math.min(renderedRange.startIndex, rowCount - 1)),
+          endIndex: Math.max(0, Math.min(renderedRange.endIndex, rowCount - 1)),
+        },
+        pageSize
+      ).length
+    : 0;
+  const inlineCustomScrollParent =
+    !scrollContainer &&
+    resolvedInlineScrollContainer &&
+    !isWindowScrollContainer(resolvedInlineScrollContainer)
+      ? resolvedInlineScrollContainer
+      : undefined;
+  const useInlineWindowScroll =
+    !scrollContainer &&
+    !hasExplicitInlineScrollParent &&
+    (resolvedInlineScrollContainer === null ||
+      isWindowScrollContainer(resolvedInlineScrollContainer));
+  const isInlineScrollParentPending =
+    !scrollContainer &&
+    hasExplicitInlineScrollParent &&
+    resolvedInlineScrollContainer === null;
+  const virtualRows = (
+    <Virtuoso
+      totalCount={rowCount}
+      components={virtuosoComponents}
+      data-testid="paged-diff-virtual-list"
+      style={
+        scrollContainer
+          ? {
+              height: "100%",
+              overflowX: "auto",
+            }
+          : {
+              overflowX: "visible",
+            }
+      }
+      {...(inlineCustomScrollParent
+        ? { customScrollParent: inlineCustomScrollParent }
+        : {})}
+      {...(useInlineWindowScroll ? { useWindowScroll: true } : {})}
+      defaultItemHeight={DIFF_ROW_ESTIMATED_HEIGHT}
+      rangeChanged={handleRangeChanged}
+      scrollSeekConfiguration={scrollSeekConfiguration}
+      increaseViewportBy={
+        scrollContainer ? CONTAINED_VIEWPORT_INCREASE : INLINE_VIEWPORT_INCREASE
+      }
+      computeItemKey={(index) => index}
+      itemContent={(index) => {
+        const row = rowAtIndex(pages, index, pageSize);
+        if (!row) {
+          return (
+            <div
+              data-testid="paged-diff-placeholder-row"
+              className="h-5"
+              style={{ backgroundColor: "var(--bg-base)" }}
+            />
+          );
+        }
+        return renderRow(row, index);
+      }}
+    />
+  );
 
   return (
     <div className={scrollContainer ? "h-full overflow-hidden" : "w-full overflow-hidden"}>
@@ -352,6 +454,7 @@ export function PagedDiffView({
         className="font-mono text-[0.8125rem] leading-[20px]"
         data-testid="paged-diff-view"
         data-loaded-page-count={pages.size}
+        data-mounted-page-count={mountedPageCount}
         data-scroll-container={String(scrollContainer)}
         data-total-rows={rowCount}
         data-wrap-lines={wrapLines}
@@ -370,78 +473,24 @@ export function PagedDiffView({
           </Button>
         </div>
         {scrollContainer ? (
-          <Virtuoso
-            totalCount={rowCount}
-            data-testid="paged-diff-virtual-list"
-            style={{
-              height: "100%",
-              overflowX: "auto",
-            }}
-            rangeChanged={handleRangeChanged}
-            increaseViewportBy={{ top: 320, bottom: 640 }}
-            computeItemKey={(index) => {
-              const row = rowAtIndex(pages, index, pageSize);
-              if (!row) return `placeholder-${index}`;
-              return row.kind === "hunk_header"
-                ? `hunk-${index}-${row.header}`
-                : `line-${index}-${row.line.oldLineNum ?? "x"}-${row.line.newLineNum ?? "x"}`;
-            }}
-            itemContent={(index) => {
-              const row = rowAtIndex(pages, index, pageSize);
-              if (!row) {
-                return (
-                  <div
-                    data-testid="paged-diff-placeholder-row"
-                    className="h-5"
-                    style={{ backgroundColor: "var(--bg-base)" }}
-                  />
-                );
-              }
-              return renderRow(row, index);
-            }}
-          />
+          virtualRows
         ) : (
-          <div data-testid="paged-diff-inline-list" className="overflow-x-auto">
-            {topSpacerHeight > 0 && (
+          <div
+            ref={inlineListRef}
+            data-testid="paged-diff-inline-list"
+            className="overflow-x-auto"
+          >
+            {isInlineScrollParentPending ? (
               <div
-                data-testid="paged-diff-top-spacer"
-                aria-hidden="true"
-                style={{ height: `${topSpacerHeight}px` }}
+                data-testid="paged-diff-scroll-parent-pending"
+                style={{
+                  height:
+                    rowCount * DIFF_ROW_ESTIMATED_HEIGHT,
+                  backgroundColor: "var(--bg-base)",
+                }}
               />
-            )}
-            {previousOffset !== null && (
-              <div
-                ref={previousSentinelRef}
-                data-testid="paged-diff-previous-sentinel"
-                aria-hidden="true"
-                className="h-px"
-              />
-            )}
-            {sortedPageOffsets.flatMap((offset) =>
-              (pages.get(offset)?.rows ?? []).map((row, index) => {
-                const absoluteIndex = offset + index;
-                return (
-                  <div key={`${offset}-${index}`}>
-                    {renderRow(row, absoluteIndex)}
-                  </div>
-                );
-              })
-            )}
-            {nextOffset !== null && (
-              <div
-                ref={nextSentinelRef}
-                data-testid="paged-diff-next-sentinel"
-                aria-hidden="true"
-                className="h-5"
-                style={{ backgroundColor: "var(--bg-base)" }}
-              />
-            )}
-            {bottomSpacerHeight > 0 && (
-              <div
-                data-testid="paged-diff-bottom-spacer"
-                aria-hidden="true"
-                style={{ height: `${bottomSpacerHeight}px` }}
-              />
+            ) : (
+              virtualRows
             )}
           </div>
         )}
