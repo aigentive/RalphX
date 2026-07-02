@@ -20,6 +20,7 @@ export declare function callGetAgentWorkspacePrFixContextTool(callTauriGet: Taur
 export declare function callGetPrReviewContextTool(callTauriGet: TauriGet, args: unknown, runtimeContext?: AgentWorkspaceToolRuntimeContext): Promise<unknown>;
 export declare function callGetWorkspaceReviewContextTool(callTauriGet: TauriGet, args: unknown, runtimeContext?: AgentWorkspaceToolRuntimeContext): Promise<unknown>;
 export declare function callWriteWorkspaceReviewArtifactTool(callTauri: TauriPost, args: unknown, runtimeContext?: AgentWorkspaceToolRuntimeContext): Promise<unknown>;
+export declare function callWriteWorkspaceReviewHunkAnnotationsTool(callTauri: TauriPost, args: unknown, runtimeContext?: AgentWorkspaceToolRuntimeContext): Promise<unknown>;
 export declare function callCompleteWorkspaceReviewRunTool(callTauri: TauriPost, args: unknown, runtimeContext?: AgentWorkspaceToolRuntimeContext): Promise<unknown>;
 export declare function callProposePrReviewActionTool(callTauri: TauriPost, args: unknown, runtimeContext?: AgentWorkspaceToolRuntimeContext): Promise<unknown>;
 export declare function callWritePrReviewArtifactTool(callTauri: TauriPost, args: unknown, runtimeContext?: AgentWorkspaceToolRuntimeContext): Promise<unknown>;

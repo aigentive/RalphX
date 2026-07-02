@@ -1,6 +1,13 @@
 //! Agent workspace HTTP handlers.
 
-use std::{future::Future, pin::Pin, str::FromStr, sync::Arc, time::Instant};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    future::Future,
+    pin::Pin,
+    str::FromStr,
+    sync::Arc,
+    time::Instant,
+};
 
 use axum::{
     extract::{Path, Query, State},
@@ -16,8 +23,8 @@ use crate::application::agent_conversation_workspace::{
 use crate::application::agent_workspace_pr_description::validate_agent_workspace_pr_description_body;
 use crate::application::agent_workspace_review::{
     apply_review_artifact_to_monitor, load_agent_workspace_review_context,
-    review_gate_publish_blocker, start_agent_workspace_review, AgentWorkspaceReviewStart,
-    AgentWorkspaceReviewTarget,
+    review_gate_publish_blocker, start_agent_workspace_review, AgentWorkspaceReviewHunkAnchor,
+    AgentWorkspaceReviewStart, AgentWorkspaceReviewTarget,
 };
 use crate::application::publish_resilience::{
     inspect_publish_branch_freshness_for_source, push_publish_branch,
@@ -41,7 +48,7 @@ use crate::domain::entities::{
     AgentWorkspacePrDescription, AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
     AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
     AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewGateStatus,
-    AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor,
+    AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor, AgentWorkspaceReviewOutcome,
     AgentWorkspaceReviewTargetScope, Artifact, ArtifactId, ArtifactType, ChatConversationId,
     IdeationAnalysisBaseRefKind, ProjectId,
 };
@@ -385,6 +392,34 @@ pub struct AgentWorkspaceReviewHunkAnchorResponse {
     pub new_lines: u32,
 }
 
+impl From<AgentWorkspaceReviewHunkAnchor> for AgentWorkspaceReviewHunkAnchorResponse {
+    fn from(value: AgentWorkspaceReviewHunkAnchor) -> Self {
+        Self {
+            path: value.path,
+            source: value.source,
+            hunk_header: value.hunk_header,
+            old_start: value.old_start,
+            old_lines: value.old_lines,
+            new_start: value.new_start,
+            new_lines: value.new_lines,
+        }
+    }
+}
+
+impl From<&AgentWorkspaceReviewHunkAnchor> for AgentWorkspaceReviewHunkAnchorResponse {
+    fn from(value: &AgentWorkspaceReviewHunkAnchor) -> Self {
+        Self {
+            path: value.path.clone(),
+            source: value.source.clone(),
+            hunk_header: value.hunk_header.clone(),
+            old_start: value.old_start,
+            old_lines: value.old_lines,
+            new_start: value.new_start,
+            new_lines: value.new_lines,
+        }
+    }
+}
+
 impl From<crate::application::agent_workspace_review::AgentWorkspaceReviewPacket>
     for AgentWorkspaceReviewPacketResponse
 {
@@ -407,15 +442,7 @@ impl From<crate::application::agent_workspace_review::AgentWorkspaceReviewPacket
             hunk_anchors: value
                 .hunk_anchors
                 .into_iter()
-                .map(|anchor| AgentWorkspaceReviewHunkAnchorResponse {
-                    path: anchor.path,
-                    source: anchor.source,
-                    hunk_header: anchor.hunk_header,
-                    old_start: anchor.old_start,
-                    old_lines: anchor.old_lines,
-                    new_start: anchor.new_start,
-                    new_lines: anchor.new_lines,
-                })
+                .map(AgentWorkspaceReviewHunkAnchorResponse::from)
                 .collect(),
             patch_excerpt: value.patch_excerpt,
             patch_excerpt_truncated: value.patch_excerpt_truncated,
@@ -582,10 +609,9 @@ pub struct WriteAgentWorkspaceReviewArtifactRequest {
     pub head_sha: Option<String>,
     pub diff_fingerprint: Option<String>,
     pub created_by_run_id: Option<String>,
-    pub hunk_annotations: Option<Vec<WriteAgentWorkspaceReviewHunkAnnotationRequest>>,
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize)]
 pub struct WriteAgentWorkspaceReviewHunkAnnotationRequest {
     pub path: String,
     pub source: String,
@@ -597,6 +623,44 @@ pub struct WriteAgentWorkspaceReviewHunkAnnotationRequest {
     pub title: Option<String>,
     pub message: String,
     pub level: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct WriteAgentWorkspaceReviewHunkAnnotationsRequest {
+    pub target_scope: Option<String>,
+    pub head_sha: Option<String>,
+    pub diff_fingerprint: Option<String>,
+    pub created_by_run_id: Option<String>,
+    pub annotations: Vec<WriteAgentWorkspaceReviewHunkAnnotationRequest>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct WriteAgentWorkspaceReviewHunkAnnotationResult {
+    pub index: usize,
+    pub accepted: bool,
+    pub annotation_id: Option<String>,
+    pub path: Option<String>,
+    pub source: Option<String>,
+    pub hunk_header: Option<String>,
+    pub old_start: Option<u32>,
+    pub old_lines: Option<u32>,
+    pub new_start: Option<u32>,
+    pub new_lines: Option<u32>,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct WriteAgentWorkspaceReviewHunkAnnotationsResponse {
+    pub success: bool,
+    pub accepted_count: usize,
+    pub rejected_count: usize,
+    pub stored_count: usize,
+    pub missing_required_count: usize,
+    pub artifact_id: String,
+    pub artifact_version: u32,
+    pub monitor: AgentWorkspaceReviewMonitorResponse,
+    pub results: Vec<WriteAgentWorkspaceReviewHunkAnnotationResult>,
+    pub missing_required_hunks: Vec<AgentWorkspaceReviewHunkAnchorResponse>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -1253,14 +1317,6 @@ pub async fn write_agent_workspace_review_artifact(
                 None,
             )
         })?;
-    let validated_hunk_annotations = validate_workspace_review_hunk_annotation_requests(
-        req.hunk_annotations.unwrap_or_default(),
-        context.target.as_ref(),
-        target_scope,
-        target_head_sha.as_deref(),
-        &target_diff_fingerprint,
-    )?;
-    let hunk_annotation_count = validated_hunk_annotations.len();
 
     let previous_artifact = match monitor.review_artifact_id.clone() {
         Some(artifact_id) => {
@@ -1331,34 +1387,6 @@ pub async fn write_agent_workspace_review_artifact(
             })?
     };
 
-    if hunk_annotation_count > 0 {
-        let annotation_entities = build_workspace_review_hunk_annotation_entities(
-            validated_hunk_annotations,
-            WorkspaceReviewHunkAnnotationEntityContext {
-                conversation_id: &conversation_id,
-                project_id: &workspace.project_id,
-                artifact_id: &created.id,
-                artifact_version: created.metadata.version,
-                target_scope,
-                head_sha: target_head_sha.clone(),
-                diff_fingerprint: &target_diff_fingerprint,
-                created_by_run_id: created_by_run_id.clone(),
-            },
-        );
-        state
-            .app_state
-            .agent_conversation_workspace_repo
-            .replace_workspace_review_hunk_annotations(
-                &conversation_id,
-                &created.id,
-                annotation_entities,
-            )
-            .await
-            .map_err(|error| {
-                json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
-            })?;
-    }
-
     apply_review_artifact_to_monitor(
         &mut monitor,
         target_scope,
@@ -1400,7 +1428,6 @@ pub async fn write_agent_workspace_review_artifact(
                     "name": created.name.clone(),
                     "content": content_text,
                     "version": created.metadata.version,
-                    "hunkAnnotationCount": hunk_annotation_count,
                 }
             }),
         );
@@ -1422,7 +1449,6 @@ pub async fn write_agent_workspace_review_artifact(
         artifact_version = artifact_response.version,
         previous_artifact_id = %previous_artifact_id.as_deref().unwrap_or("none"),
         created_by_run_id = %created_by_run_id.as_deref().unwrap_or("none"),
-        hunk_annotations = hunk_annotation_count,
         content_bytes,
         monitor_status = %monitor.status,
         "Wrote workspace Review artifact"
@@ -1433,6 +1459,162 @@ pub async fn write_agent_workspace_review_artifact(
         monitor: AgentWorkspaceReviewMonitorResponse::from(monitor),
         artifact: artifact_response,
         previous_artifact_id,
+    }))
+}
+
+/// POST /api/agent-workspaces/{conversation_id}/workspace-review-hunk-annotations
+pub async fn write_agent_workspace_review_hunk_annotations(
+    State(state): State<HttpServerState>,
+    Path(conversation_id): Path<String>,
+    Json(req): Json<WriteAgentWorkspaceReviewHunkAnnotationsRequest>,
+) -> Result<Json<WriteAgentWorkspaceReviewHunkAnnotationsResponse>, JsonError> {
+    let started = Instant::now();
+    let requested_diff_fingerprint = req.diff_fingerprint.clone();
+    let created_by_run_id = req.created_by_run_id.clone();
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    let workspace = load_agent_workspace_entity(state.app_state.as_ref(), &conversation_id).await?;
+    let context = load_agent_workspace_review_context(state.app_state.as_ref(), &workspace)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+
+    if !context.is_current {
+        return Err(json_error(
+            StatusCode::CONFLICT,
+            "Write the current workspace Review artifact before writing hunk annotations",
+            None,
+        ));
+    }
+
+    let target = context.target.as_ref().ok_or_else(|| {
+        json_error(
+            StatusCode::BAD_REQUEST,
+            "workspace review hunk annotations require a current review target",
+            None,
+        )
+    })?;
+    let monitor = context.monitor;
+    let artifact_id = monitor.review_artifact_id.clone().ok_or_else(|| {
+        json_error(
+            StatusCode::CONFLICT,
+            "workspace review hunk annotations require a current Review artifact",
+            None,
+        )
+    })?;
+    let artifact_version = monitor.review_artifact_version.ok_or_else(|| {
+        json_error(
+            StatusCode::CONFLICT,
+            "workspace review hunk annotations require a current Review artifact version",
+            None,
+        )
+    })?;
+    let target_scope =
+        parse_workspace_review_target_scope(req.target_scope.as_deref()).unwrap_or(target.scope);
+    let target_head_sha = req.head_sha.or_else(|| target.head_sha.clone());
+    let target_diff_fingerprint = req
+        .diff_fingerprint
+        .unwrap_or_else(|| target.diff_fingerprint.clone());
+    let validation = validate_workspace_review_hunk_annotation_requests(
+        req.annotations,
+        Some(target),
+        target_scope,
+        target_head_sha.as_deref(),
+        &target_diff_fingerprint,
+    )?;
+    let accepted_count = validation.accepted.len();
+    let rejected_count = validation.rejected.len();
+    let annotation_entities = build_workspace_review_hunk_annotation_entities(
+        validation.accepted.clone(),
+        WorkspaceReviewHunkAnnotationEntityContext {
+            conversation_id: &conversation_id,
+            project_id: &workspace.project_id,
+            artifact_id: &artifact_id,
+            artifact_version,
+            target_scope,
+            head_sha: target_head_sha.clone(),
+            diff_fingerprint: &target_diff_fingerprint,
+            created_by_run_id,
+        },
+    );
+
+    let mut results = validation.rejected;
+    results.extend(
+        validation
+            .accepted
+            .iter()
+            .zip(annotation_entities.iter())
+            .map(|(validated, entity)| {
+                accepted_workspace_review_hunk_annotation_result(validated, entity)
+            }),
+    );
+    results.sort_by_key(|result| result.index);
+
+    let existing = state
+        .app_state
+        .agent_conversation_workspace_repo
+        .list_workspace_review_hunk_annotations(&conversation_id, &artifact_id)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    let merged = merge_workspace_review_hunk_annotations(existing, annotation_entities);
+    let stored_count = merged.len();
+    let missing_required_hunks = missing_workspace_review_hunk_anchors(target, &merged)
+        .into_iter()
+        .map(AgentWorkspaceReviewHunkAnchorResponse::from)
+        .collect::<Vec<_>>();
+    let missing_required_count = missing_required_hunks.len();
+    state
+        .app_state
+        .agent_conversation_workspace_repo
+        .replace_workspace_review_hunk_annotations(&conversation_id, &artifact_id, merged)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+
+    if let Some(app_handle) = &state.app_state.app_handle {
+        let _ = app_handle.emit(
+            "workspace_review_artifact:updated",
+            serde_json::json!({
+                "conversationId": conversation_id.as_str(),
+                "targetScope": target_scope.to_string(),
+                "headSha": target_head_sha,
+                "diffFingerprint": target_diff_fingerprint,
+                "artifact": {
+                    "id": artifact_id.as_str(),
+                    "version": artifact_version,
+                    "hunkAnnotationCount": stored_count,
+                }
+            }),
+        );
+    }
+
+    tracing::info!(
+        target: "ralphx_lib::http_server::agent_workspaces",
+        operation = "workspace_review_hunk_annotations_write_http",
+        conversation_id = %conversation_id,
+        project_id = %workspace.project_id,
+        branch = %workspace.branch_name,
+        elapsed_ms = started.elapsed().as_millis(),
+        target_scope = %target_scope,
+        diff_fingerprint = %compact_workspace_review_log_fingerprint(Some(&target_diff_fingerprint)),
+        requested_diff_fingerprint = %compact_workspace_review_log_fingerprint(requested_diff_fingerprint.as_deref()),
+        artifact_id = %artifact_id,
+        artifact_version,
+        accepted_count,
+        rejected_count,
+        stored_count,
+        missing_required_count,
+        "Wrote workspace Review hunk annotations"
+    );
+
+    Ok(Json(WriteAgentWorkspaceReviewHunkAnnotationsResponse {
+        success: rejected_count == 0,
+        accepted_count,
+        rejected_count,
+        stored_count,
+        missing_required_count,
+        artifact_id: artifact_id.as_str().to_string(),
+        artifact_version,
+        monitor: AgentWorkspaceReviewMonitorResponse::from(monitor),
+        results,
+        missing_required_hunks,
     }))
 }
 
@@ -1453,15 +1635,23 @@ pub async fn complete_agent_workspace_review_run(
         .blocker
         .as_ref()
         .is_some_and(|value| !value.trim().is_empty());
+    let outcome = req.outcome.clone();
+    let blocker = req.blocker.clone();
     let created_by_run_id = req.created_by_run_id.clone();
     let conversation_id = ChatConversationId::from_string(conversation_id);
     let workspace = load_agent_workspace_entity(state.app_state.as_ref(), &conversation_id).await?;
+    ensure_workspace_review_hunk_annotation_coverage_for_completion(
+        state.app_state.as_ref(),
+        &workspace,
+        outcome.as_deref(),
+    )
+    .await?;
     let monitor = crate::application::agent_workspace_review::complete_agent_workspace_review_run(
         state.app_state.as_ref(),
         &workspace,
-        req.outcome,
+        outcome,
         Some(summary),
-        req.blocker,
+        blocker,
         req.created_by_run_id,
     )
     .await
@@ -3337,8 +3527,9 @@ const WORKSPACE_REVIEW_HUNK_ANNOTATION_MAX_HEADER_CHARS: usize = 300;
 const WORKSPACE_REVIEW_HUNK_ANNOTATION_MAX_TITLE_CHARS: usize = 160;
 const WORKSPACE_REVIEW_HUNK_ANNOTATION_MAX_MESSAGE_CHARS: usize = 1200;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct ValidatedWorkspaceReviewHunkAnnotation {
+    index: usize,
     path: String,
     source: String,
     hunk_header: String,
@@ -3351,27 +3542,33 @@ struct ValidatedWorkspaceReviewHunkAnnotation {
     level: String,
 }
 
+#[derive(Debug, Default)]
+struct WorkspaceReviewHunkAnnotationValidation {
+    accepted: Vec<ValidatedWorkspaceReviewHunkAnnotation>,
+    rejected: Vec<WriteAgentWorkspaceReviewHunkAnnotationResult>,
+}
+
 fn validate_workspace_review_hunk_annotation_requests(
     requests: Vec<WriteAgentWorkspaceReviewHunkAnnotationRequest>,
     target: Option<&AgentWorkspaceReviewTarget>,
     target_scope: AgentWorkspaceReviewTargetScope,
     target_head_sha: Option<&str>,
     target_diff_fingerprint: &str,
-) -> Result<Vec<ValidatedWorkspaceReviewHunkAnnotation>, JsonError> {
+) -> Result<WorkspaceReviewHunkAnnotationValidation, JsonError> {
     if requests.is_empty() {
-        return Ok(Vec::new());
+        return Ok(WorkspaceReviewHunkAnnotationValidation::default());
     }
     if requests.len() > WORKSPACE_REVIEW_MAX_HUNK_ANNOTATIONS {
         return Err(json_error(
             StatusCode::BAD_REQUEST,
-            format!("hunk_annotations is limited to {WORKSPACE_REVIEW_MAX_HUNK_ANNOTATIONS} items"),
+            format!("annotations is limited to {WORKSPACE_REVIEW_MAX_HUNK_ANNOTATIONS} items"),
             None,
         ));
     }
     let target = target.ok_or_else(|| {
         json_error(
             StatusCode::BAD_REQUEST,
-            "hunk_annotations require a current workspace review target",
+            "annotations require a current workspace review target",
             None,
         )
     })?;
@@ -3382,112 +3579,163 @@ fn validate_workspace_review_hunk_annotation_requests(
     {
         return Err(json_error(
             StatusCode::BAD_REQUEST,
-            "hunk_annotations target metadata does not match the current workspace review target",
+            "annotations target metadata does not match the current workspace review target",
             None,
         ));
     }
 
-    requests
-        .into_iter()
-        .enumerate()
-        .map(|(index, request)| {
-            let field = |name: &str| format!("hunk_annotations[{index}].{name}");
-            let path = bounded_trimmed_string(
-                request.path,
-                &field("path"),
-                WORKSPACE_REVIEW_HUNK_ANNOTATION_MAX_PATH_CHARS,
-            )?;
-            validate_workspace_review_annotation_path(&path, &field("path"))?;
-            let source = bounded_trimmed_string(
-                request.source,
-                &field("source"),
-                WORKSPACE_REVIEW_HUNK_ANNOTATION_MAX_SOURCE_CHARS,
-            )?;
-            let hunk_header = bounded_trimmed_string(
-                request.hunk_header,
-                &field("hunk_header"),
-                WORKSPACE_REVIEW_HUNK_ANNOTATION_MAX_HEADER_CHARS,
-            )?;
-            let message = bounded_trimmed_string(
-                request.message,
-                &field("message"),
-                WORKSPACE_REVIEW_HUNK_ANNOTATION_MAX_MESSAGE_CHARS,
-            )?;
-            let title = request
-                .title
-                .map(|title| {
-                    bounded_trimmed_string(
-                        title,
-                        &field("title"),
-                        WORKSPACE_REVIEW_HUNK_ANNOTATION_MAX_TITLE_CHARS,
-                    )
-                })
-                .transpose()?;
-            let level = validate_workspace_review_hunk_annotation_level(
-                request.level.unwrap_or_else(|| "notice".to_string()),
-                &field("level"),
-            )?;
-
-            let anchor_matches = target.review_packet.hunk_anchors.iter().any(|anchor| {
-                anchor.path == path
-                    && anchor.source == source
-                    && anchor.hunk_header == hunk_header
-                    && anchor.old_start == request.old_start
-                    && anchor.old_lines == request.old_lines
-                    && anchor.new_start == request.new_start
-                    && anchor.new_lines == request.new_lines
-            });
-            if !anchor_matches {
-                return Err(json_error(
-                    StatusCode::BAD_REQUEST,
-                    format!(
-                        "{} does not match any current workspace review hunk anchor",
-                        field("hunk_header")
-                    ),
-                    None,
-                ));
-            }
-
-            Ok(ValidatedWorkspaceReviewHunkAnnotation {
-                path,
-                source,
-                hunk_header,
-                old_start: request.old_start,
-                old_lines: request.old_lines,
-                new_start: request.new_start,
-                new_lines: request.new_lines,
-                title,
-                message,
-                level,
-            })
-        })
-        .collect()
+    let mut validation = WorkspaceReviewHunkAnnotationValidation::default();
+    for (index, request) in requests.into_iter().enumerate() {
+        match validate_workspace_review_hunk_annotation_request(index, request, target) {
+            Ok(validated) => validation.accepted.push(validated),
+            Err(rejected) => validation.rejected.push(rejected),
+        }
+    }
+    Ok(validation)
 }
 
-fn bounded_trimmed_string(
-    value: String,
-    field: &str,
-    max_chars: usize,
-) -> Result<String, JsonError> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return Err(json_error(
-            StatusCode::BAD_REQUEST,
-            format!("{field} is required"),
-            None,
+fn validate_workspace_review_hunk_annotation_request(
+    index: usize,
+    request: WriteAgentWorkspaceReviewHunkAnnotationRequest,
+    target: &AgentWorkspaceReviewTarget,
+) -> Result<ValidatedWorkspaceReviewHunkAnnotation, WriteAgentWorkspaceReviewHunkAnnotationResult> {
+    let field = |name: &str| format!("annotations[{index}].{name}");
+    let path = bounded_trimmed_string(
+        request.path.clone(),
+        &field("path"),
+        WORKSPACE_REVIEW_HUNK_ANNOTATION_MAX_PATH_CHARS,
+    )
+    .map_err(|reason| rejected_workspace_review_hunk_annotation_result(index, &request, reason))?;
+    validate_workspace_review_annotation_path(&path, &field("path")).map_err(|reason| {
+        rejected_workspace_review_hunk_annotation_result(index, &request, reason)
+    })?;
+    let source = bounded_trimmed_string(
+        request.source.clone(),
+        &field("source"),
+        WORKSPACE_REVIEW_HUNK_ANNOTATION_MAX_SOURCE_CHARS,
+    )
+    .map_err(|reason| rejected_workspace_review_hunk_annotation_result(index, &request, reason))?;
+    let hunk_header = bounded_trimmed_string(
+        request.hunk_header.clone(),
+        &field("hunk_header"),
+        WORKSPACE_REVIEW_HUNK_ANNOTATION_MAX_HEADER_CHARS,
+    )
+    .map_err(|reason| rejected_workspace_review_hunk_annotation_result(index, &request, reason))?;
+    let message = bounded_trimmed_string(
+        request.message.clone(),
+        &field("message"),
+        WORKSPACE_REVIEW_HUNK_ANNOTATION_MAX_MESSAGE_CHARS,
+    )
+    .map_err(|reason| rejected_workspace_review_hunk_annotation_result(index, &request, reason))?;
+    let title = request
+        .title
+        .clone()
+        .map(|title| {
+            bounded_trimmed_string(
+                title,
+                &field("title"),
+                WORKSPACE_REVIEW_HUNK_ANNOTATION_MAX_TITLE_CHARS,
+            )
+        })
+        .transpose()
+        .map_err(|reason| {
+            rejected_workspace_review_hunk_annotation_result(index, &request, reason)
+        })?;
+    let level = validate_workspace_review_hunk_annotation_level(
+        request
+            .level
+            .clone()
+            .unwrap_or_else(|| "notice".to_string()),
+        &field("level"),
+    )
+    .map_err(|reason| rejected_workspace_review_hunk_annotation_result(index, &request, reason))?;
+
+    let anchor_matches = target.review_packet.hunk_anchors.iter().any(|anchor| {
+        anchor.path == path
+            && anchor.source == source
+            && anchor.hunk_header == hunk_header
+            && anchor.old_start == request.old_start
+            && anchor.old_lines == request.old_lines
+            && anchor.new_start == request.new_start
+            && anchor.new_lines == request.new_lines
+    });
+    if !anchor_matches {
+        return Err(rejected_workspace_review_hunk_annotation_result(
+            index,
+            &request,
+            format!(
+                "{} does not match any current workspace review hunk anchor",
+                field("hunk_header")
+            ),
         ));
     }
+
+    Ok(ValidatedWorkspaceReviewHunkAnnotation {
+        index,
+        path,
+        source,
+        hunk_header,
+        old_start: request.old_start,
+        old_lines: request.old_lines,
+        new_start: request.new_start,
+        new_lines: request.new_lines,
+        title,
+        message,
+        level,
+    })
+}
+
+fn rejected_workspace_review_hunk_annotation_result(
+    index: usize,
+    request: &WriteAgentWorkspaceReviewHunkAnnotationRequest,
+    reason: impl Into<String>,
+) -> WriteAgentWorkspaceReviewHunkAnnotationResult {
+    WriteAgentWorkspaceReviewHunkAnnotationResult {
+        index,
+        accepted: false,
+        annotation_id: None,
+        path: Some(request.path.clone()),
+        source: Some(request.source.clone()),
+        hunk_header: Some(request.hunk_header.clone()),
+        old_start: Some(request.old_start),
+        old_lines: Some(request.old_lines),
+        new_start: Some(request.new_start),
+        new_lines: Some(request.new_lines),
+        reason: Some(reason.into()),
+    }
+}
+
+fn accepted_workspace_review_hunk_annotation_result(
+    validated: &ValidatedWorkspaceReviewHunkAnnotation,
+    entity: &AgentWorkspaceReviewHunkAnnotation,
+) -> WriteAgentWorkspaceReviewHunkAnnotationResult {
+    WriteAgentWorkspaceReviewHunkAnnotationResult {
+        index: validated.index,
+        accepted: true,
+        annotation_id: Some(entity.id.clone()),
+        path: Some(validated.path.clone()),
+        source: Some(validated.source.clone()),
+        hunk_header: Some(validated.hunk_header.clone()),
+        old_start: Some(validated.old_start),
+        old_lines: Some(validated.old_lines),
+        new_start: Some(validated.new_start),
+        new_lines: Some(validated.new_lines),
+        reason: None,
+    }
+}
+
+fn bounded_trimmed_string(value: String, field: &str, max_chars: usize) -> Result<String, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(format!("{field} is required"));
+    }
     if trimmed.chars().count() > max_chars {
-        return Err(json_error(
-            StatusCode::BAD_REQUEST,
-            format!("{field} is limited to {max_chars} characters"),
-            None,
-        ));
+        return Err(format!("{field} is limited to {max_chars} characters"));
     }
     Ok(trimmed.to_string())
 }
 
-fn validate_workspace_review_annotation_path(path: &str, field: &str) -> Result<(), JsonError> {
+fn validate_workspace_review_annotation_path(path: &str, field: &str) -> Result<(), String> {
     let candidate = std::path::Path::new(path);
     if candidate.is_absolute()
         || candidate.components().any(|component| {
@@ -3499,10 +3747,8 @@ fn validate_workspace_review_annotation_path(path: &str, field: &str) -> Result<
             )
         })
     {
-        return Err(json_error(
-            StatusCode::BAD_REQUEST,
-            format!("{field} must be a relative path inside the reviewed workspace"),
-            None,
+        return Err(format!(
+            "{field} must be a relative path inside the reviewed workspace"
         ));
     }
     Ok(())
@@ -3511,15 +3757,11 @@ fn validate_workspace_review_annotation_path(path: &str, field: &str) -> Result<
 fn validate_workspace_review_hunk_annotation_level(
     value: String,
     field: &str,
-) -> Result<String, JsonError> {
+) -> Result<String, String> {
     let level = value.trim();
     match level {
         "info" | "notice" | "warning" => Ok(level.to_string()),
-        _ => Err(json_error(
-            StatusCode::BAD_REQUEST,
-            format!("{field} must be one of: info, notice, warning"),
-            None,
-        )),
+        _ => Err(format!("{field} must be one of: info, notice, warning")),
     }
 }
 
@@ -3564,6 +3806,152 @@ fn build_workspace_review_hunk_annotation_entities(
             created_at,
         })
         .collect()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct WorkspaceReviewHunkAnnotationKey {
+    path: String,
+    source: String,
+    hunk_header: String,
+    old_start: u32,
+    old_lines: u32,
+    new_start: u32,
+    new_lines: u32,
+}
+
+impl From<&AgentWorkspaceReviewHunkAnnotation> for WorkspaceReviewHunkAnnotationKey {
+    fn from(value: &AgentWorkspaceReviewHunkAnnotation) -> Self {
+        Self {
+            path: value.path.clone(),
+            source: value.diff_source.clone(),
+            hunk_header: value.hunk_header.clone(),
+            old_start: value.old_start,
+            old_lines: value.old_lines,
+            new_start: value.new_start,
+            new_lines: value.new_lines,
+        }
+    }
+}
+
+impl From<&AgentWorkspaceReviewHunkAnchor> for WorkspaceReviewHunkAnnotationKey {
+    fn from(value: &AgentWorkspaceReviewHunkAnchor) -> Self {
+        Self {
+            path: value.path.clone(),
+            source: value.source.clone(),
+            hunk_header: value.hunk_header.clone(),
+            old_start: value.old_start,
+            old_lines: value.old_lines,
+            new_start: value.new_start,
+            new_lines: value.new_lines,
+        }
+    }
+}
+
+fn merge_workspace_review_hunk_annotations(
+    existing: Vec<AgentWorkspaceReviewHunkAnnotation>,
+    updates: Vec<AgentWorkspaceReviewHunkAnnotation>,
+) -> Vec<AgentWorkspaceReviewHunkAnnotation> {
+    let mut merged = BTreeMap::new();
+    for annotation in existing {
+        merged.insert(
+            WorkspaceReviewHunkAnnotationKey::from(&annotation),
+            annotation,
+        );
+    }
+    for annotation in updates {
+        merged.insert(
+            WorkspaceReviewHunkAnnotationKey::from(&annotation),
+            annotation,
+        );
+    }
+    merged.into_values().collect()
+}
+
+fn missing_workspace_review_hunk_anchors(
+    target: &AgentWorkspaceReviewTarget,
+    annotations: &[AgentWorkspaceReviewHunkAnnotation],
+) -> Vec<AgentWorkspaceReviewHunkAnchor> {
+    let covered = annotations
+        .iter()
+        .map(WorkspaceReviewHunkAnnotationKey::from)
+        .collect::<BTreeSet<_>>();
+    target
+        .review_packet
+        .hunk_anchors
+        .iter()
+        .filter(|anchor| !covered.contains(&WorkspaceReviewHunkAnnotationKey::from(*anchor)))
+        .cloned()
+        .collect()
+}
+
+fn workspace_review_completion_requires_hunk_coverage(outcome: Option<&str>) -> bool {
+    outcome
+        .and_then(|value| AgentWorkspaceReviewOutcome::from_str(value.trim()).ok())
+        .is_some_and(|outcome| {
+            matches!(
+                outcome,
+                AgentWorkspaceReviewOutcome::Passed | AgentWorkspaceReviewOutcome::Blocking
+            )
+        })
+}
+
+async fn ensure_workspace_review_hunk_annotation_coverage_for_completion(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+    outcome: Option<&str>,
+) -> Result<(), JsonError> {
+    if !workspace_review_completion_requires_hunk_coverage(outcome) {
+        return Ok(());
+    }
+
+    let context = load_agent_workspace_review_context(state, workspace)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    let Some(target) = context.target.as_ref() else {
+        return Ok(());
+    };
+    if !context.is_current {
+        return Err(json_error(
+            StatusCode::CONFLICT,
+            "Write the current workspace Review artifact before completing this review outcome",
+            None,
+        ));
+    }
+    if target.review_packet.hunk_anchors.is_empty() {
+        return Ok(());
+    }
+    let artifact_id = context.monitor.review_artifact_id.clone().ok_or_else(|| {
+        json_error(
+            StatusCode::CONFLICT,
+            "Write the current workspace Review artifact before completing this review outcome",
+            None,
+        )
+    })?;
+    let annotations = state
+        .agent_conversation_workspace_repo
+        .list_workspace_review_hunk_annotations(&workspace.conversation_id, &artifact_id)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    let missing = missing_workspace_review_hunk_anchors(target, &annotations);
+    if missing.is_empty() {
+        return Ok(());
+    }
+
+    let preview = missing
+        .iter()
+        .take(5)
+        .map(|anchor| format!("{} {} {}", anchor.source, anchor.path, anchor.hunk_header))
+        .collect::<Vec<_>>()
+        .join("; ");
+    Err(json_error(
+        StatusCode::CONFLICT,
+        format!(
+            "workspace Review hunk annotations are incomplete: {} current hunk(s) still need descriptions. Call write_workspace_review_hunk_annotations for the missing target.review_packet.hunk_anchors before completing. Missing: {}",
+            missing.len(),
+            preview
+        ),
+        None,
+    ))
 }
 
 fn compact_workspace_review_log_fingerprint(value: Option<&str>) -> String {
@@ -4990,7 +5378,7 @@ mod tests {
             },
         };
 
-        let validated = validate_workspace_review_hunk_annotation_requests(
+        let validation = validate_workspace_review_hunk_annotation_requests(
             vec![WriteAgentWorkspaceReviewHunkAnnotationRequest {
                 path: "src/lib.rs".to_string(),
                 source: "committed".to_string(),
@@ -5010,13 +5398,14 @@ mod tests {
         )
         .expect("annotation should match current anchor");
 
-        assert_eq!(validated.len(), 1);
-        assert_eq!(validated[0].path, "src/lib.rs");
-        assert_eq!(validated[0].level, "notice");
+        assert_eq!(validation.accepted.len(), 1);
+        assert!(validation.rejected.is_empty());
+        assert_eq!(validation.accepted[0].path, "src/lib.rs");
+        assert_eq!(validation.accepted[0].level, "notice");
     }
 
     #[test]
-    fn workspace_review_hunk_annotation_validation_rejects_unmatched_anchor() {
+    fn workspace_review_hunk_annotation_validation_partially_rejects_unmatched_anchor() {
         let target = crate::application::agent_workspace_review::AgentWorkspaceReviewTarget {
             scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,
             base_ref: "main".to_string(),
@@ -5026,29 +5415,145 @@ mod tests {
             diff_fingerprint: "fingerprint".to_string(),
             working_directory: PathBuf::from("/tmp/worktree"),
             source_pull_request_number: None,
-            review_packet: AgentWorkspaceReviewPacket::default(),
+            review_packet: AgentWorkspaceReviewPacket {
+                hunk_anchors: vec![AgentWorkspaceReviewHunkAnchor {
+                    path: "src/lib.rs".to_string(),
+                    source: "committed".to_string(),
+                    hunk_header: "@@ -1,1 +1,2 @@".to_string(),
+                    old_start: 1,
+                    old_lines: 1,
+                    new_start: 1,
+                    new_lines: 2,
+                }],
+                ..AgentWorkspaceReviewPacket::default()
+            },
         };
 
-        let result = validate_workspace_review_hunk_annotation_requests(
-            vec![WriteAgentWorkspaceReviewHunkAnnotationRequest {
-                path: "src/lib.rs".to_string(),
-                source: "committed".to_string(),
-                hunk_header: "@@ -1,1 +1,2 @@".to_string(),
-                old_start: 1,
-                old_lines: 1,
-                new_start: 1,
-                new_lines: 2,
-                title: None,
-                message: "Explains the reviewed hunk.".to_string(),
-                level: None,
-            }],
+        let validation = validate_workspace_review_hunk_annotation_requests(
+            vec![
+                WriteAgentWorkspaceReviewHunkAnnotationRequest {
+                    path: "src/lib.rs".to_string(),
+                    source: "committed".to_string(),
+                    hunk_header: "@@ -1,1 +1,2 @@".to_string(),
+                    old_start: 1,
+                    old_lines: 1,
+                    new_start: 1,
+                    new_lines: 2,
+                    title: None,
+                    message: "Explains the reviewed hunk.".to_string(),
+                    level: None,
+                },
+                WriteAgentWorkspaceReviewHunkAnnotationRequest {
+                    path: "src/lib.rs".to_string(),
+                    source: "committed".to_string(),
+                    hunk_header: "@@ -10,1 +10,2 @@".to_string(),
+                    old_start: 10,
+                    old_lines: 1,
+                    new_start: 10,
+                    new_lines: 2,
+                    title: None,
+                    message: "This hunk is not in the current packet.".to_string(),
+                    level: None,
+                },
+            ],
             Some(&target),
             AgentWorkspaceReviewTargetScope::WorkspaceDelta,
             Some("head"),
             "fingerprint",
-        );
+        )
+        .expect("batch metadata should be valid");
 
-        assert!(result.is_err());
+        assert_eq!(validation.accepted.len(), 1);
+        assert_eq!(validation.rejected.len(), 1);
+        assert!(validation.rejected[0]
+            .reason
+            .as_deref()
+            .expect("rejection should include reason")
+            .contains("does not match any current workspace review hunk anchor"));
+    }
+
+    #[test]
+    fn workspace_review_missing_hunk_anchors_requires_every_anchor() {
+        let target = crate::application::agent_workspace_review::AgentWorkspaceReviewTarget {
+            scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+            base_ref: "main".to_string(),
+            base_sha: Some("base".to_string()),
+            head_ref: "HEAD".to_string(),
+            head_sha: Some("head".to_string()),
+            diff_fingerprint: "fingerprint".to_string(),
+            working_directory: PathBuf::from("/tmp/worktree"),
+            source_pull_request_number: None,
+            review_packet: AgentWorkspaceReviewPacket {
+                hunk_anchors: vec![
+                    AgentWorkspaceReviewHunkAnchor {
+                        path: "src/lib.rs".to_string(),
+                        source: "committed".to_string(),
+                        hunk_header: "@@ -1,1 +1,2 @@".to_string(),
+                        old_start: 1,
+                        old_lines: 1,
+                        new_start: 1,
+                        new_lines: 2,
+                    },
+                    AgentWorkspaceReviewHunkAnchor {
+                        path: "src/main.rs".to_string(),
+                        source: "committed".to_string(),
+                        hunk_header: "@@ -5,1 +5,3 @@".to_string(),
+                        old_start: 5,
+                        old_lines: 1,
+                        new_start: 5,
+                        new_lines: 3,
+                    },
+                ],
+                ..AgentWorkspaceReviewPacket::default()
+            },
+        };
+        let annotation = AgentWorkspaceReviewHunkAnnotation {
+            id: "annotation-1".to_string(),
+            conversation_id: ChatConversationId::from_string("conversation-1".to_string()),
+            project_id: ProjectId::from_string("project-1".to_string()),
+            artifact_id: ArtifactId::from_string("artifact-1".to_string()),
+            artifact_version: 1,
+            target_scope: AgentWorkspaceReviewTargetScope::WorkspaceDelta,
+            head_sha: Some("head".to_string()),
+            diff_fingerprint: "fingerprint".to_string(),
+            path: "src/lib.rs".to_string(),
+            diff_source: "committed".to_string(),
+            hunk_header: "@@ -1,1 +1,2 @@".to_string(),
+            old_start: 1,
+            old_lines: 1,
+            new_start: 1,
+            new_lines: 2,
+            title: None,
+            message: "Explains the first hunk.".to_string(),
+            level: "notice".to_string(),
+            created_by_run_id: Some("run-1".to_string()),
+            created_at: chrono::Utc::now(),
+        };
+
+        let missing = missing_workspace_review_hunk_anchors(&target, &[annotation]);
+
+        assert_eq!(missing.len(), 1);
+        assert_eq!(missing[0].path, "src/main.rs");
+    }
+
+    #[test]
+    fn workspace_review_completion_hunk_coverage_only_blocks_reviewed_outcomes() {
+        assert!(workspace_review_completion_requires_hunk_coverage(Some(
+            "passed"
+        )));
+        assert!(workspace_review_completion_requires_hunk_coverage(Some(
+            "blocking"
+        )));
+        assert!(!workspace_review_completion_requires_hunk_coverage(Some(
+            "no_changes"
+        )));
+        assert!(!workspace_review_completion_requires_hunk_coverage(Some(
+            "run_failed"
+        )));
+        assert!(!workspace_review_completion_requires_hunk_coverage(None));
+        assert!(!workspace_review_completion_requires_hunk_coverage(Some(
+            "bogus"
+        )));
     }
 
     #[test]

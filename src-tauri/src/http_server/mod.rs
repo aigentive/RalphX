@@ -377,6 +377,10 @@ pub async fn start_http_server(
             post(write_agent_workspace_review_artifact),
         )
         .route(
+            "/api/agent-workspaces/:conversation_id/workspace-review-hunk-annotations",
+            post(write_agent_workspace_review_hunk_annotations),
+        )
+        .route(
             "/api/agent-workspaces/:conversation_id/complete-workspace-review-run",
             post(complete_agent_workspace_review_run),
         )

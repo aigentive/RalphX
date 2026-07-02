@@ -36,6 +36,7 @@ import {
   callSubmitAgentWorkspacePrDescriptionTool,
   callUpdateAgentWorkspaceFromBaseTool,
   callWriteWorkspaceReviewArtifactTool,
+  callWriteWorkspaceReviewHunkAnnotationsTool,
   callWritePrReviewArtifactTool,
   isAgentWorkspaceToolName,
 } from '../agent-workspace-tools.js';
@@ -1190,6 +1191,7 @@ describe('getAllowedToolNames - CLI arg priority chain', () => {
     expect(tools).toContain('fs_glob');
     expect(tools).toContain('get_workspace_review_context');
     expect(tools).toContain('write_workspace_review_artifact');
+    expect(tools).toContain('write_workspace_review_hunk_annotations');
     expect(tools).toContain('complete_workspace_review_run');
     expect(tools).not.toContain('get_agent_task');
     expect(tools).not.toContain('list_agent_tasks');
@@ -1757,20 +1759,6 @@ describe('agent workspace publish tool transport', () => {
           head_sha: 'abc123',
           diff_fingerprint: 'fingerprint-1',
           created_by_run_id: 'run-1',
-          hunk_annotations: [
-            {
-              path: 'src/lib.rs',
-              source: 'committed',
-              hunk_header: '@@ -1,1 +1,2 @@',
-              old_start: 1,
-              old_lines: 1,
-              new_start: 1,
-              new_lines: 2,
-              title: 'Updates lib',
-              message: 'Explains the changed hunk.',
-              level: 'notice',
-            },
-          ],
         },
         { parentConversationId: 'conversation-from-runtime' }
       )
@@ -1785,20 +1773,49 @@ describe('agent workspace publish tool transport', () => {
         head_sha: 'abc123',
         diff_fingerprint: 'fingerprint-1',
         created_by_run_id: 'run-1',
-        hunk_annotations: [
-          {
-            path: 'src/lib.rs',
-            source: 'committed',
-            hunk_header: '@@ -1,1 +1,2 @@',
-            old_start: 1,
-            old_lines: 1,
-            new_start: 1,
-            new_lines: 2,
-            title: 'Updates lib',
-            message: 'Explains the changed hunk.',
-            level: 'notice',
-          },
-        ],
+      }
+    );
+  });
+
+  it('routes workspace Review hunk annotation writes to the runtime workspace conversation', async () => {
+    const callTauri = vi.fn().mockResolvedValue({ success: true });
+    const annotations = [
+      {
+        path: 'src/lib.rs',
+        source: 'committed',
+        hunk_header: '@@ -1,1 +1,2 @@',
+        old_start: 1,
+        old_lines: 1,
+        new_start: 1,
+        new_lines: 2,
+        title: 'Updates lib',
+        message: 'Explains the changed hunk.',
+        level: 'notice',
+      },
+    ];
+
+    await expect(
+      callWriteWorkspaceReviewHunkAnnotationsTool(
+        callTauri,
+        {
+          target_scope: 'workspace_delta',
+          head_sha: 'abc123',
+          diff_fingerprint: 'fingerprint-1',
+          created_by_run_id: 'run-1',
+          annotations,
+        },
+        { parentConversationId: 'conversation-from-runtime' }
+      )
+    ).resolves.toEqual({ success: true });
+
+    expect(callTauri).toHaveBeenCalledWith(
+      'agent-workspaces/conversation-from-runtime/workspace-review-hunk-annotations',
+      {
+        target_scope: 'workspace_delta',
+        head_sha: 'abc123',
+        diff_fingerprint: 'fingerprint-1',
+        created_by_run_id: 'run-1',
+        annotations,
       }
     );
   });
@@ -1993,6 +2010,15 @@ describe('agent workspace publish tool transport', () => {
     ).resolves.toEqual({ success: true });
     await expect(
       callAgentWorkspaceTool(
+        'write_workspace_review_hunk_annotations',
+        callTauri,
+        callTauriGet,
+        { annotations: [] },
+        { parentConversationId: 'conversation-from-runtime' }
+      )
+    ).resolves.toEqual({ success: true });
+    await expect(
+      callAgentWorkspaceTool(
         'complete_workspace_review_run',
         callTauri,
         callTauriGet,
@@ -2046,6 +2072,16 @@ describe('agent workspace publish tool transport', () => {
         head_sha: undefined,
         diff_fingerprint: undefined,
         created_by_run_id: undefined,
+      }
+    );
+    expect(callTauri).toHaveBeenCalledWith(
+      'agent-workspaces/conversation-from-runtime/workspace-review-hunk-annotations',
+      {
+        target_scope: undefined,
+        head_sha: undefined,
+        diff_fingerprint: undefined,
+        created_by_run_id: undefined,
+        annotations: [],
       }
     );
     expect(callTauri).toHaveBeenCalledWith(
@@ -2140,6 +2176,18 @@ describe('agent workspace publish tool transport', () => {
         head_sha: 'head-sha',
         diff_fingerprint: 'fingerprint-1',
         created_by_run_id: 'run-1',
+      },
+    ],
+    [
+      'write_workspace_review_hunk_annotations',
+      'post',
+      'agent-workspaces/conversation-1/workspace-review-hunk-annotations',
+      {
+        target_scope: 'workspace_delta',
+        head_sha: 'head-sha',
+        diff_fingerprint: 'fingerprint-1',
+        created_by_run_id: 'run-1',
+        annotations: undefined,
       },
     ],
     [

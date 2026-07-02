@@ -179,10 +179,44 @@ export const AGENT_WORKSPACE_TOOLS: Tool[] = [
           type: "string",
           description: "Optional RalphX run id that produced this review artifact.",
         },
-        hunk_annotations: {
+      },
+      required: ["content"],
+    },
+  },
+  {
+    name: "write_workspace_review_hunk_annotations",
+    description:
+      "Write structured hunk-level descriptions for the current workspace Review artifact. " +
+      "Call this after write_workspace_review_artifact and before complete_workspace_review_run. The backend accepts valid hunks and reports rejected or missing hunks independently.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        conversation_id: {
+          type: "string",
+          description:
+            "Optional agent workspace conversation ID. Omit when calling from the current workspace Review conversation.",
+        },
+        target_scope: {
+          type: "string",
+          enum: ["selected_source", "workspace_delta"],
+          description: "Review target scope from get_workspace_review_context.",
+        },
+        head_sha: {
+          type: "string",
+          description: "Optional target head SHA covered by these hunk descriptions.",
+        },
+        diff_fingerprint: {
+          type: "string",
+          description: "Target diff fingerprint from get_workspace_review_context.",
+        },
+        created_by_run_id: {
+          type: "string",
+          description: "Optional RalphX run id that produced these hunk descriptions.",
+        },
+        annotations: {
           type: "array",
           description:
-            "Optional structured hunk-level review notes. Use only hunk anchors returned in target.review_packet.hunk_anchors; omit anchors you cannot describe confidently.",
+            "Structured hunk-level review notes. Use one item per hunk anchor returned in target.review_packet.hunk_anchors.",
           items: {
             type: "object",
             properties: {
@@ -244,14 +278,14 @@ export const AGENT_WORKSPACE_TOOLS: Tool[] = [
           },
         },
       },
-      required: ["content"],
+      required: ["annotations"],
     },
   },
   {
     name: "complete_workspace_review_run",
     description:
       "Record that a general workspace Review run completed or is blocked. " +
-      "Call this after writing the Review artifact, or with blocker when the review could not be completed.",
+      "Call this after writing the Review artifact and hunk annotations, or with blocker when the review could not be completed.",
     inputSchema: {
       type: "object",
       properties: {
@@ -262,7 +296,8 @@ export const AGENT_WORKSPACE_TOOLS: Tool[] = [
         },
         outcome: {
           type: "string",
-          description: "Optional normalized outcome such as reviewed, no_changes, or blocked.",
+          description:
+            "Optional normalized outcome: passed, blocking, no_changes, or run_failed.",
         },
         summary: {
           type: "string",
@@ -538,6 +573,12 @@ export async function callAgentWorkspaceTool(
       return callGetWorkspaceReviewContextTool(callTauriGet, args, runtimeContext);
     case "write_workspace_review_artifact":
       return callWriteWorkspaceReviewArtifactTool(callTauri, args, runtimeContext);
+    case "write_workspace_review_hunk_annotations":
+      return callWriteWorkspaceReviewHunkAnnotationsTool(
+        callTauri,
+        args,
+        runtimeContext
+      );
     case "complete_workspace_review_run":
       return callCompleteWorkspaceReviewRunTool(callTauri, args, runtimeContext);
     case "propose_pr_review_action":
@@ -700,7 +741,6 @@ export async function callWriteWorkspaceReviewArtifactTool(
     head_sha?: string;
     diff_fingerprint?: string;
     created_by_run_id?: string;
-    hunk_annotations?: unknown;
   };
   return callTauri(`agent-workspaces/${conversation_id}/workspace-review-artifact`, {
     title: artifactArgs.title,
@@ -709,7 +749,32 @@ export async function callWriteWorkspaceReviewArtifactTool(
     head_sha: artifactArgs.head_sha,
     diff_fingerprint: artifactArgs.diff_fingerprint,
     created_by_run_id: artifactArgs.created_by_run_id,
-    hunk_annotations: artifactArgs.hunk_annotations,
+  });
+}
+
+export async function callWriteWorkspaceReviewHunkAnnotationsTool(
+  callTauri: TauriPost,
+  args: unknown,
+  runtimeContext?: AgentWorkspaceToolRuntimeContext
+): Promise<unknown> {
+  const conversation_id = resolveAgentWorkspaceConversationId(
+    "write_workspace_review_hunk_annotations",
+    args,
+    runtimeContext
+  );
+  const annotationArgs = (args && typeof args === "object" ? args : {}) as {
+    target_scope?: string;
+    head_sha?: string;
+    diff_fingerprint?: string;
+    created_by_run_id?: string;
+    annotations?: unknown;
+  };
+  return callTauri(`agent-workspaces/${conversation_id}/workspace-review-hunk-annotations`, {
+    target_scope: annotationArgs.target_scope,
+    head_sha: annotationArgs.head_sha,
+    diff_fingerprint: annotationArgs.diff_fingerprint,
+    created_by_run_id: annotationArgs.created_by_run_id,
+    annotations: annotationArgs.annotations,
   });
 }
 

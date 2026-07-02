@@ -9,6 +9,7 @@ capabilities:
     - fs_glob
     - get_workspace_review_context
     - write_workspace_review_artifact
+    - write_workspace_review_hunk_annotations
     - complete_workspace_review_run
 harnesses:
   claude:
@@ -31,4 +32,5 @@ harnesses:
       - fs_glob
       - get_workspace_review_context
       - write_workspace_review_artifact
+      - write_workspace_review_hunk_annotations
       - complete_workspace_review_run
