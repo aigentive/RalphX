@@ -55,10 +55,11 @@ use crate::domain::entities::ideation::SessionPurpose;
 use crate::domain::entities::{
     AgentConversationGranolaNoteLink, AgentConversationJiraIssueLink,
     AgentConversationLinearIssueLink, AgentConversationWorkspace, AgentConversationWorkspaceMode,
-    AgentConversationWorkspaceStatus, AgentRun, AgentRunId, AgentRunStatus, Artifact,
-    ChatAttachment, ChatAttachmentId, ChatContextType, ChatConversation, ChatConversationId,
-    ChatMessage, ChatMessageAttribution, ChatMessageId, IdeationSessionId, InternalStatus,
-    MessageRole, ProjectId, TaskId,
+    AgentConversationWorkspaceStatus, AgentRun, AgentRunId, AgentRunStatus,
+    AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
+    Artifact, ChatAttachment, ChatAttachmentId, ChatContextType, ChatConversation,
+    ChatConversationId, ChatMessage, ChatMessageAttribution, ChatMessageId, IdeationSessionId,
+    InternalStatus, MessageRole, ProjectId, TaskId,
 };
 use crate::domain::repositories::{
     ActivityEventRepository, AgentConversationGranolaNoteRepository,
@@ -96,6 +97,7 @@ use tokio_util::sync::CancellationToken;
 /// must use this constant to stay in sync.
 pub const AGENT_ERROR_PREFIX: &str = "[Agent error:";
 const REGISTRY_PID_ZERO_GRACE_SECONDS: i64 = 30;
+const WORKSPACE_REVIEW_STOPPED_ERROR: &str = "Workspace reviewer stopped by user";
 
 // Re-exports from extracted modules
 #[doc(hidden)]
@@ -203,6 +205,10 @@ pub enum AgentRuntimeStatus {
 pub struct AgentRunningState {
     pub is_running: bool,
     pub agent_status: AgentRuntimeStatus,
+}
+
+struct WorkspaceReviewStopReconciliation {
+    agent_run_id: Option<String>,
 }
 
 impl AgentRunningState {
@@ -1552,6 +1558,136 @@ impl<R: Runtime> AppChatService<R> {
             .unwrap()
             .as_ref()
             .map(Arc::clone)
+    }
+
+    async fn reconcile_stopped_workspace_review_child(
+        &self,
+        context_type: ChatContextType,
+        context_id: &str,
+        stopped_agent_run_id: Option<&str>,
+    ) -> Option<WorkspaceReviewStopReconciliation> {
+        match self
+            .try_reconcile_stopped_workspace_review_child(
+                context_type,
+                context_id,
+                stopped_agent_run_id,
+            )
+            .await
+        {
+            Ok(result) => result,
+            Err(error) => {
+                tracing::warn!(
+                    %context_type,
+                    context_id,
+                    error = %error,
+                    "Failed to reconcile stopped workspace Review child monitor"
+                );
+                None
+            }
+        }
+    }
+
+    async fn try_reconcile_stopped_workspace_review_child(
+        &self,
+        context_type: ChatContextType,
+        context_id: &str,
+        stopped_agent_run_id: Option<&str>,
+    ) -> Result<Option<WorkspaceReviewStopReconciliation>, ChatServiceError> {
+        if context_type != ChatContextType::Project {
+            return Ok(None);
+        }
+
+        let Some(workspace_repo) = self.workspace_repo() else {
+            return Ok(None);
+        };
+
+        let child_conversation_id = ChatConversationId::from_string(context_id);
+        let Some(child_conversation) = self
+            .conversation_repo
+            .get_by_id(&child_conversation_id)
+            .await
+            .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?
+        else {
+            return Ok(None);
+        };
+        let Some(parent_conversation_id) = child_conversation
+            .parent_conversation_id
+            .as_ref()
+            .map(|id| ChatConversationId::from_string(id.clone()))
+        else {
+            return Ok(None);
+        };
+
+        let Some(mut monitor) = workspace_repo
+            .get_workspace_review_monitor(&parent_conversation_id)
+            .await
+            .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?
+        else {
+            return Ok(None);
+        };
+
+        if monitor.status != AgentWorkspaceReviewMonitorStatus::Reviewing
+            || monitor.review_conversation_id != Some(child_conversation_id)
+        {
+            return Ok(None);
+        }
+
+        if let (Some(current_run_id), Some(stopped_run_id)) =
+            (monitor.last_run_id.as_deref(), stopped_agent_run_id)
+        {
+            if current_run_id != stopped_run_id {
+                return Ok(None);
+            }
+        }
+
+        let reconciled_run_id = stopped_agent_run_id
+            .map(str::to_string)
+            .or_else(|| monitor.last_run_id.clone());
+        if stopped_agent_run_id.is_none() {
+            if let Some(run_id) = reconciled_run_id.as_deref() {
+                let run_id = AgentRunId::from_string(run_id);
+                if let Some(run) = self
+                    .agent_run_repo
+                    .get_by_id(&run_id)
+                    .await
+                    .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?
+                {
+                    if run.status == AgentRunStatus::Completed {
+                        return Ok(None);
+                    }
+                    if run.status == AgentRunStatus::Running {
+                        self.agent_run_repo
+                            .fail(&run_id, WORKSPACE_REVIEW_STOPPED_ERROR)
+                            .await
+                            .map_err(|error| {
+                                ChatServiceError::RepositoryError(error.to_string())
+                            })?;
+                    }
+                }
+            }
+        }
+
+        monitor.status = AgentWorkspaceReviewMonitorStatus::Blocked;
+        monitor.review_outcome = AgentWorkspaceReviewOutcome::RunFailed;
+        monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Failed;
+        monitor.review_blocking_summary = None;
+        monitor.review_blocking_fingerprint = None;
+        monitor.review_fixer_run_id = None;
+        monitor.review_fixer_conversation_id = None;
+        monitor.review_fixer_status = None;
+        if let Some(run_id) = reconciled_run_id.clone() {
+            monitor.last_run_id = Some(run_id);
+        }
+        monitor.last_error = Some(WORKSPACE_REVIEW_STOPPED_ERROR.to_string());
+
+        workspace_repo
+            .upsert_workspace_review_monitor(monitor)
+            .await
+            .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?;
+
+        Ok(Some(WorkspaceReviewStopReconciliation {
+            agent_run_id: reconciled_run_id,
+        }))
     }
 
     fn should_replace_running_state(
@@ -5606,6 +5742,12 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                         "Agent stopped by user",
                     )
                     .await;
+                self.reconcile_stopped_workspace_review_child(
+                    context_type,
+                    context_id,
+                    Some(&info.agent_run_id),
+                )
+                .await;
 
                 // Also emit run_completed so frontend knows agent is no longer running
                 self.emit_event(
@@ -5624,8 +5766,36 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 Ok(true)
             }
             Ok(None) => {
-                // No agent was running
-                Ok(false)
+                let reconciled = self
+                    .reconcile_stopped_workspace_review_child(context_type, context_id, None)
+                    .await;
+                if let Some(reconciled) = reconciled {
+                    self.emit_event(
+                        "agent:stopped",
+                        serde_json::json!({
+                            "conversation_id": context_id,
+                            "agent_run_id": reconciled.agent_run_id.clone(),
+                            "context_type": context_type.to_string(),
+                            "context_id": context_id,
+                        }),
+                    );
+                    self.emit_event(
+                        "agent:run_completed",
+                        AgentRunCompletedPayload::with_provider_session_and_run_id(
+                            reconciled.agent_run_id,
+                            context_id.to_string(),
+                            context_type.to_string(),
+                            context_id.to_string(),
+                            None,
+                            None,
+                            None,
+                        ),
+                    );
+                    Ok(true)
+                } else {
+                    // No agent was running
+                    Ok(false)
+                }
             }
             Err(e) => Err(ChatServiceError::AgentRunFailed(e)),
         }
@@ -6268,6 +6438,8 @@ mod agent_workspace_send_tests {
     use crate::domain::agents::{AgentHarnessKind, LogicalEffort, ProviderSessionRef};
     use crate::domain::entities::{
         AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunStatus,
+        AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor,
+        AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
         AgentWorkspaceSourcePullRequest, ChatAttachment, ChatAttachmentId, ChatContextType,
         ChatConversation, ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSession,
         MessageRole, Project, ProjectId, TaskId,
@@ -6933,6 +7105,123 @@ mod agent_workspace_send_tests {
             vec![selected.id.as_str(), first.id.as_str(), third.id.as_str()],
             "failed immediate launch should restore the selected prompt at the front"
         );
+    }
+
+    #[tokio::test]
+    async fn stop_agent_marks_current_workspace_review_child_blocked() {
+        let state = AppState::new_test();
+        let project = Project::new(
+            "Workspace Review Stop".to_string(),
+            "/tmp/workspace-review-stop".to_string(),
+        );
+        state
+            .project_repo
+            .create(project.clone())
+            .await
+            .expect("project should persist");
+
+        let parent_conversation = ChatConversation::new_project(project.id.clone());
+        let parent_conversation_id = parent_conversation.id;
+        state
+            .chat_conversation_repo
+            .create(parent_conversation)
+            .await
+            .expect("parent conversation should persist");
+
+        let mut review_conversation = ChatConversation::new_project(project.id.clone());
+        review_conversation.parent_conversation_id = Some(parent_conversation_id.as_str());
+        let review_conversation_id = review_conversation.id;
+        state
+            .chat_conversation_repo
+            .create(review_conversation)
+            .await
+            .expect("review child conversation should persist");
+
+        let workspace = AgentConversationWorkspace::new(
+            parent_conversation_id,
+            project.id.clone(),
+            AgentConversationWorkspaceMode::Edit,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main".to_string(),
+            Some("main".to_string()),
+            Some("base-sha".to_string()),
+            "ralphx/project/review-stop".to_string(),
+            "/tmp/workspace-review-stop-agent".to_string(),
+        );
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace should persist");
+
+        let review_run = AgentRun::new(review_conversation_id);
+        let review_run_id = review_run.id;
+        state
+            .agent_run_repo
+            .create(review_run)
+            .await
+            .expect("review run should persist");
+        state
+            .running_agent_registry
+            .register(
+                RunningAgentKey::new("project", review_conversation_id.as_str()),
+                0,
+                review_conversation_id.as_str().to_string(),
+                review_run_id.as_str().to_string(),
+                None,
+                None,
+            )
+            .await;
+
+        let mut monitor =
+            AgentWorkspaceReviewMonitor::new(parent_conversation_id, project.id.clone());
+        monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
+        monitor.review_outcome = AgentWorkspaceReviewOutcome::None;
+        monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Reviewing;
+        monitor.review_conversation_id = Some(review_conversation_id);
+        monitor.last_run_id = Some(review_run_id.as_str().to_string());
+        state
+            .agent_conversation_workspace_repo
+            .upsert_workspace_review_monitor(monitor)
+            .await
+            .expect("review monitor should persist");
+
+        let service =
+            state.build_chat_service_with_execution_state(Arc::new(ExecutionState::new()));
+
+        let stopped = service
+            .stop_agent(ChatContextType::Project, &review_conversation_id.as_str())
+            .await
+            .expect("stop should succeed");
+
+        assert!(stopped, "stopping the review child should report work done");
+        let monitor = state
+            .agent_conversation_workspace_repo
+            .get_workspace_review_monitor(&parent_conversation_id)
+            .await
+            .expect("monitor read should succeed")
+            .expect("monitor should exist");
+        assert_eq!(monitor.status, AgentWorkspaceReviewMonitorStatus::Blocked);
+        assert_eq!(
+            monitor.review_outcome,
+            AgentWorkspaceReviewOutcome::RunFailed
+        );
+        assert_eq!(
+            monitor.review_gate_status,
+            AgentWorkspaceReviewGateStatus::Failed
+        );
+        assert_eq!(
+            monitor.last_error.as_deref(),
+            Some("Workspace reviewer stopped by user")
+        );
+
+        let run = state
+            .agent_run_repo
+            .get_by_id(&review_run_id)
+            .await
+            .expect("run read should succeed")
+            .expect("run should exist");
+        assert_eq!(run.status, AgentRunStatus::Failed);
     }
 }
 

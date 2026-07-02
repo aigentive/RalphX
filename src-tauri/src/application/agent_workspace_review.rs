@@ -13,10 +13,13 @@ use crate::application::chat_service::{ChatService, SendCallerContext, SendMessa
 use crate::application::git_service::git_cmd::{self, GitCommandLane};
 use crate::application::{AppState, GitService};
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentRunId, AgentRunStatus, AgentWorkspaceReviewGateStatus,
-    AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
-    AgentWorkspaceReviewTargetScope, ChatContextType, ChatConversation, ChatConversationId,
-    MessageRole, Project,
+    AgentConversationWorkspace, AgentRun, AgentRunId, AgentRunStatus,
+    AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus,
+    AgentWorkspaceReviewOutcome, AgentWorkspaceReviewTargetScope, ChatContextType,
+    ChatConversation, ChatConversationId, MessageRole, Project,
+};
+use crate::domain::repositories::{
+    AgentConversationWorkspaceRepository, AgentRunRepository, ORPHANED_AGENT_RUN_ON_APP_RESTART,
 };
 use crate::domain::services::{
     ComposerArtifactReference, ComposerIntegrationReference, ComposerProjectReference,
@@ -34,6 +37,10 @@ const WORKSPACE_REVIEW_MAX_INHERITED_INTEGRATION_REFERENCES: usize = 8;
 const WORKSPACE_REVIEW_MAX_INHERITED_ARTIFACT_REFERENCES: usize = 8;
 const WORKSPACE_REVIEW_TARGET_MISMATCH_ERROR: &str =
     "Workspace reviewer completion did not match the current Review target";
+const WORKSPACE_REVIEW_INTERRUPTED_ON_STARTUP_ERROR: &str =
+    "Workspace reviewer was interrupted when the app restarted";
+const WORKSPACE_REVIEW_COMPLETED_WITHOUT_CURRENT_REVIEW_ERROR: &str =
+    "Workspace reviewer completed without writing a current Review";
 const MERGED_PUBLICATION_PR_STATUS: &str = "merged";
 
 fn compact_log_fingerprint(value: Option<&str>) -> String {
@@ -110,6 +117,195 @@ pub struct AgentWorkspaceReviewStart {
     pub started: bool,
     pub skipped_reason: Option<String>,
     pub was_queued: bool,
+}
+
+pub async fn reconcile_interrupted_agent_workspace_reviews_on_startup(
+    workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    agent_run_repo: Arc<dyn AgentRunRepository>,
+) -> AppResult<usize> {
+    let monitors = workspace_repo
+        .list_reviewing_workspace_review_monitors()
+        .await?;
+    let mut reconciled = 0usize;
+    for monitor in monitors {
+        let conversation_id = monitor.conversation_id.clone();
+        match reconcile_interrupted_workspace_review_monitor_on_startup(
+            workspace_repo.as_ref(),
+            agent_run_repo.as_ref(),
+            monitor,
+        )
+        .await
+        {
+            Ok(true) => {
+                reconciled += 1;
+            }
+            Ok(false) => {}
+            Err(error) => warn!(
+                target: WORKSPACE_REVIEW_LOG_TARGET,
+                operation = "startup_reconcile_monitor_failed",
+                conversation_id = %conversation_id,
+                error = %error,
+                "Failed to reconcile interrupted workspace Review monitor on startup"
+            ),
+        }
+    }
+    if reconciled > 0 {
+        info!(
+            target: WORKSPACE_REVIEW_LOG_TARGET,
+            operation = "startup_reconcile_completed",
+            reconciled,
+            "Reconciled interrupted workspace Review monitors on startup"
+        );
+    }
+    Ok(reconciled)
+}
+
+async fn reconcile_interrupted_workspace_review_monitor_on_startup(
+    workspace_repo: &dyn AgentConversationWorkspaceRepository,
+    agent_run_repo: &dyn AgentRunRepository,
+    monitor: AgentWorkspaceReviewMonitor,
+) -> AppResult<bool> {
+    if monitor.status != AgentWorkspaceReviewMonitorStatus::Reviewing {
+        return Ok(false);
+    }
+
+    let original_run_id = monitor.last_run_id.clone();
+    let run = match original_run_id.as_deref() {
+        Some(run_id) => {
+            let run_id = AgentRunId::from_string(run_id.to_string());
+            agent_run_repo.get_by_id(&run_id).await?
+        }
+        None => None,
+    };
+    if run
+        .as_ref()
+        .is_some_and(|run| run.status == AgentRunStatus::Running)
+    {
+        return Ok(false);
+    }
+
+    let Some(mut monitor) = workspace_repo
+        .get_workspace_review_monitor(&monitor.conversation_id)
+        .await?
+    else {
+        return Ok(false);
+    };
+    if monitor.status != AgentWorkspaceReviewMonitorStatus::Reviewing
+        || monitor.last_run_id != original_run_id
+    {
+        return Ok(false);
+    }
+
+    if settle_completed_workspace_review_monitor_on_startup(&mut monitor, run.as_ref()) {
+        workspace_repo
+            .upsert_workspace_review_monitor(monitor)
+            .await?;
+        return Ok(true);
+    }
+
+    let error =
+        startup_workspace_review_interruption_error(run.as_ref(), original_run_id.as_deref());
+    monitor.status = AgentWorkspaceReviewMonitorStatus::Blocked;
+    monitor.review_outcome = AgentWorkspaceReviewOutcome::RunFailed;
+    monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Failed;
+    clear_review_blocking_state(&mut monitor);
+    monitor.last_error = Some(error);
+    workspace_repo
+        .upsert_workspace_review_monitor(monitor)
+        .await?;
+    Ok(true)
+}
+
+fn settle_completed_workspace_review_monitor_on_startup(
+    monitor: &mut AgentWorkspaceReviewMonitor,
+    run: Option<&AgentRun>,
+) -> bool {
+    if !run.is_some_and(|run| run.status == AgentRunStatus::Completed) {
+        return false;
+    }
+
+    let artifact_current = workspace_review_monitor_has_current_artifact(monitor);
+    match monitor.review_outcome {
+        AgentWorkspaceReviewOutcome::Passed if artifact_current => {
+            monitor.status = AgentWorkspaceReviewMonitorStatus::Ready;
+            monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Passed;
+            monitor.last_error = None;
+            clear_review_blocking_state(monitor);
+            true
+        }
+        AgentWorkspaceReviewOutcome::Blocking if artifact_current => {
+            monitor.status = AgentWorkspaceReviewMonitorStatus::Ready;
+            monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Blocking;
+            monitor.last_error = None;
+            true
+        }
+        AgentWorkspaceReviewOutcome::None if artifact_current => {
+            monitor.status = AgentWorkspaceReviewMonitorStatus::Ready;
+            monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Required;
+            monitor.last_error = None;
+            clear_review_blocking_state(monitor);
+            true
+        }
+        AgentWorkspaceReviewOutcome::NoChanges => {
+            monitor.status = AgentWorkspaceReviewMonitorStatus::Idle;
+            monitor.review_gate_status = AgentWorkspaceReviewGateStatus::NotRequired;
+            monitor.last_error = None;
+            clear_review_blocking_state(monitor);
+            true
+        }
+        _ => false,
+    }
+}
+
+fn workspace_review_monitor_has_current_artifact(monitor: &AgentWorkspaceReviewMonitor) -> bool {
+    if monitor.review_artifact_id.is_none() {
+        return false;
+    }
+    let (Some(target_scope), Some(diff_fingerprint)) = (
+        monitor.current_target_scope,
+        monitor.current_diff_fingerprint.as_deref(),
+    ) else {
+        return false;
+    };
+    let target_head_sha = match target_scope {
+        AgentWorkspaceReviewTargetScope::WorkspaceDelta => None,
+        AgentWorkspaceReviewTargetScope::SelectedSource => {
+            monitor.selected_source_head_sha.as_deref()
+        }
+    };
+    monitor.is_current_for_target(target_scope, target_head_sha, diff_fingerprint)
+}
+
+fn startup_workspace_review_interruption_error(
+    run: Option<&AgentRun>,
+    run_id: Option<&str>,
+) -> String {
+    match run {
+        Some(run) if run.status == AgentRunStatus::Completed => {
+            WORKSPACE_REVIEW_COMPLETED_WITHOUT_CURRENT_REVIEW_ERROR.to_string()
+        }
+        Some(run)
+            if run.status == AgentRunStatus::Cancelled
+                && run.error_message.as_deref() == Some(ORPHANED_AGENT_RUN_ON_APP_RESTART) =>
+        {
+            WORKSPACE_REVIEW_INTERRUPTED_ON_STARTUP_ERROR.to_string()
+        }
+        Some(run) if run.status == AgentRunStatus::Cancelled => {
+            run.error_message.clone().unwrap_or_else(|| {
+                "Workspace reviewer was cancelled before producing a current Review".to_string()
+            })
+        }
+        Some(run) if run.status == AgentRunStatus::Failed => {
+            run.error_message.clone().unwrap_or_else(|| {
+                "Workspace reviewer failed before producing a current Review".to_string()
+            })
+        }
+        Some(run) => format!("Workspace reviewer ended with status {}", run.status),
+        None if run_id.is_some() => {
+            "Workspace reviewer run disappeared before startup reconciliation".to_string()
+        }
+        None => "Workspace reviewer was interrupted before a run was recorded".to_string(),
+    }
 }
 
 pub async fn load_agent_workspace_review_context(
@@ -3747,6 +3943,379 @@ x
             Some(completed_run_id.as_str())
         );
         assert_eq!(monitor.review_artifact_version, Some(4));
+        assert_eq!(monitor.last_error, None);
+    }
+
+    #[tokio::test]
+    async fn startup_reconciliation_blocks_cancelled_workspace_review_monitor() {
+        let (_temp, repo, base_sha) = init_repo();
+        committed_workspace_delta(&repo);
+
+        let state = AppState::new_test();
+        let project = seed_project(&state, &repo).await;
+        let workspace = workspace(
+            &project,
+            &repo,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main",
+            Some(base_sha),
+        );
+        let context = load_agent_workspace_review_context(&state, &workspace)
+            .await
+            .expect("context should load");
+        let target = context.target.expect("target should exist");
+
+        let child_conversation_id = ChatConversationId::new();
+        let mut cancelled_run = AgentRun::new(child_conversation_id.clone());
+        let run_id = cancelled_run.id.as_str().to_string();
+        cancelled_run.cancel();
+        cancelled_run.error_message =
+            Some(crate::domain::repositories::ORPHANED_AGENT_RUN_ON_APP_RESTART.to_string());
+        state
+            .agent_run_repo
+            .create(cancelled_run)
+            .await
+            .expect("cancelled run should persist");
+
+        let mut monitor = context.monitor;
+        apply_current_target_to_monitor(&mut monitor, Some(&target));
+        monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
+        monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Reviewing;
+        monitor.review_conversation_id = Some(child_conversation_id);
+        monitor.last_run_id = Some(run_id.clone());
+        state
+            .agent_conversation_workspace_repo
+            .upsert_workspace_review_monitor(monitor)
+            .await
+            .expect("reviewing monitor should persist");
+
+        let reconciled = reconcile_interrupted_agent_workspace_reviews_on_startup(
+            Arc::clone(&state.agent_conversation_workspace_repo),
+            Arc::clone(&state.agent_run_repo),
+        )
+        .await
+        .expect("startup reconciliation should succeed");
+
+        assert_eq!(reconciled, 1);
+        let monitor = state
+            .agent_conversation_workspace_repo
+            .get_workspace_review_monitor(&workspace.conversation_id)
+            .await
+            .expect("monitor read should succeed")
+            .expect("monitor should exist");
+        assert_eq!(monitor.status, AgentWorkspaceReviewMonitorStatus::Blocked);
+        assert_eq!(
+            monitor.review_outcome,
+            AgentWorkspaceReviewOutcome::RunFailed
+        );
+        assert_eq!(
+            monitor.review_gate_status,
+            AgentWorkspaceReviewGateStatus::Failed
+        );
+        assert_eq!(monitor.last_run_id.as_deref(), Some(run_id.as_str()));
+        assert_eq!(
+            monitor.last_error.as_deref(),
+            Some("Workspace reviewer was interrupted when the app restarted")
+        );
+    }
+
+    #[tokio::test]
+    async fn startup_reconciliation_ignores_still_running_workspace_review_monitor() {
+        let (_temp, repo, base_sha) = init_repo();
+        committed_workspace_delta(&repo);
+
+        let state = AppState::new_test();
+        let project = seed_project(&state, &repo).await;
+        let workspace = workspace(
+            &project,
+            &repo,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main",
+            Some(base_sha),
+        );
+        let context = load_agent_workspace_review_context(&state, &workspace)
+            .await
+            .expect("context should load");
+        let target = context.target.expect("target should exist");
+
+        let child_conversation_id = ChatConversationId::new();
+        let running_run = AgentRun::new(child_conversation_id.clone());
+        let run_id = running_run.id.as_str().to_string();
+        state
+            .agent_run_repo
+            .create(running_run)
+            .await
+            .expect("running run should persist");
+
+        let mut monitor = context.monitor;
+        apply_current_target_to_monitor(&mut monitor, Some(&target));
+        monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
+        monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Reviewing;
+        monitor.review_conversation_id = Some(child_conversation_id);
+        monitor.last_run_id = Some(run_id.clone());
+        state
+            .agent_conversation_workspace_repo
+            .upsert_workspace_review_monitor(monitor)
+            .await
+            .expect("reviewing monitor should persist");
+
+        let reconciled = reconcile_interrupted_agent_workspace_reviews_on_startup(
+            Arc::clone(&state.agent_conversation_workspace_repo),
+            Arc::clone(&state.agent_run_repo),
+        )
+        .await
+        .expect("startup reconciliation should succeed");
+
+        assert_eq!(reconciled, 0);
+        let monitor = state
+            .agent_conversation_workspace_repo
+            .get_workspace_review_monitor(&workspace.conversation_id)
+            .await
+            .expect("monitor read should succeed")
+            .expect("monitor should exist");
+        assert_eq!(monitor.status, AgentWorkspaceReviewMonitorStatus::Reviewing);
+        assert_eq!(
+            monitor.review_gate_status,
+            AgentWorkspaceReviewGateStatus::Reviewing
+        );
+        assert_eq!(monitor.last_run_id.as_deref(), Some(run_id.as_str()));
+        assert_eq!(monitor.last_error, None);
+    }
+
+    #[tokio::test]
+    async fn startup_reconciliation_marks_completed_current_workspace_review_ready() {
+        let (_temp, repo, base_sha) = init_repo();
+        committed_workspace_delta(&repo);
+
+        let state = AppState::new_test();
+        let project = seed_project(&state, &repo).await;
+        let workspace = workspace(
+            &project,
+            &repo,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main",
+            Some(base_sha),
+        );
+        let context = load_agent_workspace_review_context(&state, &workspace)
+            .await
+            .expect("context should load");
+        let target = context.target.expect("target should exist");
+
+        let child_conversation_id = ChatConversationId::new();
+        let mut completed_run = AgentRun::new(child_conversation_id.clone());
+        let run_id = completed_run.id.as_str().to_string();
+        completed_run.complete();
+        state
+            .agent_run_repo
+            .create(completed_run)
+            .await
+            .expect("completed run should persist");
+
+        let mut monitor = context.monitor;
+        apply_current_target_to_monitor(&mut monitor, Some(&target));
+        monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
+        monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Reviewing;
+        monitor.review_conversation_id = Some(child_conversation_id);
+        monitor.last_run_id = Some(run_id.clone());
+        apply_review_artifact_to_monitor(
+            &mut monitor,
+            target.scope,
+            target.head_sha.clone(),
+            target.diff_fingerprint.clone(),
+            Some(run_id.clone()),
+            ArtifactId::from_string("artifact-startup-ready"),
+            9,
+            Utc::now(),
+            None,
+        );
+        monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
+        monitor.review_outcome = AgentWorkspaceReviewOutcome::Passed;
+        monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Reviewing;
+        state
+            .agent_conversation_workspace_repo
+            .upsert_workspace_review_monitor(monitor)
+            .await
+            .expect("reviewing monitor should persist");
+
+        let reconciled = reconcile_interrupted_agent_workspace_reviews_on_startup(
+            Arc::clone(&state.agent_conversation_workspace_repo),
+            Arc::clone(&state.agent_run_repo),
+        )
+        .await
+        .expect("startup reconciliation should succeed");
+
+        assert_eq!(reconciled, 1);
+        let monitor = state
+            .agent_conversation_workspace_repo
+            .get_workspace_review_monitor(&workspace.conversation_id)
+            .await
+            .expect("monitor read should succeed")
+            .expect("monitor should exist");
+        assert_eq!(monitor.status, AgentWorkspaceReviewMonitorStatus::Ready);
+        assert_eq!(monitor.review_outcome, AgentWorkspaceReviewOutcome::Passed);
+        assert_eq!(
+            monitor.review_gate_status,
+            AgentWorkspaceReviewGateStatus::Passed
+        );
+        assert_eq!(monitor.review_artifact_version, Some(9));
+        assert_eq!(monitor.last_error, None);
+    }
+
+    #[tokio::test]
+    async fn startup_reconciliation_blocks_completed_stale_workspace_review_artifact() {
+        let (_temp, repo, base_sha) = init_repo();
+        committed_workspace_delta(&repo);
+
+        let state = AppState::new_test();
+        let project = seed_project(&state, &repo).await;
+        let workspace = workspace(
+            &project,
+            &repo,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main",
+            Some(base_sha),
+        );
+        let context = load_agent_workspace_review_context(&state, &workspace)
+            .await
+            .expect("context should load");
+        let target = context.target.expect("target should exist");
+
+        let child_conversation_id = ChatConversationId::new();
+        let mut completed_run = AgentRun::new(child_conversation_id.clone());
+        let run_id = completed_run.id.as_str().to_string();
+        completed_run.complete();
+        state
+            .agent_run_repo
+            .create(completed_run)
+            .await
+            .expect("completed run should persist");
+
+        let mut monitor = context.monitor;
+        apply_review_artifact_to_monitor(
+            &mut monitor,
+            target.scope,
+            target.head_sha.clone(),
+            "stale-diff-fingerprint".to_string(),
+            Some(run_id.clone()),
+            ArtifactId::from_string("artifact-startup-stale"),
+            8,
+            Utc::now(),
+            None,
+        );
+        apply_current_target_to_monitor(&mut monitor, Some(&target));
+        monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
+        monitor.review_outcome = AgentWorkspaceReviewOutcome::Passed;
+        monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Reviewing;
+        monitor.review_conversation_id = Some(child_conversation_id);
+        monitor.last_run_id = Some(run_id.clone());
+        state
+            .agent_conversation_workspace_repo
+            .upsert_workspace_review_monitor(monitor)
+            .await
+            .expect("reviewing monitor should persist");
+
+        let reconciled = reconcile_interrupted_agent_workspace_reviews_on_startup(
+            Arc::clone(&state.agent_conversation_workspace_repo),
+            Arc::clone(&state.agent_run_repo),
+        )
+        .await
+        .expect("startup reconciliation should succeed");
+
+        assert_eq!(reconciled, 1);
+        let monitor = state
+            .agent_conversation_workspace_repo
+            .get_workspace_review_monitor(&workspace.conversation_id)
+            .await
+            .expect("monitor read should succeed")
+            .expect("monitor should exist");
+        assert_eq!(monitor.status, AgentWorkspaceReviewMonitorStatus::Blocked);
+        assert_eq!(
+            monitor.review_outcome,
+            AgentWorkspaceReviewOutcome::RunFailed
+        );
+        assert_eq!(
+            monitor.review_gate_status,
+            AgentWorkspaceReviewGateStatus::Failed
+        );
+        assert_eq!(
+            monitor.last_error.as_deref(),
+            Some("Workspace reviewer completed without writing a current Review")
+        );
+    }
+
+    #[tokio::test]
+    async fn startup_reconciliation_preserves_completed_current_artifact_without_outcome() {
+        let (_temp, repo, base_sha) = init_repo();
+        committed_workspace_delta(&repo);
+
+        let state = AppState::new_test();
+        let project = seed_project(&state, &repo).await;
+        let workspace = workspace(
+            &project,
+            &repo,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main",
+            Some(base_sha),
+        );
+        let context = load_agent_workspace_review_context(&state, &workspace)
+            .await
+            .expect("context should load");
+        let target = context.target.expect("target should exist");
+
+        let child_conversation_id = ChatConversationId::new();
+        let mut completed_run = AgentRun::new(child_conversation_id.clone());
+        let run_id = completed_run.id.as_str().to_string();
+        completed_run.complete();
+        state
+            .agent_run_repo
+            .create(completed_run)
+            .await
+            .expect("completed run should persist");
+
+        let mut monitor = context.monitor;
+        apply_current_target_to_monitor(&mut monitor, Some(&target));
+        monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
+        monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Reviewing;
+        monitor.review_conversation_id = Some(child_conversation_id);
+        monitor.last_run_id = Some(run_id.clone());
+        apply_review_artifact_to_monitor(
+            &mut monitor,
+            target.scope,
+            target.head_sha.clone(),
+            target.diff_fingerprint.clone(),
+            Some(run_id.clone()),
+            ArtifactId::from_string("artifact-startup-unfinalized"),
+            10,
+            Utc::now(),
+            None,
+        );
+        state
+            .agent_conversation_workspace_repo
+            .upsert_workspace_review_monitor(monitor)
+            .await
+            .expect("reviewing monitor should persist");
+
+        let reconciled = reconcile_interrupted_agent_workspace_reviews_on_startup(
+            Arc::clone(&state.agent_conversation_workspace_repo),
+            Arc::clone(&state.agent_run_repo),
+        )
+        .await
+        .expect("startup reconciliation should succeed");
+
+        assert_eq!(reconciled, 1);
+        let monitor = state
+            .agent_conversation_workspace_repo
+            .get_workspace_review_monitor(&workspace.conversation_id)
+            .await
+            .expect("monitor read should succeed")
+            .expect("monitor should exist");
+        assert_eq!(monitor.status, AgentWorkspaceReviewMonitorStatus::Ready);
+        assert_eq!(monitor.review_outcome, AgentWorkspaceReviewOutcome::None);
+        assert_eq!(
+            monitor.review_gate_status,
+            AgentWorkspaceReviewGateStatus::Required
+        );
+        assert_eq!(monitor.review_artifact_version, Some(10));
         assert_eq!(monitor.last_error, None);
     }
 
