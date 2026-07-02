@@ -63,6 +63,7 @@ import {
   REVIEWER,
   GENERAL_EXPLORER,
   GENERAL_WORKER,
+  AGENT_WORKSPACE_REPAIR,
   AGENT_WORKSPACE_PR_FIXER,
   PLAN_COMPLEXITY_ASSESSOR,
   WORKSPACE_REVIEWER,
@@ -1395,6 +1396,15 @@ describe('agent workspace repair tool', () => {
         'summary',
       ])
     );
+  });
+
+  it('repair agent allowlist includes review artifact fetch and completion tools', () => {
+    const tools = toolsByAgent()[AGENT_WORKSPACE_REPAIR];
+    expect(tools).toEqual(loadCanonicalMcpTools(AGENT_WORKSPACE_REPAIR));
+    expect(tools).toContain('get_artifact');
+    expect(tools).toContain('complete_agent_workspace_repair');
+    expect(tools).not.toContain('write_workspace_review_artifact');
+    expect(tools).not.toContain('complete_workspace_review_run');
   });
 });
 
