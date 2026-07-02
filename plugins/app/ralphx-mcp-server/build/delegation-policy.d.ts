@@ -1,2 +1,2 @@
-export declare function applyDelegationToolPolicy(toolNames: string[], agentType: string): string[];
+export declare function applyDelegationToolPolicy(toolNames: string[], agentType: string, agentProfile?: string): string[];
 //# sourceMappingURL=delegation-policy.d.ts.map

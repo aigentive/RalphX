@@ -5043,8 +5043,13 @@ exit 0
                     );
                     assert!(
                         mcp_args.contains("ask_user_question")
-                            && mcp_args.contains("get_session_plan"),
+                            && mcp_args.contains("get_session_plan")
+                            && mcp_args.contains("delegate_start"),
                         "{harness_label} Plan launch should keep the constrained Plan MCP surface"
+                    );
+                    assert!(
+                        mcp_args.contains("agent-profile") && mcp_args.contains("plan"),
+                        "{harness_label} Plan launch should pass the profile to MCP runtime context"
                     );
                     assert!(
                         !mcp_args.contains("create_task_proposal")

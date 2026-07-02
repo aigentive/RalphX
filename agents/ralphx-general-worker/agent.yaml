@@ -13,6 +13,9 @@ capabilities:
     - check_agent_workspace_publish_readiness
     - update_agent_workspace_from_base
     - publish_agent_workspace
+    - delegate_start
+    - delegate_wait
+    - delegate_cancel
     - create_agent_task
     - get_agent_task
     - list_agent_tasks
@@ -33,3 +36,7 @@ harnesses:
         - Edit
         - Bash
         - LSP
+delegation:
+  allowed_targets:
+    - ralphx-general-explorer
+    - ralphx-general-worker

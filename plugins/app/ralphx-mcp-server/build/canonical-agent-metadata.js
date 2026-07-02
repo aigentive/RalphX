@@ -131,8 +131,31 @@ export function loadCanonicalAgentDefinition(agentType) {
         return null;
     }
 }
-export function loadCanonicalMcpTools(agentType) {
+export function loadCanonicalAgentDefinitionForProfile(agentType, agentProfile) {
     const definition = loadCanonicalAgentDefinition(agentType);
+    if (!definition || !agentProfile) {
+        return definition;
+    }
+    if (!SAFE_CANONICAL_AGENT_NAME.test(agentProfile)) {
+        return null;
+    }
+    const profile = definition.profiles?.[agentProfile];
+    if (!profile) {
+        return null;
+    }
+    const profileTools = profile.capabilities?.mcp_tools;
+    return {
+        ...definition,
+        capabilities: profileTools && profileTools.length > 0
+            ? { ...definition.capabilities, mcp_tools: [...profileTools] }
+            : definition.capabilities,
+        delegation: profile.delegation
+            ? { allowed_targets: [...(profile.delegation.allowed_targets ?? [])] }
+            : definition.delegation,
+    };
+}
+export function loadCanonicalMcpTools(agentType, agentProfile) {
+    const definition = loadCanonicalAgentDefinitionForProfile(agentType, agentProfile);
     const tools = definition?.capabilities?.mcp_tools;
     return tools ? [...tools] : undefined;
 }

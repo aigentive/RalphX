@@ -11,6 +11,9 @@ capabilities:
     - write_pr_review_artifact
     - propose_pr_review_action
     - complete_pr_review_run
+    - delegate_start
+    - delegate_wait
+    - delegate_cancel
     - get_agent_task
     - list_agent_tasks
     - search_memories
@@ -29,3 +32,6 @@ harnesses:
       - NotebookEdit
     preapproved_cli_tools:
       - Bash
+delegation:
+  allowed_targets:
+    - ralphx-general-explorer

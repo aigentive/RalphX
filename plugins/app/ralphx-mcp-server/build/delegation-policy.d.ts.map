@@ -1,1 +1,1 @@
-{"version":3,"file":"delegation-policy.d.ts","sourceRoot":"","sources":["../src/delegation-policy.ts"],"names":[],"mappings":"AAYA,wBAAgB,yBAAyB,CAAC,SAAS,EAAE,MAAM,EAAE,EAAE,SAAS,EAAE,MAAM,GAAG,MAAM,EAAE,CAK1F"}
+{"version":3,"file":"delegation-policy.d.ts","sourceRoot":"","sources":["../src/delegation-policy.ts"],"names":[],"mappings":"AAYA,wBAAgB,yBAAyB,CACvC,SAAS,EAAE,MAAM,EAAE,EACnB,SAAS,EAAE,MAAM,EACjB,YAAY,CAAC,EAAE,MAAM,GACpB,MAAM,EAAE,CAKV"}

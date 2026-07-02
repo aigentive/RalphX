@@ -1125,6 +1125,10 @@ fn build_internal_mcp_server_config(
     // Always pass --agent-type for MCP-side tool filtering.
     args_vec.push("--agent-type".to_string());
     args_vec.push(short_name.to_string());
+    if let Some(agent_profile) = agent_profile {
+        args_vec.push("--agent-profile".to_string());
+        args_vec.push(agent_profile.to_string());
+    }
     args_vec.push("--tauri-api-url".to_string());
     args_vec.push(crate::utils::backend_endpoint::backend_http_base_url());
     args_vec.push("--trace-dir".to_string());

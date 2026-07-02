@@ -14,6 +14,8 @@ describe("hydrateRalphxRuntimeEnvFromCli", () => {
             "index.js",
             "--agent-type",
             "ralphx-plan-verifier",
+            "--agent-profile",
+            "plan",
             "--context-type",
             "ideation",
             "--context-id",
@@ -35,6 +37,7 @@ describe("hydrateRalphxRuntimeEnvFromCli", () => {
             "/tmp/ralphx-logs/mcp-proxy",
         ], env);
         expect(runtimeContext.agentType).toBe("ralphx-plan-verifier");
+        expect(runtimeContext.agentProfile).toBe("plan");
         expect(runtimeContext.contextType).toBe("ideation");
         expect(runtimeContext.contextId).toBe("session-123");
         expect(runtimeContext.conversationId).toBe("conversation-current");
@@ -45,6 +48,7 @@ describe("hydrateRalphxRuntimeEnvFromCli", () => {
         expect(runtimeContext.tauriApiUrl).toBe("http://127.0.0.1:3857");
         expect(runtimeContext.traceDir).toBe("/tmp/ralphx-logs/mcp-proxy");
         expect(env.RALPHX_AGENT_TYPE).toBe("ralphx-plan-verifier");
+        expect(env.RALPHX_AGENT_PROFILE).toBe("plan");
         expect(env.RALPHX_CONTEXT_TYPE).toBe("ideation");
         expect(env.RALPHX_CONTEXT_ID).toBe("session-123");
         expect(env.RALPHX_CONVERSATION_ID).toBe("conversation-current");

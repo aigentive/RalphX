@@ -1542,6 +1542,7 @@ pub struct TeamConfigInput {
 #[derive(Debug, Deserialize)]
 pub struct DelegateStartRequest {
     pub caller_agent_name: Option<String>,
+    pub caller_agent_profile: Option<String>,
     pub caller_context_type: Option<String>,
     pub caller_context_id: Option<String>,
     pub parent_session_id: Option<String>,
