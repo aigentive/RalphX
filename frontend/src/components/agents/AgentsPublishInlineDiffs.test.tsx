@@ -28,6 +28,7 @@ vi.mock("react-virtuoso", async () => {
     itemContent?: (index: number, item: unknown) => React.ReactNode;
     computeItemKey?: (index: number, item: unknown) => React.Key;
     rangeChanged?: (range: MockListRange) => void;
+    scrollerRef?: (ref: HTMLElement | Window | null) => void;
     className?: string;
     style?: React.CSSProperties;
     "data-testid"?: string;
@@ -37,7 +38,9 @@ vi.mock("react-virtuoso", async () => {
     props,
     ref,
   ) {
+    const { scrollerRef: onScrollerRef } = props;
     const data = props.data ?? [];
+    const scrollerElementRef = React.useRef<HTMLDivElement | null>(null);
     const startIndex = virtuosoMockState.range?.startIndex ?? 0;
     const endIndex = virtuosoMockState.range?.endIndex ?? data.length - 1;
     const visibleItems = data
@@ -61,8 +64,14 @@ vi.mock("react-virtuoso", async () => {
       };
     }, [props.rangeChanged]);
 
+    React.useEffect(() => {
+      onScrollerRef?.(scrollerElementRef.current);
+      return () => onScrollerRef?.(null);
+    }, [onScrollerRef]);
+
     return (
       <div
+        ref={scrollerElementRef}
         data-testid={props["data-testid"] ?? "mock-virtuoso"}
         data-count={data.length}
         className={props.className}
@@ -139,6 +148,8 @@ vi.mock("./AgentsPublishFileDiff", () => ({
     refKind,
     diffPageRefKind,
     diffPageReloadKey,
+    inlineDiffScrollParent,
+    diffPageSummary,
     conversationId,
     shouldHydrate,
     annotations,
@@ -157,6 +168,8 @@ vi.mock("./AgentsPublishFileDiff", () => ({
     refKind?: { kind: string };
     diffPageRefKind?: { kind: string };
     diffPageReloadKey?: string;
+    inlineDiffScrollParent?: HTMLElement | null;
+    diffPageSummary?: { totalRows: number; isBinary: boolean };
     conversationId?: string;
     shouldHydrate: boolean;
     annotations?: unknown[];
@@ -174,6 +187,9 @@ vi.mock("./AgentsPublishFileDiff", () => ({
       data-ref-kind={refKind?.kind}
       data-diff-page-ref-kind={diffPageRefKind?.kind}
       data-diff-page-reload-key={diffPageReloadKey}
+      data-inline-scroll-parent={String(Boolean(inlineDiffScrollParent))}
+      data-diff-page-total-rows={diffPageSummary?.totalRows ?? ""}
+      data-diff-page-is-binary={String(diffPageSummary?.isBinary ?? false)}
       data-conversation-id={conversationId}
       data-should-hydrate={String(shouldHydrate)}
       data-annotation-count={String(annotations?.length ?? 0)}
@@ -217,6 +233,7 @@ const mockGetRepairStagedFiles = vi.fn();
 const mockGetRepairUnstagedFiles = vi.fn();
 const mockGetRepairStagedFileDiff = vi.fn();
 const mockGetRepairUnstagedFileDiff = vi.fn();
+const mockGetDiffPage = vi.fn();
 
 vi.mock("@/api/diff", () => ({
   diffApi: {
@@ -248,6 +265,8 @@ vi.mock("@/api/diff", () => ({
       mockGetCumulativeFileDiff(...args),
     getAgentConversationWorkspaceRepairConflictFileDiff: (...args: unknown[]) =>
       mockGetRepairConflictFileDiff(...args),
+    getAgentConversationWorkspaceFileDiffPage: (...args: unknown[]) =>
+      mockGetDiffPage(...args),
   },
 }));
 
@@ -378,6 +397,18 @@ describe("AgentsPublishInlineDiffs", () => {
     mockGetRepairUnstagedFileDiff.mockResolvedValue(makeHunkDiff("src/UnstagedFile.tsx"));
     mockGetCumulativeFileDiff.mockResolvedValue(makeHunkDiff("src/CumulativeFile.tsx"));
     mockGetRepairConflictFileDiff.mockResolvedValue(makeConflictDiff("src/Conflict.tsx"));
+    mockGetDiffPage.mockResolvedValue({
+      filePath: "src/Foo.tsx",
+      language: "typescript",
+      rows: [{ kind: "hunk_header", header: "@@ -1,1 +1,1 @@" }],
+      offset: 0,
+      limit: 1,
+      nextOffset: 1,
+      totalRows: 719,
+      oldTotalLines: 0,
+      newTotalLines: 719,
+      isBinary: false,
+    });
   });
 
   describe("rendering", () => {
@@ -2194,6 +2225,168 @@ describe("AgentsPublishInlineDiffs", () => {
         behavior: "auto",
         index: 1,
       });
+      await waitFor(() =>
+        expect(annotationScrollIntoViewMock).toHaveBeenCalledWith({
+          block: "start",
+          behavior: "auto",
+          inline: "nearest",
+        }),
+      );
+      expect(screen.getByTestId("mock-file-diff-src-Bar.tsx")).toHaveAttribute(
+        "data-focus-target",
+        "true",
+      );
+    });
+
+    it("keeps the selected jump file aligned while the row resizes", async () => {
+      const user = userEvent.setup();
+      const changes = [makeFileChange("src/Foo.tsx"), makeFileChange("src/Bar.tsx")];
+      const originalResizeObserver = globalThis.ResizeObserver;
+      const originalWindowResizeObserver = window.ResizeObserver;
+      const resizeCallbacks: ResizeObserverCallback[] = [];
+
+      class TestResizeObserver {
+        constructor(callback: ResizeObserverCallback) {
+          resizeCallbacks.push(callback);
+        }
+
+        observe = vi.fn();
+        unobserve = vi.fn();
+        disconnect = vi.fn();
+      }
+
+      vi.stubGlobal("ResizeObserver", TestResizeObserver);
+      Object.defineProperty(window, "ResizeObserver", {
+        configurable: true,
+        writable: true,
+        value: TestResizeObserver,
+      });
+      try {
+        render(
+          withProviders(
+            <AgentsPublishInlineDiffs
+              conversationId="conv-1"
+              review={makeReview(changes)}
+              commits={[]}
+              isLoading={false}
+            />,
+          ),
+        );
+        await user.click(screen.getByTestId("inline-diffs-jump-to-file"));
+        await user.click(screen.getByTestId("jump-to-file-item-src/Bar.tsx"));
+        await waitFor(() =>
+          expect(annotationScrollIntoViewMock).toHaveBeenCalledWith({
+            block: "start",
+            behavior: "auto",
+            inline: "nearest",
+          }),
+        );
+
+        annotationScrollIntoViewMock.mockClear();
+        expect(resizeCallbacks.length).toBeGreaterThan(0);
+        act(() => {
+          for (const resizeCallback of resizeCallbacks) {
+            resizeCallback([], {} as ResizeObserver);
+          }
+        });
+
+        expect(annotationScrollIntoViewMock).toHaveBeenCalledWith({
+          block: "start",
+          behavior: "auto",
+          inline: "nearest",
+        });
+      } finally {
+        vi.stubGlobal("ResizeObserver", originalResizeObserver);
+        Object.defineProperty(window, "ResizeObserver", {
+          configurable: true,
+          writable: true,
+          value: originalWindowResizeObserver,
+        });
+      }
+    });
+
+    it("keeps the selected jump file aligned during settle frames and releases on user input", async () => {
+      const user = userEvent.setup();
+      const changes = [makeFileChange("src/Foo.tsx"), makeFileChange("src/Bar.tsx")];
+      const originalRequestAnimationFrame = window.requestAnimationFrame;
+      const originalCancelAnimationFrame = window.cancelAnimationFrame;
+      const frameCallbacks: Array<{ callback: FrameRequestCallback; id: number }> = [];
+      const cancelledFrames = new Set<number>();
+      let nextFrameId = 1;
+
+      Object.defineProperty(window, "requestAnimationFrame", {
+        configurable: true,
+        writable: true,
+        value: (callback: FrameRequestCallback) => {
+          const id = nextFrameId++;
+          frameCallbacks.push({ callback, id });
+          return id;
+        },
+      });
+      Object.defineProperty(window, "cancelAnimationFrame", {
+        configurable: true,
+        writable: true,
+        value: (id: number) => {
+          cancelledFrames.add(id);
+        },
+      });
+
+      try {
+        render(
+          withProviders(
+            <AgentsPublishInlineDiffs
+              conversationId="conv-1"
+              review={makeReview(changes)}
+              commits={[]}
+              isLoading={false}
+            />,
+          ),
+        );
+        await user.click(screen.getByTestId("inline-diffs-jump-to-file"));
+        await user.click(screen.getByTestId("jump-to-file-item-src/Bar.tsx"));
+        await waitFor(() =>
+          expect(annotationScrollIntoViewMock).toHaveBeenCalledWith({
+            block: "start",
+            behavior: "auto",
+            inline: "nearest",
+          }),
+        );
+
+        annotationScrollIntoViewMock.mockClear();
+        const firstFrame = frameCallbacks.shift();
+        expect(firstFrame).toBeDefined();
+        act(() => {
+          firstFrame?.callback(performance.now());
+        });
+        expect(annotationScrollIntoViewMock).toHaveBeenCalledWith({
+          block: "start",
+          behavior: "auto",
+          inline: "nearest",
+        });
+
+        annotationScrollIntoViewMock.mockClear();
+        act(() => {
+          window.dispatchEvent(new Event("wheel"));
+        });
+        const cancelledFrame = frameCallbacks.shift();
+        expect(cancelledFrame).toBeDefined();
+        expect(cancelledFrames.has(cancelledFrame!.id)).toBe(true);
+        act(() => {
+          cancelledFrame?.callback(performance.now());
+        });
+        expect(annotationScrollIntoViewMock).not.toHaveBeenCalled();
+      } finally {
+        Object.defineProperty(window, "requestAnimationFrame", {
+          configurable: true,
+          writable: true,
+          value: originalRequestAnimationFrame,
+        });
+        Object.defineProperty(window, "cancelAnimationFrame", {
+          configurable: true,
+          writable: true,
+          value: originalCancelAnimationFrame,
+        });
+      }
     });
 
     it("scrolls and expands a file from an external focus request", async () => {
@@ -2472,6 +2665,27 @@ describe("AgentsPublishInlineDiffs", () => {
       expect(screen.getByTestId("mock-file-diff-src-Huge.tsx")).toHaveAttribute(
         "data-diff-page-ref-kind",
         "head",
+      );
+      await waitFor(() =>
+        expect(mockGetDiffPage).toHaveBeenCalledWith({
+          conversationId: "conv-1",
+          path: "src/Huge.tsx",
+          refKind: { kind: "head" },
+          offset: 0,
+          limit: 1,
+        }),
+      );
+      await waitFor(() =>
+        expect(screen.getByTestId("mock-file-diff-src-Huge.tsx")).toHaveAttribute(
+          "data-diff-page-total-rows",
+          "719",
+        ),
+      );
+      await waitFor(() =>
+        expect(screen.getByTestId("mock-file-diff-src-Huge.tsx")).toHaveAttribute(
+          "data-inline-scroll-parent",
+          "true",
+        ),
       );
     });
 

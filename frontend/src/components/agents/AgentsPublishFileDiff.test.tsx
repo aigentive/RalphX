@@ -50,11 +50,19 @@ vi.mock("@/components/diff/PagedDiffView", () => ({
     filePath,
     refKind,
     scrollContainer,
+    inlineScrollParent,
+    defaultWrapLines,
+    initialTotalRows,
+    initialIsBinary,
   }: {
     conversationId: string;
     filePath: string;
     refKind: { kind: string };
     scrollContainer?: boolean;
+    inlineScrollParent?: HTMLElement | null;
+    defaultWrapLines?: boolean;
+    initialTotalRows?: number;
+    initialIsBinary?: boolean;
   }) => (
     <div
       data-testid="paged-diff-view"
@@ -62,6 +70,10 @@ vi.mock("@/components/diff/PagedDiffView", () => ({
       data-file-path={filePath}
       data-ref-kind={refKind.kind}
       data-scroll-container={String(scrollContainer ?? false)}
+      data-inline-scroll-parent={String(Boolean(inlineScrollParent))}
+      data-default-wrap-lines={String(defaultWrapLines ?? true)}
+      data-initial-total-rows={initialTotalRows ?? ""}
+      data-initial-is-binary={String(initialIsBinary ?? false)}
     >
       PagedDiffView
     </div>
@@ -530,6 +542,7 @@ describe("AgentsPublishFileDiff", () => {
             onOpenFullscreen={onOpenFullscreen}
             conversationId="conv-1"
             diffPageRefKind={{ kind: "head" }}
+            diffPageSummary={{ totalRows: 719, isBinary: false }}
             shouldHydrate={true}
             isShowAnywayOverridden={false}
             onShowAnyway={onShowAnyway}
@@ -544,6 +557,18 @@ describe("AgentsPublishFileDiff", () => {
       expect(screen.getByTestId("paged-diff-view")).toHaveAttribute(
         "data-ref-kind",
         "head",
+      );
+      expect(screen.getByTestId("paged-diff-view")).toHaveAttribute(
+        "data-default-wrap-lines",
+        "false",
+      );
+      expect(screen.getByTestId("paged-diff-view")).toHaveAttribute(
+        "data-initial-total-rows",
+        "719",
+      );
+      expect(screen.getByTestId("paged-diff-view")).toHaveAttribute(
+        "data-initial-is-binary",
+        "false",
       );
       expect(screen.queryByTestId("simple-diff-view")).toBeNull();
     });

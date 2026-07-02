@@ -25,6 +25,7 @@ import type {
   ConflictDiff,
   FileChange,
   FileDiff,
+  FileDiffPage,
   DiffRefKind,
   PrDiffAnnotation,
 } from "@/api/diff";
@@ -35,6 +36,7 @@ import {
 
 export type DiffState = FileDiff | "loading" | "error" | undefined;
 export type ConflictDiffState = ConflictDiff | "loading" | "error" | undefined;
+export type DiffPageSummary = Pick<FileDiffPage, "totalRows" | "isBinary">;
 
 export interface AgentsPublishFileDiffProps {
   file: FileChange;
@@ -54,6 +56,10 @@ export interface AgentsPublishFileDiffProps {
   diffPageRefKind?: DiffRefKind | undefined;
   /** Optional remount key for paged rows when same-ref content changes. */
   diffPageReloadKey?: string | undefined;
+  /** Outer inline diff scroller used by row-virtualized paged diffs. */
+  inlineDiffScrollParent?: HTMLElement | null | undefined;
+  /** Lightweight page metadata used to reserve stable inline row height. */
+  diffPageSummary?: DiffPageSummary | undefined;
   /** Whether this file is in the viewport (±200px) — controls body hydration. */
   shouldHydrate: boolean;
   /** GitHub PR review/check annotations for this file. */
@@ -102,6 +108,8 @@ export function AgentsPublishFileDiff({
   refKind,
   diffPageRefKind,
   diffPageReloadKey,
+  inlineDiffScrollParent,
+  diffPageSummary,
   shouldHydrate,
   annotations = [],
   isShowAnywayOverridden,
@@ -378,6 +386,10 @@ export function AgentsPublishFileDiff({
                   refKind={diffPageRefKind!}
                   annotations={annotations}
                   scrollContainer={false}
+                  inlineScrollParent={inlineDiffScrollParent}
+                  defaultWrapLines={false}
+                  initialTotalRows={diffPageSummary?.totalRows}
+                  initialIsBinary={diffPageSummary?.isBinary}
                 />
               )}
 
