@@ -13,6 +13,7 @@ export declare const REVIEW_HISTORY = "ralphx-review-history";
 export declare const WORKER = "ralphx-execution-worker";
 export declare const GENERAL_EXPLORER = "ralphx-general-explorer";
 export declare const GENERAL_WORKER = "ralphx-general-worker";
+export declare const AGENT_WORKSPACE_REPAIR = "ralphx-agent-workspace-repair";
 export declare const AGENT_WORKSPACE_PR_FIXER = "ralphx-agent-workspace-pr-fixer";
 export declare const CODER = "ralphx-execution-coder";
 export declare const SESSION_NAMER = "ralphx-utility-session-namer";

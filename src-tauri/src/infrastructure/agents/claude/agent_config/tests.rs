@@ -1646,6 +1646,23 @@ fn test_memory_capture_has_read_cli_tools() {
     }
 }
 
+#[test]
+fn test_agent_workspace_repair_can_fetch_review_artifacts() {
+    let config = get_agent_config(SHORT_AGENT_WORKSPACE_REPAIR)
+        .expect("ralphx-agent-workspace-repair should exist");
+
+    assert!(
+        config
+            .allowed_mcp_tools
+            .contains(&"complete_agent_workspace_repair".to_string()),
+        "repair agent must be able to signal completion"
+    );
+    assert!(
+        config.allowed_mcp_tools.contains(&"get_artifact".to_string()),
+        "repair agent must be able to fetch blocking Review artifacts"
+    );
+}
+
 // ── Verification tool allowlist tests ───────────────────────────
 
 #[test]

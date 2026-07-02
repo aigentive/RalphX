@@ -1318,14 +1318,28 @@ fn build_workspace_review_blocking_repair_message(
         (Some(id), None) => id.as_str().to_string(),
         _ => "not recorded".to_string(),
     };
+    let artifact_fetch_instruction = monitor
+        .review_artifact_id
+        .as_ref()
+        .map(|id| {
+            format!(
+                "Fetch the full Review artifact before editing: call `get_artifact` with `artifact_id: \"{}\"`.",
+                id.as_str()
+            )
+        })
+        .unwrap_or_else(|| {
+            "No Review artifact ID was recorded; use the blocking summary below as the repair source."
+                .to_string()
+        });
     [
         "Workspace Review found blocking issues for this agent workspace.".to_string(),
         String::new(),
-        "Please fix the workspace changes described by the Review. After the repair is complete, continue normally; RalphX will run a fresh local workspace Review before publishing can proceed.".to_string(),
+        "Please fix the workspace changes described by the Review artifact. After the repair is complete, continue normally; RalphX will run a fresh local workspace Review before publishing can proceed.".to_string(),
         String::new(),
         format!("Conversation ID: {}", workspace.conversation_id),
         format!("Workspace branch: {}", workspace.branch_name),
         format!("Review artifact: {artifact}"),
+        artifact_fetch_instruction,
         format!("Review target scope: {}", target.scope),
         format!("Review diff fingerprint: {}", target.diff_fingerprint),
         format!(
@@ -3858,6 +3872,46 @@ x
             .last_error
             .as_deref()
             .is_some_and(|error| error.contains("Failed to route Review fixer")));
+    }
+
+    #[tokio::test]
+    async fn blocking_repair_message_tells_repair_agent_to_fetch_review_artifact() {
+        let (_temp, repo, base_sha) = init_repo();
+        committed_workspace_delta(&repo);
+
+        let state = AppState::new_test();
+        let project = seed_project(&state, &repo).await;
+        let workspace = workspace(
+            &project,
+            &repo,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main",
+            Some(base_sha),
+        );
+        let context = load_agent_workspace_review_context(&state, &workspace)
+            .await
+            .expect("context should load");
+        let target = context.target.expect("target should exist");
+        let mut monitor = context.monitor;
+        apply_review_artifact_to_monitor(
+            &mut monitor,
+            target.scope,
+            target.head_sha.clone(),
+            target.diff_fingerprint.clone(),
+            Some("review-run".to_string()),
+            ArtifactId::from_string("review-artifact-1"),
+            7,
+            Utc::now(),
+            None,
+        );
+        monitor.review_blocking_summary =
+            Some("Fix the missing review artifact access.".to_string());
+
+        let message = build_workspace_review_blocking_repair_message(&workspace, &monitor, &target);
+
+        assert!(message.contains("Review artifact: review-artifact-1 v7"));
+        assert!(message.contains("call `get_artifact` with `artifact_id: \"review-artifact-1\"`"));
+        assert!(message.contains("Fix the missing review artifact access."));
     }
 
     #[test]
