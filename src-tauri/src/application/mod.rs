@@ -9,6 +9,7 @@ pub mod agent_conversation_linear_issue;
 pub mod agent_conversation_start_service;
 pub mod agent_conversation_workspace;
 pub mod agent_conversation_workspace_base;
+pub mod agent_workspace_continuation;
 pub mod agent_issue_report;
 pub mod agent_lane_resolution;
 pub mod agent_lane_settings_bootstrap;

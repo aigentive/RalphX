@@ -2,13 +2,17 @@ use axum::{
     extract::{Path, Query, State},
     Json,
 };
-use ralphx_lib::application::{AppState, InteractiveProcessKey, TeamService, TeamStateTracker};
+use ralphx_lib::application::{
+    agent_conversation_workspace::resolve_agent_conversation_workspace_path, AppState,
+    InteractiveProcessKey, TeamService, TeamStateTracker,
+};
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::{
     ideation::{ChatMessage, IdeationSession, IdeationSessionStatus, SessionOrigin},
     project::{GitMode, Project},
     types::ProjectId,
-    ChatContextType, IdeationSessionId,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, ChatContextType,
+    ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId,
 };
 use ralphx_lib::domain::services::running_agent_registry::RunningAgentKey;
 use ralphx_lib::http_server::handlers::*;
@@ -210,6 +214,87 @@ async fn test_ideation_message_scope_violation_returns_403() {
 
     assert!(result.is_err());
     assert_eq!(result.unwrap_err().0, axum::http::StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn test_ideation_message_linked_cleaned_agent_workspace_returns_non_resumable_before_persisting_message(
+) {
+    let state = setup_test_state().await;
+    let project = make_project("proj-msg-linked-cleaned", "Linked Cleaned Agent Workspace");
+    state
+        .app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+
+    let session = IdeationSession::builder()
+        .project_id(project.id.clone())
+        .source_context_type("agent_conversation")
+        .source_context_id("conversation-linked-cleaned")
+        .spawn_reason("agent_plan_mode")
+        .build();
+    let session = state
+        .app_state
+        .ideation_session_repo
+        .create(session)
+        .await
+        .unwrap();
+
+    let conversation_id = ChatConversationId::from_string("conversation-linked-cleaned");
+    let expected_worktree = resolve_agent_conversation_workspace_path(&project, &conversation_id)
+        .expect("expected workspace path should resolve");
+    let mut workspace = AgentConversationWorkspace::new(
+        conversation_id,
+        project.id.clone(),
+        AgentConversationWorkspaceMode::Edit,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("main".to_string()),
+        Some("base-sha".to_string()),
+        "ralphx/project/linked-cleaned".to_string(),
+        expected_worktree.to_string_lossy().to_string(),
+    );
+    workspace.linked_ideation_session_id = Some(session.id.clone());
+    workspace.publication_pr_number = Some(571);
+    workspace.publication_pr_status = Some("merged".to_string());
+    state
+        .app_state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .unwrap();
+
+    let result = ideation_message_http(
+        State(state.clone()),
+        unrestricted_scope(),
+        Json(IdeationMessageRequest {
+            session_id: session.id.as_str().to_string(),
+            message: "continue the old cleaned workspace".to_string(),
+        }),
+    )
+    .await;
+
+    assert!(result.is_err(), "cleaned workspace must not be spawned");
+    let (status, body) = result.unwrap_err();
+    assert_eq!(status, axum::http::StatusCode::CONFLICT);
+    assert_eq!(body.0["error"], "agent_workspace_non_resumable");
+    assert_eq!(body.0["reason"], "cleaned_after_terminal");
+    assert_eq!(
+        body.0["next_action"], "start_fresh_agent_conversation",
+        "response should direct the caller away from stale continuation"
+    );
+
+    let messages = state
+        .app_state
+        .chat_message_repo
+        .get_by_session(&session.id)
+        .await
+        .unwrap();
+    assert!(
+        messages.is_empty(),
+        "preflight must reject before persisting a continuation message"
+    );
 }
 
 #[tokio::test]
