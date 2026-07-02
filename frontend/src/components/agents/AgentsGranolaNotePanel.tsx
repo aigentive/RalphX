@@ -368,7 +368,10 @@ function NotePreview({
 
 function MarkdownBlock({ markdown }: { markdown: string }) {
   return (
-    <div className="prose prose-sm max-w-none text-sm dark:prose-invert">
+    <div
+      className="theme-aware-prose prose prose-sm max-w-none text-sm"
+      data-testid="agent-granola-note-markdown"
+    >
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
         {markdown}
       </ReactMarkdown>
