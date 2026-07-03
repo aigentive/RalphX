@@ -3546,6 +3546,11 @@ async fn test_task_execution_agent_exit_uses_head_matched_validation_cache_for_f
         exit_code: None,
         stderr: "agent exited after execution_complete".to_string(),
     };
+    let app = mock_builder()
+        .manage(state.clone())
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+    let app_handle = Some(app.handle().clone());
 
     let recovery_spawned = handle_stream_error::<MockRuntime>(
         "agent exited after execution_complete",
@@ -3583,7 +3588,7 @@ async fn test_task_execution_agent_exit_uses_head_matched_validation_cache_for_f
         &None,
         &None,
         &None,
-        &None::<tauri::AppHandle<MockRuntime>>,
+        &app_handle,
         None,
         false,
         None,
