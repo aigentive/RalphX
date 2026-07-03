@@ -15,6 +15,9 @@ capabilities:
     - get_step_progress
     - get_issue_progress
     - get_project_analysis
+    - get_task_validation_summary
+    - get_task_diff_stat
+    - get_task_diff
     - create_followup_agent_conversation
     - register_agent_issue
     - delegate_start
@@ -27,9 +30,7 @@ harnesses:
   claude:
     model: sonnet
     tools:
-      extends: base_tools
-    preapproved_cli_tools:
-      - Bash
+      extends: readonly_tools
     skills:
       - code-review-checklist
 delegation:

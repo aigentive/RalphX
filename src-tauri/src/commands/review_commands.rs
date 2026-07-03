@@ -1026,6 +1026,9 @@ pub async fn update_review_settings(
     if let Some(v) = input.auto_create_followup_agent_conversation {
         settings.auto_create_followup_agent_conversation = v;
     }
+    if let Some(v) = input.run_task_validations {
+        settings.run_task_validations = v;
+    }
 
     let updated = state
         .review_settings_repo

@@ -9,32 +9,27 @@ RalphX: React/TS frontend + Rust/Tauri backend + SQLite. MCP: `Claude Agent → 
 - Tauri invoke uses camelCase (`contextId`, NOT `context_id`)
 - No fragile string comparisons — use enum variants or error codes
 - USE TransitionHandler for status changes — NEVER direct DB update
-- Lint before commit: run lint commands from `get_project_analysis()` for all modified paths
+- Reviewers are read-only: do not run shell commands, do not run validation, and do not modify files.
 - If an unrelated blocking failure is discovered, register an Agent Issue instead of approving unrelated inline fixes
 - `.artifacts/specs/**/tracker.md` is ignored local task-worktree state; missing/ignored tracker files are not review blockers. Use `git status --short -- <path>`, `git check-ignore -v -- <path> || true`, or `git status --short --ignored=matching -- <path>`; never pass tracker paths as `--ignored=<path>`.
 
-## Environment Setup (call before writing code)
+## Review Evidence Setup
 
 ```
-get_project_analysis(project_id: RALPHX_PROJECT_ID, task_id: ...)
+get_task_diff_stat(task_id: RALPHX_TASK_ID)
+get_task_validation_summary(task_id: RALPHX_TASK_ID)
 ```
-→ `worktree_setup` commands are ALREADY executed by the backend before you start — do NOT re-run them.
-→ Run `validate` commands to confirm clean baseline.
+→ Use structured diff and persisted validation evidence. Do not run setup or validation commands.
 If `status: "analyzing"` — wait `retry_after_secs` and retry.
 
 **NEVER commit `node_modules`, `target`, or other symlinked directories. These are worktree artifacts, not source code.**
 
-## Pre-Completion Validation (MANDATORY)
+## Validation Evidence Review (MANDATORY)
 
-1. `get_project_analysis(project_id, task_id)` — get current validation commands
-2. **Targeted test identification** — When code changes span ≤5 files (or task steps include test instructions):
-   - Identify affected test files using language-appropriate methods (e.g., grep imports for JS/TS, check `mod tests` + `tests/` for Rust)
-   - Run ONLY identified targeted tests
-   - If no targeted tests found, fall back to running all validate commands including tests (step 3)
-   - Document which tests were run and why
-3. Run validate commands for every path modified. When targeted tests passed in step 2, skip test-runner commands. Typecheck, lint, build, and format commands always run.
-4. Validation fails on worker's changes → flag in review
-5. Validation fails on pre-existing code → note but do not block review
+1. `get_task_validation_summary(task_id)` — inspect persisted backend-run validation evidence.
+2. Confirm evidence is current for the task changes and covers the changed surface.
+3. Missing, stale, failed, skipped, or too-broad validation is a review finding or escalation reason.
+4. Do not run validation commands yourself. Reviewers are read-only.
 6. If a blocking pre-existing failure would require unrelated file edits, call `register_agent_issue` with `source_task_id`, a concise title/summary, evidence, recommendation, `issue_kind: "plan_drift"` or `"blocked"`, and `auto_followup_eligible: true` when a separate follow-up Agent conversation is appropriate. Then use `complete_review` to request changes or escalate according to the task state. Do not call `create_followup_agent_conversation` for discovered blockers; backend policy decides whether the registered issue creates or reuses a visible follow-up Agent conversation. Do not approve out-of-scope fixes folded into the task branch.
 7. If `get_task_context` reports `scope_drift_status: "scope_expansion"`, you MUST classify that drift in `complete_review`. Use:
    - `adjacent_scope_expansion` for nearby tests/wiring needed to complete the task safely
@@ -51,8 +46,7 @@ Route to **RE-REVIEW** state — the worker has addressed prior issues and the r
 
 ## Quality Checklist
 
-- [ ] Tests pass (identify and run only affected tests; fall back to test-runner commands from `get_project_analysis()` for modified paths)
-- [ ] Run non-test validate commands from `get_project_analysis()` for all modified paths
+- [ ] Persisted validation evidence is fresh, passing, and covers the changed surface; otherwise record the gap.
 - [ ] All open issues addressed
 - [ ] Changes committed
 
@@ -77,8 +71,8 @@ Start with `get_review_notes(task_id)`:
 
 <state name="FIRST-REVIEW">
 1. **Gather** — `get_task_context(task_id)` (acceptance criteria, scope drift, task status) + `get_task_steps(task_id)` (step IDs for issue linking)
-2. **Examine** — check `task.base_branch` from `get_task_context` first (do NOT assume `main`), then: `git diff {base_branch}..HEAD --stat` then `git diff {base_branch}..HEAD`
-3. **Validate** — `get_project_analysis(project_id, task_id)` → run `validate` commands for modified paths (see validation-rules)
+2. **Examine** — `get_task_diff_stat(task_id)` then `get_task_diff(task_id)`; use `base_ref` only when the task context requires an explicit override.
+3. **Validate Evidence** — `get_task_validation_summary(task_id)`; missing, stale, failed, skipped, or insufficient validation becomes a finding.
 4. **Evaluate** — apply review-checklist
 5. **Submit** — call `complete_review` (see appendix for schema, decision guide, examples)
 </state>
@@ -86,7 +80,7 @@ Start with `get_review_notes(task_id)`:
 <state name="RE-REVIEW">
 1. **Load** — `get_task_issues(task_id)` (prior issues) + `get_step_progress(task_id)` (what worker did)
 2. **Cross-reference** — for each `addressed` issue: verify resolution notes match actual code changes; for `open` issues: check if worker fixed without marking
-3. **Validate** — same as FIRST-REVIEW step 3; check for regressions
+3. **Validate Evidence** — same as FIRST-REVIEW step 3; check for missing, stale, failed, or insufficient validation after re-execution
 4. **Decide:**
    - All prior issues resolved + no new issues → `approved`
    - Issues remain or new issues → `needs_changes` with updated issues list
@@ -95,10 +89,10 @@ Start with `get_review_notes(task_id)`:
 </state>
 
 <section name="validation-rules">
-**Validation cache check** — Before running any tests, check `validation_hint` in the task context (`get_task_context`):
-- `skip_tests`: code unchanged since last passing run — skip test execution, proceed to code review only
-- `skip_test_validation`: no tests existed at execution time — skip test validation entirely
-- `run_tests` or hint absent: run tests normally per commands below
+**Validation evidence check** — Reviewers never run tests or validation commands. Use `get_task_validation_summary(task_id)`:
+- Fresh `ran`, `forced`, or `cached` passing command evidence can support approval.
+- Failed validation blocks approval unless the failure is clearly pre-existing and not task-related.
+- Missing, stale, skipped, or too-broad validation is a structured review finding or escalation reason.
 
 **Scope drift check** — Also inspect these `get_task_context` fields before deciding:
 - `actual_changed_files`
@@ -107,11 +101,9 @@ Start with `get_review_notes(task_id)`:
 
 When `scope_drift_status = "scope_expansion"`, explicitly decide whether the expansion is adjacent, a legitimate plan correction, or unrelated drift. Do not silently approve expanded scope without that classification.
 
-1. Call `get_project_analysis(project_id, task_id)` to get path-scoped validate commands
-2. For each path modified by the worker, run the corresponding validate commands:
-   - Test commands: First identify and run only test files affected by the changes. If targeted tests pass, skip full test suite. If no targeted tests identified, fall back to test-runner commands from validate array.
-   - Non-test commands (typecheck, lint, build, format): Always run for modified paths.
-3. Report validation results in review findings.
+1. Call `get_task_validation_summary(task_id)` and inspect command rows.
+2. Compare validation categories/reasons/related files to `get_task_diff_stat` and `get_task_diff`.
+3. Report validation evidence or validation gaps in review findings.
 </section>
 
 <section name="review-checklist">
@@ -176,7 +168,7 @@ When `scope_drift_classification = "unrelated_drift"`, prefer `needs_changes` wi
 ### approved_no_changes Decision Guide
 
 **When to use:**
-1. Run `git diff <base_branch>..HEAD --stat` (base_branch from `get_task_context` → `task.base_branch`; if absent, use project default branch e.g. `main`)
+1. Call `get_task_diff_stat(task_id)` using the base ref resolved by backend unless the task context provides an explicit override.
 2. If diff is **empty** AND task type is research/docs/planning → use `approved_no_changes`
 3. If diff is **empty** BUT acceptance criteria expect code changes → use `needs_changes` (execution failure, not a no-change task)
 

@@ -12,6 +12,7 @@ async fn test_get_default_settings() {
     assert!(!settings.require_fix_approval);
     assert!(!settings.require_human_review);
     assert!(settings.require_workspace_review);
+    assert!(settings.run_task_validations);
     assert_eq!(settings.max_fix_attempts, 3);
     assert_eq!(settings.max_revision_cycles, 5);
 }
@@ -30,6 +31,7 @@ async fn test_update_settings() {
         max_fix_attempts: 5,
         max_revision_cycles: 10,
         auto_create_followup_agent_conversation: false,
+        run_task_validations: false,
     };
 
     let updated = repo.update_settings(&new_settings).await.unwrap();
@@ -41,6 +43,7 @@ async fn test_update_settings() {
     assert_eq!(updated.max_fix_attempts, 5);
     assert_eq!(updated.max_revision_cycles, 10);
     assert!(!updated.auto_create_followup_agent_conversation);
+    assert!(!updated.run_task_validations);
 
     // Verify persistence
     let retrieved = repo.get_settings().await.unwrap();
@@ -52,6 +55,7 @@ async fn test_update_settings() {
     assert_eq!(retrieved.max_fix_attempts, 5);
     assert_eq!(retrieved.max_revision_cycles, 10);
     assert!(!retrieved.auto_create_followup_agent_conversation);
+    assert!(!retrieved.run_task_validations);
 }
 
 #[tokio::test]

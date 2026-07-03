@@ -387,6 +387,8 @@ pub struct ReviewSettingsResponse {
     pub require_fix_approval: bool,
     /// Whether eligible registered agent issues auto-create visible follow-up Agent conversations.
     pub auto_create_followup_agent_conversation: bool,
+    /// Whether task execution agents may run backend-managed validation commands.
+    pub run_task_validations: bool,
 }
 
 /// Input for updating the primary review policy fields.
@@ -400,6 +402,7 @@ pub struct UpdateReviewSettingsInput {
     pub max_fix_attempts: Option<u32>,
     pub max_revision_cycles: Option<u32>,
     pub auto_create_followup_agent_conversation: Option<bool>,
+    pub run_task_validations: Option<bool>,
 }
 
 use crate::domain::review::ReviewSettings;
@@ -415,6 +418,7 @@ impl From<ReviewSettings> for ReviewSettingsResponse {
             ai_review_auto_fix: s.ai_review_auto_fix,
             require_fix_approval: s.require_fix_approval,
             auto_create_followup_agent_conversation: s.auto_create_followup_agent_conversation,
+            run_task_validations: s.run_task_validations,
         }
     }
 }

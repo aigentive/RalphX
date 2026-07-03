@@ -57,6 +57,7 @@ const mockReviewSettings = {
   ai_review_auto_fix: true,
   require_fix_approval: false,
   auto_create_followup_agent_conversation: true,
+  run_task_validations: true,
 };
 
 const mockExternalMcpConfig = {
@@ -2668,6 +2669,7 @@ const commandHandlers: Record<
       maxFixAttempts?: number;
       maxRevisionCycles?: number;
       autoCreateFollowupAgentConversation?: boolean;
+      runTaskValidations?: boolean;
     };
     if (input.requireHumanReview !== undefined) {
       mockReviewSettings.require_human_review = input.requireHumanReview;
@@ -2685,7 +2687,24 @@ const commandHandlers: Record<
       mockReviewSettings.auto_create_followup_agent_conversation =
         input.autoCreateFollowupAgentConversation;
     }
+    if (input.runTaskValidations !== undefined) {
+      mockReviewSettings.run_task_validations = input.runTaskValidations;
+    }
     return { ...mockReviewSettings };
+  },
+  get_task_validation_summary: async (args) => {
+    const taskId = (args.taskId ?? args.task_id ?? "mock-task") as string;
+    return {
+      task_id: taskId,
+      project_id: "mock-project",
+      policy_enabled: mockReviewSettings.run_task_validations,
+      latest_run: null,
+      commands: [],
+      legacy_validation_cache: null,
+      disabled_reason: mockReviewSettings.run_task_validations
+        ? null
+        : "Run Task Validations is disabled in Review Policy",
+    };
   },
   get_external_mcp_config: async () => ({ ...mockExternalMcpConfig }),
   update_external_mcp_config: async (args) => {

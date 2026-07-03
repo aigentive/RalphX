@@ -182,6 +182,7 @@ export const DEFAULT_REVIEW_SETTINGS = {
   requireFixApproval: false,
   requireHumanReview: false,
   requireWorkspaceReview: true,
+  runTaskValidations: true,
   maxFixAttempts: 3,
 } as const;
 
@@ -202,6 +203,10 @@ export const ReviewSettingsSchema = z.object({
   requireWorkspaceReview: z
     .boolean()
     .default(DEFAULT_REVIEW_SETTINGS.requireWorkspaceReview),
+  /** Allow execution agents to run backend-managed task validations */
+  runTaskValidations: z
+    .boolean()
+    .default(DEFAULT_REVIEW_SETTINGS.runTaskValidations),
   /** Maximum fix attempts before giving up and moving to backlog */
   maxFixAttempts: z.number().int().nonnegative().default(DEFAULT_REVIEW_SETTINGS.maxFixAttempts),
 });

@@ -12,6 +12,7 @@ import { WORKFLOW_TOOLS } from "./workflow-tools.js";
 import { AGENT_WORKSPACE_TOOLS } from "./agent-workspace-tools.js";
 import { AGENT_TASK_TOOLS } from "./agent-task-tools.js";
 import { SUPPORT_TOOLS } from "./support-tools.js";
+import { VALIDATION_TOOLS } from "./validation-tools.js";
 import { formatToolErrorMessageFromRegistry, getToolRecoveryHintFromRegistry, } from "./tool-recovery.js";
 import { logToolsByAgent } from "./tool-debug.js";
 import { getAllowedToolNames as resolveAllowedToolNames, getToolsByAgent as resolveToolsByAgent, parseAllowedToolsFromArgs as parseAllowedToolsFromKnownRegistry, } from "./tool-authorization.js";
@@ -40,6 +41,10 @@ export const ALL_TOOLS = [
     // WORKER CONTEXT TOOLS (worker agent)
     // ========================================================================
     ...WORKER_CONTEXT_TOOLS,
+    // ========================================================================
+    // TASK VALIDATION / REVIEW EVIDENCE TOOLS
+    // ========================================================================
+    ...VALIDATION_TOOLS,
     // ========================================================================
     // STEP TOOLS (worker agent)
     // ========================================================================

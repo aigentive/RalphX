@@ -9,7 +9,7 @@ RalphX: React/TS frontend + Rust/Tauri backend + SQLite. MCP: `Claude Agent → 
 - Tauri invoke uses camelCase (`contextId`, NOT `context_id`)
 - No fragile string comparisons — use enum variants or error codes
 - USE TransitionHandler for status changes — NEVER direct DB update
-- Lint before commit: run lint commands from `get_project_analysis()` for all modified paths
+- Lint before handoff: select lint commands from `get_project_analysis()` and run them through `run_task_validation` when available.
 - `.artifacts/specs/**/tracker.md` is ignored local task-worktree state; missing/ignored tracker files are not blockers. Use `git status --short -- <path>`, `git check-ignore -v -- <path> || true`, or `git status --short --ignored=matching -- <path>`; never pass tracker paths as `--ignored=<path>`.
 
 ## Environment Setup (call before writing code)
@@ -18,7 +18,7 @@ RalphX: React/TS frontend + Rust/Tauri backend + SQLite. MCP: `Claude Agent → 
 get_project_analysis(project_id: RALPHX_PROJECT_ID, task_id: ...)
 ```
 → `worktree_setup` commands are ALREADY executed by the backend before you start — do NOT re-run them.
-→ Run `validate` commands to confirm clean baseline.
+→ Choose relevant `validate` commands and call `run_task_validation` to confirm clean baseline.
 If `status: "analyzing"` — wait `retry_after_secs` and retry.
 
 **NEVER commit `node_modules`, `target`, or other symlinked directories. These are worktree artifacts, not source code.**
@@ -42,7 +42,7 @@ If `status: "analyzing"` — wait `retry_after_secs` and retry.
    - If no targeted tests found, fall back to running all validate commands including tests (step 3)
    - If uncertain about completeness, run path-scoped test commands as supplement
    - Document which tests were run and why in completion message
-3. Run validate commands for every path you modified. When targeted tests passed in step 2, skip test-runner commands (non-exhaustive examples: commands containing `test`, `jest`, `vitest`, `pytest`, `cargo test`, `npm run test` — inspect your project's validate commands to identify which are test runners vs non-test tools). Typecheck, lint, build, and format commands always run. When no targeted tests were run, run ALL validate commands as before.
+3. Call `run_task_validation` with selected validate commands for every path you modified, including command category, reason, and related files. When targeted tests passed in step 2, omit broad test-runner commands; typecheck, lint, build, and format commands always run. When no targeted tests were run, include the relevant test-runner commands.
 4. Validation fails on YOUR changes → fix before completing
 5. Validation fails on pre-existing code → note but do not block
 
@@ -56,7 +56,7 @@ If `status: "analyzing"` — wait `retry_after_secs` and retry.
 ## Quality Checklist
 
 - [ ] Tests pass (identify and run only affected tests; fall back to test-runner commands from get_project_analysis() for modified paths)
-- [ ] Run non-test validate commands from get_project_analysis() for all modified paths
+- [ ] Non-test validation evidence recorded through `run_task_validation` for all modified paths
 - [ ] All open issues addressed
 - [ ] Changes committed
 
@@ -126,7 +126,7 @@ After fixing all issues, proceed through state EXECUTE (VALIDATE + COMPLETE phas
 1. `get_project_analysis(project_id, task_id)` → returns path-scoped validate commands
    - `worktree_setup` is ALREADY done by the backend — do NOT re-run
    - If `status: "analyzing"` — wait `retry_after_secs` and retry
-2. Run ALL `validate` commands to confirm clean baseline before writing code
+2. Call `run_task_validation` with relevant `validate` commands to confirm clean baseline before writing code
    - Pre-existing failures → note and proceed; your failures → fix first
 </phase>
 
@@ -147,7 +147,7 @@ Before marking work complete:
    - If no targeted tests found, fall back to running all validate commands including tests (step 3)
    - If uncertain about completeness, run path-scoped test commands as supplement
    - Document which tests were run and why in completion message
-3. Run validate commands for every path you modified. When targeted tests passed in step 2, skip test-runner commands (non-exhaustive examples: commands containing `test`, `jest`, `vitest`, `pytest`, `cargo test`, `npm run test` — inspect your project's validate commands to identify which are test runners vs non-test tools). Typecheck, lint, build, and format commands always run. When no targeted tests were run, run ALL validate commands as before.
+3. Call `run_task_validation` with selected validate commands for every path you modified, including command category, reason, and related files. When targeted tests passed in step 2, omit broad test-runner commands; typecheck, lint, build, and format commands always run. When no targeted tests were run, include the relevant test-runner commands.
 4. Validation fails on YOUR changes → fix before completing
 5. Validation fails on pre-existing code → note but do not block
 </phase>
@@ -157,8 +157,8 @@ Quality checks before closing:
 
 | Check | Command |
 |-------|---------|
-| Tests pass | Identify and run only test files affected by your changes (e.g., grep imports for JS/TS; check `mod tests` blocks and `tests/` directory for Rust). If no targeted tests identified, fall back to test-runner commands from `get_project_analysis()` validate array for modified paths. |
-| Non-test validation | Run all non-test validate commands from `get_project_analysis()` for every modified path (typecheck, lint, build, format, etc.). |
+| Tests pass | Identify affected tests, then call `run_task_validation` with targeted test commands. If no targeted tests are identified, include relevant test-runner commands from `get_project_analysis()` validate array. |
+| Non-test validation | Call `run_task_validation` with all relevant non-test validate commands from `get_project_analysis()` for every modified path (typecheck, lint, build, format, etc.). |
 | Open issues | All addressed or have explanation notes |
 | Committed | Atomic commits with clear messages |
 
@@ -181,5 +181,6 @@ Do NOT call `execution_complete` — that is the worker's responsibility (see in
 | `get_task_steps` | Fetch step plan |
 | `start_step` / `complete_step` / `skip_step` / `fail_step` | Step lifecycle |
 | `get_project_analysis` | Validation + setup commands |
+| `run_task_validation` | Run/reuse selected validation commands and persist evidence for the worker/reviewer |
 
 </appendix>

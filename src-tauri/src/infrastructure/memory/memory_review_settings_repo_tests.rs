@@ -10,6 +10,7 @@ async fn test_get_default_settings() {
     assert!(!settings.require_fix_approval);
     assert!(!settings.require_human_review);
     assert!(settings.require_workspace_review);
+    assert!(settings.run_task_validations);
     assert_eq!(settings.max_fix_attempts, 3);
     assert_eq!(settings.max_revision_cycles, 5);
 }
@@ -27,6 +28,7 @@ async fn test_update_settings() {
         max_fix_attempts: 7,
         max_revision_cycles: 10,
         auto_create_followup_agent_conversation: false,
+        run_task_validations: false,
     };
 
     let updated = repo.update_settings(&new_settings).await.unwrap();
@@ -34,12 +36,14 @@ async fn test_update_settings() {
     assert!(!updated.require_workspace_review);
     assert_eq!(updated.max_revision_cycles, 10);
     assert!(!updated.auto_create_followup_agent_conversation);
+    assert!(!updated.run_task_validations);
 
     // Verify persistence
     let retrieved = repo.get_settings().await.unwrap();
     assert!(!retrieved.ai_review_enabled);
     assert!(retrieved.require_fix_approval);
     assert_eq!(retrieved.max_revision_cycles, 10);
+    assert!(!retrieved.run_task_validations);
 }
 
 #[tokio::test]
@@ -53,6 +57,7 @@ async fn test_with_settings() {
         max_fix_attempts: 2,
         max_revision_cycles: 3,
         auto_create_followup_agent_conversation: false,
+        run_task_validations: false,
     };
 
     let repo = MemoryReviewSettingsRepository::with_settings(initial_settings);
@@ -63,4 +68,5 @@ async fn test_with_settings() {
     assert!(!settings.require_workspace_review);
     assert_eq!(settings.max_revision_cycles, 3);
     assert!(!settings.auto_create_followup_agent_conversation);
+    assert!(!settings.run_task_validations);
 }

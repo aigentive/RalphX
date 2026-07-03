@@ -340,6 +340,7 @@ pub fn migrate(conn: &Connection) -> AppResult<()> {
             require_fix_approval INTEGER NOT NULL DEFAULT 0,
             require_human_review INTEGER NOT NULL DEFAULT 0,
             require_workspace_review INTEGER NOT NULL DEFAULT 1,
+            run_task_validations INTEGER NOT NULL DEFAULT 1,
             max_fix_attempts INTEGER NOT NULL DEFAULT 3,
             max_revision_cycles INTEGER NOT NULL DEFAULT 5,
             updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S+00:00', 'now'))

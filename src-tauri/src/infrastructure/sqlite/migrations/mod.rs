@@ -399,6 +399,7 @@ mod v20260701152000_workspace_review_runtime_global_scope_tests;
 mod v20260701174810_workspace_review_hunk_annotations;
 #[cfg(test)]
 mod v20260701174810_workspace_review_hunk_annotations_tests;
+mod v20260703143000_task_validation_runs;
 #[cfg(test)]
 mod v20_merge_validation_mode_tests;
 #[cfg(test)]
@@ -489,7 +490,7 @@ mod v8_task_git_fields_tests;
 mod v9_project_git_fields_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260701174810;
+pub const SCHEMA_VERSION: i64 = 20260703143000;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -1358,6 +1359,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260701174810,
         name: "workspace_review_hunk_annotations",
         migrate: v20260701174810_workspace_review_hunk_annotations::migrate,
+    },
+    Migration {
+        version: 20260703143000,
+        name: "task_validation_runs",
+        migrate: v20260703143000_task_validation_runs::migrate,
     },
 ];
 

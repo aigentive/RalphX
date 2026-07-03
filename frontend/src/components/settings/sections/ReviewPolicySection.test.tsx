@@ -37,10 +37,13 @@ describe("ReviewPolicySection", () => {
           ai_review_auto_fix: true,
           require_fix_approval: false,
           auto_create_followup_agent_conversation: true,
+          run_task_validations: true,
         };
       }
       if (command === "update_review_settings") {
-        const input = (args as { input: { requireHumanReview?: boolean } }).input;
+        const input = (args as {
+          input: { requireHumanReview?: boolean; runTaskValidations?: boolean };
+        }).input;
         return {
           require_human_review: input.requireHumanReview ?? false,
           require_workspace_review: true,
@@ -50,6 +53,7 @@ describe("ReviewPolicySection", () => {
           ai_review_auto_fix: true,
           require_fix_approval: false,
           auto_create_followup_agent_conversation: true,
+          run_task_validations: input.runTaskValidations ?? true,
         };
       }
       return undefined;
@@ -65,6 +69,19 @@ describe("ReviewPolicySection", () => {
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith("update_review_settings", {
         input: { requireHumanReview: true },
+      }),
+    );
+  });
+
+  it("updates the task validation runner setting", async () => {
+    const user = userEvent.setup();
+    renderSection();
+
+    await user.click(await screen.findByTestId("run-task-validations"));
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("update_review_settings", {
+        input: { runTaskValidations: false },
       }),
     );
   });

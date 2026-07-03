@@ -9,6 +9,7 @@ import type { InternalStatus } from "@/types/task";
 import { DescriptionBlock } from "./DescriptionBlock";
 import { DetailCard } from "./DetailCard";
 import { SectionTitle } from "./SectionTitle";
+import { TaskValidationEvidenceCard } from "./TaskValidationEvidenceCard";
 import type {
   TaskDetailContextModel,
   TaskDetailViewMode,
@@ -157,6 +158,9 @@ export function TaskContextRail({
 
       <HistoricalLensCard viewMode={model.viewMode} />
       {model.merge && <MergeCard merge={model.merge} />}
+      <RailSection title="Validation">
+        <TaskValidationEvidenceCard taskId={model.task.id} />
+      </RailSection>
     </div>
   );
 }

@@ -117,6 +117,7 @@ pub mod ticketing_cache_invalidator;
 pub mod ticketing_pr_summary;
 pub mod ticketing_service;
 pub mod ticketing_status_catalog_service;
+pub mod validation_service;
 pub mod webhook_service;
 pub(crate) mod workspace_capacity;
 
@@ -240,6 +241,10 @@ pub use ticketing_service::{
     TicketTransitionRequest, TicketingCommentResult, TicketingEventSink, TicketingLabelResult,
     TicketingMutationResult, TicketingOperationEvent, TicketingPersonResult, TicketingService,
     TicketingTicketIdentity, TicketingTransitionOption, TICKETING_OPERATION_EVENT,
+};
+pub use validation_service::{
+    RunTaskValidationRequest, TaskValidationService, TaskValidationSummary,
+    ValidationCommandRequest, ValidationCommandSummary, ValidationRunSummary,
 };
 pub use webhook_service::WebhookService;
 
