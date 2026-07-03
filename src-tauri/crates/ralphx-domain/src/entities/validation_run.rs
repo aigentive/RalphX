@@ -26,7 +26,7 @@ impl ValidationPurpose {
         }
     }
 
-    pub fn from_str(value: &str) -> Self {
+    pub fn parse(value: &str) -> Self {
         match value {
             "baseline" => Self::Baseline,
             "wave_gate" => Self::WaveGate,
@@ -61,7 +61,7 @@ impl ValidationContextType {
         }
     }
 
-    pub fn from_str(value: &str) -> Self {
+    pub fn parse(value: &str) -> Self {
         match value {
             "execution" => Self::Execution,
             "re_execution" | "re-execution" => Self::ReExecution,
@@ -90,7 +90,7 @@ impl ValidationRunMode {
         }
     }
 
-    pub fn from_str(value: &str) -> Self {
+    pub fn parse(value: &str) -> Self {
         match value {
             "force" => Self::Force,
             "dry_run" | "dry-run" => Self::DryRun,
@@ -122,7 +122,7 @@ impl ValidationRunStatus {
         }
     }
 
-    pub fn from_str(value: &str) -> Self {
+    pub fn parse(value: &str) -> Self {
         match value {
             "passed" => Self::Passed,
             "failed" => Self::Failed,
@@ -149,7 +149,7 @@ impl ValidationCommandSource {
         }
     }
 
-    pub fn from_str(value: &str) -> Self {
+    pub fn parse(value: &str) -> Self {
         match value {
             "project_analysis_ref" => Self::ProjectAnalysisRef,
             _ => Self::AgentSelected,
@@ -180,7 +180,7 @@ impl ValidationCommandCategory {
         }
     }
 
-    pub fn from_str(value: &str) -> Self {
+    pub fn parse(value: &str) -> Self {
         match value {
             "test" => Self::Test,
             "lint" => Self::Lint,
@@ -213,7 +213,7 @@ impl ValidationCacheDecision {
         }
     }
 
-    pub fn from_str(value: &str) -> Self {
+    pub fn parse(value: &str) -> Self {
         match value {
             "cached" => Self::Cached,
             "stale" => Self::Stale,
@@ -245,7 +245,7 @@ impl ValidationCommandStatus {
         }
     }
 
-    pub fn from_str(value: &str) -> Self {
+    pub fn parse(value: &str) -> Self {
         match value {
             "failed" => Self::Failed,
             "error" => Self::Error,

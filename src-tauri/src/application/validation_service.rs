@@ -141,10 +141,10 @@ impl TaskValidationService {
         let current_head_sha = GitService::get_head_sha(&repo_path).await.ok();
         let status_episode_entered_at = latest_execution_episode_entered_at(state, &task_id).await;
         let base_ref = resolve_validation_base_ref(state, &task, &project).await;
-        let purpose = ValidationPurpose::from_str(request.purpose.as_deref().unwrap_or("final"));
+        let purpose = ValidationPurpose::parse(request.purpose.as_deref().unwrap_or("final"));
         let context_type =
-            ValidationContextType::from_str(request.context_type.as_deref().unwrap_or("execution"));
-        let mode = ValidationRunMode::from_str(request.mode.as_deref().unwrap_or("reuse_or_run"));
+            ValidationContextType::parse(request.context_type.as_deref().unwrap_or("execution"));
+        let mode = ValidationRunMode::parse(request.mode.as_deref().unwrap_or("reuse_or_run"));
         let run_id = uuid::Uuid::new_v4().to_string();
         let started_at = Utc::now();
 
@@ -297,7 +297,7 @@ async fn build_or_run_command(
     let command = normalize_command(&request.command)?;
     let cwd = resolve_command_cwd(repo_path, request.cwd.as_deref())?;
     let category =
-        ValidationCommandCategory::from_str(request.category.as_deref().unwrap_or("test"));
+        ValidationCommandCategory::parse(request.category.as_deref().unwrap_or("test"));
     let command_source = match request.source.as_deref() {
         Some("project_analysis_ref") => ValidationCommandSource::ProjectAnalysisRef,
         _ if request.command_ref.is_some() => ValidationCommandSource::ProjectAnalysisRef,
