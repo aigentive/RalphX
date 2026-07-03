@@ -8,8 +8,14 @@ fn test_review_settings_default() {
     assert!(!settings.require_fix_approval);
     assert!(!settings.require_human_review);
     assert!(settings.require_workspace_review);
+    assert!(settings.run_task_validations);
     assert_eq!(settings.max_fix_attempts, 3);
     assert_eq!(settings.max_revision_cycles, 5);
+}
+
+#[test]
+fn test_run_task_validations_default_helper() {
+    assert!(default_run_task_validations());
 }
 
 #[test]
@@ -105,6 +111,7 @@ fn test_review_settings_serialize() {
     assert!(json.contains("\"require_workspace_review\":true"));
     assert!(json.contains("\"max_fix_attempts\":3"));
     assert!(json.contains("\"auto_create_followup_agent_conversation\":true"));
+    assert!(json.contains("\"run_task_validations\":true"));
 }
 
 #[test]
@@ -117,7 +124,8 @@ fn test_review_settings_deserialize() {
         "require_workspace_review": false,
         "max_fix_attempts": 5,
         "max_revision_cycles": 8,
-        "auto_create_followup_agent_conversation": false
+        "auto_create_followup_agent_conversation": false,
+        "run_task_validations": false
     }"#;
     let settings: ReviewSettings = serde_json::from_str(json).unwrap();
     assert!(!settings.ai_review_enabled);
@@ -128,6 +136,7 @@ fn test_review_settings_deserialize() {
     assert_eq!(settings.max_fix_attempts, 5);
     assert_eq!(settings.max_revision_cycles, 8);
     assert!(!settings.auto_create_followup_agent_conversation);
+    assert!(!settings.run_task_validations);
 }
 
 #[test]
@@ -141,6 +150,7 @@ fn test_review_settings_roundtrip() {
         max_fix_attempts: 7,
         max_revision_cycles: 8,
         auto_create_followup_agent_conversation: false,
+        run_task_validations: false,
     };
     let json = serde_json::to_string(&original).unwrap();
     let deserialized: ReviewSettings = serde_json::from_str(&json).unwrap();
@@ -161,6 +171,7 @@ fn test_review_settings_partial_json_with_defaults() {
     let settings: ReviewSettings = serde_json::from_str(json).unwrap();
     assert_eq!(settings, ReviewSettings::default());
     assert!(settings.require_workspace_review);
+    assert!(settings.run_task_validations);
 }
 
 #[test]

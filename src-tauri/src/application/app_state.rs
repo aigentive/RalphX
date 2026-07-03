@@ -64,7 +64,8 @@ use crate::domain::repositories::{
     ReviewSettingsRepository, SessionLinkRepository, TaskDependencyRepository,
     TaskProposalRepository, TaskQARepository, TaskRepository, TaskStepRepository,
     TeamMessageRepository, TeamSessionRepository, TicketCanonicalBranchRepository,
-    WebhookRegistrationRepository, WorkflowRepository, WorkspaceReviewRuntimeSettingsRepository,
+    ValidationRunRepository, WebhookRegistrationRepository, WorkflowRepository,
+    WorkspaceReviewRuntimeSettingsRepository,
 };
 use crate::domain::services::{
     GithubServiceTrait, MemoryRunningAgentRegistry, MessageQueue, RunningAgentRegistry,
@@ -96,7 +97,8 @@ use crate::infrastructure::memory::{
     MemoryTaskDependencyRepository, MemoryTaskProposalRepository, MemoryTaskQARepository,
     MemoryTaskRepository, MemoryTaskStepRepository, MemoryTeamMessageRepository,
     MemoryTeamSessionRepository, MemoryTicketCanonicalBranchRepository,
-    MemoryTicketingStatusCatalogRepository, MemoryWebhookRegistrationRepository,
+    MemoryTicketingStatusCatalogRepository, MemoryValidationRunRepository,
+    MemoryWebhookRegistrationRepository,
     MemoryWorkflowRepository, MemoryWorkspaceReviewRuntimeSettingsRepository,
 };
 use crate::infrastructure::secret_store::MacosKeychainSecretStore;
@@ -129,8 +131,9 @@ use crate::infrastructure::sqlite::{
     SqliteTaskDependencyRepository, SqliteTaskProposalRepository, SqliteTaskQARepository,
     SqliteTaskRepository, SqliteTaskStepRepository, SqliteTeamMessageRepository,
     SqliteTeamSessionRepository, SqliteTicketCanonicalBranchRepository,
-    SqliteTicketingStatusCatalogRepository, SqliteWebhookRegistrationRepository,
-    SqliteWorkflowRepository, SqliteWorkspaceReviewRuntimeSettingsRepository,
+    SqliteTicketingStatusCatalogRepository, SqliteValidationRunRepository,
+    SqliteWebhookRegistrationRepository, SqliteWorkflowRepository,
+    SqliteWorkspaceReviewRuntimeSettingsRepository,
 };
 use crate::infrastructure::HyperAtlassianApiClient;
 use crate::infrastructure::HyperClickUpApiClient;
@@ -192,6 +195,8 @@ pub struct AppState {
     pub review_repo: Arc<dyn ReviewRepository>,
     /// Review settings repository
     pub review_settings_repo: Arc<dyn ReviewSettingsRepository>,
+    /// Durable task validation run/result repository
+    pub validation_run_repo: Arc<dyn ValidationRunRepository>,
     /// Provider-keyed Workspace Review runtime defaults repository
     pub workspace_review_runtime_settings_repo: Arc<dyn WorkspaceReviewRuntimeSettingsRepository>,
     /// Review issue repository for tracking structured issues from reviews
@@ -1133,6 +1138,9 @@ impl AppState {
             review_settings_repo: Arc::new(SqliteReviewSettingsRepository::from_shared(
                 Arc::clone(&shared_conn),
             )),
+            validation_run_repo: Arc::new(SqliteValidationRunRepository::from_shared(Arc::clone(
+                &shared_conn,
+            ))),
             workspace_review_runtime_settings_repo: Arc::new(
                 SqliteWorkspaceReviewRuntimeSettingsRepository::from_shared(Arc::clone(
                     &shared_conn,
@@ -1372,6 +1380,7 @@ impl AppState {
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
             review_repo: Arc::new(MemoryReviewRepository::new()),
             review_settings_repo: Arc::new(MemoryReviewSettingsRepository::new()),
+            validation_run_repo: Arc::new(MemoryValidationRunRepository::new()),
             workspace_review_runtime_settings_repo: Arc::new(
                 MemoryWorkspaceReviewRuntimeSettingsRepository::new(),
             ),
@@ -1521,6 +1530,7 @@ impl AppState {
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
             review_repo: Arc::new(MemoryReviewRepository::new()),
             review_settings_repo: Arc::new(MemoryReviewSettingsRepository::new()),
+            validation_run_repo: Arc::new(MemoryValidationRunRepository::new()),
             workspace_review_runtime_settings_repo: Arc::new(
                 MemoryWorkspaceReviewRuntimeSettingsRepository::new(),
             ),
@@ -1680,6 +1690,7 @@ impl AppState {
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
             review_repo: Arc::new(MemoryReviewRepository::new()),
             review_settings_repo: Arc::new(MemoryReviewSettingsRepository::new()),
+            validation_run_repo: Arc::new(MemoryValidationRunRepository::new()),
             workspace_review_runtime_settings_repo: Arc::new(
                 MemoryWorkspaceReviewRuntimeSettingsRepository::new(),
             ),
@@ -1833,6 +1844,7 @@ impl AppState {
             task_qa_repo: Arc::new(MemoryTaskQARepository::new()),
             review_repo: Arc::new(MemoryReviewRepository::new()),
             review_settings_repo: Arc::new(MemoryReviewSettingsRepository::new()),
+            validation_run_repo: Arc::new(MemoryValidationRunRepository::new()),
             workspace_review_runtime_settings_repo: Arc::new(
                 MemoryWorkspaceReviewRuntimeSettingsRepository::new(),
             ),

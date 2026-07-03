@@ -234,6 +234,10 @@ function validateTaskScope(
     "add_task_note",
     "get_task_details",
     "get_task_context",
+    "run_task_validation",
+    "get_task_validation_summary",
+    "get_task_diff",
+    "get_task_diff_stat",
     "get_review_notes",
     "get_task_steps",
     "add_step",
@@ -585,11 +589,25 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     safeTrace("tool.dispatch", { name });
 
     let result: unknown;
+    const requestArgs = (args ?? {}) as Record<string, unknown>;
 
     // Special handling for GET endpoints with path parameters
     if (name === "get_task_context") {
       const { task_id } = args as { task_id: string };
       result = await callTauriGet(`task_context/${task_id}`);
+    } else if (name === "run_task_validation") {
+      result = await callTauri("task_validation/run", {
+        ...((args as Record<string, unknown>) ?? {}),
+        caller_agent: AGENT_TYPE,
+        context_type: RALPHX_CONTEXT_TYPE,
+      });
+    } else if (name === "get_task_validation_summary") {
+      const { task_id } = args as { task_id: string };
+      result = await callTauriGet(`task_validation/summary/${task_id}`);
+    } else if (name === "get_task_diff") {
+      result = await callTauri("task_validation/diff", requestArgs);
+    } else if (name === "get_task_diff_stat") {
+      result = await callTauri("task_validation/diff_stat", requestArgs);
     } else if (name === "get_artifact") {
       const { artifact_id } = args as { artifact_id: string };
       result = await callTauriGet(`artifact/${artifact_id}`);

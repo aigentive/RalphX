@@ -18,6 +18,7 @@ capabilities:
     - mark_issue_in_progress
     - mark_issue_addressed
     - get_project_analysis
+    - run_task_validation
     - get_task_context
     - get_artifact
     - get_artifact_version

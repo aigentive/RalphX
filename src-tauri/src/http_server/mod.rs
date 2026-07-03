@@ -306,6 +306,19 @@ pub async fn start_http_server(
         .route("/api/mark_issue_addressed", post(mark_issue_addressed_http))
         // Worker context tools (worker agent)
         .route("/api/task_context/:task_id", get(get_task_context))
+        .route("/api/task_validation/run", post(run_task_validation_http))
+        .route(
+            "/api/task_validation/summary/:task_id",
+            get(get_task_validation_summary_http),
+        )
+        .route(
+            "/api/task_validation/diff",
+            post(get_validation_task_diff_http),
+        )
+        .route(
+            "/api/task_validation/diff_stat",
+            post(get_validation_task_diff_stat_http),
+        )
         .route("/api/artifact/:artifact_id", get(get_artifact_full))
         .route(
             "/api/artifact/:artifact_id/version/:version",

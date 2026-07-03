@@ -208,6 +208,30 @@ pub fn merge_validation_log_dir(task_id: &str) -> PathBuf {
         .join(hashed_log_component("task", task_id))
 }
 
+pub fn task_validation_log_dir(task_id: &str, run_id: &str) -> PathBuf {
+    app_log_dir()
+        .join("task-validation")
+        .join(hashed_log_component("task", task_id))
+        .join(hashed_log_component("run", run_id))
+}
+
+pub fn task_validation_command_log_file(
+    task_id: &str,
+    run_id: &str,
+    command_id: &str,
+    stream: &str,
+) -> PathBuf {
+    let stream = match stream {
+        "stdout" => "stdout",
+        "stderr" => "stderr",
+        _ => "output",
+    };
+    task_validation_log_dir(task_id, run_id).join(format!(
+        "{}-{stream}.log",
+        hashed_log_component("command", command_id)
+    ))
+}
+
 pub fn stream_debug_log_file(conversation_id: &str) -> PathBuf {
     app_log_dir().join("stream-debug").join(format!(
         "{}.log",

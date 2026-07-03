@@ -7,7 +7,7 @@ RalphX: React/TS frontend + Rust/Tauri backend + SQLite. MCP: `Claude Agent → 
 - TDD mandatory: tests first, then implementation
 - Tauri invoke uses camelCase (`contextId`, NOT `context_id`)
 - Use TransitionHandler for status changes — NEVER direct DB update
-- Lint before commit: run lint commands from `get_project_analysis()` for all modified paths
+- Lint before commit: select lint commands from `get_project_analysis()` and run them through `run_task_validation` for all modified paths when the tool is available.
 - Modify only files directly related to the task
 - If an unrelated blocking failure is discovered, register an Agent Issue instead of patching unrelated files inline
 - `.artifacts/specs/**/tracker.md` is ignored local task-worktree state; missing/ignored tracker files are not blockers. Use `git status --short -- <path>`, `git check-ignore -v -- <path> || true`, or `git status --short --ignored=matching -- <path>`; never pass tracker paths as `--ignored=<path>`.
@@ -58,7 +58,7 @@ You own ONE task — not the full plan. The Coordinator already decomposed it.
     TESTS: Write tests for new code. Do NOT modify existing test files outside scope.
     VERIFICATION: Run [specific validation command] on modified files only.
 
-**Wave gates:** After each wave → verify file ownership → run wave gate validation using commands from get_project_analysis() → commit → next wave.
+**Wave gates:** After each wave → verify file ownership → call `run_task_validation` for selected wave gate commands from get_project_analysis() → commit → next wave.
 
 **Anti-patterns:** ❌ Execute other tasks' waves | ❌ Re-implement merged work | ❌ Use full plan as roadmap | ❌ Dispatch coders one-at-a-time across responses
 </reference>
@@ -114,7 +114,7 @@ After fixing all issues, proceed through state EXECUTE (VALIDATE + COMPLETE phas
 5. **Early exit**: If ALL steps are already completed or skipped, output a brief summary
    (e.g. "All N steps already completed/skipped from previous execution. No further work needed.") and stop.
    Do NOT call any additional tools or proceed to further phases.
-6. Call `get_project_analysis(project_id, task_id)` → run `validate` commands (worktree_setup is ALREADY done by the backend — do NOT re-run)
+6. Call `get_project_analysis(project_id, task_id)` → choose relevant `validate` commands and call `run_task_validation` (worktree_setup is ALREADY done by the backend — do NOT re-run)
    - All validate commands must pass before writing code (pre-existing failures: note and proceed)
    - NEVER commit `node_modules`, `target`, or other symlinked directories — these are worktree artifacts
 7. If a pre-existing failure outside your task scope blocks progress, call `register_agent_issue` with `source_task_id`, a concise title/summary, evidence, recommendation, `issue_kind: "plan_drift"` or `"blocked"`, and `auto_followup_eligible: true` when a separate follow-up Agent conversation is appropriate. Then stop or fail the current step according to the task state. Do not call `create_followup_agent_conversation` for discovered blockers; backend policy decides whether the registered issue creates or reuses a visible follow-up Agent conversation. Do not edit unrelated files to make the current task green.
@@ -146,7 +146,7 @@ For each wave, use RalphX-native delegated coder jobs when parallel bounded exec
    - the instruction to call `get_step_context('<sub_step_id>')` first
 4. Wait for all delegated coder jobs with `delegate_wait`; inspect each result before proceeding
 5. Check `get_sub_steps(parent_step_id)` for progress
-6. Run wave gate validation before starting next wave: always run typecheck + lint; for tests, identify and run only affected test files/modules (same approach as VALIDATE step 2). Fall back to full test suite only if no targeted tests identified.
+6. Run wave gate validation through `run_task_validation` before starting next wave: always include typecheck + lint; for tests, identify and include only affected test files/modules (same approach as VALIDATE step 2). Fall back to full test suite only if no targeted tests identified.
 7. `complete_step(step_id)` after all sub-steps complete
 
 Do not use legacy Claude subagent or background-agent patterns for coder dispatch in this flow.
@@ -161,8 +161,8 @@ Before marking work complete:
    - If no targeted tests found, fall back to running all validate commands including tests (step 3)
    - If uncertain about completeness, run path-scoped test commands as supplement
    - Document which tests were run and why in completion message
-3. Run validate commands for every path you modified. When targeted tests passed in step 2, skip test-runner commands (non-exhaustive examples: commands containing `test`, `jest`, `vitest`, `pytest`, `cargo test`, `npm run test` — inspect your project's validate commands to identify which are test runners vs non-test tools). Typecheck, lint, build, and format commands always run. When no targeted tests were run, run ALL validate commands as before.
-4. **Capture test results** — After running tests, record pass/fail counts and a brief summary from the output for reporting in `execution_complete`.
+3. Call `run_task_validation` with selected validate commands for every path you modified, including command category, reason, and related files. When targeted tests passed in step 2, omit broad test-runner commands; typecheck, lint, build, and format commands always run. When no targeted tests were run, include the relevant test-runner commands.
+4. **Capture test results** — Use `run_task_validation` command output to record pass/fail counts and a brief summary for reporting in `execution_complete`.
 5. Validation fails on YOUR changes → fix before completing
 6. Validation fails on pre-existing code → note but do not block
 
@@ -173,8 +173,8 @@ Quality checks before closing:
 
 | Check | Command |
 |-------|---------|
-| Tests pass | Identify and run only test files affected by your changes (e.g., grep imports for JS/TS; check `mod tests` blocks and `tests/` directory for Rust). If no targeted tests identified, fall back to test-runner commands from `get_project_analysis()` validate array for modified paths. |
-| Non-test validation | Run all non-test validate commands from `get_project_analysis()` for every modified path (typecheck, lint, build, format, etc.). |
+| Tests pass | Identify affected tests, then call `run_task_validation` with targeted test commands. If no targeted tests are identified, include relevant test-runner commands from `get_project_analysis()` validate array. |
+| Non-test validation | Call `run_task_validation` with all relevant non-test validate commands from `get_project_analysis()` for every modified path (typecheck, lint, build, format, etc.). |
 | Open issues | All addressed or have explanation notes |
 | Committed | Atomic commits with clear messages |
 
@@ -203,6 +203,7 @@ Provide summary: files created/modified, tests added, issues encountered and res
 | `add_step` | Add step during execution |
 | `get_step_progress` / `get_step_context` / `get_sub_steps` | Step inspection |
 | `get_project_analysis` | Validation + setup commands |
+| `run_task_validation` | Run/reuse selected validation commands and persist evidence for reviewers |
 | `register_agent_issue` | Record out-of-scope blockers, drift, or decisions on the origin Agent conversation |
 | `execution_complete` | Signal task execution is complete — triggers clean process exit |
 

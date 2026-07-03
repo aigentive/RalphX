@@ -34,6 +34,16 @@ export default function ReviewPolicySection() {
           updateSettings({ requireHumanReview: !settings.require_human_review })
         }
       />
+      <ToggleSettingRow
+        id="run-task-validations"
+        label="Run Task Validations"
+        description="Allow execution agents to run backend-managed validation commands"
+        checked={settings.run_task_validations}
+        disabled={disabled}
+        onChange={() =>
+          updateSettings({ runTaskValidations: !settings.run_task_validations })
+        }
+      />
       <NumberSettingRow
         id="max-fix-attempts"
         label="Max Fix Attempts"

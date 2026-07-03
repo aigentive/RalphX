@@ -71,6 +71,7 @@ pub mod test_data_commands;
 pub mod ticketing_commands;
 pub mod ui_commands;
 pub mod unified_chat_commands;
+pub mod validation_commands;
 pub mod workflow_commands;
 pub mod workspace_open_commands;
 pub mod workspace_review_settings_commands;

@@ -38,6 +38,7 @@ pub mod task_step;
 pub mod team;
 pub mod ticket_canonical_branch;
 pub mod types;
+pub mod validation_run;
 pub mod workflow;
 
 pub use activity_event::{
@@ -177,6 +178,11 @@ pub use ticket_canonical_branch::TicketCanonicalBranch;
 pub use types::{
     ApiKeyId, ChatMessageId, ExecutionPlanId, IdeationSessionId, ProjectId, ReviewIssueId,
     SessionLinkId, TaskId, TaskProposalId, TaskQAId, TaskStepId,
+};
+pub use validation_run::{
+    ValidationCacheDecision, ValidationCommandCategory, ValidationCommandResult,
+    ValidationCommandSource, ValidationCommandStatus, ValidationContextType, ValidationPurpose,
+    ValidationRun, ValidationRunMode, ValidationRunStatus, ValidationRunWithResults,
 };
 pub use workflow::{
     ColumnBehavior, ConflictResolution, ExternalStatusMapping, ExternalSyncConfig,

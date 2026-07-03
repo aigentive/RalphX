@@ -27,6 +27,7 @@ pub mod session_linking;
 pub mod steps;
 pub mod tasks;
 pub mod teams;
+pub mod validation;
 pub mod verification;
 pub mod worker;
 
@@ -56,6 +57,7 @@ pub use session_linking::*;
 pub use steps::*;
 pub use tasks::*;
 pub use teams::*;
+pub use validation::*;
 pub use verification::*;
 pub use worker::*;
 

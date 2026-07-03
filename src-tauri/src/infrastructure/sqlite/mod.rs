@@ -96,6 +96,9 @@ mod sqlite_team_session_repo_tests;
 mod sqlite_orphan_worktree_cleanup_marker_repo_tests;
 pub mod sqlite_ticket_canonical_branch_repo;
 pub mod sqlite_ticketing_status_catalog_repo;
+pub mod sqlite_validation_run_repo;
+#[cfg(test)]
+mod sqlite_validation_run_repo_tests;
 pub mod sqlite_webhook_registration_repo;
 pub mod sqlite_workspace_review_runtime_settings_repo;
 pub mod sqlite_workflow_repo;
@@ -173,6 +176,7 @@ pub use sqlite_team_message_repo::SqliteTeamMessageRepository;
 pub use sqlite_team_session_repo::SqliteTeamSessionRepository;
 pub use sqlite_ticket_canonical_branch_repo::SqliteTicketCanonicalBranchRepository;
 pub use sqlite_ticketing_status_catalog_repo::SqliteTicketingStatusCatalogRepository;
+pub use sqlite_validation_run_repo::SqliteValidationRunRepository;
 pub use sqlite_webhook_registration_repo::SqliteWebhookRegistrationRepository;
 pub use sqlite_workspace_review_runtime_settings_repo::SqliteWorkspaceReviewRuntimeSettingsRepository;
 pub use sqlite_workflow_repo::SqliteWorkflowRepository;
