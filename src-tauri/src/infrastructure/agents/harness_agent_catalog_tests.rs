@@ -534,7 +534,7 @@ const CANONICAL_CLAUDE_TOOL_SPEC_OWNED_AGENTS: &[(&str, &str, &[&str], bool)] = 
         &["Write", "Edit", "Task", "LSP"],
         false,
     ),
-    ("ralphx-execution-reviewer", "base_tools", &[], false),
+    ("ralphx-execution-reviewer", "readonly_tools", &[], false),
     ("ralphx-qa-prep", "base_tools", &["Task"], false),
     (
         "ralphx-qa-executor",
