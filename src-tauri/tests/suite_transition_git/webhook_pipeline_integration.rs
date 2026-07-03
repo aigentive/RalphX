@@ -9,8 +9,6 @@
 // Uses the SQLite-backed apply-test app state for the ideation/apply pipeline and
 // `ConcreteWebhookPublisher` with `MockWebhookHttpClient` — no network calls.
 
-mod support;
-
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -36,7 +34,7 @@ use ralphx_lib::http_server::project_scope::ProjectScope;
 use ralphx_lib::http_server::types::HttpServerState;
 use ralphx_lib::infrastructure::memory::MemoryWebhookRegistrationRepository;
 use ralphx_lib::infrastructure::{ConcreteWebhookPublisher, MockWebhookHttpClient};
-use support::real_git_repo::setup_real_git_repo;
+use crate::support::real_git_repo::setup_real_git_repo;
 
 type HmacSha256 = Hmac<Sha256>;
 

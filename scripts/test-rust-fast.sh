@@ -64,12 +64,7 @@ ipc_cmd() {
     --manifest-path "${MANIFEST_PATH}" \
     --profile ci \
     --features test-utils \
-    --test task_commands \
-    --test api_key_commands \
-    --test project_commands \
-    --test harness_provider_commands \
-    --test unified_chat_commands \
-    --test task_step_commands \
+    --test suite_ipc_commands \
     ipc_contract
 }
 

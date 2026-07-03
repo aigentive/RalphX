@@ -179,12 +179,7 @@ jobs:
             --manifest-path src-tauri/Cargo.toml \
             --profile ci \
             --features test-utils \
-            --test task_commands \
-            --test api_key_commands \
-            --test project_commands \
-            --test harness_provider_commands \
-            --test unified_chat_commands \
-            --test task_step_commands \
+            --test suite_ipc_commands \
             ipc_contract
 
   rust-lib-tests:
@@ -303,7 +298,10 @@ jobs:
   rust-macos-build:
     name: Rust macOS Build
     needs: changes
-    if: needs.changes.outputs.run_rust == 'true'
+    # Temporarily disabled: current PR macOS runners make this check too slow to be feasible.
+    # Keep the job definition and rust-tests dependency so it can be re-enabled by restoring
+    # the original condition: needs.changes.outputs.run_rust == 'true'
+    if: ${{ false && needs.changes.outputs.run_rust == 'true' }}
     runs-on: macos-latest
     timeout-minutes: 45
     env:

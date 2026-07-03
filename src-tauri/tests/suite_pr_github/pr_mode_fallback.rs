@@ -6,8 +6,6 @@
 //! - mode_switch bypass at integration level
 //! - Non-pr_eligible plan_branch skips PR polling
 
-mod common;
-
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -21,7 +19,7 @@ use ralphx_lib::domain::repositories::PlanBranchRepository;
 use ralphx_lib::domain::services::github_service::PrStatus;
 use ralphx_lib::infrastructure::memory::MemoryPlanBranchRepository;
 
-use common::MockGithubService;
+use crate::common::MockGithubService;
 
 // ============================================================================
 // Shared helpers (copied from pr_reconciler_tests.rs)

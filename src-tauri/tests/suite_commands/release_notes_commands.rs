@@ -9,7 +9,7 @@ use tauri::Manager;
 fn release_notes_command_app() -> tauri::App<MockRuntime> {
     mock_builder()
         .manage(AppState::new_test())
-        .build(tauri::generate_context!())
+        .build(crate::tauri_context())
         .expect("mock app should build")
 }
 

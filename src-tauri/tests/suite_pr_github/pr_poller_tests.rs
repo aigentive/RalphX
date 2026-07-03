@@ -3,8 +3,6 @@
 //! Covers: MERGED/CLOSED/error transitions, duplicate prevention, stopping guard,
 //! cascade stop, and the DashMap CAS creation guard.
 
-mod common;
-
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
@@ -31,7 +29,7 @@ use ralphx_lib::infrastructure::memory::{
     MemoryPlanBranchRepository,
 };
 
-use common::MockGithubService;
+use crate::common::MockGithubService;
 
 // ============================================================================
 // Shared helpers

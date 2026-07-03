@@ -4,14 +4,12 @@
 //! the PendingMerge PR skip guard, the mode_switch bypass in
 //! `reconcile_merge_incomplete_task`, and the startup recovery helper.
 
-mod common;
-
 use std::collections::HashSet;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::Utc;
-use common::MockGithubService;
+use crate::common::MockGithubService;
 use ralphx_lib::application::pr_startup_recovery::{recover_missing_draft_prs, recover_pr_pollers};
 use ralphx_lib::application::services::PrPollerRegistry;
 use ralphx_lib::application::{AppState, ReconciliationRunner, TaskTransitionService};
