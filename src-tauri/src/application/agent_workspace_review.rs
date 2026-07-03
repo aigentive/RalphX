@@ -1230,6 +1230,7 @@ async fn linked_workspace_plan_artifact_context(
     Ok(Some((reference, resolved_artifact)))
 }
 
+#[cfg(test)]
 async fn linked_workspace_plan_artifact_reference(
     state: &AppState,
     workspace: &AgentConversationWorkspace,

@@ -50,5 +50,6 @@ retry_apt install --no-install-recommends -y \
   libssl-dev \
   libwebkit2gtk-4.1-dev \
   libxdo-dev \
+  lld \
   pkg-config \
   wget
