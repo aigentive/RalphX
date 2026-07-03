@@ -14,7 +14,8 @@ paths:
 | Rule | Detail |
 |---|---|
 | Run targeted Rust tests | ✅ `cargo test --manifest-path src-tauri/Cargo.toml --test <file_stem>` | ❌ full `cargo test` |
-| Use `cargo-nextest` for broad Rust runs | ✅ `cargo nextest run --manifest-path src-tauri/Cargo.toml --lib --profile ci` for broad lib coverage and CI; keep `cargo test` for pinpoint filters and doctests |
+| Use `cargo-nextest` for broad Rust runs | ✅ `cargo nextest run --manifest-path src-tauri/Cargo.toml --lib --profile ci --features test-utils` for current root-lib coverage and CI; keep `cargo test` for pinpoint filters and doctests |
+| Run both Rust clippy gates | `cargo clippy --manifest-path src-tauri/Cargo.toml --lib --bins --no-default-features -- -D warnings` + `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings` |
 | Use the fast wrapper for CI-shaped local loops | ✅ `scripts/test-rust-fast.sh pr` / `main` / `ipc` / `lib-1` / `lib-2`; `*-parallel` modes are local-only wall-clock optimizers that isolate `CARGO_TARGET_DIR` per lane |
 | Keep helper runs checkout-local | `scripts/test-rust-fast.sh` resolves paths relative to its own checkout/worktree and refuses to run if the current cwd belongs to a different RalphX checkout |
 | PATH must honor rustup toolchain | If Cargo reports an older compiler despite `rust-toolchain.toml`, run with `RUSTC=$(rustup which --toolchain 1.91.0 rustc) rustup run 1.91.0 cargo test ...`; Homebrew `cargo` can otherwise drive Homebrew `rustc` |
@@ -58,7 +59,7 @@ paths:
 | Test layers | Keep fast repo/unit suites separate from slower integration/state-machine/git suites |
 | Large lib suites | When a lib-side test file becomes a massive orchestration suite, prefer moving it to `src-tauri/tests/` and exposing only the minimum internal-facing API with `#[doc(hidden)] pub` rather than keeping it in the giant `--lib` binary |
 | Internal support | Invest early in a thin shared test-support layer under `src-tauri/src/testing/` when setup repeats |
-| CI coverage split | PR CI = IPC contracts + 2 lib shards; `push` CI = PR stack + doctests; local mirror = `scripts/test-rust-fast.sh pr` / `main` |
+| CI coverage split | PR CI = IPC contracts + 2 root-lib shards, currently feature-on with `test-utils`; `push` CI = PR stack + doctests; local mirror = `scripts/test-rust-fast.sh pr` / `main` |
 
 ## Selective Commands
 
@@ -127,8 +128,8 @@ cargo test --manifest-path src-tauri/Cargo.toml --test unified_chat_commands
 cargo test --manifest-path src-tauri/Cargo.toml --test git_commands
 cargo test --manifest-path src-tauri/Cargo.toml --test activity_commands
 cargo test --manifest-path src-tauri/Cargo.toml --test question_commands
-cargo nextest run --manifest-path src-tauri/Cargo.toml --lib
-cargo nextest run --manifest-path src-tauri/Cargo.toml --lib --profile ci
+cargo nextest run --manifest-path src-tauri/Cargo.toml --lib --features test-utils
+cargo nextest run --manifest-path src-tauri/Cargo.toml --lib --profile ci --features test-utils
 ```
 
 ## Nextest Setup
@@ -140,13 +141,14 @@ cargo nextest run --manifest-path src-tauri/Cargo.toml --lib --profile ci
 | Homebrew Rust ahead of rustup in PATH | `RUSTC=$(rustup which --toolchain 1.91.0 rustc) rustup run 1.91.0 cargo test --manifest-path src-tauri/Cargo.toml <filter> --lib` |
 | Install on macOS | `brew install cargo-nextest` |
 | Install from Cargo | `cargo install cargo-nextest --locked` |
-| Broad local lib run | `cargo nextest run --manifest-path src-tauri/Cargo.toml --lib` |
-| Broad CI-style lib run | `cargo nextest run --manifest-path src-tauri/Cargo.toml --lib --profile ci` |
-| Broad CI-style full suite | `cargo nextest run --manifest-path src-tauri/Cargo.toml --profile ci` |
+| Broad local root-lib run | `cargo nextest run --manifest-path src-tauri/Cargo.toml --lib --features test-utils` |
+| Broad CI-style root-lib run | `cargo nextest run --manifest-path src-tauri/Cargo.toml --lib --profile ci --features test-utils` |
+| Broad CI-style full suite | `cargo nextest run --manifest-path src-tauri/Cargo.toml --profile ci --features test-utils` |
+| Clippy feature matrix | `cargo clippy --manifest-path src-tauri/Cargo.toml --lib --bins --no-default-features -- -D warnings && cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings` |
 | Pinpoint module/test validation | `cargo test --manifest-path src-tauri/Cargo.toml <filter> --lib` or `cargo test --manifest-path src-tauri/Cargo.toml --test <target>` |
 | Lib-side capability check | `cargo test --manifest-path src-tauri/Cargo.toml '<filter>' --lib -- --ignored` |
 | Doctests | `cargo test --manifest-path src-tauri/Cargo.toml --doc` |
-| CI broad coverage | `cargo nextest run --manifest-path src-tauri/Cargo.toml --profile ci && cargo test --manifest-path src-tauri/Cargo.toml --doc` |
+| CI broad coverage | `cargo nextest run --manifest-path src-tauri/Cargo.toml --profile ci --features test-utils && cargo test --manifest-path src-tauri/Cargo.toml --doc` |
 
 ## Nextest Groups
 

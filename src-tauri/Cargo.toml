@@ -40,7 +40,7 @@ crate-type = ["rlib"]
 tauri-build = { version = "2.6.0", features = [] }
 
 [dependencies]
-tauri = { version = "2.11.0", features = ["protocol-asset", "devtools", "test", "macos-private-api"] }
+tauri = { version = "2.11.0", features = ["protocol-asset", "macos-private-api"] }
 tauri-plugin-opener = "2.5.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -89,6 +89,11 @@ hmac = "0.12"
 http-body-util = "0.1"
 portable-pty = "0.8"
 
+[features]
+default = ["devtools"]
+devtools = ["tauri/devtools"]
+test-utils = ["tauri/test"]
+
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSButton", "NSControl", "NSView", "NSResponder"] }
@@ -98,6 +103,101 @@ security-framework = "3.7"
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }
 tower = { version = "0.4", features = ["util"] }
+
+[[test]]
+name = "activity_commands"
+path = "tests/activity_commands.rs"
+required-features = ["test-utils"]
+
+[[test]]
+name = "agent_profile_commands"
+path = "tests/agent_profile_commands.rs"
+required-features = ["test-utils"]
+
+[[test]]
+name = "api_key_commands"
+path = "tests/api_key_commands.rs"
+required-features = ["test-utils"]
+
+[[test]]
+name = "chat_service_context"
+path = "tests/chat_service_context.rs"
+required-features = ["test-utils"]
+
+[[test]]
+name = "git_commands"
+path = "tests/git_commands.rs"
+required-features = ["test-utils"]
+
+[[test]]
+name = "harness_provider_commands"
+path = "tests/harness_provider_commands.rs"
+required-features = ["test-utils"]
+
+[[test]]
+name = "ideation_commands"
+path = "tests/ideation_commands.rs"
+required-features = ["test-utils"]
+
+[[test]]
+name = "ideation_plan_delivery_test"
+path = "tests/ideation_plan_delivery_test.rs"
+required-features = ["test-utils"]
+
+[[test]]
+name = "merge_system_hardening"
+path = "tests/merge_system_hardening.rs"
+required-features = ["test-utils"]
+
+[[test]]
+name = "methodology_commands"
+path = "tests/methodology_commands.rs"
+required-features = ["test-utils"]
+
+[[test]]
+name = "metrics_commands"
+path = "tests/metrics_commands.rs"
+required-features = ["test-utils"]
+
+[[test]]
+name = "project_commands"
+path = "tests/project_commands.rs"
+required-features = ["test-utils"]
+
+[[test]]
+name = "qa_commands"
+path = "tests/qa_commands.rs"
+required-features = ["test-utils"]
+
+[[test]]
+name = "question_commands"
+path = "tests/question_commands.rs"
+required-features = ["test-utils"]
+
+[[test]]
+name = "release_notes_commands"
+path = "tests/release_notes_commands.rs"
+required-features = ["test-utils"]
+
+[[test]]
+name = "research_commands"
+path = "tests/research_commands.rs"
+required-features = ["test-utils"]
+
+[[test]]
+name = "task_step_commands"
+path = "tests/task_step_commands.rs"
+required-features = ["test-utils"]
+
+[[test]]
+name = "unified_chat_commands"
+path = "tests/unified_chat_commands.rs"
+required-features = ["test-utils"]
+
+[[test]]
+name = "workflow_commands"
+path = "tests/workflow_commands.rs"
+required-features = ["test-utils"]
 
 [lints.clippy]
 # Elevated to deny — catches real null-dereference bugs

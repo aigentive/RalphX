@@ -6447,11 +6447,7 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
     if workspace.has_terminal_publication_pr_status() {
         return Err("Cannot publish a workspace whose PR is already closed or merged".to_string());
     }
-    if let Err(error) =
-        review_base_for_publish(workspace.base_commit.as_deref(), &workspace.base_ref)
-    {
-        return Err(error);
-    }
+    review_base_for_publish(workspace.base_commit.as_deref(), &workspace.base_ref)?;
     if let Some(blocker) = load_workspace_review_publish_blocker(state, &workspace)
         .await
         .map_err(|e| e.to_string())?

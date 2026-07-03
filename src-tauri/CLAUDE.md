@@ -95,6 +95,7 @@ New pattern → add one-liner here. Pattern name + rule only.
 | MergeDeadline | `attempt_programmatic_merge` wraps cleanup + strategy in bounded deadline (`attempt_merge_deadline_secs`) |
 | No Inline Timeout Consts | All durations → `runtime_config` + `config/ralphx.yaml`, never Rust `const` |
 | Rust test runner split | Use targeted `cargo test` for pinpoint Rust validation and doctests; use `cargo nextest run` for broad Rust lib runs; fixture rules and commands live in `.claude/rules/rust-test-execution.md` |
+| Tauri test-utils gate | Tauri mock-app helpers require `--features test-utils`; keep root lib/IPC CI lanes feature-on until later phases remove lib-side `tauri::test` users |
 | Worktree-safe Rust helper | `scripts/test-rust-fast.sh` mirrors PR/`main` Rust CI locally; `*-parallel` modes isolate `src-tauri/target/rust-fast/*` per lane and refuse cross-checkout drift |
 | Workspace domain split | Low-dependency backend modules and pure entities move into `src-tauri/crates/ralphx-domain`; review logic, shared memory/team types, and pure repository traits belong there, while Tauri/SQLite-facing or root-coupled code stays in the root crate until a clean boundary exists |
 | Forward-only migration repairs | Never reuse or renumber shipped migration versions; schema repair for already-upgraded DBs must be a new forward-only migration |
@@ -147,8 +148,9 @@ scripts/test-rust-fast.sh pr-parallel                                    # local
 scripts/bench-rust-build.sh --label before                               # Rust build-cost benchmark for profile/linker/crate-type changes
 cargo test --manifest-path src-tauri/Cargo.toml <filter> --lib           # pinpoint lib tests
 cargo test --manifest-path src-tauri/Cargo.toml --test <target>          # targeted integration tests
-cargo nextest run --manifest-path src-tauri/Cargo.toml --lib             # broad Rust lib run
-cargo clippy --all-targets --all-features -- -D warnings                 # lint
+cargo nextest run --manifest-path src-tauri/Cargo.toml --lib --features test-utils  # broad root lib run during PR 0.x decoupling
+cargo clippy --manifest-path src-tauri/Cargo.toml --lib --bins --no-default-features -- -D warnings
+cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
 ```
 Selective Rust test commands + SQLite test fixture rules → `.claude/rules/rust-test-execution.md` (`external_handlers`, `external_ideation_runtime_handlers`, `ideation_handlers`, `ideation_runtime_handlers`, ...)
 

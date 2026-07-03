@@ -44,6 +44,8 @@ Notes:
     isolating CARGO_TARGET_DIR per lane.
   - All paths are checkout-local; in a worktree, caches live under that
     worktree's src-tauri/target and the script refuses to drift across checkouts.
+  - Root lib and IPC lanes currently pass --features test-utils so Tauri mock
+    tests stay covered while the backend test surface is being decoupled.
 EOF
 }
 
@@ -61,6 +63,7 @@ ipc_cmd() {
   cargo nextest run \
     --manifest-path "${MANIFEST_PATH}" \
     --profile ci \
+    --features test-utils \
     --test task_commands \
     --test api_key_commands \
     --test project_commands \
@@ -76,6 +79,7 @@ lib_shard_cmd() {
     --manifest-path "${MANIFEST_PATH}" \
     --lib \
     --profile ci \
+    --features test-utils \
     --partition "hash:${partition}"
 }
 
