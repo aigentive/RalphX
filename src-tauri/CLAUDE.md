@@ -99,8 +99,8 @@ New pattern → add one-liner here. Pattern name + rule only.
 | Worktree-safe Rust helper | `scripts/test-rust-fast.sh` mirrors PR/`main` Rust CI locally; `*-parallel` modes isolate `src-tauri/target/rust-fast/*` per lane and refuse cross-checkout drift |
 | Workspace domain split | Low-dependency backend modules and pure entities move into `src-tauri/crates/ralphx-domain`; review logic, shared memory/team types, and pure repository traits belong there, while Tauri/SQLite-facing or root-coupled code stays in the root crate until a clean boundary exists |
 | Forward-only migration repairs | Never reuse or renumber shipped migration versions; schema repair for already-upgraded DBs must be a new forward-only migration |
-| Oversized lib suite split | Move massive orchestration/state-machine/worktree suites out of `src/**` lib tests into `src-tauri/tests/*.rs` integration binaries, and expose only the minimum internal-facing API needed for them |
-| HTTP handler suite split | Move large handler sidecar suites to `src-tauri/tests/*.rs`; import via `ralphx_lib::http_server::{handlers,types}` and use `AppState::new_sqlite_test()` only for SQLite-backed handler cases |
+| Oversized lib suite split | Move massive orchestration/state-machine/worktree suites out of `src/**` lib tests into existing `src-tauri/tests/suite_*/` modules, and expose only the minimum internal-facing API needed for them |
+| HTTP handler suite split | Move large handler sidecar suites to `src-tauri/tests/suite_http_handlers/`; import via `ralphx_lib::http_server::{handlers,types}` and use `AppState::new_sqlite_test()` only for SQLite-backed handler cases |
 | HTTP handler module split | Move oversized production handler files to directory-backed modules (`foo/mod.rs` + endpoint-family files) and keep the module root as a thin prelude/re-export layer |
 | Mechanical extraction only (NON-NEGOTIABLE) | Large backend module splits must move existing bodies with real extraction commands/scripts (`mv`, `sed`, `awk`, scripted extractors); do not hand-copy/retype large existing functions into new files |
 | Apply-patch is fix-up only (NON-NEGOTIABLE) | During a large split, `apply_patch` is only for the post-move fix-up layer: imports, visibility, re-exports, module wiring, and targeted test adjustments |
@@ -147,12 +147,12 @@ scripts/test-rust-fast.sh main                                           # local
 scripts/test-rust-fast.sh pr-parallel                                    # local wall-clock optimized PR Rust CI parity
 scripts/bench-rust-build.sh --label before                               # Rust build-cost benchmark for profile/linker/crate-type changes
 cargo test --manifest-path src-tauri/Cargo.toml <filter> --lib           # pinpoint lib tests
-cargo test --manifest-path src-tauri/Cargo.toml --test <target>          # targeted integration tests
+cargo nextest run --manifest-path src-tauri/Cargo.toml --test <suite> -E 'test(<module_or_test>)'  # targeted integration suites
 cargo nextest run --manifest-path src-tauri/Cargo.toml --lib --features test-utils  # broad root lib run during PR 0.x decoupling
 cargo clippy --manifest-path src-tauri/Cargo.toml --lib --bins --no-default-features -- -D warnings
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
 ```
-Selective Rust test commands + SQLite test fixture rules → `.claude/rules/rust-test-execution.md` (`external_handlers`, `external_ideation_runtime_handlers`, `ideation_handlers`, `ideation_runtime_handlers`, ...)
+Selective Rust test commands + suite mapping + SQLite test fixture rules → `.claude/rules/rust-test-execution.md`
 
 ## Real Integration Tests
 Pattern: `tempfile::TempDir` + git CLI → `Memory*Repository` → `TaskServices::new_mock()` | `MockChatService` → `TransitionHandler` → assert state + git.
@@ -160,8 +160,8 @@ Shared helpers: `transition_handler/tests/helpers.rs` — `setup_real_git_repo()
 
 | File | Tests | Real | Mocked |
 |------|-------|------|--------|
-| `tests/merge_system_hardening.rs` | 23 | git, MemoryTaskRepo | — |
-| `tests/deferred_main_merge_integration.rs` | 8 | MemoryTaskRepo | git/merge side effects |
+| `tests/suite_transition_git/merge_system_hardening.rs` | 23 | git, MemoryTaskRepo | — |
+| `tests/suite_transition_git/deferred_main_merge_integration.rs` | 8 | MemoryTaskRepo | git/merge side effects |
 | `transition_handler/tests/real_git_integration.rs` | 8 | git, merge dispatch | MockChatService |
 | `transition_handler/tests/orchestration_chain_tests.rs` | 3 | git, full state machine | MockChatService |
 | `transition_handler/tests/plan_update_from_main.rs` | 7 | git, pure fn | — |

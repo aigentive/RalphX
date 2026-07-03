@@ -403,24 +403,18 @@ jobs:
           cargo llvm-cov nextest \
             --profile ci \
             --features test-utils \
-            --test task_commands \
-            --test api_key_commands \
-            --test project_commands \
-            --test harness_provider_commands \
-            --test release_notes_commands \
-            --test unified_chat_commands \
-            --test agent_workspace_repair_auto_publish \
-            --test task_step_commands \
+            --test suite_ipc_commands \
+            --test suite_commands \
+            --test suite_agent_workspace \
+            -E 'test(ipc_contract) or test(release_notes_commands) or test(agent_workspace_repair_auto_publish)' \
             --remap-path-prefix \
-            ipc_contract \
             | tee ../coverage/rust-ipc/summary.txt
           cargo llvm-cov nextest \
             --profile ci \
             --features test-utils \
-            --test metrics_commands \
-            --test metrics_delivery_trends \
-            --test metrics_integration \
-            --test metrics_pr_insights \
+            --test suite_commands \
+            --test suite_metrics \
+            -E 'test(metrics_commands) or test(metrics_delivery_trends) or test(metrics_integration) or test(metrics_pr_insights)' \
             --remap-path-prefix \
             | tee -a ../coverage/rust-ipc/summary.txt
           cargo llvm-cov report --lcov --output-path ../coverage/rust-ipc/lcov.info

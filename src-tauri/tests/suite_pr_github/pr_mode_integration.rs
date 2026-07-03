@@ -8,8 +8,6 @@
 //! - PrStatus::Closed causes poller to stop
 //! - Merging task with pr_polling_active=false falls through to normal reconciler logic
 
-mod common;
-
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -27,7 +25,7 @@ use ralphx_lib::infrastructure::memory::{
     MemoryPlanBranchRepository, MemoryProjectRepository, MemoryTaskRepository,
 };
 
-use common::MockGithubService;
+use crate::common::MockGithubService;
 
 // ============================================================================
 // Shared helpers (copied from pr_reconciler_tests.rs)

@@ -1,5 +1,3 @@
-mod common;
-mod support;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -20,8 +18,8 @@ use ralphx_lib::http_server::handlers::{
 use ralphx_lib::http_server::project_scope::ProjectScope;
 use ralphx_lib::http_server::types::HttpServerState;
 
-use common::MockGithubService;
-use support::real_git_repo::{setup_real_git_repo, RealGitRepo};
+use crate::common::MockGithubService;
+use crate::support::real_git_repo::{setup_real_git_repo, RealGitRepo};
 
 fn unrestricted_scope() -> ProjectScope {
     ProjectScope(None)

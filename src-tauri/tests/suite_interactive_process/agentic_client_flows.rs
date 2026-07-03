@@ -175,7 +175,7 @@ async fn test_claude_client_with_nonexistent_cli() {
 async fn test_claude_spawn_blocked_in_tests() {
     // NOTE: Integration tests don't have cfg!(test) = true, so we must
     // explicitly enable test mode via environment variable
-    std::env::set_var("RALPHX_TEST_MODE", "1");
+    let _test_mode = crate::support::env::EnvVarGuard::set("RALPHX_TEST_MODE", "1");
 
     let client = ClaudeCodeClient::new();
     let config = AgentConfig::worker("test");
@@ -186,9 +186,6 @@ async fn test_claude_spawn_blocked_in_tests() {
         result,
         Err(ralphx_lib::domain::agents::AgentError::SpawnNotAllowed(_))
     ));
-
-    // Clean up
-    std::env::remove_var("RALPHX_TEST_MODE");
 }
 
 // ============================================================================

@@ -15,14 +15,12 @@
 // sequential scenarios using mocked and real repos. These integration tests
 // focus on verifiable end-to-end git interaction patterns.
 
-mod support;
-
 use ralphx_lib::domain::entities::{Project, ProjectId, Task};
 use ralphx_lib::domain::state_machine::transition_handler::freshness::{
     ensure_branches_fresh, FreshnessAction, FreshnessMetadata,
 };
 use ralphx_lib::infrastructure::agents::claude::ReconciliationConfig;
-use support::real_git_repo::{setup_real_git_repo, RealGitRepo};
+use crate::support::real_git_repo::{setup_real_git_repo, RealGitRepo};
 
 // ==================
 // Local helpers

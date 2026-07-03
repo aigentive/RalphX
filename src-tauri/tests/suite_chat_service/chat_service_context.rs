@@ -38,14 +38,11 @@ where
     Fut: Future<Output = T>,
 {
     let _guard = provider_state_home_lock().lock().expect("lock poisoned");
-    let previous = std::env::var_os("RALPHX_PROVIDER_STATE_HOME_OVERRIDE");
-    std::env::set_var("RALPHX_PROVIDER_STATE_HOME_OVERRIDE", home);
-    let result = f().await;
-    match previous {
-        Some(value) => std::env::set_var("RALPHX_PROVIDER_STATE_HOME_OVERRIDE", value),
-        None => std::env::remove_var("RALPHX_PROVIDER_STATE_HOME_OVERRIDE"),
-    }
-    result
+    let _env_guard = crate::support::env::EnvVarGuard::set(
+        "RALPHX_PROVIDER_STATE_HOME_OVERRIDE",
+        home.as_os_str(),
+    );
+    f().await
 }
 
 #[allow(clippy::await_holding_lock)]
@@ -54,14 +51,9 @@ where
     Fut: Future<Output = T>,
 {
     let _guard = claude_spawn_override_lock().lock().expect("lock poisoned");
-    let previous = std::env::var_os("RALPHX_ALLOW_CLAUDE_SPAWN_IN_TESTS");
-    std::env::set_var("RALPHX_ALLOW_CLAUDE_SPAWN_IN_TESTS", "1");
-    let result = f().await;
-    match previous {
-        Some(value) => std::env::set_var("RALPHX_ALLOW_CLAUDE_SPAWN_IN_TESTS", value),
-        None => std::env::remove_var("RALPHX_ALLOW_CLAUDE_SPAWN_IN_TESTS"),
-    }
-    result
+    let _env_guard =
+        crate::support::env::EnvVarGuard::set("RALPHX_ALLOW_CLAUDE_SPAWN_IN_TESTS", "1");
+    f().await
 }
 
 fn write_file(path: &Path, contents: &str) {
