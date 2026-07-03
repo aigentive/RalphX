@@ -863,8 +863,12 @@ pub async fn deferred_merge_cleanup(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::entities::{InternalStatus, MergeStrategy, Project, ProjectId, Task};
-    use crate::infrastructure::memory::MemoryTaskRepository;
+    use crate::domain::entities::{
+        IdeationSessionId, InternalStatus, MergeStrategy, Project, ProjectId, Task, TaskCategory,
+    };
+    use crate::domain::repositories::external_events_repository::ExternalEventsRepository;
+    use crate::domain::state_machine::services::MockWebhookPublisher;
+    use crate::infrastructure::memory::{MemoryExternalEventsRepository, MemoryTaskRepository};
 
     fn make_test_repo() -> (tempfile::TempDir, String) {
         let dir = tempfile::TempDir::new().expect("create temp dir");
@@ -951,6 +955,69 @@ mod tests {
              Got {:?}",
             task.internal_status,
         );
+    }
+
+    #[tokio::test]
+    async fn complete_merge_internal_emits_external_plan_events() {
+        let (_dir, repo_path_str) = make_test_repo();
+        let repo_path = Path::new(&repo_path_str);
+        let head_sha_output = std::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(repo_path)
+            .output()
+            .expect("git rev-parse HEAD");
+        let head_sha = String::from_utf8_lossy(&head_sha_output.stdout)
+            .trim()
+            .to_string();
+
+        let task_repo: Arc<dyn TaskRepository> = Arc::new(MemoryTaskRepository::new());
+        let external_events_repo: Arc<dyn ExternalEventsRepository> =
+            Arc::new(MemoryExternalEventsRepository::new());
+        let webhook_publisher: Arc<dyn WebhookPublisher> = Arc::new(MockWebhookPublisher);
+
+        let project_id = ProjectId::from_string("proj-plan-events".to_string());
+        let session_id = IdeationSessionId::new();
+        let mut task = Task::new(project_id.clone(), "Plan merge event task".to_string());
+        task.internal_status = InternalStatus::PendingMerge;
+        task.category = TaskCategory::PlanMerge;
+        task.ideation_session_id = Some(session_id.clone());
+        task_repo.create(task.clone()).await.unwrap();
+
+        let mut project = Project::new("Plan Event Project".to_string(), repo_path_str);
+        project.id = project_id.clone();
+        project.base_branch = Some("main".to_string());
+        project.merge_strategy = MergeStrategy::Merge;
+
+        complete_merge_internal::<tauri::Wry>(
+            &mut task,
+            &project,
+            &head_sha,
+            "task/plan-events",
+            "main",
+            &task_repo,
+            Some(&external_events_repo),
+            Some(&webhook_publisher),
+            None,
+            Some("Plan event session".to_string()),
+        )
+        .await
+        .unwrap();
+
+        let events = external_events_repo
+            .get_events_after_cursor(&[project_id.to_string()], 0, 10)
+            .await
+            .unwrap();
+        let event_types: Vec<_> = events
+            .iter()
+            .map(|event| event.event_type.as_str())
+            .collect();
+
+        assert!(event_types.contains(&"merge:completed"));
+        assert!(event_types.contains(&"task:status_changed"));
+        assert!(event_types.contains(&"plan:delivered"));
+        assert!(events
+            .iter()
+            .any(|event| event.payload.contains(session_id.as_str())));
     }
 
     /// Fix #3: When pre_merge_cleanup already deleted the worktree,
