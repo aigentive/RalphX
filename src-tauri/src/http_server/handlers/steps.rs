@@ -14,6 +14,7 @@ use crate::domain::entities::{
     ValidationCacheMetadata,
 };
 use crate::http_server::project_scope::{ProjectScope, ProjectScopeGuard};
+use crate::utils::path_safety::validate_absolute_non_root_path;
 
 pub async fn get_task_steps_http(
     State(state): State<HttpServerState>,
@@ -667,11 +668,59 @@ pub async fn execution_complete_http(
         req.summary
     );
 
+    if let Some(ref worktree_path) = task.worktree_path {
+        let path = validate_absolute_non_root_path(
+            std::path::Path::new(worktree_path),
+            "execution complete worktree",
+        )
+        .map_err(|e| {
+            tracing::error!(
+                task_id = %task_id_str,
+                worktree_path = %worktree_path,
+                error = %e,
+                "Rejecting execution_complete because worktree path failed validation"
+            );
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+        let dirty_summary = GitService::uncommitted_change_summary(&path)
+            .await
+            .map_err(|e| {
+                tracing::error!(
+                    task_id = %task_id_str,
+                    worktree_path = %worktree_path,
+                    error = %e,
+                    "Rejecting execution_complete because worktree status could not be checked"
+                );
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+        if !dirty_summary.is_empty() {
+            tracing::warn!(
+                task_id = %task_id_str,
+                worktree_path = %worktree_path,
+                dirty_files = ?dirty_summary,
+                "Rejecting execution_complete because task worktree has uncommitted changes"
+            );
+            return Err(StatusCode::CONFLICT);
+        }
+    }
+
     // If test_result provided, capture HEAD SHA and store validation cache in metadata
     if let Some(ref test_result) = req.test_result {
         if let Some(ref worktree_path) = task.worktree_path {
-            let path = std::path::Path::new(worktree_path);
-            match GitService::get_head_sha(path).await {
+            let path = validate_absolute_non_root_path(
+                std::path::Path::new(worktree_path),
+                "execution complete worktree",
+            )
+            .map_err(|e| {
+                tracing::error!(
+                    task_id = %task_id_str,
+                    worktree_path = %worktree_path,
+                    error = %e,
+                    "Skipping validation cache because worktree path failed validation"
+                );
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+            match GitService::get_head_sha(&path).await {
                 Ok(commit_sha) => {
                     let cache = ValidationCacheMetadata {
                         version: 1,

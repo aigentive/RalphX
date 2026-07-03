@@ -1,6 +1,6 @@
 use super::{
     agent_run_usage_from_codex_usage, capture_file_diff_baseline, codex_tool_call_content_block,
-    flush_content_before_error, format_agent_exit_stderr,
+    completion_tool_result_accepted, flush_content_before_error, format_agent_exit_stderr,
     normalize_codex_cumulative_usage_for_persistence, normalize_codex_stream_usage_for_persistence,
     persist_assistant_message_snapshot, persist_message_text_timeline_item,
     persist_timeline_snapshot, process_codex_stream_background, process_exit_details,
@@ -37,10 +37,39 @@ use tokio_util::sync::CancellationToken;
 
 struct FailingTimelineRepository;
 
+#[test]
+fn completion_tool_result_accepts_success_payloads() {
+    assert!(completion_tool_result_accepted(None));
+    assert!(completion_tool_result_accepted(Some(
+        &serde_json::json!({ "success": true })
+    )));
+    assert!(completion_tool_result_accepted(Some(
+        &serde_json::json!({ "status": "ok" })
+    )));
+}
+
+#[test]
+fn completion_tool_result_rejects_error_payloads() {
+    assert!(!completion_tool_result_accepted(Some(
+        &serde_json::json!({ "is_error": true })
+    )));
+    assert!(!completion_tool_result_accepted(Some(
+        &serde_json::json!({ "isError": true })
+    )));
+    assert!(!completion_tool_result_accepted(Some(
+        &serde_json::json!({ "success": false })
+    )));
+    assert!(!completion_tool_result_accepted(Some(
+        &serde_json::json!({ "status": "failed" })
+    )));
+}
+
 #[async_trait::async_trait]
 impl ChatTimelineRepository for FailingTimelineRepository {
     async fn upsert_item(&self, _item: ChatTimelineItem) -> AppResult<ChatTimelineItem> {
-        Err(AppError::Infrastructure("timeline write failed".to_string()))
+        Err(AppError::Infrastructure(
+            "timeline write failed".to_string(),
+        ))
     }
 
     async fn get_by_id(&self, _id: &ChatTimelineItemId) -> AppResult<Option<ChatTimelineItem>> {

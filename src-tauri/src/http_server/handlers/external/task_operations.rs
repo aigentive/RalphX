@@ -1,4 +1,5 @@
 use super::*;
+use crate::application::task_restart::prepare_terminal_task_for_ready_restart;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -44,6 +45,9 @@ pub async fn external_task_transition_http(
 
     task.assert_project_scope(&scope).map_err(|e| e.status)?;
 
+    let is_retry_restart =
+        matches!(&req.action, TransitionAction::Retry) && task.internal_status.is_terminal();
+
     // Map action to target status
     let target_status = match req.action {
         TransitionAction::Pause => InternalStatus::Paused,
@@ -56,6 +60,37 @@ pub async fn external_task_transition_http(
             }
         }
     };
+
+    if is_retry_restart && target_status == InternalStatus::Ready {
+        match prepare_terminal_task_for_ready_restart(
+            &state.app_state.task_repo,
+            &state.app_state.task_step_repo,
+            &task,
+            None,
+        )
+        .await
+        {
+            Ok(preparation) => {
+                if task.internal_status == InternalStatus::Failed
+                    && preparation.cleared_failed_steps > 0
+                {
+                    tracing::info!(
+                        task_id = task_id.as_str(),
+                        cleared = preparation.cleared_failed_steps,
+                        "External retry cleared failed steps while preserving completed progress"
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::error!(
+                    task_id = task_id.as_str(),
+                    error = %e,
+                    "External retry failed to prepare terminal task restart"
+                );
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        }
+    }
 
     let mut transition_service_builder = state
         .app_state

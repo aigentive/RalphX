@@ -32,6 +32,7 @@ use crate::domain::repositories::{PlanBranchRepository, TaskRepository};
 use crate::domain::services::payload_enrichment::{
     emit_external_webhook_event, PresentationKind, WebhookPresentationContext,
 };
+use crate::error::AppError;
 
 /// Result of `fetch_merge_context`: the loaded task and project.
 pub(super) struct MergeInputs {
@@ -1175,12 +1176,65 @@ impl<'a> super::TransitionHandler<'a> {
 
         // Phase 1: Run git strategy under merge deadline (fast, seconds only)
         let git_result = tokio::time::timeout(remaining, async {
+            let identical_branch_opts = match project.merge_strategy {
+                MergeStrategy::Merge => MergeHandlerOptions::merge(),
+                MergeStrategy::Rebase => MergeHandlerOptions::rebase(),
+                MergeStrategy::Squash | MergeStrategy::RebaseSquash => {
+                    MergeHandlerOptions::squash()
+                }
+            };
+
             // Early return: if branches are already identical, skip merge entirely (prevents empty
             // commits on main). Covers all strategies including plan merge path.
             if GitService::branches_have_same_content(repo_path, source_branch, target_branch)
                 .await
                 .unwrap_or(false)
             {
+                match GitService::count_commits_not_on_branch(
+                    repo_path,
+                    source_branch,
+                    target_branch,
+                )
+                .await
+                {
+                    Ok(0) => {
+                        tracing::error!(
+                            task_id = task_id_str,
+                            source_branch = %source_branch,
+                            target_branch = %target_branch,
+                            "branches are identical but source has zero unique commits — \
+                             refusing no-op merge success to prevent ghost completion"
+                        );
+                        return (
+                            MergeOutcome::GitError(AppError::GitOperation(format!(
+                                "Source branch '{}' has no commits not already on '{}' and \
+                                 cannot be marked merged without committed source work",
+                                source_branch, target_branch
+                            ))),
+                            identical_branch_opts,
+                        );
+                    }
+                    Ok(unique_commits) => {
+                        tracing::debug!(
+                            task_id = task_id_str,
+                            source_branch = %source_branch,
+                            target_branch = %target_branch,
+                            unique_commits,
+                            "branches have identical content but source still has unique commits; \
+                             treating as content-equivalent merge success"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            task_id = task_id_str,
+                            source_branch = %source_branch,
+                            target_branch = %target_branch,
+                            error = %e,
+                            "failed to prove identical branch merge is safe"
+                        );
+                        return (MergeOutcome::GitError(e), identical_branch_opts);
+                    }
+                }
                 tracing::debug!(
                     task_id = task_id_str,
                     source_branch = %source_branch,
@@ -1189,19 +1243,18 @@ impl<'a> super::TransitionHandler<'a> {
                 );
                 let commit_sha = match GitService::get_branch_sha(repo_path, target_branch).await {
                     Ok(sha) => sha,
-                    Err(e) => return (MergeOutcome::GitError(e), MergeHandlerOptions::merge()),
-                };
-                let opts = match project.merge_strategy {
-                    MergeStrategy::Merge => MergeHandlerOptions::merge(),
-                    MergeStrategy::Rebase => MergeHandlerOptions::rebase(),
-                    MergeStrategy::Squash | MergeStrategy::RebaseSquash => {
-                        MergeHandlerOptions::squash()
-                    }
+                    Err(e) => return (MergeOutcome::GitError(e), identical_branch_opts),
                 };
                 // Branches are identical — no merge performed, no worktree needed.
                 // Validation (if any) runs in the project root; this is safe because no code
                 // changed and the repo state is identical to what a worktree would contain.
-                return (MergeOutcome::Success { commit_sha, merge_path: repo_path.to_path_buf() }, opts);
+                return (
+                    MergeOutcome::Success {
+                        commit_sha,
+                        merge_path: repo_path.to_path_buf(),
+                    },
+                    identical_branch_opts,
+                );
             }
 
             match project.merge_strategy {
