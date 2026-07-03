@@ -26,7 +26,7 @@ test-group = 'perf-serial'
 slow-timeout = { period = "120s", terminate-after = 2 }
 
 [[profile.default.overrides]]
-filter = 'binary(merge_system_hardening) or binary(deferred_main_merge_integration) or binary(repository_swapping) or binary(pr_mode_integration) or binary(pr_mode_fallback)'
+filter = 'binary(merge_system_hardening) or binary(repository_swapping) or binary(pr_mode_integration)'
 test-group = 'git-heavy'
 slow-timeout = { period = "120s", terminate-after = 2 }
 

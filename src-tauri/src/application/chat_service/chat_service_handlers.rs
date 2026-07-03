@@ -2189,6 +2189,114 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
     // Redact secrets from error string before propagating to non-tracing sinks
     let redacted_error = redact(error);
 
+    // AgentExit where the work is actually complete: the agent called
+    // execution_complete successfully, green validation was cached for the
+    // current attempt/HEAD, and the provider process exited before the normal
+    // success finalizer ran. Treat this as a successful execution completion
+    // before the generic failure path can persist stale stderr or emit
+    // agent:error.
+    if context_type == ChatContextType::TaskExecution
+        && matches!(stream_error, Some(StreamError::AgentExit { .. }))
+    {
+        if let Some(ref exec_state) = execution_state {
+            let task_id = TaskId::from_string(context_id.to_string());
+            let completion_proven = if exec_state.is_shutting_down.load(Ordering::SeqCst) {
+                false
+            } else {
+                match resolve_current_execution_attempt(
+                    &task_id,
+                    agent_run_id,
+                    task_repo,
+                    agent_run_repo,
+                )
+                .await
+                {
+                    AttemptResolution::Current {
+                        task,
+                        episode_entered_at,
+                    } => validated_completion_override(task.as_ref(), episode_entered_at).await,
+                    _ => false,
+                }
+            };
+
+            if completion_proven {
+                let transition_service = build_transition_service(
+                    app_handle,
+                    Arc::clone(task_repo),
+                    Arc::clone(task_dependency_repo),
+                    Arc::clone(project_repo),
+                    Arc::clone(artifact_repo),
+                    Arc::clone(chat_message_repo),
+                    Arc::clone(chat_attachment_repo),
+                    Arc::clone(conversation_repo),
+                    Arc::clone(agent_run_repo),
+                    Arc::clone(ideation_session_repo),
+                    Arc::clone(activity_event_repo),
+                    Arc::clone(message_queue),
+                    Arc::clone(running_agent_registry),
+                    Arc::clone(exec_state),
+                    Arc::clone(memory_event_repo),
+                );
+                let transition_service = if let Some(ref repo) = execution_settings_repo {
+                    transition_service.with_execution_settings_repo(Arc::clone(repo))
+                } else {
+                    transition_service
+                };
+                let transition_service = if let Some(ref repo) = plan_branch_repo {
+                    transition_service.with_plan_branch_repo(Arc::clone(repo))
+                } else {
+                    transition_service
+                };
+                let transition_service = if let Some(ref ipr) = interactive_process_registry {
+                    transition_service.with_interactive_process_registry(Arc::clone(ipr))
+                } else {
+                    transition_service
+                };
+
+                if transition_service
+                    .transition_task(&task_id, InternalStatus::PendingReview)
+                    .await
+                    .is_ok()
+                {
+                    let _ = agent_run_repo
+                        .complete(&AgentRunId::from_string(agent_run_id))
+                        .await;
+                    let (existing_content, existing_tool_calls, existing_content_blocks) =
+                        read_existing_message_content(chat_message_repo, pre_assistant_msg_id)
+                            .await;
+                    finalize_assistant_message_with_terminal_tool_state(
+                        chat_message_repo,
+                        app_handle.as_ref(),
+                        event_ctx,
+                        pre_assistant_msg_id,
+                        &get_assistant_role(&context_type).to_string(),
+                        &existing_content,
+                        existing_tool_calls,
+                        existing_content_blocks,
+                        "validation_complete",
+                    )
+                    .await;
+
+                    if let Some(ref handle) = app_handle {
+                        let _ = handle.emit(
+                            "agent:run_completed",
+                            AgentRunCompletedPayload::with_provider_session_and_run_id(
+                                Some(agent_run_id.to_string()),
+                                conversation_id.as_str().to_string(),
+                                context_type.to_string(),
+                                context_id.to_string(),
+                                stored_provider_harness,
+                                stored_provider_session_id.clone(),
+                                run_chain_id.clone(),
+                            ),
+                        );
+                    }
+                    return false;
+                }
+            }
+        }
+    }
+
     // Fail the agent run
     let _ = agent_run_repo
         .fail(&AgentRunId::from_string(agent_run_id), &redacted_error)

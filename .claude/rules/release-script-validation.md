@@ -24,3 +24,4 @@ paths:
 | 3 | **No publish side effects during validation** — stop before tag creation, `git push`, workflow dispatch, Homebrew/update publication, or any other release action. |
 | 4 | **Stored version state is test input** — `.artifacts/release-notes/.version` is local/gitignored, affects no-arg `bump-version.sh` and `generate-release-notes.sh`, and must never be committed. |
 | 5 | **Interface changes require doc sync** — if release script flags, prompts, or artifact paths change, update `docs/release-process.md` and `release-notes/README.md` in the same slice. |
+| 6 | **Cargo manifest version invariant** — `src-tauri/Cargo.toml` must keep `[package].version` as the first `version =` line; workspace dependency scaffolding uses inline entries after package metadata so `bump-version.sh` rewrites only the app version. |

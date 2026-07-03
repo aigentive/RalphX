@@ -15,7 +15,7 @@ use crate::domain::agents::{AgentHarnessKind, HarnessStreamMode};
 use crate::domain::entities::{
     AgentRun, AgentRunUsage, ChatContextType, ChatConversationId, ChatMessage, ChatMessageId,
     ChatTimelineItem, ChatTimelineItemId, ChatTimelineItemStatus, ChatTimelinePage,
-    IdeationSessionId, MessageRole,
+    IdeationSessionId, MessageRole, TaskId,
 };
 use crate::domain::repositories::{AgentRunRepository, ChatTimelineRepository};
 use crate::error::{AppError, AppResult};
@@ -330,6 +330,112 @@ async fn codex_stream_turn_completed_finishes_without_waiting_for_process_exit()
     assert_eq!(outcome.response_text, "Done.");
     assert_eq!(outcome.session_id, Some("codex-thread-queue".to_string()));
     assert_eq!(outcome.turns_finalized, 0);
+}
+
+#[tokio::test]
+async fn codex_event_msg_agent_messages_persist_to_task_execution_transcript() {
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::new();
+    let task_id = TaskId::new();
+
+    let pre_assistant = create_assistant_message(
+        ChatContextType::TaskExecution,
+        task_id.as_str(),
+        "",
+        conversation_id.clone(),
+        &[],
+        &[],
+    );
+    let pre_assistant_id = pre_assistant.id.as_str().to_string();
+    state
+        .chat_message_repo
+        .create(pre_assistant)
+        .await
+        .expect("seed task execution assistant message");
+
+    let child = spawn_jsonl_process(&[
+        r#"{"type":"thread.started","thread_id":"codex-thread-event-msg"}"#,
+        r#"{"type":"event_msg","msg":{"type":"agent_message","phase":"commentary","message":"Still working through validation."}}"#,
+        r#"{"type":"event_msg","msg":{"type":"agent_message","phase":"final_answer","message":"Done from the final answer."}}"#,
+        r#"{"type":"turn.completed","usage":{"last_token_usage":{"input_tokens":3,"output_tokens":2}}}"#,
+    ])
+    .await;
+
+    let outcome = process_codex_stream_background::<MockRuntime>(
+        child,
+        ChatContextType::TaskExecution,
+        task_id.as_str(),
+        &conversation_id,
+        None::<tauri::AppHandle<MockRuntime>>,
+        None,
+        None,
+        Some(state.chat_message_repo.clone()),
+        Some(state.chat_timeline_repo.clone()),
+        Some(pre_assistant_id.clone()),
+        None,
+        CancellationToken::new(),
+        StreamingStateCache::new(),
+        None,
+        None,
+        None,
+        None,
+        None,
+        false,
+        false,
+    )
+    .await
+    .expect("Codex event_msg stream should complete");
+
+    assert!(
+        outcome
+            .response_text
+            .contains("Still working through validation."),
+        "event_msg commentary text should be part of the stream outcome"
+    );
+    assert!(
+        outcome
+            .response_text
+            .contains("Done from the final answer."),
+        "event_msg final answer text should be part of the stream outcome"
+    );
+
+    let persisted = state
+        .chat_message_repo
+        .get_by_id(&ChatMessageId::from_string(pre_assistant_id.clone()))
+        .await
+        .expect("load assistant message")
+        .expect("assistant message should still exist");
+    assert!(
+        persisted
+            .content
+            .contains("Still working through validation."),
+        "event_msg commentary text should be persisted into chat_messages"
+    );
+    assert!(
+        persisted.content.contains("Done from the final answer."),
+        "event_msg final answer text should be persisted into chat_messages"
+    );
+
+    let page = state
+        .chat_timeline_repo
+        .get_page(&conversation_id, 20, None)
+        .await
+        .expect("load timeline page");
+    let text_concat = page
+        .items
+        .iter()
+        .filter(|item| {
+            item.message_id
+                .as_ref()
+                .is_some_and(|id| id.as_str() == pre_assistant_id)
+        })
+        .filter_map(|item| item.text.clone())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        text_concat.contains("Done from the final answer."),
+        "event_msg assistant text should also be persisted to timeline blocks"
+    );
 }
 
 #[tokio::test]
