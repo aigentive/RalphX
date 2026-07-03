@@ -1096,6 +1096,7 @@ impl<'a> super::TransitionHandler<'a> {
         pc: super::ProjectCtx<'_>,
         squash_commit_msg: &str,
         plan_branch_repo: &Option<Arc<dyn PlanBranchRepository>>,
+        source_updated_from_target: bool,
         remaining: std::time::Duration,
         deadline_secs: u64,
     ) {
@@ -1132,6 +1133,21 @@ impl<'a> super::TransitionHandler<'a> {
             deadline_secs,
             "Dispatching merge strategy"
         );
+
+        let plan_scoped_zero_unique_noop_allowed = if task.category == TaskCategory::PlanMerge {
+            true
+        } else if let (Some(session_id), Some(pb_repo)) =
+            (task.ideation_session_id.as_ref(), plan_branch_repo.as_ref())
+        {
+            pb_repo
+                .get_by_session_id(session_id)
+                .await
+                .ok()
+                .flatten()
+                .is_some_and(|pb| pb.branch_name == target_branch)
+        } else {
+            false
+        };
 
         // Emit merge:ready via both channels: external_events (SSE/poll) + webhook publisher.
         {
@@ -1198,21 +1214,57 @@ impl<'a> super::TransitionHandler<'a> {
                 .await
                 {
                     Ok(0) => {
-                        tracing::error!(
-                            task_id = task_id_str,
-                            source_branch = %source_branch,
-                            target_branch = %target_branch,
-                            "branches are identical but source has zero unique commits — \
-                             refusing no-op merge success to prevent ghost completion"
-                        );
-                        return (
-                            MergeOutcome::GitError(AppError::GitOperation(format!(
-                                "Source branch '{}' has no commits not already on '{}' and \
-                                 cannot be marked merged without committed source work",
-                                source_branch, target_branch
-                            ))),
-                            identical_branch_opts,
-                        );
+                        if plan_scoped_zero_unique_noop_allowed || source_updated_from_target {
+                            tracing::info!(
+                                task_id = task_id_str,
+                                source_branch = %source_branch,
+                                target_branch = %target_branch,
+                                category = %task.category,
+                                source_updated_from_target,
+                                "branches are identical and source has zero unique commits; \
+                                 accepting no-op completion with current merge proof"
+                            );
+                        } else {
+                            let source_sha =
+                                match GitService::get_branch_sha(repo_path, source_branch).await {
+                                    Ok(sha) => sha,
+                                    Err(e) => return (MergeOutcome::GitError(e), identical_branch_opts),
+                                };
+                            let target_sha =
+                                match GitService::get_branch_sha(repo_path, target_branch).await {
+                                    Ok(sha) => sha,
+                                    Err(e) => return (MergeOutcome::GitError(e), identical_branch_opts),
+                                };
+                            if source_sha != target_sha {
+                                tracing::info!(
+                                    task_id = task_id_str,
+                                    source_branch = %source_branch,
+                                    target_branch = %target_branch,
+                                    source_sha = %source_sha,
+                                    target_sha = %target_sha,
+                                    "branches are identical and source has zero unique commits, \
+                                     but target has advanced beyond source; accepting prior-merge completion"
+                                );
+                            } else {
+                                tracing::error!(
+                                    task_id = task_id_str,
+                                    source_branch = %source_branch,
+                                    target_branch = %target_branch,
+                                    source_sha = %source_sha,
+                                    "branches are identical but source has zero unique commits — \
+                                     refusing no-op merge success to prevent ghost completion"
+                                );
+                                return (
+                                    MergeOutcome::GitError(AppError::GitOperation(format!(
+                                        "Source branch '{}' has no commits not already on '{}' and \
+                                         cannot be marked merged without committed source work \
+                                         (source_sha={}, target_sha={})",
+                                        source_branch, target_branch, source_sha, target_sha
+                                    ))),
+                                    identical_branch_opts,
+                                );
+                            }
+                        }
                     }
                     Ok(unique_commits) => {
                         tracing::debug!(

@@ -63,25 +63,32 @@ fn make_services_with_tracked_chat(
 async fn gap1_conflict_resolved_then_auto_complete_to_merged() {
     let git_repo = setup_real_git_repo();
     let path = git_repo.path();
+    let run_git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(path)
+            .output()
+            .expect("git command should run")
+    };
+
+    let assert_git_success = |args: &[&str]| {
+        let output = run_git(args);
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
 
     // Create a divergent commit on main (same file as task branch)
     std::fs::write(path.join("feature.rs"), "// main conflicting version\n").unwrap();
-    let _ = std::process::Command::new("git")
-        .args(["add", "."])
-        .current_dir(path)
-        .output();
-    let _ = std::process::Command::new("git")
-        .args(["commit", "-m", "conflicting change on main"])
-        .current_dir(path)
-        .output();
+    assert_git_success(&["add", "."]);
+    assert_git_success(&["commit", "-m", "conflicting change on main"]);
 
     // Simulate the merger agent's resolution: merge task branch into main manually,
     // resolving the conflict by keeping both changes.
-    let merge_output = std::process::Command::new("git")
-        .args(["merge", &git_repo.task_branch, "--no-edit"])
-        .current_dir(path)
-        .output()
-        .expect("git merge");
+    let merge_output = run_git(&["merge", &git_repo.task_branch, "--no-edit"]);
 
     if !merge_output.status.success() {
         // Conflict occurred — resolve it by taking "ours" and adding task content
@@ -90,22 +97,20 @@ async fn gap1_conflict_resolved_then_auto_complete_to_merged() {
             "// main conflicting version\n// feature code\nfn feature() {}\n",
         )
         .unwrap();
-        let _ = std::process::Command::new("git")
-            .args(["add", "."])
-            .current_dir(path)
-            .output();
-        let _ = std::process::Command::new("git")
-            .args(["commit", "-m", "Merge: resolved conflict"])
-            .current_dir(path)
-            .output();
+        assert_git_success(&["add", "."]);
+        assert_git_success(&["commit", "-m", "Merge: resolved conflict"]);
     }
 
     // Verify precondition: task branch content is now on main
-    let log = std::process::Command::new("git")
-        .args(["log", "--oneline", "main"])
-        .current_dir(path)
-        .output()
-        .expect("git log");
+    let main_sha = run_git(&["rev-parse", "main"]);
+    let task_sha = run_git(&["rev-parse", &git_repo.task_branch]);
+    assert_ne!(
+        String::from_utf8_lossy(&main_sha.stdout).trim(),
+        String::from_utf8_lossy(&task_sha.stdout).trim(),
+        "Precondition: main should contain a merge/resolution commit beyond task branch"
+    );
+
+    let log = run_git(&["log", "--oneline", "main"]);
     let log_str = String::from_utf8_lossy(&log.stdout);
     assert!(
         log_str.contains("feature") || log_str.contains("Merge"),
