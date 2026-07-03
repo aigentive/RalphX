@@ -248,6 +248,8 @@ fn test_build_memory_agent_config_uses_resolved_provider_model_and_env() {
         logical_effort: Some(LogicalEffort::Medium),
         approval_policy: Some("never".to_string()),
         sandbox_mode: Some("danger-full-access".to_string()),
+        service_tier: None,
+        env: Default::default(),
     };
 
     let config = build_memory_agent_config(
@@ -603,6 +605,8 @@ async fn test_spawn_memory_agent_with_runtime_records_spawn_and_completion() {
         logical_effort: Some(LogicalEffort::Low),
         approval_policy: Some("never".to_string()),
         sandbox_mode: Some("danger-full-access".to_string()),
+        service_tier: None,
+        env: Default::default(),
     };
 
     spawn_memory_agent_with_runtime(

@@ -572,10 +572,12 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
     {
         let workspace_repo = Arc::clone(&agent_conversation_workspace_repo);
         let periodic_agent_run_repo = Arc::clone(&agent_run_repo);
+        let periodic_task_outcome_repo = Arc::clone(&task_outcome_repo);
         tauri::async_runtime::spawn(async move {
             crate::application::agent_workspace_publish_recovery::run_periodic_workspace_publish_recovery(
                 workspace_repo,
                 periodic_agent_run_repo,
+                periodic_task_outcome_repo,
             )
             .await;
         });

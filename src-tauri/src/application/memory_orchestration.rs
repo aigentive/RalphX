@@ -721,6 +721,7 @@ fn build_memory_agent_config(
         logical_effort: runtime.logical_effort,
         approval_policy: runtime.approval_policy.clone(),
         sandbox_mode: runtime.sandbox_mode.clone(),
+        service_tier: runtime.service_tier.clone(),
         max_tokens: None,
         timeout_secs: None,
         env,

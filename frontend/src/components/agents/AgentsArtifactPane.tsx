@@ -620,11 +620,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
                   ? "issues"
                   : visibleTabs.some((tab) => tab.id === "review")
                     ? "review"
-                    : showPublishTab
-                      ? "publish"
-                      : skillsEnabled
-                        ? "skills"
-                        : "plan";
+                    : "plan";
   const effectiveActiveTab =
     visibleTabs.some((tab) => tab.id === activeTab)
       ? activeTab
@@ -973,7 +969,6 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       >
         <ArtifactContent
           activeTab={effectiveActiveTab}
-          conversationId={conversation?.id ?? null}
           workspace={workspace}
           conversationId={conversationId}
           activeWorkspaceFreshness={activeWorkspaceFreshness}
@@ -1025,7 +1020,6 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
 
 type ArtifactContentProps = {
   activeTab: AgentArtifactTab;
-  conversationId: string | null;
   workspace: AgentConversationWorkspace | null;
   conversationId: string | null;
   activeWorkspaceFreshness: AgentConversationWorkspaceFreshness | undefined;
@@ -1070,7 +1064,6 @@ type ArtifactContentProps = {
 
 function ArtifactContent({
   activeTab,
-  conversationId,
   workspace,
   conversationId,
   activeWorkspaceFreshness,

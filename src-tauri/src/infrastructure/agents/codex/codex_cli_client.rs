@@ -123,6 +123,7 @@ impl CodexCliClient {
             Some(McpRuntimeContext {
                 context_type: None,
                 context_id: config.env.get("RALPHX_TASK_ID").cloned(),
+                conversation_id: config.env.get("RALPHX_CONVERSATION_ID").cloned(),
                 task_id: config.env.get("RALPHX_TASK_ID").cloned(),
                 project_id: Some(project_id.clone()),
                 working_directory: Some(config.working_directory.clone()),

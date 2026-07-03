@@ -236,6 +236,7 @@ pub async fn recover_stale_transient_publish_statuses(
 pub async fn run_periodic_workspace_publish_recovery(
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     agent_run_repo: Arc<dyn AgentRunRepository>,
+    task_outcome_repo: Arc<dyn TaskOutcomeRepository>,
 ) {
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(120)).await;
@@ -243,6 +244,7 @@ pub async fn run_periodic_workspace_publish_recovery(
         if let Err(err) = recover_stale_agent_workspace_publish_repairs(
             Arc::clone(&workspace_repo),
             Arc::clone(&agent_run_repo),
+            Arc::clone(&task_outcome_repo),
         )
         .await
         {

@@ -23,8 +23,8 @@ use crate::application::agent_conversation_workspace::{
 use crate::application::agent_workspace_pr_description::validate_agent_workspace_pr_description_body;
 use crate::application::agent_workspace_review::{
     apply_review_artifact_to_monitor, load_agent_workspace_review_context,
-    review_gate_publish_blocker, start_agent_workspace_review, AgentWorkspaceReviewHunkAnchor,
-    AgentWorkspaceReviewGoalContext, AgentWorkspaceReviewStart, AgentWorkspaceReviewTarget,
+    review_gate_publish_blocker, start_agent_workspace_review, AgentWorkspaceReviewGoalContext,
+    AgentWorkspaceReviewHunkAnchor, AgentWorkspaceReviewStart, AgentWorkspaceReviewTarget,
 };
 use crate::application::publish_resilience::{
     inspect_publish_branch_freshness_for_source, push_publish_branch,
@@ -49,8 +49,9 @@ use crate::domain::entities::{
     AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
     AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewGateStatus,
     AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor,
-    AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome, AgentWorkspaceReviewTargetScope,
-    Artifact, ArtifactId, ArtifactType, ChatConversationId, IdeationAnalysisBaseRefKind, ProjectId,
+    AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
+    AgentWorkspaceReviewTargetScope, Artifact, ArtifactId, ArtifactType, ChatConversationId,
+    IdeationAnalysisBaseRefKind, ProjectId,
 };
 use crate::domain::services::github_service::{
     GithubServiceTrait, PrHealth, PrReviewFeedback, PrReviewSubmissionEvent, PrStatus,
@@ -3427,6 +3428,7 @@ async fn maybe_start_pr_review_monitor_polling(
         worktree_path,
         Arc::clone(&state.agent_conversation_workspace_repo),
         Arc::clone(&state.agent_run_repo),
+        Arc::clone(&state.task_outcome_repo),
         chat_service,
     );
 }
@@ -3597,7 +3599,9 @@ fn validate_workspace_review_tool_target_metadata(
     {
         return Err(json_error(
             StatusCode::CONFLICT,
-            format!("{operation} target metadata does not match the current workspace Review target"),
+            format!(
+                "{operation} target metadata does not match the current workspace Review target"
+            ),
             None,
         ));
     }

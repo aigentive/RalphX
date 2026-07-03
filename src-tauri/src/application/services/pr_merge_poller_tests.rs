@@ -1438,6 +1438,7 @@ async fn review_pr_monitor_open_and_terminal_state_stays_monitor_scoped() {
 
     super::mark_agent_workspace_pr_terminal(
         Arc::clone(&workspace_repo),
+        Arc::new(MemoryTaskOutcomeRepository::new()),
         &conversation_id,
         "closed",
         "Pull request closed without merging",
@@ -1497,6 +1498,7 @@ async fn review_pr_monitor_merged_terminal_outcome_has_no_error() {
 
     super::mark_agent_workspace_pr_terminal(
         Arc::clone(&workspace_repo),
+        Arc::new(MemoryTaskOutcomeRepository::new()),
         &conversation_id,
         "merged",
         "Pull request merged",
@@ -2608,6 +2610,7 @@ async fn review_pr_monitor_skips_requested_changes_feedback_routing() {
         101,
         &conversation_id,
         Arc::clone(&workspace_repo),
+        Arc::new(MemoryTaskOutcomeRepository::new()),
         chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
     )
     .await

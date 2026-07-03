@@ -1194,6 +1194,7 @@ role: project_chat
     let runtime_context = McpRuntimeContext {
         context_type: Some("project".to_string()),
         context_id: Some("project-1".to_string()),
+        conversation_id: Some("conversation-1".to_string()),
         task_id: None,
         project_id: Some("project-1".to_string()),
         working_directory: Some(root.join("workspace")),

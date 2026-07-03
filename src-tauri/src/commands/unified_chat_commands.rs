@@ -4353,6 +4353,7 @@ pub async fn set_agent_conversation_workspace_pr_supervision_for_state(
                     target.working_dir.clone(),
                     Arc::clone(&state.agent_conversation_workspace_repo),
                     Arc::clone(&state.agent_run_repo),
+                    Arc::clone(&state.task_outcome_repo),
                     chat_service,
                 );
             }
@@ -6373,6 +6374,7 @@ async fn publish_linked_ideation_plan_branch_workspace_for_app_state(
         publish_target.worktree_path.clone(),
         Arc::clone(&state.agent_conversation_workspace_repo),
         Arc::clone(&state.agent_run_repo),
+        Arc::clone(&state.task_outcome_repo),
         review_chat_service,
     );
 

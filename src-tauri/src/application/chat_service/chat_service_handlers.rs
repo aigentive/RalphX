@@ -1239,6 +1239,7 @@ pub(super) async fn handle_stream_success<R: Runtime>(
                     } else {
                         false
                     };
+                    let all_steps_done = step_state == StepCompletionState::AllComplete;
                     let completion_action = execution_completion_action(
                         has_output,
                         step_state,
@@ -1247,7 +1248,7 @@ pub(super) async fn handle_stream_success<R: Runtime>(
                     );
 
                     if completion_action == ExecutionCompletionAction::PendingReview
-                        && step_state == StepCompletionState::AllComplete
+                        && all_steps_done
                     {
                         tracing::info!(
                                 task_id = task_id.as_str(),
