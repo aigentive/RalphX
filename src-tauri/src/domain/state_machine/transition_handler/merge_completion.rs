@@ -11,7 +11,6 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 
 use crate::application::GitService;
-use crate::infrastructure::agents::claude::git_runtime_config;
 use crate::domain::entities::{
     merge_progress_event::{MergePhase, MergePhaseStatus},
     task_metadata::{
@@ -23,6 +22,8 @@ use crate::domain::entities::{
 use crate::domain::repositories::TaskRepository;
 use crate::domain::state_machine::services::WebhookPublisher;
 use crate::error::{AppError, AppResult};
+use crate::infrastructure::agents::claude::git_runtime_config;
+use crate::utils::path_safety::validate_absolute_non_root_path;
 use ralphx_domain::repositories::ExternalEventsRepository;
 
 use crate::domain::services::payload_enrichment::{
@@ -341,7 +342,10 @@ async fn complete_merge_internal_impl<R: tauri::Runtime>(
     // Non-fatal: failures must not block merge completion.
     if let (Some(repo), Some(publisher)) = (external_events_repo, webhook_publisher) {
         let project_id_str = project.id.to_string();
-        let session_id_str = task.ideation_session_id.as_ref().map(|id| id.as_str().to_string());
+        let session_id_str = task
+            .ideation_session_id
+            .as_ref()
+            .map(|id| id.as_str().to_string());
         let category_str = task.category.to_string();
 
         let ctx = WebhookPresentationContext {
@@ -362,7 +366,15 @@ async fn complete_merge_internal_impl<R: tauri::Runtime>(
             "timestamp": chrono::Utc::now().to_rfc3339(),
         });
         ctx.inject_into(&mut merge_payload);
-        if let Err(e) = emit_external_webhook_event("merge:completed", &project_id_str, merge_payload, repo, publisher).await {
+        if let Err(e) = emit_external_webhook_event(
+            "merge:completed",
+            &project_id_str,
+            merge_payload,
+            repo,
+            publisher,
+        )
+        .await
+        {
             tracing::warn!(
                 task_id = task_id_str,
                 error = %e,
@@ -386,7 +398,15 @@ async fn complete_merge_internal_impl<R: tauri::Runtime>(
             "timestamp": chrono::Utc::now().to_rfc3339(),
         });
         ctx_sc.inject_into(&mut sc_payload);
-        if let Err(e) = emit_external_webhook_event("task:status_changed", &project_id_str, sc_payload, repo, publisher).await {
+        if let Err(e) = emit_external_webhook_event(
+            "task:status_changed",
+            &project_id_str,
+            sc_payload,
+            repo,
+            publisher,
+        )
+        .await
+        {
             tracing::warn!(
                 task_id = task_id_str,
                 error = %e,
@@ -436,7 +456,15 @@ async fn complete_merge_internal_impl<R: tauri::Runtime>(
                         "timestamp": chrono::Utc::now().to_rfc3339(),
                     });
                     ctx_pd.inject_into(&mut payload);
-                    if let Err(e) = emit_external_webhook_event("plan:delivered", &project_id_str, payload, repo, publisher).await {
+                    if let Err(e) = emit_external_webhook_event(
+                        "plan:delivered",
+                        &project_id_str,
+                        payload,
+                        repo,
+                        publisher,
+                    )
+                    .await
+                    {
                         tracing::warn!(
                             task_id = task_id_str,
                             session_id = %session_id_str,
@@ -593,6 +621,49 @@ pub async fn deferred_merge_cleanup(
         "Phase 3: starting deferred merge cleanup"
     );
 
+    if let Some(ref wt_path_str) = worktree_path {
+        let wt_path = match validate_absolute_non_root_path(
+            Path::new(wt_path_str),
+            "deferred merge cleanup worktree",
+        ) {
+            Ok(path) => path,
+            Err(e) => {
+                tracing::warn!(
+                    task_id = %task_id_str,
+                    worktree = %wt_path_str,
+                    error = %e,
+                    "Phase 3: worktree path failed validation; skipping cleanup to prevent work loss"
+                );
+                return;
+            }
+        };
+        if wt_path.exists() {
+            match GitService::uncommitted_change_summary(&wt_path).await {
+                Ok(changes) if !changes.is_empty() => {
+                    tracing::error!(
+                        task_id = %task_id_str,
+                        worktree = %wt_path_str,
+                        changes = ?changes,
+                        "Phase 3: worktree still has uncommitted changes; skipping cleanup to \
+                         prevent work loss"
+                    );
+                    return;
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::warn!(
+                        task_id = %task_id_str,
+                        worktree = %wt_path_str,
+                        error = %e,
+                        "Phase 3: could not verify worktree cleanliness; skipping cleanup to \
+                         prevent work loss"
+                    );
+                    return;
+                }
+            }
+        }
+    }
+
     // Step 1: Kill worktree processes via SIGKILL (instant, no SIGTERM wait)
     // Wrapped in OS-thread timeout to prevent Phase 3 from stalling if kill hangs.
     let kill_step_timed_out = if let Some(ref wt_path_str) = worktree_path {
@@ -602,8 +673,14 @@ pub async fn deferred_merge_cleanup(
             let kill_timeout_secs = git_runtime_config().step_0b_kill_timeout_secs;
             match super::cleanup_helpers::os_thread_timeout(
                 std::time::Duration::from_secs(kill_timeout_secs),
-                crate::domain::services::kill_worktree_processes_async(&wt_path, lsof_timeout, true),
-            ).await {
+                crate::domain::services::kill_worktree_processes_async(
+                    &wt_path,
+                    lsof_timeout,
+                    true,
+                ),
+            )
+            .await
+            {
                 Ok(_) => false,
                 Err(_) => {
                     tracing::warn!(
@@ -732,18 +809,21 @@ pub async fn deferred_merge_cleanup(
             // Persist cleanup timeout metadata if the worktree kill step timed out.
             // Recorded on the Merged task for post-mortem visibility.
             if kill_step_timed_out {
-                let mut meta: serde_json::Value = fresh_task.metadata
+                let mut meta: serde_json::Value = fresh_task
+                    .metadata
                     .as_deref()
                     .and_then(|m| serde_json::from_str(m).ok())
                     .unwrap_or_else(|| serde_json::json!({}));
                 if let Some(obj) = meta.as_object_mut() {
                     obj.insert(
                         "merge_failure_source".to_string(),
-                        serde_json::to_value(MergeFailureSource::CleanupTimeout).unwrap_or_default(),
+                        serde_json::to_value(MergeFailureSource::CleanupTimeout)
+                            .unwrap_or_default(),
                     );
                     obj.insert(
                         "cleanup_phase".to_string(),
-                        serde_json::to_value(CleanupPhase::DeferredWorktreeKill).unwrap_or_default(),
+                        serde_json::to_value(CleanupPhase::DeferredWorktreeKill)
+                            .unwrap_or_default(),
                     );
                 }
                 fresh_task.metadata = Some(meta.to_string());
@@ -783,8 +863,12 @@ pub async fn deferred_merge_cleanup(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::entities::{InternalStatus, MergeStrategy, Project, ProjectId, Task};
-    use crate::infrastructure::memory::MemoryTaskRepository;
+    use crate::domain::entities::{
+        IdeationSessionId, InternalStatus, MergeStrategy, Project, ProjectId, Task, TaskCategory,
+    };
+    use crate::domain::repositories::external_events_repository::ExternalEventsRepository;
+    use crate::domain::state_machine::services::MockWebhookPublisher;
+    use crate::infrastructure::memory::{MemoryExternalEventsRepository, MemoryTaskRepository};
 
     fn make_test_repo() -> (tempfile::TempDir, String) {
         let dir = tempfile::TempDir::new().expect("create temp dir");
@@ -873,6 +957,69 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn complete_merge_internal_emits_external_plan_events() {
+        let (_dir, repo_path_str) = make_test_repo();
+        let repo_path = Path::new(&repo_path_str);
+        let head_sha_output = std::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(repo_path)
+            .output()
+            .expect("git rev-parse HEAD");
+        let head_sha = String::from_utf8_lossy(&head_sha_output.stdout)
+            .trim()
+            .to_string();
+
+        let task_repo: Arc<dyn TaskRepository> = Arc::new(MemoryTaskRepository::new());
+        let external_events_repo: Arc<dyn ExternalEventsRepository> =
+            Arc::new(MemoryExternalEventsRepository::new());
+        let webhook_publisher: Arc<dyn WebhookPublisher> = Arc::new(MockWebhookPublisher);
+
+        let project_id = ProjectId::from_string("proj-plan-events".to_string());
+        let session_id = IdeationSessionId::new();
+        let mut task = Task::new(project_id.clone(), "Plan merge event task".to_string());
+        task.internal_status = InternalStatus::PendingMerge;
+        task.category = TaskCategory::PlanMerge;
+        task.ideation_session_id = Some(session_id.clone());
+        task_repo.create(task.clone()).await.unwrap();
+
+        let mut project = Project::new("Plan Event Project".to_string(), repo_path_str);
+        project.id = project_id.clone();
+        project.base_branch = Some("main".to_string());
+        project.merge_strategy = MergeStrategy::Merge;
+
+        complete_merge_internal::<tauri::Wry>(
+            &mut task,
+            &project,
+            &head_sha,
+            "task/plan-events",
+            "main",
+            &task_repo,
+            Some(&external_events_repo),
+            Some(&webhook_publisher),
+            None,
+            Some("Plan event session".to_string()),
+        )
+        .await
+        .unwrap();
+
+        let events = external_events_repo
+            .get_events_after_cursor(&[project_id.to_string()], 0, 10)
+            .await
+            .unwrap();
+        let event_types: Vec<_> = events
+            .iter()
+            .map(|event| event.event_type.as_str())
+            .collect();
+
+        assert!(event_types.contains(&"merge:completed"));
+        assert!(event_types.contains(&"task:status_changed"));
+        assert!(event_types.contains(&"plan:delivered"));
+        assert!(events
+            .iter()
+            .any(|event| event.payload.contains(session_id.as_str())));
+    }
+
     /// Fix #3: When pre_merge_cleanup already deleted the worktree,
     /// deferred_merge_cleanup should skip worktree deletion but still
     /// delete the branch and clear task fields.
@@ -904,7 +1051,8 @@ mod tests {
         );
 
         let task_repo = Arc::new(MemoryTaskRepository::new());
-        let task_repo_dyn: Arc<dyn TaskRepository> = Arc::clone(&task_repo) as Arc<dyn TaskRepository>;
+        let task_repo_dyn: Arc<dyn TaskRepository> =
+            Arc::clone(&task_repo) as Arc<dyn TaskRepository>;
         let project_id = ProjectId::from_string("proj-fix3".to_string());
 
         let mut task = Task::new(project_id.clone(), "Fix3 test".to_string());
@@ -953,16 +1101,219 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn test_deferred_cleanup_preserves_dirty_worktree() {
+        let (_dir, repo_path_str) = make_test_repo();
+        let repo_path = validate_absolute_non_root_path(
+            Path::new(&repo_path_str),
+            "dirty cleanup test repository",
+        )
+        .unwrap();
+        let worktree_parent = tempfile::TempDir::new().expect("create worktree parent");
+
+        let branch_name = "task/dirty-worktree-test";
+        let worktree_path = validate_absolute_non_root_path(
+            &worktree_parent.path().join("dirty-worktree"),
+            "dirty cleanup test worktree",
+        )
+        .unwrap();
+        let worktree_path_str = worktree_path.to_string_lossy().to_string();
+
+        let _ = std::process::Command::new("git")
+            .args(["branch", branch_name])
+            .current_dir(&repo_path)
+            .output();
+        let add_worktree = std::process::Command::new("git")
+            .args(["worktree", "add", &worktree_path_str, branch_name])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git worktree add");
+        assert!(add_worktree.status.success());
+
+        let dirty_file = validate_absolute_non_root_path(
+            &worktree_path.join("uncommitted_source.rs"),
+            "dirty cleanup test source",
+        )
+        .unwrap();
+        std::fs::write(dirty_file, "fn work() {}\n").unwrap();
+
+        let task_repo = Arc::new(MemoryTaskRepository::new());
+        let task_repo_dyn: Arc<dyn TaskRepository> =
+            Arc::clone(&task_repo) as Arc<dyn TaskRepository>;
+        let project_id = ProjectId::from_string("proj-dirty-cleanup".to_string());
+
+        let mut task = Task::new(project_id, "Dirty cleanup test".to_string());
+        task.internal_status = InternalStatus::Merged;
+        task.task_branch = Some(branch_name.to_string());
+        task.worktree_path = Some(worktree_path_str.clone());
+        set_pending_cleanup_metadata(&mut task);
+        let task_id = task.id.clone();
+        task_repo.create(task).await.unwrap();
+
+        deferred_merge_cleanup(
+            task_id.clone(),
+            task_repo_dyn,
+            repo_path_str.clone(),
+            Some(branch_name.to_string()),
+            Some(worktree_path_str.clone()),
+            None,
+        )
+        .await;
+
+        assert!(worktree_path.exists());
+
+        let updated_task = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
+        assert_eq!(
+            updated_task.worktree_path.as_deref(),
+            Some(worktree_path_str.as_str())
+        );
+        assert_eq!(updated_task.task_branch.as_deref(), Some(branch_name));
+        assert!(has_pending_cleanup_metadata(&updated_task));
+
+        let branch_check = std::process::Command::new("git")
+            .args(["branch", "--list", branch_name])
+            .current_dir(&repo_path)
+            .output()
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&branch_check.stdout).contains(branch_name),
+            "dirty cleanup must not delete task branch"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_deferred_cleanup_preserves_invalid_worktree_path() {
+        let (_dir, repo_path_str) = make_test_repo();
+        let repo_path = Path::new(&repo_path_str);
+
+        let branch_name = "task/invalid-worktree-path-test";
+        let _ = std::process::Command::new("git")
+            .args(["branch", branch_name])
+            .current_dir(repo_path)
+            .output();
+
+        let task_repo = Arc::new(MemoryTaskRepository::new());
+        let task_repo_dyn: Arc<dyn TaskRepository> =
+            Arc::clone(&task_repo) as Arc<dyn TaskRepository>;
+        let project_id = ProjectId::from_string("proj-invalid-cleanup".to_string());
+
+        let mut task = Task::new(project_id, "Invalid cleanup path test".to_string());
+        task.internal_status = InternalStatus::Merged;
+        task.task_branch = Some(branch_name.to_string());
+        task.worktree_path = Some("relative-worktree-path".to_string());
+        set_pending_cleanup_metadata(&mut task);
+        let task_id = task.id.clone();
+        task_repo.create(task).await.unwrap();
+
+        deferred_merge_cleanup(
+            task_id.clone(),
+            task_repo_dyn,
+            repo_path_str.clone(),
+            Some(branch_name.to_string()),
+            Some("relative-worktree-path".to_string()),
+            None,
+        )
+        .await;
+
+        let updated_task = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
+        assert_eq!(
+            updated_task.worktree_path.as_deref(),
+            Some("relative-worktree-path")
+        );
+        assert_eq!(updated_task.task_branch.as_deref(), Some(branch_name));
+        assert!(has_pending_cleanup_metadata(&updated_task));
+
+        let branch_check = std::process::Command::new("git")
+            .args(["branch", "--list", branch_name])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&branch_check.stdout).contains(branch_name),
+            "branch should still exist after invalid worktree cleanup path"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_deferred_cleanup_removes_clean_worktree() {
+        let (_dir, repo_path_str) = make_test_repo();
+        let repo_path = validate_absolute_non_root_path(
+            Path::new(&repo_path_str),
+            "clean cleanup test repository",
+        )
+        .unwrap();
+        let worktree_parent = tempfile::TempDir::new().expect("create worktree parent");
+
+        let branch_name = "task/clean-worktree-test";
+        let worktree_path = validate_absolute_non_root_path(
+            &worktree_parent.path().join("clean-worktree"),
+            "clean cleanup test worktree",
+        )
+        .unwrap();
+        let worktree_path_str = worktree_path.to_string_lossy().to_string();
+
+        let _ = std::process::Command::new("git")
+            .args(["branch", branch_name])
+            .current_dir(&repo_path)
+            .output();
+        let add_worktree = std::process::Command::new("git")
+            .args(["worktree", "add", &worktree_path_str, branch_name])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git worktree add");
+        assert!(add_worktree.status.success());
+
+        let task_repo = Arc::new(MemoryTaskRepository::new());
+        let task_repo_dyn: Arc<dyn TaskRepository> =
+            Arc::clone(&task_repo) as Arc<dyn TaskRepository>;
+        let project_id = ProjectId::from_string("proj-clean-cleanup".to_string());
+
+        let mut task = Task::new(project_id, "Clean cleanup test".to_string());
+        task.internal_status = InternalStatus::Merged;
+        task.task_branch = Some(branch_name.to_string());
+        task.worktree_path = Some(worktree_path_str.clone());
+        set_pending_cleanup_metadata(&mut task);
+        let task_id = task.id.clone();
+        task_repo.create(task).await.unwrap();
+
+        deferred_merge_cleanup(
+            task_id.clone(),
+            task_repo_dyn,
+            repo_path_str.clone(),
+            Some(branch_name.to_string()),
+            Some(worktree_path_str.clone()),
+            None,
+        )
+        .await;
+
+        assert!(!worktree_path.exists());
+
+        let updated_task = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
+        assert!(updated_task.worktree_path.is_none());
+        assert!(updated_task.task_branch.is_none());
+        assert!(!has_pending_cleanup_metadata(&updated_task));
+
+        let branch_check = std::process::Command::new("git")
+            .args(["branch", "--list", branch_name])
+            .current_dir(&repo_path)
+            .output()
+            .unwrap();
+        assert!(
+            !String::from_utf8_lossy(&branch_check.stdout).contains(branch_name),
+            "clean cleanup should delete task branch"
+        );
+    }
+
     // ===== No-code-changes metadata helper tests =====
 
     #[test]
     fn test_set_no_code_changes_metadata_sets_flag() {
         let project_id = ProjectId::from_string("proj-test".to_string());
         let mut task = Task::new(project_id, "test task".to_string());
-        assert!(!has_no_code_changes_metadata(&task), "should be false before setting");
+        assert!(!has_no_code_changes_metadata(&task));
 
         set_no_code_changes_metadata(&mut task);
-        assert!(has_no_code_changes_metadata(&task), "should be true after setting");
+        assert!(has_no_code_changes_metadata(&task));
     }
 
     #[test]
@@ -990,11 +1341,11 @@ mod tests {
 
         set_no_code_changes_metadata(&mut task);
 
-        assert!(has_no_code_changes_metadata(&task), "no_code_changes should be set");
+        assert!(has_no_code_changes_metadata(&task));
         // Existing key should still be there
         let meta: serde_json::Value =
             serde_json::from_str(task.metadata.as_deref().unwrap()).unwrap();
-        assert_eq!(meta["existing_key"], "existing_value", "existing metadata should be preserved");
+        assert_eq!(meta["existing_key"], "existing_value");
     }
 
     #[test]
@@ -1027,7 +1378,10 @@ mod tests {
             .current_dir(repo_path)
             .output();
         std::fs::write(repo_path.join("task_only_file.md"), "task work").unwrap();
-        for args in [vec!["add", "."], vec!["commit", "-m", "task: task-only work"]] {
+        for args in [
+            vec!["add", "."],
+            vec!["commit", "-m", "task: task-only work"],
+        ] {
             let _ = std::process::Command::new("git")
                 .args(&args)
                 .current_dir(repo_path)

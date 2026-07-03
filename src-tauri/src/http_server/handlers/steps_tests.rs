@@ -3,6 +3,7 @@ use crate::application::{AppState, TeamService, TeamStateTracker};
 use crate::commands::ExecutionState;
 use crate::domain::entities::{ProjectId, Task, ValidationCacheMetadata};
 use crate::http_server::types::{ExecutionCompleteRequest, HttpServerState, TestResultInput};
+use crate::utils::path_safety::validate_absolute_non_root_path;
 use axum::{
     extract::{Path, State},
     Json,
@@ -11,11 +12,12 @@ use std::sync::Arc;
 
 fn create_temp_git_repo() -> tempfile::TempDir {
     let tmp_dir = tempfile::tempdir().expect("tempdir");
-    let repo_path = tmp_dir.path();
+    let repo_path = validate_absolute_non_root_path(tmp_dir.path(), "test git repository")
+        .expect("safe test repo");
     let run_git = |args: &[&str]| {
         let output = std::process::Command::new("git")
             .args(args)
-            .current_dir(repo_path)
+            .current_dir(&repo_path)
             .env("GIT_AUTHOR_NAME", "Test")
             .env("GIT_AUTHOR_EMAIL", "test@test.com")
             .env("GIT_COMMITTER_NAME", "Test")
@@ -33,11 +35,34 @@ fn create_temp_git_repo() -> tempfile::TempDir {
     run_git(&["init", "-b", "main"]);
     run_git(&["config", "user.email", "test@test.com"]);
     run_git(&["config", "user.name", "Test"]);
-    std::fs::write(repo_path.join("README.md"), "test").unwrap();
+    let readme_path =
+        validate_absolute_non_root_path(&repo_path.join("README.md"), "test repository README")
+            .unwrap();
+    std::fs::write(readme_path, "test").unwrap();
     run_git(&["add", "."]);
     run_git(&["commit", "-m", "init"]);
 
     tmp_dir
+}
+
+fn run_git(repo_path: &std::path::Path, args: &[&str]) {
+    let repo_path =
+        validate_absolute_non_root_path(repo_path, "test git repository").expect("safe test repo");
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(&repo_path)
+        .env("GIT_AUTHOR_NAME", "Test")
+        .env("GIT_AUTHOR_EMAIL", "test@test.com")
+        .env("GIT_COMMITTER_NAME", "Test")
+        .env("GIT_COMMITTER_EMAIL", "test@test.com")
+        .output()
+        .expect("git command failed");
+    assert!(
+        output.status.success(),
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 fn test_http_state(app_state: Arc<AppState>) -> HttpServerState {
@@ -50,6 +75,74 @@ fn test_http_state(app_state: Arc<AppState>) -> HttpServerState {
         team_service,
         delegation_service: Default::default(),
     }
+}
+
+#[tokio::test]
+async fn execution_complete_rejects_dirty_worktree() {
+    let tmp_dir = create_temp_git_repo();
+    let source_path = validate_absolute_non_root_path(
+        &tmp_dir.path().join("src.rs"),
+        "dirty completion test source",
+    )
+    .unwrap();
+    std::fs::write(source_path, "uncommitted").unwrap();
+
+    let app_state = Arc::new(AppState::new_test());
+    let state = test_http_state(Arc::clone(&app_state));
+
+    let mut task = Task::new(ProjectId::new(), "Dirty completion task".to_string());
+    task.worktree_path = Some(tmp_dir.path().to_string_lossy().to_string());
+    let task_id = task.id.clone();
+    app_state.task_repo.create(task).await.unwrap();
+
+    let response = execution_complete_http(
+        State(state),
+        Path(task_id.as_str().to_string()),
+        Json(ExecutionCompleteRequest {
+            summary: Some("done".to_string()),
+            test_result: None,
+        }),
+    )
+    .await;
+
+    assert_eq!(
+        response.expect_err("dirty worktree must be rejected"),
+        axum::http::StatusCode::CONFLICT
+    );
+}
+
+#[tokio::test]
+async fn execution_complete_accepts_clean_committed_worktree() {
+    let tmp_dir = create_temp_git_repo();
+    let source_path = validate_absolute_non_root_path(
+        &tmp_dir.path().join("src.rs"),
+        "clean completion test source",
+    )
+    .unwrap();
+    std::fs::write(source_path, "committed").unwrap();
+    run_git(tmp_dir.path(), &["add", "src.rs"]);
+    run_git(tmp_dir.path(), &["commit", "-m", "task work"]);
+
+    let app_state = Arc::new(AppState::new_test());
+    let state = test_http_state(Arc::clone(&app_state));
+
+    let mut task = Task::new(ProjectId::new(), "Clean completion task".to_string());
+    task.worktree_path = Some(tmp_dir.path().to_string_lossy().to_string());
+    let task_id = task.id.clone();
+    app_state.task_repo.create(task).await.unwrap();
+
+    let response = execution_complete_http(
+        State(state),
+        Path(task_id.as_str().to_string()),
+        Json(ExecutionCompleteRequest {
+            summary: Some("done".to_string()),
+            test_result: None,
+        }),
+    )
+    .await
+    .unwrap();
+
+    assert!(response.0.success);
 }
 
 #[tokio::test]

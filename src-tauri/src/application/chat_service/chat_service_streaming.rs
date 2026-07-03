@@ -1007,6 +1007,34 @@ impl CompletionSignalTracker {
     }
 }
 
+fn completion_tool_result_accepted(result: Option<&serde_json::Value>) -> bool {
+    let Some(result) = result else {
+        return true;
+    };
+    if ["is_error", "isError"].iter().any(|key| {
+        result
+            .get(*key)
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+    }) {
+        return false;
+    }
+    if result
+        .get("success")
+        .and_then(|value| value.as_bool())
+        .is_some_and(|success| !success)
+    {
+        return false;
+    }
+    if let Some(status) = result.get("status").and_then(|value| value.as_str()) {
+        let status = status.to_ascii_lowercase();
+        if matches!(status.as_str(), "error" | "failed" | "failure") {
+            return false;
+        }
+    }
+    true
+}
+
 // ============================================================================
 // Background stream processing
 // ============================================================================
@@ -1725,14 +1753,24 @@ pub async fn process_stream_background<R: Runtime>(
                         parent_tool_use_id,
                     } => {
                         if is_completion_tool_name(&tool_call.name) {
-                            completion_signal_tracker.mark_completion_called();
-                            tracing::info!(
-                                conversation_id = %conversation_id_str,
-                                context_id,
-                                tool_name = %tool_call.name,
-                                grace_secs = completion_grace_duration.as_secs(),
-                                "Completion tool called, entering shutdown grace period"
-                            );
+                            if completion_tool_result_accepted(tool_call.result.as_ref()) {
+                                completion_signal_tracker.mark_completion_called();
+                                tracing::info!(
+                                    conversation_id = %conversation_id_str,
+                                    context_id,
+                                    tool_name = %tool_call.name,
+                                    grace_secs = completion_grace_duration.as_secs(),
+                                    "Completion tool accepted, entering shutdown grace period"
+                                );
+                            } else {
+                                tracing::warn!(
+                                    conversation_id = %conversation_id_str,
+                                    context_id,
+                                    tool_name = %tool_call.name,
+                                    result = ?tool_call.result,
+                                    "Completion tool returned an error; not entering shutdown grace period"
+                                );
+                            }
                         }
 
                         // Capture old file content for Edit/Write tool calls
@@ -3461,7 +3499,17 @@ async fn process_codex_stream_background<R: Runtime>(
                 }
 
                 if is_completion_tool_name(&tool_call.name) {
-                    completion_signal_tracker.mark_completion_called();
+                    if completion_tool_result_accepted(tool_call.result.as_ref()) {
+                        completion_signal_tracker.mark_completion_called();
+                    } else {
+                        tracing::warn!(
+                            conversation_id = %conversation_id_str,
+                            context_id,
+                            tool_name = %tool_call.name,
+                            result = ?tool_call.result,
+                            "Codex completion tool returned an error; not entering shutdown grace period"
+                        );
+                    }
                 }
             }
 

@@ -46,6 +46,8 @@ fn git_add_and_commit(repo_path: &std::path::Path, message: &str) {
 // ==================
 
 /// Branch discovery with attempt_programmatic_merge: task_branch=None but git branch exists.
+///
+/// A discovered branch with no committed work must not be marked merged.
 #[tokio::test]
 async fn test_branch_discovery_integrates_with_pending_merge() {
     use crate::domain::entities::{Project, Task};
@@ -92,20 +94,16 @@ async fn test_branch_discovery_integrates_with_pending_merge() {
 
     let _ = handler.on_enter(&State::PendingMerge).await;
 
-    let repo = Arc::clone(&task_repo);
-    let tid = task.id.clone();
-    assert!(
-        wait_for_condition(
-            || {
-                let r = Arc::clone(&repo);
-                let t = tid.clone();
-                async move {
-                    r.get_by_id(&t).await.unwrap().unwrap().internal_status == InternalStatus::Merged
-                }
-            },
-            5000
-        ).await,
-        "Task should reach Merged status — proving branch was discovered and merge succeeded (branch={expected_branch})"
+    let updated = task_repo.get_by_id(&task.id).await.unwrap().unwrap();
+    assert_eq!(
+        updated.task_branch.as_deref(),
+        Some(expected_branch.as_str()),
+        "Task branch should be discovered and attached"
+    );
+    assert_eq!(
+        updated.internal_status,
+        InternalStatus::MergeIncomplete,
+        "Discovered branch has no committed source work and must not be marked Merged"
     );
 }
 

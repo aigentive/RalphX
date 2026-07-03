@@ -234,7 +234,16 @@ impl GitService {
     /// # Arguments
     /// * `path` - Path to the git repository or worktree
     pub async fn has_uncommitted_changes(path: &Path) -> AppResult<bool> {
-        let output = git_cmd::run(&["status", "--porcelain"], path).await?;
+        Ok(!Self::uncommitted_change_summary(path).await?.is_empty())
+    }
+
+    /// Return a short, human-readable summary of staged/unstaged/untracked changes.
+    ///
+    /// Uses `git status --porcelain=v1 -uall`, which respects `.gitignore` and
+    /// includes untracked source files that would otherwise be lost if a task
+    /// worktree were cleaned up before committing.
+    pub async fn uncommitted_change_summary(path: &Path) -> AppResult<Vec<String>> {
+        let output = git_cmd::run(&["status", "--porcelain=v1", "-uall"], path).await?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -245,7 +254,18 @@ impl GitService {
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        Ok(!stdout.trim().is_empty())
+        Ok(stdout
+            .lines()
+            .filter_map(|line| {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                }
+            })
+            .take(25)
+            .collect())
     }
 
     /// Check if there are staged changes ready to commit

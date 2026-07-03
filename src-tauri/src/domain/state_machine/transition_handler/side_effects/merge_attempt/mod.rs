@@ -557,7 +557,7 @@ impl<'a> TransitionHandler<'a> {
         .await;
 
         let source_update_elapsed = source_update_start.elapsed();
-        match source_update_result {
+        let source_updated_from_target = match source_update_result {
             Err(_elapsed) => {
                 tracing::error!(
                     task_id = task_id_str,
@@ -588,14 +588,21 @@ impl<'a> TransitionHandler<'a> {
                 .await;
                 return;
             }
-            Ok(merge_coordination::SourceUpdateResult::AlreadyUpToDate)
-            | Ok(merge_coordination::SourceUpdateResult::Updated) => {
+            Ok(merge_coordination::SourceUpdateResult::AlreadyUpToDate) => {
                 tracing::info!(
                     task_id = task_id_str,
                     elapsed_ms = source_update_elapsed.as_millis() as u64,
                     "update_source_from_target completed"
                 );
-                // Continue with merge
+                false
+            }
+            Ok(merge_coordination::SourceUpdateResult::Updated) => {
+                tracing::info!(
+                    task_id = task_id_str,
+                    elapsed_ms = source_update_elapsed.as_millis() as u64,
+                    "update_source_from_target completed"
+                );
+                true
             }
             Ok(merge_coordination::SourceUpdateResult::Conflicts { conflict_files }) => {
                 tracing::warn!(
@@ -678,8 +685,9 @@ impl<'a> TransitionHandler<'a> {
                     "Source branch update from target failed (non-fatal) — proceeding with merge"
                 );
                 // Non-fatal: continue with merge anyway. The source branch may still merge cleanly.
+                false
             }
-        }
+        };
 
         // Branch freshness checks complete
         emit_merge_progress(
@@ -843,6 +851,7 @@ impl<'a> TransitionHandler<'a> {
             ProjectCtx { project, repo_path },
             &squash_commit_msg,
             plan_branch_repo,
+            source_updated_from_target,
             remaining,
             deadline_secs,
         )
