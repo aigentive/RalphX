@@ -44,6 +44,8 @@ jobs:
               - '.cargo/**'
               - 'scripts/summarize-coverage.mjs'
               - 'scripts/bench-rust-build.sh'
+              - 'scripts/check-rust-test-features.py'
+              - 'scripts/test-rust-fast.sh'
               - 'src-tauri/**'
               - 'rust-toolchain.toml'
               - 'scripts/ci-install-linux-deps.sh'
@@ -178,6 +180,7 @@ jobs:
           cargo llvm-cov nextest \
             --profile ci \
             --lib \
+            --features test-utils \
             --partition hash:${{ matrix.partition }} \
             --remap-path-prefix \
             | tee "../${RUST_LIB_COVERAGE_ROOT}/summary.txt"
@@ -399,6 +402,7 @@ jobs:
           cargo llvm-cov clean --workspace
           cargo llvm-cov nextest \
             --profile ci \
+            --features test-utils \
             --test task_commands \
             --test api_key_commands \
             --test project_commands \
@@ -412,6 +416,7 @@ jobs:
             | tee ../coverage/rust-ipc/summary.txt
           cargo llvm-cov nextest \
             --profile ci \
+            --features test-utils \
             --test metrics_commands \
             --test metrics_delivery_trends \
             --test metrics_integration \
