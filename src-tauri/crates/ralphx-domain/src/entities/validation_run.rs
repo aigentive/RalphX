@@ -315,3 +315,7 @@ pub struct ValidationRunWithResults {
     pub run: ValidationRun,
     pub commands: Vec<ValidationCommandResult>,
 }
+
+#[cfg(test)]
+#[path = "validation_run_tests.rs"]
+mod tests;

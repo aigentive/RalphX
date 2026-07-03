@@ -296,8 +296,7 @@ async fn build_or_run_command(
 ) -> AppResult<ValidationCommandResult> {
     let command = normalize_command(&request.command)?;
     let cwd = resolve_command_cwd(repo_path, request.cwd.as_deref())?;
-    let category =
-        ValidationCommandCategory::parse(request.category.as_deref().unwrap_or("test"));
+    let category = ValidationCommandCategory::parse(request.category.as_deref().unwrap_or("test"));
     let command_source = match request.source.as_deref() {
         Some("project_analysis_ref") => ValidationCommandSource::ProjectAnalysisRef,
         _ if request.command_ref.is_some() => ValidationCommandSource::ProjectAnalysisRef,
@@ -861,6 +860,168 @@ mod tests {
                 source: None,
             }],
         }
+    }
+
+    #[tokio::test]
+    async fn run_task_validation_runs_command_and_reuses_cached_success_for_same_episode() {
+        let (state, temp_dir, task_id) = seeded_state().await;
+        let package_dir = temp_dir.path().join("package");
+        std::fs::create_dir(&package_dir).expect("package dir should be created");
+        state
+            .task_repo
+            .persist_status_change(
+                &task_id,
+                InternalStatus::Ready,
+                InternalStatus::Executing,
+                "agent-started",
+            )
+            .await
+            .expect("execution episode should be recorded");
+
+        let mut first_request = request(&task_id, "ralphx-execution-worker");
+        first_request.analysis_fingerprint = Some("analysis-fingerprint".to_string());
+        first_request.commands = vec![ValidationCommandRequest {
+            command: "printf validation-pass".to_string(),
+            cwd: Some("package".to_string()),
+            label: Some("Unit tests".to_string()),
+            category: Some("test".to_string()),
+            reason: Some("exercise managed validation runner".to_string()),
+            related_files: vec![
+                "src/lib.rs".to_string(),
+                "/absolute.rs".to_string(),
+                "../escape.rs".to_string(),
+                "nested//bad.rs".to_string(),
+                "  ".to_string(),
+            ],
+            command_ref: Some("test-command".to_string()),
+            source: Some("project_analysis_ref".to_string()),
+        }];
+
+        let first = TaskValidationService::run_task_validation(&state, first_request.clone())
+            .await
+            .expect("first validation should run");
+
+        assert!(first.policy_enabled);
+        let first_run = first.latest_run.expect("run summary should be present");
+        assert_eq!(first_run.status, "passed");
+        assert_eq!(first_run.mode, "force");
+        assert_eq!(
+            first_run.requested_by_agent.as_deref(),
+            Some("ralphx-execution-worker")
+        );
+        assert_eq!(first_run.base_ref.as_deref(), Some("main"));
+        assert_eq!(first.commands.len(), 1);
+        let first_command = &first.commands[0];
+        assert_eq!(first_command.command_source, "project_analysis_ref");
+        assert_eq!(first_command.command_ref.as_deref(), Some("test-command"));
+        assert_eq!(first_command.category, "test");
+        assert_eq!(first_command.cache_decision, "forced");
+        assert_eq!(first_command.status, "passed");
+        assert_eq!(first_command.exit_code, Some(0));
+        assert_eq!(
+            first_command.stdout_snippet.as_deref(),
+            Some("validation-pass")
+        );
+        assert!(first_command.stdout_log_path.is_some());
+        assert!(first_command.stderr_log_path.is_none());
+        assert_eq!(first_command.related_files, vec!["src/lib.rs"]);
+
+        let mut second_request = first_request;
+        second_request.mode = Some("reuse_or_run".to_string());
+        let second = TaskValidationService::run_task_validation(&state, second_request)
+            .await
+            .expect("second validation should reuse cached success");
+
+        assert_eq!(second.commands.len(), 1);
+        let cached = &second.commands[0];
+        assert_eq!(cached.cache_decision, "cached");
+        assert_eq!(cached.status, "cached");
+        assert_eq!(cached.exit_code, Some(0));
+        assert_eq!(cached.stdout_snippet.as_deref(), Some("validation-pass"));
+        assert_ne!(cached.id, first_command.id);
+
+        let latest = state
+            .validation_run_repo
+            .latest_run_with_results_for_task(&task_id)
+            .await
+            .expect("latest run lookup should succeed")
+            .expect("latest run should exist");
+        assert_eq!(latest.run.status, ValidationRunStatus::Passed);
+        assert_eq!(latest.run.mode, ValidationRunMode::ReuseOrRun);
+        assert_eq!(latest.commands.len(), 1);
+        assert_eq!(
+            latest.commands[0].cache_decision,
+            ValidationCacheDecision::Cached
+        );
+        assert_eq!(latest.commands[0].status, ValidationCommandStatus::Cached);
+
+        let summary = TaskValidationService::get_task_validation_summary(&state, &task_id)
+            .await
+            .expect("summary should load latest cached validation");
+        assert_eq!(summary.latest_run.expect("latest run").status, "passed");
+        assert_eq!(summary.commands[0].cache_decision, "cached");
+        assert!(summary.disabled_reason.is_none());
+    }
+
+    #[tokio::test]
+    async fn run_task_validation_dry_run_records_skipped_commands_and_disabled_summary_reason() {
+        let (state, _temp_dir, task_id) = seeded_state().await;
+        let mut request = request(&task_id, "ralphx-execution-worker");
+        request.mode = Some("dry-run".to_string());
+        request.purpose = Some("re-execution".to_string());
+        request.context_type = Some("agent-conversation".to_string());
+        request.commands = vec![ValidationCommandRequest {
+            command: "echo dry-run".to_string(),
+            cwd: Some(".".to_string()),
+            label: Some("Dry validation".to_string()),
+            category: Some("type_check".to_string()),
+            reason: Some("preview only".to_string()),
+            related_files: vec![
+                "frontend/src/App.tsx".to_string(),
+                "bad/../path".to_string(),
+            ],
+            command_ref: Some("typecheck".to_string()),
+            source: None,
+        }];
+
+        let summary = TaskValidationService::run_task_validation(&state, request)
+            .await
+            .expect("dry run should record skipped command");
+
+        let run = summary.latest_run.expect("run summary should be present");
+        assert_eq!(run.purpose, "re_execution");
+        assert_eq!(run.context_type, "agent_conversation");
+        assert_eq!(run.status, "skipped");
+        assert_eq!(run.mode, "dry_run");
+        assert_eq!(summary.commands.len(), 1);
+        let command = &summary.commands[0];
+        assert_eq!(command.command_source, "project_analysis_ref");
+        assert_eq!(command.category, "typecheck");
+        assert_eq!(command.cache_decision, "skipped");
+        assert_eq!(command.status, "skipped");
+        assert_eq!(command.duration_ms, Some(0));
+        assert_eq!(command.related_files, vec!["frontend/src/App.tsx"]);
+        assert!(command.stdout_log_path.is_none());
+        assert!(command.stderr_log_path.is_none());
+
+        state
+            .review_settings_repo
+            .update_settings(&ReviewSettings {
+                run_task_validations: false,
+                ..ReviewSettings::default()
+            })
+            .await
+            .expect("settings should update");
+
+        let disabled = TaskValidationService::get_task_validation_summary(&state, &task_id)
+            .await
+            .expect("disabled summary should still load");
+        assert!(!disabled.policy_enabled);
+        assert_eq!(
+            disabled.disabled_reason.as_deref(),
+            Some("Run Task Validations is disabled in Review Policy")
+        );
+        assert_eq!(disabled.commands[0].status, "skipped");
     }
 
     #[tokio::test]

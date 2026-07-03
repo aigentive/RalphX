@@ -422,3 +422,22 @@ impl From<ReviewSettings> for ReviewSettingsResponse {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn review_settings_response_includes_task_validation_policy() {
+        let settings = ReviewSettings {
+            run_task_validations: false,
+            ..ReviewSettings::default()
+        };
+
+        let response = ReviewSettingsResponse::from(settings);
+
+        assert!(!response.run_task_validations);
+        assert!(response.ai_review_enabled);
+        assert!(response.auto_create_followup_agent_conversation);
+    }
+}
