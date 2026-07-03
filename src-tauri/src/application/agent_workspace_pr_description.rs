@@ -20,10 +20,10 @@ pub const DEFAULT_AGENT_WORKSPACE_PR_TEMPLATE: &str =
     include_str!("../../../.github/PULL_REQUEST_TEMPLATE.md");
 
 const MAX_AGENT_WORKSPACE_PR_BODY_CHARS: usize = 60_000;
-const MAX_PATCH_EXCERPT_CHARS: usize = 42_000;
+pub(crate) const MAX_PATCH_EXCERPT_CHARS: usize = 42_000;
 const MAX_CONVERSATION_CONTEXT_CHARS: usize = 12_000;
-const MAX_NAME_STATUS_CHARS: usize = 16_000;
-const MAX_STAT_CHARS: usize = 8_000;
+pub(crate) const MAX_NAME_STATUS_CHARS: usize = 16_000;
+pub(crate) const MAX_STAT_CHARS: usize = 8_000;
 const MAX_MESSAGE_CHARS: usize = 1_600;
 const MAX_CONTEXT_MESSAGES: usize = 12;
 const MAX_COMMIT_SUMMARIES: usize = 40;
@@ -302,6 +302,7 @@ pub async fn draft_agent_workspace_pr_description(
         PathBuf::from(&project.working_directory),
     );
     ensure_pr_describer_submit_tool_available(helper_harness, &bootstrap.plugin_dir)?;
+    let env = runtime.env_with_overrides(bootstrap.env);
 
     let spawn_started = Instant::now();
     let output = agent_client
@@ -317,9 +318,10 @@ pub async fn draft_agent_workspace_pr_description(
             logical_effort: runtime.logical_effort,
             approval_policy: runtime.approval_policy,
             sandbox_mode: runtime.sandbox_mode,
+            service_tier: runtime.service_tier,
             max_tokens: None,
             timeout_secs: Some(120),
-            env: bootstrap.env,
+            env,
         })
         .await
         .map_err(|error| {
@@ -614,9 +616,8 @@ fn recover_pr_description_from_literal_tool_call(
         return None;
     }
 
-    let body_markdown = unescape_xml_text(
-        extract_literal_tool_parameter(output, "body_markdown")?.trim(),
-    );
+    let body_markdown =
+        unescape_xml_text(extract_literal_tool_parameter(output, "body_markdown")?.trim());
     if body_markdown.trim().is_empty() {
         return None;
     }
@@ -678,7 +679,7 @@ async fn read_template(repo_path: &Path) -> Option<String> {
     }
 }
 
-async fn run_git_text(repo: &Path, args: &[&str]) -> AppResult<String> {
+pub(crate) async fn run_git_text(repo: &Path, args: &[&str]) -> AppResult<String> {
     let output = git_cmd::run(args, repo).await?;
     if !output.status.success() {
         return Err(AppError::GitOperation(format!(
@@ -798,7 +799,9 @@ fn build_pr_describer_prompt(ctx: PrDescriberPromptContext<'_>) -> String {
     )
 }
 
-fn format_commit_summaries(commits: &[crate::application::git_service::CommitInfo]) -> String {
+pub(crate) fn format_commit_summaries(
+    commits: &[crate::application::git_service::CommitInfo],
+) -> String {
     if commits.is_empty() {
         return "No commit summaries were available.".to_string();
     }
@@ -829,7 +832,9 @@ fn is_pr_description_commit_noise(message: &str) -> bool {
         || trimmed.starts_with("merged ")
 }
 
-fn format_changed_files(diff_stats: &crate::application::git_service::DiffStats) -> String {
+pub(crate) fn format_changed_files(
+    diff_stats: &crate::application::git_service::DiffStats,
+) -> String {
     if diff_stats.changed_files.is_empty() {
         return "No changed files were reported by git diff.".to_string();
     }
@@ -841,11 +846,11 @@ fn format_changed_files(diff_stats: &crate::application::git_service::DiffStats)
         .join("\n")
 }
 
-fn truncate_chars(text: &str, max_chars: usize) -> String {
+pub(crate) fn truncate_chars(text: &str, max_chars: usize) -> String {
     text.chars().take(max_chars).collect()
 }
 
-fn escape_xml_text(value: &str) -> String {
+pub(crate) fn escape_xml_text(value: &str) -> String {
     value
         .replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -1131,7 +1136,10 @@ mod tests {
             AgentWorkspacePrDescriptionCacheStatus::Coalesced.as_str(),
             "coalesced"
         );
-        assert_eq!(AgentWorkspacePrDescriptionCacheStatus::Miss.as_str(), "miss");
+        assert_eq!(
+            AgentWorkspacePrDescriptionCacheStatus::Miss.as_str(),
+            "miss"
+        );
         assert_eq!(
             AgentWorkspacePrDescriptionCacheStatus::Disabled.as_str(),
             "disabled"
@@ -1223,9 +1231,15 @@ mod tests {
         .await
         .expect("first draft should succeed");
 
-        assert_eq!(first.cache_status, AgentWorkspacePrDescriptionCacheStatus::Miss);
+        assert_eq!(
+            first.cache_status,
+            AgentWorkspacePrDescriptionCacheStatus::Miss
+        );
         assert!(first.cache_age_ms.is_none());
-        assert_eq!(first.description.title.as_deref(), Some("Cached draft title"));
+        assert_eq!(
+            first.description.title.as_deref(),
+            Some("Cached draft title")
+        );
         assert_eq!(client.spawned_configs().await.len(), 1);
 
         let second = get_or_draft_agent_workspace_pr_description(
@@ -1240,10 +1254,16 @@ mod tests {
         .await
         .expect("second draft should hit cache");
 
-        assert_eq!(second.cache_status, AgentWorkspacePrDescriptionCacheStatus::Hit);
+        assert_eq!(
+            second.cache_status,
+            AgentWorkspacePrDescriptionCacheStatus::Hit
+        );
         assert!(second.cache_age_ms.is_some());
         assert_eq!(second.cache_wait_ms, 0);
-        assert_eq!(second.description.body_markdown, "## Summary\n\nCached draft body.");
+        assert_eq!(
+            second.description.body_markdown,
+            "## Summary\n\nCached draft body."
+        );
         assert_eq!(
             client.spawned_configs().await.len(),
             1,
@@ -1756,7 +1776,10 @@ mod tests {
         .expect("literal tool call output should recover");
 
         assert_eq!(description.title.as_deref(), Some("Recovered title"));
-        assert_eq!(description.body_markdown, "## Summary\n\nRecovered body & context");
+        assert_eq!(
+            description.body_markdown,
+            "## Summary\n\nRecovered body & context"
+        );
         let stored = state
             .agent_conversation_workspace_repo
             .get_pr_description(&conversation.id)
@@ -1856,8 +1879,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn draft_pr_description_summarizes_tool_unavailable_output_when_agent_submits_nothing()
-    {
+    async fn draft_pr_description_summarizes_tool_unavailable_output_when_agent_submits_nothing() {
         let (_temp_dir, repo, base) = create_reviewable_repo();
         let project = project_for(&repo);
         let mut conversation = conversation_for(&project);

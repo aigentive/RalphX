@@ -1,44 +1,14 @@
 import { useEffect, useMemo } from "react";
 
 import { chatApi } from "@/api/chat";
-import { type AgentStatus, useChatStore } from "@/stores/chatStore";
 
 import {
   getAgentConversationStoreKey,
   type AgentConversation,
 } from "./agentConversations";
+import { reconcileAgentConversationRuntimeStatus } from "./agentConversationRuntimeStore";
 
 const AGENT_SIDEBAR_LIVENESS_POLL_MS = 5_000;
-
-type SidebarRunningState =
-  | boolean
-  | {
-      isRunning?: boolean;
-      is_running?: boolean;
-      agentStatus?: AgentStatus;
-      agent_status?: AgentStatus;
-    };
-
-function normalizeRunningState(state: SidebarRunningState | undefined): {
-  isRunning: boolean;
-  agentStatus: AgentStatus;
-} {
-  if (typeof state === "boolean") {
-    return {
-      isRunning: state,
-      agentStatus: state ? "generating" : "idle",
-    };
-  }
-
-  const isRunning = state?.isRunning ?? state?.is_running ?? false;
-  const agentStatus = state?.agentStatus ?? state?.agent_status ?? "generating";
-  return {
-    isRunning,
-    agentStatus: isRunning
-      ? (agentStatus === "idle" ? "generating" : agentStatus)
-      : "idle",
-  };
-}
 
 export function useAgentSidebarRunningStates(
   conversations: AgentConversation[],
@@ -73,29 +43,16 @@ export function useAgentSidebarRunningStates(
 
       const contextIds = projectConversations.map((conversation) => conversation.id);
       chatApi
-        .getAgentRunningStates("project", contextIds)
-        .then((runningStates) => {
+        .getAgentConversationRuntimeStatuses(contextIds)
+        .then((runtimeStatuses) => {
           if (cancelled) return;
 
-          const chatState = useChatStore.getState();
           for (const conversation of projectConversations) {
-            const storeKey = getAgentConversationStoreKey(conversation);
-            const { isRunning, agentStatus } = normalizeRunningState(
-              runningStates[conversation.id] as SidebarRunningState | undefined
+            reconcileAgentConversationRuntimeStatus(
+              conversation.id,
+              runtimeStatuses[conversation.id],
+              { storeKey: getAgentConversationStoreKey(conversation) }
             );
-            const currentStatus = chatState.agentStatus[storeKey] ?? "idle";
-
-            if (isRunning) {
-              chatState.setActiveConversation(storeKey, conversation.id);
-              if (currentStatus !== agentStatus) {
-                chatState.setAgentStatus(storeKey, agentStatus);
-              }
-              continue;
-            }
-
-            if (currentStatus !== "idle") {
-              chatState.setAgentRunning(storeKey, false);
-            }
           }
         })
         .catch(() => {

@@ -10,7 +10,7 @@ use crate::domain::entities::TaskId;
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::tool_paths::resolve_git_cli_path;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -78,8 +78,16 @@ pub struct FileDiffPage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DiffPageRow {
-    HunkHeader { header: String },
-    Line { line: DiffLine },
+    HunkHeader {
+        header: String,
+        old_start: u32,
+        old_lines: u32,
+        new_start: u32,
+        new_lines: u32,
+    },
+    Line {
+        line: DiffLine,
+    },
 }
 
 // =========================================================================
@@ -133,7 +141,9 @@ pub enum DiffRefKind {
     Head,
     Staged,
     Unstaged,
-    Commit { sha: String },
+    Commit {
+        sha: String,
+    },
     /// Workspace cumulative base ref — caller must resolve before passing to DiffService
     CumulativeBase,
     /// Workspace cumulative head ref — caller must resolve before passing to DiffService
@@ -191,6 +201,10 @@ impl DiffService {
         for hunk in diff.hunks {
             rows.push(DiffPageRow::HunkHeader {
                 header: hunk.header,
+                old_start: hunk.old_start,
+                old_lines: hunk.old_lines,
+                new_start: hunk.new_start,
+                new_lines: hunk.new_lines,
             });
             rows.extend(
                 hunk.lines
@@ -239,16 +253,16 @@ impl DiffService {
     ) -> AppResult<Vec<FileChange>> {
         let name_status = run_git_text(project_path, &["diff", "--name-status", base_ref])?;
         let line_counts = run_git_numstat_lossy(project_path, &["diff", "--numstat", base_ref]);
-        Ok(file_changes_from_name_status(&name_status, &line_counts))
+        let mut changes = file_changes_from_name_status(&name_status, &line_counts);
+        self.extend_untracked_file_changes(project_path, &mut changes)?;
+        Ok(changes)
     }
 
     /// Get files staged in the index (git diff --cached).
     /// Only shows changes between HEAD and the index — excludes unstaged working-tree edits.
     pub fn get_staged_file_changes(&self, project_path: &str) -> AppResult<Vec<FileChange>> {
-        let name_status =
-            run_git_text(project_path, &["diff", "--cached", "--name-status"])?;
-        let line_counts =
-            run_git_numstat_lossy(project_path, &["diff", "--cached", "--numstat"]);
+        let name_status = run_git_text(project_path, &["diff", "--cached", "--name-status"])?;
+        let line_counts = run_git_numstat_lossy(project_path, &["diff", "--cached", "--numstat"]);
         Ok(file_changes_from_name_status(&name_status, &line_counts))
     }
 
@@ -257,20 +271,17 @@ impl DiffService {
     pub fn get_unstaged_file_changes(&self, project_path: &str) -> AppResult<Vec<FileChange>> {
         let name_status = run_git_text(project_path, &["diff", "--name-status"])?;
         let line_counts = run_git_numstat_lossy(project_path, &["diff", "--numstat"]);
-        Ok(file_changes_from_name_status(&name_status, &line_counts))
+        let mut changes = file_changes_from_name_status(&name_status, &line_counts);
+        self.extend_untracked_file_changes(project_path, &mut changes)?;
+        Ok(changes)
     }
 
     /// Get the diff for a specific file between HEAD and the staging area.
     ///
     /// Old = committed HEAD version; New = staged (index) version.
-    pub fn get_staged_file_diff(
-        &self,
-        file_path: &str,
-        project_path: &str,
-    ) -> AppResult<FileDiff> {
-        let raw_diff =
-            run_git_text(project_path, &["diff", "--cached", "HEAD", "--", file_path])
-                .unwrap_or_default();
+    pub fn get_staged_file_diff(&self, file_path: &str, project_path: &str) -> AppResult<FileDiff> {
+        let raw_diff = run_git_text(project_path, &["diff", "--cached", "HEAD", "--", file_path])
+            .unwrap_or_default();
         let is_binary = raw_diff.contains("Binary files");
         let hunks = if is_binary {
             vec![]
@@ -297,8 +308,10 @@ impl DiffService {
         file_path: &str,
         project_path: &str,
     ) -> AppResult<FileDiff> {
-        let raw_diff =
-            run_git_text(project_path, &["diff", "--", file_path]).unwrap_or_default();
+        let raw_diff = run_git_text(project_path, &["diff", "--", file_path]).unwrap_or_default();
+        if raw_diff.trim().is_empty() && self.is_untracked_file(project_path, file_path)? {
+            return self.get_untracked_file_diff(file_path, project_path);
+        }
         let is_binary = raw_diff.contains("Binary files");
         let hunks = if is_binary {
             vec![]
@@ -317,17 +330,69 @@ impl DiffService {
         })
     }
 
+    /// Get 3-way conflict data from Git's unmerged index stages.
+    ///
+    /// Stage 1 = merge base, stage 2 = ours, stage 3 = theirs. This is the
+    /// most reliable source while a worktree is paused mid-merge or mid-rebase,
+    /// because branch names may be detached or no longer point at the exact
+    /// commits involved in the conflict.
+    pub fn get_index_conflict_diff(
+        &self,
+        file_path: &str,
+        project_path: &str,
+    ) -> AppResult<ConflictDiff> {
+        validate_diff_file_path(file_path)?;
+
+        let base_content = self
+            .get_file_content_at_index_stage(project_path, file_path, 1)
+            .unwrap_or_default();
+        let ours_content = self
+            .get_file_content_at_index_stage(project_path, file_path, 2)
+            .unwrap_or_default();
+        let theirs_content = self
+            .get_file_content_at_index_stage(project_path, file_path, 3)
+            .unwrap_or_default();
+        let full_path = Path::new(project_path).join(file_path);
+        let merged_with_markers =
+            crate::utils::path_safety::checked_read_to_string(&full_path, "conflict file")
+                .unwrap_or_default();
+
+        Ok(ConflictDiff {
+            file_path: file_path.to_string(),
+            base_content,
+            ours_content,
+            theirs_content,
+            merged_with_markers,
+            language: get_language_from_path(file_path),
+        })
+    }
+
     /// Read a file's content from the git index (staging area).
     ///
     /// Uses `git show :<file>` where the leading `:` refers to the index.
     /// Returns `None` if the file is not staged (e.g. untracked or only on disk).
-    fn get_file_content_at_index(
+    fn get_file_content_at_index(&self, project_path: &str, file_path: &str) -> Option<String> {
+        let output = Command::new(resolve_git_cli_path())
+            .args(["show", &format!(":{}", file_path)])
+            .current_dir(project_path)
+            .output()
+            .ok()?;
+        if output.status.success() {
+            Some(String::from_utf8_lossy(&output.stdout).to_string())
+        } else {
+            None
+        }
+    }
+
+    /// Read a file's content from a specific git index stage.
+    fn get_file_content_at_index_stage(
         &self,
         project_path: &str,
         file_path: &str,
+        stage: u8,
     ) -> Option<String> {
         let output = Command::new(resolve_git_cli_path())
-            .args(["show", &format!(":{}", file_path)])
+            .args(["show", &format!(":{stage}:{file_path}")])
             .current_dir(project_path)
             .output()
             .ok()?;
@@ -346,8 +411,10 @@ impl DiffService {
         base_branch: &str,
     ) -> AppResult<FileDiff> {
         let raw_diff =
-            run_git_text(project_path, &["diff", base_branch, "--", file_path])
-                .unwrap_or_default();
+            run_git_text(project_path, &["diff", base_branch, "--", file_path]).unwrap_or_default();
+        if raw_diff.trim().is_empty() && self.is_untracked_file(project_path, file_path)? {
+            return self.get_untracked_file_diff(file_path, project_path);
+        }
         let is_binary = raw_diff.contains("Binary files");
         let hunks = if is_binary {
             vec![]
@@ -364,6 +431,97 @@ impl DiffService {
             new_total_lines,
             is_binary,
         })
+    }
+
+    fn extend_untracked_file_changes(
+        &self,
+        project_path: &str,
+        changes: &mut Vec<FileChange>,
+    ) -> AppResult<()> {
+        let mut tracked_paths = changes
+            .iter()
+            .map(|change| change.path.clone())
+            .collect::<HashSet<_>>();
+        for change in self.get_untracked_file_changes(project_path)? {
+            if tracked_paths.insert(change.path.clone()) {
+                changes.push(change);
+            }
+        }
+        changes.sort_by(|a, b| a.path.cmp(&b.path));
+        Ok(())
+    }
+
+    fn get_untracked_file_changes(&self, project_path: &str) -> AppResult<Vec<FileChange>> {
+        let status = run_git_text(project_path, &["status", "--porcelain=v1", "-z", "-uall"])?;
+        let mut changes = Vec::new();
+        for entry in status.split('\0').filter(|entry| !entry.is_empty()) {
+            let Some(path) = entry.strip_prefix("?? ") else {
+                continue;
+            };
+            validate_diff_file_path(path)?;
+            let additions = self.count_untracked_file_lines(project_path, path)?;
+            changes.push(FileChange {
+                path: path.to_string(),
+                status: FileChangeStatus::Added,
+                additions,
+                deletions: 0,
+                is_generated: false,
+            });
+        }
+        changes.sort_by(|a, b| a.path.cmp(&b.path));
+        Ok(changes)
+    }
+
+    fn is_untracked_file(&self, project_path: &str, file_path: &str) -> AppResult<bool> {
+        validate_diff_file_path(file_path)?;
+        let status = run_git_text(
+            project_path,
+            &["status", "--porcelain=v1", "-z", "-uall", "--", file_path],
+        )?;
+        Ok(status
+            .split('\0')
+            .any(|entry| entry.strip_prefix("?? ") == Some(file_path)))
+    }
+
+    fn get_untracked_file_diff(&self, file_path: &str, project_path: &str) -> AppResult<FileDiff> {
+        let Some(bytes) = read_validated_worktree_file_bytes(project_path, file_path)? else {
+            return Ok(FileDiff {
+                file_path: file_path.to_string(),
+                language: get_language_from_path(file_path),
+                hunks: Vec::new(),
+                old_total_lines: 0,
+                new_total_lines: 0,
+                is_binary: true,
+            });
+        };
+        let Ok(content) = String::from_utf8(bytes) else {
+            return Ok(FileDiff {
+                file_path: file_path.to_string(),
+                language: get_language_from_path(file_path),
+                hunks: Vec::new(),
+                old_total_lines: 0,
+                new_total_lines: 0,
+                is_binary: true,
+            });
+        };
+        let new_total_lines = content.lines().count() as u32;
+        Ok(FileDiff {
+            file_path: file_path.to_string(),
+            language: get_language_from_path(file_path),
+            hunks: added_file_hunks(&content),
+            old_total_lines: 0,
+            new_total_lines,
+            is_binary: false,
+        })
+    }
+
+    fn count_untracked_file_lines(&self, project_path: &str, file_path: &str) -> AppResult<u32> {
+        let Some(bytes) = read_validated_worktree_file_bytes(project_path, file_path)? else {
+            return Ok(0);
+        };
+        Ok(String::from_utf8(bytes)
+            .map(|content| content.lines().count() as u32)
+            .unwrap_or(0))
     }
 
     /// Get files changed in a specific commit
@@ -426,9 +584,8 @@ impl DiffService {
         from_ref: &str,
         to_ref: &str,
     ) -> AppResult<FileDiff> {
-        let raw_diff =
-            run_git_text(project_path, &["diff", from_ref, to_ref, "--", file_path])
-                .unwrap_or_default();
+        let raw_diff = run_git_text(project_path, &["diff", from_ref, to_ref, "--", file_path])
+            .unwrap_or_default();
         let is_binary = raw_diff.contains("Binary files");
         let hunks = if is_binary {
             vec![]
@@ -678,8 +835,7 @@ impl DiffService {
             DiffRefKind::Unstaged => {
                 if matches!(side, DiffSide::New) {
                     // Working-tree file — use safe read helper (CodeQL path containment)
-                    let full_path =
-                        std::path::PathBuf::from(workspace_path).join(path);
+                    let full_path = std::path::PathBuf::from(workspace_path).join(path);
                     crate::utils::path_safety::checked_read_to_string(
                         &full_path,
                         "content range file",
@@ -694,30 +850,21 @@ impl DiffService {
                         })?
                 }
             }
-            DiffRefKind::Staged => {
-                self.get_file_content_at_index(workspace_path, path)
-                    .ok_or_else(|| {
-                        AppError::GitOperation(format!(
-                            "File '{path}' not found in the git index"
-                        ))
-                    })?
-            }
-            DiffRefKind::Head => {
-                self.get_file_content_at_ref(workspace_path, "HEAD", path)
-                    .ok_or_else(|| {
-                        AppError::GitOperation(format!(
-                            "File '{path}' not found at HEAD"
-                        ))
-                    })?
-            }
-            DiffRefKind::Commit { sha } => {
-                self.get_file_content_at_ref(workspace_path, sha, path)
-                    .ok_or_else(|| {
-                        AppError::GitOperation(format!(
-                            "File '{path}' not found at commit {sha}"
-                        ))
-                    })?
-            }
+            DiffRefKind::Staged => self
+                .get_file_content_at_index(workspace_path, path)
+                .ok_or_else(|| {
+                    AppError::GitOperation(format!("File '{path}' not found in the git index"))
+                })?,
+            DiffRefKind::Head => self
+                .get_file_content_at_ref(workspace_path, "HEAD", path)
+                .ok_or_else(|| {
+                    AppError::GitOperation(format!("File '{path}' not found at HEAD"))
+                })?,
+            DiffRefKind::Commit { sha } => self
+                .get_file_content_at_ref(workspace_path, sha, path)
+                .ok_or_else(|| {
+                    AppError::GitOperation(format!("File '{path}' not found at commit {sha}"))
+                })?,
             DiffRefKind::CumulativeBase | DiffRefKind::CumulativeHead => {
                 return Err(AppError::Validation(
                     "CumulativeBase/CumulativeHead must be resolved to Commit by the caller"
@@ -1028,9 +1175,7 @@ impl DiffService {
                 Ok(flags)
             }
             Err(e) => {
-                tracing::warn!(
-                    "git check-attr failed, falling back to heuristic: {e}"
-                );
+                tracing::warn!("git check-attr failed, falling back to heuristic: {e}");
                 let flags = paths
                     .iter()
                     .map(|&p| (p.to_string(), is_generated_by_heuristic(p)))
@@ -1055,9 +1200,7 @@ impl DiffService {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| {
-                AppError::GitOperation(format!("Failed to spawn git check-attr: {e}"))
-            })?;
+            .map_err(|e| AppError::GitOperation(format!("Failed to spawn git check-attr: {e}")))?;
 
         // Write all paths to stdin (drop closes the pipe, signalling EOF to git)
         if let Some(mut stdin) = child.stdin.take() {
@@ -1247,6 +1390,102 @@ fn max_new_line_from_hunks(hunks: &[DiffHunk]) -> u32 {
         .map(|hunk| hunk.new_start + hunk.new_lines - 1)
         .max()
         .unwrap_or(0)
+}
+
+fn added_file_hunks(content: &str) -> Vec<DiffHunk> {
+    let lines = content
+        .lines()
+        .enumerate()
+        .map(|(index, line)| DiffLine {
+            kind: DiffLineKind::Addition,
+            content: line.to_string(),
+            old_line_num: None,
+            new_line_num: Some((index + 1) as u32),
+        })
+        .collect::<Vec<_>>();
+    let new_lines = lines.len() as u32;
+    if new_lines == 0 {
+        return Vec::new();
+    }
+
+    vec![DiffHunk {
+        old_start: 0,
+        old_lines: 0,
+        new_start: 1,
+        new_lines,
+        header: format!("@@ -0,0 +1,{new_lines} @@"),
+        lines,
+    }]
+}
+
+fn validated_worktree_file_path(project_path: &str, file_path: &str) -> AppResult<PathBuf> {
+    validate_diff_file_path(file_path)?;
+    let root = crate::utils::path_safety::validate_absolute_non_root_path(
+        Path::new(project_path),
+        "workspace root",
+    )?;
+    let canonical_root = root.canonicalize().map_err(|error| {
+        AppError::Infrastructure(format!(
+            "Failed to canonicalize workspace root {}: {error}",
+            root.display()
+        ))
+    })?;
+    let candidate = crate::utils::path_safety::validate_absolute_non_root_path(
+        &root.join(file_path),
+        "diff file",
+    )?;
+    let parent = candidate.parent().ok_or_else(|| {
+        AppError::Validation(format!(
+            "Diff file path has no parent: {}",
+            candidate.display()
+        ))
+    })?;
+    let canonical_parent = parent.canonicalize().map_err(|error| {
+        AppError::Infrastructure(format!(
+            "Failed to canonicalize diff file parent {}: {error}",
+            parent.display()
+        ))
+    })?;
+    if !canonical_parent.starts_with(&canonical_root) {
+        return Err(AppError::Validation(format!(
+            "File path escapes workspace root: {}",
+            candidate.display()
+        )));
+    }
+    let file_name = candidate.file_name().ok_or_else(|| {
+        AppError::Validation(format!(
+            "Diff file path has no filename: {}",
+            candidate.display()
+        ))
+    })?;
+    Ok(canonical_parent.join(file_name))
+}
+
+fn read_validated_worktree_file_bytes(
+    project_path: &str,
+    file_path: &str,
+) -> AppResult<Option<Vec<u8>>> {
+    let file_path = validated_worktree_file_path(project_path, file_path)?;
+    let metadata = match std::fs::symlink_metadata(&file_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(AppError::Infrastructure(format!(
+                "Failed to inspect diff file {}: {error}",
+                file_path.display()
+            )));
+        }
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Ok(None);
+    }
+
+    std::fs::read(&file_path).map(Some).map_err(|error| {
+        AppError::Infrastructure(format!(
+            "Failed to read diff file {}: {error}",
+            file_path.display()
+        ))
+    })
 }
 
 fn run_git_text(project_path: &str, args: &[&str]) -> AppResult<String> {
@@ -1523,7 +1762,9 @@ fn validate_diff_file_path(path: &str) -> AppResult<()> {
         }
     }
     if path.is_empty() {
-        return Err(AppError::Validation("File path must not be empty".to_string()));
+        return Err(AppError::Validation(
+            "File path must not be empty".to_string(),
+        ));
     }
     Ok(())
 }

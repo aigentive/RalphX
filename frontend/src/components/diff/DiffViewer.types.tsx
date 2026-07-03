@@ -68,6 +68,8 @@ export interface DiffViewerProps {
   onFetchDiff: (filePath: string, commitSha?: string) => Promise<DiffData | null>;
   /** GitHub PR review/check annotations for the current workspace diff. */
   annotations?: import("@/api/diff").PrDiffAnnotation[];
+  /** Workspace Review hunk notes for the current workspace diff. */
+  hunkAnnotations?: import("@/api/diff").WorkspaceReviewHunkAnnotation[];
   /** Callback to fetch files changed in a specific commit */
   onFetchCommitFiles?: (commitSha: string) => Promise<void>;
   /** Callback to open file in IDE */

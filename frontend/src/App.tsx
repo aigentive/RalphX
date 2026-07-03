@@ -19,10 +19,17 @@ import { ProposalDetailSheet } from "@/components/Ideation/ProposalDetailSheet";
 import type { ProposalDetailEnrichment } from "@/components/Ideation/ProposalDetailSheet";
 import { ExtensibilityView } from "@/components/ExtensibilityView";
 import { ActivityView } from "@/components/activity";
+import { GitHubBranchesView, githubBranchOverviewKeys } from "@/components/github";
+import {
+  GranolaDashboardView,
+  granolaComposerReference,
+  granolaDashboardKeys,
+} from "@/components/granola";
+import { TicketingDashboardView } from "@/components/ticketing";
 import SettingsDialog from "@/components/settings/SettingsDialog";
 import { InsightsView } from "@/components/views/InsightsView";
 import { SkillsView } from "@/components/views/SkillsView";
-import { AgentsView } from "@/components/agents";
+import { AgentsView, AgentIssueReportDialog } from "@/components/agents";
 import { TeamSplitView } from "@/components/Team";
 import { TaskGraphView } from "@/components/TaskGraph";
 import { WelcomeScreen } from "@/components/WelcomeScreen";
@@ -39,7 +46,9 @@ import { useProposalStore } from "@/stores/proposalStore";
 import { useProjectStore } from "@/stores/projectStore";
 import { useAgentSessionStore } from "@/stores/agentSessionStore";
 import { useSkillsEnabled } from "@/stores/skillsSettingsStore";
+import { useIntegrationDashboardStore } from "@/stores/integrationDashboardStore";
 import { DEFAULT_PROJECT_VIEW, type ViewType } from "@/types/chat";
+import { useTicketingStore } from "@/stores/ticketingStore";
 import type { ApplyProposalsInput } from "@/api/ideation.types";
 import type { UpdateProposalInput } from "@/api/ideation";
 import { toTaskProposal, ideationApi } from "@/api/ideation";
@@ -63,12 +72,17 @@ import { useFeatureFlags, isViewEnabled } from "@/hooks/useFeatureFlags";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
 import { useNavCompactBreakpoint } from "@/hooks";
 import { usePostUpdatePreparing } from "@/hooks/usePostUpdatePreparing";
+import { useTicketingCacheEvents } from "@/hooks/useTicketingEvents";
 import { extractErrorMessage } from "@/lib/errors";
 import { resolveIdeationSession } from "@/lib/resolveIdeationSession";
 import { readFreshPostUpdatePreparingMarker } from "@/lib/postUpdatePreparing";
 import { api, getGitBranches, getGitDefaultBranch } from "@/lib/tauri";
 import { executionApi } from "@/api/execution";
+import { githubApi } from "@/api/github";
+import { granolaApi, type GranolaNoteDetail, type GranolaNoteSummary } from "@/api/granola";
 import { tasksApi } from "@/api/tasks";
+import { ticketingApi, type TicketDeepLink } from "@/api/ticketing";
+import { ticketingKeys } from "@/hooks/useTicketing";
 import type { SelectionSource } from "@/api/plan";
 import type { ProjectSettings } from "@/types/settings";
 import { DEFAULT_PROJECT_SETTINGS } from "@/types/settings";
@@ -121,10 +135,12 @@ function FeatureDisabledPlaceholder({
   view,
   yamlKey,
   envVar,
+  settingsPath,
 }: {
   view: string;
-  yamlKey: string;
-  envVar: string;
+  yamlKey?: string;
+  envVar?: string;
+  settingsPath?: string;
 }) {
   return (
     <div
@@ -134,11 +150,19 @@ function FeatureDisabledPlaceholder({
       <p className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
         {view} page is disabled (dev mode)
       </p>
-      <div className="text-xs font-mono rounded p-3 text-left" style={{ background: "var(--bg-surface)", color: "var(--text-secondary)" }}>
-        <p className="mb-2 font-sans" style={{ color: "var(--text-muted)" }}>Enable via ralphx.yaml:</p>
-        <pre>{`ui:\n  feature_flags:\n    ${yamlKey}: true`}</pre>
-        <p className="mt-3 mb-1 font-sans" style={{ color: "var(--text-muted)" }}>Or via env var:</p>
-        <pre>{`${envVar}=true`}</pre>
+      <div className="text-xs font-mono rounded p-3 text-left" style={{ backgroundColor: "var(--bg-surface)", color: "var(--text-secondary)" }}>
+        {settingsPath ? (
+          <p className="font-sans" style={{ color: "var(--text-muted)" }}>
+            Enable it in {settingsPath}.
+          </p>
+        ) : (
+          <>
+            <p className="mb-2 font-sans" style={{ color: "var(--text-muted)" }}>Enable via ralphx.yaml:</p>
+            <pre>{`ui:\n  feature_flags:\n    ${yamlKey}: true`}</pre>
+            <p className="mt-3 mb-1 font-sans" style={{ color: "var(--text-muted)" }}>Or via env var:</p>
+            <pre>{`${envVar}=true`}</pre>
+          </>
+        )}
       </div>
     </div>
   );
@@ -170,8 +194,14 @@ function AppContent() {
   const [skillsEnabled] = useSkillsEnabled();
 
   // Redirect to the default project view in production when the current view is disabled.
+  // Ticketing remains directly reachable when a provider enables the dashboard
+  // entry; provider availability is handled by the dashboard/sidebar surfaces.
   useEffect(() => {
-    if (!import.meta.env.DEV && !isViewEnabled(currentView, featureFlags)) {
+    if (
+      currentView !== "ticketing" &&
+      !import.meta.env.DEV &&
+      !isViewEnabled(currentView, featureFlags)
+    ) {
       setCurrentView(DEFAULT_PROJECT_VIEW);
     }
   }, [currentView, featureFlags, setCurrentView]);
@@ -194,6 +224,9 @@ function AppContent() {
   const clearMessages = useChatStore((s) => s.clearMessages);
 
   const switchToProject = useUiStore((s) => s.switchToProject);
+  const preserveCurrentViewOnNextProjectSwitch = useUiStore(
+    (s) => s.preserveCurrentViewOnNextProjectSwitch,
+  );
 
   // Project state
   const activeProjectId = useProjectStore((s) => s.activeProjectId);
@@ -202,23 +235,46 @@ function AppContent() {
   const selectProject = useProjectStore((s) => s.selectProject);
   const clearAgentSelection = useAgentSessionStore((s) => s.clearSelection);
   const setFocusedAgentProject = useAgentSessionStore((s) => s.setFocusedProject);
+  const {
+    selectedAgentProjectId,
+    selectedAgentConversationId,
+    focusedAgentProjectId,
+  } = useAgentSessionStore(
+    useShallow((s) => ({
+      selectedAgentProjectId: s.selectedProjectId,
+      selectedAgentConversationId: s.selectedConversationId,
+      focusedAgentProjectId: s.focusedProjectId,
+    }))
+  );
 
   const prevProjectIdRef = useRef<string | null>(null);
   const agentsReturnViewRef = useRef<ViewType>(DEFAULT_PROJECT_VIEW);
   const showsExecutionFooter =
     currentView === "kanban" ||
     currentView === "graph" ||
-    currentView === "ideation" ||
+    (currentView === "ideation" && isViewEnabled("ideation", featureFlags)) ||
     currentView === "agents";
   const shouldHydrateAgentHaltState = currentView === "agents";
   const shouldHydrateExecutionStatus =
     showsExecutionFooter || shouldHydrateAgentHaltState;
-  const shouldPollExecutionStatus = showsExecutionFooter && Boolean(activeProjectId);
-  const shouldHydrateIdeationView = currentView === "ideation";
+  const currentProjectId = activeProjectId ?? "";
+  const agentFooterProjectId = selectedAgentConversationId
+    ? selectedAgentProjectId ?? focusedAgentProjectId ?? currentProjectId
+    : focusedAgentProjectId ?? selectedAgentProjectId ?? currentProjectId;
+  const executionProjectId =
+    currentView === "agents" ? agentFooterProjectId : currentProjectId;
+  const executionProjectParam = executionProjectId || undefined;
+  const shouldPollExecutionStatus = showsExecutionFooter && Boolean(executionProjectParam);
+  const shouldHydrateIdeationView =
+    currentView === "ideation" && isViewEnabled("ideation", featureFlags);
   const shouldHydrateExecutionSettings = activeModal === "settings";
 
   // Fetch projects from backend
   const { data: fetchedProjects, isLoading: isLoadingProjects } = useProjects();
+  const activeProject = useMemo(
+    () => fetchedProjects?.find((project) => project.id === currentProjectId) ?? null,
+    [currentProjectId, fetchedProjects],
+  );
   const {
     settings: providerSettings,
     isLoading: isLoadingProviderSettings,
@@ -229,6 +285,7 @@ function AppContent() {
   const [isProjectWizardOpen, setIsProjectWizardOpen] = useState(false);
   const [isCreatingProject, setIsCreatingProject] = useState(false);
   const [projectCreationError, setProjectCreationError] = useState<string | null>(null);
+  const [isAgentIssueReportOpen, setIsAgentIssueReportOpen] = useState(false);
 
   // Plan quick switcher state
   const [isPlanQuickSwitcherOpen, setIsPlanQuickSwitcherOpen] = useState(false);
@@ -267,8 +324,8 @@ function AppContent() {
   const [executionSettings, setExecutionSettings] = useState<ProjectSettings | null>(null);
 
   // Running processes data for popover
-  const { data: runningProcessesData } = useRunningProcesses(activeProjectId ?? undefined, {
-    enabled: showsExecutionFooter && Boolean(activeProjectId),
+  const { data: runningProcessesData } = useRunningProcesses(executionProjectParam, {
+    enabled: showsExecutionFooter && Boolean(executionProjectParam),
   });
   const [isLoadingSettings, setIsLoadingSettings] = useState(false);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
@@ -289,21 +346,42 @@ function AppContent() {
     !isLoadingProviderSettings &&
     !isPlaceholderProviderSettings;
   const isPostUpdatePreparing = usePostUpdatePreparing(postUpdateAppReady);
+  const agentIssueReportContext = useMemo(() => {
+    if (
+      currentView !== "agents" ||
+      hasNoProjects ||
+      showWelcomeOverlay ||
+      providerSetupRequired ||
+      !selectedAgentProjectId ||
+      !selectedAgentConversationId
+    ) {
+      return null;
+    }
+    return {
+      projectId: selectedAgentProjectId,
+      conversationId: selectedAgentConversationId,
+    };
+  }, [
+    currentView,
+    hasNoProjects,
+    providerSetupRequired,
+    selectedAgentConversationId,
+    selectedAgentProjectId,
+    showWelcomeOverlay,
+  ]);
   const shouldShowAtlassianAwarenessAfterUpdateRef = useRef(
     readFreshPostUpdatePreparingMarker() !== null,
   );
 
-  // Use active project ID (queries are disabled when null)
-  const currentProjectId = activeProjectId ?? "";
-
   const { totalCount: pendingReviewCount } = useTasksAwaitingReview(currentProjectId);
 
   // Real-time execution status updates via Tauri events
-  useExecutionEvents();
+  useExecutionEvents(executionProjectParam);
+  useTicketingCacheEvents();
   // Fetch initial execution status and poll every 30s as fallback
-  // Pass currentProjectId for per-project execution status scoping
-  useExecutionStatus(currentProjectId || undefined, {
-    enabled: shouldHydrateExecutionStatus && Boolean(currentProjectId),
+  // Scope the Agents footer to the selected/focused agent project instead of the app's active project.
+  useExecutionStatus(executionProjectParam, {
+    enabled: shouldHydrateExecutionStatus && Boolean(executionProjectParam),
     refetchInterval: shouldPollExecutionStatus ? 30000 : false,
     refetchOnWindowFocus: shouldPollExecutionStatus,
     staleTime: shouldHydrateAgentHaltState ? 30_000 : 0,
@@ -311,8 +389,8 @@ function AppContent() {
   const { isApproving, isRequestingChanges } = useReviewMutations();
 
   // Merge pipeline data
-  const { data: mergePipelineData } = useMergePipeline(activeProjectId ?? undefined, {
-    enabled: showsExecutionFooter && Boolean(activeProjectId),
+  const { data: mergePipelineData } = useMergePipeline(executionProjectParam, {
+    enabled: showsExecutionFooter && Boolean(executionProjectParam),
   });
   const mergingCount = useMemo(() => {
     if (!mergePipelineData) return 0;
@@ -513,8 +591,8 @@ function AppContent() {
     setIsExecutionLoading(true);
     try {
       const response = executionStatus.isPaused || isStopped
-        ? await api.execution.resume(currentProjectId || undefined)
-        : await api.execution.pause(currentProjectId || undefined);
+        ? await api.execution.resume(executionProjectParam)
+        : await api.execution.pause(executionProjectParam);
       setExecutionStatus(response.status);
     } catch {
       toast.error(
@@ -532,7 +610,7 @@ function AppContent() {
   const handleStop = async () => {
     setIsExecutionLoading(true);
     try {
-      const response = await api.execution.stop(currentProjectId || undefined);
+      const response = await api.execution.stop(executionProjectParam);
       setExecutionStatus(response.status);
     } catch {
       toast.error("Failed to stop execution");
@@ -563,6 +641,16 @@ function AppContent() {
     openModal("settings");
   }, [openModal]);
 
+  const handleOpenAgentIssueReport = useCallback(() => {
+    setIsAgentIssueReportOpen(true);
+  }, []);
+
+  useEffect(() => {
+    if (!agentIssueReportContext && isAgentIssueReportOpen) {
+      setIsAgentIssueReportOpen(false);
+    }
+  }, [agentIssueReportContext, isAgentIssueReportOpen]);
+
   const handleOpenProviderSettings = useCallback(() => {
     openModal("settings", { section: "providers" });
   }, [openModal]);
@@ -570,6 +658,118 @@ function AppContent() {
   const handleOpenIntegrationSettings = useCallback(() => {
     openModal("settings", { section: "integrations" });
   }, [openModal]);
+
+  const handleWarmView = useCallback((view: ViewType) => {
+    if (!currentProjectId) {
+      return;
+    }
+    if (view === "ticketing") {
+      void queryClient.prefetchQuery({
+        queryKey: ticketingKeys.providers(currentProjectId),
+        queryFn: () => ticketingApi.listProviders({ projectId: currentProjectId }),
+        staleTime: 60_000,
+      }).catch(() => {
+        // Warm-up failures are non-blocking; opening the view surfaces real state.
+      });
+      return;
+    }
+    if (view === "github") {
+      void queryClient.prefetchQuery({
+        queryKey: githubBranchOverviewKeys.project(currentProjectId),
+        queryFn: () => githubApi.getBranchOverview({ projectId: currentProjectId }),
+        staleTime: 15_000,
+      }).catch(() => {
+        // Warm-up failures are non-blocking; opening the view surfaces real state.
+      });
+      return;
+    }
+    if (view === "granola") {
+      void queryClient.prefetchQuery({
+        queryKey: granolaDashboardKeys.settings(),
+        queryFn: () => granolaApi.getSettings(),
+        staleTime: 30_000,
+      }).catch(() => {
+        // Warm-up failures are non-blocking; opening the view surfaces real state.
+      });
+    }
+  }, [currentProjectId]);
+
+  const handleNavigateFromTicketAssociation = useCallback((deepLink: TicketDeepLink) => {
+    const targetProjectId = deepLink.projectId ?? currentProjectId;
+    const switchProjectForDeepLink = (view: ViewType) => {
+      setCurrentView(view);
+      if (targetProjectId && targetProjectId !== activeProjectId) {
+        preserveCurrentViewOnNextProjectSwitch();
+        selectProject(targetProjectId);
+      }
+    };
+
+    if (deepLink.view === "kanban") {
+      setCurrentView("kanban");
+      setSelectedTaskId(deepLink.id);
+      return;
+    }
+    if (deepLink.view === "github" && targetProjectId) {
+      useIntegrationDashboardStore.getState().setGitHubState(targetProjectId, {
+        associationFilter: "pull_requests",
+        searchQuery: deepLink.id,
+        selectedBranchName: deepLink.id || null,
+      });
+      switchProjectForDeepLink("github");
+      return;
+    }
+    if (deepLink.view === "granola" && targetProjectId) {
+      useIntegrationDashboardStore.getState().setGranolaState(targetProjectId, {
+        query: "",
+        noteFilter: "all",
+        selectedNoteId: deepLink.id || null,
+      });
+      switchProjectForDeepLink("granola");
+      return;
+    }
+    if (deepLink.view === "ticketing") {
+      if (deepLink.id) {
+        useTicketingStore.getState().setFilters({ text: deepLink.id });
+      }
+      switchProjectForDeepLink("ticketing");
+      return;
+    }
+    if (deepLink.view === "agents" && deepLink.projectId) {
+      // Select the exact linked conversation (not just switch to the Agents view)
+      // so its linked ticket and artifact are visible on arrival.
+      const projectId = deepLink.projectId;
+      setFocusedAgentProject(projectId);
+      useAgentSessionStore.getState().selectConversation(projectId, deepLink.id);
+      useChatStore.getState().setActiveConversation(`project:${projectId}`, deepLink.id);
+      setCurrentView("agents");
+      return;
+    }
+    setCurrentView(deepLink.view);
+  }, [
+    activeProjectId,
+    currentProjectId,
+    preserveCurrentViewOnNextProjectSwitch,
+    selectProject,
+    setCurrentView,
+    setSelectedTaskId,
+    setFocusedAgentProject,
+  ]);
+
+  const handleStartConversationFromGranolaNote = useCallback((
+    note: GranolaNoteDetail | GranolaNoteSummary,
+    targetProjectId: string,
+  ) => {
+    useAgentSessionStore.getState().setStartConversationDraft({
+      projectId: targetProjectId,
+      content: "",
+      mode: "edit",
+      composerIntegrationReferences: [granolaComposerReference(note)],
+    });
+    setFocusedAgentProject(targetProjectId);
+    clearAgentSelection();
+    useChatStore.getState().setActiveConversation(`project:${targetProjectId}`, null);
+    setCurrentView("agents");
+  }, [clearAgentSelection, setCurrentView, setFocusedAgentProject]);
 
   useEffect(() => {
     if (
@@ -660,6 +860,13 @@ function AppContent() {
     setCurrentView("ideation");
     await handleSelectSession(sessionId);
   }, [setCurrentView, handleSelectSession]);
+
+  const handleNavigateToWorkspace = useCallback((projectId: string, conversationId: string) => {
+    setFocusedAgentProject(projectId);
+    useAgentSessionStore.getState().selectConversation(projectId, conversationId);
+    useChatStore.getState().setActiveConversation(`project:${projectId}`, conversationId);
+    setCurrentView("agents");
+  }, [setCurrentView, setFocusedAgentProject]);
 
   const handleEditProposal = useCallback((proposalId: string) => {
     setEditingProposalId(proposalId);
@@ -890,9 +1097,9 @@ function AppContent() {
     return testPage;
   }
 
-  const executionFooter = currentProjectId ? (
+  const executionFooter = executionProjectId ? (
     <ExecutionControlBar
-      projectId={currentProjectId}
+      projectId={executionProjectId}
       runningCount={executionStatus.runningCount}
       maxConcurrent={executionStatus.maxConcurrent}
       queuedCount={executionStatus.queuedCount}
@@ -913,10 +1120,14 @@ function AppContent() {
       onStop={handleStop}
       runningProcesses={runningProcessesData?.processes ?? []}
       ideationSessions={runningProcessesData?.ideationSessions ?? []}
+      workspaceSessions={runningProcessesData?.workspaceSessions ?? []}
+      lanes={runningProcessesData?.lanes ?? []}
+      capacity={runningProcessesData?.capacity ?? null}
       onPauseProcess={handlePauseProcess}
       onStopProcess={handleStopProcess}
       onOpenSettings={handleOpenSettings}
       onNavigateToSession={handleNavigateToSession}
+      onNavigateToWorkspace={handleNavigateToWorkspace}
     />
   ) : null;
 
@@ -951,6 +1162,7 @@ function AppContent() {
             reviewsPanelOpen={reviewsPanelOpen}
             onToggleReviewsPanel={toggleReviewsPanel}
             onNewProject={handleOpenProjectWizard}
+            onProjectSwitchIntent={preserveCurrentViewOnNextProjectSwitch}
             showProjectSelector={
               !hasNoProjects && !showWelcomeOverlay && !providerSetupRequired
             }
@@ -964,7 +1176,11 @@ function AppContent() {
             <LeftNavRail
               currentView={currentView}
               onViewChange={handleViewChange}
+              onViewWarmUp={handleWarmView}
               onOpenSettings={handleOpenSettings}
+              {...(agentIssueReportContext
+                ? { onOpenIssueReport: handleOpenAgentIssueReport }
+                : {})}
               hideViews={hasNoProjects || showWelcomeOverlay || providerSetupRequired}
             />
 
@@ -1004,21 +1220,27 @@ function AppContent() {
                 />
               )}
               {currentView === "ideation" && (
-                <IdeationView
-                  session={resolvedSession}
-                  proposals={proposals}
-                  isSessionLoading={isSessionLoading}
-                  onNewSession={handleNewSession}
-                  onSelectSession={handleSelectSession}
-                  onArchiveSession={handleArchiveSession}
-                  onEditProposal={handleEditProposal}
-                  onViewProposal={handleViewProposal}
-                  selectedProposalId={viewingProposalId}
-                  onRemoveProposal={handleRemoveProposal}
-                  onReorderProposals={handleReorderProposals}
-                  onApply={handleApplyProposals}
-                  footer={executionFooter}
-                />
+                isViewEnabled("ideation", featureFlags)
+                  ? (
+                    <IdeationView
+                      session={resolvedSession}
+                      proposals={proposals}
+                      isSessionLoading={isSessionLoading}
+                      onNewSession={handleNewSession}
+                      onSelectSession={handleSelectSession}
+                      onArchiveSession={handleArchiveSession}
+                      onEditProposal={handleEditProposal}
+                      onViewProposal={handleViewProposal}
+                      selectedProposalId={viewingProposalId}
+                      onRemoveProposal={handleRemoveProposal}
+                      onReorderProposals={handleReorderProposals}
+                      onApply={handleApplyProposals}
+                      footer={executionFooter}
+                    />
+                  )
+                  : import.meta.env.DEV
+                    ? <FeatureDisabledPlaceholder view="ideation" yamlKey="ideation_page" envVar="RALPHX_UI_IDEATION_PAGE" />
+                    : null
               )}
               {currentView === "agents" && (
                 <AgentsView
@@ -1046,6 +1268,28 @@ function AppContent() {
                   : import.meta.env.DEV
                     ? <FeatureDisabledPlaceholder view="activity" yamlKey="activity_page" envVar="RALPHX_UI_ACTIVITY_PAGE" />
                     : null
+              )}
+              {currentView === "ticketing" && (
+                <TicketingDashboardView
+                  projectId={currentProjectId}
+                  onNavigateToAssociation={handleNavigateFromTicketAssociation}
+                />
+              )}
+              {currentView === "github" && (
+                <GitHubBranchesView
+                  projectId={currentProjectId}
+                  project={activeProject}
+                  onNavigateToAssociation={handleNavigateFromTicketAssociation}
+                />
+              )}
+              {currentView === "granola" && (
+                <GranolaDashboardView
+                  projectId={currentProjectId}
+                  project={activeProject}
+                  projects={fetchedProjects ?? []}
+                  onStartConversation={handleStartConversationFromGranolaNote}
+                  onNavigateToAssociation={handleNavigateFromTicketAssociation}
+                />
               )}
               {currentView === "insights" && <InsightsView />}
               {currentView === "skills" && <SkillsView />}
@@ -1113,6 +1357,12 @@ function AppContent() {
         isSavingSettings={isSavingSettings}
         settingsError={settingsError}
         onSettingsChange={handleSettingsChange}
+      />
+
+      <AgentIssueReportDialog
+        open={isAgentIssueReportOpen}
+        onOpenChange={setIsAgentIssueReportOpen}
+        context={agentIssueReportContext}
       />
 
       {/* Permission Dialog - Global UI-based permission approval */}

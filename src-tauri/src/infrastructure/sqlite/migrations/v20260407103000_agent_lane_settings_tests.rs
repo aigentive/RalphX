@@ -57,7 +57,9 @@ fn test_agent_lane_settings_accepts_global_and_project_rows() {
     .unwrap();
 
     let count: i32 = conn
-        .query_row("SELECT COUNT(*) FROM agent_lane_settings", [], |row| row.get(0))
+        .query_row("SELECT COUNT(*) FROM agent_lane_settings", [], |row| {
+            row.get(0)
+        })
         .unwrap();
     assert_eq!(count, 2);
 }

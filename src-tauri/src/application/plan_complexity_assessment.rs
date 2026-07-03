@@ -99,6 +99,7 @@ async fn run_plan_complexity_assessor(
         &artifact,
     );
     let client = Arc::clone(&runtime.client);
+    let env = runtime.env_with_overrides(bootstrap.env);
     let handle = client
         .spawn_agent(AgentConfig {
             role: AgentRole::Custom(bootstrap.agent_role),
@@ -112,9 +113,10 @@ async fn run_plan_complexity_assessor(
             logical_effort: runtime.logical_effort,
             approval_policy: runtime.approval_policy,
             sandbox_mode: runtime.sandbox_mode,
+            service_tier: runtime.service_tier,
             max_tokens: None,
             timeout_secs: Some(ASSESSOR_TIMEOUT_SECS),
-            env: bootstrap.env,
+            env,
         })
         .await
         .map_err(|error| {

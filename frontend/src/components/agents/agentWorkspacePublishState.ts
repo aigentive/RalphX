@@ -46,6 +46,26 @@ export function isPipelineOwnedAgentWorkspace(
   return Boolean(workspace?.linkedPlanBranchId);
 }
 
+export function getAgentWorkspacePrConflictSummary(
+  workspace: AgentConversationWorkspace | null | undefined,
+): string | null {
+  const status = workspace?.prSupervisionStatus?.trim().toLowerCase();
+  const summary = workspace?.prSupervisionSummary?.trim() ?? "";
+  if (status !== "blocked" || !summary) {
+    return null;
+  }
+
+  const normalized = summary.toLowerCase();
+  if (
+    normalized.includes("merge conflict") ||
+    normalized.includes("reported as conflicting") ||
+    normalized.includes("mergeability blocker")
+  ) {
+    return summary;
+  }
+  return null;
+}
+
 export function isAgentWorkspaceAutoMergeRequestPending({
   autoMergeCurrent,
   autoMergeDesired,
@@ -125,15 +145,38 @@ export function isAgentWorkspacePublishCurrent(
   const freshnessScope = freshness?.freshnessScope ?? "full";
   const remoteRefreshed = freshness?.remoteRefreshed ?? true;
   const worktreeStatusChecked = freshness?.worktreeStatusChecked ?? true;
+  const pushStatus = normalizePublicationStatus(workspace?.publicationPushStatus);
   return (
     hasPublishedWorkspacePr(workspace) &&
-    workspace?.publicationPushStatus === "pushed" &&
+    (pushStatus === "pushed" || pushStatus === "refreshed") &&
     freshness !== undefined &&
     freshnessScope === "full" &&
     remoteRefreshed &&
     worktreeStatusChecked &&
     freshness.baseStatus !== "blocked" &&
     !freshness.isBaseAhead &&
+    !freshness.hasUncommittedChanges &&
+    freshness.unpublishedCommitCount === 0
+  );
+}
+
+export function shouldAutoRefreshCleanAgentWorkspaceFromBase(
+  workspace: AgentConversationWorkspace | null,
+  freshness: AgentConversationWorkspaceFreshness | undefined
+): boolean {
+  const freshnessScope = freshness?.freshnessScope ?? "full";
+  const remoteRefreshed = freshness?.remoteRefreshed ?? false;
+  const worktreeStatusChecked = freshness?.worktreeStatusChecked ?? false;
+  const baseStatus = freshness?.baseStatus ?? "valid";
+  return (
+    workspace?.mode === "edit" &&
+    workspace.status !== "missing" &&
+    freshness !== undefined &&
+    freshnessScope === "full" &&
+    remoteRefreshed &&
+    worktreeStatusChecked &&
+    baseStatus !== "blocked" &&
+    freshness.isBaseAhead &&
     !freshness.hasUncommittedChanges &&
     freshness.unpublishedCommitCount === 0
   );

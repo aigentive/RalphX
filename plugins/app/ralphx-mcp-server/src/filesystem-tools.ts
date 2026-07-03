@@ -5,9 +5,7 @@ import ignore, { type Ignore } from "ignore";
 import picomatch from "picomatch";
 import { Tool } from "@modelcontextprotocol/sdk/types.js";
 import {
-  getAllowedFilesystemRoots,
   getPrimaryFilesystemRoot,
-  isWithin,
   normalizePathLike,
 } from "./path-policy.js";
 
@@ -37,13 +35,13 @@ export const FILESYSTEM_TOOLS: Tool[] = [
   {
     name: "fs_read_file",
     description:
-      "Read a local text file from the allowed filesystem roots. Use this for direct source inspection without shell access. Relative paths resolve from the canonical RalphX working directory.",
+      "Read a local text file. Use this for direct source inspection without shell access. Absolute paths are accepted; relative paths resolve from the current MCP working directory.",
     inputSchema: {
       type: "object",
       properties: {
         path: {
           type: "string",
-          description: "Absolute path or path relative to the RalphX working directory.",
+          description: "Absolute path or path relative to the current MCP working directory.",
         },
         start_line: {
           type: "integer",
@@ -71,13 +69,13 @@ export const FILESYSTEM_TOOLS: Tool[] = [
   {
     name: "fs_list_dir",
     description:
-      "List entries in a local directory under the allowed filesystem roots. Defaults to ignoring gitignored and hidden entries so the result stays high-signal in large repos.",
+      "List entries in a local directory. Defaults to ignoring gitignored and hidden entries so the result stays high-signal in large repos.",
     inputSchema: {
       type: "object",
       properties: {
         path: {
           type: "string",
-          description: "Directory to inspect. Absolute path or path relative to the RalphX working directory. Defaults to '.'.",
+          description: "Directory to inspect. Absolute path or path relative to the current MCP working directory. Defaults to '.'.",
         },
         include_hidden: {
           type: "boolean",
@@ -107,7 +105,7 @@ export const FILESYSTEM_TOOLS: Tool[] = [
   {
     name: "fs_grep",
     description:
-      "Search text content within files under the allowed filesystem roots. Uses ignore-aware traversal and bounded reads so it remains useful when shell access is disabled.",
+      "Search text content within local files. Uses ignore-aware traversal and bounded reads so it remains useful when shell access is disabled.",
     inputSchema: {
       type: "object",
       properties: {
@@ -117,7 +115,7 @@ export const FILESYSTEM_TOOLS: Tool[] = [
         },
         base_path: {
           type: "string",
-          description: "Optional directory root for the search. Defaults to the RalphX working directory.",
+          description: "Optional directory root for the search. Defaults to the current MCP working directory.",
         },
         file_pattern: {
           type: "string",
@@ -166,7 +164,7 @@ export const FILESYSTEM_TOOLS: Tool[] = [
   {
     name: "fs_glob",
     description:
-      "List files under the allowed filesystem roots using production-grade glob matching. Defaults to ignoring gitignored and hidden paths so results stay close to ripgrep expectations.",
+      "List local files using production-grade glob matching. Defaults to ignoring gitignored and hidden paths so results stay close to ripgrep expectations.",
     inputSchema: {
       type: "object",
       properties: {
@@ -176,7 +174,7 @@ export const FILESYSTEM_TOOLS: Tool[] = [
         },
         base_path: {
           type: "string",
-          description: "Optional directory root for the glob. Defaults to the RalphX working directory.",
+          description: "Optional directory root for the glob. Defaults to the current MCP working directory.",
         },
         include_hidden: {
           type: "boolean",
@@ -283,15 +281,7 @@ function clampNonNegative(value: number, fallback: number): number {
   return normalized;
 }
 
-async function canonicalizeAllowedRoot(root: string): Promise<string> {
-  try {
-    return await fs.realpath(root);
-  } catch {
-    return normalizePathLike(root);
-  }
-}
-
-async function resolveAllowedExistingPath(
+async function resolveReadOnlyExistingPath(
   inputPath: string,
   basePath?: string
 ): Promise<ResolvedExistingPath> {
@@ -300,20 +290,7 @@ async function resolveAllowedExistingPath(
     path.isAbsolute(inputPath) || inputPath.startsWith("~")
       ? normalizePathLike(inputPath)
       : path.resolve(baseRoot, inputPath);
-  const allowedRoots = getAllowedFilesystemRoots();
-
-  if (!allowedRoots.some((root) => isWithin(root, displayPath))) {
-    throw new Error(`Path "${inputPath}" resolves outside the allowed filesystem roots.`);
-  }
-
   const safePath = await fs.realpath(displayPath);
-  const canonicalAllowedRoots = await Promise.all(
-    allowedRoots.map((root) => canonicalizeAllowedRoot(root))
-  );
-
-  if (!canonicalAllowedRoots.some((root) => isWithin(root, safePath))) {
-    throw new Error(`Path "${inputPath}" resolves outside the allowed filesystem roots.`);
-  }
 
   return {
     displayPath,
@@ -577,7 +554,7 @@ async function handleReadFile(args: Record<string, unknown>): Promise<ToolResult
     DEFAULT_MAX_READ_BYTES,
     MAX_READ_BYTES_CAP
   );
-  const { displayPath, safePath } = await resolveAllowedExistingPath(requestedPath);
+  const { displayPath, safePath } = await resolveReadOnlyExistingPath(requestedPath);
   const stat = await fs.stat(safePath);
   if (!stat.isFile()) {
     throw new Error(`Path "${requestedPath}" is not a file.`);
@@ -609,7 +586,7 @@ async function handleReadFile(args: Record<string, unknown>): Promise<ToolResult
 
 async function handleListDir(args: Record<string, unknown>): Promise<ToolResult> {
   const requestedPath = getStringArg(args, "path") ?? ".";
-  const { displayPath, safePath } = await resolveAllowedExistingPath(requestedPath);
+  const { displayPath, safePath } = await resolveReadOnlyExistingPath(requestedPath);
   const stat = await fs.stat(safePath);
   if (!stat.isDirectory()) {
     throw new Error(`Path "${requestedPath}" is not a directory.`);
@@ -677,7 +654,7 @@ async function handleGlob(args: Record<string, unknown>): Promise<ToolResult> {
 
   const basePath = getStringArg(args, "base_path") ?? ".";
   const { displayPath: displayRoot, safePath: safeRoot } =
-    await resolveAllowedExistingPath(basePath);
+    await resolveReadOnlyExistingPath(basePath);
   const rootStat = await fs.stat(safeRoot);
   if (!rootStat.isDirectory()) {
     throw new Error(`Base path "${basePath}" is not a directory.`);
@@ -742,7 +719,7 @@ async function handleGrep(args: Record<string, unknown>): Promise<ToolResult> {
   );
 
   const { displayPath: displayRoot, safePath: safeRoot } =
-    await resolveAllowedExistingPath(basePath);
+    await resolveReadOnlyExistingPath(basePath);
   const rootStat = await fs.stat(safeRoot);
   if (!rootStat.isDirectory()) {
     throw new Error(`Base path "${basePath}" is not a directory.`);
@@ -838,15 +815,16 @@ export async function handleFilesystemToolCall(
 
 export function formatFilesystemToolError(error: unknown): ToolResult {
   const message = error instanceof Error ? error.message : String(error);
-  const roots = getAllowedFilesystemRoots()
-    .map((root) => normalizePathLike(root))
-    .map((root) => `- ${root}`)
-    .join("\n");
+  const primaryRoot = normalizePathLike(getPrimaryFilesystemRoot());
   return {
     content: [
       {
         type: "text",
-        text: `ERROR: ${message}\nAllowed filesystem roots:\n${roots}`,
+        text: [
+          `ERROR: ${message}`,
+          "Path resolution: absolute paths are read directly; relative paths resolve from:",
+          `- ${primaryRoot}`,
+        ].join("\n"),
       },
     ],
     isError: true,

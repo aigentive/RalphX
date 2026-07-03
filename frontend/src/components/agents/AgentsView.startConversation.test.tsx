@@ -24,11 +24,14 @@ import {
   conversationFixture as conversation,
   conversationWorkspaceFixture as conversationWorkspace,
 } from "./agentsTestFixtures";
+import { agentJiraIssueKeys } from "./agentJiraIssueQueries";
+import { agentLinearIssueKeys } from "./agentLinearIssueQueries";
 import { useStartAgentConversation } from "./useStartAgentConversation";
 
 const {
   archiveConversationMock,
   createConversationMock,
+  getTicketAssociationsMock,
   integratedChatPanelRenderMock,
   loadBranchBaseOptionsMock,
   loadPullRequestBaseOptionsMock,
@@ -91,6 +94,8 @@ function agentProviderSettings(
         status: "Available codex detected.",
         error: null,
         missingCoreExecFeatures: [],
+        supportsFastMode: true,
+        fastModeSupportedModels: ["gpt-5.5", "gpt-5.4"],
         updatedAt: providerUpdatedAt,
       },
       {
@@ -110,6 +115,8 @@ function agentProviderSettings(
         status: "Available claude detected.",
         error: null,
         missingCoreExecFeatures: [],
+        supportsFastMode: false,
+        fastModeSupportedModels: [],
         updatedAt: providerUpdatedAt,
       },
     ],
@@ -135,9 +142,69 @@ describe("AgentsView start conversation", () => {
     expect(screen.getByTestId("agent-composer-runtime-pill")).toBeInTheDocument();
     expect(screen.queryByTestId("agents-start-new-project")).not.toBeInTheDocument();
     await userEvent.click(screen.getByTestId("agent-composer-actions-menu"));
-    expect(screen.getByTestId("agents-start-mode-edit")).toBeInTheDocument();
     expect(screen.getByTestId("agents-start-new-project")).toBeInTheDocument();
     expect(screen.queryByTestId("integrated-chat-panel")).not.toBeInTheDocument();
+    await userEvent.keyboard("{Escape}");
+    // Workflow modes live on the Mode chip popover, not the "+" action menu.
+    await userEvent.click(screen.getByTestId("agents-start-mode-chip"));
+    expect(screen.getByTestId("agents-start-mode-edit")).toBeInTheDocument();
+  });
+
+  it("prefills and consumes a pending start conversation draft", async () => {
+    mockAgentViewData();
+    useAgentSessionStore.getState().setStartConversationDraft({
+      projectId: "project-1",
+      content: "replace ideation command with agent composer",
+      mode: "edit",
+      composerIntegrationReferences: [
+        {
+          provider: "clickup",
+          kind: "clickup",
+          id: "TASK-123",
+          key: "TASK-123",
+          title: "Demo task",
+        },
+      ],
+    });
+
+    renderAgentsView();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-start-textarea")).toHaveValue(
+        "replace ideation command with agent composer"
+      )
+    );
+    expect(screen.getByTestId("agents-start-mode-chip")).toHaveTextContent("Agent");
+    expect(
+      screen.getByTestId("agent-composer-reference-pill-integration:clickup:TASK-123")
+    ).toHaveTextContent("Demo task");
+    expect(useAgentSessionStore.getState().startConversationDraft).toBeNull();
+  });
+
+  it("restores unsent starter composer text and attachments from the draft store", async () => {
+    mockAgentViewData();
+    const file = new File(["draft"], "notes.md", { type: "text/markdown" });
+    useChatStore
+      .getState()
+      .setComposerDraftContent("agents:start", "continue this draft");
+    useChatStore.getState().setComposerDraftAttachments("agents:start", [
+      {
+        id: "starter-attachment-1",
+        file,
+        fileName: "notes.md",
+        fileSize: 5,
+        mimeType: "text/markdown",
+      },
+    ]);
+
+    renderAgentsView();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-start-textarea")).toHaveValue(
+        "continue this draft"
+      )
+    );
+    expect(screen.getByTestId("chat-attachment-gallery")).toHaveTextContent("notes.md");
   });
 
   it("restores a persisted selected conversation even when it is outside the first sidebar page", async () => {
@@ -250,6 +317,77 @@ describe("AgentsView start conversation", () => {
     expect(screen.getByTestId("agents-start-composer")).toBeInTheDocument();
   });
 
+  it("restores starter composer text and attachments after visiting another conversation", async () => {
+    const existingConversation = conversation({
+      id: "conversation-existing",
+      title: "Existing agent",
+      contextId: "project-1",
+      projectId: "project-1",
+    });
+    useProjectsMock.mockReturnValue({
+      data: [project],
+      isLoading: false,
+    });
+    useProjectAgentConversationsMock.mockReturnValue({
+      data: [existingConversation],
+      conversations: [existingConversation],
+      isLoading: false,
+      isSuccess: true,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+    mockAgentSidebarData([existingConversation]);
+    useConversationMock.mockImplementation((conversationId: string | null) => ({
+      data:
+        conversationId === existingConversation.id
+          ? {
+              conversation: existingConversation,
+              messages: [],
+            }
+          : null,
+      isLoading: false,
+    }));
+    resetAgentSessionState({
+      selectedProjectId: null,
+      selectedConversationId: null,
+    });
+
+    renderAgentsView();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-start-composer")).toBeInTheDocument()
+    );
+    const file = new File(["draft"], "starter-draft.txt", {
+      type: "text/plain",
+    });
+    fireEvent.change(screen.getByTestId("attachment-file-input"), {
+      target: { files: [file] },
+    });
+    fireEvent.change(screen.getByTestId("agents-start-textarea"), {
+      target: { value: "keep this starter draft" },
+    });
+    expect(screen.getByText("starter-draft.txt")).toBeInTheDocument();
+
+    const row = await screen.findByTestId("agents-session-conversation-existing");
+    const button = row.querySelector("button");
+    expect(button).not.toBeNull();
+    fireEvent.click(button as HTMLButtonElement);
+    await waitFor(() =>
+      expect(screen.queryByTestId("agents-start-composer")).not.toBeInTheDocument()
+    );
+
+    fireEvent.click(button as HTMLButtonElement);
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-start-composer")).toBeInTheDocument()
+    );
+
+    expect(screen.getByTestId("agents-start-textarea")).toHaveValue(
+      "keep this starter draft"
+    );
+    expect(screen.getByText("starter-draft.txt")).toBeInTheDocument();
+  });
+
   it("starts a new conversation directly from the starter composer and triggers the session namer", async () => {
     const invalidateSpy = vi.spyOn(QueryClient.prototype, "invalidateQueries");
     mockAgentViewData();
@@ -273,6 +411,7 @@ describe("AgentsView start conversation", () => {
           base: expect.objectContaining({
             kind: "project_default",
             ref: "main",
+            branchMode: "isolated",
           }),
         })
       )
@@ -288,10 +427,18 @@ describe("AgentsView start conversation", () => {
       expect(screen.getByTestId("integrated-chat-panel")).toBeInTheDocument()
     );
     expect(screen.queryByTestId("agents-start-composer")).not.toBeInTheDocument();
-    expect(screen.getByTestId("agents-workspace-status")).toHaveTextContent(
+    expect(screen.getByTestId("agents-conversation-workspace-line")).toHaveTextContent(
       "agent-conversation-2"
     );
     expect(useAgentSessionStore.getState().selectedConversationId).toBe("conversation-2");
+    expect(
+      useAgentSessionStore.getState().artifactByConversationId["conversation-2"]
+    ).toEqual(
+      expect.objectContaining({
+        isOpen: false,
+        activeTab: "plan",
+      })
+    );
     expect(queryClient.getQueryData(["chat", "conversations", "conversation-2"])).toEqual({
       conversation: expect.objectContaining({ id: "conversation-2" }),
       messages: [
@@ -335,6 +482,9 @@ describe("AgentsView start conversation", () => {
     await waitFor(() =>
       expect(screen.getByTestId("agents-start-base")).toHaveTextContent("#42 Add PR picker")
     );
+    expect(
+      screen.getByRole("switch", { name: /Use isolated branch/i })
+    ).toHaveAttribute("aria-checked", "false");
     fireEvent.change(screen.getByTestId("agents-start-textarea"), {
       target: { value: "review this PR" },
     });
@@ -347,6 +497,7 @@ describe("AgentsView start conversation", () => {
           content: "review this PR",
           base: expect.objectContaining({
             kind: "local_branch",
+            branchMode: "linked",
             ref: "feature/pr-picker",
             displayName: "PR #42: Add PR picker",
             sourcePullRequest: expect.objectContaining({
@@ -355,6 +506,265 @@ describe("AgentsView start conversation", () => {
               baseRefName: "main",
               headRefOid: "abc123",
             }),
+          }),
+        })
+      )
+    );
+  });
+
+  it("starts a selected pull request in isolated branch mode when enabled", async () => {
+    const user = userEvent.setup();
+    mockAgentViewData();
+    loadPullRequestBaseOptionsMock.mockResolvedValue([prPickerBranchOption()]);
+
+    renderAgentsView();
+
+    await user.click(await screen.findByTestId("agents-start-base"));
+    await user.click(screen.getByRole("tab", { name: /PRs/i }));
+    const prOption = await screen.findByText("#42 Add PR picker");
+    await user.click(prOption.closest("button") as HTMLButtonElement);
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-start-base")).toHaveTextContent("#42 Add PR picker")
+    );
+
+    const isolatedSwitch = screen.getByRole("switch", {
+      name: /Use isolated branch/i,
+    });
+    expect(isolatedSwitch).toHaveAttribute("aria-checked", "false");
+    await user.click(isolatedSwitch);
+
+    fireEvent.change(screen.getByTestId("agents-start-textarea"), {
+      target: { value: "review this PR separately" },
+    });
+    fireEvent.click(screen.getByTestId("agents-start-submit"));
+
+    await waitFor(() =>
+      expect(startAgentConversationMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: "review this PR separately",
+          base: expect.objectContaining({
+            kind: "local_branch",
+            branchMode: "isolated",
+            ref: "feature/pr-picker",
+            sourcePullRequest: expect.objectContaining({
+              number: 42,
+              headRefName: "feature/pr-picker",
+            }),
+          }),
+        })
+      )
+    );
+  });
+
+  it("forces isolated branch mode when starting from the current project branch", async () => {
+    mockAgentViewData();
+    const currentBranchOptions: BranchBaseOption[] = [
+      {
+        key: "project_default:main",
+        label: "Project default (main)",
+        detail: "Configured project base branch",
+        source: "project",
+        selection: {
+          kind: "project_default",
+          ref: "main",
+          displayName: "Project default (main)",
+        },
+      },
+      {
+        key: "current_branch:feature/current",
+        label: "Current branch (feature/current)",
+        detail: "Currently checked out in the project root",
+        source: "current",
+        selection: {
+          kind: "current_branch",
+          ref: "feature/current",
+          displayName: "Current branch (feature/current)",
+        },
+      },
+    ];
+    loadBranchBaseOptionsMock.mockResolvedValue({
+      options: currentBranchOptions,
+      selectedKey: "project_default:main",
+    });
+    resetAgentSessionState({
+      branchBaseCacheByProjectId: {
+        "project-1": {
+          options: currentBranchOptions,
+          selectedKey: "current_branch:feature/current",
+          loadedAt: "2026-05-08T00:00:00.000Z",
+        },
+      },
+      lastBranchBaseSelectionByProjectId: {
+        "project-1": "current_branch:feature/current",
+      },
+    });
+
+    renderAgentsView();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-start-base")).toHaveTextContent(
+        "Current branch (feature/current)"
+      )
+    );
+    await userEvent.click(screen.getByTestId("agents-start-base"));
+    const isolatedSwitch = screen.getByRole("switch", {
+      name: /Use isolated branch/i,
+    });
+    expect(isolatedSwitch).toBeDisabled();
+    expect(isolatedSwitch).toHaveAttribute("aria-checked", "true");
+
+    fireEvent.change(screen.getByTestId("agents-start-textarea"), {
+      target: { value: "start from current branch" },
+    });
+    fireEvent.click(screen.getByTestId("agents-start-submit"));
+
+    await waitFor(() =>
+      expect(startAgentConversationMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: "start from current branch",
+          base: expect.objectContaining({
+            kind: "current_branch",
+            branchMode: "isolated",
+            ref: "feature/current",
+          }),
+        })
+      )
+    );
+  });
+
+  it("auto-selects a ticket's linked pull request as the start base", async () => {
+    mockAgentViewData();
+    getTicketAssociationsMock.mockResolvedValue({
+      tasks: [],
+      proposals: [],
+      sessions: [],
+      conversations: [],
+      pullRequests: [
+        {
+          id: "https://github.com/owner/repo/pull/88",
+          title: "PR #88",
+          subtitle: "feature/ticket-pr",
+          status: "open",
+          active: true,
+          deepLink: {
+            view: "agents",
+            id: "conversation-ticket",
+            projectId: "project-1",
+          },
+          branchName: "feature/ticket-pr",
+          baseRef: "main",
+          prNumber: 88,
+          prUrl: "https://github.com/owner/repo/pull/88",
+        },
+      ],
+      checks: [],
+      qa: [],
+      specs: [],
+    });
+    useAgentSessionStore.getState().setStartConversationDraft({
+      projectId: "project-1",
+      content: "continue the ticket work",
+      mode: "edit",
+      composerIntegrationReferences: [
+        {
+          provider: "atlassian",
+          kind: "jira",
+          id: "10088",
+          key: "RX-88",
+          title: "Ticket with PR",
+        },
+      ],
+    });
+
+    renderAgentsView();
+
+    await waitFor(() =>
+      expect(getTicketAssociationsMock).toHaveBeenCalledWith({
+        provider: "jira",
+        ticketRef: { provider: "jira", id: "10088", key: "RX-88" },
+        projectId: "project-1",
+      })
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-start-base")).toHaveTextContent("PR #88")
+    );
+
+    fireEvent.click(screen.getByTestId("agents-start-submit"));
+
+    await waitFor(() =>
+      expect(startAgentConversationMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectId: "project-1",
+          content: "continue the ticket work",
+          base: expect.objectContaining({
+            kind: "local_branch",
+            branchMode: "linked",
+            ref: "feature/ticket-pr",
+            displayName: "PR #88",
+            sourcePullRequest: expect.objectContaining({
+              number: 88,
+              url: "https://github.com/owner/repo/pull/88",
+              headRefName: "feature/ticket-pr",
+              baseRefName: "main",
+            }),
+          }),
+          composerIntegrationReferences: [
+            expect.objectContaining({
+              provider: "atlassian",
+              kind: "jira",
+              id: "10088",
+              key: "RX-88",
+            }),
+          ],
+        })
+      )
+    );
+  });
+
+  it("falls back to the ticket branch when ticket association lookup fails", async () => {
+    mockAgentViewData();
+    getTicketAssociationsMock.mockRejectedValue(new Error("associations unavailable"));
+    useAgentSessionStore.getState().setStartConversationDraft({
+      projectId: "project-1",
+      content: "continue without a linked PR",
+      mode: "plan",
+      composerIntegrationReferences: [
+        {
+          provider: "linear",
+          kind: "linear",
+          id: "lin-99",
+          key: "ENG-99",
+          title: "Ticket without PR",
+        },
+      ],
+    });
+
+    renderAgentsView();
+
+    await waitFor(() =>
+      expect(getTicketAssociationsMock).toHaveBeenCalledWith({
+        provider: "linear",
+        ticketRef: { provider: "linear", id: "lin-99", key: "ENG-99" },
+        projectId: "project-1",
+      })
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-start-base")).toHaveTextContent("Ticket ENG-99")
+    );
+
+    fireEvent.click(screen.getByTestId("agents-start-submit"));
+
+    await waitFor(() =>
+      expect(startAgentConversationMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectId: "project-1",
+          content: "continue without a linked PR",
+          mode: "plan",
+          base: expect.objectContaining({
+            kind: "local_branch",
+            branchMode: "linked",
+            ref: "ralphx/ticket/linear-eng-99",
+            displayName: "Ticket ENG-99 (ralphx/ticket/linear-eng-99)",
           }),
         })
       )
@@ -381,8 +791,7 @@ describe("AgentsView start conversation", () => {
       expect(screen.getByTestId("agents-start-base")).toHaveTextContent("#42 Add PR picker")
     );
 
-    await user.click(screen.getByTestId("agents-start-base"));
-    await user.click(screen.getByRole("tab", { name: /PRs/i }));
+    await user.type(screen.getByPlaceholderText(/Search pull requests/i), "missing");
 
     await waitFor(() => expect(pullRequestSearches).toBe(2));
     expect(screen.getAllByText("#42 Add PR picker").length).toBeGreaterThan(1);
@@ -1048,6 +1457,178 @@ describe("AgentsView start conversation", () => {
     await startPromise;
   });
 
+  it("invalidates the resolved Jira issue query after starting with a Jira reference", async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false, gcTime: 0 },
+        mutations: { retry: false },
+      },
+    });
+    const invalidateQueriesSpy = vi.spyOn(queryClient, "invalidateQueries");
+    const seededConversation = conversation({
+      id: "conversation-with-jira",
+      contextId: "project-1",
+      title: null,
+    });
+    createConversationMock.mockResolvedValue(seededConversation);
+    startAgentConversationMock.mockResolvedValue({
+      conversation: seededConversation,
+      workspace: conversationWorkspace({
+        conversationId: "conversation-with-jira",
+      }),
+      sendResult: {
+        conversationId: "conversation-with-jira",
+        agentRunId: "run-with-jira",
+        isNewConversation: false,
+        wasQueued: false,
+        queuedAsPending: false,
+        queuedMessageId: null,
+      },
+    });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    );
+    const onJiraLinked = vi.fn();
+    const { result } = renderHook(
+      () =>
+        useStartAgentConversation({
+          handleAutoManagedTitle: vi.fn(),
+          invalidateProjectConversations: vi.fn().mockResolvedValue(undefined),
+          queryClient,
+          selectConversation: vi.fn(),
+          setActiveConversation: useChatStore.getState().setActiveConversation,
+          setFocusedProject: vi.fn(),
+          setOptimisticConversationsById: vi.fn(),
+          setOptimisticSelectedConversationId: vi.fn(),
+          setOptimisticWorkspacesByConversationId: vi.fn(),
+          setRuntimeForConversation: vi.fn(),
+          onJiraLinked,
+        }),
+      { wrapper }
+    );
+
+    await result.current({
+      projectId: "project-1",
+      content: "start with jira",
+      runtime: {
+        provider: "codex",
+        modelId: "gpt-5.5",
+        effort: "xhigh",
+      },
+      mode: "edit",
+      base: null,
+      files: [],
+      composerIntegrationReferences: [
+        {
+          provider: "atlassian",
+          kind: "jira",
+          id: "RX-42",
+          key: "RX-42",
+          title: "Fix composer references",
+        },
+      ],
+    });
+
+    expect(invalidateQueriesSpy).toHaveBeenCalledWith({
+      queryKey: agentJiraIssueKeys.issue("conversation-with-jira"),
+    });
+    expect(onJiraLinked).toHaveBeenCalledWith("conversation-with-jira");
+    expect(
+      useAgentSessionStore.getState().artifactByConversationId["conversation-with-jira"]
+    ).toEqual(
+      expect.objectContaining({
+        isOpen: true,
+        activeTab: "jira",
+      })
+    );
+  });
+
+  it("opens and invalidates the Linear tab after starting with a Linear reference", async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false, gcTime: 0 },
+        mutations: { retry: false },
+      },
+    });
+    const invalidateQueriesSpy = vi.spyOn(queryClient, "invalidateQueries");
+    const seededConversation = conversation({
+      id: "conversation-with-linear",
+      contextId: "project-1",
+      title: null,
+    });
+    createConversationMock.mockResolvedValue(seededConversation);
+    startAgentConversationMock.mockResolvedValue({
+      conversation: seededConversation,
+      workspace: conversationWorkspace({
+        conversationId: "conversation-with-linear",
+      }),
+      sendResult: {
+        conversationId: "conversation-with-linear",
+        agentRunId: "run-with-linear",
+        isNewConversation: false,
+        wasQueued: false,
+        queuedAsPending: false,
+        queuedMessageId: null,
+      },
+    });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    );
+    const onLinearLinked = vi.fn();
+    const { result } = renderHook(
+      () =>
+        useStartAgentConversation({
+          handleAutoManagedTitle: vi.fn(),
+          invalidateProjectConversations: vi.fn().mockResolvedValue(undefined),
+          queryClient,
+          selectConversation: vi.fn(),
+          setActiveConversation: useChatStore.getState().setActiveConversation,
+          setFocusedProject: vi.fn(),
+          setOptimisticConversationsById: vi.fn(),
+          setOptimisticSelectedConversationId: vi.fn(),
+          setOptimisticWorkspacesByConversationId: vi.fn(),
+          setRuntimeForConversation: vi.fn(),
+          onLinearLinked,
+        }),
+      { wrapper }
+    );
+
+    await result.current({
+      projectId: "project-1",
+      content: "start with linear",
+      runtime: {
+        provider: "codex",
+        modelId: "gpt-5.5",
+        effort: "xhigh",
+      },
+      mode: "edit",
+      base: null,
+      files: [],
+      composerIntegrationReferences: [
+        {
+          provider: "linear",
+          kind: "linear",
+          id: "LIN-42",
+          key: "LIN-42",
+          title: "Fix composer references",
+        },
+      ],
+    });
+
+    expect(invalidateQueriesSpy).toHaveBeenCalledWith({
+      queryKey: agentLinearIssueKeys.issue("conversation-with-linear"),
+    });
+    expect(onLinearLinked).toHaveBeenCalledWith("conversation-with-linear");
+    expect(
+      useAgentSessionStore.getState().artifactByConversationId["conversation-with-linear"]
+    ).toEqual(
+      expect.objectContaining({
+        isOpen: true,
+        activeTab: "linear",
+      })
+    );
+  });
+
   it("clears optimistic running state when the seeded agent start fails", async () => {
     const queryClient = new QueryClient({
       defaultOptions: {
@@ -1372,7 +1953,7 @@ describe("AgentsView start conversation", () => {
 
     renderAgentsView();
 
-    await userEvent.click(screen.getByTestId("agent-composer-actions-menu"));
+    await userEvent.click(screen.getByTestId("agents-start-mode-chip"));
     await userEvent.click(screen.getByTestId("agents-start-mode-chat"));
     expect(screen.getByTestId("agents-start-base")).toBeInTheDocument();
 
@@ -1397,7 +1978,7 @@ describe("AgentsView start conversation", () => {
     await waitFor(() =>
       expect(screen.getByTestId("integrated-chat-panel")).toBeInTheDocument()
     );
-    expect(screen.getByTestId("agents-workspace-status")).toHaveTextContent(
+    expect(screen.getByTestId("agents-conversation-workspace-line")).toHaveTextContent(
       "agent-conversation-chat"
     );
   });

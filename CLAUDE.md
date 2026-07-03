@@ -4,26 +4,25 @@
 
 ## Priority Zero — Owner Strategy Alignment (NON-NEGOTIABLE)
 
-Before ANY user-facing content, documentation, UI copy, or messaging work, agents MUST load these on demand when the files exist:
+Before ANY user-facing content, documentation, UI copy, or messaging work, agents must probe these optional files with non-failing file checks and load any that exist:
 - `~/.ralphx/founder/founder-profile.md` — Owner vision and non-negotiables
 - `~/.ralphx/strategy/project-goal-card.md` — Messaging architecture, positioning, ICPs, competitive landscape
 - `~/.ralphx/strategy/project-metrics.md` — Verifiable project data points
 
-These are the **owner's directives**. They override default agent judgment on messaging. Do not keep them as always-on `@` imports in project memory.
-If any file is absent, record that it was unavailable and continue with repository-local instructions; missing private strategy files must not fail worker startup or task execution.
+If one is missing, skip it and continue; do not fail work or run bare `sed`/`cat` commands that turn absence into a task error. Present files are the **owner's directives** and override default agent judgment on messaging. Do not keep them as always-on `@` imports in project memory.
 
 ---
 
 ## Project: RalphX
 Native Mac GUI for autonomous AI dev: Kanban, multi-agent orchestration, ideation chat.
-Code quality: `.claude/rules/code-quality-standards.md` | State machine: `.claude/rules/task-state-machine.md` | Git/merge: `.claude/rules/task-git-branching.md` | Merge recovery consistency: `.claude/rules/merge-recovery-consistency.md` | Agents: `.claude/rules/task-execution-agents.md` | Delegation topology: `.claude/rules/delegation-topology.md` | Runtime roots: `.claude/rules/runtime-root-vs-target-project.md` | Production CLI resolution: `.claude/rules/production-cli-resolution.md` | CodeQL path safety: `.claude/rules/codeql-path-safety.md` | Ideation verification architecture: `.claude/rules/ideation-verification-architecture.md` | Follow-up blocker dedupe: `.claude/rules/followup-blocker-dedupe.md` | Agent type map: `.claude/rules/agent-type-map.md` | Task detail views: `.claude/rules/task-detail-views.md` | Frontend interaction performance: `.claude/rules/frontend-interaction-performance.md` | Icon-only buttons: `.claude/rules/icon-only-buttons.md` | Rust API safety: `.claude/rules/rust-stable-apis.md` | Rust test execution: `.claude/rules/rust-test-execution.md` | WKWebView CSS vars: `.claude/rules/wkwebview-css-vars.md` | Release script validation: `.claude/rules/release-script-validation.md` | PR descriptions: `.claude/rules/pr-descriptions.md`
+Code quality: `.claude/rules/code-quality-standards.md` | State machine: `.claude/rules/task-state-machine.md` | Stateful workflow review: `.claude/rules/stateful-workflow-review.md` | Git/merge: `.claude/rules/task-git-branching.md` | Merge recovery consistency: `.claude/rules/merge-recovery-consistency.md` | Agents: `.claude/rules/task-execution-agents.md` | Delegation topology: `.claude/rules/delegation-topology.md` | Runtime roots: `.claude/rules/runtime-root-vs-target-project.md` | Production CLI resolution: `.claude/rules/production-cli-resolution.md` | CodeQL path safety: `.claude/rules/codeql-path-safety.md` | Ideation verification architecture: `.claude/rules/ideation-verification-architecture.md` | Follow-up blocker dedupe: `.claude/rules/followup-blocker-dedupe.md` | Agent type map: `.claude/rules/agent-type-map.md` | Task detail views: `.claude/rules/task-detail-views.md` | Frontend interaction performance: `.claude/rules/frontend-interaction-performance.md` | Icon-only buttons: `.claude/rules/icon-only-buttons.md` | Rust API safety: `.claude/rules/rust-stable-apis.md` | Rust test execution: `.claude/rules/rust-test-execution.md` | WKWebView CSS vars: `.claude/rules/wkwebview-css-vars.md` | Release script validation: `.claude/rules/release-script-validation.md` | PR descriptions: `.claude/rules/pr-descriptions.md`
 CodeQL path safety applies to production and tests; use process-owned runtime roots, fixed entry lists, pure test builders, and suppress `rust/path-injection` only after containment validation.
 Production CLI resolution applies to installed app launches; all runtime subprocess binaries must go through the shared resolver surface.
 
 ## Structure
 ```
 ralphx/
-├─ frontend/              # Frontend project root (Vite/React) → frontend/src/CLAUDE.md
+├─ frontend/              # Frontend project root (Vite/React) → frontend/CLAUDE.md → frontend/src/CLAUDE.md
 │  ├─ src/                # Frontend app code
 │  └─ tests/              # Frontend/Vitest/Playwright tests
 ├─ plugins/
@@ -72,6 +71,7 @@ This is a **large codebase** (~100k+ lines across Rust backend + React frontend)
 | **Every change = tests** | Code changes without corresponding test coverage are incomplete. |
 | **Audit ALL code paths** | When fixing a guard, search ALL paths to same destination. ❌ Fix one, miss another. |
 | **Shared safety helpers** | Extract guard logic to shared fn — ❌ duplicate across paths. |
+| **False-success review** | Completion/cache/retry/recovery/state-machine fixes → adversarial pass for stale attempts, stale cache, fail-open reads, side-effect order, prompt/schema drift, and path sinks. See `.claude/rules/stateful-workflow-review.md`. |
 | **Adversarial plan convergence (NON-NEGOTIABLE)** | See "Adversarial Plan Convergence" section below. Non-trivial plans MUST pass multi-round adversarial debate before implementation. |
 | **Verify end-to-end** | After fix, verify user-visible behavior changed. Stale logs/UI can make working fixes look broken. |
 | **Dual-spawn architecture** | Agent teams need BOTH in-process Task subagents (do actual work, write to sidechain JSONL) AND external CLI processes (registry workers, `approve_team_plan`). ❌ Remove either — both are required by design. See `src-tauri/manual_agent_teams_process.txt`. |
@@ -145,6 +145,7 @@ Plugin: `claude --plugin-dir ./plugins/app --agent worker -p "Execute"` | Tool c
 | 22 | **WKWebView CSS vars (NON-NEGOTIABLE):** Theme tokens for bg/text/border MUST use literal color values (`#rrggbb`, `hsl()`, `hsla()`) — ❌ chained `var(--primitive)`. WKWebView drops chained var() on inheritance. Every new `[data-theme="X"]` block needs a defensive `html[data-theme="X"]` canvas paint rule. Verify in `npm run tauri dev`, not just `dev:web`. Details: `.claude/rules/wkwebview-css-vars.md` |
 | 23 | **Icon-only buttons:** Must have an accessible name and the app tooltip component; native `title` alone is not enough. Details: `.claude/rules/icon-only-buttons.md` |
 | 24 | **Frontend interaction performance (NON-NEGOTIABLE):** User-triggered panes/drawers/widgets must paint a lightweight shell before lazy imports, fetches, persistence, process startup, or heavy mount/unmount work; warm up likely heavy paths on safe intent/idle; fix safe current-scope opportunities with TDD. Details: `.claude/rules/frontend-interaction-performance.md` |
+| 25 | **Stateful workflow review (NON-NEGOTIABLE):** For completion/cache/retry/recovery/state-machine changes, prove current-attempt authority, fail-closed reads, event ordering, prompt/schema alignment, path containment, and production-path tests. Details: `.claude/rules/stateful-workflow-review.md` |
 
 ## Adversarial Plan Convergence (NON-NEGOTIABLE)
 

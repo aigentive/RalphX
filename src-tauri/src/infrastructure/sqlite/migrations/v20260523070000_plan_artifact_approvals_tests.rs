@@ -38,8 +38,11 @@ fn migration_creates_plan_artifact_approvals_table() {
         [],
     )
     .unwrap();
-    conn.execute("INSERT INTO artifacts (id, version) VALUES ('artifact-1', 2)", [])
-        .unwrap();
+    conn.execute(
+        "INSERT INTO artifacts (id, version) VALUES ('artifact-1', 2)",
+        [],
+    )
+    .unwrap();
     conn.execute(
         "INSERT INTO plan_artifact_approvals (
             session_id, artifact_id, artifact_version, status, approved_at, approved_by

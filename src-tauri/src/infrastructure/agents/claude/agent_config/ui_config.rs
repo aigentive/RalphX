@@ -19,12 +19,17 @@ pub struct UiFeatureFlagsConfig {
     pub activity_page: bool,
     /// Show or hide the Extensibility page. Default: true.
     pub extensibility_page: bool,
+    /// Show or hide the standalone Ideation page. Default: false.
+    /// Agent conversation Plan/Ideation modes are controlled separately.
+    pub ideation_page: bool,
     /// Enable or disable Battle Mode. Default: true (backward compat; disabled via config/ralphx.yaml).
     pub battle_mode: bool,
     /// Enable or disable team mode UI. Default: false.
     pub team_mode: bool,
     /// Enable or disable Atlassian OAuth setup UI. Default: false.
     pub atlassian_oauth: bool,
+    /// Enable or disable the read-only ticketing dashboard UI. Default: false.
+    pub ticketing_dashboard: bool,
 }
 
 impl Default for UiFeatureFlagsConfig {
@@ -32,9 +37,11 @@ impl Default for UiFeatureFlagsConfig {
         Self {
             activity_page: true,
             extensibility_page: true,
+            ideation_page: false,
             battle_mode: true,
             team_mode: false,
             atlassian_oauth: false,
+            ticketing_dashboard: false,
         }
     }
 }

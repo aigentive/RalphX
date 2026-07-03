@@ -113,6 +113,7 @@ import {
 import { useAgentSidebarPublicationPolling } from "./useAgentSidebarPublicationPolling";
 import { useAgentSidebarRunningStates } from "./useAgentSidebarRunningStates";
 import { useArchivedConversationCounts } from "./useArchivedConversationCounts";
+import { PrTemplateEditorDialog } from "./PrTemplateEditorDialog";
 
 const AGENTS_SEARCH_DEBOUNCE_MS = 180;
 const AGENTS_SIDEBAR_MAX_VISIBLE_SESSION_ROWS = 8;
@@ -282,6 +283,7 @@ function ScrollableAgentSessionList<T>({
   const [measuredRowHeight, setMeasuredRowHeight] = useState<number | null>(null);
   const underflowFetchKeyRef = useRef<string | null>(null);
   const nextPageRequestRowCountRef = useRef<number | null>(null);
+  const nextPageRequestIdRef = useRef(0);
   const rowCount = rows.length;
   const rowHeight =
     measuredRowHeight ?? AGENTS_SIDEBAR_FALLBACK_SESSION_ROW_PX;
@@ -417,22 +419,55 @@ function ScrollableAgentSessionList<T>({
     if (nextPageRequestRowCountRef.current === rowCount) {
       return;
     }
+    const requestId = nextPageRequestIdRef.current + 1;
+    nextPageRequestIdRef.current = requestId;
     nextPageRequestRowCountRef.current = rowCount;
-    void Promise.resolve(fetchNextPage()).catch(() => {
-      if (nextPageRequestRowCountRef.current === rowCount) {
+    const clearRequestIfStillCurrent = () => {
+      if (
+        nextPageRequestIdRef.current === requestId &&
+        nextPageRequestRowCountRef.current === rowCount &&
+        latestRowCountRef.current <= rowCount
+      ) {
         nextPageRequestRowCountRef.current = null;
       }
-    });
+    };
+    void Promise.resolve(fetchNextPage())
+      .catch(clearRequestIfStillCurrent)
+      .finally(() => {
+        afterSidebarControlPaint(clearRequestIfStillCurrent);
+      });
   }, [fetchNextPage, hasNextPage, isFetchingNextPage, rowCount]);
+  const fetchNextPageFromScrollPosition = useCallback(() => {
+    const scroller = scrollerRef.current;
+    if (!scroller || scroller.clientHeight <= 0 || scroller.scrollHeight <= 0) {
+      return;
+    }
+    if (scroller.scrollHeight <= scroller.clientHeight) {
+      return;
+    }
+
+    const distanceFromBottom =
+      scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+    if (distanceFromBottom <= rowHeight * 2) {
+      fetchNextPageIfNeeded();
+    }
+  }, [fetchNextPageIfNeeded, rowHeight]);
 
   useEffect(() => {
     if (
       nextPageRequestRowCountRef.current !== null &&
       rowCount > nextPageRequestRowCountRef.current
     ) {
+      nextPageRequestIdRef.current += 1;
       nextPageRequestRowCountRef.current = null;
     }
   }, [rowCount]);
+
+  useEffect(() => {
+    nextPageRequestIdRef.current += 1;
+    nextPageRequestRowCountRef.current = null;
+    underflowFetchKeyRef.current = null;
+  }, [scrollKey]);
 
   const handleScrollerRef = useCallback((node: HTMLElement | Window | null) => {
     const element = node instanceof HTMLElement ? node : null;
@@ -562,6 +597,7 @@ function ScrollableAgentSessionList<T>({
     };
     const handleScroll = () => {
       lastScrollTopRef.current = scroller.scrollTop;
+      fetchNextPageFromScrollPosition();
       if (typeof window === "undefined") {
         saveScroll();
         return;
@@ -589,7 +625,7 @@ function ScrollableAgentSessionList<T>({
       }
       scroller.removeEventListener("scroll", handleScroll);
     };
-  }, [saveLatestScrollMemory, scrollerVersion]);
+  }, [fetchNextPageFromScrollPosition, saveLatestScrollMemory, scrollerVersion]);
 
   useLayoutEffect(() => {
     const scroller = scrollerRef.current;
@@ -779,6 +815,7 @@ export function AgentsSidebar({
   const setProjectSort = useAgentSessionStore((s) => s.setProjectSort);
   const sidebarGroupBy = useAgentSessionStore((s) => s.sidebarGroupBy);
   const setSidebarGroupBy = useAgentSessionStore((s) => s.setSidebarGroupBy);
+  const expandedProjectIds = useAgentSessionStore((s) => s.expandedProjectIds);
   const sidebarProjectFilterIds = useAgentSessionStore(
     (s) => s.sidebarProjectFilterIds
   );
@@ -924,8 +961,27 @@ export function AgentsSidebar({
     return nextProjects.filter((project) => selectedProjectFilterSet.has(project.id));
   }, [projectSort, projects, selectedProjectFilterSet, latestProjectOrder]);
   const selectedPublicationStates = sidebarPublicationStateFilters;
-  const fillSingleProjectSidebar =
-    sidebarGroupBy === "project" && !showAllProjects && orderedProjects.length === 1;
+  const expandedProjectIdForFill = useMemo(() => {
+    if (sidebarGroupBy !== "project" || showAllProjects || normalizedSearch.length > 0) {
+      return null;
+    }
+    if (orderedProjects.length === 1) {
+      return orderedProjects[0]?.id ?? null;
+    }
+
+    const expandedProjects = orderedProjects.filter(
+      (project) => expandedProjectIds[project.id] ?? focusedProjectId === project.id
+    );
+    return expandedProjects.length === 1 ? expandedProjects[0]?.id ?? null : null;
+  }, [
+    expandedProjectIds,
+    focusedProjectId,
+    normalizedSearch.length,
+    orderedProjects,
+    showAllProjects,
+    sidebarGroupBy,
+  ]);
+  const fillFilteredProjectSidebar = expandedProjectIdForFill !== null;
 
   return (
     <aside
@@ -1073,7 +1129,7 @@ export function AgentsSidebar({
 
       <div
         className={
-          fillSingleProjectSidebar
+          fillFilteredProjectSidebar
             ? "flex min-h-0 flex-1 flex-col overflow-hidden px-3 pb-3 pt-0.5"
             : "flex-1 overflow-y-auto px-3 pb-3 pt-0.5"
         }
@@ -1140,7 +1196,7 @@ export function AgentsSidebar({
               showAllProjects={showAllProjects}
               showProjectHeader
               showProjectNameInMeta={false}
-              fillAvailableHeight={fillSingleProjectSidebar}
+              fillAvailableHeight={expandedProjectIdForFill === project.id}
             />
           ))
         )}
@@ -1743,6 +1799,7 @@ function PublicationStateGroup({
   });
   const activeConversationIds = useChatStore((s) => s.activeConversationIds);
   const agentStatuses = useChatStore((s) => s.agentStatus);
+  const agentActivityLabels = useChatStore((s) => s.agentActivityLabels);
   const sessionActionsTriggerRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const [renameDialogConversation, setRenameDialogConversation] =
     useState<AgentConversation | null>(null);
@@ -1843,6 +1900,7 @@ function PublicationStateGroup({
       const rowKey = getAgentConversationStoreKey(conversation);
       const activeConversationId = activeConversationIds[rowKey] ?? null;
       const agentStatus = agentStatuses[rowKey] ?? "idle";
+      const runtimeLabel = agentActivityLabels[rowKey] ?? null;
       const isSelected = selectedConversationId === conversation.id;
       const isActiveRuntime = activeConversationId === conversation.id;
       const isPinned = Boolean(pinnedConversationIds[conversation.id]);
@@ -1851,7 +1909,15 @@ function PublicationStateGroup({
         isActiveRuntime,
         agentStatus
       );
-      const showRuntimeState = runtimeState === "running" || runtimeState === "waiting";
+      const publicationLabel = getVisiblePublicationLabel(
+        row.publicationLabel,
+        runtimeState,
+        runtimeLabel
+      );
+      const showRuntimeState = shouldShowSessionRuntimeLabel(
+        runtimeState,
+        publicationLabel
+      );
       const sessionActionsOpen = openSessionActionsId === conversation.id;
 
       return (
@@ -1862,10 +1928,11 @@ function PublicationStateGroup({
           refKind={row.refKind}
           refLabel={row.refLabel}
           publicationState={row.publicationState}
-          publicationLabel={row.publicationLabel}
+          publicationLabel={publicationLabel}
           isSelected={isSelected}
           isPinned={isPinned}
           runtimeState={runtimeState}
+          runtimeLabel={runtimeLabel}
           showRuntimeState={showRuntimeState}
           sessionActionsOpen={sessionActionsOpen}
           onSelect={() => onSelectConversation(conversation.projectId, conversation)}
@@ -1890,6 +1957,7 @@ function PublicationStateGroup({
     },
     [
       activeConversationIds,
+      agentActivityLabels,
       agentStatuses,
       openRenameDialog,
       onForkConversation,
@@ -2095,6 +2163,7 @@ interface AgentSessionRowProps {
   isSelected: boolean;
   isPinned: boolean;
   runtimeState: SessionRuntimeState;
+  runtimeLabel: string | null;
   showRuntimeState: boolean;
   sessionActionsOpen: boolean;
   onSelect: () => void;
@@ -2118,6 +2187,7 @@ function AgentSessionRow({
   isSelected,
   isPinned,
   runtimeState,
+  runtimeLabel,
   showRuntimeState,
   sessionActionsOpen,
   onSelect,
@@ -2215,7 +2285,7 @@ function AgentSessionRow({
                 <span className="flex h-[1em] shrink-0 items-center" aria-hidden="true">
                   ·
                 </span>
-                <SessionRuntimeLabel state={runtimeState} />
+                <SessionRuntimeLabel state={runtimeState} label={runtimeLabel} />
               </>
             )}
           </span>
@@ -2346,6 +2416,7 @@ function ProjectSessionGroup({
   const sessionActionsTriggerRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const [projectActionsOpen, setProjectActionsOpen] = useState(false);
   const [archiveDialogOpen, setArchiveDialogOpen] = useState(false);
+  const [prTemplateDialogOpen, setPrTemplateDialogOpen] = useState(false);
   const [renameDialogConversation, setRenameDialogConversation] =
     useState<AgentConversation | null>(null);
   const [renameDraftTitle, setRenameDraftTitle] = useState("");
@@ -2395,6 +2466,7 @@ function ProjectSessionGroup({
   });
   const activeConversationIds = useChatStore((s) => s.activeConversationIds);
   const agentStatuses = useChatStore((s) => s.agentStatus);
+  const agentActivityLabels = useChatStore((s) => s.agentActivityLabels);
   const visibleRows = groupQuery.group.rows;
   const visibleConversations = useMemo(
     () => visibleRows.map((row) => toProjectAgentConversation(row.conversation)),
@@ -2501,6 +2573,7 @@ function ProjectSessionGroup({
       const rowKey = getAgentConversationStoreKey(conversation);
       const activeConversationId = activeConversationIds[rowKey] ?? null;
       const agentStatus = agentStatuses[rowKey] ?? "idle";
+      const runtimeLabel = agentActivityLabels[rowKey] ?? null;
       const isSelected = selectedConversationId === conversation.id;
       const isActiveRuntime = activeConversationId === conversation.id;
       const isPinned = Boolean(pinnedConversationIds[conversation.id]);
@@ -2509,7 +2582,15 @@ function ProjectSessionGroup({
         isActiveRuntime,
         agentStatus
       );
-      const showRuntimeState = runtimeState === "running" || runtimeState === "waiting";
+      const publicationLabel = getVisiblePublicationLabel(
+        row.publicationLabel,
+        runtimeState,
+        runtimeLabel
+      );
+      const showRuntimeState = shouldShowSessionRuntimeLabel(
+        runtimeState,
+        publicationLabel
+      );
       const sessionActionsOpen = openSessionActionsId === conversation.id;
 
       return (
@@ -2520,10 +2601,11 @@ function ProjectSessionGroup({
           refKind={row.refKind}
           refLabel={row.refLabel}
           publicationState={row.publicationState}
-          publicationLabel={row.publicationLabel}
+          publicationLabel={publicationLabel}
           isSelected={isSelected}
           isPinned={isPinned}
           runtimeState={runtimeState}
+          runtimeLabel={runtimeLabel}
           showRuntimeState={showRuntimeState}
           sessionActionsOpen={sessionActionsOpen}
           onSelect={() => onSelectConversation(project.id, conversation)}
@@ -2548,6 +2630,7 @@ function ProjectSessionGroup({
     },
     [
       activeConversationIds,
+      agentActivityLabels,
       agentStatuses,
       onForkConversation,
       onRestoreConversation,
@@ -2688,6 +2771,14 @@ function ProjectSessionGroup({
                 >
                   <DropdownMenuItem
                     className="gap-2 text-xs"
+                    onClick={() => setPrTemplateDialogOpen(true)}
+                  >
+                    <Pencil className="w-3.5 h-3.5" />
+                    Edit PR Template
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    className="gap-2 text-xs"
                     onClick={() => setArchiveDialogOpen(true)}
                   >
                     <Archive className="w-3.5 h-3.5" />
@@ -2698,6 +2789,12 @@ function ProjectSessionGroup({
             </div>
           </div>
           )}
+
+          <PrTemplateEditorDialog
+            open={prTemplateDialogOpen}
+            onOpenChange={setPrTemplateDialogOpen}
+            project={project}
+          />
 
           <AlertDialog open={archiveDialogOpen} onOpenChange={setArchiveDialogOpen}>
             <AlertDialogContent>
@@ -2940,6 +3037,12 @@ function StaticRecentRuns() {
 }
 
 type SessionRuntimeState = "running" | "waiting" | "queued" | "done" | "blocked" | "archived";
+const PUBLICATION_LABELS_WITH_OWN_RUNTIME = new Set([
+  "auto-merge",
+  "blocked",
+  "fixing",
+  "waiting",
+]);
 
 function getSessionRuntimeState(
   conversation: AgentConversation,
@@ -2969,11 +3072,51 @@ function getSessionRuntimeState(
   return "running";
 }
 
-function SessionRuntimeLabel({ state }: { state: SessionRuntimeState }) {
+function getVisiblePublicationLabel(
+  publicationLabel: string | null,
+  state: SessionRuntimeState,
+  runtimeLabel: string | null
+) {
+  const normalizedPublicationLabel =
+    publicationLabel?.trim().toLowerCase() ?? null;
+  const normalizedRuntimeLabel = runtimeLabel?.trim().toLowerCase() ?? null;
+  if (
+    state === "running" &&
+    normalizedPublicationLabel === "blocked" &&
+    normalizedRuntimeLabel === "reviewing"
+  ) {
+    return null;
+  }
+
+  return publicationLabel;
+}
+
+function shouldShowSessionRuntimeLabel(
+  state: SessionRuntimeState,
+  publicationLabel: string | null
+) {
+  if (state !== "running" && state !== "waiting") {
+    return false;
+  }
+
+  const normalizedPublicationLabel = publicationLabel?.trim().toLowerCase() ?? null;
+  return (
+    !normalizedPublicationLabel ||
+    !PUBLICATION_LABELS_WITH_OWN_RUNTIME.has(normalizedPublicationLabel)
+  );
+}
+
+function SessionRuntimeLabel({
+  state,
+  label,
+}: {
+  state: SessionRuntimeState;
+  label: string | null;
+}) {
   if (state === "running") {
     return (
       <span className="agents-session-runtime-label font-medium">
-        running
+        {label ?? "running"}
       </span>
     );
   }

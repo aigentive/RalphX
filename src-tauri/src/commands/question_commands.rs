@@ -19,6 +19,7 @@ use crate::domain::entities::{
 use crate::domain::services::learned_skill_adapters::{
     capture_plan_mode_verdict, PlanModeVerdict, PlanModeVerdictCaptureInput, PlanModeVerdictOutcome,
 };
+use crate::domain::services::QueueKey;
 use crate::domain::services::{
     OutcomeLedgerService, ProjectSkillDistillationOrigin, ProjectSkillDistillerService,
 };
@@ -255,6 +256,7 @@ async fn handle_accepted_plan_mode_proposal<R: Runtime + 'static>(
             conversation_id: conversation_id.as_str(),
             mode: "plan".to_string(),
             base_ref_kind: None,
+            base_branch_mode: None,
             base_ref: None,
             base_display_name: None,
             base_source_pull_request: None,
@@ -293,6 +295,12 @@ async fn handle_accepted_plan_mode_proposal<R: Runtime + 'static>(
             None,
             None,
         );
+        let queue_key = QueueKey::new(ChatContextType::Project, conversation_id.as_str());
+        state
+            .queued_message_repo
+            .enqueue_back(&queue_key, &queued)
+            .await
+            .map_err(|error| error.to_string())?;
 
         let ipr_key = InteractiveProcessKey::new(
             ChatContextType::Project.to_string(),

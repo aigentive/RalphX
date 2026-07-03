@@ -7,6 +7,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
 export interface ReviewSettings {
   require_human_review: boolean;
+  require_workspace_review: boolean;
   max_fix_attempts: number;
   max_revision_cycles: number;
   /** Stored-only; follow-up decision pending */
@@ -15,13 +16,16 @@ export interface ReviewSettings {
   ai_review_auto_fix: boolean;
   /** Stored-only; follow-up decision pending */
   require_fix_approval: boolean;
+  auto_create_followup_agent_conversation: boolean;
 }
 
 /** Only the primary policy fields are accepted for update. */
 export interface UpdateReviewSettingsInput {
   requireHumanReview?: boolean;
+  requireWorkspaceReview?: boolean;
   maxFixAttempts?: number;
   maxRevisionCycles?: number;
+  autoCreateFollowupAgentConversation?: boolean;
 }
 
 // ============================================================================

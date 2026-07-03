@@ -12,15 +12,17 @@ use crate::application::agent_conversation_workspace_base::{
 };
 use crate::application::git_service::GitService;
 use crate::domain::entities::{
-    is_terminal_publication_pr_status, AgentConversationWorkspace, AgentConversationWorkspaceMode,
-    AgentWorkspaceSourcePullRequest, ChatConversationId, IdeationAnalysisBaseRefKind, Project,
-    Task,
+    is_terminal_publication_pr_status, AgentConversationWorkspace,
+    AgentConversationWorkspaceBranchMode, AgentConversationWorkspaceMode,
+    AgentWorkspaceSourcePullRequest, ChatConversationId, IdeationAnalysisBaseRefKind, PlanBranch,
+    Project, Task,
 };
 use crate::domain::execution::ExecutionSettings;
 use crate::domain::state_machine::transition_handler::run_pre_execution_setup;
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::agent_names::{
     AGENT_CHAT_PROJECT, AGENT_GENERAL_EXPLORER, AGENT_GENERAL_WORKER, AGENT_ORCHESTRATOR_IDEATION,
+    AGENT_PR_REVIEWER,
 };
 
 pub const AGENT_CONVERSATION_WORKSPACE_CONTINUATION_MESSAGE: &str =
@@ -29,9 +31,35 @@ pub const AGENT_CONVERSATION_WORKSPACE_CONTINUATION_MESSAGE: &str =
 #[derive(Debug, Clone, Default)]
 pub struct AgentConversationWorkspaceBaseSelection {
     pub kind: Option<IdeationAnalysisBaseRefKind>,
+    pub branch_mode: Option<AgentConversationWorkspaceBranchMode>,
     pub base_ref: Option<String>,
     pub display_name: Option<String>,
     pub source_pull_request: Option<AgentWorkspaceSourcePullRequest>,
+}
+
+impl AgentConversationWorkspaceBaseSelection {
+    pub(crate) fn for_workspace_reuse(workspace: &AgentConversationWorkspace) -> Self {
+        let source_pull_request = workspace.source_pull_request.clone();
+        let (kind, base_ref) = if let Some(source_pull_request) = source_pull_request.as_ref() {
+            (
+                Some(IdeationAnalysisBaseRefKind::LocalBranch),
+                Some(source_pull_request.head_ref_name.clone()),
+            )
+        } else {
+            (
+                Some(workspace.base_ref_kind),
+                Some(workspace.base_ref.clone()),
+            )
+        };
+
+        Self {
+            kind,
+            branch_mode: Some(workspace.branch_mode),
+            base_ref,
+            display_name: workspace.base_display_name.clone(),
+            source_pull_request,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,11 +133,14 @@ pub async fn prepare_agent_conversation_workspace_with_setup_mode_and_defaults(
         mode = %mode,
         setup_mode = ?setup_mode,
         selected_base_kind = ?selection.kind,
+        selected_branch_mode = ?selection.branch_mode,
         selected_base_ref = ?selection.base_ref,
         "Agent conversation workspace prepare started"
     );
 
     let selected_kind = selection.kind;
+    let selected_branch_mode = selection.branch_mode;
+    let source_pull_request = selection.source_pull_request;
     let selected_base_ref = selection
         .base_ref
         .as_deref()
@@ -129,7 +160,8 @@ pub async fn prepare_agent_conversation_workspace_with_setup_mode_and_defaults(
             && selected_base_ref.is_none());
     let needs_project_default = selected_kind.is_none()
         || (selected_kind == Some(IdeationAnalysisBaseRefKind::ProjectDefault)
-            && selected_base_ref.is_none());
+            && selected_base_ref.is_none())
+        || selected_branch_mode == Some(AgentConversationWorkspaceBranchMode::Linked);
     let current_branch_probe_started = Instant::now();
     let project_default_probe_started = Instant::now();
     let (current_branch, project_default) = tokio::join!(
@@ -219,10 +251,22 @@ pub async fn prepare_agent_conversation_workspace_with_setup_mode_and_defaults(
         ));
     }
 
-    let base_ref = match kind {
+    let branch_mode = if kind == IdeationAnalysisBaseRefKind::ProjectDefault {
+        AgentConversationWorkspaceBranchMode::Isolated
+    } else {
+        selected_branch_mode.unwrap_or_else(|| {
+            if source_pull_request.is_some() {
+                AgentConversationWorkspaceBranchMode::Linked
+            } else {
+                AgentConversationWorkspaceBranchMode::Isolated
+            }
+        })
+    };
+
+    let selected_work_ref = match kind {
         IdeationAnalysisBaseRefKind::ProjectDefault => selected_base_ref
             .clone()
-            .or(project_default)
+            .or_else(|| project_default.clone())
             .unwrap_or_else(|| "main".to_string()),
         IdeationAnalysisBaseRefKind::CurrentBranch => selected_base_ref
             .clone()
@@ -235,30 +279,72 @@ pub async fn prepare_agent_conversation_workspace_with_setup_mode_and_defaults(
         })?,
         IdeationAnalysisBaseRefKind::PullRequest => unreachable!("handled above"),
     };
-    let base_ref = if kind == IdeationAnalysisBaseRefKind::LocalBranch {
-        GitService::ensure_local_branch_from_origin_if_missing(&repo_path, &base_ref).await?
+    let selected_work_ref = if kind == IdeationAnalysisBaseRefKind::LocalBranch {
+        GitService::ensure_local_branch_from_origin_if_missing(&repo_path, &selected_work_ref)
+            .await?
     } else {
-        base_ref
+        selected_work_ref
+    };
+
+    let target_base_ref = if branch_mode == AgentConversationWorkspaceBranchMode::Linked {
+        let source_pr_base = source_pull_request
+            .as_ref()
+            .and_then(|pull_request| pull_request.base_ref_name.as_deref())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        let fallback_default = project_default
+            .clone()
+            .or_else(|| project.base_branch.clone())
+            .unwrap_or_else(|| "main".to_string());
+        source_pr_base.unwrap_or(fallback_default)
+    } else {
+        selected_work_ref.clone()
+    };
+    let target_base_ref =
+        GitService::ensure_local_branch_from_origin_if_missing(&repo_path, &target_base_ref)
+            .await?;
+
+    let project_default_ref = project_default
+        .as_deref()
+        .or(project.base_branch.as_deref())
+        .unwrap_or("main");
+    let stored_base_kind = if branch_mode == AgentConversationWorkspaceBranchMode::Linked {
+        if target_base_ref == project_default_ref {
+            IdeationAnalysisBaseRefKind::ProjectDefault
+        } else {
+            IdeationAnalysisBaseRefKind::LocalBranch
+        }
+    } else {
+        kind
     };
 
     let ref_check_started = Instant::now();
-    let base_commit = GitService::get_branch_sha(&repo_path, &base_ref)
+    let base_commit = GitService::get_branch_sha(&repo_path, &target_base_ref)
         .await
         .map_err(|error| {
             AppError::Validation(format!(
                 "Agent conversation base ref '{}' does not exist in the project repository: {}",
-                base_ref, error
+                target_base_ref, error
             ))
         })?;
     log_agent_workspace_phase(conversation_id, "validate_base_ref", ref_check_started);
 
     let display_name = selected_display_name.unwrap_or_else(|| match kind {
-        IdeationAnalysisBaseRefKind::ProjectDefault => format!("Project default ({base_ref})"),
-        IdeationAnalysisBaseRefKind::CurrentBranch => format!("Current branch ({base_ref})"),
-        IdeationAnalysisBaseRefKind::LocalBranch => base_ref.clone(),
-        IdeationAnalysisBaseRefKind::PullRequest => base_ref.clone(),
+        IdeationAnalysisBaseRefKind::ProjectDefault => {
+            format!("Project default ({selected_work_ref})")
+        }
+        IdeationAnalysisBaseRefKind::CurrentBranch => {
+            format!("Current branch ({selected_work_ref})")
+        }
+        IdeationAnalysisBaseRefKind::LocalBranch => selected_work_ref.clone(),
+        IdeationAnalysisBaseRefKind::PullRequest => selected_work_ref.clone(),
     });
-    let branch_name = agent_conversation_branch_name(project, conversation_id);
+    let branch_name = if branch_mode == AgentConversationWorkspaceBranchMode::Linked {
+        selected_work_ref.clone()
+    } else {
+        agent_conversation_branch_name(project, conversation_id)
+    };
     let workspace_path_started = Instant::now();
     let worktree_path = resolve_agent_conversation_workspace_path(project, conversation_id)?;
     tracing::info!(
@@ -271,7 +357,18 @@ pub async fn prepare_agent_conversation_workspace_with_setup_mode_and_defaults(
     );
 
     let worktree_started = Instant::now();
-    ensure_agent_conversation_worktree(&repo_path, &worktree_path, &branch_name, &base_ref).await?;
+    if branch_mode == AgentConversationWorkspaceBranchMode::Linked {
+        ensure_linked_agent_conversation_branch_worktree(&repo_path, &worktree_path, &branch_name)
+            .await?;
+    } else {
+        ensure_agent_conversation_worktree(
+            &repo_path,
+            &worktree_path,
+            &branch_name,
+            &target_base_ref,
+        )
+        .await?;
+    }
     log_agent_workspace_phase(conversation_id, "ensure_worktree", worktree_started);
 
     let setup_started = Instant::now();
@@ -288,27 +385,43 @@ pub async fn prepare_agent_conversation_workspace_with_setup_mode_and_defaults(
         conversation_id = %conversation_id,
         phase = "capture_base_commit",
         elapsed_ms = 0u64,
-        source_ref = %base_ref,
+        source_ref = %target_base_ref,
         "Agent conversation workspace phase completed"
     );
     log_agent_workspace_phase(conversation_id, "prepare_total", total_started);
+    let (publication_pr_number, publication_pr_url, publication_pr_status) =
+        if branch_mode == AgentConversationWorkspaceBranchMode::Linked {
+            source_pull_request
+                .as_ref()
+                .map(|pull_request| {
+                    (
+                        Some(pull_request.number),
+                        pull_request.url.clone(),
+                        Some("open".to_string()),
+                    )
+                })
+                .unwrap_or((None, None, None))
+        } else {
+            (None, None, None)
+        };
 
     Ok(AgentConversationWorkspace {
         conversation_id: conversation_id.clone(),
         project_id: project.id.clone(),
         mode,
-        base_ref_kind: kind,
-        base_ref,
+        branch_mode,
+        base_ref_kind: stored_base_kind,
+        base_ref: target_base_ref,
         base_display_name: Some(display_name),
         base_commit: Some(base_commit),
         branch_name,
         worktree_path: worktree_path.to_string_lossy().to_string(),
         linked_ideation_session_id: None,
         linked_plan_branch_id: None,
-        source_pull_request: selection.source_pull_request,
-        publication_pr_number: None,
-        publication_pr_url: None,
-        publication_pr_status: None,
+        source_pull_request,
+        publication_pr_number,
+        publication_pr_url,
+        publication_pr_status,
         publication_push_status: None,
         auto_publish_enabled: true,
         auto_publish_initial_pr_enabled: false,
@@ -642,6 +755,7 @@ pub fn agent_name_for_workspace_mode(mode: AgentConversationWorkspaceMode) -> &'
         AgentConversationWorkspaceMode::Edit => AGENT_GENERAL_WORKER,
         AgentConversationWorkspaceMode::Plan => AGENT_ORCHESTRATOR_IDEATION,
         AgentConversationWorkspaceMode::Ideation => AGENT_CHAT_PROJECT,
+        AgentConversationWorkspaceMode::ReviewPr => AGENT_PR_REVIEWER,
     }
 }
 
@@ -704,6 +818,74 @@ async fn ensure_agent_conversation_worktree(
     result
 }
 
+async fn ensure_linked_agent_conversation_branch_worktree(
+    repo_path: &Path,
+    workspace_path: &Path,
+    branch_name: &str,
+) -> AppResult<()> {
+    let project_root =
+        crate::utils::path_safety::validate_absolute_non_root_path(repo_path, "project checkout")?;
+
+    if workspace_path == project_root {
+        return Err(AppError::Validation(format!(
+            "Linked agent conversation branch '{}' points to the project root",
+            branch_name
+        )));
+    }
+
+    if workspace_path.exists() {
+        if !workspace_path.is_dir() {
+            return Err(AppError::Validation(format!(
+                "Linked agent conversation workspace path exists but is not a directory: {}",
+                workspace_path.display()
+            )));
+        }
+        let checked_out = GitService::get_current_branch(workspace_path).await?;
+        if checked_out != branch_name {
+            return Err(AppError::Validation(format!(
+                "Existing linked agent conversation workspace {} is checked out at '{}' instead of '{}'",
+                workspace_path.display(),
+                checked_out,
+                branch_name
+            )));
+        }
+        return Ok(());
+    }
+
+    let project_root_canonical = project_root
+        .canonicalize()
+        .unwrap_or_else(|_| project_root.clone());
+    let workspace_path_canonical = workspace_path
+        .canonicalize()
+        .unwrap_or_else(|_| workspace_path.to_path_buf());
+    for worktree in GitService::list_worktrees(&project_root).await? {
+        if worktree.branch.as_deref() != Some(branch_name) {
+            continue;
+        }
+        let existing_path = PathBuf::from(&worktree.path);
+        let existing_path_canonical = existing_path
+            .canonicalize()
+            .unwrap_or_else(|_| existing_path.clone());
+        if existing_path_canonical == workspace_path_canonical {
+            continue;
+        }
+        if existing_path_canonical == project_root_canonical {
+            return Err(AppError::Validation(format!(
+                "Selected branch '{}' is checked out in the project root; choose isolated branch mode or switch the primary checkout first",
+                branch_name
+            )));
+        }
+        return Err(AppError::Validation(format!(
+            "Selected branch '{}' is already checked out at {}; choose isolated branch mode or continue in that conversation",
+            branch_name,
+            existing_path.display()
+        )));
+    }
+
+    GitService::checkout_existing_branch_worktree_strict(&project_root, workspace_path, branch_name)
+        .await
+}
+
 pub fn resolve_agent_conversation_workspace_path(
     project: &Project,
     conversation_id: &ChatConversationId,
@@ -721,6 +903,99 @@ pub(crate) fn resolve_agent_conversation_project_workspace_dir(
 ) -> AppResult<PathBuf> {
     let parent = expand_worktree_parent(project.worktree_parent_or_default())?;
     Ok(parent.join(hashed_path_component("project", project.id.as_str())))
+}
+
+pub async fn ensure_linked_plan_branch_agent_worktree(
+    project: &Project,
+    plan_branch: &PlanBranch,
+) -> AppResult<PathBuf> {
+    let workspace_path = resolve_linked_plan_branch_agent_worktree_path(project, plan_branch)?;
+    let repo_path = PathBuf::from(&project.working_directory);
+    let project_root =
+        crate::utils::path_safety::validate_absolute_non_root_path(&repo_path, "project checkout")?;
+
+    if workspace_path == project_root {
+        return Err(AppError::Validation(format!(
+            "Linked plan branch worktree {} points to the project root",
+            plan_branch.id
+        )));
+    }
+
+    if workspace_path.exists() {
+        if !workspace_path.is_dir() {
+            return Err(AppError::Validation(format!(
+                "Linked plan branch worktree path exists but is not a directory: {}",
+                workspace_path.display()
+            )));
+        }
+        let checked_out = GitService::get_current_branch(&workspace_path).await?;
+        if checked_out != plan_branch.branch_name {
+            return Err(AppError::Validation(format!(
+                "Existing linked plan branch worktree {} is checked out at '{}' instead of '{}'",
+                workspace_path.display(),
+                checked_out,
+                plan_branch.branch_name
+            )));
+        }
+        return Ok(workspace_path);
+    }
+
+    let project_root_canonical = project_root
+        .canonicalize()
+        .unwrap_or_else(|_| project_root.clone());
+    let workspace_path_canonical = workspace_path
+        .canonicalize()
+        .unwrap_or_else(|_| workspace_path.clone());
+    for worktree in GitService::list_worktrees(&project_root).await? {
+        if worktree.branch.as_deref() != Some(plan_branch.branch_name.as_str()) {
+            continue;
+        }
+        let existing_path = PathBuf::from(&worktree.path);
+        let existing_path_canonical = existing_path
+            .canonicalize()
+            .unwrap_or_else(|_| existing_path.clone());
+        if existing_path_canonical == workspace_path_canonical {
+            continue;
+        }
+        if existing_path_canonical == project_root_canonical {
+            return Err(AppError::Validation(format!(
+                "Linked plan branch '{}' is checked out in the project root; refusing to publish from the primary checkout",
+                plan_branch.branch_name
+            )));
+        }
+        return Err(AppError::Validation(format!(
+            "Linked plan branch '{}' is already checked out at {}; refusing to move or delete another worktree",
+            plan_branch.branch_name,
+            existing_path.display()
+        )));
+    }
+
+    GitService::checkout_existing_branch_worktree(
+        &project_root,
+        &workspace_path,
+        &plan_branch.branch_name,
+    )
+    .await?;
+    Ok(workspace_path)
+}
+
+pub fn resolve_linked_plan_branch_agent_worktree_path(
+    project: &Project,
+    plan_branch: &PlanBranch,
+) -> AppResult<PathBuf> {
+    if plan_branch.project_id != project.id {
+        return Err(AppError::Validation(format!(
+            "Plan branch {} belongs to project {} instead of {}",
+            plan_branch.id, plan_branch.project_id, project.id
+        )));
+    }
+
+    Ok(
+        resolve_agent_conversation_project_workspace_dir(project)?.join(hashed_path_component(
+            "linked-plan-branch",
+            plan_branch.id.as_str(),
+        )),
+    )
 }
 
 pub async fn resolve_valid_agent_conversation_workspace_path(
@@ -862,7 +1137,8 @@ fn slug_branch_component(value: &str) -> String {
 mod tests {
     use super::*;
     use crate::domain::entities::{
-        AgentConversationWorkspaceMode, ChatConversationId, IdeationAnalysisBaseRefKind, Project,
+        AgentConversationWorkspaceMode, ArtifactId, ChatConversationId,
+        IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranch, Project,
     };
     use std::process::Command;
 
@@ -893,6 +1169,153 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn linked_plan_branch_worktree_refuses_primary_checkout() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let repo_path = temp.path().join("repo");
+        let worktree_parent = temp.path().join("worktrees");
+        setup_repo(&repo_path);
+        let branch_name = "feature/primary-plan-branch";
+        git(&repo_path, &["checkout", "-b", branch_name]);
+
+        let mut project = Project::new(
+            "Primary Plan Checkout".to_string(),
+            repo_path.to_string_lossy().to_string(),
+        );
+        project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+        let plan_branch = PlanBranch::new(
+            ArtifactId::from_string("artifact-primary-plan-branch"),
+            IdeationSessionId::from_string("session-primary-plan-branch"),
+            project.id.clone(),
+            branch_name.to_string(),
+            "main".to_string(),
+        );
+
+        let error = ensure_linked_plan_branch_agent_worktree(&project, &plan_branch)
+            .await
+            .expect_err("primary checkout plan branch should be refused");
+
+        assert!(error
+            .to_string()
+            .contains("refusing to publish from the primary checkout"));
+        assert_eq!(git(&repo_path, &["branch", "--show-current"]), branch_name);
+    }
+
+    #[tokio::test]
+    async fn linked_plan_branch_worktree_reuses_existing_isolated_checkout() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let repo_path = temp.path().join("repo");
+        let worktree_parent = temp.path().join("worktrees");
+        setup_repo(&repo_path);
+        let branch_name = "feature/existing-plan-worktree";
+        git(&repo_path, &["checkout", "-b", branch_name]);
+        git(&repo_path, &["checkout", "main"]);
+
+        let mut project = Project::new(
+            "Existing Plan Checkout".to_string(),
+            repo_path.to_string_lossy().to_string(),
+        );
+        project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+        let plan_branch = PlanBranch::new(
+            ArtifactId::from_string("artifact-existing-plan-branch"),
+            IdeationSessionId::from_string("session-existing-plan-branch"),
+            project.id.clone(),
+            branch_name.to_string(),
+            "main".to_string(),
+        );
+        let workspace_path = resolve_linked_plan_branch_agent_worktree_path(&project, &plan_branch)
+            .expect("linked plan worktree path should resolve");
+        std::fs::create_dir_all(workspace_path.parent().expect("workspace path should nest"))
+            .expect("workspace parent should be created");
+        let workspace_path_arg = workspace_path.to_string_lossy().to_string();
+        git(
+            &repo_path,
+            &["worktree", "add", workspace_path_arg.as_str(), branch_name],
+        );
+
+        let resolved = ensure_linked_plan_branch_agent_worktree(&project, &plan_branch)
+            .await
+            .expect("existing linked plan worktree should be reused");
+
+        assert_eq!(resolved, workspace_path);
+        assert_eq!(git(&repo_path, &["branch", "--show-current"]), "main");
+        assert_eq!(git(&resolved, &["branch", "--show-current"]), branch_name);
+    }
+
+    #[tokio::test]
+    async fn linked_plan_branch_worktree_refuses_file_at_expected_path() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let repo_path = temp.path().join("repo");
+        let worktree_parent = temp.path().join("worktrees");
+        setup_repo(&repo_path);
+        let branch_name = "feature/file-plan-worktree";
+        git(&repo_path, &["checkout", "-b", branch_name]);
+        git(&repo_path, &["checkout", "main"]);
+
+        let mut project = Project::new(
+            "File Plan Checkout".to_string(),
+            repo_path.to_string_lossy().to_string(),
+        );
+        project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+        let plan_branch = PlanBranch::new(
+            ArtifactId::from_string("artifact-file-plan-branch"),
+            IdeationSessionId::from_string("session-file-plan-branch"),
+            project.id.clone(),
+            branch_name.to_string(),
+            "main".to_string(),
+        );
+        let workspace_path = resolve_linked_plan_branch_agent_worktree_path(&project, &plan_branch)
+            .expect("linked plan worktree path should resolve");
+        std::fs::create_dir_all(workspace_path.parent().expect("workspace path should nest"))
+            .expect("workspace parent should be created");
+        std::fs::write(&workspace_path, "not a directory\n")
+            .expect("file should be written at expected worktree path");
+
+        let error = ensure_linked_plan_branch_agent_worktree(&project, &plan_branch)
+            .await
+            .expect_err("file at linked plan path should be refused");
+
+        assert!(error.to_string().contains("exists but is not a directory"));
+        assert_eq!(git(&repo_path, &["branch", "--show-current"]), "main");
+    }
+
+    #[tokio::test]
+    async fn linked_plan_branch_worktree_refuses_other_existing_worktree() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let repo_path = temp.path().join("repo");
+        let worktree_parent = temp.path().join("worktrees");
+        setup_repo(&repo_path);
+        let branch_name = "feature/other-plan-worktree";
+        git(&repo_path, &["checkout", "-b", branch_name]);
+        git(&repo_path, &["checkout", "main"]);
+        let other_worktree_path = temp.path().join("other-plan-worktree");
+        let other_worktree_arg = other_worktree_path.to_string_lossy().to_string();
+        git(
+            &repo_path,
+            &["worktree", "add", other_worktree_arg.as_str(), branch_name],
+        );
+
+        let mut project = Project::new(
+            "Other Plan Checkout".to_string(),
+            repo_path.to_string_lossy().to_string(),
+        );
+        project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+        let plan_branch = PlanBranch::new(
+            ArtifactId::from_string("artifact-other-plan-branch"),
+            IdeationSessionId::from_string("session-other-plan-branch"),
+            project.id.clone(),
+            branch_name.to_string(),
+            "main".to_string(),
+        );
+
+        let error = ensure_linked_plan_branch_agent_worktree(&project, &plan_branch)
+            .await
+            .expect_err("other linked plan worktree should be refused");
+
+        assert!(error.to_string().contains("already checked out at"));
+        assert_eq!(git(&repo_path, &["branch", "--show-current"]), "main");
+    }
+
+    #[tokio::test]
     async fn prepare_agent_conversation_workspace_runs_project_worktree_setup() {
         let temp = tempfile::tempdir().expect("tempdir should be created");
         let repo_path = temp.path().join("repo");
@@ -917,6 +1340,7 @@ mod tests {
             AgentConversationWorkspaceMode::Edit,
             AgentConversationWorkspaceBaseSelection {
                 kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+                branch_mode: None,
                 base_ref: Some("main".to_string()),
                 display_name: None,
                 source_pull_request: None,
@@ -966,6 +1390,7 @@ mod tests {
             AgentConversationWorkspaceMode::Edit,
             AgentConversationWorkspaceBaseSelection {
                 kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+                branch_mode: None,
                 base_ref: Some("main".to_string()),
                 display_name: None,
                 source_pull_request: None,
@@ -989,6 +1414,147 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn linked_pr_workspace_checks_out_selected_branch_and_links_publication_pr() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let repo_path = temp.path().join("repo");
+        let worktree_parent = temp.path().join("worktrees");
+        setup_repo(&repo_path);
+        let branch_name = "feature/pr-work";
+        git(&repo_path, &["checkout", "-b", branch_name]);
+        git(&repo_path, &["checkout", "main"]);
+        let mut project = Project::new(
+            "Linked PR Workspace".to_string(),
+            repo_path.to_string_lossy().to_string(),
+        );
+        project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+        let conversation_id =
+            ChatConversationId::from_string("33333333-3333-4333-8333-333333333333");
+
+        let workspace = prepare_agent_conversation_workspace_with_setup_mode(
+            &project,
+            &conversation_id,
+            AgentConversationWorkspaceMode::Edit,
+            AgentConversationWorkspaceBaseSelection {
+                kind: Some(IdeationAnalysisBaseRefKind::LocalBranch),
+                branch_mode: Some(AgentConversationWorkspaceBranchMode::Linked),
+                base_ref: Some(branch_name.to_string()),
+                display_name: Some("PR #42: Linked PR".to_string()),
+                source_pull_request: Some(AgentWorkspaceSourcePullRequest {
+                    number: 42,
+                    url: Some("https://example.test/pull/42".to_string()),
+                    title: Some("Linked PR".to_string()),
+                    head_ref_name: branch_name.to_string(),
+                    base_ref_name: Some("main".to_string()),
+                    head_ref_oid: None,
+                }),
+            },
+            AgentConversationWorkspaceSetupMode::Deferred,
+        )
+        .await
+        .expect("linked PR workspace should prepare");
+
+        assert_eq!(
+            workspace.branch_mode,
+            AgentConversationWorkspaceBranchMode::Linked
+        );
+        assert_eq!(workspace.branch_name, branch_name);
+        assert_eq!(
+            workspace.base_ref_kind,
+            IdeationAnalysisBaseRefKind::ProjectDefault
+        );
+        assert_eq!(workspace.base_ref, "main");
+        assert_eq!(workspace.publication_pr_number, Some(42));
+        assert_eq!(
+            workspace.publication_pr_url.as_deref(),
+            Some("https://example.test/pull/42")
+        );
+        assert_eq!(workspace.publication_pr_status.as_deref(), Some("open"));
+        let checked_out = git(
+            Path::new(&workspace.worktree_path),
+            &["branch", "--show-current"],
+        );
+        assert_eq!(checked_out, branch_name);
+        assert_eq!(git(&repo_path, &["branch", "--show-current"]), "main");
+    }
+
+    #[tokio::test]
+    async fn project_default_selection_remains_isolated_even_when_linked_requested() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let repo_path = temp.path().join("repo");
+        let worktree_parent = temp.path().join("worktrees");
+        setup_repo(&repo_path);
+        let mut project = Project::new(
+            "Default Isolated Workspace".to_string(),
+            repo_path.to_string_lossy().to_string(),
+        );
+        project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+        let conversation_id =
+            ChatConversationId::from_string("44444444-4444-4444-8444-444444444444");
+
+        let workspace = prepare_agent_conversation_workspace_with_setup_mode(
+            &project,
+            &conversation_id,
+            AgentConversationWorkspaceMode::Edit,
+            AgentConversationWorkspaceBaseSelection {
+                kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+                branch_mode: Some(AgentConversationWorkspaceBranchMode::Linked),
+                base_ref: Some("main".to_string()),
+                display_name: None,
+                source_pull_request: None,
+            },
+            AgentConversationWorkspaceSetupMode::Deferred,
+        )
+        .await
+        .expect("default workspace should prepare");
+
+        assert_eq!(
+            workspace.branch_mode,
+            AgentConversationWorkspaceBranchMode::Isolated
+        );
+        assert_ne!(workspace.branch_name, "main");
+        assert!(workspace.branch_name.contains("/agent-"));
+        assert_eq!(workspace.base_ref, "main");
+    }
+
+    #[tokio::test]
+    async fn linked_branch_workspace_refuses_primary_checkout() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let repo_path = temp.path().join("repo");
+        let worktree_parent = temp.path().join("worktrees");
+        setup_repo(&repo_path);
+        let branch_name = "feature/primary-agent-branch";
+        git(&repo_path, &["checkout", "-b", branch_name]);
+        let mut project = Project::new(
+            "Primary Linked Checkout".to_string(),
+            repo_path.to_string_lossy().to_string(),
+        );
+        project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+        let conversation_id =
+            ChatConversationId::from_string("55555555-5555-4555-8555-555555555555");
+
+        let error = prepare_agent_conversation_workspace_with_setup_mode(
+            &project,
+            &conversation_id,
+            AgentConversationWorkspaceMode::Edit,
+            AgentConversationWorkspaceBaseSelection {
+                kind: Some(IdeationAnalysisBaseRefKind::LocalBranch),
+                branch_mode: Some(AgentConversationWorkspaceBranchMode::Linked),
+                base_ref: Some(branch_name.to_string()),
+                display_name: None,
+                source_pull_request: None,
+            },
+            AgentConversationWorkspaceSetupMode::Deferred,
+        )
+        .await
+        .expect_err("primary checkout should block linked branch workspace");
+
+        assert!(error
+            .to_string()
+            .contains("checked out in the project root"));
+        assert_eq!(git(&repo_path, &["branch", "--show-current"]), branch_name);
+    }
+
+    #[tokio::test]
     async fn prepare_agent_conversation_workspace_applies_pr_automation_defaults() {
         let temp = tempfile::tempdir().expect("tempdir should be created");
         let repo_path = temp.path().join("repo");
@@ -1009,6 +1575,7 @@ mod tests {
             AgentConversationWorkspaceMode::Edit,
             AgentConversationWorkspaceBaseSelection {
                 kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+                branch_mode: None,
                 base_ref: Some("main".to_string()),
                 display_name: None,
                 source_pull_request: None,
@@ -1085,6 +1652,7 @@ mod tests {
             AgentConversationWorkspaceMode::Edit,
             AgentConversationWorkspaceBaseSelection {
                 kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+                branch_mode: None,
                 base_ref: Some("main".to_string()),
                 display_name: None,
                 source_pull_request: None,
@@ -1131,6 +1699,7 @@ mod tests {
             AgentConversationWorkspaceMode::Edit,
             AgentConversationWorkspaceBaseSelection {
                 kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+                branch_mode: None,
                 base_ref: Some("main".to_string()),
                 display_name: None,
                 source_pull_request: None,
@@ -1171,6 +1740,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rollover_agent_conversation_workspace_preserves_linked_branch_mode() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let repo_path = temp.path().join("repo");
+        let worktree_parent = temp.path().join("worktrees");
+        setup_repo(&repo_path);
+        let linked_branch = "feature/linked-rollover";
+        git(&repo_path, &["checkout", "-b", linked_branch]);
+        git(&repo_path, &["checkout", "main"]);
+
+        let mut project = Project::new(
+            "Linked Rollover".to_string(),
+            repo_path.to_string_lossy().to_string(),
+        );
+        project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+
+        let conversation_id =
+            ChatConversationId::from_string("conversation-linked-rollover-test".to_string());
+        let mut workspace = prepare_agent_conversation_workspace(
+            &project,
+            &conversation_id,
+            AgentConversationWorkspaceMode::Edit,
+            AgentConversationWorkspaceBaseSelection {
+                kind: Some(IdeationAnalysisBaseRefKind::LocalBranch),
+                branch_mode: Some(AgentConversationWorkspaceBranchMode::Linked),
+                base_ref: Some(linked_branch.to_string()),
+                display_name: Some("PR #92: Linked rollover".to_string()),
+                source_pull_request: Some(AgentWorkspaceSourcePullRequest {
+                    number: 92,
+                    url: Some("https://example.test/pr/92".to_string()),
+                    title: Some("Linked rollover".to_string()),
+                    head_ref_name: linked_branch.to_string(),
+                    base_ref_name: Some("main".to_string()),
+                    head_ref_oid: None,
+                }),
+            },
+        )
+        .await
+        .expect("linked workspace should be prepared");
+        assert_eq!(
+            workspace.branch_mode,
+            AgentConversationWorkspaceBranchMode::Linked
+        );
+        workspace.publication_pr_status = Some("merged".to_string());
+
+        let updated = rollover_agent_conversation_workspace(&project, &workspace)
+            .await
+            .expect("terminal linked workspace should roll over");
+
+        assert_eq!(
+            updated.branch_mode,
+            AgentConversationWorkspaceBranchMode::Linked
+        );
+        assert_ne!(updated.branch_name, workspace.branch_name);
+        assert_eq!(updated.publication_pr_number, None);
+        assert_eq!(updated.publication_pr_url, None);
+        assert_eq!(updated.publication_pr_status, None);
+        let checked_out = GitService::get_current_branch(Path::new(&updated.worktree_path))
+            .await
+            .expect("rolled linked workspace branch should resolve");
+        assert_eq!(checked_out, updated.branch_name);
+    }
+
+    #[tokio::test]
     async fn rollover_agent_conversation_workspace_blocks_dirty_old_worktree() {
         let temp = tempfile::tempdir().expect("tempdir should be created");
         let repo_path = temp.path().join("repo");
@@ -1191,6 +1823,7 @@ mod tests {
             AgentConversationWorkspaceMode::Edit,
             AgentConversationWorkspaceBaseSelection {
                 kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+                branch_mode: None,
                 base_ref: Some("main".to_string()),
                 display_name: None,
                 source_pull_request: None,
@@ -1248,6 +1881,7 @@ mod tests {
             AgentConversationWorkspaceMode::Edit,
             AgentConversationWorkspaceBaseSelection {
                 kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+                branch_mode: None,
                 base_ref: Some("main".to_string()),
                 display_name: None,
                 source_pull_request: None,
@@ -1297,6 +1931,7 @@ mod tests {
             AgentConversationWorkspaceMode::Edit,
             AgentConversationWorkspaceBaseSelection {
                 kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+                branch_mode: None,
                 base_ref: Some("main".to_string()),
                 display_name: None,
                 source_pull_request: None,

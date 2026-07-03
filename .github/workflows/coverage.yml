@@ -130,11 +130,21 @@ jobs:
             artifact_suffix: "2"
     env:
       CARGO_TERM_COLOR: never
+      CARGO_BUILD_JOBS: "2"
       RALPHX_TEST_MODE: "1"
       RUST_LIB_COVERAGE_ARTIFACT: coverage-rust-lib-${{ matrix.artifact_suffix }}
       RUST_LIB_COVERAGE_ROOT: coverage/coverage-rust-lib-${{ matrix.artifact_suffix }}
     steps:
       - uses: actions/checkout@v6
+
+      - name: Free runner disk space
+        shell: bash
+        run: |
+          set -euo pipefail
+          df -h /
+          sudo rm -rf /usr/local/lib/android /opt/ghc /usr/share/dotnet
+          sudo docker system prune -af || true
+          df -h /
 
       - name: Install Linux system dependencies
         shell: bash
@@ -349,6 +359,15 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Free runner disk space
+        shell: bash
+        run: |
+          set -euo pipefail
+          df -h /
+          sudo rm -rf /usr/local/lib/android /opt/ghc /usr/share/dotnet
+          sudo docker system prune -af || true
+          df -h /
+
       - name: Install Linux system dependencies
         shell: bash
         run: bash scripts/ci-install-linux-deps.sh
@@ -389,6 +408,14 @@ jobs:
             --remap-path-prefix \
             ipc_contract \
             | tee ../coverage/rust-ipc/summary.txt
+          cargo llvm-cov nextest \
+            --profile ci \
+            --test metrics_commands \
+            --test metrics_delivery_trends \
+            --test metrics_integration \
+            --test metrics_pr_insights \
+            --remap-path-prefix \
+            | tee -a ../coverage/rust-ipc/summary.txt
           cargo llvm-cov report --lcov --output-path ../coverage/rust-ipc/lcov.info
           cargo llvm-cov report --json --output-path ../coverage/rust-ipc/coverage.json
           cargo llvm-cov report --html --output-dir ../coverage/rust-ipc/html
@@ -961,19 +988,26 @@ jobs:
             )"
 
             state=""
+            failure_state=""
             for candidate in "${status_state}" "${check_state}"; do
               case "${candidate}" in
-                failure|error|timed_out|cancelled|action_required)
-                  state="${candidate}"
+                success)
+                  state="success"
                   break
+                  ;;
+                pending)
+                  if [[ -z "${state}" ]]; then
+                    state="pending"
+                  fi
+                  ;;
+                failure|error|timed_out|cancelled|action_required)
+                  failure_state="${candidate}"
                   ;;
               esac
             done
             if [[ -z "${state}" ]]; then
-              if [[ "${status_state}" == "success" || "${check_state}" == "success" ]]; then
-                state="success"
-              elif [[ "${status_state}" == "pending" || "${check_state}" == "pending" ]]; then
-                state="pending"
+              if [[ -n "${failure_state}" ]]; then
+                state="${failure_state}"
               fi
             fi
 
@@ -983,13 +1017,7 @@ jobs:
                 exit 0
                 ;;
               failure|error|timed_out|cancelled|action_required)
-                gh api "repos/${GITHUB_REPOSITORY}/commits/${COMMIT_SHA}/statuses" \
-                  --jq 'map(select(.context == "codecov/patch"))[0]'
-                gh api --method GET "repos/${GITHUB_REPOSITORY}/commits/${COMMIT_SHA}/check-runs" \
-                  -f check_name="codecov/patch" \
-                  --jq '.check_runs | sort_by(.completed_at // .started_at // .created_at) | .[-1]'
-                echo "Codecov patch status failed."
-                exit 1
+                echo "Codecov patch status is ${state}; waiting for a final success or timeout."
                 ;;
               pending)
                 echo "Codecov patch status is pending; waiting."
@@ -1006,5 +1034,10 @@ jobs:
             sleep 10
           done
 
-          echo "Timed out waiting for Codecov patch status."
+          echo "Timed out waiting for Codecov patch status to pass."
+          gh api "repos/${GITHUB_REPOSITORY}/commits/${COMMIT_SHA}/statuses" \
+            --jq 'map(select(.context == "codecov/patch"))[0]'
+          gh api --method GET "repos/${GITHUB_REPOSITORY}/commits/${COMMIT_SHA}/check-runs" \
+            -f check_name="codecov/patch" \
+            --jq '.check_runs | sort_by(.completed_at // .started_at // .created_at) | .[-1]'
           exit 1

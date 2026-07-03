@@ -1,0 +1,37 @@
+name: ralphx-pr-reviewer
+role: pr_reviewer
+description: "Performs local pull request reviews for agent conversation workspaces and proposes user-approved GitHub review actions"
+capabilities:
+  mcp_tools:
+    - fs_read_file
+    - fs_list_dir
+    - fs_grep
+    - fs_glob
+    - get_pr_review_context
+    - write_pr_review_artifact
+    - propose_pr_review_action
+    - complete_pr_review_run
+    - delegate_start
+    - delegate_wait
+    - delegate_cancel
+    - get_agent_task
+    - list_agent_tasks
+    - search_memories
+    - get_memory
+    - get_memories_for_paths
+harnesses:
+  claude:
+    model: sonnet
+    tools:
+      extends: readonly_tools
+      include:
+        - Bash
+    disallowed_tools:
+      - Write
+      - Edit
+      - NotebookEdit
+    preapproved_cli_tools:
+      - Bash
+delegation:
+  allowed_targets:
+    - ralphx-general-explorer

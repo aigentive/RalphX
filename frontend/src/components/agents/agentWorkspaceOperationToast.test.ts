@@ -3,11 +3,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   agentWorkspaceOperationErrorDetail,
   agentWorkspaceOperationToastId,
+  markAgentWorkspaceOperationToastSettled,
   publishPipelineToastLabel,
   startAgentWorkspaceOperationToast,
 } from "./agentWorkspaceOperationToast";
 
-const { toastErrorMock, toastInfoMock, toastLoadingMock, toastSuccessMock } = vi.hoisted(() => ({
+const {
+  toastDismissMock,
+  toastErrorMock,
+  toastInfoMock,
+  toastLoadingMock,
+  toastSuccessMock,
+} = vi.hoisted(() => ({
+  toastDismissMock: vi.fn(),
   toastErrorMock: vi.fn(),
   toastInfoMock: vi.fn(),
   toastLoadingMock: vi.fn(),
@@ -16,6 +24,7 @@ const { toastErrorMock, toastInfoMock, toastLoadingMock, toastSuccessMock } = vi
 
 vi.mock("sonner", () => ({
   toast: {
+    dismiss: (...args: unknown[]) => toastDismissMock(...args),
     error: (...args: unknown[]) => toastErrorMock(...args),
     info: (...args: unknown[]) => toastInfoMock(...args),
     loading: (...args: unknown[]) => toastLoadingMock(...args),
@@ -27,6 +36,7 @@ describe("agentWorkspaceOperationToast", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
+    toastDismissMock.mockClear();
     toastErrorMock.mockClear();
     toastInfoMock.mockClear();
     toastLoadingMock.mockClear();
@@ -137,6 +147,9 @@ describe("agentWorkspaceOperationToast", () => {
       startedAtMs: 1_000,
     });
 
+    expect(toastDismissMock).toHaveBeenCalledWith(
+      "agent-workspace-operation:conversation-1:publish",
+    );
     expect(toastLoadingMock).toHaveBeenLastCalledWith(
       "Publishing workspace",
       expect.objectContaining({
@@ -160,6 +173,64 @@ describe("agentWorkspaceOperationToast", () => {
       },
     );
     expect(toastLoadingMock).toHaveBeenCalledTimes(loadingCallCount);
+  });
+
+  it("lets an external terminal toast settle active progress before later redraws", () => {
+    const toastId = agentWorkspaceOperationToastId("conversation-1", "publish");
+    const progress = startAgentWorkspaceOperationToast({
+      conversationTitle: "Agent conversation",
+      detail: "Open draft PR",
+      id: toastId,
+      startedAtMs: 0,
+      title: "Publishing workspace",
+    });
+    const loadingCallCount = toastLoadingMock.mock.calls.length;
+
+    expect(markAgentWorkspaceOperationToastSettled(toastId)).toBe(true);
+    toastSuccessMock("Published #404", {
+      description: "Agent conversation",
+      duration: 8_000,
+      id: toastId,
+    });
+
+    vi.advanceTimersByTime(1_000);
+    progress.update({ detail: "Open draft PR" });
+
+    expect(toastLoadingMock).toHaveBeenCalledTimes(loadingCallCount);
+    expect(toastSuccessMock).toHaveBeenCalledWith("Published #404", {
+      description: "Agent conversation",
+      duration: 8_000,
+      id: toastId,
+    });
+  });
+
+  it("dismisses an obsolete active loading toast without blocking later results", () => {
+    const toastId = agentWorkspaceOperationToastId(
+      "conversation-1",
+      "update-from-base",
+    );
+    const progress = startAgentWorkspaceOperationToast({
+      conversationTitle: "Agent conversation",
+      detail: "From main",
+      id: toastId,
+      title: "Updating branch",
+    });
+    const loadingCallCount = toastLoadingMock.mock.calls.length;
+
+    progress.dismiss();
+    progress.update({ detail: "Still running" });
+    vi.advanceTimersByTime(3_000);
+
+    expect(toastDismissMock).toHaveBeenCalledWith(toastId);
+    expect(toastLoadingMock).toHaveBeenCalledTimes(loadingCallCount);
+
+    progress.success("Updated from main");
+
+    expect(toastSuccessMock).toHaveBeenCalledWith("Updated from main", {
+      description: "Agent conversation • From main",
+      duration: 8_000,
+      id: toastId,
+    });
   });
 
   it("replaces the persistent loading toast with an error result", () => {

@@ -606,11 +606,11 @@ pub async fn re_review_task_from_escalated(
     Ok(())
 }
 
-fn ensure_human_review_followup_status(
-    status: InternalStatus,
-    action: &str,
-) -> Result<(), String> {
-    if matches!(status, InternalStatus::ReviewPassed | InternalStatus::Escalated) {
+fn ensure_human_review_followup_status(status: InternalStatus, action: &str) -> Result<(), String> {
+    if matches!(
+        status,
+        InternalStatus::ReviewPassed | InternalStatus::Escalated
+    ) {
         return Ok(());
     }
 
@@ -814,7 +814,9 @@ mod transition_guard_tests {
 
     #[test]
     fn human_review_followup_accepts_review_passed_and_escalated() {
-        assert!(ensure_human_review_followup_status(InternalStatus::ReviewPassed, "approve").is_ok());
+        assert!(
+            ensure_human_review_followup_status(InternalStatus::ReviewPassed, "approve").is_ok()
+        );
         assert!(
             ensure_human_review_followup_status(InternalStatus::Escalated, "request changes")
                 .is_ok()
@@ -1012,11 +1014,17 @@ pub async fn update_review_settings(
     if let Some(v) = input.require_human_review {
         settings.require_human_review = v;
     }
+    if let Some(v) = input.require_workspace_review {
+        settings.require_workspace_review = v;
+    }
     if let Some(v) = input.max_fix_attempts {
         settings.max_fix_attempts = v;
     }
     if let Some(v) = input.max_revision_cycles {
         settings.max_revision_cycles = v;
+    }
+    if let Some(v) = input.auto_create_followup_agent_conversation {
+        settings.auto_create_followup_agent_conversation = v;
     }
 
     let updated = state

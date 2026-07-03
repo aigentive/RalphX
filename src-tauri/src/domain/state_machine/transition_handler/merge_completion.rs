@@ -32,7 +32,7 @@ use crate::domain::services::payload_enrichment::{
 };
 
 use super::merge_helpers::{
-    sync_plan_branch_pr_after_regular_task_merge, PlanBranchPrSyncServices,
+    merge_metadata_into, sync_plan_branch_pr_after_regular_task_merge, PlanBranchPrSyncServices,
 };
 use super::merge_validation::emit_merge_progress;
 
@@ -297,6 +297,40 @@ async fn complete_merge_internal_impl<R: tauri::Runtime>(
         }
     }
 
+    if let Some(pr_sync_services) = pr_sync_services.as_ref() {
+        if let Err(error) =
+            sync_plan_branch_pr_after_regular_task_merge(task, project, pr_sync_services).await
+        {
+            tracing::warn!(
+                task_id = task_id_str,
+                error = %error,
+                "complete_merge_internal: PR branch publication failed before Merged status"
+            );
+            merge_metadata_into(
+                task,
+                &serde_json::json!({
+                    "error": format!("PR branch publication failed: {}", error),
+                    "error_code": "pr_branch_publication_failed",
+                    "target_branch": target_branch,
+                    "source_branch": source_branch,
+                    "commit_sha": commit_sha,
+                }),
+            );
+            task.internal_status = InternalStatus::MergeIncomplete;
+            task.touch();
+            task_repo.update(task).await?;
+            let _ = task_repo
+                .persist_status_change(
+                    &task_id,
+                    old_status,
+                    InternalStatus::MergeIncomplete,
+                    "pr_branch_publication_failed",
+                )
+                .await;
+            return Err(error);
+        }
+    }
+
     // 2. Update task with merge commit SHA, status, and pending_cleanup in ONE write.
     // Combining status + pending_cleanup into a single update eliminates the crash
     // window where status=Merged but pending_cleanup is not yet set.
@@ -476,10 +510,6 @@ async fn complete_merge_internal_impl<R: tauri::Runtime>(
                 }
             }
         }
-    }
-
-    if let Some(pr_sync_services) = pr_sync_services.as_ref() {
-        sync_plan_branch_pr_after_regular_task_merge(task, project, pr_sync_services).await;
     }
 
     // Emit finalize success merge progress event

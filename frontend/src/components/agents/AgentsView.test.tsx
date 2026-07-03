@@ -22,10 +22,11 @@ import {
   renderWithAgentProviders as renderWithProviders,
 } from "./agentsTestFixtures";
 const {
+  getAgentConversationRuntimeStatusesMock,
   getAgentConversationWorkspaceFreshnessMock,
   getAgentConversationWorkspaceMock,
-  getAgentRunningStatesMock,
   getLatestChildSessionIdMock,
+  getWorkspaceReviewContextMock,
   loadBranchBaseOptionsMock,
   loadPullRequestBaseOptionsMock,
   updateWorkspaceFromBaseMock,
@@ -217,8 +218,15 @@ describe("AgentsView", () => {
     getAgentConversationWorkspaceMock.mockResolvedValue(
       conversationWorkspace({ mode: "edit" }),
     );
-    getAgentRunningStatesMock.mockResolvedValue({
-      [activeConversation.id]: { isRunning: true, agentStatus: "generating" },
+    getAgentConversationRuntimeStatusesMock.mockResolvedValue({
+      [activeConversation.id]: {
+        conversationId: activeConversation.id,
+        isRunning: true,
+        agentStatus: "generating",
+        primarySource: "workspace",
+        summaryLabel: "Agent running",
+        items: [],
+      },
     });
 
     renderAgentsView();
@@ -241,10 +249,14 @@ describe("AgentsView", () => {
     getAgentConversationWorkspaceMock.mockResolvedValue(
       conversationWorkspace({ mode: "edit" }),
     );
-    getAgentRunningStatesMock.mockResolvedValue({
+    getAgentConversationRuntimeStatusesMock.mockResolvedValue({
       [activeConversation.id]: {
+        conversationId: activeConversation.id,
         isRunning: true,
         agentStatus: "waiting_for_input",
+        primarySource: "workspace",
+        summaryLabel: "Agent running",
+        items: [],
       },
     });
 
@@ -395,7 +407,9 @@ describe("AgentsView", () => {
     const panel = await screen.findByTestId("integrated-chat-panel");
     expect(panel).toHaveAttribute("data-conversation-id-override", "conversation-1");
     expect(panel).toHaveAttribute("data-ideation-session-id", "");
-    expect(await screen.findByTestId("agents-workspace-status")).toBeInTheDocument();
+    expect(
+      await screen.findByTestId("agents-conversation-workspace-line"),
+    ).toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId("mock-open-child-session"));
 
@@ -428,7 +442,9 @@ describe("AgentsView", () => {
         "conversation-1",
       );
     });
-    expect(await screen.findByTestId("agents-workspace-status")).toBeInTheDocument();
+    expect(
+      await screen.findByTestId("agents-conversation-workspace-line"),
+    ).toBeInTheDocument();
   });
 
   it("shows the chat focus switcher on workspace chat when the latest archived/completed verification child is hydrated", async () => {
@@ -573,6 +589,164 @@ describe("AgentsView", () => {
     expect(screen.getByTestId("integrated-chat-panel")).toHaveAttribute(
       "data-ideation-session-id",
       "",
+    );
+  });
+
+  it("returns Review child focus to the workspace chat when another artifact tab is selected", async () => {
+    mockAgentViewData();
+    getAgentConversationWorkspaceMock.mockResolvedValue(
+      conversationWorkspace({ mode: "ideation", linkedIdeationSessionId: "session-1" })
+    );
+    getWorkspaceReviewContextMock.mockResolvedValue({
+      success: true,
+      workspace: conversationWorkspace({ mode: "ideation" }),
+      events: [],
+      target: {
+        scope: "workspace_delta",
+        baseRef: "main",
+        baseSha: "base-sha",
+        headRef: "HEAD",
+        headSha: "head-sha",
+        diffFingerprint: "fingerprint-1",
+        sourcePullRequestNumber: null,
+      },
+      monitor: {
+        conversationId: "conversation-1",
+        status: "ready",
+        reviewOutcome: "passed",
+        reviewGateStatus: "passed",
+        reviewConversationId: "review-conversation-1",
+        reviewArtifactId: "review-artifact-1",
+        reviewArtifactVersion: 1,
+        lastError: null,
+      },
+      isCurrent: true,
+      isOutdated: false,
+      shouldShowTab: true,
+    });
+    mockSessionWithData({ id: "session-1", planArtifactId: "plan-1" });
+    resetAgentSessionState({
+      selectedProjectId: "project-1",
+      selectedConversationId: "conversation-1",
+      artifactByConversationId: {
+        "conversation-1": {
+          isOpen: false,
+          activeTab: "review",
+          taskMode: "graph",
+        },
+      },
+    });
+    useAgentArtifactUiStore.setState({
+      artifactByConversationId: {
+        "conversation-1": {
+          isOpen: false,
+          activeTab: "review",
+          taskMode: "graph",
+        },
+      },
+    });
+
+    renderAgentsView();
+
+    const focusPill = await screen.findByTestId("agents-composer-chat-focus-pill");
+    fireEvent.click(focusPill);
+    fireEvent.click(
+      await screen.findByTestId("agents-composer-chat-focus-option-workspace_review"),
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("integrated-chat-panel")).toHaveAttribute(
+        "data-conversation-id-override",
+        "review-conversation-1",
+      );
+    });
+
+    fireEvent.click(await screen.findByLabelText("Plan"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("integrated-chat-panel")).toHaveAttribute(
+        "data-conversation-id-override",
+        "conversation-1",
+      );
+    });
+    expect(screen.getByTestId("agents-composer-chat-focus-pill")).toHaveTextContent(
+      "Workspace",
+    );
+  });
+
+  it("keeps Review child focus when another artifact tab is selected while Review is running", async () => {
+    mockAgentViewData();
+    getAgentConversationWorkspaceMock.mockResolvedValue(
+      conversationWorkspace({ mode: "ideation", linkedIdeationSessionId: "session-1" })
+    );
+    getWorkspaceReviewContextMock.mockResolvedValue({
+      success: true,
+      workspace: conversationWorkspace({ mode: "ideation" }),
+      events: [],
+      target: {
+        scope: "workspace_delta",
+        baseRef: "main",
+        baseSha: "base-sha",
+        headRef: "HEAD",
+        headSha: "head-sha",
+        diffFingerprint: "fingerprint-1",
+        sourcePullRequestNumber: null,
+      },
+      monitor: {
+        conversationId: "conversation-1",
+        status: "reviewing",
+        reviewOutcome: "none",
+        reviewGateStatus: "reviewing",
+        reviewConversationId: "review-conversation-1",
+        reviewArtifactId: null,
+        reviewArtifactVersion: null,
+        lastError: null,
+      },
+      isCurrent: false,
+      isOutdated: false,
+      shouldShowTab: true,
+    });
+    mockSessionWithData({ id: "session-1", planArtifactId: "plan-1" });
+    resetAgentSessionState({
+      selectedProjectId: "project-1",
+      selectedConversationId: "conversation-1",
+      artifactByConversationId: {
+        "conversation-1": {
+          isOpen: false,
+          activeTab: "review",
+          taskMode: "graph",
+        },
+      },
+    });
+    useAgentArtifactUiStore.setState({
+      artifactByConversationId: {
+        "conversation-1": {
+          isOpen: false,
+          activeTab: "review",
+          taskMode: "graph",
+        },
+      },
+    });
+
+    renderAgentsView();
+
+    await waitFor(() => {
+      expect(screen.getByTestId("integrated-chat-panel")).toHaveAttribute(
+        "data-conversation-id-override",
+        "review-conversation-1",
+      );
+    });
+
+    fireEvent.click(await screen.findByLabelText("Plan"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("integrated-chat-panel")).toHaveAttribute(
+        "data-conversation-id-override",
+        "review-conversation-1",
+      );
+    });
+    expect(screen.getByTestId("agents-composer-chat-focus-pill")).toHaveTextContent(
+      "Review",
     );
   });
 

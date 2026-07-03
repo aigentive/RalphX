@@ -1,13 +1,25 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type Dispatch,
+  type MutableRefObject,
+  type SetStateAction,
+} from "react";
 import { PauseCircle, Sparkles } from "lucide-react";
 
 import type {
+  AgentConversationBranchMode,
   AgentConversationBaseSelection,
   AgentConversationWorkspaceMode,
   ComposerArtifactReference,
   ComposerIntegrationReference,
   ComposerProjectReference,
 } from "@/api/chat";
+import { ticketingApi, type TicketRef } from "@/api/ticketing";
 import type { Project } from "@/types/project";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
 import { withAlpha } from "@/lib/theme-colors";
@@ -17,14 +29,26 @@ import {
   type AgentProvider,
   type AgentRuntimeSelection,
 } from "@/stores/agentSessionStore";
+import {
+  selectComposerDraft,
+  useChatStore,
+  type ChatComposerAttachment,
+} from "@/stores/chatStore";
 import { BranchBasePicker } from "@/components/shared/BranchBasePicker";
 import {
   fallbackBranchBaseOptions,
   loadBranchBaseOptions,
   loadPullRequestBaseOptions,
+  ticketAssociationBranchBaseOption,
+  ticketCanonicalBranchBaseOption,
+  ticketProviderForComposerReference,
   type BranchBaseOption,
 } from "@/components/shared/branchBaseOptions";
 import type { AgentModelRegistry } from "@/lib/agent-models";
+import {
+  CODEX_FAST_MODE_DESCRIPTION,
+  codexFastModeAvailabilityForProvider,
+} from "@/lib/codex-fast-mode";
 import {
   AgentComposerProjectCreateButton,
   AgentComposerProjectLine,
@@ -76,6 +100,7 @@ interface AgentsStartComposerProps {
     mode: AgentConversationWorkspaceMode;
     base: AgentConversationBaseSelection | null;
     files: File[];
+    codexFastMode?: boolean | null;
     composerArtifactReferences?: ComposerArtifactReference[] | undefined;
     composerProjectReferences?: ComposerProjectReference[] | undefined;
     composerIntegrationReferences?: ComposerIntegrationReference[] | undefined;
@@ -84,6 +109,7 @@ interface AgentsStartComposerProps {
 
 const MAX_FILES = 5;
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
+const REVIEW_PR_DEFAULT_PROMPT = "Review this PR.";
 const STARTER_TYPING_WORDS = [
   "agent",
   "project",
@@ -98,8 +124,15 @@ const STARTER_TYPING_HOLD_MS = 1600;
 const STARTER_TYPING_SPEED_MS = 72;
 const STARTER_DELETING_SPEED_MS = 44;
 const STARTER_TYPING_INITIAL_WORD = STARTER_TYPING_WORDS[0];
+const AGENTS_START_COMPOSER_DRAFT_KEY = "agents:start";
 
 type StarterTypingPhase = "holding" | "typing" | "deleting";
+
+function isPendingAttachment(
+  attachment: ChatComposerAttachment,
+): attachment is PendingAttachment {
+  return attachment.file !== undefined;
+}
 
 const AGENT_MODE_OPTIONS: Array<{
   id: AgentConversationWorkspaceMode;
@@ -107,6 +140,7 @@ const AGENT_MODE_OPTIONS: Array<{
   description: string;
 }> = [
   { id: "edit", label: "Agent", description: "Build, change, and review code in a branch." },
+  { id: "review_pr", label: "Review PR", description: "Review a linked pull request." },
   { id: "plan", label: "Plan", description: "Draft and refine a plan before execution." },
   { id: "chat", label: "Chat", description: "Ask read-only questions about the project." },
   { id: "ideation", label: "Ideation", description: "Plan work before creating tasks." },
@@ -137,19 +171,38 @@ export function AgentsStartComposer({
   const [pullRequestStartFromOptions, setPullRequestStartFromOptions] = useState<
     BranchBaseOption[]
   >([]);
+  const [ticketStartFromOption, setTicketStartFromOption] =
+    useState<BranchBaseOption | null>(null);
   const [selectedStartFromKey, setSelectedStartFromKey] = useState("");
+  const [isStartFromIsolatedBranch, setIsStartFromIsolatedBranch] =
+    useState(false);
   const [isLoadingStartFrom, setIsLoadingStartFrom] = useState(false);
   const [isLoadingPullRequestStartFrom, setIsLoadingPullRequestStartFrom] = useState(false);
   const [pullRequestStartFromMessage, setPullRequestStartFromMessage] =
     useState<string | null>(null);
   const [hydratedStartFromProjectId, setHydratedStartFromProjectId] =
     useState<string | null>(null);
-  const [content, setContent] = useState("");
   const [isComposerActive, setIsComposerActive] = useState(false);
-  const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
+  const [draftProjectReferences, setDraftProjectReferences] = useState<
+    ComposerProjectReference[]
+  >([]);
+  const [draftIntegrationReferences, setDraftIntegrationReferences] = useState<
+    ComposerIntegrationReference[]
+  >([]);
+  const [composerIntegrationReferences, setComposerIntegrationReferences] = useState<
+    ComposerIntegrationReference[]
+  >([]);
+  const [draftArtifactReferences, setDraftArtifactReferences] = useState<
+    ComposerArtifactReference[]
+  >([]);
+  const [codexFastModeOverride, setCodexFastModeOverride] = useState<
+    boolean | null
+  >(null);
   const [error, setError] = useState<string | null>(null);
   const startFromRequestRef = useRef(0);
   const pullRequestStartFromRequestRef = useRef(0);
+  const ticketStartFromRequestRef = useRef(0);
+  const userSelectedStartFromRef = useRef(false);
   const openModal = useUiStore((s) => s.openModal);
   const {
     settings: providerSettings,
@@ -168,6 +221,25 @@ export function AgentsStartComposer({
   );
   const lastModelEffortByProvider = useAgentSessionStore(
     (s) => s.lastModelEffortByProvider
+  );
+  const startConversationDraft = useAgentSessionStore(
+    (s) => s.startConversationDraft
+  );
+  const consumeStartConversationDraft = useAgentSessionStore(
+    (s) => s.consumeStartConversationDraft
+  );
+  const startComposerDraft = useChatStore(
+    selectComposerDraft(AGENTS_START_COMPOSER_DRAFT_KEY)
+  );
+  const setComposerDraftContent = useChatStore((s) => s.setComposerDraftContent);
+  const setComposerDraftAttachments = useChatStore(
+    (s) => s.setComposerDraftAttachments
+  );
+  const clearComposerDraft = useChatStore((s) => s.clearComposerDraft);
+  const content = startComposerDraft?.content ?? "";
+  const attachments = useMemo(
+    () => (startComposerDraft?.attachments ?? []).filter(isPendingAttachment),
+    [startComposerDraft?.attachments]
   );
 
   const providerSettingsReady =
@@ -222,6 +294,21 @@ export function AgentsStartComposer({
     providerOptions,
     isReady: providerSettingsReady,
   });
+  const codexProviderSettings = configuredProviders.find(
+    (entry) => entry.provider === "codex",
+  );
+  const codexProviderFastMode =
+    codexProviderSettings?.serviceTier?.trim().toLowerCase() === "fast";
+  const codexFastModeAvailability = codexFastModeAvailabilityForProvider({
+    provider: codexProviderSettings,
+    modelId,
+    isReady: providerSettingsReady,
+  });
+  const codexFastMode = codexFastModeOverride ?? codexProviderFastMode;
+  const selectableCodexFastMode =
+    provider === "codex" && codexFastModeAvailability.supported
+      ? codexFastMode
+      : false;
   const hasSelectableProvider = providerOptions.some((option) => !option.disabled);
   const openProviderSettings = useCallback(() => {
     openModal("settings", { section: "providers" });
@@ -230,6 +317,29 @@ export function AgentsStartComposer({
   useEffect(() => {
     setProjectId(defaultProjectId ?? projects[0]?.id ?? "");
   }, [defaultProjectId, projects]);
+
+  useEffect(() => {
+    if (!startConversationDraft) {
+      return;
+    }
+    const draft = consumeStartConversationDraft();
+    if (!draft) {
+      return;
+    }
+    setProjectId(draft.projectId);
+    setComposerDraftContent(AGENTS_START_COMPOSER_DRAFT_KEY, draft.content);
+    setMode(draft.mode);
+    setDraftProjectReferences(draft.composerProjectReferences ?? []);
+    setDraftIntegrationReferences(draft.composerIntegrationReferences ?? []);
+    setComposerIntegrationReferences(draft.composerIntegrationReferences ?? []);
+    setDraftArtifactReferences(draft.composerArtifactReferences ?? []);
+    setIsStartFromIsolatedBranch(false);
+    userSelectedStartFromRef.current = false;
+  }, [
+    consumeStartConversationDraft,
+    setComposerDraftContent,
+    startConversationDraft,
+  ]);
 
   useEffect(() => {
     setProvider(normalizedRuntime.provider);
@@ -263,12 +373,25 @@ export function AgentsStartComposer({
   const activeProjectId = activeProject?.id ?? null;
   const activeProjectBaseBranch = activeProject?.baseBranch ?? null;
   const activeProjectWorkingDirectory = activeProject?.workingDirectory ?? null;
+  const pullRequestOptionsWithTicketStartFrom = useMemo(() => {
+    if (!ticketStartFromOption) {
+      return pullRequestStartFromOptions;
+    }
+    return [
+      ticketStartFromOption,
+      ...pullRequestStartFromOptions.filter(
+        (option) => option.key !== ticketStartFromOption.key
+      ),
+    ];
+  }, [pullRequestStartFromOptions, ticketStartFromOption]);
   const allStartFromOptions = useMemo(
-    () => [...startFromOptions, ...pullRequestStartFromOptions],
-    [pullRequestStartFromOptions, startFromOptions]
+    () => [...startFromOptions, ...pullRequestOptionsWithTicketStartFrom],
+    [pullRequestOptionsWithTicketStartFrom, startFromOptions]
   );
   const selectedStartFrom =
     allStartFromOptions.find((option) => option.key === selectedStartFromKey) ?? null;
+  const reviewPrDefaultPrompt =
+    mode === "review_pr" ? REVIEW_PR_DEFAULT_PROMPT : undefined;
   const isExecutionHalted = executionHaltState !== null;
   const executionHaltTitle =
     executionHaltState === "stopped" ? "Execution is stopped" : "Execution is paused";
@@ -287,6 +410,14 @@ export function AgentsStartComposer({
       displayName: `Project default (${ref})`,
     };
   }, [activeProject]);
+  const selectedStartFromSelection =
+    selectedStartFrom?.selection ?? fallbackStartFrom;
+  const startFromForcesIsolatedBranch =
+    selectedStartFromSelection
+      ? startSelectionForcesIsolatedBranch(selectedStartFromSelection)
+      : false;
+  const effectiveStartFromIsolatedBranch =
+    startFromForcesIsolatedBranch || isStartFromIsolatedBranch;
 
   const persistRuntimePreference = useCallback(
     (nextProjectId: string, runtime: AgentRuntimeSelection) => {
@@ -333,6 +464,8 @@ export function AgentsStartComposer({
 
   const handleProjectChange = useCallback(
     (nextProjectId: string) => {
+      userSelectedStartFromRef.current = false;
+      setIsStartFromIsolatedBranch(false);
       setProjectId(nextProjectId);
       persistRuntimePreference(nextProjectId, { provider, modelId, effort });
     },
@@ -421,12 +554,19 @@ export function AgentsStartComposer({
 
   const handleStartFromChange = useCallback(
     (nextKey: string) => {
+      userSelectedStartFromRef.current = true;
       setSelectedStartFromKey(nextKey);
-      if (activeProjectId && !nextKey.startsWith("pull_request:")) {
+      const nextSelection =
+        allStartFromOptions.find((option) => option.key === nextKey)?.selection ??
+        null;
+      setIsStartFromIsolatedBranch(
+        nextSelection ? startSelectionForcesIsolatedBranch(nextSelection) : false
+      );
+      if (activeProjectId && !isTransientStartFromKey(nextKey)) {
         setLastBranchBaseSelectionForProject(activeProjectId, nextKey);
       }
     },
-    [activeProjectId, setLastBranchBaseSelectionForProject]
+    [activeProjectId, allStartFromOptions, setLastBranchBaseSelectionForProject]
   );
 
   const handleFilesSelected = (files: File[]) => {
@@ -444,8 +584,8 @@ export function AgentsStartComposer({
     }
 
     setError(null);
-    setAttachments((current) => [
-      ...current,
+    setComposerDraftAttachments(AGENTS_START_COMPOSER_DRAFT_KEY, [
+      ...attachments,
       ...files.map((file) => ({
         id:
           globalThis.crypto?.randomUUID?.() ??
@@ -461,10 +601,14 @@ export function AgentsStartComposer({
   useEffect(() => {
     startFromRequestRef.current += 1;
     pullRequestStartFromRequestRef.current += 1;
+    ticketStartFromRequestRef.current += 1;
     setHydratedStartFromProjectId(null);
     setPullRequestStartFromOptions([]);
+    setTicketStartFromOption(null);
     setPullRequestStartFromMessage(null);
     setIsLoadingPullRequestStartFrom(false);
+    setIsStartFromIsolatedBranch(false);
+    userSelectedStartFromRef.current = false;
 
     if (!activeProjectId || !activeProjectWorkingDirectory) {
       setStartFromOptions([]);
@@ -495,6 +639,67 @@ export function AgentsStartComposer({
     activeProjectBaseBranch,
     activeProjectId,
     activeProjectWorkingDirectory,
+  ]);
+
+  useEffect(() => {
+    const requestId = ++ticketStartFromRequestRef.current;
+    const ticketReference = firstTicketComposerReference(composerIntegrationReferences);
+    if (!activeProjectId || !ticketReference) {
+      setTicketStartFromOption(null);
+      setSelectedStartFromKey((currentKey) =>
+        isTicketStartFromKey(currentKey)
+          ? `project_default:${activeProjectBaseBranch ?? "main"}`
+          : currentKey
+      );
+      return;
+    }
+
+    const fallbackOption = ticketCanonicalBranchBaseOption(ticketReference.reference);
+    applyTicketStartFromOption(
+      fallbackOption,
+      activeProjectBaseBranch,
+      userSelectedStartFromRef,
+      setTicketStartFromOption,
+      setSelectedStartFromKey
+    );
+
+    void ticketingApi
+      .getTicketAssociations({
+        provider: ticketReference.provider,
+        ticketRef: ticketReference.ticketRef,
+        projectId: activeProjectId,
+      })
+      .then((associations) => {
+        if (ticketStartFromRequestRef.current !== requestId) {
+          return;
+        }
+        const associationOption = preferredTicketAssociationStartFromOption(
+          associations.pullRequests
+        );
+        applyTicketStartFromOption(
+          associationOption ?? fallbackOption,
+          activeProjectBaseBranch,
+          userSelectedStartFromRef,
+          setTicketStartFromOption,
+          setSelectedStartFromKey
+        );
+      })
+      .catch(() => {
+        if (ticketStartFromRequestRef.current !== requestId) {
+          return;
+        }
+        applyTicketStartFromOption(
+          fallbackOption,
+          activeProjectBaseBranch,
+          userSelectedStartFromRef,
+          setTicketStartFromOption,
+          setSelectedStartFromKey
+        );
+      });
+  }, [
+    activeProjectBaseBranch,
+    activeProjectId,
+    composerIntegrationReferences,
   ]);
 
   const searchPullRequestStartFromOptions = useCallback(
@@ -610,7 +815,10 @@ export function AgentsStartComposer({
   ]);
 
   const handleRemoveAttachment = (attachmentId: string) => {
-    setAttachments((current) => current.filter((attachment) => attachment.id !== attachmentId));
+    setComposerDraftAttachments(
+      AGENTS_START_COMPOSER_DRAFT_KEY,
+      attachments.filter((attachment) => attachment.id !== attachmentId),
+    );
   };
 
   const handleSubmit: AgentComposerSurfaceProps["onSend"] = async (
@@ -633,13 +841,23 @@ export function AgentsStartComposer({
 
     setError(null);
     try {
+      const base = selectedStartFromSelection
+        ? {
+            ...selectedStartFromSelection,
+            branchMode: branchModeForStartSelection(
+              selectedStartFromSelection,
+              effectiveStartFromIsolatedBranch
+            ),
+          }
+        : null;
       await onSubmit({
         projectId,
         content: message.trim(),
         runtime: { provider, modelId, effort },
         mode,
-        base: selectedStartFrom?.selection ?? fallbackStartFrom,
+        base,
         files: attachments.map((attachment) => attachment.file),
+        codexFastMode: provider === "codex" ? selectableCodexFastMode : null,
         ...(options?.projectReferences?.length
           ? { composerProjectReferences: options.projectReferences }
           : {}),
@@ -650,8 +868,7 @@ export function AgentsStartComposer({
           ? { composerArtifactReferences: options.artifactReferences }
           : {}),
       });
-      setContent("");
-      setAttachments([]);
+      clearComposerDraft(AGENTS_START_COMPOSER_DRAFT_KEY);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to start agent conversation");
     }
@@ -751,18 +968,31 @@ export function AgentsStartComposer({
             textareaTestId="agents-start-textarea"
             actionTestId="agents-start-submit"
             value={content}
-            onChange={setContent}
+            onChange={(value) =>
+              setComposerDraftContent(AGENTS_START_COMPOSER_DRAFT_KEY, value)
+            }
             onSend={handleSubmit}
-            placeholder="Ask the agent to plan, build, debug, or review something"
+            placeholder={
+              mode === "review_pr"
+                ? REVIEW_PR_DEFAULT_PROMPT
+                : "Ask the agent to plan, build, debug, or review something"
+            }
             isSubmitting={isSubmitting}
             autoFocus
             attachments={attachments}
+            initialProjectReferences={draftProjectReferences}
+            initialIntegrationReferences={draftIntegrationReferences}
+            initialArtifactReferences={draftArtifactReferences}
+            onIntegrationReferencesChange={setComposerIntegrationReferences}
             enableAttachments
             onFilesSelected={handleFilesSelected}
             onRemoveAttachment={handleRemoveAttachment}
             attachmentsUploading={isSubmitting && attachments.length > 0}
             submitLabel={isExecutionHalted ? "Queue Prompt" : "Start Agent"}
             submittingLabel={isExecutionHalted ? "Queuing..." : "Starting..."}
+            {...(reviewPrDefaultPrompt
+              ? { emptySubmitMessage: reviewPrDefaultPrompt }
+              : {})}
             mode={{
               value: mode,
               onValueChange: (value) => setMode(value as AgentConversationWorkspaceMode),
@@ -813,6 +1043,18 @@ export function AgentsStartComposer({
               onValueChange: handleModelChange,
               options: modelOptions,
               disabled: Boolean(providerStatusMessage),
+              fastMode: {
+                visible: provider === "codex",
+                value: selectableCodexFastMode,
+                onValueChange: setCodexFastModeOverride,
+                disabled:
+                  !providerSettingsReady ||
+                  !codexFastModeAvailability.supported,
+                description:
+                  codexFastModeAvailability.reason ??
+                  CODEX_FAST_MODE_DESCRIPTION,
+                testId: "agents-start-codex-fast-mode",
+              },
               onOpenModelSettings: () => openModal("settings", { section: "models" }),
               testId: "agents-start-model",
               className: "max-w-[188px] flex-none",
@@ -872,7 +1114,7 @@ export function AgentsStartComposer({
               onValueChange={handleStartFromChange}
               options={startFromOptions}
               enablePullRequests={Boolean(activeProjectId)}
-              pullRequestOptions={pullRequestStartFromOptions}
+              pullRequestOptions={pullRequestOptionsWithTicketStartFrom}
               isLoadingPullRequests={isLoadingPullRequestStartFrom}
               pullRequestMessage={pullRequestStartFromMessage}
               onPullRequestSearch={searchPullRequestStartFromOptions}
@@ -886,6 +1128,10 @@ export function AgentsStartComposer({
                   ensureStartFromOptionsLoaded();
                 }
               }}
+              closeOnSelect={false}
+              isolatedBranch={effectiveStartFromIsolatedBranch}
+              isolatedBranchDisabled={startFromForcesIsolatedBranch}
+              onIsolatedBranchChange={setIsStartFromIsolatedBranch}
             />
           </div>
 
@@ -945,6 +1191,120 @@ function resolveBranchSelectionKey(
   return options.some((option) => option.key === preferredKey) ? preferredKey : null;
 }
 
+function branchModeForStartSelection(
+  selection: AgentConversationBaseSelection,
+  isIsolated: boolean
+): AgentConversationBranchMode {
+  if (selection.kind === "project_default") {
+    return "isolated";
+  }
+  if (selection.kind === "current_branch") {
+    return "isolated";
+  }
+  return isIsolated ? "isolated" : "linked";
+}
+
+function startSelectionForcesIsolatedBranch(
+  selection: AgentConversationBaseSelection
+): boolean {
+  return selection.kind === "project_default" || selection.kind === "current_branch";
+}
+
+type TicketProvider = "jira" | "linear" | "clickup";
+
+interface TicketComposerStartReference {
+  reference: ComposerIntegrationReference;
+  provider: TicketProvider;
+  ticketRef: TicketRef;
+}
+
+function firstTicketComposerReference(
+  references: ComposerIntegrationReference[]
+): TicketComposerStartReference | null {
+  for (const reference of references) {
+    const provider = ticketProviderForComposerReference(reference);
+    if (!provider) {
+      continue;
+    }
+    const id = reference.id.trim() || reference.key?.trim() || "";
+    const key = reference.key?.trim() || undefined;
+    if (!id) {
+      continue;
+    }
+    return {
+      reference,
+      provider,
+      ticketRef: {
+        provider,
+        id,
+        ...(key ? { key } : {}),
+      },
+    };
+  }
+  return null;
+}
+
+function preferredTicketAssociationStartFromOption(
+  associations: Array<Parameters<typeof ticketAssociationBranchBaseOption>[0]>
+) {
+  const ranked = [
+    ...associations.filter(
+      (association) => association.active && association.prNumber != null
+    ),
+    ...associations.filter((association) => association.prNumber != null),
+    ...associations.filter((association) => association.active),
+    ...associations,
+  ];
+  const seen = new Set<string>();
+  for (const association of ranked) {
+    const key = `${association.id}:${association.branchName ?? association.subtitle ?? ""}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    const option = ticketAssociationBranchBaseOption(association);
+    if (option) {
+      return option;
+    }
+  }
+  return null;
+}
+
+function applyTicketStartFromOption(
+  option: BranchBaseOption | null,
+  activeProjectBaseBranch: string | null,
+  userSelectedStartFromRef: MutableRefObject<boolean>,
+  setTicketStartFromOption: Dispatch<SetStateAction<BranchBaseOption | null>>,
+  setSelectedStartFromKey: Dispatch<SetStateAction<string>>
+) {
+  setTicketStartFromOption(option);
+  setSelectedStartFromKey((currentKey) => {
+    if (userSelectedStartFromRef.current) {
+      return currentKey;
+    }
+    if (!option) {
+      return isTicketStartFromKey(currentKey)
+        ? `project_default:${activeProjectBaseBranch ?? "main"}`
+        : currentKey;
+    }
+    if (
+      !currentKey ||
+      currentKey.startsWith("project_default:") ||
+      isTicketStartFromKey(currentKey)
+    ) {
+      return option.key;
+    }
+    return currentKey;
+  });
+}
+
+function isTransientStartFromKey(key: string) {
+  return key.startsWith("pull_request:") || isTicketStartFromKey(key);
+}
+
+function isTicketStartFromKey(key: string) {
+  return key.startsWith("ticket_branch:");
+}
 
 function useAnimatedStarterWord(paused = false) {
   const [wordIndex, setWordIndex] = useState(0);

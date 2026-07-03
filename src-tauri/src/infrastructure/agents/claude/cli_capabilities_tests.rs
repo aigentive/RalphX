@@ -1,6 +1,6 @@
 use crate::domain::agents::LogicalEffort;
 use crate::infrastructure::agents::claude::cli_capabilities::{
-    clear_claude_cli_capability_cache, is_claude_fable_model,
+    clear_claude_cli_capability_cache, is_claude_fable_model, is_claude_sonnet_5_model,
     normalize_claude_effort_for_capabilities, normalize_claude_effort_for_cli_path,
     parse_claude_cli_capabilities, parse_claude_version, probe_claude_cli_cached,
     validate_claude_model_for_cli_path, ClaudeCliCapabilities,
@@ -97,10 +97,37 @@ fn parse_capabilities_enables_fable_alias_for_supported_cli_versions() {
 }
 
 #[test]
+fn parse_capabilities_enables_sonnet_5_for_supported_cli_versions() {
+    let before_sonnet_5 = parse_claude_cli_capabilities("", Some("2.1.196 (Claude Code)"));
+    let with_sonnet_5 = parse_claude_cli_capabilities("", Some("2.1.197 (Claude Code)"));
+
+    assert!(!before_sonnet_5.supports_model_alias("claude-sonnet-5"));
+    assert!(with_sonnet_5.supports_model_alias("claude-sonnet-5"));
+    assert_eq!(
+        with_sonnet_5.supported_model_aliases,
+        vec![
+            "sonnet",
+            "opus",
+            "haiku",
+            "fable",
+            "claude-sonnet-4-6",
+            "claude-sonnet-5",
+        ]
+    );
+}
+
+#[test]
 fn fable_model_detection_accepts_alias_and_api_model_id() {
     assert!(is_claude_fable_model("fable"));
     assert!(is_claude_fable_model(" Claude-Fable-5 "));
     assert!(!is_claude_fable_model("opus"));
+}
+
+#[test]
+fn sonnet_5_model_detection_accepts_api_model_id_only() {
+    assert!(is_claude_sonnet_5_model(" Claude-Sonnet-5 "));
+    assert!(!is_claude_sonnet_5_model("sonnet"));
+    assert!(!is_claude_sonnet_5_model("claude-sonnet-4-6"));
 }
 
 #[test]
@@ -279,6 +306,144 @@ esac
     );
 
     assert!(validate_claude_model_for_cli_path(&cli_path, "fable").is_ok());
+
+    clear_claude_cli_capability_cache();
+}
+
+#[cfg(unix)]
+#[test]
+fn validate_sonnet_4_6_model_for_cli_path_requires_supported_version() {
+    let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("env mutex");
+    clear_claude_cli_capability_cache();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let cli_path = temp.path().join("claude");
+    write_fake_claude_cli(
+        &cli_path,
+        r#"#!/bin/sh
+case "$1" in
+  --version)
+    echo "2.1.196 (Claude Code)"
+    ;;
+  --help)
+    echo "Options:"
+    echo "  --effort <level>  Effort level for the current session (low, medium, high, xhigh, max)"
+    ;;
+  *)
+    echo "unexpected $1" >&2
+    exit 2
+    ;;
+esac
+"#,
+    );
+
+    let error = validate_claude_model_for_cli_path(&cli_path, "claude-sonnet-4-6")
+        .expect_err("old CLI should reject Sonnet 4.6");
+    assert!(error.contains("v2.1.197"));
+    assert!(validate_claude_model_for_cli_path(&cli_path, "sonnet").is_ok());
+
+    clear_claude_cli_capability_cache();
+}
+
+#[cfg(unix)]
+#[test]
+fn validate_sonnet_4_6_model_for_cli_path_accepts_supported_version() {
+    let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("env mutex");
+    clear_claude_cli_capability_cache();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let cli_path = temp.path().join("claude");
+    write_fake_claude_cli(
+        &cli_path,
+        r#"#!/bin/sh
+case "$1" in
+  --version)
+    echo "2.1.197 (Claude Code)"
+    ;;
+  --help)
+    echo "Options:"
+    echo "  --effort <level>  Effort level for the current session (low, medium, high, xhigh, max)"
+    ;;
+  *)
+    echo "unexpected $1" >&2
+    exit 2
+    ;;
+esac
+"#,
+    );
+
+    assert!(validate_claude_model_for_cli_path(&cli_path, "claude-sonnet-4-6").is_ok());
+
+    clear_claude_cli_capability_cache();
+}
+
+#[cfg(unix)]
+#[test]
+fn validate_sonnet_5_model_for_cli_path_requires_supported_version() {
+    let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("env mutex");
+    clear_claude_cli_capability_cache();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let cli_path = temp.path().join("claude");
+    write_fake_claude_cli(
+        &cli_path,
+        r#"#!/bin/sh
+case "$1" in
+  --version)
+    echo "2.1.196 (Claude Code)"
+    ;;
+  --help)
+    echo "Options:"
+    echo "  --effort <level>  Effort level for the current session (low, medium, high, xhigh, max)"
+    ;;
+  *)
+    echo "unexpected $1" >&2
+    exit 2
+    ;;
+esac
+"#,
+    );
+
+    let error = validate_claude_model_for_cli_path(&cli_path, "claude-sonnet-5")
+        .expect_err("old CLI should reject Sonnet 5");
+    assert!(error.contains("v2.1.197"));
+    assert!(validate_claude_model_for_cli_path(&cli_path, "sonnet").is_ok());
+
+    clear_claude_cli_capability_cache();
+}
+
+#[cfg(unix)]
+#[test]
+fn validate_sonnet_5_model_for_cli_path_accepts_supported_version() {
+    let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("env mutex");
+    clear_claude_cli_capability_cache();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let cli_path = temp.path().join("claude");
+    write_fake_claude_cli(
+        &cli_path,
+        r#"#!/bin/sh
+case "$1" in
+  --version)
+    echo "2.1.197 (Claude Code)"
+    ;;
+  --help)
+    echo "Options:"
+    echo "  --effort <level>  Effort level for the current session (low, medium, high, xhigh, max)"
+    ;;
+  *)
+    echo "unexpected $1" >&2
+    exit 2
+    ;;
+esac
+"#,
+    );
+
+    assert!(validate_claude_model_for_cli_path(&cli_path, "claude-sonnet-5").is_ok());
 
     clear_claude_cli_capability_cache();
 }

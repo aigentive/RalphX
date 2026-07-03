@@ -45,6 +45,18 @@ vi.mock("./sections/ReviewPolicySection", () => ({
   default: () => <div data-testid="review-policy-section">Review Policy</div>,
 }));
 
+vi.mock("./sections/WorkspaceReviewSection", () => ({
+  default: () => (
+    <div data-testid="workspace-review-section">Workspace Review</div>
+  ),
+}));
+
+vi.mock("./sections/AutonomyPolicySection", () => ({
+  default: () => (
+    <div data-testid="autonomy-policy-section">Autonomy Policy</div>
+  ),
+}));
+
 vi.mock("./ExternalMcpSettingsPanel", () => ({
   ExternalMcpSettingsPanel: () => (
     <div data-testid="external-mcp-section">External MCP</div>
@@ -224,6 +236,14 @@ describe("SettingsDialog", () => {
         "aria-current",
         "page",
       );
+    });
+
+    it("renders the settings layer above global toasts", () => {
+      uiState.activeModal = "settings";
+      render(<SettingsDialog {...defaultProps} />);
+
+      expect(screen.getByTestId("modal-overlay")).toHaveClass("z-50");
+      expect(screen.getByTestId("settings-dialog")).toHaveClass("z-50");
     });
 
     it("paints the settings shell before hydrating the active section", () => {

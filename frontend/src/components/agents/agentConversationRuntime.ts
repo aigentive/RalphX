@@ -1,11 +1,13 @@
 import type { AgentConversationWorkspace } from "@/api/chat";
 import type {
   AgentEffort,
+  AgentProvider,
   AgentRuntimeSelection,
 } from "@/stores/agentSessionStore";
 
 import type { AgentConversation } from "./agentConversations";
 import { DEFAULT_AGENT_RUNTIME } from "./agentOptions";
+import { getAgentWorkspaceTerminalPublicationStatus } from "./agentWorkspacePublishState";
 
 const AGENT_EFFORTS = new Set<AgentEffort>([
   "low",
@@ -14,6 +16,11 @@ const AGENT_EFFORTS = new Set<AgentEffort>([
   "xhigh",
   "max",
 ]);
+
+const WORKSPACE_REVIEW_UTILITY_MODEL_BY_PROVIDER: Record<AgentProvider, string> = {
+  claude: "haiku",
+  codex: "gpt-5.4-mini",
+};
 
 export function getAgentTerminalUnavailableReason(
   conversation: AgentConversation | null,
@@ -28,16 +35,42 @@ export function getAgentTerminalUnavailableReason(
   if (!workspace) {
     return "Terminal requires a workspace-backed conversation";
   }
-  if (workspace.status === "missing") {
-    return "Terminal unavailable because the workspace is missing";
-  }
-  const hasExternalWorkspaceOwner =
-    Boolean(workspace.linkedPlanBranchId) ||
-    workspaceIsLinkedNonEditWorkspace(workspace);
-  if (hasExternalWorkspaceOwner) {
+  if (workspaceHasExternalOwner(workspace)) {
     return "Terminal disabled while ideation or execution owns this workspace";
   }
   return null;
+}
+
+export function getAgentTerminalArchivedReason(
+  conversation: AgentConversation | null,
+  workspace: AgentConversationWorkspace | null,
+): string | null {
+  if (!conversation || conversation.contextType !== "project" || !workspace) {
+    return null;
+  }
+  if (workspaceHasExternalOwner(workspace)) {
+    return null;
+  }
+
+  const terminalPublicationStatus =
+    getAgentWorkspaceTerminalPublicationStatus(workspace);
+  if (terminalPublicationStatus === "merged") {
+    return "Workspace archived after PR merge. Send a follow-up to continue in a fresh workspace.";
+  }
+  if (terminalPublicationStatus === "closed") {
+    return "Workspace archived after PR close. Send a follow-up to continue in a fresh workspace.";
+  }
+  if (workspace.status === "missing") {
+    return "Workspace missing. Send a follow-up to continue in a fresh workspace.";
+  }
+  return null;
+}
+
+function workspaceHasExternalOwner(workspace: AgentConversationWorkspace): boolean {
+  return (
+    Boolean(workspace.linkedPlanBranchId) ||
+    workspaceIsLinkedNonEditWorkspace(workspace)
+  );
 }
 
 function workspaceIsLinkedNonEditWorkspace(
@@ -76,6 +109,29 @@ export function runtimeFromConversation(
   }
 
   return null;
+}
+
+export function workspaceReviewUtilityRuntimeForProvider(
+  provider: AgentProvider
+): AgentRuntimeSelection {
+  return {
+    provider,
+    modelId: WORKSPACE_REVIEW_UTILITY_MODEL_BY_PROVIDER[provider],
+    effort: "medium",
+  };
+}
+
+export function runtimeForWorkspaceReviewFocus(
+  workspaceRuntime: AgentRuntimeSelection | null,
+  reviewRuntime: AgentRuntimeSelection | null
+): AgentRuntimeSelection | null {
+  if (reviewRuntime) {
+    return reviewRuntime;
+  }
+  if (!workspaceRuntime) {
+    return null;
+  }
+  return workspaceReviewUtilityRuntimeForProvider(workspaceRuntime.provider);
 }
 
 function effortFromConversation(

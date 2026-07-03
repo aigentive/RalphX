@@ -52,6 +52,10 @@ describe("chatStore", () => {
       isTeamActive: {},
       lastAgentEventTimestamp: {},
       toolCallStartTimes: {},
+      lastToolCallCompletionTimestamp: {},
+      toolCallCompletionTimestamps: {},
+      effectiveModel: {},
+      composerDraftsByKey: {},
     });
   });
 
@@ -120,6 +124,63 @@ describe("chatStore", () => {
 
       const state = useChatStore.getState();
       expect(state.context).toBeNull();
+    });
+  });
+
+  describe("composer drafts", () => {
+    it("stores draft content and removes the draft when content and attachments are empty", () => {
+      const store = useChatStore.getState();
+
+      store.setComposerDraftContent("conversation:one", "unsent message");
+
+      expect(useChatStore.getState().composerDraftsByKey["conversation:one"]).toMatchObject({
+        content: "unsent message",
+        attachments: [],
+      });
+
+      useChatStore.getState().setComposerDraftContent("conversation:one", "");
+
+      expect(useChatStore.getState().composerDraftsByKey["conversation:one"]).toBeUndefined();
+    });
+
+    it("keeps attachment drafts scoped by composer key", () => {
+      const file = new File(["draft"], "draft.txt", { type: "text/plain" });
+      const store = useChatStore.getState();
+
+      store.setComposerDraftContent("conversation:one", "first");
+      store.setComposerDraftAttachments("conversation:one", [
+        {
+          id: "attachment-1",
+          conversationId: "one",
+          fileName: "draft.txt",
+          filePath: "/tmp/draft.txt",
+          fileSize: 5,
+          mimeType: "text/plain",
+          createdAt: "2026-06-29T00:00:00Z",
+          file,
+        },
+      ]);
+      store.setComposerDraftContent("conversation:two", "second");
+
+      expect(
+        useChatStore.getState().composerDraftsByKey["conversation:one"]?.attachments,
+      ).toEqual([
+        expect.objectContaining({
+          id: "attachment-1",
+          fileName: "draft.txt",
+          file,
+        }),
+      ]);
+      expect(
+        useChatStore.getState().composerDraftsByKey["conversation:two"]?.attachments,
+      ).toEqual([]);
+
+      useChatStore.getState().clearComposerDraft("conversation:one");
+
+      expect(useChatStore.getState().composerDraftsByKey["conversation:one"]).toBeUndefined();
+      expect(useChatStore.getState().composerDraftsByKey["conversation:two"]).toMatchObject({
+        content: "second",
+      });
     });
   });
 
@@ -657,6 +718,116 @@ describe("chatStore", () => {
 
       const state = useChatStore.getState();
       expect(state.queuedMessages[contextKey]).toHaveLength(2);
+    });
+  });
+
+  describe("setQueuedMessages", () => {
+    const contextKey = "task:test-task";
+    const otherContextKey = "task:other-task";
+
+    it("replaces a context queue with backend messages", () => {
+      useChatStore.getState().queueMessage(contextKey, "Stale", "stale-id");
+
+      useChatStore.getState().setQueuedMessages(contextKey, [
+        {
+          id: "backend-1",
+          content: "Backend first",
+          createdAt: "2026-06-19T10:00:00Z",
+          isEditing: false,
+          attachmentIds: ["att-1"],
+        },
+        {
+          id: "backend-2",
+          content: "Backend second",
+          createdAt: "2026-06-19T10:01:00Z",
+          isEditing: false,
+          attachmentIds: [],
+        },
+      ]);
+
+      const state = useChatStore.getState();
+      expect(state.queuedMessages[contextKey]).toEqual([
+        {
+          id: "backend-1",
+          content: "Backend first",
+          createdAt: "2026-06-19T10:00:00Z",
+          isEditing: false,
+          attachmentIds: ["att-1"],
+        },
+        {
+          id: "backend-2",
+          content: "Backend second",
+          createdAt: "2026-06-19T10:01:00Z",
+          isEditing: false,
+          attachmentIds: [],
+        },
+      ]);
+    });
+
+    it("clears the context queue when backend has no messages", () => {
+      useChatStore.getState().queueMessage(contextKey, "Queued", "queued-id");
+
+      useChatStore.getState().setQueuedMessages(contextKey, []);
+
+      expect(useChatStore.getState().queuedMessages[contextKey]).toBeUndefined();
+    });
+
+    it("preserves local editing state for matching backend messages", () => {
+      useChatStore.getState().queueMessage(contextKey, "Original", "queued-id");
+      useChatStore.getState().startEditingQueuedMessage(contextKey, "queued-id");
+
+      useChatStore.getState().setQueuedMessages(contextKey, [
+        {
+          id: "queued-id",
+          content: "Original",
+          createdAt: "2026-06-19T10:00:00Z",
+          isEditing: false,
+          attachmentIds: [],
+        },
+      ]);
+
+      expect(useChatStore.getState().queuedMessages[contextKey]?.[0].isEditing).toBe(true);
+    });
+
+    it("keeps the same queue reference when hydrated messages are unchanged", () => {
+      useChatStore.getState().setQueuedMessages(contextKey, [
+        {
+          id: "queued-id",
+          content: "Original",
+          createdAt: "2026-06-19T10:00:00Z",
+          isEditing: false,
+          attachmentIds: ["att-1"],
+        },
+      ]);
+      const before = useChatStore.getState().queuedMessages[contextKey];
+
+      useChatStore.getState().setQueuedMessages(contextKey, [
+        {
+          id: "queued-id",
+          content: "Original",
+          createdAt: "2026-06-19T10:00:00Z",
+          isEditing: false,
+          attachmentIds: ["att-1"],
+        },
+      ]);
+
+      expect(useChatStore.getState().queuedMessages[contextKey]).toBe(before);
+    });
+
+    it("does not change other context queues", () => {
+      useChatStore.getState().queueMessage(otherContextKey, "Other", "other-id");
+
+      useChatStore.getState().setQueuedMessages(contextKey, [
+        {
+          id: "backend-id",
+          content: "Backend",
+          createdAt: "2026-06-19T10:00:00Z",
+          isEditing: false,
+          attachmentIds: [],
+        },
+      ]);
+
+      expect(useChatStore.getState().queuedMessages[otherContextKey]?.[0].content).toBe("Other");
     });
   });
 

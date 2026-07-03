@@ -4,13 +4,19 @@ export type SettingsSectionId =
   | "execution-harnesses"
   | "models"
   | "global-execution"
+  | "workspace-review"
   | "review"
+  | "autonomy"
   | "repository"
   | "project-analysis"
   | "ideation-workflow"
   | "ideation-harnesses"
   | "api-keys"
   | "integrations"
+  | "github"
+  | "linear"
+  | "clickup"
+  | "granola"
   | "external-mcp"
   | "app-preferences"
   | "accessibility";
@@ -50,10 +56,16 @@ export const SETTINGS_SECTIONS: SettingsSectionMeta[] = [
   { id: "execution", groupId: "general", label: "Execution" },
   { id: "execution-harnesses", groupId: "general", label: "Execution Agents" },
   { id: "global-execution", groupId: "general", label: "Global Capacity" },
+  { id: "workspace-review", groupId: "general", label: "Workspace Review" },
   { id: "review", groupId: "general", label: "Review Policy" },
+  { id: "autonomy", groupId: "general", label: "Autonomy Policy" },
   { id: "ideation-workflow", groupId: "ideation", label: "Planning & Verification" },
   { id: "ideation-harnesses", groupId: "ideation", label: "Ideation Agents" },
   { id: "integrations", groupId: "integrations", label: "Atlassian" },
+  { id: "github", groupId: "integrations", label: "GitHub" },
+  { id: "linear", groupId: "integrations", label: "Linear" },
+  { id: "clickup", groupId: "integrations", label: "ClickUp" },
+  { id: "granola", groupId: "integrations", label: "Granola" },
   { id: "api-keys", groupId: "access", label: "API Keys" },
   { id: "external-mcp", groupId: "access", label: "External MCP" },
   { id: "app-preferences", groupId: "preferences", label: "App Preferences" },

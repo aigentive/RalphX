@@ -462,6 +462,7 @@ fn test_create_mcp_config_injects_runtime_context_args() {
     let runtime_context = McpRuntimeContext {
         context_type: Some("project".to_string()),
         context_id: Some("project-123".to_string()),
+        conversation_id: Some("conversation-current".to_string()),
         task_id: None,
         project_id: Some("project-123".to_string()),
         working_directory: Some(workspace_dir.clone()),
@@ -497,6 +498,14 @@ fn test_create_mcp_config_injects_runtime_context_args() {
     assert!(args.contains(&"project".to_string()), "args: {args:?}");
     assert!(args.contains(&"--context-id".to_string()), "args: {args:?}");
     assert!(args.contains(&"project-123".to_string()), "args: {args:?}");
+    assert!(
+        args.contains(&"--conversation-id".to_string()),
+        "args: {args:?}"
+    );
+    assert!(
+        args.contains(&"conversation-current".to_string()),
+        "args: {args:?}"
+    );
     assert!(args.contains(&"--project-id".to_string()), "args: {args:?}");
     assert!(
         args.contains(&"--working-directory".to_string()),
@@ -825,6 +834,7 @@ harnesses:
     let runtime_context = McpRuntimeContext {
         context_type: Some("project".to_string()),
         context_id: Some("project-123".to_string()),
+        conversation_id: Some("conversation current".to_string()),
         project_id: Some("project-123".to_string()),
         parent_conversation_id: Some("conversation 456".to_string()),
         ..Default::default()
@@ -842,7 +852,8 @@ harnesses:
     assert!(
         server["url"]
             .as_str()
-            .is_some_and(|url| url.contains("parent_conversation_id=conversation%20456")),
+            .is_some_and(|url| url.contains("conversation_id=conversation%20current")
+                && url.contains("parent_conversation_id=conversation%20456")),
         "external MCP URL should carry encoded runtime context: {server:?}"
     );
     assert!(

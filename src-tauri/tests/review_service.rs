@@ -256,6 +256,15 @@ impl TaskRepository for MockTaskRepo {
     ) -> AppResult<Option<chrono::DateTime<chrono::Utc>>> {
         Ok(None)
     }
+
+    async fn get_status_last_entered_at(
+        &self,
+        _task_id: &TaskId,
+        _status: InternalStatus,
+    ) -> AppResult<Option<chrono::DateTime<chrono::Utc>>> {
+        Ok(None)
+    }
+
     async fn get_next_executable(&self, _project_id: &ProjectId) -> AppResult<Option<Task>> {
         Ok(None)
     }

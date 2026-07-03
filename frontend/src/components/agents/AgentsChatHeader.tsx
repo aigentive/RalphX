@@ -1,7 +1,17 @@
-import { memo, useCallback, useEffect, useMemo, useState, type ElementType } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type ElementType,
+  type ReactNode,
+} from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   BookOpenCheck,
+  AlertCircle,
+  ArrowLeft,
   CheckCircle2,
   ChevronDown,
   ClipboardList,
@@ -16,6 +26,7 @@ import {
   PanelRightOpen,
   ShieldCheck,
   Terminal as TerminalIcon,
+  Ticket,
 } from "lucide-react";
 
 import type { AgentConversationWorkspace, WorkspaceOpenTarget } from "@/api/chat";
@@ -36,6 +47,7 @@ import {
 import { formatBranchDisplay } from "@/lib/branch-utils";
 import { withAlpha } from "@/lib/theme-colors";
 import { cn } from "@/lib/utils";
+import { useConversationTicket } from "@/hooks/useTicketing";
 import { useChatStore } from "@/stores/chatStore";
 import { useSkillsEnabled } from "@/stores/skillsSettingsStore";
 import type { AgentArtifactTab } from "@/stores/agentSessionStore";
@@ -70,6 +82,8 @@ const HEADER_IDEATION_ARTIFACT_TABS: Array<{
   label: string;
   icon: ElementType;
 }> = [
+  { id: "review", label: "Review", icon: FileText },
+  { id: "issues", label: "Issues", icon: AlertCircle },
   { id: "plan", label: "Plan", icon: FileText },
   { id: "verification", label: "Verification", icon: CheckCircle2 },
   { id: "proposal", label: "Proposals", icon: GitPullRequestArrow },
@@ -112,6 +126,7 @@ export interface AgentsChatHeaderProps {
   artifactOpen: boolean;
   activeArtifactTab: AgentArtifactTab;
   terminalOpen?: boolean;
+  terminalArchivedReason?: string | null;
   terminalUnavailableReason?: string | null;
   onRenameConversation: (conversationId: string, title: string) => Promise<void>;
   onPublishWorkspace?: (conversationId: string) => Promise<void>;
@@ -121,12 +136,16 @@ export interface AgentsChatHeaderProps {
   onOpenWorkspaceTarget?: (targetId: string) => void;
   onPreloadArtifacts?: () => void;
   publishShortcutLabel?: string;
+  publishShortcutWorkspace?: AgentConversationWorkspace | null;
+  promotePublishShortcut?: boolean;
   isPublishingWorkspace?: boolean;
   onToggleTerminal?: () => void;
   onPreloadTerminal?: () => void;
   onToggleArtifacts: () => void;
   onSelectArtifact: (tab: AgentArtifactTab) => void;
+  onBackToWorkspaceChat?: () => void;
   showTitle?: boolean;
+  workspaceControl?: ReactNode;
 }
 
 export const AgentsChatFocusBar = memo(function AgentsChatFocusBar({
@@ -287,6 +306,7 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
   artifactOpen,
   activeArtifactTab,
   terminalOpen = false,
+  terminalArchivedReason = null,
   terminalUnavailableReason = null,
   onRenameConversation,
   onPublishWorkspace,
@@ -296,14 +316,30 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
   onOpenWorkspaceTarget,
   onPreloadArtifacts,
   publishShortcutLabel = "Commit & Publish",
+  publishShortcutWorkspace = null,
+  promotePublishShortcut = false,
   isPublishingWorkspace = false,
   onToggleTerminal,
   onPreloadTerminal,
   onToggleArtifacts,
   onSelectArtifact,
+  onBackToWorkspaceChat,
   showTitle = true,
+  workspaceControl,
 }: AgentsChatHeaderProps) {
   const [skillsEnabled] = useSkillsEnabled();
+  const terminalTooltip =
+    terminalUnavailableReason ??
+    terminalArchivedReason ??
+    (terminalOpen ? "Collapse terminal" : "Expand terminal");
+  const terminalAriaLabel = terminalArchivedReason
+    ? terminalOpen
+      ? "Hide archived terminal"
+      : "Show archived terminal"
+    : terminalOpen
+      ? "Collapse terminal"
+      : "Expand terminal";
+  const terminalPreloadHandler = terminalArchivedReason ? undefined : onPreloadTerminal;
   const title = conversation?.title || "Untitled agent";
   const conversationMode = conversation
     ? resolveConversationAgentMode(conversation, workspace)
@@ -317,25 +353,37 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
         availableArtifactTabs.includes(tab.id),
       );
       return isLinkedPlanEditWorkspace
-        ? tabs.filter((tab) => tab.id === "plan")
+        ? tabs.filter((tab) => tab.id === "plan" || tab.id === "issues")
         : [...tabs, ...(skillsEnabled ? [HEADER_SKILLS_TAB] : [])];
     },
     [availableArtifactTabs, isLinkedPlanEditWorkspace, skillsEnabled],
   );
   const showHeaderArtifactShortcuts =
-    Boolean(conversation) && visibleHeaderArtifactTabs.length > 0;
+    visibleHeaderArtifactTabs.length > 0 &&
+    (conversationMode === "ideation" ||
+      conversationMode === "plan" ||
+      conversationMode === "review_pr" ||
+      conversation?.contextType === "project" ||
+      Boolean(conversation && skillsEnabled) ||
+      isLinkedPlanEditWorkspace);
   const showArtifactToggle =
     artifactOpen ||
     conversationMode === "ideation" ||
+    (conversation?.contextType === "project" &&
+      visibleHeaderArtifactTabs.length > 0) ||
     (conversationMode === "plan" && visibleHeaderArtifactTabs.length > 0) ||
+    (conversationMode === "review_pr" && visibleHeaderArtifactTabs.length > 0) ||
     Boolean(conversation && skillsEnabled);
-  // Hide the publish shortcut whenever any artifact pane is open — the user
-  // can already reach Commit & Publish via the artifact tab bar, so the
-  // header CTA is redundant (and visually crowds the Update-from-base label).
+  const showPromotedPublishShortcut =
+    promotePublishShortcut && artifactOpen && activeArtifactTab === "review";
+  const effectivePublishWorkspace = publishShortcutWorkspace ?? workspace;
+  // Hide the publish shortcut whenever most artifact panes are open because the
+  // tab bar already exposes it. A current passed Review promotes publishing so
+  // the user does not have to switch tabs just to reach the publish flow.
   const showPublishShortcut = Boolean(
     conversation &&
-      shouldShowAgentWorkspacePublishSurface(workspace) &&
-      !artifactOpen,
+      shouldShowAgentWorkspacePublishSurface(effectivePublishWorkspace) &&
+      (!artifactOpen || showPromotedPublishShortcut),
   );
   const showWorkspaceOpenControl = Boolean(
     workspace && workspaceOpenTargets.length > 0 && onOpenWorkspaceTarget,
@@ -354,10 +402,16 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
   const isSending = useChatStore((state) =>
     conversationStoreKey ? state.isSending[conversationStoreKey] ?? false : false,
   );
+  const conversationTicketQuery = useConversationTicket(conversation?.id, {
+    enabled: Boolean(conversation),
+  });
+  const linkedTicket = conversationTicketQuery.data ?? null;
   const isAgentActive = isSending || agentStatus === "generating";
   const sidebarVisibility = useAgentsSidebarVisibility();
   const showOpenSidebarButton =
     sidebarVisibility !== null && sidebarVisibility.isCollapsed;
+  const showBackToWorkspaceChat =
+    chatFocus.type !== "workspace" && Boolean(onBackToWorkspaceChat);
 
   useEffect(() => {
     if (!isEditing) {
@@ -379,6 +433,15 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
     await onRenameConversation(conversation.id, trimmed);
     setIsEditing(false);
   }, [conversation, draftTitle, onRenameConversation, title]);
+
+  const openLinkedTicket = useCallback(() => {
+    if (!linkedTicket) {
+      return;
+    }
+    // Open the linked issue in the right-hand artifact sidebar (Jira/Linear tab)
+    // rather than navigating away to the ticketing dashboard.
+    onSelectArtifact(linkedTicket.ticketRef.provider === "jira" ? "jira" : "linear");
+  }, [linkedTicket, onSelectArtifact]);
 
   return (
     <div
@@ -411,7 +474,21 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
             </TooltipContent>
           </Tooltip>
         )}
-        {workspace ? <AgentsWorkspaceStatusPill workspace={workspace} /> : null}
+        {workspaceControl ??
+          (workspace ? <AgentsWorkspaceStatusPill workspace={workspace} /> : null)}
+        {showBackToWorkspaceChat && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-7 shrink-0 gap-1.5 px-2.5 text-xs"
+            onClick={onBackToWorkspaceChat}
+            data-testid="agents-chat-header-back-to-workspace"
+          >
+            <ArrowLeft className="h-3.5 w-3.5" aria-hidden="true" />
+            <span>Back to Workspace Chat</span>
+          </Button>
+        )}
         {showTitle ? (
           <div className="min-w-0 flex-1">
             {isEditing ? (
@@ -474,6 +551,27 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
           </div>
         )}
 
+        {linkedTicket && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-8 w-8 p-0"
+                onClick={openLinkedTicket}
+                aria-label={`Open ticket ${linkedTicket.ticketRef.key ?? linkedTicket.ticketRef.id}`}
+                data-testid="agents-linked-ticket-button"
+              >
+                <Ticket className="w-4 h-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" className="max-w-[280px] text-xs">
+              {linkedTicket.title ?? linkedTicket.ticketRef.key ?? linkedTicket.ticketRef.id}
+            </TooltipContent>
+          </Tooltip>
+        )}
+
         <Tooltip>
           <TooltipTrigger asChild>
             <Button
@@ -482,18 +580,17 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
               size="sm"
               className="h-8 w-8 p-0"
               onClick={onToggleTerminal}
-              onPointerEnter={onPreloadTerminal}
-              onFocus={onPreloadTerminal}
+              onPointerEnter={terminalPreloadHandler}
+              onFocus={terminalPreloadHandler}
               disabled={!onToggleTerminal || Boolean(terminalUnavailableReason)}
-              aria-label={terminalOpen ? "Collapse terminal" : "Expand terminal"}
+              aria-label={terminalAriaLabel}
               data-testid="agents-terminal-toggle"
             >
               <TerminalIcon className="w-4 h-4" />
             </Button>
           </TooltipTrigger>
           <TooltipContent side="bottom" className="max-w-[280px] text-xs">
-            {terminalUnavailableReason ??
-              (terminalOpen ? "Collapse terminal" : "Expand terminal")}
+            {terminalTooltip}
           </TooltipContent>
         </Tooltip>
 
@@ -520,7 +617,8 @@ export const AgentsChatHeader = memo(function AgentsChatHeader({
                   !onPublishWorkspace ||
                   !onOpenPublishPane ||
                   isPublishingWorkspace ||
-                  (workspace?.mode === "edit" && workspace?.status === "missing")
+                  (effectivePublishWorkspace?.mode === "edit" &&
+                    effectivePublishWorkspace?.status === "missing")
                 }
                 aria-label={`Open workspace publish panel: ${publishShortcutLabel}`}
                 data-testid="agents-publish-workspace"

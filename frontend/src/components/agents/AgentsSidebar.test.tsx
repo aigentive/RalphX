@@ -96,6 +96,12 @@ const { runningStatesHook, publicationPollingHook } = vi.hoisted(() => ({
   runningStatesHook: vi.fn(),
   publicationPollingHook: vi.fn(),
 }));
+const { prTemplateDialogCalls } = vi.hoisted(() => ({
+  prTemplateDialogCalls: [] as Array<{
+    open: boolean;
+    projectId: string | null;
+  }>,
+}));
 
 vi.mock("react-virtuoso", async () => {
   const React = await vi.importActual<typeof import("react")>("react");
@@ -289,6 +295,28 @@ vi.mock("./useAgentSidebarPublicationPolling", () => ({
   useAgentSidebarPublicationPolling: publicationPollingHook,
 }));
 
+vi.mock("./PrTemplateEditorDialog", () => {
+  return {
+    PrTemplateEditorDialog: ({
+      open,
+      project,
+    }: {
+      open: boolean;
+      project: Project | null;
+    }) => {
+      prTemplateDialogCalls.push({
+        open,
+        projectId: project?.id ?? null,
+      });
+      return open ? (
+        <div data-testid="pr-template-editor-dialog">
+          Edit PR Template for {project?.name}
+        </div>
+      ) : null;
+    },
+  };
+});
+
 vi.mock("./useArchivedConversationCounts", () => ({
   useArchivedConversationCounts: (projectIds: string[]) => {
     archivedCountCalls.push(projectIds);
@@ -380,6 +408,37 @@ vi.mock("./useAgentSidebarPublicationGroup", () => {
       if (prStatus === "draft") return "draft";
       return "active";
     };
+    const getPublicationLabel = (
+      workspace: AgentConversationWorkspace | null,
+      state: string
+    ): string | null => {
+      const supervisionStatus = workspace?.prSupervisionStatus?.trim().toLowerCase();
+      if (
+        state === "active" ||
+        state === "uncommitted" ||
+        state === "unpushed"
+      ) {
+        if (supervisionStatus === "fixing" || supervisionStatus === "publishing") {
+          return "fixing";
+        }
+        if (supervisionStatus === "blocked") {
+          return "blocked";
+        }
+        if (
+          supervisionStatus === "waiting" ||
+          supervisionStatus === "waiting_for_checks"
+        ) {
+          return "waiting";
+        }
+        if (
+          supervisionStatus === "monitoring" &&
+          workspace?.prAutoMergeCurrent === true
+        ) {
+          return "auto-merge";
+        }
+      }
+      return state === "active" ? null : state;
+    };
     const normalizedSearch = search.trim().toLowerCase();
     const pinnedIds = new Set(pinnedConversationIds);
     const priorityIds = new Set(priorityConversationIds);
@@ -414,7 +473,7 @@ vi.mock("./useAgentSidebarPublicationGroup", () => {
               ? `PR #${workspace.publicationPrNumber}`
               : workspace?.baseRef ?? "master",
           publicationState: state,
-          publicationLabel: state === "active" ? null : state,
+          publicationLabel: getPublicationLabel(workspace, state),
         };
       })
       .filter((row) => publicationStates.includes(row.publicationState))
@@ -701,6 +760,7 @@ describe("AgentsSidebar", () => {
     workspacesByProject.clear();
     workspaceCalls.length = 0;
     publicationGroupCalls.length = 0;
+    prTemplateDialogCalls.length = 0;
     latestProjectOrderData.current = null;
     virtuosoMockState.dimensionsByTestId.clear();
     virtuosoMockState.endReachedByTestId.clear();
@@ -926,6 +986,105 @@ describe("AgentsSidebar", () => {
     expect(screen.queryByText("queued")).not.toBeInTheDocument();
     expect(screen.queryByText("done")).not.toBeInTheDocument();
     expect(screen.queryByText("blocked")).not.toBeInTheDocument();
+  });
+
+  it("uses the Review activity label for a running workspace Review", () => {
+    const reviewingConversation = conversation({
+      id: "conversation-reviewing",
+      title: "Reviewing workspace",
+    });
+    const reviewingStoreKey = getAgentConversationStoreKey(reviewingConversation);
+    conversationsByProject.set("project-1", {
+      data: [reviewingConversation],
+      total: 1,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+    useChatStore.setState({
+      activeConversationIds: { [reviewingStoreKey]: reviewingConversation.id },
+      agentStatus: { [reviewingStoreKey]: "generating" },
+      agentActivityLabels: { [reviewingStoreKey]: "reviewing" },
+    });
+
+    renderSidebar();
+
+    const row = screen.getByTestId("agents-session-conversation-reviewing");
+    expect(row).toHaveTextContent("reviewing");
+    expect(within(row).queryByText("running")).not.toBeInTheDocument();
+  });
+
+  it("shows reviewing ahead of blocked PR supervision for a running workspace Review", () => {
+    const reviewingConversation = conversation({
+      id: "conversation-reviewing-blocked",
+      title: "Reviewing blocked workspace",
+    });
+    const reviewingStoreKey = getAgentConversationStoreKey(reviewingConversation);
+    conversationsByProject.set("project-1", {
+      data: [reviewingConversation],
+      total: 1,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+    workspacesByProject.set("project-1", [
+      workspace({
+        conversationId: reviewingConversation.id,
+        publicationPrNumber: 556,
+        publicationPushStatus: "pushed",
+        prSupervisionStatus: "blocked",
+      }),
+    ]);
+    useChatStore.setState({
+      activeConversationIds: {
+        [reviewingStoreKey]: reviewingConversation.id,
+      },
+      agentStatus: { [reviewingStoreKey]: "generating" },
+      agentActivityLabels: { [reviewingStoreKey]: "reviewing" },
+    });
+
+    renderSidebar();
+
+    const row = within(screen.getByTestId("agents-session-conversation-reviewing-blocked"));
+    expect(row.getByText("PR #556")).toBeInTheDocument();
+    expect(row.getByText("reviewing")).toBeInTheDocument();
+    expect(row.queryByText("blocked")).not.toBeInTheDocument();
+    expect(row.queryByText("running")).not.toBeInTheDocument();
+  });
+
+  it("uses fixing publication label instead of generic running text", () => {
+    const fixingConversation = conversation({
+      id: "conversation-fixing",
+      title: "Repair workspace",
+    });
+    const fixingStoreKey = getAgentConversationStoreKey(fixingConversation);
+    conversationsByProject.set("project-1", {
+      data: [fixingConversation],
+      total: 1,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+    workspacesByProject.set("project-1", [
+      workspace({
+        conversationId: fixingConversation.id,
+        publicationPushStatus: "needs_agent",
+        prSupervisionStatus: "fixing",
+      }),
+    ]);
+    useChatStore.setState({
+      activeConversationIds: { [fixingStoreKey]: fixingConversation.id },
+      agentStatus: { [fixingStoreKey]: "running" },
+    });
+
+    renderSidebar();
+
+    const row = screen.getByTestId("agents-session-conversation-fixing");
+    expect(row).toHaveTextContent("fixing");
+    expect(within(row).queryByText("running")).not.toBeInTheDocument();
   });
 
   it("bounds project session lists to eight visible rows and virtualizes overflow", () => {
@@ -1159,6 +1318,111 @@ describe("AgentsSidebar", () => {
 
     virtuosoMockState.endReachedByTestId.get("agents-sidebar-session-list-project-1")?.();
     expect(fetchNextPage).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps project pagination available after a same-size group refresh", async () => {
+    const user = userEvent.setup();
+    const rows = Array.from({ length: 8 }, (_, index) =>
+      conversation({
+        id: `conversation-refresh-${index + 1}`,
+        title: `Refresh row ${index + 1}`,
+      })
+    );
+    const firstFetchNextPage = vi.fn().mockResolvedValue(undefined);
+    const refreshedFetchNextPage = vi.fn().mockResolvedValue(undefined);
+
+    function RefreshingSidebar() {
+      const [refreshVersion, setRefreshVersion] = useState(0);
+      conversationsByProject.set("project-1", {
+        data: rows,
+        total: 24,
+        isLoading: false,
+        hasNextPage: true,
+        isFetchingNextPage: false,
+        fetchNextPage:
+          refreshVersion === 0 ? firstFetchNextPage : refreshedFetchNextPage,
+      });
+
+      return (
+        <TooltipProvider delayDuration={0}>
+          <button
+            type="button"
+            onClick={() => setRefreshVersion((version) => version + 1)}
+          >
+            Refresh group
+          </button>
+          <AgentsSidebar
+            projects={[project()]}
+            focusedProjectId="project-1"
+            selectedConversationId={null}
+            onFocusProject={vi.fn()}
+            onSelectConversation={vi.fn()}
+            onCreateAgent={vi.fn()}
+            onCreateProject={vi.fn()}
+            onArchiveProject={vi.fn()}
+            onAutoRenameConversation={vi.fn()}
+            onRenameConversation={vi.fn()}
+            onArchiveConversation={vi.fn()}
+            onRestoreConversation={vi.fn()}
+            onForkConversation={vi.fn()}
+            showArchived={false}
+            onShowArchivedChange={vi.fn()}
+          />
+        </TooltipProvider>
+      );
+    }
+
+    render(<RefreshingSidebar />);
+
+    virtuosoMockState.endReachedByTestId.get("agents-sidebar-session-list-project-1")?.();
+    expect(firstFetchNextPage).toHaveBeenCalledTimes(1);
+    await waitForAnimationFrame();
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+
+    await user.click(screen.getByRole("button", { name: "Refresh group" }));
+    virtuosoMockState.endReachedByTestId.get("agents-sidebar-session-list-project-1")?.();
+
+    expect(refreshedFetchNextPage).toHaveBeenCalledTimes(1);
+  });
+
+  it("auto-fetches the next project page when the user scrolls the virtual list to the bottom", async () => {
+    const fetchNextPage = vi.fn().mockResolvedValue(undefined);
+    const paginationProject = project({
+      id: "project-pagination",
+      name: "pagination",
+    });
+    virtuosoMockState.dimensionsByTestId.set(
+      "agents-sidebar-session-list-project-pagination",
+      {
+        clientHeight: 368,
+        scrollHeight: 736,
+      }
+    );
+    conversationsByProject.set("project-pagination", {
+      data: Array.from({ length: 8 }, (_, index) =>
+        conversation({
+          id: `conversation-${index + 1}`,
+          title: `Agent ${index + 1}`,
+          projectId: "project-pagination",
+          contextId: "project-pagination",
+        })
+      ),
+      total: 212,
+      isLoading: false,
+      hasNextPage: true,
+      isFetchingNextPage: false,
+      fetchNextPage,
+    });
+
+    renderSidebar([paginationProject], { focusedProjectId: "project-pagination" });
+
+    const list = screen.getByTestId(
+      "agents-sidebar-session-list-project-pagination"
+    );
+    list.scrollTop = 368;
+    fireEvent.scroll(list);
+
+    await waitFor(() => expect(fetchNextPage).toHaveBeenCalledTimes(1));
   });
 
   it("auto-fills an exact eight-row project page when more pages exist but no scrollbar is present", async () => {
@@ -1736,6 +2000,189 @@ describe("AgentsSidebar", () => {
     });
   });
 
+  it("keeps the expanded project capped while all projects are visible", () => {
+    const first = project({ id: "project-1", name: "alpha" });
+    const second = project({ id: "project-2", name: "beta" });
+    const third = project({ id: "project-3", name: "gamma" });
+    useAgentSessionStore.setState({
+      expandedProjectIds: {
+        "project-1": true,
+        "project-2": false,
+        "project-3": false,
+      },
+      showAllProjects: true,
+      projectSort: "latest",
+    });
+    conversationsByProject.set("project-1", {
+      data: [conversation({ id: "conversation-1", title: "First run" })],
+      total: 1,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+    conversationsByProject.set("project-2", {
+      data: [
+        conversation({
+          id: "conversation-2",
+          title: "Second run",
+          projectId: "project-2",
+          contextId: "project-2",
+        }),
+      ],
+      total: 1,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+    conversationsByProject.set("project-3", {
+      data: [
+        conversation({
+          id: "conversation-3",
+          title: "Third run",
+          projectId: "project-3",
+          contextId: "project-3",
+        }),
+      ],
+      total: 1,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+
+    renderSidebar([first, second, third]);
+
+    const expandedProject = screen.getByTestId("agents-project-project-1");
+    const collapsedProject = screen.getByTestId("agents-project-project-2");
+    const projectList = expandedProject.parentElement;
+
+    expect(projectList).toHaveClass("flex-1", "overflow-y-auto");
+    expect(projectList).not.toHaveClass("overflow-hidden");
+    expect(expandedProject).not.toHaveClass("flex-1", "min-h-0");
+    expect(collapsedProject).not.toHaveClass("flex-1");
+    expect(screen.getByTestId("agents-sidebar-session-list-project-1")).toHaveStyle({
+      height: "46px",
+      maxHeight: "368px",
+    });
+    expect(screen.queryByTestId("agents-sidebar-session-list-project-2")).not.toBeInTheDocument();
+  });
+
+  it("lets the expanded project use remaining sidebar height when multiple projects are filtered", () => {
+    const first = project({ id: "project-1", name: "alpha" });
+    const second = project({ id: "project-2", name: "beta" });
+    const third = project({ id: "project-3", name: "gamma" });
+    useAgentSessionStore.setState({
+      expandedProjectIds: {
+        "project-1": true,
+        "project-2": false,
+        "project-3": false,
+      },
+      showAllProjects: false,
+      sidebarProjectFilterIds: ["project-1", "project-2"],
+      projectSort: "latest",
+    });
+    conversationsByProject.set("project-1", {
+      data: [conversation({ id: "conversation-1", title: "First run" })],
+      total: 1,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+    conversationsByProject.set("project-2", {
+      data: [
+        conversation({
+          id: "conversation-2",
+          title: "Second run",
+          projectId: "project-2",
+          contextId: "project-2",
+        }),
+      ],
+      total: 1,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+    conversationsByProject.set("project-3", {
+      data: [
+        conversation({
+          id: "conversation-3",
+          title: "Third run",
+          projectId: "project-3",
+          contextId: "project-3",
+        }),
+      ],
+      total: 1,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+
+    renderSidebar([first, second, third]);
+
+    const expandedProject = screen.getByTestId("agents-project-project-1");
+    const collapsedProject = screen.getByTestId("agents-project-project-2");
+    const projectList = expandedProject.parentElement;
+
+    expect(projectList).toHaveClass("flex", "min-h-0", "flex-1", "overflow-hidden");
+    expect(expandedProject).toHaveClass("flex-1", "min-h-0");
+    expect(collapsedProject).not.toHaveClass("flex-1");
+    expect(screen.getByTestId("agents-sidebar-session-list-project-1")).toHaveStyle({
+      height: "100%",
+    });
+    expect(screen.queryByTestId("agents-sidebar-session-list-project-2")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("agents-project-project-3")).not.toBeInTheDocument();
+  });
+
+  it("fills a single visible project when expansion state is unset and focus is elsewhere", () => {
+    const visibleProject = project({ id: "project-1", name: "alpha" });
+    const focusedElsewhere = project({ id: "project-2", name: "beta" });
+    useAgentSessionStore.setState({
+      expandedProjectIds: {},
+      showAllProjects: false,
+      sidebarProjectFilterIds: ["project-1"],
+      projectSort: "latest",
+    });
+    conversationsByProject.set("project-1", {
+      data: [conversation({ id: "conversation-1", title: "First run" })],
+      total: 1,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+    conversationsByProject.set("project-2", {
+      data: [
+        conversation({
+          id: "conversation-2",
+          title: "Second run",
+          projectId: "project-2",
+          contextId: "project-2",
+        }),
+      ],
+      total: 1,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+
+    renderSidebar([visibleProject, focusedElsewhere], {
+      focusedProjectId: "project-2",
+    });
+
+    const visibleProjectGroup = screen.getByTestId("agents-project-project-1");
+    const projectList = visibleProjectGroup.parentElement;
+
+    expect(projectList).toHaveClass("flex", "min-h-0", "flex-1", "overflow-hidden");
+    expect(visibleProjectGroup).toHaveClass("flex-1", "min-h-0");
+    expect(screen.queryByTestId("agents-project-project-2")).not.toBeInTheDocument();
+  });
+
   it("searches conversations on the backend across projects without matching project names", async () => {
     const focused = project({ id: "project-1", name: "alpha" });
     const idle = project({ id: "project-2", name: "beta" });
@@ -2172,6 +2619,40 @@ describe("AgentsSidebar", () => {
     fireEvent.click(screen.getByRole("button", { name: "Archive project" }));
 
     expect(onArchiveProject).toHaveBeenCalledWith("project-1");
+  });
+
+  it("opens the PR template editor from project actions before archive", () => {
+    conversationsByProject.set("project-1", {
+      data: [conversation()],
+      total: 1,
+      isLoading: false,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+
+    renderSidebar([project()]);
+
+    const actions = screen.getByTestId("agents-project-actions-project-1");
+    const trigger = within(actions).getByRole("button", { name: "Project actions" });
+    fireEvent.pointerDown(trigger);
+
+    const editItem = screen.getByText("Edit PR Template");
+    const archiveItem = screen.getByText("Archive project");
+    expect(
+      editItem.compareDocumentPosition(archiveItem) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
+
+    fireEvent.click(editItem);
+
+    expect(screen.getByTestId("pr-template-editor-dialog")).toHaveTextContent(
+      "Edit PR Template for ralphx"
+    );
+    expect(prTemplateDialogCalls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ open: true, projectId: "project-1" }),
+      ])
+    );
   });
 
   it("does not show a tooltip for project actions", async () => {

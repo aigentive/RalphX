@@ -13,7 +13,10 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { act } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { IntegratedChatPanel } from "./IntegratedChatPanel";
+import {
+  IntegratedChatPanel,
+  type IntegratedChatComposerRenderProps,
+} from "./IntegratedChatPanel";
 import { PreviousRunBanner } from "./IntegratedChatPanel.components";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { chatApi } from "@/api/chat";
@@ -187,7 +190,7 @@ vi.mock("@/hooks/useChatEvents", () => ({
 
 // Mock useChatRecovery
 vi.mock("@/hooks/useChatRecovery", () => ({
-  useChatRecovery: vi.fn(),
+  useChatRecovery: vi.fn().mockReturnValue({ isStreamingHydrated: true }),
 }));
 
 // Mock useAgentEvents
@@ -297,7 +300,17 @@ describe("IntegratedChatPanel", () => {
         activeConversationId: null,
         queuedMessages: {},
         agentStatus: {},
+        agentActivityLabels: {},
         isSending: {},
+        activeConversationIds: {},
+        activeAgentRunIds: {},
+        isTeamActive: {},
+        lastAgentEventTimestamp: {},
+        toolCallStartTimes: {},
+        lastToolCallCompletionTimestamp: {},
+        toolCallCompletionTimestamps: {},
+        effectiveModel: {},
+        composerDraftsByKey: {},
       });
     });
 
@@ -338,11 +351,16 @@ describe("IntegratedChatPanel", () => {
       );
     });
 
-    it("observes the input container so composer chrome height changes can update transcript layout", async () => {
+    it("observes all chrome below the transcript so any sibling height change can update transcript layout", async () => {
       const observedTargets: Element[] = [];
+      const resizeCallbacks: ResizeObserverCallback[] = [];
       const originalResizeObserver = globalThis.ResizeObserver;
 
       class MockResizeObserver implements ResizeObserver {
+        constructor(callback: ResizeObserverCallback) {
+          resizeCallbacks.push(callback);
+        }
+
         disconnect = vi.fn();
         observe = vi.fn((target: Element) => {
           observedTargets.push(target);
@@ -368,8 +386,18 @@ describe("IntegratedChatPanel", () => {
           </TestWrapper>
         );
 
+        const belowTranscriptChrome = screen.getByTestId("chat-below-transcript-chrome");
         const inputContainer = screen.getByTestId("chat-input-container");
-        await waitFor(() => expect(observedTargets).toContain(inputContainer));
+        expect(belowTranscriptChrome).toContainElement(inputContainer);
+        await waitFor(() => expect(observedTargets).toContain(belowTranscriptChrome));
+        expect(resizeCallbacks).toHaveLength(1);
+
+        act(() => {
+          resizeCallbacks[0]?.(
+            [{ contentRect: { height: 0 } as DOMRectReadOnly } as ResizeObserverEntry],
+            {} as ResizeObserver,
+          );
+        });
       } finally {
         if (originalResizeObserver === undefined) {
           Reflect.deleteProperty(globalThis, "ResizeObserver");
@@ -534,6 +562,62 @@ describe("IntegratedChatPanel", () => {
       );
 
       expect(screen.getByTestId("integrated-chat-input-shell")).toHaveClass("max-w-[980px]");
+    });
+  });
+
+  describe("composer drafts", () => {
+    it("restores unsent composer text per active conversation", () => {
+      mockChatPanelContext.storeContextKey = "project:project-1";
+      mockChatPanelContext.currentContextType = "project";
+      mockChatPanelContext.currentContextId = "project-1";
+      mockChatPanelContext.activeConversationId = "conv-1";
+      useChatMockState.conversations = [{ id: "conv-1" }, { id: "conv-2" }];
+
+      const renderComposer = (props: IntegratedChatComposerRenderProps) => (
+        <textarea
+          data-testid="draft-composer"
+          value={props.value ?? ""}
+          onChange={(event) => props.onChange?.(event.currentTarget.value)}
+        />
+      );
+      const panel = () => (
+        <TestWrapper>
+          <IntegratedChatPanel
+            projectId="project-1"
+            selectedTaskIdOverride={null}
+            storeContextKeyOverride="project:project-1"
+            renderComposer={renderComposer}
+          />
+        </TestWrapper>
+      );
+
+      const { rerender } = render(panel());
+
+      fireEvent.change(screen.getByTestId("draft-composer"), {
+        target: { value: "draft for first conversation" },
+      });
+      expect(
+        useChatStore.getState().composerDraftsByKey["conversation:conv-1"]
+          ?.content,
+      ).toBe("draft for first conversation");
+
+      mockChatPanelContext.activeConversationId = "conv-2";
+      rerender(panel());
+      expect(screen.getByTestId("draft-composer")).toHaveValue("");
+
+      fireEvent.change(screen.getByTestId("draft-composer"), {
+        target: { value: "draft for second conversation" },
+      });
+
+      mockChatPanelContext.activeConversationId = "conv-1";
+      rerender(panel());
+      expect(screen.getByTestId("draft-composer")).toHaveValue(
+        "draft for first conversation",
+      );
+      expect(
+        useChatStore.getState().composerDraftsByKey["conversation:conv-2"]
+          ?.content,
+      ).toBe("draft for second conversation");
     });
   });
 
@@ -864,24 +948,31 @@ describe("IntegratedChatPanel", () => {
       expect(screen.getByTestId("chat-input")).toBeInTheDocument();
     });
 
-    it("renders a custom composer when provided", () => {
+    it("renders a custom composer when provided", async () => {
       mockChatPanelContext.activeConversationId = "conv-1";
+      const renderComposer = vi.fn(({ enableAttachments, onLayoutChange }) => (
+        <button type="button" data-testid="custom-composer" onClick={onLayoutChange}>
+          {enableAttachments ? "attachments-enabled" : "attachments-disabled"}
+          {typeof onLayoutChange === "function" ? "-layout-callback" : ""}
+        </button>
+      ));
 
       render(
         <TestWrapper>
           <IntegratedChatPanel
             projectId="project-1"
-            renderComposer={({ enableAttachments }) => (
-              <div data-testid="custom-composer">
-                {enableAttachments ? "attachments-enabled" : "attachments-disabled"}
-              </div>
-            )}
+            renderComposer={renderComposer}
           />
         </TestWrapper>
       );
 
-      expect(screen.getByTestId("custom-composer")).toHaveTextContent("attachments-enabled");
+      expect(screen.getByTestId("custom-composer")).toHaveTextContent("attachments-enabled-layout-callback");
       expect(screen.queryByTestId("chat-input")).not.toBeInTheDocument();
+
+      const renderCount = renderComposer.mock.calls.length;
+      fireEvent.click(screen.getByTestId("custom-composer"));
+
+      await waitFor(() => expect(renderComposer).toHaveBeenCalledTimes(renderCount + 1));
     });
 
     it("mounts the scrollable transcript instead of blocking on placeholder hydration", async () => {

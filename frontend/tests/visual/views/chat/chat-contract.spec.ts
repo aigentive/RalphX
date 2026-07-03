@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { setupApp } from "../../../fixtures/setup.fixtures";
+import { setupIdeation } from "../../../fixtures/setup.fixtures";
 
 const contextId = "session-chat-contract";
 const conversationId = "conv-chat-contract";
@@ -133,9 +133,7 @@ async function seedIdeationConversation(
   page: Page,
   messages: Array<typeof userMessage | typeof liveProviderMessage>
 ) {
-  await setupApp(page);
-  await page.click('[data-testid="nav-ideation"]');
-  await page.waitForSelector('[data-testid="ideation-view"]', { timeout: 10000 });
+  await setupIdeation(page);
 
   await page.evaluate(async ({ conversation, seededMessages, sessionId }) => {
     const mockChatApi = window.__mockChatApi;
@@ -294,7 +292,8 @@ test.describe("Chat Contract", () => {
     });
 
     await expect(page.getByText("I am preparing the plan now.")).toHaveCount(1);
-    await expect(page.locator('[data-testid="ideation-widget-get-session-plan"]')).toHaveCount(1);
+    await expect(page.getByRole("button", { name: "Agent called 1 tool" })).toHaveCount(1);
+    await expect(page.locator('[data-testid="ideation-widget-get-session-plan"]')).toHaveCount(0);
 
     await page.getByTestId("chat-session-stats-button").click();
     await expect(page.getByText("Conversation stats")).toBeVisible();
@@ -332,17 +331,17 @@ test.describe("Chat Contract", () => {
 
     await expect(page.getByText("I am preparing the plan now.")).toHaveCount(1);
     await expect(page.getByText("Here is the final plan summary.")).toHaveCount(1);
-    await expect(page.locator('[data-testid="ideation-widget-get-session-plan"]')).toHaveCount(1);
+    await expect(page.getByRole("button", { name: "Agent called 1 tool" })).toHaveCount(1);
 
     const firstText = page.getByText("I am preparing the plan now.");
-    const widget = page.locator('[data-testid="ideation-widget-get-session-plan"]');
+    const toolSummary = page.getByRole("button", { name: "Agent called 1 tool" });
     const secondText = page.getByText("Here is the final plan summary.");
     const firstBox = await firstText.boundingBox();
-    const widgetBox = await widget.boundingBox();
+    const toolSummaryBox = await toolSummary.boundingBox();
     const secondBox = await secondText.boundingBox();
 
-    expect(firstBox?.y).toBeLessThan(widgetBox?.y ?? Number.POSITIVE_INFINITY);
-    expect(widgetBox?.y).toBeLessThan(secondBox?.y ?? Number.POSITIVE_INFINITY);
+    expect(firstBox?.y).toBeLessThan(toolSummaryBox?.y ?? Number.POSITIVE_INFINITY);
+    expect(toolSummaryBox?.y).toBeLessThan(secondBox?.y ?? Number.POSITIVE_INFINITY);
   });
 
   test("bridges the message_created-to-refetch gap without leaking the stale provider row", async ({ page }) => {
@@ -364,7 +363,8 @@ test.describe("Chat Contract", () => {
     });
 
     await expect(page.getByText("I am preparing the plan now.")).toHaveCount(1);
-    await expect(page.locator('[data-testid="ideation-widget-get-session-plan"]')).toHaveCount(1);
+    await expect(page.getByRole("button", { name: "Agent called 1 tool" })).toHaveCount(1);
+    await expect(page.locator('[data-testid="ideation-widget-get-session-plan"]')).toHaveCount(0);
 
     await emitChatEvent(page, "agent:message_created", {
       conversation_id: conversationId,
@@ -382,7 +382,7 @@ test.describe("Chat Contract", () => {
 
     await expect(page.getByText("I am preparing the plan now.")).toHaveCount(1);
     await expect(page.getByText("Here is the final plan summary.")).toHaveCount(1);
-    await expect(page.locator('[data-testid="ideation-widget-get-session-plan"]')).toHaveCount(1);
+    await expect(page.getByRole("button", { name: "Agent called 1 tool" })).toHaveCount(1);
   });
 
   test("keeps the persisted live snapshot visible when a turn completes without a finalized replacement row", async ({ page }) => {
@@ -405,7 +405,8 @@ test.describe("Chat Contract", () => {
     });
 
     await expect(page.getByText("I am preparing the plan now.")).toHaveCount(1);
-    await expect(page.locator('[data-testid="ideation-widget-get-session-plan"]')).toHaveCount(1);
+    await expect(page.getByRole("button", { name: "Agent called 1 tool" })).toHaveCount(1);
+    await expect(page.locator('[data-testid="ideation-widget-get-session-plan"]')).toHaveCount(0);
 
     await emitChatEvent(page, "agent:turn_completed", {
       conversation_id: conversationId,
@@ -414,13 +415,14 @@ test.describe("Chat Contract", () => {
     });
 
     await expect(page.getByText("I am preparing the plan now.")).toHaveCount(1);
-    await expect(page.locator('[data-testid="ideation-widget-get-session-plan"]')).toHaveCount(1);
+    await expect(page.getByRole("button", { name: "Agent called 1 tool" })).toHaveCount(1);
+    await expect(page.locator('[data-testid="ideation-widget-get-session-plan"]')).toHaveCount(0);
   });
 
-  test("keeps finalized widgets visible when appended raw content diverges from persisted content blocks", async ({ page }) => {
+  test("keeps finalized tool summary visible when appended raw content diverges from persisted content blocks", async ({ page }) => {
     await seedIdeationConversation(page, [userMessage, erroredProviderMessage]);
 
-    await expect(page.locator('[data-testid="ideation-widget-get-session-plan"]')).toHaveCount(1);
+    await expect(page.getByRole("button", { name: "Agent called 1 tool" })).toHaveCount(1);
     await expect(page.getByText("Here is the final plan summary.")).toHaveCount(1);
     await expect(page.getByText("I am preparing the plan now.")).toHaveCount(1);
   });

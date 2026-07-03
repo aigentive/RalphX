@@ -74,6 +74,8 @@ pub struct CodexCliDiagnosticsResponse {
     pub supports_search_flag: bool,
     pub supports_resume_subcommand: bool,
     pub supports_mcp_subcommand: bool,
+    pub supports_fast_mode: bool,
+    pub fast_mode_supported_models: Vec<String>,
     pub error: Option<String>,
 }
 
@@ -133,6 +135,8 @@ pub fn build_codex_cli_diagnostics_response(
             supports_search_flag: capabilities.supports_search_flag,
             supports_resume_subcommand: capabilities.supports_resume_subcommand,
             supports_mcp_subcommand: capabilities.supports_mcp_subcommand,
+            supports_fast_mode: capabilities.supports_fast_mode(),
+            fast_mode_supported_models: capabilities.fast_mode_supported_models(),
             error: probe.error,
         },
         None => CodexCliDiagnosticsResponse {
@@ -145,6 +149,8 @@ pub fn build_codex_cli_diagnostics_response(
             supports_search_flag: false,
             supports_resume_subcommand: false,
             supports_mcp_subcommand: false,
+            supports_fast_mode: false,
+            fast_mode_supported_models: Vec::new(),
             error: probe.error,
         },
     }
@@ -154,7 +160,10 @@ pub fn build_codex_cli_diagnostics_response(
 #[tauri::command]
 pub fn get_codex_cli_diagnostics() -> Result<CodexCliDiagnosticsResponse, String> {
     let (probe, capabilities) = probe_codex_harness_with_capabilities();
-    Ok(build_codex_cli_diagnostics_response(probe.into(), capabilities))
+    Ok(build_codex_cli_diagnostics_response(
+        probe.into(),
+        capabilities,
+    ))
 }
 
 #[cfg(test)]

@@ -162,9 +162,104 @@ function AgentTerminalLoadingShell({
   return dockElement ? createPortal(shell, dockElement) : shell;
 }
 
+function AgentTerminalArchivedShell({
+  height,
+  expanded,
+  reason,
+  workspace,
+  dockElement,
+  onToggleExpanded,
+}: {
+  height: number;
+  expanded: boolean;
+  reason: string;
+  workspace: AgentConversationWorkspace;
+  dockElement: HTMLElement | null;
+  onToggleExpanded: () => void;
+}) {
+  const branchLabel = formatBranchDisplay(workspace.branchName).short;
+  const displayCwd = compactTerminalPath(workspace.worktreePath);
+  const shell = (
+    <div
+      className="relative shrink-0 overflow-hidden border-t"
+      style={{
+        height: expanded ? height : AGENT_TERMINAL_COLLAPSED_HEIGHT,
+        backgroundColor: "var(--bg-base)",
+        borderColor: "var(--overlay-weak)",
+        borderStyle: "solid",
+        borderTopWidth: "1px",
+        boxShadow: "0 -16px 36px var(--shadow-card)",
+      }}
+      data-testid="agent-terminal-archived-shell"
+    >
+      <div
+        className="flex h-9 cursor-pointer select-none items-center gap-2 border-b px-3 text-xs"
+        role="button"
+        tabIndex={0}
+        aria-expanded={expanded}
+        aria-label={
+          expanded ? "Collapse archived terminal panel" : "Expand archived terminal panel"
+        }
+        data-testid="agent-terminal-archived-shell-header"
+        onClick={onToggleExpanded}
+        onKeyDown={(event: ReactKeyboardEvent<HTMLDivElement>) => {
+          if (event.key !== "Enter" && event.key !== " ") {
+            return;
+          }
+          event.preventDefault();
+          onToggleExpanded();
+        }}
+        style={{
+          backgroundColor: "var(--bg-surface)",
+          borderBottomWidth: "1px",
+          borderColor: "var(--overlay-faint)",
+          borderStyle: "solid",
+          color: "var(--text-secondary)",
+        }}
+      >
+        <TerminalIcon
+          className="h-3.5 w-3.5 shrink-0"
+          style={{ color: "var(--text-muted)" }}
+        />
+        <span className="font-medium" style={{ color: "var(--text-primary)" }}>
+          Terminal
+        </span>
+        <span
+          className="h-1 w-1 rounded-full"
+          style={{ backgroundColor: "var(--text-muted)" }}
+        />
+        <span>Archived</span>
+        <span className="min-w-0 truncate font-mono" style={{ color: "var(--text-muted)" }}>
+          {branchLabel}
+        </span>
+        <span
+          className="hidden min-w-0 truncate font-mono md:inline"
+          style={{ color: "var(--text-muted)" }}
+        >
+          {displayCwd}
+        </span>
+      </div>
+      {expanded ? (
+        <div
+          className="space-y-2 px-3 py-3 text-xs"
+          style={{ color: "var(--text-secondary)" }}
+        >
+          <p>{reason}</p>
+          <p style={{ color: "var(--text-muted)" }}>
+            No terminal process is running for this archived workspace.
+          </p>
+        </div>
+      ) : null}
+    </div>
+  );
+
+  return dockElement ? createPortal(shell, dockElement) : shell;
+}
+
 interface AgentsTerminalPresentationInput {
   conversationId: string | null;
   workspace: AgentConversationWorkspace | null;
+  terminalArchivedReason: string | null;
   terminalUnavailableReason: string | null;
   hasAutoOpenArtifacts: boolean;
 }
@@ -213,6 +308,7 @@ export function AgentsTerminalDockHost({
   dock,
   conversationId,
   workspace,
+  terminalArchivedReason,
   terminalUnavailableReason,
   hasAutoOpenArtifacts,
   setDockElement,
@@ -221,6 +317,7 @@ export function AgentsTerminalDockHost({
     useAgentTerminalPresentation({
       conversationId,
       workspace,
+      terminalArchivedReason,
       terminalUnavailableReason,
       hasAutoOpenArtifacts,
     });
@@ -525,6 +622,7 @@ interface AgentsTerminalRegionProps extends AgentsTerminalPresentationInput {
 export function AgentsTerminalRegion({
   conversationId,
   workspace,
+  terminalArchivedReason,
   terminalUnavailableReason,
   hasAutoOpenArtifacts,
   chatDockElement,
@@ -541,10 +639,12 @@ export function AgentsTerminalRegion({
   } = useAgentTerminalPresentation({
     conversationId,
     workspace,
+    terminalArchivedReason,
     terminalUnavailableReason,
     hasAutoOpenArtifacts,
   });
-  const contentMounted = useAfterPaintMounted(canRender);
+  const shouldMountInteractiveTerminal = canRender && !terminalArchivedReason;
+  const contentMounted = useAfterPaintMounted(shouldMountInteractiveTerminal);
   const terminalStatus = useAgentTerminalStore((state) =>
     conversationId ? state.statusByConversationId[conversationId] ?? "closed" : "closed",
   );
@@ -608,6 +708,19 @@ export function AgentsTerminalRegion({
   const handleTerminalShellToggle = () => {
     setTerminalOpen(conversationId, !isExpanded);
   };
+
+  if (terminalArchivedReason) {
+    return (
+      <AgentTerminalArchivedShell
+        height={height}
+        expanded={isExpanded}
+        reason={terminalArchivedReason}
+        workspace={workspace}
+        dockElement={dockElement}
+        onToggleExpanded={handleTerminalShellToggle}
+      />
+    );
+  }
 
   if (!contentMounted) {
     return (

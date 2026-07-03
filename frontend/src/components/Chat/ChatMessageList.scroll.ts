@@ -74,6 +74,95 @@ export function shouldTreatScrollTopDecreaseAsUserAway({
   return currentScrollTop < previousScrollTop;
 }
 
+export interface ScheduledBottomPinState {
+  scheduledAwayVersion: number;
+  currentAwayVersion: number;
+  requireLastItemVisible: boolean;
+  isLastItemVisible: boolean;
+}
+
+export function shouldRunScheduledBottomPin({
+  scheduledAwayVersion,
+  currentAwayVersion,
+  requireLastItemVisible,
+  isLastItemVisible,
+}: ScheduledBottomPinState): boolean {
+  if (currentAwayVersion !== scheduledAwayVersion) {
+    return false;
+  }
+  return !requireLastItemVisible || isLastItemVisible;
+}
+
+export type ManualWheelScrollIntent = "away" | "bottom" | "none";
+
+export interface ManualWheelScrollIntentState {
+  deltaY: number;
+  bottomDelta: number | null;
+  trueBottomSettleThresholdPx: number;
+}
+
+export function getManualWheelScrollIntent({
+  deltaY,
+  bottomDelta,
+  trueBottomSettleThresholdPx,
+}: ManualWheelScrollIntentState): ManualWheelScrollIntent {
+  if (deltaY < 0) {
+    return "away";
+  }
+
+  if (deltaY <= 0) {
+    return "none";
+  }
+
+  if (bottomDelta !== null && bottomDelta <= trueBottomSettleThresholdPx) {
+    return "bottom";
+  }
+
+  return "none";
+}
+
+export interface ScrollDriftRecoveryState {
+  scrollToTimestamp: string | null | undefined;
+  bottomDelta: number;
+  isVisuallyAtBottom: boolean;
+  isUserScrollingAwayFromBottom: boolean;
+  hasRecentBottomScrollIntent: boolean;
+  stickyBottomThresholdPx: number;
+  hasUserScrollInput: boolean;
+  isAtBottom: boolean;
+  wasVisuallyAtBottom: boolean;
+}
+
+export function shouldRecoverScrollDriftToBottom({
+  scrollToTimestamp,
+  bottomDelta,
+  isVisuallyAtBottom,
+  isUserScrollingAwayFromBottom,
+  hasRecentBottomScrollIntent,
+  stickyBottomThresholdPx,
+  isAtBottom,
+  wasVisuallyAtBottom,
+}: ScrollDriftRecoveryState): boolean {
+  if (
+    scrollToTimestamp ||
+    isVisuallyAtBottom ||
+    isUserScrollingAwayFromBottom ||
+    bottomDelta <= VISUAL_BOTTOM_EPSILON_PX
+  ) {
+    return false;
+  }
+
+  if (hasRecentBottomScrollIntent && bottomDelta >= stickyBottomThresholdPx) {
+    return true;
+  }
+
+  if (bottomDelta < stickyBottomThresholdPx) {
+    return false;
+  }
+
+  return isAtBottom || wasVisuallyAtBottom;
+}
+
 export interface ScrollToBottomControlState {
   timelineLength: number;
   scrollToTimestamp: string | null | undefined;

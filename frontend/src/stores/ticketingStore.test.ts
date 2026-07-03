@@ -1,0 +1,118 @@
+import { beforeEach, describe, expect, it } from "vitest";
+
+import { useTicketingStore } from "./ticketingStore";
+
+describe("useTicketingStore", () => {
+  beforeEach(() => {
+    localStorage.removeItem("ralphx-ticketing-store");
+    useTicketingStore.getState().reset();
+  });
+
+  it("clears container and selected ticket when provider changes", () => {
+    useTicketingStore.getState().setProvider("jira");
+    useTicketingStore.getState().setContainerId("board-1");
+    useTicketingStore.getState().setSelectedTicketRef({
+      provider: "jira",
+      id: "10001",
+      key: "RX-1",
+    });
+
+    useTicketingStore.getState().setProvider("linear");
+
+    expect(useTicketingStore.getState().activeProvider).toBe("linear");
+    expect(useTicketingStore.getState().activeContainerId).toBeNull();
+    expect(useTicketingStore.getState().selectedTicketRef).toBeNull();
+  });
+
+  it("clears container and selected ticket when switching to ClickUp", () => {
+    useTicketingStore.getState().setProvider("linear");
+    useTicketingStore.getState().setContainerId("team-1");
+    useTicketingStore.getState().setSelectedTicketRef({
+      provider: "linear",
+      id: "LIN-1",
+      key: "ENG-1",
+    });
+
+    useTicketingStore.getState().setProvider("clickup");
+
+    expect(useTicketingStore.getState().activeProvider).toBe("clickup");
+    expect(useTicketingStore.getState().activeContainerId).toBeNull();
+    expect(useTicketingStore.getState().selectedTicketRef).toBeNull();
+  });
+
+  it("merges filter updates and resets them independently", () => {
+    useTicketingStore.getState().setFilters({
+      text: "race",
+      stateIds: ["started"],
+    });
+    useTicketingStore.getState().setFilters({ assignees: ["me", "you"] });
+
+    expect(useTicketingStore.getState().filters).toEqual({
+      text: "race",
+      assignees: ["me", "you"],
+      stateIds: ["started"],
+      labels: [],
+      sprint: null,
+      watcherMe: false,
+    });
+
+    useTicketingStore.getState().resetFilters();
+
+    expect(useTicketingStore.getState().filters).toEqual({
+      text: "",
+      assignees: [],
+      stateIds: [],
+      labels: [],
+      sprint: null,
+      watcherMe: false,
+    });
+  });
+
+  it("records a last-opened timestamp per ticket and clears it on reset", () => {
+    useTicketingStore.getState().markTicketOpened("linear:ABC-1");
+    useTicketingStore.getState().markTicketOpened("jira:RX-9");
+
+    const opened = useTicketingStore.getState().lastOpenedAt;
+    expect(opened["linear:ABC-1"]).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(opened["jira:RX-9"]).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+
+    useTicketingStore.getState().reset();
+    expect(useTicketingStore.getState().lastOpenedAt).toEqual({});
+  });
+
+  it("persists the active ticketing dashboard state", () => {
+    useTicketingStore.getState().setProvider("linear");
+    useTicketingStore.getState().setContainerId("team-1");
+    useTicketingStore.getState().setViewMode("kanban");
+    useTicketingStore.getState().setFilters({
+      text: "billing",
+      assignees: ["Ada"],
+      stateIds: ["started"],
+    });
+    useTicketingStore.getState().setSelectedTicketRef({
+      provider: "linear",
+      id: "issue-1",
+      key: "LIN-1",
+    });
+
+    const persisted = JSON.parse(localStorage.getItem("ralphx-ticketing-store") ?? "{}") as {
+      state?: Record<string, unknown>;
+    };
+
+    expect(persisted.state).toMatchObject({
+      activeProvider: "linear",
+      activeContainerId: "team-1",
+      viewMode: "kanban",
+      filters: {
+        text: "billing",
+        assignees: ["Ada"],
+        stateIds: ["started"],
+      },
+      selectedTicketRef: {
+        provider: "linear",
+        id: "issue-1",
+        key: "LIN-1",
+      },
+    });
+  });
+});

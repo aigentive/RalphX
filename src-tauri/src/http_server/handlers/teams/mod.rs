@@ -73,6 +73,7 @@ pub use self::spawn_helpers::{
 
 use self::spawn_execution::execute_team_spawn;
 use self::spawn_helpers::{
-    ensure_team_mode_supported_for_context, resolve_lead_session_from_config,
-    resolve_teammate_plugin_dir, resolve_teammate_project_id, resolve_teammate_working_dir,
+    ensure_team_mode_supported_for_context, load_claude_provider_env_for_teammate_spawn,
+    resolve_lead_session_from_config, resolve_teammate_plugin_dir, resolve_teammate_project_id,
+    resolve_teammate_working_dir,
 };

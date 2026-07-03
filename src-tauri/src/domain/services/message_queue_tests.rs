@@ -67,7 +67,10 @@ fn test_take_removes_selected_message_without_reordering_remaining() {
 
     let remaining = queue.get_queued(ChatContextType::Task, "task-1");
     assert_eq!(
-        remaining.iter().map(|message| message.id.as_str()).collect::<Vec<_>>(),
+        remaining
+            .iter()
+            .map(|message| message.id.as_str())
+            .collect::<Vec<_>>(),
         vec![first.id.as_str(), third.id.as_str()],
         "taking a selected queued message must preserve the order of the rest"
     );
@@ -417,6 +420,7 @@ fn test_remove_stale_drops_old_messages() {
             harness_override: None,
             model_override: None,
             logical_effort_override: None,
+            service_tier_override: None,
             force_new_provider_session: false,
             composer_project_references: Vec::new(),
             composer_integration_references: Vec::new(),
@@ -433,6 +437,7 @@ fn test_remove_stale_drops_old_messages() {
             harness_override: None,
             model_override: None,
             logical_effort_override: None,
+            service_tier_override: None,
             force_new_provider_session: false,
             composer_project_references: Vec::new(),
             composer_integration_references: Vec::new(),
@@ -564,6 +569,8 @@ fn test_queue_with_overrides_preserves_composer_integration_references() {
         key: Some("RX-42".to_string()),
         title: Some("Fix composer search".to_string()),
         url: Some("https://example.atlassian.net/browse/RX-42".to_string()),
+        summary_excerpt: None,
+        include_transcript: None,
     }];
 
     let queued = queue.queue_with_overrides_and_project_references(
@@ -582,6 +589,43 @@ fn test_queue_with_overrides_preserves_composer_integration_references() {
     assert_eq!(queued.composer_integration_references, references);
     let popped = queue.pop(ChatContextType::Project, "project-1").unwrap();
     assert_eq!(popped.composer_integration_references, references);
+}
+
+#[test]
+fn composer_integration_reference_deserializes_legacy_atlassian_metadata_defaults() {
+    let reference: ComposerIntegrationReference = serde_json::from_str(
+        r#"{"provider":"atlassian","kind":"jira","id":"RX-42","key":"RX-42"}"#,
+    )
+    .expect("legacy Atlassian reference should deserialize");
+
+    assert_eq!(reference.provider, "atlassian");
+    assert_eq!(reference.kind, "jira");
+    assert_eq!(reference.key.as_deref(), Some("RX-42"));
+    assert_eq!(reference.summary_excerpt, None);
+    assert_eq!(reference.include_transcript, None);
+}
+
+#[test]
+fn composer_integration_reference_serializes_granola_prompt_metadata() {
+    let reference = ComposerIntegrationReference {
+        provider: "granola".to_string(),
+        kind: "note".to_string(),
+        id: "not_1234567890ABCD".to_string(),
+        key: None,
+        title: Some("Planning note".to_string()),
+        url: Some("https://granola.ai/notes/not_1234567890ABCD".to_string()),
+        summary_excerpt: Some("Decision summary".to_string()),
+        include_transcript: Some(true),
+    };
+
+    let value = serde_json::to_value(&reference).expect("serialize Granola reference");
+
+    assert_eq!(value["provider"], "granola");
+    assert_eq!(value["kind"], "note");
+    assert_eq!(value["summaryExcerpt"], "Decision summary");
+    assert_eq!(value["includeTranscript"], true);
+    assert!(value.get("summary_excerpt").is_none());
+    assert!(value.get("include_transcript").is_none());
 }
 
 #[test]
@@ -696,6 +740,7 @@ fn test_queue_with_runtime_overrides_preserves_selection() {
         Some(AgentHarnessKind::Codex),
         Some("gpt-5.5".to_string()),
         Some(LogicalEffort::XHigh),
+        Some("fast".to_string()),
         true,
         Vec::new(),
         Vec::new(),
@@ -706,6 +751,7 @@ fn test_queue_with_runtime_overrides_preserves_selection() {
     assert_eq!(queued.harness_override, Some(AgentHarnessKind::Codex));
     assert_eq!(queued.model_override.as_deref(), Some("gpt-5.5"));
     assert_eq!(queued.logical_effort_override, Some(LogicalEffort::XHigh));
+    assert_eq!(queued.service_tier_override.as_deref(), Some("fast"));
     assert!(queued.force_new_provider_session);
 
     let stored = queue.get_queued(ChatContextType::Project, "project-runtime");
@@ -731,6 +777,7 @@ fn test_remove_stale_unparseable_timestamp_retained() {
             harness_override: None,
             model_override: None,
             logical_effort_override: None,
+            service_tier_override: None,
             force_new_provider_session: false,
             composer_project_references: Vec::new(),
             composer_integration_references: Vec::new(),

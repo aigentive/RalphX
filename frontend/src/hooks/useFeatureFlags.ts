@@ -16,17 +16,23 @@ export const FEATURE_FLAGS_QUERY_KEY = ["featureFlags"] as const;
 const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
   activityPage: true,
   extensibilityPage: true,
+  ideationPage: false,
   battleMode: true,
   teamMode: false,
   atlassianOauth: false,
+  ticketingDashboard: false,
 };
+
+export function applyFeatureFlagOverrides(flags: FeatureFlags): FeatureFlags {
+  return flags;
+}
 
 export function useFeatureFlags() {
   const query = useQuery<FeatureFlags>({
     queryKey: FEATURE_FLAGS_QUERY_KEY,
     queryFn: async () => {
       const raw = await invoke("get_ui_feature_flags");
-      return featureFlagsSchema.parse(raw);
+      return applyFeatureFlagOverrides(featureFlagsSchema.parse(raw));
     },
     staleTime: Infinity,
     // placeholderData shows defaults immediately (prevents startup flash) while
@@ -39,7 +45,7 @@ export function useFeatureFlags() {
     ...query,
     // Always return a defined FeatureFlags. Falls back to defaults on error
     // (placeholderData is not shown in error state; query.data would be undefined).
-    data: query.data ?? DEFAULT_FEATURE_FLAGS,
+    data: applyFeatureFlagOverrides(query.data ?? DEFAULT_FEATURE_FLAGS),
   };
 }
 
@@ -53,6 +59,10 @@ export function isViewEnabled(view: string, flags: FeatureFlags): boolean {
       return flags.activityPage;
     case "extensibility":
       return flags.extensibilityPage;
+    case "ideation":
+      return flags.ideationPage;
+    case "ticketing":
+      return true;
     default:
       return true;
   }

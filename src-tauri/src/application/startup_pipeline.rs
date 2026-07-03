@@ -2,7 +2,7 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::application::agent_workspace_bridge::AgentWorkspaceBridgeDeps;
 use crate::application::agent_workspace_publish_recovery::recover_stale_agent_workspace_publish_repairs_on_startup;
@@ -21,7 +21,9 @@ use crate::application::{
 };
 use crate::commands::{ActiveProjectState, ExecutionState};
 use crate::domain::repositories::{
-    ActivityEventRepository, AgentConversationWorkspaceRepository, AgentLaneSettingsRepository,
+    ActivityEventRepository, AgentConversationGranolaNoteRepository,
+    AgentConversationJiraIssueRepository, AgentConversationLinearIssueRepository,
+    AgentConversationWorkspaceRepository, AgentLaneSettingsRepository,
     AgentProviderSettingsRepository, AgentRunRepository, AppStateRepository, ArtifactRepository,
     ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,
     ExecutionPlanRepository, ExecutionSettingsRepository, ExternalEventsRepository,
@@ -59,6 +61,9 @@ pub(crate) struct StartupPipelineDeps {
     pub artifact_repo: Arc<dyn ArtifactRepository>,
     pub conversation_repo: Arc<dyn ChatConversationRepository>,
     pub agent_conversation_workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    pub agent_conversation_jira_issue_repo: Arc<dyn AgentConversationJiraIssueRepository>,
+    pub agent_conversation_linear_issue_repo: Arc<dyn AgentConversationLinearIssueRepository>,
+    pub agent_conversation_granola_note_repo: Arc<dyn AgentConversationGranolaNoteRepository>,
     pub orphan_worktree_cleanup_marker_repo: Arc<dyn OrphanWorktreeCleanupMarkerRepository>,
     pub agent_run_repo: Arc<dyn AgentRunRepository>,
     pub task_outcome_repo: Arc<dyn TaskOutcomeRepository>,
@@ -170,6 +175,9 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         artifact_repo,
         conversation_repo,
         agent_conversation_workspace_repo,
+        agent_conversation_jira_issue_repo,
+        agent_conversation_linear_issue_repo,
+        agent_conversation_granola_note_repo,
         orphan_worktree_cleanup_marker_repo,
         agent_run_repo,
         task_outcome_repo,
@@ -303,6 +311,12 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
     if let Some(github_service) = github_service.as_ref() {
         tracing::info!("Running startup PR creation recovery...");
         let phase_started_at = Instant::now();
+        let plan_pr_description_drafter =
+            crate::application::plan_pr_description::build_app_state_plan_pr_description_drafter(
+                Arc::clone(&agent_conversation_workspace_repo),
+                Arc::clone(&agent_provider_settings_repo),
+                agent_clients.clone(),
+            );
         crate::application::pr_startup_recovery::recover_missing_draft_prs(
             Arc::clone(&task_repo),
             Arc::clone(&plan_branch_repo),
@@ -311,6 +325,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
             Arc::clone(&ideation_session_repo),
             Arc::clone(&artifact_repo),
             Arc::clone(github_service),
+            plan_pr_description_drafter,
             Arc::clone(&blocked_git_project_ids),
         )
         .await;
@@ -376,6 +391,13 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         Arc::clone(&project_memory_settings_repo),
     )
     .with_agent_conversation_workspace_repo(Some(Arc::clone(&agent_conversation_workspace_repo)))
+    .with_agent_conversation_jira_issue_repo(Some(Arc::clone(&agent_conversation_jira_issue_repo)))
+    .with_agent_conversation_linear_issue_repo(Some(Arc::clone(
+        &agent_conversation_linear_issue_repo,
+    )))
+    .with_agent_conversation_granola_note_repo(Some(Arc::clone(
+        &agent_conversation_granola_note_repo,
+    )))
     .with_runtime_support(
         Some(Arc::clone(&execution_settings_repo)),
         Some(Arc::clone(&agent_lane_settings_repo)),
@@ -446,6 +468,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
     crate::application::pr_startup_recovery::recover_agent_workspace_pr_pollers(
         Arc::clone(&agent_conversation_workspace_repo),
         Arc::clone(&project_repo),
+        Arc::clone(&plan_branch_repo),
         Arc::clone(&pr_poller_registry),
         Arc::clone(&agent_run_repo),
         Arc::clone(&task_outcome_repo),
@@ -514,6 +537,29 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
     let startup_ideation_recovery_claims = runner.run().await;
     startup_phase_completed("startup_job_runner", phase_started_at);
 
+    let phase_started_at = startup_phase_started("workspace_review_startup_reconciliation");
+    match crate::application::agent_workspace_review::reconcile_interrupted_agent_workspace_reviews_on_startup(
+        Arc::clone(&agent_conversation_workspace_repo),
+        Arc::clone(&agent_run_repo),
+    )
+    .await
+    {
+        Ok(count) if count > 0 => {
+            info!(
+                count,
+                "Startup reconciled interrupted workspace Review monitors"
+            );
+        }
+        Ok(_) => {}
+        Err(error) => {
+            warn!(
+                error = %error,
+                "Startup workspace Review monitor reconciliation failed"
+            );
+        }
+    }
+    startup_phase_completed("workspace_review_startup_reconciliation", phase_started_at);
+
     let phase_started_at = startup_phase_started("stale_workspace_publish_repair");
     recover_stale_agent_workspace_publish_repairs_on_startup(
         Arc::clone(&agent_conversation_workspace_repo),
@@ -522,6 +568,18 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
     )
     .await;
     startup_phase_completed("stale_workspace_publish_repair", phase_started_at);
+
+    {
+        let workspace_repo = Arc::clone(&agent_conversation_workspace_repo);
+        let periodic_agent_run_repo = Arc::clone(&agent_run_repo);
+        tauri::async_runtime::spawn(async move {
+            crate::application::agent_workspace_publish_recovery::run_periodic_workspace_publish_recovery(
+                workspace_repo,
+                periodic_agent_run_repo,
+            )
+            .await;
+        });
+    }
 
     if let Some(github_service) = github_service.as_ref().map(Arc::clone) {
         tracing::info!("Scheduling agent workspace PR supervision startup recovery...");

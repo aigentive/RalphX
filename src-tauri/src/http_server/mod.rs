@@ -336,6 +336,23 @@ pub async fn start_http_server(
             "/api/append_task_to_ideation_plan",
             post(append_ideation_plan_task_http),
         )
+        .route(
+            "/api/create_followup_agent_conversation",
+            post(create_followup_agent_conversation),
+        )
+        .route("/api/register_agent_issue", post(register_agent_issue))
+        .route(
+            "/api/agent_conversation_issues/list",
+            post(list_agent_conversation_issues),
+        )
+        .route(
+            "/api/agent_conversation_issues/status",
+            post(update_agent_conversation_issue_status),
+        )
+        .route(
+            "/api/agent_conversation_issues/convert_followup",
+            post(convert_agent_conversation_issue_followup),
+        )
         // Review tools (reviewer agent)
         .route("/api/complete_review", post(complete_review))
         .route("/api/review_notes/:task_id", get(get_review_notes))
@@ -405,6 +422,50 @@ pub async fn start_http_server(
         .route(
             "/api/agent-workspaces/:conversation_id/pr-fix-context",
             get(get_agent_workspace_pr_fix_context),
+        )
+        .route(
+            "/api/agent-workspaces/:conversation_id/pr-review-context",
+            get(get_agent_workspace_pr_review_context),
+        )
+        .route(
+            "/api/agent-workspaces/:conversation_id/workspace-review-context",
+            get(get_agent_workspace_review_context),
+        )
+        .route(
+            "/api/agent-workspaces/:conversation_id/workspace-review-runs",
+            post(start_agent_workspace_review_run),
+        )
+        .route(
+            "/api/agent-workspaces/:conversation_id/workspace-review-artifact",
+            post(write_agent_workspace_review_artifact),
+        )
+        .route(
+            "/api/agent-workspaces/:conversation_id/workspace-review-hunk-annotations",
+            post(write_agent_workspace_review_hunk_annotations),
+        )
+        .route(
+            "/api/agent-workspaces/:conversation_id/complete-workspace-review-run",
+            post(complete_agent_workspace_review_run),
+        )
+        .route(
+            "/api/agent-workspaces/:conversation_id/pr-review-artifact",
+            post(write_agent_workspace_pr_review_artifact),
+        )
+        .route(
+            "/api/agent-workspaces/:conversation_id/pr-review-actions",
+            post(propose_agent_workspace_pr_review_action),
+        )
+        .route(
+            "/api/agent-workspaces/:conversation_id/complete-pr-review-run",
+            post(complete_agent_workspace_pr_review_run),
+        )
+        .route(
+            "/api/agent-workspaces/:conversation_id/pr-review-actions/:action_id/submit",
+            post(submit_agent_workspace_pr_review_action),
+        )
+        .route(
+            "/api/agent-workspaces/:conversation_id/pr-review-actions/:action_id/skip",
+            post(skip_agent_workspace_pr_review_action),
         )
         .route(
             "/api/agent-workspaces/:conversation_id/pr-comments/:comment_id",
@@ -584,6 +645,10 @@ pub async fn start_http_server(
         .route(
             "/api/external/webhooks/health",
             get(get_webhook_health_http),
+        )
+        .route(
+            "/api/integrations/linear/webhook",
+            post(receive_linear_webhook_http),
         )
         .route("/api/external/task-note", post(create_task_note_http))
         // Team endpoints (agent teams) — two-phase plan flow

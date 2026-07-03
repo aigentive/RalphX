@@ -25,6 +25,7 @@ import {
 import ExecutionSection from "./sections/ExecutionSection";
 import ReviewPolicySection from "./sections/ReviewPolicySection";
 import GlobalExecutionSection from "./sections/GlobalExecutionSection";
+import WorkspaceReviewSection from "./sections/WorkspaceReviewSection";
 
 // ============================================================================
 // Main Component
@@ -100,6 +101,7 @@ export function SettingsView({
         onChange={handleExecutionChange}
         disabled={isSaving}
       />
+      <WorkspaceReviewSection />
       <ReviewPolicySection />
       <GlobalExecutionSection />
       <RepositorySettingsSection />

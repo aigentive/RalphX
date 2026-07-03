@@ -4,6 +4,10 @@ import { chatApi } from "@/api/chat";
 import type {
   AgentConversationWorkspace,
   AgentConversationWorkspaceFreshnessScope,
+  AgentConversationWorkspaceMode,
+  AgentWorkspacePrReviewContext,
+  AgentWorkspaceReviewContext,
+  StartAgentWorkspaceReviewResult,
 } from "@/api/chat";
 
 import {
@@ -73,6 +77,21 @@ export const agentWorkspaceKeys = {
     "workspace-pr-annotations",
     conversationId,
   ] as const,
+  workspaceReviewHunkAnnotations: (conversationId: string | null | undefined) => [
+    "agents",
+    "workspace-review-hunk-annotations",
+    conversationId,
+  ] as const,
+  prReview: (conversationId: string | null | undefined) => [
+    "agents",
+    "workspace-pr-review",
+    conversationId,
+  ] as const,
+  workspaceReview: (conversationId: string | null | undefined) => [
+    "agents",
+    "workspace-review-context",
+    conversationId,
+  ] as const,
   diff: (conversationId: string | null | undefined) => [
     "agents",
     "workspace-diff",
@@ -84,6 +103,93 @@ export const agentWorkspaceKeys = {
     conversationId,
   ] as const,
 };
+
+export function prReviewContextForConversation(
+  context: AgentWorkspacePrReviewContext | null | undefined,
+  conversationId: string | null | undefined,
+): AgentWorkspacePrReviewContext | null {
+  if (!context || !conversationId) {
+    return null;
+  }
+
+  if (context.workspace.conversationId !== conversationId) {
+    return null;
+  }
+  if (context.monitor?.conversationId && context.monitor.conversationId !== conversationId) {
+    return null;
+  }
+  if (context.pendingAction?.conversationId && context.pendingAction.conversationId !== conversationId) {
+    return null;
+  }
+  if (context.recentActions.some((action) => action.conversationId !== conversationId)) {
+    return null;
+  }
+
+  return context;
+}
+
+type WorkspaceReviewContextLike =
+  | AgentWorkspaceReviewContext
+  | StartAgentWorkspaceReviewResult;
+
+const WORKSPACE_REVIEW_OWNER_MODES: ReadonlySet<AgentConversationWorkspaceMode> =
+  new Set(["edit", "ideation", "plan", "review_pr"]);
+
+export interface WorkspaceReviewOwnerConversationInput {
+  activeConversationContextType: string | null | undefined;
+  activeConversationId: string | null | undefined;
+  activeConversationParentId: string | null | undefined;
+  activeConversationMode: AgentConversationWorkspaceMode | null | undefined;
+  activeWorkspaceConversationId: string | null | undefined;
+}
+
+export function resolveWorkspaceReviewOwnerConversationId({
+  activeConversationContextType,
+  activeConversationId,
+  activeConversationParentId,
+  activeConversationMode,
+  activeWorkspaceConversationId,
+}: WorkspaceReviewOwnerConversationInput): string | null {
+  if (activeConversationContextType !== "project" || !activeConversationId) {
+    return null;
+  }
+
+  const hasReviewableWorkspaceMode = activeConversationMode
+    ? WORKSPACE_REVIEW_OWNER_MODES.has(activeConversationMode)
+    : false;
+  if (
+    hasReviewableWorkspaceMode &&
+    activeWorkspaceConversationId === activeConversationId
+  ) {
+    return activeConversationId;
+  }
+
+  if (activeConversationParentId) {
+    return activeConversationParentId;
+  }
+
+  return hasReviewableWorkspaceMode ? activeConversationId : null;
+}
+
+export function workspaceReviewContextForConversation<
+  T extends WorkspaceReviewContextLike,
+>(
+  context: T | null | undefined,
+  conversationId: string | null | undefined,
+): T | null {
+  if (!context || !conversationId) {
+    return null;
+  }
+
+  if ("workspace" in context && context.workspace.conversationId !== conversationId) {
+    return null;
+  }
+  if (context.monitor.conversationId !== conversationId) {
+    return null;
+  }
+
+  return context;
+}
 
 const pendingFreshnessPreflights = new Set<string>();
 
@@ -164,6 +270,15 @@ export function invalidateWorkspaceQueries(
     }),
     queryClient.invalidateQueries({
       queryKey: agentWorkspaceKeys.prAnnotations(conversationId),
+    }),
+    queryClient.invalidateQueries({
+      queryKey: agentWorkspaceKeys.workspaceReviewHunkAnnotations(conversationId),
+    }),
+    queryClient.invalidateQueries({
+      queryKey: agentWorkspaceKeys.prReview(conversationId),
+    }),
+    queryClient.invalidateQueries({
+      queryKey: agentWorkspaceKeys.workspaceReview(conversationId),
     }),
     queryClient.invalidateQueries({
       queryKey: agentWorkspaceKeys.diff(conversationId),

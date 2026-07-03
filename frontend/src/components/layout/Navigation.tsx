@@ -90,10 +90,12 @@ export function Navigation({ currentView, onViewChange, onOpenSettings, hideView
   const [skillsEnabled] = useSkillsEnabled();
 
   const taskCount = stats?.taskCount ?? 0;
+  const dashboardViews = new Set<ViewType>(["ticketing", "github", "granola"]);
   const visibleItems = hideViews
     ? []
     : ALL_NAV_ITEMS.filter(
         (item) =>
+          !dashboardViews.has(item.view) &&
           item.visible(featureFlags, taskCount) &&
           (item.view !== "skills" || skillsEnabled),
       );

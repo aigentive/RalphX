@@ -1,9 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  getManualWheelScrollIntent,
   getTrueBottomScrollTop,
   isScrollElementVisuallyAtBottom,
   scrollElementToTrueBottom,
+  shouldRecoverScrollDriftToBottom,
+  shouldRunScheduledBottomPin,
   shouldShowScrollToBottomControl,
   shouldStickToBottom,
   shouldTreatScrollTopDecreaseAsUserAway,
@@ -235,6 +238,129 @@ describe("ChatMessageList scroll math", () => {
         previousScrollTop: 620,
         currentScrollTop: 580,
         isVisuallyAtBottom: false,
+      })
+    ).toBe(false);
+  });
+
+  it("cancels scheduled bottom pins when the user-away version changes", () => {
+    expect(
+      shouldRunScheduledBottomPin({
+        scheduledAwayVersion: 2,
+        currentAwayVersion: 3,
+        requireLastItemVisible: false,
+        isLastItemVisible: false,
+      })
+    ).toBe(false);
+  });
+
+  it("requires the last item to be visible for guarded scheduled bottom pins", () => {
+    expect(
+      shouldRunScheduledBottomPin({
+        scheduledAwayVersion: 2,
+        currentAwayVersion: 2,
+        requireLastItemVisible: true,
+        isLastItemVisible: false,
+      })
+    ).toBe(false);
+
+    expect(
+      shouldRunScheduledBottomPin({
+        scheduledAwayVersion: 2,
+        currentAwayVersion: 2,
+        requireLastItemVisible: false,
+        isLastItemVisible: false,
+      })
+    ).toBe(true);
+  });
+
+  it("classifies downward wheel input in the final-pixel zone as bottom intent", () => {
+    expect(
+      getManualWheelScrollIntent({
+        deltaY: 120,
+        bottomDelta: 24,
+        trueBottomSettleThresholdPx: 32,
+      })
+    ).toBe("bottom");
+  });
+
+  it("classifies upward wheel input as scroll-away intent", () => {
+    expect(
+      getManualWheelScrollIntent({
+        deltaY: -1,
+        bottomDelta: 0,
+        trueBottomSettleThresholdPx: 32,
+      })
+    ).toBe("away");
+  });
+
+  it("defers downward wheel-away classification until the resulting scroll position is known", () => {
+    expect(
+      getManualWheelScrollIntent({
+        deltaY: 120,
+        bottomDelta: 60,
+        trueBottomSettleThresholdPx: 32,
+      })
+    ).toBe("none");
+  });
+
+  it("recovers large late layout drift after an explicit bottom intent", () => {
+    expect(
+      shouldRecoverScrollDriftToBottom({
+        bottomDelta: 180,
+        hasRecentBottomScrollIntent: true,
+        hasUserScrollInput: true,
+        isAtBottom: false,
+        isUserScrollingAwayFromBottom: false,
+        isVisuallyAtBottom: false,
+        scrollToTimestamp: null,
+        stickyBottomThresholdPx: 150,
+        wasVisuallyAtBottom: false,
+      })
+    ).toBe(true);
+  });
+
+  it("recovers large drift after ordinary user input when the user has not scrolled away", () => {
+    expect(
+      shouldRecoverScrollDriftToBottom({
+        bottomDelta: 180,
+        hasRecentBottomScrollIntent: false,
+        hasUserScrollInput: true,
+        isAtBottom: true,
+        isUserScrollingAwayFromBottom: false,
+        isVisuallyAtBottom: false,
+        scrollToTimestamp: null,
+        stickyBottomThresholdPx: 150,
+        wasVisuallyAtBottom: true,
+      })
+    ).toBe(true);
+  });
+
+  it("does not recover drift during history targeting or manual scroll-away", () => {
+    expect(
+      shouldRecoverScrollDriftToBottom({
+        bottomDelta: 200,
+        hasRecentBottomScrollIntent: true,
+        hasUserScrollInput: false,
+        isAtBottom: true,
+        isUserScrollingAwayFromBottom: false,
+        isVisuallyAtBottom: false,
+        scrollToTimestamp: "2026-01-01T12:00:00.000Z",
+        stickyBottomThresholdPx: 150,
+        wasVisuallyAtBottom: true,
+      })
+    ).toBe(false);
+
+    expect(
+      shouldRecoverScrollDriftToBottom({
+        bottomDelta: 200,
+        hasRecentBottomScrollIntent: true,
+        hasUserScrollInput: false,
+        isAtBottom: true,
+        isUserScrollingAwayFromBottom: true,
+        isVisuallyAtBottom: false,
+        scrollToTimestamp: null,
+        stickyBottomThresholdPx: 150,
+        wasVisuallyAtBottom: true,
       })
     ).toBe(false);
   });

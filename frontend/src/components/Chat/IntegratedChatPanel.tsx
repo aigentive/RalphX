@@ -26,6 +26,7 @@ import {
   selectIsSending,
   selectToolCallStartTimes,
   selectLastAgentEventTimestamp,
+  selectComposerDraft,
   type AgentStatus,
 } from "@/stores/chatStore";
 import { useUiStore } from "@/stores/uiStore";
@@ -64,6 +65,7 @@ import {
 import { useChatActions } from "@/hooks/useChatActions";
 import { useChatEvents } from "@/hooks/useChatEvents";
 import { useChatRecovery } from "@/hooks/useChatRecovery";
+import { useQueuedMessagesHydration } from "@/hooks/useQueuedMessagesHydration";
 // useAgentEvents is already called inside useChat — no direct import needed
 import {
   useAskUserQuestion,
@@ -153,6 +155,8 @@ interface IntegratedChatPanelProps {
   conversationIdOverride?: string | undefined;
   /** Override task selection so host surfaces can ignore the global task detail state. */
   selectedTaskIdOverride?: string | null | undefined;
+  /** Force task chat runtime mode when selected task status alone is not deterministic. */
+  taskRuntimeContextTypeOverride?: "task_execution" | "review" | "merge" | undefined;
   /** Force a specific store key for externally-owned queue/running state. */
   storeContextKeyOverride?: string | undefined;
   /** Override the backend process/queue context id used for recovery, stop, and queued-message edits. */
@@ -163,6 +167,7 @@ interface IntegratedChatPanelProps {
     providerHarness?: string | null;
     modelId?: string | null;
     logicalEffort?: string | null;
+    codexFastMode?: boolean | null;
   };
   /** Optional host-owned child session navigation. Falls back to transcript modal. */
   onChildSessionNavigate?: (sessionId: string) => void | Promise<void>;
@@ -170,6 +175,7 @@ interface IntegratedChatPanelProps {
   onUserMessageSent?: (payload: {
     content: string;
     result: SendAgentMessageResult;
+    composerIntegrationReferences?: ComposerIntegrationReference[];
   }) => void | Promise<void>;
   onQuestionAnswered?: (
     question: AskUserQuestionPayload,
@@ -206,6 +212,8 @@ export interface IntegratedChatComposerRenderProps {
   effectiveModel?: { id: string; label: string } | undefined;
   /** Provider harness label (e.g. "claude", "codex") for this chat context. */
   providerHarness?: string | null | undefined;
+  /** Notify the transcript that composer chrome is resizing outside ResizeObserver timing. */
+  onLayoutChange: () => void;
 }
 
 export function IntegratedChatPanel({
@@ -228,6 +236,7 @@ export function IntegratedChatPanel({
   toolbarBackAction,
   conversationIdOverride,
   selectedTaskIdOverride,
+  taskRuntimeContextTypeOverride,
   storeContextKeyOverride,
   agentProcessContextIdOverride,
   sendOptions,
@@ -284,27 +293,39 @@ export function IntegratedChatPanel({
   const reviewAgentRunning = useChatStore(selectIsAgentRunning(reviewKey));
   const mergeKey = selectedTaskId ? buildStoreKey("merge", selectedTaskId) : "";
   const mergeAgentRunning = useChatStore(selectIsAgentRunning(mergeKey));
+  const forcedTaskRuntimeContext = selectedTaskId
+    ? taskRuntimeContextTypeOverride
+    : undefined;
 
   // Execution states: worker agent is running (only when NOT in ideation mode)
   // Agent-status override is gated on !taskHistoryState: in history mode, no agent
   // is running so the override is always false, but the explicit guard prevents
   // stale agentStatus entries from activating mode flags for historical contexts.
   const isExecutionMode = !ideationSessionId && !!selectedTaskId && (
-    (effectiveStatus ? (EXECUTION_STATUSES as readonly string[]).includes(effectiveStatus) : false)
-    || (!taskHistoryState && executionAgentRunning)
+    forcedTaskRuntimeContext === "task_execution" ||
+    (!forcedTaskRuntimeContext && (
+      (effectiveStatus ? (EXECUTION_STATUSES as readonly string[]).includes(effectiveStatus) : false)
+      || (!taskHistoryState && executionAgentRunning)
+    ))
   );
 
   // Review states: reviewer agent conversation (only when NOT in ideation mode)
   // Include 'approved' so historical view loads the reviewer's conversation
   const isReviewMode = !ideationSessionId && !!selectedTaskId && (
-    (effectiveStatus ? ((ALL_REVIEW_STATUSES as readonly string[]).includes(effectiveStatus) || effectiveStatus === "approved") : false)
-    || (!taskHistoryState && reviewAgentRunning)
+    forcedTaskRuntimeContext === "review" ||
+    (!forcedTaskRuntimeContext && (
+      (effectiveStatus ? ((ALL_REVIEW_STATUSES as readonly string[]).includes(effectiveStatus) || effectiveStatus === "approved") : false)
+      || (!taskHistoryState && reviewAgentRunning)
+    ))
   );
 
   // Merge states: merger agent conversation (only when NOT in ideation mode)
   const isMergeMode = !ideationSessionId && !!selectedTaskId && (
-    (effectiveStatus ? (MERGE_STATUSES as readonly string[]).includes(effectiveStatus) : false)
-    || (!taskHistoryState && mergeAgentRunning)
+    forcedTaskRuntimeContext === "merge" ||
+    (!forcedTaskRuntimeContext && (
+      (effectiveStatus ? (MERGE_STATUSES as readonly string[]).includes(effectiveStatus) : false)
+      || (!taskHistoryState && mergeAgentRunning)
+    ))
   );
 
   // Use extracted context management hook
@@ -339,6 +360,12 @@ export function IntegratedChatPanel({
     isVisible,
   });
   const agentProcessContextId = agentProcessContextIdOverride ?? currentContextId;
+  useQueuedMessagesHydration({
+    contextType: currentContextType,
+    contextId: agentProcessContextId,
+    storeContextKey,
+    enabled: !isHistoryMode,
+  });
   const {
     ideationTeamModeAvailable,
     executionTeamModeAvailable,
@@ -691,7 +718,7 @@ export function IntegratedChatPanel({
   });
 
   // Recovery and polling effects (extracted to hook)
-  useChatRecovery({
+  const { isStreamingHydrated } = useChatRecovery({
     activeConversationId,
     storeContextKey,
     currentContextType,
@@ -726,29 +753,33 @@ export function IntegratedChatPanel({
   );
 
   const virtuosoRef = useRef<VirtuosoHandle>(null);
-  const inputContainerRef = useRef<HTMLDivElement | null>(null);
-  const inputContainerHeightRef = useRef<number | null>(null);
-  const [inputLayoutVersion, setInputLayoutVersion] = useState(0);
+  const belowTranscriptChromeRef = useRef<HTMLDivElement | null>(null);
+  const belowTranscriptChromeHeightRef = useRef<number | null>(null);
+  const [transcriptLayoutVersion, setTranscriptLayoutVersion] = useState(0);
+
+  const updateBelowTranscriptChromeHeight = useCallback((height: number, { force = false } = {}) => {
+    const nextHeight = Math.round(height);
+    if (!force && belowTranscriptChromeHeightRef.current === nextHeight) {
+      return;
+    }
+    belowTranscriptChromeHeightRef.current = nextHeight;
+    setTranscriptLayoutVersion((version) => version + 1);
+  }, []);
+
+  const notifyInputLayoutChanged = useCallback(() => {
+    setTranscriptLayoutVersion((version) => version + 1);
+  }, []);
 
   useLayoutEffect(() => {
-    const container = inputContainerRef.current;
+    const container = belowTranscriptChromeRef.current;
     if (!container || typeof ResizeObserver === "undefined") {
       return undefined;
     }
 
-    const updateInputHeight = (height: number) => {
-      const nextHeight = Math.round(height);
-      if (inputContainerHeightRef.current === nextHeight) {
-        return;
-      }
-      inputContainerHeightRef.current = nextHeight;
-      setInputLayoutVersion((version) => version + 1);
-    };
-
-    updateInputHeight(container.getBoundingClientRect().height);
+    updateBelowTranscriptChromeHeight(container.getBoundingClientRect().height);
 
     const observer = new ResizeObserver((entries) => {
-      updateInputHeight(
+      updateBelowTranscriptChromeHeight(
         entries[0]?.contentRect.height ?? container.getBoundingClientRect().height,
       );
     });
@@ -757,9 +788,18 @@ export function IntegratedChatPanel({
     return () => {
       observer.disconnect();
     };
-  }, []);
+  }, [updateBelowTranscriptChromeHeight]);
 
-  // File attachments - use activeConversationId for attachment association
+  // Effective conversation ID: teammate's when on teammate tab, lead's otherwise
+  const effectiveConversationId = isTeammateTab ? teammateConversationId : activeConversationId;
+  const composerDraftKey = effectiveConversationId
+    ? `conversation:${effectiveConversationId}`
+    : null;
+  const composerDraft = useChatStore(selectComposerDraft(composerDraftKey));
+  const setComposerDraftContent = useChatStore((s) => s.setComposerDraftContent);
+  const clearComposerDraft = useChatStore((s) => s.clearComposerDraft);
+
+  // File attachments - use effectiveConversationId for attachment association
   // Only enable attachments when there's an active conversation (not in history mode)
   const {
     attachments,
@@ -767,10 +807,9 @@ export function IntegratedChatPanel({
     removeAttachment,
     clearAttachments,
     uploading,
-  } = useChatAttachments(activeConversationId ?? "");
-
-  // Effective conversation ID: teammate's when on teammate tab, lead's otherwise
-  const effectiveConversationId = isTeammateTab ? teammateConversationId : activeConversationId;
+  } = useChatAttachments(effectiveConversationId ?? "", {
+    draftKey: composerDraftKey,
+  });
   const activeConversationMeta = useMemo(() => {
     const queriedConversation = isTeammateTab
       ? currentTeammateConversationData?.conversation
@@ -884,10 +923,20 @@ export function IntegratedChatPanel({
       showTeamUi ? sendTarget : undefined,
       options
     );
-    if (attachmentIds.length > 0) {
+    if (composerDraftKey) {
+      clearComposerDraft(composerDraftKey);
+    } else if (attachmentIds.length > 0) {
       clearAttachments();
     }
-  }, [attachments, handleSendBase, clearAttachments, showTeamUi, sendTarget]);
+  }, [
+    attachments,
+    clearAttachments,
+    clearComposerDraft,
+    composerDraftKey,
+    handleSendBase,
+    showTeamUi,
+    sendTarget,
+  ]);
 
   // Wrapper for handleEditLastQueued that provides the queued messages
   const handleEditLastQueuedWrapper = () => {
@@ -1078,7 +1127,7 @@ export function IntegratedChatPanel({
     (streamingContentBlocks?.length ?? 0) > 0 ||
     streamingTasks.size > 0;
   const shouldUsePersistedStreamingTimelineItems =
-    hasPersistedStreamingTimelineItems && !hasClientLiveStreamingState;
+    hasPersistedStreamingTimelineItems && (!hasClientLiveStreamingState || !isStreamingHydrated);
   const statsFallbackMessages = useMemo(
     () =>
       effectiveConversationId
@@ -1324,10 +1373,15 @@ export function IntegratedChatPanel({
                   ? teammateConversationHistory.fetchOlderMessages
                   : primaryConversationHistory.fetchOlderMessages
               }
-              externalLayoutVersion={inputLayoutVersion}
+              externalLayoutVersion={transcriptLayoutVersion}
             />
           )}
 
+          <div
+            ref={belowTranscriptChromeRef}
+            data-testid="chat-below-transcript-chrome"
+            className="shrink-0"
+          >
           {/* StreamingToolIndicator — outside scroll container so it's always visible.
               Filters out Task calls (shown as TaskSubagentCard), diff calls (shown inline),
               and any tool calls already rendered inline via streamingContentBlocks to avoid duplication. */}
@@ -1383,8 +1437,6 @@ export function IntegratedChatPanel({
                 }
               }}
             />
-          </ChildSessionNavigationContext.Provider>
-
           {/* Previous Run Banner - shown when viewing stale agent conversation */}
           {isAgentContext && !isHistoryMode && agentStatus === "idle" && agentRunQuery.data?.status !== "running" && !isSending && sortedMessages.length > 0 && !isRecentlyActive && (
             <div className="px-3">
@@ -1414,7 +1466,6 @@ export function IntegratedChatPanel({
              chrome rhythm. Previous bg-base@50 collapsed on HC and shaded
              darker than body on Dark, producing a three-tier sandwich. */}
           <div
-            ref={inputContainerRef}
             data-testid="chat-input-container"
             className={inputContainerClassName ?? "shrink-0"}
             style={inputContainerClassName ? undefined : {
@@ -1468,7 +1519,7 @@ export function IntegratedChatPanel({
                     isReadOnly: isHistoryMode,
                     placeholder: getContextConfig(currentContextType).placeholder,
                     autoFocus: autoFocusInput,
-                    enableAttachments: !!activeConversationId && !isHistoryMode,
+                    enableAttachments: !!effectiveConversationId && !isHistoryMode,
                     attachments,
                     onFilesSelected: uploadFiles,
                     onRemoveAttachment: removeAttachment,
@@ -1478,6 +1529,7 @@ export function IntegratedChatPanel({
                       activeConversationMeta?.providerHarness ??
                       fallbackProviderHarness ??
                       null,
+                    onLayoutChange: notifyInputLayoutChanged,
                     ...(activeQuestion
                       ? {
                           value: questionInputValue,
@@ -1488,7 +1540,13 @@ export function IntegratedChatPanel({
                             onMatchedOptions: handleMatchedOptions,
                           },
                         }
-                      : {}),
+                      : composerDraftKey
+                        ? {
+                            value: composerDraft?.content ?? "",
+                            onChange: (value: string) =>
+                              setComposerDraftContent(composerDraftKey, value),
+                          }
+                        : {})
                   })
                 ) : (
                   <ChatInput
@@ -1509,9 +1567,15 @@ export function IntegratedChatPanel({
                         multiSelect: activeQuestion.multiSelect,
                         onMatchedOptions: handleMatchedOptions,
                       },
-                    } : {})}
+                    } : composerDraftKey
+                      ? {
+                          value: composerDraft?.content ?? "",
+                          onChange: (value: string) =>
+                            setComposerDraftContent(composerDraftKey, value),
+                        }
+                      : {})}
                     autoFocus={autoFocusInput}
-                    enableAttachments={!!activeConversationId && !isHistoryMode}
+                    enableAttachments={!!effectiveConversationId && !isHistoryMode}
                     attachments={attachments}
                     onFilesSelected={uploadFiles}
                     onRemoveAttachment={removeAttachment}
@@ -1520,6 +1584,8 @@ export function IntegratedChatPanel({
               </div>
             </div>
           </div>
+          </div>
+          </ChildSessionNavigationContext.Provider>
         </div>
       </div>
     </>

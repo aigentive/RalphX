@@ -168,12 +168,13 @@ impl WorkflowRepository for SqliteWorkflowRepository {
 }
 
 impl SqliteWorkflowRepository {
-    /// Seeds built-in workflows (default RalphX and Jira-compatible) if they don't exist.
+    /// Seeds built-in workflows if they don't exist.
     /// Returns the number of workflows seeded.
     pub async fn seed_builtin_workflows(&self) -> AppResult<usize> {
         let builtin_workflows = vec![
             WorkflowSchema::default_ralphx(),
             WorkflowSchema::jira_compatible(),
+            WorkflowSchema::linear_compatible(),
         ];
         self.db
             .run(move |conn| {

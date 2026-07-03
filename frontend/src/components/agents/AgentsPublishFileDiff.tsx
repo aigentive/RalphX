@@ -2,7 +2,7 @@
  * AgentsPublishFileDiff
  *
  * Per-file collapsible card in the inline diff view.
- * Parent manages normal diff fetching via `diff`; large explicit diffs use paged row fetching.
+ * Parent manages fallback diff fetching via `diff`; page-capable diffs fetch rows lazily.
  *
  * Performance contract (frontend-interaction-performance.md):
  * - Header (file path, status badge, +/−, buttons) paints synchronously.
@@ -14,23 +14,42 @@
  */
 
 import { useEffect, useRef } from "react";
-import { Copy, ChevronRight, Maximize2, RefreshCw } from "lucide-react";
+import { Code2, Copy, ChevronRight, Maximize2, RefreshCw } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { ConflictDiffViewer } from "@/components/diff/ConflictDiffViewer";
 import { PagedDiffView } from "@/components/diff/PagedDiffView";
 import { SimpleDiffView } from "@/components/diff/SimpleDiffView";
+import {
+  renderAnnotationRows,
+  renderHunkAnnotationRows,
+  renderHunkHeader,
+} from "@/components/diff/diffRenderHelpers";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Skeleton } from "@/components/ui/skeleton";
-import type { FileChange, FileDiff, DiffRefKind, PrDiffAnnotation } from "@/api/diff";
+import type {
+  ConflictDiff,
+  FileChange,
+  FileDiff,
+  FileDiffPage,
+  DiffRefKind,
+  PrDiffAnnotation,
+  WorkspaceReviewHunkAnnotation,
+} from "@/api/diff";
 import {
-  isLargeInlineDiff,
+  canUsePagedInlineDiff,
   requiresExplicitDiffHydration,
 } from "./inlineDiffGuards";
 
 export type DiffState = FileDiff | "loading" | "error" | undefined;
+export type ConflictDiffState = ConflictDiff | "loading" | "error" | undefined;
+export type DiffPageSummary = Pick<FileDiffPage, "totalRows" | "isBinary">;
+export type FileDiffContentMode = "full" | "review-only";
 
 export interface AgentsPublishFileDiffProps {
   file: FileChange;
   diff: DiffState;
+  conflictDiff?: ConflictDiffState;
+  isConflictMode?: boolean;
   isExpanded: boolean;
   onToggle: () => void;
   onCopyPath: (path: string) => void;
@@ -40,18 +59,58 @@ export interface AgentsPublishFileDiffProps {
   conversationId?: string | undefined;
   /** Which diff reference to use for range fetches. */
   refKind?: DiffRefKind | undefined;
-  /** Which diff reference to use for paged large-file fetching. */
+  /** Which diff reference to use for paged row fetching. */
   diffPageRefKind?: DiffRefKind | undefined;
+  /** Optional remount key for paged rows when same-ref content changes. */
+  diffPageReloadKey?: string | undefined;
+  /** Outer inline diff scroller used by row-virtualized paged diffs. */
+  inlineDiffScrollParent?: HTMLElement | null | undefined;
+  /** Lightweight page metadata used to reserve stable inline row height. */
+  diffPageSummary?: DiffPageSummary | undefined;
   /** Whether this file is in the viewport (±200px) — controls body hydration. */
   shouldHydrate: boolean;
   /** GitHub PR review/check annotations for this file. */
   annotations?: PrDiffAnnotation[] | undefined;
+  /** Workspace Review hunk notes for this file/ref. */
+  hunkAnnotations?: WorkspaceReviewHunkAnnotation[] | undefined;
   /** Whether the user has clicked "Show anyway" for a generated file. */
   isShowAnywayOverridden: boolean;
   /** Called when the user clicks "Show anyway" on a generated-file placeholder. */
   onShowAnyway: () => void;
   /** Focus the path control after an external jump request opens this file. */
   isFocusTarget?: boolean;
+  /** Display full code or only hunk headers and review annotations. */
+  contentMode?: FileDiffContentMode | undefined;
+  /** Called when review-only mode should hydrate/show this file's code. */
+  onLoadCode?: (() => void) | undefined;
+}
+
+function groupHunkAnnotations(
+  annotations: WorkspaceReviewHunkAnnotation[],
+): Array<{ key: string; header: string; annotations: WorkspaceReviewHunkAnnotation[] }> {
+  const groups = new Map<
+    string,
+    { header: string; annotations: WorkspaceReviewHunkAnnotation[] }
+  >();
+  for (const annotation of annotations) {
+    const key = [
+      annotation.hunkHeader,
+      annotation.oldStart,
+      annotation.oldLines,
+      annotation.newStart,
+      annotation.newLines,
+    ].join("\u0000");
+    const existing = groups.get(key);
+    if (existing) {
+      existing.annotations.push(annotation);
+    } else {
+      groups.set(key, {
+        header: annotation.hunkHeader,
+        annotations: [annotation],
+      });
+    }
+  }
+  return [...groups.entries()].map(([key, value]) => ({ key, ...value }));
 }
 
 function statusLetter(status: FileChange["status"]): string {
@@ -79,6 +138,8 @@ function statusColor(status: FileChange["status"]): string {
 export function AgentsPublishFileDiff({
   file,
   diff,
+  conflictDiff,
+  isConflictMode = false,
   isExpanded,
   onToggle,
   onCopyPath,
@@ -87,26 +148,48 @@ export function AgentsPublishFileDiff({
   conversationId,
   refKind,
   diffPageRefKind,
+  diffPageReloadKey,
+  inlineDiffScrollParent,
+  diffPageSummary,
   shouldHydrate,
   annotations = [],
+  hunkAnnotations = [],
   isShowAnywayOverridden,
   onShowAnyway,
   isFocusTarget = false,
+  contentMode = "full",
+  onLoadCode,
 }: AgentsPublishFileDiffProps) {
   const diffData = diff !== "loading" && diff !== "error" ? diff : undefined;
+  const conflictDiffData =
+    conflictDiff !== "loading" && conflictDiff !== "error" ? conflictDiff : undefined;
   const showExplicitPlaceholder =
-    requiresExplicitDiffHydration(file) && !isShowAnywayOverridden;
-  const usePagedDiff =
-    isLargeInlineDiff(file) &&
-    conversationId !== undefined &&
-    diffPageRefKind !== undefined;
+    !isConflictMode && requiresExplicitDiffHydration(file) && !isShowAnywayOverridden;
+  const usePagedDiff = canUsePagedInlineDiff({
+    file,
+    isConflictMode,
+    conversationId,
+    diffPageRefKind,
+    isShowAnywayOverridden,
+  });
   const pathButtonRef = useRef<HTMLButtonElement | null>(null);
+  const showReviewOnlyBody = contentMode === "review-only" && !isConflictMode;
+  const groupedHunkAnnotations = groupHunkAnnotations(hunkAnnotations);
+  const hasReviewAnnotations =
+    groupedHunkAnnotations.length > 0 || annotations.length > 0;
 
   useEffect(() => {
     if (isFocusTarget) {
       pathButtonRef.current?.focus({ preventScroll: true });
     }
   }, [isFocusTarget]);
+
+  const handleLoadCode = () => {
+    if (showExplicitPlaceholder) {
+      onShowAnyway();
+    }
+    onLoadCode?.();
+  };
 
   return (
     <div
@@ -223,6 +306,18 @@ export function AgentsPublishFileDiff({
             {annotations.length}
           </span>
         )}
+        {hunkAnnotations.length > 0 && (
+          <span
+            data-testid="file-diff-hunk-annotation-count"
+            className="shrink-0 rounded border px-1.5 py-0.5 text-[0.6875rem] font-medium"
+            style={{
+              borderColor: "var(--status-info-border)",
+              color: "var(--status-info)",
+            }}
+          >
+            {hunkAnnotations.length} review
+          </span>
+        )}
 
         {/* Open fullscreen */}
         <Tooltip>
@@ -250,7 +345,120 @@ export function AgentsPublishFileDiff({
           className="flex min-h-0 flex-col"
           style={{ minHeight: "60px" }}
         >
-          {showExplicitPlaceholder ? (
+          {isConflictMode ? (
+            conflictDiff === "loading" ? (
+              <div className="px-3 py-3">
+                <Skeleton className="h-24 w-full" />
+              </div>
+            ) : conflictDiff === "error" ? (
+              <div
+                data-testid="file-diff-error"
+                className="flex items-center gap-2 px-3 py-4 text-xs"
+                style={{ color: "var(--status-error)" }}
+              >
+                <span>Failed to load conflict diff</span>
+                {onRetry && (
+                  <button
+                    type="button"
+                    onClick={onRetry}
+                    className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs"
+                    style={{
+                      backgroundColor: "var(--status-error-muted)",
+                      color: "var(--status-error)",
+                    }}
+                  >
+                    <RefreshCw className="h-3 w-3" aria-hidden="true" />
+                    Retry
+                  </button>
+                )}
+              </div>
+            ) : conflictDiffData ? (
+              <ConflictDiffViewer conflictDiff={conflictDiffData} />
+            ) : shouldHydrate ? (
+              <div className="px-3 py-3">
+                <Skeleton className="h-24 w-full" />
+              </div>
+            ) : null
+          ) : showReviewOnlyBody ? (
+            <div
+              data-testid="file-diff-review-only"
+              className="flex min-h-[60px] flex-col"
+              style={{ backgroundColor: "var(--bg-base)" }}
+            >
+              {hasReviewAnnotations ? (
+                <>
+                  {groupedHunkAnnotations.map((group) => (
+                    <div
+                      key={group.key}
+                      data-testid="file-diff-review-only-hunk"
+                      style={{
+                        borderBottomColor: "var(--overlay-faint)",
+                        borderBottomStyle: "solid",
+                        borderBottomWidth: "1px",
+                      }}
+                    >
+                      {renderHunkHeader(group.header)}
+                      {renderHunkAnnotationRows(group.annotations, true, "standard")}
+                    </div>
+                  ))}
+                  {annotations.length > 0 && (
+                    <div
+                      data-testid="file-diff-review-only-pr-annotations"
+                      style={{
+                        borderBottomColor: "var(--overlay-faint)",
+                        borderBottomStyle: "solid",
+                        borderBottomWidth: "1px",
+                      }}
+                    >
+                      <div
+                        className="px-3 py-1 text-[0.6875rem] font-semibold uppercase"
+                        style={{
+                          backgroundColor: "var(--bg-subtle)",
+                          color: "var(--text-muted)",
+                        }}
+                      >
+                        GitHub annotations
+                      </div>
+                      {renderAnnotationRows(annotations, true, "standard")}
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div
+                  data-testid="file-diff-review-only-empty"
+                  className="px-3 py-4 text-xs"
+                  style={{ color: "var(--text-muted)" }}
+                >
+                  No review annotations for this file.
+                </div>
+              )}
+              {onLoadCode !== undefined && (
+                <div
+                  className="flex items-center justify-between gap-2 px-3 py-2"
+                  style={{
+                    borderTopColor: "var(--overlay-faint)",
+                    borderTopStyle: "solid",
+                    borderTopWidth: "1px",
+                  }}
+                >
+                  <span className="text-[0.6875rem]" style={{ color: "var(--text-muted)" }}>
+                    Code hidden in Reviews mode
+                  </span>
+                  <button
+                    type="button"
+                    data-testid="file-diff-load-code"
+                    aria-label={`Load code diff for ${file.path}`}
+                    onClick={handleLoadCode}
+                    className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs transition-colors hover:bg-[var(--bg-hover)]"
+                    style={{ color: "var(--text-secondary)" }}
+                  >
+                    <Code2 className="h-3 w-3" aria-hidden="true" />
+                    {showExplicitPlaceholder ? "Load generated code" : "Load code"}
+                  </button>
+                </div>
+              )}
+            </div>
+          ) : showExplicitPlaceholder ? (
             /* Generated-file placeholder — shown until user clicks "Show anyway" */
             <div
               data-testid="file-diff-generated-placeholder"
@@ -318,11 +526,17 @@ export function AgentsPublishFileDiff({
 
               {usePagedDiff && (
                 <PagedDiffView
+                  key={diffPageReloadKey ?? "stable"}
                   conversationId={conversationId!}
                   filePath={file.path}
                   refKind={diffPageRefKind!}
                   annotations={annotations}
+                  hunkAnnotations={hunkAnnotations}
                   scrollContainer={false}
+                  inlineScrollParent={inlineDiffScrollParent}
+                  defaultWrapLines={false}
+                  initialTotalRows={diffPageSummary?.totalRows}
+                  initialIsBinary={diffPageSummary?.isBinary}
                 />
               )}
 
@@ -337,7 +551,9 @@ export function AgentsPublishFileDiff({
                   filePath={file.path}
                   refKind={refKind}
                   scrollContainer={false}
+                  stickyGutter={false}
                   annotations={annotations}
+                  hunkAnnotations={hunkAnnotations}
                 />
               )}
 

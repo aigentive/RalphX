@@ -1,12 +1,17 @@
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { chatApi, type ConversationStatsResponse } from "@/api/chat";
+import { useConversationTicket } from "@/hooks/useTicketing";
 import { useChatStore } from "@/stores/chatStore";
 import {
   resetSkillsEnabledForTests,
   setSkillsEnabled,
 } from "@/stores/skillsSettingsStore";
+import { useProjectStore } from "@/stores/projectStore";
+import { useTicketingStore } from "@/stores/ticketingStore";
+import { useUiStore } from "@/stores/uiStore";
 import { toast } from "sonner";
 import { AgentsChatFocusBar, AgentsChatHeader } from "./AgentsChatHeader";
 import { AgentsChatHeaderController } from "./AgentsChatHeaderController";
@@ -20,6 +25,10 @@ vi.mock("sonner", () => ({
   toast: {
     error: vi.fn(),
   },
+}));
+
+vi.mock("@/hooks/useTicketing", () => ({
+  useConversationTicket: vi.fn(),
 }));
 
 function conversationStats(
@@ -77,6 +86,12 @@ function conversationStats(
 describe("AgentsChatHeader", () => {
   beforeEach(() => {
     resetSkillsEnabledForTests(true);
+    vi.mocked(useConversationTicket).mockReturnValue({
+      data: null,
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof useConversationTicket>);
   });
 
   afterEach(() => {
@@ -87,6 +102,194 @@ describe("AgentsChatHeader", () => {
     }
     resetSkillsEnabledForTests(true);
     useChatStore.setState({ agentStatus: {}, isSending: {} });
+    useTicketingStore.getState().reset();
+    useProjectStore.setState({ activeProjectId: null });
+    useUiStore.setState({ currentView: "agents" });
+  });
+
+  it("opens the linked ticket in the artifact sidebar from the header ticket button", () => {
+    vi.mocked(useConversationTicket).mockReturnValue({
+      data: {
+        ticketRef: { provider: "linear", id: "LIN-1", key: "LIN-1" },
+        projectId: "project-2",
+        title: "Fix Linear tickets",
+        url: null,
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof useConversationTicket>);
+
+    const onSelectArtifact = vi.fn();
+    renderWithProviders(
+      <AgentsChatHeader
+        conversation={conversation({ id: "conversation-linked", projectId: "project-2" })}
+        workspace={null}
+        artifactOpen={false}
+        activeArtifactTab="plan"
+        onRenameConversation={vi.fn().mockResolvedValue(undefined)}
+        onToggleArtifacts={vi.fn()}
+        onSelectArtifact={onSelectArtifact}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Open ticket LIN-1" }));
+
+    // Opens the Linear issue tab in the artifact sidebar instead of navigating away.
+    expect(onSelectArtifact).toHaveBeenCalledWith("linear");
+    expect(useUiStore.getState().currentView).toBe("agents");
+  });
+
+  it("opens the linked jira ticket in the jira artifact tab", () => {
+    vi.mocked(useConversationTicket).mockReturnValue({
+      data: {
+        ticketRef: { provider: "jira", id: "10001", key: "RX-42" },
+        projectId: "project-2",
+        title: "Fix Jira tickets",
+        url: null,
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof useConversationTicket>);
+
+    const onSelectArtifact = vi.fn();
+    renderWithProviders(
+      <AgentsChatHeader
+        conversation={conversation({ id: "conversation-jira", projectId: "project-2" })}
+        workspace={null}
+        artifactOpen={false}
+        activeArtifactTab="plan"
+        onRenameConversation={vi.fn().mockResolvedValue(undefined)}
+        onToggleArtifacts={vi.fn()}
+        onSelectArtifact={onSelectArtifact}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Open ticket RX-42" }));
+
+    expect(onSelectArtifact).toHaveBeenCalledWith("jira");
+  });
+
+  it("does not render the linked ticket button when no ticket is linked", () => {
+    vi.mocked(useConversationTicket).mockReturnValue({
+      data: null,
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof useConversationTicket>);
+
+    renderWithProviders(
+      <AgentsChatHeader
+        conversation={conversation()}
+        workspace={null}
+        artifactOpen={false}
+        activeArtifactTab="plan"
+        onRenameConversation={vi.fn().mockResolvedValue(undefined)}
+        onToggleArtifacts={vi.fn()}
+        onSelectArtifact={vi.fn()}
+      />
+    );
+
+    expect(
+      screen.queryByTestId("agents-linked-ticket-button"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("falls back to the ticket key in the aria-label when title is missing", () => {
+    vi.mocked(useConversationTicket).mockReturnValue({
+      data: {
+        ticketRef: { provider: "linear", id: "lin-uuid", key: "ENG-7" },
+        projectId: "project-1",
+        title: null,
+        url: null,
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof useConversationTicket>);
+
+    renderWithProviders(
+      <AgentsChatHeader
+        conversation={conversation()}
+        workspace={null}
+        artifactOpen={false}
+        activeArtifactTab="plan"
+        onRenameConversation={vi.fn().mockResolvedValue(undefined)}
+        onToggleArtifacts={vi.fn()}
+        onSelectArtifact={vi.fn()}
+      />
+    );
+
+    expect(
+      screen.getByRole("button", { name: "Open ticket ENG-7" }),
+    ).toBeInTheDocument();
+  });
+
+  it("falls back to the ticket id in the aria-label when title and key are missing", () => {
+    vi.mocked(useConversationTicket).mockReturnValue({
+      data: {
+        ticketRef: { provider: "linear", id: "lin-uuid-only" },
+        projectId: "project-1",
+        title: null,
+        url: null,
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof useConversationTicket>);
+
+    renderWithProviders(
+      <AgentsChatHeader
+        conversation={conversation()}
+        workspace={null}
+        artifactOpen={false}
+        activeArtifactTab="plan"
+        onRenameConversation={vi.fn().mockResolvedValue(undefined)}
+        onToggleArtifacts={vi.fn()}
+        onSelectArtifact={vi.fn()}
+      />
+    );
+
+    expect(
+      screen.getByRole("button", { name: "Open ticket lin-uuid-only" }),
+    ).toBeInTheDocument();
+  });
+
+  it("enables the linked ticket query only when a conversation exists", () => {
+    renderWithProviders(
+      <AgentsChatHeader
+        conversation={conversation({ id: "conversation-enabled" })}
+        workspace={null}
+        artifactOpen={false}
+        activeArtifactTab="plan"
+        onRenameConversation={vi.fn().mockResolvedValue(undefined)}
+        onToggleArtifacts={vi.fn()}
+        onSelectArtifact={vi.fn()}
+      />
+    );
+
+    expect(useConversationTicket).toHaveBeenCalledWith("conversation-enabled", {
+      enabled: true,
+    });
+  });
+
+  it("disables the linked ticket query when there is no conversation", () => {
+    renderWithProviders(
+      <AgentsChatHeader
+        conversation={null}
+        workspace={null}
+        artifactOpen={false}
+        activeArtifactTab="plan"
+        onRenameConversation={vi.fn().mockResolvedValue(undefined)}
+        onToggleArtifacts={vi.fn()}
+        onSelectArtifact={vi.fn()}
+      />
+    );
+
+    expect(useConversationTicket).toHaveBeenCalledWith(undefined, {
+      enabled: false,
+    });
   });
 
   it("opts the title button out of the high-contrast default button border", () => {
@@ -273,6 +476,34 @@ describe("AgentsChatHeader", () => {
     expect(screen.queryByTestId("agents-chat-focus-return")).not.toBeInTheDocument();
   });
 
+  it("shows a back to workspace chat action for child chat focus", async () => {
+    const user = userEvent.setup();
+    const onBackToWorkspaceChat = vi.fn();
+
+    renderWithProviders(
+      <AgentsChatHeader
+        conversation={conversation()}
+        workspace={null}
+        chatFocus={{ type: "workspace_review", conversationId: "review-child" }}
+        artifactOpen={false}
+        activeArtifactTab="review"
+        onRenameConversation={vi.fn().mockResolvedValue(undefined)}
+        onToggleArtifacts={vi.fn()}
+        onSelectArtifact={vi.fn()}
+        onBackToWorkspaceChat={onBackToWorkspaceChat}
+      />
+    );
+
+    const backButton = screen.getByRole("button", {
+      name: "Back to Workspace Chat",
+    });
+    expect(backButton).toBeInTheDocument();
+
+    await user.click(backButton);
+
+    expect(onBackToWorkspaceChat).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps verification focus out of the primary title row", () => {
     renderWithProviders(
       <AgentsChatHeader
@@ -451,6 +682,30 @@ describe("AgentsChatHeader", () => {
       background: "transparent",
     });
     expect(screen.getByTestId("chat-session-chips")).toBeInTheDocument();
+  });
+
+  it("renders a provided workspace control instead of the default status pill", () => {
+    renderWithProviders(
+      <AgentsChatHeader
+        conversation={conversation()}
+        workspace={conversationWorkspace({ mode: "edit" })}
+        artifactOpen={false}
+        activeArtifactTab="plan"
+        onRenameConversation={vi.fn().mockResolvedValue(undefined)}
+        onToggleArtifacts={vi.fn()}
+        onSelectArtifact={vi.fn()}
+        workspaceControl={
+          <div data-testid="agents-header-workspace-control">BASE: main</div>
+        }
+      />,
+    );
+
+    expect(screen.getByTestId("agents-chat-title-group")).toContainElement(
+      screen.getByTestId("agents-header-workspace-control"),
+    );
+    expect(
+      screen.queryByTestId("agents-workspace-status"),
+    ).not.toBeInTheDocument();
   });
 
   it("shows the workspace branch status inside the focus subheader", () => {
@@ -1065,6 +1320,38 @@ describe("AgentsChatHeader", () => {
     fireEvent.focus(toggle);
 
     expect(preloadTerminal).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps archived terminal action enabled without preloading terminal code", () => {
+    const toggleTerminal = vi.fn();
+    const preloadTerminal = vi.fn();
+    renderWithProviders(
+      <AgentsChatHeader
+        conversation={conversation()}
+        workspace={conversationWorkspace({ publicationPrStatus: "merged" })}
+        artifactOpen={false}
+        activeArtifactTab="plan"
+        terminalOpen={false}
+        terminalUnavailableReason={null}
+        terminalArchivedReason="Workspace archived after PR merge. Send a follow-up to continue in a fresh workspace."
+        onRenameConversation={vi.fn().mockResolvedValue(undefined)}
+        onToggleTerminal={toggleTerminal}
+        onPreloadTerminal={preloadTerminal}
+        onToggleArtifacts={vi.fn()}
+        onSelectArtifact={vi.fn()}
+      />
+    );
+
+    const toggle = screen.getByTestId("agents-terminal-toggle");
+    expect(toggle).not.toBeDisabled();
+    expect(toggle).toHaveAccessibleName("Show archived terminal");
+
+    fireEvent.pointerEnter(toggle);
+    fireEvent.focus(toggle);
+    fireEvent.click(toggle);
+
+    expect(preloadTerminal).not.toHaveBeenCalled();
+    expect(toggleTerminal).toHaveBeenCalledTimes(1);
   });
 
   it("disables the terminal header action for branchless conversations", () => {

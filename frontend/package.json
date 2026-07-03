@@ -1,7 +1,7 @@
 {
   "name": "ralphx",
   "private": true,
-  "version": "0.37.0",
+  "version": "0.55.0",
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
@@ -13,6 +13,7 @@
     "tauri": "cd .. && ./frontend/node_modules/.bin/tauri",
     "test": "vitest",
     "test:run": "vitest run",
+    "test:check-warnings": "./scripts/check-vitest-warnings.sh",
     "test:visual": "playwright test tests/visual --workers=1",
     "test:coverage": "vitest run --coverage --testTimeout=15000 --retry=1",
     "typecheck": "tsc --noEmit",
@@ -79,6 +80,7 @@
     "zustand": "^5.0.12"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.11.3",
     "@eslint/js": "^9.39.2",
     "@playwright/test": "^1.59.1",
     "@tailwindcss/postcss": "^4.2.4",

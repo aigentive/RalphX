@@ -48,9 +48,9 @@ use super::tool_result_preview::{
     live_tool_result_activity_metadata, tool_detail_ref,
 };
 use super::{
-    event_context, events, has_meaningful_output, AgentChunkPayload, AgentHookPayload,
-    AgentTaskCompletedPayload, AgentTaskStartedPayload, AgentToolCallPayload,
-    AgentToolCallPreviewFields,
+    event_context, events, has_meaningful_output, message_metadata_hidden_from_ui,
+    AgentChunkPayload, AgentHookPayload, AgentTaskCompletedPayload, AgentTaskStartedPayload,
+    AgentToolCallPayload, AgentToolCallPreviewFields,
 };
 use crate::utils::truncate_str;
 
@@ -372,17 +372,7 @@ pub(super) async fn persist_message_text_timeline_item(
     if message.content.is_empty() {
         return;
     }
-    if message
-        .metadata
-        .as_deref()
-        .and_then(|metadata| serde_json::from_str::<serde_json::Value>(metadata).ok())
-        .and_then(|metadata| {
-            metadata
-                .get("recovery_context")
-                .and_then(serde_json::Value::as_bool)
-        })
-        .unwrap_or(false)
-    {
+    if message_metadata_hidden_from_ui(message.metadata.as_deref()) {
         return;
     }
 
@@ -926,6 +916,9 @@ pub struct StreamOutcome {
     /// to re-increment it (process was idle between turns at exit time).
     /// Used by the caller to prevent double-decrement in on_exit.
     pub execution_slot_held: bool,
+    /// True when the stream observed the execution completion MCP tool before
+    /// the provider process exited.
+    pub completion_tool_called: bool,
     /// True when the process exited while idle between interactive turns.
     /// Suppresses queue processing and run_completed emission is forced.
     pub silent_interactive_exit: bool,
@@ -2951,6 +2944,7 @@ pub async fn process_stream_background<R: Runtime>(
         stderr_text: stderr_content,
         turns_finalized,
         execution_slot_held,
+        completion_tool_called: completion_signal_tracker.was_called(),
         silent_interactive_exit,
     };
 
@@ -3594,6 +3588,7 @@ async fn process_codex_stream_background<R: Runtime>(
         stderr_text: stderr_content.clone(),
         turns_finalized: 0,
         execution_slot_held: true,
+        completion_tool_called: completion_signal_tracker.was_called(),
         silent_interactive_exit: false,
     };
 

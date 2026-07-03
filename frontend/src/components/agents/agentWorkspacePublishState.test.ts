@@ -1,9 +1,15 @@
 import { describe, expect, it } from "vitest";
 
-import type { AgentConversationWorkspace } from "@/api/chat";
+import type {
+  AgentConversationWorkspace,
+  AgentConversationWorkspaceFreshness,
+} from "@/api/chat";
 import {
+  getAgentWorkspacePrConflictSummary,
   isAgentWorkspaceAutoMergeDeferred,
   isAgentWorkspaceAutoMergeRequestPending,
+  isAgentWorkspacePublishCurrent,
+  shouldAutoRefreshCleanAgentWorkspaceFromBase,
   shouldShowAgentWorkspacePublishSurface,
 } from "./agentWorkspacePublishState";
 
@@ -36,6 +42,30 @@ function workspace(
   };
 }
 
+function freshness(
+  overrides: Partial<AgentConversationWorkspaceFreshness> = {},
+): AgentConversationWorkspaceFreshness {
+  return {
+    conversationId: "conversation-1",
+    freshnessScope: "full",
+    baseRef: "release/1.2",
+    baseDisplayName: "release/1.2",
+    targetRef: "origin/release/1.2",
+    capturedBaseCommit: "old-base-sha",
+    targetBaseCommit: "new-base-sha",
+    isBaseAhead: true,
+    hasUncommittedChanges: false,
+    unpublishedCommitCount: 0,
+    remoteRefreshed: true,
+    worktreeStatusChecked: true,
+    baseStatus: "valid",
+    effectiveBaseRef: "release/1.2",
+    effectiveBaseDisplayName: "release/1.2",
+    baseBlockReason: null,
+    ...overrides,
+  };
+}
+
 const base = {
   autoMergeDesired: true,
   autoMergeCurrent: false as boolean | null,
@@ -43,6 +73,51 @@ const base = {
   publicationPushStatus: "pushed",
   terminalPublicationStatus: null as string | null,
 };
+
+describe("isAgentWorkspacePublishCurrent", () => {
+  const currentFreshness = () =>
+    freshness({
+      isBaseAhead: false,
+      hasUncommittedChanges: false,
+      unpublishedCommitCount: 0,
+    });
+
+  it("treats pushed published workspaces with no remaining changes as current", () => {
+    expect(
+      isAgentWorkspacePublishCurrent(
+        workspace({
+          publicationPrNumber: 78,
+          publicationPushStatus: "pushed",
+        }),
+        currentFreshness(),
+      ),
+    ).toBe(true);
+  });
+
+  it("treats refreshed published workspaces with no remaining changes as current", () => {
+    expect(
+      isAgentWorkspacePublishCurrent(
+        workspace({
+          publicationPrNumber: 78,
+          publicationPushStatus: "refreshed",
+        }),
+        currentFreshness(),
+      ),
+    ).toBe(true);
+  });
+
+  it("rejects pending publication statuses even when freshness is clean", () => {
+    expect(
+      isAgentWorkspacePublishCurrent(
+        workspace({
+          publicationPrNumber: 78,
+          publicationPushStatus: "checking",
+        }),
+        currentFreshness(),
+      ),
+    ).toBe(false);
+  });
+});
 
 describe("isAgentWorkspaceAutoMergeRequestPending", () => {
   it("returns true when supervision status is null (active publish in progress)", () => {
@@ -178,5 +253,108 @@ describe("shouldShowAgentWorkspacePublishSurface", () => {
         }),
       ),
     ).toBe(false);
+  });
+});
+
+describe("shouldAutoRefreshCleanAgentWorkspaceFromBase", () => {
+  it("allows clean edit workspaces behind their configured base", () => {
+    expect(
+      shouldAutoRefreshCleanAgentWorkspaceFromBase(
+        workspace({ baseRef: "release/1.2", baseDisplayName: "release/1.2" }),
+        freshness(),
+      ),
+    ).toBe(true);
+  });
+
+  it("rejects workspaces with local changes or publishable commits", () => {
+    expect(
+      shouldAutoRefreshCleanAgentWorkspaceFromBase(
+        workspace(),
+        freshness({ hasUncommittedChanges: true }),
+      ),
+    ).toBe(false);
+    expect(
+      shouldAutoRefreshCleanAgentWorkspaceFromBase(
+        workspace(),
+        freshness({ unpublishedCommitCount: 1 }),
+      ),
+    ).toBe(false);
+  });
+
+  it("requires a full remote-refreshed freshness check", () => {
+    expect(
+      shouldAutoRefreshCleanAgentWorkspaceFromBase(
+        workspace(),
+        freshness({ freshnessScope: "local" }),
+      ),
+    ).toBe(false);
+    expect(
+      shouldAutoRefreshCleanAgentWorkspaceFromBase(
+        workspace(),
+        freshness({ remoteRefreshed: false }),
+      ),
+    ).toBe(false);
+    expect(
+      shouldAutoRefreshCleanAgentWorkspaceFromBase(
+        workspace(),
+        freshness({ worktreeStatusChecked: false }),
+      ),
+    ).toBe(false);
+  });
+
+  it("rejects blocked, missing, and non-edit workspaces", () => {
+    expect(
+      shouldAutoRefreshCleanAgentWorkspaceFromBase(
+        workspace(),
+        freshness({ baseStatus: "blocked" }),
+      ),
+    ).toBe(false);
+    expect(
+      shouldAutoRefreshCleanAgentWorkspaceFromBase(
+        workspace({ status: "missing" }),
+        freshness(),
+      ),
+    ).toBe(false);
+    expect(
+      shouldAutoRefreshCleanAgentWorkspaceFromBase(
+        workspace({ mode: "ideation" }),
+        freshness(),
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("getAgentWorkspacePrConflictSummary", () => {
+  it("returns blocked merge-conflict summaries", () => {
+    expect(
+      getAgentWorkspacePrConflictSummary(
+        workspace({
+          prSupervisionStatus: "blocked",
+          prSupervisionSummary:
+            "PR #470 has merge conflicts. GitHub reports: PR is reported as conflicting.",
+        }),
+      ),
+    ).toBe(
+      "PR #470 has merge conflicts. GitHub reports: PR is reported as conflicting.",
+    );
+  });
+
+  it("ignores generic blocked supervision summaries", () => {
+    expect(
+      getAgentWorkspacePrConflictSummary(
+        workspace({
+          prSupervisionStatus: "blocked",
+          prSupervisionSummary: "Required checks are still pending.",
+        }),
+      ),
+    ).toBeNull();
+    expect(
+      getAgentWorkspacePrConflictSummary(
+        workspace({
+          prSupervisionStatus: "monitoring",
+          prSupervisionSummary: "PR #470 has merge conflicts.",
+        }),
+      ),
+    ).toBeNull();
   });
 });

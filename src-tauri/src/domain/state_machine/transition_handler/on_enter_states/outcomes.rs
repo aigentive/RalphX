@@ -193,7 +193,7 @@ impl<'a> TransitionHandler<'a> {
                             super::super::merge_helpers::PlanBranchPrSyncServices::from_task_services(
                                 &self.machine.context.services,
                             );
-                        super::super::merge_helpers::sync_plan_branch_pr_after_regular_task_merge(
+                        let _ = super::super::merge_helpers::sync_plan_branch_pr_after_regular_task_merge(
                             &task,
                             &project,
                             &pr_sync_services,

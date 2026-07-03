@@ -2,12 +2,55 @@ import { ExternalLink } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { withAlpha } from "@/lib/theme-colors";
-import type { DiffLine, PrDiffAnnotation } from "@/api/diff";
+import type {
+  DiffHunk,
+  DiffLine,
+  PrDiffAnnotation,
+  WorkspaceReviewHunkAnnotation,
+} from "@/api/diff";
 
 export type DiffRenderVariant = "standard" | "conflict";
 type Variant = DiffRenderVariant;
 type AnnotationSide = "old" | "new";
 export type AnnotationIndex = Map<string, PrDiffAnnotation[]>;
+export interface RenderDiffLineOptions {
+  stickyGutter?: boolean | undefined;
+}
+
+export type HunkAnnotationIndex = Map<string, WorkspaceReviewHunkAnnotation[]>;
+export interface DiffAnnotationLegendItem {
+  label: string;
+  levels: string;
+  color: string;
+  description: string;
+}
+
+export const DIFF_ANNOTATION_LEVEL_LEGEND: DiffAnnotationLegendItem[] = [
+  {
+    label: "Blocking",
+    levels: "failure, error, critical, high",
+    color: "var(--status-error)",
+    description: "Needs attention before this change should ship.",
+  },
+  {
+    label: "Warning",
+    levels: "medium, warning",
+    color: "var(--status-warning)",
+    description: "Worth reviewing, but not always a hard blocker.",
+  },
+  {
+    label: "Notice",
+    levels: "low, notice",
+    color: "var(--status-info)",
+    description: "Context or low-risk reviewer guidance.",
+  },
+  {
+    label: "Other",
+    levels: "unclassified",
+    color: "var(--accent-primary)",
+    description: "No recognized severity was provided.",
+  },
+];
 
 function getLineBackground(kind: DiffLine["kind"], variant: Variant): string {
   switch (kind) {
@@ -62,7 +105,7 @@ function annotationSide(annotation: PrDiffAnnotation): AnnotationSide {
   return side === "left" || side === "old" ? "old" : "new";
 }
 
-function annotationLevelColor(level: string): string {
+export function annotationLevelColor(level: string): string {
   switch (level.toLowerCase()) {
     case "failure":
     case "error":
@@ -80,7 +123,7 @@ function annotationLevelColor(level: string): string {
   }
 }
 
-function annotationSourceLabel(source: string): string {
+export function annotationSourceLabel(source: string): string {
   switch (source) {
     case "code_scanning":
       return "Code scanning";
@@ -128,7 +171,46 @@ export function annotationsForLine(
   return [...new Map(annotations.map((annotation) => [annotation.id, annotation])).values()];
 }
 
-function renderAnnotationRows(
+function hunkAnnotationKey(hunk: Pick<DiffHunk, "header" | "oldStart" | "oldLines" | "newStart" | "newLines">): string {
+  return [
+    hunk.header,
+    hunk.oldStart,
+    hunk.oldLines,
+    hunk.newStart,
+    hunk.newLines,
+  ].join("\u0000");
+}
+
+export function buildHunkAnnotationIndex(
+  annotations: WorkspaceReviewHunkAnnotation[]
+): HunkAnnotationIndex {
+  const index: HunkAnnotationIndex = new Map();
+  for (const annotation of annotations) {
+    const key = hunkAnnotationKey({
+      header: annotation.hunkHeader,
+      oldStart: annotation.oldStart,
+      oldLines: annotation.oldLines,
+      newStart: annotation.newStart,
+      newLines: annotation.newLines,
+    });
+    const existing = index.get(key);
+    if (existing) {
+      existing.push(annotation);
+    } else {
+      index.set(key, [annotation]);
+    }
+  }
+  return index;
+}
+
+export function hunkAnnotationsForHunk(
+  index: HunkAnnotationIndex,
+  hunk: Pick<DiffHunk, "header" | "oldStart" | "oldLines" | "newStart" | "newLines">
+): WorkspaceReviewHunkAnnotation[] {
+  return index.get(hunkAnnotationKey(hunk)) ?? [];
+}
+
+export function renderAnnotationRows(
   annotations: PrDiffAnnotation[],
   wrapLines: boolean,
   variant: Variant
@@ -220,13 +302,70 @@ function renderAnnotationRows(
   });
 }
 
+export function renderHunkAnnotationRows(
+  annotations: WorkspaceReviewHunkAnnotation[],
+  wrapLines: boolean,
+  variant: Variant
+) {
+  if (annotations.length === 0) return null;
+  return annotations.map((annotation) => {
+    const summary = annotation.title ?? annotation.message;
+    const detail =
+      annotation.title && annotation.message && annotation.title !== annotation.message
+        ? annotation.message
+        : null;
+    return (
+      <div
+        key={annotation.id}
+        className="flex"
+        data-testid="diff-hunk-annotation-row"
+        style={{ backgroundColor: variant === "conflict" ? "var(--status-info-muted)" : "var(--bg-subtle)" }}
+      >
+        <div className="w-12 shrink-0" style={{ backgroundColor: "var(--bg-surface)" }} />
+        <div className="w-12 shrink-0 border-r" style={{ backgroundColor: "var(--bg-surface)", borderColor: "var(--border-subtle)" }} />
+        <div className="w-6 shrink-0" style={{ backgroundColor: "var(--bg-surface)" }} />
+        <div
+          className={`flex-1 min-w-0 border-l-2 px-2 py-1 text-[0.6875rem] ${
+            wrapLines ? "whitespace-normal break-words" : "whitespace-nowrap"
+          }`}
+          style={{
+            borderColor: annotationLevelColor(annotation.level),
+            color: "var(--text-secondary)",
+          }}
+        >
+          <span
+            className="mr-1 rounded px-1 font-semibold uppercase"
+            style={{
+              backgroundColor: "var(--overlay-weak)",
+              color: annotationLevelColor(annotation.level),
+            }}
+          >
+            Workspace review
+          </span>
+          <span className="mr-1" style={{ color: "var(--text-muted)" }}>
+            {annotation.diffSource.replace(/_/g, " ")}
+          </span>
+          <span>{summary}</span>
+          {detail && (
+            <div className="mt-0.5" style={{ color: "var(--text-muted)" }}>
+              {detail}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  });
+}
+
 export function renderDiffLine(
   line: DiffLine,
   index: number,
   wrapLines: boolean,
   variant: Variant,
-  annotations: PrDiffAnnotation[] = []
+  annotations: PrDiffAnnotation[] = [],
+  options: RenderDiffLineOptions = {},
 ) {
+  const stickyGutter = options.stickyGutter ?? true;
   return (
     <div key={index}>
       <div
@@ -239,8 +378,7 @@ export function renderDiffLine(
         <div
           className="w-12 shrink-0 text-right pr-2 select-none z-10"
           style={{
-            position: "sticky",
-            left: 0,
+            ...(stickyGutter ? { position: "sticky" as const, left: 0 } : {}),
             color: getLineNumColor(line.kind, variant),
             backgroundColor: "var(--bg-surface)",
           }}
@@ -251,8 +389,7 @@ export function renderDiffLine(
         <div
           className="w-12 shrink-0 text-right pr-2 select-none border-r z-10"
           style={{
-            position: "sticky",
-            left: 48,
+            ...(stickyGutter ? { position: "sticky" as const, left: 48 } : {}),
             color: getLineNumColor(line.kind, variant),
             backgroundColor: "var(--bg-surface)",
             borderColor: "var(--border-subtle)",
@@ -264,8 +401,7 @@ export function renderDiffLine(
         <div
           className="w-6 shrink-0 text-center select-none font-bold z-10"
           style={{
-            position: "sticky",
-            left: 96,
+            ...(stickyGutter ? { position: "sticky" as const, left: 96 } : {}),
             color: getPrefixColor(line.kind, variant),
             backgroundColor: "var(--bg-surface)",
           }}

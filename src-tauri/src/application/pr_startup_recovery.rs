@@ -16,7 +16,9 @@ use std::time::{Duration, Instant};
 use chrono::Utc;
 use futures::StreamExt as _;
 
-use crate::application::agent_conversation_workspace::resolve_valid_agent_conversation_workspace_path;
+use crate::application::agent_conversation_workspace::{
+    ensure_linked_plan_branch_agent_worktree, resolve_valid_agent_conversation_workspace_path,
+};
 use crate::application::chat_service::ChatService;
 use crate::application::git_artifact_cleanup::{
     cleanup_merged_plan_branch_local_artifacts_with_known_local_branches,
@@ -28,8 +30,9 @@ use crate::application::services::PrPollerRegistry;
 use crate::application::task_transition_service::PrBranchFreshnessOutcome;
 use crate::application::TaskTransitionService;
 use crate::domain::entities::{
-    AgentConversationWorkspace, ExecutionPlanId, ExecutionPlanStatus, InternalStatus, PlanBranch,
-    PlanBranchId, PlanBranchStatus, Project, ProjectId, Task, TaskCategory, TaskId,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, ExecutionPlanId,
+    ExecutionPlanStatus, InternalStatus, PlanBranch, PlanBranchId, PlanBranchStatus, Project,
+    ProjectId, Task, TaskCategory, TaskId,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, ArtifactRepository,
@@ -37,7 +40,8 @@ use crate::domain::repositories::{
     TaskOutcomeRepository, TaskRepository,
 };
 use crate::domain::services::{
-    GithubServiceTrait, PlanPrPublisher, PrReviewState, RunningAgentRegistry,
+    GithubServiceTrait, PlanPrDescriptionDrafter, PlanPrPublisher, PrReviewState,
+    RunningAgentRegistry,
 };
 use crate::domain::state_machine::transition_handler::{
     create_draft_pr_if_needed, plan_branch_has_reviewable_diff, plan_regular_tasks_complete,
@@ -374,6 +378,7 @@ pub async fn recover_missing_draft_prs(
     ideation_session_repo: Arc<dyn IdeationSessionRepository>,
     artifact_repo: Arc<dyn ArtifactRepository>,
     github_service: Arc<dyn GithubServiceTrait>,
+    plan_pr_description_drafter: Arc<dyn PlanPrDescriptionDrafter>,
     blocked_git_project_ids: Arc<HashSet<ProjectId>>,
 ) {
     let started_at = Instant::now();
@@ -396,6 +401,7 @@ pub async fn recover_missing_draft_prs(
             let ideation_session_repo = Arc::clone(&ideation_session_repo);
             let artifact_repo = Arc::clone(&artifact_repo);
             let github_service = Arc::clone(&github_service);
+            let plan_pr_description_drafter = Arc::clone(&plan_pr_description_drafter);
             let blocked_git_project_ids = Arc::clone(&blocked_git_project_ids);
             let pr_creation_guard = Arc::clone(&pr_creation_guard);
             async move {
@@ -407,6 +413,7 @@ pub async fn recover_missing_draft_prs(
                     ideation_session_repo,
                     artifact_repo,
                     github_service,
+                    plan_pr_description_drafter,
                     blocked_git_project_ids,
                     pr_creation_guard,
                 )
@@ -452,6 +459,7 @@ pub async fn recover_missing_draft_prs(
             "PR startup recovery: scheduling existing PR metadata refresh in background"
         );
         let metadata_refresh_jobs = totals.metadata_refresh_jobs;
+        let plan_pr_description_drafter = Arc::clone(&plan_pr_description_drafter);
         tauri::async_runtime::spawn(async move {
             tokio::time::sleep(STARTUP_BACKGROUND_DB_GRACE).await;
             git_cmd::with_git_command_lane(git_cmd::GitCommandLane::Background, async move {
@@ -460,6 +468,7 @@ pub async fn recover_missing_draft_prs(
                     github_service,
                     ideation_session_repo,
                     artifact_repo,
+                    plan_pr_description_drafter,
                 )
                 .await;
             })
@@ -477,6 +486,7 @@ async fn recover_missing_draft_prs_for_project(
     ideation_session_repo: Arc<dyn IdeationSessionRepository>,
     artifact_repo: Arc<dyn ArtifactRepository>,
     github_service: Arc<dyn GithubServiceTrait>,
+    plan_pr_description_drafter: Arc<dyn PlanPrDescriptionDrafter>,
     blocked_git_project_ids: Arc<HashSet<ProjectId>>,
     pr_creation_guard: Arc<dashmap::DashMap<PlanBranchId, ()>>,
 ) -> PrCreationRecoveryProjectResult {
@@ -726,6 +736,7 @@ async fn recover_missing_draft_prs_for_project(
             &pr_creation_guard,
             &github_service,
             &plan_branch_repo,
+            Some(&plan_pr_description_drafter),
             Some(&ideation_session_repo),
             Some(&artifact_repo),
         )
@@ -761,6 +772,7 @@ async fn refresh_existing_pr_metadata(
     github_service: Arc<dyn GithubServiceTrait>,
     ideation_session_repo: Arc<dyn IdeationSessionRepository>,
     artifact_repo: Arc<dyn ArtifactRepository>,
+    plan_pr_description_drafter: Arc<dyn PlanPrDescriptionDrafter>,
 ) {
     if jobs.is_empty() {
         return;
@@ -784,12 +796,38 @@ async fn refresh_existing_pr_metadata(
             let github_service = Arc::clone(&github_service);
             let ideation_session_repo = Arc::clone(&ideation_session_repo);
             let artifact_repo = Arc::clone(&artifact_repo);
+            let plan_pr_description_drafter = Arc::clone(&plan_pr_description_drafter);
             let refreshed_count = Arc::clone(&refreshed_count);
             let refresh_failed_count = Arc::clone(&refresh_failed_count);
             let mark_ready_count = Arc::clone(&mark_ready_count);
             let mark_ready_failed_count = Arc::clone(&mark_ready_failed_count);
             async move {
                 let job_started_at = Instant::now();
+                let review_base = crate::domain::state_machine::transition_handler::resolve_plan_branch_pr_base(
+                    &job.project,
+                    &job.plan_branch,
+                );
+                let description = match plan_pr_description_drafter
+                    .draft_plan_description(
+                        &job.project,
+                        &job.plan_branch,
+                        &review_base,
+                        job.review_state,
+                    )
+                    .await
+                {
+                    Ok(description) => description,
+                    Err(e) => {
+                        tracing::warn!(
+                            branch_id = job.plan_branch.id.as_str(),
+                            branch = %job.plan_branch.branch_name,
+                            error = %e,
+                            "PR startup recovery: failed to draft PR description for metadata refresh"
+                        );
+                        refresh_failed_count.fetch_add(1, Ordering::Relaxed);
+                        return;
+                    }
+                };
                 let publisher = PlanPrPublisher::new(
                     &github_service,
                     Some(&ideation_session_repo),
@@ -801,6 +839,7 @@ async fn refresh_existing_pr_metadata(
                         &job.project,
                         &job.plan_branch,
                         job.review_state,
+                        &description,
                     )
                     .await
                 {
@@ -1074,14 +1113,15 @@ pub async fn recover_pr_pollers(
 pub async fn recover_agent_workspace_pr_pollers(
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     project_repo: Arc<dyn ProjectRepository>,
+    plan_branch_repo: Arc<dyn PlanBranchRepository>,
     pr_poller_registry: Arc<PrPollerRegistry>,
     agent_run_repo: Arc<dyn AgentRunRepository>,
     task_outcome_repo: Arc<dyn TaskOutcomeRepository>,
     chat_service: Arc<dyn ChatService>,
     blocked_git_project_ids: Arc<HashSet<ProjectId>>,
 ) {
-    let workspaces = match workspace_repo
-        .list_active_direct_published_workspaces()
+    let mut workspaces = match workspace_repo
+        .list_active_pr_poller_recovery_workspaces()
         .await
     {
         Ok(workspaces) => workspaces,
@@ -1090,19 +1130,60 @@ pub async fn recover_agent_workspace_pr_pollers(
                 error = %error,
                 "Agent workspace PR startup recovery: failed to list published workspaces"
             );
-            return;
+            Vec::new()
         }
     };
 
+    let mut seen_conversations = workspaces
+        .iter()
+        .map(|workspace| workspace.conversation_id.as_str().to_string())
+        .collect::<HashSet<_>>();
+    match workspace_repo.list_active_pr_review_monitors().await {
+        Ok(monitors) => {
+            for monitor in monitors {
+                if !seen_conversations.insert(monitor.conversation_id.as_str().to_string()) {
+                    continue;
+                }
+                match workspace_repo
+                    .get_by_conversation_id(&monitor.conversation_id)
+                    .await
+                {
+                    Ok(Some(workspace)) => workspaces.push(workspace),
+                    Ok(None) => {
+                        tracing::warn!(
+                            conversation_id = monitor.conversation_id.as_str(),
+                            pr_number = monitor.pr_number,
+                            "Agent workspace PR startup recovery: active Review PR monitor has no workspace"
+                        );
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            conversation_id = monitor.conversation_id.as_str(),
+                            pr_number = monitor.pr_number,
+                            error = %error,
+                            "Agent workspace PR startup recovery: failed to load Review PR monitor workspace"
+                        );
+                    }
+                }
+            }
+        }
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "Agent workspace PR startup recovery: failed to list active Review PR monitors"
+            );
+        }
+    }
+
     if workspaces.is_empty() {
-        tracing::debug!("Agent workspace PR startup recovery: no published workspaces");
+        tracing::debug!("Agent workspace PR startup recovery: no PR poller workspaces");
         return;
     }
 
     tracing::info!(
         count = workspaces.len(),
         concurrency = AGENT_WORKSPACE_PR_POLLER_RECOVERY_CONCURRENCY,
-        "Agent workspace PR startup recovery: found active published workspaces"
+        "Agent workspace PR startup recovery: found active PR poller workspaces"
     );
 
     futures::stream::iter(workspaces)
@@ -1111,6 +1192,7 @@ pub async fn recover_agent_workspace_pr_pollers(
             |workspace| {
                 let workspace_repo = Arc::clone(&workspace_repo);
                 let project_repo = Arc::clone(&project_repo);
+                let plan_branch_repo = Arc::clone(&plan_branch_repo);
                 let pr_poller_registry = Arc::clone(&pr_poller_registry);
                 let agent_run_repo = Arc::clone(&agent_run_repo);
                 let task_outcome_repo = Arc::clone(&task_outcome_repo);
@@ -1121,6 +1203,7 @@ pub async fn recover_agent_workspace_pr_pollers(
                         workspace,
                         workspace_repo,
                         project_repo,
+                        plan_branch_repo,
                         pr_poller_registry,
                         agent_run_repo,
                         task_outcome_repo,
@@ -1138,13 +1221,14 @@ async fn recover_one_agent_workspace_pr_poller(
     workspace: AgentConversationWorkspace,
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     project_repo: Arc<dyn ProjectRepository>,
+    plan_branch_repo: Arc<dyn PlanBranchRepository>,
     pr_poller_registry: Arc<PrPollerRegistry>,
     agent_run_repo: Arc<dyn AgentRunRepository>,
     task_outcome_repo: Arc<dyn TaskOutcomeRepository>,
     chat_service: Arc<dyn ChatService>,
     blocked_git_project_ids: Arc<HashSet<ProjectId>>,
 ) {
-    let Some(pr_number) = workspace.publication_pr_number else {
+    let Some(pr_number) = agent_workspace_pr_poller_number(&workspace) else {
         return;
     };
 
@@ -1179,53 +1263,60 @@ async fn recover_one_agent_workspace_pr_poller(
         return;
     }
 
-    let worktree_path =
-        match resolve_valid_agent_conversation_workspace_path(&project, &workspace).await {
-            Ok(path) => path,
-            Err(error) => {
-                tracing::warn!(
-                    conversation_id = workspace.conversation_id.as_str(),
-                    pr_number,
-                    error = %error,
-                    "Agent workspace PR startup recovery: workspace path is not usable"
-                );
-                let _ = workspace_repo
-                    .update_status(
-                        &workspace.conversation_id,
-                        crate::domain::entities::AgentConversationWorkspaceStatus::Missing,
-                    )
-                    .await;
-                return;
-            }
-        };
-
-    match pr_poller_registry
-        .process_agent_workspace_review_feedback_once(
-            &workspace.conversation_id,
-            pr_number,
-            &worktree_path,
-            Arc::clone(&workspace_repo),
-            Arc::clone(&task_outcome_repo),
-            Arc::clone(&chat_service),
-        )
-        .await
+    let worktree_path = match resolve_agent_workspace_pr_poller_worktree_path(
+        &project,
+        &workspace,
+        plan_branch_repo.as_ref(),
+    )
+    .await
     {
-        Ok(true) => {
-            tracing::info!(
-                conversation_id = workspace.conversation_id.as_str(),
-                pr_number,
-                "Agent workspace PR startup recovery: routed GitHub requested-changes review before restarting poller"
-            );
-            return;
-        }
-        Ok(false) => {}
+        Ok(path) => path,
         Err(error) => {
             tracing::warn!(
                 conversation_id = workspace.conversation_id.as_str(),
                 pr_number,
                 error = %error,
-                "Agent workspace PR startup recovery: failed to inspect GitHub review feedback before poller restart"
+                "Agent workspace PR startup recovery: workspace path is not usable"
             );
+            let _ = workspace_repo
+                .update_status(
+                    &workspace.conversation_id,
+                    crate::domain::entities::AgentConversationWorkspaceStatus::Missing,
+                )
+                .await;
+            return;
+        }
+    };
+
+    if workspace.mode != AgentConversationWorkspaceMode::ReviewPr {
+        match pr_poller_registry
+            .process_agent_workspace_review_feedback_once(
+                &workspace.conversation_id,
+                pr_number,
+                &worktree_path,
+                Arc::clone(&workspace_repo),
+                Arc::clone(&task_outcome_repo),
+                Arc::clone(&chat_service),
+            )
+            .await
+        {
+            Ok(true) => {
+                tracing::info!(
+                    conversation_id = workspace.conversation_id.as_str(),
+                    pr_number,
+                    "Agent workspace PR startup recovery: routed GitHub requested-changes review before restarting poller"
+                );
+                return;
+            }
+            Ok(false) => {}
+            Err(error) => {
+                tracing::warn!(
+                    conversation_id = workspace.conversation_id.as_str(),
+                    pr_number,
+                    error = %error,
+                    "Agent workspace PR startup recovery: failed to inspect GitHub review feedback before poller restart"
+                );
+            }
         }
     }
 
@@ -1239,6 +1330,41 @@ async fn recover_one_agent_workspace_pr_poller(
         task_outcome_repo,
         chat_service,
     );
+}
+
+fn agent_workspace_pr_poller_number(workspace: &AgentConversationWorkspace) -> Option<i64> {
+    workspace
+        .source_pull_request
+        .as_ref()
+        .map(|pull_request| pull_request.number)
+        .or(workspace.publication_pr_number)
+}
+
+async fn resolve_agent_workspace_pr_poller_worktree_path(
+    project: &Project,
+    workspace: &AgentConversationWorkspace,
+    plan_branch_repo: &dyn PlanBranchRepository,
+) -> Result<std::path::PathBuf, String> {
+    if workspace.mode == AgentConversationWorkspaceMode::Ideation
+        && workspace.linked_plan_branch_id.is_some()
+    {
+        let plan_branch_id = workspace
+            .linked_plan_branch_id
+            .as_ref()
+            .expect("checked above");
+        let plan_branch = plan_branch_repo
+            .get_by_id(plan_branch_id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("Plan branch not found: {}", plan_branch_id))?;
+        return ensure_linked_plan_branch_agent_worktree(project, &plan_branch)
+            .await
+            .map_err(|error| error.to_string());
+    }
+
+    resolve_valid_agent_conversation_workspace_path(project, workspace)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 pub async fn cleanup_terminal_plan_branch_local_artifacts_on_startup(
@@ -2037,10 +2163,29 @@ mod tests {
     };
     use crate::domain::services::RunningAgentKey;
     use crate::tests::mock_github_service::MockGithubService;
+    use async_trait::async_trait;
     use tokio::sync::Mutex as TokioMutex;
 
     static TERMINAL_CLEANUP_FETCH_TEST_LOCK: LazyLock<TokioMutex<()>> =
         LazyLock::new(|| TokioMutex::new(()));
+
+    struct StaticPlanPrDescriptionDrafter;
+
+    #[async_trait]
+    impl PlanPrDescriptionDrafter for StaticPlanPrDescriptionDrafter {
+        async fn draft_plan_description(
+            &self,
+            _project: &Project,
+            _plan_branch: &PlanBranch,
+            _review_base: &str,
+            _review_state: PrReviewState,
+        ) -> crate::error::AppResult<crate::domain::entities::AgentWorkspacePrDescription> {
+            Ok(crate::domain::entities::AgentWorkspacePrDescription::new(
+                None,
+                "## Summary\n\nStartup recovery drafted body".to_string(),
+            ))
+        }
+    }
 
     fn run_git(repo: &Path, args: &[&str]) {
         let output = Command::new("git")
@@ -2343,6 +2488,7 @@ mod tests {
             Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
             Arc::clone(&app_state.ideation_session_repo),
             Arc::clone(&app_state.artifact_repo),
+            Arc::new(StaticPlanPrDescriptionDrafter),
         )
         .await;
 
@@ -2350,6 +2496,13 @@ mod tests {
         assert_eq!(state.update_pr_details_calls, 1);
         assert_eq!(state.mark_pr_ready_calls, 1);
         assert_eq!(state.last_mark_pr_ready_number, Some(42));
+        let body = state
+            .last_update_pr_details_body
+            .as_deref()
+            .expect("updated PR body should be captured");
+        assert!(body.starts_with("## Summary\n\nStartup recovery drafted body"));
+        assert!(!body.contains("## RalphX Status"));
+        assert!(!body.contains("## How To Review"));
     }
 
     #[test]
@@ -2458,6 +2611,7 @@ mod tests {
             Arc::clone(&app_state.ideation_session_repo),
             Arc::clone(&app_state.artifact_repo),
             Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+            Arc::new(StaticPlanPrDescriptionDrafter),
             Arc::new(HashSet::new()),
         )
         .await;
@@ -2495,7 +2649,17 @@ mod tests {
                 .last_update_pr_details_body
                 .as_deref()
                 .unwrap_or_default()
-                .contains("Ready for GitHub review"));
+                .starts_with("## Summary\n\nStartup recovery drafted body"));
+            assert!(!state
+                .last_update_pr_details_body
+                .as_deref()
+                .unwrap_or_default()
+                .contains("## RalphX Status"));
+            assert!(!state
+                .last_update_pr_details_body
+                .as_deref()
+                .unwrap_or_default()
+                .contains("## How To Review"));
         }
 
         let stored_merge_task = app_state

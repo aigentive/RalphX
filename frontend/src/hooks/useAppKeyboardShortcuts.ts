@@ -10,9 +10,11 @@ import type { FeatureFlags } from "@/types/feature-flags";
 const ALL_ENABLED_FLAGS: FeatureFlags = {
   activityPage: true,
   extensibilityPage: true,
+  ideationPage: true,
   battleMode: true,
   teamMode: false,
   atlassianOauth: false,
+  ticketingDashboard: false,
 };
 
 interface UseAppKeyboardShortcutsProps {
@@ -72,7 +74,9 @@ export function useAppKeyboardShortcuts({
             break;
           case "2":
             e.preventDefault();
-            setCurrentView("ideation");
+            if (featureFlags.ideationPage) {
+              setCurrentView("ideation");
+            }
             break;
           case "3":
             e.preventDefault();

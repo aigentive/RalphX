@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { agentTaskApi } from "./agent-tasks";
+import { backendApiUrl } from "./backend";
 
 const fetchMock = vi.fn();
 
@@ -64,7 +65,7 @@ describe("agentTaskApi", () => {
     ]);
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "http://localhost:3847/api/agent_tasks/list",
+      backendApiUrl("agent_tasks/list"),
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -104,7 +105,7 @@ describe("agentTaskApi", () => {
 
     expect(tasks[0]?.ownerAgent).toBeNull();
     expect(fetchMock).toHaveBeenCalledWith(
-      "http://localhost:3847/api/agent_tasks/list",
+      backendApiUrl("agent_tasks/list"),
       expect.objectContaining({
         body: JSON.stringify({
           context_type: "conversation",

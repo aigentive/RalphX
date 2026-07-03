@@ -47,13 +47,27 @@ let mockUiStoreState: Record<string, unknown> = {
   dequeueVerification: mockDequeue,
   addAutoAcceptVerificationSession: mockAddAutoAcceptVerificationSession,
   setCurrentView: mockSetCurrentView,
+  featureFlags: {
+    activityPage: true,
+    extensibilityPage: true,
+    ideationPage: false,
+    battleMode: true,
+    teamMode: false,
+    atlassianOauth: false,
+    ticketingDashboard: false,
+  },
 };
 
-vi.mock("@/stores/uiStore", () => ({
-  useUiStore: vi.fn((selector: (s: object) => unknown) =>
+vi.mock("@/stores/uiStore", () => {
+  const useUiStore = vi.fn((selector: (s: object) => unknown) =>
     selector(mockUiStoreState)
-  ),
-}));
+  );
+  return {
+    useUiStore: Object.assign(useUiStore, {
+      getState: () => mockUiStoreState,
+    }),
+  };
+});
 
 // ── Mock ideationStore ────────────────────────────────────────────────────────
 
@@ -64,11 +78,16 @@ let mockIdeationStoreState: Record<string, unknown> = {
   setActiveSession: mockSetActiveSession,
 };
 
-vi.mock("@/stores/ideationStore", () => ({
-  useIdeationStore: vi.fn((selector: (s: object) => unknown) =>
+vi.mock("@/stores/ideationStore", () => {
+  const useIdeationStore = vi.fn((selector: (s: object) => unknown) =>
     selector(mockIdeationStoreState)
-  ),
-}));
+  );
+  return {
+    useIdeationStore: Object.assign(useIdeationStore, {
+      getState: () => mockIdeationStoreState,
+    }),
+  };
+});
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -467,15 +486,15 @@ describe("VerificationConfirmDialog", () => {
   // ── View Plan button ───────────────────────────────────────────────────────
 
   describe("View Plan button", () => {
-    it("dequeues, sets active session, and navigates to ideation view", async () => {
+    it("dequeues and routes to Agents when standalone ideation is disabled", async () => {
       const user = userEvent.setup();
       render(<VerificationConfirmDialog />);
 
       await user.click(screen.getByRole("button", { name: /View Plan/i }));
 
       expect(mockDequeue).toHaveBeenCalledTimes(1);
-      expect(mockSetActiveSession).toHaveBeenCalledWith("session-abc");
-      expect(mockSetCurrentView).toHaveBeenCalledWith("ideation");
+      expect(mockSetActiveSession).not.toHaveBeenCalled();
+      expect(mockSetCurrentView).toHaveBeenCalledWith("agents");
     });
   });
 

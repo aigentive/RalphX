@@ -8,6 +8,7 @@ import type { EventBus } from "@/lib/event-bus";
 import type { MockStore } from "@/api-mock/store";
 import type { MockChatController } from "@/api-mock/chat";
 import type { GitAuthDiagnostics } from "@/hooks/useGithubSettings";
+import type { FeatureFlags } from "@/types/feature-flags";
 
 declare global {
   interface Window {
@@ -17,6 +18,7 @@ declare global {
     __mockChatApi?: MockChatController;
     __mockGitAuthDiagnostics?: GitAuthDiagnostics;
     __mockGhAuthStatus?: boolean;
+    __mockUiFeatureFlags?: FeatureFlags;
     __queryClient?: QueryClient;
     __eventBus?: EventBus;
     __uiStore?: unknown;

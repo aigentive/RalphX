@@ -164,8 +164,7 @@ impl ReviewScopeMetadata {
         let value: serde_json::Value = serde_json::from_str(json_str)?;
 
         if let Some(review_scope) = value.get("review_scope") {
-            let review_scope: ReviewScopeMetadata =
-                serde_json::from_value(review_scope.clone())?;
+            let review_scope: ReviewScopeMetadata = serde_json::from_value(review_scope.clone())?;
             Ok(Some(review_scope))
         } else {
             Ok(None)
@@ -678,6 +677,8 @@ pub enum ExecutionFailureSource {
     WallClockTimeout,
     /// Transient git isolation failure (stale index.lock, leftover worktree dir, concurrent git op) — safe to auto-retry after cleanup
     GitIsolation,
+    /// Agent exited successfully without producing enough work to satisfy execution completion
+    AgentIncomplete,
     /// Unknown/unclassified failure
     Unknown,
 }
@@ -753,6 +754,10 @@ pub enum ExecutionRecoveryReasonCode {
     StructuralGitError,
     /// Git-isolation retry budget exhausted (3/3 retries failed)
     GitIsolationExhausted,
+    /// Agent exited successfully before task steps were complete
+    IncompleteSteps,
+    /// Agent made a deterministic local command usage error
+    AgentCommandInvalid,
     /// Unknown/unclassified reason
     Unknown,
 }
@@ -784,6 +789,8 @@ pub enum StopRetryingReason {
     StructuralGitError,
     /// Git-isolation retry budget exhausted (3/3 retries failed)
     GitIsolationExhausted,
+    /// Deterministic local command usage error by the agent; retrying is expected to repeat it.
+    AgentCommandInvalid,
     /// Unknown variant from newer code — MUST be treated as stop reason (safe default:
     /// unknown variants were explicitly set as stop reasons by newer code).
     #[serde(other)]
@@ -827,8 +834,7 @@ impl ValidationCacheMetadata {
         let value: serde_json::Value = serde_json::from_str(json_str)?;
 
         if let Some(validation_cache) = value.get("validation_cache") {
-            let cache: ValidationCacheMetadata =
-                serde_json::from_value(validation_cache.clone())?;
+            let cache: ValidationCacheMetadata = serde_json::from_value(validation_cache.clone())?;
             Ok(Some(cache))
         } else {
             Ok(None)

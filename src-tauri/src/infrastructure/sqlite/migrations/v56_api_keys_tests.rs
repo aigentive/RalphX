@@ -142,7 +142,10 @@ fn test_api_key_insert_with_defaults() {
 
     assert_eq!(permissions, 3, "default permissions should be 3");
     assert!(revoked_at.is_none(), "revoked_at should default to NULL");
-    assert!(last_used_at.is_none(), "last_used_at should default to NULL");
+    assert!(
+        last_used_at.is_none(),
+        "last_used_at should default to NULL"
+    );
 }
 
 #[test]

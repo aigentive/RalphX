@@ -71,7 +71,10 @@ fn test_session_purpose_defaults_to_general() {
         )
         .unwrap();
 
-    assert_eq!(val, "general", "session_purpose should default to 'general'");
+    assert_eq!(
+        val, "general",
+        "session_purpose should default to 'general'"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -98,7 +101,10 @@ fn test_existing_sessions_get_default() {
         )
         .unwrap();
 
-    assert_eq!(title, "Old Session", "existing session data should be preserved");
+    assert_eq!(
+        title, "Old Session",
+        "existing session data should be preserved"
+    );
 
     let purpose: String = conn
         .query_row(
@@ -108,7 +114,10 @@ fn test_existing_sessions_get_default() {
         )
         .unwrap();
 
-    assert_eq!(purpose, "general", "existing session should get default 'general' purpose");
+    assert_eq!(
+        purpose, "general",
+        "existing session should get default 'general' purpose"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -149,5 +158,9 @@ fn test_migration_idempotent() {
     v68_session_purpose::migrate(&conn).unwrap();
     v68_session_purpose::migrate(&conn).unwrap();
 
-    assert!(helpers::column_exists(&conn, "ideation_sessions", "session_purpose"));
+    assert!(helpers::column_exists(
+        &conn,
+        "ideation_sessions",
+        "session_purpose"
+    ));
 }

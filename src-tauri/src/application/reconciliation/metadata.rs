@@ -3,14 +3,6 @@
 use tauri::Runtime;
 use tracing::warn;
 
-use crate::application::GitService;
-use crate::domain::entities::{
-    task_metadata::{RetryStrategy, StopRetryingReason},
-    ExecutionFailureSource, ExecutionRecoveryEvent, ExecutionRecoveryEventKind,
-    ExecutionRecoveryMetadata, ExecutionRecoveryReasonCode, ExecutionRecoverySource,
-    ExecutionRecoveryState, InternalStatus, MergeFailureSource, MergeRecoveryEventKind,
-    MergeRecoveryMetadata, MergeRecoveryState, Task,
-};
 use crate::application::harness_runtime_registry::{
     default_reconciliation_attempt_merge_deadline_secs,
     default_reconciliation_execution_failed_retry_base_secs,
@@ -21,6 +13,14 @@ use crate::application::harness_runtime_registry::{
     default_reconciliation_merge_incomplete_retry_base_secs,
     default_reconciliation_merge_incomplete_retry_max_secs,
     default_reconciliation_validation_deadline_secs,
+};
+use crate::application::GitService;
+use crate::domain::entities::{
+    task_metadata::{RetryStrategy, StopRetryingReason},
+    ExecutionFailureSource, ExecutionRecoveryEvent, ExecutionRecoveryEventKind,
+    ExecutionRecoveryMetadata, ExecutionRecoveryReasonCode, ExecutionRecoverySource,
+    ExecutionRecoveryState, InternalStatus, MergeFailureSource, MergeRecoveryEventKind,
+    MergeRecoveryMetadata, MergeRecoveryState, Task,
 };
 
 use super::policy::ShaComparisonResult;
@@ -156,8 +156,7 @@ impl<R: Runtime> ReconciliationRunner<R> {
         let exponent = retry_count.min(6);
         let scaled = (default_reconciliation_merge_conflict_retry_base_secs() as i64)
             .saturating_mul(1_i64 << exponent);
-        let base_delay =
-            scaled.min(default_reconciliation_merge_conflict_retry_max_secs() as i64);
+        let base_delay = scaled.min(default_reconciliation_merge_conflict_retry_max_secs() as i64);
         let jitter = rand::thread_rng().gen_range(0..=base_delay / 4);
         chrono::Duration::seconds(base_delay + jitter)
     }
@@ -263,7 +262,11 @@ impl<R: Runtime> ReconciliationRunner<R> {
         task.metadata
             .as_deref()
             .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
-            .and_then(|v| v.get("consecutive_validation_failures").and_then(|c| c.as_u64()).map(|c| c as u32))
+            .and_then(|v| {
+                v.get("consecutive_validation_failures")
+                    .and_then(|c| c.as_u64())
+                    .map(|c| c as u32)
+            })
             .unwrap_or(0)
     }
 
@@ -354,11 +357,7 @@ impl<R: Runtime> ReconciliationRunner<R> {
     /// many times while other tasks hold the target branch — triggering the circuit breaker
     /// would incorrectly block a healthy task.
     #[doc(hidden)]
-    pub fn should_circuit_break(
-        task: &Task,
-        threshold: usize,
-        window: usize,
-    ) -> Option<String> {
+    pub fn should_circuit_break(task: &Task, threshold: usize, window: usize) -> Option<String> {
         let metadata = MergeRecoveryMetadata::from_task_metadata(task.metadata.as_deref())
             .ok()
             .flatten()?;
@@ -399,8 +398,7 @@ impl<R: Runtime> ReconciliationRunner<R> {
         let mut counts: HashMap<String, usize> = HashMap::new();
         for event in recent {
             if let Some(source) = &event.failure_source {
-                let key =
-                    serde_json::to_string(source).unwrap_or_else(|_| "unknown".to_string());
+                let key = serde_json::to_string(source).unwrap_or_else(|_| "unknown".to_string());
                 *counts.entry(key).or_insert(0) += 1;
             }
         }
@@ -525,7 +523,6 @@ impl<R: Runtime> ReconciliationRunner<R> {
             }
         }
     }
-
 }
 
 // ── Execution Recovery Helpers ────────────────────────────────────────────────
@@ -579,7 +576,8 @@ impl<R: Runtime> ReconciliationRunner<R> {
         };
         let exponent = retry_count.min(6);
         let scaled = base_secs.saturating_mul(1_i64 << exponent);
-        let base_delay = scaled.min(default_reconciliation_execution_failed_retry_max_secs() as i64);
+        let base_delay =
+            scaled.min(default_reconciliation_execution_failed_retry_max_secs() as i64);
         let jitter = rand::thread_rng().gen_range(0..=base_delay / 4);
         chrono::Duration::seconds(base_delay + jitter)
     }
@@ -605,10 +603,9 @@ impl<R: Runtime> ReconciliationRunner<R> {
         failure_source: ExecutionFailureSource,
         message: impl Into<String>,
     ) -> Result<(), String> {
-        let mut recovery =
-            ExecutionRecoveryMetadata::from_task_metadata(task.metadata.as_deref())
-                .unwrap_or(None)
-                .unwrap_or_default();
+        let mut recovery = ExecutionRecoveryMetadata::from_task_metadata(task.metadata.as_deref())
+            .unwrap_or(None)
+            .unwrap_or_default();
 
         let reason_code = Self::failure_source_to_reason_code(failure_source);
         let event = ExecutionRecoveryEvent::new(
@@ -637,10 +634,9 @@ impl<R: Runtime> ReconciliationRunner<R> {
     /// Uses targeted `update_metadata()` SQL path (GAP H7).
     #[doc(hidden)]
     pub async fn set_execution_stop_retrying(&self, task: &Task) -> Result<(), String> {
-        let mut recovery =
-            ExecutionRecoveryMetadata::from_task_metadata(task.metadata.as_deref())
-                .unwrap_or(None)
-                .unwrap_or_default();
+        let mut recovery = ExecutionRecoveryMetadata::from_task_metadata(task.metadata.as_deref())
+            .unwrap_or(None)
+            .unwrap_or_default();
 
         let event = ExecutionRecoveryEvent::new(
             ExecutionRecoveryEventKind::StopRetrying,
@@ -670,10 +666,9 @@ impl<R: Runtime> ReconciliationRunner<R> {
         task: &Task,
         reason: StopRetryingReason,
     ) -> Result<(), String> {
-        let mut recovery =
-            ExecutionRecoveryMetadata::from_task_metadata(task.metadata.as_deref())
-                .unwrap_or(None)
-                .unwrap_or_default();
+        let mut recovery = ExecutionRecoveryMetadata::from_task_metadata(task.metadata.as_deref())
+            .unwrap_or(None)
+            .unwrap_or_default();
 
         let reason_code = stop_retrying_reason_to_code(&reason);
 
@@ -681,7 +676,7 @@ impl<R: Runtime> ReconciliationRunner<R> {
             ExecutionRecoveryEventKind::StopRetrying,
             ExecutionRecoverySource::System,
             reason_code,
-            format!("Permanent git error - stopping auto-retry (reason: {:?})", reason),
+            format!("Stopping execution auto-retry (reason: {:?})", reason),
         );
 
         recovery.stop_retrying = true;
@@ -757,14 +752,10 @@ impl<R: Runtime> ReconciliationRunner<R> {
     /// Uses targeted `update_metadata()` SQL path (GAP H7).
     /// Used by Wave 4 (apply_user_recovery_action).
     #[doc(hidden)]
-    pub async fn reset_execution_recovery_metadata(
-        &self,
-        task: &Task,
-    ) -> Result<(), String> {
-        let mut recovery =
-            ExecutionRecoveryMetadata::from_task_metadata(task.metadata.as_deref())
-                .unwrap_or(None)
-                .unwrap_or_default();
+    pub async fn reset_execution_recovery_metadata(&self, task: &Task) -> Result<(), String> {
+        let mut recovery = ExecutionRecoveryMetadata::from_task_metadata(task.metadata.as_deref())
+            .unwrap_or(None)
+            .unwrap_or_default();
 
         recovery.events.clear();
         recovery.last_state = ExecutionRecoveryState::Retrying;
@@ -777,8 +768,8 @@ impl<R: Runtime> ReconciliationRunner<R> {
         // Also clear stale flat keys (is_timeout, failure_error) — prevents
         // a subsequent clear_execution_flat_metadata call from re-reading the
         // stale task object and overwriting this write (GAP B7).
-        let mut json: serde_json::Value = serde_json::from_str(&updated_metadata)
-            .unwrap_or_else(|_| serde_json::json!({}));
+        let mut json: serde_json::Value =
+            serde_json::from_str(&updated_metadata).unwrap_or_else(|_| serde_json::json!({}));
         if let Some(obj) = json.as_object_mut() {
             obj.remove("is_timeout");
             obj.remove("failure_error");
@@ -795,10 +786,9 @@ impl<R: Runtime> ReconciliationRunner<R> {
     /// Uses targeted `update_metadata()` SQL path (GAP H7).
     #[doc(hidden)]
     pub async fn stop_execution_retrying_by_user(&self, task: &Task) -> Result<(), String> {
-        let mut recovery =
-            ExecutionRecoveryMetadata::from_task_metadata(task.metadata.as_deref())
-                .unwrap_or(None)
-                .unwrap_or_default();
+        let mut recovery = ExecutionRecoveryMetadata::from_task_metadata(task.metadata.as_deref())
+            .unwrap_or(None)
+            .unwrap_or_default();
 
         let event = ExecutionRecoveryEvent::new(
             ExecutionRecoveryEventKind::StopRetrying,
@@ -824,14 +814,10 @@ impl<R: Runtime> ReconciliationRunner<R> {
     /// Used when the user manually restarts a Failed task (GAP H2, Restart action).
     /// Uses targeted `update_metadata()` SQL path (GAP H7).
     #[doc(hidden)]
-    pub async fn record_execution_manual_retry_event(
-        &self,
-        task: &Task,
-    ) -> Result<(), String> {
-        let mut recovery =
-            ExecutionRecoveryMetadata::from_task_metadata(task.metadata.as_deref())
-                .unwrap_or(None)
-                .unwrap_or_default();
+    pub async fn record_execution_manual_retry_event(&self, task: &Task) -> Result<(), String> {
+        let mut recovery = ExecutionRecoveryMetadata::from_task_metadata(task.metadata.as_deref())
+            .unwrap_or(None)
+            .unwrap_or_default();
 
         let event = ExecutionRecoveryEvent::new(
             ExecutionRecoveryEventKind::ManualRetry,
@@ -856,15 +842,16 @@ impl<R: Runtime> ReconciliationRunner<R> {
     /// Used by the reconciler loop to skip tasks already handled at startup (GAP M5 sentinel).
     #[doc(hidden)]
     pub fn has_recent_startup_recovery(task: &Task) -> bool {
-        let recovery =
-            match ExecutionRecoveryMetadata::from_task_metadata(task.metadata.as_deref()) {
-                Ok(Some(r)) => r,
-                _ => return false,
-            };
+        let recovery = match ExecutionRecoveryMetadata::from_task_metadata(task.metadata.as_deref())
+        {
+            Ok(Some(r)) => r,
+            _ => return false,
+        };
         let threshold = chrono::Utc::now() - chrono::Duration::seconds(60);
-        recovery.events.iter().any(|e| {
-            matches!(e.source, ExecutionRecoverySource::Startup) && e.at >= threshold
-        })
+        recovery
+            .events
+            .iter()
+            .any(|e| matches!(e.source, ExecutionRecoverySource::Startup) && e.at >= threshold)
     }
 
     /// Append an `AutoRetryTriggered` event with `Startup` source to the task's execution recovery metadata.
@@ -881,10 +868,9 @@ impl<R: Runtime> ReconciliationRunner<R> {
         failure_source: ExecutionFailureSource,
         reason_code: ExecutionRecoveryReasonCode,
     ) -> Result<(), String> {
-        let mut recovery =
-            ExecutionRecoveryMetadata::from_task_metadata(task.metadata.as_deref())
-                .unwrap_or(None)
-                .unwrap_or_default();
+        let mut recovery = ExecutionRecoveryMetadata::from_task_metadata(task.metadata.as_deref())
+            .unwrap_or(None)
+            .unwrap_or_default();
 
         // For legacy tasks (no prior execution_recovery), create an initial Failed event
         // to record the historical failure before migrating to the new format.
@@ -934,6 +920,7 @@ impl<R: Runtime> ReconciliationRunner<R> {
                 ExecutionRecoveryReasonCode::WallClockExceeded
             }
             ExecutionFailureSource::GitIsolation => ExecutionRecoveryReasonCode::GitIsolationFailed,
+            ExecutionFailureSource::AgentIncomplete => ExecutionRecoveryReasonCode::IncompleteSteps,
             ExecutionFailureSource::Unknown => ExecutionRecoveryReasonCode::Unknown,
         }
     }
@@ -949,6 +936,7 @@ pub(crate) fn stop_retrying_reason_to_code(
         StopRetryingReason::GitIsolationExhausted => {
             ExecutionRecoveryReasonCode::GitIsolationExhausted
         }
+        StopRetryingReason::AgentCommandInvalid => ExecutionRecoveryReasonCode::AgentCommandInvalid,
         _ => ExecutionRecoveryReasonCode::Unknown,
     }
 }

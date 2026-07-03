@@ -6,6 +6,7 @@ import type {
   AgentWorkspaceReviewResponseSchema,
   FileChangeSchema,
   FileDiffSchema,
+  ConflictDiffSchema,
   FileDiffPageSchema,
   DiffPageRowSchema,
   DiffLineSchema,
@@ -14,6 +15,8 @@ import type {
   PrDiffAnnotationSchema,
   PrAnnotationSourceUnavailableSchema,
   PrDiffAnnotationsResponseSchema,
+  WorkspaceReviewHunkAnnotationSchema,
+  WorkspaceReviewHunkAnnotationsResponseSchema,
   RangeLineSchema,
 } from "./diff.schemas";
 import type {
@@ -22,6 +25,7 @@ import type {
   AgentWorkspaceReview,
   FileChange,
   FileDiff,
+  ConflictDiff,
   FileDiffPage,
   DiffPageRow,
   DiffLine,
@@ -30,11 +34,14 @@ import type {
   PrDiffAnnotation,
   PrAnnotationSourceUnavailable,
   PrDiffAnnotationsResponse,
+  WorkspaceReviewHunkAnnotation,
+  WorkspaceReviewHunkAnnotationsResponse,
   RangeLine,
 } from "./diff.types";
 
 type RawFileChange = z.infer<typeof FileChangeSchema>;
 type RawFileDiff = z.infer<typeof FileDiffSchema>;
+type RawConflictDiff = z.infer<typeof ConflictDiffSchema>;
 type RawFileDiffPage = z.infer<typeof FileDiffPageSchema>;
 type RawDiffPageRow = z.infer<typeof DiffPageRowSchema>;
 type RawDiffLine = z.infer<typeof DiffLineSchema>;
@@ -43,6 +50,12 @@ type RawCommitInfo = z.infer<typeof CommitInfoSchema>;
 type RawPrDiffAnnotation = z.infer<typeof PrDiffAnnotationSchema>;
 type RawPrAnnotationSourceUnavailable = z.infer<typeof PrAnnotationSourceUnavailableSchema>;
 type RawPrDiffAnnotationsResponse = z.infer<typeof PrDiffAnnotationsResponseSchema>;
+type RawWorkspaceReviewHunkAnnotation = z.infer<
+  typeof WorkspaceReviewHunkAnnotationSchema
+>;
+type RawWorkspaceReviewHunkAnnotationsResponse = z.infer<
+  typeof WorkspaceReviewHunkAnnotationsResponseSchema
+>;
 type RawRangeLine = z.infer<typeof RangeLineSchema>;
 type RawAgentWorkspaceReview = z.infer<typeof AgentWorkspaceReviewResponseSchema>;
 type RawAgentWorkspaceChangeSummary = z.infer<
@@ -90,11 +103,26 @@ export function transformFileDiff(raw: RawFileDiff): FileDiff {
   };
 }
 
+export function transformConflictDiff(raw: RawConflictDiff): ConflictDiff {
+  return {
+    filePath: raw.filePath,
+    baseContent: raw.baseContent,
+    oursContent: raw.oursContent,
+    theirsContent: raw.theirsContent,
+    mergedWithMarkers: raw.mergedWithMarkers,
+    language: raw.language,
+  };
+}
+
 export function transformDiffPageRow(raw: RawDiffPageRow): DiffPageRow {
   if (raw.kind === "hunk_header") {
     return {
       kind: raw.kind,
       header: raw.header,
+      oldStart: raw.old_start,
+      oldLines: raw.old_lines,
+      newStart: raw.new_start,
+      newLines: raw.new_lines,
     };
   }
   return {
@@ -177,6 +205,46 @@ export function transformPrDiffAnnotationsResponse(
   };
 }
 
+export function transformWorkspaceReviewHunkAnnotation(
+  raw: RawWorkspaceReviewHunkAnnotation
+): WorkspaceReviewHunkAnnotation {
+  return {
+    id: raw.id,
+    conversationId: raw.conversation_id,
+    projectId: raw.project_id,
+    artifactId: raw.artifact_id,
+    artifactVersion: raw.artifact_version,
+    targetScope: raw.target_scope,
+    headSha: raw.head_sha,
+    diffFingerprint: raw.diff_fingerprint,
+    path: raw.path,
+    diffSource: raw.diff_source,
+    hunkHeader: raw.hunk_header,
+    oldStart: raw.old_start,
+    oldLines: raw.old_lines,
+    newStart: raw.new_start,
+    newLines: raw.new_lines,
+    title: raw.title,
+    message: raw.message,
+    level: raw.level,
+    createdByRunId: raw.created_by_run_id,
+    createdAt: raw.created_at,
+  };
+}
+
+export function transformWorkspaceReviewHunkAnnotationsResponse(
+  raw: RawWorkspaceReviewHunkAnnotationsResponse
+): WorkspaceReviewHunkAnnotationsResponse {
+  return {
+    artifactId: raw.artifact_id,
+    artifactVersion: raw.artifact_version,
+    targetScope: raw.target_scope,
+    headSha: raw.head_sha,
+    diffFingerprint: raw.diff_fingerprint,
+    annotations: raw.annotations.map(transformWorkspaceReviewHunkAnnotation),
+  };
+}
+
 export function transformAgentWorkspaceReview(
   raw: RawAgentWorkspaceReview
 ): AgentWorkspaceReview {
@@ -206,5 +274,23 @@ export function transformAgentWorkspaceChangeSummary(
     supportsWorktreeModes: raw.supports_worktree_modes,
     staged: transformAgentWorkspaceChangeBucketSummary(raw.staged),
     unstaged: transformAgentWorkspaceChangeBucketSummary(raw.unstaged),
+    ...(raw.conflicted
+      ? {
+          conflicted: {
+            fileCount: raw.conflicted.file_count,
+            files: raw.conflicted.files,
+          },
+        }
+      : {}),
+    ...(raw.repair_state
+      ? {
+          repairState: {
+            expectedBranch: raw.repair_state.expected_branch,
+            checkedOutBranch: raw.repair_state.checked_out_branch,
+            rebaseInProgress: raw.repair_state.rebase_in_progress,
+            mergeInProgress: raw.repair_state.merge_in_progress,
+          },
+        }
+      : {}),
   };
 }

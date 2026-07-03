@@ -20,9 +20,11 @@ export function serializeComposerReferencesMetadata({
   artifactReferences?: ComposerArtifactReference[] | null | undefined;
 }): string | null {
   const normalizedProjectReferences = parseProjectReferences(projectReferences);
-  const normalizedIntegrationReferences =
-    parseIntegrationReferences(integrationReferences);
-  const normalizedArtifactReferences = parseArtifactReferences(artifactReferences);
+  const normalizedIntegrationReferences = parseIntegrationReferences(
+    integrationReferences,
+  );
+  const normalizedArtifactReferences =
+    parseArtifactReferences(artifactReferences);
 
   if (
     normalizedProjectReferences.length === 0 &&
@@ -56,10 +58,12 @@ export function parseComposerReferencesFromMetadata(
     metadata.composer_project_references ?? metadata.composerProjectReferences,
   );
   const integrationReferences = parseIntegrationReferences(
-    metadata.composer_integration_references ?? metadata.composerIntegrationReferences,
+    metadata.composer_integration_references ??
+      metadata.composerIntegrationReferences,
   );
   const artifactReferences = parseArtifactReferences(
-    metadata.composer_artifact_references ?? metadata.composerArtifactReferences,
+    metadata.composer_artifact_references ??
+      metadata.composerArtifactReferences,
   );
 
   if (
@@ -99,7 +103,9 @@ function parseProjectReferences(raw: unknown): ComposerProjectReference[] {
   return references;
 }
 
-function parseIntegrationReferences(raw: unknown): ComposerIntegrationReference[] {
+function parseIntegrationReferences(
+  raw: unknown,
+): ComposerIntegrationReference[] {
   if (!Array.isArray(raw)) {
     return [];
   }
@@ -111,17 +117,36 @@ function parseIntegrationReferences(raw: unknown): ComposerIntegrationReference[
     }
     const record = item as Record<string, unknown>;
     if (
-      record.provider !== "atlassian" ||
-      (record.kind !== "jira" && record.kind !== "confluence") ||
+      (record.provider !== "atlassian" &&
+        record.provider !== "linear" &&
+        record.provider !== "clickup" &&
+        record.provider !== "granola") ||
+      (record.provider === "atlassian" &&
+        record.kind !== "jira" &&
+        record.kind !== "confluence") ||
+      (record.provider === "linear" && record.kind !== "linear") ||
+      (record.provider === "clickup" && record.kind !== "clickup") ||
+      (record.provider === "granola" && record.kind !== "note") ||
       typeof record.id !== "string" ||
       record.id.trim().length === 0
     ) {
       continue;
     }
 
+    const provider = record.provider as
+      | "atlassian"
+      | "linear"
+      | "clickup"
+      | "granola";
+    const kind = record.kind as
+      | "jira"
+      | "confluence"
+      | "linear"
+      | "clickup"
+      | "note";
     references.push({
-      provider: "atlassian",
-      kind: record.kind,
+      provider,
+      kind,
       id: record.id,
       ...(typeof record.key === "string" && record.key.trim().length > 0
         ? { key: record.key }
@@ -131,6 +156,20 @@ function parseIntegrationReferences(raw: unknown): ComposerIntegrationReference[
         : {}),
       ...(typeof record.url === "string" && record.url.trim().length > 0
         ? { url: record.url }
+        : {}),
+      ...(typeof record.summaryExcerpt === "string" &&
+      record.summaryExcerpt.trim().length > 0
+        ? { summaryExcerpt: record.summaryExcerpt }
+        : {}),
+      ...(typeof record.summary_excerpt === "string" &&
+      record.summary_excerpt.trim().length > 0
+        ? { summaryExcerpt: record.summary_excerpt }
+        : {}),
+      ...(typeof record.includeTranscript === "boolean"
+        ? { includeTranscript: record.includeTranscript }
+        : {}),
+      ...(typeof record.include_transcript === "boolean"
+        ? { includeTranscript: record.include_transcript }
         : {}),
     });
   }
@@ -157,7 +196,10 @@ function parseArtifactReferences(raw: unknown): ComposerArtifactReference[] {
     if (!artifactId || artifactId.trim().length === 0) {
       continue;
     }
-    const kind = typeof record.kind === "string" && record.kind.trim() ? record.kind : "plan";
+    const kind =
+      typeof record.kind === "string" && record.kind.trim()
+        ? record.kind
+        : "plan";
     const sessionId =
       typeof record.sessionId === "string"
         ? record.sessionId

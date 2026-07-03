@@ -11,9 +11,11 @@ use crate::application::harness_runtime_registry::default_ui_feature_flags;
 pub struct UiFeatureFlagsResponse {
     pub activity_page: bool,
     pub extensibility_page: bool,
+    pub ideation_page: bool,
     pub battle_mode: bool,
     pub team_mode: bool,
     pub atlassian_oauth: bool,
+    pub ticketing_dashboard: bool,
 }
 
 /// Returns the current UI feature flag configuration.
@@ -24,9 +26,11 @@ pub fn get_ui_feature_flags() -> UiFeatureFlagsResponse {
     UiFeatureFlagsResponse {
         activity_page: flags.activity_page,
         extensibility_page: flags.extensibility_page,
+        ideation_page: flags.ideation_page,
         battle_mode: flags.battle_mode,
         team_mode: flags.team_mode,
         atlassian_oauth: flags.atlassian_oauth,
+        ticketing_dashboard: flags.ticketing_dashboard,
     }
 }
 

@@ -53,8 +53,24 @@ export interface FileDiff {
   isBinary: boolean;
 }
 
+export interface ConflictDiff {
+  filePath: string;
+  baseContent: string;
+  oursContent: string;
+  theirsContent: string;
+  mergedWithMarkers: string;
+  language: string;
+}
+
 export type DiffPageRow =
-  | { kind: "hunk_header"; header: string }
+  | {
+      kind: "hunk_header";
+      header: string;
+      oldStart: number;
+      oldLines: number;
+      newStart: number;
+      newLines: number;
+    }
   | { kind: "line"; line: DiffLine };
 
 export interface FileDiffPage {
@@ -104,6 +120,40 @@ export interface PrDiffAnnotationsResponse {
   sourcesUnavailable: PrAnnotationSourceUnavailable[];
 }
 
+// ── Workspace review hunk annotation types ────────────────────────────────
+
+export interface WorkspaceReviewHunkAnnotation {
+  id: string;
+  conversationId: string;
+  projectId: string;
+  artifactId: string;
+  artifactVersion: number;
+  targetScope: "selected_source" | "workspace_delta";
+  headSha: string | null;
+  diffFingerprint: string;
+  path: string;
+  diffSource: string;
+  hunkHeader: string;
+  oldStart: number;
+  oldLines: number;
+  newStart: number;
+  newLines: number;
+  title: string | null;
+  message: string;
+  level: string;
+  createdByRunId: string | null;
+  createdAt: string;
+}
+
+export interface WorkspaceReviewHunkAnnotationsResponse {
+  artifactId: string | null;
+  artifactVersion: number | null;
+  targetScope: string | null;
+  headSha: string | null;
+  diffFingerprint: string | null;
+  annotations: WorkspaceReviewHunkAnnotation[];
+}
+
 // ── Other domain types ────────────────────────────────────────────────────
 
 export interface CommitInfo {
@@ -128,8 +178,22 @@ export interface AgentWorkspaceChangeBucketSummary {
   deletions: number;
 }
 
+export interface AgentWorkspaceConflictSummary {
+  fileCount: number;
+  files: string[];
+}
+
+export interface AgentWorkspaceRepairState {
+  expectedBranch: string;
+  checkedOutBranch: string;
+  rebaseInProgress: boolean;
+  mergeInProgress: boolean;
+}
+
 export interface AgentWorkspaceChangeSummary {
   supportsWorktreeModes: boolean;
   staged: AgentWorkspaceChangeBucketSummary;
   unstaged: AgentWorkspaceChangeBucketSummary;
+  conflicted?: AgentWorkspaceConflictSummary;
+  repairState?: AgentWorkspaceRepairState;
 }

@@ -42,6 +42,8 @@ pub(crate) fn initialize_settings_defaults(
                 init_execution_state
                     .set_global_max_concurrent(result.global_defaults.global_max_concurrent);
                 init_execution_state
+                    .set_workspace_max_concurrent(result.global_defaults.workspace_max_concurrent);
+                init_execution_state
                     .set_global_ideation_max(result.global_defaults.global_ideation_max);
                 init_execution_state.set_allow_ideation_borrow_idle_execution(
                     result.global_defaults.allow_ideation_borrow_idle_execution,
@@ -52,6 +54,7 @@ pub(crate) fn initialize_settings_defaults(
                     max_concurrent = result.project_defaults.max_concurrent_tasks,
                     project_ideation_max = result.project_defaults.project_ideation_max,
                     global_max_concurrent = result.global_defaults.global_max_concurrent,
+                    workspace_max_concurrent = result.global_defaults.workspace_max_concurrent,
                     global_ideation_max = result.global_defaults.global_ideation_max,
                     allow_ideation_borrow_idle_execution =
                         result.global_defaults.allow_ideation_borrow_idle_execution,

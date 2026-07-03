@@ -37,31 +37,51 @@ Object.defineProperty(window, "matchMedia", {
   })),
 });
 
-const testLocalStorage = window.localStorage;
-if (
-  !testLocalStorage ||
-  typeof testLocalStorage.getItem !== "function" ||
-  typeof testLocalStorage.setItem !== "function" ||
-  typeof testLocalStorage.removeItem !== "function" ||
-  typeof testLocalStorage.clear !== "function"
-) {
-  const values = new Map<string, string>();
-  Object.defineProperty(window, "localStorage", {
-    configurable: true,
-    value: {
-      getItem: (key: string) => values.get(key) ?? null,
-      setItem: (key: string, value: string) => {
-        values.set(key, value);
-      },
-      removeItem: (key: string) => {
-        values.delete(key);
-      },
-      clear: () => {
-        values.clear();
-      },
+// Node 25 ships an experimental global `localStorage`/`sessionStorage` that can
+// shadow jsdom's Storage and lacks its methods, crashing any test that touches
+// storage (e.g. `window.localStorage.clear()`). Install a standard in-memory
+// Storage only when the environment's implementation is missing/unusable, so
+// CI (Node 20 + jsdom) is unaffected while local Node 25 runs stay green.
+function installMemoryStorage(prop: "localStorage" | "sessionStorage") {
+  const existing = (window as unknown as Record<string, Storage | undefined>)[prop];
+  if (existing && typeof existing.clear === "function") {
+    return;
+  }
+  const store = new Map<string, string>();
+  const storage = {
+    get length() {
+      return store.size;
     },
-  });
+    clear() {
+      store.clear();
+    },
+    getItem(key: string) {
+      return store.has(key) ? (store.get(key) as string) : null;
+    },
+    key(index: number) {
+      return Array.from(store.keys())[index] ?? null;
+    },
+    removeItem(key: string) {
+      store.delete(key);
+    },
+    setItem(key: string, value: string) {
+      store.set(String(key), String(value));
+    },
+  } as Storage;
+  for (const target of [window, globalThis] as object[]) {
+    try {
+      Object.defineProperty(target, prop, {
+        configurable: true,
+        writable: true,
+        value: storage,
+      });
+    } catch {
+      // Leave the existing implementation if it cannot be redefined.
+    }
+  }
 }
+installMemoryStorage("localStorage");
+installMemoryStorage("sessionStorage");
 
 // jsdom does not implement canvas rendering. Keep canvas unavailable, but avoid
 // noisy "HTMLCanvasElement.getContext() not implemented" warnings in tests.

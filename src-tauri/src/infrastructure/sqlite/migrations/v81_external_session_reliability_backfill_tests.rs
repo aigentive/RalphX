@@ -28,7 +28,11 @@ fn setup_test_db() -> Connection {
 fn test_backfill_columns_added() {
     let conn = setup_test_db();
 
-    assert!(!helpers::column_exists(&conn, "ideation_sessions", "api_key_id"));
+    assert!(!helpers::column_exists(
+        &conn,
+        "ideation_sessions",
+        "api_key_id"
+    ));
     assert!(!helpers::column_exists(
         &conn,
         "ideation_sessions",
@@ -47,7 +51,11 @@ fn test_backfill_columns_added() {
 
     v81_external_session_reliability_backfill::migrate(&conn).unwrap();
 
-    assert!(helpers::column_exists(&conn, "ideation_sessions", "api_key_id"));
+    assert!(helpers::column_exists(
+        &conn,
+        "ideation_sessions",
+        "api_key_id"
+    ));
     assert!(helpers::column_exists(
         &conn,
         "ideation_sessions",
@@ -102,7 +110,11 @@ fn test_backfill_idempotent() {
     v81_external_session_reliability_backfill::migrate(&conn).unwrap();
     v81_external_session_reliability_backfill::migrate(&conn).unwrap();
 
-    assert!(helpers::column_exists(&conn, "ideation_sessions", "api_key_id"));
+    assert!(helpers::column_exists(
+        &conn,
+        "ideation_sessions",
+        "api_key_id"
+    ));
     assert!(helpers::index_exists(
         &conn,
         "idx_ideation_sessions_idempotency"

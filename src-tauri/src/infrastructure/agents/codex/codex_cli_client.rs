@@ -150,6 +150,7 @@ impl CodexCliClient {
             reasoning_effort: config.logical_effort,
             approval_policy: Some(CODEX_DEFAULT_APPROVAL_POLICY.to_string()),
             sandbox_mode: Some(CODEX_DEFAULT_SANDBOX_MODE.to_string()),
+            service_tier: config.service_tier.clone(),
             config_overrides,
             cwd: Some(config.working_directory.clone()),
             add_dirs: Vec::new(),

@@ -8,7 +8,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { InfiniteData } from "@tanstack/react-query";
 import { infiniteTaskKeys } from "@/hooks/useInfiniteTasksQuery";
 import { createMockTask } from "@/test/mock-data";
-import type { WorkflowColumn } from "@/types/workflow";
+import { defaultWorkflow, type WorkflowColumn } from "@/types/workflow";
 import type { InternalStatus } from "@/types/status";
 import type { TaskListResponse } from "@/types/task";
 import { useColumnTaskCounts } from "./useColumnTaskCounts";
@@ -106,6 +106,17 @@ describe("useColumnTaskCounts", () => {
     );
 
     expect(result.current.get("ready")).toBe(4);
+  });
+
+  it("counts paused tasks under the default In Progress lane", () => {
+    seedCache(["executing", "re_executing", "paused"], 1);
+
+    const { result } = renderHook(
+      () => useColumnTaskCounts(defaultWorkflow.columns, PROJECT_ID, false, SESSION_ID),
+      { wrapper: createWrapper() },
+    );
+
+    expect(result.current.get("in_progress")).toBe(1);
   });
 
   it("reacts to cache updates", () => {

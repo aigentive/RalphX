@@ -1,4 +1,5 @@
 import { chatApi, type AgentConversationSourcePullRequest } from "@/api/chat";
+import type { ComposerIntegrationReference } from "@/api/chat";
 import { ideationApi } from "@/api/ideation";
 import { planBranchApi } from "@/api/plan-branch";
 import {
@@ -7,6 +8,7 @@ import {
   getGitDefaultBranch,
   searchGithubPullRequests,
 } from "@/api/projects";
+import type { TicketAssociationItem } from "@/api/ticketing";
 import type { ChatConversation } from "@/types/chat-conversation";
 
 export type BranchBaseRefKind = "project_default" | "current_branch" | "local_branch";
@@ -25,6 +27,7 @@ export type BranchBaseOptionSource =
   | "plan"
   | "agent"
   | "pull_request";
+export type TicketComposerProvider = "jira" | "linear" | "clickup";
 
 export interface BranchBaseOption {
   key: string;
@@ -170,10 +173,7 @@ export async function loadBranchBaseOptions({
 
   return {
     options: Array.from(optionMap.values()),
-    selectedKey:
-      currentBranch && currentBranch !== projectDefault
-        ? `current_branch:${currentBranch}`
-        : `project_default:${projectDefault}`,
+    selectedKey: `project_default:${projectDefault}`,
   };
 }
 
@@ -195,6 +195,130 @@ export function fallbackBranchBaseOptions(baseBranch: string | null | undefined)
     ],
     selectedKey: `project_default:${fallback}`,
   };
+}
+
+export function ticketAssociationBranchBaseOption(
+  association: TicketAssociationItem
+): BranchBaseOption | null {
+  const branchName = normalizeGitBranchName(
+    association.branchName ?? association.subtitle ?? ""
+  );
+  if (!branchName) {
+    return null;
+  }
+
+  const prNumber = association.prNumber ?? null;
+  if (typeof prNumber === "number" && Number.isFinite(prNumber)) {
+    const title = association.title.trim() || `PR #${prNumber}`;
+    const baseRefName = association.baseRef?.trim() || null;
+    return {
+      key: `pull_request:${prNumber}:${branchName}`,
+      label: title,
+      detail: baseRefName ? `${branchName} -> ${baseRefName}` : branchName,
+      source: "pull_request",
+      selection: {
+        kind: "local_branch",
+        ref: branchName,
+        displayName: title,
+        sourcePullRequest: {
+          number: prNumber,
+          url: association.prUrl ?? null,
+          title,
+          headRefName: branchName,
+          baseRefName,
+          headRefOid: null,
+        },
+      },
+    };
+  }
+
+  const title = association.title.trim() || branchName;
+  return {
+    key: `ticket_branch:${branchName}`,
+    label: title,
+    detail: branchName,
+    source: "local",
+    selection: {
+      kind: "local_branch",
+      ref: branchName,
+      displayName: title,
+    },
+  };
+}
+
+export function ticketCanonicalBranchBaseOption(
+  reference: ComposerIntegrationReference
+): BranchBaseOption | null {
+  const ticket = ticketBaseReferenceFromComposerReference(reference);
+  if (!ticket) {
+    return null;
+  }
+  const branchName = `ralphx/ticket/${ticket.provider}-${ticket.issueSlug}`;
+  const title = `Ticket ${ticket.issueKey}`;
+  return {
+    key: `ticket_branch:${branchName}`,
+    label: title,
+    detail: branchName,
+    source: "local",
+    selection: {
+      kind: "local_branch",
+      ref: branchName,
+      displayName: `${title} (${branchName})`,
+    },
+  };
+}
+
+function ticketBaseReferenceFromComposerReference(
+  reference: ComposerIntegrationReference
+): { provider: string; issueKey: string; issueSlug: string } | null {
+  const provider = ticketProviderForComposerReference(reference);
+  if (!provider) {
+    return null;
+  }
+  const issueKey = (reference.key?.trim() || reference.id.trim());
+  const issueSlug = sanitizeTicketBranchComponent(issueKey);
+  if (!issueKey || !issueSlug) {
+    return null;
+  }
+  return {
+    provider,
+    issueKey,
+    issueSlug,
+  };
+}
+
+export function ticketProviderForComposerReference(
+  reference: ComposerIntegrationReference
+): TicketComposerProvider | null {
+  const provider = reference.provider.trim().toLowerCase();
+  const kind = reference.kind.trim().toLowerCase();
+  if ((provider === "atlassian" || provider === "jira") && kind === "jira") {
+    return "jira";
+  }
+  if (provider === "linear" && kind === "linear") {
+    return "linear";
+  }
+  if (provider === "clickup" && kind === "clickup") {
+    return "clickup";
+  }
+  return null;
+}
+
+function sanitizeTicketBranchComponent(value: string): string | null {
+  let output = "";
+  let lastWasDash = false;
+  for (const character of value) {
+    const lower = character.toLowerCase();
+    if ((lower >= "a" && lower <= "z") || (lower >= "0" && lower <= "9")) {
+      output += lower;
+      lastWasDash = false;
+    } else if (!lastWasDash) {
+      output += "-";
+      lastWasDash = true;
+    }
+  }
+  const trimmed = output.replace(/^-+|-+$/g, "");
+  return trimmed.length > 0 ? trimmed : null;
 }
 
 export async function loadPullRequestBaseOptions({

@@ -2,7 +2,7 @@
  * ProjectSelector - Compact header dropdown for project selection
  *
  * A refined dropdown selector showing current project with git mode indicator.
- * Uses shadcn DropdownMenu for proper keyboard accessibility and animations.
+ * Uses the shared searchable project popover for keyboard-accessible selection.
  *
  * Design: Follows RalphX design system with warm orange accent, SF Pro fonts,
  * 8pt grid, dark theme. Full keyboard accessibility with arrow navigation.
@@ -11,22 +11,7 @@
 import { useMemo, useCallback } from "react";
 import { useProjectStore, selectActiveProject } from "@/stores/projectStore";
 import { useProjects } from "@/hooks/useProjects";
-import { Button } from "@/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import {
-  FolderOpen,
-  ChevronDown,
-  Plus,
-} from "lucide-react";
-import { cn } from "@/lib/utils";
-import type { Project } from "@/types/project";
+import { ProjectDropdown } from "./ProjectDropdown";
 
 // ============================================================================
 // Props Interface
@@ -35,52 +20,20 @@ import type { Project } from "@/types/project";
 export interface ProjectSelectorProps {
   /** Callback when New Project is selected */
   onNewProject: () => void;
+  /** Called immediately before switching to another existing project. */
+  onBeforeProjectChange?: ((projectId: string) => void) | undefined;
   /** Optional className for custom styling */
   className?: string;
   /** Dropdown alignment - defaults to center */
   align?: "start" | "center" | "end";
 }
 
-// ============================================================================
-// Sub-components
-// ============================================================================
-
-interface ProjectItemProps {
-  project: Project;
-  isActive: boolean;
-  onSelect: () => void;
-}
-
-function ProjectItem({ project, isActive, onSelect }: ProjectItemProps) {
-  return (
-    <DropdownMenuItem
-      className={cn(
-        "flex items-center justify-between gap-2 px-3 py-2 cursor-pointer",
-        isActive && "border-l-2 border-[var(--accent-primary)] bg-[var(--accent-muted)]"
-      )}
-      onClick={onSelect}
-      data-testid={`project-option-${project.id}`}
-    >
-      <div className="flex items-center gap-2 min-w-0">
-        {/* Active dot indicator */}
-        <span
-          className={cn(
-            "w-1.5 h-1.5 rounded-full flex-shrink-0",
-            isActive ? "bg-[var(--accent-primary)]" : "bg-transparent"
-          )}
-        />
-        {/* Project name */}
-        <span className="text-sm font-medium truncate">{project.name}</span>
-      </div>
-    </DropdownMenuItem>
-  );
-}
-
-// ============================================================================
-// Main Component
-// ============================================================================
-
-export function ProjectSelector({ onNewProject, className = "", align = "center" }: ProjectSelectorProps) {
+export function ProjectSelector({
+  onNewProject,
+  onBeforeProjectChange,
+  className = "",
+  align = "center",
+}: ProjectSelectorProps) {
   // Store state (selection only)
   const activeProjectId = useProjectStore((s) => s.activeProjectId);
   const selectProject = useProjectStore((s) => s.selectProject);
@@ -113,79 +66,36 @@ export function ProjectSelector({ onNewProject, className = "", align = "center"
 
   const handleSelectProject = useCallback(
     (projectId: string) => {
+      if (projectId !== activeProjectId) {
+        onBeforeProjectChange?.(projectId);
+      }
       selectProject(projectId);
     },
-    [selectProject]
+    [activeProjectId, onBeforeProjectChange, selectProject]
   );
 
-  const hasProjects = projectList.length > 0;
-
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button
-          variant="ghost"
-          className={cn(
-            "inline-flex items-center gap-2 px-3 h-8 border border-[var(--border-default)] max-w-[280px] overflow-hidden",
-            className
-          )}
-          data-testid="project-selector-trigger"
-        >
-          <FolderOpen className="w-4 h-4 text-[var(--text-secondary)] flex-shrink-0" />
-          {activeProject ? (
-            <span className="flex items-center gap-2 min-w-0 overflow-hidden">
-              <span className="text-sm font-medium truncate">{activeProject.name}</span>
-            </span>
-          ) : (
-            <span className="text-sm text-[var(--text-muted)]">Select Project</span>
-          )}
-          <ChevronDown className="w-3.5 h-3.5 text-[var(--text-muted)] flex-shrink-0" />
-        </Button>
-      </DropdownMenuTrigger>
-
-      <DropdownMenuContent
-        className="w-60 bg-[var(--bg-elevated)] border-[var(--border-default)]"
-        align={align}
-        sideOffset={8}
-        data-testid="project-selector-dropdown"
-      >
-        {/* Section label */}
-        <DropdownMenuLabel
-          className="text-xs uppercase tracking-wide text-[var(--text-muted)] px-3 py-2"
-        >
-          Recent Projects
-        </DropdownMenuLabel>
-
-        {/* Project list */}
-        {hasProjects ? (
-          <div className="max-h-[240px] overflow-y-auto">
-            {projectList.map((project) => (
-              <ProjectItem
-                key={project.id}
-                project={project}
-                isActive={project.id === activeProjectId}
-                onSelect={() => handleSelectProject(project.id)}
-              />
-            ))}
-          </div>
-        ) : (
-          <div className="px-3 py-4 text-center text-sm text-[var(--text-muted)]">
-            No projects yet
-          </div>
-        )}
-
-        <DropdownMenuSeparator className="bg-[var(--border-subtle)]" />
-
-        {/* New Project option */}
-        <DropdownMenuItem
-          className="flex items-center gap-2 px-3 py-2 cursor-pointer text-[var(--text-secondary)] hover:text-[var(--text-primary)] focus:text-[var(--text-primary)]"
-          onClick={onNewProject}
-          data-testid="new-project-option"
-        >
-          <Plus className="w-4 h-4 text-[var(--accent-primary)]" />
-          <span className="text-sm font-medium">New Project...</span>
-        </DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
+    <ProjectDropdown
+      projects={projectList}
+      value={activeProjectId}
+      selectedProject={activeProject}
+      onValueChange={(projectId) => {
+        if (projectId) {
+          handleSelectProject(projectId);
+        }
+      }}
+      onNewProject={onNewProject}
+      className={className}
+      align={align}
+      variant="navbar"
+      placeholder="Select Project"
+      testId="project-selector-trigger"
+      dropdownTestId="project-selector-dropdown"
+      listTestId="project-selector-list"
+      searchTestId="project-selector-search"
+      newProjectTestId="new-project-option"
+      showMoreTestId="project-selector-show-more"
+      projectOptionTestId={(project) => `project-option-${project.id}`}
+    />
   );
 }

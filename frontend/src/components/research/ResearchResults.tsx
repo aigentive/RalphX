@@ -39,7 +39,7 @@ const STATUS_COLORS: Record<ResearchProcessStatus, string> = {
 const TYPE_LABELS: Record<ArtifactType, string> = {
   prd: "PRD", research_document: "Research Document", design_doc: "Design Doc", specification: "Specification",
   code_change: "Code Change", diff: "Diff", test_result: "Test Result", task_spec: "Task Spec",
-  review_feedback: "Review Feedback", approval: "Approval", findings: "Findings", recommendations: "Recommendations",
+  review_feedback: "Review Feedback", pr_review: "PR Review", approval: "Approval", findings: "Findings", recommendations: "Recommendations",
   context: "Context", previous_work: "Previous Work", research_brief: "Research Brief",
   activity_log: "Activity Log", alert: "Alert", intervention: "Intervention",
 };

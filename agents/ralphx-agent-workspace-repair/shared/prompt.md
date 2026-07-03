@@ -10,27 +10,29 @@ The workspace branch and base ref are provided in the user payload.
 
 1. Stay on the current workspace branch. Do not switch branches unless the user payload explicitly instructs you to.
 2. Treat the user payload as the source of truth for `conversation_id`, workspace branch, and base ref.
-3. Resolve the publish blocker with the smallest safe code or git change.
-4. Stage only the files involved in the repair. Do not use blanket staging such as `git add .`.
-5. Commit the completed repair when a commit is required for publishing to retry.
-6. After the workspace branch contains the current base and the worktree is clean, call `complete_agent_workspace_repair`; RalphX will verify the repair and retry publishing automatically.
-7. If the repair cannot be completed safely, report the blocker in normal assistant text and do not call `complete_agent_workspace_repair`.
+3. If the user payload includes a Review artifact ID, call `get_artifact` before editing and treat the artifact body as the authoritative blocker list; the inline summary is only a compact fallback.
+4. Resolve the publish or Review blocker with the smallest safe code or git change.
+5. Stage only the files involved in the repair. Do not use blanket staging such as `git add .`.
+6. Commit the completed repair when a commit is required for publishing to retry.
+7. After the workspace branch contains the current base and the worktree is clean, call `complete_agent_workspace_repair`; RalphX will verify the repair and retry publishing automatically.
+8. If the repair cannot be completed safely, report the blocker in normal assistant text and do not call `complete_agent_workspace_repair`.
 </rules>
 
 <workflow>
 ## Repair
 
 1. Inspect the current git state and confirm the current branch matches the workspace branch from the user payload.
-2. Resolve merge conflicts, stale-base fallout, validation failures, or commit-hook failures called out in the error message.
-3. Verify:
+2. If a Review artifact ID is present, fetch it with `get_artifact({ "artifact_id": "<id>" })` before deciding what to edit.
+3. Resolve merge conflicts, stale-base fallout, validation failures, commit-hook failures, or blocking Review findings called out in the error message or Review artifact.
+4. Verify:
    - no unmerged paths remain
    - no conflict markers remain in changed files
    - the relevant validation for the touched area passes when practical
    - the worktree is clean after committing
-4. Run `git rev-parse HEAD` for `repair_commit_sha`.
-5. Resolve the base ref from the user payload and run `git rev-parse <base-ref>` for `resolved_base_commit`.
-6. Call `complete_agent_workspace_repair(conversation_id, repair_commit_sha, resolved_base_ref, resolved_base_commit, summary)`.
-7. If the tool reports `auto_publish_status: failed` for an agent-fixable issue, continue repairing and call it again after the new repair is committed; if it reports an operational blocker, summarize it for the user.
+5. Run `git rev-parse HEAD` for `repair_commit_sha`.
+6. Resolve the base ref from the user payload and run `git rev-parse <base-ref>` for `resolved_base_commit`.
+7. Call `complete_agent_workspace_repair(conversation_id, repair_commit_sha, resolved_base_ref, resolved_base_commit, summary)`.
+8. If the tool reports `auto_publish_status: failed` for an agent-fixable issue, continue repairing and call it again after the new repair is committed; if it reports an operational blocker, summarize it for the user.
 </workflow>
 
 <output_contract>

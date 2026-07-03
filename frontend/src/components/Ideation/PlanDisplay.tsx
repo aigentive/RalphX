@@ -45,6 +45,7 @@ export interface TeamMetadata {
 
 export interface PlanDisplayProps {
   plan: Artifact;
+  artifactLabel?: string;
   showApprove?: boolean;
   linkedProposalsCount?: number;
   onEdit?: () => void;
@@ -76,6 +77,7 @@ export interface PlanDisplayProps {
   implementDirectlyLabel?: string;
   isImplementingDirectly?: boolean;
   primaryPlanAction?: "implement_directly" | "create_proposals";
+  isPlanActionRecommendationPending?: boolean;
   planActionHint?: string | null;
   /** Show the overflow action cluster (version picker / copy / export / edit) */
   showOverflowActions?: boolean;
@@ -335,6 +337,7 @@ const markdownComponents = {
 
 export function PlanDisplay({
   plan,
+  artifactLabel = "Plan",
   showApprove = false,
   linkedProposalsCount = 0,
   onEdit,
@@ -357,6 +360,7 @@ export function PlanDisplay({
   implementDirectlyLabel = "Implement Directly",
   isImplementingDirectly = false,
   primaryPlanAction,
+  isPlanActionRecommendationPending = false,
   planActionHint = null,
   showOverflowActions = true,
   chromeless = false,
@@ -370,11 +374,13 @@ export function PlanDisplay({
     (linkedProposalsCount === undefined || linkedProposalsCount === 0);
   const showImplementDirectly = Boolean(onImplementDirectly);
   const isCreateProposalsPrimary =
-    primaryPlanAction === "create_proposals" ||
-    (!showImplementDirectly && Boolean(showCreateProposals));
+    !isPlanActionRecommendationPending &&
+    (primaryPlanAction === "create_proposals" ||
+      (!showImplementDirectly && Boolean(showCreateProposals)));
   const isImplementDirectlyPrimary =
-    primaryPlanAction === "implement_directly" ||
-    (showImplementDirectly && !showCreateProposals);
+    !isPlanActionRecommendationPending &&
+    (primaryPlanAction === "implement_directly" ||
+      (showImplementDirectly && !showCreateProposals));
   const isOpen = isExpanded !== undefined ? isExpanded : internalIsOpen;
   const setIsOpen = onExpandedChange ?? setInternalIsOpen;
   const actionButtonStyle = (isPrimary: boolean) => ({
@@ -518,300 +524,317 @@ export function PlanDisplay({
       ? (displayContent ?? "").slice(headingMatch[0].length)
       : displayContent;
 
+    const hasActionCTAs =
+      (showApprove && !isApproved) ||
+      isApproved ||
+      onVerifyPlan ||
+      showCreateProposals ||
+      showImplementDirectly;
+
     return (
       <div data-testid="plan-display-chromeless" className="group">
         <div className="pb-2 mb-3" style={{ borderBottom: "1px solid var(--border-subtle)" }}>
-          <div
-            className="flex items-center justify-between gap-3"
-          >
+          <div className="flex items-center justify-between gap-3">
             <h1
               className="text-[1.125rem] font-semibold tracking-[-0.02em] flex-1 min-w-0 leading-tight"
               style={{ color: "var(--text-primary)" }}
             >
               {headingTitle ?? plan.name}
             </h1>
-            {/* Slim action row — keeps every control the wrapper card had
-                (approve, create proposals, version history, overflow menu)
-                without the file-icon header chrome that duplicated the
-                in-content H1 title. */}
             <div className="flex items-center gap-1 shrink-0">
-          {showApprove && !isApproved && (
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={onApprove}
-              disabled={isApproving}
-              data-testid="plan-approve-button"
-              className="h-7 px-2.5 text-[0.6875rem] font-semibold gap-1.5 rounded-lg transition-colors duration-150"
-              style={{
-                color: "var(--accent-primary)",
-                background: withAlpha("var(--accent-primary)", 10),
-                border: "1px solid var(--accent-border)",
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.background = withAlpha("var(--accent-primary)", 15);
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.background = withAlpha("var(--accent-primary)", 10);
-              }}
-            >
-              <Sparkles className="w-3 h-3" />
-              {isApproving ? "Approving..." : approveLabel}
-            </Button>
-          )}
-
-          {isApproved && (
-            <span
-              className="flex items-center gap-1.5 text-[0.6875rem] font-medium px-2.5 py-1 rounded-lg"
-              style={{
-                background: "var(--status-success-muted)",
-                border: "1px solid var(--status-success-border)",
-                color: "var(--status-success)",
-              }}
-            >
-              <CheckCircle2 className="w-3 h-3" />
-              Plan Approved
-            </span>
-          )}
-
-          {onVerifyPlan && (
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={onVerifyPlan}
-              disabled={isVerifyingPlan}
-              data-testid="plan-verify-button"
-              className="h-7 px-2.5 text-[0.6875rem] font-semibold gap-1.5 rounded-lg transition-colors duration-150"
-              style={{
-                color: "var(--accent-primary)",
-                background: withAlpha("var(--accent-primary)", 10),
-                border: "1px solid var(--accent-border)",
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.background = withAlpha("var(--accent-primary)", 15);
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.background = withAlpha("var(--accent-primary)", 10);
-              }}
-            >
-              {isVerifyingPlan ? (
-                <Loader2 className="w-3 h-3 animate-spin" />
-              ) : (
-                <ShieldCheck className="w-3 h-3" />
-              )}
-              {isVerifyingPlan ? "Verifying..." : verifyPlanLabel}
-            </Button>
-          )}
-
-          {primaryPlanAction === "create_proposals" ? (
-            <>
-              {showCreateProposals && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={onCreateProposals}
-                  className="h-7 px-2.5 text-[0.6875rem] font-semibold gap-1.5 rounded-lg transition-colors duration-150"
-                  style={actionButtonStyle(isCreateProposalsPrimary)}
-                  onMouseEnter={(e) => actionButtonHover(e, isCreateProposalsPrimary)}
-                  onMouseLeave={(e) => actionButtonLeave(e, isCreateProposalsPrimary)}
-                >
-                  <ListPlus className="w-3 h-3" />
-                  {createProposalsLabel}
-                </Button>
-              )}
-              {showImplementDirectly && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={onImplementDirectly}
-                  disabled={isImplementingDirectly}
-                  className="h-7 px-2.5 text-[0.6875rem] font-semibold gap-1.5 rounded-lg transition-colors duration-150"
-                  style={actionButtonStyle(isImplementDirectlyPrimary)}
-                  onMouseEnter={(e) => actionButtonHover(e, isImplementDirectlyPrimary)}
-                  onMouseLeave={(e) => actionButtonLeave(e, isImplementDirectlyPrimary)}
-                >
-                  {isImplementingDirectly ? (
-                    <Loader2 className="w-3 h-3 animate-spin" />
-                  ) : (
-                    <Rocket className="w-3 h-3" />
-                  )}
-                  {isImplementingDirectly ? "Starting..." : implementDirectlyLabel}
-                </Button>
-              )}
-            </>
-          ) : (
-            <>
-              {showImplementDirectly && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={onImplementDirectly}
-                  disabled={isImplementingDirectly}
-                  className="h-7 px-2.5 text-[0.6875rem] font-semibold gap-1.5 rounded-lg transition-colors duration-150"
-                  style={actionButtonStyle(isImplementDirectlyPrimary)}
-                  onMouseEnter={(e) =>
-                    actionButtonHover(e, isImplementDirectlyPrimary)
-                  }
-                  onMouseLeave={(e) =>
-                    actionButtonLeave(e, isImplementDirectlyPrimary)
-                  }
-                >
-                  {isImplementingDirectly ? (
-                    <Loader2 className="w-3 h-3 animate-spin" />
-                  ) : (
-                    <Rocket className="w-3 h-3" />
-                  )}
-                  {isImplementingDirectly ? "Starting..." : implementDirectlyLabel}
-                </Button>
-              )}
-              {showCreateProposals && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={onCreateProposals}
-                  className="h-7 px-2.5 text-[0.6875rem] font-semibold gap-1.5 rounded-lg transition-colors duration-150"
-                  style={actionButtonStyle(isCreateProposalsPrimary)}
-                  onMouseEnter={(e) =>
-                    actionButtonHover(e, isCreateProposalsPrimary)
-                  }
-                  onMouseLeave={(e) =>
-                    actionButtonLeave(e, isCreateProposalsPrimary)
-                  }
-                >
-                  <ListPlus className="w-3 h-3" />
-                  {createProposalsLabel}
-                </Button>
-              )}
-            </>
-          )}
-
-          {showOverflowActions && plan.metadata.version > 1 && (
-            <DropdownMenu open={isVersionDropdownOpen} onOpenChange={setIsVersionDropdownOpen}>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-7 px-2 text-[0.6875rem] gap-1 rounded-lg transition-colors duration-150"
-                  style={{ color: "var(--text-muted)" }}
-                  title="View version history"
-                >
-                  <History className="w-3 h-3" />
-                  v{selectedVersion}
-                  <ChevronDown className="w-3 h-3" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent
-                align="end"
-                className="w-72"
-                style={{
-                  background: "var(--bg-elevated)",
-                  backdropFilter: "blur(20px)",
-                  border: "1px solid var(--overlay-weak)",
-                  boxShadow: "var(--shadow-lg)",
-                }}
-              >
-                {Array.from({ length: plan.metadata.version }, (_, i) => plan.metadata.version - i).map((version) => {
-                  const isSelected = version === selectedVersion;
-                  const isLatest = version === plan.metadata.version;
-                  const versionSummary = versionHistory?.find((v) => v.version === version);
-                  const timestamp = versionSummary ? formatDateTime(versionSummary.created_at) : null;
-                  return (
-                    <DropdownMenuItem
-                      key={version}
-                      onClick={() => handleVersionSelect(version)}
-                      className="text-[0.75rem] cursor-pointer px-3 py-2"
-                      style={{
-                        background: isSelected ? withAlpha("var(--accent-primary)", 10) : "transparent",
-                        borderLeft: isSelected ? "2px solid var(--accent-primary)" : "2px solid transparent",
-                      }}
+              {showOverflowActions && plan.metadata.version > 1 && (
+                <DropdownMenu open={isVersionDropdownOpen} onOpenChange={setIsVersionDropdownOpen}>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 px-2 text-[0.6875rem] gap-1 rounded-lg transition-colors duration-150"
+                      style={{ color: "var(--text-muted)" }}
+                      title="View version history"
                     >
-                      <span className="flex items-center gap-2 w-full">
-                        {isSelected && (
-                          <span
-                            className="w-1.5 h-1.5 rounded-full"
-                            style={{ background: "var(--accent-primary)" }}
-                          />
-                        )}
-                        <span>
-                          v{version}
-                          {timestamp && (
-                            <span style={{ color: "var(--text-muted)" }}> — {timestamp}</span>
-                          )}
-                        </span>
-                        {isLatest && (
-                          <span className="ml-auto" style={{ color: "var(--text-muted)" }}>
-                            (latest)
-                          </span>
-                        )}
-                      </span>
-                    </DropdownMenuItem>
-                  );
-                })}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          )}
-
-          {showOverflowActions && (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-7 w-7 p-0 rounded-lg transition-colors duration-150"
-                  style={{ color: "var(--text-muted)" }}
-                  aria-label="Plan actions"
-                >
-                  <MoreHorizontal className="w-3.5 h-3.5" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent
-                align="end"
-                className="w-44"
-                style={{
-                  background: "var(--bg-elevated)",
-                  backdropFilter: "blur(20px)",
-                  border: "1px solid var(--overlay-weak)",
-                  boxShadow: "var(--shadow-lg)",
-                }}
-              >
-                <DropdownMenuItem
-                  onClick={() => {
-                    const content = plan.content.type === "inline" ? plan.content.text : "";
-                    navigator.clipboard.writeText(content).then(() => {
-                      toast.success("Copied to clipboard");
-                    }).catch(() => {
-                      toast.error("Failed to copy");
-                    });
-                  }}
-                  disabled={plan.content.type !== "inline" || !plan.content.text}
-                  className="text-[0.75rem] cursor-pointer gap-2 px-3 py-2"
-                >
-                  <Copy className="w-3.5 h-3.5" />
-                  Copy Markdown
-                </DropdownMenuItem>
-                {onEdit && (
-                  <DropdownMenuItem
-                    onClick={onEdit}
-                    className="text-[0.75rem] cursor-pointer gap-2 px-3 py-2"
+                      <History className="w-3 h-3" />
+                      v{selectedVersion}
+                      <ChevronDown className="w-3 h-3" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent
+                    align="end"
+                    className="w-72"
+                    style={{
+                      background: "var(--bg-elevated)",
+                      backdropFilter: "blur(20px)",
+                      border: "1px solid var(--overlay-weak)",
+                      boxShadow: "var(--shadow-lg)",
+                    }}
                   >
-                    <FileEdit className="w-3.5 h-3.5" />
-                    Edit
-                  </DropdownMenuItem>
-                )}
-                <DropdownMenuItem
-                  onClick={handleExport}
-                  className="text-[0.75rem] cursor-pointer gap-2 px-3 py-2"
-                >
-                  <Download className="w-3.5 h-3.5" />
-                  Export...
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          )}
+                    {Array.from({ length: plan.metadata.version }, (_, i) => plan.metadata.version - i).map((version) => {
+                      const isSelected = version === selectedVersion;
+                      const isLatest = version === plan.metadata.version;
+                      const versionSummary = versionHistory?.find((v) => v.version === version);
+                      const timestamp = versionSummary ? formatDateTime(versionSummary.created_at) : null;
+                      return (
+                        <DropdownMenuItem
+                          key={version}
+                          onClick={() => handleVersionSelect(version)}
+                          className="text-[0.75rem] cursor-pointer px-3 py-2"
+                          style={{
+                            background: isSelected ? withAlpha("var(--accent-primary)", 10) : "transparent",
+                            borderLeft: isSelected ? "2px solid var(--accent-primary)" : "2px solid transparent",
+                          }}
+                        >
+                          <span className="flex items-center gap-2 w-full">
+                            {isSelected && (
+                              <span
+                                className="w-1.5 h-1.5 rounded-full"
+                                style={{ background: "var(--accent-primary)" }}
+                              />
+                            )}
+                            <span>
+                              v{version}
+                              {timestamp && (
+                                <span style={{ color: "var(--text-muted)" }}> — {timestamp}</span>
+                              )}
+                            </span>
+                            {isLatest && (
+                              <span className="ml-auto" style={{ color: "var(--text-muted)" }}>
+                                (latest)
+                              </span>
+                            )}
+                          </span>
+                        </DropdownMenuItem>
+                      );
+                    })}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              )}
+
+              {showOverflowActions && (
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 w-7 p-0 rounded-lg transition-colors duration-150"
+                      style={{ color: "var(--text-muted)" }}
+                      aria-label={`${artifactLabel} actions`}
+                    >
+                      <MoreHorizontal className="w-3.5 h-3.5" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent
+                    align="end"
+                    className="w-44"
+                    style={{
+                      background: "var(--bg-elevated)",
+                      backdropFilter: "blur(20px)",
+                      border: "1px solid var(--overlay-weak)",
+                      boxShadow: "var(--shadow-lg)",
+                    }}
+                  >
+                    <DropdownMenuItem
+                      onClick={() => {
+                        const content = plan.content.type === "inline" ? plan.content.text : "";
+                        navigator.clipboard.writeText(content).then(() => {
+                          toast.success("Copied to clipboard");
+                        }).catch(() => {
+                          toast.error("Failed to copy");
+                        });
+                      }}
+                      disabled={plan.content.type !== "inline" || !plan.content.text}
+                      className="text-[0.75rem] cursor-pointer gap-2 px-3 py-2"
+                    >
+                      <Copy className="w-3.5 h-3.5" />
+                      Copy Markdown
+                    </DropdownMenuItem>
+                    {onEdit && (
+                      <DropdownMenuItem
+                        onClick={onEdit}
+                        className="text-[0.75rem] cursor-pointer gap-2 px-3 py-2"
+                      >
+                        <FileEdit className="w-3.5 h-3.5" />
+                        Edit
+                      </DropdownMenuItem>
+                    )}
+                    <DropdownMenuItem
+                      onClick={handleExport}
+                      className="text-[0.75rem] cursor-pointer gap-2 px-3 py-2"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      Export...
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              )}
             </div>
           </div>
+
+          {hasActionCTAs && (
+            <div className="flex flex-wrap items-center gap-1.5 mt-2.5">
+              {showApprove && !isApproved && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={onApprove}
+                  disabled={isApproving}
+                  data-testid="plan-approve-button"
+                  className="h-7 px-2.5 text-[0.6875rem] font-semibold gap-1.5 rounded-lg transition-colors duration-150"
+                  style={{
+                    color: "var(--accent-primary)",
+                    background: withAlpha("var(--accent-primary)", 10),
+                    border: "1px solid var(--accent-border)",
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.background = withAlpha("var(--accent-primary)", 15);
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.background = withAlpha("var(--accent-primary)", 10);
+                  }}
+                >
+                  <Sparkles className="w-3 h-3" />
+                  {isApproving ? "Approving..." : approveLabel}
+                </Button>
+              )}
+
+              {isApproved && (
+                <span
+                  className="flex items-center gap-1.5 text-[0.6875rem] font-medium px-2.5 py-1 rounded-lg"
+                  style={{
+                    background: "var(--status-success-muted)",
+                    border: "1px solid var(--status-success-border)",
+                    color: "var(--status-success)",
+                  }}
+                >
+                  <CheckCircle2 className="w-3 h-3" />
+                  Plan Approved
+                </span>
+              )}
+
+              {onVerifyPlan && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={onVerifyPlan}
+                  disabled={
+                    isVerifyingPlan || isPlanActionRecommendationPending
+                  }
+                  data-testid="plan-verify-button"
+                  className="h-7 px-2.5 text-[0.6875rem] font-semibold gap-1.5 rounded-lg transition-colors duration-150"
+                  style={{
+                    color: "var(--accent-primary)",
+                    background: withAlpha("var(--accent-primary)", 10),
+                    border: "1px solid var(--accent-border)",
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.background = withAlpha("var(--accent-primary)", 15);
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.background = withAlpha("var(--accent-primary)", 10);
+                  }}
+                >
+                  {isVerifyingPlan ? (
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                  ) : (
+                    <ShieldCheck className="w-3 h-3" />
+                  )}
+                  {isVerifyingPlan ? "Verifying..." : verifyPlanLabel}
+                </Button>
+              )}
+
+              {isPlanActionRecommendationPending ||
+              primaryPlanAction === "create_proposals" ? (
+                <>
+                  {showCreateProposals && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={onCreateProposals}
+                      disabled={isPlanActionRecommendationPending}
+                      className="h-7 px-2.5 text-[0.6875rem] font-semibold gap-1.5 rounded-lg transition-colors duration-150"
+                      style={actionButtonStyle(isCreateProposalsPrimary)}
+                      onMouseEnter={(e) => actionButtonHover(e, isCreateProposalsPrimary)}
+                      onMouseLeave={(e) => actionButtonLeave(e, isCreateProposalsPrimary)}
+                    >
+                      <ListPlus className="w-3 h-3" />
+                      {createProposalsLabel}
+                    </Button>
+                  )}
+                  {showImplementDirectly && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={onImplementDirectly}
+                      disabled={
+                        isImplementingDirectly ||
+                        isPlanActionRecommendationPending
+                      }
+                      className="h-7 px-2.5 text-[0.6875rem] font-semibold gap-1.5 rounded-lg transition-colors duration-150"
+                      style={actionButtonStyle(isImplementDirectlyPrimary)}
+                      onMouseEnter={(e) => actionButtonHover(e, isImplementDirectlyPrimary)}
+                      onMouseLeave={(e) => actionButtonLeave(e, isImplementDirectlyPrimary)}
+                    >
+                      {isImplementingDirectly ? (
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                      ) : (
+                        <Rocket className="w-3 h-3" />
+                      )}
+                      {isImplementingDirectly ? "Starting..." : implementDirectlyLabel}
+                    </Button>
+                  )}
+                </>
+              ) : (
+                <>
+                  {showImplementDirectly && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={onImplementDirectly}
+                      disabled={
+                        isImplementingDirectly ||
+                        isPlanActionRecommendationPending
+                      }
+                      className="h-7 px-2.5 text-[0.6875rem] font-semibold gap-1.5 rounded-lg transition-colors duration-150"
+                      style={actionButtonStyle(isImplementDirectlyPrimary)}
+                      onMouseEnter={(e) =>
+                        actionButtonHover(e, isImplementDirectlyPrimary)
+                      }
+                      onMouseLeave={(e) =>
+                        actionButtonLeave(e, isImplementDirectlyPrimary)
+                      }
+                    >
+                      {isImplementingDirectly ? (
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                      ) : (
+                        <Rocket className="w-3 h-3" />
+                      )}
+                      {isImplementingDirectly ? "Starting..." : implementDirectlyLabel}
+                    </Button>
+                  )}
+                  {showCreateProposals && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={onCreateProposals}
+                      disabled={isPlanActionRecommendationPending}
+                      className="h-7 px-2.5 text-[0.6875rem] font-semibold gap-1.5 rounded-lg transition-colors duration-150"
+                      style={actionButtonStyle(isCreateProposalsPrimary)}
+                      onMouseEnter={(e) =>
+                        actionButtonHover(e, isCreateProposalsPrimary)
+                      }
+                      onMouseLeave={(e) =>
+                        actionButtonLeave(e, isCreateProposalsPrimary)
+                      }
+                    >
+                      <ListPlus className="w-3 h-3" />
+                      {createProposalsLabel}
+                    </Button>
+                  )}
+                </>
+              )}
+            </div>
+          )}
+
           {planActionHint && (
             <p
               className="mt-2 text-[0.6875rem] leading-snug"
@@ -1098,6 +1121,7 @@ export function PlanDisplay({
                         e.currentTarget.style.background = "transparent";
                         e.currentTarget.style.color = "var(--text-muted)";
                       }}
+                      aria-label={`${artifactLabel} actions`}
                     >
                       <History className="w-3 h-3" />
                       v{selectedVersion}

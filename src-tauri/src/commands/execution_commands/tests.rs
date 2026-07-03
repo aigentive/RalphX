@@ -3,8 +3,10 @@ use crate::application::chat_service::{ChatService, MockChatService};
 use crate::commands::execution_commands::lifecycle::{
     determine_paused_restore_status, prepare_resumed_task_for_entry_actions,
 };
-use crate::domain::entities::{GitMode, IdeationSession};
-use crate::domain::services::RunningAgentKey;
+use crate::domain::entities::{
+    AgentRun, ChatConversation, ChatConversationId, GitMode, IdeationSession,
+};
+use crate::domain::services::{QueueKey, QueuedMessage, RunningAgentKey};
 use std::sync::Arc;
 use tauri::test::{mock_builder, mock_context, noop_assets};
 use tauri::Manager;
@@ -83,6 +85,8 @@ fn test_queued_message_to_send_options_preserves_references_and_attachments() {
         key: Some("RX-42".to_string()),
         title: Some("Fix queued replay".to_string()),
         url: Some("https://example.atlassian.net/browse/RX-42".to_string()),
+        summary_excerpt: None,
+        include_transcript: None,
     };
     let attachment_id = crate::domain::entities::ChatAttachmentId::new();
 
@@ -538,6 +542,7 @@ fn test_update_execution_settings_input_deserialization() {
 fn test_global_execution_settings_response_serialization() {
     let response = GlobalExecutionSettingsResponse {
         global_max_concurrent: 20,
+        workspace_max_concurrent: 10,
         global_ideation_max: 4,
         allow_ideation_borrow_idle_execution: true,
     };
@@ -545,6 +550,7 @@ fn test_global_execution_settings_response_serialization() {
     let json = serde_json::to_string(&response).unwrap();
 
     assert!(json.contains("\"global_max_concurrent\":20"));
+    assert!(json.contains("\"workspace_max_concurrent\":10"));
     assert!(json.contains("\"global_ideation_max\":4"));
     assert!(json.contains("\"allow_ideation_borrow_idle_execution\":true"));
 }
@@ -553,6 +559,7 @@ fn test_global_execution_settings_response_serialization() {
 fn test_global_execution_settings_response_from_domain() {
     let settings = crate::domain::execution::GlobalExecutionSettings {
         global_max_concurrent: 18,
+        workspace_max_concurrent: 7,
         global_ideation_max: 3,
         allow_ideation_borrow_idle_execution: false,
     };
@@ -560,20 +567,94 @@ fn test_global_execution_settings_response_from_domain() {
     let response = GlobalExecutionSettingsResponse::from(settings);
 
     assert_eq!(response.global_max_concurrent, 18);
+    assert_eq!(response.workspace_max_concurrent, 7);
     assert_eq!(response.global_ideation_max, 3);
     assert!(!response.allow_ideation_borrow_idle_execution);
 }
 
 #[test]
+fn test_global_execution_settings_deserializes_legacy_without_workspace_limit() {
+    let json = r#"{
+        "global_max_concurrent": 12,
+        "global_ideation_max": 5,
+        "allow_ideation_borrow_idle_execution": true
+    }"#;
+
+    let settings: crate::domain::execution::GlobalExecutionSettings =
+        serde_json::from_str(json).unwrap();
+
+    assert_eq!(settings.global_max_concurrent, 12);
+    assert_eq!(
+        settings.workspace_max_concurrent,
+        crate::domain::execution::DEFAULT_WORKSPACE_MAX_CONCURRENT
+    );
+    assert_eq!(settings.global_ideation_max, 5);
+    assert!(settings.allow_ideation_borrow_idle_execution);
+}
+
+#[test]
 fn test_update_global_execution_settings_input_deserialization() {
-    let json = r#"{"global_max_concurrent":22,"global_ideation_max":5,"allow_ideation_borrow_idle_execution":true}"#;
+    let json = r#"{"global_max_concurrent":22,"workspace_max_concurrent":10,"global_ideation_max":5,"allow_ideation_borrow_idle_execution":true}"#;
 
     let input: UpdateGlobalExecutionSettingsInput =
         serde_json::from_str(json).expect("Failed to deserialize global input");
 
     assert_eq!(input.global_max_concurrent, 22);
+    assert_eq!(input.workspace_max_concurrent, 10);
     assert_eq!(input.global_ideation_max, 5);
     assert!(input.allow_ideation_borrow_idle_execution);
+}
+
+#[tokio::test]
+async fn test_update_global_execution_settings_syncs_runtime_state_and_persists() {
+    let active_project_state = Arc::new(ActiveProjectState::new());
+    let execution_state = Arc::new(ExecutionState::new());
+    execution_state.set_global_max_concurrent(2);
+    execution_state.set_workspace_max_concurrent(1);
+    execution_state.set_global_ideation_max(1);
+    execution_state.set_allow_ideation_borrow_idle_execution(false);
+    let app_state = AppState::new_test();
+
+    let app = mock_builder()
+        .manage(Arc::clone(&active_project_state))
+        .manage(Arc::clone(&execution_state))
+        .manage(app_state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app should build");
+
+    let response = update_global_execution_settings(
+        UpdateGlobalExecutionSettingsInput {
+            global_max_concurrent: 12,
+            workspace_max_concurrent: 6,
+            global_ideation_max: 5,
+            allow_ideation_borrow_idle_execution: true,
+        },
+        app.state::<Arc<ActiveProjectState>>(),
+        app.state::<Arc<ExecutionState>>(),
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("global settings should update");
+
+    assert_eq!(response.global_max_concurrent, 12);
+    assert_eq!(response.workspace_max_concurrent, 6);
+    assert_eq!(response.global_ideation_max, 5);
+    assert!(response.allow_ideation_borrow_idle_execution);
+    assert_eq!(execution_state.global_max_concurrent(), 12);
+    assert_eq!(execution_state.workspace_max_concurrent(), 6);
+    assert_eq!(execution_state.global_ideation_max(), 5);
+    assert!(execution_state.allow_ideation_borrow_idle_execution());
+
+    let stored = app
+        .state::<AppState>()
+        .global_execution_settings_repo
+        .get_settings()
+        .await
+        .expect("stored global settings");
+    assert_eq!(stored.global_max_concurrent, 12);
+    assert_eq!(stored.workspace_max_concurrent, 6);
+    assert_eq!(stored.global_ideation_max, 5);
+    assert!(stored.allow_ideation_borrow_idle_execution);
 }
 
 // ========================================
@@ -1399,6 +1480,107 @@ async fn test_resume_relaunches_one_queued_message_for_active_ideation_session()
 }
 
 #[tokio::test]
+async fn test_resume_relaunches_durable_queued_ideation_message() {
+    let app_state = AppState::new_test();
+    let execution_state = Arc::new(ExecutionState::new());
+    let project = Project::new(
+        "Durable Ideation Resume".to_string(),
+        "/test/durable-ideation".to_string(),
+    );
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+    let session = app_state
+        .ideation_session_repo
+        .create(IdeationSession::new(project.id.clone()))
+        .await
+        .unwrap();
+    let key = QueueKey::new(ChatContextType::Ideation, session.id.as_str());
+    let mut queued = QueuedMessage::with_id(
+        "durable-ideation".to_string(),
+        "durable ideation".to_string(),
+    );
+    queued.metadata_override = Some(r#"{"resume_in_place":true}"#.to_string());
+    app_state
+        .queued_message_repo
+        .enqueue_back(&key, &queued)
+        .await
+        .unwrap();
+
+    let mock = Arc::new(MockChatService::new());
+    let resumed =
+        resume_paused_ideation_queues_with_chat_service(None, &app_state, &execution_state, |_| {
+            Arc::clone(&mock) as Arc<dyn ChatService>
+        })
+        .await
+        .expect("resume durable ideation queue");
+
+    assert_eq!(resumed, 1);
+    assert_eq!(
+        mock.get_sent_messages().await,
+        vec!["durable ideation".to_string()]
+    );
+    assert!(app_state
+        .queued_message_repo
+        .list(&key)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn test_resume_clears_durable_queue_for_inactive_ideation_session() {
+    let app_state = AppState::new_test();
+    let execution_state = Arc::new(ExecutionState::new());
+    let project = Project::new(
+        "Inactive Durable Ideation".to_string(),
+        "/test/inactive-durable-ideation".to_string(),
+    );
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+    let session = app_state
+        .ideation_session_repo
+        .create(IdeationSession::new(project.id.clone()))
+        .await
+        .unwrap();
+    app_state
+        .ideation_session_repo
+        .update_status(&session.id, IdeationSessionStatus::Archived)
+        .await
+        .unwrap();
+    let key = QueueKey::new(ChatContextType::Ideation, session.id.as_str());
+    let queued =
+        QueuedMessage::with_id("archived-ideation".to_string(), "should clear".to_string());
+    app_state
+        .queued_message_repo
+        .enqueue_back(&key, &queued)
+        .await
+        .unwrap();
+
+    let mock = Arc::new(MockChatService::new());
+    let resumed =
+        resume_paused_ideation_queues_with_chat_service(None, &app_state, &execution_state, |_| {
+            Arc::clone(&mock) as Arc<dyn ChatService>
+        })
+        .await
+        .expect("resume durable inactive ideation queue");
+
+    assert_eq!(resumed, 0);
+    assert_eq!(mock.call_count(), 0);
+    assert!(app_state
+        .queued_message_repo
+        .list(&key)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
 async fn test_resume_relaunches_queued_task_chat_message() {
     let app_state = AppState::new_test();
     let project = Project::new(
@@ -1446,6 +1628,107 @@ async fn test_resume_relaunches_queued_task_chat_message() {
         .message_queue
         .get_queued(ChatContextType::Task, task.id.as_str())
         .is_empty());
+}
+
+#[tokio::test]
+async fn test_resume_relaunches_durable_queued_task_chat_message() {
+    let app_state = AppState::new_test();
+    let project = Project::new(
+        "Resume Durable Task Chat".to_string(),
+        "/test/durable-task-chat".to_string(),
+    );
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+    let task = app_state
+        .task_repo
+        .create(Task::new(
+            project.id.clone(),
+            "Durable task chat".to_string(),
+        ))
+        .await
+        .unwrap();
+    let key = QueueKey::new(ChatContextType::Task, task.id.as_str());
+    let queued = QueuedMessage::with_id(
+        "durable-task-chat".to_string(),
+        "durable task chat".to_string(),
+    );
+    app_state
+        .queued_message_repo
+        .enqueue_back(&key, &queued)
+        .await
+        .unwrap();
+
+    let mock = Arc::new(MockChatService::new());
+    let resumed = resume_paused_non_slot_chat_queues_with_chat_service(None, &app_state, || {
+        Arc::clone(&mock) as Arc<dyn ChatService>
+    })
+    .await
+    .expect("resume durable task chat queue");
+
+    assert_eq!(resumed, 1);
+    assert_eq!(
+        mock.get_sent_messages().await,
+        vec!["durable task chat".to_string()]
+    );
+    assert!(app_state
+        .queued_message_repo
+        .list(&key)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn test_resume_restores_durable_non_slot_message_when_send_fails() {
+    let app_state = AppState::new_test();
+    let project = Project::new(
+        "Restore Durable Task Chat".to_string(),
+        "/test/restore-durable-task-chat".to_string(),
+    );
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+    let task = app_state
+        .task_repo
+        .create(Task::new(
+            project.id.clone(),
+            "Restore task chat".to_string(),
+        ))
+        .await
+        .unwrap();
+    let key = QueueKey::new(ChatContextType::Task, task.id.as_str());
+    let queued = QueuedMessage::with_id(
+        "restore-task-chat".to_string(),
+        "restore task chat".to_string(),
+    );
+    app_state
+        .queued_message_repo
+        .enqueue_back(&key, &queued)
+        .await
+        .unwrap();
+
+    let mock = Arc::new(MockChatService::new());
+    mock.set_available(false).await;
+    let resumed = resume_paused_non_slot_chat_queues_with_chat_service(None, &app_state, || {
+        Arc::clone(&mock) as Arc<dyn ChatService>
+    })
+    .await
+    .expect("resume durable task chat queue");
+
+    assert_eq!(resumed, 0);
+    assert_eq!(
+        app_state.message_queue.get_queued_with_key(&key),
+        vec![queued.clone()]
+    );
+    assert_eq!(
+        app_state.queued_message_repo.list(&key).await.unwrap(),
+        vec![queued]
+    );
 }
 
 #[tokio::test]
@@ -1504,6 +1787,57 @@ async fn test_resume_relaunches_queued_review_message_with_harness_override() {
 }
 
 #[tokio::test]
+async fn test_resume_restores_durable_slot_message_when_send_fails() {
+    let app_state = AppState::new_test();
+    let execution_state = Arc::new(ExecutionState::new());
+    let project = Project::new(
+        "Restore Durable Slot".to_string(),
+        "/test/restore-durable-slot".to_string(),
+    );
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+    let task = app_state
+        .task_repo
+        .create(Task {
+            internal_status: InternalStatus::Reviewing,
+            ..Task::new(project.id.clone(), "Restore review".to_string())
+        })
+        .await
+        .unwrap();
+    let key = QueueKey::new(ChatContextType::Review, task.id.as_str());
+    let queued = QueuedMessage::with_id("restore-review".to_string(), "restore review".to_string());
+    app_state
+        .queued_message_repo
+        .enqueue_back(&key, &queued)
+        .await
+        .unwrap();
+
+    let mock = Arc::new(MockChatService::new());
+    mock.set_available(false).await;
+    let resumed = resume_paused_slot_consuming_queues_with_chat_service(
+        None,
+        &app_state,
+        &execution_state,
+        || Arc::clone(&mock) as Arc<dyn ChatService>,
+    )
+    .await
+    .expect("resume durable slot queue");
+
+    assert_eq!(resumed, 0);
+    assert_eq!(
+        app_state.message_queue.get_queued_with_key(&key),
+        vec![queued.clone()]
+    );
+    assert_eq!(
+        app_state.queued_message_repo.list(&key).await.unwrap(),
+        vec![queued]
+    );
+}
+
+#[tokio::test]
 async fn test_resume_relaunches_queued_project_chat_message() {
     let app_state = AppState::new_test();
     let project = Project::new(
@@ -1526,12 +1860,15 @@ async fn test_resume_relaunches_queued_project_chat_message() {
     );
 
     let mock = Arc::new(MockChatService::new());
-    let resumed =
-        resume_paused_non_slot_chat_queues_with_chat_service(Some(&project.id), &app_state, || {
-            Arc::clone(&mock) as Arc<dyn ChatService>
-        })
-        .await
-        .expect("resume paused project chat queue");
+    let execution_state = Arc::new(ExecutionState::new());
+    let resumed = resume_paused_workspace_queues_with_chat_service(
+        Some(&project.id),
+        &app_state,
+        &execution_state,
+        || Arc::clone(&mock) as Arc<dyn ChatService>,
+    )
+    .await
+    .expect("resume paused project chat queue");
 
     assert_eq!(resumed, 1);
     assert_eq!(mock.call_count(), 1);
@@ -1542,6 +1879,1135 @@ async fn test_resume_relaunches_queued_project_chat_message() {
     assert!(app_state
         .message_queue
         .get_queued(ChatContextType::Project, project.id.as_str())
+        .is_empty());
+}
+
+#[tokio::test]
+async fn test_resume_workspace_queue_respects_workspace_capacity() {
+    let app_state = AppState::new_test();
+    let execution_state = Arc::new(ExecutionState::new());
+    execution_state.set_workspace_max_concurrent(1);
+    let project = Project::new(
+        "Workspace Capacity".to_string(),
+        "/test/workspace-capacity".to_string(),
+    );
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+
+    app_state
+        .running_agent_registry
+        .register(
+            RunningAgentKey::new("project", project.id.as_str()),
+            45454,
+            "workspace-conv".to_string(),
+            "workspace-run".to_string(),
+            None,
+            None,
+        )
+        .await;
+    app_state.message_queue.queue(
+        ChatContextType::Project,
+        project.id.as_str(),
+        "blocked workspace queue".to_string(),
+    );
+
+    let mock = Arc::new(MockChatService::new());
+    let resumed = resume_paused_workspace_queues_with_chat_service(
+        Some(&project.id),
+        &app_state,
+        &execution_state,
+        || Arc::clone(&mock) as Arc<dyn ChatService>,
+    )
+    .await
+    .expect("resume paused project chat queue");
+
+    assert_eq!(resumed, 0);
+    assert_eq!(mock.call_count(), 0);
+    assert_eq!(
+        app_state
+            .message_queue
+            .get_queued(ChatContextType::Project, project.id.as_str())
+            .len(),
+        1,
+        "workspace queue should stay pending while the workspace lane is full"
+    );
+}
+
+#[tokio::test]
+async fn test_project_scoped_workspace_resume_respects_global_workspace_capacity() {
+    let app_state = AppState::new_test();
+    let execution_state = Arc::new(ExecutionState::new());
+    execution_state.set_workspace_max_concurrent(1);
+    let active_project = Project::new(
+        "Active Workspace".to_string(),
+        "/test/active-workspace".to_string(),
+    );
+    let queued_project = Project::new(
+        "Queued Workspace".to_string(),
+        "/test/queued-workspace".to_string(),
+    );
+    app_state
+        .project_repo
+        .create(active_project.clone())
+        .await
+        .unwrap();
+    app_state
+        .project_repo
+        .create(queued_project.clone())
+        .await
+        .unwrap();
+
+    app_state
+        .running_agent_registry
+        .register(
+            RunningAgentKey::new("project", active_project.id.as_str()),
+            56565,
+            "active-workspace-conv".to_string(),
+            "active-workspace-run".to_string(),
+            None,
+            None,
+        )
+        .await;
+    app_state.message_queue.queue(
+        ChatContextType::Project,
+        queued_project.id.as_str(),
+        "blocked by another project workspace".to_string(),
+    );
+
+    let mock = Arc::new(MockChatService::new());
+    let resumed = resume_paused_workspace_queues_with_chat_service(
+        Some(&queued_project.id),
+        &app_state,
+        &execution_state,
+        || Arc::clone(&mock) as Arc<dyn ChatService>,
+    )
+    .await
+    .expect("resume project-scoped workspace queue");
+
+    assert_eq!(resumed, 0);
+    assert_eq!(mock.call_count(), 0);
+    assert_eq!(
+        app_state
+            .message_queue
+            .get_queued(ChatContextType::Project, queued_project.id.as_str())
+            .len(),
+        1,
+        "project-scoped resume must still respect the global workspace lane cap"
+    );
+}
+
+#[tokio::test]
+async fn test_get_running_processes_reports_scoped_lanes_and_capacity() {
+    let active_project_state = Arc::new(ActiveProjectState::new());
+    let execution_state = Arc::new(ExecutionState::new());
+    execution_state.set_global_max_concurrent(7);
+    execution_state.set_workspace_max_concurrent(1);
+    execution_state.set_allow_ideation_borrow_idle_execution(true);
+    let app_state = AppState::new_test();
+
+    let project = Project::new(
+        "Scoped Running Project".to_string(),
+        "/test/scoped-running-project".to_string(),
+    );
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+    let other_project = Project::new(
+        "Other Running Project".to_string(),
+        "/test/other-running-project".to_string(),
+    );
+    app_state
+        .project_repo
+        .create(other_project.clone())
+        .await
+        .unwrap();
+
+    app_state
+        .execution_settings_repo
+        .update_settings(
+            Some(&project.id),
+            &ExecutionSettings {
+                max_concurrent_tasks: 4,
+                project_ideation_max: 1,
+                auto_commit: false,
+                pause_on_failure: false,
+                ..ExecutionSettings::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    let mut conversation = ChatConversation::new_project(project.id.clone());
+    conversation.title = Some("Feature workspace".to_string());
+    let conversation = app_state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .unwrap();
+    let other_conversation = app_state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(other_project.id.clone()))
+        .await
+        .unwrap();
+
+    let running_task = app_state
+        .task_repo
+        .create(Task {
+            internal_status: InternalStatus::Executing,
+            ..Task::new(project.id.clone(), "Running task".to_string())
+        })
+        .await
+        .unwrap();
+    app_state
+        .task_repo
+        .create(Task {
+            internal_status: InternalStatus::Ready,
+            ..Task::new(project.id.clone(), "Queued ready task".to_string())
+        })
+        .await
+        .unwrap();
+    let other_task = app_state
+        .task_repo
+        .create(Task {
+            internal_status: InternalStatus::Executing,
+            ..Task::new(other_project.id.clone(), "Other running task".to_string())
+        })
+        .await
+        .unwrap();
+    let task_run = app_state
+        .agent_run_repo
+        .create(AgentRun::new(ChatConversationId::new()))
+        .await
+        .unwrap();
+    let other_task_run = app_state
+        .agent_run_repo
+        .create(AgentRun::new(ChatConversationId::new()))
+        .await
+        .unwrap();
+
+    let mut ideation_session = IdeationSession::new(project.id.clone());
+    ideation_session.title = Some("Planning session".to_string());
+    let ideation_session = app_state
+        .ideation_session_repo
+        .create(ideation_session)
+        .await
+        .unwrap();
+    let other_ideation_session = app_state
+        .ideation_session_repo
+        .create(IdeationSession::new(other_project.id.clone()))
+        .await
+        .unwrap();
+    let ideation_run = app_state
+        .agent_run_repo
+        .create(AgentRun::new(ChatConversationId::new()))
+        .await
+        .unwrap();
+    let other_ideation_run = app_state
+        .agent_run_repo
+        .create(AgentRun::new(ChatConversationId::new()))
+        .await
+        .unwrap();
+
+    app_state.message_queue.queue(
+        ChatContextType::Project,
+        conversation.id.as_str(),
+        "queued workspace message".to_string(),
+    );
+    app_state.message_queue.queue(
+        ChatContextType::TaskExecution,
+        running_task.id.as_str(),
+        "queued task message".to_string(),
+    );
+    app_state.message_queue.queue(
+        ChatContextType::Ideation,
+        ideation_session.id.as_str(),
+        "queued ideation message".to_string(),
+    );
+    app_state.message_queue.queue(
+        ChatContextType::Project,
+        other_conversation.id.as_str(),
+        "other queued workspace message".to_string(),
+    );
+
+    let mut live_process = std::process::Command::new("sleep")
+        .arg("60")
+        .spawn()
+        .expect("spawn disposable process for live registry rows");
+    let pid = live_process.id();
+    let workspace_key = RunningAgentKey::new("project", conversation.id.as_str());
+    app_state
+        .running_agent_registry
+        .register(
+            workspace_key.clone(),
+            pid,
+            conversation.id.as_str().to_string(),
+            "workspace-run".to_string(),
+            None,
+            None,
+        )
+        .await;
+    app_state
+        .running_agent_registry
+        .update_agent_process(
+            &workspace_key,
+            pid,
+            &conversation.id.as_str(),
+            "workspace-run",
+            None,
+            None,
+            Some("gpt-5.5".to_string()),
+        )
+        .await
+        .unwrap();
+    app_state
+        .running_agent_registry
+        .register(
+            RunningAgentKey::new("project", other_conversation.id.as_str()),
+            pid,
+            other_conversation.id.as_str().to_string(),
+            "other-workspace-run".to_string(),
+            None,
+            None,
+        )
+        .await;
+    app_state
+        .running_agent_registry
+        .register(
+            RunningAgentKey::new("task_execution", running_task.id.as_str()),
+            pid,
+            "task-conversation".to_string(),
+            task_run.id.as_str(),
+            None,
+            None,
+        )
+        .await;
+    app_state
+        .running_agent_registry
+        .register(
+            RunningAgentKey::new("task_execution", other_task.id.as_str()),
+            pid,
+            "other-task-conversation".to_string(),
+            other_task_run.id.as_str(),
+            None,
+            None,
+        )
+        .await;
+    app_state
+        .running_agent_registry
+        .register(
+            RunningAgentKey::new("ideation", ideation_session.id.as_str()),
+            pid,
+            "ideation-conversation".to_string(),
+            ideation_run.id.as_str(),
+            None,
+            None,
+        )
+        .await;
+    app_state
+        .running_agent_registry
+        .register(
+            RunningAgentKey::new("ideation", other_ideation_session.id.as_str()),
+            pid,
+            "other-ideation-conversation".to_string(),
+            other_ideation_run.id.as_str(),
+            None,
+            None,
+        )
+        .await;
+
+    let app = mock_builder()
+        .manage(Arc::clone(&active_project_state))
+        .manage(Arc::clone(&execution_state))
+        .manage(app_state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app should build");
+
+    let response = get_running_processes(
+        Some(project.id.as_str().to_string()),
+        app.state::<Arc<ActiveProjectState>>(),
+        app.state::<Arc<ExecutionState>>(),
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("running processes should load");
+
+    let aggregate_response = get_running_processes(
+        None,
+        app.state::<Arc<ActiveProjectState>>(),
+        app.state::<Arc<ExecutionState>>(),
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("aggregate running processes should load");
+
+    let _ = live_process.kill();
+    let _ = live_process.wait();
+
+    assert_eq!(response.workspace_sessions.len(), 1);
+    assert_eq!(
+        response.workspace_sessions[0].conversation_id,
+        conversation.id.as_str()
+    );
+    assert_eq!(response.workspace_sessions[0].project_id, project.id.as_str());
+    assert_eq!(response.workspace_sessions[0].title, "Feature workspace");
+    assert_eq!(
+        response.workspace_sessions[0].model.as_deref(),
+        Some("gpt-5.5")
+    );
+    assert_eq!(response.processes.len(), 1);
+    assert_eq!(response.processes[0].task_id, running_task.id.as_str());
+    assert_eq!(response.ideation_sessions.len(), 1);
+    assert_eq!(
+        response.ideation_sessions[0].session_id,
+        ideation_session.id.as_str()
+    );
+    assert!(response.ideation_sessions[0].is_generating);
+
+    let workspace_lane = response
+        .lanes
+        .iter()
+        .find(|lane| lane.lane == "workspaces")
+        .expect("workspace lane");
+    assert_eq!(workspace_lane.active, 1);
+    assert_eq!(workspace_lane.waiting, 1);
+    assert_eq!(workspace_lane.max, 1);
+    assert_eq!(workspace_lane.borrowed, 0);
+    assert_eq!(workspace_lane.priority_rank, 1);
+
+    let task_lane = response
+        .lanes
+        .iter()
+        .find(|lane| lane.lane == "tasks")
+        .expect("tasks lane");
+    assert_eq!(task_lane.active, 1);
+    assert_eq!(task_lane.waiting, 2);
+    assert_eq!(task_lane.max, 4);
+    assert_eq!(task_lane.priority_rank, 2);
+
+    let ideation_lane = response
+        .lanes
+        .iter()
+        .find(|lane| lane.lane == "ideation")
+        .expect("ideation lane");
+    assert_eq!(ideation_lane.active, 1);
+    assert_eq!(ideation_lane.idle, 0);
+    assert_eq!(ideation_lane.waiting, 1);
+    assert_eq!(ideation_lane.max, 1);
+    assert_eq!(ideation_lane.priority_rank, 3);
+
+    assert_eq!(response.capacity.total_active, 3);
+    assert_eq!(response.capacity.global_max_concurrent, 7);
+    assert!(response.capacity.borrowing_enabled);
+    assert_eq!(
+        response.capacity.priority,
+        vec![
+            "workspaces".to_string(),
+            "tasks".to_string(),
+            "ideation".to_string(),
+        ]
+    );
+
+    assert_eq!(aggregate_response.workspace_sessions.len(), 2);
+    assert_eq!(aggregate_response.processes.len(), 2);
+    assert_eq!(aggregate_response.ideation_sessions.len(), 2);
+    let aggregate_workspace_lane = aggregate_response
+        .lanes
+        .iter()
+        .find(|lane| lane.lane == "workspaces")
+        .expect("aggregate workspace lane");
+    assert_eq!(aggregate_workspace_lane.active, 2);
+    assert_eq!(aggregate_workspace_lane.waiting, 2);
+    assert_eq!(aggregate_workspace_lane.max, 1);
+    assert_eq!(aggregate_workspace_lane.borrowed, 1);
+    let aggregate_task_lane = aggregate_response
+        .lanes
+        .iter()
+        .find(|lane| lane.lane == "tasks")
+        .expect("aggregate task lane");
+    assert_eq!(aggregate_task_lane.active, 2);
+    assert_eq!(aggregate_task_lane.waiting, 2);
+    assert_eq!(aggregate_task_lane.max, 10);
+    let aggregate_ideation_lane = aggregate_response
+        .lanes
+        .iter()
+        .find(|lane| lane.lane == "ideation")
+        .expect("aggregate ideation lane");
+    assert_eq!(aggregate_ideation_lane.active, 2);
+    assert_eq!(aggregate_ideation_lane.waiting, 1);
+    assert_eq!(aggregate_response.capacity.total_active, 6);
+}
+
+#[test]
+fn test_workspace_capacity_available_respects_all_global_guards() {
+    assert!(crate::application::workspace_capacity::workspace_capacity_available(
+        1, 3, 1, 5, false, false
+    ));
+    assert!(!crate::application::workspace_capacity::workspace_capacity_available(
+        1, 3, 1, 5, true, false
+    ));
+    assert!(!crate::application::workspace_capacity::workspace_capacity_available(
+        1, 3, 1, 5, false, true
+    ));
+    assert!(!crate::application::workspace_capacity::workspace_capacity_available(
+        3, 3, 0, 10, false, false
+    ));
+    assert!(!crate::application::workspace_capacity::workspace_capacity_available(
+        2, 3, 3, 5, false, false
+    ));
+}
+
+#[tokio::test]
+async fn test_workspace_capacity_resolves_conversation_backed_queues_and_sessions() {
+    let app_state = AppState::new_test();
+    let project = app_state
+        .project_repo
+        .create(Project::new(
+            "Workspace Capacity Project".to_string(),
+            "/test/workspace-capacity-project".to_string(),
+        ))
+        .await
+        .unwrap();
+    let other_project = app_state
+        .project_repo
+        .create(Project::new(
+            "Other Workspace Capacity Project".to_string(),
+            "/test/other-workspace-capacity-project".to_string(),
+        ))
+        .await
+        .unwrap();
+    let conversation = app_state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project.id.clone()))
+        .await
+        .unwrap();
+    let other_conversation = app_state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(other_project.id.clone()))
+        .await
+        .unwrap();
+    let task = app_state
+        .task_repo
+        .create(Task::new(project.id.clone(), "Non-workspace chat".to_string()))
+        .await
+        .unwrap();
+    let task_conversation = app_state
+        .chat_conversation_repo
+        .create(ChatConversation::new_task(task.id.clone()))
+        .await
+        .unwrap();
+
+    let task_key = QueueKey::new(ChatContextType::Task, task.id.as_str());
+    let resolved = crate::application::workspace_capacity::resolve_project_queue_context(
+        &task_key,
+        &app_state.project_repo,
+        &app_state.chat_conversation_repo,
+    )
+    .await
+    .expect("non-project key resolves as direct context")
+    .expect("non-project context");
+    assert_eq!(resolved.0.as_str(), task.id.as_str());
+    assert_eq!(resolved.1, None);
+
+    let direct_key = QueueKey::new(ChatContextType::Project, project.id.as_str());
+    let resolved = crate::application::workspace_capacity::resolve_project_queue_context(
+        &direct_key,
+        &app_state.project_repo,
+        &app_state.chat_conversation_repo,
+    )
+    .await
+    .expect("direct project key resolves")
+    .expect("direct project context");
+    assert_eq!(resolved.0, project.id);
+    assert_eq!(resolved.1, None);
+
+    let conversation_key = QueueKey::new(ChatContextType::Project, conversation.id.as_str());
+    let resolved = crate::application::workspace_capacity::resolve_project_queue_context(
+        &conversation_key,
+        &app_state.project_repo,
+        &app_state.chat_conversation_repo,
+    )
+    .await
+    .expect("conversation key resolves")
+    .expect("conversation project context");
+    assert_eq!(resolved.0, project.id);
+    assert_eq!(resolved.1.as_ref(), Some(&conversation.id));
+
+    let wrong_context_key = QueueKey::new(ChatContextType::Project, task_conversation.id.as_str());
+    assert!(
+        crate::application::workspace_capacity::resolve_project_queue_context(
+            &wrong_context_key,
+            &app_state.project_repo,
+            &app_state.chat_conversation_repo,
+        )
+        .await
+        .expect("wrong context lookup succeeds")
+        .is_none()
+    );
+    let missing_key = QueueKey::new(ChatContextType::Project, ChatConversationId::new().as_str());
+    assert!(
+        crate::application::workspace_capacity::resolve_project_queue_context(
+            &missing_key,
+            &app_state.project_repo,
+            &app_state.chat_conversation_repo,
+        )
+        .await
+        .expect("missing context lookup succeeds")
+        .is_none()
+    );
+
+    app_state.message_queue.queue(
+        ChatContextType::Project,
+        project.id.as_str(),
+        "direct project queue".to_string(),
+    );
+    app_state.message_queue.queue(
+        ChatContextType::Project,
+        conversation.id.as_str(),
+        "conversation project queue".to_string(),
+    );
+    app_state.message_queue.queue(
+        ChatContextType::Project,
+        other_project.id.as_str(),
+        "other project queue".to_string(),
+    );
+    app_state.message_queue.queue(
+        ChatContextType::Task,
+        task.id.as_str(),
+        "task queue is not workspace capacity".to_string(),
+    );
+
+    assert_eq!(
+        crate::application::workspace_capacity::count_queued_workspace_messages(
+            &app_state.message_queue,
+            &app_state.project_repo,
+            &app_state.chat_conversation_repo,
+            Some(&project.id),
+        )
+        .await
+        .expect("count scoped queued workspaces"),
+        2
+    );
+    assert_eq!(
+        crate::application::workspace_capacity::count_queued_workspace_messages(
+            &app_state.message_queue,
+            &app_state.project_repo,
+            &app_state.chat_conversation_repo,
+            None,
+        )
+        .await
+        .expect("count aggregate queued workspaces"),
+        3
+    );
+
+    app_state
+        .running_agent_registry
+        .register(
+            RunningAgentKey::new("project", "runtime-from-conversation"),
+            61001,
+            conversation.id.as_str().to_string(),
+            "run-from-conversation".to_string(),
+            None,
+            None,
+        )
+        .await;
+    app_state
+        .running_agent_registry
+        .register(
+            RunningAgentKey::new("project", project.id.as_str()),
+            61002,
+            "missing-conversation".to_string(),
+            "run-from-project-id".to_string(),
+            None,
+            None,
+        )
+        .await;
+    app_state
+        .running_agent_registry
+        .register(
+            RunningAgentKey::new("project", conversation.id.as_str()),
+            61003,
+            "missing-conversation-2".to_string(),
+            "run-from-runtime-conversation".to_string(),
+            None,
+            None,
+        )
+        .await;
+    app_state
+        .running_agent_registry
+        .register(
+            RunningAgentKey::new("project", "other-runtime"),
+            61004,
+            other_conversation.id.as_str().to_string(),
+            "run-other-project".to_string(),
+            None,
+            None,
+        )
+        .await;
+    app_state
+        .running_agent_registry
+        .register(
+            RunningAgentKey::new("project", "missing-runtime"),
+            61005,
+            "missing-conversation-3".to_string(),
+            "run-missing-project-and-conversation".to_string(),
+            None,
+            None,
+        )
+        .await;
+    app_state
+        .running_agent_registry
+        .register(
+            RunningAgentKey::new("project", task_conversation.id.as_str()),
+            61006,
+            "missing-conversation-4".to_string(),
+            "run-non-project-runtime-conversation".to_string(),
+            None,
+            None,
+        )
+        .await;
+    app_state
+        .running_agent_registry
+        .register(
+            RunningAgentKey::new("project", "pid-zero-runtime"),
+            0,
+            conversation.id.as_str().to_string(),
+            "run-pid-zero".to_string(),
+            None,
+            None,
+        )
+        .await;
+    app_state
+        .running_agent_registry
+        .register(
+            RunningAgentKey::new("task", task.id.as_str()),
+            61007,
+            conversation.id.as_str().to_string(),
+            "run-non-workspace".to_string(),
+            None,
+            None,
+        )
+        .await;
+
+    assert_eq!(
+        crate::application::workspace_capacity::count_active_workspace_sessions(
+            &app_state.running_agent_registry,
+            &app_state.project_repo,
+            &app_state.chat_conversation_repo,
+            Some(&project.id),
+        )
+        .await
+        .expect("count scoped active workspace sessions"),
+        3
+    );
+    assert_eq!(
+        crate::application::workspace_capacity::count_active_workspace_sessions(
+            &app_state.running_agent_registry,
+            &app_state.project_repo,
+            &app_state.chat_conversation_repo,
+            None,
+        )
+        .await
+        .expect("count aggregate active workspace sessions"),
+        4
+    );
+}
+
+#[tokio::test]
+async fn test_resume_relaunches_durable_project_conversation_queue_with_override() {
+    let app_state = AppState::new_test();
+    let execution_state = Arc::new(ExecutionState::new());
+    let project = Project::new(
+        "Durable Conversation Queue".to_string(),
+        "/test/durable-conversation-queue".to_string(),
+    );
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+    let conversation = app_state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project.id.clone()))
+        .await
+        .unwrap();
+    let key = QueueKey::new(ChatContextType::Project, conversation.id.as_str());
+    let queued = QueuedMessage::with_id(
+        "durable-project-conversation".to_string(),
+        "durable project conversation".to_string(),
+    );
+    app_state
+        .queued_message_repo
+        .enqueue_back(&key, &queued)
+        .await
+        .unwrap();
+
+    let mock = Arc::new(MockChatService::new());
+    let resumed = resume_paused_workspace_queues_with_chat_service(
+        None,
+        &app_state,
+        &execution_state,
+        || Arc::clone(&mock) as Arc<dyn ChatService>,
+    )
+    .await
+    .expect("resume durable project conversation queue");
+
+    assert_eq!(resumed, 1);
+    assert_eq!(
+        mock.get_sent_messages().await,
+        vec!["durable project conversation".to_string()]
+    );
+    let options = mock.get_sent_options().await;
+    assert_eq!(
+        options[0]
+            .conversation_id_override
+            .as_ref()
+            .map(|id| id.as_str()),
+        Some(conversation.id.as_str())
+    );
+    assert!(app_state
+        .queued_message_repo
+        .list(&key)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn test_resume_workspace_queue_restores_message_when_send_fails() {
+    let app_state = AppState::new_test();
+    let execution_state = Arc::new(ExecutionState::new());
+    let project = app_state
+        .project_repo
+        .create(Project::new(
+            "Failed Workspace Resume".to_string(),
+            "/test/failed-workspace-resume".to_string(),
+        ))
+        .await
+        .unwrap();
+    app_state.message_queue.queue(
+        ChatContextType::Project,
+        project.id.as_str(),
+        "restore workspace queue".to_string(),
+    );
+
+    let mock = Arc::new(MockChatService::new());
+    mock.set_available(false).await;
+    let resumed = resume_paused_workspace_queues_with_chat_service(
+        None,
+        &app_state,
+        &execution_state,
+        || Arc::clone(&mock) as Arc<dyn ChatService>,
+    )
+    .await
+    .expect("resume workspace queue handles send failure");
+
+    assert_eq!(resumed, 0);
+    assert_eq!(mock.call_count(), 1);
+    let restored = app_state
+        .message_queue
+        .get_queued(ChatContextType::Project, project.id.as_str());
+    assert_eq!(restored.len(), 1);
+    assert_eq!(restored[0].content, "restore workspace queue");
+}
+
+#[tokio::test]
+async fn test_queued_context_counts_and_runnable_waiting_include_workspace_and_task_pressure() {
+    let app_state = AppState::new_test();
+    let project = app_state
+        .project_repo
+        .create(Project::new(
+            "Runnable Queue Project".to_string(),
+            "/test/runnable-queue-project".to_string(),
+        ))
+        .await
+        .unwrap();
+    let other_project = app_state
+        .project_repo
+        .create(Project::new(
+            "Other Runnable Queue Project".to_string(),
+            "/test/other-runnable-queue-project".to_string(),
+        ))
+        .await
+        .unwrap();
+    let review_task = app_state
+        .task_repo
+        .create(Task {
+            internal_status: InternalStatus::Reviewing,
+            ..Task::new(project.id.clone(), "Queued review pressure".to_string())
+        })
+        .await
+        .unwrap();
+    let other_review_task = app_state
+        .task_repo
+        .create(Task {
+            internal_status: InternalStatus::Reviewing,
+            ..Task::new(
+                other_project.id.clone(),
+                "Other queued review pressure".to_string(),
+            )
+        })
+        .await
+        .unwrap();
+
+    app_state.message_queue.queue(
+        ChatContextType::Project,
+        project.id.as_str(),
+        "workspace pressure".to_string(),
+    );
+
+    assert_eq!(
+        count_queued_messages_for_context_types(
+            &[ChatContextType::Project],
+            Some(&project.id),
+            &app_state,
+        )
+        .await
+        .expect("count workspace queue"),
+        1
+    );
+    assert!(
+        has_runnable_execution_waiting(&app_state, Some(&project.id))
+            .await
+            .expect("workspace queue should count as waiting execution")
+    );
+
+    app_state
+        .message_queue
+        .clear(ChatContextType::Project, project.id.as_str());
+    app_state.message_queue.queue(
+        ChatContextType::Review,
+        review_task.id.as_str(),
+        "review pressure".to_string(),
+    );
+    app_state.message_queue.queue(
+        ChatContextType::Review,
+        other_review_task.id.as_str(),
+        "other review pressure".to_string(),
+    );
+
+    assert_eq!(
+        count_queued_messages_for_context_types(
+            &[
+                ChatContextType::TaskExecution,
+                ChatContextType::Review,
+                ChatContextType::Merge,
+            ],
+            Some(&project.id),
+            &app_state,
+        )
+        .await
+        .expect("count scoped slot queues"),
+        1
+    );
+    assert!(
+        has_runnable_execution_waiting(&app_state, Some(&project.id))
+            .await
+            .expect("review queue should count as waiting execution")
+    );
+
+    app_state
+        .task_repo
+        .create(Task {
+            internal_status: InternalStatus::Ready,
+            ..Task::new(other_project.id.clone(), "Ready global work".to_string())
+        })
+        .await
+        .unwrap();
+
+    assert!(has_runnable_execution_waiting(&app_state, None)
+        .await
+        .expect("global ready task should count as waiting execution"));
+}
+
+#[tokio::test]
+async fn test_resume_workspace_queue_skips_unmatched_missing_and_already_running_entries() {
+    let app_state = AppState::new_test();
+    let execution_state = Arc::new(ExecutionState::new());
+    let project = app_state
+        .project_repo
+        .create(Project::new(
+            "Workspace Resume Branches".to_string(),
+            "/test/workspace-resume-branches".to_string(),
+        ))
+        .await
+        .unwrap();
+    let other_project = app_state
+        .project_repo
+        .create(Project::new(
+            "Other Workspace Resume Branches".to_string(),
+            "/test/other-workspace-resume-branches".to_string(),
+        ))
+        .await
+        .unwrap();
+
+    app_state.message_queue.queue(
+        ChatContextType::Project,
+        other_project.id.as_str(),
+        "other workspace should stay queued".to_string(),
+    );
+    let mock = Arc::new(MockChatService::new());
+    let resumed = resume_paused_workspace_queues_with_chat_service(
+        Some(&project.id),
+        &app_state,
+        &execution_state,
+        || Arc::clone(&mock) as Arc<dyn ChatService>,
+    )
+    .await
+    .expect("resume scoped workspace queue with non-matching key");
+    assert_eq!(resumed, 0);
+    assert_eq!(mock.call_count(), 0);
+    assert_eq!(
+        app_state
+            .message_queue
+            .get_queued(ChatContextType::Project, other_project.id.as_str())
+            .len(),
+        1
+    );
+
+    app_state
+        .message_queue
+        .clear(ChatContextType::Project, other_project.id.as_str());
+    app_state.message_queue.queue(
+        ChatContextType::Project,
+        "missing-workspace-context",
+        "missing workspace target".to_string(),
+    );
+    let resumed = resume_paused_workspace_queues_with_chat_service(
+        None,
+        &app_state,
+        &execution_state,
+        || Arc::clone(&mock) as Arc<dyn ChatService>,
+    )
+    .await
+    .expect("resume workspace queue with missing target");
+    assert_eq!(resumed, 0);
+    assert_eq!(mock.call_count(), 0);
+    assert_eq!(
+        app_state
+            .message_queue
+            .get_queued(ChatContextType::Project, "missing-workspace-context")
+            .len(),
+        1
+    );
+
+    app_state
+        .message_queue
+        .clear(ChatContextType::Project, "missing-workspace-context");
+    app_state.message_queue.queue(
+        ChatContextType::Project,
+        project.id.as_str(),
+        "already running workspace".to_string(),
+    );
+    mock.set_already_running_after(0).await;
+    let resumed = resume_paused_workspace_queues_with_chat_service(
+        Some(&project.id),
+        &app_state,
+        &execution_state,
+        || Arc::clone(&mock) as Arc<dyn ChatService>,
+    )
+    .await
+    .expect("resume workspace queue with already-running send result");
+    assert_eq!(resumed, 0);
+    assert_eq!(mock.call_count(), 1);
+    assert!(app_state
+        .message_queue
+        .get_queued(ChatContextType::Project, project.id.as_str())
+        .is_empty());
+}
+
+#[tokio::test]
+async fn test_durable_queue_counts_merge_with_memory_by_message_id() {
+    let app_state = AppState::new_test();
+    let project = Project::new(
+        "Durable Queue Count".to_string(),
+        "/test/durable-queue-count".to_string(),
+    );
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+    let task = app_state
+        .task_repo
+        .create(Task {
+            internal_status: InternalStatus::Reviewing,
+            ..Task::new(project.id.clone(), "Queued review".to_string())
+        })
+        .await
+        .unwrap();
+    let key = QueueKey::new(ChatContextType::Review, task.id.as_str());
+    let shared = QueuedMessage::with_id("shared".to_string(), "Shared".to_string());
+    let durable_only =
+        QueuedMessage::with_id("durable-only".to_string(), "Durable only".to_string());
+    app_state
+        .queued_message_repo
+        .enqueue_back(&key, &shared)
+        .await
+        .unwrap();
+    app_state
+        .queued_message_repo
+        .enqueue_back(&key, &durable_only)
+        .await
+        .unwrap();
+    app_state
+        .message_queue
+        .queue_front_existing(ChatContextType::Review, task.id.as_str(), shared);
+
+    let count = count_slot_consuming_queued_messages(Some(&project.id), &app_state)
+        .await
+        .expect("count durable queued messages");
+
+    assert_eq!(count, 2);
+}
+
+#[tokio::test]
+async fn test_clear_slot_consuming_queues_clears_durable_and_memory_rows() {
+    let app_state = AppState::new_test();
+    let project = Project::new(
+        "Clear Durable Slot Queue".to_string(),
+        "/test/clear-durable-slot-queue".to_string(),
+    );
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+    let task = app_state
+        .task_repo
+        .create(Task {
+            internal_status: InternalStatus::Reviewing,
+            ..Task::new(project.id.clone(), "Clear review".to_string())
+        })
+        .await
+        .unwrap();
+    let key = QueueKey::new(ChatContextType::Review, task.id.as_str());
+    let memory = QueuedMessage::with_id("memory".to_string(), "Memory".to_string());
+    let durable = QueuedMessage::with_id("durable".to_string(), "Durable".to_string());
+    app_state
+        .message_queue
+        .queue_front_existing(ChatContextType::Review, task.id.as_str(), memory);
+    app_state
+        .queued_message_repo
+        .enqueue_back(&key, &durable)
+        .await
+        .unwrap();
+
+    let cleared = clear_slot_consuming_queues(Some(&project.id), &app_state)
+        .await
+        .expect("clear slot queues");
+
+    assert_eq!(cleared, 1);
+    assert!(app_state.message_queue.get_queued_with_key(&key).is_empty());
+    assert!(app_state
+        .queued_message_repo
+        .list(&key)
+        .await
+        .unwrap()
         .is_empty());
 }
 
@@ -1809,6 +3275,80 @@ async fn test_resume_borrowing_stays_blocked_when_ready_execution_waits() {
             .len(),
         1,
         "borrowing must stay blocked while ready execution work exists"
+    );
+}
+
+#[tokio::test]
+async fn test_resume_borrowing_stays_blocked_when_workspace_queue_waits() {
+    let app_state = AppState::new_test();
+    let execution_state = Arc::new(ExecutionState::new());
+    let project = Project::new(
+        "Workspace Borrow Block".to_string(),
+        "/test/workspace-borrow-block".to_string(),
+    );
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+
+    execution_state.set_global_max_concurrent(5);
+    execution_state.set_global_ideation_max(1);
+    execution_state.set_allow_ideation_borrow_idle_execution(true);
+
+    let occupied = app_state
+        .ideation_session_repo
+        .create(IdeationSession::new(project.id.clone()))
+        .await
+        .unwrap();
+    let queued = app_state
+        .ideation_session_repo
+        .create(IdeationSession::new(project.id.clone()))
+        .await
+        .unwrap();
+
+    app_state.message_queue.queue(
+        ChatContextType::Project,
+        project.id.as_str(),
+        "waiting workspace".to_string(),
+    );
+    app_state.message_queue.queue(
+        ChatContextType::Ideation,
+        queued.id.as_str(),
+        "blocked by workspace pressure".to_string(),
+    );
+
+    app_state
+        .running_agent_registry
+        .register(
+            RunningAgentKey::new("ideation", occupied.id.as_str()),
+            24242,
+            "occupied-conv".to_string(),
+            "occupied-run".to_string(),
+            None,
+            None,
+        )
+        .await;
+
+    let mock = Arc::new(MockChatService::new());
+    let resumed = resume_paused_ideation_queues_with_chat_service(
+        Some(&project.id),
+        &app_state,
+        &execution_state,
+        |_| Arc::clone(&mock) as Arc<dyn ChatService>,
+    )
+    .await
+    .expect("resume queued ideation with workspace pressure");
+
+    assert_eq!(resumed, 0);
+    assert_eq!(mock.call_count(), 0);
+    assert_eq!(
+        app_state
+            .message_queue
+            .get_queued(ChatContextType::Ideation, queued.id.as_str())
+            .len(),
+        1,
+        "borrowing must stay blocked while workspace work is waiting"
     );
 }
 
@@ -2502,7 +4042,7 @@ async fn test_resume_mixed_load_relaunches_execution_then_ideation_while_blocked
 }
 
 #[tokio::test]
-async fn test_resume_mixed_context_relaunches_execution_ideation_and_chat_queues() {
+async fn test_resume_mixed_context_relaunches_workspace_execution_ideation_and_task_chat_queues() {
     let app_state = AppState::new_test();
     let execution_state = Arc::new(ExecutionState::new());
 
@@ -2562,6 +4102,22 @@ async fn test_resume_mixed_context_relaunches_execution_ideation_and_chat_queues
         None,
     );
 
+    let workspace_mock = Arc::new(MockChatService::new());
+    let workspace_resumed = resume_paused_workspace_queues_with_chat_service(
+        None,
+        &app_state,
+        &execution_state,
+        || Arc::clone(&workspace_mock) as Arc<dyn ChatService>,
+    )
+    .await
+    .expect("resume mixed workspace queue");
+
+    assert_eq!(workspace_resumed, 1);
+    assert_eq!(
+        workspace_mock.get_sent_messages().await,
+        vec!["resume mixed project chat".to_string()]
+    );
+
     let slot_mock = Arc::new(MockChatService::new());
     let slot_resumed = resume_paused_slot_consuming_queues_with_chat_service(
         None,
@@ -2600,13 +4156,10 @@ async fn test_resume_mixed_context_relaunches_execution_ideation_and_chat_queues
         .await
         .expect("resume mixed non-slot chat queues");
 
-    assert_eq!(chat_resumed, 2);
+    assert_eq!(chat_resumed, 1);
     assert_eq!(
         chat_mock.get_sent_messages().await,
-        vec![
-            "resume mixed project chat".to_string(),
-            "resume mixed task chat".to_string(),
-        ]
+        vec!["resume mixed task chat".to_string()]
     );
     assert!(app_state
         .message_queue
@@ -3989,6 +5542,121 @@ async fn test_stop_execution_syncs_quota() {
     assert_eq!(max_concurrent, 6);
     assert_eq!(execution_state.max_concurrent(), 6);
     assert_eq!(resolved_project_id, Some(project.id));
+}
+
+#[tokio::test]
+async fn test_stop_execution_persists_stopped_and_clears_project_queues() {
+    let execution_state = Arc::new(ExecutionState::new());
+    let active_project_state = Arc::new(ActiveProjectState::new());
+    let app_state = AppState::new_test();
+
+    let project = app_state
+        .project_repo
+        .create(Project::new(
+            "Stop Queues Project".to_string(),
+            "/test/stop-queues-project".to_string(),
+        ))
+        .await
+        .unwrap();
+    let other_project = app_state
+        .project_repo
+        .create(Project::new(
+            "Other Stop Queues Project".to_string(),
+            "/test/other-stop-queues-project".to_string(),
+        ))
+        .await
+        .unwrap();
+
+    let task = app_state
+        .task_repo
+        .create(Task::new(project.id.clone(), "Queued task chat".to_string()))
+        .await
+        .unwrap();
+    let other_task = app_state
+        .task_repo
+        .create(Task::new(
+            other_project.id.clone(),
+            "Other queued task chat".to_string(),
+        ))
+        .await
+        .unwrap();
+
+    app_state.message_queue.queue(
+        ChatContextType::Project,
+        project.id.as_str(),
+        "project queue".to_string(),
+    );
+    app_state.message_queue.queue(
+        ChatContextType::Task,
+        task.id.as_str(),
+        "task chat queue".to_string(),
+    );
+    app_state.message_queue.queue(
+        ChatContextType::TaskExecution,
+        task.id.as_str(),
+        "task execution queue".to_string(),
+    );
+    app_state.message_queue.queue(
+        ChatContextType::Project,
+        other_project.id.as_str(),
+        "other project queue".to_string(),
+    );
+    app_state.message_queue.queue(
+        ChatContextType::Task,
+        other_task.id.as_str(),
+        "other task queue".to_string(),
+    );
+
+    let app = mock_builder()
+        .manage(Arc::clone(&active_project_state))
+        .manage(Arc::clone(&execution_state))
+        .manage(app_state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app should build");
+
+    let response = stop_execution(
+        Some(project.id.as_str().to_string()),
+        app.state::<Arc<ActiveProjectState>>(),
+        app.state::<Arc<ExecutionState>>(),
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("stop execution should succeed");
+
+    assert!(response.success);
+    assert!(execution_state.is_paused());
+    assert_eq!(response.status.halt_mode, "stopped");
+
+    let state = app.state::<AppState>();
+    assert!(state
+        .message_queue
+        .get_queued(ChatContextType::Project, project.id.as_str())
+        .is_empty());
+    assert!(state
+        .message_queue
+        .get_queued(ChatContextType::Task, task.id.as_str())
+        .is_empty());
+    assert!(state
+        .message_queue
+        .get_queued(ChatContextType::TaskExecution, task.id.as_str())
+        .is_empty());
+    assert_eq!(
+        state
+            .message_queue
+            .get_queued(ChatContextType::Project, other_project.id.as_str())
+            .len(),
+        1
+    );
+    assert_eq!(
+        state
+            .message_queue
+            .get_queued(ChatContextType::Task, other_task.id.as_str())
+            .len(),
+        1
+    );
+
+    let settings = state.app_state_repo.get().await.unwrap();
+    assert_eq!(settings.execution_halt_mode, ExecutionHaltMode::Stopped);
 }
 
 #[tokio::test]

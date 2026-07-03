@@ -41,13 +41,13 @@ impl std::str::FromStr for ProfileRole {
     }
 }
 
-/// Model short forms for Claude 4.5 models
+/// Model short forms for Claude models
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Model {
     /// claude-opus-4-5-20251101
     Opus,
-    /// claude-sonnet-4-5-20250929
+    /// claude-sonnet-4-6
     Sonnet,
     /// claude-haiku-4-5-20251001
     Haiku,
@@ -58,7 +58,7 @@ impl Model {
     pub fn model_id(&self) -> &'static str {
         match self {
             Model::Opus => "claude-opus-4-5-20251101",
-            Model::Sonnet => "claude-sonnet-4-5-20250929",
+            Model::Sonnet => "claude-sonnet-4-6",
             Model::Haiku => "claude-haiku-4-5-20251001",
         }
     }

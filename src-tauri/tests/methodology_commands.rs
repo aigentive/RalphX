@@ -1,14 +1,23 @@
 use ralphx_lib::application::AppState;
 use ralphx_lib::commands::methodology_commands::{
+    activate_methodology, deactivate_methodology, get_active_methodology, get_methodologies,
     MethodologyActivationResponse, MethodologyResponse,
 };
 use ralphx_lib::commands::WorkflowSchemaResponse;
 use ralphx_lib::domain::entities::methodology::MethodologyExtension;
 use ralphx_lib::domain::entities::status::InternalStatus;
 use ralphx_lib::domain::entities::workflow::{WorkflowColumn, WorkflowSchema};
+use tauri::Manager;
 
 fn setup_test_state() -> AppState {
     AppState::new_test()
+}
+
+fn methodology_command_app() -> tauri::App<tauri::test::MockRuntime> {
+    tauri::test::mock_builder()
+        .manage(AppState::new_test())
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app should build")
 }
 
 fn create_test_workflow() -> WorkflowSchema {
@@ -55,6 +64,30 @@ async fn test_get_methodologies_returns_all() {
     assert_eq!(result.len(), 2);
 }
 
+#[tokio::test]
+async fn get_methodologies_command_maps_repository_rows() {
+    let app = methodology_command_app();
+
+    let methodology = create_test_methodology();
+    app.state::<AppState>()
+        .methodology_repo
+        .create(methodology)
+        .await
+        .expect("methodology creates");
+
+    let response = get_methodologies(app.state::<AppState>())
+        .await
+        .expect("methodologies should list");
+
+    assert_eq!(response.len(), 1);
+    assert_eq!(response[0].name, "Test Method");
+    assert_eq!(response[0].workflow_name, "Test Workflow");
+    assert_eq!(response[0].agent_profiles, vec!["analyst", "developer"]);
+    assert_eq!(response[0].skills, vec!["skill1", "skill2"]);
+    assert_eq!(response[0].phase_count, 0);
+    assert_eq!(response[0].agent_count, 2);
+}
+
 // ===== get_active_methodology Tests =====
 
 #[tokio::test]
@@ -80,6 +113,36 @@ async fn test_get_active_methodology_some() {
     let result = state.methodology_repo.get_active().await.unwrap();
     assert!(result.is_some());
     assert_eq!(result.unwrap().id, id);
+}
+
+#[tokio::test]
+async fn get_active_methodology_command_returns_none_then_active_response() {
+    let app = methodology_command_app();
+
+    let none = get_active_methodology(app.state::<AppState>())
+        .await
+        .expect("active lookup should not error");
+    assert!(none.is_none());
+
+    let methodology = create_test_methodology();
+    let id = methodology.id.clone();
+    app.state::<AppState>()
+        .methodology_repo
+        .create(methodology)
+        .await
+        .expect("methodology creates");
+    app.state::<AppState>()
+        .methodology_repo
+        .activate(&id)
+        .await
+        .expect("methodology activates");
+
+    let active = get_active_methodology(app.state::<AppState>())
+        .await
+        .expect("active lookup should return response")
+        .expect("active methodology exists");
+    assert_eq!(active.id, id.as_str());
+    assert!(active.is_active);
 }
 
 // ===== activate_methodology Tests =====
@@ -136,6 +199,80 @@ async fn test_activate_methodology_deactivates_previous() {
     assert!(!m1_now.is_active);
 }
 
+#[tokio::test]
+async fn activate_methodology_command_deactivates_previous_and_reports_context() {
+    let app = methodology_command_app();
+
+    let first = create_test_methodology();
+    let first_id = first.id.clone();
+    app.state::<AppState>()
+        .methodology_repo
+        .create(first)
+        .await
+        .expect("first methodology creates");
+    app.state::<AppState>()
+        .methodology_repo
+        .activate(&first_id)
+        .await
+        .expect("first methodology activates");
+
+    let mut second = create_test_methodology();
+    second.name = "Second Method".to_string();
+    let second_id = second.id.clone();
+    app.state::<AppState>()
+        .methodology_repo
+        .create(second)
+        .await
+        .expect("second methodology creates");
+
+    let response = activate_methodology(second_id.as_str().to_string(), app.state::<AppState>())
+        .await
+        .expect("second activation should succeed");
+
+    assert_eq!(response.previous_methodology_id.as_deref(), Some(first_id.as_str()));
+    assert_eq!(response.methodology.id, second_id.as_str());
+    assert!(response.methodology.is_active);
+    assert_eq!(response.workflow.name, "Test Workflow");
+    assert_eq!(response.workflow.column_count, 3);
+    assert_eq!(response.agent_profiles, vec!["analyst", "developer"]);
+    assert_eq!(response.skills, vec!["skill1", "skill2"]);
+
+    let first_after = app
+        .state::<AppState>()
+        .methodology_repo
+        .get_by_id(&first_id)
+        .await
+        .expect("first lookup")
+        .expect("first methodology still exists");
+    assert!(!first_after.is_active);
+}
+
+#[tokio::test]
+async fn activate_methodology_command_rejects_missing_and_already_active() {
+    let app = methodology_command_app();
+
+    let missing_error = activate_methodology("missing-method".to_string(), app.state::<AppState>())
+        .await
+        .expect_err("missing methodology should error");
+    assert!(missing_error.contains("Methodology not found: missing-method"));
+
+    let methodology = create_test_methodology();
+    let id = methodology.id.clone();
+    app.state::<AppState>()
+        .methodology_repo
+        .create(methodology)
+        .await
+        .expect("methodology creates");
+    activate_methodology(id.as_str().to_string(), app.state::<AppState>())
+        .await
+        .expect("first activation succeeds");
+
+    let active_error = activate_methodology(id.as_str().to_string(), app.state::<AppState>())
+        .await
+        .expect_err("already active methodology should error");
+    assert!(active_error.contains("already active"));
+}
+
 // ===== deactivate_methodology Tests =====
 
 #[tokio::test]
@@ -162,6 +299,46 @@ async fn test_deactivate_methodology_success() {
         .unwrap()
         .unwrap();
     assert!(!methodology.is_active);
+}
+
+#[tokio::test]
+async fn deactivate_methodology_command_rejects_missing_inactive_and_clears_active() {
+    let app = methodology_command_app();
+
+    let missing_error =
+        deactivate_methodology("missing-method".to_string(), app.state::<AppState>())
+            .await
+            .expect_err("missing methodology should error");
+    assert!(missing_error.contains("Methodology not found: missing-method"));
+
+    let methodology = create_test_methodology();
+    let id = methodology.id.clone();
+    app.state::<AppState>()
+        .methodology_repo
+        .create(methodology)
+        .await
+        .expect("methodology creates");
+
+    let inactive_error = deactivate_methodology(id.as_str().to_string(), app.state::<AppState>())
+        .await
+        .expect_err("inactive methodology should error");
+    assert!(inactive_error.contains("is not active"));
+
+    app.state::<AppState>()
+        .methodology_repo
+        .activate(&id)
+        .await
+        .expect("methodology activates");
+    let response = deactivate_methodology(id.as_str().to_string(), app.state::<AppState>())
+        .await
+        .expect("active methodology deactivates");
+    assert_eq!(response.id, id.as_str());
+    assert!(!response.is_active);
+
+    let active = get_active_methodology(app.state::<AppState>())
+        .await
+        .expect("active lookup succeeds");
+    assert!(active.is_none());
 }
 
 // ===== Response Serialization Tests =====

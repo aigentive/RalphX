@@ -17,7 +17,8 @@ use tokio_util::bytes::Bytes;
 
 use crate::application::{
     harness_runtime_registry::clear_harness_runtime_caches_for_harness,
-    managed_provider_cli::is_launchable_file, AppState,
+    managed_provider_cli::{is_launchable_file, provider_runtime_probe},
+    AppState,
 };
 use crate::domain::agents::{
     AgentHarnessKind, AgentProviderCliManagementMode, AgentProviderSettings,
@@ -25,9 +26,10 @@ use crate::domain::agents::{
 };
 use crate::domain::entities::{AgentRunId, ChatConversationId};
 use crate::infrastructure::agents::claude::parse_claude_version;
+use crate::infrastructure::agents::{find_codex_cli, resolve_codex_cli, ResolvedCodexCli};
 use crate::infrastructure::tool_paths::{
     agent_subprocess_env_path, claude_native_cli_path, find_claude_cli_path,
-    find_claude_native_cli_path, find_codex_cli_path, resolve_shell_cli_path,
+    find_claude_native_cli_path, resolve_shell_cli_path,
 };
 use crate::utils::runtime_log_paths::{
     managed_codex_bin_dir, managed_codex_binary_path, managed_codex_home_dir,
@@ -58,6 +60,8 @@ pub struct ManagedProviderCliStatusResponse {
     pub provider: String,
     pub cli_management_mode: String,
     pub auto_update_enabled: bool,
+    pub custom_binary_enabled: bool,
+    pub custom_binary_path: Option<String>,
     pub supported: bool,
     pub installed: bool,
     pub binary_path: Option<String>,
@@ -147,6 +151,9 @@ fn managed_cli_action(
     if !observation.supported {
         return "unsupported";
     }
+    if settings.custom_binary_enabled {
+        return "none";
+    }
     if settings.cli_management_mode != AgentProviderCliManagementMode::RxManaged {
         return "none";
     }
@@ -180,6 +187,17 @@ fn managed_cli_status_text(
 ) -> String {
     if !observation.supported {
         return format!("RX-managed {provider} installs are unavailable.");
+    }
+    if settings.custom_binary_enabled {
+        if let Some(version) = observation.current_version.as_deref() {
+            return format!(
+                "Custom {provider} CLI {version} is configured. RX will not install or update it."
+            );
+        }
+        if let Some(error) = observation.error.as_deref() {
+            return format!("Custom {provider} CLI is not ready: {error}");
+        }
+        return format!("Custom {provider} CLI is configured. RX will not install or update it.");
     }
     if settings.cli_management_mode != AgentProviderCliManagementMode::RxManaged {
         if managed_cli_update_available(observation) {
@@ -219,13 +237,16 @@ fn managed_cli_status_response(
     provider_active: bool,
 ) -> ManagedProviderCliStatusResponse {
     let action = managed_cli_action(&settings, &observation, provider_active);
-    let update_available = managed_cli_update_available(&observation);
+    let update_available =
+        !settings.custom_binary_enabled && managed_cli_update_available(&observation);
     let status =
         managed_cli_status_text(settings.provider, &settings, &observation, provider_active);
     ManagedProviderCliStatusResponse {
         provider: settings.provider.to_string(),
         cli_management_mode: settings.cli_management_mode.to_string(),
         auto_update_enabled: settings.auto_update_enabled,
+        custom_binary_enabled: settings.custom_binary_enabled,
+        custom_binary_path: settings.custom_binary_path.clone(),
         supported: observation.supported,
         installed: observation.installed,
         binary_path: observation
@@ -237,6 +258,33 @@ fn managed_cli_status_response(
         action: action.to_string(),
         status,
         error: observation.error,
+    }
+}
+
+async fn custom_provider_observation(
+    settings: &AgentProviderSettings,
+) -> ManagedProviderCliObservation {
+    let Some(probe) = provider_runtime_probe(settings) else {
+        return ManagedProviderCliObservation {
+            supported: true,
+            installed: false,
+            binary_path: None,
+            current_version: None,
+            latest_version: None,
+            error: Some(format!(
+                "Custom {} binary path is not configured.",
+                settings.provider
+            )),
+        };
+    };
+
+    ManagedProviderCliObservation {
+        supported: true,
+        installed: probe.binary_found,
+        binary_path: probe.binary_path.map(PathBuf::from),
+        current_version: probe.cli_version,
+        latest_version: None,
+        error: probe.error,
     }
 }
 
@@ -293,29 +341,51 @@ async fn managed_codex_observation(include_latest_version: bool) -> ManagedProvi
 async fn user_managed_codex_observation(
     include_latest_version: bool,
 ) -> ManagedProviderCliObservation {
-    let Some(binary_path) = find_codex_cli_path() else {
-        return ManagedProviderCliObservation {
-            supported: true,
-            installed: false,
-            binary_path: None,
-            current_version: None,
-            latest_version: None,
-            error: None,
-        };
-    };
-
-    let current_version = match probe_cli_version(&binary_path).await {
-        Ok(output) => parse_codex_version(&output).or_else(|| Some(output.trim().to_string())),
+    let resolved = match resolve_user_managed_codex_cli().await {
+        Ok(resolved) => resolved,
         Err(error) => {
+            let binary_path = find_codex_cli();
+            let installed = binary_path.is_some();
             return ManagedProviderCliObservation {
                 supported: true,
-                installed: true,
-                binary_path: Some(binary_path),
+                installed,
+                binary_path,
                 current_version: None,
                 latest_version: None,
-                error: Some(error),
-            }
+                error: installed.then_some(error),
+            };
         }
+    };
+
+    user_managed_codex_observation_from_resolved_cli(resolved, include_latest_version).await
+}
+
+async fn resolve_user_managed_codex_cli() -> Result<ResolvedCodexCli, String> {
+    tokio::task::spawn_blocking(resolve_codex_cli)
+        .await
+        .map_err(|error| format!("Codex CLI resolver task failed: {error}"))?
+}
+
+async fn user_managed_codex_observation_from_resolved_cli(
+    resolved: ResolvedCodexCli,
+    include_latest_version: bool,
+) -> ManagedProviderCliObservation {
+    let binary_path = resolved.path;
+    let current_version = match resolved.capabilities.version {
+        Some(version) => Some(version),
+        None => match probe_cli_version(&binary_path).await {
+            Ok(output) => parse_codex_version(&output).or_else(|| Some(output.trim().to_string())),
+            Err(error) => {
+                return ManagedProviderCliObservation {
+                    supported: true,
+                    installed: true,
+                    binary_path: Some(binary_path),
+                    current_version: None,
+                    latest_version: None,
+                    error: Some(error),
+                }
+            }
+        },
     };
 
     let latest_version = if include_latest_version {
@@ -444,18 +514,22 @@ async fn managed_provider_cli_status_for_settings(
     settings: AgentProviderSettings,
     include_latest_version: bool,
 ) -> Result<ManagedProviderCliStatusResponse, String> {
-    let observation = match (settings.provider, settings.cli_management_mode) {
-        (AgentHarnessKind::Codex, AgentProviderCliManagementMode::RxManaged) => {
-            managed_codex_observation(include_latest_version).await
-        }
-        (AgentHarnessKind::Codex, AgentProviderCliManagementMode::UserManaged) => {
-            user_managed_codex_observation(include_latest_version).await
-        }
-        (AgentHarnessKind::Claude, AgentProviderCliManagementMode::RxManaged) => {
-            managed_claude_observation(include_latest_version).await
-        }
-        (AgentHarnessKind::Claude, AgentProviderCliManagementMode::UserManaged) => {
-            user_managed_claude_observation(include_latest_version).await
+    let observation = if settings.custom_binary_enabled {
+        custom_provider_observation(&settings).await
+    } else {
+        match (settings.provider, settings.cli_management_mode) {
+            (AgentHarnessKind::Codex, AgentProviderCliManagementMode::RxManaged) => {
+                managed_codex_observation(include_latest_version).await
+            }
+            (AgentHarnessKind::Codex, AgentProviderCliManagementMode::UserManaged) => {
+                user_managed_codex_observation(include_latest_version).await
+            }
+            (AgentHarnessKind::Claude, AgentProviderCliManagementMode::RxManaged) => {
+                managed_claude_observation(include_latest_version).await
+            }
+            (AgentHarnessKind::Claude, AgentProviderCliManagementMode::UserManaged) => {
+                user_managed_claude_observation(include_latest_version).await
+            }
         }
     };
     let provider_active = managed_provider_has_active_runtime(state, settings.provider).await?;
@@ -785,6 +859,11 @@ async fn install_or_update_managed_provider_cli_inner(
         .map_err(|err| err.to_string())?
         .unwrap_or_else(|| AgentProviderSettings::disabled_defaults(provider));
 
+    if settings.custom_binary_enabled {
+        return Err(format!(
+            "{provider} is configured with a custom binary. Disable custom binary mode before running RX-managed install or update."
+        ));
+    }
     if settings.cli_management_mode != AgentProviderCliManagementMode::RxManaged {
         return Err(format!(
             "{provider} is configured as user-managed. Enable RX-managed installs before running this action."

@@ -59,11 +59,13 @@ describe("ProjectReviewSettingsSchema", () => {
       ai_review_auto_fix: false,
       require_fix_approval: true,
       require_human_review: true,
+      require_workspace_review: false,
       max_fix_attempts: 5,
     };
     const result = ProjectReviewSettingsSchema.parse(data);
     expect(result.ai_review_enabled).toBe(false);
     expect(result.require_human_review).toBe(true);
+    expect(result.require_workspace_review).toBe(false);
     expect(result.max_fix_attempts).toBe(5);
   });
 

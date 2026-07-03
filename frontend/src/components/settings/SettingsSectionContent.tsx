@@ -26,6 +26,12 @@ const LazyAgentModelsSection = lazy(() =>
 const LazyReviewPolicySection = lazy(() =>
   import("./sections/ReviewPolicySection"),
 );
+const LazyWorkspaceReviewSection = lazy(() =>
+  import("./sections/WorkspaceReviewSection"),
+);
+const LazyAutonomyPolicySection = lazy(() =>
+  import("./sections/AutonomyPolicySection"),
+);
 const LazyRepositorySettingsSection = lazy(() =>
   import("./RepositorySettingsSection").then((module) => ({
     default: module.RepositorySettingsSection,
@@ -54,6 +60,26 @@ const LazyApiKeysSection = lazy(() =>
 const LazyAtlassianIntegrationSettingsPanel = lazy(() =>
   import("./AtlassianIntegrationSettingsPanel").then((module) => ({
     default: module.AtlassianIntegrationSettingsPanel,
+  })),
+);
+const LazyGitHubIntegrationSettingsPanel = lazy(() =>
+  import("./GitHubIntegrationSettingsPanel").then((module) => ({
+    default: module.GitHubIntegrationSettingsPanel,
+  })),
+);
+const LazyLinearIntegrationSettingsPanel = lazy(() =>
+  import("./LinearIntegrationSettingsPanel").then((module) => ({
+    default: module.LinearIntegrationSettingsPanel,
+  })),
+);
+const LazyClickUpIntegrationSettingsPanel = lazy(() =>
+  import("./ClickUpIntegrationSettingsPanel").then((module) => ({
+    default: module.ClickUpIntegrationSettingsPanel,
+  })),
+);
+const LazyGranolaIntegrationSettingsPanel = lazy(() =>
+  import("./GranolaIntegrationSettingsPanel").then((module) => ({
+    default: module.GranolaIntegrationSettingsPanel,
   })),
 );
 const LazyExternalMcpSettingsPanel = lazy(() =>
@@ -124,12 +150,18 @@ export function SettingsSectionContent({
       {section === "execution-harnesses" && <LazyExecutionHarnessSection />}
       {section === "models" && <LazyAgentModelsSection />}
       {section === "global-execution" && <LazyGlobalExecutionSection />}
+      {section === "workspace-review" && <LazyWorkspaceReviewSection />}
       {section === "review" && <LazyReviewPolicySection />}
+      {section === "autonomy" && <LazyAutonomyPolicySection />}
       {section === "repository" && <LazyRepositorySettingsSection />}
       {section === "project-analysis" && <LazyProjectAnalysisSection />}
       {section === "ideation-workflow" && <LazyIdeationSettingsPanel />}
       {section === "ideation-harnesses" && <LazyIdeationHarnessSection />}
       {section === "integrations" && <LazyAtlassianIntegrationSettingsPanel />}
+      {section === "github" && <LazyGitHubIntegrationSettingsPanel />}
+      {section === "linear" && <LazyLinearIntegrationSettingsPanel />}
+      {section === "clickup" && <LazyClickUpIntegrationSettingsPanel />}
+      {section === "granola" && <LazyGranolaIntegrationSettingsPanel />}
       {section === "api-keys" && <LazyApiKeysSection />}
       {section === "external-mcp" && <LazyExternalMcpSettingsPanel />}
       {section === "app-preferences" && <LazyAppPreferencesSection />}

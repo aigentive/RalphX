@@ -23,6 +23,7 @@ export interface QuickAction {
   description: (query: string) => string;
   isVisible: (query: string) => boolean;
   execute: (query: string) => Promise<string>;
+  requiresConfirmation?: boolean;
   creatingLabel: string;
   successLabel: string;
   viewLabel: string;

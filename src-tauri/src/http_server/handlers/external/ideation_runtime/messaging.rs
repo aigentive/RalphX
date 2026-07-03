@@ -1,5 +1,10 @@
 use super::*;
+use crate::application::agent_workspace_continuation::{
+    classify_agent_workspace_continuation, AgentWorkspaceContinuationBlock,
+};
 use crate::application::harness_runtime_registry::default_external_mcp_message_queue_cap;
+use crate::domain::services::QueueKey;
+use std::collections::HashSet;
 
 #[derive(Debug, Deserialize)]
 pub struct IdeationMessageRequest {
@@ -69,6 +74,7 @@ pub async fn ideation_message_http(
             Json(serde_json::json!({"error": "Session is not active"})),
         ));
     }
+    ensure_linked_agent_workspace_continuable(&state, &session_id).await?;
 
     let session_id_str = session_id.as_str().to_string();
     let current_phase = session.external_activity_phase.clone();
@@ -187,10 +193,29 @@ pub async fn ideation_message_http(
         .await
     {
         let cap = default_external_mcp_message_queue_cap();
-        let queued_count = state
+        let queue_key = QueueKey::new(ChatContextType::Ideation, &session_id_str);
+        let mut queued_ids: HashSet<String> = state
             .app_state
             .message_queue
-            .count_for_context("ideation", &session_id_str);
+            .get_queued_with_key(&queue_key)
+            .into_iter()
+            .map(|message| message.id)
+            .collect();
+        for message in state
+            .app_state
+            .queued_message_repo
+            .list(&queue_key)
+            .await
+            .map_err(|error| {
+                (
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": error.to_string() })),
+                )
+            })?
+        {
+            queued_ids.insert(message.id);
+        }
+        let queued_count = queued_ids.len();
         if queued_count >= cap {
             return Err((
                 axum::http::StatusCode::TOO_MANY_REQUESTS,
@@ -205,11 +230,22 @@ pub async fn ideation_message_http(
             ));
         }
 
-        state.app_state.message_queue.queue(
+        let queued = state.app_state.message_queue.queue(
             ChatContextType::Ideation,
             &session_id_str,
             req.message.clone(),
         );
+        state
+            .app_state
+            .queued_message_repo
+            .enqueue_back(&queue_key, &queued)
+            .await
+            .map_err(|error| {
+                (
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": error.to_string() })),
+                )
+            })?;
         maybe_transition_to_planning(
             Arc::clone(&state.app_state.ideation_session_repo),
             IdeationSessionId::from_string(session_id_str.clone()),
@@ -292,4 +328,85 @@ pub async fn ideation_message_http(
             "Wait for agent to respond. Poll v1_get_ideation_status (5-10s interval)".to_string(),
         ),
     }))
+}
+
+async fn ensure_linked_agent_workspace_continuable(
+    state: &HttpServerState,
+    session_id: &IdeationSessionId,
+) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    let workspace = state
+        .app_state
+        .agent_conversation_workspace_repo
+        .get_by_linked_ideation_session_id(session_id)
+        .await
+        .map_err(|error| {
+            error!(
+                session_id = %session_id.as_str(),
+                error = %error,
+                "Failed to load linked agent workspace for ideation message preflight"
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": "Failed to check linked agent workspace"
+                })),
+            )
+        })?;
+    let Some(workspace) = workspace else {
+        return Ok(());
+    };
+
+    let project = state
+        .app_state
+        .project_repo
+        .get_by_id(&workspace.project_id)
+        .await
+        .map_err(|error| {
+            error!(
+                session_id = %session_id.as_str(),
+                conversation_id = %workspace.conversation_id.as_str(),
+                error = %error,
+                "Failed to load project for linked agent workspace preflight"
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": "Failed to check linked agent workspace project"
+                })),
+            )
+        })?
+        .ok_or_else(|| {
+            let reason = AgentWorkspaceContinuationBlock::UnknownRequiresManualCheck(
+                "project not found".to_string(),
+            );
+            non_resumable_ideation_response(session_id, &workspace, &reason)
+        })?;
+
+    if let Some(reason) =
+        classify_agent_workspace_continuation(&project, &workspace).blocked_reason()
+    {
+        return Err(non_resumable_ideation_response(
+            session_id, &workspace, reason,
+        ));
+    }
+
+    Ok(())
+}
+
+fn non_resumable_ideation_response(
+    session_id: &IdeationSessionId,
+    workspace: &crate::domain::entities::AgentConversationWorkspace,
+    reason: &AgentWorkspaceContinuationBlock,
+) -> (StatusCode, Json<serde_json::Value>) {
+    (
+        StatusCode::CONFLICT,
+        Json(serde_json::json!({
+            "error": "agent_workspace_non_resumable",
+            "reason": reason.code(),
+            "session_id": session_id.as_str(),
+            "conversation_id": workspace.conversation_id.as_str(),
+            "next_action": "start_fresh_agent_conversation",
+            "hint": reason.user_message(),
+        })),
+    )
 }

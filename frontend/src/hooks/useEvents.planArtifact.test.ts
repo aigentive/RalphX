@@ -3,7 +3,7 @@
  *
  * Tests schema validation, all 3 handler tiers, dedup behavior, and rapid event sequences.
  * The hook has 3-tier matching for plan_artifact:updated:
- *   Tier 1 — sessionId matches active session (most reliable)
+ *   Tier 1 — sessionId is authoritative (most reliable)
  *   Tier 2 — planArtifactId fallback (for old backend events without sessionId)
  *   Tier 3 — safety net: invalidate active session query when neither tier matched
  */
@@ -197,6 +197,40 @@ describe("usePlanArtifactEvents", () => {
       });
       expect(mockInvalidateQueries).toHaveBeenCalledWith({
         queryKey: ["agents", "plan-approval", "session-1"],
+      });
+    });
+
+    it("sessionId invalidates agent plan queries even when the session is not active in the ideation store", () => {
+      mockActiveSessionId = "different-session";
+      mockSessions = {};
+
+      renderHook(() => usePlanArtifactEvents());
+
+      act(() => {
+        fireEvent("plan_artifact:updated", {
+          sessionId: "planning-session-1",
+          artifactId: "artifact-2",
+          previousArtifactId: "artifact-1",
+          artifact: makeArtifact("artifact-2", 2),
+        });
+      });
+
+      expect(mockSetPlanArtifact).not.toHaveBeenCalled();
+      expect(mockUpdateSession).not.toHaveBeenCalled();
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({
+        queryKey: ["ideation", "session", "planning-session-1"],
+      });
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({
+        queryKey: ["agents", "session-plan", "planning-session-1"],
+      });
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({
+        queryKey: ["agents", "plan-approval", "planning-session-1"],
+      });
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({
+        queryKey: ["agents", "artifact", "artifact-2"],
+      });
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({
+        queryKey: ["agents", "artifact", "artifact-1"],
       });
     });
 

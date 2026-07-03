@@ -22,7 +22,10 @@ async fn test_create_and_get() {
     let retrieved = repo.get_by_id(&id).await.unwrap().unwrap();
     assert_eq!(retrieved.id, id);
     assert_eq!(retrieved.harness, Some(AgentHarnessKind::Codex));
-    assert_eq!(retrieved.provider_session_id, Some("session-123".to_string()));
+    assert_eq!(
+        retrieved.provider_session_id,
+        Some("session-123".to_string())
+    );
     assert_eq!(retrieved.logical_effort, Some(LogicalEffort::Medium));
     assert_eq!(retrieved.input_tokens, Some(123));
     assert_eq!(retrieved.output_tokens, Some(45));
@@ -110,6 +113,7 @@ async fn test_update_attribution() {
             effective_model_id: Some("glm-4.7".to_string()),
             logical_effort: Some(LogicalEffort::High),
             effective_effort: Some("high".to_string()),
+            service_tier: Some("fast".to_string()),
         },
     )
     .await
@@ -127,6 +131,7 @@ async fn test_update_attribution() {
     assert_eq!(retrieved.effective_model_id.as_deref(), Some("glm-4.7"));
     assert_eq!(retrieved.logical_effort, Some(LogicalEffort::High));
     assert_eq!(retrieved.effective_effort.as_deref(), Some("high"));
+    assert_eq!(retrieved.service_tier.as_deref(), Some("fast"));
 }
 
 #[tokio::test]

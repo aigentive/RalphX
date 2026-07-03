@@ -12,12 +12,23 @@ import * as ScrollAreaPrimitive from "@radix-ui/react-scroll-area";
 import { Virtuoso } from "react-virtuoso";
 import { Button } from "@/components/ui/button";
 import { diffApi } from "@/api/diff";
-import type { DiffHunk, DiffLine, DiffRefKind, PrDiffAnnotation, RangeLine } from "@/api/diff";
+import type {
+  DiffHunk,
+  DiffLine,
+  DiffRefKind,
+  PrDiffAnnotation,
+  RangeLine,
+  WorkspaceReviewHunkAnnotation,
+} from "@/api/diff";
 import {
   annotationsForLine,
   buildAnnotationIndex,
+  buildHunkAnnotationIndex,
+  hunkAnnotationsForHunk,
+  renderAnnotationRows,
   renderDiffLine,
   renderHunkHeader,
+  renderHunkAnnotationRows,
   type AnnotationIndex,
   type DiffRenderVariant,
 } from "./diffRenderHelpers";
@@ -40,6 +51,8 @@ export interface SimpleDiffViewProps {
   scrollContainer?: boolean | undefined;
   /** GitHub review/check annotations already filtered to this file. */
   annotations?: PrDiffAnnotation[] | undefined;
+  /** Workspace Review hunk notes already filtered to this file and ref/source. */
+  hunkAnnotations?: WorkspaceReviewHunkAnnotation[] | undefined;
   /** Compact density for embedded chat widgets; default keeps repository diff views unchanged. */
   density?: "standard" | "compact" | undefined;
   /** Initial line wrapping state. */
@@ -48,6 +61,10 @@ export interface SimpleDiffViewProps {
   showWrapToggle?: boolean | undefined;
   /** Show expandable unchanged-line gap rows between hunks. */
   showContextGaps?: boolean | undefined;
+  /** Disable per-row sticky line-number gutters for WebKit-sensitive embedded diffs. */
+  stickyGutter?: boolean | undefined;
+  /** Full code diff or review narrative without code rows. */
+  contentMode?: "full" | "review-only" | undefined;
 }
 
 type GapState = "loading" | "error" | RangeLine[];
@@ -65,7 +82,15 @@ type GapRowBase = {
 };
 
 type DiffVirtualRow =
-  | { type: "hunk-header"; key: string; header: string }
+  | {
+      type: "hunk-header";
+      key: string;
+      header: string;
+      oldStart: number;
+      oldLines: number;
+      newStart: number;
+      newLines: number;
+    }
   | { type: "line"; key: string; line: DiffLine }
   | { type: "range-line"; key: string; line: DiffLine }
   | ({ type: "gap-collapsed" | "gap-loading" | "gap-error" | "gap-hide"; key: string } & GapRowBase);
@@ -94,7 +119,8 @@ function renderRangeLine(
   oldLineNum: number,
   wrapLines: boolean,
   variant: Variant,
-  annotations: PrDiffAnnotation[]
+  annotations: PrDiffAnnotation[],
+  stickyGutter: boolean,
 ) {
   const line: DiffLine = {
     kind: "context",
@@ -102,7 +128,9 @@ function renderRangeLine(
     oldLineNum,
     newLineNum: rl.lineNum,
   };
-  return renderDiffLine(line, rl.lineNum, wrapLines, variant, annotations);
+  return renderDiffLine(line, rl.lineNum, wrapLines, variant, annotations, {
+    stickyGutter,
+  });
 }
 
 function pushGapRows(
@@ -192,6 +220,10 @@ function buildDiffVirtualRows(
       type: "hunk-header",
       key: `hunk-${hunkIdx}-header`,
       header: hunk.header,
+      oldStart: hunk.oldStart,
+      oldLines: hunk.oldLines,
+      newStart: hunk.newStart,
+      newLines: hunk.newLines,
     });
     hunk.lines.forEach((line, lineIdx) => {
       rows.push({
@@ -243,6 +275,9 @@ export function SimpleDiffView({
   defaultWrapLines = true,
   showWrapToggle = true,
   showContextGaps = true,
+  stickyGutter = true,
+  hunkAnnotations = [],
+  contentMode = "full",
 }: SimpleDiffViewProps) {
   const [wrapLines, setWrapLines] = useState(defaultWrapLines);
   // gapCache state drives rendering; gapCacheRef mirrors it so callbacks
@@ -258,6 +293,10 @@ export function SimpleDiffView({
     filePath !== undefined &&
     refKind !== undefined;
   const annotationIndex = useMemo(() => buildAnnotationIndex(annotations), [annotations]);
+  const hunkAnnotationIndex = useMemo(
+    () => buildHunkAnnotationIndex(hunkAnnotations),
+    [hunkAnnotations]
+  );
   const bodyTextClass =
     density === "compact"
       ? "font-mono text-[0.6875rem] leading-[18px]"
@@ -384,6 +423,48 @@ export function SimpleDiffView({
     );
   }
 
+  if (contentMode === "review-only") {
+    return (
+      <div className={scrollContainer ? "h-full overflow-y-auto" : "w-full overflow-visible"}>
+        <div
+          className={bodyTextClass}
+          data-density={density}
+          data-testid="simple-diff-review-only"
+          style={{ backgroundColor: "var(--bg-base)" }}
+        >
+          {hunks.map((hunk, hunkIdx) => {
+            const hunkLineAnnotations = [
+              ...new Map(
+                hunk.lines
+                  .flatMap((line) => annotationsForLine(annotationIndex, line))
+                  .map((annotation) => [annotation.id, annotation]),
+              ).values(),
+            ];
+            return (
+              <div
+                key={`review-hunk-${hunkIdx}`}
+                data-testid="diff-review-only-hunk"
+                style={{
+                  borderBottomColor: "var(--overlay-faint)",
+                  borderBottomStyle: "solid",
+                  borderBottomWidth: "1px",
+                }}
+              >
+                {renderHunkHeader(hunk.header)}
+                {renderHunkAnnotationRows(
+                  hunkAnnotationsForHunk(hunkAnnotationIndex, hunk),
+                  true,
+                  variant,
+                )}
+                {renderAnnotationRows(hunkLineAnnotations, true, variant)}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
   // ── Gap computation helper ─────────────────────────────────────────────
 
   /** Render the gap region (context lines not in any hunk). */
@@ -461,7 +542,8 @@ export function SimpleDiffView({
                   content: rl.content,
                   oldLineNum: fromOldLine + i,
                   newLineNum: rl.lineNum,
-                })
+                }),
+                stickyGutter,
               )
             )}
             <div
@@ -645,7 +727,19 @@ export function SimpleDiffView({
 
   function renderVirtualRow(_index: number, row: DiffVirtualRow) {
     if (row.type === "hunk-header") {
-      return renderHunkHeader(row.header);
+      const matchedHunkAnnotations = hunkAnnotationsForHunk(hunkAnnotationIndex, {
+        header: row.header,
+        oldStart: row.oldStart,
+        oldLines: row.oldLines,
+        newStart: row.newStart,
+        newLines: row.newLines,
+      });
+      return (
+        <>
+          {renderHunkHeader(row.header)}
+          {renderHunkAnnotationRows(matchedHunkAnnotations, wrapLines, variant)}
+        </>
+      );
     }
     if (row.type === "line" || row.type === "range-line") {
       return renderDiffLine(
@@ -653,7 +747,8 @@ export function SimpleDiffView({
         _index,
         wrapLines,
         variant,
-        annotationsForLine(annotationIndex, row.line)
+        annotationsForLine(annotationIndex, row.line),
+        { stickyGutter },
       );
     }
     return renderVirtualGapRow(row);
@@ -766,6 +861,11 @@ export function SimpleDiffView({
                 style={{ borderColor: "var(--overlay-faint)" }}
               >
                 {renderHunkHeader(hunk.header)}
+                {renderHunkAnnotationRows(
+                  hunkAnnotationsForHunk(hunkAnnotationIndex, hunk),
+                  wrapLines,
+                  variant,
+                )}
                 <ScrollAreaPrimitive.Root className="w-full overflow-hidden">
                   <ScrollAreaPrimitive.Viewport className="w-full overflow-x-auto">
                     <div style={{ minWidth: wrapLines ? "auto" : "max-content" }}>
@@ -775,7 +875,8 @@ export function SimpleDiffView({
                           lineIdx,
                           wrapLines,
                           variant,
-                          annotationsForLine(annotationIndex, line)
+                          annotationsForLine(annotationIndex, line),
+                          { stickyGutter },
                         )
                       )}
                     </div>

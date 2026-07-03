@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+pub const DEFAULT_WORKSPACE_MAX_CONCURRENT: u32 = 10;
+
 /// Execution settings for task scheduling and automation
 /// Can be stored per-project (with project_id) or as global defaults (project_id = None)
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -41,10 +43,17 @@ pub struct GlobalExecutionSettings {
     /// Maximum total concurrent tasks across ALL projects (hard cap)
     /// Default: 20, UI max: 50
     pub global_max_concurrent: u32,
+    /// Maximum number of workspace main-agent conversations allowed globally.
+    #[serde(default = "default_workspace_max_concurrent")]
+    pub workspace_max_concurrent: u32,
     /// Maximum number of ideation/verification sessions allowed globally.
     pub global_ideation_max: u32,
     /// When true, ideation may borrow idle execution capacity if no runnable execution work waits.
     pub allow_ideation_borrow_idle_execution: bool,
+}
+
+fn default_workspace_max_concurrent() -> u32 {
+    DEFAULT_WORKSPACE_MAX_CONCURRENT
 }
 
 impl Default for GlobalExecutionSettings {
@@ -52,6 +61,7 @@ impl Default for GlobalExecutionSettings {
         // Last-resort fallback only. Keep aligned with ralphx.yaml execution_defaults.global.
         Self {
             global_max_concurrent: 20,
+            workspace_max_concurrent: DEFAULT_WORKSPACE_MAX_CONCURRENT,
             global_ideation_max: 10,
             allow_ideation_borrow_idle_execution: false,
         }
@@ -66,6 +76,7 @@ impl GlobalExecutionSettings {
     pub fn validate(&self) -> Self {
         Self {
             global_max_concurrent: self.global_max_concurrent.clamp(1, Self::MAX_ALLOWED),
+            workspace_max_concurrent: self.workspace_max_concurrent.clamp(1, Self::MAX_ALLOWED),
             global_ideation_max: self.global_ideation_max.clamp(1, Self::MAX_ALLOWED),
             allow_ideation_borrow_idle_execution: self.allow_ideation_borrow_idle_execution,
         }

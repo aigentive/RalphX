@@ -76,6 +76,7 @@ interface DefaultProps {
   isHistoryMode: boolean;
   isAgentContext: boolean;
   isAgentRunning: boolean;
+  isGenerating: boolean;
   isConversationInCurrentContext: boolean;
   agentRunStatus: string | undefined;
   isVisible: boolean;
@@ -98,6 +99,7 @@ function makeProps(overrides?: Partial<DefaultProps>): DefaultProps {
     isHistoryMode: false,
     isAgentContext: true,
     isAgentRunning: false,
+    isGenerating: false,
     isConversationInCurrentContext: true,
     agentRunStatus: undefined,
     isVisible: true,
@@ -517,6 +519,98 @@ describe("useChatRecovery", () => {
 
       // Must check with the correct context type and id
       expect(mockIsAgentRunning).toHaveBeenCalledWith("merge", "task-merge-42");
+    });
+  });
+
+  describe("isStreamingHydrated flag", () => {
+    it("returns false before hydration completes", () => {
+      let resolveActiveState!: (val: unknown) => void;
+      mockGetConversationActiveState.mockReturnValueOnce(
+        new Promise((resolve) => { resolveActiveState = resolve; })
+      );
+      const props = makeProps({
+        setStreamingToolCalls: vi.fn(),
+        setStreamingContentBlocks: vi.fn(),
+        setStreamingTasks: vi.fn(),
+      });
+      const { result } = renderHook(() => useChatRecovery(props));
+
+      expect(result.current.isStreamingHydrated).toBe(false);
+
+      // cleanup: resolve to avoid hanging
+      resolveActiveState({ is_active: false, tool_calls: [], streaming_tasks: [], partial_text: "" });
+    });
+
+    it("returns true after hydration completes", async () => {
+      mockGetConversationActiveState.mockResolvedValueOnce({
+        is_active: true,
+        tool_calls: [],
+        streaming_tasks: [],
+        partial_text: "some text",
+      });
+      const props = makeProps({
+        setStreamingToolCalls: vi.fn(),
+        setStreamingContentBlocks: vi.fn(),
+        setStreamingTasks: vi.fn(),
+      });
+      const { result } = renderHook(() => useChatRecovery(props));
+
+      await act(async () => {});
+
+      expect(result.current.isStreamingHydrated).toBe(true);
+    });
+
+    it("returns true immediately when hydration is not needed (history mode)", () => {
+      const props = makeProps({ isHistoryMode: true });
+      const { result } = renderHook(() => useChatRecovery(props));
+
+      expect(result.current.isStreamingHydrated).toBe(true);
+    });
+
+    it("resets to false on conversation switch then completes to true", async () => {
+      mockGetConversationActiveState.mockResolvedValue({
+        is_active: false,
+        tool_calls: [],
+        streaming_tasks: [],
+        partial_text: "",
+      });
+      const props = makeProps({
+        activeConversationId: "conv-1",
+        setStreamingToolCalls: vi.fn(),
+        setStreamingContentBlocks: vi.fn(),
+        setStreamingTasks: vi.fn(),
+      });
+
+      const { result, rerender } = renderHook(
+        (p: DefaultProps) => useChatRecovery(p),
+        { initialProps: props },
+      );
+
+      await act(async () => {});
+      expect(result.current.isStreamingHydrated).toBe(true);
+
+      // Switch conversation
+      const newProps = { ...props, activeConversationId: "conv-2" };
+      rerender(newProps);
+
+      expect(result.current.isStreamingHydrated).toBe(false);
+
+      await act(async () => {});
+      expect(result.current.isStreamingHydrated).toBe(true);
+    });
+
+    it("returns true when hydration fetch fails", async () => {
+      mockGetConversationActiveState.mockRejectedValueOnce(new Error("network"));
+      const props = makeProps({
+        setStreamingToolCalls: vi.fn(),
+        setStreamingContentBlocks: vi.fn(),
+        setStreamingTasks: vi.fn(),
+      });
+      const { result } = renderHook(() => useChatRecovery(props));
+
+      await act(async () => {});
+
+      expect(result.current.isStreamingHydrated).toBe(true);
     });
   });
 

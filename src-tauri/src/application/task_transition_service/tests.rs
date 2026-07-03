@@ -1,15 +1,22 @@
 use super::*;
 use crate::application::AppState;
+use crate::domain::entities::plan_branch::PrPushStatus;
 use crate::domain::entities::task_metadata::GIT_ISOLATION_ERROR_PREFIX;
 use crate::domain::entities::{
-    ExecutionFailureSource, ExecutionRecoveryEventKind, ExecutionRecoveryMetadata,
-    ExecutionRecoveryReasonCode, ExecutionRecoverySource, ExecutionRecoveryState, InternalStatus,
-    Project, Task, TaskCategory,
+    AgentWorkspacePrDescription, ArtifactId, ExecutionFailureSource, ExecutionRecoveryEventKind,
+    ExecutionRecoveryMetadata, ExecutionRecoveryReasonCode, ExecutionRecoverySource,
+    ExecutionRecoveryState, IdeationSessionId, InternalStatus, PlanBranch, Project, ProjectId,
+    Task, TaskCategory,
 };
-use crate::domain::services::{MemoryRunningAgentRegistry, MessageQueue};
+use crate::domain::services::{
+    GithubServiceTrait, MemoryRunningAgentRegistry, MessageQueue, PlanPrDescriptionDrafter,
+    PrReviewState,
+};
 use crate::domain::state_machine::transition_handler::metadata_builder::MetadataUpdate;
 use crate::error::AppError;
 use crate::infrastructure::{MockAgenticClient, MockCallType};
+use crate::tests::mock_github_service::MockGithubService;
+use async_trait::async_trait;
 use serde_json::Value;
 
 #[test]
@@ -153,6 +160,24 @@ fn build_test_service(app_state: &AppState) -> TaskTransitionService<tauri::Wry>
     )
 }
 
+struct StaticPlanPrDescriptionDrafter;
+
+#[async_trait]
+impl PlanPrDescriptionDrafter for StaticPlanPrDescriptionDrafter {
+    async fn draft_plan_description(
+        &self,
+        _project: &Project,
+        _plan_branch: &PlanBranch,
+        _review_base: &str,
+        _review_state: PrReviewState,
+    ) -> crate::error::AppResult<AgentWorkspacePrDescription> {
+        Ok(AgentWorkspacePrDescription::new(
+            None,
+            "## Summary\n\nTransition service drafted body".to_string(),
+        ))
+    }
+}
+
 fn pr_sync_state(
     merge_state_status: Option<PrMergeStateStatus>,
     mergeable: Option<PrMergeableState>,
@@ -222,6 +247,63 @@ fn pr_branch_freshness_only_targets_active_waiting_plan_merge_tasks() {
     task.internal_status = InternalStatus::WaitingOnPr;
     task.category = TaskCategory::Regular;
     assert!(!pr_branch_freshness_task_eligible(&task));
+}
+
+#[tokio::test]
+async fn push_and_refresh_pr_branch_uses_drafted_description() {
+    let app_state = AppState::new_test();
+    let github = Arc::new(MockGithubService::new());
+    let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
+    let service = build_test_service(&app_state)
+        .with_plan_branch_repo(Arc::clone(&app_state.plan_branch_repo))
+        .with_github_service(github_trait)
+        .with_plan_pr_description_drafter(Arc::new(StaticPlanPrDescriptionDrafter));
+
+    let mut project = Project::new("Test Project".to_string(), "/test/path".to_string());
+    project.id = ProjectId::from_string("proj-1".to_string());
+    project.base_branch = Some("main".to_string());
+    let task = Task::new(project.id.clone(), "Refresh PR branch".to_string());
+
+    let mut plan_branch = PlanBranch::new(
+        ArtifactId::from_string("artifact-1".to_string()),
+        IdeationSessionId::from_string("session-1".to_string()),
+        project.id.clone(),
+        "plan/feature".to_string(),
+        "main".to_string(),
+    );
+    plan_branch.pr_eligible = true;
+    plan_branch.pr_number = Some(42);
+    plan_branch.pr_push_status = PrPushStatus::Pushed;
+    let plan_branch_id = plan_branch.id.clone();
+    app_state
+        .plan_branch_repo
+        .create(plan_branch.clone())
+        .await
+        .unwrap();
+
+    service
+        .push_and_refresh_pr_branch(&task, &project, &plan_branch)
+        .await
+        .expect("PR branch should push and refresh");
+
+    {
+        let state = github.state();
+        assert_eq!(state.push_branch_calls, 1);
+        assert_eq!(state.update_pr_details_calls, 1);
+        let body = state
+            .last_update_pr_details_body
+            .as_deref()
+            .expect("updated PR body should be captured");
+        assert!(body.starts_with("## Summary\n\nTransition service drafted body"));
+    }
+
+    let updated_plan_branch = app_state
+        .plan_branch_repo
+        .get_by_id(&plan_branch_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(updated_plan_branch.pr_push_status, PrPushStatus::Pushed);
 }
 
 fn init_git_repo(path: &std::path::Path) {

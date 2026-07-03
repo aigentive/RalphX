@@ -6,8 +6,22 @@ import { TaskCreationOverlay } from "./TaskCreationOverlay";
 import { useUiStore } from "@/stores/uiStore";
 
 vi.mock("./TaskCreationForm", () => ({
-  TaskCreationForm: ({ projectId }: { projectId: string }) => (
-    <div data-testid="task-creation-form">project={projectId}</div>
+  TaskCreationForm: ({
+    projectId,
+    ideationSessionId,
+    executionPlanId,
+  }: {
+    projectId: string;
+    ideationSessionId?: string;
+    executionPlanId?: string;
+  }) => (
+    <div
+      data-testid="task-creation-form"
+      data-ideation-session-id={ideationSessionId ?? ""}
+      data-execution-plan-id={executionPlanId ?? ""}
+    >
+      project={projectId}
+    </div>
   ),
 }));
 
@@ -28,6 +42,21 @@ describe("TaskCreationOverlay", () => {
     render(<TaskCreationOverlay projectId="proj-1" />);
     expect(screen.getByTestId("task-creation-overlay")).toBeInTheDocument();
     expect(screen.getByTestId("task-creation-form")).toBeInTheDocument();
+  });
+
+  it("passes active flow context to the form", () => {
+    useUiStore.setState({
+      taskCreationContext: {
+        projectId: "proj-1",
+        ideationSessionId: "session-1",
+        executionPlanId: "exec-plan-1",
+      },
+    } as Partial<ReturnType<typeof useUiStore.getState>>);
+    render(<TaskCreationOverlay projectId="proj-1" />);
+
+    const form = screen.getByTestId("task-creation-form");
+    expect(form).toHaveAttribute("data-ideation-session-id", "session-1");
+    expect(form).toHaveAttribute("data-execution-plan-id", "exec-plan-1");
   });
 
   it("closes the overlay on Escape key + Close button", async () => {

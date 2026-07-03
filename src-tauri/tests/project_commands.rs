@@ -1,4 +1,6 @@
 mod common;
+#[path = "project_pr_template.rs"]
+mod project_pr_template_ipc_contract_coverage;
 
 use std::sync::Arc;
 

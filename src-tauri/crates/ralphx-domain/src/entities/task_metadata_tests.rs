@@ -763,7 +763,10 @@ fn execution_recovery_event_builder_methods() {
     .with_failure_source(ExecutionFailureSource::TransientTimeout);
 
     assert_eq!(event.attempt, Some(2));
-    assert_eq!(event.failure_source, Some(ExecutionFailureSource::TransientTimeout));
+    assert_eq!(
+        event.failure_source,
+        Some(ExecutionFailureSource::TransientTimeout)
+    );
 }
 
 #[test]
@@ -803,9 +806,18 @@ fn execution_recovery_event_skips_serializing_none_fields() {
 fn execution_recovery_event_kind_serialization() {
     let kinds = [
         (ExecutionRecoveryEventKind::Failed, "failed"),
-        (ExecutionRecoveryEventKind::AutoRetryTriggered, "auto_retry_triggered"),
-        (ExecutionRecoveryEventKind::AttemptStarted, "attempt_started"),
-        (ExecutionRecoveryEventKind::AttemptSucceeded, "attempt_succeeded"),
+        (
+            ExecutionRecoveryEventKind::AutoRetryTriggered,
+            "auto_retry_triggered",
+        ),
+        (
+            ExecutionRecoveryEventKind::AttemptStarted,
+            "attempt_started",
+        ),
+        (
+            ExecutionRecoveryEventKind::AttemptSucceeded,
+            "attempt_succeeded",
+        ),
         (ExecutionRecoveryEventKind::ManualRetry, "manual_retry"),
         (ExecutionRecoveryEventKind::StopRetrying, "stop_retrying"),
     ];
@@ -837,9 +849,19 @@ fn execution_recovery_reason_code_serialization() {
         (ExecutionRecoveryReasonCode::ParseStall, "parse_stall"),
         (ExecutionRecoveryReasonCode::AgentExit, "agent_exit"),
         (ExecutionRecoveryReasonCode::ProviderError, "provider_error"),
-        (ExecutionRecoveryReasonCode::WallClockExceeded, "wall_clock_exceeded"),
-        (ExecutionRecoveryReasonCode::MaxRetriesExceeded, "max_retries_exceeded"),
+        (
+            ExecutionRecoveryReasonCode::WallClockExceeded,
+            "wall_clock_exceeded",
+        ),
+        (
+            ExecutionRecoveryReasonCode::MaxRetriesExceeded,
+            "max_retries_exceeded",
+        ),
         (ExecutionRecoveryReasonCode::UserStopped, "user_stopped"),
+        (
+            ExecutionRecoveryReasonCode::IncompleteSteps,
+            "incomplete_steps",
+        ),
         (ExecutionRecoveryReasonCode::Unknown, "unknown"),
     ];
 
@@ -866,11 +888,18 @@ fn execution_recovery_state_serialization() {
 #[test]
 fn execution_failure_source_serialization() {
     let sources = [
-        (ExecutionFailureSource::TransientTimeout, "transient_timeout"),
+        (
+            ExecutionFailureSource::TransientTimeout,
+            "transient_timeout",
+        ),
         (ExecutionFailureSource::ParseStall, "parse_stall"),
         (ExecutionFailureSource::AgentCrash, "agent_crash"),
         (ExecutionFailureSource::ProviderError, "provider_error"),
-        (ExecutionFailureSource::WallClockTimeout, "wall_clock_timeout"),
+        (
+            ExecutionFailureSource::WallClockTimeout,
+            "wall_clock_timeout",
+        ),
+        (ExecutionFailureSource::AgentIncomplete, "agent_incomplete"),
         (ExecutionFailureSource::Unknown, "unknown"),
     ];
 
@@ -891,6 +920,7 @@ fn execution_failure_source_is_transient_for_retryable_variants() {
 fn execution_failure_source_not_transient_for_non_retryable_variants() {
     assert!(!ExecutionFailureSource::ProviderError.is_transient());
     assert!(!ExecutionFailureSource::WallClockTimeout.is_transient());
+    assert!(!ExecutionFailureSource::AgentIncomplete.is_transient());
     assert!(!ExecutionFailureSource::Unknown.is_transient());
 }
 
@@ -1012,7 +1042,10 @@ fn execution_recovery_metadata_update_task_metadata_creates_new_object() {
     assert!(value.get("execution_recovery").is_some());
     assert_eq!(value["execution_recovery"]["version"], 1);
     assert_eq!(
-        value["execution_recovery"]["events"].as_array().unwrap().len(),
+        value["execution_recovery"]["events"]
+            .as_array()
+            .unwrap()
+            .len(),
         1
     );
     assert_eq!(value["execution_recovery"]["last_state"], "retrying");
@@ -1308,7 +1341,10 @@ fn execution_recovery_reason_code_git_isolation_failed_serde_round_trip() {
     assert_eq!(json, "\"git_isolation_failed\"");
     let deserialized: ExecutionRecoveryReasonCode =
         serde_json::from_str(&json).expect("deserialize");
-    assert_eq!(deserialized, ExecutionRecoveryReasonCode::GitIsolationFailed);
+    assert_eq!(
+        deserialized,
+        ExecutionRecoveryReasonCode::GitIsolationFailed
+    );
 }
 
 #[test]
@@ -1331,8 +1367,9 @@ fn execution_recovery_metadata_backward_compat_deserializes_without_new_fields()
             "stop_retrying": false
         }
     }"#;
-    let recovery =
-        ExecutionRecoveryMetadata::from_json(old_json).expect("parse").expect("some");
+    let recovery = ExecutionRecoveryMetadata::from_json(old_json)
+        .expect("parse")
+        .expect("some");
     assert_eq!(recovery.events.len(), 1);
     assert_eq!(
         recovery.events[0].failure_source,
@@ -1448,10 +1485,9 @@ fn test_execution_recovery_metadata_backward_compat_auto_recovery_count() {
         }
     }"#;
 
-    let recovery =
-        ExecutionRecoveryMetadata::from_json(old_json)
-            .expect("Should parse without error")
-            .expect("Should contain execution_recovery key");
+    let recovery = ExecutionRecoveryMetadata::from_json(old_json)
+        .expect("Should parse without error")
+        .expect("Should contain execution_recovery key");
 
     assert_eq!(
         recovery.auto_recovery_count, 0,
@@ -1499,7 +1535,10 @@ fn test_git_branch_lost_sets_distinct_reason_code() {
     // "Reset to Ready" admin action can distinguish the two cases.
     let git_lost = StopRetryingReason::GitBranchLost;
     let max_retries = StopRetryingReason::MaxRetriesExceeded;
-    assert_ne!(git_lost, max_retries, "GitBranchLost must be distinct from MaxRetriesExceeded");
+    assert_ne!(
+        git_lost, max_retries,
+        "GitBranchLost must be distinct from MaxRetriesExceeded"
+    );
 
     // Also verify serialization differs (used for UI display and DB storage)
     let git_json = serde_json::to_string(&git_lost).unwrap();
@@ -1619,9 +1658,18 @@ fn validation_cache_metadata_update_task_metadata_preserves_other_keys() {
     let value: serde_json::Value = serde_json::from_str(&updated_json).unwrap();
 
     // All three keys must be present
-    assert!(value.get("merge_recovery").is_some(), "merge_recovery must be preserved");
-    assert!(value.get("execution_recovery").is_some(), "execution_recovery must be preserved");
-    assert!(value.get("validation_cache").is_some(), "validation_cache must be added");
+    assert!(
+        value.get("merge_recovery").is_some(),
+        "merge_recovery must be preserved"
+    );
+    assert!(
+        value.get("execution_recovery").is_some(),
+        "execution_recovery must be preserved"
+    );
+    assert!(
+        value.get("validation_cache").is_some(),
+        "validation_cache must be added"
+    );
 
     let vc = value.get("validation_cache").unwrap();
     assert_eq!(vc["commit_sha"], "deadbeef");
@@ -1702,10 +1750,22 @@ fn validation_cache_metadata_update_task_metadata_preserves_auto_retry_count_key
     assert!(result.is_ok());
     let value: serde_json::Value = serde_json::from_str(&result.unwrap()).unwrap();
 
-    assert_eq!(value["auto_retry_count_executing"], 2, "auto_retry_count_executing must be preserved");
-    assert_eq!(value["auto_retry_count_reviewing"], 1, "auto_retry_count_reviewing must be preserved");
-    assert!(value.get("merge_recovery").is_some(), "merge_recovery must be preserved");
-    assert!(value.get("validation_cache").is_some(), "validation_cache must be added");
+    assert_eq!(
+        value["auto_retry_count_executing"], 2,
+        "auto_retry_count_executing must be preserved"
+    );
+    assert_eq!(
+        value["auto_retry_count_reviewing"], 1,
+        "auto_retry_count_reviewing must be preserved"
+    );
+    assert!(
+        value.get("merge_recovery").is_some(),
+        "merge_recovery must be preserved"
+    );
+    assert!(
+        value.get("validation_cache").is_some(),
+        "validation_cache must be added"
+    );
     assert_eq!(value["validation_cache"]["commit_sha"], "abc123");
 }
 
@@ -1743,6 +1803,12 @@ fn stop_retrying_reason_serde_round_trip_new_variants() {
     assert_eq!(json, "\"git_isolation_exhausted\"");
     let parsed: StopRetryingReason = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed, StopRetryingReason::GitIsolationExhausted);
+
+    // AgentCommandInvalid round-trips
+    let json = serde_json::to_string(&StopRetryingReason::AgentCommandInvalid).unwrap();
+    assert_eq!(json, "\"agent_command_invalid\"");
+    let parsed: StopRetryingReason = serde_json::from_str(&json).unwrap();
+    assert_eq!(parsed, StopRetryingReason::AgentCommandInvalid);
 }
 
 #[test]
@@ -1751,4 +1817,3 @@ fn stop_retrying_reason_unknown_fallback_for_future_variants() {
     let parsed: StopRetryingReason = serde_json::from_str("\"some_future_variant\"").unwrap();
     assert_eq!(parsed, StopRetryingReason::Unknown);
 }
-

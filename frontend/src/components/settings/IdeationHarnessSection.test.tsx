@@ -125,6 +125,8 @@ const enabledProviderSettings: AgentProvidersSettingsResponse = {
       status: "Available claude detected at /usr/local/bin/claude.",
       error: null,
       missingCoreExecFeatures: [],
+      supportsFastMode: false,
+      fastModeSupportedModels: [],
       updatedAt: providerUpdatedAt,
     },
     {
@@ -144,6 +146,8 @@ const enabledProviderSettings: AgentProvidersSettingsResponse = {
       status: "Available codex detected at /usr/local/bin/codex.",
       error: null,
       missingCoreExecFeatures: [],
+      supportsFastMode: true,
+      fastModeSupportedModels: ["gpt-5.5", "gpt-5.4"],
       updatedAt: providerUpdatedAt,
     },
   ],

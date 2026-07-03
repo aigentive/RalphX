@@ -41,10 +41,23 @@ export const FileDiffSchema = z.object({
   is_binary: z.boolean(),
 });
 
+export const ConflictDiffSchema = z.object({
+  filePath: z.string(),
+  baseContent: z.string(),
+  oursContent: z.string(),
+  theirsContent: z.string(),
+  mergedWithMarkers: z.string(),
+  language: z.string(),
+});
+
 export const DiffPageRowSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("hunk_header"),
     header: z.string(),
+    old_start: z.number(),
+    old_lines: z.number(),
+    new_start: z.number(),
+    new_lines: z.number(),
   }),
   z.object({
     kind: z.literal("line"),
@@ -99,6 +112,40 @@ export const PrDiffAnnotationsResponseSchema = z.object({
   sources_unavailable: z.array(PrAnnotationSourceUnavailableSchema),
 });
 
+// ── Workspace review hunk annotation schemas ──────────────────────────────
+
+export const WorkspaceReviewHunkAnnotationSchema = z.object({
+  id: z.string(),
+  conversation_id: z.string(),
+  project_id: z.string(),
+  artifact_id: z.string(),
+  artifact_version: z.number(),
+  target_scope: z.enum(["selected_source", "workspace_delta"]),
+  head_sha: z.string().nullable(),
+  diff_fingerprint: z.string(),
+  path: z.string(),
+  diff_source: z.string(),
+  hunk_header: z.string(),
+  old_start: z.number(),
+  old_lines: z.number(),
+  new_start: z.number(),
+  new_lines: z.number(),
+  title: z.string().nullable(),
+  message: z.string(),
+  level: z.string(),
+  created_by_run_id: z.string().nullable(),
+  created_at: z.string(),
+});
+
+export const WorkspaceReviewHunkAnnotationsResponseSchema = z.object({
+  artifact_id: z.string().nullable(),
+  artifact_version: z.number().nullable(),
+  target_scope: z.string().nullable(),
+  head_sha: z.string().nullable(),
+  diff_fingerprint: z.string().nullable(),
+  annotations: z.array(WorkspaceReviewHunkAnnotationSchema),
+});
+
 // ── DiffRefKind — tagged enum from backend ────────────────────────────────
 
 export const DiffRefKindSchema = z.discriminatedUnion("kind", [
@@ -149,8 +196,22 @@ export const AgentWorkspaceChangeBucketSummarySchema = z.object({
   deletions: z.number(),
 });
 
+export const AgentWorkspaceConflictSummarySchema = z.object({
+  file_count: z.number(),
+  files: z.array(z.string()),
+});
+
+export const AgentWorkspaceRepairStateSchema = z.object({
+  expected_branch: z.string(),
+  checked_out_branch: z.string(),
+  rebase_in_progress: z.boolean(),
+  merge_in_progress: z.boolean(),
+});
+
 export const AgentWorkspaceChangeSummaryResponseSchema = z.object({
   supports_worktree_modes: z.boolean().default(true),
   staged: AgentWorkspaceChangeBucketSummarySchema,
   unstaged: AgentWorkspaceChangeBucketSummarySchema,
+  conflicted: AgentWorkspaceConflictSummarySchema.optional(),
+  repair_state: AgentWorkspaceRepairStateSchema.optional(),
 });

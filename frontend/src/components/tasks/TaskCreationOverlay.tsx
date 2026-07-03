@@ -110,6 +110,8 @@ export function TaskCreationOverlay({ projectId }: TaskCreationOverlayProps) {
               <TaskCreationForm
                 projectId={taskCreationContext.projectId || projectId}
                 {...(taskCreationContext.defaultTitle !== undefined && { defaultTitle: taskCreationContext.defaultTitle })}
+                {...(taskCreationContext.ideationSessionId !== undefined && { ideationSessionId: taskCreationContext.ideationSessionId })}
+                {...(taskCreationContext.executionPlanId !== undefined && { executionPlanId: taskCreationContext.executionPlanId })}
                 onSuccess={closeTaskCreation}
                 onCancel={closeTaskCreation}
               />

@@ -1,5 +1,56 @@
 use chrono::{Duration, Utc};
-use serde_json::{Map, Value, json};
+use serde_json::{json, Map, Value};
+use std::sync::Arc;
+
+use crate::application::{AppState, ReconciliationRunner, TaskTransitionService};
+use crate::commands::ExecutionState;
+use crate::domain::entities::{
+    task_metadata::StopRetryingReason, ExecutionFailureSource, ExecutionRecoveryEvent,
+    ExecutionRecoveryEventKind, ExecutionRecoveryMetadata, ExecutionRecoveryReasonCode,
+    ExecutionRecoverySource, ExecutionRecoveryState, InternalStatus, Project, Task,
+};
+
+use super::execution::is_deterministic_agent_command_error;
+
+fn build_reconciler_for_execution_tests(
+    app_state: &AppState,
+    execution_state: &Arc<ExecutionState>,
+) -> ReconciliationRunner<tauri::Wry> {
+    let transition_service = Arc::new(TaskTransitionService::new(
+        Arc::clone(&app_state.task_repo),
+        Arc::clone(&app_state.task_dependency_repo),
+        Arc::clone(&app_state.project_repo),
+        Arc::clone(&app_state.chat_message_repo),
+        Arc::clone(&app_state.chat_attachment_repo),
+        Arc::clone(&app_state.chat_conversation_repo),
+        Arc::clone(&app_state.agent_run_repo),
+        Arc::clone(&app_state.ideation_session_repo),
+        Arc::clone(&app_state.activity_event_repo),
+        Arc::clone(&app_state.message_queue),
+        Arc::clone(&app_state.running_agent_registry),
+        Arc::clone(execution_state),
+        None,
+        Arc::clone(&app_state.memory_event_repo),
+    ));
+    ReconciliationRunner::new(
+        Arc::clone(&app_state.task_repo),
+        Arc::clone(&app_state.task_dependency_repo),
+        Arc::clone(&app_state.project_repo),
+        Arc::clone(&app_state.artifact_repo),
+        Arc::clone(&app_state.chat_conversation_repo),
+        Arc::clone(&app_state.chat_message_repo),
+        Arc::clone(&app_state.chat_attachment_repo),
+        Arc::clone(&app_state.ideation_session_repo),
+        Arc::clone(&app_state.activity_event_repo),
+        Arc::clone(&app_state.message_queue),
+        Arc::clone(&app_state.running_agent_registry),
+        Arc::clone(&app_state.memory_event_repo),
+        Arc::clone(&app_state.agent_run_repo),
+        transition_service,
+        Arc::clone(execution_state),
+        None,
+    )
+}
 
 /// Replicates the staleness check logic from `recover_timeout_failures`.
 ///
@@ -279,5 +330,283 @@ fn test_structural_git_error_empty_message_not_structural() {
     assert!(
         !is_structural_git_error_test(""),
         "Empty message should not be classified as structural git error"
+    );
+}
+
+#[test]
+fn deterministic_agent_command_error_detects_invalid_ignored_mode() {
+    assert!(is_deterministic_agent_command_error(
+        "Agent failed: fatal: Invalid ignored mode '.artifacts/specs/p8-regression-gate/tracker.md'"
+    ));
+}
+
+#[test]
+fn deterministic_agent_command_error_does_not_match_normal_agent_exit() {
+    let ordinary_agent_error = "Agent failed: tests failed in frontend/src/App.test.tsx";
+    assert!(!is_deterministic_agent_command_error(ordinary_agent_error));
+}
+
+#[tokio::test]
+async fn failed_execution_with_invalid_ignored_mode_stops_retrying() {
+    let app_state = AppState::new_test();
+    let execution_state = Arc::new(ExecutionState::new());
+    let reconciler = build_reconciler_for_execution_tests(&app_state, &execution_state);
+
+    let project = Project::new(
+        "Coverage project".to_string(),
+        "/tmp/coverage-project".to_string(),
+    );
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+
+    let mut recovery = ExecutionRecoveryMetadata::new();
+    let failure_message =
+        "Agent failed: fatal: Invalid ignored mode '.artifacts/specs/p8-regression-gate/tracker.md'";
+    recovery.append_event_with_state(
+        ExecutionRecoveryEvent::new(
+            ExecutionRecoveryEventKind::Failed,
+            ExecutionRecoverySource::System,
+            ExecutionRecoveryReasonCode::AgentExit,
+            failure_message,
+        )
+        .with_failure_source(ExecutionFailureSource::AgentCrash),
+        ExecutionRecoveryState::Retrying,
+    );
+
+    let mut task = Task::new(project.id.clone(), "invalid ignored mode".to_string());
+    task.internal_status = InternalStatus::Failed;
+    task.metadata = Some(recovery.update_task_metadata(None).unwrap());
+    let task_id = task.id.clone();
+    app_state.task_repo.create(task.clone()).await.unwrap();
+
+    assert!(
+        !reconciler
+            .reconcile_failed_execution_task(&task, InternalStatus::Failed)
+            .await,
+        "deterministic command failures should stop retries instead of re-queueing"
+    );
+
+    let updated_task = app_state
+        .task_repo
+        .get_by_id(&task_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let updated_recovery =
+        ExecutionRecoveryMetadata::from_task_metadata(updated_task.metadata.as_deref())
+            .unwrap()
+            .unwrap();
+    assert!(updated_recovery.stop_retrying);
+    assert_eq!(
+        updated_recovery.unrecoverable_reason,
+        Some(StopRetryingReason::AgentCommandInvalid)
+    );
+    assert_eq!(updated_recovery.last_state, ExecutionRecoveryState::Failed);
+    assert!(updated_recovery.events.iter().any(|event| {
+        event.kind == ExecutionRecoveryEventKind::StopRetrying
+            && event.reason_code == ExecutionRecoveryReasonCode::AgentCommandInvalid
+    }));
+}
+
+#[tokio::test]
+async fn execution_recovery_metadata_helpers_persist_structured_events() {
+    let app_state = AppState::new_test();
+    let execution_state = Arc::new(ExecutionState::new());
+    let reconciler = build_reconciler_for_execution_tests(&app_state, &execution_state);
+
+    let project = Project::new(
+        "Recovery metadata project".to_string(),
+        "/tmp/recovery-metadata-project".to_string(),
+    );
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+
+    let mut task = Task::new(project.id.clone(), "metadata helpers".to_string());
+    task.metadata = Some(
+        json!({
+            "existing": true,
+            "is_timeout": true,
+            "failure_error": "stale failure"
+        })
+        .to_string(),
+    );
+    let task_id = task.id.clone();
+    app_state.task_repo.create(task).await.unwrap();
+
+    let stored = app_state
+        .task_repo
+        .get_by_id(&task_id)
+        .await
+        .unwrap()
+        .unwrap();
+    reconciler
+        .record_execution_auto_retry_event(
+            &stored,
+            2,
+            ExecutionFailureSource::GitIsolation,
+            "retry git isolation",
+        )
+        .await
+        .unwrap();
+    let stored = app_state
+        .task_repo
+        .get_by_id(&task_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let recovery = ExecutionRecoveryMetadata::from_task_metadata(stored.metadata.as_deref())
+        .unwrap()
+        .unwrap();
+    let retry = recovery.events.last().expect("retry event");
+    assert_eq!(recovery.last_state, ExecutionRecoveryState::Retrying);
+    assert_eq!(retry.kind, ExecutionRecoveryEventKind::AutoRetryTriggered);
+    assert_eq!(retry.source, ExecutionRecoverySource::Auto);
+    assert_eq!(
+        retry.reason_code,
+        ExecutionRecoveryReasonCode::GitIsolationFailed
+    );
+    assert_eq!(retry.attempt, Some(2));
+    assert_eq!(
+        retry.failure_source,
+        Some(ExecutionFailureSource::GitIsolation)
+    );
+
+    reconciler
+        .set_execution_stop_retrying(&stored)
+        .await
+        .unwrap();
+    let stored = app_state
+        .task_repo
+        .get_by_id(&task_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let recovery = ExecutionRecoveryMetadata::from_task_metadata(stored.metadata.as_deref())
+        .unwrap()
+        .unwrap();
+    let stopped = recovery.events.last().expect("stop event");
+    assert!(recovery.stop_retrying);
+    assert_eq!(recovery.last_state, ExecutionRecoveryState::Failed);
+    assert_eq!(stopped.kind, ExecutionRecoveryEventKind::StopRetrying);
+    assert_eq!(
+        stopped.reason_code,
+        ExecutionRecoveryReasonCode::MaxRetriesExceeded
+    );
+
+    reconciler
+        .reset_execution_recovery_metadata(&stored)
+        .await
+        .unwrap();
+    let stored = app_state
+        .task_repo
+        .get_by_id(&task_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let metadata: Value = serde_json::from_str(stored.metadata.as_deref().unwrap()).unwrap();
+    assert_eq!(metadata["existing"], Value::Bool(true));
+    assert!(metadata.get("is_timeout").is_none());
+    assert!(metadata.get("failure_error").is_none());
+    let recovery = ExecutionRecoveryMetadata::from_task_metadata(stored.metadata.as_deref())
+        .unwrap()
+        .unwrap();
+    assert!(recovery.events.is_empty());
+    assert!(!recovery.stop_retrying);
+    assert_eq!(recovery.last_state, ExecutionRecoveryState::Retrying);
+
+    reconciler
+        .record_execution_startup_retry_event(
+            &stored,
+            3,
+            ExecutionFailureSource::AgentCrash,
+            ExecutionRecoveryReasonCode::AgentExit,
+        )
+        .await
+        .unwrap();
+    let stored = app_state
+        .task_repo
+        .get_by_id(&task_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let recovery = ExecutionRecoveryMetadata::from_task_metadata(stored.metadata.as_deref())
+        .unwrap()
+        .unwrap();
+    assert_eq!(recovery.events.len(), 2);
+    assert_eq!(recovery.events[0].kind, ExecutionRecoveryEventKind::Failed);
+    assert_eq!(recovery.events[0].source, ExecutionRecoverySource::System);
+    assert_eq!(
+        recovery.events[1].kind,
+        ExecutionRecoveryEventKind::AutoRetryTriggered
+    );
+    assert_eq!(recovery.events[1].source, ExecutionRecoverySource::Startup);
+    assert_eq!(recovery.events[1].attempt, Some(3));
+
+    reconciler
+        .record_execution_manual_retry_event(&stored)
+        .await
+        .unwrap();
+    let stored = app_state
+        .task_repo
+        .get_by_id(&task_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let recovery = ExecutionRecoveryMetadata::from_task_metadata(stored.metadata.as_deref())
+        .unwrap()
+        .unwrap();
+    let manual = recovery.events.last().expect("manual retry event");
+    assert_eq!(manual.kind, ExecutionRecoveryEventKind::ManualRetry);
+    assert_eq!(manual.source, ExecutionRecoverySource::User);
+    assert_eq!(recovery.last_state, ExecutionRecoveryState::Retrying);
+
+    reconciler
+        .stop_execution_retrying_by_user(&stored)
+        .await
+        .unwrap();
+    let stored = app_state
+        .task_repo
+        .get_by_id(&task_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let recovery = ExecutionRecoveryMetadata::from_task_metadata(stored.metadata.as_deref())
+        .unwrap()
+        .unwrap();
+    let user_stop = recovery.events.last().expect("user stop event");
+    assert!(recovery.stop_retrying);
+    assert_eq!(user_stop.source, ExecutionRecoverySource::User);
+    assert_eq!(
+        user_stop.reason_code,
+        ExecutionRecoveryReasonCode::UserStopped
+    );
+
+    reconciler
+        .set_execution_stop_retrying_with_reason(&stored, StopRetryingReason::StructuralGitError)
+        .await
+        .unwrap();
+    let stored = app_state
+        .task_repo
+        .get_by_id(&task_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let recovery = ExecutionRecoveryMetadata::from_task_metadata(stored.metadata.as_deref())
+        .unwrap()
+        .unwrap();
+    let structural_stop = recovery.events.last().expect("structural stop event");
+    assert_eq!(
+        recovery.unrecoverable_reason,
+        Some(StopRetryingReason::StructuralGitError)
+    );
+    assert_eq!(
+        structural_stop.reason_code,
+        ExecutionRecoveryReasonCode::StructuralGitError
     );
 }

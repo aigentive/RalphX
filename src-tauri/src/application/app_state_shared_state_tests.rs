@@ -7,9 +7,10 @@
 
 use std::sync::Arc;
 
-use crate::application::AppState;
 use crate::application::interactive_process_registry::InteractiveProcessKey;
+use crate::application::AppState;
 use crate::domain::entities::ChatContextType;
+use crate::domain::services::{QueueKey, QueuedMessage};
 
 /// Helper: create a real stdin pipe via `cat` subprocess for testing writes.
 async fn create_test_stdin() -> (tokio::process::ChildStdin, tokio::process::Child) {
@@ -123,4 +124,23 @@ async fn test_shared_message_queue_visible_across_instances() {
         "Message queued on A must be poppable from B when queue is shared"
     );
     assert_eq!(popped.unwrap().content, "hello from A");
+}
+
+/// Verifies that sharing queued_message_repo between two AppState instances
+/// allows durable queued rows written by one side to be read by the other.
+#[tokio::test]
+async fn test_shared_queued_message_repo_visible_across_instances() {
+    let a = AppState::new_test();
+    let mut b = AppState::new_test();
+    b.queued_message_repo = Arc::clone(&a.queued_message_repo);
+
+    let key = QueueKey::new(ChatContextType::Ideation, "test-session-durable-queue");
+    let message = QueuedMessage::with_id("queued-1".to_string(), "hello durable".to_string());
+    a.queued_message_repo
+        .enqueue_back(&key, &message)
+        .await
+        .unwrap();
+
+    let queued = b.queued_message_repo.list(&key).await.unwrap();
+    assert_eq!(queued, vec![message]);
 }

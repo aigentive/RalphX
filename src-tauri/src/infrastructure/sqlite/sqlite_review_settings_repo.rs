@@ -32,7 +32,8 @@ impl ReviewSettingsRepository for SqliteReviewSettingsRepository {
             .run(move |conn| {
                 let result = conn.query_row(
                     "SELECT ai_review_enabled, ai_review_auto_fix, require_fix_approval,
-                    require_human_review, max_fix_attempts, max_revision_cycles
+                    require_human_review, max_fix_attempts, max_revision_cycles,
+                    auto_create_followup_agent_conversation, require_workspace_review
              FROM review_settings WHERE id = 1",
                     [],
                     |row| {
@@ -42,14 +43,19 @@ impl ReviewSettingsRepository for SqliteReviewSettingsRepository {
                         let require_human_review: i64 = row.get(3)?;
                         let max_fix_attempts: u32 = row.get(4)?;
                         let max_revision_cycles: u32 = row.get(5)?;
+                        let auto_create_followup_agent_conversation: i64 = row.get(6)?;
+                        let require_workspace_review: i64 = row.get(7)?;
 
                         Ok(ReviewSettings {
                             ai_review_enabled: ai_review_enabled != 0,
                             ai_review_auto_fix: ai_review_auto_fix != 0,
                             require_fix_approval: require_fix_approval != 0,
                             require_human_review: require_human_review != 0,
+                            require_workspace_review: require_workspace_review != 0,
                             max_fix_attempts,
                             max_revision_cycles,
+                            auto_create_followup_agent_conversation:
+                                auto_create_followup_agent_conversation != 0,
                         })
                     },
                 );
@@ -80,6 +86,8 @@ impl ReviewSettingsRepository for SqliteReviewSettingsRepository {
                  require_human_review = ?4,
                  max_fix_attempts = ?5,
                  max_revision_cycles = ?6,
+                 auto_create_followup_agent_conversation = ?7,
+                 require_workspace_review = ?8,
                  updated_at = strftime('%Y-%m-%dT%H:%M:%S+00:00', 'now')
              WHERE id = 1",
                     rusqlite::params![
@@ -89,6 +97,8 @@ impl ReviewSettingsRepository for SqliteReviewSettingsRepository {
                         settings.require_human_review as i64,
                         settings.max_fix_attempts,
                         settings.max_revision_cycles,
+                        settings.auto_create_followup_agent_conversation as i64,
+                        settings.require_workspace_review as i64,
                     ],
                 )?;
                 Ok(settings)

@@ -89,7 +89,7 @@ export function useAgentWorkspaceBaseUpdate({
     }: RunAgentWorkspaceBaseUpdateInput) => {
       const requestConversationId = conversationId;
       const requestWorkspace = workspace ?? null;
-      progressToastRef.current?.dispose();
+      progressToastRef.current?.dismiss();
       const progressToast = startAgentWorkspaceOperationToast({
         conversationTitle: toastConversationTitle,
         detail,

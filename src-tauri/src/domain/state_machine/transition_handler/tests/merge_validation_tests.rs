@@ -4,16 +4,52 @@
 // format_validation_error/warn_metadata, take_skip_validation_flag,
 // extract_cached_validation, validation caching, and fail-fast behavior.
 
+use std::ffi::{OsStr, OsString};
 use std::path::Path;
 
 use super::super::merge_validation::{
     cleanup_validation_logs, extract_cached_validation, format_validation_error_metadata,
     format_validation_warn_metadata, run_pre_execution_setup, run_validation_commands,
-    take_skip_validation_flag, validation_log_dir, PreExecSetupResult, ValidationFailure,
-    ValidationLogEntry,
+    spawn_cancellable_command, take_skip_validation_flag, validation_log_dir,
+    CancellableCommandResult, PreExecSetupResult, ValidationFailure, ValidationLogEntry,
 };
 use super::helpers::*;
 use crate::domain::entities::MergeValidationMode;
+
+struct EnvGuard {
+    key: &'static str,
+    original: Option<OsString>,
+}
+
+impl EnvGuard {
+    fn set_os(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+        let original = std::env::var_os(key);
+        std::env::set_var(key, value);
+        Self { key, original }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        match &self.original {
+            Some(value) => std::env::set_var(self.key, value),
+            None => std::env::remove_var(self.key),
+        }
+    }
+}
+
+fn write_executable(path: &Path, contents: &str) {
+    std::fs::write(path, contents).expect("write executable");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = std::fs::metadata(path)
+            .expect("executable metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(path, permissions).expect("mark executable");
+    }
+}
 
 // ==================
 // run_validation_commands tests
@@ -35,6 +71,51 @@ async fn run_validation_returns_none_when_no_analysis() {
     )
     .await;
     assert!(result.is_none());
+}
+
+#[tokio::test]
+async fn shell_commands_receive_agent_subprocess_path_for_node_managed_tools() {
+    let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
+        .lock()
+        .expect("env mutex");
+    let dir = tempfile::tempdir().expect("temp dir");
+    let bin_dir = dir.path().join("node-bin");
+    let cwd = dir.path().join("workspace");
+    std::fs::create_dir_all(&bin_dir).expect("create node bin");
+    std::fs::create_dir_all(&cwd).expect("create workspace");
+    let npm = bin_dir.join("npm");
+    write_executable(&npm, "#!/bin/sh\nprintf fake-npm\n");
+    let node = bin_dir.join("node");
+    write_executable(&node, "#!/bin/sh\n");
+
+    let _path = EnvGuard::set_os("PATH", "");
+    let _node = EnvGuard::set_os("RALPHX_NODE_PATH", node.as_os_str());
+    let _disable_login_shell =
+        EnvGuard::set_os(crate::infrastructure::login_shell_env::DISABLE_ENV_VAR, "1");
+
+    let result = spawn_cancellable_command(
+        "npm --version",
+        &cwd,
+        &tokio_util::sync::CancellationToken::new(),
+    )
+    .await;
+
+    match result {
+        CancellableCommandResult::Completed(output) => {
+            assert!(
+                output.status.success(),
+                "expected npm from managed node bin to resolve, stderr: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(String::from_utf8_lossy(&output.stdout), "fake-npm");
+        }
+        CancellableCommandResult::SpawnError(error) => {
+            panic!("shell command should spawn: {error}");
+        }
+        CancellableCommandResult::Cancelled => {
+            panic!("shell command should not be cancelled");
+        }
+    }
 }
 
 #[tokio::test]
@@ -1168,4 +1249,30 @@ async fn pre_exec_setup_uses_detected_when_custom_is_null() {
         "setup phase should have one entry from detected_analysis"
     );
     assert_eq!(setup_entries[0].command, "echo setup_from_detected");
+}
+
+#[tokio::test]
+async fn run_pre_execution_setup_returns_none_for_invalid_analysis_json() {
+    let worktree_dir = tempfile::tempdir().unwrap();
+    let project_dir = tempfile::tempdir().unwrap();
+    let mut project = make_project(Some("main"));
+    project.working_directory = project_dir.path().to_str().unwrap().to_string();
+    project.custom_analysis = Some("{broken json".to_string());
+    let task = make_task(None, None);
+
+    let result = run_pre_execution_setup(
+        &project,
+        &task,
+        worktree_dir.path(),
+        "test-task",
+        None,
+        "test",
+        &tokio_util::sync::CancellationToken::new(),
+    )
+    .await;
+
+    assert!(
+        result.is_none(),
+        "invalid custom_analysis json should skip pre-execution setup"
+    );
 }

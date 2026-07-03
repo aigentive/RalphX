@@ -609,7 +609,18 @@ fn is_launchable_tool_path(tool_name: &str, path: &Path) -> bool {
     matches_tool_path(tool_name, path) && is_launchable_file(path)
 }
 
+pub(crate) fn has_safe_absolute_binary_path_shape(path: &Path) -> bool {
+    has_safe_absolute_shape(path)
+}
+
+pub(crate) fn is_safe_launchable_binary_path(path: &Path) -> bool {
+    has_safe_absolute_shape(path) && is_launchable_file(path)
+}
+
 fn is_launchable_file(path: &Path) -> bool {
+    // Callers must validate absolute path shape before this filesystem sink when
+    // paths are influenced by settings or env state.
+    // codeql[rust/path-injection]
     let Ok(metadata) = path.metadata() else {
         return false;
     };

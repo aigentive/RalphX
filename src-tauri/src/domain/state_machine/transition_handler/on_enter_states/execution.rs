@@ -68,7 +68,7 @@ impl<'a> TransitionHandler<'a> {
 
     /// Run pre-execution setup (worktree_setup + install), store log in metadata.
     /// Returns Err if setup fails in Block/AutoFix mode.
-    pub(super) async fn run_and_store_pre_execution_setup(
+    pub(crate) async fn run_and_store_pre_execution_setup(
         &self,
         task_id_str: &str,
         project_id_str: &str,
@@ -86,111 +86,107 @@ impl<'a> TransitionHandler<'a> {
             let project_result = project_repo.get_by_id(&project_id).await;
 
             if let (Ok(Some(task)), Ok(Some(project))) = (task_result, project_result) {
-                use crate::domain::entities::MergeValidationMode;
-                if project.merge_validation_mode != MergeValidationMode::Off {
-                    let exec_cwd = if let Some(ref wt_path) = task.worktree_path {
-                        std::path::PathBuf::from(wt_path)
-                    } else {
-                        tracing::warn!(
-                            task_id = task_id_str,
-                            "Skipping pre-execution setup: task has no worktree_path. \
-                             Running install commands in the main repo is not safe."
-                        );
-                        return Ok(());
-                    };
+                let exec_cwd = if let Some(ref wt_path) = task.worktree_path {
+                    std::path::PathBuf::from(wt_path)
+                } else {
+                    tracing::warn!(
+                        task_id = task_id_str,
+                        "Skipping pre-execution setup: task has no worktree_path. \
+                         Running install commands in the main repo is not safe."
+                    );
+                    return Ok(());
+                };
 
-                    if !exec_cwd.exists() {
-                        tracing::warn!(
-                            task_id = task_id_str,
-                            exec_cwd = %exec_cwd.display(),
-                            "Execution directory does not exist, skipping pre-execution setup"
-                        );
-                    } else if let Some(setup_result) = merge_validation::run_pre_execution_setup(
-                        &project,
-                        &task,
-                        &exec_cwd,
-                        task_id_str,
-                        self.machine.context.services.app_handle.as_ref(),
-                        context,
-                        &tokio_util::sync::CancellationToken::new(),
-                    )
-                    .await
-                    {
-                        if let Ok(Some(task_updated)) = task_repo.get_by_id(&task_id).await {
-                            let log_json = serde_json::to_value(&setup_result.log)
-                                .unwrap_or_else(|_| serde_json::Value::Array(Vec::new()));
+                if !exec_cwd.exists() {
+                    tracing::warn!(
+                        task_id = task_id_str,
+                        exec_cwd = %exec_cwd.display(),
+                        "Execution directory does not exist, skipping pre-execution setup"
+                    );
+                } else if let Some(setup_result) = merge_validation::run_pre_execution_setup(
+                    &project,
+                    &task,
+                    &exec_cwd,
+                    task_id_str,
+                    self.machine.context.services.app_handle.as_ref(),
+                    context,
+                    &tokio_util::sync::CancellationToken::new(),
+                )
+                .await
+                {
+                    if let Ok(Some(task_updated)) = task_repo.get_by_id(&task_id).await {
+                        let log_json = serde_json::to_value(&setup_result.log)
+                            .unwrap_or_else(|_| serde_json::Value::Array(Vec::new()));
 
-                            let mut metadata_obj =
-                                if let Some(json_str) = task_updated.metadata.as_ref() {
-                                    serde_json::from_str::<serde_json::Value>(json_str)
-                                        .unwrap_or_else(|_| serde_json::json!({}))
-                                } else {
-                                    serde_json::json!({})
-                                };
+                        let mut metadata_obj =
+                            if let Some(json_str) = task_updated.metadata.as_ref() {
+                                serde_json::from_str::<serde_json::Value>(json_str)
+                                    .unwrap_or_else(|_| serde_json::json!({}))
+                            } else {
+                                serde_json::json!({})
+                            };
 
-                            if let Some(obj) = metadata_obj.as_object_mut() {
-                                obj.insert(metadata_key.to_string(), log_json);
-                            }
-
-                            if let Ok(updated_metadata) = serde_json::to_string(&metadata_obj) {
-                                if let Err(e) = task_repo
-                                    .update_metadata(&task_id, Some(updated_metadata))
-                                    .await
-                                {
-                                    tracing::warn!(task_id = %task_id, error = %e, "Failed to persist setup log metadata");
-                                }
-                            }
+                        if let Some(obj) = metadata_obj.as_object_mut() {
+                            obj.insert(metadata_key.to_string(), log_json);
                         }
 
-                        if !setup_result.success {
-                            match project.merge_validation_mode {
-                                MergeValidationMode::Block | MergeValidationMode::AutoFix => {
-                                    tracing::error!(
-                                        task_id = task_id_str,
-                                        "Pre-execution setup failed (install command failed). Blocking execution."
-                                    );
-                                    return Err(AppError::ExecutionBlocked(format!(
-                                        "Pre-execution setup failed: install command(s) failed. Check {} in task metadata for details.",
-                                        metadata_key
-                                    )));
-                                }
-                                MergeValidationMode::Warn => {
-                                    tracing::warn!(
-                                        task_id = task_id_str,
-                                        "Pre-execution setup failed (install command failed). Proceeding with warning."
-                                    );
-                                    if let Ok(Some(task_updated)) =
-                                        task_repo.get_by_id(&task_id).await
-                                    {
-                                        let mut metadata_obj = if let Some(json_str) =
-                                            task_updated.metadata.as_ref()
-                                        {
+                        if let Ok(updated_metadata) = serde_json::to_string(&metadata_obj) {
+                            if let Err(e) = task_repo
+                                .update_metadata(&task_id, Some(updated_metadata))
+                                .await
+                            {
+                                tracing::warn!(task_id = %task_id, error = %e, "Failed to persist setup log metadata");
+                            }
+                        }
+                    }
+
+                    if !setup_result.success {
+                        use crate::domain::entities::MergeValidationMode;
+
+                        match project.merge_validation_mode {
+                            MergeValidationMode::Block | MergeValidationMode::AutoFix => {
+                                tracing::error!(
+                                    task_id = task_id_str,
+                                    "Pre-execution setup failed (install command failed). Blocking execution."
+                                );
+                                return Err(AppError::ExecutionBlocked(format!(
+                                    "Pre-execution setup failed: install command(s) failed. Check {} in task metadata for details.",
+                                    metadata_key
+                                )));
+                            }
+                            MergeValidationMode::Warn | MergeValidationMode::Off => {
+                                tracing::warn!(
+                                    task_id = task_id_str,
+                                    "Pre-execution setup failed (install command failed). Proceeding with warning."
+                                );
+                                if let Ok(Some(task_updated)) = task_repo.get_by_id(&task_id).await
+                                {
+                                    let mut metadata_obj =
+                                        if let Some(json_str) = task_updated.metadata.as_ref() {
                                             serde_json::from_str::<serde_json::Value>(json_str)
                                                 .unwrap_or_else(|_| serde_json::json!({}))
                                         } else {
                                             serde_json::json!({})
                                         };
 
-                                        if let Some(obj) = metadata_obj.as_object_mut() {
-                                            obj.insert(
-                                                "execution_setup_warning".to_string(),
-                                                serde_json::json!(true),
-                                            );
-                                        }
+                                    if let Some(obj) = metadata_obj.as_object_mut() {
+                                        obj.insert(
+                                            "execution_setup_warning".to_string(),
+                                            serde_json::json!(true),
+                                        );
+                                    }
 
-                                        if let Ok(updated_metadata) =
-                                            serde_json::to_string(&metadata_obj)
+                                    if let Ok(updated_metadata) =
+                                        serde_json::to_string(&metadata_obj)
+                                    {
+                                        if let Err(e) = task_repo
+                                            .update_metadata(&task_id, Some(updated_metadata))
+                                            .await
                                         {
-                                            if let Err(e) = task_repo
-                                                .update_metadata(&task_id, Some(updated_metadata))
-                                                .await
-                                            {
-                                                tracing::warn!(task_id = %task_id, error = %e, "Failed to persist setup warning metadata");
-                                            }
+                                            tracing::warn!(task_id = %task_id, error = %e, "Failed to persist setup warning metadata");
                                         }
                                     }
                                 }
-                                MergeValidationMode::Off => {}
                             }
                         }
                     }
@@ -332,6 +328,8 @@ impl<'a> TransitionHandler<'a> {
                 let task_repo_ref = &self.machine.context.services.task_repo;
                 let pr_creation_guard_ref = &self.machine.context.services.pr_creation_guard;
                 let github_service_ref = &self.machine.context.services.github_service;
+                let plan_pr_description_drafter_ref =
+                    &self.machine.context.services.plan_pr_description_drafter;
 
                 if task
                     .worktree_path
@@ -420,6 +418,7 @@ impl<'a> TransitionHandler<'a> {
                             task_repo_ref,
                             pr_creation_guard_ref,
                             github_service_ref,
+                            plan_pr_description_drafter_ref,
                         )
                         .await
                         {
@@ -459,6 +458,7 @@ impl<'a> TransitionHandler<'a> {
                             task_repo_ref,
                             pr_creation_guard_ref,
                             github_service_ref,
+                            plan_pr_description_drafter_ref,
                         )
                         .await
                         {

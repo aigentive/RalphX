@@ -4,14 +4,18 @@
 
 use crate::application::{
     agent_conversation_workspace::{
-        resolve_agent_conversation_workspace_path, resolve_valid_agent_conversation_workspace_path,
+        resolve_agent_conversation_workspace_path,
+        resolve_agent_conversation_workspace_path_for_send,
+        resolve_valid_agent_conversation_workspace_path,
     },
+    agent_workspace_review::load_agent_workspace_review_context,
     AppState, ConflictDiff, DiffRefKind, DiffService, DiffSide, FileChange, FileDiff, FileDiffPage,
     GitService, RangeLine,
 };
 use crate::commands::git_commands::{CommitInfoResponse, TaskCommitsResponse};
 use crate::domain::entities::{
-    AgentConversationWorkspace, ChatConversationId, PlanBranch, Project, Task, TaskId,
+    AgentConversationWorkspace, AgentWorkspaceReviewHunkAnnotation, ChatConversationId, PlanBranch,
+    Project, Task, TaskId,
 };
 use crate::domain::services::github_service::{PrAnnotationSourceUnavailable, PrDiffAnnotations};
 use crate::error::{AppError, AppResult};
@@ -233,6 +237,8 @@ struct AgentWorkspaceContext {
     /// True only when the context points at the agent worktree and can inspect
     /// unstaged/staged changes. Branch-target contexts are read-only history.
     supports_worktree_modes: bool,
+    /// Present only for explicit repair-mode contexts.
+    repair_state: Option<AgentWorkspaceRepairStateResponse>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -245,6 +251,29 @@ pub struct AgentWorkspaceReviewResponse {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct AgentWorkspaceReviewHunkAnnotationsResponse {
+    pub artifact_id: Option<String>,
+    pub artifact_version: Option<u32>,
+    pub target_scope: Option<String>,
+    pub head_sha: Option<String>,
+    pub diff_fingerprint: Option<String>,
+    pub annotations: Vec<AgentWorkspaceReviewHunkAnnotation>,
+}
+
+impl AgentWorkspaceReviewHunkAnnotationsResponse {
+    fn empty() -> Self {
+        Self {
+            artifact_id: None,
+            artifact_version: None,
+            target_scope: None,
+            head_sha: None,
+            diff_fingerprint: None,
+            annotations: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct AgentWorkspaceChangeSummaryBucketResponse {
     pub file_count: usize,
     pub additions: u32,
@@ -252,10 +281,28 @@ pub struct AgentWorkspaceChangeSummaryBucketResponse {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct AgentWorkspaceConflictSummaryResponse {
+    pub file_count: usize,
+    pub files: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentWorkspaceRepairStateResponse {
+    pub expected_branch: String,
+    pub checked_out_branch: String,
+    pub rebase_in_progress: bool,
+    pub merge_in_progress: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct AgentWorkspaceChangeSummaryResponse {
     pub supports_worktree_modes: bool,
     pub staged: AgentWorkspaceChangeSummaryBucketResponse,
     pub unstaged: AgentWorkspaceChangeSummaryBucketResponse,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conflicted: Option<AgentWorkspaceConflictSummaryResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repair_state: Option<AgentWorkspaceRepairStateResponse>,
 }
 
 #[derive(Clone)]
@@ -298,6 +345,21 @@ impl AgentWorkspaceDiffCacheStatus {
     }
 }
 
+#[derive(Clone, Copy)]
+enum AgentWorkspaceContextMode {
+    Strict,
+    Repair,
+}
+
+impl AgentWorkspaceContextMode {
+    fn cache_key_suffix(self) -> &'static str {
+        match self {
+            Self::Strict => "strict",
+            Self::Repair => "repair",
+        }
+    }
+}
+
 fn agent_workspace_review_cache_ttl() -> Duration {
     Duration::from_millis(git_runtime_config().workspace_review_cache_ttl_ms)
 }
@@ -311,6 +373,14 @@ fn agent_workspace_diff_cache_key(conversation_id: &ChatConversationId) -> Optio
         return None;
     }
     Some(conversation_id.as_str())
+}
+
+fn agent_workspace_context_cache_key(
+    conversation_id: &ChatConversationId,
+    mode: AgentWorkspaceContextMode,
+) -> Option<String> {
+    agent_workspace_diff_cache_key(conversation_id)
+        .map(|key| format!("{key}:{}", mode.cache_key_suffix()))
 }
 
 fn agent_workspace_pr_annotations_cache_key(
@@ -354,12 +424,13 @@ fn agent_workspace_pr_annotations_locks() -> &'static DashMap<String, Arc<tokio:
 
 fn cached_agent_workspace_context(
     conversation_id: &ChatConversationId,
+    mode: AgentWorkspaceContextMode,
 ) -> Option<AgentWorkspaceContext> {
     let ttl = agent_workspace_review_cache_ttl();
     if ttl.is_zero() {
         return None;
     }
-    let key = agent_workspace_diff_cache_key(conversation_id)?;
+    let key = agent_workspace_context_cache_key(conversation_id, mode)?;
     let entry = agent_workspace_context_cache().get(&key)?;
     if entry.inserted_at.elapsed() <= ttl {
         return Some(entry.context.clone());
@@ -371,12 +442,13 @@ fn cached_agent_workspace_context(
 
 fn store_agent_workspace_context(
     conversation_id: &ChatConversationId,
+    mode: AgentWorkspaceContextMode,
     context: &AgentWorkspaceContext,
 ) {
     if agent_workspace_review_cache_ttl().is_zero() {
         return;
     }
-    let Some(key) = agent_workspace_diff_cache_key(conversation_id) else {
+    let Some(key) = agent_workspace_context_cache_key(conversation_id, mode) else {
         return;
     };
     agent_workspace_context_cache().insert(
@@ -472,7 +544,14 @@ pub(crate) fn invalidate_agent_workspace_diff_caches(conversation_id: &ChatConve
     let Some(key) = agent_workspace_diff_cache_key(conversation_id) else {
         return;
     };
-    agent_workspace_context_cache().remove(&key);
+    agent_workspace_context_cache().remove(&format!(
+        "{key}:{}",
+        AgentWorkspaceContextMode::Strict.cache_key_suffix()
+    ));
+    agent_workspace_context_cache().remove(&format!(
+        "{key}:{}",
+        AgentWorkspaceContextMode::Repair.cache_key_suffix()
+    ));
     agent_workspace_review_cache().remove(&key);
     let annotation_prefix = format!("{key}:");
     let annotation_keys = agent_workspace_pr_annotations_cache()
@@ -528,6 +607,7 @@ async fn get_agent_workspace_context(
                 diff_target: Some(plan_branch.branch_name.clone()),
                 patch_diff: None,
                 supports_worktree_modes: false,
+                repair_state: None,
             });
         }
     }
@@ -545,6 +625,7 @@ async fn get_agent_workspace_context(
             diff_target: None,
             patch_diff: None,
             supports_worktree_modes: true,
+            repair_state: None,
         }),
         Err(worktree_error) => {
             if let Some(context) =
@@ -559,7 +640,10 @@ async fn get_agent_workspace_context(
                 return Ok(context);
             }
             if let Some(context) = resolve_agent_workspace_github_patch_context(
-                app_state, &project, &workspace, &base_commit,
+                app_state,
+                &project,
+                &workspace,
+                &base_commit,
             )
             .await?
             {
@@ -593,6 +677,7 @@ async fn resolve_agent_workspace_local_branch_context(
         diff_target: Some(workspace.branch_name.clone()),
         patch_diff: None,
         supports_worktree_modes: false,
+        repair_state: None,
     }))
 }
 
@@ -624,6 +709,7 @@ async fn resolve_agent_workspace_pr_head_context(
         diff_target: Some(pr_head_ref),
         patch_diff: None,
         supports_worktree_modes: false,
+        repair_state: None,
     }))
 }
 
@@ -664,6 +750,7 @@ async fn resolve_agent_workspace_github_patch_context(
         diff_target: Some(format!("github-pr-diff/{pr_number}")),
         patch_diff: Some(Arc::<str>::from(patch)),
         supports_worktree_modes: false,
+        repair_state: None,
     }))
 }
 
@@ -700,18 +787,109 @@ async fn get_terminal_agent_workspace_pr_context(
         diff_target: Some(head_ref),
         patch_diff: None,
         supports_worktree_modes: false,
+        repair_state: None,
     }))
+}
+
+async fn get_agent_workspace_repair_context(
+    app_state: &AppState,
+    conversation_id: &ChatConversationId,
+) -> AppResult<AgentWorkspaceContext> {
+    let workspace = app_state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(conversation_id)
+        .await?
+        .ok_or_else(|| {
+            AppError::Validation(format!(
+                "Agent conversation workspace not found for conversation {}",
+                conversation_id
+            ))
+        })?;
+    if workspace.publication_push_status.as_deref() != Some("needs_agent") {
+        return Err(AppError::Validation(format!(
+            "Repair diff context requires agent conversation workspace {} to be in needs_agent publication state",
+            conversation_id
+        )));
+    }
+
+    let project = app_state
+        .project_repo
+        .get_by_id(&workspace.project_id)
+        .await?
+        .ok_or_else(|| AppError::ProjectNotFound(workspace.project_id.as_str().to_string()))?;
+    let base_commit = workspace.base_commit.clone().ok_or_else(|| {
+        AppError::Validation(format!(
+            "Agent conversation workspace {} is missing its captured base commit",
+            conversation_id
+        ))
+    })?;
+    let worktree_path = resolve_agent_conversation_workspace_path_for_send(&project, &workspace)?;
+    let checked_out_branch = GitService::get_current_branch(&worktree_path).await?;
+    let rebase_in_progress = GitService::is_rebase_in_progress(&worktree_path);
+    let merge_in_progress = GitService::is_merge_in_progress(&worktree_path);
+    if checked_out_branch != workspace.branch_name && !rebase_in_progress && !merge_in_progress {
+        return Err(AppError::Validation(format!(
+            "Agent conversation workspace {} is checked out at '{}' instead of '{}' and is not in a recognized repair state",
+            workspace.conversation_id, checked_out_branch, workspace.branch_name
+        )));
+    }
+
+    Ok(AgentWorkspaceContext {
+        working_path: worktree_path,
+        base_ref: base_commit,
+        diff_target: None,
+        patch_diff: None,
+        supports_worktree_modes: true,
+        repair_state: Some(AgentWorkspaceRepairStateResponse {
+            expected_branch: workspace.branch_name,
+            checked_out_branch,
+            rebase_in_progress,
+            merge_in_progress,
+        }),
+    })
 }
 
 async fn get_agent_workspace_context_cached(
     app_state: &AppState,
     conversation_id: &ChatConversationId,
 ) -> AppResult<(AgentWorkspaceContext, AgentWorkspaceDiffCacheStatus)> {
-    if let Some(context) = cached_agent_workspace_context(conversation_id) {
+    get_agent_workspace_context_cached_for_mode(
+        app_state,
+        conversation_id,
+        AgentWorkspaceContextMode::Strict,
+    )
+    .await
+}
+
+async fn get_agent_workspace_repair_context_cached(
+    app_state: &AppState,
+    conversation_id: &ChatConversationId,
+) -> AppResult<(AgentWorkspaceContext, AgentWorkspaceDiffCacheStatus)> {
+    get_agent_workspace_context_cached_for_mode(
+        app_state,
+        conversation_id,
+        AgentWorkspaceContextMode::Repair,
+    )
+    .await
+}
+
+async fn get_agent_workspace_context_cached_for_mode(
+    app_state: &AppState,
+    conversation_id: &ChatConversationId,
+    mode: AgentWorkspaceContextMode,
+) -> AppResult<(AgentWorkspaceContext, AgentWorkspaceDiffCacheStatus)> {
+    if let Some(context) = cached_agent_workspace_context(conversation_id, mode) {
         return Ok((context, AgentWorkspaceDiffCacheStatus::Hit));
     }
-    let Some(key) = agent_workspace_diff_cache_key(conversation_id) else {
-        let context = get_agent_workspace_context(app_state, conversation_id).await?;
+    let Some(key) = agent_workspace_context_cache_key(conversation_id, mode) else {
+        let context = match mode {
+            AgentWorkspaceContextMode::Strict => {
+                get_agent_workspace_context(app_state, conversation_id).await?
+            }
+            AgentWorkspaceContextMode::Repair => {
+                get_agent_workspace_repair_context(app_state, conversation_id).await?
+            }
+        };
         return Ok((context, AgentWorkspaceDiffCacheStatus::Miss));
     };
     let lock = agent_workspace_context_locks()
@@ -719,11 +897,18 @@ async fn get_agent_workspace_context_cached(
         .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
         .clone();
     let _guard = lock.lock().await;
-    if let Some(context) = cached_agent_workspace_context(conversation_id) {
+    if let Some(context) = cached_agent_workspace_context(conversation_id, mode) {
         return Ok((context, AgentWorkspaceDiffCacheStatus::Coalesced));
     }
-    let context = get_agent_workspace_context(app_state, conversation_id).await?;
-    store_agent_workspace_context(conversation_id, &context);
+    let context = match mode {
+        AgentWorkspaceContextMode::Strict => {
+            get_agent_workspace_context(app_state, conversation_id).await?
+        }
+        AgentWorkspaceContextMode::Repair => {
+            get_agent_workspace_repair_context(app_state, conversation_id).await?
+        }
+    };
+    store_agent_workspace_context(conversation_id, mode, &context);
     Ok((context, AgentWorkspaceDiffCacheStatus::Miss))
 }
 
@@ -821,6 +1006,8 @@ pub async fn get_agent_conversation_workspace_change_summary_for_state(
                 additions: 0,
                 deletions: 0,
             },
+            conflicted: None,
+            repair_state: None,
         });
     }
 
@@ -833,6 +1020,8 @@ pub async fn get_agent_conversation_workspace_change_summary_for_state(
             supports_worktree_modes: true,
             staged: summarize_agent_workspace_file_changes(&staged),
             unstaged: summarize_agent_workspace_file_changes(&unstaged),
+            conflicted: None,
+            repair_state: None,
         })
     })
     .await
@@ -882,6 +1071,81 @@ pub async fn get_agent_conversation_workspace_change_summary(
     result
 }
 
+#[doc(hidden)]
+pub async fn get_agent_conversation_workspace_repair_change_summary_for_state(
+    app_state: &AppState,
+    conversation_id: &ChatConversationId,
+) -> AppResult<AgentWorkspaceChangeSummaryResponse> {
+    let (ctx, _) = get_agent_workspace_repair_context_cached(app_state, conversation_id).await?;
+    let repair_state = ctx.repair_state.clone();
+    let mut conflicted_files = GitService::get_conflict_files(&ctx.working_path)
+        .await?
+        .into_iter()
+        .map(|path| path.to_string_lossy().to_string())
+        .collect::<Vec<_>>();
+    conflicted_files.sort();
+
+    let working_path = ctx.working_path.to_string_lossy().to_string();
+    let (staged, unstaged) = tokio::task::spawn_blocking(move || {
+        let diff_service = DiffService::new();
+        let staged = diff_service.get_staged_file_changes(&working_path)?;
+        let unstaged = diff_service.get_unstaged_file_changes(&working_path)?;
+        Ok::<_, AppError>((staged, unstaged))
+    })
+    .await
+    .map_err(|error| {
+        AppError::Infrastructure(format!(
+            "agent workspace repair change summary task failed: {error}"
+        ))
+    })??;
+
+    Ok(AgentWorkspaceChangeSummaryResponse {
+        supports_worktree_modes: true,
+        staged: summarize_agent_workspace_file_changes(&staged),
+        unstaged: summarize_agent_workspace_file_changes(&unstaged),
+        conflicted: Some(AgentWorkspaceConflictSummaryResponse {
+            file_count: conflicted_files.len(),
+            files: conflicted_files,
+        }),
+        repair_state,
+    })
+}
+
+#[tauri::command]
+pub async fn get_agent_conversation_workspace_repair_change_summary(
+    app_state: State<'_, AppState>,
+    conversation_id: String,
+) -> AppResult<AgentWorkspaceChangeSummaryResponse> {
+    let started = Instant::now();
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    let result = get_agent_conversation_workspace_repair_change_summary_for_state(
+        app_state.inner(),
+        &conversation_id,
+    )
+    .await;
+    match &result {
+        Ok(summary) => info!(
+            target: "ralphx_lib::commands::agent_workspace_diff",
+            operation = "repair_change_summary",
+            conversation_id = %conversation_id,
+            elapsed_ms = started.elapsed().as_millis(),
+            staged_files = summary.staged.file_count,
+            unstaged_files = summary.unstaged.file_count,
+            conflicted_files = summary.conflicted.as_ref().map(|bucket| bucket.file_count).unwrap_or(0),
+            "Loaded repair-aware agent workspace change summary"
+        ),
+        Err(error) => warn!(
+            target: "ralphx_lib::commands::agent_workspace_diff",
+            operation = "repair_change_summary",
+            conversation_id = %conversation_id,
+            elapsed_ms = started.elapsed().as_millis(),
+            error = %error,
+            "Failed to load repair-aware agent workspace change summary"
+        ),
+    }
+    result
+}
+
 #[tauri::command]
 pub async fn get_agent_conversation_workspace_pr_annotations(
     app_state: State<'_, AppState>,
@@ -914,6 +1178,106 @@ pub async fn get_agent_conversation_workspace_pr_annotations(
         ),
     }
     result.map(|(payload, _)| payload)
+}
+
+#[tauri::command]
+pub async fn get_agent_conversation_workspace_review_hunk_annotations(
+    app_state: State<'_, AppState>,
+    conversation_id: String,
+) -> AppResult<AgentWorkspaceReviewHunkAnnotationsResponse> {
+    let started = Instant::now();
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    let result = get_agent_conversation_workspace_review_hunk_annotations_for_state(
+        app_state.inner(),
+        &conversation_id,
+    )
+    .await;
+    match &result {
+        Ok(payload) => info!(
+            target: "ralphx_lib::commands::agent_workspace_diff",
+            operation = "workspace_review_hunk_annotations",
+            conversation_id = %conversation_id,
+            elapsed_ms = started.elapsed().as_millis(),
+            annotations = payload.annotations.len(),
+            artifact_id = %payload.artifact_id.as_deref().unwrap_or("none"),
+            diff_fingerprint = %payload
+                .diff_fingerprint
+                .as_deref()
+                .map(|value| value.chars().take(12).collect::<String>())
+                .unwrap_or_else(|| "none".to_string()),
+            "Loaded workspace Review hunk annotations"
+        ),
+        Err(error) => warn!(
+            target: "ralphx_lib::commands::agent_workspace_diff",
+            operation = "workspace_review_hunk_annotations",
+            conversation_id = %conversation_id,
+            elapsed_ms = started.elapsed().as_millis(),
+            error = %error,
+            "Failed to load workspace Review hunk annotations"
+        ),
+    }
+    result
+}
+
+async fn get_agent_conversation_workspace_review_hunk_annotations_for_state(
+    app_state: &AppState,
+    conversation_id: &ChatConversationId,
+) -> AppResult<AgentWorkspaceReviewHunkAnnotationsResponse> {
+    let workspace = app_state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(conversation_id)
+        .await?
+        .ok_or_else(|| {
+            AppError::Validation(format!(
+                "Agent conversation workspace not found for conversation {}",
+                conversation_id
+            ))
+        })?;
+    let context = load_agent_workspace_review_context(app_state, &workspace).await?;
+    let Some(target) = context.target.as_ref() else {
+        return Ok(AgentWorkspaceReviewHunkAnnotationsResponse::empty());
+    };
+    if !context.is_current {
+        return Ok(AgentWorkspaceReviewHunkAnnotationsResponse {
+            artifact_id: context
+                .monitor
+                .review_artifact_id
+                .as_ref()
+                .map(|id| id.as_str().to_string()),
+            artifact_version: context.monitor.review_artifact_version,
+            target_scope: Some(target.scope.to_string()),
+            head_sha: target.head_sha.clone(),
+            diff_fingerprint: Some(target.diff_fingerprint.clone()),
+            annotations: Vec::new(),
+        });
+    }
+    let Some(artifact_id) = context.monitor.review_artifact_id.as_ref() else {
+        return Ok(AgentWorkspaceReviewHunkAnnotationsResponse::empty());
+    };
+    let annotations = app_state
+        .agent_conversation_workspace_repo
+        .list_workspace_review_hunk_annotations(conversation_id, artifact_id)
+        .await?
+        .into_iter()
+        .filter(|annotation| {
+            annotation.target_scope == target.scope
+                && annotation.diff_fingerprint == target.diff_fingerprint
+                && annotation.artifact_id == *artifact_id
+                && annotation.artifact_version
+                    == context.monitor.review_artifact_version.unwrap_or(0)
+                && (target.scope
+                    != crate::domain::entities::AgentWorkspaceReviewTargetScope::SelectedSource
+                    || annotation.head_sha.as_deref() == target.head_sha.as_deref())
+        })
+        .collect();
+    Ok(AgentWorkspaceReviewHunkAnnotationsResponse {
+        artifact_id: Some(artifact_id.as_str().to_string()),
+        artifact_version: context.monitor.review_artifact_version,
+        target_scope: Some(target.scope.to_string()),
+        head_sha: target.head_sha.clone(),
+        diff_fingerprint: Some(target.diff_fingerprint.clone()),
+        annotations,
+    })
 }
 
 async fn get_agent_conversation_workspace_pr_annotations_cached(
@@ -1057,18 +1421,17 @@ async fn get_agent_workspace_review_for_context(
     let changes_path = working_path.clone();
     let changes_base_ref = base_ref.clone();
     let changes_target = ctx.diff_target.clone();
+    let changes_supports_worktree_modes = ctx.supports_worktree_modes;
     let changes_fut = async move {
         tokio::task::spawn_blocking(move || {
             let diff_service = DiffService::new();
-            let mut changes = if let Some(target) = changes_target {
-                diff_service.get_file_changes_between_refs(
-                    &changes_path,
-                    &changes_base_ref,
-                    &target,
-                )
-            } else {
-                diff_service.get_worktree_file_changes_from_ref(&changes_path, &changes_base_ref)
-            }?;
+            let mut changes = get_workspace_file_changes_for_context(
+                &diff_service,
+                &changes_path,
+                &changes_base_ref,
+                changes_target.as_deref(),
+                changes_supports_worktree_modes,
+            )?;
             let flags = {
                 let path_strs: Vec<&str> = changes.iter().map(|c| c.path.as_str()).collect();
                 diff_service.compute_generated_flags(Path::new(&changes_path), &path_strs)?
@@ -1104,6 +1467,43 @@ async fn get_agent_workspace_review_for_context(
             supports_worktree_modes: ctx.supports_worktree_modes,
         },
     })
+}
+
+fn get_workspace_file_changes_for_context(
+    diff_service: &DiffService,
+    working_path: &str,
+    base_ref: &str,
+    diff_target: Option<&str>,
+    supports_worktree_modes: bool,
+) -> AppResult<Vec<FileChange>> {
+    if supports_worktree_modes {
+        return diff_service.get_worktree_file_changes_from_ref(working_path, base_ref);
+    }
+
+    if let Some(target) = diff_target {
+        return diff_service.get_file_changes_between_refs(working_path, base_ref, target);
+    }
+
+    diff_service.get_worktree_file_changes_from_ref(working_path, base_ref)
+}
+
+fn get_workspace_file_diff_for_context(
+    diff_service: &DiffService,
+    file_path: &str,
+    working_path: &str,
+    base_ref: &str,
+    diff_target: Option<&str>,
+    supports_worktree_modes: bool,
+) -> AppResult<FileDiff> {
+    if supports_worktree_modes {
+        return diff_service.get_file_diff(file_path, working_path, base_ref);
+    }
+
+    if let Some(target) = diff_target {
+        return diff_service.get_file_diff_between_refs(file_path, working_path, base_ref, target);
+    }
+
+    diff_service.get_file_diff(file_path, working_path, base_ref)
 }
 
 #[tauri::command]
@@ -1157,15 +1557,15 @@ pub async fn get_agent_conversation_workspace_file_diff(
         let diff_service = DiffService::new();
         let diff = if let Some(patch) = &ctx.patch_diff {
             diff_service.get_file_diff_from_unified_diff(patch, &file_path)
-        } else if let Some(target) = &ctx.diff_target {
-            diff_service.get_file_diff_between_refs(
+        } else {
+            get_workspace_file_diff_for_context(
+                &diff_service,
                 &file_path,
                 &working_path,
                 &ctx.base_ref,
-                target,
+                ctx.diff_target.as_deref(),
+                ctx.supports_worktree_modes,
             )
-        } else {
-            diff_service.get_file_diff(&file_path, &working_path, &ctx.base_ref)
         }?;
         Ok((diff, cache_status))
     }
@@ -1517,6 +1917,103 @@ pub async fn get_agent_conversation_workspace_unstaged_file_diff_for_state(
 }
 
 #[doc(hidden)]
+pub async fn get_agent_conversation_workspace_repair_staged_file_changes_for_state(
+    app_state: &AppState,
+    conversation_id: &ChatConversationId,
+) -> AppResult<Vec<FileChange>> {
+    let (ctx, _) = get_agent_workspace_repair_context_cached(app_state, conversation_id).await?;
+    let working_path = ctx.working_path.to_string_lossy().to_string();
+    tokio::task::spawn_blocking(move || {
+        let diff_service = DiffService::new();
+        let mut changes = diff_service.get_staged_file_changes(&working_path)?;
+        let flags = {
+            let path_strs: Vec<&str> = changes.iter().map(|c| c.path.as_str()).collect();
+            diff_service.compute_generated_flags(Path::new(&working_path), &path_strs)?
+        };
+        for change in &mut changes {
+            if let Some(&is_gen) = flags.get(&change.path) {
+                change.is_generated = is_gen;
+            }
+        }
+        Ok(changes)
+    })
+    .await
+    .map_err(|e| AppError::Infrastructure(format!("repair staged file changes task failed: {e}")))?
+}
+
+#[doc(hidden)]
+pub async fn get_agent_conversation_workspace_repair_unstaged_file_changes_for_state(
+    app_state: &AppState,
+    conversation_id: &ChatConversationId,
+) -> AppResult<Vec<FileChange>> {
+    let (ctx, _) = get_agent_workspace_repair_context_cached(app_state, conversation_id).await?;
+    let working_path = ctx.working_path.to_string_lossy().to_string();
+    tokio::task::spawn_blocking(move || {
+        let diff_service = DiffService::new();
+        let mut changes = diff_service.get_unstaged_file_changes(&working_path)?;
+        let flags = {
+            let path_strs: Vec<&str> = changes.iter().map(|c| c.path.as_str()).collect();
+            diff_service.compute_generated_flags(Path::new(&working_path), &path_strs)?
+        };
+        for change in &mut changes {
+            if let Some(&is_gen) = flags.get(&change.path) {
+                change.is_generated = is_gen;
+            }
+        }
+        Ok(changes)
+    })
+    .await
+    .map_err(|e| {
+        AppError::Infrastructure(format!("repair unstaged file changes task failed: {e}"))
+    })?
+}
+
+#[doc(hidden)]
+pub async fn get_agent_conversation_workspace_repair_staged_file_diff_for_state(
+    app_state: &AppState,
+    conversation_id: &ChatConversationId,
+    file_path: String,
+) -> AppResult<FileDiff> {
+    let (ctx, _) = get_agent_workspace_repair_context_cached(app_state, conversation_id).await?;
+    let working_path = ctx.working_path.to_string_lossy().to_string();
+    tokio::task::spawn_blocking(move || {
+        DiffService::new().get_staged_file_diff(&file_path, &working_path)
+    })
+    .await
+    .map_err(|e| AppError::Infrastructure(format!("repair staged file diff task failed: {e}")))?
+}
+
+#[doc(hidden)]
+pub async fn get_agent_conversation_workspace_repair_unstaged_file_diff_for_state(
+    app_state: &AppState,
+    conversation_id: &ChatConversationId,
+    file_path: String,
+) -> AppResult<FileDiff> {
+    let (ctx, _) = get_agent_workspace_repair_context_cached(app_state, conversation_id).await?;
+    let working_path = ctx.working_path.to_string_lossy().to_string();
+    tokio::task::spawn_blocking(move || {
+        DiffService::new().get_unstaged_file_diff(&file_path, &working_path)
+    })
+    .await
+    .map_err(|e| AppError::Infrastructure(format!("repair unstaged file diff task failed: {e}")))?
+}
+
+#[doc(hidden)]
+pub async fn get_agent_conversation_workspace_repair_conflict_file_diff_for_state(
+    app_state: &AppState,
+    conversation_id: &ChatConversationId,
+    file_path: String,
+) -> AppResult<ConflictDiff> {
+    let (ctx, _) = get_agent_workspace_repair_context_cached(app_state, conversation_id).await?;
+    let working_path = ctx.working_path.to_string_lossy().to_string();
+    tokio::task::spawn_blocking(move || {
+        DiffService::new().get_index_conflict_diff(&file_path, &working_path)
+    })
+    .await
+    .map_err(|e| AppError::Infrastructure(format!("repair conflict file diff task failed: {e}")))?
+}
+
+#[doc(hidden)]
 pub async fn get_agent_conversation_workspace_cumulative_file_changes_for_state(
     app_state: &AppState,
     conversation_id: &ChatConversationId,
@@ -1542,10 +2039,16 @@ pub async fn get_agent_conversation_workspace_cumulative_file_changes_for_state(
         .diff_target
         .clone()
         .unwrap_or_else(|| "HEAD".to_string());
+    let supports_worktree_modes = ctx.supports_worktree_modes;
     tokio::task::spawn_blocking(move || {
         let diff_service = DiffService::new();
-        let mut changes =
-            diff_service.get_file_changes_between_refs(&working_path, &base_ref, &head_ref)?;
+        let mut changes = get_workspace_file_changes_for_context(
+            &diff_service,
+            &working_path,
+            &base_ref,
+            Some(&head_ref),
+            supports_worktree_modes,
+        )?;
         let flags = {
             let path_strs: Vec<&str> = changes.iter().map(|c| c.path.as_str()).collect();
             diff_service.compute_generated_flags(Path::new(&working_path), &path_strs)?
@@ -1577,12 +2080,16 @@ pub async fn get_agent_conversation_workspace_cumulative_file_diff_for_state(
         .diff_target
         .clone()
         .unwrap_or_else(|| "HEAD".to_string());
+    let supports_worktree_modes = ctx.supports_worktree_modes;
     tokio::task::spawn_blocking(move || {
-        DiffService::new().get_file_diff_between_refs(
+        let diff_service = DiffService::new();
+        get_workspace_file_diff_for_context(
+            &diff_service,
             &file_path,
             &working_path,
             &base_ref,
-            &head_ref,
+            Some(&head_ref),
+            supports_worktree_modes,
         )
     })
     .await
@@ -1630,6 +2137,7 @@ pub async fn get_agent_conversation_workspace_file_diff_page_for_state(
     let base_ref = ctx.base_ref.clone();
     let diff_target = ctx.diff_target.clone();
     let patch_diff = ctx.patch_diff.clone();
+    let supports_worktree_modes = ctx.supports_worktree_modes;
 
     tokio::task::spawn_blocking(move || {
         let diff_service = DiffService::new();
@@ -1637,15 +2145,15 @@ pub async fn get_agent_conversation_workspace_file_diff_page_for_state(
             DiffRefKind::Head => {
                 if let Some(patch) = patch_diff.as_deref() {
                     diff_service.get_file_diff_from_unified_diff(patch, &file_path)
-                } else if let Some(target) = diff_target.as_deref() {
-                    diff_service.get_file_diff_between_refs(
+                } else {
+                    get_workspace_file_diff_for_context(
+                        &diff_service,
                         &file_path,
                         &working_path,
                         &base_ref,
-                        target,
+                        diff_target.as_deref(),
+                        supports_worktree_modes,
                     )
-                } else {
-                    diff_service.get_file_diff(&file_path, &working_path, &base_ref)
                 }
             }
             DiffRefKind::Staged => diff_service.get_staged_file_diff(&file_path, &working_path),
@@ -1667,11 +2175,13 @@ pub async fn get_agent_conversation_workspace_file_diff_page_for_state(
                     diff_service.get_file_diff_from_unified_diff(patch, &file_path)
                 } else {
                     let head_ref = diff_target.unwrap_or_else(|| "HEAD".to_string());
-                    diff_service.get_file_diff_between_refs(
+                    get_workspace_file_diff_for_context(
+                        &diff_service,
                         &file_path,
                         &working_path,
                         &base_ref,
-                        &head_ref,
+                        Some(&head_ref),
+                        supports_worktree_modes,
                     )
                 }
             }
@@ -1823,6 +2333,181 @@ pub async fn get_agent_conversation_workspace_unstaged_file_diff(
             elapsed_ms = started.elapsed().as_millis(),
             error = %error,
             "Failed to load agent workspace unstaged file diff"
+        ),
+    }
+    result
+}
+
+#[tauri::command]
+pub async fn get_agent_conversation_workspace_repair_staged_file_changes(
+    app_state: State<'_, AppState>,
+    conversation_id: String,
+) -> AppResult<Vec<FileChange>> {
+    let started = Instant::now();
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    let result = get_agent_conversation_workspace_repair_staged_file_changes_for_state(
+        app_state.inner(),
+        &conversation_id,
+    )
+    .await;
+    match &result {
+        Ok(changes) => info!(
+            target: "ralphx_lib::commands::agent_workspace_diff",
+            operation = "repair_staged_file_changes",
+            conversation_id = %conversation_id,
+            elapsed_ms = started.elapsed().as_millis(),
+            files = changes.len(),
+            "Loaded repair-aware agent workspace staged file changes"
+        ),
+        Err(error) => warn!(
+            target: "ralphx_lib::commands::agent_workspace_diff",
+            operation = "repair_staged_file_changes",
+            conversation_id = %conversation_id,
+            elapsed_ms = started.elapsed().as_millis(),
+            error = %error,
+            "Failed to load repair-aware agent workspace staged file changes"
+        ),
+    }
+    result
+}
+
+#[tauri::command]
+pub async fn get_agent_conversation_workspace_repair_unstaged_file_changes(
+    app_state: State<'_, AppState>,
+    conversation_id: String,
+) -> AppResult<Vec<FileChange>> {
+    let started = Instant::now();
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    let result = get_agent_conversation_workspace_repair_unstaged_file_changes_for_state(
+        app_state.inner(),
+        &conversation_id,
+    )
+    .await;
+    match &result {
+        Ok(changes) => info!(
+            target: "ralphx_lib::commands::agent_workspace_diff",
+            operation = "repair_unstaged_file_changes",
+            conversation_id = %conversation_id,
+            elapsed_ms = started.elapsed().as_millis(),
+            files = changes.len(),
+            "Loaded repair-aware agent workspace unstaged file changes"
+        ),
+        Err(error) => warn!(
+            target: "ralphx_lib::commands::agent_workspace_diff",
+            operation = "repair_unstaged_file_changes",
+            conversation_id = %conversation_id,
+            elapsed_ms = started.elapsed().as_millis(),
+            error = %error,
+            "Failed to load repair-aware agent workspace unstaged file changes"
+        ),
+    }
+    result
+}
+
+#[tauri::command]
+pub async fn get_agent_conversation_workspace_repair_staged_file_diff(
+    app_state: State<'_, AppState>,
+    conversation_id: String,
+    file_path: String,
+) -> AppResult<FileDiff> {
+    let started = Instant::now();
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    let result = get_agent_conversation_workspace_repair_staged_file_diff_for_state(
+        app_state.inner(),
+        &conversation_id,
+        file_path,
+    )
+    .await;
+    match &result {
+        Ok(diff) => info!(
+            target: "ralphx_lib::commands::agent_workspace_diff",
+            operation = "repair_staged_file_diff",
+            conversation_id = %conversation_id,
+            elapsed_ms = started.elapsed().as_millis(),
+            hunk_count = diff.hunks.len(),
+            old_lines = diff.old_total_lines,
+            new_lines = diff.new_total_lines,
+            "Loaded repair-aware agent workspace staged file diff"
+        ),
+        Err(error) => warn!(
+            target: "ralphx_lib::commands::agent_workspace_diff",
+            operation = "repair_staged_file_diff",
+            conversation_id = %conversation_id,
+            elapsed_ms = started.elapsed().as_millis(),
+            error = %error,
+            "Failed to load repair-aware agent workspace staged file diff"
+        ),
+    }
+    result
+}
+
+#[tauri::command]
+pub async fn get_agent_conversation_workspace_repair_unstaged_file_diff(
+    app_state: State<'_, AppState>,
+    conversation_id: String,
+    file_path: String,
+) -> AppResult<FileDiff> {
+    let started = Instant::now();
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    let result = get_agent_conversation_workspace_repair_unstaged_file_diff_for_state(
+        app_state.inner(),
+        &conversation_id,
+        file_path,
+    )
+    .await;
+    match &result {
+        Ok(diff) => info!(
+            target: "ralphx_lib::commands::agent_workspace_diff",
+            operation = "repair_unstaged_file_diff",
+            conversation_id = %conversation_id,
+            elapsed_ms = started.elapsed().as_millis(),
+            hunk_count = diff.hunks.len(),
+            old_lines = diff.old_total_lines,
+            new_lines = diff.new_total_lines,
+            "Loaded repair-aware agent workspace unstaged file diff"
+        ),
+        Err(error) => warn!(
+            target: "ralphx_lib::commands::agent_workspace_diff",
+            operation = "repair_unstaged_file_diff",
+            conversation_id = %conversation_id,
+            elapsed_ms = started.elapsed().as_millis(),
+            error = %error,
+            "Failed to load repair-aware agent workspace unstaged file diff"
+        ),
+    }
+    result
+}
+
+#[tauri::command]
+pub async fn get_agent_conversation_workspace_repair_conflict_file_diff(
+    app_state: State<'_, AppState>,
+    conversation_id: String,
+    file_path: String,
+) -> AppResult<ConflictDiff> {
+    let started = Instant::now();
+    let conversation_id = ChatConversationId::from_string(conversation_id);
+    let result = get_agent_conversation_workspace_repair_conflict_file_diff_for_state(
+        app_state.inner(),
+        &conversation_id,
+        file_path,
+    )
+    .await;
+    match &result {
+        Ok(diff) => info!(
+            target: "ralphx_lib::commands::agent_workspace_diff",
+            operation = "repair_conflict_file_diff",
+            conversation_id = %conversation_id,
+            elapsed_ms = started.elapsed().as_millis(),
+            file_path = diff.file_path.as_str(),
+            "Loaded repair conflict file diff"
+        ),
+        Err(error) => warn!(
+            target: "ralphx_lib::commands::agent_workspace_diff",
+            operation = "repair_conflict_file_diff",
+            conversation_id = %conversation_id,
+            elapsed_ms = started.elapsed().as_millis(),
+            error = %error,
+            "Failed to load repair conflict file diff"
         ),
     }
     result
@@ -2072,20 +2757,19 @@ pub async fn get_agent_conversation_workspace_file_content_range_for_state(
     let (ctx, _) = get_agent_workspace_context_cached(app_state, conversation_id).await?;
     if ctx.patch_diff.is_some() {
         return Err(AppError::Validation(
-            "File content range is unavailable for patch-backed agent workspace diffs"
-                .to_string(),
+            "File content range is unavailable for patch-backed agent workspace diffs".to_string(),
         ));
     }
     let workspace_path = ctx.working_path.to_string_lossy().to_string();
 
     // Resolve workspace-specific ref_kind variants to concrete refs that match
     // the same old/new pair used by get_agent_conversation_workspace_file_diff.
-    let live_worktree_head_range =
-        ctx.supports_worktree_modes && ctx.diff_target.is_none() && ctx.patch_diff.is_none();
+    let live_worktree_head_range = ctx.supports_worktree_modes && ctx.patch_diff.is_none();
     let resolved_ref_kind = match ref_kind {
         DiffRefKind::CumulativeBase => DiffRefKind::Commit {
             sha: ctx.base_ref.clone(),
         },
+        DiffRefKind::CumulativeHead if live_worktree_head_range => DiffRefKind::Unstaged,
         DiffRefKind::CumulativeHead => {
             let head = ctx
                 .diff_target
@@ -2265,6 +2949,7 @@ mod tests {
             AgentConversationWorkspaceMode::Edit,
             AgentConversationWorkspaceBaseSelection {
                 kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+                branch_mode: None,
                 base_ref: Some("main".to_string()),
                 display_name: None,
                 source_pull_request: None,
@@ -2355,17 +3040,23 @@ mod tests {
             diff_target: Some("feature/review-cache".to_string()),
             patch_diff: None,
             supports_worktree_modes: false,
+            repair_state: None,
         };
         let snapshot = sample_review_snapshot("abcdef0123456789abcdef0123456789abcdef01");
         let mut annotations = PrDiffAnnotations::empty(68);
         annotations.head_sha = Some("head-sha".to_string());
 
-        store_agent_workspace_context(&conversation_id, &context);
+        store_agent_workspace_context(
+            &conversation_id,
+            AgentWorkspaceContextMode::Strict,
+            &context,
+        );
         store_agent_workspace_review(&conversation_id, &snapshot);
         store_agent_workspace_pr_annotations(&conversation_id, 68, &annotations);
 
         let cached_context =
-            cached_agent_workspace_context(&conversation_id).expect("context should hit");
+            cached_agent_workspace_context(&conversation_id, AgentWorkspaceContextMode::Strict)
+                .expect("context should hit");
         assert_eq!(cached_context.working_path, context.working_path);
         assert_eq!(cached_context.base_ref, "base-sha");
         assert_eq!(
@@ -2389,7 +3080,11 @@ mod tests {
         );
 
         invalidate_agent_workspace_diff_caches(&conversation_id);
-        assert!(cached_agent_workspace_context(&conversation_id).is_none());
+        assert!(cached_agent_workspace_context(
+            &conversation_id,
+            AgentWorkspaceContextMode::Strict
+        )
+        .is_none());
         assert!(cached_agent_workspace_review(&conversation_id).is_none());
         assert!(cached_agent_workspace_pr_annotations(&conversation_id, 68).is_none());
     }
@@ -2403,15 +3098,24 @@ mod tests {
             diff_target: None,
             patch_diff: None,
             supports_worktree_modes: true,
+            repair_state: None,
         };
         let snapshot = sample_review_snapshot("abcdef0123456789abcdef0123456789abcdef01");
         let annotations = PrDiffAnnotations::empty(68);
 
-        store_agent_workspace_context(&conversation_id, &context);
+        store_agent_workspace_context(
+            &conversation_id,
+            AgentWorkspaceContextMode::Strict,
+            &context,
+        );
         store_agent_workspace_review(&conversation_id, &snapshot);
         store_agent_workspace_pr_annotations(&conversation_id, 68, &annotations);
 
-        assert!(cached_agent_workspace_context(&conversation_id).is_none());
+        assert!(cached_agent_workspace_context(
+            &conversation_id,
+            AgentWorkspaceContextMode::Strict
+        )
+        .is_none());
         assert!(cached_agent_workspace_review(&conversation_id).is_none());
         assert!(cached_agent_workspace_pr_annotations(&conversation_id, 68).is_none());
         invalidate_agent_workspace_diff_caches(&conversation_id);
@@ -2457,9 +3161,14 @@ mod tests {
             diff_target: None,
             patch_diff: None,
             supports_worktree_modes: true,
+            repair_state: None,
         };
         invalidate_agent_workspace_diff_caches(&conversation_id);
-        store_agent_workspace_context(&conversation_id, &context);
+        store_agent_workspace_context(
+            &conversation_id,
+            AgentWorkspaceContextMode::Strict,
+            &context,
+        );
 
         let (cached, status) = get_agent_workspace_context_cached(&state, &conversation_id)
             .await
@@ -2602,8 +3311,14 @@ mod tests {
 
     #[tokio::test]
     async fn agent_workspace_diff_commands_use_shared_review_cache() {
-        let (_temp_dir, state, conversation_id, _worktree_path, commit_sha) =
+        let (_temp_dir, state, conversation_id, worktree_path, commit_sha) =
             create_agent_workspace_command_state().await;
+        std::fs::create_dir_all(worktree_path.join("docs")).unwrap();
+        std::fs::write(
+            worktree_path.join("docs").join("untracked.md"),
+            "draft\nnotes\n",
+        )
+        .unwrap();
         let app = mock_builder()
             .manage(state)
             .build(mock_context(noop_assets()))
@@ -2617,6 +3332,11 @@ mod tests {
             .changes
             .iter()
             .any(|change| change.path == "src/lib.rs"));
+        assert!(review
+            .changes
+            .iter()
+            .any(|change| change.path == "docs/untracked.md"
+                && matches!(change.status, FileChangeStatus::Added)));
         assert!(review.commits.iter().any(|commit| commit.sha == commit_sha));
 
         let changes =
@@ -2624,6 +3344,19 @@ mod tests {
                 .await
                 .expect("cached file changes should load");
         assert!(changes.iter().any(|change| change.path == "src/lib.rs"));
+        assert!(changes
+            .iter()
+            .any(|change| change.path == "docs/untracked.md"));
+
+        let unstaged_changes = get_agent_conversation_workspace_unstaged_file_changes(
+            app.state(),
+            conversation_id.as_str(),
+        )
+        .await
+        .expect("unstaged file changes should load");
+        assert!(unstaged_changes
+            .iter()
+            .any(|change| change.path == "docs/untracked.md"));
 
         let commits =
             get_agent_conversation_workspace_commits(app.state(), conversation_id.as_str())
@@ -2651,6 +3384,21 @@ mod tests {
                 .any(|l| l.content.contains("answer")),
             "file diff hunks should contain the 'answer' function"
         );
+
+        let untracked_file_diff = get_agent_conversation_workspace_file_diff(
+            app.state(),
+            conversation_id.as_str(),
+            "docs/untracked.md".to_string(),
+        )
+        .await
+        .expect("untracked workspace file diff should load");
+        assert_eq!(untracked_file_diff.old_total_lines, 0);
+        assert_eq!(untracked_file_diff.new_total_lines, 2);
+        assert!(untracked_file_diff
+            .hunks
+            .iter()
+            .flat_map(|hunk| hunk.lines.iter())
+            .any(|line| line.content == "draft"));
 
         let file_diff_page = get_agent_conversation_workspace_file_diff_page(
             app.state(),
@@ -2704,6 +3452,104 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn diff_target_editable_workspace_includes_untracked_files() {
+        let (_temp_dir, state, conversation_id, worktree_path, _commit_sha) =
+            create_agent_workspace_command_state().await;
+        let workspace = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        std::fs::create_dir_all(worktree_path.join("docs")).unwrap();
+        std::fs::write(
+            worktree_path.join("docs").join("untracked.md"),
+            "draft\nnotes\n",
+        )
+        .unwrap();
+        store_agent_workspace_context(
+            &conversation_id,
+            AgentWorkspaceContextMode::Strict,
+            &AgentWorkspaceContext {
+                working_path: worktree_path,
+                base_ref: workspace
+                    .base_commit
+                    .expect("workspace should have captured base commit"),
+                diff_target: Some("HEAD".to_string()),
+                patch_diff: None,
+                supports_worktree_modes: true,
+                repair_state: None,
+            },
+        );
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        let review =
+            get_agent_conversation_workspace_review(app.state(), conversation_id.as_str()).await;
+        let review = review.expect("diff-target review should load");
+        assert!(review
+            .changes
+            .iter()
+            .any(|change| change.path == "docs/untracked.md"));
+
+        let file_diff = get_agent_conversation_workspace_file_diff(
+            app.state(),
+            conversation_id.as_str(),
+            "docs/untracked.md".to_string(),
+        )
+        .await
+        .expect("diff-target untracked file diff should load");
+        assert_eq!(file_diff.old_total_lines, 0);
+        assert_eq!(file_diff.new_total_lines, 2);
+        assert!(file_diff
+            .hunks
+            .iter()
+            .flat_map(|hunk| hunk.lines.iter())
+            .any(|line| line.content == "draft"));
+
+        let file_diff_page = get_agent_conversation_workspace_file_diff_page(
+            app.state(),
+            conversation_id.as_str(),
+            "docs/untracked.md".to_string(),
+            DiffRefKind::Head,
+            0,
+            20,
+        )
+        .await
+        .expect("diff-target untracked file diff page should load");
+        assert!(diff_page_contains_line(&file_diff_page, "draft"));
+
+        let cumulative_page = get_agent_conversation_workspace_file_diff_page(
+            app.state(),
+            conversation_id.as_str(),
+            "docs/untracked.md".to_string(),
+            DiffRefKind::CumulativeHead,
+            0,
+            20,
+        )
+        .await
+        .expect("diff-target cumulative untracked file diff page should load");
+        assert!(diff_page_contains_line(&cumulative_page, "draft"));
+
+        let content_range = get_agent_conversation_workspace_file_content_range(
+            app.state(),
+            conversation_id.as_str(),
+            DiffSide::New,
+            "docs/untracked.md".to_string(),
+            DiffRefKind::Head,
+            1,
+            2,
+        )
+        .await
+        .expect("diff-target untracked file content range should load");
+        assert_eq!(content_range[0].content, "draft");
+
+        invalidate_agent_workspace_diff_caches(&conversation_id);
+    }
+
+    #[tokio::test]
     async fn file_diff_page_command_loads_staged_and_unstaged_refs() {
         let (_tmp, state, conversation_id, worktree_path) =
             create_staged_unstaged_workspace_state().await;
@@ -2730,11 +3576,7 @@ mod tests {
             "staged diff page should include staged content"
         );
 
-        std::fs::write(
-            worktree_path.join("base.txt"),
-            "base\nstaged\nunstaged\n",
-        )
-        .unwrap();
+        std::fs::write(worktree_path.join("base.txt"), "base\nstaged\nunstaged\n").unwrap();
 
         let unstaged_page = get_agent_conversation_workspace_file_diff_page(
             app.state(),
@@ -2821,12 +3663,14 @@ mod tests {
             create_staged_unstaged_workspace_state().await;
         store_agent_workspace_context(
             &conversation_id,
+            AgentWorkspaceContextMode::Strict,
             &AgentWorkspaceContext {
                 working_path: worktree_path,
                 base_ref: "HEAD".to_string(),
                 diff_target: Some("agent-branch".to_string()),
                 patch_diff: None,
                 supports_worktree_modes: false,
+                repair_state: None,
             },
         );
         let app = mock_builder()
@@ -2913,11 +3757,12 @@ mod tests {
         let remote = temp_dir.path().join("origin.git");
         std::fs::create_dir_all(&remote).expect("remote dir should be created");
         run_git(&remote, &["init", "--bare"]);
-        let remote_arg = remote
-            .to_str()
-            .expect("test remote path should be utf-8");
+        let remote_arg = remote.to_str().expect("test remote path should be utf-8");
         run_git(&repo, &["remote", "add", "origin", remote_arg]);
-        run_git(&worktree_path, &["push", "origin", "HEAD:refs/pull/123/head"]);
+        run_git(
+            &worktree_path,
+            &["push", "origin", "HEAD:refs/pull/123/head"],
+        );
 
         let mut workspace = state
             .agent_conversation_workspace_repo
@@ -2991,8 +3836,7 @@ new file mode 100644
             .expect("workspace should exist");
         let branch_name = workspace.branch_name.clone();
         workspace.publication_pr_number = Some(123);
-        workspace.publication_pr_url =
-            Some("https://github.com/mock/project/pull/123".to_string());
+        workspace.publication_pr_url = Some("https://github.com/mock/project/pull/123".to_string());
         workspace.publication_pr_status = Some("merged".to_string());
         state
             .agent_conversation_workspace_repo
@@ -3077,6 +3921,7 @@ new file mode 100644
             diff_target: None,
             patch_diff: None,
             supports_worktree_modes: true,
+            repair_state: None,
         })
         .await
         .expect("review payload should load");
@@ -3114,6 +3959,7 @@ new file mode 100644
             diff_target: Some("feature/target-review".to_string()),
             patch_diff: None,
             supports_worktree_modes: false,
+            repair_state: None,
         })
         .await
         .expect("targeted review payload should load");
@@ -3169,6 +4015,7 @@ new file mode 100644
             AgentConversationWorkspaceMode::Edit,
             AgentConversationWorkspaceBaseSelection {
                 kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+                branch_mode: None,
                 base_ref: Some("main".to_string()),
                 display_name: None,
                 source_pull_request: None,
@@ -3191,6 +4038,338 @@ new file mode 100644
             .expect("seed workspace");
 
         (temp_dir, state, conversation_id, worktree_path)
+    }
+
+    fn git_dir_for_test(worktree_path: &Path) -> PathBuf {
+        let git_path = worktree_path.join(".git");
+        if git_path.is_file() {
+            let content = std::fs::read_to_string(&git_path).expect(".git file should be readable");
+            if let Some(path) = content.strip_prefix("gitdir: ") {
+                let path = PathBuf::from(path.trim());
+                return if path.is_absolute() {
+                    path
+                } else {
+                    worktree_path.join(path)
+                };
+            }
+        }
+        git_path
+    }
+
+    fn create_rebase_marker_for_test(worktree_path: &Path) {
+        let rebase_dir = git_dir_for_test(worktree_path).join("rebase-merge");
+        std::fs::create_dir_all(rebase_dir).expect("rebase marker should be created");
+    }
+
+    async fn mark_workspace_needs_agent(
+        state: &AppState,
+        conversation_id: &ChatConversationId,
+    ) -> AgentConversationWorkspace {
+        let mut workspace = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(conversation_id)
+            .await
+            .expect("workspace lookup should succeed")
+            .expect("workspace should exist");
+        workspace.publication_push_status = Some("needs_agent".to_string());
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace.clone())
+            .await
+            .expect("workspace should be updated");
+        workspace
+    }
+
+    fn create_agent_workspace_merge_conflict(temp_dir: &TempDir, worktree_path: &Path) {
+        let repo = temp_dir.path().join("repo");
+
+        std::fs::write(worktree_path.join("base.txt"), "base\nours\n").unwrap();
+        run_git(worktree_path, &["add", "base.txt"]);
+        run_git(worktree_path, &["commit", "-m", "Update workspace side"]);
+
+        std::fs::write(repo.join("base.txt"), "base\ntheirs\n").unwrap();
+        run_git(&repo, &["add", "base.txt"]);
+        run_git(&repo, &["commit", "-m", "Update base side"]);
+
+        let output = Command::new("git")
+            .args(["merge", "main"])
+            .current_dir(worktree_path)
+            .output()
+            .expect("git merge should run");
+        assert!(
+            !output.status.success(),
+            "merge should leave base.txt conflicted"
+        );
+    }
+
+    #[tokio::test]
+    async fn repair_change_summary_allows_needs_agent_detached_rebase_state() {
+        let (_tmp, state, conversation_id, worktree_path) =
+            create_staged_unstaged_workspace_state().await;
+        invalidate_agent_workspace_diff_caches(&conversation_id);
+        mark_workspace_needs_agent(&state, &conversation_id).await;
+        run_git(&worktree_path, &["checkout", "--detach"]);
+        create_rebase_marker_for_test(&worktree_path);
+
+        std::fs::write(worktree_path.join("staged.txt"), "one\ntwo\n").unwrap();
+        run_git(&worktree_path, &["add", "staged.txt"]);
+        std::fs::write(worktree_path.join("base.txt"), "base\nunstaged\n").unwrap();
+
+        let normal_summary =
+            get_agent_conversation_workspace_change_summary_for_state(&state, &conversation_id)
+                .await;
+        assert!(
+            normal_summary
+                .expect_err("normal summary should remain strict while detached")
+                .to_string()
+                .contains("checked out at 'HEAD'"),
+            "normal summary should preserve strict branch validation"
+        );
+
+        let repair_summary = get_agent_conversation_workspace_repair_change_summary_for_state(
+            &state,
+            &conversation_id,
+        )
+        .await
+        .expect("repair summary should load for needs_agent rebase state");
+
+        assert!(repair_summary.supports_worktree_modes);
+        assert_eq!(repair_summary.staged.file_count, 1);
+        assert_eq!(repair_summary.staged.additions, 2);
+        assert_eq!(repair_summary.unstaged.file_count, 1);
+        assert_eq!(repair_summary.unstaged.additions, 1);
+        let repair_state = repair_summary
+            .repair_state
+            .expect("repair summary should include repair state");
+        assert_eq!(repair_state.checked_out_branch, "HEAD");
+        assert!(repair_state.rebase_in_progress);
+        assert!(!repair_state.merge_in_progress);
+
+        let staged = get_agent_conversation_workspace_repair_staged_file_changes_for_state(
+            &state,
+            &conversation_id,
+        )
+        .await
+        .expect("repair staged files should load");
+        assert!(staged.iter().any(|file| file.path == "staged.txt"));
+
+        let unstaged_diff = get_agent_conversation_workspace_repair_unstaged_file_diff_for_state(
+            &state,
+            &conversation_id,
+            "base.txt".to_string(),
+        )
+        .await
+        .expect("repair unstaged diff should load");
+        assert!(
+            unstaged_diff
+                .hunks
+                .iter()
+                .flat_map(|hunk| hunk.lines.iter())
+                .any(|line| line.content.contains("unstaged")),
+            "repair unstaged diff should include disk-only content"
+        );
+
+        invalidate_agent_workspace_diff_caches(&conversation_id);
+    }
+
+    #[tokio::test]
+    async fn repair_conflict_file_diff_command_reads_unmerged_index_stages() {
+        let (tmp, state, conversation_id, worktree_path) =
+            create_staged_unstaged_workspace_state().await;
+        invalidate_agent_workspace_diff_caches(&conversation_id);
+        mark_workspace_needs_agent(&state, &conversation_id).await;
+        create_agent_workspace_merge_conflict(&tmp, &worktree_path);
+
+        let summary = get_agent_conversation_workspace_repair_change_summary_for_state(
+            &state,
+            &conversation_id,
+        )
+        .await
+        .expect("repair summary should load");
+        assert_eq!(
+            summary
+                .conflicted
+                .as_ref()
+                .expect("conflict summary should be present")
+                .files,
+            vec!["base.txt".to_string()]
+        );
+
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app");
+
+        let conflict_diff = get_agent_conversation_workspace_repair_conflict_file_diff(
+            app.state(),
+            conversation_id.as_str(),
+            "base.txt".to_string(),
+        )
+        .await
+        .expect("repair conflict diff command should load");
+
+        assert_eq!(conflict_diff.file_path, "base.txt");
+        assert_eq!(conflict_diff.base_content, "base\n");
+        assert_eq!(conflict_diff.ours_content, "base\nours\n");
+        assert_eq!(conflict_diff.theirs_content, "base\ntheirs\n");
+        assert!(conflict_diff.merged_with_markers.contains("<<<<<<<"));
+
+        invalidate_agent_workspace_diff_caches(&conversation_id);
+    }
+
+    #[tokio::test]
+    async fn repair_commands_return_summary_lists_and_diffs() {
+        let (_tmp, state, conversation_id, worktree_path) =
+            create_staged_unstaged_workspace_state().await;
+        invalidate_agent_workspace_diff_caches(&conversation_id);
+        mark_workspace_needs_agent(&state, &conversation_id).await;
+
+        std::fs::write(worktree_path.join("staged.txt"), "one\ntwo\n").unwrap();
+        run_git(&worktree_path, &["add", "staged.txt"]);
+        std::fs::write(worktree_path.join("base.txt"), "base\nunstaged\n").unwrap();
+
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app");
+
+        let summary = get_agent_conversation_workspace_repair_change_summary(
+            app.state(),
+            conversation_id.as_str(),
+        )
+        .await
+        .expect("repair summary command should load");
+        assert!(summary.supports_worktree_modes);
+        assert_eq!(summary.staged.file_count, 1);
+        assert_eq!(summary.unstaged.file_count, 1);
+
+        let staged = get_agent_conversation_workspace_repair_staged_file_changes(
+            app.state(),
+            conversation_id.as_str(),
+        )
+        .await
+        .expect("repair staged changes command should load");
+        assert!(staged.iter().any(|file| file.path == "staged.txt"));
+
+        let unstaged = get_agent_conversation_workspace_repair_unstaged_file_changes(
+            app.state(),
+            conversation_id.as_str(),
+        )
+        .await
+        .expect("repair unstaged changes command should load");
+        assert!(unstaged.iter().any(|file| file.path == "base.txt"));
+
+        let staged_diff = get_agent_conversation_workspace_repair_staged_file_diff(
+            app.state(),
+            conversation_id.as_str(),
+            "staged.txt".to_string(),
+        )
+        .await
+        .expect("repair staged diff command should load");
+        assert!(staged_diff
+            .hunks
+            .iter()
+            .flat_map(|hunk| hunk.lines.iter())
+            .any(|line| line.content.contains("two")));
+
+        let unstaged_diff = get_agent_conversation_workspace_repair_unstaged_file_diff(
+            app.state(),
+            conversation_id.as_str(),
+            "base.txt".to_string(),
+        )
+        .await
+        .expect("repair unstaged diff command should load");
+        assert!(unstaged_diff
+            .hunks
+            .iter()
+            .flat_map(|hunk| hunk.lines.iter())
+            .any(|line| line.content.contains("unstaged")));
+
+        invalidate_agent_workspace_diff_caches(&conversation_id);
+    }
+
+    #[tokio::test]
+    async fn repair_change_summary_rejects_detached_rebase_without_needs_agent() {
+        let (_tmp, state, conversation_id, worktree_path) =
+            create_staged_unstaged_workspace_state().await;
+        invalidate_agent_workspace_diff_caches(&conversation_id);
+        run_git(&worktree_path, &["checkout", "--detach"]);
+        create_rebase_marker_for_test(&worktree_path);
+
+        let result = get_agent_conversation_workspace_repair_change_summary_for_state(
+            &state,
+            &conversation_id,
+        )
+        .await;
+
+        assert!(
+            result
+                .expect_err("repair summary should require needs_agent")
+                .to_string()
+                .contains("requires agent conversation workspace"),
+            "repair summary should explain the needs_agent gate"
+        );
+
+        invalidate_agent_workspace_diff_caches(&conversation_id);
+    }
+
+    #[tokio::test]
+    async fn repair_change_summary_rejects_detached_without_transient_repair_state() {
+        let (_tmp, state, conversation_id, worktree_path) =
+            create_staged_unstaged_workspace_state().await;
+        invalidate_agent_workspace_diff_caches(&conversation_id);
+        mark_workspace_needs_agent(&state, &conversation_id).await;
+        run_git(&worktree_path, &["checkout", "--detach"]);
+
+        let result = get_agent_conversation_workspace_repair_change_summary_for_state(
+            &state,
+            &conversation_id,
+        )
+        .await;
+
+        assert!(
+            result
+                .expect_err("detached worktree without repair state should reject")
+                .to_string()
+                .contains("recognized repair state"),
+            "repair summary should reject unrecognized detached state"
+        );
+
+        invalidate_agent_workspace_diff_caches(&conversation_id);
+    }
+
+    #[tokio::test]
+    async fn repair_change_summary_rejects_mismatched_workspace_path() {
+        let (tmp, state, conversation_id, _worktree_path) =
+            create_staged_unstaged_workspace_state().await;
+        invalidate_agent_workspace_diff_caches(&conversation_id);
+        let mut workspace = mark_workspace_needs_agent(&state, &conversation_id).await;
+        workspace.worktree_path = tmp
+            .path()
+            .join("wrong-worktree")
+            .to_string_lossy()
+            .to_string();
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace should be updated with mismatched path");
+
+        let result = get_agent_conversation_workspace_repair_change_summary_for_state(
+            &state,
+            &conversation_id,
+        )
+        .await;
+
+        assert!(
+            result
+                .expect_err("mismatched path should reject")
+                .to_string()
+                .contains("path mismatch"),
+            "repair summary should validate the canonical workspace path"
+        );
+
+        invalidate_agent_workspace_diff_caches(&conversation_id);
     }
 
     #[tokio::test]
@@ -3287,12 +4466,14 @@ new file mode 100644
             create_staged_unstaged_workspace_state().await;
         store_agent_workspace_context(
             &conversation_id,
+            AgentWorkspaceContextMode::Strict,
             &AgentWorkspaceContext {
                 working_path: worktree_path,
                 base_ref: "HEAD".to_string(),
                 diff_target: Some("agent-branch".to_string()),
                 patch_diff: None,
                 supports_worktree_modes: false,
+                repair_state: None,
             },
         );
         let app = mock_builder()

@@ -37,7 +37,10 @@ async fn test_upsert_refreshes_project_ids() {
     let result2 = repo.upsert(reg2).await.unwrap();
 
     // Existing id preserved
-    assert_eq!(result2.id, "wh-1", "Re-registration must return the existing id");
+    assert_eq!(
+        result2.id, "wh-1",
+        "Re-registration must return the existing id"
+    );
     // project_ids updated
     assert_eq!(
         result2.project_ids, "[\"proj-1\",\"proj-2\"]",

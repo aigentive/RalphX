@@ -4,7 +4,10 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from "react";
 
-import type { AgentConversationWorkspace } from "@/api/chat";
+import type {
+  AgentConversationWorkspace,
+  AgentConversationWorkspaceFreshness,
+} from "@/api/chat";
 import { ResizeHandle } from "@/components/ui/ResizeHandle";
 import { cn } from "@/lib/utils";
 import type {
@@ -18,6 +21,7 @@ import type { AgentConversation } from "./agentConversations";
 import { useAfterPaintMounted } from "./agentDeferredFrame";
 import { AgentsTerminalDockHost } from "./AgentsTerminalRegion";
 import type { AgentPublishFocusRequest } from "./agentPublishFocus";
+import type { AgentTaskArtifactFocusRequest } from "./agentTaskArtifactFocus";
 
 export const AGENTS_ARTIFACT_MIN_WIDTH = 600;
 export const AGENTS_CHAT_MIN_WIDTH = 600;
@@ -41,6 +45,7 @@ interface AgentsArtifactPaneRegionProps {
   conversationId: string;
   conversation: AgentConversation;
   workspace: AgentConversationWorkspace | null;
+  activeWorkspaceFreshness: AgentConversationWorkspaceFreshness | undefined;
   projectBaseBranch: string | null;
   focusedIdeationSessionId: string | null;
   hasAutoOpenArtifacts: boolean;
@@ -49,12 +54,17 @@ interface AgentsArtifactPaneRegionProps {
   onResizeStart: (event: ReactMouseEvent) => void;
   onResizeReset: (event: ReactMouseEvent) => void;
   onTabChange: (tab: AgentArtifactTab) => void;
+  onOpenPublish: () => void;
   onTaskModeChange: (mode: AgentTaskArtifactMode) => void;
   onPublishWorkspace: (conversationId: string) => Promise<void>;
   isPublishingWorkspace: boolean;
   publishFocusRequest: AgentPublishFocusRequest | null;
+  taskFocusRequest: AgentTaskArtifactFocusRequest | null;
   onFocusVerificationSession: (parentSessionId: string, childSessionId: string) => void;
+  onFocusWorkspaceReview: (conversationId: string) => void;
+  onTaskArtifactSelectionChange: (taskId: string | null) => void;
   onClose: () => void;
+  terminalArchivedReason: string | null;
   terminalUnavailableReason: string | null;
   setTerminalPanelDockElement: (element: HTMLDivElement | null) => void;
 }
@@ -63,6 +73,7 @@ export function AgentsArtifactPaneRegion({
   conversationId,
   conversation,
   workspace,
+  activeWorkspaceFreshness,
   projectBaseBranch,
   focusedIdeationSessionId,
   hasAutoOpenArtifacts,
@@ -71,12 +82,17 @@ export function AgentsArtifactPaneRegion({
   onResizeStart,
   onResizeReset,
   onTabChange,
+  onOpenPublish,
   onTaskModeChange,
   onPublishWorkspace,
   isPublishingWorkspace,
   publishFocusRequest,
+  taskFocusRequest,
   onFocusVerificationSession,
+  onFocusWorkspaceReview,
+  onTaskArtifactSelectionChange,
   onClose,
+  terminalArchivedReason,
   terminalUnavailableReason,
   setTerminalPanelDockElement,
 }: AgentsArtifactPaneRegionProps) {
@@ -125,16 +141,21 @@ export function AgentsArtifactPaneRegion({
                   <LazyAgentsArtifactPane
                     conversation={conversation}
                     workspace={workspace}
+                    activeWorkspaceFreshness={activeWorkspaceFreshness}
                     projectBaseBranch={projectBaseBranch}
                     focusedIdeationSessionId={focusedIdeationSessionId}
                     activeTab={artifactState.activeTab}
                     taskMode={artifactState.taskMode}
                     onTabChange={onTabChange}
+                    onOpenPublish={onOpenPublish}
                     onTaskModeChange={onTaskModeChange}
                     onPublishWorkspace={onPublishWorkspace}
                     isPublishingWorkspace={isPublishingWorkspace}
                     publishFocusRequest={publishFocusRequest}
+                    taskFocusRequest={taskFocusRequest}
                     onFocusVerificationSession={onFocusVerificationSession}
+                    onFocusWorkspaceReview={onFocusWorkspaceReview}
+                    onTaskArtifactSelectionChange={onTaskArtifactSelectionChange}
                     onClose={onClose}
                   />
                 </Suspense>
@@ -147,6 +168,7 @@ export function AgentsArtifactPaneRegion({
             dock="panel"
             conversationId={conversationId}
             workspace={workspace}
+            terminalArchivedReason={terminalArchivedReason}
             terminalUnavailableReason={terminalUnavailableReason}
             hasAutoOpenArtifacts={hasAutoOpenArtifacts}
             setDockElement={setTerminalPanelDockElement}

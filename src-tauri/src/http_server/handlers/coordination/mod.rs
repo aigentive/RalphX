@@ -26,7 +26,8 @@ use crate::http_server::types::{
     DelegatedSessionSummary, HttpServerState,
 };
 use crate::infrastructure::agents::harness_agent_catalog::{
-    load_canonical_agent_definition, resolve_project_root_from_plugin_dir,
+    load_canonical_agent_definition, load_canonical_agent_definition_for_profile,
+    resolve_project_root_from_plugin_dir,
 };
 use tracing::warn;
 
@@ -45,6 +46,7 @@ fn json_error(status: StatusCode, error: impl Into<String>) -> JsonError {
 fn resolve_delegation_policy(
     project_root: &std::path::Path,
     caller_agent_name: &str,
+    caller_agent_profile: Option<&str>,
     target_agent_name: &str,
 ) -> Result<
     (
@@ -54,10 +56,21 @@ fn resolve_delegation_policy(
     JsonError,
 > {
     let caller =
-        load_canonical_agent_definition(project_root, caller_agent_name).ok_or_else(|| {
+        load_canonical_agent_definition_for_profile(
+            project_root,
+            caller_agent_name,
+            caller_agent_profile,
+        )
+        .ok_or_else(|| {
             json_error(
                 StatusCode::BAD_REQUEST,
-                format!("Unknown canonical caller agent '{}'", caller_agent_name),
+                format!(
+                    "Unknown canonical caller agent '{}'{}",
+                    caller_agent_name,
+                    caller_agent_profile
+                        .map(|profile| format!(" profile '{profile}'"))
+                        .unwrap_or_default()
+                ),
             )
         })?;
     let target =
@@ -840,7 +853,12 @@ pub(crate) async fn start_delegate_impl(
     let plugin_dir = resolve_harness_plugin_dir(harness, &working_directory);
     let project_root = resolve_project_root_from_plugin_dir(&plugin_dir);
     let (_caller_definition, definition) =
-        resolve_delegation_policy(&project_root, caller_agent_name, &req.agent_name)?;
+        resolve_delegation_policy(
+            &project_root,
+            caller_agent_name,
+            req.caller_agent_profile.as_deref(),
+            &req.agent_name,
+        )?;
     let delegated_session_id =
         resolve_delegated_session_id(state, &req, &parent_session_id, harness).await?;
     let logical_effort = req

@@ -10,7 +10,9 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Runtime, State};
 use tokio::sync::RwLock;
 
-use crate::application::chat_service::{uses_execution_slot, ChatService, SendMessageOptions};
+use crate::application::chat_service::{
+    uses_execution_slot, ChatService, SendCallerContext, SendMessageOptions,
+};
 use crate::application::reconciliation::UserRecoveryAction;
 use crate::application::team_state_tracker::TeamStateTracker;
 use crate::application::{AppState, ReconciliationRunner, TaskTransitionService};
@@ -22,10 +24,9 @@ use crate::domain::entities::{
 use crate::domain::execution::ExecutionSettings;
 use crate::domain::execution::{
     build_execution_status_response, build_running_ideation_session, build_running_process,
-    elapsed_seconds_for_status, ExecutionStatusInput,
+    build_running_workspace_session, elapsed_seconds_for_status, ExecutionStatusInput,
 };
 use crate::domain::execution::{count_execution_status, ScopedExecutionSubject};
-use crate::domain::services::QueueKey;
 use crate::domain::state_machine::services::TaskScheduler;
 use crate::domain::state_machine::transition_handler::get_trigger_origin;
 
@@ -42,6 +43,7 @@ use state::*;
 mod control_helpers;
 
 pub use control_helpers::count_active_ideation_slots;
+pub use control_helpers::count_active_workspace_sessions;
 pub use control_helpers::project_has_execution_capacity_for_state;
 use control_helpers::*;
 
@@ -59,8 +61,9 @@ mod running;
 
 use running::prune_stale_execution_registry_entries;
 pub use running::{
-    context_matches_running_status_for_gc, RunningIdeationSession, RunningProcess,
-    RunningProcessesResponse,
+    context_matches_running_status_for_gc, ExecutionCapacitySummary, ExecutionLaneUsage,
+    RunningIdeationSession, RunningProcess, RunningProcessesResponse, RunningWorkspaceSession,
+    DEFAULT_WORKSPACE_MAX_CONCURRENT,
 };
 
 mod scheduling;
@@ -81,9 +84,9 @@ pub use settings::{
     __cmd__get_active_project, __cmd__get_execution_settings, __cmd__get_global_execution_settings,
     __cmd__set_active_project, __cmd__set_max_concurrent, __cmd__update_execution_settings,
     __cmd__update_global_execution_settings, __tauri_command_name_get_active_project,
-    __tauri_command_name_get_execution_settings, __tauri_command_name_get_global_execution_settings,
-    __tauri_command_name_set_active_project, __tauri_command_name_set_max_concurrent,
-    __tauri_command_name_update_execution_settings,
+    __tauri_command_name_get_execution_settings,
+    __tauri_command_name_get_global_execution_settings, __tauri_command_name_set_active_project,
+    __tauri_command_name_set_max_concurrent, __tauri_command_name_update_execution_settings,
     __tauri_command_name_update_global_execution_settings, get_active_project,
     get_execution_settings, get_global_execution_settings, set_active_project, set_max_concurrent,
     update_execution_settings, update_global_execution_settings,

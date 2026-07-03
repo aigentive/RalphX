@@ -12,9 +12,12 @@ import {
   WORKER,
   GENERAL_EXPLORER,
   GENERAL_WORKER,
+  PR_REVIEWER,
+  AGENT_WORKSPACE_REPAIR,
   CODER,
   SESSION_NAMER,
   PR_DESCRIBER,
+  WORKSPACE_REVIEWER,
   PLAN_COMPLEXITY_ASSESSOR,
   MERGER,
   PROJECT_ANALYZER,
@@ -55,9 +58,12 @@ const CANONICAL_TOOL_ALLOWLIST_AGENTS: string[] = [
   WORKER,
   GENERAL_EXPLORER,
   GENERAL_WORKER,
+  PR_REVIEWER,
+  AGENT_WORKSPACE_REPAIR,
   CODER,
   SESSION_NAMER,
   PR_DESCRIBER,
+  WORKSPACE_REVIEWER,
   PLAN_COMPLEXITY_ASSESSOR,
   MERGER,
   PROJECT_ANALYZER,
@@ -115,6 +121,11 @@ export function getAgentType(): string {
   return currentAgentType || process.env.RALPHX_AGENT_TYPE || "";
 }
 
+export function getAgentProfile(): string | undefined {
+  const profile = process.env.RALPHX_AGENT_PROFILE;
+  return profile && profile.length > 0 ? profile : undefined;
+}
+
 const TOOL_NAME_PATTERN = /^[a-z][a-z0-9_]*$/;
 
 export function parseAllowedToolsFromArgs(knownToolNames: string[]): string[] | undefined {
@@ -145,24 +156,25 @@ export function parseAllowedToolsFromArgs(knownToolNames: string[]): string[] | 
 
 export function getAllowedToolNames(knownToolNames: string[]): string[] {
   const agentType = getAgentType();
+  const agentProfile = getAgentProfile();
 
   const envAllowedTools = process.env.RALPHX_ALLOWED_MCP_TOOLS;
   if (envAllowedTools) {
     const tools = envAllowedTools.split(",").map((t) => t.trim()).filter((t) => t.length > 0);
-    return applyDelegationToolPolicy(tools, agentType);
+    return applyDelegationToolPolicy(tools, agentType, agentProfile);
   }
 
   const cliTools = parseAllowedToolsFromArgs(knownToolNames);
   if (cliTools !== undefined) {
-    return applyDelegationToolPolicy(cliTools, agentType);
+    return applyDelegationToolPolicy(cliTools, agentType, agentProfile);
   }
 
-  const canonicalTools = loadCanonicalMcpTools(agentType);
+  const canonicalTools = loadCanonicalMcpTools(agentType, agentProfile);
   if (canonicalTools !== undefined) {
     console.error(
       `[RalphX MCP] WARN: --allowed-tools not provided, using canonical agent capabilities`
     );
-    return applyDelegationToolPolicy(canonicalTools, agentType);
+    return applyDelegationToolPolicy(canonicalTools, agentType, agentProfile);
   }
 
   const legacyTools = LEGACY_TOOL_ALLOWLIST[agentType];
@@ -170,7 +182,7 @@ export function getAllowedToolNames(knownToolNames: string[]): string[] {
     console.error(
       `[RalphX MCP] WARN: --allowed-tools not provided, using fallback TOOL_ALLOWLIST (legacy only)`
     );
-    return applyDelegationToolPolicy(legacyTools, agentType);
+    return applyDelegationToolPolicy(legacyTools, agentType, agentProfile);
   }
 
   return [];

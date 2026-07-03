@@ -73,8 +73,14 @@ fn test_existing_proposals_have_null_migrated_from_fields() {
         )
         .unwrap();
 
-    assert!(session_val.is_none(), "existing proposals should have NULL migrated_from_session_id");
-    assert!(proposal_val.is_none(), "existing proposals should have NULL migrated_from_proposal_id");
+    assert!(
+        session_val.is_none(),
+        "existing proposals should have NULL migrated_from_session_id"
+    );
+    assert!(
+        proposal_val.is_none(),
+        "existing proposals should have NULL migrated_from_proposal_id"
+    );
 }
 
 #[test]
@@ -108,6 +114,14 @@ fn test_migration_idempotent() {
     v73_proposal_migrated_from::migrate(&conn).unwrap();
     v73_proposal_migrated_from::migrate(&conn).unwrap();
 
-    assert!(helpers::column_exists(&conn, "task_proposals", "migrated_from_session_id"));
-    assert!(helpers::column_exists(&conn, "task_proposals", "migrated_from_proposal_id"));
+    assert!(helpers::column_exists(
+        &conn,
+        "task_proposals",
+        "migrated_from_session_id"
+    ));
+    assert!(helpers::column_exists(
+        &conn,
+        "task_proposals",
+        "migrated_from_proposal_id"
+    ));
 }

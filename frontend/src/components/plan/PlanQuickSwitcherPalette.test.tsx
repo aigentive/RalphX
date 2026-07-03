@@ -136,15 +136,16 @@ const mockCandidates: PlanCandidate[] = [
 ];
 
 const createMockQuickAction = (): QuickAction => ({
-  id: "ideation",
-  label: "Start new ideation session",
+  id: "agent-conversation",
+  label: "Start new agent conversation",
   icon: Lightbulb,
   description: (query: string) => `"${query}"`,
   isVisible: (query: string) => query.trim().length > 0,
   execute: vi.fn().mockResolvedValue("session-new"),
-  creatingLabel: "Creating your ideation session...",
-  successLabel: "Session created!",
-  viewLabel: "View Session",
+  requiresConfirmation: false,
+  creatingLabel: "Opening agent composer...",
+  successLabel: "Agent composer ready",
+  viewLabel: "View Composer",
   navigateTo: vi.fn(),
 });
 
@@ -164,6 +165,7 @@ const createMockQuickActionFlow = (overrides?: Partial<UseQuickActionFlowReturn>
 describe("PlanQuickSwitcherPalette", () => {
   const mockHandleSelect = vi.fn();
   const mockHandleClear = vi.fn();
+  const mockHandleQuickActionSelect = vi.fn();
   const mockHandleRetry = vi.fn();
   const mockHandleKeyDown = vi.fn();
   const mockSetSearchQuery = vi.fn();
@@ -204,6 +206,7 @@ describe("PlanQuickSwitcherPalette", () => {
     handleKeyDown: mockHandleKeyDown,
     handleSelect: mockHandleSelect,
     handleClear: mockHandleClear,
+    handleQuickActionSelect: mockHandleQuickActionSelect,
     handleRetry: mockHandleRetry,
     ...overrides,
   });
@@ -508,7 +511,22 @@ describe("PlanQuickSwitcherPalette", () => {
       render(<PlanQuickSwitcherPalette {...defaultProps} />);
 
       expect(screen.getByTestId("quick-action-idle")).toBeInTheDocument();
-      expect(screen.getByText("Start new ideation session")).toBeInTheDocument();
+      expect(screen.getByText("Start new agent conversation")).toBeInTheDocument();
+    });
+
+    it("runs the quick action selection handler when the idle row is clicked", () => {
+      (usePlanQuickSwitcher as unknown as ReturnType<typeof vi.fn>).mockReturnValue(
+        createMockHookReturn({
+          showQuickAction: true,
+          searchQuery: "new feature",
+        })
+      );
+
+      render(<PlanQuickSwitcherPalette {...defaultProps} />);
+
+      fireEvent.click(screen.getByTestId("quick-action-idle"));
+
+      expect(mockHandleQuickActionSelect).toHaveBeenCalled();
     });
 
     it("transitions to confirming state when quick action is selected", () => {
@@ -547,7 +565,7 @@ describe("PlanQuickSwitcherPalette", () => {
       render(<PlanQuickSwitcherPalette {...defaultProps} />);
 
       expect(screen.getByTestId("quick-action-creating")).toBeInTheDocument();
-      expect(screen.getByText("Creating your ideation session...")).toBeInTheDocument();
+      expect(screen.getByText("Opening agent composer...")).toBeInTheDocument();
     });
 
     it("shows success state with view button after completion", () => {
@@ -567,7 +585,7 @@ describe("PlanQuickSwitcherPalette", () => {
       render(<PlanQuickSwitcherPalette {...defaultProps} />);
 
       expect(screen.getByTestId("quick-action-success")).toBeInTheDocument();
-      expect(screen.getByText("Session created!")).toBeInTheDocument();
+      expect(screen.getByText("Agent composer ready")).toBeInTheDocument();
       expect(screen.getByTestId("quick-action-view")).toBeInTheDocument();
     });
 

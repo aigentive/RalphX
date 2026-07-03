@@ -53,6 +53,7 @@ export type ConversationProviderMetadata = {
   claudeSessionId?: string | null | undefined;
   providerSessionId?: string | null | undefined;
   providerHarness?: ProviderHarness | null | undefined;
+  serviceTier?: string | null | undefined;
 };
 
 export const AGENT_CONVERSATION_MODE_VALUES = [
@@ -60,6 +61,7 @@ export const AGENT_CONVERSATION_MODE_VALUES = [
   "edit",
   "plan",
   "ideation",
+  "review_pr",
 ] as const;
 export const AgentConversationModeSchema = z.enum(
   AGENT_CONVERSATION_MODE_VALUES
@@ -86,6 +88,7 @@ export const ChatConversationSchema = z.object({
   effectiveModelId: z.string().nullable().optional(),
   logicalEffort: z.string().nullable().optional(),
   effectiveEffort: z.string().nullable().optional(),
+  serviceTier: z.string().nullable().optional(),
   agentMode: AgentConversationModeSchema.nullable().optional(),
   parentConversationId: z.string().nullable().optional(),
   title: z.string().nullable(),
@@ -154,6 +157,9 @@ export function mergeConversationProviderMetadata(
       providerSessionId,
       providerHarness,
     }),
+    ...(metadata.serviceTier !== undefined
+      ? { serviceTier: metadata.serviceTier }
+      : {}),
   };
 }
 

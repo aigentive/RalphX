@@ -35,7 +35,7 @@ export const AGENT_WORKSPACE_TOOLS = [
     {
         name: "update_agent_workspace_from_base",
         description: "Update the current agent workspace branch from its configured base through RalphX. " +
-            "If conflicts require repair, RalphX will route the workspace to the repair agent and will not publish automatically.",
+            "If conflicts require repair, RalphX will route the workspace to the repair agent and continue the original publish flow after repair when Auto Publish is enabled.",
         inputSchema: {
             type: "object",
             properties: {
@@ -87,6 +87,303 @@ export const AGENT_WORKSPACE_TOOLS = [
                 },
             },
             required: ["conversation_id"],
+        },
+    },
+    {
+        name: "get_pr_review_context",
+        description: "Read the current Review PR workspace context, including linked PR metadata, current head SHA, prior review monitor state, pending review action, and PR health/comment evidence. " +
+            "Call this first when running in Review PR mode.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                conversation_id: {
+                    type: "string",
+                    description: "Optional agent workspace conversation ID. Omit when calling from the current Review PR workspace conversation.",
+                },
+            },
+        },
+    },
+    {
+        name: "get_workspace_review_context",
+        description: "Read the current general workspace Review context, including the selected review target, compact review packet, diff fingerprint, prior Review artifact version, and freshness state. " +
+            "Call this first when running as the workspace Review artifact writer.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                conversation_id: {
+                    type: "string",
+                    description: "Optional agent workspace conversation ID. Omit when calling from the current workspace Review conversation.",
+                },
+            },
+        },
+    },
+    {
+        name: "write_workspace_review_artifact",
+        description: "Create a new version of the durable Markdown Review artifact for the current agent workspace review target. " +
+            "Call this after reviewing the selected_source or workspace_delta review packet and any targeted read-only follow-up.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                conversation_id: {
+                    type: "string",
+                    description: "Optional agent workspace conversation ID. Omit when calling from the current workspace Review conversation.",
+                },
+                title: {
+                    type: "string",
+                    description: "Optional review artifact title. Usually omit it; RalphX defaults to a target-specific title such as PR #123, the source branch name, or Workspace changes. Do not duplicate the title as a Markdown H1 in content.",
+                },
+                content: {
+                    type: "string",
+                    description: "Full Markdown content for the durable Review tab artifact.",
+                },
+                target_scope: {
+                    type: "string",
+                    enum: ["selected_source", "workspace_delta"],
+                    description: "Review target scope from get_workspace_review_context.",
+                },
+                head_sha: {
+                    type: "string",
+                    description: "Target head SHA from get_workspace_review_context.",
+                },
+                diff_fingerprint: {
+                    type: "string",
+                    description: "Target diff fingerprint from get_workspace_review_context.",
+                },
+                created_by_run_id: {
+                    type: "string",
+                    description: "monitor.last_run_id from get_workspace_review_context.",
+                },
+            },
+            required: ["content", "target_scope", "head_sha", "diff_fingerprint", "created_by_run_id"],
+        },
+    },
+    {
+        name: "write_workspace_review_hunk_annotations",
+        description: "Write structured hunk-level descriptions for the current workspace Review artifact. " +
+            "Call this after write_workspace_review_artifact and before complete_workspace_review_run. The backend accepts valid hunks and reports rejected or missing hunks independently.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                conversation_id: {
+                    type: "string",
+                    description: "Optional agent workspace conversation ID. Omit when calling from the current workspace Review conversation.",
+                },
+                target_scope: {
+                    type: "string",
+                    enum: ["selected_source", "workspace_delta"],
+                    description: "Review target scope from get_workspace_review_context.",
+                },
+                head_sha: {
+                    type: "string",
+                    description: "Target head SHA from get_workspace_review_context.",
+                },
+                diff_fingerprint: {
+                    type: "string",
+                    description: "Target diff fingerprint from get_workspace_review_context.",
+                },
+                created_by_run_id: {
+                    type: "string",
+                    description: "monitor.last_run_id from get_workspace_review_context.",
+                },
+                annotations: {
+                    type: "array",
+                    description: "Structured hunk-level review notes. Use one item per hunk anchor returned in target.review_packet.hunk_anchors.",
+                    items: {
+                        type: "object",
+                        properties: {
+                            path: {
+                                type: "string",
+                                description: "Reviewed file path from the hunk anchor.",
+                            },
+                            source: {
+                                type: "string",
+                                description: "Diff source from the hunk anchor, such as selected_source, committed, staged, or unstaged.",
+                            },
+                            hunk_header: {
+                                type: "string",
+                                description: "Exact @@ hunk header from the hunk anchor.",
+                            },
+                            old_start: {
+                                type: "number",
+                                description: "Old-file start line from the hunk anchor.",
+                            },
+                            old_lines: {
+                                type: "number",
+                                description: "Old-file line count from the hunk anchor.",
+                            },
+                            new_start: {
+                                type: "number",
+                                description: "New-file start line from the hunk anchor.",
+                            },
+                            new_lines: {
+                                type: "number",
+                                description: "New-file line count from the hunk anchor.",
+                            },
+                            title: {
+                                type: "string",
+                                description: "Optional short label for the hunk note.",
+                            },
+                            message: {
+                                type: "string",
+                                description: "Concise explanation of what changed in this hunk and why it matters.",
+                            },
+                            level: {
+                                type: "string",
+                                enum: ["info", "notice", "warning"],
+                                description: "Informational severity for the hunk note. Use warning only for noteworthy risk.",
+                            },
+                        },
+                        required: [
+                            "path",
+                            "source",
+                            "hunk_header",
+                            "old_start",
+                            "old_lines",
+                            "new_start",
+                            "new_lines",
+                            "message",
+                        ],
+                    },
+                },
+            },
+            required: ["target_scope", "head_sha", "diff_fingerprint", "created_by_run_id", "annotations"],
+        },
+    },
+    {
+        name: "complete_workspace_review_run",
+        description: "Record that a general workspace Review run completed or is blocked. " +
+            "Call this after writing the Review artifact and hunk annotations, or with blocker when the review could not be completed.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                conversation_id: {
+                    type: "string",
+                    description: "Optional agent workspace conversation ID. Omit when calling from the current workspace Review conversation.",
+                },
+                outcome: {
+                    type: "string",
+                    description: "Optional normalized outcome: passed, blocking, no_changes, or run_failed.",
+                },
+                summary: {
+                    type: "string",
+                    description: "Brief summary of the review run outcome.",
+                },
+                blocker: {
+                    type: "string",
+                    description: "Optional blocker when review could not be completed safely.",
+                },
+                created_by_run_id: {
+                    type: "string",
+                    description: "monitor.last_run_id from get_workspace_review_context.",
+                },
+            },
+            required: ["summary", "created_by_run_id"],
+        },
+    },
+    {
+        name: "propose_pr_review_action",
+        description: "Create or update a pending user-approved PR review action for the current PR head. " +
+            "Use this after local review when the recommendation is Request Changes, Approve PR, or Comment.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                conversation_id: {
+                    type: "string",
+                    description: "Optional agent workspace conversation ID. Omit when calling from the current Review PR workspace conversation.",
+                },
+                head_sha: {
+                    type: "string",
+                    description: "Current PR head SHA being reviewed.",
+                },
+                proposed_action: {
+                    type: "string",
+                    enum: ["request_changes", "approve", "comment"],
+                    description: "Recommended GitHub review action for the current PR head.",
+                },
+                summary: {
+                    type: "string",
+                    description: "Short user-facing summary for the approval card.",
+                },
+                review_body: {
+                    type: "string",
+                    description: "Full Markdown review body to submit if the user approves.",
+                },
+                findings_json: {
+                    type: "string",
+                    description: "Optional compact JSON string containing structured review findings.",
+                },
+                created_by_run_id: {
+                    type: "string",
+                    description: "Optional RalphX run id that produced this recommendation.",
+                },
+            },
+            required: ["head_sha", "proposed_action", "summary", "review_body"],
+        },
+    },
+    {
+        name: "write_pr_review_artifact",
+        description: "Create or update the versioned Markdown Review artifact for the current Review PR workspace. " +
+            "Call this after completing the local code review and before proposing a GitHub review action.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                conversation_id: {
+                    type: "string",
+                    description: "Optional agent workspace conversation ID. Omit when calling from the current Review PR workspace conversation.",
+                },
+                title: {
+                    type: "string",
+                    description: "Optional review artifact title. Defaults to PR #<number> Review and preserves the previous title on updates.",
+                },
+                content: {
+                    type: "string",
+                    description: "Full Markdown content for the durable Review tab artifact.",
+                },
+                head_sha: {
+                    type: "string",
+                    description: "Optional PR head SHA covered by this review artifact.",
+                },
+                created_by_run_id: {
+                    type: "string",
+                    description: "Optional RalphX run id that produced this review artifact.",
+                },
+            },
+            required: ["content"],
+        },
+    },
+    {
+        name: "complete_pr_review_run",
+        description: "Record that a Review PR run completed without proposing a GitHub review action, or that it is blocked. " +
+            "Use this for Comment/No Action or Blocked outcomes when no pending approval card should be created.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                conversation_id: {
+                    type: "string",
+                    description: "Optional agent workspace conversation ID. Omit when calling from the current Review PR workspace conversation.",
+                },
+                head_sha: {
+                    type: "string",
+                    description: "Optional PR head SHA reviewed by this run.",
+                },
+                outcome: {
+                    type: "string",
+                    description: "Optional normalized outcome such as no_action, comment, or blocked.",
+                },
+                summary: {
+                    type: "string",
+                    description: "Brief summary of the review run outcome.",
+                },
+                blocker: {
+                    type: "string",
+                    description: "Optional blocker when review could not be completed safely.",
+                },
+                created_by_run_id: {
+                    type: "string",
+                    description: "Optional RalphX run id that produced this outcome.",
+                },
+            },
+            required: ["summary"],
         },
     },
     {
@@ -208,6 +505,22 @@ export async function callAgentWorkspaceTool(name, callTauri, callTauriGet, args
             return callPublishAgentWorkspaceTool(callTauri, args, runtimeContext);
         case "get_agent_workspace_pr_fix_context":
             return callGetAgentWorkspacePrFixContextTool(callTauriGet, args);
+        case "get_pr_review_context":
+            return callGetPrReviewContextTool(callTauriGet, args, runtimeContext);
+        case "get_workspace_review_context":
+            return callGetWorkspaceReviewContextTool(callTauriGet, args, runtimeContext);
+        case "write_workspace_review_artifact":
+            return callWriteWorkspaceReviewArtifactTool(callTauri, args, runtimeContext);
+        case "write_workspace_review_hunk_annotations":
+            return callWriteWorkspaceReviewHunkAnnotationsTool(callTauri, args, runtimeContext);
+        case "complete_workspace_review_run":
+            return callCompleteWorkspaceReviewRunTool(callTauri, args, runtimeContext);
+        case "propose_pr_review_action":
+            return callProposePrReviewActionTool(callTauri, args, runtimeContext);
+        case "write_pr_review_artifact":
+            return callWritePrReviewArtifactTool(callTauri, args, runtimeContext);
+        case "complete_pr_review_run":
+            return callCompletePrReviewRunTool(callTauri, args, runtimeContext);
         case "read_agent_workspace_pr_comment":
             return callReadAgentWorkspacePrCommentTool(callTauriGet, args);
         case "complete_agent_workspace_pr_fix":
@@ -260,6 +573,80 @@ export async function callPublishAgentWorkspaceTool(callTauri, args, runtimeCont
 export async function callGetAgentWorkspacePrFixContextTool(callTauriGet, args) {
     const { conversation_id } = args;
     return callTauriGet(`agent-workspaces/${conversation_id}/pr-fix-context`);
+}
+export async function callGetPrReviewContextTool(callTauriGet, args, runtimeContext) {
+    const conversation_id = resolveAgentWorkspaceConversationId("get_pr_review_context", args, runtimeContext);
+    return callTauriGet(`agent-workspaces/${conversation_id}/pr-review-context`);
+}
+export async function callGetWorkspaceReviewContextTool(callTauriGet, args, runtimeContext) {
+    const conversation_id = resolveAgentWorkspaceConversationId("get_workspace_review_context", args, runtimeContext);
+    return callTauriGet(`agent-workspaces/${conversation_id}/workspace-review-context?include_review_packet=true`);
+}
+export async function callWriteWorkspaceReviewArtifactTool(callTauri, args, runtimeContext) {
+    const conversation_id = resolveAgentWorkspaceConversationId("write_workspace_review_artifact", args, runtimeContext);
+    const artifactArgs = (args && typeof args === "object" ? args : {});
+    return callTauri(`agent-workspaces/${conversation_id}/workspace-review-artifact`, {
+        title: artifactArgs.title,
+        content: artifactArgs.content,
+        target_scope: artifactArgs.target_scope,
+        head_sha: artifactArgs.head_sha,
+        diff_fingerprint: artifactArgs.diff_fingerprint,
+        created_by_run_id: artifactArgs.created_by_run_id,
+    });
+}
+export async function callWriteWorkspaceReviewHunkAnnotationsTool(callTauri, args, runtimeContext) {
+    const conversation_id = resolveAgentWorkspaceConversationId("write_workspace_review_hunk_annotations", args, runtimeContext);
+    const annotationArgs = (args && typeof args === "object" ? args : {});
+    return callTauri(`agent-workspaces/${conversation_id}/workspace-review-hunk-annotations`, {
+        target_scope: annotationArgs.target_scope,
+        head_sha: annotationArgs.head_sha,
+        diff_fingerprint: annotationArgs.diff_fingerprint,
+        created_by_run_id: annotationArgs.created_by_run_id,
+        annotations: annotationArgs.annotations,
+    });
+}
+export async function callCompleteWorkspaceReviewRunTool(callTauri, args, runtimeContext) {
+    const conversation_id = resolveAgentWorkspaceConversationId("complete_workspace_review_run", args, runtimeContext);
+    const runArgs = (args && typeof args === "object" ? args : {});
+    return callTauri(`agent-workspaces/${conversation_id}/complete-workspace-review-run`, {
+        outcome: runArgs.outcome,
+        summary: runArgs.summary,
+        blocker: runArgs.blocker,
+        created_by_run_id: runArgs.created_by_run_id,
+    });
+}
+export async function callProposePrReviewActionTool(callTauri, args, runtimeContext) {
+    const conversation_id = resolveAgentWorkspaceConversationId("propose_pr_review_action", args, runtimeContext);
+    const actionArgs = (args && typeof args === "object" ? args : {});
+    return callTauri(`agent-workspaces/${conversation_id}/pr-review-actions`, {
+        head_sha: actionArgs.head_sha,
+        proposed_action: actionArgs.proposed_action,
+        summary: actionArgs.summary,
+        review_body: actionArgs.review_body,
+        findings_json: actionArgs.findings_json,
+        created_by_run_id: actionArgs.created_by_run_id,
+    });
+}
+export async function callWritePrReviewArtifactTool(callTauri, args, runtimeContext) {
+    const conversation_id = resolveAgentWorkspaceConversationId("write_pr_review_artifact", args, runtimeContext);
+    const artifactArgs = (args && typeof args === "object" ? args : {});
+    return callTauri(`agent-workspaces/${conversation_id}/pr-review-artifact`, {
+        title: artifactArgs.title,
+        content: artifactArgs.content,
+        head_sha: artifactArgs.head_sha,
+        created_by_run_id: artifactArgs.created_by_run_id,
+    });
+}
+export async function callCompletePrReviewRunTool(callTauri, args, runtimeContext) {
+    const conversation_id = resolveAgentWorkspaceConversationId("complete_pr_review_run", args, runtimeContext);
+    const runArgs = (args && typeof args === "object" ? args : {});
+    return callTauri(`agent-workspaces/${conversation_id}/complete-pr-review-run`, {
+        head_sha: runArgs.head_sha,
+        outcome: runArgs.outcome,
+        summary: runArgs.summary,
+        blocker: runArgs.blocker,
+        created_by_run_id: runArgs.created_by_run_id,
+    });
 }
 export async function callReadAgentWorkspacePrCommentTool(callTauriGet, args) {
     const { conversation_id, comment_id } = args;

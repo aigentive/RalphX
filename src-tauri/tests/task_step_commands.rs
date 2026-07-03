@@ -1,10 +1,23 @@
 use ralphx_lib::application::AppState;
+use ralphx_lib::commands::task_step_commands::{
+    complete_step, create_task_step, delete_task_step, fail_step, get_step_progress,
+    get_task_steps, reorder_task_steps, skip_step, start_step, update_task_step,
+    CreateTaskStepInput, UpdateTaskStepInput,
+};
 use ralphx_lib::domain::entities::{
     Project, ProjectId, StepProgressSummary, TaskId, TaskStep, TaskStepStatus,
 };
+use tauri::Manager;
 
 fn setup_test_state() -> AppState {
     AppState::new_test()
+}
+
+fn task_step_command_app() -> tauri::App<tauri::test::MockRuntime> {
+    tauri::test::mock_builder()
+        .manage(AppState::new_test())
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app should build")
 }
 
 async fn create_test_project(state: &AppState) -> Project {
@@ -42,6 +55,32 @@ async fn test_create_task_step() {
 }
 
 #[tokio::test]
+async fn create_task_step_command_uses_defaults_and_optional_fields() {
+    let app = task_step_command_app();
+    let project = create_test_project(app.state::<AppState>().inner()).await;
+    let task_id = create_test_task(app.state::<AppState>().inner(), project.id).await;
+
+    let response = create_task_step(
+        task_id.as_str().to_string(),
+        CreateTaskStepInput {
+            title: "Command Step".to_string(),
+            description: Some("Created by command".to_string()),
+            sort_order: None,
+        },
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("step creates");
+
+    assert_eq!(response.task_id, task_id.as_str());
+    assert_eq!(response.title, "Command Step");
+    assert_eq!(response.description.as_deref(), Some("Created by command"));
+    assert_eq!(response.status, "pending");
+    assert_eq!(response.sort_order, 0);
+    assert_eq!(response.created_by, "user");
+}
+
+#[tokio::test]
 async fn test_get_task_steps() {
     let state = setup_test_state();
     let project = create_test_project(&state).await;
@@ -59,6 +98,44 @@ async fn test_get_task_steps() {
     assert_eq!(steps.len(), 2);
     assert_eq!(steps[0].title, "Step 1");
     assert_eq!(steps[1].title, "Step 2");
+}
+
+#[tokio::test]
+async fn get_task_steps_command_returns_ordered_responses() {
+    let app = task_step_command_app();
+    let project = create_test_project(app.state::<AppState>().inner()).await;
+    let task_id = create_test_task(app.state::<AppState>().inner(), project.id).await;
+
+    create_task_step(
+        task_id.as_str().to_string(),
+        CreateTaskStepInput {
+            title: "First".to_string(),
+            description: None,
+            sort_order: Some(0),
+        },
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("first step creates");
+    create_task_step(
+        task_id.as_str().to_string(),
+        CreateTaskStepInput {
+            title: "Second".to_string(),
+            description: None,
+            sort_order: Some(1),
+        },
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("second step creates");
+
+    let response = get_task_steps(task_id.as_str().to_string(), app.state::<AppState>())
+        .await
+        .expect("steps list");
+
+    assert_eq!(response.len(), 2);
+    assert_eq!(response[0].title, "First");
+    assert_eq!(response[1].title, "Second");
 }
 
 #[tokio::test]
@@ -91,6 +168,55 @@ async fn test_update_task_step() {
     assert_eq!(found.title, "Updated Title");
     assert_eq!(found.description, Some("Updated Description".to_string()));
     assert_eq!(found.sort_order, 0); // Unchanged
+}
+
+#[tokio::test]
+async fn update_task_step_command_applies_partial_fields_and_rejects_missing_step() {
+    let app = task_step_command_app();
+    let project = create_test_project(app.state::<AppState>().inner()).await;
+    let task_id = create_test_task(app.state::<AppState>().inner(), project.id).await;
+
+    let missing_error = update_task_step(
+        "missing-step".to_string(),
+        UpdateTaskStepInput {
+            title: Some("Nope".to_string()),
+            description: None,
+            sort_order: None,
+        },
+        app.state::<AppState>(),
+    )
+    .await
+    .expect_err("missing step should error");
+    assert!(missing_error.to_string().contains("Step missing-step not found"));
+
+    let created = create_task_step(
+        task_id.as_str().to_string(),
+        CreateTaskStepInput {
+            title: "Original".to_string(),
+            description: None,
+            sort_order: Some(0),
+        },
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("step creates");
+
+    let response = update_task_step(
+        created.id.clone(),
+        UpdateTaskStepInput {
+            title: Some("Updated".to_string()),
+            description: Some("Updated description".to_string()),
+            sort_order: Some(7),
+        },
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("step updates");
+
+    assert_eq!(response.title, "Updated");
+    assert_eq!(response.description.as_deref(), Some("Updated description"));
+    assert_eq!(response.sort_order, 7);
+    assert_eq!(response.status, "pending");
 }
 
 #[tokio::test]
@@ -153,6 +279,63 @@ async fn test_reorder_task_steps() {
 }
 
 #[tokio::test]
+async fn reorder_task_steps_command_reorders_and_returns_updated_steps() {
+    let app = task_step_command_app();
+    let project = create_test_project(app.state::<AppState>().inner()).await;
+    let task_id = create_test_task(app.state::<AppState>().inner(), project.id).await;
+
+    let first = create_task_step(
+        task_id.as_str().to_string(),
+        CreateTaskStepInput {
+            title: "First".to_string(),
+            description: None,
+            sort_order: Some(0),
+        },
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("first creates");
+    let second = create_task_step(
+        task_id.as_str().to_string(),
+        CreateTaskStepInput {
+            title: "Second".to_string(),
+            description: None,
+            sort_order: Some(1),
+        },
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("second creates");
+    let third = create_task_step(
+        task_id.as_str().to_string(),
+        CreateTaskStepInput {
+            title: "Third".to_string(),
+            description: None,
+            sort_order: Some(2),
+        },
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("third creates");
+
+    let reordered = reorder_task_steps(
+        task_id.as_str().to_string(),
+        vec![third.id.clone(), first.id.clone(), second.id.clone()],
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("steps reorder");
+
+    assert_eq!(reordered.len(), 3);
+    assert_eq!(reordered[0].title, "Third");
+    assert_eq!(reordered[0].sort_order, 0);
+    assert_eq!(reordered[1].title, "First");
+    assert_eq!(reordered[1].sort_order, 1);
+    assert_eq!(reordered[2].title, "Second");
+    assert_eq!(reordered[2].sort_order, 2);
+}
+
+#[tokio::test]
 async fn test_get_step_progress() {
     let state = setup_test_state();
     let project = create_test_project(&state).await;
@@ -201,6 +384,50 @@ async fn test_get_step_progress() {
 }
 
 #[tokio::test]
+async fn get_step_progress_command_summarizes_current_and_next_steps() {
+    let app = task_step_command_app();
+    let project = create_test_project(app.state::<AppState>().inner()).await;
+    let task_id = create_test_task(app.state::<AppState>().inner(), project.id).await;
+
+    let current = create_task_step(
+        task_id.as_str().to_string(),
+        CreateTaskStepInput {
+            title: "Current".to_string(),
+            description: None,
+            sort_order: Some(0),
+        },
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("current creates");
+    let next = create_task_step(
+        task_id.as_str().to_string(),
+        CreateTaskStepInput {
+            title: "Next".to_string(),
+            description: None,
+            sort_order: Some(1),
+        },
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("next creates");
+
+    start_step(current.id.clone(), app.state::<AppState>())
+        .await
+        .expect("current starts");
+
+    let progress = get_step_progress(task_id.as_str().to_string(), app.state::<AppState>())
+        .await
+        .expect("progress loads");
+
+    assert_eq!(progress.total, 2);
+    assert_eq!(progress.in_progress, 1);
+    assert_eq!(progress.pending, 1);
+    assert_eq!(progress.current_step.expect("current step").id.as_str(), current.id);
+    assert_eq!(progress.next_step.expect("next step").id.as_str(), next.id);
+}
+
+#[tokio::test]
 async fn test_start_step_valid() {
     let state = setup_test_state();
     let project = create_test_project(&state).await;
@@ -239,6 +466,43 @@ async fn test_start_step_valid() {
         .unwrap();
     assert_eq!(found.status, TaskStepStatus::InProgress);
     assert!(found.started_at.is_some());
+}
+
+#[tokio::test]
+async fn start_step_command_sets_in_progress_and_rejects_invalid_status() {
+    let app = task_step_command_app();
+    let project = create_test_project(app.state::<AppState>().inner()).await;
+    let task_id = create_test_task(app.state::<AppState>().inner(), project.id).await;
+
+    let missing_error = start_step("missing-step".to_string(), app.state::<AppState>())
+        .await
+        .expect_err("missing step should error");
+    assert!(missing_error.to_string().contains("Step missing-step not found"));
+
+    let step = create_task_step(
+        task_id.as_str().to_string(),
+        CreateTaskStepInput {
+            title: "Start me".to_string(),
+            description: None,
+            sort_order: None,
+        },
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("step creates");
+
+    let started = start_step(step.id.clone(), app.state::<AppState>())
+        .await
+        .expect("step starts");
+    assert_eq!(started.status, "in_progress");
+    assert!(started.started_at.is_some());
+
+    let second_start = start_step(step.id, app.state::<AppState>())
+        .await
+        .expect_err("in-progress step cannot start again");
+    assert!(second_start
+        .to_string()
+        .contains("Step must be Pending to start"));
 }
 
 #[tokio::test]
@@ -322,6 +586,51 @@ async fn test_complete_step_valid() {
 }
 
 #[tokio::test]
+async fn complete_step_command_requires_in_progress_and_records_note() {
+    let app = task_step_command_app();
+    let project = create_test_project(app.state::<AppState>().inner()).await;
+    let task_id = create_test_task(app.state::<AppState>().inner(), project.id).await;
+
+    let step = create_task_step(
+        task_id.as_str().to_string(),
+        CreateTaskStepInput {
+            title: "Complete me".to_string(),
+            description: None,
+            sort_order: None,
+        },
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("step creates");
+
+    let premature = complete_step(
+        step.id.clone(),
+        Some("too soon".to_string()),
+        app.state::<AppState>(),
+    )
+    .await
+    .expect_err("pending step cannot complete");
+    assert!(premature
+        .to_string()
+        .contains("Step must be InProgress to complete"));
+
+    start_step(step.id.clone(), app.state::<AppState>())
+        .await
+        .expect("step starts");
+    let completed = complete_step(
+        step.id.clone(),
+        Some("Finished cleanly".to_string()),
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("step completes");
+
+    assert_eq!(completed.status, "completed");
+    assert_eq!(completed.completion_note.as_deref(), Some("Finished cleanly"));
+    assert!(completed.completed_at.is_some());
+}
+
+#[tokio::test]
 async fn test_complete_step_invalid_status() {
     let state = setup_test_state();
     let project = create_test_project(&state).await;
@@ -391,6 +700,46 @@ async fn test_skip_step_from_pending() {
     assert_eq!(skipped.status, TaskStepStatus::Skipped);
     assert!(skipped.completed_at.is_some());
     assert_eq!(skipped.completion_note, Some("Not needed".to_string()));
+}
+
+#[tokio::test]
+async fn skip_step_command_accepts_pending_and_rejects_terminal_status() {
+    let app = task_step_command_app();
+    let project = create_test_project(app.state::<AppState>().inner()).await;
+    let task_id = create_test_task(app.state::<AppState>().inner(), project.id).await;
+
+    let step = create_task_step(
+        task_id.as_str().to_string(),
+        CreateTaskStepInput {
+            title: "Skip me".to_string(),
+            description: None,
+            sort_order: None,
+        },
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("step creates");
+
+    let skipped = skip_step(
+        step.id.clone(),
+        "No longer needed".to_string(),
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("pending step skips");
+    assert_eq!(skipped.status, "skipped");
+    assert_eq!(skipped.completion_note.as_deref(), Some("No longer needed"));
+
+    let skip_again = skip_step(
+        step.id,
+        "still no".to_string(),
+        app.state::<AppState>(),
+    )
+    .await
+    .expect_err("terminal skipped step cannot skip again");
+    assert!(skip_again
+        .to_string()
+        .contains("Step must be Pending or InProgress to skip"));
 }
 
 #[tokio::test]
@@ -484,6 +833,78 @@ async fn test_fail_step_valid() {
     assert_eq!(failed.status, TaskStepStatus::Failed);
     assert!(failed.completed_at.is_some());
     assert_eq!(failed.completion_note, Some("Build error".to_string()));
+}
+
+#[tokio::test]
+async fn fail_step_command_requires_in_progress_and_records_error() {
+    let app = task_step_command_app();
+    let project = create_test_project(app.state::<AppState>().inner()).await;
+    let task_id = create_test_task(app.state::<AppState>().inner(), project.id).await;
+
+    let step = create_task_step(
+        task_id.as_str().to_string(),
+        CreateTaskStepInput {
+            title: "Fail me".to_string(),
+            description: None,
+            sort_order: None,
+        },
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("step creates");
+
+    let premature = fail_step(
+        step.id.clone(),
+        "not yet".to_string(),
+        app.state::<AppState>(),
+    )
+    .await
+    .expect_err("pending step cannot fail");
+    assert!(premature
+        .to_string()
+        .contains("Step must be InProgress to fail"));
+
+    start_step(step.id.clone(), app.state::<AppState>())
+        .await
+        .expect("step starts");
+    let failed = fail_step(
+        step.id.clone(),
+        "Build failed".to_string(),
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("step fails");
+    assert_eq!(failed.status, "failed");
+    assert_eq!(failed.completion_note.as_deref(), Some("Build failed"));
+    assert!(failed.completed_at.is_some());
+}
+
+#[tokio::test]
+async fn delete_task_step_command_removes_step() {
+    let app = task_step_command_app();
+    let project = create_test_project(app.state::<AppState>().inner()).await;
+    let task_id = create_test_task(app.state::<AppState>().inner(), project.id).await;
+
+    let step = create_task_step(
+        task_id.as_str().to_string(),
+        CreateTaskStepInput {
+            title: "Delete me".to_string(),
+            description: None,
+            sort_order: None,
+        },
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("step creates");
+
+    delete_task_step(step.id, app.state::<AppState>())
+        .await
+        .expect("step deletes");
+
+    let steps = get_task_steps(task_id.as_str().to_string(), app.state::<AppState>())
+        .await
+        .expect("steps list after delete");
+    assert!(steps.is_empty());
 }
 
 #[tokio::test]

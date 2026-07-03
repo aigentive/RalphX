@@ -54,7 +54,7 @@ describe('ModelSchema', () => {
 describe('getModelId', () => {
   it('should return correct model IDs', () => {
     expect(getModelId('opus')).toBe('claude-opus-4-5-20251101');
-    expect(getModelId('sonnet')).toBe('claude-sonnet-4-5-20250929');
+    expect(getModelId('sonnet')).toBe('claude-sonnet-4-6');
     expect(getModelId('haiku')).toBe('claude-haiku-4-5-20251001');
     expect(getModelId('fable')).toBe('claude-fable-5');
   });

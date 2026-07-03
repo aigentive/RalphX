@@ -9,6 +9,7 @@ const CANONICAL_AGENTS_DIR: &str = "agents";
 const PROMPT_FILE_NAME: &str = "prompt.md";
 const AGENT_FILE_NAME: &str = "agent.yaml";
 const SHARED_PROMPT_DIR_NAME: &str = "shared";
+const PROFILES_DIR_NAME: &str = "profiles";
 const GENERATED_PLUGIN_RUNTIME_ENTRY_NAMES: &[&str] = &["ralphx-mcp-server", "ralphx-external-mcp"];
 const PRIMARY_PLUGIN_DIR_COMPONENTS: &[&str] = &["plugins", "app"];
 const LEGACY_PLUGIN_DIR_COMPONENTS: &[&str] = &["ralphx-plugin"];
@@ -359,7 +360,6 @@ impl CanonicalCodexAgentMetadata {
             && self.mcp_tools.is_empty()
             && self.internal_mcp_tools.is_empty()
     }
-
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -489,7 +489,7 @@ pub fn render_agent_runtime_profile_context(
 
     Some(format!(
         "<agent_runtime_profile>\n<agent_name>{}</agent_name>\n<profile_slug>{}</profile_slug>\n<profile_role>{}</profile_role>\n</agent_runtime_profile>",
-        escape_prompt_context_text(&agent_name),
+        escape_prompt_context_text(agent_name),
         escape_prompt_context_text(trusted_profile_name),
         escape_prompt_context_text(&definition.role)
     ))
@@ -623,6 +623,28 @@ fn read_trusted_canonical_agent_file(
             agent_root.join(harness.dir_name()).join(AGENT_FILE_NAME)
         }
     };
+    let canonical_candidate = candidate.canonicalize().ok()?;
+    if !canonical_candidate.starts_with(&agent_root) || !canonical_candidate.is_file() {
+        return None;
+    }
+
+    // codeql[rust/path-injection]
+    std::fs::read_to_string(canonical_candidate).ok()
+}
+
+fn read_trusted_canonical_profile_prompt(
+    project_root: &Path,
+    agent_name: &str,
+    harness: AgentPromptHarness,
+    profile_name: &str,
+) -> Option<String> {
+    let agent_root = canonical_agent_root(project_root, agent_name)?;
+    let trusted_profile_name = trusted_canonical_profile_name(profile_name)?;
+    let candidate = agent_root
+        .join(PROFILES_DIR_NAME)
+        .join(trusted_profile_name)
+        .join(harness.dir_name())
+        .join(PROMPT_FILE_NAME);
     let canonical_candidate = candidate.canonicalize().ok()?;
     if !canonical_candidate.starts_with(&agent_root) || !canonical_candidate.is_file() {
         return None;
@@ -983,18 +1005,24 @@ pub fn load_harness_agent_prompt_for_profile(
 ) -> Option<String> {
     let definition =
         load_canonical_agent_definition_for_profile(project_root, agent_name, profile_name)?;
-    let raw = read_trusted_canonical_agent_file(
-        project_root,
-        agent_name,
-        CanonicalAgentFileKind::HarnessPrompt(harness),
-    )
-    .or_else(|| {
-        read_trusted_canonical_agent_file(
-            project_root,
-            agent_name,
-            CanonicalAgentFileKind::SharedPrompt,
-        )
-    })?;
+    let raw = profile_name
+        .and_then(|profile_name| {
+            read_trusted_canonical_profile_prompt(project_root, agent_name, harness, profile_name)
+        })
+        .or_else(|| {
+            read_trusted_canonical_agent_file(
+                project_root,
+                agent_name,
+                CanonicalAgentFileKind::HarnessPrompt(harness),
+            )
+        })
+        .or_else(|| {
+            read_trusted_canonical_agent_file(
+                project_root,
+                agent_name,
+                CanonicalAgentFileKind::SharedPrompt,
+            )
+        })?;
     let mut prompt = raw.trim().to_string();
     if let Some(generated_appendix) = build_generated_delegation_appendix(&definition) {
         prompt.push_str("\n\n");
@@ -1088,9 +1116,8 @@ fn build_generated_agent_task_appendix(
             .map(String::as_str)
             .collect()
     };
-    let tool_name = |name: &'static str| -> Option<&'static str> {
-        tools.iter().any(|tool| *tool == name).then_some(name)
-    };
+    let tool_name =
+        |name: &'static str| -> Option<&'static str> { tools.contains(&name).then_some(name) };
     let create_tool = tool_name("create_agent_task");
     let get_tool = tool_name("get_agent_task");
     let list_tool = tool_name("list_agent_tasks");

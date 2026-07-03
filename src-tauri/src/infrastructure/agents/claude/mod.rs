@@ -40,9 +40,10 @@ pub use claude_code_client::{
     TeammateSpawnResult,
 };
 pub use cli_capabilities::{
-    clear_claude_cli_capability_cache, normalize_claude_effort_for_cli_path,
-    parse_claude_cli_capabilities, parse_claude_version, probe_claude_cli,
-    probe_claude_cli_cached, validate_claude_model_for_cli_path, ClaudeCliCapabilities,
+    clear_claude_cli_capability_cache, is_claude_sonnet_5_model,
+    normalize_claude_effort_for_cli_path, parse_claude_cli_capabilities, parse_claude_version,
+    probe_claude_cli, probe_claude_cli_cached, validate_claude_model_for_cli_path,
+    ClaudeCliCapabilities, CLAUDE_SONNET_5_API_MODEL_ID, CLAUDE_SONNET_5_MIN_VERSION,
 };
 
 // Re-export stream processor types for use by services
@@ -461,6 +462,7 @@ pub(crate) struct ClaudePermissionCliOptions {
 
 pub(crate) fn resolve_claude_permission_cli_options(
     agent_type: Option<&str>,
+    agent_profile: Option<&str>,
 ) -> ClaudePermissionCliOptions {
     let runtime = claude_runtime_config();
     let override_settings = claude_permission_runtime_override()
@@ -468,7 +470,15 @@ pub(crate) fn resolve_claude_permission_cli_options(
         .ok()
         .and_then(|guard| guard.clone());
     ClaudePermissionCliOptions {
-        permission_prompt_tool: runtime.permission_prompt_tool.clone(),
+        // Transport-aware (and profile-aware): external-transport agents whose private
+        // tools live on the internal sidecar must point `--permission-prompt-tool` at
+        // that sidecar server so the flag matches the injected `--allowed-tools`
+        // permission entry resolved under the same profile.
+        permission_prompt_tool: agent_config::resolve_permission_prompt_tool(
+            agent_type,
+            agent_profile,
+            &runtime.permission_prompt_tool,
+        ),
         permission_mode: resolve_permission_mode(agent_type),
         dangerously_skip_permissions: override_settings
             .as_ref()
@@ -481,8 +491,12 @@ pub(crate) fn resolve_claude_permission_cli_options(
     }
 }
 
-pub(crate) fn append_claude_permission_args(args: &mut Vec<String>, agent_type: Option<&str>) {
-    let options = resolve_claude_permission_cli_options(agent_type);
+pub(crate) fn append_claude_permission_args(
+    args: &mut Vec<String>,
+    agent_type: Option<&str>,
+    agent_profile: Option<&str>,
+) {
+    let options = resolve_claude_permission_cli_options(agent_type, agent_profile);
     args.extend([
         "--permission-prompt-tool".to_string(),
         options.permission_prompt_tool,
@@ -497,8 +511,12 @@ pub(crate) fn append_claude_permission_args(args: &mut Vec<String>, agent_type: 
     }
 }
 
-fn apply_claude_permission_args(cmd: &mut Command, agent_type: Option<&str>) {
-    let options = resolve_claude_permission_cli_options(agent_type);
+fn apply_claude_permission_args(
+    cmd: &mut Command,
+    agent_type: Option<&str>,
+    agent_profile: Option<&str>,
+) {
+    let options = resolve_claude_permission_cli_options(agent_type, agent_profile);
     cmd.args([
         "--permission-prompt-tool",
         &options.permission_prompt_tool,
@@ -636,7 +654,7 @@ fn build_base_cli_command_inner_with_runtime_context_and_profile(
     }
 
     // Configure permission handling from config/harnesses/claude.yaml.
-    apply_claude_permission_args(&mut cmd, agent_type);
+    apply_claude_permission_args(&mut cmd, agent_type, agent_profile);
     // Optional settings JSON passed to claude CLI via --settings.
     // Agent-specific profile overrides global profile when configured.
     if let Some(s) = get_effective_settings(agent_type) {
@@ -1126,6 +1144,10 @@ fn build_internal_mcp_server_config(
     // Always pass --agent-type for MCP-side tool filtering.
     args_vec.push("--agent-type".to_string());
     args_vec.push(short_name.to_string());
+    if let Some(agent_profile) = agent_profile {
+        args_vec.push("--agent-profile".to_string());
+        args_vec.push(agent_profile.to_string());
+    }
     args_vec.push("--tauri-api-url".to_string());
     args_vec.push(crate::utils::backend_endpoint::backend_http_base_url());
     args_vec.push("--trace-dir".to_string());
@@ -1283,12 +1305,7 @@ impl std::fmt::Debug for DebugCommandView<'_> {
         let envs = std_cmd
             .get_envs()
             .filter_map(|(key, value)| {
-                value.map(|val| {
-                    (
-                        key.to_string_lossy().into_owned(),
-                        val.to_string_lossy().into_owned(),
-                    )
-                })
+                value.map(|_| (key.to_string_lossy().into_owned(), "<redacted>".to_string()))
             })
             .collect::<Vec<_>>();
 
@@ -2259,6 +2276,34 @@ mod tests {
     use std::ffi::{OsStr, OsString};
     use std::path::{Path, PathBuf};
 
+    /// Regression: the `--permission-prompt-tool` flag for an external-transport agent
+    /// (mixed external + internal MCP) must name the internal sidecar server, matching
+    /// the `permission_request` tool injected into `--allowed-tools`. Otherwise the
+    /// Claude CLI aborts before any MCP tool (e.g. ideation start) can run.
+    #[test]
+    fn test_resolve_claude_permission_cli_options_external_agent_uses_internal_server() {
+        let options = resolve_claude_permission_cli_options(Some("ralphx-chat-project"), None);
+        assert_eq!(
+            options.permission_prompt_tool,
+            "mcp__ralphx_internal__permission_request"
+        );
+
+        // The flag value must be present in the agent's pre-approved tool surface.
+        let preapproved = get_preapproved_tools("ralphx-chat-project").unwrap();
+        let tool_list: std::collections::HashSet<_> = preapproved.split(',').collect();
+        assert!(tool_list.contains(options.permission_prompt_tool.as_str()));
+    }
+
+    /// Non-external agents keep the primary-server permission-prompt tool unchanged.
+    #[test]
+    fn test_resolve_claude_permission_cli_options_worker_uses_primary_server() {
+        let options = resolve_claude_permission_cli_options(Some("ralphx-execution-worker"), None);
+        assert_eq!(
+            options.permission_prompt_tool,
+            "mcp__ralphx__permission_request"
+        );
+    }
+
     struct EnvGuard {
         key: &'static str,
         original: Option<OsString>,
@@ -2355,6 +2400,19 @@ mod tests {
     fn test_spawnable_command_debug_impl() {
         fn assert_debug<T: std::fmt::Debug>() {}
         assert_debug::<SpawnableCommand>();
+    }
+
+    #[test]
+    fn spawnable_command_debug_redacts_env_values() {
+        let mut command = Command::new("/fake/claude");
+        command.env("ANTHROPIC_AUTH_TOKEN", "secret-token");
+        let spawnable = SpawnableCommand::new(command, None);
+
+        let debug = format!("{spawnable:?}");
+
+        assert!(debug.contains("ANTHROPIC_AUTH_TOKEN"));
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains("secret-token"));
     }
 
     #[test]

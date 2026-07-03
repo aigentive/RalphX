@@ -81,9 +81,11 @@ profiles:
         - get_artifact
         - get_session_plan
         - ask_user_question
-        - create_child_session
         - get_plan_verification
         - stop_verification
+        - delegate_start
+        - delegate_wait
+        - delegate_cancel
         - search_memories
         - get_memory
         - get_memories_for_paths
@@ -107,7 +109,8 @@ profiles:
         runtime_features:
           shell_tool: false
     delegation:
-      allowed_targets: []
+      allowed_targets:
+        - ralphx-general-explorer
 delegation:
   allowed_targets:
     - ralphx-ideation-specialist-backend

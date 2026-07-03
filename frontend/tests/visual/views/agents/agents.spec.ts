@@ -19,6 +19,108 @@ const ideationConversationId = "conv-agent-ideation-visual";
 const archivedConversationId = "conv-agent-archived-visual";
 const stablePublishEventCreatedAt = "2026-05-13T05:20:00";
 
+function makePagedDiffRows() {
+  return [
+    { kind: "hunk_header", header: "@@ -1,5 +1,7 @@" },
+    {
+      kind: "line",
+      line: {
+        kind: "context",
+        content: "import { cn } from \"@/lib/utils\";",
+        old_line_num: 1,
+        new_line_num: 1,
+      },
+    },
+    {
+      kind: "line",
+      line: {
+        kind: "deletion",
+        content: "const stickyGutter = true;",
+        old_line_num: 2,
+        new_line_num: null,
+      },
+    },
+    {
+      kind: "line",
+      line: {
+        kind: "addition",
+        content: "const stickyGutter = false;",
+        old_line_num: null,
+        new_line_num: 2,
+      },
+    },
+    {
+      kind: "line",
+      line: {
+        kind: "addition",
+        content: "const inlineRowsArePaged = true;",
+        old_line_num: null,
+        new_line_num: 3,
+      },
+    },
+    {
+      kind: "line",
+      line: {
+        kind: "context",
+        content: "export function renderWorkspaceDiff() {",
+        old_line_num: 4,
+        new_line_num: 5,
+      },
+    },
+    {
+      kind: "line",
+      line: {
+        kind: "addition",
+        content: "  return \"bounded page window\";",
+        old_line_num: null,
+        new_line_num: 6,
+      },
+    },
+    {
+      kind: "line",
+      line: {
+        kind: "context",
+        content: "}",
+        old_line_num: 5,
+        new_line_num: 7,
+      },
+    },
+  ];
+}
+
+async function installPagedDiffRoute(page: Page) {
+  await page.route("**/api/agent-workspaces/**/file-diff-page**", async (route) => {
+    const url = new URL(route.request().url());
+    const filePath = url.searchParams.get("path") ?? "mock-file.ts";
+    const offset = Math.max(0, Number(url.searchParams.get("offset") ?? "0"));
+    const limit = Math.max(1, Number(url.searchParams.get("limit") ?? "200"));
+    const rows = makePagedDiffRows();
+    const pageRows = rows.slice(offset, offset + limit);
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        file_path: filePath,
+        language: filePath.endsWith(".rs")
+          ? "rust"
+          : filePath.endsWith(".yaml") || filePath.endsWith(".yml")
+            ? "yaml"
+            : filePath.endsWith(".tsx")
+              ? "tsx"
+              : "text",
+        rows: pageRows,
+        offset,
+        limit,
+        next_offset: offset + limit < rows.length ? offset + limit : null,
+        total_rows: rows.length,
+        old_total_lines: 5,
+        new_total_lines: 7,
+        is_binary: false,
+      }),
+    });
+  });
+}
+
 function makeConversation({
   id,
   title,
@@ -128,6 +230,7 @@ function seededMessages(conversationId: string): ChatMessageResponse[] {
 }
 
 async function setupAgentsView(page: Page) {
+  await installPagedDiffRoute(page);
   await setupApp(page);
   await page.click('[data-testid="nav-agents"]');
   await expect(page.getByTestId("agents-view")).toBeVisible();
@@ -626,15 +729,22 @@ test.describe("Agents View", () => {
     });
   });
 
-  test("starter composer and action menu match visual contract", async ({ page }) => {
+  test("starter composer mode and action menus are separated", async ({ page }) => {
     await setupAgentsView(page);
     await expect(page.getByTestId("agents-start-composer")).toBeVisible();
 
-    await page.getByTestId("agent-composer-actions-menu").click();
+    // Workflow modes live on the Mode chip popover only.
+    await page.getByTestId("agents-start-mode-chip").click();
     await expect(page.getByTestId("agents-start-mode-edit")).toBeVisible();
     await expect(page.getByTestId("agents-start-mode-chat")).toBeVisible();
     await expect(page.getByTestId("agents-start-mode-ideation")).toBeVisible();
     await expect(page.getByText("Build, change, and review code in a branch.")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.getByTestId("agents-start-mode-edit")).toHaveCount(0);
+
+    // The "+" action menu keeps everything except mode switching.
+    await page.getByTestId("agent-composer-actions-menu").click();
+    await expect(page.getByTestId("agents-start-mode-edit")).toHaveCount(0);
 
     await expect(page).toHaveScreenshot("agents-start-composer-actions.png", {
       fullPage: false,

@@ -17,11 +17,13 @@ pub(crate) struct ResolvedAgentSpawnSettings {
     pub configured_logical_effort: Option<LogicalEffort>,
     pub configured_approval_policy: Option<String>,
     pub configured_sandbox_mode: Option<String>,
+    pub configured_service_tier: Option<String>,
     pub model: String,
     pub logical_effort: Option<LogicalEffort>,
     pub claude_effort: Option<String>,
     pub approval_policy: Option<String>,
     pub sandbox_mode: Option<String>,
+    pub service_tier: Option<String>,
     pub configured_subagent_model_cap: Option<String>,
     pub subagent_model_cap: Option<String>,
 }
@@ -48,6 +50,7 @@ pub(crate) async fn resolve_agent_spawn_settings(
             configured_logical_effort: None,
             configured_approval_policy: None,
             configured_sandbox_mode: None,
+            configured_service_tier: None,
             model: model_override
                 .map(str::to_string)
                 .or_else(|| {
@@ -72,6 +75,7 @@ pub(crate) async fn resolve_agent_spawn_settings(
                         .as_ref()
                         .and_then(|settings| settings.sandbox_mode.clone())
                 }),
+            service_tier: None,
             configured_subagent_model_cap: None,
             subagent_model_cap: None,
         };
@@ -126,37 +130,36 @@ pub(crate) async fn resolve_agent_spawn_settings(
         None
     };
 
-    let (configured_subagent_model_cap, subagent_model_cap) = if let Some(subagent_lane) =
-        subagent_lane
-    {
-        let (subagent_project_row, subagent_global_row) =
-            load_lane_rows(agent_lane_settings_repo, project_id, Some(subagent_lane)).await;
-        let subagent_harness =
-            lane_harness(subagent_project_row.as_ref(), subagent_global_row.as_ref());
-        let configured_subagent_model_cap = subagent_harness
-            .map(|configured| configured == effective_harness)
-            .unwrap_or(true)
-            .then(|| {
-                lane_settings_value(subagent_project_row.as_ref(), subagent_global_row.as_ref())
+    let (configured_subagent_model_cap, subagent_model_cap) =
+        if let Some(subagent_lane) = subagent_lane {
+            let (subagent_project_row, subagent_global_row) =
+                load_lane_rows(agent_lane_settings_repo, project_id, Some(subagent_lane)).await;
+            let subagent_harness =
+                lane_harness(subagent_project_row.as_ref(), subagent_global_row.as_ref());
+            let configured_subagent_model_cap = subagent_harness
+                .map(|configured| configured == effective_harness)
+                .unwrap_or(true)
+                .then(|| {
+                    lane_settings_value(subagent_project_row.as_ref(), subagent_global_row.as_ref())
+                        .and_then(|settings| settings.model)
+                })
+                .flatten();
+
+            let subagent_model_cap = if let Some(model) = configured_subagent_model_cap.clone() {
+                model
+            } else if let Some(model) =
+                nondefault_harness_lane_settings(subagent_lane, effective_harness)
                     .and_then(|settings| settings.model)
-            })
-            .flatten();
+            {
+                model
+            } else {
+                "haiku".to_string()
+            };
 
-        let subagent_model_cap = if let Some(model) = configured_subagent_model_cap.clone() {
-            model
-        } else if let Some(model) =
-            nondefault_harness_lane_settings(subagent_lane, effective_harness)
-                .and_then(|settings| settings.model)
-        {
-            model
+            (configured_subagent_model_cap, Some(subagent_model_cap))
         } else {
-            "haiku".to_string()
+            (None, None)
         };
-
-        (configured_subagent_model_cap, Some(subagent_model_cap))
-    } else {
-        (None, None)
-    };
 
     ResolvedAgentSpawnSettings {
         configured_harness,
@@ -173,6 +176,7 @@ pub(crate) async fn resolve_agent_spawn_settings(
         configured_sandbox_mode: configured_primary_settings
             .as_ref()
             .and_then(|settings| settings.sandbox_mode.clone()),
+        configured_service_tier: None,
         model,
         logical_effort,
         claude_effort: logical_effort.map(|effort| effort.to_legacy_claude_effort().to_string()),
@@ -200,6 +204,7 @@ pub(crate) async fn resolve_agent_spawn_settings(
                     .as_ref()
                     .and_then(|settings| settings.sandbox_mode.clone())
             }),
+        service_tier: None,
         configured_subagent_model_cap,
         subagent_model_cap,
     }

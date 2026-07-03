@@ -22,7 +22,11 @@ import {
 import { cn } from "@/lib/utils";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import type { DiffRefKind, PrDiffAnnotation } from "@/api/diff";
+import type {
+  DiffRefKind,
+  PrDiffAnnotation,
+  WorkspaceReviewHunkAnnotation,
+} from "@/api/diff";
 
 // Import types and utilities from separate file
 import {
@@ -45,6 +49,39 @@ import {
 // Re-export types for external use
 export type { DiffViewTab, FileChange, Commit, DiffData, DiffViewerProps };
 
+function hunkAnnotationMatchesRefKind(
+  annotation: WorkspaceReviewHunkAnnotation,
+  refKind: DiffRefKind,
+): boolean {
+  if (refKind.kind === "staged") {
+    return annotation.diffSource === "staged";
+  }
+  if (refKind.kind === "unstaged") {
+    return annotation.diffSource === "unstaged";
+  }
+  if (refKind.kind === "head") {
+    return (
+      annotation.diffSource === "committed" ||
+      annotation.diffSource === "selected_source" ||
+      annotation.diffSource === "staged" ||
+      annotation.diffSource === "unstaged"
+    );
+  }
+  return annotation.diffSource === "committed" || annotation.diffSource === "selected_source";
+}
+
+function hunkAnnotationsForRefKind(
+  annotations: WorkspaceReviewHunkAnnotation[],
+  refKind: DiffRefKind | undefined,
+): WorkspaceReviewHunkAnnotation[] {
+  if (!refKind) {
+    return [];
+  }
+  return annotations.filter((annotation) =>
+    hunkAnnotationMatchesRefKind(annotation, refKind),
+  );
+}
+
 // ============================================================================
 // Main Component
 // ============================================================================
@@ -54,6 +91,7 @@ export function DiffViewer({
   commits,
   commitFiles: commitFilesProp = [],
   annotations = [],
+  hunkAnnotations = [],
   onFetchDiff,
   onFetchCommitFiles,
   onOpenInIDE,
@@ -100,6 +138,18 @@ export function DiffViewer({
     }
     return map;
   }, [annotations]);
+  const hunkAnnotationsByPath = useMemo(() => {
+    const map = new Map<string, WorkspaceReviewHunkAnnotation[]>();
+    for (const annotation of hunkAnnotations) {
+      const existing = map.get(annotation.path);
+      if (existing) {
+        existing.push(annotation);
+      } else {
+        map.set(annotation.path, [annotation]);
+      }
+    }
+    return map;
+  }, [hunkAnnotations]);
 
   // Handle tab change
   const handleTabChange = useCallback((value: string) => {
@@ -307,6 +357,14 @@ export function DiffViewer({
               annotations={
                 selectedFilePath ? annotationsByPath.get(selectedFilePath) ?? [] : []
               }
+              hunkAnnotations={
+                selectedFilePath
+                  ? hunkAnnotationsForRefKind(
+                      hunkAnnotationsByPath.get(selectedFilePath) ?? [],
+                      changesTabRefKind,
+                    )
+                  : []
+              }
             />
           </div>
         </TabsContent>
@@ -351,6 +409,14 @@ export function DiffViewer({
                 conversationId,
                 refKind: historyTabRefKind,
               })}
+              hunkAnnotations={
+                commitSelectedFile
+                  ? hunkAnnotationsForRefKind(
+                      hunkAnnotationsByPath.get(commitSelectedFile) ?? [],
+                      historyTabRefKind,
+                    )
+                  : []
+              }
             />
           </div>
         </TabsContent>

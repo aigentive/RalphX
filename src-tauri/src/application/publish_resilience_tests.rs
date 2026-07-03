@@ -1,11 +1,11 @@
 use super::publish_resilience::review_base_for_publish;
 use super::publish_resilience::{
-    classify_publish_failure, count_unpublished_publish_commits,
-    publish_branch_freshness_outcome_from_source_update, publish_push_status_for_failure,
+    classify_publish_failure, count_publishable_commits_with_base_fallback,
+    count_unpublished_publish_commits, publish_branch_freshness_outcome_from_source_update,
     publish_branch_freshness_status_from_commits,
-    publish_branch_freshness_status_from_commits_and_branch, remote_tracking_ref_for_publish,
-    verify_agent_workspace_repair_completion, AgentWorkspaceRepairCompletionCheck,
-    PublishBranchFreshnessOutcome, PublishFailureClass,
+    publish_branch_freshness_status_from_commits_and_branch, publish_push_status_for_failure,
+    remote_tracking_ref_for_publish, verify_agent_workspace_repair_completion,
+    AgentWorkspaceRepairCompletionCheck, PublishBranchFreshnessOutcome, PublishFailureClass,
 };
 use crate::domain::state_machine::transition_handler::SourceUpdateResult;
 use std::path::{Path, PathBuf};
@@ -243,6 +243,34 @@ async fn counts_unpublished_commits_against_remote_workspace_branch() {
             .await
             .expect("count unpublished branch"),
         Some(1)
+    );
+}
+
+#[tokio::test]
+async fn counts_local_only_publish_commits_against_base_when_remote_branch_is_missing() {
+    let repo = tempfile::TempDir::new().expect("repo tempdir");
+    git(repo.path(), &["init", "-b", "main"]);
+    git(repo.path(), &["config", "user.email", "test@example.com"]);
+    git(repo.path(), &["config", "user.name", "RalphX Test"]);
+    std::fs::write(repo.path().join("README.md"), "base\n").expect("write base");
+    git(repo.path(), &["add", "README.md"]);
+    git(repo.path(), &["commit", "-m", "base"]);
+    git(repo.path(), &["checkout", "-b", "ralphx/test/workspace"]);
+    std::fs::write(repo.path().join("agent.txt"), "local\n").expect("write local");
+    git(repo.path(), &["add", "agent.txt"]);
+    git(repo.path(), &["commit", "-m", "local update"]);
+
+    assert_eq!(
+        count_unpublished_publish_commits(repo.path(), "ralphx/test/workspace")
+            .await
+            .expect("count missing remote"),
+        None
+    );
+    assert_eq!(
+        count_publishable_commits_with_base_fallback(repo.path(), "ralphx/test/workspace", "main",)
+            .await
+            .expect("count local-only branch"),
+        1
     );
 }
 

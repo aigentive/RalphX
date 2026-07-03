@@ -123,6 +123,13 @@ impl TaskRepository for MockTaskRepoForSpawner {
     ) -> AppResult<Option<chrono::DateTime<chrono::Utc>>> {
         Ok(None)
     }
+    async fn get_status_last_entered_at(
+        &self,
+        _: &TaskId,
+        _: crate::domain::entities::InternalStatus,
+    ) -> AppResult<Option<chrono::DateTime<chrono::Utc>>> {
+        Ok(None)
+    }
     async fn get_next_executable(&self, _: &ProjectId) -> AppResult<Option<Task>> {
         Ok(None)
     }
@@ -907,6 +914,8 @@ fn test_build_agent_config_for_mock_client_omits_claude_plugin_wiring() {
         None,
         None,
         None,
+        None,
+        std::collections::HashMap::new(),
     );
 
     assert_eq!(config.role, AgentRole::Worker);
@@ -944,6 +953,8 @@ fn test_build_agent_config_for_claude_client_sets_plugin_and_agent() {
         None,
         None,
         None,
+        None,
+        std::collections::HashMap::new(),
     );
 
     assert_eq!(config.role, AgentRole::QaRefiner);
@@ -977,6 +988,8 @@ fn test_build_agent_config_for_codex_client_uses_process_mapping() {
         Some("on-request".to_string()),
         Some("workspace-write".to_string()),
         None,
+        None,
+        std::collections::HashMap::new(),
     );
 
     assert_eq!(config.harness, Some(AgentHarnessKind::Codex));
@@ -1054,12 +1067,14 @@ async fn test_spawn_uses_codex_client_when_execution_lane_resolves_to_codex() {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn test_spawn_uses_rx_managed_codex_cli_path_override() {
     let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
         .lock()
         .expect("test env mutex");
     let temp = tempfile::tempdir().expect("temp dir");
     let managed_codex_path = temp.path().join("codex");
+    let env_path = temp.path().join("codex.env");
     write_executable(
         &managed_codex_path,
         r#"#!/bin/sh
@@ -1075,6 +1090,11 @@ else
 fi
 "#,
     );
+    fs::write(
+        &env_path,
+        "CUSTOM_PROVIDER_TOKEN=from-env-file\nRALPHX_TASK_ID=spoofed\nCODEX_MODEL=spoofed\n",
+    )
+    .expect("write provider env file");
     let _managed_codex_override =
         crate::application::managed_provider_cli::override_managed_codex_binary_path_for_tests(
             managed_codex_path.clone(),
@@ -1094,6 +1114,8 @@ fi
     codex_provider.enabled = true;
     codex_provider.is_default = true;
     codex_provider.cli_management_mode = AgentProviderCliManagementMode::RxManaged;
+    codex_provider.custom_env_file_enabled = true;
+    codex_provider.custom_env_file_path = Some(env_path.to_string_lossy().into_owned());
     provider_repo.upsert(&codex_provider).await.unwrap();
 
     let project_id = ProjectId::from_string("project-managed-codex".to_string());
@@ -1139,6 +1161,15 @@ fi
     let config = codex_client.last_spawn().await.expect("codex spawn config");
     assert_eq!(config.harness, Some(AgentHarnessKind::Codex));
     assert_eq!(config.cli_path_override, Some(managed_codex_path));
+    assert_eq!(
+        config.env.get("CUSTOM_PROVIDER_TOKEN").map(String::as_str),
+        Some("from-env-file")
+    );
+    assert_eq!(
+        config.env.get("RALPHX_TASK_ID").map(String::as_str),
+        Some("task-managed-codex")
+    );
+    assert!(!config.env.contains_key("CODEX_MODEL"));
 }
 
 #[tokio::test]

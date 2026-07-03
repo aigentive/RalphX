@@ -6,6 +6,7 @@
  * Content:
  *   VIEW section:
  *   - Radio "Workspace changes (N files)"
+ *   - Radio "Conflicted (N files)"
  *   - Radio "Unstaged (N files)"
  *   - Radio "Staged (N files)"
  *   - Radio "All commits (N commits)"
@@ -41,6 +42,8 @@ export interface AgentsPublishDiffFilterProps {
   stagedCount?: number;
   /** Unstaged file count — provided lazily by parent when unstaged mode is active. */
   unstagedCount?: number;
+  /** Conflicted file count — provided by repair-mode summaries. */
+  conflictedCount?: number;
   commits: DiffViewerCommit[];
   supportsWorktreeModes?: boolean;
   onModeChange: (mode: DiffFilterMode) => void;
@@ -100,6 +103,7 @@ function getTriggerLabel(
   commits: DiffViewerCommit[],
   stagedCount?: number,
   unstagedCount?: number,
+  conflictedCount?: number,
 ): string {
   if (mode === "uncommitted") {
     return `${workspaceChangeLabel} (${workspaceChangeCount} ${workspaceChangeCount === 1 ? "file" : "files"})`;
@@ -113,6 +117,11 @@ function getTriggerLabel(
     return unstagedCount !== undefined
       ? `Unstaged (${unstagedCount} ${unstagedCount === 1 ? "file" : "files"})`
       : "Unstaged";
+  }
+  if (mode === "conflicted") {
+    return conflictedCount !== undefined
+      ? `Conflicted (${conflictedCount} ${conflictedCount === 1 ? "file" : "files"})`
+      : "Conflicted";
   }
   if (mode === "cumulative") {
     const n = commits.length;
@@ -142,6 +151,7 @@ export function AgentsPublishDiffFilter({
   workspaceChangeLabel = "Workspace changes",
   stagedCount,
   unstagedCount,
+  conflictedCount,
   commits,
   supportsWorktreeModes = true,
   onModeChange,
@@ -150,7 +160,11 @@ export function AgentsPublishDiffFilter({
   const [commitSearch, setCommitSearch] = useState("");
   // Expand the specific-commit section when starting in a commit SHA mode.
   const isNamedMode =
-    mode === "uncommitted" || mode === "staged" || mode === "unstaged" || mode === "cumulative";
+    mode === "uncommitted" ||
+    mode === "conflicted" ||
+    mode === "staged" ||
+    mode === "unstaged" ||
+    mode === "cumulative";
   const [commitsOpen, setCommitsOpen] = useState(!isNamedMode);
 
   const filteredCommits = useMemo(() => {
@@ -176,6 +190,7 @@ export function AgentsPublishDiffFilter({
     commits,
     stagedCount,
     unstagedCount,
+    conflictedCount,
   );
 
   return (
@@ -227,6 +242,15 @@ export function AgentsPublishDiffFilter({
                   {workspaceChangeLabel} ({workspaceChangeCount}{" "}
                   {workspaceChangeCount === 1 ? "file" : "files"})
                 </FilterRadioRow>
+                {conflictedCount !== undefined && conflictedCount > 0 && (
+                  <FilterRadioRow
+                    selected={mode === "conflicted"}
+                    onClick={() => handleSelect("conflicted")}
+                    testId="diff-filter-option-conflicted"
+                  >
+                    Conflicted{formatFileCount(conflictedCount)}
+                  </FilterRadioRow>
+                )}
                 <FilterRadioRow
                   selected={mode === "unstaged"}
                   onClick={() => handleSelect("unstaged")}

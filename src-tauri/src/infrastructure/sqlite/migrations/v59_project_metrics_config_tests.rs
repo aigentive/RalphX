@@ -1,12 +1,15 @@
 #[cfg(test)]
 mod tests {
-    use rusqlite::Connection;
     use crate::infrastructure::sqlite::migrations::v59_project_metrics_config::migrate;
+    use rusqlite::Connection;
 
     fn setup(conn: &Connection) {
-        conn.execute_batch("
+        conn.execute_batch(
+            "
             CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT NOT NULL);
-        ").unwrap();
+        ",
+        )
+        .unwrap();
     }
 
     #[test]
@@ -42,7 +45,8 @@ mod tests {
         conn.execute(
             "INSERT INTO projects (id, name) VALUES ('proj1', 'Test Project')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO project_metrics_config (project_id, simple_base_hours, medium_base_hours, complex_base_hours, calendar_factor) VALUES ('proj1', 3.0, 6.0, 12.0, 2.0)",
             [],

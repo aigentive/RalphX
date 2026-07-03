@@ -17,6 +17,7 @@ import { useProposalStore } from "@/stores/proposalStore";
 import { useProjectStore } from "@/stores/projectStore";
 import { useExecutionStatus } from "@/hooks/useExecutionControl";
 import { useExecutionEvents } from "@/hooks/useExecutionEvents";
+import { FEATURE_FLAGS_QUERY_KEY } from "@/hooks/useFeatureFlags";
 import { useRunningProcesses } from "@/hooks/useRunningProcesses";
 import { useMergePipeline } from "@/hooks/useMergePipeline";
 import { useIdeationSession, useIdeationSessions } from "@/hooks/useIdeation";
@@ -123,8 +124,49 @@ vi.mock("@/components/views/SkillsView", () => ({
   SkillsView: () => <div data-testid="skills-view-mock">Skills View</div>,
 }));
 
+// Capture the props the App passes to the TicketingDashboardView so we can
+// drive its onNavigateToAssociation callback from tests without a real backend.
+const ticketingViewProps = vi.hoisted(() => ({
+  current: null as null | {
+    projectId: string | null;
+    onNavigateToAssociation: (deepLink: {
+      view: string;
+      id: string;
+      projectId?: string | null;
+    }) => void;
+  },
+}));
+
+// Mock the ticketing dashboard surface (and its data hooks) so navigating to
+// the ticketing view does not require live Tauri ticketing endpoints.
+vi.mock("@/components/ticketing", () => ({
+  TicketingDashboardView: (props: {
+    projectId: string | null;
+    onNavigateToAssociation: (deepLink: {
+      view: string;
+      id: string;
+      projectId?: string | null;
+    }) => void;
+  }) => {
+    ticketingViewProps.current = props;
+    return (
+      <div
+        data-testid="ticketing-dashboard-view-mock"
+        data-project-id={props.projectId ?? ""}
+      >
+        Ticketing Dashboard View
+      </div>
+    );
+  },
+}));
+
+vi.mock("@/hooks/useTicketingEvents", () => ({
+  useTicketingCacheEvents: vi.fn(),
+}));
+
 // Mock AgentsView
 vi.mock("@/components/agents", () => ({
+  AgentIssueReportDialog: () => null,
   AgentsView: ({
     footer,
     onCreateProject,
@@ -442,6 +484,19 @@ function buildCreatedProject(overrides: Partial<Project> = {}): Project {
   };
 }
 
+function enableStandaloneIdeationPage() {
+  const flags = {
+    activityPage: true,
+    extensibilityPage: true,
+    ideationPage: true,
+    battleMode: true,
+    teamMode: false,
+    atlassianOauth: false,
+  };
+  getQueryClient().setQueryData(FEATURE_FLAGS_QUERY_KEY, flags);
+  useUiStore.getState().setFeatureFlags(flags);
+}
+
 describe("App", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -494,6 +549,11 @@ describe("App", () => {
           left: "16px",
         },
         position: "bottom-left",
+      }),
+    );
+    expect(toasterProps?.style).toEqual(
+      expect.objectContaining({
+        zIndex: 40,
       }),
     );
   });
@@ -708,6 +768,9 @@ describe("App", () => {
   it.each(["kanban", "graph", "ideation"] as const)(
     "shows the project selector in the %s topbar",
     (view) => {
+      if (view === "ideation") {
+        enableStandaloneIdeationPage();
+      }
       useUiStore.getState().setCurrentView(view);
 
       render(<App />);
@@ -1128,12 +1191,12 @@ describe("App", () => {
   });
 
   describe("View Navigation", () => {
-    it("should render all navigation buttons", () => {
+    it("should render default navigation buttons with standalone Ideation hidden", () => {
       render(<App />);
       expect(screen.getByTestId("nav-agents")).toBeInTheDocument();
       expect(screen.getByTestId("nav-kanban")).toBeInTheDocument();
       expect(screen.getByTestId("nav-graph")).toBeInTheDocument();
-      expect(screen.getByTestId("nav-ideation")).toBeInTheDocument();
+      expect(screen.queryByTestId("nav-ideation")).toBeNull();
       expect(screen.getByTestId("nav-skills")).toBeInTheDocument();
       expect(screen.getByTestId("nav-extensibility")).toBeInTheDocument();
       expect(screen.getByTestId("nav-activity")).toBeInTheDocument();
@@ -1148,7 +1211,6 @@ describe("App", () => {
         { testId: "nav-agents", label: /Agents/i },
         { testId: "nav-kanban", label: /Kanban/i },
         { testId: "nav-graph", label: /Graph/i },
-        { testId: "nav-ideation", label: /Ideation/i },
         { testId: "nav-skills", label: /Skills/i },
         { testId: "nav-extensibility", label: /Extensibility/i },
         { testId: "nav-activity", label: /Activity/i },
@@ -1183,6 +1245,7 @@ describe("App", () => {
 
     it("should switch to Ideation view when clicked", async () => {
       const user = userEvent.setup();
+      enableStandaloneIdeationPage();
       render(<App />);
 
       await user.click(screen.getByTestId("nav-ideation"));
@@ -1194,6 +1257,7 @@ describe("App", () => {
 
     it("should pass footer with ExecutionControlBar to Ideation view", async () => {
       const user = userEvent.setup();
+      enableStandaloneIdeationPage();
       render(<App />);
 
       await user.click(screen.getByTestId("nav-ideation"));
@@ -1295,6 +1359,92 @@ describe("App", () => {
     });
   });
 
+  describe("Ticketing view", () => {
+    beforeEach(() => {
+      ticketingViewProps.current = null;
+      getQueryClient().clear();
+    });
+
+    it("renders the ticketing dashboard without a manual feature override", async () => {
+      render(<App />);
+
+      useUiStore.getState().setCurrentView("ticketing");
+
+      expect(
+        await screen.findByTestId("ticketing-dashboard-view-mock"),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByTestId("ticketing-dashboard-view-mock"),
+      ).toHaveAttribute("data-project-id", "demo-project-1");
+    });
+
+    it("does not show a disabled placeholder for the old dashboard flag", async () => {
+      render(<App />);
+
+      useUiStore.getState().setCurrentView("ticketing");
+
+      expect(
+        await screen.findByTestId("ticketing-dashboard-view-mock"),
+      ).toBeInTheDocument();
+      expect(screen.queryByTestId("feature-disabled-ticketing")).not.toBeInTheDocument();
+    });
+
+    it("routes a kanban deep link to the kanban view and selects the task", async () => {
+      render(<App />);
+
+      useUiStore.getState().setCurrentView("ticketing");
+      await screen.findByTestId("ticketing-dashboard-view-mock");
+
+      expect(ticketingViewProps.current).not.toBeNull();
+      ticketingViewProps.current?.onNavigateToAssociation({
+        view: "kanban",
+        id: "task-99",
+      });
+
+      await waitFor(() => {
+        expect(useUiStore.getState().currentView).toBe("kanban");
+      });
+      expect(useUiStore.getState().selectedTaskId).toBe("task-99");
+    });
+
+    it("routes an agents deep link by focusing the project and selecting the conversation", async () => {
+      render(<App />);
+
+      useUiStore.getState().setCurrentView("ticketing");
+      await screen.findByTestId("ticketing-dashboard-view-mock");
+
+      ticketingViewProps.current?.onNavigateToAssociation({
+        view: "agents",
+        id: "conversation-77",
+        projectId: "project-x",
+      });
+
+      await waitFor(() => {
+        expect(useUiStore.getState().currentView).toBe("agents");
+      });
+      expect(useAgentSessionStore.getState().focusedProjectId).toBe("project-x");
+      expect(
+        useChatStore.getState().activeConversationIds["project:project-x"],
+      ).toBe("conversation-77");
+    });
+
+    it("routes other deep-link views by switching the current view directly", async () => {
+      render(<App />);
+
+      useUiStore.getState().setCurrentView("ticketing");
+      await screen.findByTestId("ticketing-dashboard-view-mock");
+
+      ticketingViewProps.current?.onNavigateToAssociation({
+        view: "ideation",
+        id: "irrelevant",
+      });
+
+      await waitFor(() => {
+        expect(useUiStore.getState().currentView).toBe("ideation");
+      });
+    });
+  });
+
   describe("Keyboard Shortcuts", () => {
     it("should switch to Agents with Cmd+1", () => {
       useUiStore.setState({ viewByProject: { "demo-project-1": "activity" } });
@@ -1306,6 +1456,7 @@ describe("App", () => {
     });
 
     it("should switch to Ideation with Cmd+2", () => {
+      enableStandaloneIdeationPage();
       useUiStore.setState({ viewByProject: { "demo-project-1": "activity" } });
       render(<App />);
 
@@ -1507,6 +1658,31 @@ describe("App", () => {
       );
       expect(vi.mocked(useMergePipeline)).toHaveBeenCalledWith(
         "test-project-123",
+        expect.objectContaining({ enabled: true })
+      );
+    });
+
+    it("scopes Agents footer execution data to the selected agent conversation project", () => {
+      useProjectStore.setState({ activeProjectId: "active-project" });
+      useAgentSessionStore.setState({
+        selectedConversationId: "conversation-2",
+        selectedProjectId: "agent-project-2",
+        focusedProjectId: "agent-project-2",
+      });
+
+      render(<App />);
+
+      expect(vi.mocked(useExecutionEvents)).toHaveBeenCalledWith("agent-project-2");
+      expect(vi.mocked(useExecutionStatus)).toHaveBeenCalledWith(
+        "agent-project-2",
+        expect.objectContaining({ enabled: true })
+      );
+      expect(vi.mocked(useRunningProcesses)).toHaveBeenCalledWith(
+        "agent-project-2",
+        expect.objectContaining({ enabled: true })
+      );
+      expect(vi.mocked(useMergePipeline)).toHaveBeenCalledWith(
+        "agent-project-2",
         expect.objectContaining({ enabled: true })
       );
     });

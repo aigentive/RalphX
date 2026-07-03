@@ -87,11 +87,10 @@ fn test_gate_blocks_needs_revision() {
 }
 
 #[test]
-fn test_gate_passes_for_any_status_when_not_required() {
+fn test_gate_passes_for_inactive_statuses_when_not_required() {
     let settings = settings_with_required(false);
     for status in [
         VerificationStatus::Unverified,
-        VerificationStatus::Reviewing,
         VerificationStatus::NeedsRevision,
         VerificationStatus::Verified,
         VerificationStatus::Skipped,
@@ -503,6 +502,20 @@ fn test_verification_gate_in_progress_before_status_check() {
     );
 }
 
+/// Test: optional verification still cannot be finalized while a verifier is running.
+#[test]
+fn test_verification_gate_in_progress_blocks_when_not_required() {
+    let settings = settings_with_required(false);
+    let mut session = make_session(VerificationStatus::Unverified);
+    session.verification_in_progress = true;
+    let policy = accept_policy(&session, &settings);
+    let result = check_verification_gate(&session, &policy);
+    assert!(
+        matches!(result, Err(VerificationError::InProgress { .. })),
+        "in_progress=true must block even when require_verification=false"
+    );
+}
+
 /// Test: ImportedVerified sessions pass the acceptance gate (they are pre-verified by import).
 #[test]
 fn test_gate_allows_imported_verified() {
@@ -576,6 +589,20 @@ fn test_verification_gate_reviewing_status_without_in_progress() {
     assert!(
         matches!(result, Err(VerificationError::InProgress { .. })),
         "Reviewing status without in_progress flag should still return InProgress"
+    );
+}
+
+/// Test: optional verification still treats Reviewing as an active verification state.
+#[test]
+fn test_verification_gate_reviewing_status_blocks_when_not_required() {
+    let settings = settings_with_required(false);
+    let mut session = make_session(VerificationStatus::Reviewing);
+    session.verification_in_progress = false;
+    let policy = accept_policy(&session, &settings);
+    let result = check_verification_gate(&session, &policy);
+    assert!(
+        matches!(result, Err(VerificationError::InProgress { .. })),
+        "Reviewing status must block even when require_verification=false"
     );
 }
 

@@ -93,6 +93,7 @@ pub async fn approve_task(
         new_status: "approved".to_string(),
         fix_task_id: None,
         followup_session_id: None,
+        followup_conversation_id: None,
     }))
 }
 
@@ -180,5 +181,6 @@ pub async fn request_task_changes(
         new_status: "revision_needed".to_string(),
         fix_task_id: None,
         followup_session_id: None,
+        followup_conversation_id: None,
     }))
 }

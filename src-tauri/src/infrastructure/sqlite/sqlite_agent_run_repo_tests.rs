@@ -10,13 +10,19 @@ fn setup_repo() -> (SqliteTestDb, SqliteAgentRunRepository) {
     (db, repo)
 }
 
-fn seed_ideation_conversation(db: &SqliteTestDb, claude_session_id: Option<&str>) -> ChatConversation {
+fn seed_ideation_conversation(
+    db: &SqliteTestDb,
+    claude_session_id: Option<&str>,
+) -> ChatConversation {
     let mut conversation = ChatConversation::new_ideation(IdeationSessionId::new());
     conversation.claude_session_id = claude_session_id.map(str::to_string);
     db.insert_conversation(conversation)
 }
 
-fn seed_codex_ideation_conversation(db: &SqliteTestDb, provider_session_id: &str) -> ChatConversation {
+fn seed_codex_ideation_conversation(
+    db: &SqliteTestDb,
+    provider_session_id: &str,
+) -> ChatConversation {
     let mut conversation = ChatConversation::new_ideation(IdeationSessionId::new());
     conversation.set_provider_session_ref(ProviderSessionRef {
         harness: AgentHarnessKind::Codex,
@@ -82,7 +88,10 @@ async fn test_get_interrupted_conversations_returns_orphaned_codex_conversation(
 
     assert_eq!(result.len(), 1);
     assert_eq!(result[0].conversation.id, conversation.id);
-    assert_eq!(result[0].conversation.provider_harness, Some(AgentHarnessKind::Codex));
+    assert_eq!(
+        result[0].conversation.provider_harness,
+        Some(AgentHarnessKind::Codex)
+    );
     assert_eq!(
         result[0].conversation.provider_session_id.as_deref(),
         Some("codex-thread-1")
@@ -192,6 +201,7 @@ async fn test_create_and_get_by_id() {
     run.effective_model_id = Some("gpt-5.4".to_string());
     run.logical_effort = Some(LogicalEffort::XHigh);
     run.effective_effort = Some("high".to_string());
+    run.service_tier = Some("fast".to_string());
     run.input_tokens = Some(1200);
     run.output_tokens = Some(450);
     run.cache_creation_tokens = Some(80);
@@ -214,6 +224,7 @@ async fn test_create_and_get_by_id() {
     assert_eq!(r.effective_model_id, Some("gpt-5.4".to_string()));
     assert_eq!(r.logical_effort, Some(LogicalEffort::XHigh));
     assert_eq!(r.effective_effort, Some("high".to_string()));
+    assert_eq!(r.service_tier, Some("fast".to_string()));
     assert_eq!(r.input_tokens, Some(1200));
     assert_eq!(r.output_tokens, Some(450));
     assert_eq!(r.cache_creation_tokens, Some(80));
@@ -243,6 +254,7 @@ async fn test_update_attribution_updates_agent_run_metadata_fields() {
             effective_model_id: Some("glm-4.7".to_string()),
             logical_effort: Some(LogicalEffort::High),
             effective_effort: Some("high".to_string()),
+            service_tier: Some("fast".to_string()),
         },
     )
     .await
@@ -260,6 +272,7 @@ async fn test_update_attribution_updates_agent_run_metadata_fields() {
     assert_eq!(retrieved.effective_model_id.as_deref(), Some("glm-4.7"));
     assert_eq!(retrieved.logical_effort, Some(LogicalEffort::High));
     assert_eq!(retrieved.effective_effort.as_deref(), Some("high"));
+    assert_eq!(retrieved.service_tier.as_deref(), Some("fast"));
 }
 
 #[tokio::test]
@@ -362,7 +375,11 @@ async fn test_get_latest_for_conversation_empty() {
     let (_db, repo) = setup_repo();
 
     let fake_id = ChatConversationId::from_string("no-such-conv".to_string());
-    assert!(repo.get_latest_for_conversation(&fake_id).await.unwrap().is_none());
+    assert!(repo
+        .get_latest_for_conversation(&fake_id)
+        .await
+        .unwrap()
+        .is_none());
 }
 
 #[tokio::test]
@@ -371,7 +388,11 @@ async fn test_get_active_for_conversation() {
     let conv = db.seed_ideation_conversation();
 
     // No active run yet
-    assert!(repo.get_active_for_conversation(&conv.id).await.unwrap().is_none());
+    assert!(repo
+        .get_active_for_conversation(&conv.id)
+        .await
+        .unwrap()
+        .is_none());
 
     let run = AgentRun::new(conv.id);
     let run_id = run.id;
@@ -392,7 +413,11 @@ async fn test_get_active_for_conversation_excludes_terminal_runs() {
     run.completed_at = Some(Utc::now());
     repo.create(run).await.unwrap();
 
-    assert!(repo.get_active_for_conversation(&conv.id).await.unwrap().is_none());
+    assert!(repo
+        .get_active_for_conversation(&conv.id)
+        .await
+        .unwrap()
+        .is_none());
 }
 
 // ─── get_by_conversation ─────────────────────────────────────────────────────
@@ -428,7 +453,9 @@ async fn test_update_status() {
     let run_id = run.id;
     repo.create(run).await.unwrap();
 
-    repo.update_status(&run_id, AgentRunStatus::Cancelled).await.unwrap();
+    repo.update_status(&run_id, AgentRunStatus::Cancelled)
+        .await
+        .unwrap();
 
     let updated = repo.get_by_id(&run_id).await.unwrap().unwrap();
     assert_eq!(updated.status, AgentRunStatus::Cancelled);
@@ -490,7 +517,10 @@ async fn test_fail() {
     let updated = repo.get_by_id(&run_id).await.unwrap().unwrap();
     assert_eq!(updated.status, AgentRunStatus::Failed);
     assert!(updated.completed_at.is_some());
-    assert_eq!(updated.error_message, Some("Something went wrong".to_string()));
+    assert_eq!(
+        updated.error_message,
+        Some("Something went wrong".to_string())
+    );
 }
 
 #[tokio::test]
@@ -542,7 +572,11 @@ async fn test_delete_by_conversation() {
 
     repo.delete_by_conversation(&conv1.id).await.unwrap();
 
-    assert!(repo.get_by_conversation(&conv1.id).await.unwrap().is_empty());
+    assert!(repo
+        .get_by_conversation(&conv1.id)
+        .await
+        .unwrap()
+        .is_empty());
     assert!(repo.get_by_id(&run2_id).await.unwrap().is_some());
 }
 
@@ -563,9 +597,24 @@ async fn test_count_by_status() {
 
     repo.cancel(&r3_id).await.unwrap();
 
-    assert_eq!(repo.count_by_status(&conv.id, AgentRunStatus::Running).await.unwrap(), 2);
-    assert_eq!(repo.count_by_status(&conv.id, AgentRunStatus::Cancelled).await.unwrap(), 1);
-    assert_eq!(repo.count_by_status(&conv.id, AgentRunStatus::Completed).await.unwrap(), 0);
+    assert_eq!(
+        repo.count_by_status(&conv.id, AgentRunStatus::Running)
+            .await
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        repo.count_by_status(&conv.id, AgentRunStatus::Cancelled)
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        repo.count_by_status(&conv.id, AgentRunStatus::Completed)
+            .await
+            .unwrap(),
+        0
+    );
 }
 
 // ─── cancel_all_running ──────────────────────────────────────────────────────
@@ -593,7 +642,10 @@ async fn test_cancel_all_running() {
 
     let r1u = repo.get_by_id(&r1_id).await.unwrap().unwrap();
     assert_eq!(r1u.status, AgentRunStatus::Cancelled);
-    assert_eq!(r1u.error_message, Some("Orphaned on app restart".to_string()));
+    assert_eq!(
+        r1u.error_message,
+        Some("Orphaned on app restart".to_string())
+    );
 
     let r2u = repo.get_by_id(&r2_id).await.unwrap().unwrap();
     assert_eq!(r2u.status, AgentRunStatus::Cancelled);

@@ -2,11 +2,14 @@
  * ExecutionControlBar component tests
  */
 
-import { describe, it, expect, vi } from "vitest";
+import { beforeEach, describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import type { ComponentProps, ReactNode } from "react";
 import { ExecutionControlBar } from "./ExecutionControlBar";
+import { useAgentTerminalStore } from "@/components/agents/agentTerminalStore";
 import type { MergePipelineTask } from "@/api/merge-pipeline";
+import { useProjectStore } from "@/stores/projectStore";
+import { useUiStore } from "@/stores/uiStore";
 
 vi.mock("@/hooks/useTeamModeAvailability", () => ({
   useTeamModeAvailability: () => ({
@@ -43,11 +46,33 @@ vi.mock("./RunningProcessPopover", () => ({
 }));
 
 vi.mock("./QueuedTasksPopover", () => ({
-  QueuedTasksPopover: ({ children }: { children: ReactNode }) => <>{children}</>,
+  QueuedTasksPopover: ({
+    children,
+    open,
+  }: {
+    children: ReactNode;
+    open?: boolean;
+    [key: string]: unknown;
+  }) => (
+    <div data-testid="mock-queued-popover" data-open={String(open ?? false)}>
+      {children}
+    </div>
+  ),
 }));
 
 vi.mock("./MergePipelinePopover", () => ({
-  MergePipelinePopover: ({ children }: { children: ReactNode }) => <>{children}</>,
+  MergePipelinePopover: ({
+    children,
+    open,
+  }: {
+    children: ReactNode;
+    open?: boolean;
+    [key: string]: unknown;
+  }) => (
+    <div data-testid="mock-merge-popover" data-open={String(open ?? false)}>
+      {children}
+    </div>
+  ),
 }));
 
 // Helper: renders ExecutionControlBar with all required props, accepting overrides
@@ -88,6 +113,27 @@ const makeMergeTask = (
 });
 
 describe("ExecutionControlBar", () => {
+  beforeEach(() => {
+    useUiStore.setState({
+      executionBarOpenPopover: null,
+      executionBarRunningTab: "execution",
+    });
+    useAgentTerminalStore.setState({
+      openByConversationId: {},
+      heightByConversationId: {},
+      activeTerminalByConversationId: {},
+      statusByConversationId: {},
+      metadataByConversationId: {},
+      placement: "auto",
+      draggingConversationId: null,
+      dragOverDock: null,
+    });
+    useProjectStore.setState({
+      projects: {},
+      activeProjectId: null,
+    });
+  });
+
   describe("basic rendering", () => {
     it("renders with data-testid", () => {
       renderBar({ runningCount: 1, queuedCount: 3 });
@@ -468,37 +514,278 @@ describe("ExecutionControlBar", () => {
     });
   });
 
-  describe("ideation capacity indicator", () => {
-    it("shows ideation indicator when ideationMax > 0", () => {
-      renderBar({ ideationActive: 1, ideationMax: 2, ideationWaiting: 0 });
-      expect(screen.getByTestId("ideation-count")).toBeInTheDocument();
-      expect(screen.getByTestId("ideation-count")).toHaveTextContent(/1\/2/);
+  describe("running lane shortcuts", () => {
+    it("keeps lane details inside the running popover instead of rendering bar shortcuts", () => {
+      renderBar({
+        runningCount: 2,
+        maxConcurrent: 8,
+        workspaceSessions: [
+          {
+            conversationId: "conversation-1",
+            projectId: "project-1",
+            title: "Workspace",
+            elapsedSeconds: 30,
+            model: "gpt-5.5",
+          },
+        ],
+        lanes: [
+          {
+            lane: "workspaces",
+            active: 1,
+            idle: 0,
+            waiting: 0,
+            max: 10,
+            borrowed: 0,
+            priorityRank: 1,
+          },
+          {
+            lane: "tasks",
+            active: 2,
+            idle: 0,
+            waiting: 0,
+            max: 8,
+            borrowed: 0,
+            priorityRank: 2,
+          },
+        ],
+        capacity: {
+          totalActive: 3,
+          globalMaxConcurrent: 20,
+          borrowingEnabled: false,
+          priority: ["workspaces", "tasks", "ideation"],
+        },
+      });
+
+      expect(screen.getByTestId("running-count")).toHaveTextContent(/3\/20/);
+      expect(screen.queryByTestId("workspace-count")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("task-lane-count")).not.toBeInTheDocument();
+      expect(screen.getByTestId("mock-running-popover")).toHaveAttribute(
+        "data-show-ideation",
+        "false"
+      );
     });
 
-    it("hides ideation indicator when ideationMax is 0", () => {
-      renderBar({ ideationActive: 0, ideationMax: 0, ideationWaiting: 0 });
+    it("does not render the ideation shortcut while still enabling the popover ideation tab", () => {
+      renderBar({ ideationActive: 1, ideationMax: 2, ideationWaiting: 3 });
+
       expect(screen.queryByTestId("ideation-count")).not.toBeInTheDocument();
-    });
-
-    it("hides ideation indicator when ideationMax is not provided", () => {
-      renderBar();
-      expect(screen.queryByTestId("ideation-count")).not.toBeInTheDocument();
-    });
-
-    it("shows waiting badge when ideationWaiting > 0", () => {
-      renderBar({ ideationActive: 2, ideationMax: 2, ideationWaiting: 3 });
-      expect(screen.getByTestId("ideation-waiting-badge")).toBeInTheDocument();
-      expect(screen.getByTestId("ideation-waiting-badge")).toHaveTextContent("+3");
-    });
-
-    it("hides waiting badge when ideationWaiting is 0", () => {
-      renderBar({ ideationActive: 1, ideationMax: 2, ideationWaiting: 0 });
       expect(screen.queryByTestId("ideation-waiting-badge")).not.toBeInTheDocument();
+      expect(screen.getByTestId("mock-running-popover")).toHaveAttribute(
+        "data-show-ideation",
+        "true"
+      );
+    });
+  });
+
+  describe("agent terminals indicator", () => {
+    it("hides terminal count when no agent terminals are open", () => {
+      renderBar();
+
+      expect(screen.queryByTestId("terminals-count")).not.toBeInTheDocument();
     });
 
-    it("shows 0/N when no active ideation sessions", () => {
-      renderBar({ ideationActive: 0, ideationMax: 4, ideationWaiting: 0 });
-      expect(screen.getByTestId("ideation-count")).toHaveTextContent(/0\/4/);
+    it("hides explicitly closed terminal sessions even if the drawer state is expanded", () => {
+      useAgentTerminalStore.setState({
+        openByConversationId: {
+          "conversation-1": true,
+        },
+        statusByConversationId: {
+          "conversation-1": "closed",
+        },
+        metadataByConversationId: {
+          "conversation-1": {
+            conversationId: "conversation-1",
+            projectId: "project-1",
+            title: "Closed terminal",
+            branchName: "ralphx/app/closed",
+            worktreePath: "/tmp/closed",
+            updatedAt: "2026-06-25T00:00:00Z",
+          },
+        },
+      });
+
+      renderBar();
+
+      expect(screen.queryByTestId("terminals-count")).not.toBeInTheDocument();
+    });
+
+    it("keeps collapsed running terminal sessions visible", () => {
+      useProjectStore.setState({
+        projects: {
+          "project-1": {
+            id: "project-1",
+            name: "Alpha",
+            workingDirectory: "/tmp/alpha",
+            gitMode: "worktree",
+            baseBranch: null,
+            worktreeParentDirectory: null,
+            useFeatureBranches: true,
+            mergeValidationMode: "block",
+            detectedAnalysis: null,
+            customAnalysis: null,
+            analyzedAt: null,
+            githubPrEnabled: false,
+            createdAt: "2026-06-25T00:00:00Z",
+            updatedAt: "2026-06-25T00:00:00Z",
+          },
+        },
+      });
+      useAgentTerminalStore.setState({
+        openByConversationId: {
+          "conversation-1": false,
+          "conversation-2": false,
+        },
+        statusByConversationId: {
+          "conversation-1": "running",
+        },
+        metadataByConversationId: {
+          "conversation-1": {
+            conversationId: "conversation-1",
+            projectId: "project-1",
+            title: "Implement terminal UX",
+            branchName: "ralphx/app/terminal-ux",
+            worktreePath: "/Users/example/ralphx-worktrees/terminal-ux",
+            updatedAt: "2026-06-25T00:00:00Z",
+          },
+          "conversation-2": {
+            conversationId: "conversation-2",
+            projectId: "project-1",
+            title: "Closed terminal",
+            branchName: "ralphx/app/closed",
+            worktreePath: "/tmp/closed",
+            updatedAt: "2026-06-25T00:00:00Z",
+          },
+        },
+      });
+
+      renderBar();
+
+      expect(screen.getByTestId("terminals-count")).toHaveTextContent(/1/);
+      fireEvent.click(screen.getByTestId("terminals-count"));
+      expect(screen.getByTestId("terminals-popover")).toHaveTextContent("Terminals (1)");
+      expect(screen.getByTestId("terminal-session-conversation-1")).toHaveTextContent(
+        "Implement terminal UX"
+      );
+      expect(screen.getByTestId("terminal-session-conversation-1")).toHaveTextContent(
+        "Alpha"
+      );
+    });
+
+    it("navigates to the owning agent conversation when a terminal session is clicked", () => {
+      const onNavigateToWorkspace = vi.fn();
+      useProjectStore.setState({
+        projects: {
+          "project-1": {
+            id: "project-1",
+            name: "Alpha",
+            workingDirectory: "/tmp/alpha",
+            gitMode: "worktree",
+            baseBranch: null,
+            worktreeParentDirectory: null,
+            useFeatureBranches: true,
+            mergeValidationMode: "block",
+            detectedAnalysis: null,
+            customAnalysis: null,
+            analyzedAt: null,
+            githubPrEnabled: false,
+            createdAt: "2026-06-25T00:00:00Z",
+            updatedAt: "2026-06-25T00:00:00Z",
+          },
+        },
+      });
+      useAgentTerminalStore.setState({
+        openByConversationId: {
+          "conversation-1": true,
+        },
+        statusByConversationId: {
+          "conversation-1": "running",
+        },
+        metadataByConversationId: {
+          "conversation-1": {
+            conversationId: "conversation-1",
+            projectId: "project-1",
+            title: "Implement terminal UX",
+            branchName: "ralphx/app/terminal-ux",
+            worktreePath: "/tmp/alpha/terminal-ux",
+            updatedAt: "2026-06-25T00:00:00Z",
+          },
+        },
+      });
+
+      renderBar({ onNavigateToWorkspace });
+
+      fireEvent.click(screen.getByTestId("terminals-count"));
+      fireEvent.click(screen.getByTestId("terminal-session-conversation-1"));
+
+      expect(onNavigateToWorkspace).toHaveBeenCalledWith(
+        "project-1",
+        "conversation-1"
+      );
+      expect(useUiStore.getState().executionBarOpenPopover).toBeNull();
+    });
+
+    it("places terminal count after escalated merge status", () => {
+      useProjectStore.setState({
+        projects: {
+          "project-1": {
+            id: "project-1",
+            name: "Alpha",
+            workingDirectory: "/tmp/alpha",
+            gitMode: "worktree",
+            baseBranch: null,
+            worktreeParentDirectory: null,
+            useFeatureBranches: true,
+            mergeValidationMode: "block",
+            detectedAnalysis: null,
+            customAnalysis: null,
+            analyzedAt: null,
+            githubPrEnabled: false,
+            createdAt: "2026-06-25T00:00:00Z",
+            updatedAt: "2026-06-25T00:00:00Z",
+          },
+        },
+      });
+      useAgentTerminalStore.setState({
+        openByConversationId: {
+          "conversation-1": true,
+        },
+        statusByConversationId: {
+          "conversation-1": "running",
+        },
+        metadataByConversationId: {
+          "conversation-1": {
+            conversationId: "conversation-1",
+            projectId: "project-1",
+            title: "Implement terminal UX",
+            branchName: "ralphx/app/terminal-ux",
+            worktreePath: "/tmp/alpha/terminal-ux",
+            updatedAt: "2026-06-25T00:00:00Z",
+          },
+        },
+      });
+
+      renderBar({
+        mergingCount: 0,
+        mergeAttentionCount: 1,
+        hasAttentionMerges: true,
+        mergePipelineData: {
+          active: [],
+          waiting: [],
+          needsAttention: [
+            makeMergeTask({
+              internalStatus: "merge_incomplete",
+              errorContext: "Repository hook environment failed",
+            }),
+          ],
+        },
+      });
+
+      const attention = screen.getByTestId("merge-attention-count");
+      const terminals = screen.getByTestId("terminals-count");
+      expect(
+        attention.compareDocumentPosition(terminals) &
+          Node.DOCUMENT_POSITION_FOLLOWING
+      ).toBeTruthy();
     });
   });
 
@@ -511,12 +798,78 @@ describe("ExecutionControlBar", () => {
       expect(popover).toHaveAttribute("data-open", "true");
     });
 
-    it("clicking ideation-count button passes initialTab='ideation' to RunningProcessPopover", () => {
-      renderBar({ ideationActive: 1, ideationMax: 2 });
-      fireEvent.click(screen.getByTestId("ideation-count"));
+    it("clicking running-count button opens the lane overview when lane data exists", () => {
+      renderBar({
+        lanes: [
+          {
+            lane: "workspaces",
+            active: 1,
+            idle: 0,
+            waiting: 0,
+            max: 10,
+            borrowed: 0,
+            priorityRank: 1,
+          },
+        ],
+        capacity: {
+          totalActive: 1,
+          globalMaxConcurrent: 20,
+          borrowingEnabled: false,
+          priority: ["workspaces", "tasks", "ideation"],
+        },
+      });
+      fireEvent.click(screen.getByTestId("running-count"));
       const popover = screen.getByTestId("mock-running-popover");
-      expect(popover).toHaveAttribute("data-initial-tab", "ideation");
+      expect(popover).toHaveAttribute("data-initial-tab", "running");
       expect(popover).toHaveAttribute("data-open", "true");
+    });
+
+    it("preserves the running popover open state across footer remounts", () => {
+      const lanes = [
+        {
+          lane: "workspaces" as const,
+          active: 1,
+          idle: 0,
+          waiting: 0,
+          max: 10,
+          borrowed: 0,
+          priorityRank: 1,
+        },
+        {
+          lane: "tasks" as const,
+          active: 2,
+          idle: 0,
+          waiting: 0,
+          max: 8,
+          borrowed: 0,
+          priorityRank: 2,
+        },
+      ];
+      const capacity = {
+        totalActive: 3,
+        globalMaxConcurrent: 20,
+        borrowingEnabled: false,
+        priority: ["workspaces", "tasks", "ideation"] as const,
+      };
+      const firstRender = renderBar({ runningCount: 2, lanes, capacity });
+
+      fireEvent.click(screen.getByTestId("running-count"));
+      expect(screen.getByTestId("mock-running-popover")).toHaveAttribute("data-open", "true");
+      expect(screen.getByTestId("mock-running-popover")).toHaveAttribute("data-initial-tab", "running");
+
+      firstRender.unmount();
+      renderBar({ runningCount: 2, lanes, capacity });
+
+      expect(screen.getByTestId("mock-running-popover")).toHaveAttribute("data-open", "true");
+      expect(screen.getByTestId("mock-running-popover")).toHaveAttribute("data-initial-tab", "running");
+    });
+
+    it("passes preserved queued popover state into the queued popover", () => {
+      useUiStore.getState().setExecutionBarOpenPopover("queued");
+
+      renderBar({ queuedCount: 3 });
+
+      expect(screen.getByTestId("mock-queued-popover")).toHaveAttribute("data-open", "true");
     });
 
     it("RunningProcessPopover receives showIdeation=true when ideationMax > 0", () => {

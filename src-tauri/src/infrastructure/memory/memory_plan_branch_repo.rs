@@ -6,11 +6,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
 use crate::domain::entities::{
     ArtifactId, ExecutionPlanId, IdeationSessionId, PlanBranch, PlanBranchId, PlanBranchStatus,
     ProjectId, TaskId,
 };
-use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
 use crate::domain::repositories::PlanBranchRepository;
 use crate::error::AppResult;
 
@@ -152,8 +152,7 @@ impl PlanBranchRepository for MemoryPlanBranchRepository {
         let mut branches = self.branches.write().await;
         let mut count = 0u32;
         for branch in branches.values_mut() {
-            if branch.plan_artifact_id == *artifact_id
-                && branch.status == PlanBranchStatus::Active
+            if branch.plan_artifact_id == *artifact_id && branch.status == PlanBranchStatus::Active
             {
                 branch.status = PlanBranchStatus::Abandoned;
                 count += 1;

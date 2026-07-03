@@ -22,7 +22,8 @@ capabilities:
     - mark_issue_in_progress
     - mark_issue_addressed
     - get_project_analysis
-    - create_followup_session
+    - create_followup_agent_conversation
+    - register_agent_issue
     - delegate_start
     - delegate_wait
     - delegate_cancel

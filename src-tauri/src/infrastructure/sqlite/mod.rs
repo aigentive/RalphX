@@ -8,12 +8,22 @@ pub mod sqlite_api_key_repo;
 pub mod sqlite_active_plan_repo;
 pub mod sqlite_activity_event_repo;
 pub mod sqlite_agent_lane_settings_repo;
+pub mod sqlite_agent_conversation_issue_repo;
+pub mod sqlite_agent_conversation_jira_issue_repo;
+pub mod sqlite_agent_conversation_granola_note_repo;
+pub mod sqlite_agent_conversation_linear_issue_repo;
 pub mod sqlite_agent_conversation_workspace_repo;
 pub mod sqlite_agent_model_registry_repo;
 pub mod sqlite_agent_profile_repo;
 pub mod sqlite_agent_provider_settings_repo;
 pub mod sqlite_agent_task_repo;
 pub mod sqlite_atlassian_integration_settings_repo;
+pub mod sqlite_clickup_integration_settings_repo;
+#[cfg(test)]
+mod sqlite_clickup_integration_settings_repo_tests;
+pub mod sqlite_granola_integration_settings_repo;
+#[cfg(test)]
+mod sqlite_granola_integration_settings_repo_tests;
 #[cfg(test)]
 mod sqlite_agent_task_repo_tests;
 pub mod sqlite_agent_run_repo;
@@ -41,11 +51,14 @@ pub mod sqlite_external_events_repo;
 #[cfg(test)]
 mod sqlite_execution_plan_repo_tests;
 pub mod sqlite_execution_settings_repo;
+pub mod sqlite_external_issue_link_repo;
 pub mod sqlite_ideation_effort_settings_repo;
 pub mod sqlite_ideation_model_settings_repo;
 pub mod sqlite_ideation_session_repo;
 pub mod sqlite_ideation_settings_repo;
 pub mod sqlite_learned_skill_repos;
+pub mod sqlite_linear_integration_settings_repo;
+pub mod sqlite_linear_webhook_store;
 pub mod sqlite_memory_archive_job_repository;
 #[cfg(test)]
 mod sqlite_memory_archive_job_repository_tests;
@@ -69,6 +82,7 @@ pub mod sqlite_project_skill_settings_repo;
 mod sqlite_project_skill_settings_repo_tests;
 pub mod sqlite_proposal_dependency_repo;
 pub mod sqlite_question_repo;
+pub mod sqlite_queued_message_repo;
 pub mod sqlite_review_issue_repo;
 pub mod sqlite_review_repo;
 pub mod sqlite_review_settings_repo;
@@ -87,7 +101,10 @@ pub mod sqlite_team_session_repo;
 mod sqlite_team_session_repo_tests;
 #[cfg(test)]
 mod sqlite_orphan_worktree_cleanup_marker_repo_tests;
+pub mod sqlite_ticket_canonical_branch_repo;
+pub mod sqlite_ticketing_status_catalog_repo;
 pub mod sqlite_webhook_registration_repo;
+pub mod sqlite_workspace_review_runtime_settings_repo;
 pub mod sqlite_workflow_repo;
 pub mod state_machine_repository;
 
@@ -101,12 +118,18 @@ pub use sqlite_api_key_repo::SqliteApiKeyRepository;
 pub use sqlite_active_plan_repo::SqliteActivePlanRepository;
 pub use sqlite_activity_event_repo::SqliteActivityEventRepository;
 pub use sqlite_agent_lane_settings_repo::SqliteAgentLaneSettingsRepository;
+pub use sqlite_agent_conversation_issue_repo::SqliteAgentConversationIssueRepository;
+pub use sqlite_agent_conversation_jira_issue_repo::SqliteAgentConversationJiraIssueRepository;
+pub use sqlite_agent_conversation_granola_note_repo::SqliteAgentConversationGranolaNoteRepository;
+pub use sqlite_agent_conversation_linear_issue_repo::SqliteAgentConversationLinearIssueRepository;
 pub use sqlite_agent_conversation_workspace_repo::SqliteAgentConversationWorkspaceRepository;
 pub use sqlite_agent_model_registry_repo::SqliteAgentModelRegistryRepository;
 pub use sqlite_agent_profile_repo::SqliteAgentProfileRepository;
 pub use sqlite_agent_provider_settings_repo::SqliteAgentProviderSettingsRepository;
 pub use sqlite_agent_task_repo::SqliteAgentTaskRepository;
 pub use sqlite_atlassian_integration_settings_repo::SqliteAtlassianIntegrationSettingsRepository;
+pub use sqlite_clickup_integration_settings_repo::SqliteClickUpIntegrationSettingsRepository;
+pub use sqlite_granola_integration_settings_repo::SqliteGranolaIntegrationSettingsRepository;
 pub use sqlite_agent_run_repo::SqliteAgentRunRepository;
 pub use sqlite_app_state_repo::SqliteAppStateRepository;
 pub use sqlite_artifact_bucket_repo::SqliteArtifactBucketRepository;
@@ -122,6 +145,7 @@ pub use sqlite_external_events_repo::SqliteExternalEventsRepository;
 pub use sqlite_execution_settings_repo::{
     SqliteExecutionSettingsRepository, SqliteGlobalExecutionSettingsRepository,
 };
+pub use sqlite_external_issue_link_repo::SqliteExternalIssueLinkRepository;
 pub use sqlite_ideation_effort_settings_repo::SqliteIdeationEffortSettingsRepository;
 pub use sqlite_ideation_model_settings_repo::SqliteIdeationModelSettingsRepository;
 pub use sqlite_ideation_session_repo::SqliteIdeationSessionRepository;
@@ -129,6 +153,8 @@ pub use sqlite_ideation_settings_repo::SqliteIdeationSettingsRepository;
 pub use sqlite_learned_skill_repos::{
     SqliteProjectSkillRepository, SqliteSkillUsageEventRepository, SqliteTaskOutcomeRepository,
 };
+pub use sqlite_linear_integration_settings_repo::SqliteLinearIntegrationSettingsRepository;
+pub use sqlite_linear_webhook_store::SqliteLinearWebhookStore;
 pub use sqlite_memory_archive_job_repository::SqliteMemoryArchiveJobRepository;
 pub use sqlite_memory_archive_repo::SqliteMemoryArchiveRepository;
 pub use sqlite_memory_entry_repo::SqliteMemoryEntryRepository;
@@ -144,6 +170,7 @@ pub use sqlite_project_memory_settings_repo::SqliteProjectMemorySettingsReposito
 pub use sqlite_project_skill_settings_repo::SqliteProjectSkillSettingsRepository;
 pub use sqlite_proposal_dependency_repo::SqliteProposalDependencyRepository;
 pub use sqlite_question_repo::SqliteQuestionRepository;
+pub use sqlite_queued_message_repo::SqliteQueuedMessageRepository;
 pub use sqlite_review_issue_repo::{ReviewIssueRepository, SqliteReviewIssueRepository};
 pub use sqlite_review_repo::SqliteReviewRepository;
 pub use sqlite_review_settings_repo::SqliteReviewSettingsRepository;
@@ -156,6 +183,9 @@ pub use sqlite_task_repo::SqliteTaskRepository;
 pub use sqlite_task_step_repo::SqliteTaskStepRepository;
 pub use sqlite_team_message_repo::SqliteTeamMessageRepository;
 pub use sqlite_team_session_repo::SqliteTeamSessionRepository;
+pub use sqlite_ticket_canonical_branch_repo::SqliteTicketCanonicalBranchRepository;
+pub use sqlite_ticketing_status_catalog_repo::SqliteTicketingStatusCatalogRepository;
 pub use sqlite_webhook_registration_repo::SqliteWebhookRegistrationRepository;
+pub use sqlite_workspace_review_runtime_settings_repo::SqliteWorkspaceReviewRuntimeSettingsRepository;
 pub use sqlite_workflow_repo::SqliteWorkflowRepository;
 pub use state_machine_repository::TaskStateMachineRepository;

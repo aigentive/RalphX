@@ -24,6 +24,7 @@ interface AgentsConversationMainRegionProps {
   isLoadingProjects: StartConversationPanelProps["isLoadingProjects"];
   modelRegistry: StartConversationPanelProps["modelRegistry"];
   normalizedActiveRuntime: ActiveConversationPanelProps["normalizedActiveRuntime"];
+  workspaceReviewRuntimeStatus: ActiveConversationPanelProps["workspaceReviewRuntimeStatus"];
   onActiveConversationModeChange: ActiveConversationPanelProps["onActiveConversationModeChange"];
   onActiveConversationModeMenuOpen: ActiveConversationPanelProps["onActiveConversationModeMenuOpen"];
   onActiveEffortChange: ActiveConversationPanelProps["onActiveEffortChange"];
@@ -33,7 +34,12 @@ interface AgentsConversationMainRegionProps {
   onConversationModeSwitched: ActiveConversationPanelProps["onConversationModeSwitched"];
   onCreateProject: StartConversationPanelProps["onCreateProject"];
   onFocusIdeationSession: ActiveConversationPanelProps["onFocusIdeationSession"];
+  onFocusWorkspaceReview: ActiveConversationPanelProps["onFocusWorkspaceReview"];
+  onFocusVerificationSession: ActiveConversationPanelProps["onFocusVerificationSession"];
+  onFocusTaskRuntime: ActiveConversationPanelProps["onFocusTaskRuntime"];
+  onOpenTaskArtifact: ActiveConversationPanelProps["onOpenTaskArtifact"];
   onForkConversation: ActiveConversationPanelProps["onForkConversation"];
+  onOpenPlanArtifact: ActiveConversationPanelProps["onOpenPlanArtifact"];
   onOpenPublishPane: ActiveConversationPanelProps["onOpenPublishPane"];
   onOpenPublishFile: ActiveConversationPanelProps["onOpenPublishFile"];
   onPreloadArtifacts: ActiveConversationPanelProps["onPreloadArtifacts"];
@@ -46,10 +52,13 @@ interface AgentsConversationMainRegionProps {
   onSelectChatFocus: ActiveConversationPanelProps["onSelectChatFocus"];
   projects: StartConversationPanelProps["projects"];
   publishShortcutLabel: ActiveConversationPanelProps["publishShortcutLabel"];
+  promotePublishShortcut?: ActiveConversationPanelProps["promotePublishShortcut"];
   publishingConversationId: ActiveConversationPanelProps["publishingConversationId"];
   selectedConversationId: string | null;
+  selectedTaskArtifactId: ActiveConversationPanelProps["selectedTaskArtifactId"];
   setTerminalChatDockElement: ActiveConversationPanelProps["setTerminalChatDockElement"];
   switchingConversationModeId: ActiveConversationPanelProps["switchingConversationModeId"];
+  terminalArchivedReason: ActiveConversationPanelProps["terminalArchivedReason"];
   terminalUnavailableReason: ActiveConversationPanelProps["terminalUnavailableReason"];
 }
 
@@ -71,6 +80,7 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
   isLoadingProjects,
   modelRegistry,
   normalizedActiveRuntime,
+  workspaceReviewRuntimeStatus = null,
   onActiveConversationModeChange,
   onActiveConversationModeMenuOpen,
   onActiveEffortChange,
@@ -80,7 +90,12 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
   onConversationModeSwitched,
   onCreateProject,
   onFocusIdeationSession,
+  onFocusWorkspaceReview,
+  onFocusVerificationSession,
+  onFocusTaskRuntime,
+  onOpenTaskArtifact,
   onForkConversation,
+  onOpenPlanArtifact,
   onOpenPublishPane,
   onOpenPublishFile,
   onPreloadArtifacts,
@@ -93,10 +108,13 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
   onSelectChatFocus,
   projects,
   publishShortcutLabel,
+  promotePublishShortcut = false,
   publishingConversationId,
   selectedConversationId,
+  selectedTaskArtifactId,
   setTerminalChatDockElement,
   switchingConversationModeId,
+  terminalArchivedReason,
   terminalUnavailableReason,
 }: AgentsConversationMainRegionProps) {
   if (activeProjectId && selectedConversationId && activeConversation) {
@@ -115,6 +133,7 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
         chatFocusOptions={chatFocusOptions}
         hasAutoOpenArtifacts={hasAutoOpenArtifacts}
         normalizedActiveRuntime={normalizedActiveRuntime}
+        workspaceReviewRuntimeStatus={workspaceReviewRuntimeStatus}
         onActiveConversationModeChange={onActiveConversationModeChange}
         onActiveConversationModeMenuOpen={onActiveConversationModeMenuOpen}
         onActiveEffortChange={onActiveEffortChange}
@@ -123,7 +142,12 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
         onAgentUserMessageSent={onAgentUserMessageSent}
         onConversationModeSwitched={onConversationModeSwitched}
         onFocusIdeationSession={onFocusIdeationSession}
+        onFocusWorkspaceReview={onFocusWorkspaceReview}
+        onFocusVerificationSession={onFocusVerificationSession}
+        onFocusTaskRuntime={onFocusTaskRuntime}
+        onOpenTaskArtifact={onOpenTaskArtifact}
         onForkConversation={onForkConversation}
+        onOpenPlanArtifact={onOpenPlanArtifact}
         onOpenPublishPane={onOpenPublishPane}
         onOpenPublishFile={onOpenPublishFile}
         onPreloadArtifacts={onPreloadArtifacts}
@@ -133,10 +157,13 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
         onToggleArtifacts={onToggleArtifacts}
         onSelectChatFocus={onSelectChatFocus}
         publishShortcutLabel={publishShortcutLabel}
+        promotePublishShortcut={promotePublishShortcut}
         publishingConversationId={publishingConversationId}
         selectedConversationId={selectedConversationId}
+        selectedTaskArtifactId={selectedTaskArtifactId}
         setTerminalChatDockElement={setTerminalChatDockElement}
         switchingConversationModeId={switchingConversationModeId}
+        terminalArchivedReason={terminalArchivedReason}
         terminalUnavailableReason={terminalUnavailableReason}
       />
     );

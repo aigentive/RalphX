@@ -14,6 +14,8 @@ export const ManagedProviderCliStatusResponseSchema = z.object({
   provider: HarnessSchema,
   cliManagementMode: z.enum(["user_managed", "rx_managed"]),
   autoUpdateEnabled: z.boolean(),
+  customBinaryEnabled: z.boolean().optional(),
+  customBinaryPath: z.string().nullable().optional(),
   supported: z.boolean(),
   installed: z.boolean(),
   binaryPath: z.string().nullable().optional(),

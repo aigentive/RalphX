@@ -181,6 +181,70 @@ describe("agentSessionStore", () => {
       expect(useAgentSessionStore.getState().focusedProjectId).toBeNull();
     });
 
+    it("stores and consumes a pending start conversation draft once", () => {
+      const { consumeStartConversationDraft, setStartConversationDraft } =
+        useAgentSessionStore.getState();
+
+      const composerProjectReferences = [
+        {
+          projectId: "project-1",
+          name: "ralphx",
+          path: "/work/ralphx",
+        },
+      ];
+      const composerArtifactReferences = [
+        {
+          kind: "plan" as const,
+          artifactId: "plan-1",
+          label: "Plan",
+          title: "Fix flow",
+        },
+      ];
+      const composerIntegrationReferences = [
+        {
+          provider: "clickup" as const,
+          kind: "clickup" as const,
+          id: "TASK-123",
+          key: "TASK-123",
+          title: "Demo task",
+        },
+      ];
+
+      setStartConversationDraft({
+        projectId: "project-1",
+        content: "Fix the failing publish flow",
+        mode: "edit",
+        composerProjectReferences,
+        composerArtifactReferences,
+        composerIntegrationReferences,
+      });
+
+      expect(useAgentSessionStore.getState().startConversationDraft).toEqual({
+        projectId: "project-1",
+        content: "Fix the failing publish flow",
+        mode: "edit",
+        composerProjectReferences,
+        composerArtifactReferences,
+        composerIntegrationReferences,
+      });
+      const consumed = consumeStartConversationDraft();
+      expect(consumed).toEqual({
+        projectId: "project-1",
+        content: "Fix the failing publish flow",
+        mode: "edit",
+        composerProjectReferences,
+        composerArtifactReferences,
+        composerIntegrationReferences,
+      });
+      expect(consumed?.composerProjectReferences?.[0]).not.toBe(composerProjectReferences[0]);
+      expect(consumed?.composerArtifactReferences?.[0]).not.toBe(composerArtifactReferences[0]);
+      expect(consumed?.composerIntegrationReferences?.[0]).not.toBe(
+        composerIntegrationReferences[0],
+      );
+      expect(useAgentSessionStore.getState().startConversationDraft).toBeNull();
+      expect(consumeStartConversationDraft()).toBeNull();
+    });
+
     it("selectConversation pins focus + remembers per-project last conversation", () => {
       const { selectConversation, clearSelection } = useAgentSessionStore.getState();
 
@@ -320,11 +384,19 @@ describe("agentSessionStore", () => {
       const s1 = useAgentSessionStore.getState();
       expect(s1.runtimeByConversationId.c1.modelId).toBe("opus");
       expect(s1.lastRuntimeByProjectId.p1.modelId).toBe("opus");
+      expect(s1.lastModelEffortByProvider.claude).toEqual({
+        modelId: "opus",
+        effort: "xhigh",
+      });
 
       setLastRuntimeForProject("p2", { provider: "codex", modelId: "gpt-5.4-mini" });
       expect(useAgentSessionStore.getState().lastRuntimeByProjectId.p2.modelId).toBe(
         "gpt-5.4-mini",
       );
+      expect(useAgentSessionStore.getState().lastModelEffortByProvider.codex).toEqual({
+        modelId: "gpt-5.4-mini",
+        effort: "medium",
+      });
     });
 
     it("remembers branch base cache and selected branch per project", () => {

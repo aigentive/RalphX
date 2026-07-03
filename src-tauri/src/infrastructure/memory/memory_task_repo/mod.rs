@@ -222,6 +222,22 @@ impl TaskRepository for MemoryTaskRepository {
         Ok(matching_timestamps.into_iter().min())
     }
 
+    async fn get_status_last_entered_at(
+        &self,
+        task_id: &TaskId,
+        status: InternalStatus,
+    ) -> AppResult<Option<chrono::DateTime<Utc>>> {
+        let history = self.history.read().await;
+
+        let matching_timestamps: Vec<chrono::DateTime<Utc>> = history
+            .iter()
+            .filter(|(id, transition)| id == task_id && transition.to == status)
+            .map(|(_, transition)| transition.timestamp)
+            .collect();
+
+        Ok(matching_timestamps.into_iter().max())
+    }
+
     async fn get_next_executable(&self, project_id: &ProjectId) -> AppResult<Option<Task>> {
         let tasks = self.tasks.read().await;
 

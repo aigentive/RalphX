@@ -104,6 +104,7 @@ pub struct PrBranchMatch {
     pub is_draft: bool,
     pub head_ref_name: String,
     pub updated_at: Option<String>,
+    pub author_login: Option<String>,
 }
 
 impl PrBranchMatch {
@@ -129,6 +130,13 @@ pub struct PrSearchResult {
     pub is_draft: bool,
     pub updated_at: Option<String>,
     pub author_login: Option<String>,
+    #[serde(default)]
+    pub assignee_logins: Vec<String>,
+    pub review_decision: Option<String>,
+    #[serde(default)]
+    pub latest_review_author_logins: Vec<String>,
+    #[serde(default)]
+    pub review_request_logins: Vec<String>,
     pub is_cross_repository: bool,
 }
 
@@ -201,9 +209,128 @@ impl PrDiffAnnotations {
     }
 }
 
+/// Summary-level GitHub pull request review event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PrReviewSubmissionEvent {
+    Approve,
+    RequestChanges,
+    Comment,
+}
+
+impl std::fmt::Display for PrReviewSubmissionEvent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Approve => write!(f, "APPROVE"),
+            Self::RequestChanges => write!(f, "REQUEST_CHANGES"),
+            Self::Comment => write!(f, "COMMENT"),
+        }
+    }
+}
+
+/// Result from submitting a GitHub pull request review.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrSubmittedReview {
+    pub id: String,
+    pub url: Option<String>,
+}
+
+/// Full PR description payload for the read-only detail view.
+///
+/// Sourced from `gh pr view <n> --json title,body,author,createdAt,url,state,isDraft,headRefName,baseRefName`.
+/// Supplies the Description section (title/body) that lighter PR reads do not fetch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrDetail {
+    pub number: i64,
+    pub title: String,
+    pub body: Option<String>,
+    pub author: Option<String>,
+    pub created_at: Option<String>,
+    pub url: Option<String>,
+    pub state: PrStatus,
+    pub is_draft: bool,
+    pub head_ref_name: String,
+    pub base_ref_name: String,
+}
+
+/// A single inline review-thread comment attached to a PR diff line.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrReviewThreadComment {
+    pub id: String,
+    pub author: Option<String>,
+    pub body: String,
+    pub path: Option<String>,
+    pub side: Option<String>,
+    pub line: Option<i64>,
+    pub url: Option<String>,
+    pub created_at: Option<String>,
+    /// Parent review-comment id when this is a reply (enables threading).
+    pub in_reply_to_id: Option<String>,
+    /// The anchored line no longer maps to the current head (outdated comment).
+    pub is_outdated: bool,
+}
+
+/// Live, transient inline review-thread payload for a PR.
+///
+/// Factored out of [`GithubServiceTrait::fetch_pr_diff_annotations`] so the
+/// detail view can render the review conversation without the heavier
+/// check-run / code-scanning annotation fan-out (opt-in only). Not persisted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrReviewThread {
+    pub pr_number: i64,
+    pub comments: Vec<PrReviewThreadComment>,
+}
+
+impl PrReviewThread {
+    pub fn empty(pr_number: i64) -> Self {
+        Self {
+            pr_number,
+            comments: Vec::new(),
+        }
+    }
+}
+
+/// Read-only reflection of the locally-authenticated `gh` CLI (`gh auth status`).
+///
+/// RalphX stores no GitHub token (Decision 1); this is a live status surface only.
+/// `gh` not-installed and `gh` unauthenticated are distinct, non-error states.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GithubConnectionStatus {
+    /// Whether the `gh` binary is installed (resolvable + spawnable).
+    pub gh_installed: bool,
+    /// Whether `gh auth status` reports an authenticated account.
+    pub authenticated: bool,
+    /// The authenticated host (e.g. `github.com`), if any.
+    pub host: Option<String>,
+    /// The active authenticated account login, if any.
+    pub account: Option<String>,
+}
+
+impl GithubConnectionStatus {
+    /// Typed "not available" status — used for `gh` not-installed/unauthenticated
+    /// and when the GitHub service is absent from `AppState`. Never an error.
+    pub fn unavailable() -> Self {
+        Self {
+            gh_installed: false,
+            authenticated: false,
+            host: None,
+            account: None,
+        }
+    }
+}
+
 /// Abstraction over GitHub operations (production: `gh` CLI, tests: mock)
 #[async_trait]
 pub trait GithubServiceTrait: Send + Sync {
+    /// Create a GitHub issue. Returns the created issue URL.
+    async fn create_issue(
+        &self,
+        working_dir: &Path,
+        repository: &str,
+        title: &str,
+        body_file: &Path,
+    ) -> AppResult<String>;
+
     /// Create a draft pull request. Returns (pr_number, pr_url).
     async fn create_draft_pr(
         &self,
@@ -256,6 +383,40 @@ pub trait GithubServiceTrait: Send + Sync {
         pr_number: i64,
     ) -> AppResult<PrDiffAnnotations> {
         Ok(PrDiffAnnotations::empty(pr_number))
+    }
+
+    /// Fetch the full PR description payload (title/body/author/state/refs) for
+    /// the read-only detail view. The default errors so non-`gh` doubles need no
+    /// override unless they exercise the detail path (no meaningful empty value).
+    async fn fetch_pr_detail(&self, _working_dir: &Path, _pr_number: i64) -> AppResult<PrDetail> {
+        Err(crate::error::AppError::Infrastructure(
+            "GitHub PR detail fetch is unavailable for this runtime".to_string(),
+        ))
+    }
+
+    /// Fetch the live inline review-thread comments for a PR (transient; never
+    /// persisted). Factored out of `fetch_pr_diff_annotations` so the detail view
+    /// can render the review conversation without the opt-in annotation fan-out.
+    /// The default returns an empty thread so non-`gh` doubles need no override.
+    async fn fetch_pr_review_thread(
+        &self,
+        _working_dir: &Path,
+        pr_number: i64,
+    ) -> AppResult<PrReviewThread> {
+        Ok(PrReviewThread::empty(pr_number))
+    }
+
+    /// Submit a summary-level GitHub pull request review.
+    async fn submit_pr_review(
+        &self,
+        _working_dir: &Path,
+        _pr_number: i64,
+        _event: PrReviewSubmissionEvent,
+        _body: &str,
+    ) -> AppResult<PrSubmittedReview> {
+        Err(crate::error::AppError::Infrastructure(
+            "GitHub review submission is unavailable for this runtime".to_string(),
+        ))
     }
 
     /// Fetch lightweight PR health for background supervision.
@@ -330,6 +491,24 @@ pub trait GithubServiceTrait: Send + Sync {
     ) -> AppResult<Option<PrBranchMatch>> {
         Ok(None)
     }
+
+    /// List recent PR branch matches across all GitHub states.
+    async fn list_pull_request_branch_matches(
+        &self,
+        _working_dir: &Path,
+        _limit: usize,
+    ) -> AppResult<Vec<PrBranchMatch>> {
+        Ok(Vec::new())
+    }
+
+    /// Reflect the locally-authenticated `gh` CLI via `gh auth status`.
+    ///
+    /// Returns a typed status (never an error) distinguishing gh not-installed,
+    /// gh unauthenticated, and authenticated (+ host/account). The default body
+    /// reports "unavailable" so non-`gh` doubles need no override.
+    async fn fetch_github_connection_status(&self) -> AppResult<GithubConnectionStatus> {
+        Ok(GithubConnectionStatus::unavailable())
+    }
 }
 
 #[cfg(test)]
@@ -340,6 +519,16 @@ mod tests {
 
     #[async_trait]
     impl GithubServiceTrait for DefaultOnlyGithubService {
+        async fn create_issue(
+            &self,
+            _working_dir: &Path,
+            _repository: &str,
+            _title: &str,
+            _body_file: &Path,
+        ) -> AppResult<String> {
+            unimplemented!("not needed for default annotation coverage")
+        }
+
         async fn create_draft_pr(
             &self,
             _working_dir: &Path,

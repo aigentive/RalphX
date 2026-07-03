@@ -14,6 +14,7 @@ use ralphx_lib::domain::entities::{
     ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranch, PlanBranchId,
     Project, ProjectId,
 };
+use ralphx_lib::domain::review::ReviewSettings;
 use ralphx_lib::domain::services::github_service::GithubServiceTrait;
 use ralphx_lib::http_server::handlers::agent_workspaces::{
     complete_agent_workspace_repair, CompleteAgentWorkspaceRepairRequest,
@@ -45,6 +46,17 @@ fn make_http_state(app_state: AppState) -> HttpServerState {
         team_service: Arc::new(TeamService::new_without_events(Arc::new(team_tracker))),
         delegation_service: Default::default(),
     }
+}
+
+async fn disable_workspace_review_gate(app_state: &AppState) {
+    app_state
+        .review_settings_repo
+        .update_settings(&ReviewSettings {
+            require_workspace_review: false,
+            ..ReviewSettings::default()
+        })
+        .await
+        .expect("disable workspace review policy for auto-publish fixture");
 }
 
 #[tokio::test]
@@ -121,6 +133,7 @@ async fn complete_repair_attempts_publish_without_waiting_for_user_click() {
         .create_or_update(workspace)
         .await
         .expect("seed workspace");
+    disable_workspace_review_gate(&app_state).await;
 
     let state = make_http_state(app_state);
     let response = complete_agent_workspace_repair(
@@ -172,7 +185,7 @@ async fn complete_repair_attempts_publish_without_waiting_for_user_click() {
 }
 
 #[tokio::test]
-async fn complete_update_only_repair_does_not_auto_publish() {
+async fn complete_update_only_repair_auto_publishes_when_enabled() {
     let repo = tempfile::TempDir::new().expect("repo tempdir");
     let worktrees = tempfile::TempDir::new().expect("worktree tempdir");
 
@@ -240,6 +253,14 @@ async fn complete_update_only_repair_does_not_auto_publish() {
         workspace_path.to_string_lossy().to_string(),
     );
     workspace.publication_push_status = Some("needs_agent".to_string());
+    workspace.publication_pr_number = Some(391);
+    workspace.publication_pr_url = Some("https://github.com/example/ralphx/pull/391".to_string());
+    workspace.publication_pr_status = Some("open".to_string());
+    workspace.pr_autofix_enabled = true;
+    workspace.pr_auto_merge_desired = true;
+    workspace.pr_auto_merge_current = Some(true);
+    workspace.pr_supervision_status = Some("fixing".to_string());
+    workspace.pr_supervision_summary = Some("Workspace repair is in progress.".to_string());
     app_state
         .agent_conversation_workspace_repo
         .create_or_update(workspace)
@@ -256,6 +277,7 @@ async fn complete_update_only_repair_does_not_auto_publish() {
         ))
         .await
         .expect("seed update-only repair request");
+    disable_workspace_review_gate(&app_state).await;
 
     let state = make_http_state(app_state);
     let response = complete_agent_workspace_repair(
@@ -272,11 +294,17 @@ async fn complete_update_only_repair_does_not_auto_publish() {
     .expect("update-only repair completion should succeed")
     .0;
 
-    assert_eq!(response.new_status, "refreshed");
-    assert_eq!(response.auto_publish_status.as_deref(), Some("skipped"));
-    assert_eq!(response.auto_publish_error, None);
-    assert_eq!(response.pr_number, None);
-    assert_eq!(response.pr_url, None);
+    assert_eq!(response.new_status, "failed");
+    assert_eq!(response.auto_publish_status.as_deref(), Some("failed"));
+    assert!(response
+        .auto_publish_error
+        .as_deref()
+        .is_some_and(|error| error.contains("GitHub integration is not available")));
+    assert_eq!(response.pr_number, Some(391));
+    assert_eq!(
+        response.pr_url.as_deref(),
+        Some("https://github.com/example/ralphx/pull/391")
+    );
 
     let refreshed = state
         .app_state
@@ -285,10 +313,9 @@ async fn complete_update_only_repair_does_not_auto_publish() {
         .await
         .expect("query workspace")
         .expect("workspace exists");
-    assert_eq!(
-        refreshed.publication_push_status.as_deref(),
-        Some("refreshed")
-    );
+    assert_eq!(refreshed.publication_push_status.as_deref(), Some("failed"));
+    assert_eq!(refreshed.pr_supervision_status.as_deref(), Some("fixing"));
+    assert_eq!(refreshed.pr_auto_merge_current, Some(true));
 
     let events = state
         .app_state
@@ -299,7 +326,7 @@ async fn complete_update_only_repair_does_not_auto_publish() {
     assert!(events
         .iter()
         .any(|event| event.step == "repair_completed" && event.status == "succeeded"));
-    assert!(!events.iter().any(|event| {
+    assert!(events.iter().any(|event| {
         event.step == "failed"
             && event
                 .summary
@@ -326,6 +353,7 @@ async fn complete_repair_uses_linked_plan_branch_for_ideation_workspace() {
     git(repo.path(), &["add", "plan.txt"]);
     git(repo.path(), &["commit", "-m", "repair linked plan"]);
     let repair_sha = git(repo.path(), &["rev-parse", "HEAD"]);
+    git(repo.path(), &["checkout", "main"]);
 
     let conversation_id = ChatConversationId::from_string("22222222-2222-2222-2222-222222222222");
     let mut project = Project::new(

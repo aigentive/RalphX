@@ -544,6 +544,171 @@ export const IDEATION_TOOLS = [
         },
     },
     {
+        name: "create_followup_agent_conversation",
+        description: "Create a visible follow-up Agent conversation in Ideation mode, linked to an existing Agent conversation. " +
+            "Use this when task execution, review, or project chat needs an explicit separate branch of follow-up work. " +
+            "Pass source_task_id when available so the backend can resolve the origin Agent conversation from the task's attached plan.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                origin_conversation_id: {
+                    type: "string",
+                    description: "Optional explicit origin Agent conversation ID. If omitted, source_task_id must resolve to an Agent-conversation-attached ideation session.",
+                },
+                source_task_id: {
+                    type: "string",
+                    description: "Task ID that encountered the blocker or follow-up condition.",
+                },
+                source_context_type: {
+                    type: "string",
+                    description: "Originating context type, for example task_execution, review, merge, research, or agent_conversation.",
+                },
+                source_context_id: {
+                    type: "string",
+                    description: "Originating context ID. For task_execution/review this is typically the task ID; for agent_conversation this is the origin conversation ID.",
+                },
+                source_agent_name: {
+                    type: "string",
+                    description: "Fully qualified RalphX catalog agent name requesting the follow-up.",
+                },
+                title: {
+                    type: "string",
+                    description: "Visible title for the follow-up Agent conversation.",
+                },
+                description: {
+                    type: "string",
+                    description: "Description of the follow-up work.",
+                },
+                initial_prompt: {
+                    type: "string",
+                    description: "Optional initial prompt for the new Agent conversation; overrides description as the main request body.",
+                },
+                spawn_reason: {
+                    type: "string",
+                    description: "Reason for spawning the follow-up conversation, for example out_of_scope_failure.",
+                },
+                blocker_fingerprint: {
+                    type: "string",
+                    description: "Optional stable dedupe key for the blocker. In out-of-scope drift flows the backend can derive this from source_task_id task context.",
+                },
+                provider_harness: {
+                    type: "string",
+                    enum: ["claude", "codex"],
+                    description: "Optional provider harness override for the new Agent conversation.",
+                },
+                model_override: {
+                    type: "string",
+                    description: "Optional model override for the new Agent conversation.",
+                },
+                logical_effort: {
+                    type: "string",
+                    enum: ["low", "medium", "high"],
+                    description: "Optional provider-neutral reasoning effort override.",
+                },
+            },
+            required: ["title", "source_context_type", "source_context_id", "spawn_reason"],
+        },
+    },
+    {
+        name: "register_agent_issue",
+        description: "Register a durable issue on the visible origin Agent conversation when plan drift, a human decision, or a follow-up opportunity is discovered. " +
+            "This records the issue for the Agents UI. If auto-follow-up policy is enabled and auto_followup_eligible is true, the backend also creates or reuses a visible follow-up Agent conversation.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                origin_conversation_id: {
+                    type: "string",
+                    description: "Optional explicit origin Agent conversation ID. If omitted, source_task_id must resolve to an Agent-conversation-attached ideation session, or source_context_type=agent_conversation with source_context_id.",
+                },
+                source_task_id: {
+                    type: "string",
+                    description: "Task ID that discovered or is blocked by this issue.",
+                },
+                source_context_type: {
+                    type: "string",
+                    description: "Originating context type, for example agent_conversation, task_execution, review, merge, or research.",
+                },
+                source_context_id: {
+                    type: "string",
+                    description: "Originating context ID. For task_execution/review this is typically the task ID; for agent_conversation this is the origin conversation ID.",
+                },
+                source_agent_name: {
+                    type: "string",
+                    description: "Fully qualified RalphX catalog agent name registering the issue.",
+                },
+                issue_kind: {
+                    type: "string",
+                    enum: [
+                        "plan_drift",
+                        "human_decision",
+                        "execution_blocked",
+                        "review_escalation",
+                        "merge_attention",
+                        "followup_opportunity",
+                    ],
+                    description: "Issue category.",
+                },
+                severity: {
+                    type: "string",
+                    enum: ["info", "low", "medium", "high", "critical"],
+                    description: "Issue severity. Default: medium.",
+                },
+                blocking_scope: {
+                    type: "string",
+                    enum: ["none", "current_task", "review_decision", "merge", "followup_only"],
+                    description: "How this issue affects execution. Existing task states remain authoritative; use the matching task/review tool to block or escalate when needed.",
+                },
+                title: {
+                    type: "string",
+                    description: "Short visible title for the Issues tab.",
+                },
+                summary: {
+                    type: "string",
+                    description: "Concise issue summary.",
+                },
+                evidence: {
+                    type: "string",
+                    description: "Concrete evidence such as files, failing checks, or observed drift.",
+                },
+                recommendation: {
+                    type: "string",
+                    description: "Recommended next action for the user or follow-up branch.",
+                },
+                blocker_fingerprint: {
+                    type: "string",
+                    description: "Stable dedupe key for this issue, for example scope-drift:<task-id>:<file-or-check>.",
+                },
+                followup_title: {
+                    type: "string",
+                    description: "Optional title to use if this issue becomes a follow-up Agent conversation.",
+                },
+                followup_prompt: {
+                    type: "string",
+                    description: "Optional prompt to use if this issue becomes a follow-up Agent conversation.",
+                },
+                auto_followup_eligible: {
+                    type: "boolean",
+                    description: "Whether this issue is safe for automatic follow-up Agent conversation creation when the user policy enables it.",
+                },
+                provider_harness: {
+                    type: "string",
+                    enum: ["claude", "codex"],
+                    description: "Optional provider harness override for auto-created follow-up conversations.",
+                },
+                model_override: {
+                    type: "string",
+                    description: "Optional model override for auto-created follow-up conversations.",
+                },
+                logical_effort: {
+                    type: "string",
+                    enum: ["low", "medium", "high"],
+                    description: "Optional provider-neutral reasoning effort override.",
+                },
+            },
+            required: ["title", "summary", "issue_kind", "source_context_type", "source_context_id"],
+        },
+    },
+    {
         name: "get_parent_session_context",
         description: "Get the parent session context for a child session. Returns parent session metadata, plan content, and proposals summary.",
         inputSchema: {

@@ -12,7 +12,7 @@ import { enableMapSet } from "immer";
 import { invoke } from "@tauri-apps/api/core";
 import { featureFlagsSchema } from "@/types/feature-flags";
 import type { FeatureFlags } from "@/types/feature-flags";
-import { isViewEnabled } from "@/hooks/useFeatureFlags";
+import { applyFeatureFlagOverrides, isViewEnabled } from "@/hooks/useFeatureFlags";
 import type { AskUserQuestionPayload } from "@/types/ask-user-question";
 import type { ExecutionStatusResponse } from "@/lib/tauri";
 import type { RecoveryPromptEvent } from "@/types/events";
@@ -81,6 +81,13 @@ export type GraphSelection =
   | { kind: "planGroup"; id: string }
   | { kind: "tierGroup"; id: string }
   | { kind: "customGroup"; id: string };
+
+export interface TaskCreationContext {
+  projectId: string;
+  defaultTitle?: string;
+  ideationSessionId?: string;
+  executionPlanId?: string;
+}
 
 function applyTaskSelection(
   state: { selectedTaskId: string | null; taskHistoryState: UiState["taskHistoryState"] },
@@ -159,9 +166,11 @@ function saveSelectedTaskByProject(map: Record<string, string | null>): void {
 const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
   activityPage: true,
   extensibilityPage: true,
+  ideationPage: false,
   battleMode: true,
   teamMode: false,
   atlassianOauth: false,
+  ticketingDashboard: false,
 };
 
 // ============================================================================
@@ -193,6 +202,15 @@ export interface ActivityFilter {
   taskId: string | null;
   sessionId: string | null;
 }
+
+export type ExecutionBarPopoverKind =
+  | "running"
+  | "queued"
+  | "paused"
+  | "merge"
+  | "terminals"
+  | null;
+export type ExecutionBarRunningTab = "running" | "workspaces" | "execution" | "ideation";
 
 /** Confirmation dialog configuration */
 export interface ConfirmationConfig {
@@ -235,6 +253,10 @@ interface UiState {
   recoveryPromptSurface: "chat" | "task_detail" | null;
   /** Current execution status (pause state, running/queued counts) */
   executionStatus: ExecutionStatusResponse;
+  /** Currently open execution bar popover, if any */
+  executionBarOpenPopover: ExecutionBarPopoverKind;
+  /** Last selected tab inside the Running execution bar popover */
+  executionBarRunningTab: ExecutionBarRunningTab;
   /** Whether to show archived tasks on the board */
   showArchived: boolean;
   /** Whether to show merge tasks on the board */
@@ -267,13 +289,15 @@ interface UiState {
     agentRunId?: string | undefined;
   } | null;
   /** Task creation overlay context, or null if closed */
-  taskCreationContext: { projectId: string; defaultTitle?: string } | null;
+  taskCreationContext: TaskCreationContext | null;
   /** Whether the welcome screen is manually shown (vs. empty state) */
   showWelcomeOverlay: boolean;
   /** View to return to when closing manually-opened welcome screen */
   welcomeOverlayReturnView: ViewType | null;
   /** View to return to when leaving team split view */
   previousView: ViewType | null;
+  /** One-shot flag for top-bar project switches that should keep the visible section. */
+  preserveCurrentViewOnProjectSwitch: boolean;
   /** Filter for activity view navigation (set by StatusActivityBadge) */
   activityFilter: ActivityFilter;
   /** Set of collapsed column IDs (persisted to localStorage) */
@@ -353,6 +377,10 @@ interface UiActions {
   setExecutionRunningCount: (count: number) => void;
   /** Set queued count */
   setExecutionQueuedCount: (count: number, queuedMessageCount?: number) => void;
+  /** Set the currently open execution bar popover */
+  setExecutionBarOpenPopover: (popover: ExecutionBarPopoverKind) => void;
+  /** Set the selected tab inside the Running execution bar popover */
+  setExecutionBarRunningTab: (tab: ExecutionBarRunningTab) => void;
   /** Set whether to show archived tasks */
   setShowArchived: (show: boolean) => void;
   /** Set whether to show merge tasks */
@@ -389,7 +417,11 @@ interface UiActions {
     agentRunId?: string | undefined;
   } | null) => void;
   /** Open task creation overlay */
-  openTaskCreation: (projectId: string, defaultTitle?: string) => void;
+  openTaskCreation: (
+    projectId: string,
+    defaultTitle?: string,
+    context?: Pick<TaskCreationContext, "ideationSessionId" | "executionPlanId">
+  ) => void;
   /** Close task creation overlay */
   closeTaskCreation: () => void;
   /** Open welcome screen overlay, saving current view */
@@ -410,6 +442,8 @@ interface UiActions {
   setCollapsedColumns: (columns: Set<string>) => void;
   /** Set the view to return to when leaving team split view */
   setPreviousView: (view: ViewType | null) => void;
+  /** Preserve the current section for the next project switch. */
+  preserveCurrentViewOnNextProjectSwitch: () => void;
   /** Atomically save old project state, restore new project state, clear ephemeral state */
   switchToProject: (oldProjectId: string | null, newProjectId: string) => void;
   /** Remove stale per-project route entries for a deleted project */
@@ -478,6 +512,8 @@ export const useUiStore = create<UiState & UiActions>()(
       ideationMaxProject: 5,
       ideationMaxGlobal: 10,
     },
+    executionBarOpenPopover: null,
+    executionBarRunningTab: "execution",
     showArchived: false,
     showMergeTasks: loadShowMergeTasks(),
     boardSearchQuery: null,
@@ -494,6 +530,7 @@ export const useUiStore = create<UiState & UiActions>()(
     showWelcomeOverlay: false,
     welcomeOverlayReturnView: null,
     previousView: null,
+    preserveCurrentViewOnProjectSwitch: false,
     activityFilter: { taskId: null, sessionId: null },
     collapsedColumns: loadCollapsedColumns(),
     viewByProject: loadViewByProject(),
@@ -529,7 +566,10 @@ export const useUiStore = create<UiState & UiActions>()(
 
     setCurrentView: (view) =>
       set((state) => {
-        const safeView = isViewEnabled(view, state.featureFlags) ? view : DEFAULT_PROJECT_VIEW;
+        const safeView =
+          view === "ticketing" || isViewEnabled(view, state.featureFlags)
+            ? view
+            : DEFAULT_PROJECT_VIEW;
         const projectId = useProjectStore.getState().activeProjectId;
         state.currentView = safeView;
         if (projectId) {
@@ -647,6 +687,16 @@ export const useUiStore = create<UiState & UiActions>()(
         }
       }),
 
+    setExecutionBarOpenPopover: (popover) =>
+      set((state) => {
+        state.executionBarOpenPopover = popover;
+      }),
+
+    setExecutionBarRunningTab: (tab) =>
+      set((state) => {
+        state.executionBarRunningTab = tab;
+      }),
+
     setShowArchived: (show) =>
       set((state) => {
         state.showArchived = show;
@@ -747,11 +797,13 @@ export const useUiStore = create<UiState & UiActions>()(
         state.taskHistoryState = historyState;
       }),
 
-    openTaskCreation: (projectId, defaultTitle) =>
+    openTaskCreation: (projectId, defaultTitle, context) =>
       set((state) => {
         state.taskCreationContext = {
           projectId,
           ...(defaultTitle !== undefined && { defaultTitle }),
+          ...(context?.ideationSessionId && { ideationSessionId: context.ideationSessionId }),
+          ...(context?.executionPlanId && { executionPlanId: context.executionPlanId }),
         };
       }),
 
@@ -823,6 +875,11 @@ export const useUiStore = create<UiState & UiActions>()(
         state.previousView = view;
       }),
 
+    preserveCurrentViewOnNextProjectSwitch: () =>
+      set((state) => {
+        state.preserveCurrentViewOnProjectSwitch = true;
+      }),
+
     switchToProject: (oldProjectId, newProjectId) =>
       set((state) => {
         // SAVE phase — skip if oldProjectId is null (first load)
@@ -832,8 +889,13 @@ export const useUiStore = create<UiState & UiActions>()(
           state.selectedTaskByProject[oldProjectId] = state.selectedTaskId;
         }
 
+        const preserveCurrentView = state.preserveCurrentViewOnProjectSwitch;
+        state.preserveCurrentViewOnProjectSwitch = false;
+
         // RESTORE phase — resolve view, fallback ephemeral views to the default project view
-        let restoredView: ViewType = state.viewByProject[newProjectId] ?? DEFAULT_PROJECT_VIEW;
+        let restoredView: ViewType = preserveCurrentView
+          ? state.currentView
+          : state.viewByProject[newProjectId] ?? DEFAULT_PROJECT_VIEW;
         let restoredSelectedTaskId = state.selectedTaskByProject[newProjectId] ?? null;
         // Guard against stale localStorage values ("settings" was removed from ViewType)
         if ((restoredView as string) === "settings" || restoredView === "team") {
@@ -848,6 +910,9 @@ export const useUiStore = create<UiState & UiActions>()(
         }
         if (restoredView !== "kanban" && restoredView !== "graph") {
           restoredSelectedTaskId = null;
+        }
+        if (preserveCurrentView) {
+          state.viewByProject[newProjectId] = restoredView;
         }
 
         // Persist updated maps
@@ -885,6 +950,14 @@ export const useUiStore = create<UiState & UiActions>()(
     setFeatureFlags: (flags) =>
       set((state) => {
         state.featureFlags = flags;
+        if (!isViewEnabled(state.currentView, flags)) {
+          state.currentView = DEFAULT_PROJECT_VIEW;
+          const projectId = useProjectStore.getState().activeProjectId;
+          if (projectId) {
+            state.viewByProject[projectId] = DEFAULT_PROJECT_VIEW;
+            saveViewByProject(state.viewByProject);
+          }
+        }
       }),
 
     navigateToTask: (taskId) => {
@@ -987,7 +1060,7 @@ void invoke<unknown>("get_ui_feature_flags")
   .then((raw) => {
     const result = featureFlagsSchema.safeParse(raw);
     if (result.success) {
-      useUiStore.getState().setFeatureFlags(result.data);
+      useUiStore.getState().setFeatureFlags(applyFeatureFlagOverrides(result.data));
     }
   })
   .catch(() => {

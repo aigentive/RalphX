@@ -8,14 +8,15 @@
 
 use std::sync::Arc;
 
+use ralphx_lib::application::chat_service::{ChatService, MockChatService};
 use ralphx_lib::application::pending_session_drain::PendingSessionDrainService;
-use ralphx_lib::application::MockChatService;
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::{IdeationSession, IdeationSessionId, ProjectId};
 use ralphx_lib::domain::repositories::IdeationSessionRepository;
-use ralphx_lib::domain::services::MemoryRunningAgentRegistry;
+use ralphx_lib::domain::services::{MemoryRunningAgentRegistry, MessageQueue};
 use ralphx_lib::infrastructure::memory::{
-    MemoryExecutionSettingsRepository, MemoryIdeationSessionRepository, MemoryTaskRepository,
+    MemoryChatConversationRepository, MemoryExecutionSettingsRepository,
+    MemoryIdeationSessionRepository, MemoryProjectRepository, MemoryTaskRepository,
 };
 
 fn make_service(
@@ -23,16 +24,22 @@ fn make_service(
     execution_state: Arc<ExecutionState>,
     chat_service: Arc<MockChatService>,
 ) -> PendingSessionDrainService {
+    let project_repo = Arc::new(MemoryProjectRepository::new());
     let task_repo = Arc::new(MemoryTaskRepository::new());
+    let conversation_repo = Arc::new(MemoryChatConversationRepository::new());
     let settings_repo = Arc::new(MemoryExecutionSettingsRepository::new());
     let registry = Arc::new(MemoryRunningAgentRegistry::new());
+    let message_queue = Arc::new(MessageQueue::new());
     PendingSessionDrainService::new(
         session_repo,
+        project_repo,
         task_repo,
+        conversation_repo,
         settings_repo,
         execution_state,
         registry,
-        chat_service,
+        message_queue,
+        chat_service as Arc<dyn ChatService>,
     )
 }
 

@@ -3,6 +3,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { z } from "zod";
 import {
+  ConflictDiffSchema,
   FileChangesResponseSchema,
   FileDiffSchema,
   FileDiffPageSchema,
@@ -10,9 +11,11 @@ import {
   AgentWorkspaceChangeSummaryResponseSchema,
   AgentWorkspaceReviewResponseSchema,
   PrDiffAnnotationsResponseSchema,
+  WorkspaceReviewHunkAnnotationsResponseSchema,
   RangeFetchResponseSchema,
 } from "./diff.schemas";
 import {
+  transformConflictDiff,
   transformFileChange,
   transformFileDiff,
   transformFileDiffPage,
@@ -20,17 +23,20 @@ import {
   transformAgentWorkspaceChangeSummary,
   transformAgentWorkspaceReview,
   transformPrDiffAnnotationsResponse,
+  transformWorkspaceReviewHunkAnnotationsResponse,
   transformRangeLine,
 } from "./diff.transforms";
 import type {
   AgentWorkspaceChangeSummary,
   AgentWorkspaceReview,
+  ConflictDiff,
   FileChange,
   FileDiff,
   FileDiffPage,
   CommitInfo,
   DiffRefKind,
   PrDiffAnnotationsResponse,
+  WorkspaceReviewHunkAnnotationsResponse,
   RangeLine,
 } from "./diff.types";
 import { backendApiUrl } from "./backend";
@@ -39,7 +45,10 @@ import { backendApiUrl } from "./backend";
 export type {
   AgentWorkspaceChangeBucketSummary,
   AgentWorkspaceChangeSummary,
+  AgentWorkspaceConflictSummary,
+  AgentWorkspaceRepairState,
   AgentWorkspaceReview,
+  ConflictDiff,
   FileChange,
   FileDiff,
   FileDiffPage,
@@ -53,11 +62,14 @@ export type {
   PrDiffAnnotation,
   PrAnnotationSourceUnavailable,
   PrDiffAnnotationsResponse,
+  WorkspaceReviewHunkAnnotation,
+  WorkspaceReviewHunkAnnotationsResponse,
   RangeLine,
 } from "./diff.types";
 
 // Re-export schemas for consumers that need validation
 export {
+  ConflictDiffSchema,
   FileChangeSchema,
   FileChangeStatusSchema,
   FileDiffSchema,
@@ -67,6 +79,8 @@ export {
   CommitInfoSchema,
   TaskCommitsResponseSchema,
   AgentWorkspaceChangeBucketSummarySchema,
+  AgentWorkspaceConflictSummarySchema,
+  AgentWorkspaceRepairStateSchema,
   AgentWorkspaceChangeSummaryResponseSchema,
   AgentWorkspaceReviewResponseSchema,
   DiffLineKindSchema,
@@ -76,6 +90,8 @@ export {
   PrDiffAnnotationSchema,
   PrAnnotationSourceUnavailableSchema,
   PrDiffAnnotationsResponseSchema,
+  WorkspaceReviewHunkAnnotationSchema,
+  WorkspaceReviewHunkAnnotationsResponseSchema,
   RangeLineSchema,
   RangeFetchResponseSchema,
 } from "./diff.schemas";
@@ -84,6 +100,7 @@ export {
 export {
   transformAgentWorkspaceChangeSummary,
   transformAgentWorkspaceReview,
+  transformConflictDiff,
   transformFileChange,
   transformFileDiff,
   transformFileDiffPage,
@@ -94,6 +111,8 @@ export {
   transformPrDiffAnnotation,
   transformPrAnnotationSourceUnavailable,
   transformPrDiffAnnotationsResponse,
+  transformWorkspaceReviewHunkAnnotation,
+  transformWorkspaceReviewHunkAnnotationsResponse,
   transformRangeLine,
 } from "./diff.transforms";
 
@@ -223,6 +242,16 @@ export const diffApi = {
       transformAgentWorkspaceChangeSummary
     ),
 
+  getAgentConversationWorkspaceRepairChangeSummary: (
+    conversationId: string
+  ): Promise<AgentWorkspaceChangeSummary> =>
+    typedInvokeWithTransform(
+      "get_agent_conversation_workspace_repair_change_summary",
+      { conversationId },
+      AgentWorkspaceChangeSummaryResponseSchema,
+      transformAgentWorkspaceChangeSummary
+    ),
+
   getAgentConversationWorkspacePrAnnotations: (
     conversationId: string
   ): Promise<PrDiffAnnotationsResponse> =>
@@ -231,6 +260,16 @@ export const diffApi = {
       { conversationId },
       PrDiffAnnotationsResponseSchema,
       transformPrDiffAnnotationsResponse
+    ),
+
+  getAgentConversationWorkspaceReviewHunkAnnotations: (
+    conversationId: string
+  ): Promise<WorkspaceReviewHunkAnnotationsResponse> =>
+    typedInvokeWithTransform(
+      "get_agent_conversation_workspace_review_hunk_annotations",
+      { conversationId },
+      WorkspaceReviewHunkAnnotationsResponseSchema,
+      transformWorkspaceReviewHunkAnnotationsResponse
     ),
 
   getAgentConversationWorkspaceFileDiff: (
@@ -297,6 +336,26 @@ export const diffApi = {
       (changes) => changes.map(transformFileChange)
     ),
 
+  getAgentConversationWorkspaceRepairStagedFileChanges: (
+    conversationId: string
+  ): Promise<FileChange[]> =>
+    typedInvokeWithTransform(
+      "get_agent_conversation_workspace_repair_staged_file_changes",
+      { conversationId },
+      FileChangesResponseSchema,
+      (changes) => changes.map(transformFileChange)
+    ),
+
+  getAgentConversationWorkspaceRepairUnstagedFileChanges: (
+    conversationId: string
+  ): Promise<FileChange[]> =>
+    typedInvokeWithTransform(
+      "get_agent_conversation_workspace_repair_unstaged_file_changes",
+      { conversationId },
+      FileChangesResponseSchema,
+      (changes) => changes.map(transformFileChange)
+    ),
+
   getAgentConversationWorkspaceStagedFileDiff: (
     conversationId: string,
     filePath: string
@@ -317,6 +376,39 @@ export const diffApi = {
       { conversationId, filePath },
       FileDiffSchema,
       transformFileDiff
+    ),
+
+  getAgentConversationWorkspaceRepairStagedFileDiff: (
+    conversationId: string,
+    filePath: string
+  ): Promise<FileDiff> =>
+    typedInvokeWithTransform(
+      "get_agent_conversation_workspace_repair_staged_file_diff",
+      { conversationId, filePath },
+      FileDiffSchema,
+      transformFileDiff
+    ),
+
+  getAgentConversationWorkspaceRepairUnstagedFileDiff: (
+    conversationId: string,
+    filePath: string
+  ): Promise<FileDiff> =>
+    typedInvokeWithTransform(
+      "get_agent_conversation_workspace_repair_unstaged_file_diff",
+      { conversationId, filePath },
+      FileDiffSchema,
+      transformFileDiff
+    ),
+
+  getAgentConversationWorkspaceRepairConflictFileDiff: (
+    conversationId: string,
+    filePath: string
+  ): Promise<ConflictDiff> =>
+    typedInvokeWithTransform(
+      "get_agent_conversation_workspace_repair_conflict_file_diff",
+      { conversationId, filePath },
+      ConflictDiffSchema,
+      transformConflictDiff
     ),
 
   getAgentConversationWorkspaceCumulativeFileChanges: (

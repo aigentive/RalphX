@@ -14,6 +14,10 @@ fn test_ui_feature_flags_response_serializes_to_camel_case() {
         "Expected camelCase 'extensibilityPage' in JSON: {json}"
     );
     assert!(
+        json.contains("\"ideationPage\":"),
+        "Expected camelCase 'ideationPage' in JSON: {json}"
+    );
+    assert!(
         json.contains("\"battleMode\":"),
         "Expected camelCase 'battleMode' in JSON: {json}"
     );
@@ -25,6 +29,10 @@ fn test_ui_feature_flags_response_serializes_to_camel_case() {
         json.contains("\"atlassianOauth\":"),
         "Expected camelCase 'atlassianOauth' in JSON: {json}"
     );
+    assert!(
+        json.contains("\"ticketingDashboard\":"),
+        "Expected camelCase 'ticketingDashboard' in JSON: {json}"
+    );
     // Verify snake_case is NOT present
     assert!(
         !json.contains("\"activity_page\":"),
@@ -33,6 +41,10 @@ fn test_ui_feature_flags_response_serializes_to_camel_case() {
     assert!(
         !json.contains("\"extensibility_page\":"),
         "Unexpected snake_case 'extensibility_page' in JSON: {json}"
+    );
+    assert!(
+        !json.contains("\"ideation_page\":"),
+        "Unexpected snake_case 'ideation_page' in JSON: {json}"
     );
     assert!(
         !json.contains("\"battle_mode\":"),
@@ -45,5 +57,9 @@ fn test_ui_feature_flags_response_serializes_to_camel_case() {
     assert!(
         !json.contains("\"atlassian_oauth\":"),
         "Unexpected snake_case 'atlassian_oauth' in JSON: {json}"
+    );
+    assert!(
+        !json.contains("\"ticketing_dashboard\":"),
+        "Unexpected snake_case 'ticketing_dashboard' in JSON: {json}"
     );
 }

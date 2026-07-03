@@ -68,6 +68,8 @@ function controlsArgs(overrides: Partial<ControlsArgs> = {}): ControlsArgs {
       invalidateQueries: vi.fn(),
       refetchQueries: vi.fn(),
     } as unknown as QueryClient,
+    runtimeConversationId: "conversation-1",
+    runtimeDefaultPolicy: "provider_default",
     runtimeByConversationId: {},
     selectedConversationId: "conversation-1",
     setRuntimeForConversation: vi.fn(),
@@ -190,11 +192,49 @@ describe("useAgentsActiveComposerControls", () => {
     );
   });
 
+  it("normalizes review provider changes to a utility-tier model", () => {
+    const setRuntimeForConversation = vi.fn();
+    const { result } = renderHook(() =>
+      useAgentsActiveComposerControls(
+        controlsArgs({
+          normalizedActiveRuntime: {
+            provider: "claude",
+            modelId: "haiku",
+            effort: "medium",
+          },
+          runtimeConversationId: "review-conversation-1",
+          runtimeDefaultPolicy: "workspace_review_utility",
+          setRuntimeForConversation,
+        }),
+      ),
+    );
+
+    act(() => {
+      result.current.handleActiveProviderChange("codex", [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+      ]);
+    });
+
+    expect(setRuntimeForConversation).toHaveBeenCalledWith(
+      "review-conversation-1",
+      "project-1",
+      {
+        provider: "codex",
+        modelId: "gpt-5.4-mini",
+        effort: "medium",
+      },
+    );
+  });
+
   it("does not update provider runtime without a selected conversation", () => {
     const setRuntimeForConversation = vi.fn();
     const { result } = renderHook(() =>
       useAgentsActiveComposerControls(
         controlsArgs({
+          runtimeConversationId: null,
           selectedConversationId: null,
           setRuntimeForConversation,
         }),

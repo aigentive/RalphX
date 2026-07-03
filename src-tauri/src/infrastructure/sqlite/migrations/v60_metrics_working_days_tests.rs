@@ -1,5 +1,5 @@
-use rusqlite::Connection;
 use crate::infrastructure::sqlite::migrations::v60_metrics_working_days::migrate;
+use rusqlite::Connection;
 
 #[test]
 fn adds_working_days_per_week_column() {

@@ -7,7 +7,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { DiffViewer, type FileChange, type Commit, type DiffData } from "./DiffViewer";
-import type { PrDiffAnnotation } from "@/api/diff";
+import type { PrDiffAnnotation, WorkspaceReviewHunkAnnotation } from "@/api/diff";
 
 // Mock the git-diff-view library
 vi.mock("@git-diff-view/react", () => ({
@@ -81,6 +81,32 @@ const createAnnotation = (
   url: null,
   isOutdated: false,
   createdAt: null,
+  ...overrides,
+});
+
+const createHunkAnnotation = (
+  overrides: Partial<WorkspaceReviewHunkAnnotation> = {},
+): WorkspaceReviewHunkAnnotation => ({
+  id: "workspace-review-hunk-1",
+  conversationId: "conversation-1",
+  projectId: "project-1",
+  artifactId: "artifact-1",
+  artifactVersion: 1,
+  targetScope: "selected_source",
+  headSha: "head-sha",
+  diffFingerprint: "fingerprint-1",
+  path: "plan.txt",
+  diffSource: "committed",
+  hunkHeader: "@@ -1,3 +1,3 @@",
+  oldStart: 1,
+  oldLines: 1,
+  newStart: 1,
+  newLines: 1,
+  title: "Review summary",
+  message: "This commit hunk has workspace review context.",
+  level: "notice",
+  createdByRunId: "run-1",
+  createdAt: "2026-07-01T00:00:00Z",
   ...overrides,
 });
 
@@ -375,6 +401,38 @@ describe("DiffViewer", () => {
       expect(screen.queryByText("Other file annotation.")).not.toBeInTheDocument();
     });
 
+    it("renders staged workspace review hunk annotations for staged changes", async () => {
+      const diffData = createDiffData({ filePath: "plan.txt" });
+      const onFetchDiff = vi.fn().mockResolvedValue(diffData);
+      const changes = [createFileChange({ path: "plan.txt" })];
+
+      render(
+        <DiffViewer
+          {...defaultProps}
+          changes={changes}
+          changesRefKind={{ kind: "staged" }}
+          onFetchDiff={onFetchDiff}
+          hunkAnnotations={[
+            createHunkAnnotation({
+              diffSource: "staged",
+              title: "Staged review summary",
+              message: "This staged hunk has workspace review context.",
+            }),
+            createHunkAnnotation({
+              id: "workspace-review-hunk-unstaged",
+              diffSource: "unstaged",
+              title: "Unstaged review summary",
+              message: "This unstaged hunk should not render in staged mode.",
+            }),
+          ]}
+        />
+      );
+
+      expect(await screen.findByTestId("diff-hunk-annotation-row")).toBeInTheDocument();
+      expect(screen.getByText("Staged review summary")).toBeInTheDocument();
+      expect(screen.queryByText("Unstaged review summary")).not.toBeInTheDocument();
+    });
+
     it("shows error state when diff fetch fails", async () => {
       const onFetchDiff = vi.fn().mockResolvedValue(null);
       const changes = [createFileChange({ path: "test.ts" })];
@@ -577,6 +635,29 @@ describe("DiffViewer", () => {
       await waitFor(() => {
         expect(onFetchDiff).toHaveBeenCalledWith("plan.txt", "sha-1");
       });
+    });
+
+    it("passes committed workspace review hunk annotations to selected History files", async () => {
+      const commit = createCommit({ sha: "sha-1", shortSha: "sha-1" });
+      const file = createFileChange({ path: "plan.txt", status: "added" });
+      const onFetchDiff = vi.fn().mockResolvedValue(createDiffData({ filePath: "plan.txt" }));
+
+      render(
+        <DiffViewer
+          {...defaultProps}
+          defaultTab="history"
+          commits={[commit]}
+          commitFiles={[file]}
+          autoSelectFirstCommit
+          autoSelectFirstCommitFile
+          onFetchDiff={onFetchDiff}
+          hunkAnnotations={[createHunkAnnotation()]}
+        />
+      );
+
+      expect(await screen.findByTestId("diff-hunk-annotation-row")).toBeInTheDocument();
+      expect(screen.getByText("Workspace review")).toBeInTheDocument();
+      expect(screen.getByText("Review summary")).toBeInTheDocument();
     });
   });
 

@@ -12,7 +12,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { DiffHunk, DiffLine, PrDiffAnnotation } from "@/api/diff";
+import type {
+  DiffHunk,
+  DiffLine,
+  PrDiffAnnotation,
+  WorkspaceReviewHunkAnnotation,
+} from "@/api/diff";
 
 // ── Mock diffApi ─────────────────────────────────────────────────────────
 const mockGetRange = vi.fn();
@@ -132,6 +137,34 @@ function makeAnnotation(overrides: Partial<PrDiffAnnotation> = {}): PrDiffAnnota
   };
 }
 
+function makeHunkAnnotation(
+  overrides: Partial<WorkspaceReviewHunkAnnotation> = {},
+): WorkspaceReviewHunkAnnotation {
+  return {
+    id: "workspace-review-hunk-1",
+    conversationId: "conv-1",
+    projectId: "project-1",
+    artifactId: "artifact-1",
+    artifactVersion: 1,
+    targetScope: "selected_source",
+    headSha: "head-sha",
+    diffFingerprint: "fingerprint-1",
+    path: "src/foo.ts",
+    diffSource: "selected_source",
+    hunkHeader: "@@ -1,3 +1,3 @@",
+    oldStart: 1,
+    oldLines: 3,
+    newStart: 1,
+    newLines: 3,
+    title: "Review summary",
+    message: "This hunk updates the renderer.",
+    level: "notice",
+    createdByRunId: "run-1",
+    createdAt: "2026-07-01T00:00:00Z",
+    ...overrides,
+  };
+}
+
 describe("SimpleDiffView", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -212,6 +245,43 @@ describe("SimpleDiffView", () => {
         />
       );
       expect(screen.getByText("@@ -1,3 +1,3 @@")).toBeInTheDocument();
+    });
+
+    it("renders workspace review hunk annotations below matching hunk headers", () => {
+      render(
+        <SimpleDiffView
+          hunks={defaultHunks}
+          oldTotalLines={3}
+          newTotalLines={3}
+          hunkAnnotations={[makeHunkAnnotation()]}
+        />
+      );
+
+      expect(screen.getByTestId("diff-hunk-annotation-row")).toBeInTheDocument();
+      expect(screen.getByText("Workspace review")).toBeInTheDocument();
+      expect(screen.getByText("Review summary")).toBeInTheDocument();
+      expect(screen.getByText("This hunk updates the renderer.")).toBeInTheDocument();
+    });
+
+    it("renders review-only hunk headers and annotations without code rows or controls", () => {
+      render(
+        <SimpleDiffView
+          hunks={defaultHunks}
+          oldTotalLines={3}
+          newTotalLines={3}
+          annotations={[makeAnnotation()]}
+          hunkAnnotations={[makeHunkAnnotation()]}
+          contentMode="review-only"
+        />
+      );
+
+      expect(screen.getByTestId("simple-diff-review-only")).toBeInTheDocument();
+      expect(screen.getByText("@@ -1,3 +1,3 @@")).toBeInTheDocument();
+      expect(screen.getByText("Review summary")).toBeInTheDocument();
+      expect(screen.getByText("CodeQL warning")).toBeInTheDocument();
+      expect(screen.queryByText("new line")).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /wrap/i })).toBeNull();
+      expect(screen.queryByTestId("diff-gap-control")).toBeNull();
     });
 
     it("toggles line wrapping when the wrap control is visible", async () => {

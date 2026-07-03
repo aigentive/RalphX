@@ -46,6 +46,10 @@ pub struct ComposerIntegrationReference {
     pub title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_excerpt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include_transcript: Option<bool>,
 }
 
 /// An artifact reference selected in the chat composer.
@@ -122,6 +126,9 @@ pub struct QueuedMessage {
     /// Optional provider-neutral effort override selected when this message was queued.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub logical_effort_override: Option<LogicalEffort>,
+    /// Optional provider service-tier override selected when this message was queued.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_tier_override: Option<String>,
     /// Whether queue replay must start a fresh provider-native session.
     #[serde(default, skip_serializing_if = "is_false")]
     pub force_new_provider_session: bool,
@@ -152,6 +159,7 @@ impl QueuedMessage {
             harness_override: None,
             model_override: None,
             logical_effort_override: None,
+            service_tier_override: None,
             force_new_provider_session: false,
             composer_project_references: Vec::new(),
             composer_integration_references: Vec::new(),
@@ -173,6 +181,7 @@ impl QueuedMessage {
             harness_override: None,
             model_override: None,
             logical_effort_override: None,
+            service_tier_override: None,
             force_new_provider_session: false,
             composer_project_references: Vec::new(),
             composer_integration_references: Vec::new(),
@@ -185,9 +194,8 @@ impl QueuedMessage {
 /// Unified in-memory queue for chat messages
 ///
 /// Stores queued messages per (context_type, context_id) pair.
-/// Messages are ephemeral and lost on app restart.
-/// This is intentional - queued messages are short-lived and should be sent
-/// when the agent responds. If the app restarts, the user can re-type their message.
+/// This is the live process buffer; durable restart-safe ownership lives in
+/// `QueuedMessageRepository` implementations.
 #[derive(Debug, Clone)]
 pub struct MessageQueue {
     queues: Arc<Mutex<HashMap<QueueKey, Vec<QueuedMessage>>>>,
@@ -321,6 +329,7 @@ impl MessageQueue {
             harness_override,
             None,
             None,
+            None,
             false,
             composer_project_references,
             composer_integration_references,
@@ -341,6 +350,7 @@ impl MessageQueue {
         harness_override: Option<AgentHarnessKind>,
         model_override: Option<String>,
         logical_effort_override: Option<LogicalEffort>,
+        service_tier_override: Option<String>,
         force_new_provider_session: bool,
         composer_project_references: Vec<ComposerProjectReference>,
         composer_integration_references: Vec<ComposerIntegrationReference>,
@@ -354,6 +364,7 @@ impl MessageQueue {
         message.harness_override = harness_override;
         message.model_override = model_override;
         message.logical_effort_override = logical_effort_override;
+        message.service_tier_override = service_tier_override;
         message.force_new_provider_session = force_new_provider_session;
         message.composer_project_references = composer_project_references;
         message.composer_integration_references = composer_integration_references;

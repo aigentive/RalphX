@@ -54,6 +54,10 @@ fn test_execution_settings_clone() {
 fn test_global_execution_settings_default() {
     let settings = GlobalExecutionSettings::default();
     assert_eq!(settings.global_max_concurrent, 20);
+    assert_eq!(
+        settings.workspace_max_concurrent,
+        DEFAULT_WORKSPACE_MAX_CONCURRENT
+    );
     assert_eq!(settings.global_ideation_max, 10);
     assert!(!settings.allow_ideation_borrow_idle_execution);
 }
@@ -62,11 +66,13 @@ fn test_global_execution_settings_default() {
 fn test_global_execution_settings_validate_within_range() {
     let settings = GlobalExecutionSettings {
         global_max_concurrent: 30,
+        workspace_max_concurrent: 8,
         global_ideation_max: 6,
         allow_ideation_borrow_idle_execution: true,
     };
     let validated = settings.validate();
     assert_eq!(validated.global_max_concurrent, 30);
+    assert_eq!(validated.workspace_max_concurrent, 8);
     assert_eq!(validated.global_ideation_max, 6);
     assert!(validated.allow_ideation_borrow_idle_execution);
 }
@@ -75,12 +81,17 @@ fn test_global_execution_settings_validate_within_range() {
 fn test_global_execution_settings_validate_clamped_to_max() {
     let settings = GlobalExecutionSettings {
         global_max_concurrent: 100,
+        workspace_max_concurrent: 100,
         global_ideation_max: 100,
         allow_ideation_borrow_idle_execution: false,
     };
     let validated = settings.validate();
     assert_eq!(
         validated.global_max_concurrent,
+        GlobalExecutionSettings::MAX_ALLOWED
+    );
+    assert_eq!(
+        validated.workspace_max_concurrent,
         GlobalExecutionSettings::MAX_ALLOWED
     );
     assert_eq!(
@@ -93,10 +104,12 @@ fn test_global_execution_settings_validate_clamped_to_max() {
 fn test_global_execution_settings_validate_clamped_to_min() {
     let settings = GlobalExecutionSettings {
         global_max_concurrent: 0,
+        workspace_max_concurrent: 0,
         global_ideation_max: 0,
         allow_ideation_borrow_idle_execution: false,
     };
     let validated = settings.validate();
     assert_eq!(validated.global_max_concurrent, 1);
+    assert_eq!(validated.workspace_max_concurrent, 1);
     assert_eq!(validated.global_ideation_max, 1);
 }

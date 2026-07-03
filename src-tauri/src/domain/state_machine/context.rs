@@ -14,6 +14,7 @@ use crate::application::ChatService;
 use crate::application::PrPollerRegistry;
 use crate::application::TaskTransitionService;
 use crate::domain::services::github_service::GithubServiceTrait;
+use crate::domain::services::PlanPrDescriptionDrafter;
 use crate::commands::ExecutionState;
 use crate::domain::entities::PlanBranchId;
 use crate::domain::repositories::{
@@ -113,6 +114,11 @@ pub struct TaskServices {
     /// Optional — None disables PR integration (tests, non-PR workflows).
     pub pr_poller_registry: Option<Arc<PrPollerRegistry>>,
 
+    /// Optional service for generating PR descriptions for plan branches.
+    /// When available, Ready-state plan PRs get reviewer-focused descriptions
+    /// instead of empty template stubs.
+    pub plan_pr_description_drafter: Option<Arc<dyn PlanPrDescriptionDrafter>>,
+
     /// Guard preventing duplicate draft PR creation per plan branch (AD10).
     /// Shared with PrPollerRegistry — same underlying DashMap.
     /// Optional — None disables PR creation guarding.
@@ -177,6 +183,7 @@ impl TaskServices {
             validation_tokens: Arc::new(DashMap::new()),
             activity_event_repo: None,
             pr_poller_registry: None,
+            plan_pr_description_drafter: None,
             pr_creation_guard: None,
             github_service: None,
             transition_service: None,
@@ -297,6 +304,14 @@ impl TaskServices {
         self
     }
 
+    pub fn with_plan_pr_description_drafter(
+        mut self,
+        drafter: Arc<dyn PlanPrDescriptionDrafter>,
+    ) -> Self {
+        self.plan_pr_description_drafter = Some(drafter);
+        self
+    }
+
     /// Set the PR creation guard DashMap (builder pattern).
     /// Should be the same Arc as PrPollerRegistry::pr_creation_guard.
     pub fn with_pr_creation_guard(
@@ -370,6 +385,7 @@ impl TaskServices {
             validation_tokens: Arc::new(DashMap::new()),
             activity_event_repo: None,
             pr_poller_registry: None,
+            plan_pr_description_drafter: None,
             pr_creation_guard: None,
             github_service: None,
             transition_service: None,

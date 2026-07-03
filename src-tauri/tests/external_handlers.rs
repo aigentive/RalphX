@@ -9,7 +9,12 @@ use axum::{
     extract::{Path, Query, State},
     Json,
 };
-use ralphx_lib::application::{AppState, InteractiveProcessKey, TeamService, TeamStateTracker};
+use ralphx_lib::application::{
+    agent_conversation_workspace::{
+        prepare_agent_conversation_workspace, AgentConversationWorkspaceBaseSelection,
+    },
+    AppState, InteractiveProcessKey, TeamService, TeamStateTracker,
+};
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::agents::{
     AgentHarnessKind, AgentLane, AgentLaneSettings, AgentRole, AgenticClient, LogicalEffort,
@@ -19,8 +24,9 @@ use ralphx_lib::domain::entities::{
     project::{GitMode, Project},
     task::Task,
     types::ProjectId,
-    IdeationSessionId, InternalStatus, Priority, ProposalCategory, TaskProposal,
-    VerificationRunSnapshot,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, ChatConversation,
+    IdeationAnalysisBaseRefKind, IdeationSessionId, InternalStatus, Priority, ProposalCategory,
+    TaskProposal, VerificationRunSnapshot,
 };
 use ralphx_lib::domain::services::running_agent_registry::RunningAgentKey;
 use ralphx_lib::error::AppError;
@@ -201,6 +207,90 @@ fn scoped(ids: &[&str]) -> ProjectScope {
         .map(|s| ProjectId::from_string(s.to_string()))
         .collect();
     ProjectScope(Some(vec))
+}
+
+async fn setup_ideation_parent_workspace(
+    state: &HttpServerState,
+    project_id: &str,
+) -> (
+    TempDir,
+    TempDir,
+    Project,
+    ChatConversation,
+    AgentConversationWorkspace,
+) {
+    let repo_dir = tempfile::TempDir::new().unwrap();
+    let repo_path = repo_dir.path();
+    std::process::Command::new("git")
+        .args(["init", "-b", "main"])
+        .current_dir(repo_path)
+        .output()
+        .expect("git init");
+    std::process::Command::new("git")
+        .args(["config", "user.email", "test@test.com"])
+        .current_dir(repo_path)
+        .output()
+        .expect("git config email");
+    std::process::Command::new("git")
+        .args(["config", "user.name", "Test"])
+        .current_dir(repo_path)
+        .output()
+        .expect("git config name");
+    std::process::Command::new("git")
+        .args(["commit", "--allow-empty", "-m", "init"])
+        .current_dir(repo_path)
+        .output()
+        .expect("git commit");
+    let worktree_parent = tempfile::TempDir::new().unwrap();
+
+    let mut project = Project::new(
+        "Workspace Project".to_string(),
+        repo_path.to_string_lossy().to_string(),
+    );
+    project.id = ProjectId::from_string(project_id.to_string());
+    project.base_branch = Some("main".to_string());
+    project.worktree_parent_directory =
+        Some(worktree_parent.path().to_string_lossy().to_string());
+    let project = state.app_state.project_repo.create(project).await.unwrap();
+
+    let conversation = state
+        .app_state
+        .chat_conversation_repo
+        .create(ChatConversation::new_project(project.id.clone()))
+        .await
+        .expect("create project conversation");
+    let workspace = prepare_agent_conversation_workspace(
+        &project,
+        &conversation.id,
+        AgentConversationWorkspaceMode::Ideation,
+        AgentConversationWorkspaceBaseSelection {
+            kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+                branch_mode: None,
+            base_ref: Some("main".to_string()),
+            display_name: Some("Project default (main)".to_string()),
+            source_pull_request: None,
+        },
+    )
+    .await
+    .expect("prepare agent workspace");
+    state
+        .app_state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("save agent workspace");
+
+    (repo_dir, worktree_parent, project, conversation, workspace)
+}
+
+fn tauri_parent_headers(conversation: &ChatConversation) -> axum::http::HeaderMap {
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert("x-ralphx-tauri-mcp", "1".parse().unwrap());
+    headers.insert(
+        "x-ralphx-parent-conversation-id",
+        conversation.id.as_str().parse().unwrap(),
+    );
+    headers
 }
 
 // ============================================================================
@@ -626,6 +716,7 @@ async fn test_start_ideation_tauri_parent_workspace_binds_analysis_and_links_wor
         AgentConversationWorkspaceMode::Ideation,
         AgentConversationWorkspaceBaseSelection {
             kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+                branch_mode: None,
             base_ref: Some("main".to_string()),
             display_name: Some("Project default (main)".to_string()),
             source_pull_request: None,
@@ -695,6 +786,62 @@ async fn test_start_ideation_tauri_parent_workspace_binds_analysis_and_links_wor
     );
 }
 
+#[tokio::test]
+async fn test_start_ideation_tauri_parent_workspace_reuses_linked_session() {
+    let state = setup_test_state().await;
+    let project_id = "proj-parent-workspace-reuse";
+    let (_repo_dir, _worktree_parent, _project, conversation, _workspace) =
+        setup_ideation_parent_workspace(&state, project_id).await;
+
+    let first = start_ideation_http(
+        State(state.clone()),
+        unrestricted_scope(),
+        tauri_parent_headers(&conversation),
+        Json(StartIdeationRequest {
+            project_id: project_id.to_string(),
+            title: Some("Initial workspace ideation".to_string()),
+            prompt: None,
+            initial_prompt: None,
+            idempotency_key: None,
+        }),
+    )
+    .await
+    .expect("initial start should create linked session")
+    .0;
+
+    let second = start_ideation_http(
+        State(state.clone()),
+        unrestricted_scope(),
+        tauri_parent_headers(&conversation),
+        Json(StartIdeationRequest {
+            project_id: project_id.to_string(),
+            title: Some("Follow-up workspace ideation".to_string()),
+            prompt: Some("Use the existing ideation session for this follow-up".to_string()),
+            initial_prompt: None,
+            idempotency_key: None,
+        }),
+    )
+    .await
+    .expect("second start should reuse linked session")
+    .0;
+
+    assert_eq!(second.session_id, first.session_id);
+    assert!(!second.agent_spawned);
+    assert_eq!(second.next_action, "use_existing_session");
+    let conversation_id = conversation.id.as_str();
+    assert_eq!(
+        second.parent_conversation_id.as_deref(),
+        Some(conversation_id.as_str())
+    );
+
+    let active_sessions = state
+        .app_state
+        .ideation_session_repo
+        .list_active_external_by_project(&ProjectId::from_string(project_id.to_string()))
+        .await
+        .unwrap();
+    assert_eq!(active_sessions.len(), 1);
+}
 
 #[tokio::test]
 async fn test_start_ideation_scope_violation() {
@@ -4697,6 +4844,7 @@ async fn setup_plan_import_test_with_state(state: HttpServerState) -> PlanImport
         AgentConversationWorkspaceMode::Ideation,
         AgentConversationWorkspaceBaseSelection {
             kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+                branch_mode: None,
             base_ref: Some("main".to_string()),
             display_name: Some("Project default (main)".to_string()),
             source_pull_request: None,
@@ -4715,7 +4863,7 @@ async fn setup_plan_import_test_with_state(state: HttpServerState) -> PlanImport
         IdeationSessionId::from_string("dummy".to_string()),
         "Start from plan",
     );
-    msg.conversation_id = Some(conversation.id.clone());
+    msg.conversation_id = Some(conversation.id);
     msg.metadata = Some(
         serde_json::json!({
             "composer_artifact_references": [{
@@ -4734,7 +4882,7 @@ async fn setup_plan_import_test_with_state(state: HttpServerState) -> PlanImport
         project_id,
         source_session_id: source_session.id.clone(),
         source_artifact_id: source_artifact.id.clone(),
-        conversation_id: conversation.id.clone(),
+        conversation_id: conversation.id,
         _repo_dir: repo_dir,
         _worktree_parent: worktree_parent,
     }
@@ -5073,7 +5221,7 @@ async fn test_plan_import_multiple_refs_error() {
         IdeationSessionId::from_string("dummy".to_string()),
         "Start from two plans",
     );
-    msg.conversation_id = Some(fix.conversation_id.clone());
+    msg.conversation_id = Some(fix.conversation_id);
     msg.metadata = Some(
         serde_json::json!({
             "composer_artifact_references": [
@@ -5147,6 +5295,7 @@ async fn test_plan_import_missing_artifact_error() {
         AgentConversationWorkspaceMode::Ideation,
         AgentConversationWorkspaceBaseSelection {
             kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+                branch_mode: None,
             base_ref: Some("main".to_string()),
             display_name: Some("Project default (main)".to_string()),
             source_pull_request: None,
@@ -5165,7 +5314,7 @@ async fn test_plan_import_missing_artifact_error() {
         IdeationSessionId::from_string("dummy".to_string()),
         "Missing artifact",
     );
-    msg.conversation_id = Some(conv2.id.clone());
+    msg.conversation_id = Some(conv2.id);
     msg.metadata = Some(
         serde_json::json!({
             "composer_artifact_references": [{
@@ -5270,6 +5419,7 @@ async fn test_plan_import_wrong_project_error() {
         AgentConversationWorkspaceMode::Ideation,
         AgentConversationWorkspaceBaseSelection {
             kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+                branch_mode: None,
             base_ref: Some("main".to_string()),
             display_name: Some("Project default (main)".to_string()),
             source_pull_request: None,
@@ -5288,7 +5438,7 @@ async fn test_plan_import_wrong_project_error() {
         IdeationSessionId::from_string("dummy".to_string()),
         "Wrong project",
     );
-    msg.conversation_id = Some(conv2.id.clone());
+    msg.conversation_id = Some(conv2.id);
     msg.metadata = Some(
         serde_json::json!({
             "composer_artifact_references": [{
@@ -5442,6 +5592,7 @@ async fn test_plan_import_verification_child_error() {
         AgentConversationWorkspaceMode::Ideation,
         AgentConversationWorkspaceBaseSelection {
             kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+                branch_mode: None,
             base_ref: Some("main".to_string()),
             display_name: Some("Project default (main)".to_string()),
             source_pull_request: None,
@@ -5460,7 +5611,7 @@ async fn test_plan_import_verification_child_error() {
         IdeationSessionId::from_string("dummy".to_string()),
         "From verification child",
     );
-    msg.conversation_id = Some(conversation.id.clone());
+    msg.conversation_id = Some(conversation.id);
     msg.metadata = Some(
         serde_json::json!({
             "composer_artifact_references": [{
@@ -5549,6 +5700,7 @@ async fn test_plan_import_non_spec_artifact_error() {
         AgentConversationWorkspaceMode::Ideation,
         AgentConversationWorkspaceBaseSelection {
             kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+                branch_mode: None,
             base_ref: Some("main".to_string()),
             display_name: Some("Project default (main)".to_string()),
             source_pull_request: None,
@@ -5567,7 +5719,7 @@ async fn test_plan_import_non_spec_artifact_error() {
         IdeationSessionId::from_string("dummy".to_string()),
         "Non-spec artifact",
     );
-    msg.conversation_id = Some(conv2.id.clone());
+    msg.conversation_id = Some(conv2.id);
     msg.metadata = Some(
         serde_json::json!({
             "composer_artifact_references": [{

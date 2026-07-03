@@ -23,17 +23,40 @@ import {
 } from "@/hooks/useChat";
 import { useAgentModels } from "@/hooks/useAgentModels";
 import { getModelLabel } from "@/lib/model-utils";
-import type { AgentRuntimeSelection } from "@/stores/agentSessionStore";
+import {
+  useAgentSessionStore,
+  type AgentArtifactState,
+  type AgentArtifactTab,
+  type AgentRuntimeSelection,
+} from "@/stores/agentSessionStore";
 import { useChatStore } from "@/stores/chatStore";
 import type { ChatConversation } from "@/types/chat-conversation";
 
+import { DEFAULT_AGENT_ARTIFACT_UI_STATE } from "./agentArtifactUiStore";
 import {
   getAgentConversationStoreKey,
   toProjectAgentConversation,
   type AgentConversation,
 } from "./agentConversations";
+import {
+  hasJiraIntegrationReference,
+  invalidateAgentConversationJiraIssue,
+} from "./agentJiraIssueQueries";
+import {
+  hasLinearIntegrationReference,
+  invalidateAgentConversationLinearIssue,
+} from "./agentLinearIssueQueries";
+import {
+  hasGranolaIntegrationReference,
+  invalidateAgentConversationGranolaNote,
+} from "./agentGranolaNoteQueries";
 import { normalizeRuntimeSelection } from "./agentOptions";
 import { uploadDraftAttachment } from "./chatAttachmentUpload";
+
+type SupportedStartIntegrationTab = Extract<
+  AgentArtifactTab,
+  "jira" | "linear" | "granola"
+>;
 
 interface HandleAutoManagedTitleArgs {
   content: string;
@@ -60,6 +83,9 @@ interface UseStartAgentConversationArgs {
     projectId: string,
     runtime: AgentRuntimeSelection
   ) => void;
+  onJiraLinked?: (conversationId: string) => void;
+  onLinearLinked?: (conversationId: string) => void;
+  onGranolaLinked?: (conversationId: string) => void;
 }
 
 export function useStartAgentConversation({
@@ -73,6 +99,9 @@ export function useStartAgentConversation({
   setOptimisticSelectedConversationId,
   setOptimisticWorkspacesByConversationId,
   setRuntimeForConversation,
+  onJiraLinked,
+  onLinearLinked,
+  onGranolaLinked,
 }: UseStartAgentConversationArgs) {
   const { registry: modelRegistry } = useAgentModels();
   const queueMessage = useChatStore((s) => s.queueMessage);
@@ -88,6 +117,7 @@ export function useStartAgentConversation({
       mode,
       base,
       files,
+      codexFastMode,
       composerArtifactReferences,
       composerIntegrationReferences,
       composerProjectReferences,
@@ -98,11 +128,16 @@ export function useStartAgentConversation({
       mode: AgentConversationWorkspaceMode;
       base: AgentConversationBaseSelection | null;
       files: File[];
+      codexFastMode?: boolean | null;
       composerArtifactReferences?: ComposerArtifactReference[] | undefined;
       composerIntegrationReferences?: ComposerIntegrationReference[] | undefined;
       composerProjectReferences?: ComposerProjectReference[] | undefined;
     }) => {
       const normalizedRuntime = normalizeRuntimeSelection(runtime, modelRegistry);
+      const startIntegrationTab = getSupportedStartIntegrationTab(
+        composerIntegrationReferences,
+      );
+      const startArtifactState = buildStartArtifactState(startIntegrationTab);
       const seedConversationState = (
         conversation: ChatConversation,
         workspace: AgentConversationWorkspace | null | undefined,
@@ -170,6 +205,9 @@ export function useStartAgentConversation({
         setOptimisticSelectedConversationId(conversationId);
         setFocusedProject(targetProjectId);
         setRuntimeForConversation(conversationId, targetProjectId, normalizedRuntime);
+        useAgentSessionStore
+          .getState()
+          .setArtifactState(conversationId, startArtifactState);
         selectConversation(targetProjectId, conversationId);
         setActiveConversation(storeKey, conversationId);
         return storeKey;
@@ -292,6 +330,12 @@ export function useStartAgentConversation({
           providerHarness: normalizedRuntime.provider,
           modelId: normalizedRuntime.modelId,
           logicalEffort: normalizedRuntime.effort,
+          ...(codexFastMode !== undefined
+            ? {
+                codexFastMode:
+                  normalizedRuntime.provider === "codex" ? codexFastMode : null,
+              }
+            : {}),
           mode,
           ...(composerProjectReferences?.length
             ? { composerProjectReferences }
@@ -355,6 +399,33 @@ export function useStartAgentConversation({
         }
         setSending(resolvedStoreKey, false);
         invalidateConversationDataQueries(queryClient, resolvedConversationId);
+        if (hasJiraIntegrationReference(composerIntegrationReferences)) {
+          if (startIntegrationTab === "jira") {
+            onJiraLinked?.(resolvedConversationId);
+          }
+          await invalidateAgentConversationJiraIssue(
+            queryClient,
+            resolvedConversationId,
+          );
+        }
+        if (hasLinearIntegrationReference(composerIntegrationReferences)) {
+          if (startIntegrationTab === "linear") {
+            onLinearLinked?.(resolvedConversationId);
+          }
+          await invalidateAgentConversationLinearIssue(
+            queryClient,
+            resolvedConversationId,
+          );
+        }
+        if (hasGranolaIntegrationReference(composerIntegrationReferences)) {
+          if (startIntegrationTab === "granola") {
+            onGranolaLinked?.(resolvedConversationId);
+          }
+          await invalidateAgentConversationGranolaNote(
+            queryClient,
+            resolvedConversationId,
+          );
+        }
         await invalidateProjectConversations(targetProjectId);
         handleAutoManagedTitle({
           content,
@@ -389,11 +460,41 @@ export function useStartAgentConversation({
       setOptimisticSelectedConversationId,
       setOptimisticWorkspacesByConversationId,
       setRuntimeForConversation,
+      onJiraLinked,
+      onLinearLinked,
+      onGranolaLinked,
       setSending,
     ]
   );
 
   return handleStartAgentConversation;
+}
+
+function getSupportedStartIntegrationTab(
+  references: readonly ComposerIntegrationReference[] | null | undefined,
+): SupportedStartIntegrationTab | null {
+  for (const reference of references ?? []) {
+    if (reference.kind === "jira") {
+      return "jira";
+    }
+    if (reference.kind === "linear") {
+      return "linear";
+    }
+    if (reference.provider === "granola" && reference.kind === "note") {
+      return "granola";
+    }
+  }
+  return null;
+}
+
+function buildStartArtifactState(
+  integrationTab: SupportedStartIntegrationTab | null,
+): AgentArtifactState {
+  return {
+    isOpen: integrationTab !== null,
+    activeTab: integrationTab ?? "plan",
+    taskMode: DEFAULT_AGENT_ARTIFACT_UI_STATE.taskMode,
+  };
 }
 
 function buildOptimisticUserMessage({

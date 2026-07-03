@@ -84,14 +84,24 @@ pub fn check_verification_gate(
     session: &IdeationSession,
     policy: &EffectiveGatePolicy,
 ) -> Result<(), VerificationError> {
+    // Check active states first: optional verification can bypass unverified/completed
+    // outcomes, but it must not finalize while the current verifier owns the plan.
+    if session.verification_in_progress {
+        let (round, max_rounds) = (
+            session.verification_current_round.unwrap_or(0),
+            session.verification_max_rounds.unwrap_or(0),
+        );
+        return Err(VerificationError::InProgress { round, max_rounds });
+    }
+    if session.verification_status == VerificationStatus::Reviewing {
+        let (round, max_rounds) = (
+            session.verification_current_round.unwrap_or(0),
+            session.verification_max_rounds.unwrap_or(0),
+        );
+        return Err(VerificationError::InProgress { round, max_rounds });
+    }
     if !policy.require_verification_for_accept {
         return Ok(());
-    }
-    // Check in_progress first — reconciler may have reset status but process still running
-    if session.verification_in_progress {
-        let (round, max_rounds) =
-            (session.verification_current_round.unwrap_or(0), session.verification_max_rounds.unwrap_or(0));
-        return Err(VerificationError::InProgress { round, max_rounds });
     }
     // External sessions cannot accept with Skipped status — they must run verification to completion
     if session.verification_status == VerificationStatus::Skipped

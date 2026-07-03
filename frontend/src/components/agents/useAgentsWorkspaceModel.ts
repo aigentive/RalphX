@@ -10,7 +10,9 @@ import {
   resolveConversationAgentMode,
 } from "./agentConversationMode";
 import {
+  getAgentTerminalArchivedReason,
   getAgentTerminalUnavailableReason,
+  runtimeForWorkspaceReviewFocus,
   runtimeFromConversation,
 } from "./agentConversationRuntime";
 import {
@@ -31,12 +33,14 @@ interface UseAgentsWorkspaceModelArgs {
   activeConversation: AgentConversation | null;
   optimisticWorkspacesByConversationId: Record<string, AgentConversationWorkspace>;
   modelRegistry: AgentModelRegistry;
+  focusedWorkspaceReviewConversationId?: string | null;
   runtimeByConversationId: Record<string, AgentRuntimeSelection>;
   selectedConversationId: string | null;
 }
 
 export function useAgentsWorkspaceModel({
   activeConversation,
+  focusedWorkspaceReviewConversationId = null,
   optimisticWorkspacesByConversationId,
   modelRegistry,
   runtimeByConversationId,
@@ -59,11 +63,17 @@ export function useAgentsWorkspaceModel({
     activeConversation?.contextType === "project"
       ? resolveConversationAgentMode(activeConversation, activeWorkspace)
       : null;
-  const activeRuntime = selectedConversationId
+  const workspaceRuntime = selectedConversationId
     ? runtimeByConversationId[selectedConversationId] ??
       runtimeFromConversation(activeConversation) ??
       null
     : null;
+  const activeRuntime = focusedWorkspaceReviewConversationId
+    ? runtimeForWorkspaceReviewFocus(
+        workspaceRuntime,
+        runtimeByConversationId[focusedWorkspaceReviewConversationId] ?? null,
+      )
+    : workspaceRuntime;
   const normalizedActiveRuntime = normalizeRuntimeSelection(activeRuntime, modelRegistry);
   const terminalPublicationLabel =
     getAgentWorkspaceTerminalPublicationLabel(activeWorkspace);
@@ -104,6 +114,10 @@ export function useAgentsWorkspaceModel({
     activeConversation,
     activeWorkspace,
   );
+  const terminalArchivedReason = getAgentTerminalArchivedReason(
+    activeConversation,
+    activeWorkspace,
+  );
   return {
     activeConversationMode,
     activeConversationModeLocked,
@@ -111,6 +125,7 @@ export function useAgentsWorkspaceModel({
     activeWorkspaceFreshness,
     normalizedActiveRuntime,
     publishShortcutLabel,
+    terminalArchivedReason,
     terminalUnavailableReason,
   };
 }

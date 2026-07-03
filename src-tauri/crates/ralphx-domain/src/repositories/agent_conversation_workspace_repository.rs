@@ -3,9 +3,11 @@ use chrono::{DateTime, Utc};
 
 use crate::entities::{
     AgentConversationWorkspace, AgentConversationWorkspacePublicationEvent,
-    AgentConversationWorkspaceStatus, AgentWorkspacePrCommentEvidence,
-    AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription, ChatConversationId,
-    IdeationSessionId, PlanBranchId, ProjectId,
+    AgentConversationWorkspaceStatus, AgentWorkspaceFollowupProvenance,
+    AgentWorkspacePrCommentEvidence, AgentWorkspacePrCommentEvidenceUpsert,
+    AgentWorkspacePrDescription, AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionStatus,
+    AgentWorkspacePrReviewMonitor, AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor,
+    ChatConversationId, IdeationSessionId, PlanBranchId, ProjectId,
 };
 use crate::error::AppResult;
 
@@ -32,6 +34,62 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         &self,
         project_id: &ProjectId,
     ) -> AppResult<Vec<AgentConversationWorkspace>>;
+
+    async fn find_active_by_project_and_branch_name(
+        &self,
+        project_id: &ProjectId,
+        branch_name: &str,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        let branch_name = branch_name.trim();
+        if branch_name.is_empty() {
+            return Ok(Vec::new());
+        }
+        let workspaces = self.get_by_project_id(project_id).await?;
+        Ok(workspaces
+            .into_iter()
+            .filter(|workspace| {
+                workspace.status == AgentConversationWorkspaceStatus::Active
+                    && workspace.branch_name == branch_name
+            })
+            .collect())
+    }
+
+    async fn save_followup_provenance(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _provenance: AgentWorkspaceFollowupProvenance,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn find_active_followup_by_blocker(
+        &self,
+        _origin_conversation_id: &ChatConversationId,
+        _source_task_id: &str,
+        _blocker_fingerprint: &str,
+    ) -> AppResult<Option<AgentConversationWorkspace>> {
+        Ok(None)
+    }
+
+    /// Project-scoped lookup of workspaces whose branch matches `head_ref`.
+    ///
+    /// Powers the PR-detail "attached RalphX conversations" rollup: workspaces
+    /// where `project_id == project_id` AND `branch_name == head_ref` (each may
+    /// also carry a `linked_ideation_session_id`). Project scope is MANDATORY —
+    /// `branch_name` is not globally unique, so an unscoped lookup would
+    /// cross-attach conversations from unrelated projects. The default filters
+    /// the project's workspaces in memory; SQLite overrides with a scoped query.
+    async fn find_by_head_ref(
+        &self,
+        project_id: &ProjectId,
+        head_ref: &str,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        let workspaces = self.get_by_project_id(project_id).await?;
+        Ok(workspaces
+            .into_iter()
+            .filter(|workspace| workspace.branch_name == head_ref)
+            .collect())
+    }
 
     async fn get_terminal_local_cleanup_candidates_by_project_id(
         &self,
@@ -62,6 +120,12 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         &self,
     ) -> AppResult<Vec<AgentConversationWorkspace>>;
 
+    async fn list_active_pr_poller_recovery_workspaces(
+        &self,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        self.list_active_direct_published_workspaces().await
+    }
+
     async fn list_active_direct_external_pr_reconciliation_candidates(
         &self,
         limit: usize,
@@ -81,6 +145,14 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
     async fn list_active_needs_agent_workspaces(
         &self,
     ) -> AppResult<Vec<AgentConversationWorkspace>>;
+
+    async fn list_active_transient_publish_status_workspaces(
+        &self,
+        stale_older_than_secs: u64,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        let _ = stale_older_than_secs;
+        Ok(Vec::new())
+    }
 
     async fn update_links(
         &self,
@@ -207,6 +279,103 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         _conversation_id: &ChatConversationId,
         _pr_number: i64,
         _comment_id: &str,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn upsert_pr_review_monitor(
+        &self,
+        monitor: AgentWorkspacePrReviewMonitor,
+    ) -> AppResult<AgentWorkspacePrReviewMonitor> {
+        Ok(monitor)
+    }
+
+    async fn get_pr_review_monitor(
+        &self,
+        _conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<AgentWorkspacePrReviewMonitor>> {
+        Ok(None)
+    }
+
+    async fn list_active_pr_review_monitors(
+        &self,
+    ) -> AppResult<Vec<AgentWorkspacePrReviewMonitor>> {
+        Ok(Vec::new())
+    }
+
+    async fn upsert_workspace_review_monitor(
+        &self,
+        monitor: AgentWorkspaceReviewMonitor,
+    ) -> AppResult<AgentWorkspaceReviewMonitor> {
+        Ok(monitor)
+    }
+
+    async fn get_workspace_review_monitor(
+        &self,
+        _conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<AgentWorkspaceReviewMonitor>> {
+        Ok(None)
+    }
+
+    async fn list_reviewing_workspace_review_monitors(
+        &self,
+    ) -> AppResult<Vec<AgentWorkspaceReviewMonitor>> {
+        Ok(Vec::new())
+    }
+
+    async fn replace_workspace_review_hunk_annotations(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _artifact_id: &crate::entities::ArtifactId,
+        _annotations: Vec<AgentWorkspaceReviewHunkAnnotation>,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn list_workspace_review_hunk_annotations(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _artifact_id: &crate::entities::ArtifactId,
+    ) -> AppResult<Vec<AgentWorkspaceReviewHunkAnnotation>> {
+        Ok(Vec::new())
+    }
+
+    async fn create_or_update_pr_review_action(
+        &self,
+        action: AgentWorkspacePrReviewAction,
+    ) -> AppResult<AgentWorkspacePrReviewAction> {
+        Ok(action)
+    }
+
+    async fn get_pr_review_action(
+        &self,
+        _action_id: &str,
+    ) -> AppResult<Option<AgentWorkspacePrReviewAction>> {
+        Ok(None)
+    }
+
+    async fn get_pending_pr_review_action_for_head(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _pr_number: i64,
+        _head_sha: &str,
+    ) -> AppResult<Option<AgentWorkspacePrReviewAction>> {
+        Ok(None)
+    }
+
+    async fn list_pr_review_actions(
+        &self,
+        _conversation_id: &ChatConversationId,
+        _limit: usize,
+    ) -> AppResult<Vec<AgentWorkspacePrReviewAction>> {
+        Ok(Vec::new())
+    }
+
+    async fn update_pr_review_action_status(
+        &self,
+        _action_id: &str,
+        _status: AgentWorkspacePrReviewActionStatus,
+        _submitted_review_id: Option<&str>,
     ) -> AppResult<()> {
         Ok(())
     }

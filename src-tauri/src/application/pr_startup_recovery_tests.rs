@@ -5,7 +5,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
-use crate::application::agent_conversation_workspace::resolve_agent_conversation_workspace_path;
+use crate::application::agent_conversation_workspace::{
+    resolve_agent_conversation_workspace_path, resolve_linked_plan_branch_agent_worktree_path,
+};
 use crate::application::chat_service::MockChatService;
 use crate::application::git_service::GitService;
 use crate::application::pr_startup_recovery::{
@@ -17,9 +19,10 @@ use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus as PlanPrStatu
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus,
-    AgentWorkspacePrDescription, ArtifactId, ChatConversationId, ExecutionPlanId,
-    IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranch, PlanBranchId, PlanBranchStatus,
-    Project, ProjectId, TaskId,
+    AgentWorkspacePrDescription, AgentWorkspacePrReviewMonitor,
+    AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceSourcePullRequest, ArtifactId,
+    ChatConversationId, ExecutionPlanId, IdeationAnalysisBaseRefKind, IdeationSessionId,
+    PlanBranch, PlanBranchId, PlanBranchStatus, Project, ProjectId, TaskId,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, PlanBranchRepository, ProjectRepository,
@@ -113,6 +116,35 @@ fn published_workspace(
     workspace.publication_pr_url = Some("https://github.com/owner/repo/pull/101".to_string());
     workspace.publication_pr_status = Some("open".to_string());
     workspace.publication_push_status = Some("pushed".to_string());
+    workspace
+}
+
+fn review_pr_workspace(
+    project: &Project,
+    conversation_id: ChatConversationId,
+    branch_name: &str,
+) -> AgentConversationWorkspace {
+    let worktree_path = resolve_agent_conversation_workspace_path(project, &conversation_id)
+        .expect("workspace path should resolve");
+    let mut workspace = AgentConversationWorkspace::new(
+        conversation_id,
+        project.id.clone(),
+        AgentConversationWorkspaceMode::ReviewPr,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("Project default (main)".to_string()),
+        Some("base-sha".to_string()),
+        branch_name.to_string(),
+        worktree_path.to_string_lossy().to_string(),
+    );
+    workspace.source_pull_request = Some(AgentWorkspaceSourcePullRequest {
+        number: 101,
+        url: Some("https://github.com/owner/repo/pull/101".to_string()),
+        title: Some("Improve feature".to_string()),
+        head_ref_name: "feature/pr".to_string(),
+        base_ref_name: Some("main".to_string()),
+        head_ref_oid: Some("old-head".to_string()),
+    });
     workspace
 }
 
@@ -250,14 +282,17 @@ async fn startup_agent_workspace_pr_recovery_restarts_active_published_poller() 
     let project_repo: Arc<dyn ProjectRepository> =
         Arc::new(MemoryProjectRepository::with_projects(vec![project]));
     let github = Arc::new(MockGithubService::new());
+    let plan_branch_repo: Arc<dyn PlanBranchRepository> =
+        Arc::new(MemoryPlanBranchRepository::new());
     let registry = Arc::new(PrPollerRegistry::new(
         Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
-        Arc::new(MemoryPlanBranchRepository::new()),
+        Arc::clone(&plan_branch_repo),
     ));
 
     recover_agent_workspace_pr_pollers(
         workspace_repo,
         project_repo,
+        plan_branch_repo,
         Arc::clone(&registry),
         Arc::new(MemoryAgentRunRepository::new()),
         Arc::new(MemoryTaskOutcomeRepository::new()),
@@ -267,6 +302,275 @@ async fn startup_agent_workspace_pr_recovery_restarts_active_published_poller() 
     .await;
 
     assert!(registry.is_agent_workspace_polling(&conversation_id));
+    registry.stop_agent_workspace_polling(&conversation_id);
+}
+
+#[tokio::test]
+async fn startup_agent_workspace_pr_recovery_restarts_review_pr_monitor_poller() {
+    init_tracing();
+
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let repo_path = temp_dir.path().join("repo");
+    std::fs::create_dir_all(&repo_path).expect("create repo dir");
+    run_git(&repo_path, &["init"]);
+    run_git(&repo_path, &["config", "user.email", "test@example.com"]);
+    run_git(&repo_path, &["config", "user.name", "Test User"]);
+    run_git(&repo_path, &["checkout", "-b", "main"]);
+    std::fs::write(repo_path.join("README.md"), "base\n").expect("write readme");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "initial"]);
+
+    let mut project = Project::new(
+        "Startup Review PR Monitor".to_string(),
+        repo_path.to_string_lossy().to_string(),
+    );
+    project.base_branch = Some("main".to_string());
+    project.github_pr_enabled = true;
+    project.worktree_parent_directory = Some(
+        temp_dir
+            .path()
+            .join("worktrees")
+            .to_string_lossy()
+            .to_string(),
+    );
+
+    let conversation_id = ChatConversationId::from_string("abababab-7777-8888-9999-cdcdcdcdcdcd");
+    let branch_name = "ralphx/test/startup-review-pr-monitor";
+    let workspace = review_pr_workspace(&project, conversation_id.clone(), branch_name);
+    GitService::create_worktree(
+        &repo_path,
+        Path::new(&workspace.worktree_path),
+        branch_name,
+        "main",
+    )
+    .await
+    .expect("create workspace worktree");
+
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("workspace should persist");
+    let mut monitor = AgentWorkspacePrReviewMonitor::new(
+        conversation_id.clone(),
+        workspace.project_id.clone(),
+        101,
+        Some("old-head".to_string()),
+    );
+    monitor.monitor_enabled = true;
+    monitor.status = AgentWorkspacePrReviewMonitorStatus::Watching;
+    monitor.first_review_completed = true;
+    monitor.last_reviewed_head_sha = Some("old-head".to_string());
+    workspace_repo
+        .upsert_pr_review_monitor(monitor)
+        .await
+        .expect("monitor should persist");
+
+    let project_repo: Arc<dyn ProjectRepository> =
+        Arc::new(MemoryProjectRepository::with_projects(vec![project]));
+    let github = Arc::new(MockGithubService::new());
+    let plan_branch_repo: Arc<dyn PlanBranchRepository> =
+        Arc::new(MemoryPlanBranchRepository::new());
+    let registry = Arc::new(PrPollerRegistry::new(
+        Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
+        Arc::clone(&plan_branch_repo),
+    ));
+
+    recover_agent_workspace_pr_pollers(
+        workspace_repo,
+        project_repo,
+        plan_branch_repo,
+        Arc::clone(&registry),
+        Arc::new(MemoryAgentRunRepository::new()),
+        Arc::new(MockChatService::new()),
+        Arc::new(HashSet::new()),
+    )
+    .await;
+
+    assert!(registry.is_agent_workspace_polling(&conversation_id));
+    registry.stop_agent_workspace_polling(&conversation_id);
+}
+
+#[tokio::test]
+async fn startup_agent_workspace_pr_recovery_skips_orphaned_review_pr_monitor() {
+    init_tracing();
+
+    let project = cleanup_project();
+    let conversation_id = ChatConversationId::from_string("abababab-1010-1111-1212-cdcdcdcdcdcd");
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let mut monitor = AgentWorkspacePrReviewMonitor::new(
+        conversation_id.clone(),
+        project.id.clone(),
+        101,
+        Some("old-head".to_string()),
+    );
+    monitor.monitor_enabled = true;
+    monitor.status = AgentWorkspacePrReviewMonitorStatus::Watching;
+    workspace_repo
+        .upsert_pr_review_monitor(monitor)
+        .await
+        .expect("orphaned monitor should persist");
+
+    let project_repo: Arc<dyn ProjectRepository> =
+        Arc::new(MemoryProjectRepository::with_projects(vec![project]));
+    let plan_branch_repo: Arc<dyn PlanBranchRepository> =
+        Arc::new(MemoryPlanBranchRepository::new());
+    let github = Arc::new(MockGithubService::new());
+    let registry = Arc::new(PrPollerRegistry::new(
+        Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
+        Arc::clone(&plan_branch_repo),
+    ));
+
+    recover_agent_workspace_pr_pollers(
+        workspace_repo,
+        project_repo,
+        plan_branch_repo,
+        Arc::clone(&registry),
+        Arc::new(MemoryAgentRunRepository::new()),
+        Arc::new(MockChatService::new()),
+        Arc::new(HashSet::new()),
+    )
+    .await;
+
+    assert!(!registry.is_agent_workspace_polling(&conversation_id));
+}
+
+#[tokio::test]
+async fn startup_agent_workspace_pr_recovery_tolerates_workspace_and_monitor_listing_errors() {
+    init_tracing();
+
+    let project = cleanup_project();
+    let project_repo: Arc<dyn ProjectRepository> =
+        Arc::new(MemoryProjectRepository::with_projects(vec![project]));
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        Arc::new(WorkspaceLoadErrorRepository);
+    let plan_branch_repo: Arc<dyn PlanBranchRepository> =
+        Arc::new(MemoryPlanBranchRepository::new());
+    let github = Arc::new(MockGithubService::new());
+    let registry = Arc::new(PrPollerRegistry::new(
+        Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
+        Arc::clone(&plan_branch_repo),
+    ));
+
+    recover_agent_workspace_pr_pollers(
+        workspace_repo,
+        project_repo,
+        plan_branch_repo,
+        Arc::clone(&registry),
+        Arc::new(MemoryAgentRunRepository::new()),
+        Arc::new(MockChatService::new()),
+        Arc::new(HashSet::new()),
+    )
+    .await;
+
+    assert_eq!(github.state().fetch_pr_health_calls, 0);
+}
+
+#[tokio::test]
+async fn startup_agent_workspace_pr_recovery_restarts_supervised_ideation_poller() {
+    init_tracing();
+
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let repo_path = temp_dir.path().join("repo");
+    std::fs::create_dir_all(&repo_path).expect("create repo dir");
+    run_git(&repo_path, &["init"]);
+    run_git(&repo_path, &["config", "user.email", "test@example.com"]);
+    run_git(&repo_path, &["config", "user.name", "Test User"]);
+    run_git(&repo_path, &["checkout", "-b", "main"]);
+    std::fs::write(repo_path.join("README.md"), "base\n").expect("write readme");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "initial"]);
+
+    let mut project = Project::new(
+        "Startup Ideation Poller".to_string(),
+        repo_path.to_string_lossy().to_string(),
+    );
+    project.base_branch = Some("main".to_string());
+    project.github_pr_enabled = true;
+    project.worktree_parent_directory = Some(
+        temp_dir
+            .path()
+            .join("worktrees")
+            .to_string_lossy()
+            .to_string(),
+    );
+
+    let conversation_id = ChatConversationId::from_string("abababab-4444-5555-6666-cdcdcdcdcdcd");
+    let plan_branch_name = "feature/startup-ideation-poller-plan";
+    run_git(&repo_path, &["checkout", "-b", plan_branch_name]);
+    std::fs::write(repo_path.join("plan.txt"), "plan branch\n").expect("write plan fixture");
+    run_git(&repo_path, &["add", "."]);
+    run_git(&repo_path, &["commit", "-m", "plan branch"]);
+    run_git(&repo_path, &["checkout", "main"]);
+
+    let mut plan_branch = PlanBranch::new(
+        ArtifactId::from_string("artifact-startup-ideation-poller"),
+        IdeationSessionId::from_string("session-startup-ideation-poller"),
+        project.id.clone(),
+        plan_branch_name.to_string(),
+        "main".to_string(),
+    );
+    plan_branch.id = PlanBranchId::from_string("plan-branch-ideation");
+    plan_branch.pr_number = Some(101);
+    plan_branch.pr_url = Some("https://github.com/owner/repo/pull/101".to_string());
+    plan_branch.pr_status = Some(PlanPrStatus::Open);
+    plan_branch.pr_push_status = PrPushStatus::Pushed;
+    let expected_plan_worktree =
+        resolve_linked_plan_branch_agent_worktree_path(&project, &plan_branch)
+            .expect("plan worktree path should resolve");
+
+    let mut workspace = published_workspace(
+        &project,
+        conversation_id.clone(),
+        "ralphx/test/startup-ideation-poller",
+    );
+    workspace.mode = AgentConversationWorkspaceMode::Ideation;
+    workspace.linked_plan_branch_id = Some(PlanBranchId::from_string("plan-branch-ideation"));
+    workspace.pr_autofix_enabled = true;
+
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+    let project_repo: Arc<dyn ProjectRepository> =
+        Arc::new(MemoryProjectRepository::with_projects(vec![project]));
+    let plan_branch_repo: Arc<dyn PlanBranchRepository> =
+        Arc::new(MemoryPlanBranchRepository::new());
+    plan_branch_repo
+        .create(plan_branch)
+        .await
+        .expect("plan branch should persist");
+    let github = Arc::new(MockGithubService::new());
+    let registry = Arc::new(PrPollerRegistry::new(
+        Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
+        Arc::clone(&plan_branch_repo),
+    ));
+
+    recover_agent_workspace_pr_pollers(
+        workspace_repo,
+        project_repo,
+        plan_branch_repo,
+        Arc::clone(&registry),
+        Arc::new(MemoryAgentRunRepository::new()),
+        Arc::new(MockChatService::new()),
+        Arc::new(HashSet::new()),
+    )
+    .await;
+
+    assert!(registry.is_agent_workspace_polling(&conversation_id));
+    assert_eq!(
+        GitService::get_current_branch(&repo_path)
+            .await
+            .expect("root branch should be readable"),
+        "main"
+    );
+    assert_eq!(
+        GitService::get_current_branch(&expected_plan_worktree)
+            .await
+            .expect("plan worktree branch should be readable"),
+        plan_branch_name
+    );
     registry.stop_agent_workspace_polling(&conversation_id);
 }
 
@@ -529,6 +833,12 @@ impl AgentConversationWorkspaceRepository for WorkspaceLoadErrorRepository {
     async fn list_active_needs_agent_workspaces(
         &self,
     ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        Err(repo_error())
+    }
+
+    async fn list_active_pr_review_monitors(
+        &self,
+    ) -> AppResult<Vec<AgentWorkspacePrReviewMonitor>> {
         Err(repo_error())
     }
 

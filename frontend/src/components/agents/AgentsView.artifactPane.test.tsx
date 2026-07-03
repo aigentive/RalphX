@@ -1,4 +1,5 @@
 import {
+  fireAgentViewEvent,
   getAgentsViewTestMocks,
   mockAgentViewData,
   mockSessionWithData,
@@ -15,8 +16,76 @@ import {
   conversationFixture as conversation,
   conversationWorkspaceFixture as conversationWorkspace,
 } from "./agentsTestFixtures";
+import { useAgentArtifactUiStore } from "./agentArtifactUiStore";
 
-const { getAgentConversationWorkspaceMock } = getAgentsViewTestMocks();
+const {
+  getAgentConversationWorkspaceMock,
+  getWorkspaceReviewContextMock,
+  startWorkspaceReviewMock,
+} = getAgentsViewTestMocks();
+
+const workspaceReviewTarget = {
+  scope: "workspace_delta",
+  baseRef: "main",
+  baseSha: "base-sha",
+  headRef: "HEAD",
+  headSha: "head-sha",
+  diffFingerprint: "fingerprint-1",
+  sourcePullRequestNumber: null,
+};
+
+function workspaceReviewContext(overrides: {
+  conversationId?: string;
+  status?: "idle" | "ready" | "reviewing" | "blocked";
+  reviewOutcome?: "none" | "passed" | "failed";
+  reviewGateStatus?: "none" | "reviewing" | "passed" | "failed";
+  isOutdated?: boolean;
+  isCurrent?: boolean;
+  shouldShowTab?: boolean;
+} = {}) {
+  const conversationId = overrides.conversationId ?? "conversation-1";
+  return {
+    success: true,
+    workspace: conversationWorkspace({ conversationId, mode: "edit" }),
+    events: [],
+    target: workspaceReviewTarget,
+    monitor: {
+      conversationId,
+      projectId: "project-1",
+      status: overrides.status ?? "ready",
+      currentTargetScope: "workspace_delta",
+      reviewedTargetScope: "workspace_delta",
+      reviewOutcome:
+        overrides.reviewOutcome ??
+        (overrides.reviewGateStatus === "passed" ? "passed" : "none"),
+      reviewGateStatus: overrides.reviewGateStatus ?? null,
+      reviewConversationId: "review-conversation-1",
+      reviewArtifactId: "review-artifact-1",
+      reviewArtifactVersion: 1,
+      reviewArtifactUpdatedAt: "2026-04-23T09:30:00Z",
+      reviewedHeadSha: "previous-head-sha",
+      reviewedDiffFingerprint: "previous-fingerprint",
+      selectedSourceBaseRef: null,
+      selectedSourceBaseSha: null,
+      selectedSourceHeadRef: null,
+      selectedSourceHeadSha: null,
+      selectedSourcePullRequestNumber: null,
+      workspaceBaseRef: "main",
+      workspaceBaseSha: "base-sha",
+      workspaceHeadRef: "HEAD",
+      workspaceHeadSha: "head-sha",
+      currentDiffFingerprint: workspaceReviewTarget.diffFingerprint,
+      previousVersionId: null,
+      lastRunId: null,
+      lastError: null,
+      createdAt: "2026-04-23T09:00:00Z",
+      updatedAt: "2026-04-23T09:30:00Z",
+    },
+    isCurrent: overrides.isCurrent ?? false,
+    isOutdated: overrides.isOutdated ?? true,
+    shouldShowTab: overrides.shouldShowTab ?? true,
+  };
+}
 
 describe("AgentsView artifact pane", () => {
   beforeEach(setupAgentsViewTest);
@@ -162,6 +231,140 @@ describe("AgentsView artifact pane", () => {
     const pane = await screen.findByTestId("agents-artifact-pane");
     expect(pane).toHaveAttribute("data-active-tab", "publish");
     expect(screen.getByTestId("agents-artifact-resizable-pane")).toBeInTheDocument();
+  });
+
+  it("opens the Review tab when a workspace Review artifact is created", async () => {
+    mockAgentViewData(conversation({ agentMode: "edit" }));
+    getAgentConversationWorkspaceMock.mockResolvedValue(conversationWorkspace({ mode: "edit" }));
+    resetAgentSessionState({
+      selectedProjectId: "project-1",
+      selectedConversationId: "conversation-1",
+      artifactByConversationId: {
+        "conversation-1": {
+          isOpen: true,
+          activeTab: "publish",
+          taskMode: "graph",
+        },
+      },
+    });
+
+    renderAgentsView();
+
+    const pane = await screen.findByTestId("agents-artifact-pane");
+    expect(pane).toHaveAttribute("data-active-tab", "publish");
+
+    act(() => {
+      fireAgentViewEvent("workspace_review_artifact:created", {
+        conversationId: "conversation-1",
+        artifact: {
+          id: "review-artifact-1",
+          name: "Workspace Review",
+          version: 1,
+        },
+      });
+    });
+
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-artifact-pane")).toHaveAttribute(
+        "data-active-tab",
+        "review",
+      ),
+    );
+  });
+
+  it("promotes Commit & Publish in the header when the open Review is passed and current", async () => {
+    mockAgentViewData(conversation({ agentMode: "edit" }));
+    getAgentConversationWorkspaceMock.mockResolvedValue(conversationWorkspace({ mode: "edit" }));
+    getWorkspaceReviewContextMock.mockResolvedValue(
+      workspaceReviewContext({
+        reviewGateStatus: "passed",
+        isCurrent: true,
+        isOutdated: false,
+        shouldShowTab: true,
+      }),
+    );
+    resetAgentSessionState({
+      selectedProjectId: "project-1",
+      selectedConversationId: "conversation-1",
+      artifactByConversationId: {
+        "conversation-1": {
+          isOpen: true,
+          activeTab: "review",
+          taskMode: "graph",
+        },
+      },
+    });
+    useAgentArtifactUiStore.setState({
+      artifactByConversationId: {
+        "conversation-1": {
+          isOpen: true,
+          activeTab: "review",
+          taskMode: "graph",
+        },
+      },
+    });
+
+    renderAgentsView();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-publish-workspace")).toHaveTextContent(
+        "Commit & Publish",
+      ),
+    );
+  });
+
+  it("does not refresh an outdated Review from the UI when related runtimes become idle", async () => {
+    mockAgentViewData(conversation({ agentMode: "edit" }));
+    getAgentConversationWorkspaceMock.mockResolvedValue(conversationWorkspace({ mode: "edit" }));
+    getWorkspaceReviewContextMock.mockResolvedValue(
+      workspaceReviewContext({ isOutdated: true, shouldShowTab: true }),
+    );
+    resetAgentSessionState({
+      selectedProjectId: "project-1",
+      selectedConversationId: "conversation-1",
+    });
+
+    renderAgentsView();
+
+    await waitFor(() =>
+      expect(getWorkspaceReviewContextMock).toHaveBeenCalledWith("conversation-1"),
+    );
+    expect(startWorkspaceReviewMock).not.toHaveBeenCalled();
+
+    act(() => {
+      fireAgentViewEvent("agent:run_completed", {
+        conversationId: "task-conversation-1",
+      });
+    });
+
+    expect(startWorkspaceReviewMock).not.toHaveBeenCalled();
+
+    act(() => {
+      fireAgentViewEvent("agent:run_completed", {
+        conversationId: "task-conversation-1",
+      });
+    });
+
+    expect(startWorkspaceReviewMock).not.toHaveBeenCalled();
+  });
+
+  it("does not auto-start Review from the UI when retained related runtimes are only waiting for input", async () => {
+    mockAgentViewData(conversation({ agentMode: "edit" }));
+    getAgentConversationWorkspaceMock.mockResolvedValue(conversationWorkspace({ mode: "edit" }));
+    getWorkspaceReviewContextMock.mockResolvedValue(
+      workspaceReviewContext({ isOutdated: true, shouldShowTab: true }),
+    );
+    resetAgentSessionState({
+      selectedProjectId: "project-1",
+      selectedConversationId: "conversation-1",
+    });
+
+    renderAgentsView();
+
+    await waitFor(() =>
+      expect(getWorkspaceReviewContextMock).toHaveBeenCalledWith("conversation-1"),
+    );
+    expect(startWorkspaceReviewMock).not.toHaveBeenCalled();
   });
 
   it("still allows manually opening the artifact pane when the conversation has nothing to show", async () => {
@@ -340,7 +543,7 @@ describe("AgentsView artifact pane", () => {
     mockSessionWithData({ id: "session-1", planArtifactId: "plan-1" });
     await act(async () => {
       await queryClient.invalidateQueries({
-        queryKey: ideationKeys.sessionDetail("session-1"),
+        queryKey: ideationKeys.sessionWithData("session-1"),
       });
     });
 
@@ -358,6 +561,162 @@ describe("AgentsView artifact pane", () => {
       expect(screen.getByLabelText("Open artifacts")).toBeInTheDocument()
     );
     expect(screen.getByLabelText("Plan")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Proposals")).not.toBeInTheDocument();
+  });
+
+  it("selects the Plan tab when the selected plan-mode conversation creates a plan", async () => {
+    mockAgentViewData(conversation({ agentMode: "plan" }));
+    getAgentConversationWorkspaceMock.mockResolvedValue(
+      conversationWorkspace({
+        mode: "plan",
+        linkedIdeationSessionId: "session-1",
+      })
+    );
+    mockSessionWithData({
+      id: "session-1",
+      planArtifactId: null,
+      sessionFlow: "planning",
+    });
+    resetAgentSessionState({
+      selectedProjectId: "project-1",
+      selectedConversationId: "conversation-1",
+      artifactByConversationId: {
+        "conversation-1": {
+          isOpen: true,
+          activeTab: "jira",
+          taskMode: "graph",
+        },
+      },
+    });
+
+    renderAgentsView();
+
+    const pane = await screen.findByTestId("agents-artifact-pane");
+    expect(pane).toHaveAttribute("data-active-tab", "jira");
+
+    act(() => {
+      fireAgentViewEvent("plan_artifact:created", {
+        sessionId: "session-1",
+        artifact: {
+          id: "plan-1",
+          name: "Plan",
+          content: "# Plan",
+          version: 1,
+        },
+      });
+    });
+
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-artifact-pane")).toHaveAttribute(
+        "data-active-tab",
+        "plan"
+      )
+    );
+  });
+
+  it("keeps the current tab when a created plan belongs to another conversation", async () => {
+    mockAgentViewData(conversation({ agentMode: "plan" }));
+    getAgentConversationWorkspaceMock.mockResolvedValue(
+      conversationWorkspace({
+        mode: "plan",
+        linkedIdeationSessionId: "session-1",
+      })
+    );
+    mockSessionWithData({
+      id: "session-1",
+      planArtifactId: null,
+      sessionFlow: "planning",
+    });
+    resetAgentSessionState({
+      selectedProjectId: "project-1",
+      selectedConversationId: "conversation-1",
+      artifactByConversationId: {
+        "conversation-1": {
+          isOpen: true,
+          activeTab: "jira",
+          taskMode: "graph",
+        },
+      },
+    });
+
+    renderAgentsView();
+
+    const pane = await screen.findByTestId("agents-artifact-pane");
+    expect(pane).toHaveAttribute("data-active-tab", "jira");
+
+    act(() => {
+      fireAgentViewEvent("plan_artifact:created", {
+        sessionId: "other-session",
+        artifact: {
+          id: "plan-other",
+          name: "Other Plan",
+          content: "# Other Plan",
+          version: 1,
+        },
+      });
+    });
+
+    expect(screen.getByTestId("agents-artifact-pane")).toHaveAttribute(
+      "data-active-tab",
+      "jira"
+    );
+  });
+
+  it("shows the Proposals shortcut after a plan-mode session has proposals", async () => {
+    mockAgentViewData(conversation({ agentMode: "plan" }));
+    getAgentConversationWorkspaceMock.mockResolvedValue(
+      conversationWorkspace({
+        mode: "plan",
+        linkedIdeationSessionId: "session-1",
+      })
+    );
+    mockSessionWithData(
+      { id: "session-1", planArtifactId: "plan-1" },
+      [
+        {
+          id: "proposal-1",
+          sessionId: "session-1",
+          title: "Gate proposal tab visibility",
+          description: "Show Proposals only when proposal content exists.",
+          category: "frontend",
+          steps: ["Update artifact tabs"],
+          acceptanceCriteria: ["Proposals shortcut appears with content"],
+          suggestedPriority: "high",
+          priorityScore: 90,
+          priorityReason: "Avoids empty navigation",
+          estimatedComplexity: "simple",
+          userPriority: null,
+          userModified: false,
+          status: "pending",
+          createdTaskId: null,
+          planArtifactId: "plan-1",
+          planVersionAtCreation: 1,
+          sortOrder: 0,
+          createdAt: "2026-04-23T09:15:00Z",
+          updatedAt: "2026-04-23T09:15:00Z",
+        },
+      ],
+    );
+    resetAgentSessionState({
+      selectedProjectId: "project-1",
+      selectedConversationId: "conversation-1",
+    });
+
+    renderAgentsView();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-artifact-pane")).toHaveAttribute(
+        "data-active-tab",
+        "plan"
+      )
+    );
+    fireEvent.click(screen.getByLabelText("Close panel"));
+
+    await waitFor(() =>
+      expect(screen.getByLabelText("Open artifacts")).toBeInTheDocument()
+    );
+    expect(screen.getByLabelText("Plan")).toBeInTheDocument();
+    expect(screen.getByLabelText("Proposals")).toBeInTheDocument();
   });
 
 });

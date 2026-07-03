@@ -18,6 +18,10 @@ import {
 } from "@/components/ui/dialog";
 import { harnessProviderKeys } from "@/hooks/useHarnessProviders";
 import { providerCliManagementKeys } from "@/hooks/useProviderCliManagement";
+import {
+  providerCliUpdateNotificationKey,
+  providerCliUpdateToastId,
+} from "@/lib/provider-cli-update-toast";
 import { useUiStore } from "@/stores/uiStore";
 
 const STARTUP_PROVIDER_CLI_CHECK_DELAY_MS = 7_000;
@@ -48,18 +52,11 @@ function isActionableManagedStatus(status: ManagedProviderCliStatusResponse) {
 
 function isUserManagedOutdatedStatus(status: ManagedProviderCliStatusResponse) {
   return (
+    !status.customBinaryEnabled &&
     status.cliManagementMode === "user_managed" &&
     status.supported &&
     status.updateAvailable
   );
-}
-
-function providerCliToastId(provider: string) {
-  return `provider-cli-update:${provider}`;
-}
-
-function providerCliNotificationKey(status: ManagedProviderCliStatusResponse) {
-  return `${status.provider}:${status.latestVersion ?? status.action}`;
 }
 
 function readDismissedProviderCliUpdateKeys(): Set<string> {
@@ -106,14 +103,14 @@ export function ProviderCliUpdateChecker() {
 
   const handleRemindAgain = useCallback(() => {
     if (!pendingDismiss) return;
-    toast.dismiss(providerCliToastId(pendingDismiss.status.provider));
+    toast.dismiss(providerCliUpdateToastId(pendingDismiss.status.provider));
     setPendingDismiss(null);
   }, [pendingDismiss]);
 
   const handleDontAskAgain = useCallback(() => {
     if (!pendingDismiss) return;
     rememberDismissedProviderCliUpdate(pendingDismiss.notificationKey);
-    toast.dismiss(providerCliToastId(pendingDismiss.status.provider));
+    toast.dismiss(providerCliUpdateToastId(pendingDismiss.status.provider));
     setPendingDismiss(null);
   }, [pendingDismiss]);
 
@@ -132,7 +129,7 @@ export function ProviderCliUpdateChecker() {
 
     const installOrUpdate = async (status: ManagedProviderCliStatusResponse) => {
       const label = providerLabel(status.provider);
-      const toastId = providerCliToastId(status.provider);
+      const toastId = providerCliUpdateToastId(status.provider);
       const verb = status.action === "install" ? "Installing" : "Updating";
       toast.loading(`${verb} ${label} CLI...`, { id: toastId });
       try {
@@ -150,7 +147,7 @@ export function ProviderCliUpdateChecker() {
     };
 
     const showManualToast = (status: ManagedProviderCliStatusResponse) => {
-      const notificationKey = providerCliNotificationKey(status);
+      const notificationKey = providerCliUpdateNotificationKey(status);
       if (status.updateAvailable && isDismissedProviderCliUpdate(notificationKey)) {
         return;
       }
@@ -166,7 +163,7 @@ export function ProviderCliUpdateChecker() {
       const onPrimaryAction = isUserManaged
         ? () => {
             openModal("settings", { section: "providers" });
-            toast.dismiss(providerCliToastId(status.provider));
+            toast.dismiss(providerCliUpdateToastId(status.provider));
           }
         : () => void installOrUpdate(status);
       toast(
@@ -216,7 +213,7 @@ export function ProviderCliUpdateChecker() {
                   setPendingDismiss({ notificationKey, status });
                   return;
                 }
-                toast.dismiss(providerCliToastId(status.provider));
+                toast.dismiss(providerCliUpdateToastId(status.provider));
               }}
             >
               Dismiss
@@ -225,7 +222,7 @@ export function ProviderCliUpdateChecker() {
         </div>,
         {
           duration: Infinity,
-          id: providerCliToastId(status.provider),
+          id: providerCliUpdateToastId(status.provider),
           className: "git-auth-startup-toast",
         },
       );
