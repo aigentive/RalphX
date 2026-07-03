@@ -1,6 +1,6 @@
 use super::{
     agent_run_usage_from_codex_usage, capture_file_diff_baseline, codex_tool_call_content_block,
-    flush_content_before_error, format_agent_exit_stderr,
+    completion_tool_result_accepted, flush_content_before_error, format_agent_exit_stderr,
     normalize_codex_cumulative_usage_for_persistence, normalize_codex_stream_usage_for_persistence,
     persist_assistant_message_snapshot, persist_message_text_timeline_item,
     persist_timeline_snapshot, process_codex_stream_background, process_exit_details,
@@ -36,6 +36,33 @@ use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 
 struct FailingTimelineRepository;
+
+#[test]
+fn completion_tool_result_accepts_success_payloads() {
+    assert!(completion_tool_result_accepted(None));
+    assert!(completion_tool_result_accepted(Some(
+        &serde_json::json!({ "success": true })
+    )));
+    assert!(completion_tool_result_accepted(Some(
+        &serde_json::json!({ "status": "ok" })
+    )));
+}
+
+#[test]
+fn completion_tool_result_rejects_error_payloads() {
+    assert!(!completion_tool_result_accepted(Some(
+        &serde_json::json!({ "is_error": true })
+    )));
+    assert!(!completion_tool_result_accepted(Some(
+        &serde_json::json!({ "isError": true })
+    )));
+    assert!(!completion_tool_result_accepted(Some(
+        &serde_json::json!({ "success": false })
+    )));
+    assert!(!completion_tool_result_accepted(Some(
+        &serde_json::json!({ "status": "failed" })
+    )));
+}
 
 #[async_trait::async_trait]
 impl ChatTimelineRepository for FailingTimelineRepository {
@@ -303,6 +330,20 @@ async fn codex_stream_turn_completed_finishes_without_waiting_for_process_exit()
     assert_eq!(outcome.response_text, "Done.");
     assert_eq!(outcome.session_id, Some("codex-thread-queue".to_string()));
     assert_eq!(outcome.turns_finalized, 0);
+}
+
+#[tokio::test]
+async fn codex_stream_accepted_completion_tool_enters_grace_path() {
+    let outcome = run_codex_stream_lines(&[
+        r#"{"type":"item.completed","item":{"type":"mcp_tool_call","id":"tool-1","server":"ralphx","tool":"execution_complete","arguments":{"task_id":"task-1"},"result":{"success":true}}}"#,
+        r#"{"type":"turn.completed","usage":{"last_token_usage":{"input_tokens":3,"output_tokens":2}}}"#,
+    ])
+    .await
+    .expect("accepted completion tool should not fail the stream");
+
+    assert!(outcome.completion_tool_called);
+    assert_eq!(outcome.tool_calls.len(), 1);
+    assert_eq!(outcome.tool_calls[0].name, "ralphx::execution_complete");
 }
 
 #[tokio::test]
@@ -1012,6 +1053,18 @@ async fn claude_stream_success_result_completes_interactive_turn() {
     .expect("successful result should complete the turn");
 
     assert_eq!(outcome.session_id, Some("sess-1".to_string()));
+}
+
+#[tokio::test]
+async fn claude_stream_accepted_completion_tool_enters_grace_path() {
+    let outcome = run_claude_stream_lines(&[
+        r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu-complete","name":"mcp__ralphx__execution_complete","input":{"task_id":"task-1"}}]},"session_id":"sess-1"}"#,
+        r#"{"type":"result","session_id":"sess-1","is_error":false,"result":"Done","cost_usd":0.0}"#,
+    ])
+    .await
+    .expect("accepted completion tool should not fail the stream");
+
+    assert!(outcome.completion_tool_called);
 }
 
 #[tokio::test]

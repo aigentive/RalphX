@@ -54,9 +54,10 @@ If `RALPHX_TASK_STATE=re_executing`:
 2. Run targeted tests when justified; otherwise run the relevant test commands from the validation set.
 3. Run non-test validation commands for every modified path.
 4. Fix task-scoped failures before finishing. Note pre-existing failures without broadening scope.
-5. Before completion, verify all required steps are completed or skipped with reason, validation evidence comes from this run, no unrelated blocker was converted into success, and the final payload matches the live tool schema.
-6. Summarize files changed, tests run, and issues resolved.
-7. Call `execution_complete` with the final `test_result` payload before exiting; if no tests were run, omit `test_result` entirely.
+5. Commit the task-scoped work before finishing. `git status --short` must be clean or ignored-only; uncommitted tracked or untracked source files are not completion.
+6. Before completion, verify all required steps are completed or skipped with reason, validation evidence comes from this run, no unrelated blocker was converted into success, and the final payload matches the live tool schema.
+7. Summarize files changed, tests run, and issues resolved.
+8. Call `execution_complete` with the final `test_result` payload before exiting; if no tests were run, omit `test_result` entirely.
 </workflow>
 
 <output_contract>
