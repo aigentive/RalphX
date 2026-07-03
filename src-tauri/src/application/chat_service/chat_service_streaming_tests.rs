@@ -104,6 +104,14 @@ impl ChatTimelineRepository for FailingTimelineRepository {
         Ok(Vec::new())
     }
 
+    async fn delete_message_items_except_block_indices(
+        &self,
+        _message_id: &ChatMessageId,
+        _retained_block_indices: Vec<i64>,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
     async fn mark_message_items_finalized(&self, _message_id: &ChatMessageId) -> AppResult<()> {
         Ok(())
     }
@@ -586,15 +594,20 @@ async fn persist_timeline_snapshot_writes_ordered_blocks_and_finalizes_them() {
         },
     ];
 
+    let mut streaming_blocks = blocks.clone();
+    streaming_blocks.push(ContentBlockItem::Text {
+        text: "Obsolete streaming-only progress".to_string(),
+    });
+
     let streaming_items = persist_timeline_snapshot(
         &Some(state.chat_timeline_repo.clone()),
         &conversation_id.as_str(),
         &message_id,
-        &blocks,
+        &streaming_blocks,
         ChatTimelineItemStatus::Streaming,
     )
     .await;
-    assert_eq!(streaming_items.len(), 3);
+    assert_eq!(streaming_items.len(), 4);
     assert_eq!(streaming_items[0].status, ChatTimelineItemStatus::Streaming);
     assert_eq!(streaming_items[1].tool_call_id.as_deref(), Some("tool-1"));
 
@@ -603,7 +616,7 @@ async fn persist_timeline_snapshot_writes_ordered_blocks_and_finalizes_them() {
         .get_page(&conversation_id, 10, None)
         .await
         .expect("load timeline page");
-    assert_eq!(page.items.len(), 3);
+    assert_eq!(page.items.len(), 4);
     assert_eq!(page.items[0].block_index, 1);
     assert_eq!(
         page.items[0].text.as_deref(),
@@ -640,6 +653,10 @@ async fn persist_timeline_snapshot_writes_ordered_blocks_and_finalizes_them() {
         .await
         .expect("load finalized timeline page");
     assert_eq!(finalized.items.len(), 3);
+    assert!(!finalized
+        .items
+        .iter()
+        .any(|item| item.text.as_deref() == Some("Obsolete streaming-only progress")));
     assert!(finalized
         .items
         .iter()

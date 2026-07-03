@@ -34,10 +34,10 @@ use crate::domain::entities::{
 };
 use crate::domain::repositories::{
     ActivityEventRepository, AgentRunRepository, ArtifactRepository, ChatAttachmentRepository,
-    ChatConversationRepository, ChatMessageRepository, ExecutionSettingsRepository,
-    IdeationSessionRepository, MemoryEventRepository, PlanBranchRepository, ProjectRepository,
-    ReviewRepository, TaskDependencyRepository, TaskProposalRepository, TaskRepository,
-    TaskStepRepository,
+    ChatConversationRepository, ChatMessageRepository, ChatTimelineRepository,
+    ExecutionSettingsRepository, IdeationSessionRepository, MemoryEventRepository,
+    PlanBranchRepository, ProjectRepository, ReviewRepository, TaskDependencyRepository,
+    TaskProposalRepository, TaskRepository, TaskStepRepository,
 };
 use crate::domain::services::{MessageQueue, QueueKey, QueuedMessage, RunningAgentRegistry};
 use crate::domain::state_machine::services::TaskScheduler;
@@ -871,10 +871,33 @@ fn seal_unresolved_content_blocks_json(
     serde_json::to_string(&content_blocks).ok().or(Some(raw))
 }
 
+fn terminal_timeline_content_blocks(
+    content: &str,
+    content_blocks_json: Option<&str>,
+) -> Vec<ContentBlockItem> {
+    if let Some(raw) = content_blocks_json {
+        if let Ok(blocks) = serde_json::from_str::<Vec<ContentBlockItem>>(raw) {
+            if !blocks.is_empty() {
+                return blocks;
+            }
+        }
+    }
+
+    if content.is_empty() {
+        Vec::new()
+    } else {
+        vec![ContentBlockItem::Text {
+            text: content.to_string(),
+        }]
+    }
+}
+
 async fn finalize_assistant_message_with_terminal_tool_state<R: Runtime>(
     chat_message_repo: &Arc<dyn ChatMessageRepository>,
+    chat_timeline_repo: &Option<Arc<dyn ChatTimelineRepository>>,
     app_handle: Option<&AppHandle<R>>,
     event_ctx: &EventContextPayload,
+    conversation_id: &ChatConversationId,
     message_id: &str,
     role: &str,
     content: &str,
@@ -884,6 +907,16 @@ async fn finalize_assistant_message_with_terminal_tool_state<R: Runtime>(
 ) {
     let sealed_tool_calls = seal_unresolved_tool_calls_json(tool_calls_json, reason);
     let sealed_content_blocks = seal_unresolved_content_blocks_json(content_blocks_json, reason);
+    let terminal_content_blocks =
+        terminal_timeline_content_blocks(content, sealed_content_blocks.as_deref());
+    let timeline_items = super::chat_service_streaming::persist_timeline_snapshot(
+        chat_timeline_repo,
+        &conversation_id.as_str(),
+        &Some(message_id.to_string()),
+        &terminal_content_blocks,
+        crate::domain::entities::ChatTimelineItemStatus::Finalized,
+    )
+    .await;
     super::chat_service_send_background::finalize_assistant_message(
         chat_message_repo,
         app_handle,
@@ -893,7 +926,7 @@ async fn finalize_assistant_message_with_terminal_tool_state<R: Runtime>(
         content,
         sealed_tool_calls.as_deref(),
         sealed_content_blocks.as_deref(),
-        Vec::new(),
+        timeline_items,
     )
     .await;
 }
@@ -1656,6 +1689,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
     plugin_dir: &Path,
     working_directory: &Path,
     chat_message_repo: &Arc<dyn ChatMessageRepository>,
+    chat_timeline_repo: &Option<Arc<dyn ChatTimelineRepository>>,
     chat_attachment_repo: &Arc<dyn ChatAttachmentRepository>,
     artifact_repo: &Arc<dyn ArtifactRepository>,
     conversation_repo: &Arc<dyn ChatConversationRepository>,
@@ -1886,8 +1920,10 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
         };
         finalize_assistant_message_with_terminal_tool_state(
             chat_message_repo,
+            chat_timeline_repo,
             app_handle.as_ref(),
             event_ctx,
+            &conversation_id,
             pre_assistant_msg_id,
             &get_assistant_role(&context_type).to_string(),
             &stop_note,
@@ -2266,8 +2302,10 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                             .await;
                     finalize_assistant_message_with_terminal_tool_state(
                         chat_message_repo,
+                        chat_timeline_repo,
                         app_handle.as_ref(),
                         event_ctx,
+                        &conversation_id,
                         pre_assistant_msg_id,
                         &get_assistant_role(&context_type).to_string(),
                         &existing_content,
@@ -2329,8 +2367,10 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                     read_existing_message_content(chat_message_repo, pre_assistant_msg_id).await;
                 finalize_assistant_message_with_terminal_tool_state(
                     chat_message_repo,
+                    chat_timeline_repo,
                     app_handle.as_ref(),
                     event_ctx,
+                    &conversation_id,
                     pre_assistant_msg_id,
                     &get_assistant_role(&context_type).to_string(),
                     &existing_content,
@@ -2383,8 +2423,10 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
                 read_existing_message_content(chat_message_repo, pre_assistant_msg_id).await;
             finalize_assistant_message_with_terminal_tool_state(
                 chat_message_repo,
+                chat_timeline_repo,
                 app_handle.as_ref(),
                 event_ctx,
+                &conversation_id,
                 pre_assistant_msg_id,
                 &get_assistant_role(&context_type).to_string(),
                 &existing_content,
@@ -2425,8 +2467,10 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
     };
     finalize_assistant_message_with_terminal_tool_state(
         chat_message_repo,
+        chat_timeline_repo,
         app_handle.as_ref(),
         event_ctx,
+        &conversation_id,
         pre_assistant_msg_id,
         &get_assistant_role(&context_type).to_string(),
         &error_note,

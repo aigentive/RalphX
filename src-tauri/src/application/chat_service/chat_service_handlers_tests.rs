@@ -14,9 +14,9 @@ use crate::application::{
 use crate::domain::agents::{AgentHarnessKind, AgentProviderSettings};
 use crate::domain::entities::{
     app_state::ExecutionHaltMode, AgentRunId, AgentRunStatus, ChatConversation,
-    ExecutionFailureSource, ExecutionRecoveryMetadata, ExecutionRecoveryReasonCode,
-    ExecutionRecoveryState, IdeationSessionId, InternalStatus, Project, ProjectId, Task,
-    VerificationStatus,
+    ChatTimelineItemStatus, ExecutionFailureSource, ExecutionRecoveryMetadata,
+    ExecutionRecoveryReasonCode, ExecutionRecoveryState, IdeationSessionId, InternalStatus,
+    Project, ProjectId, Task, VerificationStatus,
 };
 use crate::domain::repositories::{StateHistoryMetadata, StatusTransition};
 use crate::error::AppResult;
@@ -947,6 +947,7 @@ async fn test_codex_local_tool_rate_limit_text_does_not_global_pause_execution()
         std::path::Path::new("/tmp/plugin"),
         std::path::Path::new("/tmp"),
         &state.chat_message_repo,
+        &Some(state.chat_timeline_repo.clone()),
         &state.chat_attachment_repo,
         &state.artifact_repo,
         &state.chat_conversation_repo,
@@ -2073,6 +2074,7 @@ async fn invoke_handle_stream_error_cancelled(cancelled: &StreamError) -> (bool,
         plugin_dir,
         working_dir,
         &state.chat_message_repo,
+        &Some(state.chat_timeline_repo.clone()),
         &state.chat_attachment_repo,
         &state.artifact_repo,
         &state.chat_conversation_repo,
@@ -2349,6 +2351,139 @@ async fn test_handle_stream_error_cancelled_false_completion_takes_agent_stopped
     );
 }
 
+#[tokio::test]
+async fn test_handle_stream_error_cancelled_terminalizes_existing_timeline_blocks() {
+    let state = AppState::new_test();
+    let conversation_id = ChatConversationId::new();
+    let context_id = ProjectId::new().as_str().to_string();
+    let content_blocks = vec![
+        ContentBlockItem::Text {
+            text: "Partial Codex response".to_string(),
+        },
+        ContentBlockItem::ToolUse {
+            id: Some("tool-1".to_string()),
+            name: "exec_command".to_string(),
+            arguments: serde_json::json!({ "cmd": "cargo test" }),
+            result: None,
+            parent_tool_use_id: None,
+            diff_context: None,
+        },
+    ];
+    let pre_assistant_message =
+        crate::application::chat_service::chat_service_context::create_assistant_message(
+            ChatContextType::Project,
+            &context_id,
+            "Partial Codex response",
+            conversation_id.clone(),
+            &[],
+            &content_blocks,
+        );
+    let pre_assistant_message_id = pre_assistant_message.id.as_str().to_string();
+    state
+        .chat_message_repo
+        .create(pre_assistant_message)
+        .await
+        .expect("insert pre-assistant message");
+
+    let initial_items = super::super::chat_service_streaming::persist_timeline_snapshot(
+        &Some(state.chat_timeline_repo.clone()),
+        &conversation_id.as_str(),
+        &Some(pre_assistant_message_id.clone()),
+        &content_blocks,
+        ChatTimelineItemStatus::Streaming,
+    )
+    .await;
+    assert!(initial_items
+        .iter()
+        .all(|item| item.status == ChatTimelineItemStatus::Streaming));
+
+    let event_ctx = crate::application::chat_service::event_context(
+        &conversation_id,
+        &ChatContextType::Project,
+        &context_id,
+    );
+    let cancelled = StreamError::Cancelled {
+        turns_finalized: 0,
+        completion_tool_called: false,
+    };
+    let recovery_spawned = handle_stream_error::<MockRuntime>(
+        "cancelled",
+        Some(&cancelled),
+        ChatContextType::Project,
+        &context_id,
+        conversation_id.clone(),
+        "run-id-cancelled-timeline",
+        &pre_assistant_message_id,
+        &event_ctx,
+        None,
+        crate::domain::agents::AgentHarnessKind::Codex,
+        false,
+        None,
+        None,
+        None,
+        std::path::Path::new("/tmp/codex"),
+        std::path::Path::new("/tmp/plugin"),
+        std::path::Path::new("/tmp"),
+        &state.chat_message_repo,
+        &Some(state.chat_timeline_repo.clone()),
+        &state.chat_attachment_repo,
+        &state.artifact_repo,
+        &state.chat_conversation_repo,
+        &state.agent_run_repo,
+        &state.task_repo,
+        &state.task_dependency_repo,
+        &state.project_repo,
+        &state.ideation_session_repo,
+        &None,
+        &state.activity_event_repo,
+        &state.message_queue,
+        &state.running_agent_registry,
+        &state.memory_event_repo,
+        &None,
+        &None,
+        &None,
+        &None,
+        &None::<tauri::AppHandle<MockRuntime>>,
+        None,
+        false,
+        None,
+        &None,
+        &None,
+        &None,
+        &None,
+    )
+    .await;
+
+    assert!(!recovery_spawned);
+    let page = state
+        .chat_timeline_repo
+        .get_page(&conversation_id, 10, None)
+        .await
+        .expect("load timeline page");
+    let assistant_items: Vec<_> = page
+        .items
+        .iter()
+        .filter(|item| {
+            item.message_id
+                .as_ref()
+                .is_some_and(|id| id.as_str() == pre_assistant_message_id)
+        })
+        .collect();
+    assert_eq!(assistant_items.len(), 2);
+    assert!(assistant_items
+        .iter()
+        .all(|item| item.status == ChatTimelineItemStatus::Finalized));
+    let tool_item = assistant_items
+        .iter()
+        .find(|item| item.tool_call_id.as_deref() == Some("tool-1"))
+        .expect("tool timeline item should remain present");
+    assert_eq!(tool_item.tool_status.as_deref(), Some("completed"));
+    assert!(tool_item
+        .result_json
+        .as_deref()
+        .is_some_and(|result| result.contains("stopped")));
+}
+
 /// Sub-branch A: Cancelled { turns_finalized: 1, completion_tool_called: true }
 /// → success path taken; execution slot IS re-incremented.
 ///
@@ -2445,6 +2580,7 @@ async fn test_handle_stream_error_preserves_existing_content_blocks_without_seri
         std::path::Path::new("/tmp/plugin"),
         std::path::Path::new("/tmp"),
         &state.chat_message_repo,
+        &Some(state.chat_timeline_repo.clone()),
         &state.chat_attachment_repo,
         &state.artifact_repo,
         &state.chat_conversation_repo,
@@ -2627,6 +2763,7 @@ async fn test_handle_stream_error_terminal_verification_child_seals_unresolved_t
         std::path::Path::new("/tmp/plugin"),
         std::path::Path::new("/tmp"),
         &state.chat_message_repo,
+        &Some(state.chat_timeline_repo.clone()),
         &state.chat_attachment_repo,
         &state.artifact_repo,
         &state.chat_conversation_repo,
@@ -2811,6 +2948,7 @@ async fn test_handle_stream_error_actionable_verification_child_queues_hidden_au
         std::path::Path::new("/tmp/plugin"),
         std::path::Path::new("/tmp"),
         &state.chat_message_repo,
+        &Some(state.chat_timeline_repo.clone()),
         &state.chat_attachment_repo,
         &state.artifact_repo,
         &state.chat_conversation_repo,
@@ -2930,6 +3068,7 @@ async fn test_handle_stream_error_appends_generic_agent_error_to_existing_conten
         std::path::Path::new("/tmp/plugin"),
         std::path::Path::new("/tmp"),
         &state.chat_message_repo,
+        &Some(state.chat_timeline_repo.clone()),
         &state.chat_attachment_repo,
         &state.artifact_repo,
         &state.chat_conversation_repo,
@@ -3194,6 +3333,7 @@ async fn test_task_execution_shutdown_error_persists_startup_recovery_metadata()
         std::path::Path::new("/tmp/plugin"),
         std::path::Path::new("/tmp"),
         &state.chat_message_repo,
+        &Some(state.chat_timeline_repo.clone()),
         &state.chat_attachment_repo,
         &state.artifact_repo,
         &state.chat_conversation_repo,
@@ -3311,6 +3451,7 @@ async fn test_task_execution_error_finalizer_fails_current_attempt_with_metadata
         std::path::Path::new("/tmp/plugin"),
         std::path::Path::new("/tmp"),
         &state.chat_message_repo,
+        &Some(state.chat_timeline_repo.clone()),
         &state.chat_attachment_repo,
         &state.artifact_repo,
         &state.chat_conversation_repo,
@@ -3434,6 +3575,7 @@ async fn test_task_execution_agent_exit_preserves_worker_error_as_failure_error(
         std::path::Path::new("/tmp/plugin"),
         std::path::Path::new("/tmp"),
         &state.chat_message_repo,
+        &Some(state.chat_timeline_repo.clone()),
         &state.chat_attachment_repo,
         &state.artifact_repo,
         &state.chat_conversation_repo,
@@ -3571,6 +3713,7 @@ async fn test_task_execution_agent_exit_uses_head_matched_validation_cache_for_f
         std::path::Path::new("/tmp/plugin"),
         std::path::Path::new("/tmp"),
         &state.chat_message_repo,
+        &Some(state.chat_timeline_repo.clone()),
         &state.chat_attachment_repo,
         &state.artifact_repo,
         &state.chat_conversation_repo,
@@ -3701,6 +3844,7 @@ async fn test_task_execution_provider_error_finalizer_pauses_with_metadata() {
         std::path::Path::new("/tmp/plugin"),
         std::path::Path::new("/tmp"),
         &state.chat_message_repo,
+        &Some(state.chat_timeline_repo.clone()),
         &state.chat_attachment_repo,
         &state.artifact_repo,
         &state.chat_conversation_repo,

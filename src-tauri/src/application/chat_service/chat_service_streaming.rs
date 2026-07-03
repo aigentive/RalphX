@@ -289,6 +289,7 @@ pub(super) async fn persist_timeline_snapshot(
     let role = MessageRole::Orchestrator;
     let mut persisted_items = Vec::new();
     let mut persistence_failed = false;
+    let mut retained_block_indices = Vec::new();
 
     for (index, block) in content_blocks.iter().enumerate() {
         let kind = match block {
@@ -296,6 +297,7 @@ pub(super) async fn persist_timeline_snapshot(
             ContentBlockItem::Text { .. } => ChatTimelineItemKind::Text,
             ContentBlockItem::ToolUse { .. } => ChatTimelineItemKind::ToolUse,
         };
+        retained_block_indices.push(index as i64);
 
         let mut item = ChatTimelineItem::for_message_block(
             message_id.clone(),
@@ -349,13 +351,17 @@ pub(super) async fn persist_timeline_snapshot(
         }
     }
 
-    if status == ChatTimelineItemStatus::Finalized {
-        let _ = repo.mark_message_items_finalized(&message_id).await;
-    }
-
     if persistence_failed {
         Vec::new()
     } else {
+        if status != ChatTimelineItemStatus::Streaming {
+            let _ = repo
+                .delete_message_items_except_block_indices(&message_id, retained_block_indices)
+                .await;
+        }
+        if status == ChatTimelineItemStatus::Finalized {
+            let _ = repo.mark_message_items_finalized(&message_id).await;
+        }
         persisted_items
     }
 }
