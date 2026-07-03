@@ -21,6 +21,7 @@ paths:
 | `cargo test` name filters are single-filter only | `cargo test <TESTNAME>` / `cargo test --lib <FILTER>` accepts one substring filter; do not append multiple test names and expect Cargo/libtest to combine them |
 | No broad formatter runs | ❌ `cargo fmt` / broad `rustfmt` unless user explicitly asks; they can touch hundreds of files and hide the real diff |
 | Keep diffs reviewable | Use `apply_patch` for code edits, then verify `git diff` / `git diff --staged` only shows intended hunks |
+| Benchmark build-cost changes | Use `scripts/bench-rust-build.sh --label <before\|after>` for profile/linker/crate-type changes; paste compact summaries, not raw logs |
 | Heavy SQLite tests use shared temp DB fixtures | Use `ralphx_lib::testing::SqliteTestDb` / `SqliteStateFixture` instead of rerunning migrations into fresh `:memory:` DBs |
 | Don’t over-convert narrow utility tests | Pure formatting/connection tests that never run migrations can stay on lightweight `:memory:` setup or direct connection helpers |
 
@@ -68,6 +69,7 @@ scripts/test-rust-fast.sh lib-2
 scripts/test-rust-fast.sh pr
 scripts/test-rust-fast.sh pr-parallel
 scripts/test-rust-fast.sh main
+scripts/bench-rust-build.sh --label before
 cargo test --manifest-path src-tauri/Cargo.toml db_connection --lib
 cargo test --manifest-path src-tauri/crates/ralphx-domain/Cargo.toml
 cargo test --manifest-path src-tauri/Cargo.toml --test research_integration --test workflow_integration --test artifact_integration --test repository_swapping --test methodology_integration --test gsd_integration

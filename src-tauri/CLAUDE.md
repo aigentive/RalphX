@@ -144,6 +144,7 @@ cargo build                                                              # build
 scripts/test-rust-fast.sh pr                                             # local PR Rust CI parity
 scripts/test-rust-fast.sh main                                           # local push/main Rust CI parity
 scripts/test-rust-fast.sh pr-parallel                                    # local wall-clock optimized PR Rust CI parity
+scripts/bench-rust-build.sh --label before                               # Rust build-cost benchmark for profile/linker/crate-type changes
 cargo test --manifest-path src-tauri/Cargo.toml <filter> --lib           # pinpoint lib tests
 cargo test --manifest-path src-tauri/Cargo.toml --test <target>          # targeted integration tests
 cargo nextest run --manifest-path src-tauri/Cargo.toml --lib             # broad Rust lib run
@@ -158,7 +159,7 @@ Shared helpers: `transition_handler/tests/helpers.rs` — `setup_real_git_repo()
 | File | Tests | Real | Mocked |
 |------|-------|------|--------|
 | `tests/merge_system_hardening.rs` | 23 | git, MemoryTaskRepo | — |
-| `tests/deferred_main_merge_integration.rs` | 8 | git, MemoryTaskRepo | — |
+| `tests/deferred_main_merge_integration.rs` | 8 | MemoryTaskRepo | git/merge side effects |
 | `transition_handler/tests/real_git_integration.rs` | 8 | git, merge dispatch | MockChatService |
 | `transition_handler/tests/orchestration_chain_tests.rs` | 3 | git, full state machine | MockChatService |
 | `transition_handler/tests/plan_update_from_main.rs` | 7 | git, pure fn | — |

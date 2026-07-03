@@ -41,7 +41,9 @@ jobs:
               - 'plugins/app/ralphx-external-mcp/**'
               - 'plugins/app/ralphx-mcp-server/**'
             rust:
+              - '.cargo/**'
               - 'scripts/summarize-coverage.mjs'
+              - 'scripts/bench-rust-build.sh'
               - 'src-tauri/**'
               - 'rust-toolchain.toml'
               - 'scripts/ci-install-linux-deps.sh'
