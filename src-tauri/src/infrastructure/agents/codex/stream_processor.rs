@@ -160,7 +160,64 @@ pub fn parse_codex_event_line(line: &str) -> Option<CodexStreamEvent> {
         return None;
     }
 
-    serde_json::from_str(trimmed).ok()
+    let value: serde_json::Value = serde_json::from_str(trimmed).ok()?;
+    if let Some(normalized) = normalize_codex_event_msg_agent_message(&value) {
+        return Some(normalized);
+    }
+
+    serde_json::from_value(value).ok()
+}
+
+fn normalize_codex_event_msg_agent_message(value: &serde_json::Value) -> Option<CodexStreamEvent> {
+    if value.get("type")?.as_str()? != "event_msg" {
+        return None;
+    }
+
+    let msg = value.get("msg")?;
+    if msg.get("type")?.as_str()? != "agent_message" {
+        return None;
+    }
+
+    let text = msg
+        .get("message")
+        .or_else(|| msg.get("text"))
+        .and_then(|value| value.as_str())?
+        .to_string();
+    let id = msg
+        .get("id")
+        .or_else(|| value.get("id"))
+        .and_then(|value| value.as_str())
+        .map(str::to_string);
+    let thread_id = msg
+        .get("thread_id")
+        .or_else(|| value.get("thread_id"))
+        .and_then(|value| value.as_str())
+        .map(str::to_string);
+
+    Some(CodexStreamEvent {
+        event_type: "item.completed".to_string(),
+        thread_id,
+        item: Some(CodexItem {
+            id,
+            item_type: "agent_message".to_string(),
+            text: Some(text),
+            server: None,
+            tool: None,
+            arguments: None,
+            result: None,
+            error: None,
+            status: None,
+            aggregated_output: None,
+            exit_code: None,
+            command: None,
+            changes: None,
+            sender_thread_id: None,
+            receiver_thread_ids: None,
+            prompt: None,
+            agents_states: None,
+        }),
+        usage: None,
+    })
 }
 
 pub fn extract_codex_agent_message(event: &CodexStreamEvent) -> Option<String> {
@@ -404,6 +461,21 @@ mod tests {
         };
 
         assert_eq!(extract_codex_usage(&event), None);
+    }
+
+    #[test]
+    fn parse_event_msg_agent_message_normalizes_to_agent_message_item() {
+        let event = parse_codex_event_line(
+            r#"{"type":"event_msg","msg":{"type":"agent_message","phase":"final_answer","message":"Done from Codex.","thread_id":"codex-thread-1"}}"#,
+        )
+        .expect("event_msg agent message should parse");
+
+        assert_eq!(event.event_type, "item.completed");
+        assert_eq!(event.thread_id.as_deref(), Some("codex-thread-1"));
+        assert_eq!(
+            extract_codex_agent_message(&event).as_deref(),
+            Some("Done from Codex.")
+        );
     }
 
     #[test]

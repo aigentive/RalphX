@@ -13,9 +13,10 @@ use crate::application::{
 };
 use crate::domain::agents::{AgentHarnessKind, AgentProviderSettings};
 use crate::domain::entities::{
-    app_state::ExecutionHaltMode, ChatConversation, ExecutionFailureSource,
-    ExecutionRecoveryMetadata, ExecutionRecoveryReasonCode, ExecutionRecoveryState,
-    IdeationSessionId, InternalStatus, Project, ProjectId, Task, VerificationStatus,
+    app_state::ExecutionHaltMode, AgentRunId, AgentRunStatus, ChatConversation,
+    ExecutionFailureSource, ExecutionRecoveryMetadata, ExecutionRecoveryReasonCode,
+    ExecutionRecoveryState, IdeationSessionId, InternalStatus, Project, ProjectId, Task,
+    VerificationStatus,
 };
 use crate::domain::repositories::{StateHistoryMetadata, StatusTransition};
 use crate::error::AppResult;
@@ -3611,6 +3612,27 @@ async fn test_task_execution_agent_exit_uses_head_matched_validation_cache_for_f
         ),
         "AgentExit should route to review flow when validation cache proves completion, got {:?}",
         updated.internal_status
+    );
+
+    let agent_run = state
+        .agent_run_repo
+        .get_by_id(&AgentRunId::from_string(agent_run_id.clone()))
+        .await
+        .unwrap()
+        .expect("agent run should still exist");
+    assert_eq!(
+        agent_run.status,
+        AgentRunStatus::Completed,
+        "validation-proven execution completion should not leave the agent run failed"
+    );
+    assert!(
+        agent_run.error_message.is_none(),
+        "completed execution run should clear stale failure text, got {:?}",
+        agent_run.error_message
+    );
+    assert!(
+        agent_run.completed_at.is_some(),
+        "completed execution run should have a terminal timestamp"
     );
 }
 

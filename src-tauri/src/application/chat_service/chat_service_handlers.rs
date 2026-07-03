@@ -2189,6 +2189,203 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
     // Redact secrets from error string before propagating to non-tracing sinks
     let redacted_error = redact(error);
 
+    // AgentExit where the work is actually complete: the agent called
+    // execution_complete successfully, green validation was cached for the
+    // current attempt/HEAD, and the provider process exited before the normal
+    // success finalizer ran. Treat this as a successful execution completion
+    // before the generic failure path can persist stale stderr or emit
+    // agent:error.
+    if context_type == ChatContextType::TaskExecution
+        && matches!(stream_error, Some(StreamError::AgentExit { .. }))
+    {
+        if let Some(ref exec_state) = execution_state {
+            let task_id = TaskId::from_string(context_id.to_string());
+            if exec_state.is_shutting_down.load(Ordering::SeqCst) {
+                tracing::info!(
+                    task_id = task_id.as_str(),
+                    "Shutdown detected during AgentExit validation rescue check; falling back to shutdown error handling"
+                );
+            } else {
+                match resolve_current_execution_attempt(
+                    &task_id,
+                    agent_run_id,
+                    task_repo,
+                    agent_run_repo,
+                )
+                .await
+                {
+                    AttemptResolution::Current {
+                        task,
+                        episode_entered_at,
+                    } => {
+                        if validated_completion_override(task.as_ref(), episode_entered_at).await {
+                            let all_steps_done =
+                                all_steps_completed(task_step_repo, &task_id).await;
+                            tracing::info!(
+                                task_id = task_id.as_str(),
+                                all_steps_done,
+                                validation_complete = true,
+                                "AgentExit with current green validation cache; treating as successful execution completion"
+                            );
+
+                            let transition_service = build_transition_service(
+                                app_handle,
+                                Arc::clone(task_repo),
+                                Arc::clone(task_dependency_repo),
+                                Arc::clone(project_repo),
+                                Arc::clone(artifact_repo),
+                                Arc::clone(chat_message_repo),
+                                Arc::clone(chat_attachment_repo),
+                                Arc::clone(conversation_repo),
+                                Arc::clone(agent_run_repo),
+                                Arc::clone(ideation_session_repo),
+                                Arc::clone(activity_event_repo),
+                                Arc::clone(message_queue),
+                                Arc::clone(running_agent_registry),
+                                Arc::clone(exec_state),
+                                Arc::clone(memory_event_repo),
+                            );
+                            let transition_service = if let Some(ref repo) = execution_settings_repo
+                            {
+                                transition_service.with_execution_settings_repo(Arc::clone(repo))
+                            } else {
+                                transition_service
+                            };
+                            let transition_service = if let Some(ref repo) = plan_branch_repo {
+                                transition_service.with_plan_branch_repo(Arc::clone(repo))
+                            } else {
+                                transition_service
+                            };
+                            let transition_service =
+                                if let Some(ref ipr) = interactive_process_registry {
+                                    transition_service
+                                        .with_interactive_process_registry(Arc::clone(ipr))
+                                } else {
+                                    transition_service
+                                };
+
+                            let mut transition_succeeded = false;
+                            if let Err(transition_err) = transition_service
+                                .transition_task(&task_id, InternalStatus::PendingReview)
+                                .await
+                            {
+                                tracing::warn!(
+                                    task_id = task_id.as_str(),
+                                    original_error = %redacted_error,
+                                    transition_error = %transition_err,
+                                    target_status = %InternalStatus::PendingReview,
+                                    "Validation-proven AgentExit completion transition failed — retrying after 500ms"
+                                );
+                                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                                let still_stuck =
+                                    task_still_needs_execution_recovery(&task_id, task_repo).await;
+                                if !still_stuck {
+                                    tracing::debug!(
+                                        task_id = task_id.as_str(),
+                                        "Skipping validation-proven AgentExit retry — task already transitioned"
+                                    );
+                                    transition_succeeded = true;
+                                } else if let Err(retry_err) = transition_service
+                                    .transition_task(&task_id, InternalStatus::PendingReview)
+                                    .await
+                                {
+                                    tracing::error!(
+                                        task_id = task_id.as_str(),
+                                        original_error = %redacted_error,
+                                        retry_error = %retry_err,
+                                        target_status = %InternalStatus::PendingReview,
+                                        "Validation-proven AgentExit completion retry failed — falling back to error handling"
+                                    );
+                                    if let Some(ref handle) = app_handle {
+                                        let _ = handle.emit(
+                                            "task:recovery_failed",
+                                            serde_json::json!({
+                                                "task_id": task_id.as_str(),
+                                                "original_error": redacted_error.clone(),
+                                                "transition_error": retry_err.to_string(),
+                                                "target_status": InternalStatus::PendingReview.to_string(),
+                                            }),
+                                        );
+                                    }
+                                } else {
+                                    transition_succeeded = true;
+                                }
+                            } else {
+                                transition_succeeded = true;
+                            }
+
+                            if transition_succeeded {
+                                if let Err(e) = agent_run_repo
+                                    .complete(&AgentRunId::from_string(agent_run_id))
+                                    .await
+                                {
+                                    tracing::warn!(
+                                        task_id = task_id.as_str(),
+                                        agent_run_id,
+                                        error = %e,
+                                        "Failed to complete validation-proven AgentExit run"
+                                    );
+                                }
+
+                                let (
+                                    existing_content,
+                                    existing_tool_calls,
+                                    existing_content_blocks,
+                                ) = read_existing_message_content(
+                                    chat_message_repo,
+                                    pre_assistant_msg_id,
+                                )
+                                .await;
+                                finalize_assistant_message_with_terminal_tool_state(
+                                    chat_message_repo,
+                                    app_handle.as_ref(),
+                                    event_ctx,
+                                    pre_assistant_msg_id,
+                                    &get_assistant_role(&context_type).to_string(),
+                                    &existing_content,
+                                    existing_tool_calls,
+                                    existing_content_blocks,
+                                    "validation_complete",
+                                )
+                                .await;
+
+                                if let Some(ref handle) = app_handle {
+                                    let _ = handle.emit(
+                                        "agent:run_completed",
+                                        AgentRunCompletedPayload::with_provider_session_and_run_id(
+                                            Some(agent_run_id.to_string()),
+                                            conversation_id.as_str().to_string(),
+                                            context_type.to_string(),
+                                            context_id.to_string(),
+                                            stored_provider_harness,
+                                            stored_provider_session_id.clone(),
+                                            run_chain_id.clone(),
+                                        ),
+                                    );
+                                }
+                                return false;
+                            }
+                        }
+                    }
+                    AttemptResolution::IdentityUnknown => {
+                        tracing::warn!(
+                            task_id = task_id.as_str(),
+                            agent_run_id,
+                            "Execution attempt identity unknown during AgentExit validation rescue; falling back to error handling"
+                        );
+                    }
+                    AttemptResolution::Stale => {
+                        tracing::info!(
+                            task_id = task_id.as_str(),
+                            agent_run_id,
+                            "Skipping stale AgentExit validation rescue for an older attempt"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     // Fail the agent run
     let _ = agent_run_repo
         .fail(&AgentRunId::from_string(agent_run_id), &redacted_error)
