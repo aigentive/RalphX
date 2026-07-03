@@ -1930,6 +1930,7 @@ pub fn spawn_send_message_background<R: Runtime>(ctx: BackgroundRunContext<R>) {
                     &plugin_dir,
                     &working_directory,
                     &chat_message_repo,
+                    &chat_timeline_repo,
                     &chat_attachment_repo,
                     &artifact_repo,
                     &conversation_repo,

@@ -54,6 +54,30 @@ const { useChatMockState, useChatCalls, historyWindowCalls } = vi.hoisted(() => 
       messages: Array<{ id: string; role: string; content: string; createdAt: string; toolCalls: null; contentBlocks: null }>;
       loadedStartIndex?: number;
     } | undefined,
+    timelineData: undefined as {
+      conversation: {
+        id: string;
+        contextType: string;
+        contextId: string;
+        providerHarness: string | null;
+        providerSessionId: string | null;
+        upstreamProvider?: string | null;
+        providerProfile?: string | null;
+      };
+      messages: Array<{
+        id: string;
+        role: string;
+        content: string;
+        createdAt: string;
+        toolCalls: null;
+        contentBlocks: null;
+        parentMessageId?: string | null;
+        timelineStatus?: string;
+        timelineSequence?: number;
+      }>;
+      loadedStartIndex?: number;
+    } | undefined,
+    timelineHasOlderMessages: false,
   };
   return {
     useChatMockState,
@@ -119,11 +143,12 @@ vi.mock("@/hooks/useChat", () => ({
   useConversationTimelineWindow: (...args: unknown[]) => {
     historyWindowCalls.push(args);
     return {
-    data: useChatMockState.historyData,
+    data: useChatMockState.timelineData ?? useChatMockState.historyData,
     isLoading: false,
     isFetchingOlderMessages: false,
-    hasOlderMessages: false,
-    loadedStartIndex: useChatMockState.historyData?.loadedStartIndex ?? 0,
+    hasOlderMessages: useChatMockState.timelineHasOlderMessages,
+    loadedStartIndex:
+      (useChatMockState.timelineData ?? useChatMockState.historyData)?.loadedStartIndex ?? 0,
     fetchOlderMessages: vi.fn(),
     };
   },
@@ -133,6 +158,7 @@ vi.mock("@/hooks/useChat", () => ({
     all: ["chat"],
     conversationList: (type: string, id: string) => ["chat", "conversations", type, id],
     conversation: (id: string) => ["chat", "conversation", id],
+    conversationHistory: (id: string) => ["chat", "conversation", id, "history"],
     conversationTimeline: (id: string) => ["chat", "conversation", id, "timeline"],
     agentRun: (id: string) => ["chat", "agentRun", id],
   },
@@ -287,6 +313,8 @@ describe("IntegratedChatPanel", () => {
     useChatMockState.conversation = null;
     useChatMockState.conversations = [];
     useChatMockState.historyData = undefined;
+    useChatMockState.timelineData = undefined;
+    useChatMockState.timelineHasOlderMessages = false;
     useChatCalls.length = 0;
     historyWindowCalls.length = 0;
 
@@ -526,6 +554,142 @@ describe("IntegratedChatPanel", () => {
       );
 
       expect(await screen.findByText("Live chunk from client events")).toBeInTheDocument();
+    });
+
+    it("keeps logical transcript visible when the timeline query only has a tail window", async () => {
+      mockChatPanelContext.storeContextKey = "project:project-1";
+      mockChatPanelContext.currentContextType = "project";
+      mockChatPanelContext.currentContextId = "project-1";
+      mockChatPanelContext.activeConversationId = "conv-1";
+      useChatMockState.conversations = [{ id: "conv-1" }];
+      useChatMockState.conversation = {
+        contextType: "project",
+        contextId: "project-1",
+      };
+      useChatMockState.messages = [
+        {
+          id: "msg-user",
+          role: "user",
+          content: "Initial user message",
+          createdAt: "2026-04-23T09:00:00Z",
+          toolCalls: null,
+          contentBlocks: null,
+        },
+        {
+          id: "msg-assistant",
+          role: "assistant",
+          content: "Full persisted assistant transcript",
+          createdAt: "2026-04-23T09:00:01Z",
+          toolCalls: null,
+          contentBlocks: null,
+        },
+      ];
+      useChatMockState.historyData = {
+        conversation: {
+          id: "conv-1",
+          contextType: "project",
+          contextId: "project-1",
+          providerHarness: "codex",
+          providerSessionId: "thread-1",
+          upstreamProvider: null,
+          providerProfile: null,
+        },
+        messages: useChatMockState.messages,
+        loadedStartIndex: 0,
+      };
+      useChatMockState.timelineData = {
+        conversation: {
+          id: "conv-1",
+          contextType: "project",
+          contextId: "project-1",
+          providerHarness: "codex",
+          providerSessionId: "thread-1",
+          upstreamProvider: null,
+          providerProfile: null,
+        },
+        messages: [
+          {
+            id: "block:msg-assistant:39",
+            parentMessageId: "msg-assistant",
+            role: "assistant",
+            content: "Tail-only timeline block",
+            createdAt: "2026-04-23T09:00:39Z",
+            toolCalls: null,
+            contentBlocks: null,
+            timelineStatus: "streaming",
+            timelineSequence: 40,
+          },
+        ],
+        loadedStartIndex: 39,
+      };
+      useChatMockState.timelineHasOlderMessages = true;
+
+      render(
+        <TestWrapper>
+          <IntegratedChatPanel
+            projectId="project-1"
+            selectedTaskIdOverride={null}
+            storeContextKeyOverride="project:project-1"
+          />
+        </TestWrapper>
+      );
+
+      expect(await screen.findByText("Initial user message")).toBeInTheDocument();
+      expect(screen.getByText("Full persisted assistant transcript")).toBeInTheDocument();
+      expect(screen.queryByText("Tail-only timeline block")).not.toBeInTheDocument();
+    });
+
+    it("does not paint a tail-only timeline window before logical history arrives", async () => {
+      mockChatPanelContext.storeContextKey = "project:project-1";
+      mockChatPanelContext.currentContextType = "project";
+      mockChatPanelContext.currentContextId = "project-1";
+      mockChatPanelContext.activeConversationId = "conv-1";
+      useChatMockState.conversations = [{ id: "conv-1" }];
+      useChatMockState.conversation = {
+        contextType: "project",
+        contextId: "project-1",
+      };
+      useChatMockState.messages = [];
+      useChatMockState.historyData = undefined;
+      useChatMockState.timelineData = {
+        conversation: {
+          id: "conv-1",
+          contextType: "project",
+          contextId: "project-1",
+          providerHarness: "codex",
+          providerSessionId: "thread-1",
+          upstreamProvider: null,
+          providerProfile: null,
+        },
+        messages: [
+          {
+            id: "block:msg-assistant:39",
+            parentMessageId: "msg-assistant",
+            role: "assistant",
+            content: "Tail-only timeline block",
+            createdAt: "2026-04-23T09:00:39Z",
+            toolCalls: null,
+            contentBlocks: null,
+            timelineStatus: "streaming",
+            timelineSequence: 40,
+          },
+        ],
+        loadedStartIndex: 39,
+      };
+      useChatMockState.timelineHasOlderMessages = true;
+
+      render(
+        <TestWrapper>
+          <IntegratedChatPanel
+            projectId="project-1"
+            selectedTaskIdOverride={null}
+            storeContextKeyOverride="project:project-1"
+          />
+        </TestWrapper>
+      );
+
+      expect(await screen.findByTestId("chat-panel-loading")).toBeInTheDocument();
+      expect(screen.queryByText("Tail-only timeline block")).not.toBeInTheDocument();
     });
   });
 

@@ -13,6 +13,7 @@ import { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback } fr
 import { type VirtuosoHandle } from "react-virtuoso";
 import {
   useChat,
+  useConversationHistoryWindow,
   useConversationTimelineWindow,
   getCachedConversationMessages,
   chatKeys,
@@ -665,6 +666,13 @@ export function IntegratedChatPanel({
       pageSize: 40,
     }
   );
+  const teammateLogicalConversationHistory = useConversationHistoryWindow(
+    isTeammateTab ? teammateConversationId : null,
+    {
+      enabled: !!teammateConversationId && isTeammateTab,
+      pageSize: 40,
+    }
+  );
   const primaryConversationHistory = useConversationTimelineWindow(
     !isTeammateTab ? activeConversationId : null,
     {
@@ -672,11 +680,57 @@ export function IntegratedChatPanel({
       pageSize: 40,
     }
   );
+  const primaryLogicalConversationHistory = useConversationHistoryWindow(
+    !isTeammateTab ? activeConversationId : null,
+    {
+      enabled: !!activeConversationId && !isTeammateTab,
+      pageSize: 40,
+    }
+  );
+  const shouldUsePrimaryLogicalHistory = primaryConversationHistory.hasOlderMessages;
+  const shouldUseTeammateLogicalHistory = teammateConversationHistory.hasOlderMessages;
 
   const primaryConversationData =
     !isTeammateTab
-      ? primaryConversationHistory.data ?? regularChatData.messages.data
+      ? shouldUsePrimaryLogicalHistory
+        ? primaryLogicalConversationHistory.data
+        : (
+            primaryConversationHistory.data ??
+            primaryLogicalConversationHistory.data ??
+            regularChatData.messages.data
+          )
       : regularChatData.messages.data;
+  const primaryTranscriptWindow = shouldUsePrimaryLogicalHistory
+    ? primaryLogicalConversationHistory
+    : primaryConversationHistory;
+  const teammateConversationData =
+    shouldUseTeammateLogicalHistory
+      ? teammateLogicalConversationHistory.data
+      : (teammateConversationHistory.data ?? teammateLogicalConversationHistory.data);
+  const teammateTranscriptWindow = shouldUseTeammateLogicalHistory
+    ? teammateLogicalConversationHistory
+    : teammateConversationHistory;
+  const activeTranscriptConversationId = isTeammateTab
+    ? teammateConversationId
+    : activeConversationId;
+  const activeTranscriptRequiresLogicalHistory = isTeammateTab
+    ? shouldUseTeammateLogicalHistory
+    : shouldUsePrimaryLogicalHistory;
+
+  useEffect(() => {
+    if (!isVisible || !activeTranscriptConversationId || !activeTranscriptRequiresLogicalHistory) {
+      return;
+    }
+    void queryClient.invalidateQueries({
+      queryKey: chatKeys.conversationHistory(activeTranscriptConversationId),
+    });
+  }, [
+    isVisible,
+    activeTranscriptConversationId,
+    activeTranscriptRequiresLogicalHistory,
+    queryClient,
+  ]);
+
   const currentPrimaryConversationData =
     activeConversationId &&
     primaryConversationData &&
@@ -686,10 +740,10 @@ export function IntegratedChatPanel({
       : null;
   const currentTeammateConversationData =
     teammateConversationId &&
-    teammateConversationHistory.data &&
-    (!teammateConversationHistory.data.conversation?.id ||
-      teammateConversationHistory.data.conversation.id === teammateConversationId)
-      ? teammateConversationHistory.data
+    teammateConversationData &&
+    (!teammateConversationData.conversation?.id ||
+      teammateConversationData.conversation.id === teammateConversationId)
+      ? teammateConversationData
       : null;
 
   // Check if active conversation belongs to current context (needed by recovery effects below)
@@ -856,8 +910,16 @@ export function IntegratedChatPanel({
   const isConversationsLoading = conversations.isLoading;
   const isActiveConversationLoading = activeConversationId
     ? isTeammateTab
-      ? teammateConversationHistory.isLoading && !currentTeammateConversationData
-      : primaryConversationHistory.isLoading && !primaryConversationData
+      ? (
+          teammateConversationHistory.isLoading ||
+          teammateLogicalConversationHistory.isLoading ||
+          (shouldUseTeammateLogicalHistory && !teammateConversationData)
+        ) && !currentTeammateConversationData
+      : (
+          primaryConversationHistory.isLoading ||
+          primaryLogicalConversationHistory.isLoading ||
+          (shouldUsePrimaryLogicalHistory && !primaryConversationData)
+        ) && !primaryConversationData
     : false;
   const isLoading = isConversationsLoading || isActiveConversationLoading;
   const transcriptConversationId = effectiveConversationId ?? activeConversationId ?? null;
@@ -1335,8 +1397,8 @@ export function IntegratedChatPanel({
               onInitialPaintReady={handleTranscriptInitialPaintReady}
               firstItemIndex={
                 isTeammateTab
-                  ? teammateConversationHistory.loadedStartIndex
-                  : primaryConversationHistory.loadedStartIndex
+                  ? teammateTranscriptWindow.loadedStartIndex
+                  : primaryTranscriptWindow.loadedStartIndex
               }
               failedRun={failedRunProp}
               onDismissFailedRun={setDismissedErrorId}
@@ -1360,18 +1422,18 @@ export function IntegratedChatPanel({
               topInsetClassName={transcriptTopInsetClassName}
               hasOlderMessages={
                 isTeammateTab
-                  ? teammateConversationHistory.hasOlderMessages
-                  : primaryConversationHistory.hasOlderMessages
+                  ? teammateTranscriptWindow.hasOlderMessages
+                  : primaryTranscriptWindow.hasOlderMessages
               }
               isFetchingOlderMessages={
                 isTeammateTab
-                  ? teammateConversationHistory.isFetchingOlderMessages
-                  : primaryConversationHistory.isFetchingOlderMessages
+                  ? teammateTranscriptWindow.isFetchingOlderMessages
+                  : primaryTranscriptWindow.isFetchingOlderMessages
               }
               onLoadOlderMessages={
                 isTeammateTab
-                  ? teammateConversationHistory.fetchOlderMessages
-                  : primaryConversationHistory.fetchOlderMessages
+                  ? teammateTranscriptWindow.fetchOlderMessages
+                  : primaryTranscriptWindow.fetchOlderMessages
               }
               externalLayoutVersion={transcriptLayoutVersion}
             />

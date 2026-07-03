@@ -25,5 +25,11 @@ pub trait ChatTimelineRepository: Send + Sync {
         conversation_id: &ChatConversationId,
     ) -> AppResult<Vec<ChatTimelineItem>>;
 
+    async fn delete_message_items_except_block_indices(
+        &self,
+        message_id: &ChatMessageId,
+        retained_block_indices: Vec<i64>,
+    ) -> AppResult<()>;
+
     async fn mark_message_items_finalized(&self, message_id: &ChatMessageId) -> AppResult<()>;
 }
