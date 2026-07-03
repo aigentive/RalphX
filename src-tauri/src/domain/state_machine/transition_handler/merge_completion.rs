@@ -1129,6 +1129,144 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn test_deferred_cleanup_preserves_invalid_worktree_path() {
+        let (_dir, repo_path_str) = make_test_repo();
+        let repo_path = Path::new(&repo_path_str);
+
+        let branch_name = "task/invalid-worktree-path-test";
+        let _ = std::process::Command::new("git")
+            .args(["branch", branch_name])
+            .current_dir(repo_path)
+            .output();
+
+        let task_repo = Arc::new(MemoryTaskRepository::new());
+        let task_repo_dyn: Arc<dyn TaskRepository> =
+            Arc::clone(&task_repo) as Arc<dyn TaskRepository>;
+        let project_id = ProjectId::from_string("proj-invalid-cleanup".to_string());
+
+        let mut task = Task::new(project_id, "Invalid cleanup path test".to_string());
+        task.internal_status = InternalStatus::Merged;
+        task.task_branch = Some(branch_name.to_string());
+        task.worktree_path = Some("relative-worktree-path".to_string());
+        set_pending_cleanup_metadata(&mut task);
+        let task_id = task.id.clone();
+        task_repo.create(task).await.unwrap();
+
+        deferred_merge_cleanup(
+            task_id.clone(),
+            task_repo_dyn,
+            repo_path_str.clone(),
+            Some(branch_name.to_string()),
+            Some("relative-worktree-path".to_string()),
+            None,
+        )
+        .await;
+
+        let updated_task = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
+        assert_eq!(
+            updated_task.worktree_path.as_deref(),
+            Some("relative-worktree-path"),
+            "invalid cleanup path must remain attached for manual recovery"
+        );
+        assert_eq!(
+            updated_task.task_branch.as_deref(),
+            Some(branch_name),
+            "invalid cleanup path must not delete task branch"
+        );
+        assert!(
+            has_pending_cleanup_metadata(&updated_task),
+            "pending_cleanup should remain after invalid cleanup path"
+        );
+
+        let branch_check = std::process::Command::new("git")
+            .args(["branch", "--list", branch_name])
+            .current_dir(repo_path)
+            .output()
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&branch_check.stdout).contains(branch_name),
+            "branch should still exist after invalid worktree cleanup path"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_deferred_cleanup_removes_clean_worktree() {
+        let (_dir, repo_path_str) = make_test_repo();
+        let repo_path = validate_absolute_non_root_path(
+            Path::new(&repo_path_str),
+            "clean cleanup test repository",
+        )
+        .unwrap();
+        let worktree_parent = tempfile::TempDir::new().expect("create worktree parent");
+
+        let branch_name = "task/clean-worktree-test";
+        let worktree_path = validate_absolute_non_root_path(
+            &worktree_parent.path().join("clean-worktree"),
+            "clean cleanup test worktree",
+        )
+        .unwrap();
+        let worktree_path_str = worktree_path.to_string_lossy().to_string();
+
+        let _ = std::process::Command::new("git")
+            .args(["branch", branch_name])
+            .current_dir(&repo_path)
+            .output();
+        let add_worktree = std::process::Command::new("git")
+            .args(["worktree", "add", &worktree_path_str, branch_name])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git worktree add");
+        assert!(
+            add_worktree.status.success(),
+            "worktree add should succeed: {}",
+            String::from_utf8_lossy(&add_worktree.stderr)
+        );
+
+        let task_repo = Arc::new(MemoryTaskRepository::new());
+        let task_repo_dyn: Arc<dyn TaskRepository> =
+            Arc::clone(&task_repo) as Arc<dyn TaskRepository>;
+        let project_id = ProjectId::from_string("proj-clean-cleanup".to_string());
+
+        let mut task = Task::new(project_id, "Clean cleanup test".to_string());
+        task.internal_status = InternalStatus::Merged;
+        task.task_branch = Some(branch_name.to_string());
+        task.worktree_path = Some(worktree_path_str.clone());
+        set_pending_cleanup_metadata(&mut task);
+        let task_id = task.id.clone();
+        task_repo.create(task).await.unwrap();
+
+        deferred_merge_cleanup(
+            task_id.clone(),
+            task_repo_dyn,
+            repo_path_str.clone(),
+            Some(branch_name.to_string()),
+            Some(worktree_path_str.clone()),
+            None,
+        )
+        .await;
+
+        assert!(
+            !worktree_path.exists(),
+            "clean worktree should be removed after cleanup"
+        );
+
+        let updated_task = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
+        assert!(updated_task.worktree_path.is_none());
+        assert!(updated_task.task_branch.is_none());
+        assert!(!has_pending_cleanup_metadata(&updated_task));
+
+        let branch_check = std::process::Command::new("git")
+            .args(["branch", "--list", branch_name])
+            .current_dir(&repo_path)
+            .output()
+            .unwrap();
+        assert!(
+            !String::from_utf8_lossy(&branch_check.stdout).contains(branch_name),
+            "clean cleanup should delete task branch"
+        );
+    }
+
     // ===== No-code-changes metadata helper tests =====
 
     #[test]

@@ -1,7 +1,10 @@
 use std::sync::Arc;
 
+use crate::domain::entities::task_metadata::StopRetryingReason;
 use crate::domain::entities::{
-    ExecutionRecoveryMetadata, ExecutionRecoveryState, InternalStatus, Task, TaskId, TaskStepStatus,
+    ExecutionRecoveryEvent, ExecutionRecoveryEventKind, ExecutionRecoveryMetadata,
+    ExecutionRecoveryReasonCode, ExecutionRecoverySource, ExecutionRecoveryState, InternalStatus,
+    Task, TaskId, TaskStepStatus,
 };
 use crate::domain::repositories::{TaskRepository, TaskStepRepository};
 use crate::domain::state_machine::transition_handler::{parse_metadata, set_trigger_origin};
@@ -100,6 +103,21 @@ mod tests {
     use crate::domain::entities::{ProjectId, TaskStep};
     use crate::infrastructure::memory::{MemoryTaskRepository, MemoryTaskStepRepository};
 
+    fn stopped_recovery_metadata(auto_recovery_count: u32) -> String {
+        let mut recovery = ExecutionRecoveryMetadata::new();
+        recovery.last_state = ExecutionRecoveryState::Failed;
+        recovery.stop_retrying = true;
+        recovery.auto_recovery_count = auto_recovery_count;
+        recovery.unrecoverable_reason = Some(StopRetryingReason::ManualStop);
+        recovery.append_event(ExecutionRecoveryEvent::new(
+            ExecutionRecoveryEventKind::Failed,
+            ExecutionRecoverySource::System,
+            ExecutionRecoveryReasonCode::Unknown,
+            "stopped before restart",
+        ));
+        recovery.update_task_metadata(None).unwrap()
+    }
+
     #[tokio::test]
     async fn failed_ready_restart_clears_stale_refs_and_preserves_completed_steps() {
         let task_repo: Arc<dyn TaskRepository> = Arc::new(MemoryTaskRepository::new());
@@ -111,19 +129,7 @@ mod tests {
         task.task_branch = Some("task/stale".to_string());
         task.worktree_path = Some("/tmp/stale-worktree".to_string());
         task.merge_commit_sha = Some("deadbeef".to_string());
-        task.metadata = Some(
-            serde_json::json!({
-                "execution_recovery": {
-                    "last_state": "failed",
-                    "stop_retrying": true,
-                    "auto_recovery_count": 3,
-                    "events": [{"kind": "attempt_failed"}],
-                    "unrecoverable_reason": "missing work"
-                },
-                "agent_variant": "team"
-            })
-            .to_string(),
-        );
+        task.metadata = Some(stopped_recovery_metadata(3));
         let task_id = task.id.clone();
         task_repo.create(task.clone()).await.unwrap();
 
@@ -161,6 +167,14 @@ mod tests {
         assert_eq!(metadata["trigger_origin"], "retry");
         assert_eq!(metadata["preserve_steps"], true);
         assert!(metadata.get("agent_variant").is_none());
+        assert_eq!(
+            metadata["execution_recovery"]["last_state"],
+            serde_json::json!("retrying")
+        );
+        assert_eq!(
+            metadata["execution_recovery"]["auto_recovery_count"],
+            serde_json::json!(3)
+        );
 
         let steps = task_step_repo.get_by_task(&task_id).await.unwrap();
         assert_eq!(steps[0].status, TaskStepStatus::Completed);
@@ -168,5 +182,92 @@ mod tests {
         assert!(steps[1].started_at.is_none());
         assert!(steps[1].completed_at.is_none());
         assert!(steps[1].completion_note.is_none());
+    }
+
+    #[tokio::test]
+    async fn cancelled_ready_restart_sets_variant_without_preserving_steps() {
+        let task_repo: Arc<dyn TaskRepository> = Arc::new(MemoryTaskRepository::new());
+        let task_step_repo: Arc<dyn TaskStepRepository> = Arc::new(MemoryTaskStepRepository::new());
+        let project_id = ProjectId::from_string("project-cancelled-restart".to_string());
+
+        let mut task = Task::new(project_id, "Cancelled restart".to_string());
+        task.internal_status = InternalStatus::Cancelled;
+        task.task_branch = Some("task/cancelled-stale".to_string());
+        task.worktree_path = Some("/tmp/cancelled-stale-worktree".to_string());
+        task.merge_commit_sha = Some("cafebabe".to_string());
+        task.metadata = Some(stopped_recovery_metadata(2));
+        let task_id = task.id.clone();
+        task_repo.create(task.clone()).await.unwrap();
+
+        let preparation = prepare_terminal_task_for_ready_restart(
+            &task_repo,
+            &task_step_repo,
+            &task,
+            Some("solo"),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(preparation.cleared_failed_steps, 0);
+
+        let updated_task = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
+        assert!(updated_task.task_branch.is_none());
+        assert!(updated_task.worktree_path.is_none());
+        assert!(updated_task.merge_commit_sha.is_none());
+
+        let metadata: serde_json::Value =
+            serde_json::from_str(updated_task.metadata.as_deref().unwrap()).unwrap();
+        assert_eq!(metadata["trigger_origin"], "retry");
+        assert_eq!(metadata["agent_variant"], "solo");
+        assert!(metadata.get("preserve_steps").is_none());
+        assert_eq!(
+            metadata["execution_recovery"]["last_state"],
+            serde_json::json!("retrying")
+        );
+        assert_eq!(
+            metadata["execution_recovery"]["auto_recovery_count"],
+            serde_json::json!(2)
+        );
+        assert_eq!(
+            metadata["execution_recovery"]["events"]
+                .as_array()
+                .map(Vec::len),
+            Some(0)
+        );
+        assert_eq!(
+            metadata["execution_recovery"]["stop_retrying"],
+            serde_json::json!(false)
+        );
+        assert!(metadata["execution_recovery"]
+            .get("unrecoverable_reason")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn non_terminal_ready_restart_preparation_is_noop() {
+        let task_repo: Arc<dyn TaskRepository> = Arc::new(MemoryTaskRepository::new());
+        let task_step_repo: Arc<dyn TaskStepRepository> = Arc::new(MemoryTaskStepRepository::new());
+        let project_id = ProjectId::from_string("project-ready-noop".to_string());
+
+        let mut task = Task::new(project_id, "Ready noop".to_string());
+        task.internal_status = InternalStatus::Ready;
+        task.task_branch = Some("task/keep".to_string());
+        task.worktree_path = Some("/tmp/keep-worktree".to_string());
+        task.merge_commit_sha = Some("feedface".to_string());
+
+        let preparation = prepare_terminal_task_for_ready_restart(
+            &task_repo,
+            &task_step_repo,
+            &task,
+            Some("solo"),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(preparation, ReadyRestartPreparation::default());
+        assert!(
+            task_repo.get_by_id(&task.id).await.unwrap().is_none(),
+            "non-terminal preparation should not persist a task update"
+        );
     }
 }
