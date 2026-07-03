@@ -105,98 +105,56 @@ tokio = { version = "1", features = ["test-util"] }
 tower = { version = "0.4", features = ["util"] }
 
 [[test]]
-name = "activity_commands"
-path = "tests/activity_commands.rs"
+name = "suite_agent_workspace"
+path = "tests/suite_agent_workspace/main.rs"
+
+[[test]]
+name = "suite_chat_service"
+path = "tests/suite_chat_service/main.rs"
 required-features = ["test-utils"]
 
 [[test]]
-name = "agent_profile_commands"
-path = "tests/agent_profile_commands.rs"
+name = "suite_commands"
+path = "tests/suite_commands/main.rs"
 required-features = ["test-utils"]
 
 [[test]]
-name = "api_key_commands"
-path = "tests/api_key_commands.rs"
+name = "suite_http_handlers"
+path = "tests/suite_http_handlers/main.rs"
+
+[[test]]
+name = "suite_ideation"
+path = "tests/suite_ideation/main.rs"
 required-features = ["test-utils"]
 
 [[test]]
-name = "chat_service_context"
-path = "tests/chat_service_context.rs"
+name = "suite_interactive_process"
+path = "tests/suite_interactive_process/main.rs"
+
+[[test]]
+name = "suite_ipc_commands"
+path = "tests/suite_ipc_commands/main.rs"
 required-features = ["test-utils"]
 
 [[test]]
-name = "git_commands"
-path = "tests/git_commands.rs"
-required-features = ["test-utils"]
+name = "suite_metrics"
+path = "tests/suite_metrics/main.rs"
 
 [[test]]
-name = "harness_provider_commands"
-path = "tests/harness_provider_commands.rs"
-required-features = ["test-utils"]
+name = "suite_pr_github"
+path = "tests/suite_pr_github/main.rs"
 
 [[test]]
-name = "ideation_commands"
-path = "tests/ideation_commands.rs"
-required-features = ["test-utils"]
+name = "suite_sqlite_flows"
+path = "tests/suite_sqlite_flows/main.rs"
 
 [[test]]
-name = "ideation_plan_delivery_test"
-path = "tests/ideation_plan_delivery_test.rs"
-required-features = ["test-utils"]
+name = "suite_sqlite_repos"
+path = "tests/suite_sqlite_repos/main.rs"
 
 [[test]]
-name = "merge_system_hardening"
-path = "tests/merge_system_hardening.rs"
-required-features = ["test-utils"]
-
-[[test]]
-name = "methodology_commands"
-path = "tests/methodology_commands.rs"
-required-features = ["test-utils"]
-
-[[test]]
-name = "metrics_commands"
-path = "tests/metrics_commands.rs"
-required-features = ["test-utils"]
-
-[[test]]
-name = "project_commands"
-path = "tests/project_commands.rs"
-required-features = ["test-utils"]
-
-[[test]]
-name = "qa_commands"
-path = "tests/qa_commands.rs"
-required-features = ["test-utils"]
-
-[[test]]
-name = "question_commands"
-path = "tests/question_commands.rs"
-required-features = ["test-utils"]
-
-[[test]]
-name = "release_notes_commands"
-path = "tests/release_notes_commands.rs"
-required-features = ["test-utils"]
-
-[[test]]
-name = "research_commands"
-path = "tests/research_commands.rs"
-required-features = ["test-utils"]
-
-[[test]]
-name = "task_step_commands"
-path = "tests/task_step_commands.rs"
-required-features = ["test-utils"]
-
-[[test]]
-name = "unified_chat_commands"
-path = "tests/unified_chat_commands.rs"
-required-features = ["test-utils"]
-
-[[test]]
-name = "workflow_commands"
-path = "tests/workflow_commands.rs"
+name = "suite_transition_git"
+path = "tests/suite_transition_git/main.rs"
 required-features = ["test-utils"]
 
 [lints.clippy]

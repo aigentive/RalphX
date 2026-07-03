@@ -2,8 +2,7 @@ use std::process::Command;
 use std::sync::Arc;
 
 use axum::{extract::Path, Json};
-mod common;
-use common::MockGithubService;
+use crate::common::MockGithubService;
 use ralphx_lib::application::agent_conversation_workspace::resolve_agent_conversation_workspace_path;
 use ralphx_lib::application::{AppState, TeamService, TeamStateTracker};
 use ralphx_lib::commands::ExecutionState;

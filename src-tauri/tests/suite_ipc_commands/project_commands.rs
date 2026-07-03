@@ -1,10 +1,9 @@
-mod common;
-#[path = "project_pr_template.rs"]
+#[path = "../suite_pr_github/project_pr_template.rs"]
 mod project_pr_template_ipc_contract_coverage;
 
 use std::sync::Arc;
 
-use common::MockGithubService;
+use crate::common::MockGithubService;
 use ralphx_lib::application::services::PrPollerRegistry;
 use ralphx_lib::application::AppState;
 use ralphx_lib::commands::project_commands::*;

@@ -13,8 +13,9 @@ paths:
 
 | Rule | Detail |
 |---|---|
-| Run targeted Rust tests | ✅ `cargo test --manifest-path src-tauri/Cargo.toml --test <file_stem>` | ❌ full `cargo test` |
-| Use `cargo-nextest` for broad Rust runs | ✅ `cargo nextest run --manifest-path src-tauri/Cargo.toml --lib --profile ci --features test-utils` for current root-lib coverage and CI; keep `cargo test` for pinpoint filters and doctests |
+| Run targeted Rust tests | Integration suites → ✅ `cargo nextest run --manifest-path src-tauri/Cargo.toml --test <suite> -E 'test(<module_or_test>)'`; lib pinpoints/doctests may use `cargo test` | ❌ full `cargo test` |
+| Merged suites are nextest-only | `src-tauri/tests/suite_*/main.rs` has a guard that fails under plain libtest; nextest isolates each test process and avoids env/PATH races |
+| Use `cargo-nextest` for broad Rust runs | ✅ `cargo nextest run --manifest-path src-tauri/Cargo.toml --lib --profile ci --features test-utils` for current root-lib coverage and CI; integration suites also use nextest |
 | Run both Rust clippy gates | `cargo clippy --manifest-path src-tauri/Cargo.toml --lib --bins --no-default-features -- -D warnings` + `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings` |
 | Use the fast wrapper for CI-shaped local loops | ✅ `scripts/test-rust-fast.sh pr` / `main` / `ipc` / `lib-1` / `lib-2`; `*-parallel` modes are local-only wall-clock optimizers that isolate `CARGO_TARGET_DIR` per lane |
 | Keep helper runs checkout-local | `scripts/test-rust-fast.sh` resolves paths relative to its own checkout/worktree and refuses to run if the current cwd belongs to a different RalphX checkout |
@@ -30,17 +31,17 @@ paths:
 
 | Layer | Standard |
 |---|---|
-| Test runner | `cargo test` for targeted filters, single suites, doctests, and ignored lib-side capability checks; `cargo nextest run` for broad lib/test runs and CI |
+| Test runner | `cargo test` for lib pinpoints, doctests, and ignored lib-side capability checks; `cargo nextest run` for integration suites, broad lib/test runs, and CI |
 | Low-dependency workspace crate | `src-tauri/crates/ralphx-domain` holds pure `agents`, `qa`, `execution`, `ideation`, `review`, most `entities`, and the pure repository trait subset; `question`/`permission` repos stay in the root crate until their application-type dependencies move |
 | Target discovery | `cargo test --manifest-path src-tauri/Cargo.toml --lib -- --list | rg "<module>"` |
 | Async SQLite repo tests | `SqliteTestDb` + repo `from_shared(db.shared_conn())` |
 | AppState integration tests | `SqliteStateFixture::new(...)` |
-| HTTP handler integration tests | Import handlers/types through `ralphx_lib::http_server::{handlers, types}` from `src-tauri/tests/*.rs`; use `AppState::new_sqlite_test()` or `AppState::new_sqlite_test_with_registry(...)` only when the handler calls SQLite sync helpers via `db.run(...)` |
+| HTTP handler integration tests | Import handlers/types through `ralphx_lib::http_server::{handlers, types}` from `src-tauri/tests/suite_http_handlers/*.rs`; use `AppState::new_sqlite_test()` or `AppState::new_sqlite_test_with_registry(...)` only when the handler calls SQLite sync helpers via `db.run(...)` |
 | Sync SQLite repo tests | `SqliteTestDb` + `db.new_connection()` |
 | Setup/seeding | Shared suite helpers/builders on top of `SqliteTestDb`; one migration pass per temp DB only |
 | Concurrency | File-backed temp DBs for shared access; `:memory:` only for intentionally isolated narrow tests |
-| Compile-scope reduction | Move oversized state-machine/worktree/orchestration suites out of `src-tauri/src/**` lib tests into dedicated `src-tauri/tests/*.rs` integration binaries when they only need explicit public/internal-facing APIs |
-| Command-suite test seams | When moving a `src-tauri/src/commands/**/tests.rs` sidecar into `src-tauri/tests/*.rs`, re-export any required helper entry points from the command module root with `#[doc(hidden)] pub`; don’t couple integration tests to private submodules |
+| Compile-scope reduction | Move oversized state-machine/worktree/orchestration suites out of `src-tauri/src/**` lib tests into an existing `src-tauri/tests/suite_*` integration binary when they only need explicit public/internal-facing APIs |
+| Command-suite test seams | When moving a `src-tauri/src/commands/**/tests.rs` sidecar into `src-tauri/tests/suite_*`, re-export any required helper entry points from the command module root with `#[doc(hidden)] pub`; don’t couple integration tests to private submodules |
 | Prefer public diagnostics in integration tests | When a moved suite only needs visibility into state, prefer existing public methods like `dump_state()` over widening `#[cfg(test)]` helpers just to keep the old assertions |
 | Shared regression helpers | If an integration suite validates shared state-machine logic, expose the minimal helper once with `#[doc(hidden)] pub` rather than duplicating the production logic in the test |
 | SQLite sync-helper seams | If a moved SQLite repo suite intentionally tests sync helpers, expose only the specific helper functions it calls with `#[doc(hidden)] pub`; don’t make the whole repo surface public |
@@ -55,11 +56,11 @@ paths:
 | Shared state | Keep tests isolated and parallel-safe; avoid shared DB state except for explicitly serialized cases |
 | Fixture style | Rust has no built-in fixture system here; use helper modules, suite-local `setup_*()` functions, and small builders |
 | Compile vs run | Optimize both separately: narrow targets to reduce compile scope, then keep per-test runtime setup cheap |
-| Large-suite runner | `cargo-nextest` is the adopted broad-runner for large-scale execution; targeted edit-loop runs still stay on `cargo test` |
+| Large-suite runner | `cargo-nextest` is the adopted runner for all merged integration suites; targeted lib edit-loop runs still stay on `cargo test` |
 | Test layers | Keep fast repo/unit suites separate from slower integration/state-machine/git suites |
 | Large lib suites | When a lib-side test file becomes a massive orchestration suite, prefer moving it to `src-tauri/tests/` and exposing only the minimum internal-facing API with `#[doc(hidden)] pub` rather than keeping it in the giant `--lib` binary |
 | Internal support | Invest early in a thin shared test-support layer under `src-tauri/src/testing/` when setup repeats |
-| CI coverage split | PR CI = IPC contracts + 2 root-lib shards, currently feature-on with `test-utils`; `push` CI = PR stack + doctests; local mirror = `scripts/test-rust-fast.sh pr` / `main` |
+| CI coverage split | PR CI = IPC contract suite + 2 root-lib shards, currently feature-on with `test-utils`; `push` CI = PR stack + doctests; local mirror = `scripts/test-rust-fast.sh pr` / `main` |
 
 ## Selective Commands
 
@@ -73,64 +74,36 @@ scripts/test-rust-fast.sh main
 scripts/bench-rust-build.sh --label before
 cargo test --manifest-path src-tauri/Cargo.toml db_connection --lib
 cargo test --manifest-path src-tauri/crates/ralphx-domain/Cargo.toml
-cargo test --manifest-path src-tauri/Cargo.toml --test research_integration --test workflow_integration --test artifact_integration --test repository_swapping --test methodology_integration --test gsd_integration
-cargo test --manifest-path src-tauri/Cargo.toml --test state_machine_flows --test qa_system_flows
-cargo test --manifest-path src-tauri/Cargo.toml --test per_project_execution_scoping
-cargo test --manifest-path src-tauri/Cargo.toml --test review_flows
-cargo test --manifest-path src-tauri/Cargo.toml --test execution_control_flows
-cargo test --manifest-path src-tauri/Cargo.toml --test external_handlers
-cargo test --manifest-path src-tauri/Cargo.toml --test external_ideation_runtime_handlers
-cargo test --manifest-path src-tauri/Cargo.toml --test artifacts_handlers
-cargo test --manifest-path src-tauri/Cargo.toml --test ideation_handlers
-cargo test --manifest-path src-tauri/Cargo.toml --test ideation_runtime_handlers
-cargo test --manifest-path src-tauri/Cargo.toml --test reviews_handlers
-cargo test --manifest-path src-tauri/Cargo.toml --test projects_handlers
-cargo test --manifest-path src-tauri/Cargo.toml --test git_handlers
-cargo test --manifest-path src-tauri/Cargo.toml --test api_keys_handlers
-cargo test --manifest-path src-tauri/Cargo.toml --test conversations_handlers
-cargo test --manifest-path src-tauri/Cargo.toml --test internal_handlers
-cargo test --manifest-path src-tauri/Cargo.toml --test session_linking_handlers
-cargo test --manifest-path src-tauri/Cargo.toml --test steps_handlers
-cargo test --manifest-path src-tauri/Cargo.toml --test teams_handlers
-cargo test --manifest-path src-tauri/Cargo.toml --test http_helpers
-cargo test --manifest-path src-tauri/Cargo.toml --test task_scheduler_service
-cargo test --manifest-path src-tauri/Cargo.toml --test chat_service_context
-cargo test --manifest-path src-tauri/Cargo.toml --test chat_service_errors
-cargo test --manifest-path src-tauri/Cargo.toml --test chat_service_merge
-cargo test --manifest-path src-tauri/Cargo.toml --test transition_handler_freshness
-cargo test --manifest-path src-tauri/Cargo.toml --test transition_handler_concurrent_freshness
-cargo test --manifest-path src-tauri/Cargo.toml --test transition_handler_freshness_integration
-cargo test --manifest-path src-tauri/Cargo.toml --test startup_jobs_runner
-cargo test --manifest-path src-tauri/Cargo.toml --test chat_service_streaming
-cargo test --manifest-path src-tauri/Cargo.toml --test chat_service_pause_flows
-cargo test --manifest-path src-tauri/Cargo.toml --test review_service
-cargo test --manifest-path src-tauri/Cargo.toml --test apply_service
-cargo test --manifest-path src-tauri/Cargo.toml --test ideation_service
-cargo test --manifest-path src-tauri/Cargo.toml --test ideation_commands
-cargo test --manifest-path src-tauri/Cargo.toml --test ideation_model_override
-cargo test --manifest-path src-tauri/Cargo.toml --test task_cleanup_service
-cargo test --manifest-path src-tauri/Cargo.toml --test task_commands
-cargo test --manifest-path src-tauri/Cargo.toml --test sqlite_ideation_session_repo
-cargo test --manifest-path src-tauri/Cargo.toml --test project_commands
-cargo test --manifest-path src-tauri/Cargo.toml --test task_step_commands
-cargo test --manifest-path src-tauri/Cargo.toml --test review_commands
-cargo test --manifest-path src-tauri/Cargo.toml --test metrics_commands
-cargo test --manifest-path src-tauri/Cargo.toml --test plan_branch_commands
-cargo test --manifest-path src-tauri/Cargo.toml --test execution_commands_running_count
-cargo test --manifest-path src-tauri/Cargo.toml --test api_key_commands
-cargo test --manifest-path src-tauri/Cargo.toml --test artifact_commands
-cargo test --manifest-path src-tauri/Cargo.toml --test qa_commands
-cargo test --manifest-path src-tauri/Cargo.toml --test methodology_commands
-cargo test --manifest-path src-tauri/Cargo.toml --test workflow_commands
-cargo test --manifest-path src-tauri/Cargo.toml --test research_commands
-cargo test --manifest-path src-tauri/Cargo.toml --test agent_profile_commands
-cargo test --manifest-path src-tauri/Cargo.toml --test unified_chat_commands
-cargo test --manifest-path src-tauri/Cargo.toml --test git_commands
-cargo test --manifest-path src-tauri/Cargo.toml --test activity_commands
-cargo test --manifest-path src-tauri/Cargo.toml --test question_commands
+cargo nextest run --manifest-path src-tauri/Cargo.toml --features test-utils --test suite_ipc_commands ipc_contract
+cargo nextest run --manifest-path src-tauri/Cargo.toml --features test-utils --test suite_commands -E 'test(release_notes_commands)'
+cargo nextest run --manifest-path src-tauri/Cargo.toml --test suite_http_handlers -E 'test(artifacts_handlers)'
+cargo nextest run --manifest-path src-tauri/Cargo.toml --test suite_sqlite_flows -E 'test(repository_swapping)'
+cargo nextest run --manifest-path src-tauri/Cargo.toml --features test-utils --test suite_transition_git -E 'test(transition_handler_freshness)'
 cargo nextest run --manifest-path src-tauri/Cargo.toml --lib --features test-utils
 cargo nextest run --manifest-path src-tauri/Cargo.toml --lib --profile ci --features test-utils
+cargo nextest run --manifest-path src-tauri/Cargo.toml --profile ci --features test-utils
+cargo test --manifest-path src-tauri/Cargo.toml --doc
+python3 scripts/check-rust-test-features.py
+python3 scripts/check-test-suite-modules.py
 ```
+
+## Integration Suite Mapping
+
+| Suite | Former targets |
+|---|---|
+| `suite_ipc_commands` | `task_commands`, `api_key_commands`, `project_commands`, `unified_chat_commands`, `task_step_commands`, `harness_provider_commands` |
+| `suite_commands` | `activity_commands`, `agent_profile_commands`, `methodology_commands`, `metrics_commands`, `qa_commands`, `release_notes_commands`, `research_commands`, `workflow_commands`, `artifact_commands`, `review_commands`, `review_service`, `plan_branch_commands`, `conversation_stats_commands`, `execution_commands_running_count`, `question_commands`, `git_commands` |
+| `suite_http_handlers` | `api_keys_handlers`, `artifacts_handlers`, `conversations_handlers`, `delegation_handlers`, `internal_handlers`, `projects_handlers`, `reliability_tests`, `session_linking_handlers`, `teams_handlers`, `chat_service_streaming`, `ideation_event_emission` |
+| `suite_sqlite_repos` | `sqlite_chat_message_repo`, `sqlite_ideation_session_repo`, `external_issue_links`, `clickup_integration_settings`, `granola_integration_settings`, `linear_integration_settings` |
+| `suite_sqlite_flows` | `state_machine_flows`, `qa_system_flows`, `review_flows`, `execution_control_flows`, `per_project_execution_scoping`, `workflow_integration`, `artifact_integration`, `methodology_integration`, `gsd_integration`, `research_integration`, `repository_swapping`, `linear_webhook_reconciliation` |
+| `suite_metrics` | `metrics_integration`, `metrics_schema_validation`, `metrics_delivery_trends`, `metrics_pr_insights` |
+| `suite_chat_service` | `chat_service_errors`, `chat_service_context`, `chat_service_merge`, `chat_service_pause_flows`, `chat_session_recovery_integration`, `pending_session_drain`, `session_fixes_integration`, `session_linking_integration`, `http_helpers` |
+| `suite_ideation` | `ideation_service`, `ideation_capacity_counting`, `ideation_webhook_enrichment_test`, `ideation_model_override`, `ideation_commands`, `ideation_runtime_handlers`, `external_ideation_runtime_handlers`, `ideation_plan_delivery_test`, `ideation_handlers`, `apply_service` |
+| `suite_transition_git` | `transition_handler_freshness`, `transition_handler_freshness_integration`, `transition_handler_concurrent_freshness`, `webhook_pipeline_integration`, `reviewing_initial_recovery`, `startup_jobs_runner`, `merge_system_hardening`, `deferred_main_merge_integration`, `steps_handlers`, `reviews_handlers`, `git_handlers`, `external_handlers` |
+| `suite_pr_github` | `pr_mode_integration`, `pr_mode_fallback`, `pr_mode_acceptance_paths`, `pr_poller_tests`, `pr_reconciler_tests`, `project_pr_template` |
+| `suite_interactive_process` | `gate1_ipr_fast_path_tests`, `ipr_cleanup_guard_tests`, `interactive_mode_integration`, `team_nudge_running_count_tests`, `task_cleanup_service`, `reconciliation_runner`, `agentic_client_flows`, `supervisor_integration`, `codex_stream_processor`, `codex_cli_capabilities`, `execution_types_serde`, `task_scheduler_service` |
+| `suite_agent_workspace` | `agent_workspace_publish_recovery`, `agent_workspace_repair_auto_publish`, `agent_workspace_review` |
+| `plan_selector_performance` | stays standalone under `perf-serial` |
 
 ## Nextest Setup
 
@@ -145,7 +118,7 @@ cargo nextest run --manifest-path src-tauri/Cargo.toml --lib --profile ci --feat
 | Broad CI-style root-lib run | `cargo nextest run --manifest-path src-tauri/Cargo.toml --lib --profile ci --features test-utils` |
 | Broad CI-style full suite | `cargo nextest run --manifest-path src-tauri/Cargo.toml --profile ci --features test-utils` |
 | Clippy feature matrix | `cargo clippy --manifest-path src-tauri/Cargo.toml --lib --bins --no-default-features -- -D warnings && cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings` |
-| Pinpoint module/test validation | `cargo test --manifest-path src-tauri/Cargo.toml <filter> --lib` or `cargo test --manifest-path src-tauri/Cargo.toml --test <target>` |
+| Pinpoint module/test validation | Lib: `cargo test --manifest-path src-tauri/Cargo.toml <filter> --lib`; integration: `cargo nextest run --manifest-path src-tauri/Cargo.toml --test <suite> -E 'test(<module_or_test>)'` |
 | Lib-side capability check | `cargo test --manifest-path src-tauri/Cargo.toml '<filter>' --lib -- --ignored` |
 | Doctests | `cargo test --manifest-path src-tauri/Cargo.toml --doc` |
 | CI broad coverage | `cargo nextest run --manifest-path src-tauri/Cargo.toml --profile ci --features test-utils && cargo test --manifest-path src-tauri/Cargo.toml --doc` |
@@ -165,7 +138,7 @@ cargo nextest run --manifest-path src-tauri/Cargo.toml --lib --profile ci --feat
 | Need | Use |
 |---|---|
 | One unit-test/module substring | `cargo test --manifest-path src-tauri/Cargo.toml <filter> --lib` |
-| Multiple integration targets in one run | `cargo test --manifest-path src-tauri/Cargo.toml --test review_flows --test execution_control_flows` |
+| Multiple integration targets in one run | `cargo nextest run --manifest-path src-tauri/Cargo.toml --test suite_sqlite_flows --test suite_metrics` |
 | Multiple unrelated unit-test filters | Run separate `cargo test ... --lib` commands sequentially |
 | Fast module-path guess | Derive `folder::tree::module::tests::` from the source tree first; for `#[path = "foo_tests.rs"] mod tests;` under `foo.rs`, prefer `...::foo::tests::` |
 | Sidecar `*_tests.rs` under a production module | Prefer the parent module path first: `application/review_issue_service_tests.rs` → `application::review_issue_service::tests::`, not `application::review_issue_service_tests::` |
@@ -264,7 +237,7 @@ cargo test --manifest-path src-tauri/Cargo.toml 'domain::services::running_agent
 |---|---|
 | Is this pure logic with no DB/git/process/AppState setup? | Keep it in `src-tauri/src/**` as a normal `--lib` test |
 | Does it need real SQLite schema/repositories? | Start with `SqliteTestDb` / `SqliteStateFixture` |
-| Does it mostly exercise handlers, orchestration, state machines, worktrees, or large service flows? | Put it in `src-tauri/tests/<suite>.rs` as a dedicated integration target |
+| Does it mostly exercise handlers, orchestration, state machines, worktrees, or large service flows? | Put it in an existing `src-tauri/tests/suite_*/` module; do not create a new top-level test binary |
 | Did you move a suite out of `--lib`? | Import through `ralphx_lib::*`, not `super::*` / `crate::*` |
 | Does the moved suite need internals? | Expose the smallest seam: re-export, `#[doc(hidden)] pub`, or `*_for_test()` |
 | Does it only need one small test helper from a private module? | Localize that helper in the integration target instead of exporting a broad test-only helper tree |
@@ -277,7 +250,7 @@ cargo test --manifest-path src-tauri/Cargo.toml 'domain::services::running_agent
 
 | Question | If yes | If no |
 |---|---|---|
-| Is the suite large enough to materially bloat `--lib` compile scope? | Prefer moving it to `src-tauri/tests/<suite>.rs` | Keep it in `--lib` |
+| Is the suite large enough to materially bloat `--lib` compile scope? | Prefer moving it into an existing `src-tauri/tests/suite_*/` module | Keep it in `--lib` |
 | Does the suite mostly exercise public behavior or explicit internal helpers? | Move it | Keep it local if it only probes private implementation details |
 | Does the suite rely on SQLite migrations or real git/process setup? | Move it and give it a dedicated integration target | Keep pure logic tests in `--lib` |
 | Can the suite work with `ralphx_lib::*` imports plus a few narrow helper exports? | Move it | Do not widen large surfaces just to move it |

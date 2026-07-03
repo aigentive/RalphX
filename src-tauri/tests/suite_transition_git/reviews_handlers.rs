@@ -16,8 +16,6 @@
 //   3. Stale reviewer call on Ready task → 400 BAD_REQUEST (guard fires for non-review states).
 //   4. Valid reviewer call on Reviewing task → guard does NOT fire (proceeds past guard line 32).
 
-mod support;
-
 use axum::{extract::State, http::StatusCode, Json};
 use ralphx_lib::application::{
     interactive_process_registry::InteractiveProcessKey, AppState, TeamService, TeamStateTracker,
@@ -36,7 +34,7 @@ use ralphx_lib::http_server::types::{
     CreateChildSessionRequest, HttpServerState, ReviewIssueRequest,
 };
 use std::sync::Arc;
-use support::real_git_repo::setup_real_git_repo;
+use crate::support::real_git_repo::setup_real_git_repo;
 
 /// Build a minimal HttpServerState backed by in-memory repos (no SQLite, no Tauri app handle).
 async fn setup_review_test_state() -> HttpServerState {

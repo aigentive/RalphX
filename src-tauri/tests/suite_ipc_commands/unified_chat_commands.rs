@@ -1,4 +1,3 @@
-mod common;
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -628,12 +627,12 @@ async fn setup_ipc_workspace_state(
     suffix: &str,
     capture_base_commit: bool,
     publication_pr_number: Option<i64>,
-    github: Arc<common::MockGithubService>,
+    github: Arc<crate::common::MockGithubService>,
 ) -> (
     tempfile::TempDir,
     AppState,
     ChatConversationId,
-    Arc<common::MockGithubService>,
+    Arc<crate::common::MockGithubService>,
 ) {
     let temp = tempfile::tempdir().expect("tempdir should be created");
     let repo_path = temp.path().join("repo");
@@ -993,7 +992,7 @@ async fn ipc_contract_agent_workspace_poller_cleans_merged_pr_artifacts() {
         .await
         .expect("workspace should persist");
 
-    let github = Arc::new(common::MockGithubService::new());
+    let github = Arc::new(crate::common::MockGithubService::new());
     github.will_return_status(GithubPrStatus::Merged {
         merge_commit_sha: None,
     });
@@ -1080,7 +1079,7 @@ async fn ipc_contract_agent_workspace_poller_cleans_closed_pr_worktree_only() {
         .await
         .expect("workspace should persist");
 
-    let github = Arc::new(common::MockGithubService::new());
+    let github = Arc::new(crate::common::MockGithubService::new());
     github.will_return_status(GithubPrStatus::Closed);
     let registry = PrPollerRegistry::new(
         Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
@@ -1490,7 +1489,6 @@ mod ipc_contract {
     use ralphx_lib::infrastructure::memory::MemoryAgentModelRegistryRepository;
     use ralphx_lib::infrastructure::sqlite::sqlite_agent_conversation_workspace_repo::SqliteAgentConversationWorkspaceRepository;
     use ralphx_lib::testing::SqliteTestDb;
-    use std::ffi::OsString;
     use std::sync::Arc;
     use tauri::test::{mock_builder, mock_context, noop_assets};
     use tauri::Manager;
@@ -1537,7 +1535,7 @@ mod ipc_contract {
             "freshness-blocked",
             false,
             None,
-            std::sync::Arc::new(super::common::MockGithubService::new()),
+            std::sync::Arc::new(crate::common::MockGithubService::new()),
         )
         .await;
         let app = mock_builder()
@@ -1571,7 +1569,7 @@ mod ipc_contract {
             "freshness-retargeted",
             true,
             None,
-            std::sync::Arc::new(super::common::MockGithubService::new()),
+            std::sync::Arc::new(crate::common::MockGithubService::new()),
         )
         .await;
         let app = mock_builder()
@@ -1604,7 +1602,7 @@ mod ipc_contract {
             "workspace-stale-repair-response",
             true,
             Some(765),
-            std::sync::Arc::new(super::common::MockGithubService::new()),
+            std::sync::Arc::new(crate::common::MockGithubService::new()),
         )
         .await;
         let mut workspace = state
@@ -1649,7 +1647,7 @@ mod ipc_contract {
             "workspace-stale-repair-freshness",
             true,
             Some(766),
-            std::sync::Arc::new(super::common::MockGithubService::new()),
+            std::sync::Arc::new(crate::common::MockGithubService::new()),
         )
         .await;
         let mut workspace = state
@@ -1704,7 +1702,7 @@ mod ipc_contract {
             "workspace-stale-repair-startup",
             true,
             Some(767),
-            std::sync::Arc::new(super::common::MockGithubService::new()),
+            std::sync::Arc::new(crate::common::MockGithubService::new()),
         )
         .await;
 
@@ -1801,7 +1799,7 @@ mod ipc_contract {
 
     #[tokio::test]
     async fn ipc_contract_publish_blocks_when_existing_pr_base_retarget_fails() {
-        let github = std::sync::Arc::new(super::common::MockGithubService::new());
+        let github = std::sync::Arc::new(crate::common::MockGithubService::new());
         github.will_fail_update_pr_base("denied");
         let (_temp, state, conversation_id, github) =
             super::setup_ipc_workspace_state("publish-retarget-fails", true, Some(654), github)
@@ -2829,8 +2827,8 @@ mod ipc_contract {
     }
 
     struct FakeCliOnPath {
+        _path_guard: crate::support::env::EnvVarGuard,
         _temp_dir: tempfile::TempDir,
-        previous_path: Option<OsString>,
     }
 
     impl FakeCliOnPath {
@@ -2849,26 +2847,11 @@ mod ipc_contract {
                     .expect("fake CLI should be executable");
             }
 
-            let previous_path = std::env::var_os("PATH");
-            let mut paths = vec![temp_dir.path().to_path_buf()];
-            if let Some(existing) = previous_path.as_ref() {
-                paths.extend(std::env::split_paths(existing));
-            }
-            let joined_path = std::env::join_paths(paths).expect("fake CLI PATH should join");
-            std::env::set_var("PATH", joined_path);
+            let path_guard = crate::support::env::prepend_to_path(temp_dir.path());
 
             Self {
+                _path_guard: path_guard,
                 _temp_dir: temp_dir,
-                previous_path,
-            }
-        }
-    }
-
-    impl Drop for FakeCliOnPath {
-        fn drop(&mut self) {
-            match self.previous_path.as_ref() {
-                Some(path) => std::env::set_var("PATH", path),
-                None => std::env::remove_var("PATH"),
             }
         }
     }
@@ -3166,7 +3149,7 @@ mod ipc_contract {
 
     #[tokio::test]
     async fn archive_conversation_sets_workspace_status_to_archived() {
-        let github = Arc::new(super::common::MockGithubService::new());
+        let github = Arc::new(crate::common::MockGithubService::new());
         let (_temp, state, conv_id, _github) =
             super::setup_ipc_workspace_state("archive-status", true, None, github).await;
 
@@ -3185,7 +3168,7 @@ mod ipc_contract {
 
     #[tokio::test]
     async fn archive_conversation_closes_open_pr() {
-        let github = Arc::new(super::common::MockGithubService::new());
+        let github = Arc::new(crate::common::MockGithubService::new());
         let (_temp, state, conv_id, github) =
             super::setup_ipc_workspace_state("archive-close-pr", true, Some(42), github.clone())
                 .await;
@@ -3208,7 +3191,7 @@ mod ipc_contract {
 
     #[tokio::test]
     async fn archive_conversation_skips_close_when_pr_already_closed() {
-        let github = Arc::new(super::common::MockGithubService::new());
+        let github = Arc::new(crate::common::MockGithubService::new());
         let (_temp, state, conv_id, github) = super::setup_ipc_workspace_state(
             "archive-already-closed",
             true,
@@ -3231,7 +3214,7 @@ mod ipc_contract {
 
     #[tokio::test]
     async fn archive_conversation_skips_close_when_pr_merged() {
-        let github = Arc::new(super::common::MockGithubService::new());
+        let github = Arc::new(crate::common::MockGithubService::new());
         let (_temp, state, conv_id, github) =
             super::setup_ipc_workspace_state("archive-merged", true, Some(77), github.clone())
                 .await;
@@ -3250,7 +3233,7 @@ mod ipc_contract {
 
     #[tokio::test]
     async fn archive_conversation_closes_linked_plan_branch_pr() {
-        let github = Arc::new(super::common::MockGithubService::new());
+        let github = Arc::new(crate::common::MockGithubService::new());
         let (_temp, state, conv_id, _github) =
             super::setup_ipc_workspace_state("archive-plan-branch", true, Some(55), github.clone())
                 .await;

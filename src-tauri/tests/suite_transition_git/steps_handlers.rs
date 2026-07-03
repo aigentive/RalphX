@@ -1,4 +1,3 @@
-mod support;
 
 use axum::{extract::{Path, State}, Json};
 use ralphx_lib::application::{
@@ -14,7 +13,7 @@ use ralphx_lib::http_server::helpers::get_task_context_impl;
 use ralphx_lib::http_server::project_scope::ProjectScope;
 use ralphx_lib::http_server::types::{ExecutionCompleteRequest, HttpServerState, TestResultInput};
 use std::sync::Arc;
-use support::real_git_repo::setup_real_git_repo;
+use crate::support::real_git_repo::setup_real_git_repo;
 
 async fn setup_test_state() -> HttpServerState {
     let app_state = Arc::new(AppState::new_test());

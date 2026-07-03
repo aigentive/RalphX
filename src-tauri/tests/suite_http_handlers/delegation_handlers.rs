@@ -34,42 +34,8 @@ fn codex_cli_env_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
-struct EnvVarGuard {
-    key: &'static str,
-    original: Option<String>,
-}
-
-impl EnvVarGuard {
-    fn set(key: &'static str, value: &str) -> Self {
-        let original = std::env::var(key).ok();
-        std::env::set_var(key, value);
-        Self { key, original }
-    }
-}
-
-impl Drop for EnvVarGuard {
-    fn drop(&mut self) {
-        if let Some(value) = self.original.as_ref() {
-            std::env::set_var(self.key, value);
-        } else {
-            std::env::remove_var(self.key);
-        }
-    }
-}
-
-fn prepend_to_path(dir: &Path) -> EnvVarGuard {
-    let existing = std::env::var("PATH").unwrap_or_default();
-    let separator = if cfg!(windows) { ";" } else { ":" };
-    let value = if existing.is_empty() {
-        dir.display().to_string()
-    } else {
-        format!("{}{separator}{existing}", dir.display())
-    };
-    EnvVarGuard::set("PATH", &value)
-}
-
-fn prepend_fake_codex_to_path(fake_codex_path: &Path) -> EnvVarGuard {
-    prepend_to_path(
+fn prepend_fake_codex_to_path(fake_codex_path: &Path) -> crate::support::env::EnvVarGuard {
+    crate::support::env::prepend_to_path(
         fake_codex_path
             .parent()
             .expect("fake codex script should have parent dir"),

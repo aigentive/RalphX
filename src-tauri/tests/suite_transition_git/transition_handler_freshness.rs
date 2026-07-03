@@ -4,15 +4,13 @@
 // result mapping, retry counting, and dual-conflict sequential scenarios.
 // Also covers: FreshnessMetadata struct API (cleanup scopes, backoff, serde defaults).
 
-mod support;
-
 use chrono::Utc;
 use ralphx_lib::domain::entities::{Project, ProjectId, Task};
 use ralphx_lib::domain::state_machine::transition_handler::freshness::{
     ensure_branches_fresh, FreshnessAction, FreshnessCleanupScope, FreshnessMetadata,
 };
 use ralphx_lib::infrastructure::agents::claude::ReconciliationConfig;
-use support::real_git_repo::setup_real_git_repo;
+use crate::support::real_git_repo::setup_real_git_repo;
 
 // ==================
 // Helpers

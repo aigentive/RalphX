@@ -123,7 +123,7 @@ fn insert_step(conn: &Connection, id: &str, task_id: &str) {
 fn metrics_command_app() -> tauri::App<MockRuntime> {
     mock_builder()
         .manage(AppState::new_sqlite_test())
-        .build(tauri::generate_context!())
+        .build(crate::tauri_context())
         .expect("mock metrics app should build")
 }
 

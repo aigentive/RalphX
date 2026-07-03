@@ -13,25 +13,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = REPO_ROOT / "src-tauri" / "Cargo.toml"
 
 EXPECTED_TEST_UTILS_TARGETS = {
-    "activity_commands",
-    "agent_profile_commands",
-    "api_key_commands",
-    "chat_service_context",
-    "git_commands",
-    "harness_provider_commands",
-    "ideation_commands",
-    "ideation_plan_delivery_test",
-    "merge_system_hardening",
-    "methodology_commands",
-    "metrics_commands",
-    "project_commands",
-    "qa_commands",
-    "question_commands",
-    "release_notes_commands",
-    "research_commands",
-    "task_step_commands",
-    "unified_chat_commands",
-    "workflow_commands",
+    "suite_chat_service",
+    "suite_commands",
+    "suite_ideation",
+    "suite_ipc_commands",
+    "suite_transition_git",
 }
 
 
@@ -69,7 +55,7 @@ def main() -> int:
     errors: list[str] = []
     for name in sorted(EXPECTED_TEST_UTILS_TARGETS):
         target = test_targets.get(name)
-        expected_path = (MANIFEST.parent / "tests" / f"{name}.rs").resolve()
+        expected_path = (MANIFEST.parent / "tests" / name / "main.rs").resolve()
         if target is None:
             errors.append(f"missing [[test]] target: {name}")
             continue
