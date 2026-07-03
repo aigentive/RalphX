@@ -479,6 +479,22 @@ mod tests {
     }
 
     #[test]
+    fn parse_event_msg_agent_message_supports_text_and_top_level_ids() {
+        let event = parse_codex_event_line(
+            r#"{"type":"event_msg","id":"event-msg-1","thread_id":"codex-thread-top","msg":{"type":"agent_message","phase":"commentary","text":"Working from Codex."}}"#,
+        )
+        .expect("event_msg text fallback should parse");
+
+        assert_eq!(event.thread_id.as_deref(), Some("codex-thread-top"));
+        let item = event.item.as_ref().expect("normalized item");
+        assert_eq!(item.id.as_deref(), Some("event-msg-1"));
+        assert_eq!(
+            extract_codex_agent_message(&event).as_deref(),
+            Some("Working from Codex.")
+        );
+    }
+
+    #[test]
     fn extract_codex_usage_returns_turn_usage() {
         let event = CodexStreamEvent {
             event_type: "turn.completed".to_string(),
