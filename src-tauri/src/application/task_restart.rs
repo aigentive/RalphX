@@ -1,10 +1,7 @@
 use std::sync::Arc;
 
-use crate::domain::entities::task_metadata::StopRetryingReason;
 use crate::domain::entities::{
-    ExecutionRecoveryEvent, ExecutionRecoveryEventKind, ExecutionRecoveryMetadata,
-    ExecutionRecoveryReasonCode, ExecutionRecoverySource, ExecutionRecoveryState, InternalStatus,
-    Task, TaskId, TaskStepStatus,
+    ExecutionRecoveryMetadata, ExecutionRecoveryState, InternalStatus, Task, TaskId, TaskStepStatus,
 };
 use crate::domain::repositories::{TaskRepository, TaskStepRepository};
 use crate::domain::state_machine::transition_handler::{parse_metadata, set_trigger_origin};
@@ -100,6 +97,11 @@ pub async fn clear_failed_steps_for_failed_restart(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::entities::task_metadata::StopRetryingReason;
+    use crate::domain::entities::{
+        ExecutionRecoveryEvent, ExecutionRecoveryEventKind, ExecutionRecoveryReasonCode,
+        ExecutionRecoverySource,
+    };
     use crate::domain::entities::{ProjectId, TaskStep};
     use crate::infrastructure::memory::{MemoryTaskRepository, MemoryTaskStepRepository};
 
