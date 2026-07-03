@@ -1061,11 +1061,7 @@ mod tests {
             .current_dir(&repo_path)
             .output()
             .expect("git worktree add");
-        assert!(
-            add_worktree.status.success(),
-            "worktree add should succeed: {}",
-            String::from_utf8_lossy(&add_worktree.stderr)
-        );
+        assert!(add_worktree.status.success());
 
         let dirty_file = validate_absolute_non_root_path(
             &worktree_path.join("uncommitted_source.rs"),
@@ -1097,26 +1093,15 @@ mod tests {
         )
         .await;
 
-        assert!(
-            worktree_path.exists(),
-            "dirty worktree should be preserved for recovery"
-        );
+        assert!(worktree_path.exists());
 
         let updated_task = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
         assert_eq!(
             updated_task.worktree_path.as_deref(),
-            Some(worktree_path_str.as_str()),
-            "dirty cleanup must keep worktree_path for recovery"
+            Some(worktree_path_str.as_str())
         );
-        assert_eq!(
-            updated_task.task_branch.as_deref(),
-            Some(branch_name),
-            "dirty cleanup must keep task_branch for recovery"
-        );
-        assert!(
-            has_pending_cleanup_metadata(&updated_task),
-            "pending_cleanup should remain so cleanup can be retried after recovery"
-        );
+        assert_eq!(updated_task.task_branch.as_deref(), Some(branch_name));
+        assert!(has_pending_cleanup_metadata(&updated_task));
 
         let branch_check = std::process::Command::new("git")
             .args(["branch", "--list", branch_name])
@@ -1166,18 +1151,10 @@ mod tests {
         let updated_task = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
         assert_eq!(
             updated_task.worktree_path.as_deref(),
-            Some("relative-worktree-path"),
-            "invalid cleanup path must remain attached for manual recovery"
+            Some("relative-worktree-path")
         );
-        assert_eq!(
-            updated_task.task_branch.as_deref(),
-            Some(branch_name),
-            "invalid cleanup path must not delete task branch"
-        );
-        assert!(
-            has_pending_cleanup_metadata(&updated_task),
-            "pending_cleanup should remain after invalid cleanup path"
-        );
+        assert_eq!(updated_task.task_branch.as_deref(), Some(branch_name));
+        assert!(has_pending_cleanup_metadata(&updated_task));
 
         let branch_check = std::process::Command::new("git")
             .args(["branch", "--list", branch_name])
@@ -1217,11 +1194,7 @@ mod tests {
             .current_dir(&repo_path)
             .output()
             .expect("git worktree add");
-        assert!(
-            add_worktree.status.success(),
-            "worktree add should succeed: {}",
-            String::from_utf8_lossy(&add_worktree.stderr)
-        );
+        assert!(add_worktree.status.success());
 
         let task_repo = Arc::new(MemoryTaskRepository::new());
         let task_repo_dyn: Arc<dyn TaskRepository> =
@@ -1246,10 +1219,7 @@ mod tests {
         )
         .await;
 
-        assert!(
-            !worktree_path.exists(),
-            "clean worktree should be removed after cleanup"
-        );
+        assert!(!worktree_path.exists());
 
         let updated_task = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
         assert!(updated_task.worktree_path.is_none());
@@ -1273,16 +1243,10 @@ mod tests {
     fn test_set_no_code_changes_metadata_sets_flag() {
         let project_id = ProjectId::from_string("proj-test".to_string());
         let mut task = Task::new(project_id, "test task".to_string());
-        assert!(
-            !has_no_code_changes_metadata(&task),
-            "should be false before setting"
-        );
+        assert!(!has_no_code_changes_metadata(&task));
 
         set_no_code_changes_metadata(&mut task);
-        assert!(
-            has_no_code_changes_metadata(&task),
-            "should be true after setting"
-        );
+        assert!(has_no_code_changes_metadata(&task));
     }
 
     #[test]
@@ -1310,17 +1274,11 @@ mod tests {
 
         set_no_code_changes_metadata(&mut task);
 
-        assert!(
-            has_no_code_changes_metadata(&task),
-            "no_code_changes should be set"
-        );
+        assert!(has_no_code_changes_metadata(&task));
         // Existing key should still be there
         let meta: serde_json::Value =
             serde_json::from_str(task.metadata.as_deref().unwrap()).unwrap();
-        assert_eq!(
-            meta["existing_key"], "existing_value",
-            "existing metadata should be preserved"
-        );
+        assert_eq!(meta["existing_key"], "existing_value");
     }
 
     #[test]

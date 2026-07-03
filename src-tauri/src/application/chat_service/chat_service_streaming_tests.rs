@@ -333,6 +333,20 @@ async fn codex_stream_turn_completed_finishes_without_waiting_for_process_exit()
 }
 
 #[tokio::test]
+async fn codex_stream_accepted_completion_tool_enters_grace_path() {
+    let outcome = run_codex_stream_lines(&[
+        r#"{"type":"item.completed","item":{"type":"mcp_tool_call","id":"tool-1","server":"ralphx","tool":"execution_complete","arguments":{"task_id":"task-1"},"result":{"success":true}}}"#,
+        r#"{"type":"turn.completed","usage":{"last_token_usage":{"input_tokens":3,"output_tokens":2}}}"#,
+    ])
+    .await
+    .expect("accepted completion tool should not fail the stream");
+
+    assert!(outcome.completion_tool_called);
+    assert_eq!(outcome.tool_calls.len(), 1);
+    assert_eq!(outcome.tool_calls[0].name, "ralphx::execution_complete");
+}
+
+#[tokio::test]
 async fn codex_event_msg_agent_messages_persist_to_task_execution_transcript() {
     let state = AppState::new_test();
     let conversation_id = ChatConversationId::new();
@@ -1039,6 +1053,18 @@ async fn claude_stream_success_result_completes_interactive_turn() {
     .expect("successful result should complete the turn");
 
     assert_eq!(outcome.session_id, Some("sess-1".to_string()));
+}
+
+#[tokio::test]
+async fn claude_stream_accepted_completion_tool_enters_grace_path() {
+    let outcome = run_claude_stream_lines(&[
+        r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu-complete","name":"mcp__ralphx__execution_complete","input":{"task_id":"task-1"}}]},"session_id":"sess-1"}"#,
+        r#"{"type":"result","session_id":"sess-1","is_error":false,"result":"Done","cost_usd":0.0}"#,
+    ])
+    .await
+    .expect("accepted completion tool should not fail the stream");
+
+    assert!(outcome.completion_tool_called);
 }
 
 #[tokio::test]
