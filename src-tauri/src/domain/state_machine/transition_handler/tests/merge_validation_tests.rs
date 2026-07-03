@@ -74,6 +74,7 @@ async fn run_validation_returns_none_when_no_analysis() {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)] // The test serializes process env mutation while the spawned command observes it.
 async fn shell_commands_receive_agent_subprocess_path_for_node_managed_tools() {
     let _lock = crate::infrastructure::tool_paths::TEST_ENV_MUTEX
         .lock()

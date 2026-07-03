@@ -669,14 +669,14 @@ async fn app_handle_auto_review_adapter_reports_missing_state_and_missing_worksp
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("mock app should build");
     let missing_state =
-        maybe_start_auto_review_from_app_handle(&no_state_app.handle(), ChatConversationId::new())
+        maybe_start_auto_review_from_app_handle(no_state_app.handle(), ChatConversationId::new())
             .await
             .expect_err("missing AppState should error");
     assert_eq!(missing_state, "AppState is not available");
 
     let no_execution_app = test_app(AppState::new_test());
     let missing_execution = maybe_start_auto_review_from_app_handle(
-        &no_execution_app.handle(),
+        no_execution_app.handle(),
         ChatConversationId::new(),
     )
     .await
@@ -685,7 +685,7 @@ async fn app_handle_auto_review_adapter_reports_missing_state_and_missing_worksp
 
     let app = test_app_with_execution_state(AppState::new_test());
     let missing_workspace =
-        maybe_start_auto_review_from_app_handle(&app.handle(), ChatConversationId::new())
+        maybe_start_auto_review_from_app_handle(app.handle(), ChatConversationId::new())
             .await
             .expect("missing workspace should be a skip decision");
     assert_eq!(
@@ -948,7 +948,7 @@ async fn resolve_review_event_workspace_returns_direct_workspace_conversation() 
     let app = test_app(state);
 
     let resolved = resolve_workspace_conversation_id_for_review_event(
-        &app.handle(),
+        app.handle(),
         &workspace.conversation_id,
     )
     .await
@@ -971,7 +971,7 @@ async fn resolve_review_event_workspace_maps_child_conversation_to_parent_worksp
     let child_id = seed_child_conversation(&state, &workspace).await;
     let app = test_app(state);
 
-    let resolved = resolve_workspace_conversation_id_for_review_event(&app.handle(), &child_id)
+    let resolved = resolve_workspace_conversation_id_for_review_event(app.handle(), &child_id)
         .await
         .expect("child resolution should succeed");
 
@@ -993,11 +993,11 @@ async fn resolve_review_event_workspace_ignores_unrelated_and_missing_conversati
     let app = test_app(state);
 
     let unresolved =
-        resolve_workspace_conversation_id_for_review_event(&app.handle(), &unrelated_id)
+        resolve_workspace_conversation_id_for_review_event(app.handle(), &unrelated_id)
             .await
             .expect("unrelated resolution should succeed");
     let missing = resolve_workspace_conversation_id_for_review_event(
-        &app.handle(),
+        app.handle(),
         &ChatConversationId::new(),
     )
     .await
@@ -1014,7 +1014,7 @@ async fn resolve_review_event_workspace_reports_missing_app_state() {
         .expect("mock app should build");
 
     let error = resolve_workspace_conversation_id_for_review_event(
-        &app.handle(),
+        app.handle(),
         &ChatConversationId::new(),
     )
     .await

@@ -3679,6 +3679,7 @@ fn validate_workspace_review_hunk_annotation_requests(
     Ok(validation)
 }
 
+#[allow(clippy::result_large_err)] // Rejections are serialized response payloads; keep the local API unboxed.
 fn validate_workspace_review_hunk_annotation_request(
     index: usize,
     request: WriteAgentWorkspaceReviewHunkAnnotationRequest,
@@ -7296,14 +7297,15 @@ mod tests {
         .expect("passed workspace review should complete");
 
         assert_eq!(response.monitor.review_gate_status, "passed");
-        let github_state = github.state();
-        assert_eq!(github_state.push_branch_calls, 1);
-        assert_eq!(
-            github_state.last_push_branch_name.as_deref(),
-            Some(branch_name)
-        );
-        assert_eq!(github_state.enable_pr_auto_merge_calls, 1);
-        drop(github_state);
+        {
+            let github_state = github.state();
+            assert_eq!(github_state.push_branch_calls, 1);
+            assert_eq!(
+                github_state.last_push_branch_name.as_deref(),
+                Some(branch_name)
+            );
+            assert_eq!(github_state.enable_pr_auto_merge_calls, 1);
+        }
         let updated = app_state
             .agent_conversation_workspace_repo
             .get_by_conversation_id(&conversation_id)
