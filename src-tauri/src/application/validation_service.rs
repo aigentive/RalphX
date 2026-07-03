@@ -1025,6 +1025,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn run_task_validation_marks_repeated_failed_command_stale_without_execution_episode() {
+        let (state, _temp_dir, task_id) = seeded_state().await;
+        let mut first_request = request(&task_id, "ralphx-execution-worker");
+        first_request.commands = vec![ValidationCommandRequest {
+            command: "printf validation-fail >&2; exit 7".to_string(),
+            cwd: None,
+            label: Some("Failing validation".to_string()),
+            category: Some("lint".to_string()),
+            reason: Some("exercise failure result shaping".to_string()),
+            related_files: Vec::new(),
+            command_ref: None,
+            source: None,
+        }];
+
+        let first = TaskValidationService::run_task_validation(&state, first_request.clone())
+            .await
+            .expect("first validation should run and fail");
+
+        assert_eq!(first.latest_run.expect("run summary").status, "failed");
+        assert_eq!(first.commands.len(), 1);
+        let failed = &first.commands[0];
+        assert_eq!(failed.command_source, "agent_selected");
+        assert_eq!(failed.category, "lint");
+        assert_eq!(failed.cache_decision, "forced");
+        assert_eq!(failed.status, "failed");
+        assert_eq!(failed.exit_code, Some(7));
+        assert_eq!(failed.stderr_snippet.as_deref(), Some("validation-fail"));
+        assert!(failed.stdout_snippet.is_none());
+        assert!(failed.stdout_log_path.is_none());
+        assert!(failed.stderr_log_path.is_some());
+
+        let mut second_request = first_request;
+        second_request.mode = Some("reuse_or_run".to_string());
+        let second = TaskValidationService::run_task_validation(&state, second_request)
+            .await
+            .expect("second validation should rerun stale failed command");
+
+        assert_eq!(
+            second.latest_run.expect("second run summary").status,
+            "failed"
+        );
+        assert_eq!(second.commands[0].cache_decision, "stale");
+        assert_eq!(second.commands[0].status, "failed");
+        assert_eq!(second.commands[0].exit_code, Some(7));
+    }
+
+    #[tokio::test]
     async fn run_task_validation_rejects_when_policy_disabled_before_creating_run() {
         let (state, _temp_dir, task_id) = seeded_state().await;
         state

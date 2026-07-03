@@ -14,6 +14,11 @@ fn test_review_settings_default() {
 }
 
 #[test]
+fn test_run_task_validations_default_helper() {
+    assert!(default_run_task_validations());
+}
+
+#[test]
 fn test_review_settings_ai_disabled() {
     let settings = ReviewSettings::ai_disabled();
     assert!(!settings.ai_review_enabled);
