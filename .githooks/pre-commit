@@ -161,6 +161,23 @@ resolve_primary_root() {
   cd "$common_git_dir/.." && pwd
 }
 
+frontend_dependencies_ready() {
+  local node_modules_dir="$1"
+
+  [ -x "$node_modules_dir/.bin/tsc" ] && [ -x "$node_modules_dir/.bin/eslint" ]
+}
+
+install_frontend_dependencies() {
+  local message="${1:-installing worktree frontend deps}"
+
+  printf '\033[1m[pre-commit]\033[0m %s…\n' "$message"
+  if [ -f package-lock.json ]; then
+    "$NPM_EXEC" ci --prefer-offline --no-audit --no-fund
+  else
+    "$NPM_EXEC" install --prefer-offline --no-audit --no-fund
+  fi
+}
+
 ensure_frontend_dependencies() {
   local dependency_manifest_changes primary_root primary_node_modules
 
@@ -172,17 +189,21 @@ ensure_frontend_dependencies() {
     fi
 
     ensure_node_tooling
-    printf '\033[1m[pre-commit]\033[0m dependency manifests changed; installing worktree frontend deps…\n'
-    if [ -f package-lock.json ]; then
-      "$NPM_EXEC" ci --prefer-offline --no-audit --no-fund
-    else
-      "$NPM_EXEC" install --prefer-offline --no-audit --no-fund
-    fi
+    install_frontend_dependencies "dependency manifests changed; installing worktree frontend deps"
     return
   fi
 
   if [ -d node_modules ]; then
-    return
+    if frontend_dependencies_ready node_modules; then
+      return
+    fi
+
+    if [ -L node_modules ]; then
+      rm -f node_modules
+    else
+      install_frontend_dependencies "frontend/node_modules is incomplete; reinstalling worktree frontend deps"
+      return
+    fi
   fi
 
   if [ -L node_modules ]; then
@@ -196,19 +217,13 @@ ensure_frontend_dependencies() {
   primary_root="$(resolve_primary_root)"
   primary_node_modules="$primary_root/frontend/node_modules"
 
-  if [ "$primary_root" != "$REPO_ROOT" ] && [ -d "$primary_node_modules" ]; then
+  if [ "$primary_root" != "$REPO_ROOT" ] && frontend_dependencies_ready "$primary_node_modules"; then
     printf '\033[1m[pre-commit]\033[0m linking frontend/node_modules from primary checkout…\n'
     ln -s "$primary_node_modules" node_modules
     return
   fi
 
-  echo "ERROR: frontend/node_modules is missing in this worktree and no primary checkout dependency install is available."
-  echo ""
-  echo "Install frontend dependencies in the primary checkout, then retry:"
-  echo "  npm --prefix \"$primary_root/frontend\" install"
-  echo ""
-  echo "If this commit changes frontend dependencies, stage the updated lockfile so the hook can run npm ci in this worktree."
-  exit 1
+  install_frontend_dependencies
 }
 
 cd frontend
