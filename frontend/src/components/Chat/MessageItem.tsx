@@ -16,7 +16,8 @@ import { ToolCallIndicator, type ToolCall } from "./ToolCallIndicator";
 import { shouldHideCompletedProjectOrchestrationToolCall } from "./tool-widgets/ProjectOrchestrationWidget.utils";
 import { TextBubble } from "./TextBubble";
 import { formatTimestamp, formatTimestampTitle } from "./MessageItem.utils";
-import { isTaskToolCall } from "./DiffToolCallView.utils";
+import { isDiffToolCall, isTaskToolCall } from "./DiffToolCallView.utils";
+import { getToolCallWidget } from "./tool-widgets/registry";
 import { MessageAttachments, type MessageAttachment } from "./MessageAttachments";
 import { MessageReferences } from "./MessageReferences";
 import type { MessageComposerReferences } from "./MessageReferences.parse";
@@ -206,6 +207,19 @@ function ContentToolCallGroupToggle({
       {label}
     </button>
   );
+}
+
+function shouldGroupContentBlockToolCall(toolCall: ToolCall): boolean {
+  if (isDiffToolCall(toolCall.name) || isTaskToolCall(toolCall.name)) {
+    return false;
+  }
+  if (getToolCallWidget(toolCall.name)) {
+    return false;
+  }
+  if (toolCall.resultPreviewTruncated) {
+    return false;
+  }
+  return true;
 }
 
 // ============================================================================
@@ -438,24 +452,30 @@ export const MessageItem = React.memo(function MessageItem({
       }
 
       if (block.type === "tool_use") {
-        if (!groupContentBlockToolCalls) {
-          const toolCall = buildContentBlockToolCall(block, index);
-          if (toolCall) {
-            renderedBlocks.push(
-              <ToolCallIndicator key={`block-${index}`} toolCall={toolCall} />,
-            );
-          }
+        const firstToolCall = buildContentBlockToolCall(block, index);
+        if (!firstToolCall) {
           continue;
         }
 
-        const toolCallGroup: Array<{ index: number; toolCall: ToolCall }> = [];
-        let groupEndIndex = index;
+        if (!groupContentBlockToolCalls || !shouldGroupContentBlockToolCall(firstToolCall)) {
+          renderedBlocks.push(
+            <ToolCallIndicator key={`block-${index}`} toolCall={firstToolCall} />,
+          );
+          continue;
+        }
+
+        const toolCallGroup: Array<{ index: number; toolCall: ToolCall }> = [
+          { index, toolCall: firstToolCall },
+        ];
+        let groupEndIndex = index + 1;
         while (groupEndIndex < parsedContentBlocks.length && parsedContentBlocks[groupEndIndex]?.type === "tool_use") {
           const groupBlock = parsedContentBlocks[groupEndIndex];
           if (groupBlock) {
             const toolCall = buildContentBlockToolCall(groupBlock, groupEndIndex);
-            if (toolCall) {
+            if (toolCall && shouldGroupContentBlockToolCall(toolCall)) {
               toolCallGroup.push({ index: groupEndIndex, toolCall });
+            } else if (toolCall) {
+              break;
             }
           }
           groupEndIndex += 1;

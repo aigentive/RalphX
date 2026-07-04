@@ -508,7 +508,8 @@ describe("MessageItem - Child tool call suppression for Task/Agent spawns", () =
     expect(taskCards).toHaveLength(1); // Only the Agent card at top level
   });
 
-  it("does NOT suppress tool_use blocks that are not nested in Task/Agent results", () => {
+  it("does NOT suppress tool_use blocks that are not nested in Task/Agent results", async () => {
+    const user = userEvent.setup();
     // Two independent tool calls: one Read, one Bash — neither is a Task/Agent spawn
     const contentBlocks = [
       makeContentToolUse("read", {
@@ -527,7 +528,9 @@ describe("MessageItem - Child tool call suppression for Task/Agent spawns", () =
       <MessageItem role="assistant" content="" createdAt={createdAt} contentBlocks={contentBlocks} />
     );
 
-    // Both tool calls should render at top level (they are not children of any Task/Agent)
+    // The generic tool call is collapsed, not suppressed.
+    expect(screen.getByRole("button", { name: "Agent called 1 tool" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Agent called 1 tool" }));
     const indicators = container.querySelectorAll('[data-testid="tool-call-indicator"]');
     expect(indicators.length).toBeGreaterThanOrEqual(1);
   });
@@ -585,7 +588,8 @@ describe("MessageItem - Child tool call suppression for Task/Agent spawns", () =
     expect(taskCards).toHaveLength(1);
   });
 
-  it("renders non-suppressed tool calls alongside Agent card", () => {
+  it("renders non-suppressed tool calls alongside Agent card", async () => {
+    const user = userEvent.setup();
     // A message with an Agent call AND an independent (non-child) tool call
     const contentBlocks = [
       makeContentToolUse("Agent", {
@@ -610,7 +614,9 @@ describe("MessageItem - Child tool call suppression for Task/Agent spawns", () =
 
     // Agent card renders
     expect(container.querySelector('[data-testid="task-tool-call-card"]')).toBeInTheDocument();
-    // Independent tool renders as generic indicator
+    // Independent generic tool is collapsed, not suppressed.
+    expect(screen.getByRole("button", { name: "Agent called 1 tool" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Agent called 1 tool" }));
     expect(container.querySelector('[data-testid="tool-call-indicator"]')).toBeInTheDocument();
   });
 });
