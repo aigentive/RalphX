@@ -13,6 +13,7 @@ import type { FileChange } from "@/api/diff";
 import type { AgentConversationWorkspace } from "@/api/chat";
 import { cn } from "@/lib/utils";
 
+import { canInspectAgentWorkspacePublishDiffs } from "./agentWorkspacePublishState";
 import type { DiffFilterMode } from "./AgentsPublishDiffFilter";
 import {
   AGENT_WORKSPACE_STALE_MS,
@@ -395,7 +396,7 @@ function AgentsComposerWorkspaceChangesCardContent({
   const previousTaskSignatures = useRef<Map<string, string>>(new Map());
   const taskRowRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const canInspectChanges =
-    !isFocusedChildChat && workspace?.mode === "edit" && workspace.status !== "missing";
+    !isFocusedChildChat && canInspectAgentWorkspacePublishDiffs(workspace);
   const taskLedgerScopeKey = `${taskLedgerContext.contextType}:${taskLedgerContext.contextId}`;
   const canScheduleReviewHydration = useDeferredAgentHydration(
     `${conversationId}:${taskLedgerScopeKey}`,

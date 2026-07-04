@@ -5,6 +5,8 @@ import type {
   AgentConversationWorkspaceFreshness,
 } from "@/api/chat";
 import {
+  canInspectAgentWorkspaceBaseFreshness,
+  canInspectAgentWorkspacePublishDiffs,
   getAgentWorkspacePrConflictSummary,
   isAgentWorkspaceAutoMergeDeferred,
   isAgentWorkspaceAutoMergeRequestPending,
@@ -252,6 +254,82 @@ describe("shouldShowAgentWorkspacePublishSurface", () => {
           linkedIdeationSessionId: "planning-session-1",
         }),
       ),
+    ).toBe(false);
+  });
+});
+
+describe("canInspectAgentWorkspacePublishDiffs", () => {
+  it("allows active edit workspaces", () => {
+    expect(canInspectAgentWorkspacePublishDiffs(workspace())).toBe(true);
+  });
+
+  it("allows linked ideation plan workspaces", () => {
+    expect(
+      canInspectAgentWorkspacePublishDiffs(
+        workspace({
+          mode: "ideation",
+          linkedPlanBranchId: "plan-branch-1",
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("rejects ideation workspaces without a linked plan branch", () => {
+    expect(
+      canInspectAgentWorkspacePublishDiffs(workspace({ mode: "ideation" })),
+    ).toBe(false);
+  });
+
+  it("rejects missing workspaces by default", () => {
+    expect(
+      canInspectAgentWorkspacePublishDiffs(workspace({ status: "missing" })),
+    ).toBe(false);
+  });
+
+  it("can preserve terminal published edit workspace inspection", () => {
+    expect(
+      canInspectAgentWorkspacePublishDiffs(
+        workspace({
+          status: "missing",
+          publicationPrNumber: 42,
+          publicationPrStatus: "merged",
+        }),
+        { includeTerminalPublished: true },
+      ),
+    ).toBe(true);
+  });
+});
+
+describe("canInspectAgentWorkspaceBaseFreshness", () => {
+  it("allows edit workspaces", () => {
+    expect(canInspectAgentWorkspaceBaseFreshness(workspace())).toBe(true);
+  });
+
+  it("allows linked ideation plan workspaces before a PR exists", () => {
+    expect(
+      canInspectAgentWorkspaceBaseFreshness(
+        workspace({
+          mode: "ideation",
+          linkedPlanBranchId: "plan-branch-1",
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("preserves published PR freshness inspection", () => {
+    expect(
+      canInspectAgentWorkspaceBaseFreshness(
+        workspace({
+          mode: "ideation",
+          publicationPrNumber: 42,
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("rejects ideation workspaces without a linked plan branch or PR", () => {
+    expect(
+      canInspectAgentWorkspaceBaseFreshness(workspace({ mode: "ideation" })),
     ).toBe(false);
   });
 });
