@@ -1356,122 +1356,140 @@ describe("AgentsView start conversation", () => {
     );
   });
 
-  it("stores selected references on the first optimistic message before a conversation exists", async () => {
-    const queryClient = new QueryClient({
-      defaultOptions: {
-        queries: { retry: false, gcTime: Infinity },
-        mutations: { retry: false },
-      },
-    });
-    const seededConversation = conversation({
-      id: "conversation-seeded-references",
-      contextId: "project-1",
-      title: null,
-    });
-    let resolveCreate:
-      | ((value: Awaited<ReturnType<typeof createConversationMock>>) => void)
-      | null = null;
-    createConversationMock.mockReturnValue(
-      new Promise((resolve) => {
-        resolveCreate = resolve;
-      })
-    );
-    startAgentConversationMock.mockResolvedValue({
-      conversation: seededConversation,
-      workspace: conversationWorkspace({
-        conversationId: "conversation-seeded-references",
-      }),
-      sendResult: {
-        conversationId: "conversation-seeded-references",
-        agentRunId: "run-seeded-references",
-        isNewConversation: false,
-        wasQueued: false,
-        queuedAsPending: false,
-        queuedMessageId: null,
-      },
-    });
-    const setOptimisticSelectedConversationId = vi.fn();
-    const wrapper = ({ children }: { children: ReactNode }) => (
-      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
-    );
-    const { result } = renderHook(
-      () =>
-        useStartAgentConversation({
-          handleAutoManagedTitle: vi.fn(),
-          invalidateProjectConversations: vi.fn().mockResolvedValue(undefined),
-          queryClient,
-          selectConversation: vi.fn(),
-          setActiveConversation: useChatStore.getState().setActiveConversation,
-          setFocusedProject: vi.fn(),
-          setOptimisticConversationsById: vi.fn(),
-          setOptimisticSelectedConversationId,
-          setOptimisticWorkspacesByConversationId: vi.fn(),
-          setRuntimeForConversation: vi.fn(),
+  it.each(["chat", "edit", "plan", "ideation", "review_pr"] as const)(
+    "stores and forwards selected plan references for %s mode",
+    async (mode) => {
+      const queryClient = new QueryClient({
+        defaultOptions: {
+          queries: { retry: false, gcTime: Infinity },
+          mutations: { retry: false },
+        },
+      });
+      const seededConversation = conversation({
+        id: `conversation-seeded-references-${mode}`,
+        contextId: "project-1",
+        title: null,
+        agentMode: mode,
+      });
+      let resolveCreate:
+        | ((value: Awaited<ReturnType<typeof createConversationMock>>) => void)
+        | null = null;
+      createConversationMock.mockReturnValue(
+        new Promise((resolve) => {
+          resolveCreate = resolve;
+        })
+      );
+      startAgentConversationMock.mockResolvedValue({
+        conversation: seededConversation,
+        workspace: conversationWorkspace({
+          conversationId: seededConversation.id,
+          mode,
         }),
-      { wrapper }
-    );
+        sendResult: {
+          conversationId: seededConversation.id,
+          agentRunId: "run-seeded-references",
+          isNewConversation: false,
+          wasQueued: false,
+          queuedAsPending: false,
+          queuedMessageId: null,
+        },
+      });
+      const setOptimisticSelectedConversationId = vi.fn();
+      const wrapper = ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      );
+      const { result } = renderHook(
+        () =>
+          useStartAgentConversation({
+            handleAutoManagedTitle: vi.fn(),
+            invalidateProjectConversations: vi.fn().mockResolvedValue(undefined),
+            queryClient,
+            selectConversation: vi.fn(),
+            setActiveConversation: useChatStore.getState().setActiveConversation,
+            setFocusedProject: vi.fn(),
+            setOptimisticConversationsById: vi.fn(),
+            setOptimisticSelectedConversationId,
+            setOptimisticWorkspacesByConversationId: vi.fn(),
+            setRuntimeForConversation: vi.fn(),
+          }),
+        { wrapper }
+      );
 
-    const startPromise = result.current({
-      projectId: "project-1",
-      content: "start with references",
-      runtime: {
-        provider: "codex",
-        modelId: "gpt-5.5",
-        effort: "xhigh",
-      },
-      mode: "edit",
-      base: null,
-      files: [],
-      composerProjectReferences: [{ path: "src/main.ts", kind: "file" }],
-      composerIntegrationReferences: [
-        {
-          provider: "atlassian",
-          kind: "jira",
-          id: "RX-42",
-          key: "RX-42",
-          title: "Fix composer references",
+      const startPromise = result.current({
+        projectId: "project-1",
+        content: "start with references",
+        runtime: {
+          provider: "codex",
+          modelId: "gpt-5.5",
+          effort: "xhigh",
         },
-      ],
-      composerArtifactReferences: [
-        {
-          kind: "plan",
-          artifactId: "artifact-1",
-          title: "Implementation Plan",
-        },
-      ],
-    });
+        mode,
+        base: null,
+        files: [],
+        composerProjectReferences: [{ path: "src/main.ts", kind: "file" }],
+        composerIntegrationReferences: [
+          {
+            provider: "atlassian",
+            kind: "jira",
+            id: "RX-42",
+            key: "RX-42",
+            title: "Fix composer references",
+          },
+        ],
+        composerArtifactReferences: [
+          {
+            kind: "plan",
+            artifactId: "artifact-1",
+            title: "Implementation Plan",
+          },
+        ],
+      });
 
-    await waitFor(() =>
-      expect(setOptimisticSelectedConversationId).toHaveBeenCalled()
-    );
-    const optimisticConversationId =
-      setOptimisticSelectedConversationId.mock.calls[0]?.[0];
-    const optimisticMessage = queryClient.getQueryData<{
-      messages: Array<{ metadata: string | null }>;
-    }>(["chat", "conversations", optimisticConversationId])?.messages[0];
-    expect(JSON.parse(optimisticMessage?.metadata ?? "{}")).toEqual({
-      composer_project_references: [{ path: "src/main.ts", kind: "file" }],
-      composer_integration_references: [
-        {
-          provider: "atlassian",
-          kind: "jira",
-          id: "RX-42",
-          key: "RX-42",
-          title: "Fix composer references",
-        },
-      ],
-      composer_artifact_references: [
-        {
-          kind: "plan",
-          artifactId: "artifact-1",
-          title: "Implementation Plan",
-        },
-      ],
-    });
+      await waitFor(() =>
+        expect(setOptimisticSelectedConversationId).toHaveBeenCalled()
+      );
+      const optimisticConversationId =
+        setOptimisticSelectedConversationId.mock.calls[0]?.[0];
+      const optimisticMessage = queryClient.getQueryData<{
+        messages: Array<{ metadata: string | null }>;
+      }>(["chat", "conversations", optimisticConversationId])?.messages[0];
+      expect(JSON.parse(optimisticMessage?.metadata ?? "{}")).toEqual({
+        composer_project_references: [{ path: "src/main.ts", kind: "file" }],
+        composer_integration_references: [
+          {
+            provider: "atlassian",
+            kind: "jira",
+            id: "RX-42",
+            key: "RX-42",
+            title: "Fix composer references",
+          },
+        ],
+        composer_artifact_references: [
+          {
+            kind: "plan",
+            artifactId: "artifact-1",
+            title: "Implementation Plan",
+          },
+        ],
+      });
 
-    resolveCreate?.(seededConversation);
-    await startPromise;
-  });
+      resolveCreate?.(seededConversation);
+      await startPromise;
+      expect(startAgentConversationMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          conversationId: seededConversation.id,
+          mode,
+          composerArtifactReferences: [
+            {
+              kind: "plan",
+              artifactId: "artifact-1",
+              title: "Implementation Plan",
+            },
+          ],
+        }),
+      );
+    },
+  );
 
   it("invalidates the resolved Jira issue query after starting with a Jira reference", async () => {
     const queryClient = new QueryClient({
