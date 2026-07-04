@@ -7,6 +7,7 @@
 
 import { renderHook, act } from "@testing-library/react";
 import { describe, it, expect, beforeEach, vi } from "vitest";
+import { toast } from "sonner";
 import type { Project } from "@/types/project";
 import { useAnalysisEditor } from "./useAnalysisEditor";
 import { api } from "@/lib/tauri";
@@ -381,6 +382,50 @@ describe("useAnalysisEditor", () => {
       expect(onSaveSuccess).toHaveBeenCalledWith(null);
       expect(result.current.entries[0].label).toBe("Frontend");
       expect(result.current.isDirty).toBe(false);
+    });
+
+    it("resets local entries without persistence when project is null", async () => {
+      const { result } = renderHook(() => useAnalysisEditor(null));
+
+      await act(async () => {
+        await result.current.resetAll();
+      });
+
+      expect(result.current.entries).toEqual([]);
+      expect(api.projects.updateCustomAnalysis).not.toHaveBeenCalled();
+    });
+
+    it("keeps custom entries when clearing persisted analysis fails", async () => {
+      const customProject: Project = {
+        ...mockProject,
+        customAnalysis: JSON.stringify([
+          {
+            path: "./custom",
+            label: "Custom Path",
+            install: "npm install",
+            validate: ["echo test"],
+            worktree_setup: [],
+          },
+        ]),
+      };
+
+      vi.mocked(api.projects.updateCustomAnalysis).mockRejectedValueOnce(
+        new Error("Reset failed")
+      );
+
+      const { result } = renderHook(() => useAnalysisEditor(customProject));
+
+      await act(async () => {
+        await result.current.resetAll();
+      });
+
+      expect(api.projects.updateCustomAnalysis).toHaveBeenCalledWith(
+        "test-project",
+        null
+      );
+      expect(toast.error).toHaveBeenCalledWith("Reset failed");
+      expect(result.current.entries[0].label).toBe("Custom Path");
+      expect(result.current.isDirty).toBe(true);
     });
   });
 

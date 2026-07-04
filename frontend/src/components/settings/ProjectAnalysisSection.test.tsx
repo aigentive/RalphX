@@ -8,12 +8,20 @@
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { ProjectAnalysisSection } from "./ProjectAnalysisSection";
-import { useProjectStore } from "@/stores/projectStore";
-import * as tauriApi from "@/lib/tauri";
+import { selectActiveProject, useProjectStore } from "@/stores/projectStore";
+import { api } from "@/lib/tauri";
 import type { Project } from "@/types/project";
 
 // Mock dependencies
-vi.mock("@/lib/tauri");
+vi.mock("@/lib/tauri", () => ({
+  api: {
+    projects: {
+      reanalyzeProject: vi.fn(),
+      updateCustomAnalysis: vi.fn(),
+      update: vi.fn(),
+    },
+  },
+}));
 vi.mock("@/stores/projectStore");
 vi.mock("@/providers/EventProvider", () => ({
   useEventBus: () => ({
@@ -67,11 +75,9 @@ describe("ProjectAnalysisSection", () => {
     });
 
     // Setup API mock
-    vi.mocked(tauriApi).projects = {
-      reanalyzeProject: vi.fn().mockResolvedValue(undefined),
-      updateCustomAnalysis: vi.fn().mockResolvedValue(mockProject),
-      update: vi.fn().mockResolvedValue(mockProject),
-    } as Record<string, unknown>;
+    vi.mocked(api.projects.reanalyzeProject).mockResolvedValue(undefined);
+    vi.mocked(api.projects.updateCustomAnalysis).mockResolvedValue(mockProject);
+    vi.mocked(api.projects.update).mockResolvedValue(mockProject);
   });
 
   describe("rendering", () => {
@@ -275,13 +281,10 @@ describe("ProjectAnalysisSection", () => {
         return mockUpdateProject;
       });
 
-      const mockUpdateCustomAnalysis = vi
-        .fn()
-        .mockResolvedValue(mockProject);
-      vi.mocked(tauriApi).projects = {
-        updateCustomAnalysis: mockUpdateCustomAnalysis,
-        reanalyzeProject: vi.fn().mockResolvedValue(undefined),
-      } as Record<string, unknown>;
+      const mockUpdateCustomAnalysis = vi.mocked(
+        api.projects.updateCustomAnalysis
+      );
+      mockUpdateCustomAnalysis.mockResolvedValue(mockProject);
 
       render(<ProjectAnalysisSection />);
 
@@ -310,6 +313,51 @@ describe("ProjectAnalysisSection", () => {
           });
         }
       }
+    });
+
+    it("clears persisted custom analysis when Reset All is clicked", async () => {
+      const mockUpdateProject = vi.fn();
+      const customProject: Project = {
+        ...mockProject,
+        customAnalysis: JSON.stringify([
+          {
+            path: "./custom",
+            label: "Custom Path",
+            install: "npm install",
+            validate: ["echo test"],
+            worktree_setup: [],
+          },
+        ]),
+      };
+
+      vi.mocked(useProjectStore).mockImplementation((selector) => {
+        if (selector === selectActiveProject) {
+          return customProject;
+        }
+        return mockUpdateProject;
+      });
+
+      const mockUpdateCustomAnalysis = vi.mocked(
+        api.projects.updateCustomAnalysis
+      );
+      mockUpdateCustomAnalysis.mockResolvedValue({
+        ...customProject,
+        customAnalysis: null,
+      });
+
+      render(<ProjectAnalysisSection />);
+
+      fireEvent.click(screen.getByText("Reset All"));
+
+      await waitFor(() => {
+        expect(mockUpdateCustomAnalysis).toHaveBeenCalledWith(
+          "test-project",
+          null
+        );
+      });
+      expect(mockUpdateProject).toHaveBeenCalledWith("test-project", {
+        customAnalysis: null,
+      });
     });
   });
 
