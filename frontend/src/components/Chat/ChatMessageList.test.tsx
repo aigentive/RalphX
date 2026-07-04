@@ -4812,6 +4812,99 @@ describe("ChatMessageList - Scroll Behavior", () => {
       }
     });
 
+    it("pins to true bottom when an active live row grows behind the streaming footer", async () => {
+      const callbacks: ResizeObserverCallback[] = [];
+      const observedTargets: Element[] = [];
+      const originalResizeObserver = globalThis.ResizeObserver;
+      const rafSpy = vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
+        cb(0);
+        return 1;
+      });
+      const cancelSpy = vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
+
+      class MockResizeObserver implements ResizeObserver {
+        constructor(callback: ResizeObserverCallback) {
+          callbacks.push(callback);
+        }
+
+        disconnect = vi.fn();
+        observe = vi.fn((target: Element) => {
+          observedTargets.push(target);
+        });
+        unobserve = vi.fn();
+      }
+
+      Object.defineProperty(globalThis, "ResizeObserver", {
+        value: MockResizeObserver,
+        configurable: true,
+        writable: true,
+      });
+
+      try {
+        mockIsAtBottom = false;
+        mockIsAtBottomRef.current = true;
+        render(
+          <ChatMessageList
+            {...defaultProps}
+            messages={createMessages(2)}
+            isAgentRunning={true}
+            streamingContentBlocks={[{ type: "text", text: "Live row before growth" }]}
+          />
+        );
+
+        const scroller = await screen.findByTestId("mock-virtuoso");
+        setMockScrollerGeometry(scroller, {
+          clientHeight: 500,
+          scrollHeight: 1000,
+          scrollTop: 480,
+        });
+        scrollToMock.mockClear();
+
+        const liveRow = screen.getByText("Live row before growth").closest(".px-3");
+        expect(liveRow).toBeInstanceOf(HTMLElement);
+        const liveRowIndex = observedTargets.findIndex((target) => target === liveRow);
+        expect(liveRowIndex).toBeGreaterThanOrEqual(0);
+
+        const liveRowCallback = callbacks[liveRowIndex];
+        const resizeObserver = {} as ResizeObserver;
+        act(() => {
+          liveRowCallback?.(
+            [{ contentRect: { height: 80 } as DOMRectReadOnly } as ResizeObserverEntry],
+            resizeObserver,
+          );
+        });
+        expect(scrollToMock).not.toHaveBeenCalled();
+
+        setMockScrollerGeometry(scroller, {
+          clientHeight: 500,
+          scrollHeight: 1040,
+          scrollTop: 480,
+        });
+        act(() => {
+          liveRowCallback?.(
+            [{ contentRect: { height: 120 } as DOMRectReadOnly } as ResizeObserverEntry],
+            resizeObserver,
+          );
+        });
+
+        await waitFor(() =>
+          expect(scrollToMock).toHaveBeenCalledWith({ top: 540, behavior: "auto" })
+        );
+      } finally {
+        rafSpy.mockRestore();
+        cancelSpy.mockRestore();
+        if (originalResizeObserver === undefined) {
+          Reflect.deleteProperty(globalThis, "ResizeObserver");
+        } else {
+          Object.defineProperty(globalThis, "ResizeObserver", {
+            value: originalResizeObserver,
+            configurable: true,
+            writable: true,
+          });
+        }
+      }
+    });
+
     it("pins to the settled true bottom after composer chrome shrinks the transcript viewport", async () => {
       const callbacks: ResizeObserverCallback[] = [];
       const observedTargets: Element[] = [];
