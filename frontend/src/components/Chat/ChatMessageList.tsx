@@ -91,6 +91,7 @@ type ChatScrollBottomPinReason =
   | "total-list-height-changed"
   | "footer-resized"
   | "last-row-resized"
+  | "active-live-row-resized"
   | "transcript-root-resized"
   | "finalized-provider-message-revealed"
   | "manual-scroll-to-bottom"
@@ -114,6 +115,13 @@ type ChatScrollPinOptions = {
   immediate?: boolean;
   requireLastItemVisible?: boolean;
 };
+
+interface ActiveLiveGrowthRowObserverRecord {
+  observer: ResizeObserver;
+  mounted: boolean;
+  prevHeight: number;
+  rafRef: { current: number | null };
+}
 
 /** Bucket size for text length change detection during streaming.
  *  ~2 visible lines per trigger (average line ~80 chars at standard chat width → 2 lines × 80 = 160, rounded to 150). */
@@ -725,6 +733,7 @@ function LiveTranscriptRowItem({
       ref={rowRef}
       className="px-3 w-full"
       data-chat-last-rendered-row={isLastVisibleTimelineItem ? "true" : undefined}
+      data-chat-live-row-key={row.key}
       style={contentContainerStyle}
     >
       <ContentShell className={contentWidthClassName}>
@@ -1028,6 +1037,8 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
     const lastRenderedRowResizeRafRef = useRef<number | null>(null);
     const lastRenderedRowPrevHeightRef = useRef<number>(-1);
     const lastRenderedRowMountedRef = useRef(false);
+    const activeLiveGrowthRowObserversRef = useRef<Map<string, ActiveLiveGrowthRowObserverRecord>>(new Map());
+    const activeLiveGrowthRowElementsRef = useRef<Map<string, HTMLDivElement>>(new Map());
     const transcriptRootRef = useRef<HTMLDivElement | null>(null);
     const initialPaintReadyFrameRef = useRef<number | null>(null);
     const initialPaintReadyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1512,6 +1523,30 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       }
       return -1;
     }, [expandedToolGroupKeys, timeline]);
+
+    const activeLiveGrowthRowKeys = useMemo(() => {
+      const keys = new Set<string>();
+
+      for (let index = 0; index < timeline.length; index += 1) {
+        const item = timeline[index];
+        if (item?.kind === "streaming_row" && item.data.kind === "task") {
+          keys.add(item.data.key);
+        }
+      }
+
+      for (let index = timeline.length - 1; index >= 0; index -= 1) {
+        const item = timeline[index];
+        if (item?.kind !== "streaming_row" || !isVisibleTimelineItem(item, expandedToolGroupKeys)) {
+          continue;
+        }
+        if (index !== lastVisibleTimelineIndex || hasFooterStreamingContent) {
+          keys.add(item.data.key);
+        }
+        break;
+      }
+
+      return Array.from(keys);
+    }, [expandedToolGroupKeys, hasFooterStreamingContent, lastVisibleTimelineIndex, timeline]);
 
     const lastStreamingTimelineIndex = (() => {
       for (let index = timeline.length - 1; index >= 0; index -= 1) {
@@ -2556,6 +2591,110 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
       });
       lastRenderedRowObserverRef.current.observe(el);
     }, [scheduleStickyResizeBottomPin]);
+
+    const disconnectActiveLiveGrowthRowObserver = useCallback((rowKey: string) => {
+      const record = activeLiveGrowthRowObserversRef.current.get(rowKey);
+      if (!record) {
+        activeLiveGrowthRowElementsRef.current.delete(rowKey);
+        return;
+      }
+      record.observer.disconnect();
+      if (record.rafRef.current !== null) {
+        cancelAnimationFrame(record.rafRef.current);
+      }
+      activeLiveGrowthRowObserversRef.current.delete(rowKey);
+      activeLiveGrowthRowElementsRef.current.delete(rowKey);
+    }, []);
+
+    const observeActiveLiveGrowthRow = useCallback((rowKey: string, el: HTMLDivElement) => {
+      if (activeLiveGrowthRowElementsRef.current.get(rowKey) === el) {
+        return;
+      }
+
+      disconnectActiveLiveGrowthRowObserver(rowKey);
+
+      if (typeof ResizeObserver === "undefined") {
+        activeLiveGrowthRowElementsRef.current.set(rowKey, el);
+        return;
+      }
+
+      const record: ActiveLiveGrowthRowObserverRecord = {
+        observer: null as unknown as ResizeObserver,
+        mounted: false,
+        prevHeight: -1,
+        rafRef: { current: null },
+      };
+      const observer = new ResizeObserver((entries) => {
+        const newHeight = entries[0]?.contentRect.height ?? 0;
+
+        if (!record.mounted) {
+          record.mounted = true;
+          record.prevHeight = newHeight;
+          return;
+        }
+
+        if (newHeight <= record.prevHeight) {
+          record.prevHeight = newHeight;
+          return;
+        }
+        record.prevHeight = newHeight;
+
+        scheduleStickyResizeBottomPin("active-live-row-resized", record.rafRef);
+      });
+
+      record.observer = observer;
+      activeLiveGrowthRowElementsRef.current.set(rowKey, el);
+      activeLiveGrowthRowObserversRef.current.set(rowKey, record);
+      observer.observe(el);
+    }, [disconnectActiveLiveGrowthRowObserver, scheduleStickyResizeBottomPin]);
+
+    useLayoutEffect(() => {
+      const activeKeys = new Set(activeLiveGrowthRowKeys);
+      for (const rowKey of Array.from(activeLiveGrowthRowObserversRef.current.keys())) {
+        if (!activeKeys.has(rowKey)) {
+          disconnectActiveLiveGrowthRowObserver(rowKey);
+        }
+      }
+
+      const root = transcriptRootRef.current;
+      if (!root || activeKeys.size === 0 || typeof ResizeObserver === "undefined") {
+        for (const rowKey of activeKeys) {
+          disconnectActiveLiveGrowthRowObserver(rowKey);
+        }
+        return;
+      }
+
+      const mountedKeys = new Set<string>();
+      root.querySelectorAll<HTMLDivElement>("[data-chat-live-row-key]").forEach((rowEl) => {
+        const rowKey = rowEl.dataset.chatLiveRowKey;
+        if (!rowKey || !activeKeys.has(rowKey)) {
+          return;
+        }
+        mountedKeys.add(rowKey);
+        observeActiveLiveGrowthRow(rowKey, rowEl);
+      });
+
+      for (const rowKey of activeKeys) {
+        if (!mountedKeys.has(rowKey)) {
+          disconnectActiveLiveGrowthRowObserver(rowKey);
+        }
+      }
+    }, [activeLiveGrowthRowKeys, disconnectActiveLiveGrowthRowObserver, observeActiveLiveGrowthRow]);
+
+    useEffect(() => {
+      const observerRecords = activeLiveGrowthRowObserversRef.current;
+      const observedElements = activeLiveGrowthRowElementsRef.current;
+      return () => {
+        for (const [rowKey, record] of Array.from(observerRecords.entries())) {
+          record.observer.disconnect();
+          if (record.rafRef.current !== null) {
+            cancelAnimationFrame(record.rafRef.current);
+          }
+          observerRecords.delete(rowKey);
+          observedElements.delete(rowKey);
+        }
+      };
+    }, []);
 
     useEffect(() => {
       const root = transcriptRootRef.current;
