@@ -138,6 +138,48 @@ export function shouldShowAgentWorkspacePublishSurface(
   return false;
 }
 
+export function canInspectAgentWorkspacePublishDiffs(
+  workspace: AgentConversationWorkspace | null | undefined,
+  options: { includeTerminalPublished?: boolean } = {},
+): boolean {
+  if (!workspace) {
+    return false;
+  }
+
+  const isInspectableMode =
+    workspace.mode === "edit" ||
+    (workspace.mode === "ideation" && isPipelineOwnedAgentWorkspace(workspace));
+
+  if (isInspectableMode && workspace.status !== "missing") {
+    return true;
+  }
+
+  return Boolean(
+    options.includeTerminalPublished &&
+      workspace.mode === "edit" &&
+      hasPublishedWorkspacePr(workspace) &&
+      getAgentWorkspaceTerminalPublicationStatus(workspace),
+  );
+}
+
+export function canInspectAgentWorkspaceBaseFreshness(
+  workspace: AgentConversationWorkspace | null | undefined,
+): boolean {
+  if (!workspace) {
+    return false;
+  }
+
+  if (workspace.mode === "edit") {
+    return true;
+  }
+
+  if (workspace.mode === "ideation" && isPipelineOwnedAgentWorkspace(workspace)) {
+    return true;
+  }
+
+  return hasPublishedWorkspacePr(workspace);
+}
+
 export function isAgentWorkspacePublishCurrent(
   workspace: AgentConversationWorkspace | null,
   freshness: AgentConversationWorkspaceFreshness | undefined

@@ -76,6 +76,8 @@ import { AgentsPublishInlineDiffs } from "./AgentsPublishInlineDiffs";
 import { AgentsPublishRepairState } from "./AgentsPublishRepairState";
 import { formatPullRequestUrlLabel } from "./agentPublishFormatting";
 import {
+  canInspectAgentWorkspaceBaseFreshness,
+  canInspectAgentWorkspacePublishDiffs,
   isAgentWorkspaceAutoMergeDeferred,
   isAgentWorkspaceAutoMergeRequestPending,
   getAgentWorkspacePrConflictSummary,
@@ -249,13 +251,11 @@ export function AgentPublishPanel({
   const hasPublishedPr = hasPublishedWorkspacePr(workspace);
   const terminalPublicationStatus =
     getAgentWorkspaceTerminalPublicationStatus(workspace);
-  const terminalPrDiffCandidate =
-    workspace?.mode === "edit" && hasPublishedPr && !!terminalPublicationStatus;
   // Workspace-only flag computed early so reviewQuery can decide whether the
   // inline diff view will be visible.
-  const inlineDiffsCandidate =
-    workspace?.mode === "edit" &&
-    (workspace.status !== "missing" || terminalPrDiffCandidate);
+  const inlineDiffsCandidate = canInspectAgentWorkspacePublishDiffs(workspace, {
+    includeTerminalPublished: true,
+  });
   const reviewQuery = useQuery({
     queryKey: agentWorkspaceKeys.review(conversationId),
     queryFn: () => diffApi.getAgentConversationWorkspaceReview(conversationId!),
@@ -300,6 +300,8 @@ export function AgentPublishPanel({
   const isPipelineOwnedWorkspace = isPipelineOwnedAgentWorkspace(workspace);
   const isPipelinePrAutomationWorkspace =
     workspace?.mode === "ideation" && isPipelineOwnedWorkspace && hasPublishedPr;
+  const canInspectBaseFreshness =
+    canInspectAgentWorkspaceBaseFreshness(workspace);
   const freshnessQuery = useQuery({
     queryKey: agentWorkspaceKeys.scopedFreshness(conversationId, "full"),
     queryFn: () =>
@@ -310,7 +312,7 @@ export function AgentPublishPanel({
       canHydratePublishFacts &&
       !!conversationId &&
       !isRepairPending &&
-      (workspace?.mode === "edit" || hasPublishedPr) &&
+      canInspectBaseFreshness &&
       !terminalPublicationStatus,
     staleTime: AGENT_WORKSPACE_FRESHNESS_STALE_MS,
   });

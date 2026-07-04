@@ -2537,6 +2537,68 @@ describe("AgentsArtifactPane", () => {
     expect(publish).not.toHaveBeenCalled();
   });
 
+  it("allows Update from base for pre-PR pipeline-owned ideation workspaces", async () => {
+    const publish = vi.fn().mockResolvedValue(undefined);
+    getWorkspaceFreshnessMock.mockResolvedValue({
+      conversationId: "conversation-1",
+      freshnessScope: "full",
+      baseRef: "feature/agent-screen",
+      baseDisplayName: "Current branch (feature/agent-screen)",
+      targetRef: "origin/feature/agent-screen",
+      capturedBaseCommit: "old-base",
+      targetBaseCommit: "new-base",
+      isBaseAhead: true,
+      hasUncommittedChanges: false,
+      unpublishedCommitCount: null,
+      remoteRefreshed: true,
+      worktreeStatusChecked: true,
+    });
+    updateWorkspaceFromBaseMock.mockResolvedValue({
+      workspace: workspace({
+        mode: "ideation",
+        linkedIdeationSessionId: "session-1",
+        linkedPlanBranchId: "plan-branch-1",
+        baseRef: "feature/agent-screen",
+        baseDisplayName: "Current branch (feature/agent-screen)",
+        baseCommit: "new-base",
+      }),
+      updated: true,
+      targetRef: "origin/feature/agent-screen",
+      baseCommit: "new-base",
+    });
+
+    renderPane(
+      "publish",
+      workspace({
+        mode: "ideation",
+        linkedIdeationSessionId: "session-1",
+        linkedPlanBranchId: "plan-branch-1",
+        baseRef: "feature/agent-screen",
+        baseDisplayName: "Current branch (feature/agent-screen)",
+        baseCommit: "old-base",
+      }),
+      publish,
+    );
+
+    expect(await screen.findByTestId("agents-update-from-base")).toBeEnabled();
+    expect(screen.queryByTestId("agents-publish-confirm")).not.toBeInTheDocument();
+    expect(getWorkspaceFreshnessMock).toHaveBeenCalledWith("conversation-1", {
+      scope: "full",
+    });
+
+    fireEvent.click(screen.getByTestId("agents-update-from-base"));
+    expect(updateWorkspaceFromBaseMock).not.toHaveBeenCalled();
+    fireEvent.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", {
+        name: "Update branch",
+      })
+    );
+    await waitFor(() =>
+      expect(updateWorkspaceFromBaseMock).toHaveBeenCalledWith("conversation-1")
+    );
+    expect(publish).not.toHaveBeenCalled();
+  });
+
   it("renders the publish pane shell before hydrating git-backed publish facts", async () => {
     renderPane("publish", workspace({ mode: "edit" }));
 
@@ -4731,6 +4793,43 @@ describe("AgentsArtifactPane", () => {
       expect(screen.getByTestId("inline-diffs-file-count")).toHaveTextContent("1"),
     );
     expect(getWorkspaceReviewMock).toHaveBeenCalledWith("conversation-1");
+  });
+
+  it("shows read-only inline diffs for linked ideation plan workspaces", async () => {
+    getWorkspaceReviewMock.mockResolvedValue({
+      changes: [
+        {
+          path: "src/PlanBranch.tsx",
+          status: "modified",
+          additions: 5,
+          deletions: 2,
+          isGenerated: false,
+        },
+      ],
+      commits: [],
+      baseRef: "base-sha",
+      headRef: "ralphx/demo/agent-conversation-1",
+      supportsWorktreeModes: false,
+    });
+
+    renderPane(
+      "publish",
+      workspace({
+        mode: "ideation",
+        linkedIdeationSessionId: "session-1",
+        linkedPlanBranchId: "plan-branch-1",
+      }),
+    );
+
+    await screen.findByTestId("agents-publish-inline-diffs-section");
+    await waitFor(() =>
+      expect(screen.getByTestId("inline-diffs-file-count")).toHaveTextContent("1"),
+    );
+    expect(getWorkspaceReviewMock).toHaveBeenCalledWith("conversation-1");
+    expect(screen.getByTestId("agents-publish-confirm")).toHaveTextContent(
+      "Managed by Tasks",
+    );
+    expect(screen.getByTestId("agents-publish-confirm")).toBeDisabled();
   });
 
   it("keeps publish enabled for a pushed current branch until a PR exists", async () => {
