@@ -357,12 +357,7 @@ impl<R: Runtime> ChatResumptionRunner<R> {
                     ChatContextType::Project,
                     &conversation.context_id,
                     &prompt,
-                    SendMessageOptions {
-                        metadata: Some(metadata),
-                        conversation_id_override: Some(conversation.id),
-                        caller_context: SendCallerContext::StartupResumption,
-                        ..Default::default()
-                    },
+                    durable_silent_completion_recovery_send_options(&conversation, metadata),
                 )
                 .await
             {
@@ -665,6 +660,18 @@ fn context_type_priority(context_type: ChatContextType) -> u8 {
 
 fn startup_resumption_send_options(conversation: &ChatConversation) -> SendMessageOptions {
     SendMessageOptions {
+        conversation_id_override: Some(conversation.id),
+        caller_context: SendCallerContext::StartupResumption,
+        ..Default::default()
+    }
+}
+
+fn durable_silent_completion_recovery_send_options(
+    conversation: &ChatConversation,
+    metadata: String,
+) -> SendMessageOptions {
+    SendMessageOptions {
+        metadata: Some(metadata),
         conversation_id_override: Some(conversation.id),
         caller_context: SendCallerContext::StartupResumption,
         ..Default::default()

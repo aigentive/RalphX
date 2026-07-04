@@ -3,10 +3,9 @@ use crate::application::agent_conversation_workspace::resolve_agent_conversation
 use crate::application::AppState;
 use crate::domain::agents::{AgentHarnessKind, ProviderSessionRef};
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunAttribution,
-    AgentConversationWorkspaceStatus, AgentRunId, AgentRunStatus, AgentRunUsage,
-    ChatConversation, ChatConversationId, IdeationAnalysisBaseRefKind, InternalStatus, Project,
-    Task,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus,
+    AgentRun, AgentRunAttribution, AgentRunId, AgentRunStatus, AgentRunUsage, ChatConversation,
+    ChatConversationId, IdeationAnalysisBaseRefKind, InternalStatus, Project, Task,
 };
 use crate::domain::repositories::AgentRunRepository;
 use crate::domain::services::{QueuedMessage, RunningAgentKey};
@@ -329,6 +328,24 @@ fn startup_resumption_send_options_preserves_interrupted_agent_conversation_for_
     }
 }
 
+#[test]
+fn durable_silent_completion_recovery_send_options_marks_startup_recovery() {
+    let project_id =
+        crate::domain::entities::ProjectId::from_string("project-durable-recovery".to_string());
+    let conversation = ChatConversation::new_project(project_id);
+    let metadata = silent_completion_recovery_metadata(2, 4_000);
+
+    let options = durable_silent_completion_recovery_send_options(&conversation, metadata.clone());
+
+    assert_eq!(options.metadata.as_deref(), Some(metadata.as_str()));
+    assert_eq!(options.conversation_id_override, Some(conversation.id));
+    assert_eq!(
+        options.caller_context,
+        SendCallerContext::StartupResumption,
+        "durable recovery must use startup resumption guards instead of user-send rollover"
+    );
+}
+
 fn temp_project(temp: &tempfile::TempDir, name: &str) -> Project {
     let project_root = temp.path().join("project-root");
     std::fs::create_dir_all(&project_root).expect("project root should be created");
@@ -551,13 +568,15 @@ async fn startup_resumption_without_override_blocks_terminal_workspace_before_tr
         messages.is_empty(),
         "startup resumption guard should fire before hidden resume or error messages are persisted"
     );
-    assert!(!app_state
-        .running_agent_registry
-        .is_running(&RunningAgentKey::new(
-            ChatContextType::Project.to_string(),
-            project.id.as_str(),
-        ))
-        .await);
+    assert!(
+        !app_state
+            .running_agent_registry
+            .is_running(&RunningAgentKey::new(
+                ChatContextType::Project.to_string(),
+                project.id.as_str(),
+            ))
+            .await
+    );
 }
 
 #[tokio::test]
