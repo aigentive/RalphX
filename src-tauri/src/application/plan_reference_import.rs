@@ -10,6 +10,34 @@ const PLAN_REFERENCE_KIND: &str = "plan";
 const AGENT_PLAN_REFERENCE_IMPORT_CREATOR: &str = "agent_plan_reference_import";
 const AGENT_PLAN_REFERENCE_IMPORT_REASON: &str = "agent_plan_reference_import";
 const AGENT_CONVERSATION_SOURCE_CONTEXT: &str = "agent_conversation";
+const EXTERNAL_PLAN_REFERENCE_IMPORT_CREATOR: &str = "plan_import";
+
+#[derive(Clone, Copy)]
+enum PlanReferenceArtifactRelationFailurePolicy {
+    FailImport,
+    WarnAndContinue,
+}
+
+pub(crate) struct PlanReferenceArtifactCloneOptions {
+    created_by: &'static str,
+    relation_failure_policy: PlanReferenceArtifactRelationFailurePolicy,
+}
+
+impl PlanReferenceArtifactCloneOptions {
+    pub(crate) fn agent_conversation_import() -> Self {
+        Self {
+            created_by: AGENT_PLAN_REFERENCE_IMPORT_CREATOR,
+            relation_failure_policy: PlanReferenceArtifactRelationFailurePolicy::FailImport,
+        }
+    }
+
+    pub(crate) fn external_ideation_import() -> Self {
+        Self {
+            created_by: EXTERNAL_PLAN_REFERENCE_IMPORT_CREATOR,
+            relation_failure_policy: PlanReferenceArtifactRelationFailurePolicy::WarnAndContinue,
+        }
+    }
+}
 
 fn is_plan_reference(reference: &ComposerArtifactReference) -> bool {
     reference
@@ -75,7 +103,12 @@ pub(crate) async fn import_selected_plan_reference_for_agent_start(
         None => None,
     };
 
-    let cloned_artifact = clone_plan_artifact(state, &source_artifact).await?;
+    let cloned_artifact = clone_plan_reference_artifact(
+        state,
+        &source_artifact,
+        PlanReferenceArtifactCloneOptions::agent_conversation_import(),
+    )
+    .await?;
     let analysis = prepare_ideation_analysis_state_from_agent_workspace(project, workspace)
         .await
         .map_err(|error| error.to_string())?;
@@ -105,13 +138,17 @@ pub(crate) async fn import_selected_plan_reference_for_agent_start(
     ))
 }
 
-async fn clone_plan_artifact(state: &AppState, source: &Artifact) -> Result<Artifact, String> {
+pub(crate) async fn clone_plan_reference_artifact(
+    state: &AppState,
+    source: &Artifact,
+    options: PlanReferenceArtifactCloneOptions,
+) -> Result<Artifact, String> {
     let cloned = Artifact {
         id: ArtifactId::new(),
         artifact_type: source.artifact_type,
         name: source.name.clone(),
         content: source.content.clone(),
-        metadata: ArtifactMetadata::new(AGENT_PLAN_REFERENCE_IMPORT_CREATOR).with_version(1),
+        metadata: ArtifactMetadata::new(options.created_by).with_version(1),
         derived_from: vec![source.id.clone()],
         bucket_id: source.bucket_id.clone(),
         archived_at: None,
@@ -121,14 +158,26 @@ async fn clone_plan_artifact(state: &AppState, source: &Artifact) -> Result<Arti
         .create(cloned)
         .await
         .map_err(|error| error.to_string())?;
-    state
+    let relation_result = state
         .artifact_repo
         .add_relation(ArtifactRelation::derived_from(
             cloned.id.clone(),
             source.id.clone(),
         ))
-        .await
-        .map_err(|error| error.to_string())?;
+        .await;
+    if let Err(error) = relation_result {
+        match options.relation_failure_policy {
+            PlanReferenceArtifactRelationFailurePolicy::FailImport => {
+                return Err(error.to_string());
+            }
+            PlanReferenceArtifactRelationFailurePolicy::WarnAndContinue => {
+                tracing::warn!(
+                    "Failed to record derived_from relation for cloned plan artifact: {}",
+                    error
+                );
+            }
+        }
+    }
     Ok(cloned)
 }
 

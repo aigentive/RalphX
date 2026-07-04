@@ -4,10 +4,13 @@ use crate::application::ideation_workspace::{
     prepare_ideation_analysis_state, prepare_ideation_analysis_state_from_agent_workspace,
     IdeationAnalysisBaseSelection,
 };
+use crate::application::plan_reference_import::{
+    clone_plan_reference_artifact, PlanReferenceArtifactCloneOptions,
+};
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode, Artifact, ArtifactId,
-    ArtifactMetadata, ArtifactRelation, ArtifactType, ChatConversationId, ChatMessage,
-    IdeationAnalysisState, IdeationSessionStatus, MessageRole, Project, SessionPurpose,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, Artifact, ArtifactId, ArtifactType,
+    ChatConversationId, ChatMessage, IdeationAnalysisState, IdeationSessionStatus, MessageRole,
+    Project, SessionPurpose,
 };
 use crate::domain::services::message_queue::ComposerArtifactReference;
 use crate::http_server::handlers::external_auth::TAURI_MCP_HEADER;
@@ -419,41 +422,23 @@ async fn clone_plan_artifact(
     state: &HttpServerState,
     source: &Artifact,
 ) -> Result<Artifact, HttpError> {
-    let new_artifact = Artifact {
-        id: ArtifactId::new(),
-        artifact_type: source.artifact_type,
-        name: source.name.clone(),
-        content: source.content.clone(),
-        metadata: ArtifactMetadata::new("plan_import").with_version(1),
-        derived_from: vec![source.id.clone()],
-        bucket_id: source.bucket_id.clone(),
-        archived_at: None,
-    };
-
-    let created = state
-        .app_state
-        .artifact_repo
-        .create(new_artifact)
-        .await
-        .map_err(|e| {
-            error!("Failed to create cloned plan artifact: {}", e);
-            HttpError {
-                status: StatusCode::INTERNAL_SERVER_ERROR,
-                message: Some("Failed to clone plan artifact".to_string()),
-            }
-        })?;
-
-    let relation = ArtifactRelation::derived_from(created.id.clone(), source.id.clone());
-    if let Err(e) = state.app_state.artifact_repo.add_relation(relation).await {
-        tracing::warn!(
-            "Failed to record derived_from relation for cloned artifact: {}",
-            e
-        );
-    }
-
-    Ok(created)
+    clone_plan_reference_artifact(
+        &state.app_state,
+        source,
+        PlanReferenceArtifactCloneOptions::external_ideation_import(),
+    )
+    .await
+    .map_err(|error| {
+        error!("Failed to clone plan artifact: {}", error);
+        HttpError {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: Some("Failed to clone plan artifact".to_string()),
+        }
+    })
 }
 
+/// External MCP/API plan import intentionally preserves approved-plan usability.
+/// Agent-conversation imports share the clone helper but do not call this approval propagation path.
 async fn clone_plan_approval_if_approved(
     state: &HttpServerState,
     source_session_id: &str,

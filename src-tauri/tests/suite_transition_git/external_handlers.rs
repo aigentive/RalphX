@@ -4934,6 +4934,8 @@ async fn test_plan_import_happy_path() {
         .unwrap()
         .expect("source artifact should exist");
     assert_eq!(cloned_artifact.content, source_artifact.content);
+    assert_eq!(cloned_artifact.metadata.created_by, "plan_import");
+    assert_eq!(cloned_artifact.metadata.version, 1);
     assert!(
         cloned_artifact.derived_from.contains(&fix.source_artifact_id),
         "cloned artifact should be derived from source"
