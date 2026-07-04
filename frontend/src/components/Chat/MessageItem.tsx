@@ -81,6 +81,8 @@ export interface MessageItemProps {
   toolCalls?: ToolCall[] | null;
   /** Pre-parsed content blocks array (parsed at API layer) */
   contentBlocks?: ContentBlockItem[] | null;
+  /** Collapse consecutive content-block tool calls when no higher-level timeline grouping owns them. */
+  groupContentBlockToolCalls?: boolean | undefined;
   /** File attachments for user messages */
   attachments?: MessageAttachment[];
   /** Structured project and integration references for user messages */
@@ -175,6 +177,37 @@ export function MessageMeta({
   );
 }
 
+function ContentToolCallGroupToggle({
+  groupKey,
+  count,
+  isExpanded,
+  onToggle,
+}: {
+  groupKey: string;
+  count: number;
+  isExpanded: boolean;
+  onToggle: React.MouseEventHandler<HTMLButtonElement>;
+}) {
+  const label = isExpanded ? `Hide ${count} tool call${count === 1 ? "" : "s"}` : `Agent called ${count} tool${count === 1 ? "" : "s"}`;
+  return (
+    <button
+      type="button"
+      data-testid="tool-call-group-toggle"
+      data-chat-tool-call-group-key={groupKey}
+      aria-expanded={isExpanded}
+      aria-label={label}
+      onClick={onToggle}
+      className="inline-flex max-w-full items-center rounded-md px-2 py-1 text-[0.6875rem] font-medium transition-opacity hover:opacity-80"
+      style={{
+        backgroundColor: "var(--bg-elevated)",
+        color: "var(--text-secondary)",
+      }}
+    >
+      {label}
+    </button>
+  );
+}
+
 // ============================================================================
 // Message Component
 // ============================================================================
@@ -187,6 +220,7 @@ export const MessageItem = React.memo(function MessageItem({
   isLastInList = false,
   toolCalls,
   contentBlocks,
+  groupContentBlockToolCalls = true,
   attachments,
   composerReferences,
   teammateName,
@@ -305,6 +339,159 @@ export const MessageItem = React.memo(function MessageItem({
     }
     return ids;
   }, [parsedContentBlocks, parsedToolCallsById]);
+  const [expandedContentToolGroupKeys, setExpandedContentToolGroupKeys] = useState<Set<string>>(() => new Set());
+  const toggleContentToolGroup = useCallback((groupKey: string) => {
+    setExpandedContentToolGroupKeys((previousKeys) => {
+      const nextKeys = new Set(previousKeys);
+      if (nextKeys.has(groupKey)) {
+        nextKeys.delete(groupKey);
+      } else {
+        nextKeys.add(groupKey);
+      }
+      return nextKeys;
+    });
+  }, []);
+  const buildContentBlockToolCall = useCallback((block: ContentBlockItem, index: number): ToolCall | null => {
+    if (block.type !== "tool_use" || !block.name) {
+      return null;
+    }
+    if (block.id && childToolCallIds.has(block.id)) {
+      return null;
+    }
+    const matchingToolCall = block.id ? parsedToolCallsById.get(block.id) : undefined;
+    const toolCall: ToolCall = {
+      id: block.id || matchingToolCall?.id || `tool-${index}`,
+      name: block.name || matchingToolCall?.name || "unknown",
+      arguments: block.arguments ?? matchingToolCall?.arguments ?? {},
+      result: block.result ?? matchingToolCall?.result,
+    };
+    const resultPreviewTruncated = block.resultPreviewTruncated ?? matchingToolCall?.resultPreviewTruncated;
+    if (resultPreviewTruncated) {
+      toolCall.resultPreviewTruncated = resultPreviewTruncated;
+    }
+    const resultPreviewOriginalBytes = block.resultPreviewOriginalBytes ?? matchingToolCall?.resultPreviewOriginalBytes;
+    if (resultPreviewOriginalBytes != null) {
+      toolCall.resultPreviewOriginalBytes = resultPreviewOriginalBytes;
+    }
+    const resultPreviewLineCount = block.resultPreviewLineCount ?? matchingToolCall?.resultPreviewLineCount;
+    if (resultPreviewLineCount != null) {
+      toolCall.resultPreviewLineCount = resultPreviewLineCount;
+    }
+    const resultPreviewOmittedLines = block.resultPreviewOmittedLines ?? matchingToolCall?.resultPreviewOmittedLines;
+    if (resultPreviewOmittedLines != null) {
+      toolCall.resultPreviewOmittedLines = resultPreviewOmittedLines;
+    }
+    const resultPreviewPaths = block.resultPreviewPaths ?? matchingToolCall?.resultPreviewPaths;
+    if (resultPreviewPaths) {
+      toolCall.resultPreviewPaths = resultPreviewPaths;
+    }
+    const argumentsPreviewTruncated = block.argumentsPreviewTruncated ?? matchingToolCall?.argumentsPreviewTruncated;
+    if (argumentsPreviewTruncated) {
+      toolCall.argumentsPreviewTruncated = argumentsPreviewTruncated;
+    }
+    const argumentsPreviewOriginalBytes = block.argumentsPreviewOriginalBytes ?? matchingToolCall?.argumentsPreviewOriginalBytes;
+    if (argumentsPreviewOriginalBytes != null) {
+      toolCall.argumentsPreviewOriginalBytes = argumentsPreviewOriginalBytes;
+    }
+    const argumentsPreviewLineCount = block.argumentsPreviewLineCount ?? matchingToolCall?.argumentsPreviewLineCount;
+    if (argumentsPreviewLineCount != null) {
+      toolCall.argumentsPreviewLineCount = argumentsPreviewLineCount;
+    }
+    const argumentsPreviewOmittedLines = block.argumentsPreviewOmittedLines ?? matchingToolCall?.argumentsPreviewOmittedLines;
+    if (argumentsPreviewOmittedLines != null) {
+      toolCall.argumentsPreviewOmittedLines = argumentsPreviewOmittedLines;
+    }
+    const diffPreview = block.diffPreview ?? matchingToolCall?.diffPreview;
+    if (diffPreview) {
+      toolCall.diffPreview = diffPreview;
+    }
+    const detailRef = block.detailRef ?? matchingToolCall?.detailRef;
+    if (detailRef) {
+      toolCall.detailRef = detailRef;
+    }
+    const diffContext = block.diffContext ?? matchingToolCall?.diffContext;
+    if (diffContext) {
+      toolCall.diffContext = diffContext;
+    }
+    if (shouldHideCompletedProjectOrchestrationToolCall(toolCall)) {
+      return null;
+    }
+    return toolCall;
+  }, [childToolCallIds, parsedToolCallsById]);
+  const renderedContentBlocks = useMemo(() => {
+    const renderedBlocks: React.ReactNode[] = [];
+
+    for (let index = 0; index < parsedContentBlocks.length; index += 1) {
+      const block = parsedContentBlocks[index];
+      if (!block) {
+        continue;
+      }
+      if (block.type === "text" && block.text) {
+        renderedBlocks.push(
+          <TextBubble
+            key={`block-${index}`}
+            text={block.text}
+            isUser={isUser}
+          />,
+        );
+        continue;
+      }
+
+      if (block.type === "tool_use") {
+        if (!groupContentBlockToolCalls) {
+          const toolCall = buildContentBlockToolCall(block, index);
+          if (toolCall) {
+            renderedBlocks.push(
+              <ToolCallIndicator key={`block-${index}`} toolCall={toolCall} />,
+            );
+          }
+          continue;
+        }
+
+        const toolCallGroup: Array<{ index: number; toolCall: ToolCall }> = [];
+        let groupEndIndex = index;
+        while (groupEndIndex < parsedContentBlocks.length && parsedContentBlocks[groupEndIndex]?.type === "tool_use") {
+          const groupBlock = parsedContentBlocks[groupEndIndex];
+          if (groupBlock) {
+            const toolCall = buildContentBlockToolCall(groupBlock, groupEndIndex);
+            if (toolCall) {
+              toolCallGroup.push({ index: groupEndIndex, toolCall });
+            }
+          }
+          groupEndIndex += 1;
+        }
+
+        if (toolCallGroup.length > 0) {
+          const groupIds = toolCallGroup.map(({ toolCall }) => toolCall.id).join("\u0000");
+          const groupKey = `content-tool-group:${index}:${groupIds || "anonymous"}`;
+          const isExpanded = expandedContentToolGroupKeys.has(groupKey);
+          renderedBlocks.push(
+            <div key={groupKey} className="space-y-1.5 overflow-hidden">
+              <ContentToolCallGroupToggle
+                groupKey={groupKey}
+                count={toolCallGroup.length}
+                isExpanded={isExpanded}
+                onToggle={() => toggleContentToolGroup(groupKey)}
+              />
+              {isExpanded && toolCallGroup.map(({ index: toolCallIndex, toolCall }) => (
+                <ToolCallIndicator key={`block-${toolCallIndex}`} toolCall={toolCall} />
+              ))}
+            </div>,
+          );
+        }
+        index = groupEndIndex - 1;
+      }
+    }
+
+    return renderedBlocks;
+  }, [
+    buildContentBlockToolCall,
+    expandedContentToolGroupKeys,
+    groupContentBlockToolCalls,
+    isUser,
+    parsedContentBlocks,
+    toggleContentToolGroup,
+  ]);
 
   return (
     <div
@@ -383,84 +570,7 @@ export const MessageItem = React.memo(function MessageItem({
         {hasCustomBody ? (
           children
         ) : hasContentBlocks ? (
-          // Render content blocks in order (interleaved text and tool calls)
-          // Skip child tool calls that belong to Task subagents (they render inside TaskToolCallCard)
-          parsedContentBlocks.map((block, index) => {
-            if (block.type === "text" && block.text) {
-              return (
-                <TextBubble
-                  key={`block-${index}`}
-                  text={block.text}
-                  isUser={isUser}
-                />
-              );
-            } else if (block.type === "tool_use" && block.name) {
-              // Skip child tool calls — they're rendered inside their parent TaskToolCallCard
-              if (block.id && childToolCallIds.has(block.id)) {
-                return null;
-              }
-              const matchingToolCall = block.id ? parsedToolCallsById.get(block.id) : undefined;
-              const toolCall: ToolCall = {
-                id: block.id || matchingToolCall?.id || `tool-${index}`,
-                name: block.name || matchingToolCall?.name || "unknown",
-                arguments: block.arguments ?? matchingToolCall?.arguments ?? {},
-                result: block.result ?? matchingToolCall?.result,
-              };
-              const resultPreviewTruncated = block.resultPreviewTruncated ?? matchingToolCall?.resultPreviewTruncated;
-              if (resultPreviewTruncated) {
-                toolCall.resultPreviewTruncated = resultPreviewTruncated;
-              }
-              const resultPreviewOriginalBytes = block.resultPreviewOriginalBytes ?? matchingToolCall?.resultPreviewOriginalBytes;
-              if (resultPreviewOriginalBytes != null) {
-                toolCall.resultPreviewOriginalBytes = resultPreviewOriginalBytes;
-              }
-              const resultPreviewLineCount = block.resultPreviewLineCount ?? matchingToolCall?.resultPreviewLineCount;
-              if (resultPreviewLineCount != null) {
-                toolCall.resultPreviewLineCount = resultPreviewLineCount;
-              }
-              const resultPreviewOmittedLines = block.resultPreviewOmittedLines ?? matchingToolCall?.resultPreviewOmittedLines;
-              if (resultPreviewOmittedLines != null) {
-                toolCall.resultPreviewOmittedLines = resultPreviewOmittedLines;
-              }
-              const resultPreviewPaths = block.resultPreviewPaths ?? matchingToolCall?.resultPreviewPaths;
-              if (resultPreviewPaths) {
-                toolCall.resultPreviewPaths = resultPreviewPaths;
-              }
-              const argumentsPreviewTruncated = block.argumentsPreviewTruncated ?? matchingToolCall?.argumentsPreviewTruncated;
-              if (argumentsPreviewTruncated) {
-                toolCall.argumentsPreviewTruncated = argumentsPreviewTruncated;
-              }
-              const argumentsPreviewOriginalBytes = block.argumentsPreviewOriginalBytes ?? matchingToolCall?.argumentsPreviewOriginalBytes;
-              if (argumentsPreviewOriginalBytes != null) {
-                toolCall.argumentsPreviewOriginalBytes = argumentsPreviewOriginalBytes;
-              }
-              const argumentsPreviewLineCount = block.argumentsPreviewLineCount ?? matchingToolCall?.argumentsPreviewLineCount;
-              if (argumentsPreviewLineCount != null) {
-                toolCall.argumentsPreviewLineCount = argumentsPreviewLineCount;
-              }
-              const argumentsPreviewOmittedLines = block.argumentsPreviewOmittedLines ?? matchingToolCall?.argumentsPreviewOmittedLines;
-              if (argumentsPreviewOmittedLines != null) {
-                toolCall.argumentsPreviewOmittedLines = argumentsPreviewOmittedLines;
-              }
-              const diffPreview = block.diffPreview ?? matchingToolCall?.diffPreview;
-              if (diffPreview) {
-                toolCall.diffPreview = diffPreview;
-              }
-              const detailRef = block.detailRef ?? matchingToolCall?.detailRef;
-              if (detailRef) {
-                toolCall.detailRef = detailRef;
-              }
-              const diffContext = block.diffContext ?? matchingToolCall?.diffContext;
-              if (diffContext) {
-                toolCall.diffContext = diffContext;
-              }
-              if (shouldHideCompletedProjectOrchestrationToolCall(toolCall)) {
-                return null;
-              }
-              return <ToolCallIndicator key={`block-${index}`} toolCall={toolCall} />;
-            }
-            return null;
-          })
+          renderedContentBlocks
         ) : (
           // Legacy rendering: tool calls first, then content
           <>
@@ -499,6 +609,7 @@ export const MessageItem = React.memo(function MessageItem({
     && prev.isLastInList === next.isLastInList
     && prev.toolCalls === next.toolCalls
     && prev.contentBlocks === next.contentBlocks
+    && prev.groupContentBlockToolCalls === next.groupContentBlockToolCalls
     && prev.attachments === next.attachments
     && prev.composerReferences === next.composerReferences
     && prev.teammateName === next.teammateName
