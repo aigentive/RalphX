@@ -87,17 +87,39 @@ fn run(
 #[tokio::test]
 async fn memory_automation_repo_cas_and_project_listing() {
     let repo = MemoryAutomationRepository::new();
-    let automation = automation("automation-1", "project-1", AutomationStatus::Draft);
+    let first = automation("automation-1", "project-1", AutomationStatus::Draft);
+    let other = automation("automation-2", "project-2", AutomationStatus::Active);
 
-    repo.create(automation.clone()).await.unwrap();
+    repo.create(first.clone()).await.unwrap();
+    repo.create(other.clone()).await.unwrap();
 
     assert_eq!(
-        repo.list_by_project(&automation.project_id).await.unwrap(),
-        vec![automation.clone()]
+        repo.list_by_project(&first.project_id).await.unwrap(),
+        vec![first.clone()]
     );
+    assert_eq!(
+        repo.list(None).await.unwrap(),
+        vec![other.clone(), first.clone()]
+    );
+    let updated = repo
+        .update_settings(
+            &first.id,
+            crate::domain::repositories::AutomationSettingsPatch {
+                name: Some("Renamed".to_string()),
+                max_runs: Some(9),
+                max_consecutive_failures: Some(4),
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(updated.name, "Renamed");
+    assert_eq!(updated.max_runs, 9);
+    assert_eq!(updated.max_consecutive_failures, 4);
+    assert_eq!(updated.status, AutomationStatus::Draft);
     assert!(repo
         .compare_and_swap_status(
-            &automation.id,
+            &first.id,
             AutomationStatus::Draft,
             AutomationStatus::Active,
             None,
@@ -107,7 +129,7 @@ async fn memory_automation_repo_cas_and_project_listing() {
         .unwrap());
     assert!(!repo
         .compare_and_swap_status(
-            &automation.id,
+            &first.id,
             AutomationStatus::Draft,
             AutomationStatus::Stopped,
             None,
@@ -116,11 +138,7 @@ async fn memory_automation_repo_cas_and_project_listing() {
         .await
         .unwrap());
     assert_eq!(
-        repo.get_by_id(&automation.id)
-            .await
-            .unwrap()
-            .unwrap()
-            .status,
+        repo.get_by_id(&first.id).await.unwrap().unwrap().status,
         AutomationStatus::Active
     );
 }

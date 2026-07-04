@@ -9,7 +9,9 @@ use crate::domain::entities::{
     Automation, AutomationId, AutomationJudgeState, AutomationPromptAuthor, AutomationRun,
     AutomationRunId, AutomationRunStatus, AutomationStatus, ChatConversationId, ProjectId,
 };
-use crate::domain::repositories::{AutomationRepository, AutomationRunRepository};
+use crate::domain::repositories::{
+    AutomationRepository, AutomationRunRepository, AutomationSettingsPatch,
+};
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::sqlite::DbConnection;
 
@@ -136,16 +138,62 @@ impl AutomationRepository for SqliteAutomationRepository {
             .await
     }
 
-    async fn list_by_project(&self, project_id: &ProjectId) -> AppResult<Vec<Automation>> {
-        let project_id = project_id.as_str().to_string();
+    async fn list(&self, project_id: Option<ProjectId>) -> AppResult<Vec<Automation>> {
         self.db
             .run(move |conn| {
-                let sql = format!(
-                    "{SELECT_AUTOMATION} WHERE project_id = ?1 ORDER BY created_at DESC, id DESC"
-                );
+                let sql = if project_id.is_some() {
+                    format!(
+                        "{SELECT_AUTOMATION} WHERE project_id = ?1 ORDER BY created_at DESC, id DESC"
+                    )
+                } else {
+                    format!("{SELECT_AUTOMATION} ORDER BY created_at DESC, id DESC")
+                };
                 let mut statement = conn.prepare(&sql)?;
-                let rows = statement.query_map([project_id], Self::row_to_automation)?;
+                let rows = if let Some(project_id) = project_id {
+                    statement.query_map([project_id.as_str()], Self::row_to_automation)?
+                } else {
+                    statement.query_map([], Self::row_to_automation)?
+                };
                 rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
+            })
+            .await
+    }
+
+    async fn list_by_project(&self, project_id: &ProjectId) -> AppResult<Vec<Automation>> {
+        self.list(Some(project_id.clone())).await
+    }
+
+    async fn update_settings(
+        &self,
+        id: &AutomationId,
+        patch: AutomationSettingsPatch,
+    ) -> AppResult<Option<Automation>> {
+        let id = id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                let affected = conn.execute(
+                    "UPDATE automations
+                     SET name = COALESCE(?1, name),
+                         max_runs = COALESCE(?2, max_runs),
+                         max_consecutive_failures = COALESCE(?3, max_consecutive_failures),
+                         updated_at = ?4
+                     WHERE id = ?5",
+                    params![
+                        patch.name,
+                        patch.max_runs,
+                        patch.max_consecutive_failures,
+                        Utc::now().to_rfc3339(),
+                        id,
+                    ],
+                )?;
+                if affected == 0 {
+                    return Ok(None);
+                }
+
+                let sql = format!("{SELECT_AUTOMATION} WHERE id = ?1");
+                conn.query_row(&sql, [id], Self::row_to_automation)
+                    .optional()
+                    .map_err(AppError::from)
             })
             .await
     }

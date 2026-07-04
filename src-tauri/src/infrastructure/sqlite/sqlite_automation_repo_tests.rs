@@ -107,6 +107,23 @@ async fn sqlite_automation_repo_cas_and_project_listing() {
         repo.list_by_project(&automation.project_id).await.unwrap(),
         vec![automation.clone()]
     );
+    assert_eq!(repo.list(None).await.unwrap(), vec![automation.clone()]);
+    let updated = repo
+        .update_settings(
+            &automation.id,
+            crate::domain::repositories::AutomationSettingsPatch {
+                name: Some("Renamed".to_string()),
+                max_runs: Some(9),
+                max_consecutive_failures: Some(4),
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(updated.name, "Renamed");
+    assert_eq!(updated.max_runs, 9);
+    assert_eq!(updated.max_consecutive_failures, 4);
+    assert_eq!(updated.status, AutomationStatus::Draft);
     assert!(repo
         .compare_and_swap_status(
             &automation.id,

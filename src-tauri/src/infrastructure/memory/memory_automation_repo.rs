@@ -7,7 +7,9 @@ use crate::domain::entities::{
     is_open_automation_run, Automation, AutomationId, AutomationJudgeState, AutomationRun,
     AutomationRunId, AutomationRunStatus, AutomationStatus, ProjectId,
 };
-use crate::domain::repositories::{AutomationRepository, AutomationRunRepository};
+use crate::domain::repositories::{
+    AutomationRepository, AutomationRunRepository, AutomationSettingsPatch,
+};
 use crate::error::{AppError, AppResult};
 
 pub struct MemoryAutomationRepository {
@@ -45,17 +47,51 @@ impl AutomationRepository for MemoryAutomationRepository {
             .cloned())
     }
 
-    async fn list_by_project(&self, project_id: &ProjectId) -> AppResult<Vec<Automation>> {
+    async fn list(&self, project_id: Option<ProjectId>) -> AppResult<Vec<Automation>> {
         let mut rows: Vec<_> = self
             .automations
             .read()
             .unwrap()
             .iter()
-            .filter(|automation| automation.project_id == *project_id)
+            .filter(|automation| {
+                project_id
+                    .as_ref()
+                    .is_none_or(|project_id| automation.project_id == *project_id)
+            })
             .cloned()
             .collect();
         rows.sort_by(|left, right| right.created_at.cmp(&left.created_at));
         Ok(rows)
+    }
+
+    async fn list_by_project(&self, project_id: &ProjectId) -> AppResult<Vec<Automation>> {
+        self.list(Some(project_id.clone())).await
+    }
+
+    async fn update_settings(
+        &self,
+        id: &AutomationId,
+        patch: AutomationSettingsPatch,
+    ) -> AppResult<Option<Automation>> {
+        let mut automations = self.automations.write().unwrap();
+        let Some(automation) = automations
+            .iter_mut()
+            .find(|automation| automation.id == *id)
+        else {
+            return Ok(None);
+        };
+
+        if let Some(name) = patch.name {
+            automation.name = name;
+        }
+        if let Some(max_runs) = patch.max_runs {
+            automation.max_runs = max_runs;
+        }
+        if let Some(max_consecutive_failures) = patch.max_consecutive_failures {
+            automation.max_consecutive_failures = max_consecutive_failures;
+        }
+        automation.updated_at = Utc::now();
+        Ok(Some(automation.clone()))
     }
 
     async fn compare_and_swap_status(
