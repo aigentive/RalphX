@@ -188,6 +188,24 @@ describe('getAllowedToolNames', () => {
     expect(tools).not.toContain('finalize_proposals');
   });
 
+  it.each([
+    ['Chat mode', GENERAL_EXPLORER, undefined],
+    ['Edit/Agent mode', GENERAL_WORKER, undefined],
+    ['Plan mode', ORCHESTRATOR_IDEATION, 'plan'],
+    ['Ideation mode', CHAT_PROJECT, undefined],
+    ['Review PR mode', PR_REVIEWER, undefined],
+  ])('%s plan-reference agent should expose get_artifact', (_mode, agent, profile) => {
+    setAgentType(agent);
+    if (profile) {
+      process.env.RALPHX_AGENT_PROFILE = profile;
+    }
+
+    const tools = getAllowedToolNames();
+
+    expect(tools).toEqual(loadCanonicalMcpTools(agent, profile));
+    expect(tools).toContain('get_artifact');
+  });
+
   it('rejects canonical agent path traversal attempts', () => {
     expect(loadCanonicalMcpTools('../secrets')).toBeUndefined();
     expect(loadCanonicalMcpTools(ORCHESTRATOR_IDEATION, '../secrets')).toBeUndefined();

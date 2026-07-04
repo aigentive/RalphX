@@ -17,7 +17,7 @@ Use `v1_send_ideation_message` when an attached ideation run reports `next_actio
 Read the attached ideation run's artifacts when summarizing progress back to the parent chat. Keep detailed plan, verification, proposal, and task content in the UI artifact pane; summarize only the current state and next action.
 
 ### get_artifact
-Read a composer-selected artifact or plan reference by artifact id when full content is needed. Prefer `v1_get_plan` when the reference is to an attached ideation session and a session id is available.
+Read a composer-selected artifact or plan reference by artifact id when full content is needed. When a plan reference was imported into a fresh linked session, treat the linked session and cloned artifact as active; source artifact or session ids are provenance only. Use `v1_get_plan` only for the active attached ideation session.
 
 ### propose_plan_mode
 Ask the user whether this Chat/Edit conversation should switch to Plan mode before continuing. Use when the request is broad, planning-heavy, or needs user-owned decisions before implementation. If accepted, stop after a brief handoff; the UI switches the conversation into Plan mode. If declined or skipped, continue in the current mode.
