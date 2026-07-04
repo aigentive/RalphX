@@ -18,6 +18,11 @@ import {
 export const AGENT_WORKSPACE_STALE_MS = 5_000;
 export const AGENT_WORKSPACE_FRESHNESS_STALE_MS = 60_000;
 
+const agentTaskScopeKey = (
+  contextType: string | null | undefined,
+  contextId: string | null | undefined,
+) => ["agents", "agent-task-scope", contextType, contextId] as const;
+
 export const agentWorkspaceKeys = {
   workspace: (conversationId: string | null | undefined) => [
     "agents",
@@ -53,25 +58,30 @@ export const agentWorkspaceKeys = {
     "workspace-change-summary",
     conversationId,
   ] as const,
-  agentTasks: (conversationId: string | null | undefined) => [
-    "agents",
-    "conversation-agent-tasks",
-    conversationId,
-  ] as const,
+  agentTasks: (conversationId: string | null | undefined) =>
+    agentTaskScopeKey("conversation", conversationId),
   agentTaskLists: (conversationId: string | null | undefined) => [
-    "agents",
-    "conversation-agent-task-lists",
-    conversationId,
+    ...agentTaskScopeKey("conversation", conversationId),
+    "lists",
   ] as const,
   agentTaskListTasks: (
     conversationId: string | null | undefined,
     taskListId: string | null | undefined,
   ) => [
-    "agents",
-    "conversation-agent-task-list-tasks",
-    conversationId,
+    ...agentTaskScopeKey("conversation", conversationId),
+    "list-tasks",
     taskListId,
   ] as const,
+  agentTasksForScope: agentTaskScopeKey,
+  agentTaskListsForScope: (
+    contextType: string | null | undefined,
+    contextId: string | null | undefined,
+  ) => [...agentTaskScopeKey(contextType, contextId), "lists"] as const,
+  agentTaskListTasksForScope: (
+    contextType: string | null | undefined,
+    contextId: string | null | undefined,
+    taskListId: string | null | undefined,
+  ) => [...agentTaskScopeKey(contextType, contextId), "list-tasks", taskListId] as const,
   prAnnotations: (conversationId: string | null | undefined) => [
     "agents",
     "workspace-pr-annotations",

@@ -779,6 +779,11 @@ vi.mock("@/api/diff", () => ({
 
 vi.mock("@/api/agent-tasks", () => ({
   agentTaskApi: {
+    listAgentTasks: (...args: unknown[]) => listAgentTasksMock(...args),
+    listAgentTaskLists: (...args: unknown[]) =>
+      listAgentTaskListsMock(...args),
+    listAgentTasksForList: (...args: unknown[]) =>
+      listAgentTaskListTasksMock(...args),
     listConversationTasks: (...args: unknown[]) => listAgentTasksMock(...args),
     listConversationTaskLists: (...args: unknown[]) =>
       listAgentTaskListsMock(...args),

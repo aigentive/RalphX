@@ -605,9 +605,10 @@ describe("AgentsView publish", () => {
 
     await waitFor(() =>
       expect(listAgentTaskListTasksMock).toHaveBeenCalledWith({
-        conversationId: "conversation-1",
+        contextType: "conversation",
+        contextId: "conversation-1",
         projectId: "project-1",
-        taskListId: "list-previous",
+        listId: "list-previous",
         includeDone: true,
       }),
     );
