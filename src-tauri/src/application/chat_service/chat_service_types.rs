@@ -89,6 +89,9 @@ pub enum SendCallerContext {
     /// Drain-service-initiated send.
     /// On ideation capacity full → return `Err(SpawnFailed)` so the drain service breaks cleanly.
     DrainService,
+    /// Startup/recovery-initiated send.
+    /// Must not roll over, repair, or spawn a terminal Agent workspace automatically.
+    StartupResumption,
 }
 
 /// Result from sending a message (returns immediately while processing continues in background)

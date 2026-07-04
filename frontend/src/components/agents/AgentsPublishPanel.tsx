@@ -246,10 +246,16 @@ export function AgentPublishPanel({
   const isRepairPending =
     workspace?.publicationPushStatus === "needs_agent" &&
     !getAgentWorkspaceTerminalPublicationStatus(workspace);
+  const hasPublishedPr = hasPublishedWorkspacePr(workspace);
+  const terminalPublicationStatus =
+    getAgentWorkspaceTerminalPublicationStatus(workspace);
+  const terminalPrDiffCandidate =
+    workspace?.mode === "edit" && hasPublishedPr && !!terminalPublicationStatus;
   // Workspace-only flag computed early so reviewQuery can decide whether the
   // inline diff view will be visible.
-  const inlineDiffsCandidate = workspace?.mode === "edit" && workspace.status !== "missing";
-  const hasPublishedPr = hasPublishedWorkspacePr(workspace);
+  const inlineDiffsCandidate =
+    workspace?.mode === "edit" &&
+    (workspace.status !== "missing" || terminalPrDiffCandidate);
   const reviewQuery = useQuery({
     queryKey: agentWorkspaceKeys.review(conversationId),
     queryFn: () => diffApi.getAgentConversationWorkspaceReview(conversationId!),
@@ -287,8 +293,6 @@ export function AgentPublishPanel({
     staleTime: 2_000,
     refetchInterval: isPublishingWorkspace || localPublishInFlight ? 5_000 : false,
   });
-  const terminalPublicationStatus =
-    getAgentWorkspaceTerminalPublicationStatus(workspace);
   const terminalPublicationLabel =
     getAgentWorkspaceTerminalPublicationLabel(workspace);
   const inlineDiffDefaultMode =

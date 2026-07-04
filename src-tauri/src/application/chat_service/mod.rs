@@ -36,6 +36,7 @@ use crate::application::agent_conversation_workspace::{
     rollover_agent_conversation_workspace_with_setup_mode, AgentConversationWorkspaceSetupMode,
     AGENT_CONVERSATION_WORKSPACE_CONTINUATION_MESSAGE,
 };
+use crate::application::agent_workspace_continuation::classify_agent_workspace_continuation;
 use crate::application::harness_runtime_registry::{
     default_harness_runtime_available, resolve_chat_service_bootstrap,
     resolve_default_chat_service_bootstrap, resolve_harness_plugin_dir,
@@ -2811,6 +2812,7 @@ impl<R: Runtime> AppChatService<R> {
         context_id: &str,
         runtime_context_id: &str,
         conversation_id_override: Option<&ChatConversationId>,
+        caller_context: SendCallerContext,
     ) -> Result<(), ChatServiceError> {
         if context_type != ChatContextType::Project {
             return Ok(());
@@ -2841,6 +2843,13 @@ impl<R: Runtime> AppChatService<R> {
             workspace.publication_pr_status.as_deref(),
         ) {
             return Ok(());
+        }
+
+        if caller_context == SendCallerContext::StartupResumption {
+            return Err(ChatServiceError::SpawnFailed(
+                "This Agent workspace has reached a terminal PR state and should not be resumed automatically."
+                    .to_string(),
+            ));
         }
 
         let registry_key = RunningAgentKey::new(context_type.to_string(), runtime_context_id);
@@ -2911,6 +2920,58 @@ impl<R: Runtime> AppChatService<R> {
             &updated_workspace,
         )
         .await?;
+
+        Ok(())
+    }
+
+    async fn ensure_startup_resumption_agent_workspace_is_resumable(
+        &self,
+        context_type: ChatContextType,
+        context_id: &str,
+        conversation: &ChatConversation,
+        workspace: Option<&AgentConversationWorkspace>,
+        caller_context: SendCallerContext,
+    ) -> Result<(), ChatServiceError> {
+        if caller_context != SendCallerContext::StartupResumption
+            || context_type != ChatContextType::Project
+        {
+            return Ok(());
+        }
+
+        let Some(workspace) = workspace else {
+            return Ok(());
+        };
+
+        let project = self
+            .project_repo
+            .get_by_id(&workspace.project_id)
+            .await
+            .map_err(|error| ChatServiceError::RepositoryError(error.to_string()))?
+            .ok_or_else(|| {
+                ChatServiceError::SpawnFailed(format!(
+                    "Project not found for agent conversation workspace: {}",
+                    workspace.project_id
+                ))
+            })?;
+
+        if project.id.as_str() != context_id {
+            return Err(ChatServiceError::ContextNotFound(format!(
+                "Agent conversation workspace {} belongs to project {} instead of {}",
+                workspace.conversation_id, project.id, context_id
+            )));
+        }
+
+        let availability = classify_agent_workspace_continuation(&project, workspace);
+        if let Some(reason) = availability.blocked_reason() {
+            tracing::warn!(
+                context_id,
+                conversation_id = conversation.id.as_str(),
+                workspace_conversation_id = workspace.conversation_id.as_str(),
+                reason = reason.code(),
+                "Skipping startup resumption for non-resumable agent workspace"
+            );
+            return Err(ChatServiceError::SpawnFailed(reason.user_message()));
+        }
 
         Ok(())
     }
@@ -3680,6 +3741,7 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
             context_id,
             &runtime_context_id,
             options.conversation_id_override.as_ref(),
+            options.caller_context,
         )
         .await?;
         log_send_message_spawn_prep_phase(
@@ -4102,6 +4164,14 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
                 Some(&conversation.id),
             )
             .await?;
+        self.ensure_startup_resumption_agent_workspace_is_resumable(
+            context_type,
+            context_id,
+            &conversation,
+            agent_workspace.as_ref(),
+            options.caller_context,
+        )
+        .await?;
         let entity_status = self.get_entity_status(context_type, context_id).await;
         let team_mode_val = self.team_mode.load(Ordering::Relaxed);
         let agent_conversation_mode = agent_conversation_mode_for_send(

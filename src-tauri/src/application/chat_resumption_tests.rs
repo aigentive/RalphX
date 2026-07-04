@@ -3,9 +3,9 @@ use crate::application::agent_conversation_workspace::resolve_agent_conversation
 use crate::application::AppState;
 use crate::domain::agents::{AgentHarnessKind, ProviderSessionRef};
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunAttribution,
-    AgentRunId, AgentRunStatus, AgentRunUsage, ChatConversation, ChatConversationId,
-    IdeationAnalysisBaseRefKind, InternalStatus, Project, Task,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus,
+    AgentRun, AgentRunAttribution, AgentRunId, AgentRunStatus, AgentRunUsage, ChatConversation,
+    ChatConversationId, IdeationAnalysisBaseRefKind, InternalStatus, Project, Task,
 };
 use crate::domain::repositories::AgentRunRepository;
 use crate::domain::services::{QueuedMessage, RunningAgentKey};
@@ -320,7 +320,30 @@ fn startup_resumption_send_options_preserves_interrupted_agent_conversation_for_
             Some(conversation.id),
             "startup resumption must resume the exact interrupted conversation for {mode:?} mode so agent_mode/workspace linkage are preserved"
         );
+        assert_eq!(
+            options.caller_context,
+            SendCallerContext::StartupResumption,
+            "startup resumption must be distinguishable from user-initiated project chat sends for {mode:?} mode"
+        );
     }
+}
+
+#[test]
+fn durable_silent_completion_recovery_send_options_marks_startup_recovery() {
+    let project_id =
+        crate::domain::entities::ProjectId::from_string("project-durable-recovery".to_string());
+    let conversation = ChatConversation::new_project(project_id);
+    let metadata = silent_completion_recovery_metadata(2, 4_000);
+
+    let options = durable_silent_completion_recovery_send_options(&conversation, metadata.clone());
+
+    assert_eq!(options.metadata.as_deref(), Some(metadata.as_str()));
+    assert_eq!(options.conversation_id_override, Some(conversation.id));
+    assert_eq!(
+        options.caller_context,
+        SendCallerContext::StartupResumption,
+        "durable recovery must use startup resumption guards instead of user-send rollover"
+    );
 }
 
 fn temp_project(temp: &tempfile::TempDir, name: &str) -> Project {
@@ -483,6 +506,77 @@ async fn run_skips_interrupted_non_resumable_agent_workspace() {
         .message_queue
         .get_queued(ChatContextType::Project, &conversation.id.as_str())
         .is_empty());
+}
+
+#[tokio::test]
+async fn startup_resumption_without_override_blocks_terminal_workspace_before_transcript() {
+    let (execution_state, app_state) = setup_test_state().await;
+    let temp = tempfile::tempdir().expect("temp dir should be created");
+    let project = temp_project(&temp, "Terminal Active Agent Workspace");
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+
+    let mut conversation = ChatConversation::new_project(project.id.clone());
+    conversation.set_agent_mode(Some(AgentConversationWorkspaceMode::Edit));
+    let conversation_id = conversation.id;
+    app_state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .unwrap();
+
+    let mut workspace = workspace_for_conversation(
+        &project,
+        conversation_id,
+        AgentConversationWorkspaceMode::Edit,
+        Some("merged"),
+    );
+    workspace.status = AgentConversationWorkspaceStatus::Missing;
+    app_state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .unwrap();
+
+    let service = build_runner(&app_state, &execution_state).create_chat_service();
+    let error = service
+        .send_message(
+            ChatContextType::Project,
+            project.id.as_str(),
+            "Continue where you left off.",
+            SendMessageOptions {
+                caller_context: SendCallerContext::StartupResumption,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect_err("startup resumption should not spawn a missing terminal workspace");
+
+    assert!(
+        error.to_string().contains("missing locally"),
+        "blocked startup resumption should explain the missing workspace: {error}"
+    );
+    let messages = app_state
+        .chat_message_repo
+        .get_by_conversation(&conversation_id)
+        .await
+        .expect("messages should load");
+    assert!(
+        messages.is_empty(),
+        "startup resumption guard should fire before hidden resume or error messages are persisted"
+    );
+    assert!(
+        !app_state
+            .running_agent_registry
+            .is_running(&RunningAgentKey::new(
+                ChatContextType::Project.to_string(),
+                project.id.as_str(),
+            ))
+            .await
+    );
 }
 
 #[tokio::test]
