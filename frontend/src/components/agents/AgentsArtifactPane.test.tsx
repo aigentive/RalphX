@@ -11,7 +11,8 @@ import type {
   AgentConversationWorkspace,
   AgentConversationWorkspaceFreshness,
 } from "@/api/chat";
-import type { AgentArtifactTab } from "@/stores/agentSessionStore";
+import { useAgentSessionStore, type AgentArtifactTab } from "@/stores/agentSessionStore";
+import { useChatStore } from "@/stores/chatStore";
 import { useUiStore } from "@/stores/uiStore";
 import { createTestQueryClient } from "@/test/store-utils";
 import { chatKeys } from "@/hooks/useChat";
@@ -995,6 +996,13 @@ describe("AgentsArtifactPane", () => {
     toastMessageMock.mockClear();
     toastSuccessMock.mockClear();
     useUiStore.setState({ activeModal: null, modalContext: undefined });
+    useAgentSessionStore.setState({
+      focusedProjectId: null,
+      selectedProjectId: null,
+      selectedConversationId: null,
+      startConversationDraft: null,
+    });
+    useChatStore.getState().setActiveConversation("project:project-1", null);
   });
 
   it("hides the Issues tab when a project conversation has no open issues", async () => {
@@ -2718,6 +2726,129 @@ describe("AgentsArtifactPane", () => {
     await waitFor(() => expect(getIdeationSessionMock).toHaveBeenCalledWith("session-1"));
     await waitFor(() => expect(getSessionPlanMock).toHaveBeenCalledWith("session-1"));
     expect(screen.queryByText("No plan yet")).not.toBeInTheDocument();
+  });
+
+  it("opens the start composer with the selected plan reference from the Plan overflow menu", async () => {
+    const user = userEvent.setup();
+    useAgentSessionStore.setState({
+      focusedProjectId: "project-1",
+      selectedProjectId: "project-1",
+      selectedConversationId: "conversation-1",
+      startConversationDraft: null,
+    });
+    useChatStore
+      .getState()
+      .setActiveConversation("project:project-1", "conversation-1");
+    useConversationMock.mockReturnValue({
+      data: {
+        conversation: conversation(),
+        messages: [
+          {
+            id: "message-1",
+            conversationId: "conversation-1",
+            role: "assistant",
+            content: "",
+            toolCalls: [
+              {
+                id: "tool-1",
+                name: "mcp__ralphx__create_plan_artifact",
+                arguments: { session_id: "session-1" },
+                result: {
+                  session_id: "session-1",
+                  artifact_id: "artifact-1",
+                },
+              },
+            ],
+            contentBlocks: [],
+            createdAt: "2026-04-23T09:00:00Z",
+          },
+        ],
+      },
+      isLoading: false,
+    });
+    getIdeationSessionMock.mockResolvedValue({
+      session: {
+        id: "session-1",
+        projectId: "project-1",
+        title: "Planning session",
+        titleSource: "auto",
+        status: "active",
+        planArtifactId: "artifact-1",
+        seedTaskId: null,
+        parentSessionId: null,
+        teamMode: null,
+        teamConfig: null,
+        createdAt: "2026-04-23T09:00:00Z",
+        updatedAt: "2026-04-23T09:00:00Z",
+        archivedAt: null,
+        convertedAt: null,
+        verificationStatus: "unverified",
+        verificationInProgress: false,
+        gapScore: null,
+        inheritedPlanArtifactId: null,
+        sessionPurpose: "general",
+        sessionFlow: "planning",
+        acceptanceStatus: null,
+      },
+      proposals: [],
+      messages: [],
+    });
+    getSessionPlanMock.mockResolvedValue({
+      id: "artifact-1",
+      type: "specification",
+      name: "Implementation Plan",
+      content: {
+        type: "inline",
+        text: "# Implementation Plan\n\nDo the work.",
+      },
+      metadata: {
+        createdAt: "2026-04-23T09:00:00Z",
+        createdBy: "orchestrator",
+        version: 2,
+      },
+      derivedFrom: [],
+      bucketId: "prd-library",
+      planApproval: {
+        status: "approved",
+        approvedArtifactId: "artifact-1",
+        approvedVersion: 2,
+        approvedAt: "2026-04-23T09:05:00Z",
+      },
+    });
+
+    renderPane(
+      "plan",
+      workspace({ mode: "plan", linkedIdeationSessionId: null }),
+      vi.fn(),
+      false,
+      conversation(),
+    );
+
+    await waitFor(() => expect(getSessionPlanMock).toHaveBeenCalledWith("session-1"));
+    await user.click(await screen.findByLabelText("Plan actions"));
+    await user.click(screen.getByRole("menuitem", { name: /new conversation/i }));
+
+    expect(useAgentSessionStore.getState().startConversationDraft).toEqual({
+      projectId: "project-1",
+      content: "",
+      mode: "edit",
+      composerArtifactReferences: [
+        {
+          kind: "plan",
+          artifactId: "artifact-1",
+          title: "Implementation Plan",
+          sessionId: "session-1",
+          version: 2,
+          status: "approved",
+        },
+      ],
+    });
+    expect(useAgentSessionStore.getState().focusedProjectId).toBe("project-1");
+    expect(useAgentSessionStore.getState().selectedConversationId).toBeNull();
+    expect(useChatStore.getState().activeConversationIds["project:project-1"]).toBeNull();
+    expect(sendAgentMessageMock).not.toHaveBeenCalled();
+    expect(approvePlanArtifactMock).not.toHaveBeenCalled();
+    expect(confirmVerificationMock).not.toHaveBeenCalled();
   });
 
   it("fetches the current planning-session plan even when session data has a stale null plan id", async () => {
