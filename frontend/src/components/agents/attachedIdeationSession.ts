@@ -9,19 +9,24 @@ export function resolveAttachedIdeationSessionId(
   messages: ChatMessageResponse[],
   fallbackSessionId?: string | null,
 ): string | null {
+  const linkedFallbackSessionId =
+    fallbackSessionId && fallbackSessionId.length > 0 ? fallbackSessionId : null;
   if (!conversation) {
-    return fallbackSessionId ?? null;
+    return linkedFallbackSessionId;
   }
   if (conversation.contextType === "ideation") {
     return conversation.contextId;
   }
 
+  const canUseComposerReferencedSession = !linkedFallbackSessionId;
   for (const message of [...messages].reverse()) {
-    const referencedSessionId = extractComposerReferencedSessionId(
-      message.metadata,
-    );
-    if (referencedSessionId) {
-      return referencedSessionId;
+    if (canUseComposerReferencedSession) {
+      const referencedSessionId = extractComposerReferencedSessionId(
+        message.metadata,
+      );
+      if (referencedSessionId) {
+        return referencedSessionId;
+      }
     }
 
     const toolCalls = [
@@ -43,7 +48,7 @@ export function resolveAttachedIdeationSessionId(
     }
   }
 
-  return fallbackSessionId ?? null;
+  return linkedFallbackSessionId;
 }
 
 function extractComposerReferencedSessionId(

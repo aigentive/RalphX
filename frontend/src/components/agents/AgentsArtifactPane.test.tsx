@@ -1,4 +1,5 @@
 import { QueryClientProvider, type QueryClient } from "@tanstack/react-query";
+import { invoke } from "@tauri-apps/api/core";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState, type ComponentProps } from "react";
@@ -16,11 +17,25 @@ import { useChatStore } from "@/stores/chatStore";
 import { useUiStore } from "@/stores/uiStore";
 import { createTestQueryClient } from "@/test/store-utils";
 import { chatKeys } from "@/hooks/useChat";
-import { reviewSettingsKeys } from "@/hooks/useReviewSettings";
+import {
+  reviewSettingsKeys,
+  type ReviewSettings,
+} from "@/hooks/useReviewSettings";
 import { AgentsArtifactPane } from "./AgentsArtifactPane";
 import { agentWorkspaceKeys } from "./agentWorkspaceQueries";
 
 const deferredHydrationTimeout = { timeout: 3_000 };
+const defaultReviewSettings: ReviewSettings = {
+  require_human_review: false,
+  require_workspace_review: true,
+  max_fix_attempts: 3,
+  max_revision_cycles: 5,
+  ai_review_enabled: true,
+  ai_review_auto_fix: true,
+  require_fix_approval: false,
+  auto_create_followup_agent_conversation: true,
+  run_task_validations: true,
+};
 
 const {
   getWorkspaceChangesMock,
@@ -593,6 +608,7 @@ function renderPane(
   paneProps: Partial<ComponentProps<typeof AgentsArtifactPane>> = {},
   queryClient: QueryClient = createTestQueryClient(),
 ) {
+  seedReviewSettings(queryClient);
   return render(
     <QueryClientProvider client={queryClient}>
       <TooltipProvider delayDuration={0}>
@@ -631,17 +647,29 @@ function expectReviewImmediatelyBeforePublish(tabRow: HTMLElement) {
   expect(reviewIndex).toBe(publishIndex - 1);
 }
 
+function seedReviewSettings(queryClient: QueryClient) {
+  if (queryClient.getQueryData(reviewSettingsKeys.all) === undefined) {
+    queryClient.setQueryData<ReviewSettings>(
+      reviewSettingsKeys.all,
+      defaultReviewSettings,
+    );
+  }
+}
+
 function renderControlledPane(
   initialTab: AgentArtifactTab,
   paneWorkspace: AgentConversationWorkspace | null = workspace(),
   paneConversation = conversation(),
   paneProps: Partial<ComponentProps<typeof AgentsArtifactPane>> = {},
 ) {
+  const queryClient = createTestQueryClient();
+  seedReviewSettings(queryClient);
+
   function ControlledPane() {
     const [activeTab, setActiveTab] = useState<AgentArtifactTab>(initialTab);
 
     return (
-      <QueryClientProvider client={createTestQueryClient()}>
+      <QueryClientProvider client={queryClient}>
         <TooltipProvider delayDuration={0}>
           <div className="h-[480px]">
             <AgentsArtifactPane
@@ -667,6 +695,12 @@ function renderControlledPane(
 
 describe("AgentsArtifactPane", () => {
   beforeEach(() => {
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === "get_review_settings") {
+        return defaultReviewSettings;
+      }
+      return undefined;
+    });
     getWorkspaceChangesMock.mockResolvedValue([
       { path: "frontend/src/App.tsx", status: "modified", additions: 4, deletions: 1 },
     ]);
@@ -1422,15 +1456,16 @@ describe("AgentsArtifactPane", () => {
 
   it("does not block publishing on a required Review gate when policy is disabled", async () => {
     const queryClient = createTestQueryClient();
-    queryClient.setQueryData(reviewSettingsKeys.all, {
-      require_human_review: false,
+    const disabledReviewSettings: ReviewSettings = {
+      ...defaultReviewSettings,
       require_workspace_review: false,
-      max_fix_attempts: 3,
-      max_revision_cycles: 5,
-      ai_review_enabled: true,
-      ai_review_auto_fix: true,
-      require_fix_approval: false,
-      auto_create_followup_agent_conversation: true,
+    };
+    queryClient.setQueryData(reviewSettingsKeys.all, disabledReviewSettings);
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === "get_review_settings") {
+        return disabledReviewSettings;
+      }
+      return undefined;
     });
     getWorkspaceReviewContextMock.mockResolvedValue(
       workspaceReviewContext({
@@ -3069,6 +3104,164 @@ describe("AgentsArtifactPane", () => {
     expect(screen.queryByTestId("agents-artifact-tab-proposal")).not.toBeInTheDocument();
     expect(screen.queryByTestId("agents-artifact-tab-verification")).not.toBeInTheDocument();
   });
+
+  it.each(["chat", "edit", "plan", "ideation", "review_pr"] as const)(
+    "hydrates the fresh linked plan session instead of source composer metadata for %s workspaces",
+    async (mode) => {
+      useConversationMock.mockReturnValue({
+        data: {
+          conversation: conversation(),
+          messages: [
+            {
+              id: "message-1",
+              conversationId: "conversation-1",
+              role: "user",
+              content: "Use this plan",
+              toolCalls: [],
+              contentBlocks: [],
+              metadata: JSON.stringify({
+                composer_artifact_references: [
+                  {
+                    kind: "plan",
+                    artifactId: "source-artifact-1",
+                    sessionId: "source-session-1",
+                    status: "approved",
+                    title: "Accepted source plan",
+                    version: 4,
+                  },
+                ],
+              }),
+              createdAt: "2026-04-23T09:00:00Z",
+            },
+          ],
+        },
+        isLoading: false,
+      });
+      getIdeationSessionMock.mockImplementation(async (sessionId: string) => {
+        if (sessionId === "source-session-1") {
+          return {
+            session: {
+              id: "source-session-1",
+              projectId: "project-1",
+              title: "Source session",
+              titleSource: "auto",
+              status: "active",
+              planArtifactId: "source-artifact-1",
+              seedTaskId: null,
+              parentSessionId: null,
+              teamMode: null,
+              teamConfig: null,
+              createdAt: "2026-04-23T08:00:00Z",
+              updatedAt: "2026-04-23T08:30:00Z",
+              archivedAt: null,
+              convertedAt: "2026-04-23T08:45:00Z",
+              verificationStatus: "unverified",
+              verificationInProgress: false,
+              gapScore: null,
+              inheritedPlanArtifactId: null,
+              sessionPurpose: "general",
+              sessionFlow: "planning",
+              acceptanceStatus: "accepted",
+            },
+            proposals: [
+              {
+                id: "source-proposal-1",
+                sessionId: "source-session-1",
+                title: "Source proposal",
+                description: "Must not appear in the new conversation.",
+                category: "frontend",
+                steps: [],
+                acceptanceCriteria: [],
+                suggestedPriority: "medium",
+                priorityScore: 50,
+                priorityReason: null,
+                estimatedComplexity: "simple",
+                userPriority: null,
+                userModified: false,
+                status: "pending",
+                createdTaskId: null,
+                planArtifactId: "source-artifact-1",
+                planVersionAtCreation: 4,
+                sortOrder: 0,
+                createdAt: "2026-04-23T08:20:00Z",
+                updatedAt: "2026-04-23T08:20:00Z",
+              },
+            ],
+            messages: [],
+          };
+        }
+        return {
+          session: {
+            id: "fresh-linked-session-1",
+            projectId: "project-1",
+            title: "Fresh copied plan",
+            titleSource: "auto",
+            status: "active",
+            planArtifactId: "cloned-artifact-1",
+            seedTaskId: null,
+            parentSessionId: null,
+            teamMode: null,
+            teamConfig: null,
+            createdAt: "2026-04-23T09:00:00Z",
+            updatedAt: "2026-04-23T09:00:00Z",
+            archivedAt: null,
+            convertedAt: null,
+            verificationStatus: "unverified",
+            verificationInProgress: false,
+            gapScore: null,
+            inheritedPlanArtifactId: null,
+            sessionPurpose: "general",
+            sessionFlow: "planning",
+            sourceSessionId: "source-session-1",
+            acceptanceStatus: null,
+          },
+          proposals: [],
+          messages: [],
+        };
+      });
+      getSessionPlanMock.mockResolvedValue({
+        id: "cloned-artifact-1",
+        type: "specification",
+        name: "Fresh copied plan",
+        content: {
+          type: "inline",
+          text: "# Fresh copied plan\n\nIndependent content.",
+        },
+        metadata: {
+          createdAt: "2026-04-23T09:00:00Z",
+          createdBy: "plan_import",
+          version: 1,
+        },
+        derivedFrom: ["source-artifact-1"],
+        bucketId: "prd-library",
+        planApproval: {
+          status: "draft",
+        },
+      });
+
+      renderPane(
+        "proposal",
+        workspace({
+          mode,
+          linkedIdeationSessionId: "fresh-linked-session-1",
+        }),
+        vi.fn(),
+        false,
+        conversation(),
+      );
+
+      await waitFor(() =>
+        expect(getIdeationSessionMock).toHaveBeenCalledWith(
+          "fresh-linked-session-1",
+        ),
+      );
+      expect(getIdeationSessionMock).not.toHaveBeenCalledWith("source-session-1");
+      expect(await screen.findByTestId("agents-artifact-tab-plan")).toBeInTheDocument();
+      expect(screen.queryByTestId("agents-artifact-tab-proposal")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("agents-artifact-tab-tasks")).not.toBeInTheDocument();
+      expect(screen.queryByText("Source proposal")).not.toBeInTheDocument();
+    },
+  );
 
   it("shows the Proposals tab for a plan session once proposals exist", async () => {
     getIdeationSessionMock.mockResolvedValue({

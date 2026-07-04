@@ -8,7 +8,7 @@ import {
   setupAgentsViewTest,
 } from "./AgentsView.testSetup";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, renderHook, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, renderHook, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -1881,7 +1881,9 @@ describe("AgentsView start conversation", () => {
     await waitFor(() =>
       expect(screen.getByTestId("agents-start-composer")).toBeInTheDocument()
     );
-    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
 
     expect(screen.getByTestId("agents-start-base")).toHaveTextContent("feature/cached");
     expect(loadBranchBaseOptionsMock).not.toHaveBeenCalled();
@@ -1910,21 +1912,23 @@ describe("AgentsView start conversation", () => {
       useAgentSessionStore.getState().branchBaseCacheByProjectId["project-1"]?.selectedKey
     ).toBe("project_default:main");
 
-    resolveBranchOptions?.({
-      options: [
-        {
-          key: "project_default:main",
-          label: "Project default (main)",
-          detail: "Configured project base branch",
-          source: "project",
-          selection: {
-            kind: "project_default",
-            ref: "main",
-            displayName: "Project default (main)",
+    await act(async () => {
+      resolveBranchOptions?.({
+        options: [
+          {
+            key: "project_default:main",
+            label: "Project default (main)",
+            detail: "Configured project base branch",
+            source: "project",
+            selection: {
+              kind: "project_default",
+              ref: "main",
+              displayName: "Project default (main)",
+            },
           },
-        },
-      ],
-      selectedKey: "project_default:main",
+        ],
+        selectedKey: "project_default:main",
+      });
     });
   });
 

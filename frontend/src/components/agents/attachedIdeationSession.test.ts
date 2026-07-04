@@ -121,6 +121,29 @@ describe("resolveAttachedIdeationSessionId", () => {
     expect(result).toBe("referenced-session-1");
   });
 
+  it("prefers the linked workspace session over source composer plan metadata", () => {
+    const result = resolveAttachedIdeationSessionId(
+      conversation,
+      [
+        messageWithMetadata({
+          composer_artifact_references: [
+            {
+              artifactId: "source-plan-artifact-1",
+              kind: "plan",
+              sessionId: "source-session-1",
+              status: "approved",
+              title: "Source plan",
+              version: 3,
+            },
+          ],
+        }),
+      ],
+      "fresh-linked-session-1",
+    );
+
+    expect(result).toBe("fresh-linked-session-1");
+  });
+
   it("uses the latest compatible composer artifact reference", () => {
     const result = resolveAttachedIdeationSessionId(conversation, [
       messageWithMetadata({
