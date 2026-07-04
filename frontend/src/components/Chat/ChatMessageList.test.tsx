@@ -2058,6 +2058,60 @@ describe("ChatMessageList - Scroll Behavior", () => {
     // which has data-testid="tool-call-indicator" once the live group is expanded.
     const GENERIC_TOOL_NAME = "webfetch";
 
+    it("renders logical content-block tool calls behind a collapsed group", async () => {
+      const user = userEvent.setup();
+      const firstToolCall: ToolCall = {
+        id: "logical-tool-1",
+        name: GENERIC_TOOL_NAME,
+        arguments: { url: "https://example.com/a" },
+        result: "page a",
+      };
+      const secondToolCall: ToolCall = {
+        id: "logical-tool-2",
+        name: GENERIC_TOOL_NAME,
+        arguments: { url: "https://example.com/b" },
+        result: "page b",
+      };
+      const messages: ChatMessageData[] = [
+        {
+          id: "assistant-logical-tools",
+          role: "assistant",
+          content: "",
+          createdAt: new Date(2026, 0, 1, 12, 1).toISOString(),
+          toolCalls: [firstToolCall, secondToolCall],
+          contentBlocks: [
+            { type: "text", text: "Before logical tools" },
+            {
+              type: "tool_use",
+              id: firstToolCall.id,
+              name: firstToolCall.name,
+              arguments: firstToolCall.arguments,
+              result: firstToolCall.result,
+            },
+            {
+              type: "tool_use",
+              id: secondToolCall.id,
+              name: secondToolCall.name,
+              arguments: secondToolCall.arguments,
+              result: secondToolCall.result,
+            },
+            { type: "text", text: "After logical tools" },
+          ],
+        },
+      ];
+
+      render(<ChatMessageList {...defaultProps} messages={messages} />);
+
+      expect(screen.getByText("Before logical tools")).toBeInTheDocument();
+      expect(screen.getByText("After logical tools")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Agent called 2 tools" })).toBeInTheDocument();
+      expect(screen.queryAllByTestId("tool-call-indicator")).toHaveLength(0);
+
+      await user.click(screen.getByRole("button", { name: "Agent called 2 tools" }));
+
+      expect(screen.getAllByTestId("tool-call-indicator")).toHaveLength(2);
+    });
+
     it("renders non-diff tool call block behind a collapsed single-tool group", async () => {
       const user = userEvent.setup();
       const blocks: StreamingContentBlock[] = [
