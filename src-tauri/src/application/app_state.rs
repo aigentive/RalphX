@@ -53,15 +53,15 @@ use crate::domain::repositories::{
     AgentLaneSettingsRepository, AgentModelRegistryRepository, AgentProfileRepository,
     AgentProviderSettingsRepository, AgentRunRepository, AgentTaskRepository, ApiKeyRepository,
     AppStateRepository, ArtifactBucketRepository, ArtifactFlowRepository, ArtifactRepository,
-    ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,
-    ChatTimelineRepository, DelegatedSessionRepository, ExecutionPlanRepository,
-    ExecutionSettingsRepository, ExternalEventsRepository, GlobalExecutionSettingsRepository,
-    IdeationEffortSettingsRepository, IdeationModelSettingsRepository, IdeationSessionRepository,
-    IdeationSettingsRepository, MemoryArchiveRepository, MemoryEntryRepository,
-    MemoryEventRepository, MethodologyRepository, OrphanWorktreeCleanupMarkerRepository,
-    PlanBranchRepository, PlanSelectionStatsRepository, ProcessRepository, ProjectRepository,
-    ProposalDependencyRepository, QueuedMessageRepository, ReviewRepository,
-    ReviewSettingsRepository, SessionLinkRepository, TaskDependencyRepository,
+    AutomationRepository, AutomationRunRepository, ChatAttachmentRepository,
+    ChatConversationRepository, ChatMessageRepository, ChatTimelineRepository,
+    DelegatedSessionRepository, ExecutionPlanRepository, ExecutionSettingsRepository,
+    ExternalEventsRepository, GlobalExecutionSettingsRepository, IdeationEffortSettingsRepository,
+    IdeationModelSettingsRepository, IdeationSessionRepository, IdeationSettingsRepository,
+    MemoryArchiveRepository, MemoryEntryRepository, MemoryEventRepository, MethodologyRepository,
+    OrphanWorktreeCleanupMarkerRepository, PlanBranchRepository, PlanSelectionStatsRepository,
+    ProcessRepository, ProjectRepository, ProposalDependencyRepository, QueuedMessageRepository,
+    ReviewRepository, ReviewSettingsRepository, SessionLinkRepository, TaskDependencyRepository,
     TaskProposalRepository, TaskQARepository, TaskRepository, TaskStepRepository,
     TeamMessageRepository, TeamSessionRepository, TicketCanonicalBranchRepository,
     ValidationRunRepository, WebhookRegistrationRepository, WorkflowRepository,
@@ -80,7 +80,8 @@ use crate::infrastructure::memory::{
     MemoryAgentProfileRepository, MemoryAgentProviderSettingsRepository, MemoryAgentRunRepository,
     MemoryAgentTaskRepository, MemoryApiKeyRepository, MemoryAppStateRepository,
     MemoryArtifactBucketRepository, MemoryArtifactFlowRepository, MemoryArtifactRepository,
-    MemoryAtlassianIntegrationSettingsRepository, MemoryChatAttachmentRepository,
+    MemoryAtlassianIntegrationSettingsRepository, MemoryAutomationRepository,
+    MemoryAutomationRunRepository, MemoryChatAttachmentRepository,
     MemoryChatConversationRepository, MemoryChatMessageRepository, MemoryChatTimelineRepository,
     MemoryClickUpIntegrationSettingsRepository, MemoryDelegatedSessionRepository,
     MemoryExecutionPlanRepository, MemoryExecutionSettingsRepository,
@@ -112,7 +113,8 @@ use crate::infrastructure::sqlite::{
     SqliteAgentProviderSettingsRepository, SqliteAgentRunRepository, SqliteAgentTaskRepository,
     SqliteApiKeyRepository, SqliteAppStateRepository, SqliteArtifactBucketRepository,
     SqliteArtifactFlowRepository, SqliteArtifactRepository,
-    SqliteAtlassianIntegrationSettingsRepository, SqliteChatAttachmentRepository,
+    SqliteAtlassianIntegrationSettingsRepository, SqliteAutomationRepository,
+    SqliteAutomationRunRepository, SqliteChatAttachmentRepository,
     SqliteChatConversationRepository, SqliteChatMessageRepository, SqliteChatTimelineRepository,
     SqliteClickUpIntegrationSettingsRepository, SqliteDelegatedSessionRepository,
     SqliteExecutionPlanRepository, SqliteExecutionSettingsRepository,
@@ -254,6 +256,10 @@ pub struct AppState {
     pub ticket_canonical_branch_repo: Arc<dyn TicketCanonicalBranchRepository>,
     /// Startup orphan agent-worktree cleanup backoff markers
     pub orphan_worktree_cleanup_marker_repo: Arc<dyn OrphanWorktreeCleanupMarkerRepository>,
+    /// Automation configuration repository
+    pub automation_repo: Arc<dyn AutomationRepository>,
+    /// Automation run repository
+    pub automation_run_repo: Arc<dyn AutomationRunRepository>,
     /// In-memory PTY session manager for Agents conversation terminals
     pub agent_terminal_service: Arc<AgentTerminalService>,
     /// Agent run repository (for tracking Claude agent executions)
@@ -1278,6 +1284,12 @@ impl AppState {
             orphan_worktree_cleanup_marker_repo: Arc::new(
                 SqliteOrphanWorktreeCleanupMarkerRepository::from_shared(Arc::clone(&shared_conn)),
             ),
+            automation_repo: Arc::new(SqliteAutomationRepository::from_shared(Arc::clone(
+                &shared_conn,
+            ))),
+            automation_run_repo: Arc::new(SqliteAutomationRunRepository::from_shared(Arc::clone(
+                &shared_conn,
+            ))),
             agent_terminal_service: Arc::new(AgentTerminalService::new()),
             agent_run_repo: Arc::new(SqliteAgentRunRepository::from_shared(Arc::clone(
                 &shared_conn,
@@ -1505,6 +1517,8 @@ impl AppState {
             orphan_worktree_cleanup_marker_repo: Arc::new(
                 MemoryOrphanWorktreeCleanupMarkerRepository::new(),
             ),
+            automation_repo: Arc::new(MemoryAutomationRepository::new()),
+            automation_run_repo: Arc::new(MemoryAutomationRunRepository::new()),
             agent_terminal_service: Arc::new(AgentTerminalService::new()),
             agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
             activity_event_repo: Arc::new(MemoryActivityEventRepository::new()),
@@ -1660,6 +1674,8 @@ impl AppState {
             orphan_worktree_cleanup_marker_repo: Arc::new(
                 MemoryOrphanWorktreeCleanupMarkerRepository::new(),
             ),
+            automation_repo: Arc::new(MemoryAutomationRepository::new()),
+            automation_run_repo: Arc::new(MemoryAutomationRunRepository::new()),
             agent_terminal_service: Arc::new(AgentTerminalService::new()),
             agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
             activity_event_repo: Arc::new(MemoryActivityEventRepository::new()),
@@ -1829,6 +1845,12 @@ impl AppState {
             orphan_worktree_cleanup_marker_repo: Arc::new(
                 SqliteOrphanWorktreeCleanupMarkerRepository::from_shared(Arc::clone(&shared_conn)),
             ),
+            automation_repo: Arc::new(SqliteAutomationRepository::from_shared(Arc::clone(
+                &shared_conn,
+            ))),
+            automation_run_repo: Arc::new(SqliteAutomationRunRepository::from_shared(Arc::clone(
+                &shared_conn,
+            ))),
             agent_terminal_service: Arc::new(AgentTerminalService::new()),
             agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
             activity_event_repo: Arc::new(MemoryActivityEventRepository::new()),
@@ -1974,6 +1996,8 @@ impl AppState {
             orphan_worktree_cleanup_marker_repo: Arc::new(
                 MemoryOrphanWorktreeCleanupMarkerRepository::new(),
             ),
+            automation_repo: Arc::new(MemoryAutomationRepository::new()),
+            automation_run_repo: Arc::new(MemoryAutomationRunRepository::new()),
             agent_terminal_service: Arc::new(AgentTerminalService::new()),
             agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
             activity_event_repo: Arc::new(MemoryActivityEventRepository::new()),

@@ -400,6 +400,7 @@ mod v20260701174810_workspace_review_hunk_annotations;
 #[cfg(test)]
 mod v20260701174810_workspace_review_hunk_annotations_tests;
 mod v20260703143000_task_validation_runs;
+mod v20260704193000_automations_p1;
 mod v20260706113000_agent_conversation_issue_identity;
 #[cfg(test)]
 mod v20260706113000_agent_conversation_issue_identity_tests;
@@ -463,6 +464,8 @@ mod v61_ideation_settings_verification_tests;
 mod v62_api_key_admin_permissions_tests;
 #[cfg(test)]
 mod v63_auto_verify_generation_tests;
+#[cfg(test)]
+mod v20260704193000_automations_p1_tests;
 #[cfg(test)]
 mod v65_unique_working_directory_tests;
 #[cfg(test)]
@@ -1367,6 +1370,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260703143000,
         name: "task_validation_runs",
         migrate: v20260703143000_task_validation_runs::migrate,
+    },
+    Migration {
+        version: 20260704193000,
+        name: "automations_p1",
+        migrate: v20260704193000_automations_p1::migrate,
     },
     Migration {
         version: 20260706113000,
