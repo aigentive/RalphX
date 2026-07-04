@@ -1201,6 +1201,25 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     },
     [onFocusWorkspaceReview],
   );
+  const composerTaskLedgerContext = useMemo(() => {
+    if (taskRuntimeFocus) {
+      return {
+        contextType: taskRuntimeFocus.contextType,
+        contextId: taskRuntimeFocus.taskId,
+      };
+    }
+    if (!isFocusedChildChat) {
+      return {
+        contextType: "conversation",
+        contextId: selectedConversationId,
+      };
+    }
+    return null;
+  }, [
+    isFocusedChildChat,
+    selectedConversationId,
+    taskRuntimeFocus,
+  ]);
   const workspaceModelOptions = useMemo(
     () =>
       agentModelOptions(
@@ -2155,6 +2174,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                     projectId={activeProjectId}
                     workspace={activeWorkspace}
                     isFocusedChildChat={isFocusedChildChat}
+                    taskLedgerContext={composerTaskLedgerContext}
                     isAgentGenerating={composerProps.agentStatus === "generating"}
                     pauseHydration={isComposerHydrationPaused}
                     onOpenFile={onOpenPublishFile}
