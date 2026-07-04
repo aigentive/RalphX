@@ -224,7 +224,7 @@ export function ProjectAnalysisSection() {
               type="button"
               variant="ghost"
               size="sm"
-              onClick={() => editor.resetAll()}
+              onClick={() => void editor.resetAll()}
               disabled={editor.isSaving}
               className="h-7 px-2 text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)]"
             >
