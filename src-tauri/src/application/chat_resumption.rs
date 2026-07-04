@@ -22,7 +22,8 @@ use crate::application::agent_workspace_continuation::{
 use crate::application::chat_service::{
     should_recover_silent_completion, silent_completion_recovery_attempt,
     silent_completion_recovery_backoff_ms, silent_completion_recovery_max_attempts,
-    silent_completion_recovery_metadata, silent_completion_recovery_prompt, SendMessageOptions,
+    silent_completion_recovery_metadata, silent_completion_recovery_prompt, SendCallerContext,
+    SendMessageOptions,
 };
 use crate::application::interactive_process_registry::InteractiveProcessKey;
 use crate::application::runtime_factory::{
@@ -359,6 +360,7 @@ impl<R: Runtime> ChatResumptionRunner<R> {
                     SendMessageOptions {
                         metadata: Some(metadata),
                         conversation_id_override: Some(conversation.id),
+                        caller_context: SendCallerContext::StartupResumption,
                         ..Default::default()
                     },
                 )
@@ -664,6 +666,7 @@ fn context_type_priority(context_type: ChatContextType) -> u8 {
 fn startup_resumption_send_options(conversation: &ChatConversation) -> SendMessageOptions {
     SendMessageOptions {
         conversation_id_override: Some(conversation.id),
+        caller_context: SendCallerContext::StartupResumption,
         ..Default::default()
     }
 }

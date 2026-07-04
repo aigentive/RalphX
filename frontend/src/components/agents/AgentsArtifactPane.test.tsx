@@ -4566,6 +4566,42 @@ describe("AgentsArtifactPane", () => {
     expect(getWorkspaceReviewMock).toHaveBeenCalledWith("conversation-1");
   });
 
+  it("keeps the PR-backed inline diff visible for a merged missing workspace", async () => {
+    getWorkspaceReviewMock.mockResolvedValue({
+      changes: [
+        {
+          path: "src/Merged.tsx",
+          status: "modified",
+          additions: 3,
+          deletions: 1,
+          isGenerated: false,
+        },
+      ],
+      commits: [],
+      baseRef: "base-sha",
+      headRef: "refs/ralphx/pr-heads/78",
+      supportsWorktreeModes: false,
+    });
+
+    renderPane(
+      "publish",
+      workspace({
+        mode: "edit",
+        status: "missing",
+        publicationPushStatus: "pushed",
+        publicationPrNumber: 78,
+        publicationPrUrl: "https://github.com/mock/project/pull/78",
+        publicationPrStatus: "merged",
+      }),
+    );
+
+    await screen.findByTestId("agents-publish-inline-diffs-section");
+    await waitFor(() =>
+      expect(screen.getByTestId("inline-diffs-file-count")).toHaveTextContent("1"),
+    );
+    expect(getWorkspaceReviewMock).toHaveBeenCalledWith("conversation-1");
+  });
+
   it("keeps publish enabled for a pushed current branch until a PR exists", async () => {
     const user = userEvent.setup();
     const publish = vi.fn().mockResolvedValue(undefined);
