@@ -165,6 +165,16 @@ describe("AgentsView start conversation", () => {
           title: "Demo task",
         },
       ],
+      composerArtifactReferences: [
+        {
+          kind: "plan",
+          artifactId: "plan-artifact-1",
+          title: "Runtime Plan",
+          sessionId: "session-1",
+          version: 2,
+          status: "approved",
+        },
+      ],
     });
 
     renderAgentsView();
@@ -178,6 +188,12 @@ describe("AgentsView start conversation", () => {
     expect(
       screen.getByTestId("agent-composer-reference-pill-integration:clickup:TASK-123")
     ).toHaveTextContent("Demo task");
+    const planReferencePill = screen.getByTestId(
+      "agent-composer-reference-pill-artifact:plan:plan-artifact-1",
+    );
+    expect(planReferencePill).toHaveTextContent("Runtime Plan");
+    expect(planReferencePill).toHaveTextContent("Approved");
+    expect(planReferencePill).toHaveTextContent("v2");
     expect(useAgentSessionStore.getState().startConversationDraft).toBeNull();
   });
 

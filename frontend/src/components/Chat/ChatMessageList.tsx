@@ -3284,6 +3284,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
               isLastInList={isLastVisibleTimelineItem}
               toolCalls={msg.toolCalls ?? null}
               contentBlocks={msg.contentBlocks ?? null}
+              groupContentBlockToolCalls={toolCallGroup == null}
               {...(msg.attachments && { attachments: msg.attachments })}
               {...(composerReferences ? { composerReferences } : {})}
               teammateName={teammateName}
@@ -3500,6 +3501,7 @@ export const ChatMessageList = forwardRef<VirtuosoHandle, ChatMessageListProps>(
                     isLastInList={isLastVisibleTimelineItem}
                     toolCalls={msg.toolCalls ?? null}
                     contentBlocks={msg.contentBlocks ?? null}
+                    groupContentBlockToolCalls={toolCallGroup == null}
                     {...(msg.attachments && { attachments: msg.attachments })}
                     {...(composerReferences ? { composerReferences } : {})}
                     teammateName={teammateName}

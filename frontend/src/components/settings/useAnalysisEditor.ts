@@ -6,6 +6,7 @@
  * - Tracks detected entries as baseline for reset/diff operations
  * - Field/array/entry CRUD operations
  * - Per-field reset to detected baseline
+ * - Reset All clears the persisted custom override
  * - Dirty tracking and persistence via api.projects.updateCustomAnalysis
  * - Handles project:analysis_complete event to refresh baseline
  */
@@ -46,7 +47,7 @@ export interface UseAnalysisEditorReturn {
   ): void;
   resetField(entryIdx: number, field: keyof AnalysisEntry): void;
   resetEntry(entryIdx: number): void;
-  resetAll(): void;
+  resetAll(): Promise<void>;
 
   // Array operations (validate[], worktree_setup[])
   addArrayItem(entryIdx: number, field: "validate" | "worktree_setup"): void;
@@ -175,9 +176,34 @@ export function useAnalysisEditor(
     [detectedBaseline]
   );
 
-  const resetAll = useCallback(() => {
-    setEntries(deepClone(detectedBaseline));
-  }, [detectedBaseline]);
+  const resetAll = useCallback(async () => {
+    const resetEntries = deepClone(detectedBaseline);
+
+    if (!project) {
+      setEntries(resetEntries);
+      return;
+    }
+
+    if (project.customAnalysis === null) {
+      setEntries(resetEntries);
+      return;
+    }
+
+    setIsSaving(true);
+    try {
+      await api.projects.updateCustomAnalysis(project.id, null);
+      setEntries(resetEntries);
+      toast.success("Custom override cleared");
+
+      if (onSaveSuccess) {
+        onSaveSuccess(null);
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to reset analysis settings");
+    } finally {
+      setIsSaving(false);
+    }
+  }, [project, detectedBaseline, onSaveSuccess]);
 
   // Array operations
   const addArrayItem = useCallback(
