@@ -195,7 +195,7 @@ async fn create_project_agent_workspace(
     fs::create_dir_all(safe_worktree_path.join(".git"))
         .expect("create fake workspace git marker");
     let workspace = AgentConversationWorkspace::new(
-        conversation.id.clone(),
+        conversation.id,
         project.id.clone(),
         AgentConversationWorkspaceMode::Edit,
         IdeationAnalysisBaseRefKind::ProjectDefault,
