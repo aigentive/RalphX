@@ -37,10 +37,15 @@ import {
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { withAlpha } from "@/lib/theme-colors";
-import type { TeamMetadata } from "@/components/Ideation/PlanDisplay";
 import type {
-  AgentArtifactTab,
-  AgentTaskArtifactMode,
+  PlanDisplayConversationReference,
+  TeamMetadata,
+} from "@/components/Ideation/PlanDisplay";
+import { useChatStore } from "@/stores/chatStore";
+import {
+  useAgentSessionStore,
+  type AgentArtifactTab,
+  type AgentTaskArtifactMode,
 } from "@/stores/agentSessionStore";
 import {
   invalidateConversationDataQueries,
@@ -1340,6 +1345,12 @@ function AgentPlanPanel({
   const [isStartingPlanVerification, setIsStartingPlanVerification] = useState(false);
   const [isImplementingPlanDirectly, setIsImplementingPlanDirectly] = useState(false);
   const queryClient = useQueryClient();
+  const setFocusedAgentProject = useAgentSessionStore((s) => s.setFocusedProject);
+  const clearAgentSelection = useAgentSessionStore((s) => s.clearSelection);
+  const setStartConversationDraft = useAgentSessionStore(
+    (s) => s.setStartConversationDraft,
+  );
+  const setActiveConversation = useChatStore((s) => s.setActiveConversation);
 
   useEffect(() => {
     setIsEditing(false);
@@ -1397,6 +1408,15 @@ function AgentPlanPanel({
   const planApprovalStatus = isOwnedCurrentPlan
     ? planArtifact?.planApproval?.status ?? "draft"
     : undefined;
+  const planReferenceStatus =
+    planArtifact?.planApproval?.status ??
+    (session?.status === "accepted"
+      ? "accepted"
+      : isPlanningSession
+        ? "draft"
+        : undefined);
+  const planReferenceSessionId = session?.id ?? null;
+  const planReferenceProjectId = session?.projectId ?? workspace?.projectId ?? null;
   const isPlanApproved = planApprovalStatus === "approved";
   const canShowPlanModeControls =
     workspace?.mode === "plan" &&
@@ -1524,6 +1544,42 @@ function AgentPlanPanel({
     }
   }, [canImplementDirectly, queryClient, session, workspace]);
 
+  const handleStartNewConversationWithPlan = useCallback(
+    (reference: PlanDisplayConversationReference) => {
+      if (!planReferenceProjectId || !planReferenceSessionId) {
+        return;
+      }
+
+      setStartConversationDraft({
+        projectId: planReferenceProjectId,
+        content: "",
+        mode: "edit",
+        composerArtifactReferences: [
+          {
+            kind: "plan",
+            artifactId: reference.artifactId,
+            title: reference.title,
+            sessionId: planReferenceSessionId,
+            version: reference.version,
+            ...(planReferenceStatus ? { status: planReferenceStatus } : {}),
+          },
+        ],
+      });
+      setFocusedAgentProject(planReferenceProjectId);
+      clearAgentSelection();
+      setActiveConversation(`project:${planReferenceProjectId}`, null);
+    },
+    [
+      clearAgentSelection,
+      planReferenceProjectId,
+      planReferenceSessionId,
+      planReferenceStatus,
+      setActiveConversation,
+      setFocusedAgentProject,
+      setStartConversationDraft,
+    ],
+  );
+
   const handleVerifyPlan = useCallback(async () => {
     if (!session || !canVerifyPlan || verificationInProgress) {
       return;
@@ -1583,6 +1639,9 @@ function AgentPlanPanel({
               linkedProposalsCount={proposals.filter((proposal) => proposal.planArtifactId === planArtifact.id).length}
               onEdit={() => setIsEditing(true)}
               onExport={() => setExportDialogOpen(true)}
+              {...(planReferenceSessionId && {
+                onStartNewConversationWithPlan: handleStartNewConversationWithPlan,
+              })}
               isExpanded={isPlanExpanded}
               onExpandedChange={setIsPlanExpanded}
               chromeless

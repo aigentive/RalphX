@@ -196,8 +196,10 @@ describe("agentSessionStore", () => {
         {
           kind: "plan" as const,
           artifactId: "plan-1",
-          label: "Plan",
           title: "Fix flow",
+          sessionId: "session-1",
+          version: 2,
+          status: "approved",
         },
       ];
       const composerIntegrationReferences = [

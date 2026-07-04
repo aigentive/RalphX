@@ -7,7 +7,7 @@
 
 import { useState, useCallback, useEffect } from "react";
 import { toast } from "sonner";
-import { FileEdit, Download, CheckCircle2, ChevronDown, FileText, Sparkles, History, Loader2, ArrowLeft, ListPlus, MoreHorizontal, Copy, ShieldCheck, Rocket } from "lucide-react";
+import { FileEdit, Download, CheckCircle2, ChevronDown, FileText, Sparkles, History, Loader2, ArrowLeft, ListPlus, MoreHorizontal, Copy, ShieldCheck, Rocket, MessageSquarePlus } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Button } from "@/components/ui/button";
@@ -43,6 +43,12 @@ export interface TeamMetadata {
   debateSummary?: DebateSummaryData | undefined;
 }
 
+export interface PlanDisplayConversationReference {
+  artifactId: string;
+  title: string;
+  version: number;
+}
+
 export interface PlanDisplayProps {
   plan: Artifact;
   artifactLabel?: string;
@@ -50,6 +56,9 @@ export interface PlanDisplayProps {
   linkedProposalsCount?: number;
   onEdit?: () => void;
   onExport?: () => void;
+  onStartNewConversationWithPlan?: (
+    reference: PlanDisplayConversationReference,
+  ) => void;
   onApprove?: () => void;
   isApproving?: boolean;
   approveLabel?: string;
@@ -342,6 +351,7 @@ export function PlanDisplay({
   linkedProposalsCount = 0,
   onEdit,
   onExport,
+  onStartNewConversationWithPlan,
   onApprove,
   isApproving = false,
   approveLabel = "Approve Plan",
@@ -512,6 +522,19 @@ export function PlanDisplay({
     URL.revokeObjectURL(url);
   }, [planContent, plan.name, onExport]);
 
+  const handleStartNewConversationWithPlan = useCallback(() => {
+    onStartNewConversationWithPlan?.({
+      artifactId: plan.id,
+      title: plan.name,
+      version: selectedVersion,
+    });
+  }, [
+    onStartNewConversationWithPlan,
+    plan.id,
+    plan.name,
+    selectedVersion,
+  ]);
+
   if (chromeless) {
     // Extract the leading H1 from the plan body so we can render it on
     // the same row as the action cluster instead of having the title
@@ -646,6 +669,15 @@ export function PlanDisplay({
                       <Copy className="w-3.5 h-3.5" />
                       Copy Markdown
                     </DropdownMenuItem>
+                    {onStartNewConversationWithPlan && (
+                      <DropdownMenuItem
+                        onClick={handleStartNewConversationWithPlan}
+                        className="text-[0.75rem] cursor-pointer gap-2 px-3 py-2"
+                      >
+                        <MessageSquarePlus className="w-3.5 h-3.5" />
+                        New Conversation
+                      </DropdownMenuItem>
+                    )}
                     {onEdit && (
                       <DropdownMenuItem
                         onClick={onEdit}
@@ -1121,7 +1153,7 @@ export function PlanDisplay({
                         e.currentTarget.style.background = "transparent";
                         e.currentTarget.style.color = "var(--text-muted)";
                       }}
-                      aria-label={`${artifactLabel} actions`}
+                      aria-label="View version history"
                     >
                       <History className="w-3 h-3" />
                       v{selectedVersion}
@@ -1195,6 +1227,7 @@ export function PlanDisplay({
                         e.currentTarget.style.background = "transparent";
                         e.currentTarget.style.color = "var(--text-muted)";
                       }}
+                      aria-label={`${artifactLabel} actions`}
                     >
                       <MoreHorizontal className="w-3.5 h-3.5" />
                     </Button>
@@ -1224,6 +1257,15 @@ export function PlanDisplay({
                       <Copy className="w-3.5 h-3.5" />
                       Copy Markdown
                     </DropdownMenuItem>
+                    {onStartNewConversationWithPlan && (
+                      <DropdownMenuItem
+                        onClick={handleStartNewConversationWithPlan}
+                        className="text-[0.75rem] cursor-pointer gap-2 px-3 py-2"
+                      >
+                        <MessageSquarePlus className="w-3.5 h-3.5" />
+                        New Conversation
+                      </DropdownMenuItem>
+                    )}
                     {onEdit && (
                       <DropdownMenuItem
                         onClick={onEdit}
