@@ -170,15 +170,18 @@ async fn sqlite_run_repo_latest_and_single_open_index() {
         ))
         .await
         .unwrap();
-    assert!(run_repo
+    let duplicate_open = run_repo
         .create_run(run(
             "run-2",
             2,
             AutomationRunStatus::Pending,
             AutomationJudgeState::None,
         ))
-        .await
-        .is_err());
+        .await;
+    assert!(matches!(
+        duplicate_open,
+        Err(crate::error::AppError::Conflict(_))
+    ));
 
     assert!(run_repo
         .compare_and_swap_judge_state(

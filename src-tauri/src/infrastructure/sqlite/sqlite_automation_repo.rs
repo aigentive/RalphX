@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::{DateTime, TimeZone, Utc};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, ErrorCode, OptionalExtension};
 use tokio::sync::Mutex;
 
 use crate::domain::entities::{
@@ -300,6 +300,8 @@ const SELECT_RUN: &str = "SELECT
     judge_verdict_json, judge_model_id, error_code, error_detail, signal_check_failures,
     started_at, finished_at, created_at, updated_at
 FROM automation_runs";
+const AUTOMATION_RUN_SINGLE_OPEN_CONSTRAINT: &str =
+    "UNIQUE constraint failed: automation_runs.automation_id";
 
 #[async_trait]
 impl AutomationRunRepository for SqliteAutomationRunRepository {
@@ -354,7 +356,16 @@ impl AutomationRunRepository for SqliteAutomationRunRepository {
                         to_insert.created_at.to_rfc3339(),
                         to_insert.updated_at.to_rfc3339(),
                     ],
-                )?;
+                )
+                .map_err(|error| match error {
+                    rusqlite::Error::SqliteFailure(sqlite_error, Some(message))
+                        if sqlite_error.code == ErrorCode::ConstraintViolation
+                            && message == AUTOMATION_RUN_SINGLE_OPEN_CONSTRAINT =>
+                    {
+                        AppError::Conflict("automation already has an open run".to_string())
+                    }
+                    error => AppError::from(error),
+                })?;
                 Ok(())
             })
             .await?;
