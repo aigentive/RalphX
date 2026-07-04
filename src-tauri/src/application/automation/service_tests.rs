@@ -1,5 +1,6 @@
 use std::sync::{Arc, Mutex};
 
+use async_trait::async_trait;
 use chrono::Utc;
 
 use crate::application::automation::service::{
@@ -13,7 +14,9 @@ use crate::domain::entities::{
     Automation, AutomationId, AutomationJudgeState, AutomationPromptAuthor, AutomationRunStatus,
     AutomationStatus, ProjectId,
 };
-use crate::domain::repositories::{AutomationRepository, AutomationRunRepository};
+use crate::domain::repositories::{
+    AutomationRepository, AutomationRunRepository, AutomationSettingsPatch,
+};
 use crate::error::AppError;
 use crate::infrastructure::memory::{MemoryAutomationRepository, MemoryAutomationRunRepository};
 
@@ -78,6 +81,101 @@ fn automation(id: &str, status: AutomationStatus) -> Automation {
     }
 }
 
+struct LostStatusAutomationRepository {
+    automation: Mutex<Automation>,
+    winning_status: AutomationStatus,
+}
+
+impl LostStatusAutomationRepository {
+    fn new(initial_status: AutomationStatus, winning_status: AutomationStatus) -> Self {
+        Self {
+            automation: Mutex::new(automation("automation-1", initial_status)),
+            winning_status,
+        }
+    }
+
+    fn status(&self) -> AutomationStatus {
+        self.automation.lock().unwrap().status
+    }
+}
+
+#[async_trait]
+impl AutomationRepository for LostStatusAutomationRepository {
+    async fn create(&self, automation: Automation) -> crate::error::AppResult<Automation> {
+        *self.automation.lock().unwrap() = automation.clone();
+        Ok(automation)
+    }
+
+    async fn get_by_id(&self, id: &AutomationId) -> crate::error::AppResult<Option<Automation>> {
+        let automation = self.automation.lock().unwrap();
+        if automation.id == *id {
+            Ok(Some(automation.clone()))
+        } else {
+            Ok(None)
+        }
+    }
+
+    async fn list(
+        &self,
+        project_id: Option<ProjectId>,
+    ) -> crate::error::AppResult<Vec<Automation>> {
+        let automation = self.automation.lock().unwrap();
+        if project_id
+            .as_ref()
+            .is_none_or(|project_id| automation.project_id == *project_id)
+        {
+            Ok(vec![automation.clone()])
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
+    async fn list_by_project(
+        &self,
+        project_id: &ProjectId,
+    ) -> crate::error::AppResult<Vec<Automation>> {
+        self.list(Some(project_id.clone())).await
+    }
+
+    async fn update_settings(
+        &self,
+        id: &AutomationId,
+        patch: AutomationSettingsPatch,
+    ) -> crate::error::AppResult<Option<Automation>> {
+        let mut automation = self.automation.lock().unwrap();
+        if automation.id != *id {
+            return Ok(None);
+        }
+        if let Some(name) = patch.name {
+            automation.name = name;
+        }
+        if let Some(max_runs) = patch.max_runs {
+            automation.max_runs = max_runs;
+        }
+        if let Some(max_consecutive_failures) = patch.max_consecutive_failures {
+            automation.max_consecutive_failures = max_consecutive_failures;
+        }
+        automation.updated_at = Utc::now();
+        Ok(Some(automation.clone()))
+    }
+
+    async fn compare_and_swap_status(
+        &self,
+        id: &AutomationId,
+        from: AutomationStatus,
+        _to: AutomationStatus,
+        _paused_reason_code: Option<String>,
+        _paused_reason_detail: Option<String>,
+    ) -> crate::error::AppResult<bool> {
+        let mut automation = self.automation.lock().unwrap();
+        if automation.id == *id && automation.status == from {
+            automation.status = self.winning_status;
+            automation.updated_at = Utc::now();
+        }
+        Ok(false)
+    }
+}
+
 #[tokio::test]
 async fn service_creates_lists_gets_and_updates_mechanical_settings() {
     let emitter = Arc::new(RecordingEmitter::default());
@@ -134,6 +232,55 @@ async fn service_creates_lists_gets_and_updates_mechanical_settings() {
             automation_id: draft.id
         }]
     );
+}
+
+#[tokio::test]
+async fn service_status_controls_fail_when_compare_and_swap_loses() {
+    let emitter = Arc::new(RecordingEmitter::default());
+
+    let pause_repo = Arc::new(LostStatusAutomationRepository::new(
+        AutomationStatus::Active,
+        AutomationStatus::Stopped,
+    ));
+    let pause_service = AutomationService::new(
+        pause_repo.clone(),
+        Arc::new(MemoryAutomationRunRepository::new()),
+        emitter.clone(),
+    );
+    let pause_id = AutomationId::from_string("automation-1");
+    let pause_error = pause_service
+        .pause(&pause_id, "user", Some("pause requested"))
+        .await
+        .unwrap_err();
+    assert!(matches!(pause_error, AppError::Conflict(_)));
+    assert_eq!(pause_repo.status(), AutomationStatus::Stopped);
+
+    let resume_repo = Arc::new(LostStatusAutomationRepository::new(
+        AutomationStatus::Paused,
+        AutomationStatus::Stopped,
+    ));
+    let resume_service = AutomationService::new(
+        resume_repo.clone(),
+        Arc::new(MemoryAutomationRunRepository::new()),
+        emitter.clone(),
+    );
+    let resume_error = resume_service.resume(&pause_id).await.unwrap_err();
+    assert!(matches!(resume_error, AppError::Conflict(_)));
+    assert_eq!(resume_repo.status(), AutomationStatus::Stopped);
+
+    let stop_repo = Arc::new(LostStatusAutomationRepository::new(
+        AutomationStatus::Active,
+        AutomationStatus::Paused,
+    ));
+    let stop_service = AutomationService::new(
+        stop_repo.clone(),
+        Arc::new(MemoryAutomationRunRepository::new()),
+        emitter.clone(),
+    );
+    let stop_error = stop_service.stop(&pause_id).await.unwrap_err();
+    assert!(matches!(stop_error, AppError::Conflict(_)));
+    assert_eq!(stop_repo.status(), AutomationStatus::Paused);
+    assert!(emitter.events().is_empty());
 }
 
 #[tokio::test]

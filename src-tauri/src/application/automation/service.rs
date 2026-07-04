@@ -158,44 +158,38 @@ impl AutomationService {
         reason_detail: Option<&str>,
     ) -> AppResult<Automation> {
         let automation = self.require_automation(id).await?;
-        self.transition_service
-            .transition_automation_status(
-                id,
-                automation.status,
-                AutomationStatus::Paused,
-                Some(reason_code.to_string()),
-                reason_detail.map(str::to_string),
-            )
-            .await?;
-        self.require_automation(id).await
+        self.transition_automation_status_or_conflict(
+            id,
+            automation.status,
+            AutomationStatus::Paused,
+            Some(reason_code.to_string()),
+            reason_detail.map(str::to_string),
+        )
+        .await
     }
 
     pub async fn resume(&self, id: &AutomationId) -> AppResult<Automation> {
         let automation = self.require_automation(id).await?;
-        self.transition_service
-            .transition_automation_status(
-                id,
-                automation.status,
-                AutomationStatus::Active,
-                None,
-                None,
-            )
-            .await?;
-        self.require_automation(id).await
+        self.transition_automation_status_or_conflict(
+            id,
+            automation.status,
+            AutomationStatus::Active,
+            None,
+            None,
+        )
+        .await
     }
 
     pub async fn stop(&self, id: &AutomationId) -> AppResult<Automation> {
         let automation = self.require_automation(id).await?;
-        self.transition_service
-            .transition_automation_status(
-                id,
-                automation.status,
-                AutomationStatus::Stopped,
-                None,
-                None,
-            )
-            .await?;
-        self.require_automation(id).await
+        self.transition_automation_status_or_conflict(
+            id,
+            automation.status,
+            AutomationStatus::Stopped,
+            None,
+            None,
+        )
+        .await
     }
 
     pub async fn create_run(&self, input: CreateAutomationRunInput) -> AppResult<AutomationRun> {
@@ -264,6 +258,24 @@ impl AutomationService {
             .await?
             .ok_or_else(|| automation_not_found(id))
     }
+
+    async fn transition_automation_status_or_conflict(
+        &self,
+        id: &AutomationId,
+        from: AutomationStatus,
+        to: AutomationStatus,
+        paused_reason_code: Option<String>,
+        paused_reason_detail: Option<String>,
+    ) -> AppResult<Automation> {
+        let changed = self
+            .transition_service
+            .transition_automation_status(id, from, to, paused_reason_code, paused_reason_detail)
+            .await?;
+        if !changed {
+            return Err(automation_status_conflict(id, from, to));
+        }
+        self.require_automation(id).await
+    }
 }
 
 fn normalize_name(value: Option<&str>) -> AppResult<String> {
@@ -285,4 +297,17 @@ fn validate_positive(field: &str, value: Option<i64>) -> AppResult<()> {
 
 fn automation_not_found(id: &AutomationId) -> AppError {
     AppError::NotFound(format!("automation {} not found", id.as_str()))
+}
+
+fn automation_status_conflict(
+    id: &AutomationId,
+    from: AutomationStatus,
+    to: AutomationStatus,
+) -> AppError {
+    AppError::Conflict(format!(
+        "automation {} status changed before transition {} -> {}",
+        id.as_str(),
+        from.as_str(),
+        to.as_str()
+    ))
 }
