@@ -1,23 +1,26 @@
 use axum::{extract::State, http::StatusCode, Json};
 use chrono::Utc;
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::Emitter;
 
+use crate::application::agent_conversation_workspace::resolve_agent_conversation_workspace_path_for_send;
 use crate::application::agent_lane_resolution::{
     resolve_agent_spawn_settings, resolve_agent_subagent_harness,
 };
 use crate::application::chat_service::{
-    events, AgentTaskCompletedPayload, AgentTaskStartedPayload, CachedStreamingTask, ChatService,
-    SendMessageOptions,
+    events, resolve_working_directory, AgentTaskCompletedPayload, AgentTaskStartedPayload,
+    CachedStreamingTask, ChatService, SendMessageOptions,
 };
 use crate::application::harness_runtime_registry::resolve_harness_plugin_dir;
 use crate::application::ideation_workspace::resolve_ideation_workspace_path;
 use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::{
-    AgentRun, ChatContextType, ChatConversation, ChatMessage, DelegatedSession, DelegatedSessionId,
-    IdeationSessionId, SessionPurpose,
+    AgentRun, ChatContextType, ChatConversation, ChatConversationId, ChatMessage,
+    DelegatedSession, DelegatedSessionId, IdeationSessionId, Project, ProjectId, SessionPurpose,
+    TaskId,
 };
 use crate::http_server::delegation::DelegationJobSnapshot;
 use crate::http_server::types::{
@@ -29,6 +32,7 @@ use crate::infrastructure::agents::harness_agent_catalog::{
     load_canonical_agent_definition, load_canonical_agent_definition_for_profile,
     resolve_project_root_from_plugin_dir,
 };
+use crate::utils::path_safety::validate_absolute_non_root_path;
 use tracing::warn;
 
 type JsonError = (StatusCode, Json<serde_json::Value>);
@@ -106,10 +110,19 @@ fn resolve_delegation_policy(
     Ok((caller, target))
 }
 
+struct ResolvedDelegateParent {
+    context_type: ChatContextType,
+    context_id: String,
+    project_id: String,
+    working_directory: PathBuf,
+    parent_conversation_id: Option<String>,
+    inherited_harness: Option<AgentHarnessKind>,
+}
+
 async fn resolve_delegated_session_id(
     state: &HttpServerState,
     req: &DelegateStartRequest,
-    parent_session_id: &str,
+    parent: &ResolvedDelegateParent,
     harness: AgentHarnessKind,
 ) -> Result<String, JsonError> {
     let requested_id = req
@@ -131,8 +144,8 @@ async fn resolve_delegated_session_id(
                 )
             })?
             .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "Delegated session not found"))?;
-        if delegated.parent_context_type != "ideation"
-            || delegated.parent_context_id != parent_session_id
+        if delegated.parent_context_type != parent.context_type.to_string()
+            || delegated.parent_context_id != parent.context_id
         {
             return Err(json_error(
                 StatusCode::BAD_REQUEST,
@@ -142,11 +155,10 @@ async fn resolve_delegated_session_id(
         return Ok(delegated_session_id.clone());
     }
 
-    let (project_id, _) = load_parent_project_working_directory(state, parent_session_id).await?;
     let mut session = DelegatedSession::new(
-        crate::domain::entities::ProjectId::from_string(project_id),
-        "ideation",
-        parent_session_id.to_string(),
+        ProjectId::from_string(parent.project_id.clone()),
+        parent.context_type.to_string(),
+        parent.context_id.clone(),
         req.agent_name.clone(),
         harness,
     );
@@ -167,10 +179,36 @@ async fn resolve_delegated_session_id(
     Ok(created.id.as_str().to_string())
 }
 
-async fn load_parent_project_working_directory(
+async fn load_project_by_id(
+    state: &HttpServerState,
+    project_id: &ProjectId,
+) -> Result<Project, JsonError> {
+    state
+        .app_state
+        .project_repo
+        .get_by_id(project_id)
+        .await
+        .map_err(|error| {
+            json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to load parent project: {error}"),
+            )
+        })?
+        .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "Parent project not found"))
+}
+
+fn validate_project_working_directory(project: &Project) -> Result<PathBuf, JsonError> {
+    validate_absolute_non_root_path(
+        &PathBuf::from(&project.working_directory),
+        "project working directory",
+    )
+    .map_err(|error| json_error(StatusCode::CONFLICT, error.to_string()))
+}
+
+async fn load_ideation_parent_project_working_directory(
     state: &HttpServerState,
     parent_session_id: &str,
-) -> Result<(String, PathBuf), JsonError> {
+) -> Result<(ProjectId, PathBuf), JsonError> {
     let parent_id = IdeationSessionId::from_string(parent_session_id.to_string());
     let parent = state
         .app_state
@@ -185,29 +223,18 @@ async fn load_parent_project_working_directory(
         })?
         .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "Parent session not found"))?;
 
-    let project = state
-        .app_state
-        .project_repo
-        .get_by_id(&parent.project_id)
-        .await
-        .map_err(|error| {
-            json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to load parent project: {error}"),
-            )
-        })?
-        .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "Parent project not found"))?;
+    let project = load_project_by_id(state, &parent.project_id).await?;
 
     let working_directory = resolve_ideation_workspace_path(&parent, &project)
         .map_err(|error| json_error(StatusCode::CONFLICT, error))?;
 
-    Ok((parent.project_id.as_str().to_string(), working_directory))
+    Ok((parent.project_id, working_directory))
 }
 
-async fn resolve_parent_session_id(
+async fn resolve_ideation_delegate_parent(
     state: &HttpServerState,
     req: &DelegateStartRequest,
-) -> Result<String, JsonError> {
+) -> Result<ResolvedDelegateParent, JsonError> {
     if req.caller_context_type.as_deref() == Some("ideation") {
         let caller_context_id = req.caller_context_id.as_ref().ok_or_else(|| {
             json_error(
@@ -262,20 +289,294 @@ async fn resolve_parent_session_id(
             }
         }
 
-        return Ok(derived_parent_session_id);
+        let parent_conversation_id =
+            resolve_parent_conversation_id(state, req, &derived_parent_session_id).await?;
+        let (project_id, working_directory) =
+            load_ideation_parent_project_working_directory(state, &derived_parent_session_id)
+                .await?;
+
+        return Ok(ResolvedDelegateParent {
+            context_type: ChatContextType::Ideation,
+            context_id: derived_parent_session_id,
+            project_id: project_id.as_str().to_string(),
+            working_directory,
+            parent_conversation_id,
+            inherited_harness: None,
+        });
     }
 
-    req.parent_session_id.clone().ok_or_else(|| {
+    let parent_session_id = req.parent_session_id.as_deref().ok_or_else(|| {
+        json_error(StatusCode::BAD_REQUEST, "delegate_start requires parent_session_id")
+    })?;
+    let parent_conversation_id =
+        resolve_parent_conversation_id(state, req, parent_session_id).await?;
+    let (project_id, working_directory) =
+        load_ideation_parent_project_working_directory(state, parent_session_id).await?;
+    Ok(ResolvedDelegateParent {
+        context_type: ChatContextType::Ideation,
+        context_id: parent_session_id.to_string(),
+        project_id: project_id.as_str().to_string(),
+        working_directory,
+        parent_conversation_id,
+        inherited_harness: None,
+    })
+}
+
+async fn load_parent_conversation(
+    state: &HttpServerState,
+    conversation_id: &str,
+) -> Result<ChatConversation, JsonError> {
+    state
+        .app_state
+        .chat_conversation_repo
+        .get_by_id(&ChatConversationId::from_string(conversation_id.to_string()))
+        .await
+        .map_err(|error| {
+            json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to load parent conversation: {error}"),
+            )
+        })?
+        .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "Parent conversation not found"))
+}
+
+async fn load_project_parent_conversation(
+    state: &HttpServerState,
+    req: &DelegateStartRequest,
+    caller_context_id: &str,
+) -> Result<Option<ChatConversation>, JsonError> {
+    let conversation = if let Some(parent_conversation_id) = req.parent_conversation_id.as_deref()
+    {
+        Some(load_parent_conversation(state, parent_conversation_id).await?)
+    } else {
+        let candidate_id = ChatConversationId::from_string(caller_context_id.to_string());
+        state
+            .app_state
+            .chat_conversation_repo
+            .get_by_id(&candidate_id)
+            .await
+            .map_err(|error| {
+                json_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Failed to load caller conversation: {error}"),
+                )
+            })?
+            .filter(|conversation| conversation.context_type == ChatContextType::Project)
+    };
+
+    let Some(conversation) = conversation else {
+        return Ok(None);
+    };
+
+    if conversation.context_type != ChatContextType::Project {
+        return Err(json_error(
+            StatusCode::BAD_REQUEST,
+            "delegate_start parent_conversation_id does not reference a project conversation",
+        ));
+    }
+
+    if caller_context_id != conversation.context_id && caller_context_id != conversation.id.as_str()
+    {
+        return Err(json_error(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "delegate_start project caller context '{}' does not match parent conversation '{}'",
+                caller_context_id,
+                conversation.id.as_str()
+            ),
+        ));
+    }
+
+    Ok(Some(conversation))
+}
+
+async fn resolve_project_parent_working_directory(
+    state: &HttpServerState,
+    project: &Project,
+    parent_conversation: Option<&ChatConversation>,
+) -> Result<PathBuf, JsonError> {
+    let Some(parent_conversation) = parent_conversation else {
+        return validate_project_working_directory(project);
+    };
+    let workspace = state
+        .app_state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&parent_conversation.id)
+        .await
+        .map_err(|error| {
+            json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to load parent agent workspace: {error}"),
+            )
+        })?;
+
+    match workspace {
+        Some(workspace) => resolve_agent_conversation_workspace_path_for_send(project, &workspace)
+            .map_err(|error| json_error(StatusCode::CONFLICT, error.to_string())),
+        None => validate_project_working_directory(project),
+    }
+}
+
+async fn resolve_project_delegate_parent(
+    state: &HttpServerState,
+    req: &DelegateStartRequest,
+    caller_context_id: &str,
+) -> Result<ResolvedDelegateParent, JsonError> {
+    let parent_conversation =
+        load_project_parent_conversation(state, req, caller_context_id).await?;
+    let project_id = parent_conversation
+        .as_ref()
+        .map(|conversation| conversation.context_id.clone())
+        .unwrap_or_else(|| caller_context_id.to_string());
+    let project = load_project_by_id(state, &ProjectId::from_string(project_id.clone())).await?;
+    let working_directory =
+        resolve_project_parent_working_directory(state, &project, parent_conversation.as_ref())
+            .await?;
+    let parent_conversation_id = parent_conversation
+        .as_ref()
+        .map(|conversation| conversation.id.as_str());
+    let inherited_harness = parent_conversation
+        .as_ref()
+        .and_then(|conversation| conversation.provider_harness);
+
+    Ok(ResolvedDelegateParent {
+        context_type: ChatContextType::Project,
+        context_id: project_id,
+        project_id: project.id.as_str().to_string(),
+        working_directory,
+        parent_conversation_id,
+        inherited_harness,
+    })
+}
+
+async fn resolve_task_like_delegate_parent(
+    state: &HttpServerState,
+    context_type: ChatContextType,
+    caller_context_id: &str,
+    parent_conversation_id: Option<String>,
+) -> Result<ResolvedDelegateParent, JsonError> {
+    let task = state
+        .app_state
+        .task_repo
+        .get_by_id(&TaskId::from_string(caller_context_id.to_string()))
+        .await
+        .map_err(|error| {
+            json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to load caller task context: {error}"),
+            )
+        })?
+        .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "Caller task context not found"))?;
+    let project = load_project_by_id(state, &task.project_id).await?;
+    let default_working_directory = validate_project_working_directory(&project)?;
+    let working_directory = resolve_working_directory(
+        context_type,
+        caller_context_id,
+        Arc::clone(&state.app_state.project_repo),
+        Arc::clone(&state.app_state.task_repo),
+        Arc::clone(&state.app_state.ideation_session_repo),
+        Arc::clone(&state.app_state.delegated_session_repo),
+        &default_working_directory,
+    )
+    .await
+    .map_err(|error| json_error(StatusCode::CONFLICT, error))?;
+
+    Ok(ResolvedDelegateParent {
+        context_type,
+        context_id: caller_context_id.to_string(),
+        project_id: project.id.as_str().to_string(),
+        working_directory,
+        parent_conversation_id,
+        inherited_harness: None,
+    })
+}
+
+async fn resolve_nested_delegation_parent(
+    state: &HttpServerState,
+    caller_context_id: &str,
+    parent_conversation_id: Option<String>,
+) -> Result<ResolvedDelegateParent, JsonError> {
+    let session = state
+        .app_state
+        .delegated_session_repo
+        .get_by_id(&DelegatedSessionId::from_string(caller_context_id.to_string()))
+        .await
+        .map_err(|error| {
+            json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to load caller delegated session: {error}"),
+            )
+        })?
+        .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "Caller delegated session not found"))?;
+    let project = load_project_by_id(state, &session.project_id).await?;
+    let working_directory = validate_project_working_directory(&project)?;
+
+    Ok(ResolvedDelegateParent {
+        context_type: ChatContextType::Delegation,
+        context_id: session.id.as_str().to_string(),
+        project_id: project.id.as_str().to_string(),
+        working_directory,
+        parent_conversation_id,
+        inherited_harness: Some(session.harness),
+    })
+}
+
+async fn resolve_delegate_parent(
+    state: &HttpServerState,
+    req: &DelegateStartRequest,
+) -> Result<ResolvedDelegateParent, JsonError> {
+    if req.caller_context_type.as_deref() == Some("ideation")
+        || (req.caller_context_type.is_none() && req.parent_session_id.is_some())
+    {
+        return resolve_ideation_delegate_parent(state, req).await;
+    }
+
+    let caller_context_type = req.caller_context_type.as_deref().ok_or_else(|| {
         json_error(
             StatusCode::BAD_REQUEST,
-            "delegate_start requires parent_session_id unless the MCP transport supplies an ideation caller context",
+            "delegate_start requires caller_context_type from the MCP transport",
         )
-    })
+    })?;
+    let caller_context_type = ChatContextType::from_str(caller_context_type)
+        .map_err(|error| json_error(StatusCode::BAD_REQUEST, error))?;
+    let caller_context_id = req.caller_context_id.as_deref().ok_or_else(|| {
+        json_error(
+            StatusCode::BAD_REQUEST,
+            "delegate_start requires caller_context_id from the MCP transport",
+        )
+    })?;
+    match caller_context_type {
+        ChatContextType::Ideation => resolve_ideation_delegate_parent(state, req).await,
+        ChatContextType::Project => {
+            resolve_project_delegate_parent(state, req, caller_context_id).await
+        }
+        ChatContextType::Task
+        | ChatContextType::TaskExecution
+        | ChatContextType::Review
+        | ChatContextType::Merge => {
+            resolve_task_like_delegate_parent(
+                state,
+                caller_context_type,
+                caller_context_id,
+                req.parent_conversation_id.clone(),
+            )
+            .await
+        }
+        ChatContextType::Delegation => {
+            resolve_nested_delegation_parent(
+                state,
+                caller_context_id,
+                req.parent_conversation_id.clone(),
+            )
+            .await
+        }
+    }
 }
 
 fn build_delegated_prompt(
     agent_name: &str,
-    parent_session_id: &str,
+    parent_context_type: ChatContextType,
+    parent_context_id: &str,
     parent_turn_id: Option<&str>,
     parent_message_id: Option<&str>,
     parent_conversation_id: Option<&str>,
@@ -283,8 +584,13 @@ fn build_delegated_prompt(
     delegated_session_id: &str,
     prompt: &str,
 ) -> String {
+    let parent_line = if parent_context_type == ChatContextType::Ideation {
+        format!("Parent ideation session: `{parent_context_id}`")
+    } else {
+        format!("Parent {} context: `{parent_context_id}`", parent_context_type)
+    };
     let mut metadata_lines = vec![
-        format!("Parent ideation session: `{parent_session_id}`"),
+        parent_line,
         format!("Delegated session: `{delegated_session_id}`"),
     ];
     if let Some(turn_id) = parent_turn_id {
@@ -604,6 +910,7 @@ async fn resolve_delegate_model_override(
     state: &HttpServerState,
     caller_agent_name: &str,
     project_id: &str,
+    context_type: ChatContextType,
     harness: AgentHarnessKind,
     requested_model: Option<&str>,
 ) -> Option<String> {
@@ -614,7 +921,7 @@ async fn resolve_delegate_model_override(
     resolve_agent_spawn_settings(
         caller_agent_name,
         Some(project_id),
-        ChatContextType::Ideation,
+        context_type,
         None,
         Some(harness),
         None,
@@ -628,6 +935,7 @@ async fn resolve_delegate_harness(
     state: &HttpServerState,
     caller_agent_name: &str,
     project_id: &str,
+    context_type: ChatContextType,
     requested_harness: Option<AgentHarnessKind>,
 ) -> AgentHarnessKind {
     if let Some(harness) = requested_harness {
@@ -637,7 +945,7 @@ async fn resolve_delegate_harness(
     resolve_agent_subagent_harness(
         caller_agent_name,
         Some(project_id),
-        ChatContextType::Ideation,
+        context_type,
         None,
         Some(&state.app_state.agent_lane_settings_repo),
     )
@@ -824,18 +1132,21 @@ pub(crate) async fn start_delegate_impl(
             "delegate_start requires caller_agent_name from the MCP transport",
         )
     })?;
-    let parent_session_id = resolve_parent_session_id(state, &req).await?;
-    let parent_conversation_id =
-        resolve_parent_conversation_id(state, &req, &parent_session_id).await?;
-    let (project_id, working_directory) =
-        load_parent_project_working_directory(state, &parent_session_id).await?;
-    let harness =
-        resolve_delegate_harness(state, caller_agent_name, project_id.as_str(), req.harness).await;
+    let parent = resolve_delegate_parent(state, &req).await?;
+    let requested_harness = req.harness.or(parent.inherited_harness);
+    let harness = resolve_delegate_harness(
+        state,
+        caller_agent_name,
+        parent.project_id.as_str(),
+        parent.context_type,
+        requested_harness,
+    )
+    .await;
 
     let resolved_spawn = resolve_agent_spawn_settings(
         caller_agent_name,
-        Some(project_id.as_str()),
-        ChatContextType::Ideation,
+        Some(parent.project_id.as_str()),
+        parent.context_type,
         None,
         Some(harness),
         None,
@@ -845,12 +1156,13 @@ pub(crate) async fn start_delegate_impl(
     let delegated_model = resolve_delegate_model_override(
         state,
         caller_agent_name,
-        project_id.as_str(),
+        parent.project_id.as_str(),
+        parent.context_type,
         harness,
         req.model.as_deref(),
     )
     .await;
-    let plugin_dir = resolve_harness_plugin_dir(harness, &working_directory);
+    let plugin_dir = resolve_harness_plugin_dir(harness, &parent.working_directory);
     let project_root = resolve_project_root_from_plugin_dir(&plugin_dir);
     let (_caller_definition, definition) =
         resolve_delegation_policy(
@@ -859,8 +1171,7 @@ pub(crate) async fn start_delegate_impl(
             req.caller_agent_profile.as_deref(),
             &req.agent_name,
         )?;
-    let delegated_session_id =
-        resolve_delegated_session_id(state, &req, &parent_session_id, harness).await?;
+    let delegated_session_id = resolve_delegated_session_id(state, &req, &parent, harness).await?;
     let logical_effort = req
         .logical_effort
         .clone()
@@ -893,7 +1204,7 @@ pub(crate) async fn start_delegate_impl(
     let delegated_conversation = ensure_delegated_conversation(
         state,
         &delegated_session_id,
-        parent_conversation_id.as_deref(),
+        parent.parent_conversation_id.as_deref(),
         req.title.as_deref(),
     )
     .await?;
@@ -907,10 +1218,11 @@ pub(crate) async fn start_delegate_impl(
             &delegated_session_id,
             &build_delegated_prompt(
                 &definition.name,
-                &parent_session_id,
+                parent.context_type,
+                &parent.context_id,
                 req.parent_turn_id.as_deref(),
                 req.parent_message_id.as_deref(),
-                parent_conversation_id.as_deref(),
+                parent.parent_conversation_id.as_deref(),
                 req.parent_tool_use_id.as_deref(),
                 &delegated_session_id,
                 &req.prompt,
@@ -939,11 +1251,11 @@ pub(crate) async fn start_delegate_impl(
         .delegation_service
         .register_running(
             job_id.clone(),
-            "ideation".to_string(),
-            parent_session_id.clone(),
+            parent.context_type.to_string(),
+            parent.context_id.clone(),
             req.parent_turn_id.clone(),
             req.parent_message_id.clone(),
-            parent_conversation_id.clone(),
+            parent.parent_conversation_id.clone(),
             req.parent_tool_use_id.clone(),
             delegated_session_id.clone(),
             Some(delegated_conversation.id.as_str()),

@@ -4,11 +4,13 @@ use std::time::Duration;
 use std::{fs, os::unix::fs::PermissionsExt};
 
 use axum::{extract::State, Json};
+use ralphx_lib::application::agent_conversation_workspace::resolve_agent_conversation_workspace_path;
 use ralphx_lib::application::{AppState, TeamService, TeamStateTracker};
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::agents::{AgentHarnessKind, AgentLane, AgentLaneSettings};
 use ralphx_lib::domain::entities::{
-    ChatConversation, DelegatedSessionId, IdeationSession, Project, SessionPurpose,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, ChatConversation,
+    DelegatedSessionId, IdeationAnalysisBaseRefKind, IdeationSession, Project, SessionPurpose,
 };
 use ralphx_lib::http_server::delegation::{DelegationHistoryEntry, DelegationJobSnapshot};
 use ralphx_lib::http_server::handlers::{
@@ -160,6 +162,57 @@ async fn create_parent_session_in_working_directory(
         .create(session)
         .await
         .unwrap()
+}
+
+async fn create_project_agent_workspace(
+    state: &HttpServerState,
+    worktree_parent: &Path,
+) -> (Project, ChatConversation, AgentConversationWorkspace) {
+    let mut project = Project::new(
+        "Delegation Agent Workspace Project".to_string(),
+        repo_root().display().to_string(),
+    );
+    project.worktree_parent_directory = Some(worktree_parent.display().to_string());
+    let project = state.app_state.project_repo.create(project).await.unwrap();
+
+    let mut conversation = ChatConversation::new_project(project.id.clone());
+    conversation.provider_harness = Some(AgentHarnessKind::Codex);
+    let conversation = state
+        .app_state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .unwrap();
+
+    let worktree_path =
+        resolve_agent_conversation_workspace_path(&project, &conversation.id).unwrap();
+    let safe_worktree_path =
+        ralphx_lib::utils::path_safety::validate_absolute_non_root_path(
+            &worktree_path,
+            "test agent workspace",
+        )
+        .unwrap();
+    fs::create_dir_all(safe_worktree_path.join(".git"))
+        .expect("create fake workspace git marker");
+    let workspace = AgentConversationWorkspace::new(
+        conversation.id.clone(),
+        project.id.clone(),
+        AgentConversationWorkspaceMode::Edit,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("Project default (main)".to_string()),
+        None,
+        "ralphx/agent-workspace-delegation".to_string(),
+        worktree_path.to_string_lossy().to_string(),
+    );
+    let workspace = state
+        .app_state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .unwrap();
+
+    (project, conversation, workspace)
 }
 
 fn install_runtime_plugin_dir() -> (TempDir, PathBuf) {
@@ -335,6 +388,70 @@ async fn test_delegate_start_creates_delegated_session_and_completes_with_mock_c
     assert_eq!(latest_run.input_tokens, Some(11));
     assert_eq!(latest_run.cache_read_tokens, Some(2));
     assert_eq!(latest_run.output_tokens, Some(7));
+}
+
+#[tokio::test]
+async fn test_delegate_start_from_project_agent_workspace_without_parent_session() {
+    let _env_lock = codex_cli_env_lock().lock().await;
+    let (_fake_codex_dir, fake_codex_path) = install_fake_codex_cli();
+    let _codex_cli_guard = prepend_fake_codex_to_path(&fake_codex_path);
+    let worktree_parent = TempDir::new().expect("worktree parent");
+    let app_state = Arc::new(AppState::new_sqlite_test());
+    let state = build_state(app_state);
+    let (project, parent_conversation, _workspace) =
+        create_project_agent_workspace(&state, worktree_parent.path()).await;
+    let parent_conversation_id = parent_conversation.id.as_str();
+
+    let start = start_delegate(
+        State(state.clone()),
+        Json(DelegateStartRequest {
+            caller_agent_name: Some("ralphx-general-worker".to_string()),
+            caller_agent_profile: None,
+            caller_context_type: Some("project".to_string()),
+            caller_context_id: Some(project.id.as_str().to_string()),
+            parent_session_id: None,
+            parent_turn_id: Some("turn-project".to_string()),
+            parent_message_id: Some("msg-project".to_string()),
+            parent_conversation_id: Some(parent_conversation_id.clone()),
+            parent_tool_use_id: Some("toolu-project-1".to_string()),
+            delegated_session_id: None,
+            child_session_id: None,
+            agent_name: "ralphx-general-explorer".to_string(),
+            prompt: "Inspect the workspace and summarize the requested evidence.".to_string(),
+            title: Some("Delegated Project Workspace Inspection".to_string()),
+            inherit_context: true,
+            harness: None,
+            model: None,
+            logical_effort: None,
+            approval_policy: None,
+            sandbox_mode: None,
+        }),
+    )
+    .await
+    .unwrap()
+    .0;
+
+    assert_eq!(start.parent_context_type, "project");
+    assert_eq!(start.parent_context_id, project.id.as_str());
+    assert_eq!(
+        start.parent_conversation_id.as_deref(),
+        Some(parent_conversation_id.as_str())
+    );
+    assert_eq!(start.harness, "codex");
+
+    let delegated = state
+        .app_state
+        .delegated_session_repo
+        .get_by_id(&DelegatedSessionId::from_string(
+            start.delegated_session_id.clone(),
+        ))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(delegated.parent_context_type, "project");
+    assert_eq!(delegated.parent_context_id, project.id.as_str());
+    assert_eq!(delegated.project_id, project.id);
+    assert_eq!(delegated.harness, AgentHarnessKind::Codex);
 }
 
 #[tokio::test]
