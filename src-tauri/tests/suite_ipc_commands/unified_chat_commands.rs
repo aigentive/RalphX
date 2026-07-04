@@ -1477,15 +1477,18 @@ mod ipc_contract {
     };
     use ralphx_lib::domain::entities::plan_branch::PrStatus as DbPrStatus;
     use ralphx_lib::domain::entities::{
-        AgentConversationWorkspace, AgentConversationWorkspaceBranchMode,
-        AgentConversationWorkspaceMode,
-        AgentConversationWorkspaceStatus, AgentRun, ArtifactId, ChatConversation,
-        ChatConversationId, ChatMessage, IdeationAnalysisBaseRefKind, IdeationSessionFlow,
-        IdeationSessionId, MessageRole, PlanBranch, Project, ProjectId,
+        AcceptanceStatus, AgentConversationWorkspace, AgentConversationWorkspaceBranchMode,
+        AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus, AgentRun, Artifact,
+        ArtifactContent, ArtifactId, ArtifactRelationType, ArtifactType, ChatContextType,
+        ChatConversation, ChatConversationId, ChatMessage, IdeationAnalysisBaseRefKind,
+        IdeationSession, IdeationSessionFlow, IdeationSessionId, IdeationSessionStatus,
+        MessageRole, PlanBranch, Priority, Project, ProjectId, ProposalCategory, Task,
+        TaskProposal, VerificationConfirmationStatus, VerificationStatus,
     };
     use ralphx_lib::domain::repositories::{
         AgentConversationWorkspaceRepository, AgentModelRegistryRepository,
     };
+    use ralphx_lib::domain::services::ComposerArtifactReference;
     use ralphx_lib::infrastructure::memory::MemoryAgentModelRegistryRepository;
     use ralphx_lib::infrastructure::sqlite::sqlite_agent_conversation_workspace_repo::SqliteAgentConversationWorkspaceRepository;
     use ralphx_lib::testing::SqliteTestDb;
@@ -2244,6 +2247,623 @@ mod ipc_contract {
         assert!(input.base_ref_kind.is_none());
         assert!(input.base_ref.is_none());
         assert!(input.composer_project_references.is_empty());
+    }
+
+    struct SourcePlanReferenceFixture {
+        session_id: IdeationSessionId,
+        artifact_id: ArtifactId,
+        artifact_name: String,
+        artifact_content: String,
+        artifact_version: u32,
+    }
+
+    async fn seed_source_plan_reference_fixture(
+        state: &AppState,
+        project_id: &ProjectId,
+    ) -> SourcePlanReferenceFixture {
+        let artifact_content =
+            "# Existing source plan\n\n- Keep source state isolated.".to_string();
+        let mut source_artifact = Artifact::new_inline(
+            "Existing Source Plan",
+            ArtifactType::Specification,
+            artifact_content.clone(),
+            "source_ideation",
+        );
+        source_artifact.metadata.version = 3;
+        let source_artifact = state
+            .artifact_repo
+            .create(source_artifact)
+            .await
+            .expect("source plan artifact should persist");
+
+        let source_session = IdeationSession::builder()
+            .project_id(project_id.clone())
+            .title("Accepted source plan")
+            .status(IdeationSessionStatus::Accepted)
+            .plan_artifact_id(source_artifact.id.clone())
+            .session_flow(IdeationSessionFlow::Ideation)
+            .verification_status(VerificationStatus::Verified)
+            .verification_generation(9)
+            .acceptance_status(AcceptanceStatus::Accepted)
+            .verification_confirmation_status(VerificationConfirmationStatus::Accepted)
+            .converted_at(chrono::Utc::now())
+            .build();
+        let source_session = state
+            .ideation_session_repo
+            .create(source_session)
+            .await
+            .expect("source ideation session should persist");
+
+        let mut proposal = TaskProposal::new(
+            source_session.id.clone(),
+            "Source-only proposal",
+            ProposalCategory::Feature,
+            Priority::High,
+        );
+        proposal.accept();
+        proposal.selected = true;
+        proposal.plan_artifact_id = Some(source_artifact.id.clone());
+        state
+            .task_proposal_repo
+            .create(proposal)
+            .await
+            .expect("source proposal should persist");
+
+        let mut task = Task::new(project_id.clone(), "Source-only task".to_string());
+        task.ideation_session_id = Some(source_session.id.clone());
+        task.plan_artifact_id = Some(source_artifact.id.clone());
+        state
+            .task_repo
+            .create(task)
+            .await
+            .expect("source task should persist");
+
+        SourcePlanReferenceFixture {
+            session_id: source_session.id,
+            artifact_id: source_artifact.id,
+            artifact_name: source_artifact.name,
+            artifact_content,
+            artifact_version: source_artifact.metadata.version,
+        }
+    }
+
+    fn source_plan_composer_reference(
+        fixture: &SourcePlanReferenceFixture,
+    ) -> ComposerArtifactReference {
+        ComposerArtifactReference {
+            artifact_id: fixture.artifact_id.as_str().to_string(),
+            kind: "plan".to_string(),
+            title: Some(fixture.artifact_name.clone()),
+            session_id: Some(fixture.session_id.as_str().to_string()),
+            version: Some(fixture.artifact_version),
+            status: Some("accepted".to_string()),
+        }
+    }
+
+    fn plan_reference_start_input(
+        project_id: &ProjectId,
+        mode: &str,
+        reference: ComposerArtifactReference,
+    ) -> StartAgentConversationInput {
+        StartAgentConversationInput {
+            project_id: project_id.as_str().to_string(),
+            content: format!("Use the selected plan in {mode} mode"),
+            conversation_id: None,
+            parent_conversation_id: None,
+            title: None,
+            provider_harness: None,
+            model_override: None,
+            codex_fast_mode: None,
+            logical_effort: Some(LogicalEffort::Medium),
+            mode: Some(mode.to_string()),
+            base_ref_kind: Some("project_default".to_string()),
+            base_branch_mode: None,
+            base_ref: None,
+            base_display_name: None,
+            base_source_pull_request: None,
+            composer_project_references: Vec::new(),
+            composer_integration_references: Vec::new(),
+            composer_artifact_references: vec![reference],
+        }
+    }
+
+    #[tokio::test]
+    async fn ipc_contract_start_agent_conversation_plan_reference_clones_fresh_session_for_mode_matrix(
+    ) {
+        let modes = ["chat", "edit", "plan", "ideation", "review_pr"];
+
+        for mode in modes {
+            let _fake_claude = FakeCliOnPath::new("claude");
+            let temp = tempfile::tempdir().expect("tempdir should be created");
+            let repo_path = temp.path().join(format!("repo-{mode}"));
+            let worktree_parent = temp.path().join(format!("worktrees-{mode}"));
+            super::setup_publish_repo(&repo_path);
+
+            let state = AppState::new_test();
+            let project_id = ProjectId::from_string(format!("project-plan-ref-{mode}-ipc"));
+            let mut project = Project::new(
+                format!("Start Agent Plan Ref {mode}"),
+                repo_path.to_string_lossy().to_string(),
+            );
+            project.id = project_id.clone();
+            project.base_branch = Some("main".to_string());
+            project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+            state
+                .project_repo
+                .create(project)
+                .await
+                .expect("project should persist");
+
+            let fixture = seed_source_plan_reference_fixture(&state, &project_id).await;
+            let source_proposals_before = state
+                .task_proposal_repo
+                .get_by_session(&fixture.session_id)
+                .await
+                .expect("source proposals should load");
+            let source_tasks_before = state
+                .task_repo
+                .get_by_ideation_session(&fixture.session_id)
+                .await
+                .expect("source tasks should load");
+            assert_eq!(source_proposals_before.len(), 1);
+            assert_eq!(source_tasks_before.len(), 1);
+
+            let execution_state = Arc::new(ExecutionState::new());
+            execution_state.pause();
+            let team_service = Arc::new(TeamService::new_without_events(Arc::new(
+                TeamStateTracker::new(),
+            )));
+            let app = mock_builder()
+                .manage(state)
+                .manage(Arc::clone(&execution_state))
+                .manage(team_service)
+                .build(mock_context(noop_assets()))
+                .expect("mock app should build");
+
+            let response = start_agent_conversation(
+                plan_reference_start_input(
+                    &project_id,
+                    mode,
+                    source_plan_composer_reference(&fixture),
+                ),
+                app.state::<AppState>(),
+                app.state::<Arc<ExecutionState>>(),
+                app.state::<Arc<TeamService>>(),
+                app.handle().clone(),
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{mode} plan-reference start should succeed: {error}"));
+
+            assert!(
+                response.send_result.was_queued,
+                "{mode} should queue while paused"
+            );
+            let workspace = response
+                .workspace
+                .unwrap_or_else(|| panic!("{mode} should return a linked workspace"));
+            let fresh_session_id = IdeationSessionId::from_string(
+                workspace
+                    .linked_ideation_session_id
+                    .as_deref()
+                    .unwrap_or_else(|| panic!("{mode} should link a fresh session")),
+            );
+            assert_ne!(
+                fresh_session_id, fixture.session_id,
+                "{mode} must not attach the source ideation session"
+            );
+
+            let state = app.state::<AppState>();
+            let fresh_session = state
+                .ideation_session_repo
+                .get_by_id(&fresh_session_id)
+                .await
+                .expect("fresh session lookup should succeed")
+                .expect("fresh session should persist");
+            assert_eq!(fresh_session.session_flow, IdeationSessionFlow::Planning);
+            assert_eq!(fresh_session.project_id, project_id);
+            assert!(fresh_session.parent_session_id.is_none());
+            assert!(fresh_session.inherited_plan_artifact_id.is_none());
+            assert_eq!(
+                fresh_session.verification_status,
+                VerificationStatus::Unverified
+            );
+            assert!(!fresh_session.verification_in_progress);
+            assert_eq!(fresh_session.verification_generation, 0);
+            assert_eq!(fresh_session.verification_gap_count, 0);
+            assert!(fresh_session.acceptance_status.is_none());
+            assert!(fresh_session.verification_confirmation_status.is_none());
+            assert!(fresh_session.converted_at.is_none());
+
+            let cloned_plan_id = fresh_session
+                .plan_artifact_id
+                .as_ref()
+                .unwrap_or_else(|| panic!("{mode} fresh session should own a cloned plan"));
+            assert_ne!(
+                cloned_plan_id, &fixture.artifact_id,
+                "{mode} fresh session should not point at the source artifact"
+            );
+            let cloned_artifact = state
+                .artifact_repo
+                .get_by_id(cloned_plan_id)
+                .await
+                .expect("cloned plan lookup should succeed")
+                .expect("cloned plan should persist");
+            assert_eq!(cloned_artifact.name, fixture.artifact_name);
+            assert_eq!(cloned_artifact.artifact_type, ArtifactType::Specification);
+            assert_eq!(
+                cloned_artifact.content,
+                ArtifactContent::inline(fixture.artifact_content.clone())
+            );
+            assert_eq!(cloned_artifact.metadata.version, 1);
+            assert_eq!(
+                cloned_artifact.metadata.created_by,
+                "agent_plan_reference_import"
+            );
+            assert_eq!(
+                cloned_artifact.derived_from,
+                vec![fixture.artifact_id.clone()]
+            );
+            let derived_relations = state
+                .artifact_repo
+                .get_relations_by_type(cloned_plan_id, ArtifactRelationType::DerivedFrom)
+                .await
+                .expect("cloned plan relations should load");
+            assert!(
+                derived_relations
+                    .iter()
+                    .any(|relation| relation.to_artifact_id == fixture.artifact_id),
+                "{mode} cloned plan should record source provenance"
+            );
+
+            assert!(
+                state
+                    .task_proposal_repo
+                    .get_by_session(&fresh_session_id)
+                    .await
+                    .expect("fresh proposals should load")
+                    .is_empty(),
+                "{mode} must not copy source proposals"
+            );
+            assert!(
+                state
+                    .task_repo
+                    .get_by_ideation_session(&fresh_session_id)
+                    .await
+                    .expect("fresh tasks should load")
+                    .is_empty(),
+                "{mode} must not copy source tasks"
+            );
+
+            let source_session_after = state
+                .ideation_session_repo
+                .get_by_id(&fixture.session_id)
+                .await
+                .expect("source session lookup should succeed")
+                .expect("source session should remain");
+            assert_eq!(
+                source_session_after.plan_artifact_id.as_ref(),
+                Some(&fixture.artifact_id)
+            );
+            assert_eq!(source_session_after.status, IdeationSessionStatus::Accepted);
+            assert_eq!(
+                source_session_after.verification_status,
+                VerificationStatus::Verified
+            );
+            assert_eq!(
+                source_session_after.acceptance_status,
+                Some(AcceptanceStatus::Accepted)
+            );
+            assert_eq!(
+                source_session_after.verification_confirmation_status,
+                Some(VerificationConfirmationStatus::Accepted)
+            );
+            assert_eq!(
+                state
+                    .task_proposal_repo
+                    .get_by_session(&fixture.session_id)
+                    .await
+                    .expect("source proposals should still load")
+                    .len(),
+                source_proposals_before.len()
+            );
+            assert_eq!(
+                state
+                    .task_repo
+                    .get_by_ideation_session(&fixture.session_id)
+                    .await
+                    .expect("source tasks should still load")
+                    .len(),
+                source_tasks_before.len()
+            );
+
+            let queued = state
+                .message_queue
+                .get_queued(ChatContextType::Project, response.conversation.id.as_str());
+            assert_eq!(
+                queued.len(),
+                1,
+                "{mode} should queue exactly one first turn"
+            );
+            let queued_reference = queued[0]
+                .composer_artifact_references
+                .first()
+                .unwrap_or_else(|| panic!("{mode} queued turn should carry a plan reference"));
+            assert_eq!(queued_reference.kind, "plan");
+            assert_eq!(queued_reference.artifact_id, cloned_plan_id.as_str());
+            assert_eq!(
+                queued_reference.session_id.as_deref(),
+                Some(fresh_session_id.as_str())
+            );
+            assert_eq!(
+                queued_reference.title.as_deref(),
+                Some(fixture.artifact_name.as_str())
+            );
+            assert_eq!(queued_reference.version, Some(1));
+            assert_eq!(queued_reference.status.as_deref(), Some("active"));
+        }
+    }
+
+    #[tokio::test]
+    async fn ipc_contract_start_agent_conversation_non_plan_reference_keeps_chat_workspace_less() {
+        let _fake_claude = FakeCliOnPath::new("claude");
+        let state = AppState::new_test();
+        let project_id = ProjectId::from_string("project-start-agent-non-plan-ref-ipc".to_string());
+        let mut project = Project::new(
+            "Start Agent Non Plan Reference".to_string(),
+            "/tmp/project-start-agent-non-plan-ref-ipc".to_string(),
+        );
+        project.id = project_id.clone();
+        state
+            .project_repo
+            .create(project)
+            .await
+            .expect("project should persist");
+
+        let artifact = state
+            .artifact_repo
+            .create(Artifact::new_inline(
+                "Design Context",
+                ArtifactType::DesignDoc,
+                "design context",
+                "test",
+            ))
+            .await
+            .expect("design artifact should persist");
+
+        let execution_state = Arc::new(ExecutionState::new());
+        execution_state.pause();
+        let team_service = Arc::new(TeamService::new_without_events(Arc::new(
+            TeamStateTracker::new(),
+        )));
+        let app = mock_builder()
+            .manage(state)
+            .manage(Arc::clone(&execution_state))
+            .manage(team_service)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        let reference = ComposerArtifactReference {
+            artifact_id: artifact.id.as_str().to_string(),
+            kind: "design_doc".to_string(),
+            title: Some("Design Context".to_string()),
+            session_id: None,
+            version: Some(artifact.metadata.version),
+            status: None,
+        };
+        let response = start_agent_conversation(
+            plan_reference_start_input(&project_id, "chat", reference.clone()),
+            app.state::<AppState>(),
+            app.state::<Arc<ExecutionState>>(),
+            app.state::<Arc<TeamService>>(),
+            app.handle().clone(),
+        )
+        .await
+        .expect("non-plan chat reference should keep current startup behavior");
+
+        assert!(response.workspace.is_none());
+        assert!(response.send_result.was_queued);
+        let queued = app
+            .state::<AppState>()
+            .message_queue
+            .get_queued(ChatContextType::Project, response.conversation.id.as_str());
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].composer_artifact_references, vec![reference]);
+    }
+
+    #[tokio::test]
+    async fn ipc_contract_start_agent_conversation_existing_linked_session_skips_plan_reference_import(
+    ) {
+        let _fake_claude = FakeCliOnPath::new("claude");
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let repo_path = temp.path().join("repo");
+        let worktree_parent = temp.path().join("worktrees");
+        super::setup_publish_repo(&repo_path);
+
+        let state = AppState::new_test();
+        let project_id =
+            ProjectId::from_string("project-start-agent-existing-plan-link-ipc".to_string());
+        let mut project = Project::new(
+            "Start Agent Existing Plan Link".to_string(),
+            repo_path.to_string_lossy().to_string(),
+        );
+        project.id = project_id.clone();
+        project.base_branch = Some("main".to_string());
+        project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+        let project = state
+            .project_repo
+            .create(project)
+            .await
+            .expect("project should persist");
+
+        let source_fixture = seed_source_plan_reference_fixture(&state, &project_id).await;
+        let linked_plan = state
+            .artifact_repo
+            .create(Artifact::new_inline(
+                "Already Linked Plan",
+                ArtifactType::Specification,
+                "linked plan content",
+                "test",
+            ))
+            .await
+            .expect("linked plan should persist");
+        let linked_session = state
+            .ideation_session_repo
+            .create(
+                IdeationSession::builder()
+                    .project_id(project_id.clone())
+                    .plan_artifact_id(linked_plan.id.clone())
+                    .session_flow(IdeationSessionFlow::Planning)
+                    .build(),
+            )
+            .await
+            .expect("linked session should persist");
+
+        let mut conversation = ChatConversation::new_project(project_id.clone());
+        conversation.set_agent_mode(Some(AgentConversationWorkspaceMode::Edit));
+        let conversation = state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .expect("draft conversation should persist");
+        let mut workspace = prepare_agent_conversation_workspace(
+            &project,
+            &conversation.id,
+            AgentConversationWorkspaceMode::Edit,
+            AgentConversationWorkspaceBaseSelection {
+                kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+                branch_mode: None,
+                base_ref: Some("main".to_string()),
+                display_name: None,
+                source_pull_request: None,
+            },
+        )
+        .await
+        .expect("workspace should prepare");
+        workspace.linked_ideation_session_id = Some(linked_session.id.clone());
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace should persist");
+
+        let sessions_before = state
+            .ideation_session_repo
+            .get_by_project(&project_id)
+            .await
+            .expect("sessions should load")
+            .len();
+
+        let execution_state = Arc::new(ExecutionState::new());
+        execution_state.pause();
+        let team_service = Arc::new(TeamService::new_without_events(Arc::new(
+            TeamStateTracker::new(),
+        )));
+        let app = mock_builder()
+            .manage(state)
+            .manage(Arc::clone(&execution_state))
+            .manage(team_service)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        let mut input = plan_reference_start_input(
+            &project_id,
+            "edit",
+            source_plan_composer_reference(&source_fixture),
+        );
+        input.conversation_id = Some(conversation.id.as_str().to_string());
+        let response = start_agent_conversation(
+            input,
+            app.state::<AppState>(),
+            app.state::<Arc<ExecutionState>>(),
+            app.state::<Arc<TeamService>>(),
+            app.handle().clone(),
+        )
+        .await
+        .expect("existing linked session should continue without import");
+
+        let workspace = response.workspace.expect("workspace should be returned");
+        assert_eq!(
+            workspace.linked_ideation_session_id.as_deref(),
+            Some(linked_session.id.as_str())
+        );
+        let state = app.state::<AppState>();
+        let sessions_after = state
+            .ideation_session_repo
+            .get_by_project(&project_id)
+            .await
+            .expect("sessions should load")
+            .len();
+        assert_eq!(sessions_after, sessions_before);
+
+        let queued = state
+            .message_queue
+            .get_queued(ChatContextType::Project, response.conversation.id.as_str());
+        assert_eq!(queued.len(), 1);
+        assert_eq!(
+            queued[0].composer_artifact_references,
+            vec![source_plan_composer_reference(&source_fixture)]
+        );
+    }
+
+    #[tokio::test]
+    async fn ipc_contract_start_agent_conversation_multiple_plan_references_fail_closed() {
+        let _fake_claude = FakeCliOnPath::new("claude");
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let repo_path = temp.path().join("repo");
+        let worktree_parent = temp.path().join("worktrees");
+        super::setup_publish_repo(&repo_path);
+
+        let state = AppState::new_test();
+        let project_id =
+            ProjectId::from_string("project-start-agent-multi-plan-ref-ipc".to_string());
+        let mut project = Project::new(
+            "Start Agent Multiple Plan References".to_string(),
+            repo_path.to_string_lossy().to_string(),
+        );
+        project.id = project_id.clone();
+        project.base_branch = Some("main".to_string());
+        project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+        state
+            .project_repo
+            .create(project)
+            .await
+            .expect("project should persist");
+
+        let first = seed_source_plan_reference_fixture(&state, &project_id).await;
+        let second = seed_source_plan_reference_fixture(&state, &project_id).await;
+
+        let execution_state = Arc::new(ExecutionState::new());
+        execution_state.pause();
+        let team_service = Arc::new(TeamService::new_without_events(Arc::new(
+            TeamStateTracker::new(),
+        )));
+        let app = mock_builder()
+            .manage(state)
+            .manage(Arc::clone(&execution_state))
+            .manage(team_service)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        let mut input =
+            plan_reference_start_input(&project_id, "edit", source_plan_composer_reference(&first));
+        input
+            .composer_artifact_references
+            .push(source_plan_composer_reference(&second));
+
+        let error = start_agent_conversation(
+            input,
+            app.state::<AppState>(),
+            app.state::<Arc<ExecutionState>>(),
+            app.state::<Arc<TeamService>>(),
+            app.handle().clone(),
+        )
+        .await
+        .expect_err("multiple plan references should fail closed");
+
+        assert!(
+            error.contains("exactly one plan reference"),
+            "unexpected error: {error}"
+        );
     }
 
     #[tokio::test]

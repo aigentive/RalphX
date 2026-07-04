@@ -9,6 +9,9 @@ use crate::application::agent_conversation_workspace::{
     AgentConversationWorkspaceBaseSelection, AgentConversationWorkspaceSetupMode,
 };
 use crate::application::chat_service::{AgentConversationCreatedPayload, SendMessageOptions};
+use crate::application::plan_reference_import::{
+    import_selected_plan_reference_for_agent_start, selected_plan_reference_requires_workspace,
+};
 use crate::application::ticket_canonical_branch::ensure_ticket_canonical_branch;
 use crate::application::{AppState, ChatService, SendResult, TeamService};
 use crate::commands::ExecutionState;
@@ -169,13 +172,17 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             .map(ChatConversationId::from_string);
         let ticket_start_base_reference =
             first_ticket_start_base_reference(&input.composer_integration_references);
+        let plan_reference_requires_workspace =
+            selected_plan_reference_requires_workspace(&input.composer_artifact_references)?;
         let mut source_pull_request = normalize_agent_workspace_source_pull_request(
             input.base_source_pull_request,
             base_ref_kind,
             base_ref.as_deref(),
         )?;
         let should_create_workspace =
-            agent_mode_should_create_workspace(mode, source_pull_request.as_ref());
+            agent_mode_should_create_workspace(mode, source_pull_request.as_ref())
+                || plan_reference_requires_workspace;
+        let mut composer_artifact_references = input.composer_artifact_references.clone();
         let project_id = ProjectId::from_string(input.project_id.clone());
         log_start_agent_conversation_phase(
             &input.project_id,
@@ -328,6 +335,16 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
                 "Setup workspace",
             );
         }
+        let existing_workspace = if should_create_workspace {
+            self.deps
+                .state
+                .agent_conversation_workspace_repo
+                .get_by_conversation_id(&conversation.id)
+                .await
+                .map_err(|error| error.to_string())?
+        } else {
+            None
+        };
         let workspace = if should_create_workspace {
             let pr_automation_defaults =
                 agent_workspace_pr_automation_defaults_for_project(self.deps.state, &project.id)
@@ -348,6 +365,21 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             )
             .await
             .map_err(|error| error.to_string())?;
+            if let Some(existing_workspace) = existing_workspace.as_ref() {
+                if existing_workspace.linked_ideation_session_id.is_some() {
+                    workspace.linked_ideation_session_id =
+                        existing_workspace.linked_ideation_session_id.clone();
+                    workspace.linked_plan_branch_id =
+                        existing_workspace.linked_plan_branch_id.clone();
+                }
+            }
+            composer_artifact_references = import_selected_plan_reference_for_agent_start(
+                self.deps.state,
+                &project,
+                &mut workspace,
+                &composer_artifact_references,
+            )
+            .await?;
             ensure_plan_workspace_planning_session_link(self.deps.state, &project, &mut workspace)
                 .await?;
             Some(workspace)
@@ -524,7 +556,7 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
                     working_directory_override,
                     composer_project_references: input.composer_project_references.clone(),
                     composer_integration_references: input.composer_integration_references.clone(),
-                    composer_artifact_references: input.composer_artifact_references.clone(),
+                    composer_artifact_references,
                     ..Default::default()
                 },
             )

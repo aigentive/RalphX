@@ -1,5 +1,6 @@
 # Generated local artifacts
 .artifacts/
+/ralphx-plugin/
 
 # DB backups
 backups/
