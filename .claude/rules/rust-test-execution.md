@@ -17,7 +17,8 @@ paths:
 | Merged suites are nextest-only | `src-tauri/tests/suite_*/main.rs` has a guard that fails under plain libtest; nextest isolates each test process and avoids env/PATH races |
 | Use `cargo-nextest` for broad Rust runs | ✅ `cargo nextest run --manifest-path src-tauri/Cargo.toml --lib --profile ci --features test-utils` for current root-lib coverage and CI; integration suites also use nextest |
 | Run both Rust clippy gates | `cargo clippy --manifest-path src-tauri/Cargo.toml --lib --bins --no-default-features -- -D warnings` + `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings` |
-| Use the fast wrapper for CI-shaped local loops | ✅ `scripts/test-rust-fast.sh pr` / `main` / `ipc` / `lib-1` / `lib-2`; `*-parallel` modes are local-only wall-clock optimizers that isolate `CARGO_TARGET_DIR` per lane |
+| Use the fast wrapper for CI-shaped local loops | ✅ `scripts/test-rust-fast.sh pr` / `main` / `ipc` / `layering` / `full-integration` / `lib-1` / `lib-2`; `*-parallel` modes are local-only wall-clock optimizers that isolate `CARGO_TARGET_DIR` per lane |
+| Keep the layering ratchet current | `python3 scripts/check-layering.py` blocks new tracked cross-layer edges; intentional debt removals/additions update `scripts/baselines/layering.json` in the same PR |
 | Keep helper runs checkout-local | `scripts/test-rust-fast.sh` resolves paths relative to its own checkout/worktree and refuses to run if the current cwd belongs to a different RalphX checkout |
 | PATH must honor rustup toolchain | If Cargo reports an older compiler despite `rust-toolchain.toml`, run with `RUSTC=$(rustup which --toolchain 1.91.0 rustc) rustup run 1.91.0 cargo test ...`; Homebrew `cargo` can otherwise drive Homebrew `rustc` |
 | `cargo test` name filters are single-filter only | `cargo test <TESTNAME>` / `cargo test --lib <FILTER>` accepts one substring filter; do not append multiple test names and expect Cargo/libtest to combine them |
@@ -60,17 +61,19 @@ paths:
 | Test layers | Keep fast repo/unit suites separate from slower integration/state-machine/git suites |
 | Large lib suites | When a lib-side test file becomes a massive orchestration suite, prefer moving it to `src-tauri/tests/` and exposing only the minimum internal-facing API with `#[doc(hidden)] pub` rather than keeping it in the giant `--lib` binary |
 | Internal support | Invest early in a thin shared test-support layer under `src-tauri/src/testing/` when setup repeats |
-| CI coverage split | PR CI = IPC contract suite + 2 root-lib shards, currently feature-on with `test-utils`; `push` CI = PR stack + doctests; local mirror = `scripts/test-rust-fast.sh pr` / `main` |
+| CI coverage split | PR CI = layering ratchet + IPC contract suite + archived root-lib shards, feature-on with `test-utils`; `push` CI = PR stack + workspace doctests + full integration; local mirror = `scripts/test-rust-fast.sh pr` / `main` |
 
 ## Selective Commands
 
 ```bash
 scripts/test-rust-fast.sh ipc
+scripts/test-rust-fast.sh layering
 scripts/test-rust-fast.sh lib-1
 scripts/test-rust-fast.sh lib-2
 scripts/test-rust-fast.sh pr
 scripts/test-rust-fast.sh pr-parallel
 scripts/test-rust-fast.sh main
+scripts/test-rust-fast.sh full-integration
 scripts/bench-rust-build.sh --label before
 cargo test --manifest-path src-tauri/Cargo.toml db_connection --lib
 cargo test --manifest-path src-tauri/crates/ralphx-domain/Cargo.toml
@@ -82,7 +85,8 @@ cargo nextest run --manifest-path src-tauri/Cargo.toml --features test-utils --t
 cargo nextest run --manifest-path src-tauri/Cargo.toml --lib --features test-utils
 cargo nextest run --manifest-path src-tauri/Cargo.toml --lib --profile ci --features test-utils
 cargo nextest run --manifest-path src-tauri/Cargo.toml --profile ci --features test-utils
-cargo test --manifest-path src-tauri/Cargo.toml --doc
+cargo test --manifest-path src-tauri/Cargo.toml --workspace --doc
+python3 scripts/check-layering.py
 python3 scripts/check-rust-test-features.py
 python3 scripts/check-test-suite-modules.py
 ```
@@ -120,8 +124,8 @@ python3 scripts/check-test-suite-modules.py
 | Clippy feature matrix | `cargo clippy --manifest-path src-tauri/Cargo.toml --lib --bins --no-default-features -- -D warnings && cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings` |
 | Pinpoint module/test validation | Lib: `cargo test --manifest-path src-tauri/Cargo.toml <filter> --lib`; integration: `cargo nextest run --manifest-path src-tauri/Cargo.toml --test <suite> -E 'test(<module_or_test>)'` |
 | Lib-side capability check | `cargo test --manifest-path src-tauri/Cargo.toml '<filter>' --lib -- --ignored` |
-| Doctests | `cargo test --manifest-path src-tauri/Cargo.toml --doc` |
-| CI broad coverage | `cargo nextest run --manifest-path src-tauri/Cargo.toml --profile ci --features test-utils && cargo test --manifest-path src-tauri/Cargo.toml --doc` |
+| Doctests | `cargo test --manifest-path src-tauri/Cargo.toml --workspace --doc` |
+| CI broad coverage | `cargo nextest run --manifest-path src-tauri/Cargo.toml --profile ci --features test-utils && cargo test --manifest-path src-tauri/Cargo.toml --workspace --doc` |
 
 ## Nextest Groups
 
@@ -198,7 +202,7 @@ cargo test --manifest-path src-tauri/Cargo.toml 'infrastructure::sqlite::sqlite_
 | Situation | Action |
 |---|---|
 | Converting an old SQLite test | Replace `open_memory_connection() + run_migrations()` with `SqliteTestDb` first, then extract shared seed helpers |
-| Reproducing Rust CI locally | Use `scripts/test-rust-fast.sh pr` for PR parity, `main` for push parity, and shard/local modes (`ipc`, `lib-1`, `lib-2`) when you know the lane you touched |
+| Reproducing Rust CI locally | Use `scripts/test-rust-fast.sh pr` for PR parity, `main` for push parity, and shard/local modes (`ipc`, `layering`, `full-integration`, `lib-1`, `lib-2`) when you know the lane you touched |
 | Seeing remaining `open_memory_connection()` calls after migration work | Check whether the suite is connection/formatting-only before converting it; optimize real migration-replay hotspots first |
 | Splitting oversized lib suites | Move them to `src-tauri/tests/<suite>.rs`, compile them as a separate integration binary, and keep the exported surface minimal and explicitly internal-facing |
 | Splitting HTTP handler suites | Make the handler/types module reachable from integration tests, import through `ralphx_lib::http_server::{handlers, types}`, and keep SQLite-only handler helpers on `AppState::new_sqlite_test()` / `new_sqlite_test_with_registry()` instead of duplicating ad hoc setup |
