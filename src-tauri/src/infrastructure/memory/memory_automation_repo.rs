@@ -60,7 +60,12 @@ impl AutomationRepository for MemoryAutomationRepository {
             })
             .cloned()
             .collect();
-        rows.sort_by(|left, right| right.created_at.cmp(&left.created_at));
+        rows.sort_by(|left, right| {
+            right
+                .created_at
+                .cmp(&left.created_at)
+                .then_with(|| right.id.as_str().cmp(left.id.as_str()))
+        });
         Ok(rows)
     }
 
