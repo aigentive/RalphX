@@ -96,7 +96,8 @@ New pattern → add one-liner here. Pattern name + rule only.
 | No Inline Timeout Consts | All durations → `runtime_config` + `config/ralphx.yaml`, never Rust `const` |
 | Rust test runner split | Use targeted `cargo test` for pinpoint Rust validation and doctests; use `cargo nextest run` for broad Rust lib runs; fixture rules and commands live in `.claude/rules/rust-test-execution.md` |
 | Tauri test-utils gate | Tauri mock-app helpers require `--features test-utils`; keep root lib/IPC CI lanes feature-on until later phases remove lib-side `tauri::test` users |
-| Worktree-safe Rust helper | `scripts/test-rust-fast.sh` mirrors PR/`main` Rust CI locally; `*-parallel` modes isolate `src-tauri/target/rust-fast/*` per lane and refuse cross-checkout drift |
+| Worktree-safe Rust helper | `scripts/test-rust-fast.sh` mirrors PR/`main` Rust CI locally; PR includes the layering ratchet, `main` adds workspace doctests + full integration, and `*-parallel` modes isolate `src-tauri/target/rust-fast/*` per lane |
+| Layering ratchet | `python3 scripts/check-layering.py` blocks new tracked backend layering violations; intentional baseline changes require reviewing `scripts/baselines/layering.json` |
 | Workspace domain split | Low-dependency backend modules and pure entities move into `src-tauri/crates/ralphx-domain`; review logic, shared memory/team types, and pure repository traits belong there, while Tauri/SQLite-facing or root-coupled code stays in the root crate until a clean boundary exists |
 | Forward-only migration repairs | Never reuse or renumber shipped migration versions; schema repair for already-upgraded DBs must be a new forward-only migration |
 | Oversized lib suite split | Move massive orchestration/state-machine/worktree suites out of `src/**` lib tests into existing `src-tauri/tests/suite_*/` modules, and expose only the minimum internal-facing API needed for them |
@@ -145,7 +146,10 @@ cargo build                                                              # build
 scripts/test-rust-fast.sh pr                                             # local PR Rust CI parity
 scripts/test-rust-fast.sh main                                           # local push/main Rust CI parity
 scripts/test-rust-fast.sh pr-parallel                                    # local wall-clock optimized PR Rust CI parity
+scripts/test-rust-fast.sh layering                                       # local layering ratchet
+scripts/test-rust-fast.sh full-integration                               # local push-only full Rust integration sweep
 scripts/bench-rust-build.sh --label before                               # Rust build-cost benchmark for profile/linker/crate-type changes
+python3 scripts/check-layering.py                                        # layering ratchet
 cargo test --manifest-path src-tauri/Cargo.toml <filter> --lib           # pinpoint lib tests
 cargo nextest run --manifest-path src-tauri/Cargo.toml --test <suite> -E 'test(<module_or_test>)'  # targeted integration suites
 cargo nextest run --manifest-path src-tauri/Cargo.toml --lib --features test-utils  # broad root lib run during PR 0.x decoupling
