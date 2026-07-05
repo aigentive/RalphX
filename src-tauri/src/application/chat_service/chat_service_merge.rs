@@ -1071,6 +1071,7 @@ async fn complete_merge_and_schedule<R: Runtime + 'static>(
         plan_pr_description_drafter: app_state.as_ref().map(|state| {
             crate::application::plan_pr_description::build_app_state_plan_pr_description_drafter(
                 Arc::clone(&state.agent_conversation_workspace_repo),
+                Arc::clone(&state.chat_conversation_repo),
                 Arc::clone(&state.agent_provider_settings_repo),
                 state.agent_clients.clone(),
             )

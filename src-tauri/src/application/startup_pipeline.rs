@@ -309,6 +309,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         let plan_pr_description_drafter =
             crate::application::plan_pr_description::build_app_state_plan_pr_description_drafter(
                 Arc::clone(&agent_conversation_workspace_repo),
+                Arc::clone(&conversation_repo),
                 Arc::clone(&agent_provider_settings_repo),
                 agent_clients.clone(),
             );

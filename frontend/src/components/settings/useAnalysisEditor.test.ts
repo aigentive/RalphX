@@ -7,13 +7,20 @@
 
 import { renderHook, act } from "@testing-library/react";
 import { describe, it, expect, beforeEach, vi } from "vitest";
+import { toast } from "sonner";
 import type { Project } from "@/types/project";
 import { useAnalysisEditor } from "./useAnalysisEditor";
-import "@/lib/tauri";
+import { api } from "@/lib/tauri";
 import "@/providers/EventProvider";
 
 // Mock the API
-vi.mock("@/lib/tauri");
+vi.mock("@/lib/tauri", () => ({
+  api: {
+    projects: {
+      updateCustomAnalysis: vi.fn(),
+    },
+  },
+}));
 
 // Mock the EventProvider
 const mockSubscribe = vi.fn(() => vi.fn());
@@ -66,6 +73,7 @@ const mockProject: Project = {
 describe("useAnalysisEditor", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(api.projects.updateCustomAnalysis).mockResolvedValue(mockProject);
   });
 
   describe("initialization", () => {
@@ -151,7 +159,7 @@ describe("useAnalysisEditor", () => {
       expect(result.current.entries[0].label).toBe("Frontend");
     });
 
-    it("resets all entries to detected baseline", () => {
+    it("resets all entries to detected baseline", async () => {
       const { result } = renderHook(() => useAnalysisEditor(mockProject));
 
       act(() => {
@@ -159,13 +167,14 @@ describe("useAnalysisEditor", () => {
         result.current.updateField(1, "label", "Also Modified");
       });
 
-      act(() => {
-        result.current.resetAll();
+      await act(async () => {
+        await result.current.resetAll();
       });
 
       expect(result.current.entries[0].label).toBe("Frontend");
       expect(result.current.entries[1].label).toBe("Backend");
       expect(result.current.isDirty).toBe(false);
+      expect(api.projects.updateCustomAnalysis).not.toHaveBeenCalled();
     });
   });
 
@@ -340,6 +349,83 @@ describe("useAnalysisEditor", () => {
         result.current.resetField(0, "label");
       });
       expect(result.current.isDirty).toBe(false);
+    });
+
+    it("clears persisted custom analysis when reset all restores detected entries", async () => {
+      const customProject: Project = {
+        ...mockProject,
+        customAnalysis: JSON.stringify([
+          {
+            path: "./custom",
+            label: "Custom Path",
+            install: "npm install",
+            validate: ["echo test"],
+            worktree_setup: [],
+          },
+        ]),
+      };
+      const onSaveSuccess = vi.fn();
+      const { result } = renderHook(() =>
+        useAnalysisEditor(customProject, onSaveSuccess)
+      );
+
+      expect(result.current.entries[0].label).toBe("Custom Path");
+
+      await act(async () => {
+        await result.current.resetAll();
+      });
+
+      expect(api.projects.updateCustomAnalysis).toHaveBeenCalledWith(
+        "test-project",
+        null
+      );
+      expect(onSaveSuccess).toHaveBeenCalledWith(null);
+      expect(result.current.entries[0].label).toBe("Frontend");
+      expect(result.current.isDirty).toBe(false);
+    });
+
+    it("resets local entries without persistence when project is null", async () => {
+      const { result } = renderHook(() => useAnalysisEditor(null));
+
+      await act(async () => {
+        await result.current.resetAll();
+      });
+
+      expect(result.current.entries).toEqual([]);
+      expect(api.projects.updateCustomAnalysis).not.toHaveBeenCalled();
+    });
+
+    it("keeps custom entries when clearing persisted analysis fails", async () => {
+      const customProject: Project = {
+        ...mockProject,
+        customAnalysis: JSON.stringify([
+          {
+            path: "./custom",
+            label: "Custom Path",
+            install: "npm install",
+            validate: ["echo test"],
+            worktree_setup: [],
+          },
+        ]),
+      };
+
+      vi.mocked(api.projects.updateCustomAnalysis).mockRejectedValueOnce(
+        new Error("Reset failed")
+      );
+
+      const { result } = renderHook(() => useAnalysisEditor(customProject));
+
+      await act(async () => {
+        await result.current.resetAll();
+      });
+
+      expect(api.projects.updateCustomAnalysis).toHaveBeenCalledWith(
+        "test-project",
+        null
+      );
+      expect(toast.error).toHaveBeenCalledWith("Reset failed");
+      expect(result.current.entries[0].label).toBe("Custom Path");
+      expect(result.current.isDirty).toBe(true);
     });
   });
 

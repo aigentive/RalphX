@@ -18,17 +18,20 @@ use crate::domain::agents::{
 };
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentWorkspacePrDescription,
-    ChatConversationId, IdeationAnalysisBaseRefKind, PlanBranch, Project,
+    ChatConversation, ChatConversationId, IdeationAnalysisBaseRefKind, PlanBranch, Project,
 };
-use crate::domain::repositories::AgentConversationWorkspaceRepository;
-use crate::domain::repositories::AgentProviderSettingsRepository;
+use crate::domain::repositories::{
+    AgentConversationWorkspaceRepository, AgentProviderSettingsRepository,
+    ChatConversationRepository,
+};
 use crate::domain::services::{PlanPrDescriptionDrafter, PrReviewState};
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::agent_names;
-use tracing::info;
+use tracing::{info, warn};
 
 pub(crate) struct AppStatePlanPrDescriptionDrafter {
     agent_conversation_workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    chat_conversation_repo: Arc<dyn ChatConversationRepository>,
     agent_provider_settings_repo: Arc<dyn AgentProviderSettingsRepository>,
     agent_clients: AgentClientBundle,
 }
@@ -36,11 +39,13 @@ pub(crate) struct AppStatePlanPrDescriptionDrafter {
 impl AppStatePlanPrDescriptionDrafter {
     pub(crate) fn new(
         agent_conversation_workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+        chat_conversation_repo: Arc<dyn ChatConversationRepository>,
         agent_provider_settings_repo: Arc<dyn AgentProviderSettingsRepository>,
         agent_clients: AgentClientBundle,
     ) -> Self {
         Self {
             agent_conversation_workspace_repo,
+            chat_conversation_repo,
             agent_provider_settings_repo,
             agent_clients,
         }
@@ -49,11 +54,13 @@ impl AppStatePlanPrDescriptionDrafter {
 
 pub(crate) fn build_app_state_plan_pr_description_drafter(
     agent_conversation_workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    chat_conversation_repo: Arc<dyn ChatConversationRepository>,
     agent_provider_settings_repo: Arc<dyn AgentProviderSettingsRepository>,
     agent_clients: AgentClientBundle,
 ) -> Arc<dyn PlanPrDescriptionDrafter> {
     Arc::new(AppStatePlanPrDescriptionDrafter::new(
         agent_conversation_workspace_repo,
+        chat_conversation_repo,
         agent_provider_settings_repo,
         agent_clients,
     ))
@@ -70,6 +77,7 @@ impl PlanPrDescriptionDrafter for AppStatePlanPrDescriptionDrafter {
     ) -> AppResult<AgentWorkspacePrDescription> {
         draft_plan_pr_description(
             &self.agent_conversation_workspace_repo,
+            &self.chat_conversation_repo,
             &self.agent_provider_settings_repo,
             &self.agent_clients,
             project,
@@ -83,6 +91,7 @@ impl PlanPrDescriptionDrafter for AppStatePlanPrDescriptionDrafter {
 
 async fn draft_plan_pr_description(
     workspace_repo: &Arc<dyn AgentConversationWorkspaceRepository>,
+    chat_conversation_repo: &Arc<dyn ChatConversationRepository>,
     provider_settings_repo: &Arc<dyn AgentProviderSettingsRepository>,
     agent_clients: &AgentClientBundle,
     project: &Project,
@@ -93,6 +102,7 @@ async fn draft_plan_pr_description(
     let repo_path = Path::new(&project.working_directory);
 
     let synthetic_id = ChatConversationId::new();
+    create_synthetic_plan_pr_conversation(chat_conversation_repo, &synthetic_id, project).await?;
 
     let workspace = AgentConversationWorkspace::new(
         synthetic_id.clone(),
@@ -105,7 +115,15 @@ async fn draft_plan_pr_description(
         plan_branch.branch_name.clone(),
         project.working_directory.clone(),
     );
-    workspace_repo.create_or_update(workspace.clone()).await?;
+    if let Err(error) = workspace_repo.create_or_update(workspace.clone()).await {
+        cleanup_synthetic_plan_pr_conversation(
+            workspace_repo,
+            chat_conversation_repo,
+            &synthetic_id,
+        )
+        .await;
+        return Err(error);
+    }
 
     let result = draft_plan_pr_description_inner(
         workspace_repo,
@@ -121,9 +139,47 @@ async fn draft_plan_pr_description(
     )
     .await;
 
-    let _ = workspace_repo.delete(&synthetic_id).await;
+    cleanup_synthetic_plan_pr_conversation(workspace_repo, chat_conversation_repo, &synthetic_id)
+        .await;
 
     result
+}
+
+async fn create_synthetic_plan_pr_conversation(
+    chat_conversation_repo: &Arc<dyn ChatConversationRepository>,
+    synthetic_id: &ChatConversationId,
+    project: &Project,
+) -> AppResult<()> {
+    let mut conversation = ChatConversation::new_project(project.id.clone());
+    conversation.id = synthetic_id.clone();
+    conversation.set_agent_mode(Some(AgentConversationWorkspaceMode::Edit));
+    conversation.set_title("Plan PR description draft");
+    conversation.archive();
+    chat_conversation_repo.create(conversation).await?;
+    Ok(())
+}
+
+async fn cleanup_synthetic_plan_pr_conversation(
+    workspace_repo: &Arc<dyn AgentConversationWorkspaceRepository>,
+    chat_conversation_repo: &Arc<dyn ChatConversationRepository>,
+    synthetic_id: &ChatConversationId,
+) {
+    if let Err(error) = workspace_repo.delete(synthetic_id).await {
+        warn!(
+            target: "ralphx_lib::application::plan_pr_description",
+            conversation_id = %synthetic_id,
+            error = %error,
+            "Failed to delete synthetic plan PR workspace"
+        );
+    }
+    if let Err(error) = chat_conversation_repo.delete(synthetic_id).await {
+        warn!(
+            target: "ralphx_lib::application::plan_pr_description",
+            conversation_id = %synthetic_id,
+            error = %error,
+            "Failed to delete synthetic plan PR conversation"
+        );
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

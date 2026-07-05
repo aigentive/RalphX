@@ -751,15 +751,14 @@ export const IDEATION_TOOLS: Tool[] = [
   {
     name: "delegate_start",
     description:
-      "Start a RalphX-native delegated specialist job. Use this for named specialized agents instead of relying on harness-native subagents. " +
-      "Current parent-context support is ideation-family only, but the delegated runtime itself is backed by dedicated delegated sessions, not ideation child sessions.",
+      "Start a RalphX-native delegated specialist job from the current agent context. Use this for named specialized agents instead of relying on harness-native subagents.",
     inputSchema: {
       type: "object",
       properties: {
         parent_session_id: {
           type: "string",
           description:
-            "Optional explicit parent ideation session that owns the delegated work. When omitted, RalphX infers it from the current ideation or verification-child session context supplied by the MCP transport.",
+            "Optional legacy explicit parent ideation session. Omit this in normal agent contexts; RalphX infers parent context from the MCP transport.",
         },
         parent_turn_id: {
           type: "string",
@@ -772,7 +771,7 @@ export const IDEATION_TOOLS: Tool[] = [
         parent_conversation_id: {
           type: "string",
           description:
-            "Optional parent conversation id for linking the delegated conversation back to the invoker chat.",
+            "Optional parent conversation id for linking the delegated conversation back to the invoker chat. Normally supplied by the MCP transport.",
         },
         parent_tool_use_id: {
           type: "string",

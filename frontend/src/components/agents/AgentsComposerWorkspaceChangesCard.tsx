@@ -13,6 +13,7 @@ import type { FileChange } from "@/api/diff";
 import type { AgentConversationWorkspace } from "@/api/chat";
 import { cn } from "@/lib/utils";
 
+import { canInspectAgentWorkspacePublishDiffs } from "./agentWorkspacePublishState";
 import type { DiffFilterMode } from "./AgentsPublishDiffFilter";
 import {
   AGENT_WORKSPACE_STALE_MS,
@@ -36,11 +37,17 @@ interface VisibleTaskWindow {
   hiddenAfter: number;
 }
 
+interface AgentTaskLedgerContext {
+  contextType: string;
+  contextId: string;
+}
+
 interface AgentsComposerWorkspaceChangesCardProps {
   conversationId: string;
   projectId?: string | null | undefined;
   workspace: AgentConversationWorkspace | null;
   isFocusedChildChat: boolean;
+  taskLedgerContext: AgentTaskLedgerContext | null;
   isAgentGenerating?: boolean;
   pauseHydration?: boolean;
   onOpenFile: (filePath: string, mode: DiffFilterMode) => void;
@@ -233,13 +240,13 @@ export function AgentsComposerWorkspaceChangesCard({
   projectId,
   workspace,
   isFocusedChildChat,
+  taskLedgerContext,
   isAgentGenerating = false,
   pauseHydration = false,
   onOpenFile,
   onPreloadPublishPane,
 }: AgentsComposerWorkspaceChangesCardProps) {
-  const canRender = !isFocusedChildChat;
-  if (!canRender) {
+  if (!taskLedgerContext) {
     return null;
   }
 
@@ -248,6 +255,8 @@ export function AgentsComposerWorkspaceChangesCard({
       conversationId={conversationId}
       projectId={projectId}
       workspace={workspace}
+      isFocusedChildChat={isFocusedChildChat}
+      taskLedgerContext={taskLedgerContext}
       isAgentGenerating={isAgentGenerating}
       pauseHydration={pauseHydration}
       onOpenFile={onOpenFile}
@@ -257,25 +266,30 @@ export function AgentsComposerWorkspaceChangesCard({
 }
 
 function PreviousTaskListDisclosure({
-  conversationId,
+  taskLedgerContext,
   projectId,
   list,
   expanded,
   onToggle,
 }: {
-  conversationId: string;
+  taskLedgerContext: AgentTaskLedgerContext;
   projectId?: string | null | undefined;
   list: AgentTaskListSummary;
   expanded: boolean;
   onToggle: () => void;
 }) {
   const tasksQuery = useQuery({
-    queryKey: agentWorkspaceKeys.agentTaskListTasks(conversationId, list.listId),
+    queryKey: agentWorkspaceKeys.agentTaskListTasksForScope(
+      taskLedgerContext.contextType,
+      taskLedgerContext.contextId,
+      list.listId,
+    ),
     queryFn: () =>
-      agentTaskApi.listConversationTaskListTasks({
-        conversationId,
+      agentTaskApi.listAgentTasksForList({
+        contextType: taskLedgerContext.contextType,
+        contextId: taskLedgerContext.contextId,
         projectId,
-        taskListId: list.listId,
+        listId: list.listId,
         includeDone: true,
       }),
     enabled: expanded,
@@ -356,6 +370,8 @@ function AgentsComposerWorkspaceChangesCardContent({
   conversationId,
   projectId,
   workspace,
+  isFocusedChildChat,
+  taskLedgerContext,
   isAgentGenerating,
   pauseHydration,
   onOpenFile,
@@ -364,6 +380,8 @@ function AgentsComposerWorkspaceChangesCardContent({
   conversationId: string;
   projectId?: string | null | undefined;
   workspace: AgentConversationWorkspace | null;
+  isFocusedChildChat: boolean;
+  taskLedgerContext: AgentTaskLedgerContext;
   isAgentGenerating: boolean;
   pauseHydration: boolean;
   onOpenFile: (filePath: string, mode: DiffFilterMode) => void;
@@ -378,8 +396,11 @@ function AgentsComposerWorkspaceChangesCardContent({
   const previousTaskSignatures = useRef<Map<string, string>>(new Map());
   const taskRowRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const canInspectChanges =
-    workspace?.mode === "edit" && workspace.status !== "missing";
-  const canScheduleReviewHydration = useDeferredAgentHydration(conversationId);
+    !isFocusedChildChat && canInspectAgentWorkspacePublishDiffs(workspace);
+  const taskLedgerScopeKey = `${taskLedgerContext.contextType}:${taskLedgerContext.contextId}`;
+  const canScheduleReviewHydration = useDeferredAgentHydration(
+    `${conversationId}:${taskLedgerScopeKey}`,
+  );
   const [canHydrateReview, setCanHydrateReview] = useState(false);
   useEffect(() => {
     setCanHydrateReview(false);
@@ -404,10 +425,14 @@ function AgentsComposerWorkspaceChangesCardContent({
         : false,
   });
   const tasksQuery = useQuery({
-    queryKey: agentWorkspaceKeys.agentTasks(conversationId),
+    queryKey: agentWorkspaceKeys.agentTasksForScope(
+      taskLedgerContext.contextType,
+      taskLedgerContext.contextId,
+    ),
     queryFn: () =>
-      agentTaskApi.listConversationTasks({
-        conversationId,
+      agentTaskApi.listAgentTasks({
+        contextType: taskLedgerContext.contextType,
+        contextId: taskLedgerContext.contextId,
         projectId,
         includeDone: true,
       }),
@@ -417,10 +442,14 @@ function AgentsComposerWorkspaceChangesCardContent({
       canHydrateReview && isAgentGenerating ? ACTIVE_AGENT_TASK_REFRESH_MS : false,
   });
   const taskListsQuery = useQuery({
-    queryKey: agentWorkspaceKeys.agentTaskLists(conversationId),
+    queryKey: agentWorkspaceKeys.agentTaskListsForScope(
+      taskLedgerContext.contextType,
+      taskLedgerContext.contextId,
+    ),
     queryFn: () =>
-      agentTaskApi.listConversationTaskLists({
-        conversationId,
+      agentTaskApi.listAgentTaskLists({
+        contextType: taskLedgerContext.contextType,
+        contextId: taskLedgerContext.contextId,
         projectId,
       }),
     enabled: canHydrateReview && activePanel === "tasks",
@@ -490,7 +519,7 @@ function AgentsComposerWorkspaceChangesCardContent({
     hasObservedTaskSnapshot.current = false;
     previousTaskSignatures.current = new Map();
     taskRowRefs.current.clear();
-  }, [conversationId]);
+  }, [conversationId, taskLedgerScopeKey]);
 
   useEffect(() => {
     if (isAgentGenerating && !previousIsAgentGenerating.current) {
@@ -873,7 +902,7 @@ function AgentsComposerWorkspaceChangesCardContent({
                       previousTaskLists.map((list) => (
                         <PreviousTaskListDisclosure
                           key={list.listId}
-                          conversationId={conversationId}
+                          taskLedgerContext={taskLedgerContext}
                           projectId={projectId}
                           list={list}
                           expanded={expandedTaskListIds.has(list.listId)}

@@ -31,6 +31,9 @@ const {
   composerQuestionModeRef,
   composerAgentStatusRef,
   eventSubscribers,
+  listAgentTaskListTasksMock,
+  listAgentTaskListsMock,
+  listAgentTasksMock,
   openUrlMock,
 } = vi.hoisted(() => ({
   getSessionPlanMock: vi.fn(),
@@ -45,8 +48,13 @@ const {
   composerQuestionModeRef: { current: undefined as unknown },
   composerAgentStatusRef: { current: "idle" },
   eventSubscribers: new Map<string, Set<(payload: unknown) => void>>(),
+  listAgentTaskListTasksMock: vi.fn(),
+  listAgentTaskListsMock: vi.fn(),
+  listAgentTasksMock: vi.fn(),
   openUrlMock: vi.fn(),
 }));
+
+const deferredHydrationTimeout = { timeout: 3_000 };
 
 vi.mock("@tauri-apps/plugin-opener", () => ({
   openUrl: (...args: unknown[]) => openUrlMock(...args),
@@ -258,6 +266,20 @@ vi.mock("@/api/chat", async (importOriginal) => {
     },
   };
 });
+
+vi.mock("@/api/agent-tasks", () => ({
+  agentTaskApi: {
+    listAgentTasks: (...args: unknown[]) => listAgentTasksMock(...args),
+    listAgentTaskLists: (...args: unknown[]) => listAgentTaskListsMock(...args),
+    listAgentTasksForList: (...args: unknown[]) =>
+      listAgentTaskListTasksMock(...args),
+    listConversationTasks: (...args: unknown[]) => listAgentTasksMock(...args),
+    listConversationTaskLists: (...args: unknown[]) =>
+      listAgentTaskListsMock(...args),
+    listConversationTaskListTasks: (...args: unknown[]) =>
+      listAgentTaskListTasksMock(...args),
+  },
+}));
 
 vi.mock("@/hooks/useVerificationStatus", () => ({
   verificationStatusKey: (sessionId: string) => ["verification", sessionId],
@@ -841,6 +863,9 @@ describe("AgentsActiveConversationPanel", () => {
     });
     getVerificationSpecialistsMock.mockResolvedValue({ specialists: [] });
     confirmVerificationMock.mockResolvedValue({ status: "ok" });
+    listAgentTasksMock.mockResolvedValue([]);
+    listAgentTaskListsMock.mockResolvedValue([]);
+    listAgentTaskListTasksMock.mockResolvedValue([]);
   });
 
   it("normalizes workspace runtime and forwards provider-supported capabilities", () => {
@@ -1025,6 +1050,64 @@ describe("AgentsActiveConversationPanel", () => {
 
     expect(onFocusTaskRuntime).toHaveBeenCalledWith("task-2", "review");
     expect(onOpenTaskArtifact).toHaveBeenCalledWith("task-2");
+  });
+
+  it("renders the composer task ledger for a focused task runtime chat", async () => {
+    listAgentTasksMock.mockResolvedValue([
+      {
+        taskId: "runtime-ledger-task-1",
+        taskNumber: 1,
+        title: "Investigate child runtime ledger",
+        state: "active",
+        ownerAgent: "ralphx-general-worker",
+        blockedBy: [],
+        blocks: [],
+        availability: "ready",
+        updatedAt: "2026-07-04T23:00:00Z",
+      },
+    ]);
+
+    renderPanel({
+      chatFocus: {
+        type: "task_runtime",
+        taskId: "task-42",
+        contextType: "task_execution",
+      },
+      chatFocusOptions: [
+        {
+          type: "workspace",
+          label: "Workspace",
+          description: "Show the workspace agent chat",
+        },
+        {
+          type: "task_runtime",
+          label: "Task",
+          description: "Show the task agent chat",
+          tone: "accent",
+        },
+      ],
+    });
+
+    await screen.findByTestId(
+      "agents-composer-context-tray",
+      undefined,
+      deferredHydrationTimeout,
+    );
+
+    expect(listAgentTasksMock).toHaveBeenCalledWith({
+      contextType: "task_execution",
+      contextId: "task-42",
+      projectId: "project-1",
+      includeDone: true,
+    });
+
+    fireEvent.click(screen.getByTestId("agents-composer-tasks-toggle"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-composer-task-1")).toHaveTextContent(
+        "Investigate child runtime ledger",
+      ),
+    );
   });
 
   it("focuses the workspace Review chat from the runtime status CTA", async () => {
