@@ -179,6 +179,7 @@ const RALPHX_WORKING_DIRECTORY = runtimeContext.workingDirectory;
 const RALPHX_AGENT_PROFILE = runtimeContext.agentProfile;
 const RALPHX_CONTEXT_TYPE = runtimeContext.contextType;
 const RALPHX_CONTEXT_ID = runtimeContext.contextId;
+const RALPHX_CONVERSATION_ID = runtimeContext.conversationId;
 const RALPHX_PARENT_CONVERSATION_ID = runtimeContext.parentConversationId;
 
 function buildArtifactMutationTransportHeaders(): Record<string, string> | undefined {
@@ -933,8 +934,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const { session_id } = args as { session_id: string };
       result = await callTauriGet(`parent_session_context/${session_id}`);
     } else if (name === "delegate_start") {
+      const delegateArgs = args as Record<string, unknown>;
+      const explicitParentConversationId =
+        typeof delegateArgs.parent_conversation_id === "string" &&
+        delegateArgs.parent_conversation_id.trim().length > 0
+          ? delegateArgs.parent_conversation_id
+          : undefined;
+      const parentConversationId =
+        explicitParentConversationId ??
+        RALPHX_PARENT_CONVERSATION_ID ??
+        RALPHX_CONVERSATION_ID;
       result = await callTauri("coordination/delegate/start", {
-        ...(args as Record<string, unknown>),
+        ...delegateArgs,
+        ...(parentConversationId
+          ? { parent_conversation_id: parentConversationId }
+          : {}),
         caller_agent_name: AGENT_TYPE,
         caller_agent_profile: RALPHX_AGENT_PROFILE,
         caller_context_type: RALPHX_CONTEXT_TYPE,
