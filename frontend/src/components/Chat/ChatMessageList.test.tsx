@@ -6334,6 +6334,98 @@ describe("ChatMessageList - Scroll Behavior", () => {
       }
     });
 
+    it("ignores unowned child runtime layout ticks while workspace transcript is sticky", async () => {
+      const rafSpy = vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
+        cb(0);
+        return 1;
+      });
+      const cancelSpy = vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
+
+      try {
+        mockIsAtBottom = false;
+        mockIsAtBottomRef.current = true;
+        const messages = createMessages(2);
+        const { rerender } = render(
+          <ChatMessageList
+            {...defaultProps}
+            messages={messages}
+            externalLayoutVersion={0}
+            externalLayoutOwnedByVisibleRuntime={false}
+          />
+        );
+
+        const scroller = await screen.findByTestId("mock-virtuoso");
+        setMockScrollerGeometry(scroller, {
+          clientHeight: 456,
+          scrollHeight: 1000,
+          scrollTop: 500,
+        });
+        scrollToMock.mockClear();
+
+        rerender(
+          <ChatMessageList
+            {...defaultProps}
+            messages={messages}
+            externalLayoutVersion={1}
+            externalLayoutOwnedByVisibleRuntime={false}
+          />
+        );
+        await act(async () => {});
+
+        expect(scrollToMock).not.toHaveBeenCalled();
+        expect(scroller.scrollTop).toBe(500);
+      } finally {
+        rafSpy.mockRestore();
+        cancelSpy.mockRestore();
+      }
+    });
+
+    it("pins owned external composer chrome changes while workspace transcript is sticky", async () => {
+      const rafSpy = vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
+        cb(0);
+        return 1;
+      });
+      const cancelSpy = vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
+
+      try {
+        mockIsAtBottom = false;
+        mockIsAtBottomRef.current = true;
+        const messages = createMessages(2);
+        const { rerender } = render(
+          <ChatMessageList
+            {...defaultProps}
+            messages={messages}
+            externalLayoutVersion={0}
+            externalLayoutOwnedByVisibleRuntime
+          />
+        );
+
+        const scroller = await screen.findByTestId("mock-virtuoso");
+        setMockScrollerGeometry(scroller, {
+          clientHeight: 456,
+          scrollHeight: 1000,
+          scrollTop: 500,
+        });
+        scrollToMock.mockClear();
+
+        rerender(
+          <ChatMessageList
+            {...defaultProps}
+            messages={messages}
+            externalLayoutVersion={1}
+            externalLayoutOwnedByVisibleRuntime
+          />
+        );
+
+        await waitFor(() =>
+          expect(scrollToMock).toHaveBeenCalledWith({ top: 544, behavior: "auto" })
+        );
+      } finally {
+        rafSpy.mockRestore();
+        cancelSpy.mockRestore();
+      }
+    });
+
     it("pins external chrome changes while sticky when the last row is temporarily out of range", async () => {
       const rafSpy = vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
         cb(0);

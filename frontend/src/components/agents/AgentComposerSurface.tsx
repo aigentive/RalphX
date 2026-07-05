@@ -368,6 +368,7 @@ export function AgentComposerSurface({
   const [selectedInternalSkillNames, setSelectedInternalSkillNames] = useState<
     Set<string>
   >(() => new Set());
+  const textareaAppliedHeightRef = useRef<number | null>(null);
   const [selectedProjectReferences, setSelectedProjectReferences] = useState<
     Map<string, AgentComposerProjectReference>
   >(() => new Map());
@@ -383,6 +384,7 @@ export function AgentComposerSurface({
   const restoreTextareaFocusCursorRef = useRef<number | null>(null);
   const hydratedInitialReferencesSignatureRef = useRef<string | null>(null);
   const value = isControlled ? controlledValue : internalValue;
+  const textareaValueRef = useRef(value);
   const [actionMenuOpen, setActionMenuOpen] = useState(false);
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const isAgentAlive = agentStatus !== "idle";
@@ -770,11 +772,26 @@ export function AgentComposerSurface({
     if (!textarea) {
       return;
     }
+    const previousValue = textareaValueRef.current;
+    textareaValueRef.current = value;
 
     textarea.style.height = "auto";
     const nextHeight = Math.min(textarea.scrollHeight, COMPOSER_MAX_HEIGHT);
-    textarea.style.height = `${Math.max(nextHeight, textareaMinHeight)}px`;
-  }, [value, textareaMinHeight]);
+    const appliedHeight = Math.max(nextHeight, textareaMinHeight);
+    textarea.style.height = `${appliedHeight}px`;
+
+    if (textareaAppliedHeightRef.current === null) {
+      textareaAppliedHeightRef.current = appliedHeight;
+      return;
+    }
+    if (textareaAppliedHeightRef.current === appliedHeight) {
+      return;
+    }
+    textareaAppliedHeightRef.current = appliedHeight;
+    if (previousValue !== value) {
+      onLayoutChange?.();
+    }
+  }, [onLayoutChange, value, textareaMinHeight]);
 
   useEffect(() => {
     if (!collapsible || !onLayoutChange) {

@@ -28,6 +28,7 @@ const {
   useVerificationStatusMock,
   getVerificationSpecialistsMock,
   confirmVerificationMock,
+  composerLayoutChangeMock,
   composerQuestionModeRef,
   composerAgentStatusRef,
   eventSubscribers,
@@ -45,6 +46,7 @@ const {
   useVerificationStatusMock: vi.fn(),
   getVerificationSpecialistsMock: vi.fn(),
   confirmVerificationMock: vi.fn(),
+  composerLayoutChangeMock: vi.fn(),
   composerQuestionModeRef: { current: undefined as unknown },
   composerAgentStatusRef: { current: "idle" },
   eventSubscribers: new Map<string, Set<(payload: unknown) => void>>(),
@@ -64,6 +66,7 @@ vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
   IntegratedChatPanel: ({
     additionalQuestionSessionIds,
     agentProcessContextIdOverride,
+    belowTranscriptLayoutOwnedByVisibleRuntime,
     conversationIdOverride,
     headerContent,
     planApprovalAction,
@@ -74,6 +77,7 @@ vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
   }: {
     additionalQuestionSessionIds?: string[];
     agentProcessContextIdOverride?: string;
+    belowTranscriptLayoutOwnedByVisibleRuntime?: boolean;
     conversationIdOverride?: string;
     headerContent?: ReactNode;
     planApprovalAction?: {
@@ -98,6 +102,11 @@ vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
       data-testid="integrated-chat-panel"
       data-question-session-ids={additionalQuestionSessionIds?.join(",") ?? ""}
       data-agent-process-context-id={agentProcessContextIdOverride ?? ""}
+      data-below-transcript-layout-owned={
+        belowTranscriptLayoutOwnedByVisibleRuntime === undefined
+          ? ""
+          : String(belowTranscriptLayoutOwnedByVisibleRuntime)
+      }
       data-conversation-id={conversationIdOverride ?? ""}
       data-send-codex-fast-mode={
         sendOptions?.codexFastMode === undefined
@@ -218,6 +227,7 @@ vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
         agentStatus: composerAgentStatusRef.current,
         isSending: false,
         isReadOnly: false,
+        onLayoutChange: composerLayoutChangeMock,
         autoFocus: false,
         hasQueuedMessages: false,
         onEditLastQueued: vi.fn(),
@@ -465,6 +475,7 @@ vi.mock("./AgentComposerSurface", () => ({
     showHelperText,
     onSend,
     onForkSession,
+    onLayoutChange,
   }: {
     provider: {
       value: string;
@@ -488,6 +499,7 @@ vi.mock("./AgentComposerSurface", () => ({
     showHelperText?: boolean;
     onSend: (message: string) => Promise<void> | void;
     onForkSession?: () => Promise<unknown> | void;
+    onLayoutChange?: () => void;
   }) => (
     <div>
       <div data-testid="workspace-provider-value">{provider.value}</div>
@@ -557,6 +569,11 @@ vi.mock("./AgentComposerSurface", () => ({
         type="button"
         data-testid="composer-fork-action"
         onClick={() => void onForkSession?.()}
+      />
+      <button
+        type="button"
+        data-testid="composer-layout-change"
+        onClick={() => onLayoutChange?.()}
       />
     </div>
   ),
@@ -1058,6 +1075,46 @@ describe("AgentsActiveConversationPanel", () => {
     expect(onOpenTaskArtifact).not.toHaveBeenCalled();
   });
 
+  it("marks child-only workspace layout updates as not owned by the visible transcript", async () => {
+    getAgentConversationRuntimeStatusesMock.mockResolvedValue({
+      "conversation-1": workspaceRuntimeStatus({
+        primarySource: "review",
+        summaryLabel: "Runtime activity",
+        items: [
+          {
+            source: "review",
+            contextType: "review",
+            contextId: "task-2",
+            label: "Reviewing",
+            title: "Review task",
+            agentStatus: "generating",
+            taskId: "task-2",
+            internalStatus: "reviewing",
+            runningProcess: null,
+            ideationSession: null,
+            parentSessionId: null,
+            childSessionId: null,
+            conversationId: "review-conversation-1",
+          },
+        ],
+      }),
+    });
+
+    renderPanel();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("integrated-chat-panel")).toHaveAttribute(
+        "data-below-transcript-layout-owned",
+        "false",
+      ),
+    );
+    expect(screen.queryByTestId("agents-runtime-status-widget")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("composer-layout-change"));
+    expect(composerLayoutChangeMock).toHaveBeenCalledTimes(1);
+    expect(composerLayoutChangeMock).toHaveBeenCalledWith();
+  });
+
   it("shows focused task runtime rows in the composer runtime widget", async () => {
     const workspaceItem = workspaceRuntimeStatus().items[0]!;
     getAgentConversationRuntimeStatusesMock.mockResolvedValue({
@@ -1099,6 +1156,10 @@ describe("AgentsActiveConversationPanel", () => {
     expect(
       screen.getByTestId("agents-runtime-status-current-review"),
     ).toHaveAttribute("aria-label", "Currently viewing Review task");
+    expect(screen.getByTestId("integrated-chat-panel")).toHaveAttribute(
+      "data-below-transcript-layout-owned",
+      "true",
+    );
   });
 
   it("renders the composer task ledger for a focused task runtime chat", async () => {
