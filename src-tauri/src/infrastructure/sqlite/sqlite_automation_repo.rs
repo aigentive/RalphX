@@ -291,6 +291,67 @@ impl SqliteAutomationRunRepository {
         }
     }
 
+    fn insert_run_row(conn: &Connection, run: &AutomationRun) -> AppResult<()> {
+        conn.execute(
+            "INSERT INTO automation_runs (
+                id, automation_id, run_index, status, judge_state, judge_lease_expires_at,
+                conversation_id, run_prompt, prompt_author, base_ref_kind, base_ref_used,
+                base_from_run_id, branch_name, pr_number, pr_url, pr_title,
+                pr_head_ref_name, pr_base_ref_name, pr_merged_at, merge_commit_sha,
+                diff_stats_json, agent_summary, judge_verdict_json, judge_model_id,
+                error_code, error_detail, signal_check_failures, started_at, finished_at,
+                created_at, updated_at
+            ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+                ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24,
+                ?25, ?26, ?27, ?28, ?29, ?30, ?31
+            )",
+            params![
+                run.id.as_str(),
+                run.automation_id.as_str(),
+                run.run_index,
+                run.status.as_str(),
+                run.judge_state.as_str(),
+                run.judge_lease_expires_at.map(|dt| dt.to_rfc3339()),
+                run.conversation_id.as_ref().map(|id| id.as_str()),
+                run.run_prompt.as_str(),
+                run.prompt_author.as_str(),
+                run.base_ref_kind.as_str(),
+                run.base_ref_used.as_str(),
+                run.base_from_run_id.as_ref().map(|id| id.as_str()),
+                run.branch_name.as_deref(),
+                run.pr_number,
+                run.pr_url.as_deref(),
+                run.pr_title.as_deref(),
+                run.pr_head_ref_name.as_deref(),
+                run.pr_base_ref_name.as_deref(),
+                run.pr_merged_at.map(|dt| dt.to_rfc3339()),
+                run.merge_commit_sha.as_deref(),
+                run.diff_stats_json.as_deref(),
+                run.agent_summary.as_deref(),
+                run.judge_verdict_json.as_deref(),
+                run.judge_model_id.as_deref(),
+                run.error_code.as_deref(),
+                run.error_detail.as_deref(),
+                run.signal_check_failures,
+                run.started_at.map(|dt| dt.to_rfc3339()),
+                run.finished_at.map(|dt| dt.to_rfc3339()),
+                run.created_at.to_rfc3339(),
+                run.updated_at.to_rfc3339(),
+            ],
+        )
+        .map_err(|error| match error {
+            rusqlite::Error::SqliteFailure(sqlite_error, Some(message))
+                if sqlite_error.code == ErrorCode::ConstraintViolation
+                    && message == AUTOMATION_RUN_SINGLE_OPEN_CONSTRAINT =>
+            {
+                AppError::Conflict("automation already has an open run".to_string())
+            }
+            error => AppError::from(error),
+        })?;
+        Ok(())
+    }
+
     fn row_to_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<AutomationRun> {
         Ok(AutomationRun {
             id: AutomationRunId::from_string(row.get::<_, String>(0)?),
@@ -351,66 +412,7 @@ impl AutomationRunRepository for SqliteAutomationRunRepository {
     async fn create_run(&self, run: AutomationRun) -> AppResult<AutomationRun> {
         let to_insert = run.clone();
         self.db
-            .run(move |conn| {
-                conn.execute(
-                    "INSERT INTO automation_runs (
-                        id, automation_id, run_index, status, judge_state, judge_lease_expires_at,
-                        conversation_id, run_prompt, prompt_author, base_ref_kind, base_ref_used,
-                        base_from_run_id, branch_name, pr_number, pr_url, pr_title,
-                        pr_head_ref_name, pr_base_ref_name, pr_merged_at, merge_commit_sha,
-                        diff_stats_json, agent_summary, judge_verdict_json, judge_model_id,
-                        error_code, error_detail, signal_check_failures, started_at, finished_at,
-                        created_at, updated_at
-                    ) VALUES (
-                        ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-                        ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24,
-                        ?25, ?26, ?27, ?28, ?29, ?30, ?31
-                    )",
-                    params![
-                        to_insert.id.as_str(),
-                        to_insert.automation_id.as_str(),
-                        to_insert.run_index,
-                        to_insert.status.as_str(),
-                        to_insert.judge_state.as_str(),
-                        to_insert.judge_lease_expires_at.map(|dt| dt.to_rfc3339()),
-                        to_insert.conversation_id.map(|id| id.as_str()),
-                        to_insert.run_prompt,
-                        to_insert.prompt_author.as_str(),
-                        to_insert.base_ref_kind,
-                        to_insert.base_ref_used,
-                        to_insert.base_from_run_id.map(|id| id.as_str().to_string()),
-                        to_insert.branch_name,
-                        to_insert.pr_number,
-                        to_insert.pr_url,
-                        to_insert.pr_title,
-                        to_insert.pr_head_ref_name,
-                        to_insert.pr_base_ref_name,
-                        to_insert.pr_merged_at.map(|dt| dt.to_rfc3339()),
-                        to_insert.merge_commit_sha,
-                        to_insert.diff_stats_json,
-                        to_insert.agent_summary,
-                        to_insert.judge_verdict_json,
-                        to_insert.judge_model_id,
-                        to_insert.error_code,
-                        to_insert.error_detail,
-                        to_insert.signal_check_failures,
-                        to_insert.started_at.map(|dt| dt.to_rfc3339()),
-                        to_insert.finished_at.map(|dt| dt.to_rfc3339()),
-                        to_insert.created_at.to_rfc3339(),
-                        to_insert.updated_at.to_rfc3339(),
-                    ],
-                )
-                .map_err(|error| match error {
-                    rusqlite::Error::SqliteFailure(sqlite_error, Some(message))
-                        if sqlite_error.code == ErrorCode::ConstraintViolation
-                            && message == AUTOMATION_RUN_SINGLE_OPEN_CONSTRAINT =>
-                    {
-                        AppError::Conflict("automation already has an open run".to_string())
-                    }
-                    error => AppError::from(error),
-                })?;
-                Ok(())
-            })
+            .run(move |conn| Self::insert_run_row(conn, &to_insert))
             .await?;
         Ok(run)
     }
@@ -713,6 +715,52 @@ impl AutomationRunRepository for SqliteAutomationRunRepository {
                     ],
                 )?;
                 Ok(affected == 1)
+            })
+            .await
+    }
+
+    async fn skip_judge_and_create_successor_run(
+        &self,
+        automation_id: &AutomationId,
+        previous_run_id: &AutomationRunId,
+        successor: AutomationRun,
+    ) -> AppResult<Option<AutomationRun>> {
+        if successor.automation_id != *automation_id
+            || successor.base_from_run_id.as_ref() != Some(previous_run_id)
+        {
+            return Err(AppError::Validation(
+                "automation skip-judge successor does not match the skipped run".to_string(),
+            ));
+        }
+
+        let automation_id = automation_id.as_str().to_string();
+        let previous_run_id = previous_run_id.as_str().to_string();
+        let to_insert = successor.clone();
+        self.db
+            .run_transaction(move |conn| {
+                let affected = conn.execute(
+                    "UPDATE automation_runs
+                     SET judge_state = 'skipped',
+                         judge_lease_expires_at = NULL,
+                         error_detail = NULL,
+                         updated_at = ?1
+                     WHERE id = ?2
+                       AND automation_id = ?3
+                       AND judge_state = 'none'
+                       AND status IN ('merged', 'pr_closed', 'agent_failed')
+                       AND run_index = (
+                           SELECT MAX(run_index)
+                           FROM automation_runs
+                           WHERE automation_id = ?3
+                       )",
+                    params![Utc::now().to_rfc3339(), previous_run_id, automation_id],
+                )?;
+                if affected == 0 {
+                    return Ok(None);
+                }
+
+                Self::insert_run_row(conn, &to_insert)?;
+                Ok(Some(to_insert))
             })
             .await
     }

@@ -96,6 +96,19 @@ fn run(
     }
 }
 
+fn successor_run(id: &str, index: i64, previous_run_id: &AutomationRunId) -> AutomationRun {
+    let mut run = run(
+        id,
+        index,
+        AutomationRunStatus::Pending,
+        AutomationJudgeState::None,
+    );
+    run.prompt_author = AutomationPromptAuthor::SkipJudgeTemplate;
+    run.run_prompt = "Continue the goal; previous run merged PR #593.".to_string();
+    run.base_from_run_id = Some(previous_run_id.clone());
+    run
+}
+
 #[tokio::test]
 async fn sqlite_automation_repo_cas_and_project_listing() {
     let (_db, project_id, repo, _run_repo) = setup_repos();
@@ -239,6 +252,67 @@ async fn sqlite_run_repo_latest_and_single_open_index() {
         .await
         .unwrap()
         .is_empty());
+}
+
+#[tokio::test]
+async fn sqlite_run_repo_skip_judge_and_successor_are_atomic() {
+    let (_db, project_id, automation_repo, run_repo) = setup_repos();
+    automation_repo
+        .create(automation(
+            "automation-1",
+            project_id,
+            AutomationStatus::Active,
+        ))
+        .await
+        .unwrap();
+    let previous = run(
+        "run-1",
+        1,
+        AutomationRunStatus::Merged,
+        AutomationJudgeState::None,
+    );
+    run_repo.create_run(previous.clone()).await.unwrap();
+
+    let created = run_repo
+        .skip_judge_and_create_successor_run(
+            &AutomationId::from_string("automation-1"),
+            &previous.id,
+            successor_run("run-2", 2, &previous.id),
+        )
+        .await
+        .unwrap()
+        .expect("successor should be created");
+
+    assert_eq!(created.id, AutomationRunId::from_string("run-2"));
+    let runs = run_repo
+        .list_for_automation(&AutomationId::from_string("automation-1"))
+        .await
+        .unwrap();
+    assert_eq!(runs.len(), 2);
+    assert_eq!(runs[0].judge_state, AutomationJudgeState::Skipped);
+    assert_eq!(
+        runs[1].prompt_author,
+        AutomationPromptAuthor::SkipJudgeTemplate
+    );
+    assert_eq!(runs[1].base_from_run_id, Some(previous.id.clone()));
+
+    let stale = run_repo
+        .skip_judge_and_create_successor_run(
+            &AutomationId::from_string("automation-1"),
+            &previous.id,
+            successor_run("run-3", 3, &previous.id),
+        )
+        .await
+        .unwrap();
+    assert!(stale.is_none());
+    assert_eq!(
+        run_repo
+            .list_for_automation(&AutomationId::from_string("automation-1"))
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
 }
 
 #[tokio::test]

@@ -89,5 +89,14 @@ pub trait AutomationRunRepository: Send + Sync {
         error_detail: Option<String>,
     ) -> AppResult<bool>;
 
+    /// Atomically mark the latest unjudged terminal run as skipped and insert its successor.
+    /// Returns `None` when the previous run is stale, no longer unjudged, or no longer latest.
+    async fn skip_judge_and_create_successor_run(
+        &self,
+        automation_id: &AutomationId,
+        previous_run_id: &AutomationRunId,
+        successor: AutomationRun,
+    ) -> AppResult<Option<AutomationRun>>;
+
     async fn delete_for_automation(&self, automation_id: &AutomationId) -> AppResult<usize>;
 }

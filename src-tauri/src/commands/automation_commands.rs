@@ -3,16 +3,22 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
+use crate::application::automation::scheduler::{
+    automation_judge_lease_expires_at, spawn_automation_judge_task, AutomationSchedulerConfig,
+    HarnessAutomationJudgeInvoker,
+};
 use crate::application::automation::service::{
-    AutomationDetail, AutomationScheduleOutcome, AutomationService,
+    AutomationDetail, AutomationRunNowAction, AutomationScheduleOutcome, AutomationService,
     CreateAutomationDraftInput as ServiceCreateDraftInput,
     UpdateAutomationSettingsInput as ServiceUpdateSettingsInput,
 };
-use crate::application::automation::transition::NoopAutomationEventEmitter;
+use crate::application::automation::transition::{
+    AutomationTransitionService, NoopAutomationEventEmitter,
+};
 use crate::application::AppState;
 use crate::domain::entities::{
-    AgentConversationWorkspaceMode, Automation, AutomationId, AutomationRun, AutomationRunId,
-    ChatConversation, ProjectId,
+    AgentConversationWorkspaceMode, Automation, AutomationId, AutomationJudgeState, AutomationRun,
+    AutomationRunId, ChatConversation, ProjectId,
 };
 
 #[derive(Debug, Clone, Deserialize)]
@@ -289,11 +295,58 @@ pub async fn trigger_automation_run_now(
     state: State<'_, AppState>,
 ) -> Result<AutomationScheduleResponse, String> {
     let id = parse_automation_id(&input.id)?;
-    automation_service(&state)
-        .trigger_run_now(&id)
+    trigger_automation_run_now_for_state(&id, &state)
         .await
         .map(AutomationScheduleResponse::from)
         .map_err(|error| error.to_string())
+}
+
+pub(crate) async fn trigger_automation_run_now_for_state(
+    id: &AutomationId,
+    state: &AppState,
+) -> crate::error::AppResult<AutomationScheduleOutcome> {
+    let service = automation_service(state);
+    match service.trigger_run_now_action(id).await? {
+        AutomationRunNowAction::Outcome(outcome) => Ok(outcome),
+        AutomationRunNowAction::StartJudge {
+            automation,
+            runs,
+            run,
+        } => {
+            let config = AutomationSchedulerConfig::default();
+            let transition_service = automation_transition_service(state);
+            let changed = transition_service
+                .transition_judge_state(
+                    &run.id,
+                    run.judge_state,
+                    AutomationJudgeState::InProgress,
+                    None,
+                    None,
+                    Some(automation_judge_lease_expires_at(config.judge_timeout)),
+                    None,
+                )
+                .await?;
+            if !changed {
+                return Ok(AutomationScheduleOutcome {
+                    scheduled: false,
+                    reason: Some("run in flight".to_string()),
+                });
+            }
+            spawn_automation_judge_task(
+                service,
+                transition_service,
+                Arc::new(HarnessAutomationJudgeInvoker::new(state.clone())),
+                config,
+                automation,
+                runs,
+                run,
+            );
+            Ok(AutomationScheduleOutcome {
+                scheduled: true,
+                reason: None,
+            })
+        }
+    }
 }
 
 #[tauri::command]
@@ -338,6 +391,14 @@ pub async fn delete_automation(
 
 pub(crate) fn automation_service(state: &AppState) -> AutomationService {
     AutomationService::new(
+        state.automation_repo.clone(),
+        state.automation_run_repo.clone(),
+        Arc::new(NoopAutomationEventEmitter),
+    )
+}
+
+fn automation_transition_service(state: &AppState) -> AutomationTransitionService {
+    AutomationTransitionService::new(
         state.automation_repo.clone(),
         state.automation_run_repo.clone(),
         Arc::new(NoopAutomationEventEmitter),
@@ -486,8 +547,9 @@ mod tests {
 
     use super::*;
     use crate::domain::entities::{
-        AgentConversationWorkspaceMode, AutomationStatus, ChatContextType, ChatConversationId,
-        ProjectId,
+        AgentConversationWorkspaceMode, AutomationJudgeState, AutomationPromptAuthor,
+        AutomationRunId, AutomationRunStatus, AutomationStatus, ChatContextType,
+        ChatConversationId, ProjectId,
     };
 
     fn automation() -> Automation {
@@ -519,6 +581,59 @@ mod tests {
             created_at: now,
             updated_at: now,
         }
+    }
+
+    fn automation_run(automation_id: &AutomationId) -> AutomationRun {
+        let now = Utc::now();
+        AutomationRun {
+            id: AutomationRunId::from_string("run-1"),
+            automation_id: automation_id.clone(),
+            run_index: 1,
+            status: AutomationRunStatus::Merged,
+            judge_state: AutomationJudgeState::Done,
+            judge_lease_expires_at: None,
+            conversation_id: None,
+            run_prompt: "Run 1 prompt".to_string(),
+            prompt_author: AutomationPromptAuthor::SetupAgent,
+            base_ref_kind: "project_default".to_string(),
+            base_ref_used: String::new(),
+            base_from_run_id: None,
+            branch_name: None,
+            pr_number: Some(593),
+            pr_url: None,
+            pr_title: None,
+            pr_head_ref_name: None,
+            pr_base_ref_name: Some("main".to_string()),
+            pr_merged_at: None,
+            merge_commit_sha: None,
+            diff_stats_json: None,
+            agent_summary: None,
+            judge_verdict_json: Some(continue_verdict(
+                "Implement the next automation item with focused tests and publish the follow-up PR.",
+            )),
+            judge_model_id: Some("haiku".to_string()),
+            error_code: None,
+            error_detail: None,
+            signal_check_failures: 0,
+            started_at: Some(now),
+            finished_at: Some(now),
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    fn continue_verdict(next_prompt: &str) -> String {
+        json!({
+            "decision": "continue",
+            "goalMet": false,
+            "reason": "The next item remains and should be implemented in a scoped PR.",
+            "confidence": 0.87,
+            "goalProgress": { "completedItems": 1, "totalItems": 2, "summary": "One item complete." },
+            "updatedItemStatuses": null,
+            "nextRunPrompt": next_prompt,
+            "nextBaseBranch": "automation_base"
+        })
+        .to_string()
     }
 
     #[test]
@@ -652,5 +767,40 @@ mod tests {
             .await
             .unwrap();
         assert!(automations.is_empty());
+    }
+
+    #[tokio::test]
+    async fn run_now_command_applies_stored_verdict_without_deferred_placeholder() {
+        let state = AppState::new_test();
+        let mut automation = automation();
+        automation.status = AutomationStatus::Active;
+        state
+            .automation_repo
+            .create(automation.clone())
+            .await
+            .unwrap();
+        state
+            .automation_run_repo
+            .create_run(automation_run(&automation.id))
+            .await
+            .unwrap();
+
+        let outcome = trigger_automation_run_now_for_state(&automation.id, &state)
+            .await
+            .unwrap();
+
+        assert!(outcome.scheduled);
+        assert!(outcome.reason.is_none());
+        let runs = state
+            .automation_run_repo
+            .list_for_automation(&automation.id)
+            .await
+            .unwrap();
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[1].prompt_author, AutomationPromptAuthor::Judge);
+        assert_eq!(
+            runs[1].run_prompt,
+            "Implement the next automation item with focused tests and publish the follow-up PR."
+        );
     }
 }

@@ -805,13 +805,17 @@ impl AutomationScheduler {
                         AutomationJudgeState::InProgress,
                         None,
                         None,
-                        Some(judge_lease_expires_at(self.config.judge_timeout)),
+                        Some(automation_judge_lease_expires_at(self.config.judge_timeout)),
                         None,
                     )
                     .await?
                 {
                     summary.judges_started += 1;
-                    self.spawn_judge_for_terminal_run(
+                    spawn_automation_judge_task(
+                        self.service.clone(),
+                        self.transition_service.clone(),
+                        Arc::clone(&self.judge_invoker),
+                        self.config.clone(),
                         automation.clone(),
                         runs.to_vec(),
                         run.clone(),
@@ -836,45 +840,6 @@ impl AutomationScheduler {
             AutomationJudgeState::InProgress | AutomationJudgeState::Skipped => {}
         }
         Ok(())
-    }
-
-    fn spawn_judge_for_terminal_run(
-        &self,
-        automation: Automation,
-        runs: Vec<AutomationRun>,
-        run: AutomationRun,
-    ) {
-        let task = AutomationJudgeTask {
-            service: self.service.clone(),
-            transition_service: self.transition_service.clone(),
-            judge_invoker: Arc::clone(&self.judge_invoker),
-            config: self.config.clone(),
-        };
-        tauri::async_runtime::spawn(async move {
-            let automation_id = automation.id.clone();
-            let run_id = run.id.clone();
-            match task.run_for_terminal_run(automation, runs, run).await {
-                Ok(outcome) => {
-                    tracing::info!(
-                        automation_id = %automation_id,
-                        run_id = %run_id,
-                        judge_succeeded = outcome.judge_succeeded,
-                        judge_failed = outcome.judge_failed,
-                        successor_created = outcome.successor_created,
-                        terminal_status = ?outcome.terminal_automation_status,
-                        "Automation judge task completed"
-                    );
-                }
-                Err(error) => {
-                    tracing::warn!(
-                        automation_id = %automation_id,
-                        run_id = %run_id,
-                        error = %error,
-                        "Automation judge task failed"
-                    );
-                }
-            }
-        });
     }
 
     async fn mark_judge_failed(
@@ -1083,6 +1048,48 @@ impl AutomationScheduler {
     }
 }
 
+pub(crate) fn spawn_automation_judge_task(
+    service: AutomationService,
+    transition_service: AutomationTransitionService,
+    judge_invoker: Arc<dyn AutomationJudgeInvoker>,
+    config: AutomationSchedulerConfig,
+    automation: Automation,
+    runs: Vec<AutomationRun>,
+    run: AutomationRun,
+) {
+    let task = AutomationJudgeTask {
+        service,
+        transition_service,
+        judge_invoker,
+        config,
+    };
+    tauri::async_runtime::spawn(async move {
+        let automation_id = automation.id.clone();
+        let run_id = run.id.clone();
+        match task.run_for_terminal_run(automation, runs, run).await {
+            Ok(outcome) => {
+                tracing::info!(
+                    automation_id = %automation_id,
+                    run_id = %run_id,
+                    judge_succeeded = outcome.judge_succeeded,
+                    judge_failed = outcome.judge_failed,
+                    successor_created = outcome.successor_created,
+                    terminal_status = ?outcome.terminal_automation_status,
+                    "Automation judge task completed"
+                );
+            }
+            Err(error) => {
+                tracing::warn!(
+                    automation_id = %automation_id,
+                    run_id = %run_id,
+                    error = %error,
+                    "Automation judge task failed"
+                );
+            }
+        }
+    });
+}
+
 fn publication_metadata_from_workspace(
     workspace: &AgentConversationWorkspace,
 ) -> AutomationRunPublicationMetadata {
@@ -1138,7 +1145,7 @@ fn judge_has_exceeded(run: &AutomationRun, limit: Duration) -> bool {
     elapsed_since(run.updated_at).is_some_and(|elapsed| elapsed >= limit)
 }
 
-fn judge_lease_expires_at(limit: Duration) -> DateTime<Utc> {
+pub(crate) fn automation_judge_lease_expires_at(limit: Duration) -> DateTime<Utc> {
     let Ok(limit) = chrono::Duration::from_std(limit) else {
         return Utc::now();
     };

@@ -428,6 +428,68 @@ impl AutomationRunRepository for MemoryAutomationRunRepository {
         Ok(true)
     }
 
+    async fn skip_judge_and_create_successor_run(
+        &self,
+        automation_id: &AutomationId,
+        previous_run_id: &AutomationRunId,
+        successor: AutomationRun,
+    ) -> AppResult<Option<AutomationRun>> {
+        let mut runs = self.runs.write().unwrap();
+        let Some(previous_position) = runs.iter().position(|run| run.id == *previous_run_id) else {
+            return Ok(None);
+        };
+        let previous = &runs[previous_position];
+        let is_latest = runs
+            .iter()
+            .filter(|run| run.automation_id == *automation_id)
+            .all(|run| run.run_index <= previous.run_index);
+        if previous.automation_id != *automation_id
+            || !is_latest
+            || previous.judge_state != AutomationJudgeState::None
+            || !matches!(
+                previous.status,
+                AutomationRunStatus::Merged
+                    | AutomationRunStatus::PrClosed
+                    | AutomationRunStatus::AgentFailed
+            )
+        {
+            return Ok(None);
+        }
+        if successor.automation_id != *automation_id
+            || successor.base_from_run_id.as_ref() != Some(previous_run_id)
+        {
+            return Err(AppError::Validation(
+                "automation skip-judge successor does not match the skipped run".to_string(),
+            ));
+        }
+        if runs.iter().any(|existing| {
+            existing.automation_id == successor.automation_id
+                && existing.run_index == successor.run_index
+        }) {
+            return Err(AppError::Conflict(
+                "automation run index already exists".to_string(),
+            ));
+        }
+
+        let now = Utc::now();
+        let mut updated_runs = runs.clone();
+        let mut skipped = previous.clone();
+        skipped.judge_state = AutomationJudgeState::Skipped;
+        skipped.judge_lease_expires_at = None;
+        skipped.error_detail = None;
+        skipped.updated_at = now;
+        updated_runs[previous_position] = skipped;
+
+        if Self::has_conflicting_open_run(&updated_runs, &successor) {
+            return Err(AppError::Conflict(
+                "automation already has an open run".to_string(),
+            ));
+        }
+        updated_runs.push(successor.clone());
+        *runs = updated_runs;
+        Ok(Some(successor))
+    }
+
     async fn delete_for_automation(&self, automation_id: &AutomationId) -> AppResult<usize> {
         let mut runs = self.runs.write().unwrap();
         let before = runs.len();
