@@ -1,8 +1,93 @@
 use super::{
     automation_is_transition_allowed, automation_run_is_transition_allowed, is_open_automation_run,
-    judge_is_transition_allowed, judge_transition_clears_verdict, AutomationJudgeState,
+    judge_is_transition_allowed, judge_transition_clears_verdict, AutomationContextRefKind,
+    AutomationId, AutomationJudgeState, AutomationPromptAuthor, AutomationRunId,
     AutomationRunStatus, AutomationStatus,
 };
+
+#[test]
+fn automation_newtypes_display_and_default_to_generated_uuid() {
+    let automation_id = AutomationId::from_string("automation-1");
+    assert_eq!(automation_id.as_str(), "automation-1");
+    assert_eq!(automation_id.to_string(), "automation-1");
+
+    let generated_automation_id = AutomationId::default();
+    assert!(uuid::Uuid::parse_str(generated_automation_id.as_str()).is_ok());
+
+    let run_id = AutomationRunId::from_string("run-1");
+    assert_eq!(run_id.as_str(), "run-1");
+    assert_eq!(run_id.to_string(), "run-1");
+
+    let generated_run_id = AutomationRunId::default();
+    assert!(uuid::Uuid::parse_str(generated_run_id.as_str()).is_ok());
+}
+
+#[test]
+fn automation_enum_strings_round_trip_and_reject_unknown_values() {
+    use AutomationStatus::*;
+
+    for (status, raw) in [
+        (Draft, "draft"),
+        (Active, "active"),
+        (Paused, "paused"),
+        (Completed, "completed"),
+        (Stopped, "stopped"),
+    ] {
+        assert_eq!(status.as_str(), raw);
+        assert_eq!(AutomationStatus::parse(raw), Some(status));
+    }
+    assert_eq!(AutomationStatus::parse("archived"), None);
+
+    for (status, raw) in [
+        (AutomationRunStatus::Pending, "pending"),
+        (AutomationRunStatus::Provisioning, "provisioning"),
+        (AutomationRunStatus::Running, "running"),
+        (AutomationRunStatus::Published, "published"),
+        (AutomationRunStatus::Merged, "merged"),
+        (AutomationRunStatus::PrClosed, "pr_closed"),
+        (AutomationRunStatus::AgentFailed, "agent_failed"),
+        (AutomationRunStatus::Cancelled, "cancelled"),
+    ] {
+        assert_eq!(status.as_str(), raw);
+        assert_eq!(AutomationRunStatus::parse(raw), Some(status));
+    }
+    assert_eq!(AutomationRunStatus::parse("judging"), None);
+
+    for (state, raw) in [
+        (AutomationJudgeState::None, "none"),
+        (AutomationJudgeState::InProgress, "in_progress"),
+        (AutomationJudgeState::Done, "done"),
+        (AutomationJudgeState::Failed, "failed"),
+        (AutomationJudgeState::Skipped, "skipped"),
+    ] {
+        assert_eq!(state.as_str(), raw);
+        assert_eq!(AutomationJudgeState::parse(raw), Some(state));
+    }
+    assert_eq!(AutomationJudgeState::parse("retrying"), None);
+
+    for (author, raw) in [
+        (AutomationPromptAuthor::SetupAgent, "setup_agent"),
+        (AutomationPromptAuthor::Judge, "judge"),
+        (
+            AutomationPromptAuthor::SkipJudgeTemplate,
+            "skip_judge_template",
+        ),
+    ] {
+        assert_eq!(author.as_str(), raw);
+        assert_eq!(AutomationPromptAuthor::parse(raw), Some(author));
+    }
+    assert_eq!(AutomationPromptAuthor::parse("user"), None);
+
+    for (kind, raw) in [
+        (AutomationContextRefKind::Project, "project"),
+        (AutomationContextRefKind::Integration, "integration"),
+        (AutomationContextRefKind::Artifact, "artifact"),
+    ] {
+        assert_eq!(kind.as_str(), raw);
+        assert_eq!(AutomationContextRefKind::parse(raw), Some(kind));
+    }
+    assert_eq!(AutomationContextRefKind::parse("ticket"), None);
+}
 
 #[test]
 fn automation_status_transition_matrix_matches_spec() {

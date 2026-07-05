@@ -2,9 +2,14 @@ use chrono::Utc;
 
 use crate::domain::entities::{
     Automation, AutomationId, AutomationJudgeState, AutomationPromptAuthor, AutomationRun,
-    AutomationRunId, AutomationRunStatus, AutomationStatus, ProjectId,
+    AutomationRunId, AutomationRunStatus, AutomationStatus, ChatConversation, ChatConversationId,
+    ProjectId,
 };
-use crate::domain::repositories::{AutomationRepository, AutomationRunRepository};
+use crate::domain::repositories::{
+    AutomationRepository, AutomationRunPublicationMetadata, AutomationRunRepository,
+    AutomationSettingsPatch,
+};
+use crate::error::AppError;
 use crate::testing::SqliteTestDb;
 
 use super::{SqliteAutomationRepository, SqliteAutomationRunRepository};
@@ -176,6 +181,72 @@ async fn sqlite_automation_repo_cas_and_project_listing() {
 }
 
 #[tokio::test]
+async fn sqlite_automation_repo_updates_goal_items_and_maps_optional_fields() {
+    let (db, project_id, repo, _run_repo) = setup_repos();
+    let setup_conversation_id =
+        ChatConversationId::from_string("11111111-1111-1111-1111-111111111111");
+    let mut setup_conversation = ChatConversation::new_project(project_id.clone());
+    setup_conversation.id = setup_conversation_id;
+    db.insert_conversation(setup_conversation);
+
+    let mut automation = automation("automation-1", project_id, AutomationStatus::Draft);
+    automation.paused_reason_code = Some("user".to_string());
+    automation.paused_reason_detail = Some("paused for edit".to_string());
+    automation.setup_conversation_id = Some(setup_conversation_id);
+    automation.logical_effort = Some("medium".to_string());
+    automation.base_display_name = Some("Project default (main)".to_string());
+    automation.base_source_pull_request_json = Some(r#"{"number":593}"#.to_string());
+    automation.goal_items_json = Some(r#"[{"id":"item-1","status":"pending"}]"#.to_string());
+    automation.setup_analysis_summary = Some("setup analysis".to_string());
+
+    repo.create(automation.clone()).await.unwrap();
+
+    let stored = repo.get_by_id(&automation.id).await.unwrap().unwrap();
+    assert_eq!(stored, automation);
+
+    let updated = repo
+        .update_goal_items_json(
+            &automation.id,
+            Some(r#"[{"id":"item-1","status":"done"}]"#.to_string()),
+        )
+        .await
+        .unwrap()
+        .expect("goal items should update");
+    assert_eq!(
+        updated.goal_items_json.as_deref(),
+        Some(r#"[{"id":"item-1","status":"done"}]"#)
+    );
+
+    let cleared = repo
+        .update_goal_items_json(&automation.id, None)
+        .await
+        .unwrap()
+        .expect("goal items should clear");
+    assert_eq!(cleared.goal_items_json, None);
+
+    assert!(repo
+        .update_goal_items_json(
+            &AutomationId::from_string("missing-automation"),
+            Some("[]".to_string()),
+        )
+        .await
+        .unwrap()
+        .is_none());
+    assert!(repo
+        .update_settings(
+            &AutomationId::from_string("missing-automation"),
+            AutomationSettingsPatch {
+                name: Some("No row".to_string()),
+                max_runs: None,
+                max_consecutive_failures: None,
+            },
+        )
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
 async fn sqlite_run_repo_latest_and_single_open_index() {
     let (_db, project_id, automation_repo, run_repo) = setup_repos();
     automation_repo
@@ -255,6 +326,171 @@ async fn sqlite_run_repo_latest_and_single_open_index() {
 }
 
 #[tokio::test]
+async fn sqlite_run_repo_updates_attempt_metadata_and_signal_failures() {
+    let (db, project_id, automation_repo, run_repo) = setup_repos();
+    automation_repo
+        .create(automation(
+            "automation-1",
+            project_id.clone(),
+            AutomationStatus::Active,
+        ))
+        .await
+        .unwrap();
+    let run = run(
+        "run-1",
+        1,
+        AutomationRunStatus::Provisioning,
+        AutomationJudgeState::None,
+    );
+    run_repo.create_run(run.clone()).await.unwrap();
+
+    let conversation_id = ChatConversationId::from_string("22222222-2222-2222-2222-222222222222");
+    let mut conversation = ChatConversation::new_project(project_id.clone());
+    conversation.id = conversation_id;
+    conversation.automation_id = Some(AutomationId::from_string("automation-1"));
+    conversation.automation_run_id = Some(run.id.clone());
+    db.insert_conversation(conversation);
+
+    let started = run_repo
+        .update_start_metadata(
+            &run.id,
+            &conversation_id,
+            Some("ralphx/automation-run-1".to_string()),
+        )
+        .await
+        .unwrap()
+        .expect("provisioning run should accept start metadata");
+    assert_eq!(started.conversation_id, Some(conversation_id));
+    assert_eq!(
+        started.branch_name.as_deref(),
+        Some("ralphx/automation-run-1")
+    );
+    assert!(started.started_at.is_some());
+
+    assert!(run_repo
+        .compare_and_swap_status(
+            &run.id,
+            AutomationRunStatus::Provisioning,
+            AutomationRunStatus::Running,
+            None,
+            None,
+        )
+        .await
+        .unwrap());
+    assert_eq!(
+        run_repo
+            .get_by_id(&run.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .finished_at,
+        None
+    );
+
+    let published_metadata = AutomationRunPublicationMetadata {
+        pr_number: Some(593),
+        pr_url: Some("https://github.com/aigentive/ralphx.app/pull/593".to_string()),
+        pr_title: Some("Automation run 1".to_string()),
+        pr_head_ref_name: Some("ralphx/automation-run-1".to_string()),
+        pr_base_ref_name: Some("main".to_string()),
+    };
+    let published = run_repo
+        .update_publication_metadata(&run.id, published_metadata)
+        .await
+        .unwrap()
+        .expect("running run should accept publication metadata");
+    assert_eq!(published.pr_number, Some(593));
+    assert_eq!(published.pr_base_ref_name.as_deref(), Some("main"));
+
+    assert!(run_repo
+        .compare_and_swap_status(
+            &run.id,
+            AutomationRunStatus::Running,
+            AutomationRunStatus::Published,
+            None,
+            None,
+        )
+        .await
+        .unwrap());
+
+    let first_failure = run_repo
+        .increment_signal_check_failures(&run.id)
+        .await
+        .unwrap()
+        .expect("published run should increment signal failures");
+    assert_eq!(first_failure.signal_check_failures, 1);
+    let second_failure = run_repo
+        .increment_signal_check_failures(&run.id)
+        .await
+        .unwrap()
+        .expect("published run should increment signal failures again");
+    assert_eq!(second_failure.signal_check_failures, 2);
+    let reset = run_repo
+        .reset_signal_check_failures(&run.id)
+        .await
+        .unwrap()
+        .expect("published run should reset signal failures");
+    assert_eq!(reset.signal_check_failures, 0);
+
+    let merged_at = Utc::now();
+    let merge_metadata = run_repo
+        .update_merge_metadata(&run.id, Some("merge-sha".to_string()), Some(merged_at))
+        .await
+        .unwrap()
+        .expect("published run should accept merge metadata");
+    assert_eq!(merge_metadata.pr_merged_at, Some(merged_at));
+    assert_eq!(
+        merge_metadata.merge_commit_sha.as_deref(),
+        Some("merge-sha")
+    );
+    assert_eq!(merge_metadata.signal_check_failures, 0);
+
+    assert!(run_repo
+        .compare_and_swap_status(
+            &run.id,
+            AutomationRunStatus::Published,
+            AutomationRunStatus::Merged,
+            None,
+            None,
+        )
+        .await
+        .unwrap());
+    let terminal = run_repo.get_by_id(&run.id).await.unwrap().unwrap();
+    assert_eq!(terminal.status, AutomationRunStatus::Merged);
+    assert!(terminal.finished_at.is_some());
+
+    assert!(run_repo
+        .update_start_metadata(
+            &run.id,
+            &ChatConversationId::from_string("late-conversation"),
+            Some("late-branch".to_string()),
+        )
+        .await
+        .unwrap()
+        .is_none());
+    assert!(run_repo
+        .update_publication_metadata(&run.id, AutomationRunPublicationMetadata::default())
+        .await
+        .unwrap()
+        .is_none());
+    assert!(run_repo
+        .update_merge_metadata(&run.id, Some("late-sha".to_string()), None)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(run_repo
+        .increment_signal_check_failures(&run.id)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(run_repo
+        .reset_signal_check_failures(&run.id)
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
 async fn sqlite_run_repo_skip_judge_and_successor_are_atomic() {
     let (_db, project_id, automation_repo, run_repo) = setup_repos();
     automation_repo
@@ -316,6 +552,50 @@ async fn sqlite_run_repo_skip_judge_and_successor_are_atomic() {
 }
 
 #[tokio::test]
+async fn sqlite_run_repo_rejects_skip_judge_successor_mismatches() {
+    let (_db, project_id, automation_repo, run_repo) = setup_repos();
+    automation_repo
+        .create(automation(
+            "automation-1",
+            project_id,
+            AutomationStatus::Active,
+        ))
+        .await
+        .unwrap();
+    let previous = run(
+        "run-1",
+        1,
+        AutomationRunStatus::Merged,
+        AutomationJudgeState::None,
+    );
+    run_repo.create_run(previous.clone()).await.unwrap();
+
+    let mut wrong_automation = successor_run("run-2", 2, &previous.id);
+    wrong_automation.automation_id = AutomationId::from_string("automation-2");
+    let error = run_repo
+        .skip_judge_and_create_successor_run(
+            &AutomationId::from_string("automation-1"),
+            &previous.id,
+            wrong_automation,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(error, AppError::Validation(_)));
+
+    let mut wrong_base = successor_run("run-3", 3, &previous.id);
+    wrong_base.base_from_run_id = Some(AutomationRunId::from_string("other-run"));
+    let error = run_repo
+        .skip_judge_and_create_successor_run(
+            &AutomationId::from_string("automation-1"),
+            &previous.id,
+            wrong_base,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(error, AppError::Validation(_)));
+}
+
+#[tokio::test]
 async fn sqlite_run_repo_clears_stale_judge_verdict_when_retry_starts() {
     let (_db, project_id, automation_repo, run_repo) = setup_repos();
     automation_repo
@@ -355,4 +635,25 @@ async fn sqlite_run_repo_clears_stale_judge_verdict_when_retry_starts() {
     assert_eq!(updated.judge_verdict_json, None);
     assert_eq!(updated.error_detail, None);
     assert_eq!(updated.judge_lease_expires_at, Some(lease_expires_at));
+
+    assert!(run_repo
+        .compare_and_swap_judge_state(
+            &failed.id,
+            AutomationJudgeState::InProgress,
+            AutomationJudgeState::Done,
+            Some(r#"{"decision":"stop"}"#.to_string()),
+            Some("haiku".to_string()),
+            None,
+            None,
+        )
+        .await
+        .unwrap());
+    let completed = run_repo.get_by_id(&failed.id).await.unwrap().unwrap();
+    assert_eq!(completed.judge_state, AutomationJudgeState::Done);
+    assert_eq!(
+        completed.judge_verdict_json.as_deref(),
+        Some(r#"{"decision":"stop"}"#)
+    );
+    assert_eq!(completed.judge_model_id.as_deref(), Some("haiku"));
+    assert_eq!(completed.judge_lease_expires_at, None);
 }
