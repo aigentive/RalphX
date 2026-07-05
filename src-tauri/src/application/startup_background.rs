@@ -6,12 +6,15 @@ use std::time::Duration;
 use crate::application::agent_workspace_bridge::{
     dispatch_agent_workspace_bridge_events_once_with_deps, AgentWorkspaceBridgeDeps,
 };
+use crate::application::automation::scheduler::{
+    global_automation_scheduler_registry, AutomationScheduler, AutomationSchedulerConfig,
+};
 use crate::application::harness_runtime_registry::resolve_default_external_mcp_bootstrap;
 use crate::application::runtime_factory::{build_chat_service_from_deps, ChatRuntimeFactoryDeps};
 use crate::commands::ExecutionState;
 use crate::domain::repositories::{
-    ExternalEventsRepository, MemoryArchiveRepository, MemoryEntryRepository, ProjectRepository,
-    TaskRepository,
+    AutomationRepository, AutomationRunRepository, ExternalEventsRepository,
+    MemoryArchiveRepository, MemoryEntryRepository, ProjectRepository, TaskRepository,
 };
 use crate::infrastructure::{ExternalMcpHandle, ExternalMcpSupervisor};
 use crate::utils::backend_endpoint::backend_http_port;
@@ -72,6 +75,49 @@ pub fn spawn_watchdog(
         crate::application::ReadyWatchdog::new(task_scheduler, task_repo, project_repo)
             .run_loop()
             .await;
+    });
+}
+
+pub fn spawn_automation_scheduler(
+    automation_repo: Arc<dyn AutomationRepository>,
+    run_repo: Arc<dyn AutomationRunRepository>,
+) {
+    let registry = global_automation_scheduler_registry();
+    if !registry.try_start_loop() {
+        tracing::debug!("Automation scheduler already started; skipping duplicate spawn");
+        return;
+    }
+
+    let scheduler = AutomationScheduler::new(
+        automation_repo,
+        run_repo,
+        registry,
+        AutomationSchedulerConfig::default(),
+    );
+    let poll_interval = scheduler.config().poll_interval;
+
+    tauri::async_runtime::spawn(async move {
+        let mut interval = tokio::time::interval(poll_interval);
+        interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        loop {
+            interval.tick().await;
+            match scheduler.tick_once().await {
+                Ok(summary) => {
+                    tracing::debug!(
+                        total_automations = summary.total_automations,
+                        active_automations = summary.active_automations,
+                        leased_automations = summary.leased_automations,
+                        active_without_runs = summary.active_without_runs,
+                        active_with_runs = summary.active_with_runs,
+                        automation_errors = summary.automation_errors,
+                        "Automation scheduler tick completed"
+                    );
+                }
+                Err(error) => {
+                    tracing::warn!(error = %error, "Automation scheduler tick failed");
+                }
+            }
+        }
     });
 }
 

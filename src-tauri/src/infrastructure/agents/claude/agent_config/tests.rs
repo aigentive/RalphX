@@ -635,6 +635,44 @@ agents:
 }
 
 #[test]
+fn test_automations_config_parses_top_level_block() {
+    let yaml = r#"
+automations:
+  scheduler_poll_secs: 45
+  signal_failure_pause_threshold: 7
+  judge_timeout_secs: 240
+  publish_grace_secs: 90
+  max_run_duration_secs: 7200
+"#;
+    let parsed = parse_config_no_env_overrides(yaml).expect("config should parse");
+
+    assert_eq!(parsed.automations.scheduler_poll_secs, 45);
+    assert_eq!(parsed.automations.signal_failure_pause_threshold, 7);
+    assert_eq!(parsed.automations.judge_timeout_secs, 240);
+    assert_eq!(parsed.automations.publish_grace_secs, 90);
+    assert_eq!(parsed.automations.max_run_duration_secs, 7200);
+}
+
+#[test]
+fn test_automations_config_env_overrides() {
+    let parsed = parse_config_with_lookup("", &|name| match name {
+        "RALPHX_AUTOMATIONS_SCHEDULER_POLL_SECS" => Some("45".to_string()),
+        "RALPHX_AUTOMATIONS_SIGNAL_FAILURE_PAUSE_THRESHOLD" => Some("7".to_string()),
+        "RALPHX_AUTOMATIONS_JUDGE_TIMEOUT_SECS" => Some("240".to_string()),
+        "RALPHX_AUTOMATIONS_PUBLISH_GRACE_SECS" => Some("90".to_string()),
+        "RALPHX_AUTOMATIONS_MAX_RUN_DURATION_SECS" => Some("7200".to_string()),
+        _ => None,
+    })
+    .expect("config should parse");
+
+    assert_eq!(parsed.automations.scheduler_poll_secs, 45);
+    assert_eq!(parsed.automations.signal_failure_pause_threshold, 7);
+    assert_eq!(parsed.automations.judge_timeout_secs, 240);
+    assert_eq!(parsed.automations.publish_grace_secs, 90);
+    assert_eq!(parsed.automations.max_run_duration_secs, 7200);
+}
+
+#[test]
 fn test_openrouter_settings_profile_supports_blank_api_key_and_timeout() {
     let yaml = r#"
 claude:

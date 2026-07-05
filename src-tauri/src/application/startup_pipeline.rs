@@ -25,12 +25,13 @@ use crate::domain::repositories::{
     AgentConversationJiraIssueRepository, AgentConversationLinearIssueRepository,
     AgentConversationWorkspaceRepository, AgentLaneSettingsRepository,
     AgentProviderSettingsRepository, AgentRunRepository, AppStateRepository, ArtifactRepository,
-    ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,
-    ExecutionPlanRepository, ExecutionSettingsRepository, ExternalEventsRepository,
-    IdeationEffortSettingsRepository, IdeationModelSettingsRepository, IdeationSessionRepository,
-    MemoryArchiveRepository, MemoryEntryRepository, MemoryEventRepository,
-    OrphanWorktreeCleanupMarkerRepository, PlanBranchRepository, ProjectRepository,
-    ReviewRepository, TaskDependencyRepository, TaskRepository, TaskStepRepository,
+    AutomationRepository, AutomationRunRepository, ChatAttachmentRepository,
+    ChatConversationRepository, ChatMessageRepository, ExecutionPlanRepository,
+    ExecutionSettingsRepository, ExternalEventsRepository, IdeationEffortSettingsRepository,
+    IdeationModelSettingsRepository, IdeationSessionRepository, MemoryArchiveRepository,
+    MemoryEntryRepository, MemoryEventRepository, OrphanWorktreeCleanupMarkerRepository,
+    PlanBranchRepository, ProjectRepository, ReviewRepository, TaskDependencyRepository,
+    TaskRepository, TaskStepRepository,
 };
 use crate::domain::services::{
     running_agent_registry::kill_orphaned_mcp_servers, MessageQueue, RunningAgentRegistry,
@@ -64,6 +65,8 @@ pub(crate) struct StartupPipelineDeps {
     pub agent_conversation_linear_issue_repo: Arc<dyn AgentConversationLinearIssueRepository>,
     pub agent_conversation_granola_note_repo: Arc<dyn AgentConversationGranolaNoteRepository>,
     pub orphan_worktree_cleanup_marker_repo: Arc<dyn OrphanWorktreeCleanupMarkerRepository>,
+    pub automation_repo: Arc<dyn AutomationRepository>,
+    pub automation_run_repo: Arc<dyn AutomationRunRepository>,
     pub agent_run_repo: Arc<dyn AgentRunRepository>,
     pub ideation_session_repo: Arc<dyn IdeationSessionRepository>,
     pub activity_event_repo: Arc<dyn ActivityEventRepository>,
@@ -176,6 +179,8 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         agent_conversation_linear_issue_repo,
         agent_conversation_granola_note_repo,
         orphan_worktree_cleanup_marker_repo,
+        automation_repo,
+        automation_run_repo,
         agent_run_repo,
         ideation_session_repo,
         activity_event_repo,
@@ -725,6 +730,13 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
             Arc::clone(&project_repo),
         );
         startup_phase_completed("watchdog_spawn", phase_started_at);
+
+        let phase_started_at = startup_phase_started("automation_scheduler_spawn");
+        startup_background::spawn_automation_scheduler(
+            Arc::clone(&automation_repo),
+            Arc::clone(&automation_run_repo),
+        );
+        startup_phase_completed("automation_scheduler_spawn", phase_started_at);
     }
 
     if mode == StartupPipelineMode::Full {

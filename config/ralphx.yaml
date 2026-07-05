@@ -208,6 +208,18 @@ scheduler:
   # on_enter_states.rs — settle delay before scheduling unblocked tasks after a merge completes (milliseconds)
   merge_settle_ms: 100 # Env: RALPHX_SCHEDULER_MERGE_SETTLE_MS
 
+automations:
+  # automation scheduler — authoritative poll cadence for automation runs and PR completion signals
+  scheduler_poll_secs: 30 # Env: RALPHX_AUTOMATIONS_SCHEDULER_POLL_SECS
+  # automation scheduler — consecutive GitHub signal-check failures before pausing an automation
+  signal_failure_pause_threshold: 5 # Env: RALPHX_AUTOMATIONS_SIGNAL_FAILURE_PAUSE_THRESHOLD
+  # automation judge — maximum wall-clock seconds for a judge pass
+  judge_timeout_secs: 180 # Env: RALPHX_AUTOMATIONS_JUDGE_TIMEOUT_SECS
+  # automation scheduler — grace period after agent completion before scheduler-driven publish
+  publish_grace_secs: 120 # Env: RALPHX_AUTOMATIONS_PUBLISH_GRACE_SECS
+  # automation scheduler — maximum wall-clock seconds for a running automation run
+  max_run_duration_secs: 14400 # Env: RALPHX_AUTOMATIONS_MAX_RUN_DURATION_SECS
+
 supervisor:
   # supervisor_service.rs — wall-clock seconds before supervisor warns agent about time usage
   time_threshold_secs: 600 # Env: RALPHX_SUPERVISOR_TIME_THRESHOLD_SECS
