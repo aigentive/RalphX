@@ -6,17 +6,30 @@ describe("getVisibleIdeationArtifactTabs", () => {
   const baseAvailability = {
     hasAttachedIdeationSession: true,
     hasPlanArtifact: true,
+    isPlanCapable: true,
     hasProposals: false,
     hasVerificationEvidence: false,
     hasExecutionTasks: false,
     artifactMode: "plan",
   };
 
-  it("returns no tabs before an attached ideation run has a plan", () => {
+  it("keeps the plan tab visible before an attached ideation run has a plan", () => {
     expect(
       getVisibleIdeationArtifactTabs({
         ...baseAvailability,
+        hasAttachedIdeationSession: false,
         hasPlanArtifact: false,
+      }),
+    ).toEqual(["plan"]);
+  });
+
+  it("returns no tabs before a plan exists when the conversation is not plan-capable", () => {
+    expect(
+      getVisibleIdeationArtifactTabs({
+        ...baseAvailability,
+        hasAttachedIdeationSession: false,
+        hasPlanArtifact: false,
+        isPlanCapable: false,
       }),
     ).toEqual([]);
   });
@@ -64,6 +77,19 @@ describe("getVisibleIdeationArtifactTabs", () => {
         hasVerificationEvidence: true,
       }),
     ).toEqual(["plan", "verification"]);
+  });
+
+  it("keeps verification, proposals, and tasks hidden before session data exists", () => {
+    expect(
+      getVisibleIdeationArtifactTabs({
+        ...baseAvailability,
+        hasAttachedIdeationSession: false,
+        hasPlanArtifact: false,
+        hasProposals: true,
+        hasVerificationEvidence: true,
+        hasExecutionTasks: true,
+      }),
+    ).toEqual(["plan"]);
   });
 
   it("adds tasks only after the plan has execution tasks", () => {

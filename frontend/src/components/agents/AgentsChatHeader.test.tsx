@@ -1180,7 +1180,31 @@ describe("AgentsChatHeader", () => {
     expect(screen.getByLabelText("Open artifacts")).toBeInTheDocument();
   });
 
-  it("hides plan-mode artifact controls until a plan exists", () => {
+  it("shows the artifact shortcut when Plan is the only visible artifact tab", () => {
+    const onSelectArtifact = vi.fn();
+    renderWithProviders(
+      <AgentsChatHeader
+        conversation={conversation({ agentMode: "plan" })}
+        workspace={conversationWorkspace({ mode: "plan" })}
+        availableArtifactTabs={["plan"]}
+        artifactOpen={false}
+        activeArtifactTab="plan"
+        onRenameConversation={vi.fn().mockResolvedValue(undefined)}
+        onToggleTerminal={vi.fn()}
+        onToggleArtifacts={vi.fn()}
+        onSelectArtifact={onSelectArtifact}
+      />
+    );
+
+    fireEvent.click(screen.getByLabelText("Plan"));
+
+    expect(onSelectArtifact).toHaveBeenCalledWith("plan");
+    expect(screen.getByLabelText("Open artifacts")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Verification")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Proposals")).not.toBeInTheDocument();
+  });
+
+  it("hides plan-mode artifact controls when no artifact tabs are provided", () => {
     renderWithProviders(
       <AgentsChatHeader
         conversation={conversation({ agentMode: "plan" })}

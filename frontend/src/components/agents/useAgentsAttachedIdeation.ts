@@ -70,6 +70,9 @@ export function useAgentsAttachedIdeation({
     activeWorkspace?.mode ??
     activeConversation?.agentMode ??
     (activeConversation?.contextType === "ideation" ? "ideation" : null);
+  const isPlanCapableProjectConversation =
+    activeConversation?.contextType === "project" &&
+    attachedArtifactMode !== "review_pr";
   const hasAutoOpenArtifacts = useMemo(() => {
     if (!attachedIdeationSession) {
       return false;
@@ -103,6 +106,7 @@ export function useAgentsAttachedIdeation({
     return getVisibleIdeationArtifactTabs({
       hasAttachedIdeationSession: Boolean(attachedIdeationSession),
       hasPlanArtifact,
+      isPlanCapable: isPlanCapableProjectConversation,
       hasProposals: Boolean(attachedIdeationSessionData?.proposals.length),
       hasVerificationEvidence,
       hasExecutionTasks,
@@ -113,6 +117,7 @@ export function useAgentsAttachedIdeation({
     attachedIdeationSession,
     attachedIdeationSessionData?.proposals.length,
     attachedArtifactMode,
+    isPlanCapableProjectConversation,
   ]);
   useEffect(() => {
     if (

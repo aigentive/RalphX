@@ -1,4 +1,5 @@
 import { QueryClientProvider, type QueryClient } from "@tanstack/react-query";
+import { invoke } from "@tauri-apps/api/core";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState, type ComponentProps } from "react";
@@ -461,6 +462,31 @@ function conversationRuntimeStatus(
   };
 }
 
+function reviewSettings(
+  overrides: Partial<ReturnType<typeof baseReviewSettings>> = {},
+) {
+  return {
+    ...baseReviewSettings(),
+    ...overrides,
+  };
+}
+
+function baseReviewSettings() {
+  return {
+    require_human_review: false,
+    require_workspace_review: true,
+    max_fix_attempts: 3,
+    max_revision_cycles: 5,
+    ai_review_enabled: true,
+    ai_review_auto_fix: true,
+    require_fix_approval: false,
+    auto_create_followup_agent_conversation: true,
+    run_task_validations: true,
+  };
+}
+
+let reviewSettingsResponse = reviewSettings();
+
 const workspaceReviewTarget = {
   scope: "selected_source",
   baseRef: "base-sha",
@@ -667,6 +693,13 @@ function renderControlledPane(
 
 describe("AgentsArtifactPane", () => {
   beforeEach(() => {
+    reviewSettingsResponse = reviewSettings();
+    vi.mocked(invoke).mockImplementation((command) => {
+      if (command === "get_review_settings") {
+        return Promise.resolve(reviewSettingsResponse);
+      }
+      return Promise.resolve(undefined);
+    });
     getWorkspaceChangesMock.mockResolvedValue([
       { path: "frontend/src/App.tsx", status: "modified", additions: 4, deletions: 1 },
     ]);
@@ -1090,6 +1123,25 @@ describe("AgentsArtifactPane", () => {
     expect(screen.queryByText("No plan yet")).not.toBeInTheDocument();
   });
 
+  it("renders the lightweight Plan start surface without an attached ideation run", () => {
+    renderPane(
+      "plan",
+      workspace({ mode: "edit" }),
+      vi.fn(),
+      false,
+      conversation(),
+    );
+
+    expect(screen.getByTestId("agents-artifact-tab-plan")).toBeInTheDocument();
+    expect(screen.getByTestId("agent-plan-start-panel")).toBeInTheDocument();
+    expect(
+      screen.getByRole("searchbox", { name: "Search project plans" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Import markdown")).toBeInTheDocument();
+    expect(screen.queryByText("No ideation run attached")).not.toBeInTheDocument();
+    expect(getIdeationSessionMock).not.toHaveBeenCalled();
+  });
+
   it("anchors the active tab border to the bottom edge of the tab bar", async () => {
     getIdeationSessionMock.mockResolvedValue({
       session: {
@@ -1309,7 +1361,7 @@ describe("AgentsArtifactPane", () => {
       }),
     );
 
-    renderPane("plan", workspace({ mode: "edit" }), vi.fn(), false, conversation());
+    renderPane("tasks", workspace({ mode: "edit" }), vi.fn(), false, conversation());
 
     expect(await screen.findByText("Review not run")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Run review" })).toBeInTheDocument();
@@ -1422,16 +1474,11 @@ describe("AgentsArtifactPane", () => {
 
   it("does not block publishing on a required Review gate when policy is disabled", async () => {
     const queryClient = createTestQueryClient();
-    queryClient.setQueryData(reviewSettingsKeys.all, {
-      require_human_review: false,
+    const disabledReviewSettings = reviewSettings({
       require_workspace_review: false,
-      max_fix_attempts: 3,
-      max_revision_cycles: 5,
-      ai_review_enabled: true,
-      ai_review_auto_fix: true,
-      require_fix_approval: false,
-      auto_create_followup_agent_conversation: true,
     });
+    reviewSettingsResponse = disabledReviewSettings;
+    queryClient.setQueryData(reviewSettingsKeys.all, disabledReviewSettings);
     getWorkspaceReviewContextMock.mockResolvedValue(
       workspaceReviewContext({
         target: workspaceReviewTarget,
@@ -4096,7 +4143,7 @@ describe("AgentsArtifactPane", () => {
     expect(onFocusVerificationSession).not.toHaveBeenCalled();
   });
 
-  it("hides plan-derived tabs until the attached ideation run has a plan", async () => {
+  it("keeps only Plan visible until the attached ideation run has a plan", async () => {
     useConversationMock.mockReturnValue({
       data: {
         conversation: conversation(),
@@ -4157,7 +4204,8 @@ describe("AgentsArtifactPane", () => {
     );
 
     await waitFor(() => expect(getIdeationSessionMock).toHaveBeenCalledWith("session-1"));
-    expect(screen.queryByTestId("agents-artifact-tab-plan")).not.toBeInTheDocument();
+    expect(screen.getByTestId("agents-artifact-tab-plan")).toBeInTheDocument();
+    expect(screen.getByTestId("agent-plan-start-panel")).toBeInTheDocument();
     expect(screen.queryByTestId("agents-artifact-tab-verification")).not.toBeInTheDocument();
     expect(screen.queryByTestId("agents-artifact-tab-proposal")).not.toBeInTheDocument();
     expect(screen.queryByTestId("agents-artifact-tab-tasks")).not.toBeInTheDocument();

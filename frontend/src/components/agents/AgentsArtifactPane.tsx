@@ -64,6 +64,7 @@ import {
   type AgentConversation,
 } from "./agentConversations";
 import { AgentReviewPanel } from "./AgentReviewPanel";
+import { AgentPlanStartPanel } from "./AgentPlanStartPanel";
 import {
   getVisibleIdeationArtifactTabs,
   type IdeationArtifactTab,
@@ -140,11 +141,6 @@ const LazyPlanDisplay = lazy(() =>
 );
 const LazyPlanEditor = lazy(() =>
   import("@/components/Ideation/PlanEditor").then((module) => ({ default: module.PlanEditor })),
-);
-const LazyPlanEmptyState = lazy(() =>
-  import("@/components/Ideation/PlanEmptyState").then((module) => ({
-    default: module.PlanEmptyState,
-  })),
 );
 const LazyProposalsTabContent = lazy(() =>
   import("@/components/Ideation/ProposalsTabContent").then((module) => ({
@@ -530,6 +526,8 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     workspace?.mode ??
     conversation?.agentMode ??
     (conversation?.contextType === "ideation" ? "ideation" : null);
+  const isPlanCapableProjectConversation =
+    conversation?.contextType === "project" && artifactMode !== "review_pr";
   const issueConversationId =
     conversation?.contextType === "project" ? conversation.id : null;
   const conversationIssuesQuery = useAgentConversationIssues(issueConversationId);
@@ -541,6 +539,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       getVisibleIdeationArtifactTabs({
         hasAttachedIdeationSession: Boolean(sessionData),
         hasPlanArtifact: Boolean(planArtifactId),
+        isPlanCapable: isPlanCapableProjectConversation,
         hasProposals: proposalCount > 0,
         hasVerificationEvidence,
         hasExecutionTasks: Boolean(
@@ -553,6 +552,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     [
       artifactMode,
       hasVerificationEvidence,
+      isPlanCapableProjectConversation,
       planArtifactId,
       proposalCount,
       sessionData,
@@ -1212,20 +1212,11 @@ function ArtifactContent({
     );
   }
 
-  if (isLoading) {
-    return <EmptyArtifactState title="Loading attached run..." />;
-  }
-
-  if (!attachedSessionId) {
-    return (
-      <EmptyArtifactState
-        title="No ideation run attached"
-        detail="Start ideation from this agent chat to populate plan, verification, proposals, and tasks here."
-      />
-    );
-  }
-
   if (activeTab === "plan") {
+    if (!attachedSessionId) {
+      return <AgentPlanStartPanel status={isLoading ? "loading" : "idle"} />;
+    }
+
     return (
       <AgentPlanPanel
         workspace={workspace}
@@ -1239,6 +1230,19 @@ function ArtifactContent({
         verificationState={verificationState}
         verificationInProgress={verificationInProgress}
         onOpenVerification={onOpenVerification}
+      />
+    );
+  }
+
+  if (isLoading) {
+    return <EmptyArtifactState title="Loading attached run..." />;
+  }
+
+  if (!attachedSessionId) {
+    return (
+      <EmptyArtifactState
+        title="No ideation run attached"
+        detail="Start ideation from this agent chat to populate plan, verification, proposals, and tasks here."
       />
     );
   }
@@ -1615,7 +1619,7 @@ function AgentPlanPanel({
   }, [canVerifyPlan, onOpenVerification, queryClient, session, verificationInProgress]);
 
   if (isPlanLoading) {
-    return <EmptyArtifactState title="Loading plan..." />;
+    return <AgentPlanStartPanel status="loading" />;
   }
 
   return (
@@ -1676,9 +1680,7 @@ function AgentPlanPanel({
           </Suspense>
         )
       ) : (
-        <Suspense fallback={<EmptyArtifactState title="Loading plan..." />}>
-          <LazyPlanEmptyState />
-        </Suspense>
+        <AgentPlanStartPanel />
       )}
 
       {session && exportDialogOpen && (
