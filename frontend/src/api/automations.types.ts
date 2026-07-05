@@ -111,6 +111,11 @@ export interface CreateAutomationDraftResponse {
   setupConversationId: string | null;
 }
 
+export interface AutomationScheduleResponse {
+  scheduled: boolean;
+  reason: string | null;
+}
+
 export interface ListAutomationsInput {
   projectId?: string | null | undefined;
 }
@@ -131,6 +136,11 @@ export interface PauseAutomationInput {
   id: string;
   reasonCode?: string | undefined;
   reasonDetail?: string | undefined;
+}
+
+export interface AutomationRunScopedInput {
+  id: string;
+  runId: string;
 }
 
 export interface UpdateAutomationSetupInput {

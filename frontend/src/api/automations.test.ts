@@ -144,6 +144,54 @@ describe("automationsApi", () => {
     });
   });
 
+  it("sends remaining control commands with wrapped camelCase inputs", async () => {
+    vi.mocked(invoke)
+      .mockResolvedValueOnce({
+        scheduled: false,
+        reason: "automation run-now scheduling is implemented in a later scheduler phase",
+      })
+      .mockResolvedValueOnce({
+        scheduled: false,
+        reason: "judge already started",
+      })
+      .mockResolvedValueOnce(runResponse({ status: "cancelled" }))
+      .mockResolvedValueOnce(null);
+
+    await expect(automationsApi.triggerRunNow("automation-1")).resolves.toEqual({
+      scheduled: false,
+      reason: "automation run-now scheduling is implemented in a later scheduler phase",
+    });
+    await expect(
+      automationsApi.skipJudge({
+        id: "automation-1",
+        runId: "automation-run-1",
+      }),
+    ).resolves.toEqual({
+      scheduled: false,
+      reason: "judge already started",
+    });
+    await expect(
+      automationsApi.cancelRun({
+        id: "automation-1",
+        runId: "automation-run-1",
+      }),
+    ).resolves.toEqual(expect.objectContaining({ status: "cancelled" }));
+    await expect(automationsApi.delete("automation-1")).resolves.toBeUndefined();
+
+    expect(invoke).toHaveBeenNthCalledWith(1, "trigger_automation_run_now", {
+      input: { id: "automation-1" },
+    });
+    expect(invoke).toHaveBeenNthCalledWith(2, "skip_automation_judge", {
+      input: { id: "automation-1", runId: "automation-run-1" },
+    });
+    expect(invoke).toHaveBeenNthCalledWith(3, "cancel_automation_run", {
+      input: { id: "automation-1", runId: "automation-run-1" },
+    });
+    expect(invoke).toHaveBeenNthCalledWith(4, "delete_automation", {
+      input: { id: "automation-1" },
+    });
+  });
+
   it("transforms automation detail runs", async () => {
     vi.mocked(invoke).mockResolvedValue({
       automation: automationResponse(),

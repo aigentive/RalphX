@@ -174,6 +174,10 @@ impl AutomationRepository for LostStatusAutomationRepository {
         }
         Ok(false)
     }
+
+    async fn delete_terminal(&self, _id: &AutomationId) -> crate::error::AppResult<bool> {
+        Ok(false)
+    }
 }
 
 #[tokio::test]
@@ -426,5 +430,148 @@ async fn service_creates_pending_runs_without_bypassing_single_flight() {
             .unwrap()
             .len(),
         1
+    );
+}
+
+#[tokio::test]
+async fn service_cancel_run_and_stop_use_run_transition_service() {
+    let emitter = Arc::new(RecordingEmitter::default());
+    let (service, automation_repo, run_repo) = service_with_emitter(emitter.clone());
+    let active = automation("automation-1", AutomationStatus::Active);
+    automation_repo.create(active.clone()).await.unwrap();
+
+    let run = service
+        .create_run(CreateAutomationRunInput {
+            automation_id: active.id.clone(),
+            run_prompt: "Implement item 1".to_string(),
+            prompt_author: AutomationPromptAuthor::SetupAgent,
+            base_ref_kind: "project_default".to_string(),
+            base_ref_used: String::new(),
+            base_from_run_id: None,
+        })
+        .await
+        .unwrap();
+
+    let cancelled = service.cancel_run(&active.id, &run.id).await.unwrap();
+    assert_eq!(cancelled.status, AutomationRunStatus::Cancelled);
+
+    let second = automation("automation-2", AutomationStatus::Active);
+    automation_repo.create(second.clone()).await.unwrap();
+    let second_run = service
+        .create_run(CreateAutomationRunInput {
+            automation_id: second.id.clone(),
+            run_prompt: "Implement item 2".to_string(),
+            prompt_author: AutomationPromptAuthor::SetupAgent,
+            base_ref_kind: "project_default".to_string(),
+            base_ref_used: String::new(),
+            base_from_run_id: None,
+        })
+        .await
+        .unwrap();
+
+    let stopped = service.stop(&second.id).await.unwrap();
+    assert_eq!(stopped.status, AutomationStatus::Stopped);
+    assert_eq!(
+        run_repo
+            .get_by_id(&second_run.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        AutomationRunStatus::Cancelled
+    );
+    assert_eq!(
+        emitter.events(),
+        vec![
+            AutomationEvent::AutomationRunUpdated {
+                run_id: run.id.clone()
+            },
+            AutomationEvent::AutomationRunUpdated { run_id: run.id },
+            AutomationEvent::AutomationRunUpdated {
+                run_id: second_run.id.clone()
+            },
+            AutomationEvent::AutomationUpdated {
+                automation_id: second.id
+            },
+            AutomationEvent::AutomationRunUpdated {
+                run_id: second_run.id
+            },
+        ]
+    );
+}
+
+#[tokio::test]
+async fn service_delete_is_terminal_only_and_removes_runs() {
+    let emitter = Arc::new(RecordingEmitter::default());
+    let (service, automation_repo, run_repo) = service_with_emitter(emitter.clone());
+    let active = automation("automation-1", AutomationStatus::Active);
+    automation_repo.create(active.clone()).await.unwrap();
+    let run = service
+        .create_run(CreateAutomationRunInput {
+            automation_id: active.id.clone(),
+            run_prompt: "Implement item 1".to_string(),
+            prompt_author: AutomationPromptAuthor::SetupAgent,
+            base_ref_kind: "project_default".to_string(),
+            base_ref_used: String::new(),
+            base_from_run_id: None,
+        })
+        .await
+        .unwrap();
+
+    let active_delete = service.delete(&active.id).await.unwrap_err();
+    assert!(matches!(active_delete, AppError::Validation(_)));
+
+    service.cancel_run(&active.id, &run.id).await.unwrap();
+    service.stop(&active.id).await.unwrap();
+    service.delete(&active.id).await.unwrap();
+
+    assert!(automation_repo
+        .get_by_id(&active.id)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(run_repo
+        .list_for_automation(&active.id)
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(emitter
+        .events()
+        .contains(&AutomationEvent::AutomationUpdated {
+            automation_id: active.id
+        }));
+}
+
+#[tokio::test]
+async fn service_run_now_and_skip_judge_surfaces_fail_closed_until_later_phases() {
+    let (service, automation_repo, _run_repo) =
+        service_with_emitter(Arc::new(NoopAutomationEventEmitter));
+    let active = automation("automation-1", AutomationStatus::Active);
+    automation_repo.create(active.clone()).await.unwrap();
+
+    let run_now = service.trigger_run_now(&active.id).await.unwrap();
+    assert!(!run_now.scheduled);
+    assert!(run_now
+        .reason
+        .as_deref()
+        .unwrap_or_default()
+        .contains("later scheduler phase"));
+
+    let run = service
+        .create_run(CreateAutomationRunInput {
+            automation_id: active.id.clone(),
+            run_prompt: "Implement item 1".to_string(),
+            prompt_author: AutomationPromptAuthor::SetupAgent,
+            base_ref_kind: "project_default".to_string(),
+            base_ref_used: String::new(),
+            base_from_run_id: None,
+        })
+        .await
+        .unwrap();
+    let skip = service.skip_judge(&active.id, &run.id).await.unwrap();
+    assert_eq!(skip.scheduled, false);
+    assert_eq!(
+        skip.reason.as_deref(),
+        Some("run is not ready for judge skipping")
     );
 }

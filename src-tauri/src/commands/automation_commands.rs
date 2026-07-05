@@ -4,12 +4,15 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::application::automation::service::{
-    AutomationDetail, AutomationService, CreateAutomationDraftInput as ServiceCreateDraftInput,
+    AutomationDetail, AutomationScheduleOutcome, AutomationService,
+    CreateAutomationDraftInput as ServiceCreateDraftInput,
     UpdateAutomationSettingsInput as ServiceUpdateSettingsInput,
 };
 use crate::application::automation::transition::NoopAutomationEventEmitter;
 use crate::application::AppState;
-use crate::domain::entities::{Automation, AutomationId, AutomationRun, ProjectId};
+use crate::domain::entities::{
+    Automation, AutomationId, AutomationRun, AutomationRunId, ProjectId,
+};
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -52,6 +55,13 @@ pub struct PauseAutomationInput {
     pub reason_code: Option<String>,
     #[serde(default)]
     pub reason_detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutomationRunScopedInput {
+    pub id: String,
+    pub run_id: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -128,6 +138,12 @@ pub struct AutomationDetailResponse {
 pub struct CreateAutomationDraftResponse {
     pub automation: AutomationResponse,
     pub setup_conversation_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AutomationScheduleResponse {
+    pub scheduled: bool,
+    pub reason: Option<String>,
 }
 
 #[tauri::command]
@@ -237,6 +253,59 @@ pub async fn stop_automation(
         .map_err(|error| error.to_string())
 }
 
+#[tauri::command]
+pub async fn trigger_automation_run_now(
+    input: AutomationIdInput,
+    state: State<'_, AppState>,
+) -> Result<AutomationScheduleResponse, String> {
+    let id = parse_automation_id(&input.id)?;
+    automation_service(&state)
+        .trigger_run_now(&id)
+        .await
+        .map(AutomationScheduleResponse::from)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn skip_automation_judge(
+    input: AutomationRunScopedInput,
+    state: State<'_, AppState>,
+) -> Result<AutomationScheduleResponse, String> {
+    let id = parse_automation_id(&input.id)?;
+    let run_id = parse_automation_run_id(&input.run_id)?;
+    automation_service(&state)
+        .skip_judge(&id, &run_id)
+        .await
+        .map(AutomationScheduleResponse::from)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn cancel_automation_run(
+    input: AutomationRunScopedInput,
+    state: State<'_, AppState>,
+) -> Result<AutomationRunResponse, String> {
+    let id = parse_automation_id(&input.id)?;
+    let run_id = parse_automation_run_id(&input.run_id)?;
+    automation_service(&state)
+        .cancel_run(&id, &run_id)
+        .await
+        .map(AutomationRunResponse::from)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn delete_automation(
+    input: AutomationIdInput,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let id = parse_automation_id(&input.id)?;
+    automation_service(&state)
+        .delete(&id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
 pub(crate) fn automation_service(state: &AppState) -> AutomationService {
     AutomationService::new(
         state.automation_repo.clone(),
@@ -251,6 +320,14 @@ fn parse_automation_id(value: &str) -> Result<AutomationId, String> {
         return Err("automation id is required".to_string());
     }
     Ok(AutomationId::from_string(trimmed.to_string()))
+}
+
+fn parse_automation_run_id(value: &str) -> Result<AutomationRunId, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err("automation run id is required".to_string());
+    }
+    Ok(AutomationRunId::from_string(trimmed.to_string()))
 }
 
 fn parse_project_id(value: &str) -> Result<ProjectId, String> {
@@ -363,6 +440,15 @@ impl From<Automation> for CreateAutomationDraftResponse {
     }
 }
 
+impl From<AutomationScheduleOutcome> for AutomationScheduleResponse {
+    fn from(outcome: AutomationScheduleOutcome) -> Self {
+        Self {
+            scheduled: outcome.scheduled,
+            reason: outcome.reason,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use chrono::Utc;
@@ -413,6 +499,13 @@ mod tests {
 
         assert_eq!(input.max_runs, Some(12));
         assert_eq!(input.max_consecutive_failures, Some(4));
+
+        let run_input: AutomationRunScopedInput = serde_json::from_value(json!({
+            "id": "automation-1",
+            "runId": "automation-run-1"
+        }))
+        .unwrap();
+        assert_eq!(run_input.run_id, "automation-run-1");
     }
 
     #[test]
@@ -423,5 +516,19 @@ mod tests {
         assert_eq!(value["max_runs"], 25);
         assert!(value.get("projectId").is_none());
         assert!(value.get("maxRuns").is_none());
+    }
+
+    #[test]
+    fn automation_schedule_response_serializes_with_api_layer_snake_case() {
+        let value = serde_json::to_value(AutomationScheduleResponse::from(
+            AutomationScheduleOutcome {
+                scheduled: false,
+                reason: Some("deferred".to_string()),
+            },
+        ))
+        .unwrap();
+
+        assert_eq!(value["scheduled"], false);
+        assert_eq!(value["reason"], "deferred");
     }
 }

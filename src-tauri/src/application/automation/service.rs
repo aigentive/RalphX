@@ -54,6 +54,12 @@ pub struct CreateAutomationRunInput {
     pub base_from_run_id: Option<AutomationRunId>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AutomationScheduleOutcome {
+    pub scheduled: bool,
+    pub reason: Option<String>,
+}
+
 pub struct AutomationService {
     automation_repo: Arc<dyn AutomationRepository>,
     run_repo: Arc<dyn AutomationRunRepository>,
@@ -182,14 +188,105 @@ impl AutomationService {
 
     pub async fn stop(&self, id: &AutomationId) -> AppResult<Automation> {
         let automation = self.require_automation(id).await?;
-        self.transition_automation_status_or_conflict(
-            id,
-            automation.status,
-            AutomationStatus::Stopped,
+        let stopped = self
+            .transition_automation_status_or_conflict(
+                id,
+                automation.status,
+                AutomationStatus::Stopped,
+                None,
+                None,
+            )
+            .await?;
+        if let Some(run) = self.run_repo.latest_for_automation(id).await? {
+            if run_status_is_cancellable(run.status) {
+                self.transition_run_status_or_conflict(
+                    &run.id,
+                    run.status,
+                    AutomationRunStatus::Cancelled,
+                    None,
+                    None,
+                )
+                .await?;
+            }
+        }
+        Ok(stopped)
+    }
+
+    pub async fn trigger_run_now(&self, id: &AutomationId) -> AppResult<AutomationScheduleOutcome> {
+        self.require_automation(id).await?;
+        Ok(deferred_schedule_outcome(
+            "automation run-now scheduling is implemented in a later scheduler phase",
+        ))
+    }
+
+    pub async fn skip_judge(
+        &self,
+        id: &AutomationId,
+        run_id: &AutomationRunId,
+    ) -> AppResult<AutomationScheduleOutcome> {
+        let run = self.require_run_for_automation(id, run_id).await?;
+        let latest = self.latest_run_for_automation(id).await?;
+        if latest.id != run.id {
+            return Err(AppError::Validation(
+                "runId must reference the latest automation run".to_string(),
+            ));
+        }
+        if run.judge_state != AutomationJudgeState::None {
+            return Ok(AutomationScheduleOutcome {
+                scheduled: false,
+                reason: Some("judge already started".to_string()),
+            });
+        }
+        if !run_status_is_signal_terminal(run.status) {
+            return Ok(AutomationScheduleOutcome {
+                scheduled: false,
+                reason: Some("run is not ready for judge skipping".to_string()),
+            });
+        }
+        Ok(deferred_schedule_outcome(
+            "skip-judge successor scheduling is implemented in the judge phase",
+        ))
+    }
+
+    pub async fn cancel_run(
+        &self,
+        id: &AutomationId,
+        run_id: &AutomationRunId,
+    ) -> AppResult<AutomationRun> {
+        let run = self.require_run_for_automation(id, run_id).await?;
+        self.transition_run_status_or_conflict(
+            run_id,
+            run.status,
+            AutomationRunStatus::Cancelled,
             None,
             None,
         )
         .await
+    }
+
+    pub async fn delete(&self, id: &AutomationId) -> AppResult<()> {
+        let automation = self.require_automation(id).await?;
+        if !matches!(
+            automation.status,
+            AutomationStatus::Completed | AutomationStatus::Stopped
+        ) {
+            return Err(AppError::Validation(
+                "only completed or stopped automations can be deleted".to_string(),
+            ));
+        }
+        let deleted = self.automation_repo.delete_terminal(id).await?;
+        if !deleted {
+            return Err(automation_status_conflict(
+                id,
+                automation.status,
+                AutomationStatus::Stopped,
+            ));
+        }
+        self.run_repo.delete_for_automation(id).await?;
+        self.event_emitter.emit(AutomationEvent::AutomationUpdated {
+            automation_id: id.clone(),
+        });
+        Ok(())
     }
 
     pub async fn finalize(&self, id: &AutomationId) -> AppResult<Automation> {
@@ -272,6 +369,32 @@ impl AutomationService {
             .ok_or_else(|| automation_not_found(id))
     }
 
+    async fn require_run_for_automation(
+        &self,
+        automation_id: &AutomationId,
+        run_id: &AutomationRunId,
+    ) -> AppResult<AutomationRun> {
+        self.require_automation(automation_id).await?;
+        let run = self
+            .run_repo
+            .get_by_id(run_id)
+            .await?
+            .ok_or_else(|| automation_run_not_found(run_id))?;
+        if run.automation_id != *automation_id {
+            return Err(AppError::Validation(
+                "automation run is not owned by the requested automation".to_string(),
+            ));
+        }
+        Ok(run)
+    }
+
+    async fn latest_run_for_automation(&self, id: &AutomationId) -> AppResult<AutomationRun> {
+        self.run_repo
+            .latest_for_automation(id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("automation {} has no runs", id.as_str())))
+    }
+
     async fn transition_automation_status_or_conflict(
         &self,
         id: &AutomationId,
@@ -289,6 +412,53 @@ impl AutomationService {
         }
         self.require_automation(id).await
     }
+
+    async fn transition_run_status_or_conflict(
+        &self,
+        id: &AutomationRunId,
+        from: AutomationRunStatus,
+        to: AutomationRunStatus,
+        error_code: Option<String>,
+        error_detail: Option<String>,
+    ) -> AppResult<AutomationRun> {
+        let changed = self
+            .transition_service
+            .transition_run_status(id, from, to, error_code, error_detail)
+            .await?;
+        if !changed {
+            return Err(automation_run_status_conflict(id, from, to));
+        }
+        self.run_repo
+            .get_by_id(id)
+            .await?
+            .ok_or_else(|| automation_run_not_found(id))
+    }
+}
+
+fn deferred_schedule_outcome(reason: &str) -> AutomationScheduleOutcome {
+    AutomationScheduleOutcome {
+        scheduled: false,
+        reason: Some(reason.to_string()),
+    }
+}
+
+fn run_status_is_cancellable(status: AutomationRunStatus) -> bool {
+    matches!(
+        status,
+        AutomationRunStatus::Pending
+            | AutomationRunStatus::Provisioning
+            | AutomationRunStatus::Running
+            | AutomationRunStatus::Published
+    )
+}
+
+fn run_status_is_signal_terminal(status: AutomationRunStatus) -> bool {
+    matches!(
+        status,
+        AutomationRunStatus::Merged
+            | AutomationRunStatus::PrClosed
+            | AutomationRunStatus::AgentFailed
+    )
 }
 
 fn normalize_name(value: Option<&str>) -> AppResult<String> {
@@ -374,6 +544,10 @@ fn automation_not_found(id: &AutomationId) -> AppError {
     AppError::NotFound(format!("automation {} not found", id.as_str()))
 }
 
+fn automation_run_not_found(id: &AutomationRunId) -> AppError {
+    AppError::NotFound(format!("automation run {} not found", id.as_str()))
+}
+
 fn automation_status_conflict(
     id: &AutomationId,
     from: AutomationStatus,
@@ -381,6 +555,19 @@ fn automation_status_conflict(
 ) -> AppError {
     AppError::Conflict(format!(
         "automation {} status changed before transition {} -> {}",
+        id.as_str(),
+        from.as_str(),
+        to.as_str()
+    ))
+}
+
+fn automation_run_status_conflict(
+    id: &AutomationRunId,
+    from: AutomationRunStatus,
+    to: AutomationRunStatus,
+) -> AppError {
+    AppError::Conflict(format!(
+        "automation run {} status changed before transition {} -> {}",
         id.as_str(),
         from.as_str(),
         to.as_str()

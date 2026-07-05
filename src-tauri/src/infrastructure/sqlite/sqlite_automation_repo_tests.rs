@@ -147,6 +147,19 @@ async fn sqlite_automation_repo_cas_and_project_listing() {
     let updated = repo.get_by_id(&automation.id).await.unwrap().unwrap();
     assert_eq!(updated.status, AutomationStatus::Paused);
     assert_eq!(updated.paused_reason_code.as_deref(), Some("user"));
+    assert!(!repo.delete_terminal(&automation.id).await.unwrap());
+    assert!(repo
+        .compare_and_swap_status(
+            &automation.id,
+            AutomationStatus::Paused,
+            AutomationStatus::Stopped,
+            None,
+            None,
+        )
+        .await
+        .unwrap());
+    assert!(repo.delete_terminal(&automation.id).await.unwrap());
+    assert!(repo.get_by_id(&automation.id).await.unwrap().is_none());
 }
 
 #[tokio::test]
@@ -212,6 +225,18 @@ async fn sqlite_run_repo_latest_and_single_open_index() {
             .id,
         AutomationRunId::from_string("run-2")
     );
+    assert_eq!(
+        run_repo
+            .delete_for_automation(&AutomationId::from_string("automation-1"))
+            .await
+            .unwrap(),
+        2
+    );
+    assert!(run_repo
+        .list_for_automation(&AutomationId::from_string("automation-1"))
+        .await
+        .unwrap()
+        .is_empty());
 }
 
 #[tokio::test]

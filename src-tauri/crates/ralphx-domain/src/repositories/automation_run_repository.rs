@@ -38,4 +38,6 @@ pub trait AutomationRunRepository: Send + Sync {
         judge_verdict_json: Option<String>,
         error_detail: Option<String>,
     ) -> AppResult<bool>;
+
+    async fn delete_for_automation(&self, automation_id: &AutomationId) -> AppResult<usize>;
 }

@@ -121,4 +121,9 @@ export const CreateAutomationDraftResponseSchema = z.object({
   setup_conversation_id: z.string().nullable(),
 });
 
+export const AutomationScheduleResponseSchema = z.object({
+  scheduled: z.boolean(),
+  reason: z.string().nullable(),
+});
+
 export const AutomationListSchema = z.array(AutomationSchema);

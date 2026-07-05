@@ -141,6 +141,19 @@ async fn memory_automation_repo_cas_and_project_listing() {
         repo.get_by_id(&first.id).await.unwrap().unwrap().status,
         AutomationStatus::Active
     );
+    assert!(!repo.delete_terminal(&first.id).await.unwrap());
+    assert!(repo
+        .compare_and_swap_status(
+            &first.id,
+            AutomationStatus::Active,
+            AutomationStatus::Stopped,
+            None,
+            None,
+        )
+        .await
+        .unwrap());
+    assert!(repo.delete_terminal(&first.id).await.unwrap());
+    assert!(repo.get_by_id(&first.id).await.unwrap().is_none());
 }
 
 #[tokio::test]
@@ -186,6 +199,18 @@ async fn memory_run_repo_enforces_open_run_single_flight() {
     ))
     .await
     .unwrap();
+
+    assert_eq!(
+        repo.delete_for_automation(&AutomationId::from_string("automation-1"))
+            .await
+            .unwrap(),
+        2
+    );
+    assert!(repo
+        .list_for_automation(&AutomationId::from_string("automation-1"))
+        .await
+        .unwrap()
+        .is_empty());
 }
 
 #[tokio::test]

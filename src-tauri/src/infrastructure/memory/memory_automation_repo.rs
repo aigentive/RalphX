@@ -124,6 +124,24 @@ impl AutomationRepository for MemoryAutomationRepository {
         automation.updated_at = Utc::now();
         Ok(true)
     }
+
+    async fn delete_terminal(&self, id: &AutomationId) -> AppResult<bool> {
+        let mut automations = self.automations.write().unwrap();
+        let Some(position) = automations
+            .iter()
+            .position(|automation| automation.id == *id)
+        else {
+            return Ok(false);
+        };
+        if !matches!(
+            automations[position].status,
+            AutomationStatus::Completed | AutomationStatus::Stopped
+        ) {
+            return Ok(false);
+        }
+        automations.remove(position);
+        Ok(true)
+    }
 }
 
 pub struct MemoryAutomationRunRepository {
@@ -268,5 +286,12 @@ impl AutomationRunRepository for MemoryAutomationRunRepository {
         run.error_detail = error_detail;
         run.updated_at = Utc::now();
         Ok(true)
+    }
+
+    async fn delete_for_automation(&self, automation_id: &AutomationId) -> AppResult<usize> {
+        let mut runs = self.runs.write().unwrap();
+        let before = runs.len();
+        runs.retain(|run| run.automation_id != *automation_id);
+        Ok(before - runs.len())
     }
 }

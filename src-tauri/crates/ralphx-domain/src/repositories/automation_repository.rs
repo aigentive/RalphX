@@ -34,4 +34,6 @@ pub trait AutomationRepository: Send + Sync {
         paused_reason_code: Option<String>,
         paused_reason_detail: Option<String>,
     ) -> AppResult<bool>;
+
+    async fn delete_terminal(&self, id: &AutomationId) -> AppResult<bool>;
 }

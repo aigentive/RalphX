@@ -232,7 +232,9 @@ export {
   type AutomationPromptAuthor,
   type AutomationRun,
   type AutomationRunMode,
+  type AutomationRunScopedInput,
   type AutomationRunStatus,
+  type AutomationScheduleResponse,
   type AutomationStatus,
   type CreateAutomationDraftInput,
   type CreateAutomationDraftResponse,
@@ -247,6 +249,7 @@ export {
   AutomationJudgeStateSchema,
   AutomationListSchema,
   AutomationPromptAuthorSchema,
+  AutomationScheduleResponseSchema,
   AutomationRunModeSchema,
   AutomationRunSchema,
   AutomationRunStatusSchema,
@@ -256,6 +259,8 @@ export {
   transformAutomation,
   transformAutomationDetail,
   transformAutomationRun,
+  transformAutomationRunScopedInput,
+  transformAutomationScheduleResponse,
   transformCreateAutomationDraftResponse,
 } from "@/api/automations";
 

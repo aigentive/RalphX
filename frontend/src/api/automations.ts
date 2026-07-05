@@ -1,15 +1,24 @@
-import { typedInvokeWithTransform } from "@/lib/tauri";
+import {
+  TauriVoidSchema,
+  typedInvoke,
+  typedInvokeWithTransform,
+} from "@/lib/tauri";
 import { backendApiUrl } from "@/api/backend";
 
 import {
   AutomationDetailSchema,
   AutomationListSchema,
+  AutomationRunSchema,
+  AutomationScheduleResponseSchema,
   AutomationSchema,
   CreateAutomationDraftResponseSchema,
 } from "./automations.schemas";
 import {
   transformAutomation,
   transformAutomationDetail,
+  transformAutomationRun,
+  transformAutomationRunScopedInput,
+  transformAutomationScheduleResponse,
   transformCreateAutomationDraftResponse,
   transformPauseAutomationInput,
   transformUpdateAutomationSettingsInput,
@@ -18,6 +27,9 @@ import {
 import type {
   Automation,
   AutomationDetail,
+  AutomationRun,
+  AutomationRunScopedInput,
+  AutomationScheduleResponse,
   CreateAutomationDraftInput,
   CreateAutomationDraftResponse,
   ListAutomationsInput,
@@ -36,7 +48,9 @@ export type {
   AutomationPromptAuthor,
   AutomationRun,
   AutomationRunMode,
+  AutomationRunScopedInput,
   AutomationRunStatus,
+  AutomationScheduleResponse,
   AutomationStatus,
   CreateAutomationDraftInput,
   CreateAutomationDraftResponse,
@@ -54,6 +68,7 @@ export {
   AutomationJudgeStateSchema,
   AutomationListSchema,
   AutomationPromptAuthorSchema,
+  AutomationScheduleResponseSchema,
   AutomationRunModeSchema,
   AutomationRunSchema,
   AutomationRunStatusSchema,
@@ -66,6 +81,8 @@ export {
   transformAutomation,
   transformAutomationDetail,
   transformAutomationRun,
+  transformAutomationRunScopedInput,
+  transformAutomationScheduleResponse,
   transformCreateAutomationDraftResponse,
   transformPauseAutomationInput,
   transformUpdateAutomationSettingsInput,
@@ -179,6 +196,36 @@ export const automationsApi = {
       AutomationSchema,
       transformAutomation,
     ),
+
+  triggerRunNow: (id: string): Promise<AutomationScheduleResponse> =>
+    typedInvokeWithTransform(
+      "trigger_automation_run_now",
+      { input: { id } },
+      AutomationScheduleResponseSchema,
+      transformAutomationScheduleResponse,
+    ),
+
+  skipJudge: (
+    input: AutomationRunScopedInput,
+  ): Promise<AutomationScheduleResponse> =>
+    typedInvokeWithTransform(
+      "skip_automation_judge",
+      { input: transformAutomationRunScopedInput(input) },
+      AutomationScheduleResponseSchema,
+      transformAutomationScheduleResponse,
+    ),
+
+  cancelRun: (input: AutomationRunScopedInput): Promise<AutomationRun> =>
+    typedInvokeWithTransform(
+      "cancel_automation_run",
+      { input: transformAutomationRunScopedInput(input) },
+      AutomationRunSchema,
+      transformAutomationRun,
+    ),
+
+  delete: async (id: string): Promise<void> => {
+    await typedInvoke("delete_automation", { input: { id } }, TauriVoidSchema);
+  },
 
   setupAgent: {
     getAutomation: (callerConversationId: string): Promise<AutomationDetail> =>

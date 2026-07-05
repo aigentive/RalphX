@@ -230,6 +230,20 @@ impl AutomationRepository for SqliteAutomationRepository {
             })
             .await
     }
+
+    async fn delete_terminal(&self, id: &AutomationId) -> AppResult<bool> {
+        let id = id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                let affected = conn.execute(
+                    "DELETE FROM automations
+                     WHERE id = ?1 AND status IN ('completed', 'stopped')",
+                    [id],
+                )?;
+                Ok(affected == 1)
+            })
+            .await
+    }
 }
 
 pub struct SqliteAutomationRunRepository {
@@ -485,6 +499,19 @@ impl AutomationRunRepository for SqliteAutomationRunRepository {
                     ],
                 )?;
                 Ok(affected == 1)
+            })
+            .await
+    }
+
+    async fn delete_for_automation(&self, automation_id: &AutomationId) -> AppResult<usize> {
+        let automation_id = automation_id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                conn.execute(
+                    "DELETE FROM automation_runs WHERE automation_id = ?1",
+                    [automation_id],
+                )
+                .map_err(AppError::from)
             })
             .await
     }

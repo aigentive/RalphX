@@ -4,6 +4,8 @@ import type {
   Automation,
   AutomationDetail,
   AutomationRun,
+  AutomationRunScopedInput,
+  AutomationScheduleResponse,
   CreateAutomationDraftResponse,
   PauseAutomationInput,
   UpdateAutomationSettingsInput,
@@ -12,6 +14,7 @@ import type {
 import {
   AutomationDetailSchema,
   AutomationRunSchema,
+  AutomationScheduleResponseSchema,
   AutomationSchema,
   CreateAutomationDraftResponseSchema,
 } from "./automations.schemas";
@@ -21,6 +24,9 @@ type RawAutomationRun = z.infer<typeof AutomationRunSchema>;
 type RawAutomationDetail = z.infer<typeof AutomationDetailSchema>;
 type RawCreateAutomationDraftResponse = z.infer<
   typeof CreateAutomationDraftResponseSchema
+>;
+type RawAutomationScheduleResponse = z.infer<
+  typeof AutomationScheduleResponseSchema
 >;
 
 export function transformAutomation(raw: RawAutomation): Automation {
@@ -107,6 +113,15 @@ export function transformCreateAutomationDraftResponse(
   };
 }
 
+export function transformAutomationScheduleResponse(
+  raw: RawAutomationScheduleResponse,
+): AutomationScheduleResponse {
+  return {
+    scheduled: raw.scheduled,
+    reason: raw.reason,
+  };
+}
+
 export function transformUpdateAutomationSettingsInput(
   input: UpdateAutomationSettingsInput,
 ): Record<string, unknown> {
@@ -117,6 +132,15 @@ export function transformUpdateAutomationSettingsInput(
     ...(input.maxConsecutiveFailures !== undefined && {
       maxConsecutiveFailures: input.maxConsecutiveFailures,
     }),
+  };
+}
+
+export function transformAutomationRunScopedInput(
+  input: AutomationRunScopedInput,
+): Record<string, unknown> {
+  return {
+    id: input.id,
+    runId: input.runId,
   };
 }
 
