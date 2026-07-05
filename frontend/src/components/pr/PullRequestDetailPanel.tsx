@@ -24,6 +24,9 @@ export function PullRequestDetailPanel({
       selector={selector}
       shell={shell}
       className="min-h-full"
+      // We are already inside this conversation's workspace, so embedding the
+      // linked RalphX conversation here would just duplicate the surrounding UI.
+      showRxConversation={false}
     />
   );
 }
