@@ -3844,6 +3844,9 @@ async fn filter_agent_list_visible_conversations(
 ) -> Result<Vec<ChatConversation>, String> {
     let mut visible = Vec::with_capacity(conversations.len());
     for conversation in conversations {
+        if conversation.automation_id.is_some() {
+            continue;
+        }
         if conversation.parent_conversation_id.is_none()
             || state
                 .agent_conversation_workspace_repo
@@ -9838,6 +9841,7 @@ mod tests {
         build_agent_workspace_repair_message_for_target, cached_agent_workspace_freshness,
         create_agent_conversation, emit_agent_conversation_fork_events,
         ensure_plan_workspace_planning_session_link_for_send, existing_pr_retarget_block_reason,
+        filter_agent_list_visible_conversations,
         fork_agent_conversation, fork_agent_conversation_response_for_state,
         fork_terminal_agent_conversation_for_send,
         get_agent_conversation_runtime_index_for_app_state,
@@ -15646,6 +15650,100 @@ mod tests {
             !conversation_ids.contains(&embedded_child.id.as_str()),
             "embedded child conversations without workspaces should stay hidden"
         );
+    }
+
+    #[tokio::test]
+    async fn agent_list_endpoints_hide_automation_owned_conversations_but_direct_fetch_works() {
+        let state = AppState::new_test();
+        let project_id = ProjectId::from_string("project-command-automation-hidden".to_string());
+        let mut visible = ChatConversation::new_project(project_id.clone());
+        visible.set_title("Manual agent conversation");
+        let visible = state
+            .chat_conversation_repo
+            .create(visible)
+            .await
+            .expect("visible conversation should be created");
+
+        let automation_id = AutomationId::from_string("automation-1");
+        let mut setup = ChatConversation::new_project(project_id.clone());
+        setup.set_title("Automation setup conversation");
+        setup.automation_id = Some(automation_id.clone());
+        let setup = state
+            .chat_conversation_repo
+            .create(setup)
+            .await
+            .expect("setup conversation should be created");
+
+        let mut run = ChatConversation::new_project(project_id.clone());
+        run.set_title("Automation run conversation");
+        run.automation_id = Some(automation_id);
+        run.automation_run_id = Some(AutomationRunId::from_string("run-1"));
+        let run = state
+            .chat_conversation_repo
+            .create(run)
+            .await
+            .expect("run conversation should be created");
+
+        let filtered = filter_agent_list_visible_conversations(
+            &state,
+            vec![visible.clone(), setup.clone(), run.clone()],
+        )
+        .await
+        .expect("shared list filter should run");
+        let filtered_ids = filtered
+            .iter()
+            .map(|conversation| conversation.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(filtered_ids, vec![visible.id.as_str()]);
+
+        let setup_conversation = state
+            .chat_conversation_repo
+            .get_by_id(&setup.id)
+            .await
+            .expect("direct setup conversation fetch should load")
+            .expect("direct setup conversation should exist");
+        let setup_response =
+            agent_conversation_response_for_state(&state, setup_conversation)
+                .await
+                .expect("setup response should hydrate");
+        assert_eq!(setup_response.id, setup.id.as_str());
+        assert_eq!(setup_response.automation_id.as_deref(), Some("automation-1"));
+
+        let run_conversation = state
+            .chat_conversation_repo
+            .get_by_id(&run.id)
+            .await
+            .expect("direct run conversation fetch should load")
+            .expect("direct run conversation should exist");
+        let run_response = agent_conversation_response_for_state(&state, run_conversation)
+            .await
+            .expect("run response should hydrate");
+        assert_eq!(run_response.id, run.id.as_str());
+        assert_eq!(run_response.automation_run_id.as_deref(), Some("run-1"));
+
+        let app = mock_builder()
+            .manage(state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        let page = list_agent_conversations_page(
+            ChatContextType::Project.to_string(),
+            project_id.as_str().to_string(),
+            Some(false),
+            Some(false),
+            Some(0),
+            Some(10),
+            None,
+            app.state(),
+        )
+        .await
+        .expect("conversation page should load");
+        let page_ids = page
+            .conversations
+            .iter()
+            .map(|conversation| conversation.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(page_ids, vec![visible.id.as_str()]);
     }
 
     fn mode_lock_test_workspace(
