@@ -1217,7 +1217,7 @@ describe("App", () => {
       expect(screen.getByTestId("nav-kanban")).toBeInTheDocument();
       expect(screen.getByTestId("nav-graph")).toBeInTheDocument();
       expect(screen.queryByTestId("nav-ideation")).toBeNull();
-      expect(screen.queryByTestId("nav-automations")).toBeNull();
+      expect(screen.getByTestId("nav-automations")).toBeInTheDocument();
       expect(screen.getByTestId("nav-extensibility")).toBeInTheDocument();
       expect(screen.getByTestId("nav-activity")).toBeInTheDocument();
       expect(screen.getByTestId("nav-settings")).toBeInTheDocument();
@@ -1231,6 +1231,7 @@ describe("App", () => {
         { testId: "nav-agents", label: /Agents/i },
         { testId: "nav-kanban", label: /Kanban/i },
         { testId: "nav-graph", label: /Graph/i },
+        { testId: "nav-automations", label: /Automations/i },
         { testId: "nav-extensibility", label: /Extensibility/i },
         { testId: "nav-activity", label: /Activity/i },
         { testId: "nav-settings", label: /Settings/i },
