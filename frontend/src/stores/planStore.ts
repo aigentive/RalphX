@@ -49,6 +49,12 @@ interface PlanActions {
     source: SelectionSource,
     executionPlanId?: string | null
   ) => Promise<void>;
+  /** Sync active plan state after backend-owned restart creates a new execution plan. */
+  syncActivePlanExecution: (
+    projectId: string,
+    sessionId: string,
+    executionPlanId: string | null
+  ) => void;
   /** Clear active plan for a project */
   clearActivePlan: (projectId: string) => Promise<void>;
   /** Load plan candidates for selector (not implemented yet - will call list_plan_selector_candidates) */
@@ -162,6 +168,15 @@ export const usePlanStore = create<PlanState & PlanActions>()(
         });
         throw error; // Re-throw so callers can handle
       }
+    },
+
+    syncActivePlanExecution: (projectId, sessionId, executionPlanId) => {
+      set((state) => {
+        state.activePlanByProject[projectId] = sessionId;
+        state.activeExecutionPlanIdByProject[projectId] = executionPlanId;
+        state.activePlanLoadedByProject[projectId] = true;
+        state.error = null;
+      });
     },
 
     clearActivePlan: async (projectId) => {

@@ -76,6 +76,57 @@ describe("useTasks", () => {
     expect(result.current.data).toHaveLength(2);
   });
 
+  it("should fetch all execution-plan task pages when requested", async () => {
+    const firstPageTasks = [
+      createMockTask({ id: "task-1", executionPlanId: "exec-plan-1" }),
+      createMockTask({ id: "task-2", executionPlanId: "exec-plan-1" }),
+    ];
+    const secondPageTasks = [
+      createMockTask({ id: "task-3", executionPlanId: "exec-plan-1" }),
+    ];
+    vi.mocked(api.tasks.list)
+      .mockResolvedValueOnce({
+        tasks: firstPageTasks,
+        total: 3,
+        hasMore: true,
+        offset: 0,
+      })
+      .mockResolvedValueOnce({
+        tasks: secondPageTasks,
+        total: 3,
+        hasMore: false,
+        offset: 2,
+      });
+
+    const { result } = renderHook(
+      () =>
+        useTasks("project-123", {
+          executionPlanId: "exec-plan-1",
+          allPages: true,
+          pageSize: 2,
+        }),
+      { wrapper },
+    );
+
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBe(true);
+    });
+
+    expect(api.tasks.list).toHaveBeenNthCalledWith(1, {
+      projectId: "project-123",
+      executionPlanId: "exec-plan-1",
+      offset: 0,
+      limit: 2,
+    });
+    expect(api.tasks.list).toHaveBeenNthCalledWith(2, {
+      projectId: "project-123",
+      executionPlanId: "exec-plan-1",
+      offset: 2,
+      limit: 2,
+    });
+    expect(result.current.data).toEqual([...firstPageTasks, ...secondPageTasks]);
+  });
+
   it("should handle loading state", async () => {
     // Create a promise that we can control
     let resolvePromise: (value: { tasks: Task[]; total: number; hasMore: boolean; offset: number }) => void;

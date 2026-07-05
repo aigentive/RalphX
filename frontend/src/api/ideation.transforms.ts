@@ -23,6 +23,7 @@ import type {
   ApplyProposalsResultResponse,
   CreateChildSessionResponse,
   ParentSessionContextResponse,
+  RestartImplementationResultResponse,
 } from "./ideation.types";
 import {
   IdeationSessionResponseSchema,
@@ -34,6 +35,7 @@ import {
   ApplyProposalsResultResponseSchema,
   CreateChildSessionResponseSchema,
   ParentSessionContextResponseSchema,
+  RestartImplementationResultResponseSchema,
   SessionListResponseSchema,
 } from "./ideation.schemas";
 
@@ -235,6 +237,12 @@ export function transformApplyResult(raw: z.infer<typeof ApplyProposalsResultRes
     executionPlanId: raw.execution_plan_id ?? null,
     ...(raw.message !== undefined && { message: raw.message }),
   };
+}
+
+export function transformRestartImplementationResult(
+  raw: z.infer<typeof RestartImplementationResultResponseSchema>
+): RestartImplementationResultResponse {
+  return raw;
 }
 
 export function transformNullableBool(value: number | null | undefined): boolean | null {

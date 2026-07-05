@@ -193,6 +193,20 @@ export interface ApplyProposalsResultResponse {
   message?: string | null;
 }
 
+export interface RestartImplementationResultResponse {
+  sessionId: string;
+  projectId: string;
+  oldExecutionPlanId: string;
+  newExecutionPlanId: string;
+  archivedTaskCount: number;
+  stoppedAgentCount: number;
+  tasksCreated: number;
+  dependenciesCreated: number;
+  createdTaskIds: string[];
+  anyReadyTasks: boolean;
+  warnings: string[];
+}
+
 // Input types for API calls
 
 export interface CreateProposalInput {

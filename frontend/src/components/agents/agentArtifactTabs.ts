@@ -17,21 +17,16 @@ export interface IdeationArtifactAvailability {
 export function getVisibleIdeationArtifactTabs({
   hasAttachedIdeationSession,
   hasPlanArtifact,
-  hasProposals,
   hasVerificationEvidence,
   hasExecutionTasks,
-  artifactMode,
 }: IdeationArtifactAvailability): IdeationArtifactTab[] {
   if (!hasAttachedIdeationSession || !hasPlanArtifact) {
     return [];
   }
 
-  const canShowProposalTab = artifactMode === "plan" || artifactMode === "ideation";
-
   return [
     "plan",
     ...(hasVerificationEvidence ? ["verification" as const] : []),
-    ...(hasProposals && canShowProposalTab ? ["proposal" as const] : []),
     ...(hasExecutionTasks ? ["tasks" as const] : []),
   ];
 }

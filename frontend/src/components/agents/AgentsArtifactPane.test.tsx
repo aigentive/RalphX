@@ -15,6 +15,7 @@ import type {
 import { buildStoreKey } from "@/lib/chat-context-registry";
 import { useAgentSessionStore, type AgentArtifactTab } from "@/stores/agentSessionStore";
 import { useChatStore } from "@/stores/chatStore";
+import { usePlanStore } from "@/stores/planStore";
 import { useUiStore } from "@/stores/uiStore";
 import { createTestQueryClient } from "@/test/store-utils";
 import { chatKeys } from "@/hooks/useChat";
@@ -24,7 +25,12 @@ import { agentWorkspaceKeys } from "./agentWorkspaceQueries";
 
 const deferredHydrationTimeout = { timeout: 3_000 };
 
-const defaultReviewSettings = {
+Object.defineProperty(HTMLElement.prototype, "scrollTo", {
+  configurable: true,
+  value: vi.fn(),
+});
+
+const DEFAULT_REVIEW_SETTINGS = {
   require_human_review: false,
   require_workspace_review: true,
   max_fix_attempts: 3,
@@ -73,7 +79,9 @@ const {
   confirmVerificationMock,
   getVerificationSpecialistsMock,
   getIdeationSessionMock,
+  restartImplementationMock,
   getIdeationChildrenMock,
+  useTasksMock,
   useConversationMock,
   useDependencyGraphMock,
   useVerificationStatusMock,
@@ -127,7 +135,9 @@ const {
   confirmVerificationMock: vi.fn(),
   getVerificationSpecialistsMock: vi.fn(),
   getIdeationSessionMock: vi.fn(),
+  restartImplementationMock: vi.fn(),
   getIdeationChildrenMock: vi.fn(),
+  useTasksMock: vi.fn(),
   useConversationMock: vi.fn(),
   useDependencyGraphMock: vi.fn(),
   useVerificationStatusMock: vi.fn(),
@@ -240,9 +250,19 @@ vi.mock("@/api/ideation", async (importOriginal) => {
       sessions: {
         ...actual.ideationApi.sessions,
         getWithData: (...args: unknown[]) => getIdeationSessionMock(...args),
+        restartImplementation: (...args: unknown[]) =>
+          restartImplementationMock(...args),
         getChildren: (...args: unknown[]) => getIdeationChildrenMock(...args),
       },
     },
+  };
+});
+
+vi.mock("@/hooks/useTasks", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/hooks/useTasks")>();
+  return {
+    ...actual,
+    useTasks: (...args: unknown[]) => useTasksMock(...args),
   };
 });
 
@@ -329,6 +349,11 @@ vi.mock("@/hooks/useChat", async (importOriginal) => {
 
 vi.mock("@/hooks/useDependencyGraph", () => ({
   useDependencyGraph: (...args: unknown[]) => useDependencyGraphMock(...args),
+  useDependencyTiers: () => ({
+    tierMap: new Map<string, number>(),
+    maxTier: 0,
+    tierGroups: new Map<number, string[]>(),
+  }),
 }));
 
 vi.mock("@/hooks/useVerificationStatus", () => ({
@@ -682,7 +707,12 @@ function renderControlledPane(
 describe("AgentsArtifactPane", () => {
   beforeEach(() => {
     vi.mocked(invoke).mockReset();
-    vi.mocked(invoke).mockResolvedValue(defaultReviewSettings);
+    vi.mocked(invoke).mockImplementation((cmd) => {
+      if (cmd === "get_review_settings") {
+        return Promise.resolve(DEFAULT_REVIEW_SETTINGS);
+      }
+      return Promise.resolve(undefined);
+    });
     getWorkspaceChangesMock.mockResolvedValue([
       { path: "frontend/src/App.tsx", status: "modified", additions: 4, deletions: 1 },
     ]);
@@ -970,7 +1000,24 @@ describe("AgentsArtifactPane", () => {
     confirmVerificationMock.mockResolvedValue({ status: "ok" });
     getVerificationSpecialistsMock.mockResolvedValue({ specialists: [] });
     getIdeationSessionMock.mockResolvedValue(null);
+    restartImplementationMock.mockResolvedValue({
+      sessionId: "session-1",
+      projectId: "project-1",
+      oldExecutionPlanId: "exec-plan-old",
+      newExecutionPlanId: "exec-plan-new",
+      archivedTaskCount: 2,
+      stoppedAgentCount: 0,
+      tasksCreated: 2,
+      dependenciesCreated: 0,
+      createdTaskIds: ["task-new-1", "task-new-2"],
+      anyReadyTasks: true,
+      warnings: [],
+    });
     getIdeationChildrenMock.mockResolvedValue([]);
+    useTasksMock.mockReturnValue({
+      data: [],
+      isLoading: false,
+    });
     useConversationMock.mockReturnValue({
       data: null,
       isLoading: false,
@@ -1017,6 +1064,14 @@ describe("AgentsArtifactPane", () => {
       selectedProjectId: null,
       selectedConversationId: null,
       startConversationDraft: null,
+    });
+    usePlanStore.setState({
+      activePlanByProject: {},
+      activeExecutionPlanIdByProject: {},
+      activePlanLoadedByProject: {},
+      planCandidates: [],
+      isLoading: false,
+      error: null,
     });
     useChatStore.getState().setActiveConversation("project:project-1", null);
   });
@@ -1450,7 +1505,12 @@ describe("AgentsArtifactPane", () => {
       run_task_validations: true,
     };
     queryClient.setQueryData(reviewSettingsKeys.all, disabledReviewSettings);
-    vi.mocked(invoke).mockResolvedValue(disabledReviewSettings);
+    vi.mocked(invoke).mockImplementation((cmd) => {
+      if (cmd === "get_review_settings") {
+        return Promise.resolve(disabledReviewSettings);
+      }
+      return Promise.resolve(undefined);
+    });
     getWorkspaceReviewContextMock.mockResolvedValue(
       workspaceReviewContext({
         target: workspaceReviewTarget,
@@ -2703,7 +2763,7 @@ describe("AgentsArtifactPane", () => {
     expect(useVerificationStatusMock).toHaveBeenCalledWith(undefined);
   });
 
-  it("does not hydrate graph or verification data for the ideation plan tab", async () => {
+  it("hydrates dependency graph but not verification data for the ideation plan tab", async () => {
     useConversationMock.mockReturnValue({
       data: {
         conversation: conversation(),
@@ -2764,7 +2824,7 @@ describe("AgentsArtifactPane", () => {
     );
 
     await waitFor(() => expect(getIdeationSessionMock).toHaveBeenCalledWith("session-1"));
-    expect(useDependencyGraphMock).toHaveBeenCalledWith("");
+    expect(useDependencyGraphMock).toHaveBeenCalledWith("session-1");
     expect(useVerificationStatusMock).toHaveBeenCalledWith(undefined);
   });
 
@@ -3198,7 +3258,7 @@ describe("AgentsArtifactPane", () => {
     expect(screen.queryByTestId("agents-artifact-tab-verification")).not.toBeInTheDocument();
   });
 
-  it("shows the Proposals tab for a plan session once proposals exist", async () => {
+  it("shows proposals through the Plan tab toggle instead of a top-level tab", async () => {
     getIdeationSessionMock.mockResolvedValue({
       session: {
         id: "session-1",
@@ -3283,11 +3343,357 @@ describe("AgentsArtifactPane", () => {
       conversation(),
     );
 
-    const proposalsTab = await screen.findByTestId("agents-artifact-tab-proposal");
+    const planContent = await screen.findByTestId("agents-artifact-content-plan");
+    const proposalsToggle = await within(planContent).findByRole("button", {
+      name: /Proposals 1/i,
+    });
 
-    expect(proposalsTab).toBeInTheDocument();
-    expect(within(proposalsTab).getByText("1")).toBeInTheDocument();
+    expect(screen.queryByTestId("agents-artifact-tab-proposal")).not.toBeInTheDocument();
     expect(screen.queryByTestId("agents-artifact-tab-verification")).not.toBeInTheDocument();
+
+    await userEvent.click(proposalsToggle);
+
+    expect(
+      await within(planContent).findByText("Gate proposal tab visibility"),
+    ).toBeInTheDocument();
+
+    await userEvent.click(within(planContent).getByTestId("plan-body-toggle-plan"));
+    expect(within(planContent).queryByText("Gate proposal tab visibility")).not.toBeInTheDocument();
+  });
+
+  it("renders accepted Plan progress with a Tasks badge and routes View Work to tasks", async () => {
+    const onTabChange = vi.fn();
+    usePlanStore.setState({
+      activePlanByProject: { "project-1": "session-1" },
+      activeExecutionPlanIdByProject: { "project-1": "exec-plan-1" },
+      activePlanLoadedByProject: { "project-1": true },
+    });
+    useTasksMock.mockImplementation(
+      (_projectId: string, options?: { executionPlanId?: string | null }) => ({
+        data:
+          options?.executionPlanId === "exec-plan-1"
+            ? [
+                {
+                  id: "task-1",
+                  projectId: "project-1",
+                  internalStatus: "executing",
+                  archivedAt: null,
+                  executionPlanId: "exec-plan-1",
+                },
+                {
+                  id: "task-2",
+                  projectId: "project-1",
+                  internalStatus: "merged",
+                  archivedAt: null,
+                  executionPlanId: "exec-plan-1",
+                },
+              ]
+            : [
+                {
+                  id: "task-old",
+                  projectId: "project-1",
+                  internalStatus: "ready",
+                  archivedAt: null,
+                  executionPlanId: "exec-plan-old",
+                },
+              ],
+        isLoading: false,
+      }),
+    );
+    getIdeationSessionMock.mockResolvedValue({
+      session: {
+        id: "session-1",
+        projectId: "project-1",
+        title: "Accepted plan",
+        titleSource: "auto",
+        status: "accepted",
+        planArtifactId: "artifact-1",
+        seedTaskId: null,
+        parentSessionId: null,
+        teamMode: null,
+        teamConfig: null,
+        createdAt: "2026-04-23T09:00:00Z",
+        updatedAt: "2026-04-23T10:00:00Z",
+        archivedAt: null,
+        convertedAt: "2026-04-23T10:00:00Z",
+        verificationStatus: "unverified",
+        verificationInProgress: false,
+        gapScore: null,
+        inheritedPlanArtifactId: null,
+        sessionPurpose: "general",
+        sessionFlow: "planning",
+        acceptanceStatus: "accepted",
+      },
+      proposals: [
+        {
+          id: "proposal-1",
+          sessionId: "session-1",
+          title: "Build accepted work",
+          description: "Accepted work item",
+          category: "frontend",
+          steps: [],
+          acceptanceCriteria: [],
+          suggestedPriority: "high",
+          priorityScore: 90,
+          priorityReason: null,
+          estimatedComplexity: "simple",
+          userPriority: null,
+          userModified: false,
+          status: "accepted",
+          createdTaskId: "task-old",
+          planArtifactId: "artifact-1",
+          planVersionAtCreation: 1,
+          sortOrder: 0,
+          createdAt: "2026-04-23T09:15:00Z",
+          updatedAt: "2026-04-23T09:15:00Z",
+        },
+      ],
+      messages: [],
+    });
+    getSessionPlanMock.mockResolvedValue({
+      id: "artifact-1",
+      type: "specification",
+      name: "Implementation Plan",
+      content: {
+        type: "inline",
+        text: "# Implementation Plan\n\nDo the work.",
+      },
+      metadata: {
+        createdAt: "2026-04-23T09:00:00Z",
+        createdBy: "orchestrator",
+        version: 1,
+      },
+      derivedFrom: [],
+      bucketId: "prd-library",
+      planApproval: {
+        status: "approved",
+        approvedArtifactId: "artifact-1",
+        approvedVersion: 1,
+        approvedAt: "2026-04-23T09:30:00Z",
+      },
+    });
+
+    renderPane(
+      "plan",
+      workspace({
+        mode: "plan",
+        linkedIdeationSessionId: "session-1",
+      }),
+      vi.fn(),
+      false,
+      conversation(),
+      { onTabChange },
+    );
+
+    expect(await screen.findByTestId("accepted-session-banner")).toBeInTheDocument();
+    expect(useTasksMock).toHaveBeenCalledWith(
+      "project-1",
+      expect.objectContaining({
+        allPages: true,
+        executionPlanId: "exec-plan-1",
+      }),
+    );
+    expect(screen.getByText("2 tasks")).toBeInTheDocument();
+    expect(screen.getByText("1 in progress")).toBeInTheDocument();
+    expect(screen.getByText("1 completed")).toBeInTheDocument();
+
+    const tasksTab = screen.getByTestId("agents-artifact-tab-tasks");
+    expect(within(tasksTab).getByText("2")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByTestId("view-work-button"));
+    expect(onTabChange).toHaveBeenCalledWith("tasks");
+  });
+
+  it("confirms and restarts the accepted Plan implementation attempt", async () => {
+    usePlanStore.setState({
+      activePlanByProject: { "project-1": "session-1" },
+      activeExecutionPlanIdByProject: { "project-1": "exec-plan-old" },
+      activePlanLoadedByProject: { "project-1": true },
+    });
+    useTasksMock.mockReturnValue({
+      data: [
+        {
+          id: "task-1",
+          projectId: "project-1",
+          internalStatus: "failed",
+          archivedAt: null,
+          executionPlanId: "exec-plan-old",
+        },
+      ],
+      isLoading: false,
+    });
+    getIdeationSessionMock.mockResolvedValue({
+      session: {
+        id: "session-1",
+        projectId: "project-1",
+        title: "Accepted plan",
+        titleSource: "auto",
+        status: "accepted",
+        planArtifactId: "artifact-1",
+        seedTaskId: null,
+        parentSessionId: null,
+        teamMode: null,
+        teamConfig: null,
+        createdAt: "2026-04-23T09:00:00Z",
+        updatedAt: "2026-04-23T10:00:00Z",
+        archivedAt: null,
+        convertedAt: "2026-04-23T10:00:00Z",
+        verificationStatus: "unverified",
+        verificationInProgress: false,
+        gapScore: null,
+        inheritedPlanArtifactId: null,
+        sessionPurpose: "general",
+        sessionFlow: "planning",
+        acceptanceStatus: "accepted",
+      },
+      proposals: [],
+      messages: [],
+    });
+    getSessionPlanMock.mockResolvedValue({
+      id: "artifact-1",
+      type: "specification",
+      name: "Implementation Plan",
+      content: {
+        type: "inline",
+        text: "# Implementation Plan\n\nDo the work.",
+      },
+      metadata: {
+        createdAt: "2026-04-23T09:00:00Z",
+        createdBy: "orchestrator",
+        version: 1,
+      },
+      derivedFrom: [],
+      bucketId: "prd-library",
+      planApproval: {
+        status: "approved",
+        approvedArtifactId: "artifact-1",
+        approvedVersion: 1,
+        approvedAt: "2026-04-23T09:30:00Z",
+      },
+    });
+
+    renderPane(
+      "plan",
+      workspace({
+        mode: "plan",
+        linkedIdeationSessionId: "session-1",
+      }),
+      vi.fn(),
+      false,
+      conversation(),
+    );
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: /Restart Implementation/i }),
+    );
+
+    const dialog = await screen.findByRole("alertdialog");
+    expect(within(dialog).getByText("Restart implementation?")).toBeInTheDocument();
+    expect(
+      within(dialog).getByText(/Running work will be stopped/i),
+    ).toBeInTheDocument();
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Restart Implementation" }),
+    );
+
+    await waitFor(() =>
+      expect(restartImplementationMock).toHaveBeenCalledWith("session-1"),
+    );
+    expect(usePlanStore.getState().activeExecutionPlanIdByProject["project-1"]).toBe(
+      "exec-plan-new",
+    );
+    expect(toastSuccessMock).toHaveBeenCalledWith("Implementation restarted");
+  });
+
+  it("does not restart implementation when confirmation is cancelled", async () => {
+    usePlanStore.setState({
+      activePlanByProject: { "project-1": "session-1" },
+      activeExecutionPlanIdByProject: { "project-1": "exec-plan-old" },
+      activePlanLoadedByProject: { "project-1": true },
+    });
+    useTasksMock.mockReturnValue({
+      data: [
+        {
+          id: "task-1",
+          projectId: "project-1",
+          internalStatus: "failed",
+          archivedAt: null,
+          executionPlanId: "exec-plan-old",
+        },
+      ],
+      isLoading: false,
+    });
+    getIdeationSessionMock.mockResolvedValue({
+      session: {
+        id: "session-1",
+        projectId: "project-1",
+        title: "Accepted plan",
+        titleSource: "auto",
+        status: "accepted",
+        planArtifactId: "artifact-1",
+        seedTaskId: null,
+        parentSessionId: null,
+        teamMode: null,
+        teamConfig: null,
+        createdAt: "2026-04-23T09:00:00Z",
+        updatedAt: "2026-04-23T10:00:00Z",
+        archivedAt: null,
+        convertedAt: "2026-04-23T10:00:00Z",
+        verificationStatus: "unverified",
+        verificationInProgress: false,
+        gapScore: null,
+        inheritedPlanArtifactId: null,
+        sessionPurpose: "general",
+        sessionFlow: "planning",
+        acceptanceStatus: "accepted",
+      },
+      proposals: [],
+      messages: [],
+    });
+    getSessionPlanMock.mockResolvedValue({
+      id: "artifact-1",
+      type: "specification",
+      name: "Implementation Plan",
+      content: {
+        type: "inline",
+        text: "# Implementation Plan\n\nDo the work.",
+      },
+      metadata: {
+        createdAt: "2026-04-23T09:00:00Z",
+        createdBy: "orchestrator",
+        version: 1,
+      },
+      derivedFrom: [],
+      bucketId: "prd-library",
+      planApproval: {
+        status: "approved",
+        approvedArtifactId: "artifact-1",
+        approvedVersion: 1,
+        approvedAt: "2026-04-23T09:30:00Z",
+      },
+    });
+
+    renderPane(
+      "plan",
+      workspace({
+        mode: "plan",
+        linkedIdeationSessionId: "session-1",
+      }),
+      vi.fn(),
+      false,
+      conversation(),
+    );
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: /Restart Implementation/i }),
+    );
+    await userEvent.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", {
+        name: "Cancel",
+      }),
+    );
+
+    expect(restartImplementationMock).not.toHaveBeenCalled();
   });
 
   it("falls back to the Plan tab when Proposals is active but no proposals exist", async () => {
@@ -3358,7 +3764,7 @@ describe("AgentsArtifactPane", () => {
     expect(
       planTab.querySelector("span[style='background: var(--accent-primary);']"),
     ).not.toBeNull();
-    expect(useDependencyGraphMock).toHaveBeenLastCalledWith("");
+    expect(useDependencyGraphMock).toHaveBeenLastCalledWith("session-1");
   });
 
   it("shows plan complexity guidance while still allowing direct implementation", async () => {

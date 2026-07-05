@@ -12,6 +12,7 @@ import {
   PriorityAssessmentResponseSchema,
   DependencyGraphResponseSchema,
   ApplyProposalsResultResponseSchema,
+  RestartImplementationResultResponseSchema,
   CreateChildSessionResponseSchema,
   LatestChildSessionIdResponseSchema,
   ParentSessionContextResponseSchema,
@@ -29,6 +30,7 @@ import {
   transformIdeationSettings,
   transformCreateChildSession,
   transformParentSessionContext,
+  transformRestartImplementationResult,
 } from "./ideation.transforms";
 export { toTaskProposal } from "./ideation.transforms";
 import type {
@@ -51,6 +53,7 @@ import type {
   ParentSessionContextResponse,
   CreateChildSessionInput,
   VerificationStatusResponse,
+  RestartImplementationResultResponse,
 } from "./ideation.types";
 
 // Re-export types for convenience
@@ -73,6 +76,7 @@ export type {
   ParentSessionContextResponse,
   CreateChildSessionInput,
   VerificationStatusResponse,
+  RestartImplementationResultResponse,
 } from "./ideation.types";
 
 
@@ -259,6 +263,17 @@ export const ideationApi = {
      */
     reopen: async (sessionId: string): Promise<void> => {
       await invoke("reopen_ideation_session", { id: sessionId });
+    },
+
+    restartImplementation: async (
+      sessionId: string
+    ): Promise<RestartImplementationResultResponse> => {
+      const raw = await typedInvoke(
+        "restart_ideation_implementation",
+        { sessionId },
+        RestartImplementationResultResponseSchema
+      );
+      return transformRestartImplementationResult(raw);
     },
 
     /**

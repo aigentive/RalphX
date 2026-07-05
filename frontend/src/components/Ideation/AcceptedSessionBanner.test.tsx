@@ -29,17 +29,22 @@ describe("AcceptedSessionBanner", () => {
   it("renders the accepted timestamp + View Work CTA", async () => {
     const user = userEvent.setup();
     const onViewWork = vi.fn();
+    const onRestartImplementation = vi.fn();
     render(
       <AcceptedSessionBanner
         projectId="proj-1"
         proposals={[makeProposal()]}
         convertedAt="2026-04-22T12:00:00Z"
         onViewWork={onViewWork}
+        onRestartImplementation={onRestartImplementation}
       />,
     );
     expect(screen.getByTestId("view-work-button")).toBeInTheDocument();
     await user.click(screen.getByTestId("view-work-button"));
     expect(onViewWork).toHaveBeenCalledOnce();
+
+    await user.click(screen.getByRole("button", { name: /Restart Implementation/i }));
+    expect(onRestartImplementation).toHaveBeenCalledOnce();
   });
 
   it("returns null when no proposals have createdTaskId set", () => {

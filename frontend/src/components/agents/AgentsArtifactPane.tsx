@@ -35,6 +35,8 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { AcceptedPlanProgressBanner } from "@/components/Ideation/AcceptedPlanProgressBanner";
+import { useConfirmation } from "@/hooks/useConfirmation";
 import { cn } from "@/lib/utils";
 import { withAlpha } from "@/lib/theme-colors";
 import type {
@@ -42,6 +44,7 @@ import type {
   TeamMetadata,
 } from "@/components/Ideation/PlanDisplay";
 import { useChatStore } from "@/stores/chatStore";
+import { usePlanStore } from "@/stores/planStore";
 import {
   useAgentSessionStore,
   type AgentArtifactTab,
@@ -53,9 +56,12 @@ import {
 } from "@/hooks/useChat";
 import { ideationKeys } from "@/hooks/useIdeation";
 import { useDependencyGraph } from "@/hooks/useDependencyGraph";
+import { taskKeys, useTasks } from "@/hooks/useTasks";
 import { useVerificationStatus, verificationStatusKey } from "@/hooks/useVerificationStatus";
 import type { Artifact } from "@/types/artifact";
 import type { IdeationSession, TaskProposal, VerificationStatus } from "@/types/ideation";
+import type { Task } from "@/types/task";
+import { getStatusCounts } from "@/types/status";
 import type {
   DependencyGraphResponse,
 } from "@/api/ideation.types";
@@ -116,6 +122,33 @@ function hasGeneratingConversationRuntime(
   return Boolean(
     status?.agentStatus === "generating" ||
       status?.items.some((item) => item.agentStatus === "generating"),
+  );
+}
+
+function getProposalCreatedTaskIds(proposals: TaskProposal[]): Set<string> {
+  return new Set(
+    proposals
+      .filter((proposal) => proposal.createdTaskId != null)
+      .map((proposal) => proposal.createdTaskId!),
+  );
+}
+
+function getVisibleExecutionTasks(
+  tasks: Task[],
+  proposals: TaskProposal[],
+  activeExecutionPlanId: string | null,
+): Task[] {
+  if (activeExecutionPlanId) {
+    return tasks.filter(
+      (task) =>
+        task.archivedAt == null &&
+        task.executionPlanId === activeExecutionPlanId,
+    );
+  }
+
+  const proposalTaskIds = getProposalCreatedTaskIds(proposals);
+  return tasks.filter(
+    (task) => task.archivedAt == null && proposalTaskIds.has(task.id),
   );
 }
 
@@ -195,7 +228,6 @@ const ARTIFACT_TABS: Array<{
   { id: "issues", label: "Issues", icon: AlertCircle },
   { id: "plan", label: "Plan", icon: FileText },
   { id: "verification", label: "Verification", icon: CheckCircle2 },
-  { id: "proposal", label: "Proposals", icon: GitPullRequestArrow },
   { id: "tasks", label: "Tasks", icon: ClipboardList },
 ];
 
@@ -328,6 +360,10 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   const showPublishTab = shouldShowAgentWorkspacePublishSurface(workspace);
   const showPullRequestTab = workspaceHasPullRequest(workspace);
   const shouldLoadIdeationData = canHydrateIdeationArtifacts;
+  const projectId = conversation?.projectId ?? workspace?.projectId ?? null;
+  const activeExecutionPlanId = usePlanStore((state) =>
+    projectId ? state.activeExecutionPlanIdByProject[projectId] ?? null : null,
+  );
   const conversationQuery = useConversationHistoryWindow(conversation?.id ?? null, {
     enabled: shouldLoadIdeationData && !focusedIdeationSessionId && !!conversation?.id,
     pageSize: 40,
@@ -511,6 +547,29 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     () => (sessionData?.proposals ?? []).map(toTaskProposal),
     [sessionData?.proposals],
   );
+  const tasksQuery = useTasks(projectId ?? "", {
+    enabled: Boolean(projectId && shouldLoadIdeationData && attachedSessionId),
+    executionPlanId: activeExecutionPlanId,
+    allPages: Boolean(activeExecutionPlanId),
+  });
+  const visibleExecutionTasks = useMemo(
+    () =>
+      getVisibleExecutionTasks(
+        tasksQuery.data ?? [],
+        proposals,
+        activeExecutionPlanId,
+      ),
+    [activeExecutionPlanId, proposals, tasksQuery.data],
+  );
+  const visibleExecutionTaskCount = visibleExecutionTasks.length;
+  const hasImplementationAttempt = Boolean(
+    visibleExecutionTaskCount > 0 ||
+      activeExecutionPlanId ||
+      workspace?.linkedPlanBranchId ||
+      sessionData?.session.acceptanceStatus === "accepted" ||
+      sessionData?.session.status === "accepted" ||
+      sessionData?.session.convertedAt,
+  );
   const planArtifactId = shouldLoadIdeationData
     ? sessionData?.session.planArtifactId ?? sessionData?.session.inheritedPlanArtifactId ?? null
     : null;
@@ -543,20 +602,16 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
         hasPlanArtifact: Boolean(planArtifactId),
         hasProposals: proposalCount > 0,
         hasVerificationEvidence,
-        hasExecutionTasks: Boolean(
-          workspace?.linkedPlanBranchId ||
-            sessionData?.session.acceptanceStatus === "accepted" ||
-            sessionData?.session.convertedAt,
-        ),
+        hasExecutionTasks: hasImplementationAttempt,
         artifactMode,
       }),
     [
       artifactMode,
       hasVerificationEvidence,
+      hasImplementationAttempt,
       planArtifactId,
       proposalCount,
       sessionData,
-      workspace?.linkedPlanBranchId,
     ],
   );
   const availableArtifactTabIds = useMemo<IdeationArtifactTab[]>(() => {
@@ -669,7 +724,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     shouldLoadIdeationData && effectiveActiveTab === "verification";
   const shouldLoadDependencyGraph =
     shouldLoadIdeationData &&
-    (effectiveActiveTab === "proposal" || effectiveActiveTab === "tasks");
+    (effectiveActiveTab === "plan" || effectiveActiveTab === "tasks");
   const shouldUseSessionPlanQuery =
     shouldLoadIdeationData &&
     sessionData?.session.sessionFlow === "planning" &&
@@ -791,7 +846,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
         <div className="flex h-full items-stretch gap-0 min-w-0 self-stretch">
           {visibleTabs.map(({ id, label, icon: Icon }) => {
             const isActive = effectiveActiveTab === id;
-            const count = id === "proposal" ? proposalCount : 0;
+            const count = id === "tasks" ? visibleExecutionTaskCount : 0;
 
             let iconColor: string | undefined;
             let iconPulse = false;
@@ -970,7 +1025,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
           projectBaseBranch={projectBaseBranch}
           isLoading={conversationQuery.isLoading || sessionQuery.isLoading}
           attachedSessionId={attachedSessionId}
-          projectId={conversation?.projectId ?? null}
+          projectId={projectId}
           session={session}
           sessionTitle={sessionData?.session.title ?? null}
           taskMode={taskMode}
@@ -993,6 +1048,8 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
           onPlanUpdated={handlePlanUpdated}
           dependencyGraph={dependencyGraph}
           proposals={proposals}
+          visibleExecutionTasks={visibleExecutionTasks}
+          activeExecutionPlanId={activeExecutionPlanId}
           onPublishWorkspace={onPublishWorkspace}
           isPublishingWorkspace={isPublishingWorkspace}
           publishFocusRequest={publishFocusRequest}
@@ -1003,6 +1060,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
           onOpenReview={handleOpenReview}
           onOpenPublish={handleOpenPublish}
           onOpenVerification={() => onTabChange("verification")}
+          onOpenTasks={() => onTabChange("tasks")}
           taskArtifactSelectedId={taskArtifactSelectedId}
           onTaskArtifactSelectedIdChange={setTaskArtifactSelectedId}
         />
@@ -1037,6 +1095,8 @@ type ArtifactContentProps = {
   onPlanUpdated: (updatedPlan: Artifact) => void;
   dependencyGraph: DependencyGraphResponse | null;
   proposals: TaskProposal[];
+  visibleExecutionTasks: Task[];
+  activeExecutionPlanId: string | null;
   onPublishWorkspace: ((conversationId: string) => Promise<void>) | undefined;
   isPublishingWorkspace: boolean;
   publishFocusRequest: AgentPublishFocusRequest | null;
@@ -1050,6 +1110,7 @@ type ArtifactContentProps = {
   onOpenReview: () => void;
   onOpenPublish: () => void;
   onOpenVerification: () => void;
+  onOpenTasks: () => void;
   taskArtifactSelectedId: string | null;
   onTaskArtifactSelectedIdChange: (id: string | null) => void;
 };
@@ -1080,6 +1141,8 @@ function ArtifactContent({
   onPlanUpdated,
   dependencyGraph,
   proposals,
+  visibleExecutionTasks,
+  activeExecutionPlanId,
   onPublishWorkspace,
   isPublishingWorkspace,
   publishFocusRequest,
@@ -1090,29 +1153,10 @@ function ArtifactContent({
   onOpenReview,
   onOpenPublish,
   onOpenVerification,
+  onOpenTasks,
   taskArtifactSelectedId,
   onTaskArtifactSelectedIdChange,
 }: ArtifactContentProps) {
-  const criticalPathSet = useMemo(
-    () => new Set(dependencyGraph?.criticalPath ?? []),
-    [dependencyGraph?.criticalPath],
-  );
-  const [viewingProposalId, setViewingProposalId] = useState<string | null>(null);
-  const [viewingEnrichment, setViewingEnrichment] = useState<ProposalDetailEnrichment | undefined>(undefined);
-  const viewingProposal = viewingProposalId
-    ? proposals.find((p) => p.id === viewingProposalId) ?? null
-    : null;
-  const handleViewProposal = useCallback(
-    (proposalId: string, enrichment: ProposalDetailEnrichment) => {
-      setViewingProposalId(proposalId);
-      setViewingEnrichment(enrichment);
-    },
-    [],
-  );
-  const handleCloseProposalDetail = useCallback(() => {
-    setViewingProposalId(null);
-    setViewingEnrichment(undefined);
-  }, []);
   // Opening the Verification tab no longer auto-focuses the chat on the
   // verification child. The user switches chats explicitly via the composer
   // chat-focus pill instead.
@@ -1236,10 +1280,14 @@ function ArtifactContent({
         planArtifact={planArtifact}
         isPlanLoading={isPlanLoading}
         proposals={proposals}
+        dependencyGraph={dependencyGraph}
+        visibleExecutionTasks={visibleExecutionTasks}
+        activeExecutionPlanId={activeExecutionPlanId}
         onPlanUpdated={onPlanUpdated}
         verificationState={verificationState}
         verificationInProgress={verificationInProgress}
         onOpenVerification={onOpenVerification}
+        onOpenTasks={onOpenTasks}
       />
     );
   }
@@ -1258,48 +1306,6 @@ function ArtifactContent({
           />
         </Suspense>
       </div>
-    );
-  }
-
-  if (activeTab === "proposal") {
-    if (!session || proposals.length === 0) {
-      return <EmptyArtifactState title="No proposals yet" />;
-    }
-    return (
-      <>
-        <Suspense fallback={<EmptyArtifactState title="Loading proposals..." />}>
-          <LazyProposalsTabContent
-            session={session}
-            proposals={proposals}
-            dependencyGraph={dependencyGraph}
-            criticalPathSet={criticalPathSet}
-            highlightedIds={EMPTY_PROPOSAL_HIGHLIGHTS}
-            isReadOnly
-            onEditProposal={noop}
-            onNavigateToTask={noop}
-            onViewProposal={handleViewProposal}
-            {...(viewingProposalId != null && { selectedProposalId: viewingProposalId })}
-            onViewHistoricalPlan={noop}
-            onImportPlan={noop}
-            onClearAll={noop}
-            onAcceptPlan={noop}
-            onReviewSync={noop}
-            onUndoSync={noop}
-            onDismissSync={noop}
-            hideToolbar
-          />
-        </Suspense>
-        {viewingProposal && (
-          <Suspense fallback={null}>
-            <LazyProposalDetailSheet
-              proposal={viewingProposal}
-              {...(viewingEnrichment !== undefined && { enrichment: viewingEnrichment })}
-              isReadOnly
-              onClose={handleCloseProposalDetail}
-            />
-          </Suspense>
-        )}
-      </>
     );
   }
 
@@ -1322,10 +1328,14 @@ function AgentPlanPanel({
   planArtifact,
   isPlanLoading,
   proposals,
+  dependencyGraph,
+  visibleExecutionTasks,
+  activeExecutionPlanId,
   onPlanUpdated,
   verificationState,
   verificationInProgress,
   onOpenVerification,
+  onOpenTasks,
 }: {
   workspace: AgentConversationWorkspace | null;
   activeWorkspaceFreshness: AgentConversationWorkspaceFreshness | undefined;
@@ -1334,10 +1344,14 @@ function AgentPlanPanel({
   planArtifact: Artifact | null;
   isPlanLoading: boolean;
   proposals: TaskProposal[];
+  dependencyGraph: DependencyGraphResponse | null;
+  visibleExecutionTasks: Task[];
+  activeExecutionPlanId: string | null;
   onPlanUpdated: (updatedPlan: Artifact) => void;
   verificationState: VerificationStatus | null;
   verificationInProgress: boolean;
   onOpenVerification: () => void;
+  onOpenTasks: () => void;
 }) {
   const [isEditing, setIsEditing] = useState(false);
   const [isPlanExpanded, setIsPlanExpanded] = useState(true);
@@ -1345,7 +1359,12 @@ function AgentPlanPanel({
   const [isApprovingPlan, setIsApprovingPlan] = useState(false);
   const [isStartingPlanVerification, setIsStartingPlanVerification] = useState(false);
   const [isImplementingPlanDirectly, setIsImplementingPlanDirectly] = useState(false);
+  const [planBodyMode, setPlanBodyMode] = useState<"plan" | "proposals">("plan");
+  const [viewingProposalId, setViewingProposalId] = useState<string | null>(null);
+  const [viewingEnrichment, setViewingEnrichment] = useState<ProposalDetailEnrichment | undefined>(undefined);
   const queryClient = useQueryClient();
+  const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
+  const syncActivePlanExecution = usePlanStore((s) => s.syncActivePlanExecution);
   const setFocusedAgentProject = useAgentSessionStore((s) => s.setFocusedProject);
   const clearAgentSelection = useAgentSessionStore((s) => s.clearSelection);
   const setStartConversationDraft = useAgentSessionStore(
@@ -1356,7 +1375,34 @@ function AgentPlanPanel({
   useEffect(() => {
     setIsEditing(false);
     setIsPlanExpanded(true);
-  }, [planArtifact?.id, planArtifact?.metadata.version]);
+    setPlanBodyMode("plan");
+    setViewingProposalId(null);
+    setViewingEnrichment(undefined);
+  }, [planArtifact?.id, planArtifact?.metadata.version, session?.id]);
+  useEffect(() => {
+    if (proposals.length === 0 && planBodyMode === "proposals") {
+      setPlanBodyMode("plan");
+    }
+  }, [planBodyMode, proposals.length]);
+
+  const criticalPathSet = useMemo(
+    () => new Set(dependencyGraph?.criticalPath ?? []),
+    [dependencyGraph?.criticalPath],
+  );
+  const viewingProposal = viewingProposalId
+    ? proposals.find((proposal) => proposal.id === viewingProposalId) ?? null
+    : null;
+  const handleViewProposal = useCallback(
+    (proposalId: string, enrichment: ProposalDetailEnrichment) => {
+      setViewingProposalId(proposalId);
+      setViewingEnrichment(enrichment);
+    },
+    [],
+  );
+  const handleCloseProposalDetail = useCallback(() => {
+    setViewingProposalId(null);
+    setViewingEnrichment(undefined);
+  }, []);
 
   const teamMetadata = useMemo<TeamMetadata | undefined>(() => {
     if (!session?.teamMode || session.teamMode === "solo") {
@@ -1473,6 +1519,71 @@ function AgentPlanPanel({
     isAssessing: isPlanRecommendationPending,
     canChoose: canImplementDirectly && canCreateProposals,
   });
+  const progressCounts = useMemo(
+    () => getStatusCounts(visibleExecutionTasks),
+    [visibleExecutionTasks],
+  );
+  const linkedPlanProposalCount = useMemo(
+    () =>
+      planArtifact
+        ? proposals.filter((proposal) => proposal.planArtifactId === planArtifact.id)
+            .length
+        : proposals.length,
+    [planArtifact, proposals],
+  );
+  const canRestartImplementation = Boolean(
+    session?.status === "accepted" &&
+      (activeExecutionPlanId || visibleExecutionTasks.length > 0),
+  );
+  const restartImplementationMutation = useMutation({
+    mutationFn: (sessionId: string) =>
+      ideationApi.sessions.restartImplementation(sessionId),
+    onSuccess: async (result) => {
+      syncActivePlanExecution(
+        result.projectId,
+        result.sessionId,
+        result.newExecutionPlanId,
+      );
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: taskKeys.all }),
+        queryClient.invalidateQueries({
+          queryKey: ideationKeys.sessionWithData(result.sessionId),
+        }),
+        queryClient.invalidateQueries({ queryKey: ideationKeys.sessions() }),
+        queryClient.invalidateQueries({ queryKey: ["dependencies"] }),
+      ]);
+      if (workspace?.conversationId) {
+        void invalidateWorkspaceQueries(queryClient, workspace.conversationId);
+      }
+      toast.success("Implementation restarted");
+      if (result.warnings.length > 0) {
+        toast.info(result.warnings.join("\n"));
+      }
+    },
+    onError: (error) => {
+      toast.error(
+        error instanceof Error ? error.message : "Failed to restart implementation",
+      );
+    },
+  });
+
+  const handleRestartImplementation = useCallback(async () => {
+    if (!session || !canRestartImplementation) {
+      return;
+    }
+    const confirmed = await confirm({
+      title: "Restart implementation?",
+      description:
+        "Running work will be stopped, the current task attempt will be archived, and implementation will start again from freshly created tasks.",
+      confirmText: "Restart Implementation",
+      pendingText: "Restarting...",
+      variant: "destructive",
+    });
+    if (!confirmed) {
+      return;
+    }
+    restartImplementationMutation.mutate(session.id);
+  }, [canRestartImplementation, confirm, restartImplementationMutation, session]);
 
   const handleApprovePlan = useCallback(async () => {
     if (!session || !planArtifact || !canApprovePlan) {
@@ -1621,6 +1732,16 @@ function AgentPlanPanel({
 
   return (
     <div className="min-h-full px-4 pb-4 pt-4">
+      <AcceptedPlanProgressBanner
+        counts={progressCounts}
+        convertedAt={session?.convertedAt ?? null}
+        onViewWork={onOpenTasks}
+        {...(canRestartImplementation && {
+          onRestartImplementation: handleRestartImplementation,
+          isRestartingImplementation: restartImplementationMutation.isPending,
+        })}
+      />
+
       {planArtifact ? (
         isEditing ? (
           <Suspense fallback={<EmptyArtifactState title="Loading plan editor..." />}>
@@ -1637,7 +1758,9 @@ function AgentPlanPanel({
           <Suspense fallback={<EmptyArtifactState title="Loading plan..." />}>
             <LazyPlanDisplay
               plan={planArtifact}
-              linkedProposalsCount={proposals.filter((proposal) => proposal.planArtifactId === planArtifact.id).length}
+              linkedProposalsCount={linkedPlanProposalCount}
+              bodyMode={planBodyMode}
+              onBodyModeChange={setPlanBodyMode}
               onEdit={() => setIsEditing(true)}
               onExport={() => setExportDialogOpen(true)}
               {...(planReferenceSessionId && {
@@ -1682,6 +1805,56 @@ function AgentPlanPanel({
         </Suspense>
       )}
 
+      {planBodyMode === "proposals" && session && proposals.length > 0 && (
+        <div
+          className="mt-3 h-[520px] min-h-[420px] overflow-hidden rounded-lg"
+          style={{
+            backgroundColor: "var(--bg-base)",
+            borderColor: "var(--border-subtle)",
+            borderStyle: "solid",
+            borderWidth: 1,
+          }}
+        >
+          <Suspense fallback={<EmptyArtifactState title="Loading proposals..." />}>
+            <LazyProposalsTabContent
+              session={session}
+              proposals={proposals}
+              dependencyGraph={dependencyGraph}
+              criticalPathSet={criticalPathSet}
+              highlightedIds={EMPTY_PROPOSAL_HIGHLIGHTS}
+              isReadOnly
+              onEditProposal={noop}
+              onNavigateToTask={noop}
+              onViewProposal={handleViewProposal}
+              {...(viewingProposalId != null && {
+                selectedProposalId: viewingProposalId,
+              })}
+              onViewHistoricalPlan={noop}
+              onImportPlan={noop}
+              onClearAll={noop}
+              onAcceptPlan={noop}
+              onReviewSync={noop}
+              onUndoSync={noop}
+              onDismissSync={noop}
+              hideToolbar
+            />
+          </Suspense>
+        </div>
+      )}
+
+      {viewingProposal && (
+        <Suspense fallback={null}>
+          <LazyProposalDetailSheet
+            proposal={viewingProposal}
+            {...(viewingEnrichment !== undefined && {
+              enrichment: viewingEnrichment,
+            })}
+            isReadOnly
+            onClose={handleCloseProposalDetail}
+          />
+        </Suspense>
+      )}
+
       {session && exportDialogOpen && (
         <Suspense fallback={null}>
           <LazyExportPlanDialog
@@ -1695,6 +1868,8 @@ function AgentPlanPanel({
           />
         </Suspense>
       )}
+
+      <ConfirmationDialog {...confirmationDialogProps} />
     </div>
   );
 }

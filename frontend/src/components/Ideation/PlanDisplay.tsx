@@ -81,6 +81,8 @@ export interface PlanDisplayProps {
   /** Called when user clicks the proposal action — triggers orchestrator to decompose plan into tasks */
   onCreateProposals?: () => void;
   createProposalsLabel?: string;
+  bodyMode?: "plan" | "proposals";
+  onBodyModeChange?: (mode: "plan" | "proposals") => void;
   /** Called when user chooses to implement the approved plan directly in the agent workspace */
   onImplementDirectly?: () => void;
   implementDirectlyLabel?: string;
@@ -366,6 +368,8 @@ export function PlanDisplay({
   onVersionViewed,
   onCreateProposals,
   createProposalsLabel = "Create Proposals",
+  bodyMode = "plan",
+  onBodyModeChange,
   onImplementDirectly,
   implementDirectlyLabel = "Implement Directly",
   isImplementingDirectly = false,
@@ -550,6 +554,7 @@ export function PlanDisplay({
     const hasActionCTAs =
       (showApprove && !isApproved) ||
       isApproved ||
+      Boolean(onBodyModeChange && linkedProposalsCount > 0) ||
       onVerifyPlan ||
       showCreateProposals ||
       showImplementDirectly;
@@ -742,6 +747,52 @@ export function PlanDisplay({
                 </span>
               )}
 
+              {onBodyModeChange && linkedProposalsCount > 0 && (
+                <div
+                  className="h-7 p-0.5 flex items-center rounded-lg"
+                  style={{
+                    backgroundColor: "var(--bg-base)",
+                    borderColor: "var(--border-subtle)",
+                    borderStyle: "solid",
+                    borderWidth: 1,
+                  }}
+                >
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    data-testid="plan-body-toggle-plan"
+                    onClick={() => onBodyModeChange("plan")}
+                    className="h-6 px-2 text-[0.6875rem] font-semibold gap-1 rounded-md"
+                    style={{
+                      color: bodyMode === "plan" ? "var(--accent-primary)" : "var(--text-muted)",
+                      backgroundColor:
+                        bodyMode === "plan" ? "var(--accent-muted)" : "transparent",
+                    }}
+                  >
+                    <FileText className="w-3 h-3" />
+                    Plan
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    data-testid="plan-body-toggle-proposals"
+                    onClick={() => onBodyModeChange("proposals")}
+                    className="h-6 px-2 text-[0.6875rem] font-semibold gap-1 rounded-md"
+                    style={{
+                      color:
+                        bodyMode === "proposals" ? "var(--accent-primary)" : "var(--text-muted)",
+                      backgroundColor:
+                        bodyMode === "proposals" ? "var(--accent-muted)" : "transparent",
+                    }}
+                  >
+                    <ListPlus className="w-3 h-3" />
+                    Proposals {linkedProposalsCount}
+                  </Button>
+                </div>
+              )}
+
               {onVerifyPlan && (
                 <Button
                   type="button"
@@ -919,7 +970,7 @@ export function PlanDisplay({
               style={{ color: "var(--accent-primary)" }}
             />
           </div>
-        ) : displayContent ? (
+        ) : bodyMode === "proposals" ? null : displayContent ? (
           <div className="text-[0.8125rem] leading-relaxed">
             <ReactMarkdown
               remarkPlugins={[remarkGfm]}
