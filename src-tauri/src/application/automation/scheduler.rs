@@ -19,7 +19,8 @@ use crate::application::automation::provisioning::{
     AutomationRunProvisioner, AutomationRunStarter,
 };
 use crate::application::automation::service::{
-    ApplyAutomationJudgeVerdictInput, AutomationService, CompleteAutomationJudgeInput,
+    ApplyAutomationJudgeVerdictInput, AutomationJudgeApplyOutcome, AutomationService,
+    CompleteAutomationJudgeInput,
 };
 use crate::application::automation::transition::AutomationTransitionService;
 use crate::application::automation::transition::NoopAutomationEventEmitter;
@@ -322,6 +323,159 @@ impl AutomationJudgeInvoker for HarnessAutomationJudgeInvoker {
             raw_output: output.content,
             model_id,
         })
+    }
+}
+
+#[derive(Clone)]
+struct AutomationJudgeTask {
+    service: AutomationService,
+    transition_service: AutomationTransitionService,
+    judge_invoker: Arc<dyn AutomationJudgeInvoker>,
+    config: AutomationSchedulerConfig,
+}
+
+#[derive(Debug, Default)]
+struct AutomationJudgeTaskOutcome {
+    judge_succeeded: bool,
+    judge_failed: bool,
+    successor_created: bool,
+    terminal_automation_status: Option<AutomationStatus>,
+}
+
+impl AutomationJudgeTaskOutcome {
+    fn from_apply_outcome(outcome: AutomationJudgeApplyOutcome) -> Self {
+        Self {
+            judge_succeeded: true,
+            judge_failed: false,
+            successor_created: outcome.successor_run.is_some(),
+            terminal_automation_status: outcome.terminal_automation_status,
+        }
+    }
+}
+
+impl AutomationJudgeTask {
+    async fn run_for_terminal_run(
+        &self,
+        automation: Automation,
+        runs: Vec<AutomationRun>,
+        run: AutomationRun,
+    ) -> AppResult<AutomationJudgeTaskOutcome> {
+        let parsed = match self
+            .invoke_and_parse_judge(&automation, &runs, &run, false)
+            .await
+        {
+            Ok(parsed) => parsed,
+            Err(JudgeInvocationFailure::InvalidOutput { .. }) => match self
+                .invoke_and_parse_judge(&automation, &runs, &run, true)
+                .await
+            {
+                Ok(parsed) => parsed,
+                Err(error) => {
+                    self.mark_judge_failed(&automation, &run, error.detail())
+                        .await?;
+                    return Ok(AutomationJudgeTaskOutcome {
+                        judge_failed: true,
+                        ..AutomationJudgeTaskOutcome::default()
+                    });
+                }
+            },
+            Err(error) => {
+                self.mark_judge_failed(&automation, &run, error.detail())
+                    .await?;
+                return Ok(AutomationJudgeTaskOutcome {
+                    judge_failed: true,
+                    ..AutomationJudgeTaskOutcome::default()
+                });
+            }
+        };
+
+        let outcome = self
+            .service
+            .complete_judge_verdict(CompleteAutomationJudgeInput {
+                automation,
+                previous_run: run,
+                verdict: parsed.verdict,
+                verdict_json: parsed.verdict_json,
+                judge_model_id: parsed.model_id,
+            })
+            .await?;
+        Ok(AutomationJudgeTaskOutcome::from_apply_outcome(outcome))
+    }
+
+    async fn invoke_and_parse_judge(
+        &self,
+        automation: &Automation,
+        runs: &[AutomationRun],
+        run: &AutomationRun,
+        retry_reminder: bool,
+    ) -> Result<ParsedJudgeInvocation, JudgeInvocationFailure> {
+        let output = self
+            .judge_invoker
+            .invoke(AutomationJudgeInvocation {
+                automation: automation.clone(),
+                runs: runs.to_vec(),
+                previous_run: run.clone(),
+                retry_reminder,
+                timeout: self.config.judge_timeout,
+            })
+            .await
+            .map_err(|error| JudgeInvocationFailure::Invocation {
+                detail: error.to_string(),
+            })?;
+        let verdict = parse_automation_judge_verdict(
+            &output.raw_output,
+            AutomationJudgeValidationContext {
+                automation,
+                previous_run: run,
+            },
+        )
+        .map_err(|error| JudgeInvocationFailure::InvalidOutput {
+            detail: error.to_string(),
+            raw_output: output.raw_output.clone(),
+        })?;
+        let verdict_json = serde_json::to_string(&verdict).map_err(|error| {
+            JudgeInvocationFailure::InvalidOutput {
+                detail: format!("failed to serialize normalized judge verdict: {error}"),
+                raw_output: output.raw_output,
+            }
+        })?;
+        Ok(ParsedJudgeInvocation {
+            verdict,
+            verdict_json,
+            model_id: output.model_id,
+        })
+    }
+
+    async fn mark_judge_failed(
+        &self,
+        automation: &Automation,
+        run: &AutomationRun,
+        detail: String,
+    ) -> AppResult<bool> {
+        if !self
+            .transition_service
+            .transition_judge_state(
+                &run.id,
+                AutomationJudgeState::InProgress,
+                AutomationJudgeState::Failed,
+                None,
+                None,
+                None,
+                Some(detail.clone()),
+            )
+            .await?
+        {
+            return Ok(false);
+        }
+        self.transition_service
+            .transition_automation_status(
+                &automation.id,
+                AutomationStatus::Active,
+                AutomationStatus::Paused,
+                Some("judge_failed".to_string()),
+                Some(detail),
+            )
+            .await
     }
 }
 
@@ -657,8 +811,11 @@ impl AutomationScheduler {
                     .await?
                 {
                     summary.judges_started += 1;
-                    self.run_judge_for_terminal_run(automation, runs, run, summary)
-                        .await?;
+                    self.spawn_judge_for_terminal_run(
+                        automation.clone(),
+                        runs.to_vec(),
+                        run.clone(),
+                    );
                 }
             }
             AutomationJudgeState::Done => {
@@ -681,93 +838,43 @@ impl AutomationScheduler {
         Ok(())
     }
 
-    async fn run_judge_for_terminal_run(
+    fn spawn_judge_for_terminal_run(
         &self,
-        automation: &Automation,
-        runs: &[AutomationRun],
-        run: &AutomationRun,
-        summary: &mut AutomationSchedulerTickSummary,
-    ) -> AppResult<()> {
-        let parsed = match self
-            .invoke_and_parse_judge(automation, runs, run, false)
-            .await
-        {
-            Ok(parsed) => parsed,
-            Err(JudgeInvocationFailure::InvalidOutput { .. }) => match self
-                .invoke_and_parse_judge(automation, runs, run, true)
-                .await
-            {
-                Ok(parsed) => parsed,
-                Err(error) => {
-                    self.mark_judge_failed(automation, run, error.detail(), summary)
-                        .await?;
-                    return Ok(());
-                }
-            },
-            Err(error) => {
-                self.mark_judge_failed(automation, run, error.detail(), summary)
-                    .await?;
-                return Ok(());
-            }
+        automation: Automation,
+        runs: Vec<AutomationRun>,
+        run: AutomationRun,
+    ) {
+        let task = AutomationJudgeTask {
+            service: self.service.clone(),
+            transition_service: self.transition_service.clone(),
+            judge_invoker: Arc::clone(&self.judge_invoker),
+            config: self.config.clone(),
         };
-
-        let outcome = self
-            .service
-            .complete_judge_verdict(CompleteAutomationJudgeInput {
-                automation: automation.clone(),
-                previous_run: run.clone(),
-                verdict: parsed.verdict,
-                verdict_json: parsed.verdict_json,
-                judge_model_id: parsed.model_id,
-            })
-            .await?;
-        summary.judges_succeeded += 1;
-        self.record_judge_apply_outcome(outcome, summary);
-        Ok(())
-    }
-
-    async fn invoke_and_parse_judge(
-        &self,
-        automation: &Automation,
-        runs: &[AutomationRun],
-        run: &AutomationRun,
-        retry_reminder: bool,
-    ) -> Result<ParsedJudgeInvocation, JudgeInvocationFailure> {
-        let output = self
-            .judge_invoker
-            .invoke(AutomationJudgeInvocation {
-                automation: automation.clone(),
-                runs: runs.to_vec(),
-                previous_run: run.clone(),
-                retry_reminder,
-                timeout: self.config.judge_timeout,
-            })
-            .await
-            .map_err(|error| JudgeInvocationFailure::Invocation {
-                detail: error.to_string(),
-            })?;
-        let verdict = parse_automation_judge_verdict(
-            &output.raw_output,
-            AutomationJudgeValidationContext {
-                automation,
-                previous_run: run,
-            },
-        )
-        .map_err(|error| JudgeInvocationFailure::InvalidOutput {
-            detail: error.to_string(),
-            raw_output: output.raw_output.clone(),
-        })?;
-        let verdict_json = serde_json::to_string(&verdict).map_err(|error| {
-            JudgeInvocationFailure::InvalidOutput {
-                detail: format!("failed to serialize normalized judge verdict: {error}"),
-                raw_output: output.raw_output,
+        tauri::async_runtime::spawn(async move {
+            let automation_id = automation.id.clone();
+            let run_id = run.id.clone();
+            match task.run_for_terminal_run(automation, runs, run).await {
+                Ok(outcome) => {
+                    tracing::info!(
+                        automation_id = %automation_id,
+                        run_id = %run_id,
+                        judge_succeeded = outcome.judge_succeeded,
+                        judge_failed = outcome.judge_failed,
+                        successor_created = outcome.successor_created,
+                        terminal_status = ?outcome.terminal_automation_status,
+                        "Automation judge task completed"
+                    );
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        automation_id = %automation_id,
+                        run_id = %run_id,
+                        error = %error,
+                        "Automation judge task failed"
+                    );
+                }
             }
-        })?;
-        Ok(ParsedJudgeInvocation {
-            verdict,
-            verdict_json,
-            model_id: output.model_id,
-        })
+        });
     }
 
     async fn mark_judge_failed(

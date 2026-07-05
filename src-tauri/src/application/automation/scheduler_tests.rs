@@ -5,6 +5,8 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use chrono::{TimeZone, Utc};
 use serde_json::{json, Value};
+use tokio::sync::Notify;
+use tokio::time::{sleep, timeout};
 
 use super::provisioning::{
     AutomationRunStartOutcome, AutomationRunStartRequest, AutomationRunStarter,
@@ -107,6 +109,48 @@ impl AutomationJudgeInvoker for RecordingJudgeInvoker {
                 model_id: Some("haiku".to_string()),
             }),
         }
+    }
+}
+
+struct BlockingJudgeInvoker {
+    calls: Mutex<Vec<AutomationRunId>>,
+    release: Notify,
+    output: String,
+}
+
+impl BlockingJudgeInvoker {
+    fn new(output: String) -> Self {
+        Self {
+            calls: Mutex::new(Vec::new()),
+            release: Notify::new(),
+            output,
+        }
+    }
+
+    fn call_count(&self) -> usize {
+        self.calls.lock().unwrap().len()
+    }
+
+    fn release(&self) {
+        self.release.notify_one();
+    }
+}
+
+#[async_trait]
+impl AutomationJudgeInvoker for BlockingJudgeInvoker {
+    async fn invoke(
+        &self,
+        input: AutomationJudgeInvocation,
+    ) -> AppResult<AutomationJudgeInvocationOutput> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(input.previous_run.id.clone());
+        self.release.notified().await;
+        Ok(AutomationJudgeInvocationOutput {
+            raw_output: self.output.clone(),
+            model_id: Some("haiku".to_string()),
+        })
     }
 }
 
@@ -305,6 +349,59 @@ fn item_status(goal_items_json: &str, id: &str) -> String {
         .and_then(Value::as_str)
         .unwrap()
         .to_string()
+}
+
+async fn wait_for_run_count(
+    run_repo: &MemoryAutomationRunRepository,
+    automation_id: &AutomationId,
+    expected: usize,
+) -> Vec<AutomationRun> {
+    for _ in 0..100 {
+        let runs = run_repo.list_for_automation(automation_id).await.unwrap();
+        if runs.len() == expected {
+            return runs;
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+    panic!("timed out waiting for {expected} automation runs");
+}
+
+async fn wait_for_latest_judge_state(
+    run_repo: &MemoryAutomationRunRepository,
+    automation_id: &AutomationId,
+    expected: AutomationJudgeState,
+) -> AutomationRun {
+    for _ in 0..100 {
+        let latest = run_repo
+            .latest_for_automation(automation_id)
+            .await
+            .unwrap()
+            .unwrap();
+        if latest.judge_state == expected {
+            return latest;
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+    panic!("timed out waiting for judge state {expected:?}");
+}
+
+async fn wait_for_automation_status(
+    automation_repo: &MemoryAutomationRepository,
+    automation_id: &AutomationId,
+    expected: AutomationStatus,
+) -> Automation {
+    for _ in 0..100 {
+        let automation = automation_repo
+            .get_by_id(automation_id)
+            .await
+            .unwrap()
+            .unwrap();
+        if automation.status == expected {
+            return automation;
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+    panic!("timed out waiting for automation status {expected:?}");
 }
 
 #[test]
@@ -888,12 +985,13 @@ async fn automation_scheduler_judges_terminal_run_and_schedules_successor() {
     let summary = scheduler.tick_once().await.unwrap();
 
     assert_eq!(summary.judges_started, 1);
-    assert_eq!(summary.judges_succeeded, 1);
-    assert_eq!(summary.successor_runs, 1);
+    assert_eq!(summary.judges_succeeded, 0);
+    assert_eq!(summary.successor_runs, 0);
+    let runs = wait_for_run_count(&run_repo, &automation_id, 2).await;
     assert_eq!(judge.call_count(), 1);
-    let runs = run_repo.list_for_automation(&automation_id).await.unwrap();
     assert_eq!(runs.len(), 2);
     assert_eq!(runs[0].judge_state, AutomationJudgeState::Done);
+    assert!(runs[0].judge_lease_expires_at.is_none());
     assert!(runs[0].judge_verdict_json.is_some());
     assert_eq!(runs[0].judge_model_id.as_deref(), Some("haiku"));
     assert_eq!(runs[1].status, AutomationRunStatus::Pending);
@@ -912,6 +1010,84 @@ async fn automation_scheduler_judges_terminal_run_and_schedules_successor() {
         item_status(automation.goal_items_json.as_deref().unwrap(), "item-2"),
         "done"
     );
+}
+
+#[tokio::test]
+async fn automation_scheduler_detaches_judge_without_blocking_other_signal_checks() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let judging_id = AutomationId::from_string("automation-judging");
+    let signal_id = AutomationId::from_string("automation-signal");
+    automation_repo
+        .create(automation(judging_id.as_str(), AutomationStatus::Active))
+        .await
+        .unwrap();
+    automation_repo
+        .create(automation(signal_id.as_str(), AutomationStatus::Active))
+        .await
+        .unwrap();
+    run_repo
+        .create_run(automation_run(
+            "run-judging",
+            &judging_id,
+            AutomationRunStatus::Merged,
+            None,
+        ))
+        .await
+        .unwrap();
+    let conversation_id = ChatConversationId::from_string("conversation-signal");
+    let mut published = automation_run(
+        "run-signal",
+        &signal_id,
+        AutomationRunStatus::Published,
+        Some(conversation_id.clone()),
+    );
+    published.pr_number = Some(91);
+    run_repo.create_run(published).await.unwrap();
+    let mut workspace = workspace(&conversation_id);
+    workspace.publication_pr_number = Some(91);
+    workspace.publication_pr_status = Some("open".to_string());
+    workspace_repo.create_or_update(workspace).await.unwrap();
+    let judge = Arc::new(BlockingJudgeInvoker::new(valid_stop_verdict(true)));
+    let scheduler = scheduler_with_judge(
+        Arc::clone(&automation_repo),
+        Arc::clone(&run_repo),
+        workspace_repo,
+        Arc::new(RecordingSignalChecker::with_responses(vec![Ok(
+            PrStatus::Merged {
+                merge_commit_sha: Some("def456".to_string()),
+                merged_at: Some("2026-07-05T12:00:00Z".to_string()),
+            },
+        )])),
+        judge.clone(),
+        AutomationSchedulerConfig::default(),
+    );
+
+    let summary = timeout(Duration::from_millis(500), scheduler.tick_once())
+        .await
+        .expect("tick should not wait for blocked judge")
+        .unwrap();
+
+    assert_eq!(summary.judges_started, 1);
+    assert_eq!(summary.merged_runs, 1);
+    let signal_run = run_repo
+        .latest_for_automation(&signal_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(signal_run.status, AutomationRunStatus::Merged);
+    assert_eq!(signal_run.merge_commit_sha.as_deref(), Some("def456"));
+
+    judge.release();
+    let judged =
+        wait_for_latest_judge_state(&run_repo, &judging_id, AutomationJudgeState::Done).await;
+    assert_eq!(judged.judge_state, AutomationJudgeState::Done);
+    assert_eq!(judge.call_count(), 1);
+    let automation =
+        wait_for_automation_status(&automation_repo, &judging_id, AutomationStatus::Completed)
+            .await;
+    assert_eq!(automation.status, AutomationStatus::Completed);
 }
 
 #[tokio::test]
@@ -952,26 +1128,21 @@ async fn automation_scheduler_retries_invalid_judge_output_once_then_pauses() {
     let summary = scheduler.tick_once().await.unwrap();
 
     assert_eq!(summary.judges_started, 1);
-    assert_eq!(summary.judge_failures, 1);
+    assert_eq!(summary.judge_failures, 0);
     assert_eq!(summary.successor_runs, 0);
+    let latest =
+        wait_for_latest_judge_state(&run_repo, &automation_id, AutomationJudgeState::Failed).await;
     assert_eq!(judge.call_count(), 2);
-    let latest = run_repo
-        .latest_for_automation(&automation_id)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(latest.judge_state, AutomationJudgeState::Failed);
     assert!(latest.judge_verdict_json.is_none());
+    assert!(latest.judge_lease_expires_at.is_none());
     assert!(latest
         .error_detail
         .as_deref()
         .unwrap()
         .contains("still not json"));
-    let automation = automation_repo
-        .get_by_id(&automation_id)
-        .await
-        .unwrap()
-        .unwrap();
+    let automation =
+        wait_for_automation_status(&automation_repo, &automation_id, AutomationStatus::Paused)
+            .await;
     assert_eq!(automation.status, AutomationStatus::Paused);
     assert_eq!(
         automation.paused_reason_code.as_deref(),
@@ -1052,18 +1223,17 @@ async fn automation_scheduler_redrives_failed_judge_after_resume() {
     let summary = scheduler.tick_once().await.unwrap();
 
     assert_eq!(summary.judges_started, 1);
-    assert_eq!(summary.judges_succeeded, 1);
-    let latest = run_repo
-        .latest_for_automation(&automation_id)
-        .await
-        .unwrap()
-        .unwrap();
+    assert_eq!(summary.judges_succeeded, 0);
+    let latest =
+        wait_for_latest_judge_state(&run_repo, &automation_id, AutomationJudgeState::Done).await;
     assert_eq!(latest.judge_state, AutomationJudgeState::Done);
-    let automation = automation_repo
-        .get_by_id(&automation_id)
-        .await
-        .unwrap()
-        .unwrap();
+    assert!(latest.judge_lease_expires_at.is_none());
+    let automation = wait_for_automation_status(
+        &automation_repo,
+        &automation_id,
+        AutomationStatus::Completed,
+    )
+    .await;
     assert_eq!(automation.status, AutomationStatus::Completed);
 }
 

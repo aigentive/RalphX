@@ -39,6 +39,7 @@ impl AutomationEventEmitter for NoopAutomationEventEmitter {
     fn emit(&self, _event: AutomationEvent) {}
 }
 
+#[derive(Clone)]
 pub struct AutomationTransitionService {
     automation_repo: Arc<dyn AutomationRepository>,
     run_repo: Arc<dyn AutomationRunRepository>,

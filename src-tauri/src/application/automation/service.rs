@@ -105,6 +105,7 @@ pub struct AutomationJudgeApplyOutcome {
     pub reason: Option<String>,
 }
 
+#[derive(Clone)]
 pub struct AutomationService {
     automation_repo: Arc<dyn AutomationRepository>,
     run_repo: Arc<dyn AutomationRunRepository>,
