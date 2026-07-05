@@ -842,6 +842,21 @@ function renderPanel(
   return props;
 }
 
+function setComposerArtifactPaneState(
+  state: Partial<{
+    isOpen: boolean;
+    activeTab: "plan" | "tasks" | "verification";
+    taskMode: "graph" | "kanban";
+  }>,
+) {
+  useAgentArtifactUiStore.getState().setArtifactState("conversation-1", {
+    isOpen: true,
+    activeTab: "plan",
+    taskMode: "graph",
+    ...state,
+  });
+}
+
 describe("AgentsActiveConversationPanel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -1658,6 +1673,7 @@ describe("AgentsActiveConversationPanel", () => {
 
   it("provides an Approve Plan action for draft Plan-mode sessions", async () => {
     const user = userEvent.setup();
+    setComposerArtifactPaneState({ isOpen: true, activeTab: "plan" });
     getSessionPlanMock.mockResolvedValue({
       id: "artifact-1",
       type: "specification",
@@ -1701,6 +1717,7 @@ describe("AgentsActiveConversationPanel", () => {
         linkedIdeationSessionId: "planning-session-1",
       },
       attachedIdeationSessionId: "planning-session-1",
+      availableArtifactTabs: ["plan"],
     });
 
     await user.click(await screen.findByTestId("question-plan-approval-action"));
@@ -1713,10 +1730,11 @@ describe("AgentsActiveConversationPanel", () => {
     );
   });
 
-  it("shows a composer-adjacent Approve Plan CTA for draft Plan-mode sessions", async () => {
+  it("shows a composer-adjacent Approve Plan CTA for visible draft Plan-mode sessions", async () => {
     const user = userEvent.setup();
     getSessionPlanMock.mockResolvedValue(planArtifact("draft"));
     approvePlanArtifactMock.mockResolvedValue(planArtifact("approved"));
+    setComposerArtifactPaneState({ isOpen: true, activeTab: "plan" });
 
     renderPanel({
       activeConversation: { ...projectConversation(), agentMode: "plan" },
@@ -1727,6 +1745,7 @@ describe("AgentsActiveConversationPanel", () => {
         linkedIdeationSessionId: "planning-session-1",
       },
       attachedIdeationSessionId: "planning-session-1",
+      availableArtifactTabs: ["plan"],
     });
 
     const row = await screen.findByTestId("agents-plan-composer-cta-row");
@@ -1746,6 +1765,7 @@ describe("AgentsActiveConversationPanel", () => {
     const user = userEvent.setup();
     const onSelectArtifact = vi.fn();
     getSessionPlanMock.mockResolvedValue(planArtifact("draft"));
+    setComposerArtifactPaneState({ isOpen: true, activeTab: "plan" });
     getVerificationSpecialistsMock.mockResolvedValue({
       specialists: [
         { name: "risk", enabled_by_default: false },
@@ -1762,6 +1782,7 @@ describe("AgentsActiveConversationPanel", () => {
         linkedIdeationSessionId: "planning-session-1",
       },
       attachedIdeationSessionId: "planning-session-1",
+      availableArtifactTabs: ["plan"],
       onSelectArtifact,
     });
 
@@ -1784,16 +1805,12 @@ describe("AgentsActiveConversationPanel", () => {
     expect(approvePlanArtifactMock).not.toHaveBeenCalled();
   });
 
-  it("shows View Plan before Approve Plan when the plan tab is not visible", async () => {
+  it("shows only View Plan when the artifact pane is closed", async () => {
     const user = userEvent.setup();
     const onOpenPlanArtifact = vi.fn();
     getSessionPlanMock.mockResolvedValue(planArtifact("draft"));
     approvePlanArtifactMock.mockResolvedValue(planArtifact("approved"));
-    useAgentArtifactUiStore.getState().setArtifactState("conversation-1", {
-      isOpen: false,
-      activeTab: "tasks",
-      taskMode: "graph",
-    });
+    setComposerArtifactPaneState({ isOpen: false, activeTab: "tasks" });
 
     renderPanel({
       activeConversation: { ...projectConversation(), agentMode: "plan" },
@@ -1813,25 +1830,60 @@ describe("AgentsActiveConversationPanel", () => {
     );
     const actionButtons = actionGroup.getAllByRole("button");
     const viewPlanButton = actionButtons[0];
-    const approvePlanButton = actionButtons[1];
     expect(viewPlanButton).toBeDefined();
-    expect(approvePlanButton).toBeDefined();
+    expect(actionButtons).toHaveLength(1);
     expect(viewPlanButton!).toHaveTextContent("View Plan");
-    expect(approvePlanButton!).toHaveTextContent("Approve Plan");
+    expect(
+      actionGroup.queryByRole("button", { name: /Approve Plan/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      actionGroup.queryByRole("button", { name: /Verify Plan/i }),
+    ).not.toBeInTheDocument();
 
     await user.click(viewPlanButton!);
 
     expect(onOpenPlanArtifact).toHaveBeenCalledTimes(1);
     expect(approvePlanArtifactMock).not.toHaveBeenCalled();
+    expect(confirmVerificationMock).not.toHaveBeenCalled();
+    expect(sendAgentMessageMock).not.toHaveBeenCalled();
+  });
+
+  it("shows only View Plan when a non-Plan artifact tab is selected", async () => {
+    const onOpenPlanArtifact = vi.fn();
+    getSessionPlanMock.mockResolvedValue(planArtifact("draft"));
+    setComposerArtifactPaneState({ isOpen: true, activeTab: "verification" });
+
+    renderPanel({
+      activeConversation: { ...projectConversation(), agentMode: "plan" },
+      activeConversationMode: "plan",
+      activeWorkspace: {
+        ...workspace(),
+        mode: "plan",
+        linkedIdeationSessionId: "planning-session-1",
+      },
+      attachedIdeationSessionId: "planning-session-1",
+      availableArtifactTabs: ["plan", "verification"],
+      onOpenPlanArtifact,
+    });
+
+    const actionGroup = within(
+      await screen.findByTestId("agents-plan-composer-cta-actions"),
+    );
+    expect(actionGroup.getAllByRole("button")).toHaveLength(1);
+    expect(
+      actionGroup.getByRole("button", { name: /View Plan/i }),
+    ).toBeInTheDocument();
+    expect(
+      actionGroup.queryByRole("button", { name: /Approve Plan/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      actionGroup.queryByRole("button", { name: /Verify Plan/i }),
+    ).not.toBeInTheDocument();
   });
 
   it("hides View Plan when the plan tab is already visible", async () => {
     getSessionPlanMock.mockResolvedValue(planArtifact("draft"));
-    useAgentArtifactUiStore.getState().setArtifactState("conversation-1", {
-      isOpen: true,
-      activeTab: "plan",
-      taskMode: "graph",
-    });
+    setComposerArtifactPaneState({ isOpen: true, activeTab: "plan" });
 
     renderPanel({
       activeConversation: { ...projectConversation(), agentMode: "plan" },
@@ -1857,6 +1909,7 @@ describe("AgentsActiveConversationPanel", () => {
   it("emphasizes Create Proposals in the composer CTA row when complexity recommends it", async () => {
     const user = userEvent.setup();
     getSessionPlanMock.mockResolvedValue(planArtifact("approved"));
+    setComposerArtifactPaneState({ isOpen: true, activeTab: "plan" });
     getPlanComplexityAssessmentMock.mockResolvedValue({
       id: "assessment-1",
       sessionId: "planning-session-1",
@@ -1891,6 +1944,7 @@ describe("AgentsActiveConversationPanel", () => {
         linkedIdeationSessionId: "planning-session-1",
       },
       attachedIdeationSessionId: "planning-session-1",
+      availableArtifactTabs: ["plan"],
       onConversationModeSwitched,
     });
 
@@ -1951,6 +2005,7 @@ describe("AgentsActiveConversationPanel", () => {
     const user = userEvent.setup();
     const assessment = deferred<null>();
     const approvedPlan = planArtifact("approved");
+    setComposerArtifactPaneState({ isOpen: true, activeTab: "plan" });
     getSessionPlanMock.mockResolvedValue({
       ...approvedPlan,
       planApproval: {
@@ -1971,6 +2026,7 @@ describe("AgentsActiveConversationPanel", () => {
         linkedIdeationSessionId: "planning-session-1",
       },
       attachedIdeationSessionId: "planning-session-1",
+      availableArtifactTabs: ["plan"],
     });
 
     const row = await screen.findByTestId("agents-plan-composer-cta-row");
@@ -2066,6 +2122,7 @@ describe("AgentsActiveConversationPanel", () => {
       multiSelect: false,
     };
     getSessionPlanMock.mockResolvedValue(planArtifact("approved"));
+    setComposerArtifactPaneState({ isOpen: true, activeTab: "plan" });
 
     renderPanel({
       activeConversation: { ...projectConversation(), agentMode: "plan" },
@@ -2076,6 +2133,7 @@ describe("AgentsActiveConversationPanel", () => {
         linkedIdeationSessionId: "planning-session-1",
       },
       attachedIdeationSessionId: "planning-session-1",
+      availableArtifactTabs: ["plan"],
     });
 
     await waitFor(() => expect(getSessionPlanMock).toHaveBeenCalled());
@@ -2262,6 +2320,7 @@ describe("AgentsActiveConversationPanel", () => {
   it("starts direct implementation from the composer CTA row with the selected runtime", async () => {
     const user = userEvent.setup();
     getSessionPlanMock.mockResolvedValue(planArtifact("approved"));
+    setComposerArtifactPaneState({ isOpen: true, activeTab: "plan" });
     const editWorkspace = {
       ...workspace(),
       mode: "edit" as const,
@@ -2281,6 +2340,7 @@ describe("AgentsActiveConversationPanel", () => {
         linkedIdeationSessionId: "planning-session-1",
       },
       attachedIdeationSessionId: "planning-session-1",
+      availableArtifactTabs: ["plan"],
       normalizedActiveRuntime: {
         provider: "codex",
         modelId: "gpt-5.5",
@@ -2329,6 +2389,7 @@ describe("AgentsActiveConversationPanel", () => {
     const user = userEvent.setup();
     const onSelectArtifact = vi.fn();
     getSessionPlanMock.mockResolvedValue(planArtifact("approved"));
+    setComposerArtifactPaneState({ isOpen: true, activeTab: "plan" });
     getVerificationSpecialistsMock.mockResolvedValue({
       specialists: [
         { name: "risk", enabled_by_default: false },
@@ -2345,6 +2406,7 @@ describe("AgentsActiveConversationPanel", () => {
         linkedIdeationSessionId: "planning-session-1",
       },
       attachedIdeationSessionId: "planning-session-1",
+      availableArtifactTabs: ["plan"],
       onSelectArtifact,
     });
 
