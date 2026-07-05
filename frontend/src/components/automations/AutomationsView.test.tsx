@@ -1,6 +1,7 @@
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { ComponentProps } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AutomationsView } from "./AutomationsView";
@@ -33,7 +34,7 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-function renderView() {
+function renderView(props: Partial<ComponentProps<typeof AutomationsView>> = {}) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false, gcTime: 0 },
@@ -41,7 +42,11 @@ function renderView() {
   });
   return render(
     <QueryClientProvider client={queryClient}>
-      <AutomationsView projectId="project-1" projectName="Demo Project" />
+      <AutomationsView
+        projectId="project-1"
+        projectName="Demo Project"
+        {...props}
+      />
     </QueryClientProvider>,
   );
 }
@@ -150,5 +155,39 @@ describe("AutomationsView", () => {
 
     expect(screen.getByTestId("automation-detail-shell")).toBeInTheDocument();
     expect(preloadAutomationDetailViewMock).toHaveBeenCalled();
+  });
+
+  it("renders an empty disabled state without a selected project", () => {
+    const onNewAutomation = vi.fn();
+
+    renderView({ projectId: null, projectName: null, onNewAutomation });
+
+    expect(screen.getByTestId("automations-empty-state")).toBeInTheDocument();
+    expect(screen.getByTestId("automations-new-button")).toBeDisabled();
+    expect(screen.getByTestId("automations-empty-new-button")).toBeDisabled();
+    expect(listAutomationsMock).not.toHaveBeenCalled();
+  });
+
+  it("renders an error state when the project automation list fails", async () => {
+    listAutomationsMock.mockRejectedValue(new Error("boom"));
+
+    renderView();
+
+    expect(await screen.findByTestId("automations-error-state")).toBeInTheDocument();
+    expect(screen.getByText("Could not load automations.")).toBeInTheDocument();
+  });
+
+  it("uses controlled selected automation state and reports back navigation", async () => {
+    const onSelectedAutomationChange = vi.fn();
+
+    renderView({
+      selectedAutomationId: "automation-1",
+      onSelectedAutomationChange,
+    });
+
+    expect(screen.getByTestId("automation-detail-shell")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Back" }));
+
+    expect(onSelectedAutomationChange).toHaveBeenCalledWith(null);
   });
 });

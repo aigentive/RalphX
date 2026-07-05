@@ -33,6 +33,21 @@ pub struct HttpServerState {
     pub delegation_service: Arc<DelegationService>,
 }
 
+#[cfg(test)]
+impl HttpServerState {
+    pub(crate) fn new_test(app_state: Arc<AppState>) -> Self {
+        let tracker = TeamStateTracker::new();
+        let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
+        Self {
+            app_state,
+            execution_state: Arc::new(ExecutionState::new()),
+            team_tracker: tracker,
+            team_service,
+            delegation_service: Default::default(),
+        }
+    }
+}
+
 // ============================================================================
 // Request/Response Types - Ideation (Sessions)
 // ============================================================================

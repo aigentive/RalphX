@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { Automation, AutomationDetail, AutomationRun } from "@/api/automations";
@@ -11,12 +11,23 @@ const {
   pauseAutomationMock,
   resumeAutomationMock,
   stopAutomationMock,
+  toastSuccessMock,
+  toastErrorMock,
 } = vi.hoisted(() => ({
   useAutomationDetailMock: vi.fn(),
   useAutomationEventsMock: vi.fn(),
   pauseAutomationMock: vi.fn(),
   resumeAutomationMock: vi.fn(),
   stopAutomationMock: vi.fn(),
+  toastSuccessMock: vi.fn(),
+  toastErrorMock: vi.fn(),
+}));
+
+vi.mock("sonner", () => ({
+  toast: {
+    success: toastSuccessMock,
+    error: toastErrorMock,
+  },
 }));
 
 vi.mock("@/components/agents/agentDeferredFrame", () => ({
@@ -145,6 +156,9 @@ function renderPanel(onOpenAutomation = vi.fn()) {
 describe("AgentsAutomationPanel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    pauseAutomationMock.mockResolvedValue(automationFixture({ status: "paused" }));
+    resumeAutomationMock.mockResolvedValue(automationFixture({ status: "active" }));
+    stopAutomationMock.mockResolvedValue(automationFixture({ status: "stopped" }));
     useAutomationDetailMock.mockReturnValue({
       data: automationDetailFixture(),
       isLoading: false,
@@ -166,5 +180,56 @@ describe("AgentsAutomationPanel", () => {
     fireEvent.click(screen.getByTestId("agents-automation-open"));
 
     expect(onOpenAutomation).toHaveBeenCalledWith("automation-1");
+    expect(useAutomationEventsMock).toHaveBeenCalledWith("automation-1");
+  });
+
+  it("renders loading and error states without action controls", () => {
+    useAutomationDetailMock.mockReturnValueOnce({
+      data: undefined,
+      isLoading: true,
+      isError: false,
+    });
+
+    renderPanel();
+
+    expect(screen.getByTestId("agents-automation-panel-loading")).toBeInTheDocument();
+    expect(screen.queryByTestId("agents-automation-pause")).not.toBeInTheDocument();
+
+    useAutomationDetailMock.mockReturnValueOnce({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+    });
+
+    renderPanel();
+
+    expect(screen.getByText("Could not load automation.")).toBeInTheDocument();
+    expect(screen.queryByTestId("agents-automation-open")).not.toBeInTheDocument();
+  });
+
+  it("resumes paused automations and summarizes runs without PRs", async () => {
+    useAutomationDetailMock.mockReturnValue({
+      data: automationDetailFixture({
+        automation: automationFixture({
+          status: "paused",
+          pausedReasonCode: "release_freeze",
+        }),
+        runs: [automationRunFixture({ prNumber: null, status: "running" })],
+      }),
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel();
+
+    expect(screen.getByText("Paused")).toBeInTheDocument();
+    expect(screen.getByText("running")).toBeInTheDocument();
+    expect(screen.queryByTestId("agents-automation-pause")).not.toBeInTheDocument();
+    expect(screen.getByTestId("agents-automation-resume")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("agents-automation-resume"));
+
+    await waitFor(() => expect(resumeAutomationMock).toHaveBeenCalledWith("automation-1"));
+    expect(toastSuccessMock).toHaveBeenCalledWith("Automation resumed");
   });
 });

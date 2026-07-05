@@ -164,6 +164,28 @@ function renderDetail(detail: AutomationDetail, onOpenRunConversation = vi.fn())
   };
 }
 
+function renderDetailWithQuery(onBack = vi.fn()) {
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      queries: { retry: false, gcTime: 0 },
+      mutations: { retry: false },
+    },
+  });
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <TooltipProvider>
+        <AutomationDetailView
+          automationId="automation-1"
+          projectId="project-1"
+          projectName="Demo Project"
+          onBack={onBack}
+          onOpenRunConversation={vi.fn()}
+        />
+      </TooltipProvider>
+    </QueryClientProvider>,
+  );
+}
+
 describe("AutomationDetailView", () => {
   beforeEach(() => {
     vi.stubGlobal(
@@ -255,5 +277,65 @@ describe("AutomationDetailView", () => {
         runId: "run-2",
       }),
     );
+  });
+
+  it("renders loading and error states", async () => {
+    getAutomationMock.mockReturnValue(new Promise(() => {}));
+
+    renderDetailWithQuery();
+
+    expect(screen.getByTestId("automation-detail-loading")).toBeInTheDocument();
+
+    getAutomationMock.mockReset().mockRejectedValue(new Error("boom"));
+    renderDetailWithQuery();
+
+    expect(await screen.findByText("Could not load automation.")).toBeInTheDocument();
+  });
+
+  it("resumes paused automation and opens the setup conversation from the action menu", async () => {
+    const onOpenRunConversation = vi.fn();
+    renderDetail(
+      {
+        automation: automation({
+          status: "paused",
+          pausedReasonCode: "release_freeze",
+          pausedReasonDetail: "Waiting on base branch",
+          baseSourcePullRequestJson: null,
+          goalItemsJson: "not-json",
+        }),
+        runs: [],
+        usage: { ...usage, estimatedUsd: null },
+      },
+      onOpenRunConversation,
+    );
+
+    expect(await screen.findByText("No setup input references are attached to this automation record.")).toBeInTheDocument();
+    expect(screen.getByText("No runs have been created yet.")).toBeInTheDocument();
+    expect(screen.getByText("Paused: release_freeze - Waiting on base branch")).toBeInTheDocument();
+    expect(screen.getAllByText("Not recorded").length).toBeGreaterThan(0);
+
+    await userEvent.click(screen.getByLabelText("Resume automation"));
+
+    await waitFor(() => expect(resumeAutomationMock).toHaveBeenCalledWith("automation-1"));
+    expect(toastSuccessMock).toHaveBeenCalledWith("Automation resumed");
+
+    await userEvent.click(screen.getByLabelText("More automation actions"));
+    await userEvent.click(screen.getByText("Edit"));
+
+    expect(onOpenRunConversation).toHaveBeenCalledWith("project-1", "setup-conversation-1");
+  });
+
+  it("reports run-now deferred outcomes without scheduling a run", async () => {
+    triggerRunNowMock.mockResolvedValueOnce({
+      scheduled: false,
+      reason: "run in flight",
+    });
+    renderDetail({ automation: automation(), runs: [run()], usage });
+
+    await screen.findByTestId("automation-detail-view");
+    await userEvent.click(screen.getByLabelText("Run now"));
+
+    await waitFor(() => expect(triggerRunNowMock).toHaveBeenCalledWith("automation-1"));
+    expect(toastInfoMock).toHaveBeenCalledWith("run in flight");
   });
 });

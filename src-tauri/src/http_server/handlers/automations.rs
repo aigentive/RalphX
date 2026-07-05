@@ -7,8 +7,8 @@ use serde::Deserialize;
 use serde_json::json;
 use tracing::error;
 
-use crate::commands::automation_commands::{
-    automation_detail_response_for_state, automation_service, AutomationDetailResponse,
+use crate::application::automation::api::{
+    automation_detail_response_for_state, automation_service_for_state, AutomationDetailResponse,
     AutomationResponse,
 };
 use crate::domain::entities::{Automation, AutomationId, ChatConversationId};
@@ -32,7 +32,7 @@ pub async fn get_automation(
     headers: HeaderMap,
 ) -> Result<Json<AutomationDetailResponse>, HttpError> {
     let automation = resolve_bound_automation(&state, &headers).await?;
-    let detail = automation_service(&state.app_state)
+    let detail = automation_service_for_state(&state.app_state)
         .get_automation_detail(&automation.id)
         .await
         .map_err(map_app_err)?;
@@ -48,7 +48,7 @@ pub async fn update_automation(
     Json(request): Json<UpdateAutomationRequest>,
 ) -> Result<Json<AutomationResponse>, HttpError> {
     let automation = resolve_bound_automation(&state, &headers).await?;
-    let updated = automation_service(&state.app_state)
+    let updated = automation_service_for_state(&state.app_state)
         .update_settings(
             crate::application::automation::service::UpdateAutomationSettingsInput {
                 id: automation.id,
@@ -67,7 +67,7 @@ pub async fn finalize_automation(
     headers: HeaderMap,
 ) -> Result<Json<AutomationResponse>, HttpError> {
     let automation = resolve_bound_automation(&state, &headers).await?;
-    let finalized = automation_service(&state.app_state)
+    let finalized = automation_service_for_state(&state.app_state)
         .finalize(&automation.id)
         .await
         .map_err(map_app_err)?;
@@ -102,7 +102,7 @@ async fn resolve_bound_automation(
         )
     })?;
 
-    let automation = automation_service(&state.app_state)
+    let automation = automation_service_for_state(&state.app_state)
         .get_automation_detail(&automation_id)
         .await
         .map_err(map_app_err)?

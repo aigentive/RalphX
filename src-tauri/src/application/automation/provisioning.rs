@@ -2,18 +2,14 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use tauri::Runtime;
 
 use crate::application::agent_conversation_start_service::{
-    AgentConversationStartDeps, AgentConversationStartService,
     AgentWorkspaceSourcePullRequestInput, StartAgentConversationInput,
 };
 use crate::application::automation::service::{AutomationService, CreateAutomationRunInput};
 use crate::application::automation::transition::{
     AutomationEventEmitter, AutomationTransitionService,
 };
-use crate::application::{AppState, TeamService};
-use crate::commands::ExecutionState;
 use crate::domain::agents::LogicalEffort;
 use crate::domain::entities::{
     AgentConversationWorkspaceMode, Automation, AutomationPromptAuthor, AutomationRun,
@@ -122,52 +118,6 @@ pub trait AutomationRunStarter: Send + Sync {
         &self,
         request: AutomationRunStartRequest,
     ) -> AppResult<AutomationRunStartOutcome>;
-}
-
-pub struct AgentConversationAutomationRunStarter<R: Runtime + 'static> {
-    state: AppState,
-    execution_state: Arc<ExecutionState>,
-    team_service: Option<Arc<TeamService>>,
-    app_handle: tauri::AppHandle<R>,
-}
-
-impl<R: Runtime + 'static> AgentConversationAutomationRunStarter<R> {
-    pub fn new(
-        state: AppState,
-        execution_state: Arc<ExecutionState>,
-        team_service: Option<Arc<TeamService>>,
-        app_handle: tauri::AppHandle<R>,
-    ) -> Self {
-        Self {
-            state,
-            execution_state,
-            team_service,
-            app_handle,
-        }
-    }
-}
-
-#[async_trait]
-impl<R: Runtime + 'static> AutomationRunStarter for AgentConversationAutomationRunStarter<R> {
-    async fn start_run(
-        &self,
-        request: AutomationRunStartRequest,
-    ) -> AppResult<AutomationRunStartOutcome> {
-        let start_input = request.into_start_input()?;
-        let result = AgentConversationStartService::new(AgentConversationStartDeps {
-            state: &self.state,
-            execution_state: &self.execution_state,
-            team_service: self.team_service.clone(),
-            app_handle: self.app_handle.clone(),
-        })
-        .start(start_input)
-        .await
-        .map_err(AppError::Agent)?;
-
-        Ok(AutomationRunStartOutcome {
-            branch_name: result.workspace.map(|workspace| workspace.branch_name),
-        })
-    }
 }
 
 pub struct AutomationRunProvisioner {

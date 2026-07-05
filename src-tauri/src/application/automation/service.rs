@@ -88,9 +88,9 @@ pub struct AutomationScheduleOutcome {
 pub enum AutomationRunNowAction {
     Outcome(AutomationScheduleOutcome),
     StartJudge {
-        automation: Automation,
+        automation: Box<Automation>,
         runs: Vec<AutomationRun>,
-        run: AutomationRun,
+        run: Box<AutomationRun>,
     },
 }
 
@@ -342,9 +342,9 @@ impl AutomationService {
         match latest.judge_state {
             AutomationJudgeState::None | AutomationJudgeState::Failed => {
                 Ok(AutomationRunNowAction::StartJudge {
-                    automation,
+                    automation: Box::new(automation),
                     runs,
-                    run: latest,
+                    run: Box::new(latest),
                 })
             }
             AutomationJudgeState::Done => {
@@ -447,10 +447,13 @@ impl AutomationService {
                     None => Ok(schedule_not_scheduled("judge already started")),
                 }
             }
-            SuccessorReadiness::NotScheduled(outcome) => Ok(AutomationScheduleOutcome {
-                scheduled: false,
-                reason: outcome.reason,
-            }),
+            SuccessorReadiness::NotScheduled(outcome) => {
+                let outcome = *outcome;
+                Ok(AutomationScheduleOutcome {
+                    scheduled: false,
+                    reason: outcome.reason,
+                })
+            }
         }
     }
 
@@ -603,7 +606,7 @@ impl AutomationService {
             .successor_readiness(&automation, &latest, false)
             .await?
         {
-            return Ok(outcome);
+            return Ok(*outcome);
         }
 
         let (base_ref_kind, base_ref_used) = merged_base_successor_base(&automation, &latest)?;
@@ -796,6 +799,7 @@ impl AutomationService {
                     .successor_readiness(&input.automation, &latest, false)
                     .await?
                 {
+                    let outcome = *outcome;
                     return Ok(AutomationJudgeApplyOutcome {
                         successor_run: outcome.run,
                         terminal_automation_status: None,
@@ -864,8 +868,8 @@ impl AutomationService {
             && run_status_is_signal_terminal(latest.status)
             && latest.judge_state == AutomationJudgeState::None;
         if is_open_automation_run(latest.status, latest.judge_state) && !unjudged_terminal {
-            return Ok(SuccessorReadiness::NotScheduled(successor_not_scheduled(
-                "run in flight",
+            return Ok(SuccessorReadiness::NotScheduled(Box::new(
+                successor_not_scheduled("run in flight"),
             )));
         }
         if !run_status_is_signal_terminal(latest.status) {
@@ -884,8 +888,8 @@ impl AutomationService {
                 Some("Automation reached max_runs before scheduling a successor".to_string()),
             )
             .await?;
-            return Ok(SuccessorReadiness::NotScheduled(successor_not_scheduled(
-                "max_runs_exhausted",
+            return Ok(SuccessorReadiness::NotScheduled(Box::new(
+                successor_not_scheduled("max_runs_exhausted"),
             )));
         }
         if consecutive_failure_count(&runs) >= automation.max_consecutive_failures {
@@ -900,8 +904,8 @@ impl AutomationService {
                 ),
             )
             .await?;
-            return Ok(SuccessorReadiness::NotScheduled(successor_not_scheduled(
-                "max_consecutive_failures",
+            return Ok(SuccessorReadiness::NotScheduled(Box::new(
+                successor_not_scheduled("max_consecutive_failures"),
             )));
         }
         Ok(SuccessorReadiness::Ready)
@@ -910,7 +914,7 @@ impl AutomationService {
 
 enum SuccessorReadiness {
     Ready,
-    NotScheduled(AutomationSuccessorRunOutcome),
+    NotScheduled(Box<AutomationSuccessorRunOutcome>),
 }
 
 fn schedule_not_scheduled(reason: &str) -> AutomationScheduleOutcome {

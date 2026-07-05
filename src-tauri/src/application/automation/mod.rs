@@ -1,3 +1,4 @@
+pub mod api;
 pub mod judge;
 pub mod provisioning;
 pub mod scheduler;

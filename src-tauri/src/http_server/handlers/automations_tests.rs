@@ -8,23 +8,10 @@ use axum::{
 use chrono::Utc;
 
 use super::*;
-use crate::application::{AppState, TeamService, TeamStateTracker};
-use crate::commands::ExecutionState;
+use crate::application::AppState;
 use crate::domain::entities::{
     Automation, AutomationId, AutomationStatus, ChatConversation, ChatConversationId, ProjectId,
 };
-
-fn test_http_state(app_state: Arc<AppState>) -> HttpServerState {
-    let tracker = TeamStateTracker::new();
-    let team_service = Arc::new(TeamService::new_without_events(Arc::new(tracker.clone())));
-    HttpServerState {
-        app_state,
-        execution_state: Arc::new(ExecutionState::new()),
-        team_tracker: tracker,
-        team_service,
-        delegation_service: Default::default(),
-    }
-}
 
 fn caller_headers(conversation_id: &ChatConversationId) -> HeaderMap {
     let mut headers = HeaderMap::new();
@@ -92,7 +79,7 @@ async fn get_and_update_automation_use_server_bound_conversation() {
         .create(automation.clone())
         .await
         .unwrap();
-    let state = test_http_state(app_state.clone());
+    let state = HttpServerState::new_test(app_state.clone());
 
     let Json(detail) = get_automation(State(state.clone()), caller_headers(&conversation.id))
         .await
@@ -133,7 +120,7 @@ async fn finalize_rejects_mismatched_conversation_binding() {
     let mut automation = automation(&automation_id, project_id, AutomationStatus::Draft);
     automation.setup_conversation_id = Some(ChatConversationId::new());
     app_state.automation_repo.create(automation).await.unwrap();
-    let state = test_http_state(app_state);
+    let state = HttpServerState::new_test(app_state);
 
     let error = finalize_automation(State(state), caller_headers(&conversation.id))
         .await
@@ -154,7 +141,7 @@ async fn finalize_activates_complete_bound_draft() {
     let mut automation = automation(&automation_id, project_id, AutomationStatus::Draft);
     automation.setup_conversation_id = Some(conversation.id);
     app_state.automation_repo.create(automation).await.unwrap();
-    let state = test_http_state(app_state.clone());
+    let state = HttpServerState::new_test(app_state.clone());
 
     let Json(finalized) = finalize_automation(State(state), caller_headers(&conversation.id))
         .await
