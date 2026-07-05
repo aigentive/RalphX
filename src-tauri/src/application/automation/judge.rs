@@ -261,7 +261,14 @@ pub fn validate_automation_judge_verdict(
                 ));
             }
             match verdict.next_base_branch {
-                Some(AutomationJudgeNextBaseBranch::AutomationBase) => {}
+                Some(AutomationJudgeNextBaseBranch::AutomationBase) => {
+                    if context.automation.chain_mode == "pr_head_stacked" {
+                        return Err(AppError::Validation(
+                            "judge verdict automation_base is not valid for stacked chaining"
+                                .to_string(),
+                        ));
+                    }
+                }
                 Some(AutomationJudgeNextBaseBranch::PreviousPrHead) => {
                     if context.automation.chain_mode != "pr_head_stacked"
                         || context

@@ -101,9 +101,18 @@ export interface AutomationRun {
   updatedAt: string;
 }
 
+export interface AutomationUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreationTokens: number;
+  cacheReadTokens: number;
+  estimatedUsd: number | null;
+}
+
 export interface AutomationDetail {
   automation: Automation;
   runs: AutomationRun[];
+  usage: AutomationUsage;
 }
 
 export interface CreateAutomationDraftResponse {

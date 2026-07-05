@@ -52,6 +52,7 @@ export type {
   AutomationRunStatus,
   AutomationScheduleResponse,
   AutomationStatus,
+  AutomationUsage,
   CreateAutomationDraftInput,
   CreateAutomationDraftResponse,
   ListAutomationsInput,

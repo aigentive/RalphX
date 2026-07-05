@@ -265,6 +265,37 @@ fn rejects_previous_pr_head_without_stacked_mode() {
 }
 
 #[test]
+fn parses_previous_pr_head_for_stacked_mode() {
+    let mut automation = automation_with_goal_items(Some(goal_items_json()));
+    automation.chain_mode = "pr_head_stacked".to_string();
+    let run = automation_run(1, AutomationRunStatus::Merged);
+    let output = valid_continue_output().replace("automation_base", "previous_pr_head");
+
+    let verdict =
+        parse_automation_judge_verdict(&output, validation_context(&automation, &run)).unwrap();
+
+    assert_eq!(
+        verdict.next_base_branch,
+        Some(AutomationJudgeNextBaseBranch::PreviousPrHead)
+    );
+}
+
+#[test]
+fn rejects_automation_base_for_stacked_mode() {
+    let mut automation = automation_with_goal_items(Some(goal_items_json()));
+    automation.chain_mode = "pr_head_stacked".to_string();
+    let run = automation_run(1, AutomationRunStatus::Merged);
+
+    let error = parse_automation_judge_verdict(
+        &valid_continue_output(),
+        validation_context(&automation, &run),
+    )
+    .unwrap_err();
+
+    assert!(matches!(error, AppError::Validation(_)));
+}
+
+#[test]
 fn rejects_unknown_goal_item_update_id() {
     let automation = automation_with_goal_items(Some(goal_items_json()));
     let run = automation_run(1, AutomationRunStatus::Merged);

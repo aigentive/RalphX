@@ -16,11 +16,13 @@ import {
   AutomationRunSchema,
   AutomationScheduleResponseSchema,
   AutomationSchema,
+  AutomationUsageSchema,
   CreateAutomationDraftResponseSchema,
 } from "./automations.schemas";
 
 type RawAutomation = z.infer<typeof AutomationSchema>;
 type RawAutomationRun = z.infer<typeof AutomationRunSchema>;
+type RawAutomationUsage = z.infer<typeof AutomationUsageSchema>;
 type RawAutomationDetail = z.infer<typeof AutomationDetailSchema>;
 type RawCreateAutomationDraftResponse = z.infer<
   typeof CreateAutomationDraftResponseSchema
@@ -95,12 +97,23 @@ export function transformAutomationRun(raw: RawAutomationRun): AutomationRun {
   };
 }
 
+function transformAutomationUsage(raw: RawAutomationUsage) {
+  return {
+    inputTokens: raw.input_tokens,
+    outputTokens: raw.output_tokens,
+    cacheCreationTokens: raw.cache_creation_tokens,
+    cacheReadTokens: raw.cache_read_tokens,
+    estimatedUsd: raw.estimated_usd,
+  };
+}
+
 export function transformAutomationDetail(
   raw: RawAutomationDetail,
 ): AutomationDetail {
   return {
     automation: transformAutomation(raw.automation),
     runs: raw.runs.map(transformAutomationRun),
+    usage: transformAutomationUsage(raw.usage),
   };
 }
 

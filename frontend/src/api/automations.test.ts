@@ -74,6 +74,17 @@ function runResponse(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function usageResponse(overrides: Record<string, unknown> = {}) {
+  return {
+    input_tokens: 120,
+    output_tokens: 30,
+    cache_creation_tokens: 7,
+    cache_read_tokens: 9,
+    estimated_usd: 0.04,
+    ...overrides,
+  };
+}
+
 function jsonResponse(body: unknown, init: ResponseInit = {}) {
   return new Response(JSON.stringify(body), {
     status: 200,
@@ -196,6 +207,7 @@ describe("automationsApi", () => {
     vi.mocked(invoke).mockResolvedValue({
       automation: automationResponse(),
       runs: [runResponse()],
+      usage: usageResponse(),
     });
 
     await expect(automationsApi.get("automation-1")).resolves.toEqual(
@@ -213,6 +225,13 @@ describe("automationsApi", () => {
             signalCheckFailures: 0,
           }),
         ],
+        usage: expect.objectContaining({
+          inputTokens: 120,
+          outputTokens: 30,
+          cacheCreationTokens: 7,
+          cacheReadTokens: 9,
+          estimatedUsd: 0.04,
+        }),
       }),
     );
   });

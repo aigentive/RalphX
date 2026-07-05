@@ -111,9 +111,18 @@ export const AutomationRunSchema = z.object({
   updated_at: z.string(),
 });
 
+export const AutomationUsageSchema = z.object({
+  input_tokens: z.number().int().nonnegative(),
+  output_tokens: z.number().int().nonnegative(),
+  cache_creation_tokens: z.number().int().nonnegative(),
+  cache_read_tokens: z.number().int().nonnegative(),
+  estimated_usd: z.number().nullable(),
+});
+
 export const AutomationDetailSchema = z.object({
   automation: AutomationSchema,
   runs: z.array(AutomationRunSchema),
+  usage: AutomationUsageSchema,
 });
 
 export const CreateAutomationDraftResponseSchema = z.object({

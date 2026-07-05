@@ -1007,7 +1007,7 @@ const commandHandlers: Record<
       activityPage: true,
       extensibilityPage: true,
       ideationPage: false,
-      automationsPage: false,
+      automationsPage: true,
       battleMode: true,
       teamMode: false,
       atlassianOauth: false,

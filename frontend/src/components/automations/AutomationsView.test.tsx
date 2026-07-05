@@ -78,6 +78,14 @@ function automation(overrides: Partial<Automation> = {}): Automation {
   };
 }
 
+const emptyUsage = {
+  inputTokens: 0,
+  outputTokens: 0,
+  cacheCreationTokens: 0,
+  cacheReadTokens: 0,
+  estimatedUsd: null,
+};
+
 describe("AutomationsView", () => {
   beforeEach(() => {
     vi.stubGlobal(
@@ -121,7 +129,7 @@ describe("AutomationsView", () => {
 
   it("renders project-scoped automation rows from the list API", async () => {
     listAutomationsMock.mockResolvedValue([automation()]);
-    getAutomationMock.mockResolvedValue({ automation: automation(), runs: [] });
+    getAutomationMock.mockResolvedValue({ automation: automation(), runs: [], usage: emptyUsage });
 
     renderView();
 
@@ -134,7 +142,7 @@ describe("AutomationsView", () => {
 
   it("paints the detail shell synchronously on row click before the detail bundle resolves", async () => {
     listAutomationsMock.mockResolvedValue([automation()]);
-    getAutomationMock.mockResolvedValue({ automation: automation(), runs: [] });
+    getAutomationMock.mockResolvedValue({ automation: automation(), runs: [], usage: emptyUsage });
 
     renderView();
 

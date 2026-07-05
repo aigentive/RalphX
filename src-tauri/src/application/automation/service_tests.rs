@@ -4,9 +4,12 @@ use async_trait::async_trait;
 use chrono::Utc;
 use serde_json::json;
 
+use crate::application::automation::judge::{
+    AutomationJudgeDecision, AutomationJudgeNextBaseBranch, AutomationJudgeVerdict,
+};
 use crate::application::automation::service::{
-    AutomationService, CreateAutomationDraftInput, CreateAutomationRunInput,
-    CreateMergedBaseSuccessorRunInput, UpdateAutomationSettingsInput,
+    ApplyAutomationJudgeVerdictInput, AutomationService, CreateAutomationDraftInput,
+    CreateAutomationRunInput, CreateMergedBaseSuccessorRunInput, UpdateAutomationSettingsInput,
 };
 use crate::application::automation::transition::{
     AutomationEvent, AutomationEventEmitter, NoopAutomationEventEmitter,
@@ -732,6 +735,112 @@ async fn service_drops_source_pr_linkage_for_run_two_base() {
     assert_eq!(successor.base_ref_kind, "local_branch");
     assert_eq!(successor.base_ref_used, "release/2026");
     assert_eq!(successor.base_from_run_id, Some(previous.id));
+}
+
+#[tokio::test]
+async fn service_applies_stacked_judge_verdict_from_previous_pr_head() {
+    let (service, automation_repo, run_repo) =
+        service_with_emitter(Arc::new(NoopAutomationEventEmitter));
+    let mut active = automation("automation-1", AutomationStatus::Active);
+    active.base_ref_kind = "local_branch".to_string();
+    active.base_ref = "main".to_string();
+    active.chain_mode = "pr_head_stacked".to_string();
+    automation_repo.create(active.clone()).await.unwrap();
+    let mut previous = automation_run(
+        "run-1",
+        &active.id,
+        1,
+        AutomationRunStatus::Merged,
+        AutomationJudgeState::Done,
+    );
+    previous.pr_head_ref_name = Some("ralphx/automation-run-1".to_string());
+    run_repo.create_run(previous.clone()).await.unwrap();
+
+    let outcome = service
+        .apply_persisted_judge_verdict(ApplyAutomationJudgeVerdictInput {
+            automation: active.clone(),
+            previous_run: previous.clone(),
+            verdict: AutomationJudgeVerdict {
+                decision: AutomationJudgeDecision::Continue,
+                goal_met: false,
+                reason: "The next item should stack on the previous PR branch.".to_string(),
+                confidence: 0.84,
+                goal_progress: None,
+                updated_item_statuses: None,
+                next_run_prompt: Some(
+                    "Implement the next automation item on top of the previous PR head branch."
+                        .to_string(),
+                ),
+                next_base_branch: Some(AutomationJudgeNextBaseBranch::PreviousPrHead),
+            },
+        })
+        .await
+        .unwrap();
+
+    let successor = outcome.successor_run.expect("successor should be created");
+    assert_eq!(successor.run_index, 2);
+    assert_eq!(successor.status, AutomationRunStatus::Pending);
+    assert_eq!(successor.prompt_author, AutomationPromptAuthor::Judge);
+    assert_eq!(successor.base_ref_kind, "local_branch");
+    assert_eq!(successor.base_ref_used, "ralphx/automation-run-1");
+    assert_eq!(successor.base_from_run_id, Some(previous.id));
+    assert_eq!(
+        run_repo
+            .list_for_automation(&active.id)
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+#[tokio::test]
+async fn service_rejects_stacked_judge_verdict_without_previous_pr_head() {
+    let (service, automation_repo, run_repo) =
+        service_with_emitter(Arc::new(NoopAutomationEventEmitter));
+    let mut active = automation("automation-1", AutomationStatus::Active);
+    active.chain_mode = "pr_head_stacked".to_string();
+    automation_repo.create(active.clone()).await.unwrap();
+    let mut previous = automation_run(
+        "run-1",
+        &active.id,
+        1,
+        AutomationRunStatus::Merged,
+        AutomationJudgeState::Done,
+    );
+    previous.pr_head_ref_name = None;
+    run_repo.create_run(previous.clone()).await.unwrap();
+
+    let error = service
+        .apply_persisted_judge_verdict(ApplyAutomationJudgeVerdictInput {
+            automation: active.clone(),
+            previous_run: previous,
+            verdict: AutomationJudgeVerdict {
+                decision: AutomationJudgeDecision::Continue,
+                goal_met: false,
+                reason: "The next item should stack on the previous PR branch.".to_string(),
+                confidence: 0.84,
+                goal_progress: None,
+                updated_item_statuses: None,
+                next_run_prompt: Some(
+                    "Implement the next automation item on top of the previous PR head branch."
+                        .to_string(),
+                ),
+                next_base_branch: Some(AutomationJudgeNextBaseBranch::PreviousPrHead),
+            },
+        })
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, AppError::Validation(_)));
+    assert_eq!(
+        run_repo
+            .list_for_automation(&active.id)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
 }
 
 #[tokio::test]

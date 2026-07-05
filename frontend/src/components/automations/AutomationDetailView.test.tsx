@@ -130,6 +130,14 @@ function run(overrides: Partial<AutomationRun> = {}): AutomationRun {
   };
 }
 
+const usage = {
+  inputTokens: 200,
+  outputTokens: 50,
+  cacheCreationTokens: 7,
+  cacheReadTokens: 9,
+  estimatedUsd: 0.06,
+};
+
 function renderDetail(detail: AutomationDetail, onOpenRunConversation = vi.fn()) {
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -193,13 +201,17 @@ describe("AutomationDetailView", () => {
       promptAuthor: "judge",
     });
 
-    renderDetail({ automation: automation(), runs: [olderRun, latestRun] });
+    renderDetail({ automation: automation(), runs: [olderRun, latestRun], usage });
 
     expect(await screen.findByTestId("automation-detail-view")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Ship migration loop" })).toBeInTheDocument();
     expect(screen.getByLabelText("Pause automation")).toBeInTheDocument();
     expect(screen.getByLabelText("Run now")).toBeInTheDocument();
     expect(screen.getByLabelText("Stop automation")).toBeInTheDocument();
+    expect(screen.getByText("Input tokens")).toBeInTheDocument();
+    expect(screen.getByText("200")).toBeInTheDocument();
+    expect(screen.getByText("Estimated cost")).toBeInTheDocument();
+    expect(screen.getByText("$0.06")).toBeInTheDocument();
 
     const runTwo = screen.getByTestId("automation-run-run-2");
     const runOne = screen.getByTestId("automation-run-run-1");
@@ -221,7 +233,7 @@ describe("AutomationDetailView", () => {
       status: "merged",
       judgeState: "none",
     });
-    renderDetail({ automation: automation(), runs: [latestRun] });
+    renderDetail({ automation: automation(), runs: [latestRun], usage });
 
     await screen.findByTestId("automation-detail-view");
 

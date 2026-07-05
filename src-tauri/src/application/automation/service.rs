@@ -4,7 +4,8 @@ use chrono::Utc;
 
 use crate::application::automation::judge::{
     apply_updated_item_statuses, automation_judge_loop_suspected, parse_automation_judge_verdict,
-    AutomationJudgeDecision, AutomationJudgeValidationContext, AutomationJudgeVerdict,
+    AutomationJudgeDecision, AutomationJudgeNextBaseBranch, AutomationJudgeValidationContext,
+    AutomationJudgeVerdict,
 };
 use crate::application::automation::transition::{
     AutomationEvent, AutomationEventEmitter, AutomationTransitionService,
@@ -25,6 +26,7 @@ const DEFAULT_MODEL_ID: &str = "sonnet";
 const DEFAULT_RUN_MODE: &str = "edit";
 const DEFAULT_BASE_REF_KIND: &str = "project_default";
 const DEFAULT_CHAIN_MODE: &str = "merged_base";
+const STACKED_CHAIN_MODE: &str = "pr_head_stacked";
 const DEFAULT_COMPLETION_SIGNAL: &str = "pr_merged";
 const DEFAULT_MAX_RUNS: i64 = 25;
 const DEFAULT_MAX_CONSECUTIVE_FAILURES: i64 = 3;
@@ -388,6 +390,12 @@ impl AutomationService {
             return Err(AppError::Validation(
                 "automation must be active to skip judge".to_string(),
             ));
+        }
+        if automation.chain_mode != DEFAULT_CHAIN_MODE {
+            return Err(AppError::Validation(format!(
+                "automation chain_mode {} is not supported in skip-judge scheduling",
+                automation.chain_mode
+            )));
         }
         let run = self.require_run_for_automation(id, run_id).await?;
         let latest = self.latest_run_for_automation(id).await?;
@@ -778,18 +786,39 @@ impl AutomationService {
                     .unwrap_or("")
                     .trim()
                     .to_string();
-                let outcome = self
-                    .create_merged_base_successor_run(CreateMergedBaseSuccessorRunInput {
-                        automation_id: input.automation.id,
-                        previous_run_id: input.previous_run.id,
+                let latest = self.latest_run_for_automation(&input.automation.id).await?;
+                if latest.id != input.previous_run.id {
+                    return Err(AppError::Validation(
+                        "previousRunId must reference the latest automation run".to_string(),
+                    ));
+                }
+                if let SuccessorReadiness::NotScheduled(outcome) = self
+                    .successor_readiness(&input.automation, &latest, false)
+                    .await?
+                {
+                    return Ok(AutomationJudgeApplyOutcome {
+                        successor_run: outcome.run,
+                        terminal_automation_status: None,
+                        reason: outcome.reason,
+                    });
+                }
+
+                let (base_ref_kind, base_ref_used) =
+                    judge_successor_base(&input.automation, &latest, &input.verdict)?;
+                let run = self
+                    .create_run(CreateAutomationRunInput {
+                        automation_id: input.automation.id.clone(),
                         run_prompt: next_prompt,
                         prompt_author: AutomationPromptAuthor::Judge,
+                        base_ref_kind,
+                        base_ref_used,
+                        base_from_run_id: Some(latest.id),
                     })
                     .await?;
                 Ok(AutomationJudgeApplyOutcome {
-                    successor_run: outcome.run,
+                    successor_run: Some(run),
                     terminal_automation_status: None,
-                    reason: outcome.reason,
+                    reason: None,
                 })
             }
             AutomationJudgeDecision::Stop if input.verdict.goal_met => {
@@ -831,12 +860,6 @@ impl AutomationService {
         latest: &AutomationRun,
         allow_unjudged_latest: bool,
     ) -> AppResult<SuccessorReadiness> {
-        if automation.chain_mode != DEFAULT_CHAIN_MODE {
-            return Err(AppError::Validation(format!(
-                "automation chain_mode {} is not supported in merged_base scheduling",
-                automation.chain_mode
-            )));
-        }
         let unjudged_terminal = allow_unjudged_latest
             && run_status_is_signal_terminal(latest.status)
             && latest.judge_state == AutomationJudgeState::None;
@@ -957,6 +980,51 @@ fn merged_base_successor_base(
         automation.base_ref_kind.clone(),
         automation.base_ref.clone(),
     ))
+}
+
+fn judge_successor_base(
+    automation: &Automation,
+    previous_run: &AutomationRun,
+    verdict: &AutomationJudgeVerdict,
+) -> AppResult<(String, String)> {
+    match verdict.next_base_branch {
+        Some(AutomationJudgeNextBaseBranch::AutomationBase) => {
+            if automation.chain_mode == STACKED_CHAIN_MODE {
+                return Err(AppError::Validation(
+                    "stacked automation judge verdict must use previous_pr_head".to_string(),
+                ));
+            }
+            if automation.chain_mode != DEFAULT_CHAIN_MODE {
+                return Err(AppError::Validation(format!(
+                    "automation chain_mode {} is not supported for automation_base successors",
+                    automation.chain_mode
+                )));
+            }
+            merged_base_successor_base(automation, previous_run)
+        }
+        Some(AutomationJudgeNextBaseBranch::PreviousPrHead) => {
+            if automation.chain_mode != STACKED_CHAIN_MODE {
+                return Err(AppError::Validation(
+                    "previous_pr_head is only valid for stacked automations".to_string(),
+                ));
+            }
+            let pr_head = previous_run
+                .pr_head_ref_name
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    AppError::Validation(
+                        "stacked automation successor requires previous run pr_head_ref_name"
+                            .to_string(),
+                    )
+                })?;
+            Ok(("local_branch".to_string(), pr_head.to_string()))
+        }
+        None => Err(AppError::Validation(
+            "judge verdict continue requires nextBaseBranch".to_string(),
+        )),
+    }
 }
 
 fn pending_successor_run(

@@ -8,7 +8,8 @@ use serde_json::json;
 use tracing::error;
 
 use crate::commands::automation_commands::{
-    automation_service, AutomationDetailResponse, AutomationResponse,
+    automation_detail_response_for_state, automation_service, AutomationDetailResponse,
+    AutomationResponse,
 };
 use crate::domain::entities::{Automation, AutomationId, ChatConversationId};
 use crate::error::AppError;
@@ -35,7 +36,10 @@ pub async fn get_automation(
         .get_automation_detail(&automation.id)
         .await
         .map_err(map_app_err)?;
-    Ok(Json(AutomationDetailResponse::from(detail)))
+    let response = automation_detail_response_for_state(detail, &state.app_state)
+        .await
+        .map_err(map_app_err)?;
+    Ok(Json(response))
 }
 
 pub async fn update_automation(

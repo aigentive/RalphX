@@ -17,7 +17,12 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
-import { automationsApi, type Automation, type AutomationRun } from "@/api/automations";
+import {
+  automationsApi,
+  type Automation,
+  type AutomationRun,
+  type AutomationUsage,
+} from "@/api/automations";
 import { useAfterPaintMounted } from "@/components/agents/agentDeferredFrame";
 import { Button, type ButtonProps } from "@/components/ui/button";
 import {
@@ -107,6 +112,21 @@ function formatDate(value: string | null): string {
     dateStyle: "medium",
     timeStyle: "short",
   });
+}
+
+function formatNumber(value: number): string {
+  return new Intl.NumberFormat().format(value);
+}
+
+function formatEstimatedUsd(value: AutomationUsage["estimatedUsd"]): string {
+  if (value === null) {
+    return "Not recorded";
+  }
+  return new Intl.NumberFormat(undefined, {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 4,
+  }).format(value);
 }
 
 function formatBase(automation: Automation): string {
@@ -714,6 +734,7 @@ export function AutomationDetailView({
   }
 
   const { automation, runs } = detail.data;
+  const { usage } = detail.data;
   const newestRuns = sortedNewestRuns(runs);
   const latest = latestRun(runs);
   const skipJudgeRun = isSignalTerminalUnjudged(latest) ? latest : null;
@@ -914,6 +935,10 @@ export function AutomationDetailView({
                   ["Completion signal", automation.completionSignal],
                   ["Max runs", `${runs.length} / ${automation.maxRuns}`],
                   ["Max failures", automation.maxConsecutiveFailures],
+                  ["Input tokens", formatNumber(usage.inputTokens)],
+                  ["Output tokens", formatNumber(usage.outputTokens)],
+                  ["Cache tokens", formatNumber(usage.cacheCreationTokens + usage.cacheReadTokens)],
+                  ["Estimated cost", formatEstimatedUsd(usage.estimatedUsd)],
                   ["Created", formatDate(automation.createdAt)],
                   ["Updated", formatDate(automation.updatedAt)],
                 ]}

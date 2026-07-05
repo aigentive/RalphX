@@ -45,7 +45,17 @@ function mockAutomation(overrides: Partial<Automation> = {}): Automation {
 }
 
 function mockDetail(automation: Automation = mockAutomation()): AutomationDetail {
-  return { automation, runs: [] };
+  return {
+    automation,
+    runs: [],
+    usage: {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheCreationTokens: 0,
+      cacheReadTokens: 0,
+      estimatedUsd: null,
+    },
+  };
 }
 
 function mockRun(overrides: Partial<AutomationRun> = {}): AutomationRun {

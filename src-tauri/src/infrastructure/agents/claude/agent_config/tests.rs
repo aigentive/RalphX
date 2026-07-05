@@ -3316,8 +3316,8 @@ fn test_ui_feature_flags_default_standalone_ideation_hidden() {
         "ideation_page should default to false"
     );
     assert!(
-        !flags.automations_page,
-        "automations_page should default to false"
+        flags.automations_page,
+        "automations_page should default to true"
     );
     assert!(flags.battle_mode, "battle_mode should default to true");
     assert!(!flags.team_mode, "team_mode should default to false");
@@ -3376,7 +3376,7 @@ ui:
 
 #[test]
 fn test_yaml_parsing_without_ui_section_backward_compat() {
-    // YAML without ui section: legacy pages default visible, standalone Ideation stays hidden.
+    // YAML without ui section: core pages default visible, standalone Ideation stays hidden.
     let yaml = r#"
 claude:
   mcp_server_name: ralphx
@@ -3402,8 +3402,8 @@ agents: []
         "ideation_page should default to false when ui section absent"
     );
     assert!(
-        !cfg.runtime.ui_feature_flags.automations_page,
-        "automations_page should default to false when ui section absent"
+        cfg.runtime.ui_feature_flags.automations_page,
+        "automations_page should default to true when ui section absent"
     );
     assert!(
         !cfg.runtime.ui_feature_flags.team_mode,
@@ -3557,7 +3557,7 @@ fn test_env_override_battle_mode() {
         "ideation_page untouched"
     );
     assert!(
-        !cfg.ui_feature_flags.automations_page,
+        cfg.ui_feature_flags.automations_page,
         "automations_page untouched"
     );
     assert!(!cfg.ui_feature_flags.team_mode, "team_mode untouched");

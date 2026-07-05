@@ -629,6 +629,13 @@ const automationDetailFixture = (
 ): AutomationDetail => ({
   automation: automationFixture(),
   runs: [automationRunFixture()],
+  usage: {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheCreationTokens: 0,
+    cacheReadTokens: 0,
+    estimatedUsd: null,
+  },
   ...overrides,
 });
 

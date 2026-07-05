@@ -22,7 +22,7 @@ pub struct UiFeatureFlagsConfig {
     /// Show or hide the standalone Ideation page. Default: false.
     /// Agent conversation Plan/Ideation modes are controlled separately.
     pub ideation_page: bool,
-    /// Show or hide the Automations page. Default: false.
+    /// Show or hide the Automations page. Default: true.
     pub automations_page: bool,
     /// Enable or disable Battle Mode. Default: true (backward compat; disabled via config/ralphx.yaml).
     pub battle_mode: bool,
@@ -40,7 +40,7 @@ impl Default for UiFeatureFlagsConfig {
             activity_page: true,
             extensibility_page: true,
             ideation_page: false,
-            automations_page: false,
+            automations_page: true,
             battle_mode: true,
             team_mode: false,
             atlassian_oauth: false,

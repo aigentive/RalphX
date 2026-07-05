@@ -17,8 +17,8 @@ use crate::application::automation::transition::{
 };
 use crate::application::AppState;
 use crate::domain::entities::{
-    AgentConversationWorkspaceMode, Automation, AutomationId, AutomationJudgeState, AutomationRun,
-    AutomationRunId, ChatConversation, ProjectId,
+    AgentConversationWorkspaceMode, AgentRun, Automation, AutomationId, AutomationJudgeState,
+    AutomationRun, AutomationRunId, ChatConversation, ProjectId,
 };
 
 #[derive(Debug, Clone, Deserialize)]
@@ -136,9 +136,19 @@ pub struct AutomationRunResponse {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct AutomationUsageResponse {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_creation_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub estimated_usd: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct AutomationDetailResponse {
     pub automation: AutomationResponse,
     pub runs: Vec<AutomationRunResponse>,
+    pub usage: AutomationUsageResponse,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -179,10 +189,12 @@ pub async fn get_automation(
     state: State<'_, AppState>,
 ) -> Result<AutomationDetailResponse, String> {
     let id = parse_automation_id(&input.id)?;
-    automation_service(&state)
+    let detail = automation_service(&state)
         .get_automation_detail(&id)
         .await
-        .map(AutomationDetailResponse::from)
+        .map_err(|error| error.to_string())?;
+    automation_detail_response_for_state(detail, &state)
+        .await
         .map_err(|error| error.to_string())
 }
 
@@ -397,6 +409,34 @@ pub(crate) fn automation_service(state: &AppState) -> AutomationService {
     )
 }
 
+pub(crate) async fn automation_detail_response_for_state(
+    detail: AutomationDetail,
+    state: &AppState,
+) -> crate::error::AppResult<AutomationDetailResponse> {
+    let usage = automation_usage_for_runs(&detail.runs, state).await?;
+    Ok(AutomationDetailResponse::from_detail(detail, usage))
+}
+
+async fn automation_usage_for_runs(
+    runs: &[AutomationRun],
+    state: &AppState,
+) -> crate::error::AppResult<AutomationUsageResponse> {
+    let mut usage = AutomationUsageResponse::default();
+    for run in runs {
+        let Some(conversation_id) = run.conversation_id.as_ref() else {
+            continue;
+        };
+        for agent_run in state
+            .agent_run_repo
+            .get_by_conversation(conversation_id)
+            .await?
+        {
+            usage.add_agent_run(&agent_run);
+        }
+    }
+    Ok(usage)
+}
+
 fn automation_transition_service(state: &AppState) -> AutomationTransitionService {
     AutomationTransitionService::new(
         state.automation_repo.clone(),
@@ -505,8 +545,32 @@ impl From<AutomationRun> for AutomationRunResponse {
     }
 }
 
-impl From<AutomationDetail> for AutomationDetailResponse {
-    fn from(detail: AutomationDetail) -> Self {
+impl AutomationUsageResponse {
+    fn add_agent_run(&mut self, run: &AgentRun) {
+        self.input_tokens += run.input_tokens.unwrap_or(0);
+        self.output_tokens += run.output_tokens.unwrap_or(0);
+        self.cache_creation_tokens += run.cache_creation_tokens.unwrap_or(0);
+        self.cache_read_tokens += run.cache_read_tokens.unwrap_or(0);
+        if let Some(value) = run.estimated_usd {
+            self.estimated_usd = Some(self.estimated_usd.unwrap_or(0.0) + value);
+        }
+    }
+}
+
+impl Default for AutomationUsageResponse {
+    fn default() -> Self {
+        Self {
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_creation_tokens: 0,
+            cache_read_tokens: 0,
+            estimated_usd: None,
+        }
+    }
+}
+
+impl AutomationDetailResponse {
+    fn from_detail(detail: AutomationDetail, usage: AutomationUsageResponse) -> Self {
         Self {
             automation: AutomationResponse::from(detail.automation),
             runs: detail
@@ -514,7 +578,14 @@ impl From<AutomationDetail> for AutomationDetailResponse {
                 .into_iter()
                 .map(AutomationRunResponse::from)
                 .collect(),
+            usage,
         }
+    }
+}
+
+impl From<AutomationDetail> for AutomationDetailResponse {
+    fn from(detail: AutomationDetail) -> Self {
+        Self::from_detail(detail, AutomationUsageResponse::default())
     }
 }
 
@@ -678,6 +749,45 @@ mod tests {
 
         assert_eq!(value["scheduled"], false);
         assert_eq!(value["reason"], "deferred");
+    }
+
+    #[tokio::test]
+    async fn automation_detail_response_aggregates_usage_from_run_conversations() {
+        let state = AppState::new_test();
+        let automation = automation();
+        let conversation_id = ChatConversationId::from_string("conversation-1");
+        let mut run = automation_run(&automation.id);
+        run.conversation_id = Some(conversation_id);
+
+        let mut first_agent_run = AgentRun::new(conversation_id.clone());
+        first_agent_run.input_tokens = Some(120);
+        first_agent_run.output_tokens = Some(30);
+        first_agent_run.cache_creation_tokens = Some(7);
+        first_agent_run.cache_read_tokens = Some(9);
+        first_agent_run.estimated_usd = Some(0.04);
+        state.agent_run_repo.create(first_agent_run).await.unwrap();
+
+        let mut second_agent_run = AgentRun::new(conversation_id);
+        second_agent_run.input_tokens = Some(80);
+        second_agent_run.output_tokens = Some(20);
+        second_agent_run.estimated_usd = Some(0.02);
+        state.agent_run_repo.create(second_agent_run).await.unwrap();
+
+        let response = automation_detail_response_for_state(
+            AutomationDetail {
+                automation,
+                runs: vec![run],
+            },
+            &state,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(response.usage.input_tokens, 200);
+        assert_eq!(response.usage.output_tokens, 50);
+        assert_eq!(response.usage.cache_creation_tokens, 7);
+        assert_eq!(response.usage.cache_read_tokens, 9);
+        assert_eq!(response.usage.estimated_usd, Some(0.06));
     }
 
     #[tokio::test]
