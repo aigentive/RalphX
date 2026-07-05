@@ -17,3 +17,4 @@ mod external_ideation_runtime_handlers;
 mod ideation_plan_delivery_test;
 mod ideation_handlers;
 mod apply_service;
+mod restart_implementation;
