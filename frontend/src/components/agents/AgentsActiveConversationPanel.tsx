@@ -205,6 +205,16 @@ function hasWorkspaceReviewRuntime(
   );
 }
 
+function hasWorkspaceRuntime(
+  status: AgentConversationRuntimeStatus | null | undefined,
+): boolean {
+  return (
+    status?.primarySource === "workspace" ||
+    status?.items.some((item) => item.source === "workspace") ||
+    false
+  );
+}
+
 function mergeWorkspaceReviewRuntimeFallback(
   status: AgentConversationRuntimeStatus | null | undefined,
   workspaceReviewRuntimeStatus: AgentConversationRuntimeStatus | null | undefined,
@@ -830,10 +840,17 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   const runtimeStatusStoreKey = runtimeStatusConversationId
     ? buildStoreKey("project", runtimeStatusConversationId)
     : null;
+  const shouldMirrorRuntimeStatusToVisibleChat = useCallback(
+    (status: AgentConversationRuntimeStatus | null | undefined) =>
+      isFocusedChildChat || !status?.isRunning || hasWorkspaceRuntime(status),
+    [isFocusedChildChat],
+  );
   const runtimeStatusQuery = useAgentConversationRuntimeStatus(
     runtimeStatusConversationId,
     {
       enabled: activeConversation.contextType === "project",
+      invalidateUnknownRuntimeIds: isFocusedChildChat,
+      mirrorToVisibleChatStatus: shouldMirrorRuntimeStatusToVisibleChat,
       storeKey: runtimeStatusStoreKey,
     },
   );

@@ -5,7 +5,10 @@ import { chatApi, type AgentConversationRuntimeStatus } from "@/api/chat";
 import type { Unsubscribe } from "@/lib/event-bus";
 import { useEventBus } from "@/providers/EventProvider";
 
-import { reconcileAgentConversationRuntimeStatus } from "./agentConversationRuntimeStore";
+import {
+  reconcileAgentConversationRuntimeStatus,
+  type AgentConversationRuntimeStatusMirrorOption,
+} from "./agentConversationRuntimeStore";
 
 export const agentConversationRuntimeStatusKeys = {
   all: ["agents", "conversation-runtime-status"] as const,
@@ -15,6 +18,8 @@ export const agentConversationRuntimeStatusKeys = {
 
 interface UseAgentConversationRuntimeStatusOptions {
   enabled?: boolean;
+  invalidateUnknownRuntimeIds?: boolean;
+  mirrorToVisibleChatStatus?: AgentConversationRuntimeStatusMirrorOption;
   storeKey?: string | null | undefined;
 }
 
@@ -92,10 +97,7 @@ function shouldInvalidateRuntimeStatusForPayload(
 ): boolean {
   const payloadIds = payloadRuntimeIds(payload);
   if (!payloadIds) {
-    return true;
-  }
-  if (status === undefined) {
-    return true;
+    return options.invalidateUnknownRuntimeIds !== false;
   }
 
   const knownIds = runtimeStatusIds(conversationId, status);
@@ -159,7 +161,10 @@ export function useAgentConversationRuntimeStatus(
       invalidate(payload);
     };
     const invalidatePossibleNewRuntime = (payload: unknown) => {
-      invalidate(payload, { invalidateUnknownRuntimeIds: true });
+      invalidate(payload, {
+        invalidateUnknownRuntimeIds:
+          options.invalidateUnknownRuntimeIds ?? true,
+      });
     };
     const unsubscribes: Unsubscribe[] = [
       bus.subscribe("agent:run_started", invalidatePossibleNewRuntime),
@@ -178,7 +183,15 @@ export function useAgentConversationRuntimeStatus(
     return () => {
       unsubscribes.forEach((unsubscribe) => unsubscribe());
     };
-  }, [bus, conversationId, enabled, query.data, queryClient, queryKey]);
+  }, [
+    bus,
+    conversationId,
+    enabled,
+    options.invalidateUnknownRuntimeIds,
+    query.data,
+    queryClient,
+    queryKey,
+  ]);
 
   useEffect(() => {
     if (!enabled || !conversationId || !query.isSuccess) {
@@ -186,9 +199,19 @@ export function useAgentConversationRuntimeStatus(
     }
 
     reconcileAgentConversationRuntimeStatus(conversationId, query.data, {
-      storeKey: options.storeKey,
+      ...(options.mirrorToVisibleChatStatus !== undefined
+        ? { mirrorToVisibleChatStatus: options.mirrorToVisibleChatStatus }
+        : {}),
+      ...(options.storeKey !== undefined ? { storeKey: options.storeKey } : {}),
     });
-  }, [conversationId, enabled, options.storeKey, query.data, query.isSuccess]);
+  }, [
+    conversationId,
+    enabled,
+    options.mirrorToVisibleChatStatus,
+    options.storeKey,
+    query.data,
+    query.isSuccess,
+  ]);
 
   return query;
 }

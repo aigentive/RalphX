@@ -2,6 +2,18 @@ import type { AgentConversationRuntimeStatus } from "@/api/chat";
 import { buildStoreKey } from "@/lib/chat-context-registry";
 import { type AgentStatus, useChatStore } from "@/stores/chatStore";
 
+export type AgentConversationRuntimeStatusMirrorOption =
+  | boolean
+  | ((
+      status: AgentConversationRuntimeStatus | null | undefined,
+      context: { conversationId: string; storeKey: string },
+    ) => boolean);
+
+interface ReconcileAgentConversationRuntimeStatusOptions {
+  storeKey?: string | null | undefined;
+  mirrorToVisibleChatStatus?: AgentConversationRuntimeStatusMirrorOption;
+}
+
 export function normalizeAgentConversationRuntimeStatus(
   status: AgentConversationRuntimeStatus | null | undefined,
 ): {
@@ -33,13 +45,56 @@ export function agentConversationRuntimeActivityLabel(
   return null;
 }
 
+function resolveVisibleChatStatusMirrorDecision(
+  status: AgentConversationRuntimeStatus | null | undefined,
+  options: ReconcileAgentConversationRuntimeStatusOptions,
+  context: { conversationId: string; storeKey: string },
+): { shouldMirror: boolean; shouldClearSuppressedStatus: boolean } {
+  const mirrorOption = options.mirrorToVisibleChatStatus;
+  if (typeof mirrorOption === "function") {
+    const shouldMirror = mirrorOption(status, context);
+    return {
+      shouldMirror,
+      shouldClearSuppressedStatus: !shouldMirror,
+    };
+  }
+  if (mirrorOption === false) {
+    return {
+      shouldMirror: false,
+      shouldClearSuppressedStatus: false,
+    };
+  }
+  return {
+    shouldMirror: true,
+    shouldClearSuppressedStatus: false,
+  };
+}
+
 export function reconcileAgentConversationRuntimeStatus(
   conversationId: string,
   status: AgentConversationRuntimeStatus | null | undefined,
-  options: { storeKey?: string | null | undefined } = {},
+  options: ReconcileAgentConversationRuntimeStatusOptions = {},
 ) {
   const storeKey = options.storeKey ?? buildStoreKey("project", conversationId);
   const chatState = useChatStore.getState();
+  const mirrorDecision = resolveVisibleChatStatusMirrorDecision(
+    status,
+    options,
+    {
+      conversationId,
+      storeKey,
+    },
+  );
+  if (!mirrorDecision.shouldMirror) {
+    if (
+      mirrorDecision.shouldClearSuppressedStatus &&
+      !chatState.isSending[storeKey]
+    ) {
+      chatState.setAgentStatus(storeKey, "idle");
+    }
+    return;
+  }
+
   const { isRunning, agentStatus } =
     normalizeAgentConversationRuntimeStatus(status);
   const activityLabel = agentConversationRuntimeActivityLabel(status);
