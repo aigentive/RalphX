@@ -187,7 +187,7 @@ export const AGENT_WORKSPACE_TOOLS = [
                 },
                 annotations: {
                     type: "array",
-                    description: "Structured hunk-level review notes. Use one item per hunk anchor returned in target.review_packet.hunk_anchors.",
+                    description: "Structured hunk-level review notes. Use exact anchors from target.review_packet.hunk_anchors for hunks you inspected or want to annotate; partial coverage is allowed and missing anchors are reported independently.",
                     items: {
                         type: "object",
                         properties: {
