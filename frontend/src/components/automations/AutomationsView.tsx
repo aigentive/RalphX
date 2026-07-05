@@ -1,9 +1,11 @@
+import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { ChevronRight, Plus, Workflow } from "lucide-react";
 
 import type { Automation, AutomationRun } from "@/api/automations";
 import { useAfterPaintMounted } from "@/components/agents/agentDeferredFrame";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { preloadAutomationDetailView } from "@/components/automations/preloadAutomationDetailView";
 import { useAutomationDetail, useAutomationsList } from "@/hooks/useAutomations";
 import { cn } from "@/lib/utils";
 
@@ -12,7 +14,10 @@ interface AutomationsViewProps {
   projectName?: string | null;
   onNewAutomation?: () => void;
   onOpenAutomation?: (automationId: string) => void;
+  onOpenRunConversation?: (projectId: string, conversationId: string) => void;
 }
+
+const LazyAutomationDetailView = lazy(() => preloadAutomationDetailView());
 
 const STATUS_LABELS: Record<Automation["status"], string> = {
   draft: "Draft",
@@ -230,17 +235,77 @@ function EmptyAutomations({ onNewAutomation }: { onNewAutomation?: () => void })
   );
 }
 
+function AutomationDetailShell({ onBack }: { onBack: () => void }) {
+  return (
+    <div
+      className="flex h-full min-h-0 flex-col"
+      style={{ backgroundColor: "var(--app-content-bg)" }}
+      data-testid="automation-detail-shell"
+    >
+      <div
+        className="flex flex-wrap items-center justify-between gap-3 border-b px-6 py-5"
+        style={{
+          backgroundColor: "var(--app-content-bg)",
+          borderBottomColor: "var(--border-default)",
+          borderBottomStyle: "solid",
+          borderBottomWidth: "1px",
+        }}
+      >
+        <Button type="button" variant="ghost" onClick={onBack}>
+          Back
+        </Button>
+        <div className="flex gap-2">
+          {[0, 1, 2].map((index) => (
+            <Skeleton key={index} className="h-8 w-8 rounded-md" />
+          ))}
+        </div>
+      </div>
+      <div className="grid gap-4 p-6 lg:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)]">
+        <Skeleton className="h-56 rounded-md" />
+        <Skeleton className="h-80 rounded-md" />
+      </div>
+    </div>
+  );
+}
+
 export function AutomationsView({
   projectId,
   projectName,
   onNewAutomation,
   onOpenAutomation,
+  onOpenRunConversation,
 }: AutomationsViewProps) {
+  const [selectedAutomationId, setSelectedAutomationId] = useState<string | null>(null);
   const afterPaint = useAfterPaintMounted(Boolean(projectId));
   const automations = useAutomationsList(projectId, { enabled: afterPaint });
   const projectLabel = projectName ?? projectId ?? "Current project";
   const rows = automations.data ?? [];
   const showSkeleton = Boolean(projectId) && (!afterPaint || automations.isLoading);
+  const handleOpenAutomation = useCallback((automationId: string) => {
+    setSelectedAutomationId(automationId);
+    onOpenAutomation?.(automationId);
+  }, [onOpenAutomation]);
+  const handleBackToList = useCallback(() => {
+    setSelectedAutomationId(null);
+  }, []);
+
+  useEffect(() => {
+    setSelectedAutomationId(null);
+  }, [projectId]);
+
+  if (selectedAutomationId) {
+    return (
+      <Suspense fallback={<AutomationDetailShell onBack={handleBackToList} />}>
+        <LazyAutomationDetailView
+          automationId={selectedAutomationId}
+          projectId={projectId}
+          projectName={projectName ?? null}
+          onBack={handleBackToList}
+          {...(onOpenRunConversation ? { onOpenRunConversation } : {})}
+        />
+      </Suspense>
+    );
+  }
 
   return (
     <div
@@ -310,7 +375,7 @@ export function AutomationsView({
                 key={automation.id}
                 automation={automation}
                 projectName={projectLabel}
-                {...(onOpenAutomation ? { onOpenAutomation } : {})}
+                onOpenAutomation={handleOpenAutomation}
               />
             ))}
           </div>

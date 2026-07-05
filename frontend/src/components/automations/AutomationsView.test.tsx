@@ -1,13 +1,15 @@
 import { act, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AutomationsView } from "./AutomationsView";
 import type { Automation } from "@/api/automations";
 
-const { listAutomationsMock, getAutomationMock } = vi.hoisted(() => ({
+const { listAutomationsMock, getAutomationMock, preloadAutomationDetailViewMock } = vi.hoisted(() => ({
   listAutomationsMock: vi.fn(),
   getAutomationMock: vi.fn(),
+  preloadAutomationDetailViewMock: vi.fn(() => new Promise(() => {})),
 }));
 
 vi.mock("@/api/automations", () => ({
@@ -15,6 +17,10 @@ vi.mock("@/api/automations", () => ({
     list: listAutomationsMock,
     get: getAutomationMock,
   },
+}));
+
+vi.mock("@/components/automations/preloadAutomationDetailView", () => ({
+  preloadAutomationDetailView: preloadAutomationDetailViewMock,
 }));
 
 function deferred<T>() {
@@ -84,6 +90,7 @@ describe("AutomationsView", () => {
     });
     listAutomationsMock.mockReset();
     getAutomationMock.mockReset();
+    preloadAutomationDetailViewMock.mockClear();
   });
 
   afterEach(() => {
@@ -123,5 +130,17 @@ describe("AutomationsView", () => {
     expect(within(row).getByText("Ship migration loop")).toBeInTheDocument();
     expect(within(row).getByText("Demo Project")).toBeInTheDocument();
     expect(within(row).getByText("edit · codex/gpt-5.4/high")).toBeInTheDocument();
+  });
+
+  it("paints the detail shell synchronously on row click before the detail bundle resolves", async () => {
+    listAutomationsMock.mockResolvedValue([automation()]);
+    getAutomationMock.mockResolvedValue({ automation: automation(), runs: [] });
+
+    renderView();
+
+    await userEvent.click(await screen.findByTestId("automation-row-automation-1"));
+
+    expect(screen.getByTestId("automation-detail-shell")).toBeInTheDocument();
+    expect(preloadAutomationDetailViewMock).toHaveBeenCalled();
   });
 });

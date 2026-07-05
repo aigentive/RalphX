@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
+use serde::Serialize;
+use tauri::{AppHandle, Emitter};
 
 use crate::domain::entities::{
     automation_is_transition_allowed, automation_run_is_transition_allowed,
@@ -37,6 +39,54 @@ pub struct NoopAutomationEventEmitter;
 
 impl AutomationEventEmitter for NoopAutomationEventEmitter {
     fn emit(&self, _event: AutomationEvent) {}
+}
+
+#[derive(Clone)]
+pub struct TauriAutomationEventEmitter {
+    app_handle: AppHandle,
+}
+
+impl TauriAutomationEventEmitter {
+    pub fn new(app_handle: AppHandle) -> Self {
+        Self { app_handle }
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct AutomationUpdatedPayload {
+    automation_id: String,
+    #[serde(rename = "automationId")]
+    automation_id_camel: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct AutomationRunUpdatedPayload {
+    run_id: String,
+    #[serde(rename = "runId")]
+    run_id_camel: String,
+}
+
+impl AutomationEventEmitter for TauriAutomationEventEmitter {
+    fn emit(&self, event: AutomationEvent) {
+        match event {
+            AutomationEvent::AutomationUpdated { automation_id } => {
+                let id = automation_id.as_str().to_string();
+                let payload = AutomationUpdatedPayload {
+                    automation_id: id.clone(),
+                    automation_id_camel: id,
+                };
+                let _ = self.app_handle.emit(AUTOMATION_UPDATED_EVENT, payload);
+            }
+            AutomationEvent::AutomationRunUpdated { run_id } => {
+                let id = run_id.as_str().to_string();
+                let payload = AutomationRunUpdatedPayload {
+                    run_id: id.clone(),
+                    run_id_camel: id,
+                };
+                let _ = self.app_handle.emit(AUTOMATION_RUN_UPDATED_EVENT, payload);
+            }
+        }
+    }
 }
 
 #[derive(Clone)]

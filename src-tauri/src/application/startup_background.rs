@@ -11,6 +11,7 @@ use crate::application::automation::scheduler::{
     global_automation_scheduler_registry, AutomationScheduler, AutomationSchedulerConfig,
     GithubAutomationSignalChecker, HarnessAutomationJudgeInvoker,
 };
+use crate::application::automation::transition::TauriAutomationEventEmitter;
 use crate::application::harness_runtime_registry::resolve_default_external_mcp_bootstrap;
 use crate::application::runtime_factory::{build_chat_service_from_deps, ChatRuntimeFactoryDeps};
 use crate::application::AppState;
@@ -98,12 +99,13 @@ pub fn spawn_automation_scheduler(
         state.clone(),
         execution_state,
         team_service,
-        app_handle,
+        app_handle.clone(),
     ));
     let signal_checker = Arc::new(GithubAutomationSignalChecker::new(
         state.github_service.clone(),
     ));
     let judge_invoker = Arc::new(HarnessAutomationJudgeInvoker::new(state.clone()));
+    let event_emitter = Arc::new(TauriAutomationEventEmitter::new(app_handle.clone()));
 
     let scheduler = AutomationScheduler::new(
         Arc::clone(&state.automation_repo),
@@ -113,6 +115,7 @@ pub fn spawn_automation_scheduler(
         starter,
         signal_checker,
         judge_invoker,
+        event_emitter,
         registry,
         AutomationSchedulerConfig::default(),
     );

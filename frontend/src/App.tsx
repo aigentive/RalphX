@@ -71,6 +71,7 @@ import { useHarnessProviders } from "@/hooks/useHarnessProviders";
 import { useNavCompactBreakpoint } from "@/hooks";
 import { usePostUpdatePreparing } from "@/hooks/usePostUpdatePreparing";
 import { useTicketingCacheEvents } from "@/hooks/useTicketingEvents";
+import { useAutomationEvents } from "@/hooks/useAutomations";
 import { extractErrorMessage } from "@/lib/errors";
 import { resolveIdeationSession } from "@/lib/resolveIdeationSession";
 import { readFreshPostUpdatePreparingMarker } from "@/lib/postUpdatePreparing";
@@ -411,6 +412,7 @@ function AppContent() {
   // Real-time execution status updates via Tauri events
   useExecutionEvents(executionProjectParam);
   useTicketingCacheEvents();
+  useAutomationEvents();
   // Fetch initial execution status and poll every 30s as fallback
   // Scope the Agents footer to the selected/focused agent project instead of the app's active project.
   useExecutionStatus(executionProjectParam, {
@@ -1289,6 +1291,7 @@ function AppContent() {
                       <LazyAutomationsView
                         projectId={currentProjectId || null}
                         projectName={activeProject?.name ?? null}
+                        onOpenRunConversation={handleNavigateToWorkspace}
                       />
                     </Suspense>
                   )

@@ -22,8 +22,9 @@ use crate::application::automation::service::{
     ApplyAutomationJudgeVerdictInput, AutomationJudgeApplyOutcome, AutomationService,
     CompleteAutomationJudgeInput,
 };
-use crate::application::automation::transition::AutomationTransitionService;
-use crate::application::automation::transition::NoopAutomationEventEmitter;
+use crate::application::automation::transition::{
+    AutomationEventEmitter, AutomationTransitionService,
+};
 use crate::application::harness_runtime_registry::{
     default_automation_judge_timeout_secs, default_automation_max_run_duration_secs,
     default_automation_publish_grace_secs, default_automation_scheduler_poll_secs,
@@ -500,10 +501,10 @@ impl AutomationScheduler {
         starter: Arc<dyn AutomationRunStarter>,
         signal_checker: Arc<dyn AutomationSignalChecker>,
         judge_invoker: Arc<dyn AutomationJudgeInvoker>,
+        event_emitter: Arc<dyn AutomationEventEmitter>,
         registry: Arc<AutomationSchedulerRegistry>,
         config: AutomationSchedulerConfig,
     ) -> Self {
-        let event_emitter = Arc::new(NoopAutomationEventEmitter);
         let service = AutomationService::new(
             Arc::clone(&automation_repo),
             Arc::clone(&run_repo),

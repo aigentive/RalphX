@@ -16,6 +16,7 @@ use super::scheduler::{
     AutomationScheduler, AutomationSchedulerConfig, AutomationSchedulerRegistry,
     AutomationSignalChecker,
 };
+use super::transition::NoopAutomationEventEmitter;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, Automation, AutomationId,
     AutomationJudgeState, AutomationPromptAuthor, AutomationRun, AutomationRunId,
@@ -305,6 +306,7 @@ fn scheduler_with_judge(
         Arc::new(RecordingStarter),
         signal_checker,
         judge_invoker,
+        Arc::new(NoopAutomationEventEmitter),
         Arc::new(AutomationSchedulerRegistry::default()),
         config,
     )
@@ -483,6 +485,7 @@ async fn automation_scheduler_tick_only_leases_active_automations() {
         Arc::new(RecordingStarter),
         Arc::new(RecordingSignalChecker::default()),
         Arc::new(RecordingJudgeInvoker::default()),
+        Arc::new(NoopAutomationEventEmitter),
         registry,
         AutomationSchedulerConfig::from_runtime(&AutomationsRuntimeConfig::default()),
     );
