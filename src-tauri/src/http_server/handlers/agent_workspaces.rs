@@ -49,7 +49,7 @@ use crate::domain::entities::{
     AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
     AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewGateStatus,
     AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor,
-    AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome, AgentWorkspaceReviewTargetScope,
+    AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewTargetScope,
     Artifact, ArtifactId, ArtifactType, ChatConversationId, IdeationAnalysisBaseRefKind, ProjectId,
 };
 use crate::domain::services::github_service::{
@@ -3970,15 +3970,8 @@ fn missing_workspace_review_hunk_anchors(
         .collect()
 }
 
-fn workspace_review_completion_requires_hunk_coverage(outcome: Option<&str>) -> bool {
-    outcome
-        .and_then(|value| AgentWorkspaceReviewOutcome::from_str(value.trim()).ok())
-        .is_some_and(|outcome| {
-            matches!(
-                outcome,
-                AgentWorkspaceReviewOutcome::Passed | AgentWorkspaceReviewOutcome::Blocking
-            )
-        })
+fn workspace_review_completion_requires_hunk_coverage(_outcome: Option<&str>) -> bool {
+    false
 }
 
 async fn ensure_workspace_review_hunk_annotation_coverage_for_completion(
@@ -5717,11 +5710,11 @@ mod tests {
     }
 
     #[test]
-    fn workspace_review_completion_hunk_coverage_only_blocks_reviewed_outcomes() {
-        assert!(workspace_review_completion_requires_hunk_coverage(Some(
+    fn workspace_review_completion_treats_hunk_coverage_as_best_effort() {
+        assert!(!workspace_review_completion_requires_hunk_coverage(Some(
             "passed"
         )));
-        assert!(workspace_review_completion_requires_hunk_coverage(Some(
+        assert!(!workspace_review_completion_requires_hunk_coverage(Some(
             "blocking"
         )));
         assert!(!workspace_review_completion_requires_hunk_coverage(Some(
