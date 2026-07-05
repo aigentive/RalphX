@@ -62,6 +62,7 @@ export const AGENT_CONVERSATION_MODE_VALUES = [
   "plan",
   "ideation",
   "review_pr",
+  "automation",
 ] as const;
 export const AgentConversationModeSchema = z.enum(
   AGENT_CONVERSATION_MODE_VALUES

@@ -80,8 +80,8 @@ use crate::domain::services::{
     RunningAgentKey, RunningAgentRegistry,
 };
 use crate::infrastructure::agents::claude::agent_names::{
-    AGENT_CHAT_PROJECT, AGENT_GENERAL_EXPLORER, AGENT_GENERAL_WORKER, AGENT_ORCHESTRATOR_IDEATION,
-    AGENT_PR_REVIEWER,
+    AGENT_AUTOMATION_SETUP, AGENT_CHAT_PROJECT, AGENT_GENERAL_EXPLORER, AGENT_GENERAL_WORKER,
+    AGENT_ORCHESTRATOR_IDEATION, AGENT_PR_REVIEWER,
 };
 use async_trait::async_trait;
 use serde::Serialize;
@@ -496,6 +496,7 @@ fn agent_name_for_conversation_mode(mode: AgentConversationWorkspaceMode) -> &'s
         AgentConversationWorkspaceMode::Plan => AGENT_ORCHESTRATOR_IDEATION,
         AgentConversationWorkspaceMode::Ideation => AGENT_CHAT_PROJECT,
         AgentConversationWorkspaceMode::ReviewPr => AGENT_PR_REVIEWER,
+        AgentConversationWorkspaceMode::Automation => AGENT_AUTOMATION_SETUP,
     }
 }
 

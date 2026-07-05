@@ -104,6 +104,9 @@ pub const AGENT_WORKSPACE_PR_FIXER: &str = "ralphx:ralphx-agent-workspace-pr-fix
 /// Agent-workspace local pull request reviewer
 pub const AGENT_PR_REVIEWER: &str = "ralphx:ralphx-pr-reviewer";
 
+/// Automation setup agent for draft automation conversations
+pub const AGENT_AUTOMATION_SETUP: &str = "ralphx:ralphx-automation-setup";
+
 /// Agent-workspace Review artifact writer
 pub const AGENT_WORKSPACE_REVIEWER: &str = "ralphx:ralphx-workspace-reviewer";
 

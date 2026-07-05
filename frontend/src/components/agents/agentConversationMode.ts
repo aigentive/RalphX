@@ -31,5 +31,8 @@ export function isWorkspaceModeLocked(workspace: AgentConversationWorkspace | nu
   if (workspace.modeSwitchLocked !== undefined) {
     return workspace.modeSwitchLocked;
   }
+  if (workspace.mode === "automation") {
+    return true;
+  }
   return Boolean(workspace.linkedIdeationSessionId || workspace.linkedPlanBranchId);
 }
