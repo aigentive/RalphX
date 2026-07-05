@@ -44,7 +44,13 @@ function loadedDetail(overrides: Partial<PullRequestDetail> = {}): PullRequestDe
       baseRefName: "main",
     },
     checks: [{ name: "ci", status: "completed", conclusion: "success", detailsUrl: null }],
-    reviewSummary: null,
+    reviewSummary: {
+      reviewDecision: "CHANGES_REQUESTED",
+      latestChangesRequestedAuthor: "alice",
+      latestChangesRequestedBody: "Please address feedback.",
+      latestChangesRequestedSubmittedAt: "2026-06-24T10:00:00Z",
+      latestChangesRequestedComments: [],
+    },
     issueComments: [
       {
         id: "comment-1",
@@ -55,6 +61,17 @@ function loadedDetail(overrides: Partial<PullRequestDetail> = {}): PullRequestDe
         updatedAt: null,
         isBot: false,
         isCodecov: false,
+        source: "live",
+      },
+      {
+        id: "codecov-1",
+        author: "codecov[bot]",
+        body: "Coverage 90%",
+        url: null,
+        createdAt: "2026-06-24T09:30:00Z",
+        updatedAt: null,
+        isBot: true,
+        isCodecov: true,
         source: "live",
       },
     ],
@@ -90,6 +107,7 @@ function loadedDetail(overrides: Partial<PullRequestDetail> = {}): PullRequestDe
 function renderBody(
   detail: PullRequestDetail | null = null,
   shellOverrides: Partial<NonNullable<Parameters<typeof PullRequestDetailBody>[0]["shell"]>> = {},
+  bodyOverrides: { showRxConversation?: boolean } = {},
 ) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -121,6 +139,7 @@ function renderBody(
         conversationId: "conversation-1",
         ...shellOverrides,
       }}
+      {...bodyOverrides}
     />,
     { wrapper },
   );
@@ -160,15 +179,57 @@ describe("PullRequestDetailBody", () => {
     );
   });
 
-  it("renders description, comments, RX conversation, and checks", async () => {
+  it("renders the status strip, review, summarized checks, and human comments", async () => {
     renderBody(loadedDetail());
 
     expect(screen.getByText("Add PR detail")).toBeInTheDocument();
     expect(screen.getByText("Summary")).toBeInTheDocument();
-    expect(screen.getByText("Looks good")).toBeInTheDocument();
+
+    // At-a-glance status strip surfaces the review decision.
+    expect(screen.getByTestId("pr-status-strip")).toBeInTheDocument();
+    expect(screen.getAllByText("Changes requested").length).toBeGreaterThan(0);
+
+    // Review section surfaces the changes-requested body + inline thread.
+    expect(screen.getByText("Please address feedback.")).toBeInTheDocument();
     expect(screen.getByText("Inline note")).toBeInTheDocument();
+
+    // Checks are summarized (strip + checks section); the passing check is not
+    // listed by default.
+    expect(screen.getAllByText("1 passed").length).toBeGreaterThan(0);
+    expect(screen.queryByText("ci")).not.toBeInTheDocument();
+
+    // Human comments stay; the Codecov bot comment is hidden with a count.
+    expect(screen.getByText("Looks good")).toBeInTheDocument();
+    expect(screen.queryByText("Coverage 90%")).not.toBeInTheDocument();
+    expect(screen.getByText("1 automated comment hidden.")).toBeInTheDocument();
+
     expect(await screen.findByTestId("rx-chat-panel")).toHaveTextContent("conversation-1");
-    expect(screen.getByText("ci")).toBeInTheDocument();
+  });
+
+  it("orders the sections description -> review -> checks -> comments", () => {
+    renderBody(loadedDetail(), {}, { showRxConversation: false });
+
+    const order = screen
+      .getAllByRole("heading")
+      .map((heading) => heading.textContent ?? "");
+    const index = (prefix: string) => order.findIndex((text) => text.startsWith(prefix));
+
+    expect(index("Description")).toBeGreaterThanOrEqual(0);
+    expect(index("Review")).toBeGreaterThan(index("Description"));
+    expect(index("Checks")).toBeGreaterThan(index("Review"));
+    expect(index("Comments")).toBeGreaterThan(index("Checks"));
+  });
+
+  it("hides the embedded RX conversation when showRxConversation is false", async () => {
+    renderBody(loadedDetail(), {}, { showRxConversation: false });
+
+    // Review section still renders so the RX embed is gone, not the whole body.
+    expect(screen.getByText("Inline note")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /Review/ })).toBeInTheDocument();
+    expect(screen.queryByText(/Conversation \(RX\)/)).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByTestId("rx-chat-panel")).not.toBeInTheDocument(),
+    );
   });
 
   it("does not claim an unknown shell-only pull request is open", () => {
