@@ -45,6 +45,11 @@ const PILOT_AGENTS: &[(&str, &str, &str)] = &[
         "workspace_reviewer",
         "ralphx-workspace-reviewer",
     ),
+    (
+        "ralphx-automation-setup",
+        "automation-setup",
+        "ralphx-automation-setup",
+    ),
 ];
 
 const CODEX_PILOT_AGENTS: &[&str] = &[
@@ -53,6 +58,7 @@ const CODEX_PILOT_AGENTS: &[&str] = &[
     "ralphx-utility-pr-describer",
     "ralphx-utility-plan-complexity",
     "ralphx-workspace-reviewer",
+    "ralphx-automation-setup",
 ];
 const CODEX_DELEGATION_GUIDE_AGENTS: &[&str] = &[
     "ralphx-general-explorer",
@@ -256,6 +262,7 @@ const CANONICAL_MCP_TOOL_OWNED_AGENTS: &[&str] = &[
     "ralphx-utility-session-namer",
     "ralphx-utility-pr-describer",
     "ralphx-utility-plan-complexity",
+    "ralphx-automation-setup",
     "ralphx-chat-task",
     "ralphx-chat-project",
     "ralphx-review-chat",
@@ -281,6 +288,7 @@ const CANONICAL_MCP_TOOL_OWNED_AGENTS: &[&str] = &[
 
 const CANONICAL_CODEX_RUNTIME_FEATURE_OWNED_AGENTS: &[&str] = &[
     "ralphx-general-explorer",
+    "ralphx-automation-setup",
     "ralphx-utility-pr-describer",
     "ralphx-utility-plan-complexity",
     "ralphx-plan-verifier",
@@ -324,6 +332,10 @@ const CANONICAL_CLAUDE_DISALLOWED_TOOL_OWNED_AGENTS: &[(&str, &[&str])] = &[
     ("ralphx-pr-reviewer", &["Write", "Edit", "NotebookEdit"]),
     (
         "ralphx-workspace-reviewer",
+        &["Write", "Edit", "NotebookEdit", "Bash"],
+    ),
+    (
+        "ralphx-automation-setup",
         &["Write", "Edit", "NotebookEdit", "Bash"],
     ),
     ("ralphx-qa-prep", &["Write", "Edit", "Bash", "NotebookEdit"]),
@@ -380,6 +392,7 @@ const CANONICAL_CLAUDE_HARNESS_OWNED_AGENTS: &[&str] = &[
     "ralphx-agent-workspace-pr-fixer",
     "ralphx-pr-reviewer",
     "ralphx-workspace-reviewer",
+    "ralphx-automation-setup",
     "ralphx-execution-worker",
     "ralphx-execution-coder",
     "ralphx-execution-merger",
@@ -417,6 +430,7 @@ const CANONICAL_CLAUDE_HARNESS_OWNED_AGENTS: &[&str] = &[
 ];
 
 const CANONICAL_CLAUDE_PERMISSION_MODE_OWNED_AGENTS: &[(&str, &str)] = &[
+    ("ralphx-automation-setup", "default"),
     ("ralphx-general-worker", "acceptEdits"),
     ("ralphx-agent-workspace-repair", "acceptEdits"),
     ("ralphx-agent-workspace-pr-fixer", "acceptEdits"),
@@ -436,6 +450,7 @@ const CANONICAL_CLAUDE_MODEL_OWNED_AGENTS: &[(&str, &str)] = &[
     ("ralphx-agent-workspace-pr-fixer", "opus"),
     ("ralphx-pr-reviewer", "sonnet"),
     ("ralphx-workspace-reviewer", "sonnet"),
+    ("ralphx-automation-setup", "sonnet"),
     ("ralphx-utility-session-namer", "haiku"),
     ("ralphx-utility-plan-complexity", "haiku"),
     ("ralphx-chat-task", "sonnet"),
@@ -497,6 +512,7 @@ const CANONICAL_CLAUDE_TOOL_SPEC_OWNED_AGENTS: &[(&str, &str, &[&str], bool)] = 
     ),
     ("ralphx-pr-reviewer", "readonly_tools", &["Bash"], false),
     ("ralphx-workspace-reviewer", "readonly_tools", &[], false),
+    ("ralphx-automation-setup", "readonly_tools", &[], false),
     ("ralphx-chat-task", "base_tools", &["Task"], false),
     ("ralphx-chat-project", "readonly_tools", &[], false),
     ("ralphx-review-chat", "base_tools", &["Task"], false),

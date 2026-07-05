@@ -28,6 +28,7 @@ import { hydrateRalphxRuntimeEnvFromCli, parseCliOptionFromArgs, } from "./runti
 import { createVerificationRuntime } from "./verification-runtime.js";
 import { buildAppendTaskToIdeationPlanPayload } from "./append-task-payload.js";
 import { callAgentWorkspaceTool, isAgentWorkspaceToolName, } from "./agent-workspace-tools.js";
+import { callAutomationSetupTool, isAutomationSetupToolName, } from "./automation-tools.js";
 import { AGENT_TASK_TOOL_NAMES } from "./agent-task-tools.js";
 import { withAgentTaskRuntimeContext } from "./agent-task-context.js";
 /**
@@ -608,6 +609,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         else if (isAgentWorkspaceToolName(name)) {
             result = await callAgentWorkspaceTool(name, callTauri, callTauriGet, args, {
                 parentConversationId: RALPHX_PARENT_CONVERSATION_ID,
+            });
+        }
+        else if (isAutomationSetupToolName(name)) {
+            result = await callAutomationSetupTool(name, callTauri, args, {
+                conversationId: RALPHX_CONVERSATION_ID,
             });
         }
         else if (name === "report_conflict") {
