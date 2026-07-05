@@ -9,6 +9,7 @@ use crate::application::agent_workspace_bridge::{
 use crate::application::automation::provisioning::AgentConversationAutomationRunStarter;
 use crate::application::automation::scheduler::{
     global_automation_scheduler_registry, AutomationScheduler, AutomationSchedulerConfig,
+    GithubAutomationSignalChecker,
 };
 use crate::application::harness_runtime_registry::resolve_default_external_mcp_bootstrap;
 use crate::application::runtime_factory::{build_chat_service_from_deps, ChatRuntimeFactoryDeps};
@@ -99,6 +100,9 @@ pub fn spawn_automation_scheduler(
         team_service,
         app_handle,
     ));
+    let signal_checker = Arc::new(GithubAutomationSignalChecker::new(
+        state.github_service.clone(),
+    ));
 
     let scheduler = AutomationScheduler::new(
         Arc::clone(&state.automation_repo),
@@ -106,6 +110,7 @@ pub fn spawn_automation_scheduler(
         Arc::clone(&state.chat_conversation_repo),
         Arc::clone(&state.agent_conversation_workspace_repo),
         starter,
+        signal_checker,
         registry,
         AutomationSchedulerConfig::default(),
     );
@@ -125,6 +130,12 @@ pub fn spawn_automation_scheduler(
                         active_without_runs = summary.active_without_runs,
                         active_with_runs = summary.active_with_runs,
                         provisioned_runs = summary.provisioned_runs,
+                        published_runs = summary.published_runs,
+                        merged_runs = summary.merged_runs,
+                        closed_runs = summary.closed_runs,
+                        failed_runs = summary.failed_runs,
+                        signal_check_errors = summary.signal_check_errors,
+                        paused_automations = summary.paused_automations,
                         provisioning_errors = summary.provisioning_errors,
                         automation_errors = summary.automation_errors,
                         "Automation scheduler tick completed"

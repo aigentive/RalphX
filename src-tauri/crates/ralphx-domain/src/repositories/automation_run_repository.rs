@@ -6,6 +6,15 @@ use crate::entities::{
 };
 use crate::error::AppResult;
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AutomationRunPublicationMetadata {
+    pub pr_number: Option<i64>,
+    pub pr_url: Option<String>,
+    pub pr_title: Option<String>,
+    pub pr_head_ref_name: Option<String>,
+    pub pr_base_ref_name: Option<String>,
+}
+
 #[async_trait]
 pub trait AutomationRunRepository: Send + Sync {
     async fn create_run(&self, run: AutomationRun) -> AppResult<AutomationRun>;
@@ -38,6 +47,34 @@ pub trait AutomationRunRepository: Send + Sync {
         id: &AutomationRunId,
         conversation_id: &ChatConversationId,
         branch_name: Option<String>,
+    ) -> AppResult<Option<AutomationRun>>;
+
+    /// Record publication metadata observed from the owning agent workspace.
+    /// Implementations return `None` when the run is missing or not in a running/published state.
+    async fn update_publication_metadata(
+        &self,
+        id: &AutomationRunId,
+        metadata: AutomationRunPublicationMetadata,
+    ) -> AppResult<Option<AutomationRun>>;
+
+    /// Record PR merge metadata while the run is still waiting for a published PR signal.
+    async fn update_merge_metadata(
+        &self,
+        id: &AutomationRunId,
+        merge_commit_sha: Option<String>,
+        pr_merged_at: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> AppResult<Option<AutomationRun>>;
+
+    /// Increment bounded scheduler-owned PR signal check failures for a published run.
+    async fn increment_signal_check_failures(
+        &self,
+        id: &AutomationRunId,
+    ) -> AppResult<Option<AutomationRun>>;
+
+    /// Reset scheduler-owned PR signal check failures after a successful signal check.
+    async fn reset_signal_check_failures(
+        &self,
+        id: &AutomationRunId,
     ) -> AppResult<Option<AutomationRun>>;
 
     async fn compare_and_swap_judge_state(

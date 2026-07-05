@@ -9,7 +9,8 @@ use crate::domain::entities::{
     ChatConversationId, ProjectId,
 };
 use crate::domain::repositories::{
-    AutomationRepository, AutomationRunRepository, AutomationSettingsPatch,
+    AutomationRepository, AutomationRunPublicationMetadata, AutomationRunRepository,
+    AutomationSettingsPatch,
 };
 use crate::error::{AppError, AppResult};
 
@@ -247,10 +248,20 @@ impl AutomationRunRepository for MemoryAutomationRunRepository {
             return Ok(false);
         }
         let mut updated = runs[position].clone();
+        let now = Utc::now();
         updated.status = to;
         updated.error_code = error_code;
         updated.error_detail = error_detail;
-        updated.updated_at = Utc::now();
+        if matches!(
+            to,
+            AutomationRunStatus::Merged
+                | AutomationRunStatus::PrClosed
+                | AutomationRunStatus::AgentFailed
+                | AutomationRunStatus::Cancelled
+        ) {
+            updated.finished_at.get_or_insert(now);
+        }
+        updated.updated_at = now;
         if Self::has_conflicting_open_run(&runs, &updated) {
             return Err(AppError::Conflict(
                 "automation already has an open run".to_string(),
@@ -280,6 +291,84 @@ impl AutomationRunRepository for MemoryAutomationRunRepository {
             run.started_at = Some(now);
         }
         run.updated_at = now;
+        Ok(Some(run.clone()))
+    }
+
+    async fn update_publication_metadata(
+        &self,
+        id: &AutomationRunId,
+        metadata: AutomationRunPublicationMetadata,
+    ) -> AppResult<Option<AutomationRun>> {
+        let mut runs = self.runs.write().unwrap();
+        let Some(run) = runs.iter_mut().find(|run| run.id == *id) else {
+            return Ok(None);
+        };
+        if !matches!(
+            run.status,
+            AutomationRunStatus::Running | AutomationRunStatus::Published
+        ) {
+            return Ok(None);
+        }
+        run.pr_number = metadata.pr_number;
+        run.pr_url = metadata.pr_url;
+        run.pr_title = metadata.pr_title;
+        run.pr_head_ref_name = metadata.pr_head_ref_name;
+        run.pr_base_ref_name = metadata.pr_base_ref_name;
+        run.updated_at = Utc::now();
+        Ok(Some(run.clone()))
+    }
+
+    async fn update_merge_metadata(
+        &self,
+        id: &AutomationRunId,
+        merge_commit_sha: Option<String>,
+        pr_merged_at: Option<chrono::DateTime<Utc>>,
+    ) -> AppResult<Option<AutomationRun>> {
+        let mut runs = self.runs.write().unwrap();
+        let Some(run) = runs.iter_mut().find(|run| run.id == *id) else {
+            return Ok(None);
+        };
+        if run.status != AutomationRunStatus::Published {
+            return Ok(None);
+        }
+        run.merge_commit_sha = merge_commit_sha;
+        run.pr_merged_at = pr_merged_at;
+        run.signal_check_failures = 0;
+        run.updated_at = Utc::now();
+        Ok(Some(run.clone()))
+    }
+
+    async fn increment_signal_check_failures(
+        &self,
+        id: &AutomationRunId,
+    ) -> AppResult<Option<AutomationRun>> {
+        let mut runs = self.runs.write().unwrap();
+        let Some(run) = runs.iter_mut().find(|run| run.id == *id) else {
+            return Ok(None);
+        };
+        if run.status != AutomationRunStatus::Published {
+            return Ok(None);
+        }
+        run.signal_check_failures += 1;
+        run.updated_at = Utc::now();
+        Ok(Some(run.clone()))
+    }
+
+    async fn reset_signal_check_failures(
+        &self,
+        id: &AutomationRunId,
+    ) -> AppResult<Option<AutomationRun>> {
+        let mut runs = self.runs.write().unwrap();
+        let Some(run) = runs.iter_mut().find(|run| run.id == *id) else {
+            return Ok(None);
+        };
+        if run.status != AutomationRunStatus::Published {
+            return Ok(None);
+        }
+        if run.signal_check_failures != 0 {
+            run.signal_check_failures = 0;
+            run.updated_at = Utc::now();
+        }
         Ok(Some(run.clone()))
     }
 

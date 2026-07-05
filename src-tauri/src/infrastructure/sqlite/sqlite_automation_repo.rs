@@ -11,7 +11,8 @@ use crate::domain::entities::{
     ChatConversationId, ProjectId,
 };
 use crate::domain::repositories::{
-    AutomationRepository, AutomationRunRepository, AutomationSettingsPatch,
+    AutomationRepository, AutomationRunPublicationMetadata, AutomationRunRepository,
+    AutomationSettingsPatch,
 };
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::sqlite::DbConnection;
@@ -442,18 +443,31 @@ impl AutomationRunRepository for SqliteAutomationRunRepository {
         let id = id.as_str().to_string();
         self.db
             .run(move |conn| {
+                let now = Utc::now().to_rfc3339();
+                let terminal = matches!(
+                    to,
+                    AutomationRunStatus::Merged
+                        | AutomationRunStatus::PrClosed
+                        | AutomationRunStatus::AgentFailed
+                        | AutomationRunStatus::Cancelled
+                );
                 let affected = conn.execute(
                     "UPDATE automation_runs
                      SET status = ?1,
                          error_code = ?2,
                          error_detail = ?3,
-                         updated_at = ?4
-                     WHERE id = ?5 AND status = ?6",
+                         finished_at = CASE
+                             WHEN ?4 = 1 THEN COALESCE(finished_at, ?5)
+                             ELSE finished_at
+                         END,
+                         updated_at = ?5
+                     WHERE id = ?6 AND status = ?7",
                     params![
                         to.as_str(),
                         error_code,
                         error_detail,
-                        Utc::now().to_rfc3339(),
+                        if terminal { 1_i64 } else { 0_i64 },
+                        now,
                         id,
                         from.as_str(),
                     ],
@@ -482,6 +496,134 @@ impl AutomationRunRepository for SqliteAutomationRunRepository {
                          updated_at = ?4
                      WHERE id = ?1 AND status = 'provisioning'",
                     params![id, conversation_id, branch_name, now],
+                )?;
+                if affected == 0 {
+                    return Ok(None);
+                }
+
+                let sql = format!("{SELECT_RUN} WHERE id = ?1");
+                conn.query_row(&sql, [id], Self::row_to_run)
+                    .optional()
+                    .map_err(AppError::from)
+            })
+            .await
+    }
+
+    async fn update_publication_metadata(
+        &self,
+        id: &AutomationRunId,
+        metadata: AutomationRunPublicationMetadata,
+    ) -> AppResult<Option<AutomationRun>> {
+        let id = id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                let now = Utc::now().to_rfc3339();
+                let affected = conn.execute(
+                    "UPDATE automation_runs
+                     SET pr_number = ?2,
+                         pr_url = ?3,
+                         pr_title = ?4,
+                         pr_head_ref_name = ?5,
+                         pr_base_ref_name = ?6,
+                         updated_at = ?7
+                     WHERE id = ?1 AND status IN ('running', 'published')",
+                    params![
+                        id,
+                        metadata.pr_number,
+                        metadata.pr_url,
+                        metadata.pr_title,
+                        metadata.pr_head_ref_name,
+                        metadata.pr_base_ref_name,
+                        now,
+                    ],
+                )?;
+                if affected == 0 {
+                    return Ok(None);
+                }
+
+                let sql = format!("{SELECT_RUN} WHERE id = ?1");
+                conn.query_row(&sql, [id], Self::row_to_run)
+                    .optional()
+                    .map_err(AppError::from)
+            })
+            .await
+    }
+
+    async fn update_merge_metadata(
+        &self,
+        id: &AutomationRunId,
+        merge_commit_sha: Option<String>,
+        pr_merged_at: Option<DateTime<Utc>>,
+    ) -> AppResult<Option<AutomationRun>> {
+        let id = id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                let now = Utc::now().to_rfc3339();
+                let affected = conn.execute(
+                    "UPDATE automation_runs
+                     SET pr_merged_at = ?2,
+                         merge_commit_sha = ?3,
+                         signal_check_failures = 0,
+                         updated_at = ?4
+                     WHERE id = ?1 AND status = 'published'",
+                    params![
+                        id,
+                        pr_merged_at.map(|dt| dt.to_rfc3339()),
+                        merge_commit_sha,
+                        now,
+                    ],
+                )?;
+                if affected == 0 {
+                    return Ok(None);
+                }
+
+                let sql = format!("{SELECT_RUN} WHERE id = ?1");
+                conn.query_row(&sql, [id], Self::row_to_run)
+                    .optional()
+                    .map_err(AppError::from)
+            })
+            .await
+    }
+
+    async fn increment_signal_check_failures(
+        &self,
+        id: &AutomationRunId,
+    ) -> AppResult<Option<AutomationRun>> {
+        let id = id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                let affected = conn.execute(
+                    "UPDATE automation_runs
+                     SET signal_check_failures = signal_check_failures + 1,
+                         updated_at = ?2
+                     WHERE id = ?1 AND status = 'published'",
+                    params![id, Utc::now().to_rfc3339()],
+                )?;
+                if affected == 0 {
+                    return Ok(None);
+                }
+
+                let sql = format!("{SELECT_RUN} WHERE id = ?1");
+                conn.query_row(&sql, [id], Self::row_to_run)
+                    .optional()
+                    .map_err(AppError::from)
+            })
+            .await
+    }
+
+    async fn reset_signal_check_failures(
+        &self,
+        id: &AutomationRunId,
+    ) -> AppResult<Option<AutomationRun>> {
+        let id = id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                let affected = conn.execute(
+                    "UPDATE automation_runs
+                     SET signal_check_failures = 0,
+                         updated_at = ?2
+                     WHERE id = ?1 AND status = 'published'",
+                    params![id, Utc::now().to_rfc3339()],
                 )?;
                 if affected == 0 {
                     return Ok(None);
