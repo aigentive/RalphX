@@ -6,7 +6,7 @@ use chrono::Utc;
 use crate::domain::entities::{
     is_open_automation_run, judge_transition_clears_verdict, Automation, AutomationId,
     AutomationJudgeState, AutomationRun, AutomationRunId, AutomationRunStatus, AutomationStatus,
-    ProjectId,
+    ChatConversationId, ProjectId,
 };
 use crate::domain::repositories::{
     AutomationRepository, AutomationRunRepository, AutomationSettingsPatch,
@@ -258,6 +258,29 @@ impl AutomationRunRepository for MemoryAutomationRunRepository {
         }
         runs[position] = updated;
         Ok(true)
+    }
+
+    async fn update_start_metadata(
+        &self,
+        id: &AutomationRunId,
+        conversation_id: &ChatConversationId,
+        branch_name: Option<String>,
+    ) -> AppResult<Option<AutomationRun>> {
+        let mut runs = self.runs.write().unwrap();
+        let Some(run) = runs.iter_mut().find(|run| run.id == *id) else {
+            return Ok(None);
+        };
+        if run.status != AutomationRunStatus::Provisioning {
+            return Ok(None);
+        }
+        let now = Utc::now();
+        run.conversation_id = Some(conversation_id.clone());
+        run.branch_name = branch_name;
+        if run.started_at.is_none() {
+            run.started_at = Some(now);
+        }
+        run.updated_at = now;
+        Ok(Some(run.clone()))
     }
 
     async fn compare_and_swap_judge_state(

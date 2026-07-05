@@ -6,15 +6,17 @@ use std::time::Duration;
 use crate::application::agent_workspace_bridge::{
     dispatch_agent_workspace_bridge_events_once_with_deps, AgentWorkspaceBridgeDeps,
 };
+use crate::application::automation::provisioning::AgentConversationAutomationRunStarter;
 use crate::application::automation::scheduler::{
     global_automation_scheduler_registry, AutomationScheduler, AutomationSchedulerConfig,
 };
 use crate::application::harness_runtime_registry::resolve_default_external_mcp_bootstrap;
 use crate::application::runtime_factory::{build_chat_service_from_deps, ChatRuntimeFactoryDeps};
+use crate::application::AppState;
 use crate::commands::ExecutionState;
 use crate::domain::repositories::{
-    AutomationRepository, AutomationRunRepository, ExternalEventsRepository,
-    MemoryArchiveRepository, MemoryEntryRepository, ProjectRepository, TaskRepository,
+    ExternalEventsRepository, MemoryArchiveRepository, MemoryEntryRepository, ProjectRepository,
+    TaskRepository,
 };
 use crate::infrastructure::{ExternalMcpHandle, ExternalMcpSupervisor};
 use crate::utils::backend_endpoint::backend_http_port;
@@ -79,18 +81,31 @@ pub fn spawn_watchdog(
 }
 
 pub fn spawn_automation_scheduler(
-    automation_repo: Arc<dyn AutomationRepository>,
-    run_repo: Arc<dyn AutomationRunRepository>,
+    state: AppState,
+    execution_state: Arc<ExecutionState>,
+    app_handle: tauri::AppHandle,
 ) {
     let registry = global_automation_scheduler_registry();
     if !registry.try_start_loop() {
         tracing::debug!("Automation scheduler already started; skipping duplicate spawn");
         return;
     }
+    let team_service = app_handle
+        .try_state::<Arc<crate::application::TeamService>>()
+        .map(|state| state.inner().clone());
+    let starter = Arc::new(AgentConversationAutomationRunStarter::new(
+        state.clone(),
+        execution_state,
+        team_service,
+        app_handle,
+    ));
 
     let scheduler = AutomationScheduler::new(
-        automation_repo,
-        run_repo,
+        Arc::clone(&state.automation_repo),
+        Arc::clone(&state.automation_run_repo),
+        Arc::clone(&state.chat_conversation_repo),
+        Arc::clone(&state.agent_conversation_workspace_repo),
+        starter,
         registry,
         AutomationSchedulerConfig::default(),
     );
@@ -109,6 +124,8 @@ pub fn spawn_automation_scheduler(
                         leased_automations = summary.leased_automations,
                         active_without_runs = summary.active_without_runs,
                         active_with_runs = summary.active_with_runs,
+                        provisioned_runs = summary.provisioned_runs,
+                        provisioning_errors = summary.provisioning_errors,
                         automation_errors = summary.automation_errors,
                         "Automation scheduler tick completed"
                     );

@@ -62,6 +62,7 @@ fn build_startup_pipeline_deps(
     let startup_git_auth_recovery_state = Arc::clone(&app_state.startup_git_auth_recovery_state);
 
     StartupPipelineDeps {
+        app_state: app_state.clone(),
         execution_state: Arc::clone(&startup_execution_state),
         active_project_state: Arc::clone(&startup_active_project_state),
         task_repo: startup_task_repo,

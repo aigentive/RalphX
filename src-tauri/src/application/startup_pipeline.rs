@@ -16,7 +16,7 @@ use crate::application::startup_runtime_builders::{
 };
 use crate::application::startup_transition_factory::StartupTransitionFactory;
 use crate::application::{
-    startup_background, startup_jobs, AgentClientBundle, InteractiveProcessRegistry,
+    startup_background, startup_jobs, AgentClientBundle, AppState, InteractiveProcessRegistry,
     StartupJobRunner,
 };
 use crate::commands::{ActiveProjectState, ExecutionState};
@@ -48,6 +48,7 @@ pub(crate) enum StartupPipelineMode {
 const STARTUP_BACKGROUND_DB_GRACE: Duration = Duration::from_millis(750);
 
 pub(crate) struct StartupPipelineDeps {
+    pub app_state: AppState,
     pub execution_state: Arc<ExecutionState>,
     pub active_project_state: Arc<ActiveProjectState>,
     pub task_repo: Arc<dyn TaskRepository>,
@@ -179,8 +180,8 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         agent_conversation_linear_issue_repo,
         agent_conversation_granola_note_repo,
         orphan_worktree_cleanup_marker_repo,
-        automation_repo,
-        automation_run_repo,
+        automation_repo: _automation_repo,
+        automation_run_repo: _automation_run_repo,
         agent_run_repo,
         ideation_session_repo,
         activity_event_repo,
@@ -206,6 +207,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         app_handle,
         git_auth_recovery_state,
         mode,
+        app_state,
     } = deps;
 
     let phase_started_at = startup_phase_started("git_auth_preflight");
@@ -733,8 +735,9 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
 
         let phase_started_at = startup_phase_started("automation_scheduler_spawn");
         startup_background::spawn_automation_scheduler(
-            Arc::clone(&automation_repo),
-            Arc::clone(&automation_run_repo),
+            app_state,
+            Arc::clone(&execution_state),
+            app_handle.clone(),
         );
         startup_phase_completed("automation_scheduler_spawn", phase_started_at);
     }

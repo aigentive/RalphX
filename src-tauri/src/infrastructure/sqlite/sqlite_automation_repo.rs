@@ -463,6 +463,38 @@ impl AutomationRunRepository for SqliteAutomationRunRepository {
             .await
     }
 
+    async fn update_start_metadata(
+        &self,
+        id: &AutomationRunId,
+        conversation_id: &ChatConversationId,
+        branch_name: Option<String>,
+    ) -> AppResult<Option<AutomationRun>> {
+        let id = id.as_str().to_string();
+        let conversation_id = conversation_id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                let now = Utc::now().to_rfc3339();
+                let affected = conn.execute(
+                    "UPDATE automation_runs
+                     SET conversation_id = ?2,
+                         branch_name = ?3,
+                         started_at = COALESCE(started_at, ?4),
+                         updated_at = ?4
+                     WHERE id = ?1 AND status = 'provisioning'",
+                    params![id, conversation_id, branch_name, now],
+                )?;
+                if affected == 0 {
+                    return Ok(None);
+                }
+
+                let sql = format!("{SELECT_RUN} WHERE id = ?1");
+                conn.query_row(&sql, [id], Self::row_to_run)
+                    .optional()
+                    .map_err(AppError::from)
+            })
+            .await
+    }
+
     async fn compare_and_swap_judge_state(
         &self,
         id: &AutomationRunId,

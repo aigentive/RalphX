@@ -2,6 +2,7 @@ use async_trait::async_trait;
 
 use crate::entities::{
     AutomationId, AutomationJudgeState, AutomationRun, AutomationRunId, AutomationRunStatus,
+    ChatConversationId,
 };
 use crate::error::AppResult;
 
@@ -29,6 +30,15 @@ pub trait AutomationRunRepository: Send + Sync {
         error_code: Option<String>,
         error_detail: Option<String>,
     ) -> AppResult<bool>;
+
+    /// Attach the started conversation/workspace metadata while the run is still provisioning.
+    /// Implementations return `None` when the run is missing or has already left provisioning.
+    async fn update_start_metadata(
+        &self,
+        id: &AutomationRunId,
+        conversation_id: &ChatConversationId,
+        branch_name: Option<String>,
+    ) -> AppResult<Option<AutomationRun>>;
 
     async fn compare_and_swap_judge_state(
         &self,

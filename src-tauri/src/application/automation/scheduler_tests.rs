@@ -1,15 +1,38 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use async_trait::async_trait;
 use chrono::Utc;
 
+use super::provisioning::{
+    AutomationRunStartOutcome, AutomationRunStartRequest, AutomationRunStarter,
+};
 use super::scheduler::{
     AutomationScheduler, AutomationSchedulerConfig, AutomationSchedulerRegistry,
 };
 use crate::domain::entities::{Automation, AutomationId, AutomationStatus, ProjectId};
-use crate::domain::repositories::AutomationRepository;
+use crate::domain::repositories::{AutomationRepository, AutomationRunRepository};
+use crate::error::AppResult;
 use crate::infrastructure::agents::claude::AutomationsRuntimeConfig;
-use crate::infrastructure::memory::{MemoryAutomationRepository, MemoryAutomationRunRepository};
+use crate::infrastructure::memory::{
+    MemoryAgentConversationWorkspaceRepository, MemoryAutomationRepository,
+    MemoryAutomationRunRepository, MemoryChatConversationRepository,
+};
+
+#[derive(Default)]
+struct RecordingStarter;
+
+#[async_trait]
+impl AutomationRunStarter for RecordingStarter {
+    async fn start_run(
+        &self,
+        _request: AutomationRunStartRequest,
+    ) -> AppResult<AutomationRunStartOutcome> {
+        Ok(AutomationRunStartOutcome {
+            branch_name: Some("ralphx/automation-run-1".to_string()),
+        })
+    }
+}
 
 fn automation(id: &str, status: AutomationStatus) -> Automation {
     let now = Utc::now();
@@ -102,6 +125,8 @@ fn automation_scheduler_registry_enforces_per_automation_lease() {
 async fn automation_scheduler_tick_only_leases_active_automations() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
     let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let conversation_repo = Arc::new(MemoryChatConversationRepository::new());
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     automation_repo
         .create(automation("active-1", AutomationStatus::Active))
         .await
@@ -113,7 +138,10 @@ async fn automation_scheduler_tick_only_leases_active_automations() {
     let registry = Arc::new(AutomationSchedulerRegistry::default());
     let scheduler = AutomationScheduler::new(
         automation_repo,
-        run_repo,
+        run_repo.clone(),
+        conversation_repo,
+        workspace_repo,
+        Arc::new(RecordingStarter),
         registry,
         AutomationSchedulerConfig::from_runtime(&AutomationsRuntimeConfig::default()),
     );
@@ -125,5 +153,21 @@ async fn automation_scheduler_tick_only_leases_active_automations() {
     assert_eq!(summary.leased_automations, 1);
     assert_eq!(summary.active_without_runs, 1);
     assert_eq!(summary.active_with_runs, 0);
+    assert_eq!(summary.provisioned_runs, 1);
+    assert_eq!(summary.provisioning_errors, 0);
     assert_eq!(summary.automation_errors, 0);
+
+    let latest = run_repo
+        .latest_for_automation(&AutomationId::from_string("active-1"))
+        .await
+        .unwrap()
+        .expect("run should be created");
+    assert_eq!(
+        latest.status,
+        crate::domain::entities::AutomationRunStatus::Running
+    );
+    assert_eq!(
+        latest.branch_name.as_deref(),
+        Some("ralphx/automation-run-1")
+    );
 }

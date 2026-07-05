@@ -5,6 +5,9 @@ use std::time::{Duration, Instant};
 use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
 
+use crate::application::automation::provisioning::{
+    AutomationRunProvisioner, AutomationRunStarter,
+};
 use crate::application::automation::service::AutomationService;
 use crate::application::automation::transition::NoopAutomationEventEmitter;
 use crate::application::harness_runtime_registry::{
@@ -13,7 +16,10 @@ use crate::application::harness_runtime_registry::{
     default_automation_signal_failure_pause_threshold,
 };
 use crate::domain::entities::{AutomationId, AutomationStatus};
-use crate::domain::repositories::{AutomationRepository, AutomationRunRepository};
+use crate::domain::repositories::{
+    AgentConversationWorkspaceRepository, AutomationRepository, AutomationRunRepository,
+    ChatConversationRepository,
+};
 use crate::error::AppResult;
 use crate::infrastructure::agents::claude::AutomationsRuntimeConfig;
 
@@ -57,6 +63,8 @@ pub struct AutomationSchedulerTickSummary {
     pub leased_automations: usize,
     pub active_without_runs: usize,
     pub active_with_runs: usize,
+    pub provisioned_runs: usize,
+    pub provisioning_errors: usize,
     pub automation_errors: usize,
 }
 
@@ -126,6 +134,7 @@ pub fn global_automation_scheduler_registry() -> Arc<AutomationSchedulerRegistry
 
 pub struct AutomationScheduler {
     service: AutomationService,
+    provisioner: AutomationRunProvisioner,
     registry: Arc<AutomationSchedulerRegistry>,
     config: AutomationSchedulerConfig,
 }
@@ -134,16 +143,29 @@ impl AutomationScheduler {
     pub fn new(
         automation_repo: Arc<dyn AutomationRepository>,
         run_repo: Arc<dyn AutomationRunRepository>,
+        conversation_repo: Arc<dyn ChatConversationRepository>,
+        workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+        starter: Arc<dyn AutomationRunStarter>,
         registry: Arc<AutomationSchedulerRegistry>,
         config: AutomationSchedulerConfig,
     ) -> Self {
+        let event_emitter = Arc::new(NoopAutomationEventEmitter);
         let service = AutomationService::new(
+            Arc::clone(&automation_repo),
+            Arc::clone(&run_repo),
+            event_emitter.clone(),
+        );
+        let provisioner = AutomationRunProvisioner::new(
             automation_repo,
             run_repo,
-            Arc::new(NoopAutomationEventEmitter),
+            conversation_repo,
+            workspace_repo,
+            starter,
+            event_emitter,
         );
         Self {
             service,
+            provisioner,
             registry,
             config,
         }
@@ -177,6 +199,24 @@ impl AutomationScheduler {
             match self.service.get_automation_detail(&automation.id).await {
                 Ok(detail) if detail.runs.is_empty() => {
                     summary.active_without_runs += 1;
+                    match self
+                        .provisioner
+                        .provision_first_run(&detail.automation)
+                        .await
+                    {
+                        Ok(Some(_run)) => {
+                            summary.provisioned_runs += 1;
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            summary.provisioning_errors += 1;
+                            tracing::warn!(
+                                automation_id = %automation.id,
+                                error = %error,
+                                "Automation scheduler failed to provision first run"
+                            );
+                        }
+                    }
                 }
                 Ok(_) => {
                     summary.active_with_runs += 1;

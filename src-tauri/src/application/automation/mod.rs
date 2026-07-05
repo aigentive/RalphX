@@ -1,7 +1,10 @@
+pub mod provisioning;
 pub mod service;
 pub mod scheduler;
 pub mod transition;
 
+#[cfg(test)]
+mod provisioning_tests;
 #[cfg(test)]
 mod scheduler_tests;
 
