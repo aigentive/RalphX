@@ -320,6 +320,8 @@ macro_rules! register_tauri_commands {
             commands::unified_chat_commands::start_agent_conversation,
             commands::unified_chat_commands::fork_agent_conversation,
             commands::unified_chat_commands::switch_agent_conversation_mode,
+            commands::agent_conversation_plan_commands::copy_agent_conversation_plan,
+            commands::agent_conversation_plan_commands::import_agent_conversation_plan_markdown,
             commands::unified_chat_commands::send_agent_message,
             commands::unified_chat_commands::queue_agent_message,
             commands::unified_chat_commands::get_queued_agent_messages,

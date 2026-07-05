@@ -15,7 +15,8 @@ use crate::domain::agents::{
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceBranchMode,
     AgentConversationWorkspaceMode, AgentWorkspaceSourcePullRequest, ChatConversationId,
-    IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow, Project, ProjectId,
+    IdeationAnalysisBaseRefKind, IdeationAnalysisState, IdeationSession, IdeationSessionFlow,
+    Project, ProjectId,
 };
 use crate::domain::services::ComposerIntegrationReference;
 
@@ -285,6 +286,17 @@ pub(crate) async fn ensure_plan_workspace_planning_session_link(
     project: &Project,
     workspace: &mut AgentConversationWorkspace,
 ) -> Result<bool, String> {
+    let analysis = prepare_ideation_analysis_state_from_agent_workspace(project, workspace)
+        .await
+        .map_err(|error| error.to_string())?;
+    ensure_plan_workspace_planning_session_link_with_analysis(state, workspace, analysis).await
+}
+
+pub(crate) async fn ensure_plan_workspace_planning_session_link_with_analysis(
+    state: &AppState,
+    workspace: &mut AgentConversationWorkspace,
+    analysis: IdeationAnalysisState,
+) -> Result<bool, String> {
     if workspace.mode != AgentConversationWorkspaceMode::Plan {
         return Ok(false);
     }
@@ -293,9 +305,6 @@ pub(crate) async fn ensure_plan_workspace_planning_session_link(
         return Ok(false);
     }
 
-    let analysis = prepare_ideation_analysis_state_from_agent_workspace(project, workspace)
-        .await
-        .map_err(|error| error.to_string())?;
     let session = IdeationSession::builder()
         .project_id(workspace.project_id.clone())
         .session_flow(IdeationSessionFlow::Planning)

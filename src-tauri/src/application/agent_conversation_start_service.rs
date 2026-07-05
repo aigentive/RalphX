@@ -26,11 +26,14 @@ use self::helpers::{
     agent_mode_should_create_workspace, agent_workspace_pr_automation_defaults_for_project,
     apply_ticket_canonical_branch_base_selection, base_selection_allows_ticket_canonical_branch,
     emit_start_agent_conversation_progress, ensure_linked_branch_workspace_available,
-    ensure_plan_workspace_planning_session_link, first_ticket_start_base_reference,
-    hydrate_linked_branch_source_pull_request, log_start_agent_conversation_phase,
-    normalize_agent_runtime_selection, normalize_agent_workspace_source_pull_request,
-    parse_agent_workspace_base_kind, parse_agent_workspace_branch_mode, parse_agent_workspace_mode,
-    trim_optional_input,
+    first_ticket_start_base_reference, hydrate_linked_branch_source_pull_request,
+    log_start_agent_conversation_phase, normalize_agent_runtime_selection,
+    normalize_agent_workspace_source_pull_request, parse_agent_workspace_base_kind,
+    parse_agent_workspace_branch_mode, parse_agent_workspace_mode, trim_optional_input,
+};
+pub(crate) use self::helpers::{
+    ensure_plan_workspace_planning_session_link,
+    ensure_plan_workspace_planning_session_link_with_analysis,
 };
 
 #[derive(Debug, Clone, Deserialize)]

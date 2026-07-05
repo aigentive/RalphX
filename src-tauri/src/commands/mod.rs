@@ -3,6 +3,7 @@
 
 pub mod activity_commands;
 pub mod agent_composer_commands;
+pub mod agent_conversation_plan_commands;
 pub mod agent_issue_report_commands;
 #[cfg(test)]
 mod agent_issue_report_commands_tests;
@@ -91,6 +92,11 @@ pub use agent_composer_commands::{
     SearchAgentComposerPlanReferencesResponse,
 };
 pub use agent_issue_report_commands::{build_agent_issue_report, submit_agent_issue_report};
+pub use agent_conversation_plan_commands::{
+    copy_agent_conversation_plan, import_agent_conversation_plan_markdown,
+    AgentConversationPlanDraftResponse, CopyAgentConversationPlanInput,
+    ImportAgentConversationPlanMarkdownInput,
+};
 pub use agent_model_commands::{
     delete_custom_agent_model, list_agent_models, upsert_custom_agent_model, AgentModelResponse,
     UpsertCustomAgentModelInput,

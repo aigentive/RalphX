@@ -6,6 +6,9 @@ pub mod agent_conversation_fork;
 pub mod agent_conversation_granola_note;
 pub mod agent_conversation_jira_issue;
 pub mod agent_conversation_linear_issue;
+pub mod agent_conversation_plan_import;
+#[cfg(test)]
+mod agent_conversation_plan_import_tests;
 pub mod agent_conversation_start_service;
 pub mod agent_conversation_workspace;
 pub mod agent_conversation_workspace_base;

@@ -269,6 +269,23 @@ impl SqliteArtifactRepository {
             relation_type,
         })
     }
+
+    pub(crate) fn add_relation_sync(
+        conn: &Connection,
+        relation: ArtifactRelation,
+    ) -> AppResult<ArtifactRelation> {
+        conn.execute(
+            "INSERT INTO artifact_relations (id, from_artifact_id, to_artifact_id, relation_type)
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![
+                relation.id.as_str(),
+                relation.from_artifact_id.as_str(),
+                relation.to_artifact_id.as_str(),
+                relation.relation_type.as_str(),
+            ],
+        )?;
+        Ok(relation)
+    }
 }
 
 #[async_trait]
@@ -545,19 +562,7 @@ impl ArtifactRepository for SqliteArtifactRepository {
 
     async fn add_relation(&self, relation: ArtifactRelation) -> AppResult<ArtifactRelation> {
         self.db
-            .run(move |conn| {
-                conn.execute(
-                    "INSERT INTO artifact_relations (id, from_artifact_id, to_artifact_id, relation_type)
-                     VALUES (?1, ?2, ?3, ?4)",
-                    rusqlite::params![
-                        relation.id.as_str(),
-                        relation.from_artifact_id.as_str(),
-                        relation.to_artifact_id.as_str(),
-                        relation.relation_type.as_str(),
-                    ],
-                )?;
-                Ok(relation)
-            })
+            .run(move |conn| Self::add_relation_sync(conn, relation))
             .await
     }
 
