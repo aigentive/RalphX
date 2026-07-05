@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { preloadAutomationDetailView } from "@/components/automations/preloadAutomationDetailView";
 import { useAutomationDetail, useAutomationsList } from "@/hooks/useAutomations";
+import { withAlpha } from "@/lib/theme-colors";
 import { cn } from "@/lib/utils";
 
 interface AutomationsViewProps {
@@ -212,10 +213,10 @@ function EmptyAutomations({ onNewAutomation }: { onNewAutomation?: () => void })
     >
       <div
         className="grid h-14 w-14 place-items-center rounded-full"
-        style={{ backgroundColor: "rgba(255, 107, 53, 0.14)" }}
+        style={{ backgroundColor: withAlpha("var(--accent-primary)", 14) }}
         aria-hidden="true"
       >
-        <Workflow className="h-7 w-7" style={{ color: "#ff6b35" }} />
+        <Workflow className="h-7 w-7" style={{ color: "var(--accent-primary)" }} />
       </div>
       <h2 className="mt-5 text-lg font-semibold" style={{ color: "var(--text-primary)" }}>
         No automations yet

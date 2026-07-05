@@ -2301,7 +2301,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                     >
                       <ShieldCheck
                         className="mt-0.5 h-4 w-4 shrink-0"
-                        style={{ color: "#ff6b35" }}
+                        style={{ color: "var(--accent-primary)" }}
                         aria-hidden="true"
                       />
                       <span>{automationRunReadOnlyReason}</span>

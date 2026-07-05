@@ -13,6 +13,7 @@ import {
   useAutomationEvents,
 } from "@/hooks/useAutomations";
 import { useConfirmation } from "@/hooks/useConfirmation";
+import { withAlpha } from "@/lib/theme-colors";
 
 interface AgentsAutomationPanelProps {
   automationId: string;
@@ -158,10 +159,10 @@ export function AgentsAutomationPanel({
       <div className="flex items-start gap-3">
         <div
           className="grid h-9 w-9 shrink-0 place-items-center rounded-md"
-          style={{ backgroundColor: "rgba(255, 107, 53, 0.14)" }}
+          style={{ backgroundColor: withAlpha("var(--accent-primary)", 14) }}
           aria-hidden="true"
         >
-          <Workflow className="h-5 w-5" style={{ color: "#ff6b35" }} />
+          <Workflow className="h-5 w-5" style={{ color: "var(--accent-primary)" }} />
         </div>
         <div className="min-w-0">
           <h2 className="truncate text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
