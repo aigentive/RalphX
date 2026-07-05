@@ -55,6 +55,14 @@ impl AutomationRunStartRequest {
         run: &AutomationRun,
         conversation_id: ChatConversationId,
     ) -> Self {
+        let base_display_name = if run.run_index == 1
+            || (run.base_ref_kind == automation.base_ref_kind
+                && run.base_ref_used == automation.base_ref)
+        {
+            automation.base_display_name.clone()
+        } else {
+            trim_optional_string(run.base_ref_used.clone())
+        };
         Self {
             project_id: automation.project_id.as_str().to_string(),
             conversation_id,
@@ -65,8 +73,10 @@ impl AutomationRunStartRequest {
             run_mode: automation.run_mode.clone(),
             base_ref_kind: run.base_ref_kind.clone(),
             base_ref: run.base_ref_used.clone(),
-            base_display_name: automation.base_display_name.clone(),
-            base_source_pull_request_json: automation.base_source_pull_request_json.clone(),
+            base_display_name,
+            base_source_pull_request_json: (run.run_index == 1)
+                .then(|| automation.base_source_pull_request_json.clone())
+                .flatten(),
             composer_project_references: Vec::new(),
             composer_integration_references: Vec::new(),
             composer_artifact_references: Vec::new(),
@@ -247,6 +257,34 @@ impl AutomationRunProvisioner {
         .await?;
 
         let result = self.start_provisioning_run(automation, &run).await;
+        match result {
+            Ok(started_run) => Ok(Some(started_run)),
+            Err(error) => {
+                self.mark_run_agent_failed(&run.id, error.to_string()).await;
+                Err(error)
+            }
+        }
+    }
+
+    pub async fn provision_pending_run(
+        &self,
+        automation: &Automation,
+        run: &AutomationRun,
+    ) -> AppResult<Option<AutomationRun>> {
+        if run.status != AutomationRunStatus::Pending {
+            return Ok(None);
+        }
+
+        self.transition_run_or_conflict(
+            &run.id,
+            AutomationRunStatus::Pending,
+            AutomationRunStatus::Provisioning,
+            None,
+            None,
+        )
+        .await?;
+
+        let result = self.start_provisioning_run(automation, run).await;
         match result {
             Ok(started_run) => Ok(Some(started_run)),
             Err(error) => {

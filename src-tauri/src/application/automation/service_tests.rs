@@ -5,14 +5,14 @@ use chrono::Utc;
 
 use crate::application::automation::service::{
     AutomationService, CreateAutomationDraftInput, CreateAutomationRunInput,
-    UpdateAutomationSettingsInput,
+    CreateMergedBaseSuccessorRunInput, UpdateAutomationSettingsInput,
 };
 use crate::application::automation::transition::{
     AutomationEvent, AutomationEventEmitter, NoopAutomationEventEmitter,
 };
 use crate::domain::entities::{
-    Automation, AutomationId, AutomationJudgeState, AutomationPromptAuthor, AutomationRunStatus,
-    AutomationStatus, ProjectId,
+    Automation, AutomationId, AutomationJudgeState, AutomationPromptAuthor, AutomationRun,
+    AutomationRunId, AutomationRunStatus, AutomationStatus, ChatConversationId, ProjectId,
 };
 use crate::domain::repositories::{
     AutomationRepository, AutomationRunRepository, AutomationSettingsPatch,
@@ -76,6 +76,54 @@ fn automation(id: &str, status: AutomationStatus) -> Automation {
         max_consecutive_failures: 3,
         first_run_prompt: Some("Run 1".to_string()),
         setup_analysis_summary: None,
+        created_at: now,
+        updated_at: now,
+    }
+}
+
+fn automation_run(
+    id: &str,
+    automation_id: &AutomationId,
+    run_index: i64,
+    status: AutomationRunStatus,
+    judge_state: AutomationJudgeState,
+) -> AutomationRun {
+    let now = Utc::now();
+    AutomationRun {
+        id: AutomationRunId::from_string(id),
+        automation_id: automation_id.clone(),
+        run_index,
+        status,
+        judge_state,
+        judge_lease_expires_at: None,
+        conversation_id: Some(ChatConversationId::from_string(format!(
+            "conversation-{run_index}"
+        ))),
+        run_prompt: format!("Run {run_index} prompt"),
+        prompt_author: AutomationPromptAuthor::SetupAgent,
+        base_ref_kind: "local_branch".to_string(),
+        base_ref_used: "main".to_string(),
+        base_from_run_id: None,
+        branch_name: Some(format!("ralphx/run-{run_index}")),
+        pr_number: Some(100 + run_index),
+        pr_url: Some(format!(
+            "https://github.com/acme/project/pull/{}",
+            100 + run_index
+        )),
+        pr_title: Some(format!("Run {run_index} PR")),
+        pr_head_ref_name: Some(format!("ralphx/run-{run_index}")),
+        pr_base_ref_name: Some("main".to_string()),
+        pr_merged_at: None,
+        merge_commit_sha: None,
+        diff_stats_json: None,
+        agent_summary: None,
+        judge_verdict_json: None,
+        judge_model_id: None,
+        error_code: None,
+        error_detail: None,
+        signal_check_failures: 0,
+        started_at: Some(now),
+        finished_at: Some(now),
         created_at: now,
         updated_at: now,
     }
@@ -432,6 +480,187 @@ async fn service_creates_pending_runs_without_bypassing_single_flight() {
             .unwrap()
             .len(),
         1
+    );
+}
+
+#[tokio::test]
+async fn service_creates_merged_base_successor_after_judged_terminal_run() {
+    let (service, automation_repo, run_repo) =
+        service_with_emitter(Arc::new(NoopAutomationEventEmitter));
+    let mut active = automation("automation-1", AutomationStatus::Active);
+    active.base_ref_kind = "local_branch".to_string();
+    active.base_ref = "main".to_string();
+    automation_repo.create(active.clone()).await.unwrap();
+    let previous = automation_run(
+        "run-1",
+        &active.id,
+        1,
+        AutomationRunStatus::Merged,
+        AutomationJudgeState::Done,
+    );
+    run_repo.create_run(previous.clone()).await.unwrap();
+
+    let outcome = service
+        .create_merged_base_successor_run(CreateMergedBaseSuccessorRunInput {
+            automation_id: active.id.clone(),
+            previous_run_id: previous.id.clone(),
+            run_prompt: "Implement the next goal item with the attached spec context.".to_string(),
+            prompt_author: AutomationPromptAuthor::Judge,
+        })
+        .await
+        .unwrap();
+
+    assert!(outcome.scheduled);
+    let successor = outcome.run.expect("successor should be returned");
+    assert_eq!(successor.run_index, 2);
+    assert_eq!(successor.status, AutomationRunStatus::Pending);
+    assert_eq!(successor.prompt_author, AutomationPromptAuthor::Judge);
+    assert_eq!(successor.base_from_run_id, Some(previous.id));
+    assert_eq!(successor.base_ref_kind, "local_branch");
+    assert_eq!(successor.base_ref_used, "main");
+}
+
+#[tokio::test]
+async fn service_drops_source_pr_linkage_for_run_two_base() {
+    let (service, automation_repo, run_repo) =
+        service_with_emitter(Arc::new(NoopAutomationEventEmitter));
+    let mut active = automation("automation-1", AutomationStatus::Active);
+    active.base_ref_kind = "local_branch".to_string();
+    active.base_ref = "feature/source-pr".to_string();
+    active.base_source_pull_request_json = Some(
+        r#"{"number":42,"url":"https://github.test/pull/42","title":"Source PR","headRefName":"feature/source-pr","baseRefName":"release/2026","headRefOid":"abc123"}"#
+            .to_string(),
+    );
+    automation_repo.create(active.clone()).await.unwrap();
+    let mut previous = automation_run(
+        "run-1",
+        &active.id,
+        1,
+        AutomationRunStatus::Merged,
+        AutomationJudgeState::Done,
+    );
+    previous.pr_base_ref_name = Some("release/2026".to_string());
+    run_repo.create_run(previous.clone()).await.unwrap();
+
+    let successor = service
+        .create_merged_base_successor_run(CreateMergedBaseSuccessorRunInput {
+            automation_id: active.id.clone(),
+            previous_run_id: previous.id.clone(),
+            run_prompt: "Continue from the merged source PR base branch.".to_string(),
+            prompt_author: AutomationPromptAuthor::Judge,
+        })
+        .await
+        .unwrap()
+        .run
+        .expect("successor should be created");
+
+    assert_eq!(successor.run_index, 2);
+    assert_eq!(successor.base_ref_kind, "local_branch");
+    assert_eq!(successor.base_ref_used, "release/2026");
+    assert_eq!(successor.base_from_run_id, Some(previous.id));
+}
+
+#[tokio::test]
+async fn service_pauses_before_successor_when_max_runs_exhausted() {
+    let (service, automation_repo, run_repo) =
+        service_with_emitter(Arc::new(NoopAutomationEventEmitter));
+    let mut active = automation("automation-1", AutomationStatus::Active);
+    active.max_runs = 1;
+    automation_repo.create(active.clone()).await.unwrap();
+    let previous = automation_run(
+        "run-1",
+        &active.id,
+        1,
+        AutomationRunStatus::Merged,
+        AutomationJudgeState::Done,
+    );
+    run_repo.create_run(previous.clone()).await.unwrap();
+
+    let outcome = service
+        .create_merged_base_successor_run(CreateMergedBaseSuccessorRunInput {
+            automation_id: active.id.clone(),
+            previous_run_id: previous.id,
+            run_prompt: "Try to continue beyond max runs.".to_string(),
+            prompt_author: AutomationPromptAuthor::Judge,
+        })
+        .await
+        .unwrap();
+
+    assert!(!outcome.scheduled);
+    assert_eq!(outcome.reason.as_deref(), Some("max_runs_exhausted"));
+    assert_eq!(
+        automation_repo
+            .get_by_id(&active.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .paused_reason_code
+            .as_deref(),
+        Some("max_runs_exhausted")
+    );
+    assert_eq!(
+        run_repo
+            .list_for_automation(&active.id)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn service_pauses_before_successor_when_failure_guardrail_exhausted() {
+    let (service, automation_repo, run_repo) =
+        service_with_emitter(Arc::new(NoopAutomationEventEmitter));
+    let mut active = automation("automation-1", AutomationStatus::Active);
+    active.max_consecutive_failures = 2;
+    automation_repo.create(active.clone()).await.unwrap();
+    let failure_one = automation_run(
+        "run-1",
+        &active.id,
+        1,
+        AutomationRunStatus::PrClosed,
+        AutomationJudgeState::Done,
+    );
+    let failure_two = automation_run(
+        "run-2",
+        &active.id,
+        2,
+        AutomationRunStatus::AgentFailed,
+        AutomationJudgeState::Done,
+    );
+    run_repo.create_run(failure_one).await.unwrap();
+    run_repo.create_run(failure_two.clone()).await.unwrap();
+
+    let outcome = service
+        .create_merged_base_successor_run(CreateMergedBaseSuccessorRunInput {
+            automation_id: active.id.clone(),
+            previous_run_id: failure_two.id,
+            run_prompt: "Try to continue after repeated failures.".to_string(),
+            prompt_author: AutomationPromptAuthor::Judge,
+        })
+        .await
+        .unwrap();
+
+    assert!(!outcome.scheduled);
+    assert_eq!(outcome.reason.as_deref(), Some("max_consecutive_failures"));
+    assert_eq!(
+        automation_repo
+            .get_by_id(&active.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .paused_reason_code
+            .as_deref(),
+        Some("max_consecutive_failures")
+    );
+    assert_eq!(
+        run_repo
+            .list_for_automation(&active.id)
+            .await
+            .unwrap()
+            .len(),
+        2
     );
 }
 

@@ -202,6 +202,38 @@ fn automation_run_start_request_maps_to_manual_start_input() {
     assert_eq!(input.composer_artifact_references.len(), 1);
 }
 
+#[test]
+fn automation_run_start_request_drops_source_pr_after_run_one() {
+    let mut automation = automation("automation-1");
+    automation.base_display_name = Some("Source PR #42".to_string());
+    automation.base_source_pull_request_json = Some(
+        r#"{"number":42,"url":"https://github.test/pull/42","title":"Base PR","headRefName":"feature/base","baseRefName":"main","headRefOid":"abc123"}"#
+            .to_string(),
+    );
+    let mut run = run(automation.id.clone());
+    run.run_index = 2;
+    run.base_ref_kind = "local_branch".to_string();
+    run.base_ref_used = "release/2026".to_string();
+    let request = AutomationRunStartRequest::from_automation_run(
+        &automation,
+        &run,
+        crate::domain::entities::ChatConversationId::from_string(
+            "22222222-2222-4222-8222-222222222222",
+        ),
+    );
+
+    assert_eq!(request.base_ref_kind, "local_branch");
+    assert_eq!(request.base_ref, "release/2026");
+    assert_eq!(request.base_display_name.as_deref(), Some("release/2026"));
+    assert!(request.base_source_pull_request_json.is_none());
+
+    let input = request.into_start_input().unwrap();
+    assert_eq!(input.base_ref_kind.as_deref(), Some("local_branch"));
+    assert_eq!(input.base_ref.as_deref(), Some("release/2026"));
+    assert_eq!(input.base_display_name.as_deref(), Some("release/2026"));
+    assert!(input.base_source_pull_request.is_none());
+}
+
 #[tokio::test]
 async fn provision_first_run_creates_owned_draft_and_marks_workspace_for_initial_publish() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());

@@ -6,8 +6,9 @@ use crate::application::automation::transition::{
     AutomationEvent, AutomationEventEmitter, AutomationTransitionService,
 };
 use crate::domain::entities::{
-    Automation, AutomationId, AutomationJudgeState, AutomationPromptAuthor, AutomationRun,
-    AutomationRunId, AutomationRunStatus, AutomationStatus, ChatConversationId, ProjectId,
+    is_open_automation_run, Automation, AutomationId, AutomationJudgeState, AutomationPromptAuthor,
+    AutomationRun, AutomationRunId, AutomationRunStatus, AutomationStatus, ChatConversationId,
+    ProjectId,
 };
 use crate::domain::repositories::{
     AutomationRepository, AutomationRunRepository, AutomationSettingsPatch,
@@ -54,6 +55,21 @@ pub struct CreateAutomationRunInput {
     pub base_ref_kind: String,
     pub base_ref_used: String,
     pub base_from_run_id: Option<AutomationRunId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreateMergedBaseSuccessorRunInput {
+    pub automation_id: AutomationId,
+    pub previous_run_id: AutomationRunId,
+    pub run_prompt: String,
+    pub prompt_author: AutomationPromptAuthor,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AutomationSuccessorRunOutcome {
+    pub scheduled: bool,
+    pub reason: Option<String>,
+    pub run: Option<AutomationRun>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -364,6 +380,94 @@ impl AutomationService {
         Ok(created)
     }
 
+    pub async fn create_merged_base_successor_run(
+        &self,
+        input: CreateMergedBaseSuccessorRunInput,
+    ) -> AppResult<AutomationSuccessorRunOutcome> {
+        let automation = self.require_automation(&input.automation_id).await?;
+        if automation.status != AutomationStatus::Active {
+            return Err(AppError::Validation(
+                "automation must be active to schedule a successor run".to_string(),
+            ));
+        }
+        if automation.chain_mode != DEFAULT_CHAIN_MODE {
+            return Err(AppError::Validation(format!(
+                "automation chain_mode {} is not supported in merged_base scheduling",
+                automation.chain_mode
+            )));
+        }
+        if input.run_prompt.trim().is_empty() {
+            return Err(AppError::Validation(
+                "automation successor run prompt cannot be empty".to_string(),
+            ));
+        }
+
+        let previous = self
+            .require_run_for_automation(&input.automation_id, &input.previous_run_id)
+            .await?;
+        let latest = self.latest_run_for_automation(&input.automation_id).await?;
+        if latest.id != previous.id {
+            return Err(AppError::Validation(
+                "previousRunId must reference the latest automation run".to_string(),
+            ));
+        }
+        if is_open_automation_run(latest.status, latest.judge_state) {
+            return Ok(successor_not_scheduled("run in flight"));
+        }
+        if !run_status_is_signal_terminal(latest.status) {
+            return Err(AppError::Validation(
+                "previous run is not signal-terminal".to_string(),
+            ));
+        }
+
+        let runs = self
+            .run_repo
+            .list_for_automation(&input.automation_id)
+            .await?;
+        if runs.len() as i64 >= automation.max_runs {
+            self.transition_automation_status_or_conflict(
+                &automation.id,
+                AutomationStatus::Active,
+                AutomationStatus::Paused,
+                Some("max_runs_exhausted".to_string()),
+                Some("Automation reached max_runs before scheduling a successor".to_string()),
+            )
+            .await?;
+            return Ok(successor_not_scheduled("max_runs_exhausted"));
+        }
+        if consecutive_failure_count(&runs) >= automation.max_consecutive_failures {
+            self.transition_automation_status_or_conflict(
+                &automation.id,
+                AutomationStatus::Active,
+                AutomationStatus::Paused,
+                Some("max_consecutive_failures".to_string()),
+                Some(
+                    "Automation reached max_consecutive_failures before scheduling a successor"
+                        .to_string(),
+                ),
+            )
+            .await?;
+            return Ok(successor_not_scheduled("max_consecutive_failures"));
+        }
+
+        let (base_ref_kind, base_ref_used) = merged_base_successor_base(&automation, &latest)?;
+        let run = self
+            .create_run(CreateAutomationRunInput {
+                automation_id: automation.id,
+                run_prompt: input.run_prompt,
+                prompt_author: input.prompt_author,
+                base_ref_kind,
+                base_ref_used,
+                base_from_run_id: Some(latest.id),
+            })
+            .await?;
+        Ok(AutomationSuccessorRunOutcome {
+            scheduled: true,
+            reason: None,
+            run: Some(run),
+        })
+    }
+
     async fn require_automation(&self, id: &AutomationId) -> AppResult<Automation> {
         self.automation_repo
             .get_by_id(id)
@@ -444,6 +548,14 @@ fn deferred_schedule_outcome(reason: &str) -> AutomationScheduleOutcome {
     }
 }
 
+fn successor_not_scheduled(reason: &str) -> AutomationSuccessorRunOutcome {
+    AutomationSuccessorRunOutcome {
+        scheduled: false,
+        reason: Some(reason.to_string()),
+        run: None,
+    }
+}
+
 fn run_status_is_cancellable(status: AutomationRunStatus) -> bool {
     matches!(
         status,
@@ -452,6 +564,43 @@ fn run_status_is_cancellable(status: AutomationRunStatus) -> bool {
             | AutomationRunStatus::Running
             | AutomationRunStatus::Published
     )
+}
+
+fn consecutive_failure_count(runs: &[AutomationRun]) -> i64 {
+    let mut count = 0;
+    for run in runs.iter().rev() {
+        match run.status {
+            AutomationRunStatus::AgentFailed | AutomationRunStatus::PrClosed => count += 1,
+            AutomationRunStatus::Merged => break,
+            _ => {}
+        }
+    }
+    count
+}
+
+fn merged_base_successor_base(
+    automation: &Automation,
+    previous_run: &AutomationRun,
+) -> AppResult<(String, String)> {
+    if previous_run.run_index == 1 && automation.base_source_pull_request_json.is_some() {
+        let pr_base = previous_run
+            .pr_base_ref_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                AppError::Validation(
+                    "source-PR automation successor requires previous run pr_base_ref_name"
+                        .to_string(),
+                )
+            })?;
+        return Ok(("local_branch".to_string(), pr_base.to_string()));
+    }
+
+    Ok((
+        automation.base_ref_kind.clone(),
+        automation.base_ref.clone(),
+    ))
 }
 
 fn run_status_is_signal_terminal(status: AutomationRunStatus) -> bool {

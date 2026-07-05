@@ -353,6 +353,46 @@ async fn automation_scheduler_marks_running_run_published_from_workspace_pr() {
 }
 
 #[tokio::test]
+async fn automation_scheduler_provisions_pending_successor_runs() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let automation_id = AutomationId::from_string("automation-1");
+    automation_repo
+        .create(automation(automation_id.as_str(), AutomationStatus::Active))
+        .await
+        .unwrap();
+    let mut run = automation_run("run-2", &automation_id, AutomationRunStatus::Pending, None);
+    run.run_index = 2;
+    run.base_from_run_id = Some(AutomationRunId::from_string("run-1"));
+    run_repo.create_run(run).await.unwrap();
+    let scheduler = scheduler_with(
+        Arc::clone(&automation_repo),
+        Arc::clone(&run_repo),
+        workspace_repo,
+        Arc::new(RecordingSignalChecker::default()),
+        AutomationSchedulerConfig::default(),
+    );
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.active_with_runs, 1);
+    assert_eq!(summary.provisioned_runs, 1);
+    let latest = run_repo
+        .latest_for_automation(&automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest.run_index, 2);
+    assert_eq!(latest.status, AutomationRunStatus::Running);
+    assert!(latest.conversation_id.is_some());
+    assert_eq!(
+        latest.branch_name.as_deref(),
+        Some("ralphx/automation-run-1")
+    );
+}
+
+#[tokio::test]
 async fn automation_scheduler_marks_published_run_merged_from_github_signal() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
     let run_repo = Arc::new(MemoryAutomationRunRepository::new());

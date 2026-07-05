@@ -320,6 +320,16 @@ impl AutomationScheduler {
         summary: &mut AutomationSchedulerTickSummary,
     ) -> AppResult<()> {
         match run.status {
+            AutomationRunStatus::Pending => {
+                if self
+                    .provisioner
+                    .provision_pending_run(automation, run)
+                    .await?
+                    .is_some()
+                {
+                    summary.provisioned_runs += 1;
+                }
+            }
             AutomationRunStatus::Running => {
                 self.observe_running_run(run, summary).await?;
             }
