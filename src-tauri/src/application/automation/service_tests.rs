@@ -207,6 +207,20 @@ impl AutomationRepository for LostStatusAutomationRepository {
         Ok(Some(automation.clone()))
     }
 
+    async fn update_goal_items_json(
+        &self,
+        id: &AutomationId,
+        goal_items_json: Option<String>,
+    ) -> crate::error::AppResult<Option<Automation>> {
+        let mut automation = self.automation.lock().unwrap();
+        if automation.id != *id {
+            return Ok(None);
+        }
+        automation.goal_items_json = goal_items_json;
+        automation.updated_at = Utc::now();
+        Ok(Some(automation.clone()))
+    }
+
     async fn compare_and_swap_status(
         &self,
         id: &AutomationId,

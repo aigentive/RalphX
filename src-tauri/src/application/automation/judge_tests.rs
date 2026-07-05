@@ -2,10 +2,10 @@ use chrono::Utc;
 use serde_json::json;
 
 use super::judge::{
-    apply_updated_item_statuses, automation_judge_loop_suspected, build_automation_judge_prompt,
-    parse_automation_judge_verdict, AutomationJudgeDecision, AutomationJudgeNextBaseBranch,
-    AutomationJudgeValidationContext, BuildAutomationJudgePromptInput,
-    AUTOMATION_JUDGE_PROMPT_MAX_BYTES,
+    append_automation_judge_retry_instruction, apply_updated_item_statuses,
+    automation_judge_loop_suspected, build_automation_judge_prompt, parse_automation_judge_verdict,
+    AutomationJudgeDecision, AutomationJudgeNextBaseBranch, AutomationJudgeValidationContext,
+    BuildAutomationJudgePromptInput, AUTOMATION_JUDGE_PROMPT_MAX_BYTES,
 };
 use crate::domain::entities::{
     Automation, AutomationId, AutomationJudgeState, AutomationPromptAuthor, AutomationRun,
@@ -390,6 +390,19 @@ fn prompt_builder_mid_loop_payload_keeps_goal_items_and_run_counts() {
     assert!(prompt.contains("\"id\":\"item-12\""));
     assert!(prompt.contains("\"runsUsed\": 12"));
     assert!(prompt.contains("\"goalItemsPending\": 9"));
+}
+
+#[test]
+fn retry_instruction_never_exceeds_prompt_budget() {
+    let mut prompt = "x".repeat(AUTOMATION_JUDGE_PROMPT_MAX_BYTES);
+
+    assert!(!append_automation_judge_retry_instruction(&mut prompt));
+    assert_eq!(prompt.len(), AUTOMATION_JUDGE_PROMPT_MAX_BYTES);
+
+    prompt.truncate(AUTOMATION_JUDGE_PROMPT_MAX_BYTES - 200);
+    assert!(append_automation_judge_retry_instruction(&mut prompt));
+    assert!(prompt.len() <= AUTOMATION_JUDGE_PROMPT_MAX_BYTES);
+    assert!(prompt.contains("<retry_instruction"));
 }
 
 fn xml_section_body(prompt: &str, tag: &str) -> String {

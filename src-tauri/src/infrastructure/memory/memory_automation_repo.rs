@@ -1,7 +1,7 @@
 use std::sync::RwLock;
 
 use async_trait::async_trait;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 
 use crate::domain::entities::{
     is_open_automation_run, judge_transition_clears_verdict, Automation, AutomationId,
@@ -97,6 +97,23 @@ impl AutomationRepository for MemoryAutomationRepository {
         if let Some(max_consecutive_failures) = patch.max_consecutive_failures {
             automation.max_consecutive_failures = max_consecutive_failures;
         }
+        automation.updated_at = Utc::now();
+        Ok(Some(automation.clone()))
+    }
+
+    async fn update_goal_items_json(
+        &self,
+        id: &AutomationId,
+        goal_items_json: Option<String>,
+    ) -> AppResult<Option<Automation>> {
+        let mut automations = self.automations.write().unwrap();
+        let Some(automation) = automations
+            .iter_mut()
+            .find(|automation| automation.id == *id)
+        else {
+            return Ok(None);
+        };
+        automation.goal_items_json = goal_items_json;
         automation.updated_at = Utc::now();
         Ok(Some(automation.clone()))
     }
@@ -378,6 +395,8 @@ impl AutomationRunRepository for MemoryAutomationRunRepository {
         from: AutomationJudgeState,
         to: AutomationJudgeState,
         judge_verdict_json: Option<String>,
+        judge_model_id: Option<String>,
+        judge_lease_expires_at: Option<DateTime<Utc>>,
         error_detail: Option<String>,
     ) -> AppResult<bool> {
         let mut runs = self.runs.write().unwrap();
@@ -392,8 +411,17 @@ impl AutomationRunRepository for MemoryAutomationRunRepository {
         run.judge_state = to;
         if clear_judge_verdict {
             run.judge_verdict_json = None;
+            run.judge_model_id = None;
         } else if let Some(verdict) = judge_verdict_json {
             run.judge_verdict_json = Some(verdict);
+        }
+        if let Some(model_id) = judge_model_id {
+            run.judge_model_id = Some(model_id);
+        }
+        if to == AutomationJudgeState::InProgress {
+            run.judge_lease_expires_at = judge_lease_expires_at;
+        } else {
+            run.judge_lease_expires_at = None;
         }
         run.error_detail = error_detail;
         run.updated_at = Utc::now();

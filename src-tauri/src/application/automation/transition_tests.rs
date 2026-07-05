@@ -220,6 +220,8 @@ async fn transition_service_validates_judge_lifecycle_before_cas() {
             AutomationJudgeState::Done,
             None,
             None,
+            None,
+            None,
         )
         .await
         .unwrap_err();
@@ -231,6 +233,8 @@ async fn transition_service_validates_judge_lifecycle_before_cas() {
             &run.id,
             AutomationJudgeState::None,
             AutomationJudgeState::InProgress,
+            None,
+            None,
             None,
             None,
         )

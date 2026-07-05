@@ -200,6 +200,33 @@ impl AutomationRepository for SqliteAutomationRepository {
             .await
     }
 
+    async fn update_goal_items_json(
+        &self,
+        id: &AutomationId,
+        goal_items_json: Option<String>,
+    ) -> AppResult<Option<Automation>> {
+        let id = id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                let affected = conn.execute(
+                    "UPDATE automations
+                     SET goal_items_json = ?1,
+                         updated_at = ?2
+                     WHERE id = ?3",
+                    params![goal_items_json, Utc::now().to_rfc3339(), id],
+                )?;
+                if affected == 0 {
+                    return Ok(None);
+                }
+
+                let sql = format!("{SELECT_AUTOMATION} WHERE id = ?1");
+                conn.query_row(&sql, [id], Self::row_to_automation)
+                    .optional()
+                    .map_err(AppError::from)
+            })
+            .await
+    }
+
     async fn compare_and_swap_status(
         &self,
         id: &AutomationId,
@@ -643,6 +670,8 @@ impl AutomationRunRepository for SqliteAutomationRunRepository {
         from: AutomationJudgeState,
         to: AutomationJudgeState,
         judge_verdict_json: Option<String>,
+        judge_model_id: Option<String>,
+        judge_lease_expires_at: Option<DateTime<Utc>>,
         error_detail: Option<String>,
     ) -> AppResult<bool> {
         let id = id.as_str().to_string();
@@ -659,13 +688,24 @@ impl AutomationRunRepository for SqliteAutomationRunRepository {
                              WHEN ?2 = 1 THEN NULL
                              ELSE COALESCE(?3, judge_verdict_json)
                          END,
-                         error_detail = ?4,
-                         updated_at = ?5
-                     WHERE id = ?6 AND judge_state = ?7",
+                         judge_model_id = CASE
+                             WHEN ?2 = 1 THEN NULL
+                             ELSE COALESCE(?4, judge_model_id)
+                         END,
+                         judge_lease_expires_at = CASE
+                             WHEN ?5 = 'in_progress' THEN ?6
+                             ELSE NULL
+                         END,
+                         error_detail = ?7,
+                         updated_at = ?8
+                     WHERE id = ?9 AND judge_state = ?10",
                     params![
                         to.as_str(),
                         clear_judge_verdict,
                         judge_verdict_json,
+                        judge_model_id,
+                        to.as_str(),
+                        judge_lease_expires_at.map(|dt| dt.to_rfc3339()),
                         error_detail,
                         Utc::now().to_rfc3339(),
                         id,

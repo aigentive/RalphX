@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 
 use crate::entities::{
     AutomationId, AutomationJudgeState, AutomationRun, AutomationRunId, AutomationRunStatus,
@@ -83,6 +84,8 @@ pub trait AutomationRunRepository: Send + Sync {
         from: AutomationJudgeState,
         to: AutomationJudgeState,
         judge_verdict_json: Option<String>,
+        judge_model_id: Option<String>,
+        judge_lease_expires_at: Option<DateTime<Utc>>,
         error_detail: Option<String>,
     ) -> AppResult<bool>;
 

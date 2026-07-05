@@ -26,6 +26,12 @@ pub trait AutomationRepository: Send + Sync {
         patch: AutomationSettingsPatch,
     ) -> AppResult<Option<Automation>>;
 
+    async fn update_goal_items_json(
+        &self,
+        id: &AutomationId,
+        goal_items_json: Option<String>,
+    ) -> AppResult<Option<Automation>>;
+
     async fn compare_and_swap_status(
         &self,
         id: &AutomationId,

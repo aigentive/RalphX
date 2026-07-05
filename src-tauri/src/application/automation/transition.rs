@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use chrono::{DateTime, Utc};
+
 use crate::domain::entities::{
     automation_is_transition_allowed, automation_run_is_transition_allowed,
     judge_is_transition_allowed, AutomationId, AutomationJudgeState, AutomationRunId,
@@ -115,6 +117,8 @@ impl AutomationTransitionService {
         from: AutomationJudgeState,
         to: AutomationJudgeState,
         judge_verdict_json: Option<String>,
+        judge_model_id: Option<String>,
+        judge_lease_expires_at: Option<DateTime<Utc>>,
         error_detail: Option<String>,
     ) -> AppResult<bool> {
         if !judge_is_transition_allowed(from, to) {
@@ -126,7 +130,15 @@ impl AutomationTransitionService {
 
         let changed = self
             .run_repo
-            .compare_and_swap_judge_state(id, from, to, judge_verdict_json, error_detail)
+            .compare_and_swap_judge_state(
+                id,
+                from,
+                to,
+                judge_verdict_json,
+                judge_model_id,
+                judge_lease_expires_at,
+                error_detail,
+            )
             .await?;
         if changed {
             self.event_emitter

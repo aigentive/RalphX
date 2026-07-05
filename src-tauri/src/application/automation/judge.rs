@@ -7,6 +7,7 @@ use crate::domain::entities::{Automation, AutomationRun, AutomationRunStatus};
 use crate::error::{AppError, AppResult};
 
 pub const AUTOMATION_JUDGE_PROMPT_MAX_BYTES: usize = 64 * 1024;
+const AUTOMATION_JUDGE_RETRY_INSTRUCTION: &str = "\n<retry_instruction truncated=\"false\">\nPrevious judge output was invalid. Return exactly one JSON object matching the output_contract and no prose.\n</retry_instruction>\n";
 
 const SETUP_ANALYSIS_MAX_BYTES: usize = 8 * 1024;
 const ORIGINAL_INPUTS_MAX_BYTES: usize = 12 * 1024;
@@ -202,6 +203,14 @@ pub fn build_automation_judge_prompt(
         ));
     }
     Ok(prompt)
+}
+
+pub fn append_automation_judge_retry_instruction(prompt: &mut String) -> bool {
+    if prompt.len() + AUTOMATION_JUDGE_RETRY_INSTRUCTION.len() > AUTOMATION_JUDGE_PROMPT_MAX_BYTES {
+        return false;
+    }
+    prompt.push_str(AUTOMATION_JUDGE_RETRY_INSTRUCTION);
+    true
 }
 
 pub fn parse_automation_judge_verdict(

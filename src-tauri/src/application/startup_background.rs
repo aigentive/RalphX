@@ -9,7 +9,7 @@ use crate::application::agent_workspace_bridge::{
 use crate::application::automation::provisioning::AgentConversationAutomationRunStarter;
 use crate::application::automation::scheduler::{
     global_automation_scheduler_registry, AutomationScheduler, AutomationSchedulerConfig,
-    GithubAutomationSignalChecker,
+    GithubAutomationSignalChecker, HarnessAutomationJudgeInvoker,
 };
 use crate::application::harness_runtime_registry::resolve_default_external_mcp_bootstrap;
 use crate::application::runtime_factory::{build_chat_service_from_deps, ChatRuntimeFactoryDeps};
@@ -103,6 +103,7 @@ pub fn spawn_automation_scheduler(
     let signal_checker = Arc::new(GithubAutomationSignalChecker::new(
         state.github_service.clone(),
     ));
+    let judge_invoker = Arc::new(HarnessAutomationJudgeInvoker::new(state.clone()));
 
     let scheduler = AutomationScheduler::new(
         Arc::clone(&state.automation_repo),
@@ -111,6 +112,7 @@ pub fn spawn_automation_scheduler(
         Arc::clone(&state.agent_conversation_workspace_repo),
         starter,
         signal_checker,
+        judge_invoker,
         registry,
         AutomationSchedulerConfig::default(),
     );
@@ -134,8 +136,13 @@ pub fn spawn_automation_scheduler(
                         merged_runs = summary.merged_runs,
                         closed_runs = summary.closed_runs,
                         failed_runs = summary.failed_runs,
+                        judges_started = summary.judges_started,
+                        judges_succeeded = summary.judges_succeeded,
+                        judge_failures = summary.judge_failures,
+                        successor_runs = summary.successor_runs,
                         signal_check_errors = summary.signal_check_errors,
                         paused_automations = summary.paused_automations,
+                        completed_automations = summary.completed_automations,
                         provisioning_errors = summary.provisioning_errors,
                         automation_errors = summary.automation_errors,
                         "Automation scheduler tick completed"

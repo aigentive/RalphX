@@ -1,3 +1,5 @@
+use std::path::Path;
+use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
@@ -7,20 +9,30 @@ use chrono::{DateTime, Utc};
 use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
 
+use crate::application::automation::judge::{
+    append_automation_judge_retry_instruction, build_automation_judge_prompt,
+    parse_automation_judge_verdict, AutomationJudgeAttachmentContext,
+    AutomationJudgeContextRefSummary, AutomationJudgeValidationContext,
+    BuildAutomationJudgePromptInput,
+};
 use crate::application::automation::provisioning::{
     AutomationRunProvisioner, AutomationRunStarter,
 };
-use crate::application::automation::service::AutomationService;
+use crate::application::automation::service::{
+    ApplyAutomationJudgeVerdictInput, AutomationService, CompleteAutomationJudgeInput,
+};
 use crate::application::automation::transition::AutomationTransitionService;
 use crate::application::automation::transition::NoopAutomationEventEmitter;
 use crate::application::harness_runtime_registry::{
     default_automation_judge_timeout_secs, default_automation_max_run_duration_secs,
     default_automation_publish_grace_secs, default_automation_scheduler_poll_secs,
-    default_automation_signal_failure_pause_threshold,
+    default_automation_signal_failure_pause_threshold, resolve_harness_agent_bootstrap,
 };
+use crate::application::AppState;
+use crate::domain::agents::{AgentConfig, AgentHarnessKind, AgentRole, DEFAULT_AGENT_HARNESS};
 use crate::domain::entities::{
-    AgentConversationWorkspace, Automation, AutomationId, AutomationRun, AutomationRunStatus,
-    AutomationStatus,
+    AgentConversationWorkspace, Automation, AutomationId, AutomationJudgeState, AutomationRun,
+    AutomationRunStatus, AutomationStatus,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AutomationRepository, AutomationRunPublicationMetadata,
@@ -28,7 +40,9 @@ use crate::domain::repositories::{
 };
 use crate::domain::services::github_service::{GithubServiceTrait, PrStatus};
 use crate::error::{AppError, AppResult};
+use crate::infrastructure::agents::claude::agent_names;
 use crate::infrastructure::agents::claude::AutomationsRuntimeConfig;
+use crate::utils::path_safety::validate_absolute_non_root_path;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AutomationSchedulerConfig {
@@ -75,8 +89,13 @@ pub struct AutomationSchedulerTickSummary {
     pub merged_runs: usize,
     pub closed_runs: usize,
     pub failed_runs: usize,
+    pub judges_started: usize,
+    pub judges_succeeded: usize,
+    pub judge_failures: usize,
+    pub successor_runs: usize,
     pub signal_check_errors: usize,
     pub paused_automations: usize,
+    pub completed_automations: usize,
     pub provisioning_errors: usize,
     pub automation_errors: usize,
 }
@@ -182,6 +201,130 @@ impl AutomationSignalChecker for GithubAutomationSignalChecker {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct AutomationJudgeInvocation {
+    pub automation: Automation,
+    pub runs: Vec<AutomationRun>,
+    pub previous_run: AutomationRun,
+    pub retry_reminder: bool,
+    pub timeout: Duration,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AutomationJudgeInvocationOutput {
+    pub raw_output: String,
+    pub model_id: Option<String>,
+}
+
+#[async_trait]
+pub trait AutomationJudgeInvoker: Send + Sync {
+    async fn invoke(
+        &self,
+        input: AutomationJudgeInvocation,
+    ) -> AppResult<AutomationJudgeInvocationOutput>;
+}
+
+#[derive(Clone)]
+pub struct HarnessAutomationJudgeInvoker {
+    state: AppState,
+}
+
+impl HarnessAutomationJudgeInvoker {
+    pub fn new(state: AppState) -> Self {
+        Self { state }
+    }
+}
+
+#[async_trait]
+impl AutomationJudgeInvoker for HarnessAutomationJudgeInvoker {
+    async fn invoke(
+        &self,
+        input: AutomationJudgeInvocation,
+    ) -> AppResult<AutomationJudgeInvocationOutput> {
+        let mut prompt = build_automation_judge_prompt(BuildAutomationJudgePromptInput {
+            automation: &input.automation,
+            runs: &input.runs,
+            previous_run: &input.previous_run,
+            attachments: &[] as &[AutomationJudgeAttachmentContext],
+            context_refs: &[] as &[AutomationJudgeContextRefSummary],
+        })?;
+        if input.retry_reminder && !append_automation_judge_retry_instruction(&mut prompt) {
+            tracing::warn!(
+                automation_id = %input.automation.id,
+                run_id = %input.previous_run.id,
+                "Automation judge retry instruction omitted because the prompt is at the argv-safe budget"
+            );
+        }
+
+        let harness = AgentHarnessKind::from_str(input.automation.provider_harness.trim())
+            .map_err(AppError::Validation)?;
+        let runtime = AppState::lock_utility_agent_runtime_model(
+            self.state
+                .resolve_background_agent_runtime_for_harness(harness, "automation judge")
+                .await?,
+        );
+        let helper_harness = runtime.harness.unwrap_or(DEFAULT_AGENT_HARNESS);
+        let project = self
+            .state
+            .project_repo
+            .get_by_id(&input.automation.project_id)
+            .await?
+            .ok_or_else(|| {
+                AppError::NotFound(format!(
+                    "automation judge project {} not found",
+                    input.automation.project_id.as_str()
+                ))
+            })?;
+        let project_working_directory = validate_absolute_non_root_path(
+            Path::new(&project.working_directory),
+            "automation judge project checkout",
+        )?;
+        let bootstrap = resolve_harness_agent_bootstrap(
+            helper_harness,
+            agent_names::AGENT_AUTOMATION_JUDGE,
+            project_working_directory,
+        );
+        let env = runtime.env_with_overrides(bootstrap.env);
+        let client = Arc::clone(&runtime.client);
+        let model_id = runtime.model.clone();
+        let handle = client
+            .spawn_agent(AgentConfig {
+                role: AgentRole::Custom(bootstrap.agent_role.clone()),
+                prompt,
+                working_directory: bootstrap.working_directory,
+                plugin_dir: Some(bootstrap.plugin_dir),
+                agent: Some(bootstrap.agent_name),
+                model: runtime.model,
+                harness: runtime.harness,
+                cli_path_override: runtime.cli_path_override,
+                logical_effort: runtime.logical_effort,
+                approval_policy: runtime.approval_policy,
+                sandbox_mode: runtime.sandbox_mode,
+                service_tier: runtime.service_tier,
+                max_tokens: None,
+                timeout_secs: Some(input.timeout.as_secs().max(1)),
+                env,
+            })
+            .await
+            .map_err(|error| {
+                AppError::Infrastructure(format!("failed to spawn automation judge: {error}"))
+            })?;
+        let output = client.wait_for_completion(&handle).await.map_err(|error| {
+            AppError::Infrastructure(format!("automation judge failed: {error}"))
+        })?;
+        if !output.success {
+            return Err(AppError::Infrastructure(format!(
+                "automation judge exited unsuccessfully: {}",
+                output.content.trim()
+            )));
+        }
+        Ok(AutomationJudgeInvocationOutput {
+            raw_output: output.content,
+            model_id,
+        })
+    }
+}
+
 pub struct AutomationScheduler {
     service: AutomationService,
     provisioner: AutomationRunProvisioner,
@@ -189,6 +332,7 @@ pub struct AutomationScheduler {
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     transition_service: AutomationTransitionService,
     signal_checker: Arc<dyn AutomationSignalChecker>,
+    judge_invoker: Arc<dyn AutomationJudgeInvoker>,
     registry: Arc<AutomationSchedulerRegistry>,
     config: AutomationSchedulerConfig,
 }
@@ -201,6 +345,7 @@ impl AutomationScheduler {
         workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
         starter: Arc<dyn AutomationRunStarter>,
         signal_checker: Arc<dyn AutomationSignalChecker>,
+        judge_invoker: Arc<dyn AutomationJudgeInvoker>,
         registry: Arc<AutomationSchedulerRegistry>,
         config: AutomationSchedulerConfig,
     ) -> Self {
@@ -230,6 +375,7 @@ impl AutomationScheduler {
             workspace_repo,
             transition_service,
             signal_checker,
+            judge_invoker,
             registry,
             config,
         }
@@ -286,7 +432,12 @@ impl AutomationScheduler {
                     summary.active_with_runs += 1;
                     if let Some(latest_run) = detail.runs.last() {
                         if let Err(error) = self
-                            .observe_latest_run(&detail.automation, latest_run, &mut summary)
+                            .observe_latest_run(
+                                &detail.automation,
+                                &detail.runs,
+                                latest_run,
+                                &mut summary,
+                            )
                             .await
                         {
                             summary.automation_errors += 1;
@@ -316,6 +467,7 @@ impl AutomationScheduler {
     async fn observe_latest_run(
         &self,
         automation: &Automation,
+        runs: &[AutomationRun],
         run: &AutomationRun,
         summary: &mut AutomationSchedulerTickSummary,
     ) -> AppResult<()> {
@@ -335,6 +487,12 @@ impl AutomationScheduler {
             }
             AutomationRunStatus::Published => {
                 self.observe_published_run(automation, run, summary).await?;
+            }
+            AutomationRunStatus::Merged
+            | AutomationRunStatus::PrClosed
+            | AutomationRunStatus::AgentFailed => {
+                self.observe_signal_terminal_run(automation, runs, run, summary)
+                    .await?;
             }
             AutomationRunStatus::Provisioning
                 if run_has_exceeded(run, self.config.max_run_duration) =>
@@ -473,6 +631,224 @@ impl AutomationScheduler {
             summary.failed_runs += 1;
         }
         Ok(())
+    }
+
+    async fn observe_signal_terminal_run(
+        &self,
+        automation: &Automation,
+        runs: &[AutomationRun],
+        run: &AutomationRun,
+        summary: &mut AutomationSchedulerTickSummary,
+    ) -> AppResult<()> {
+        match run.judge_state {
+            AutomationJudgeState::None | AutomationJudgeState::Failed => {
+                let from = run.judge_state;
+                if self
+                    .transition_service
+                    .transition_judge_state(
+                        &run.id,
+                        from,
+                        AutomationJudgeState::InProgress,
+                        None,
+                        None,
+                        Some(judge_lease_expires_at(self.config.judge_timeout)),
+                        None,
+                    )
+                    .await?
+                {
+                    summary.judges_started += 1;
+                    self.run_judge_for_terminal_run(automation, runs, run, summary)
+                        .await?;
+                }
+            }
+            AutomationJudgeState::Done => {
+                self.apply_stored_judge_verdict(automation, run, summary)
+                    .await?;
+            }
+            AutomationJudgeState::InProgress
+                if judge_has_exceeded(run, self.config.judge_timeout) =>
+            {
+                self.mark_judge_failed(
+                    automation,
+                    run,
+                    "Automation judge exceeded judge_timeout_secs".to_string(),
+                    summary,
+                )
+                .await?;
+            }
+            AutomationJudgeState::InProgress | AutomationJudgeState::Skipped => {}
+        }
+        Ok(())
+    }
+
+    async fn run_judge_for_terminal_run(
+        &self,
+        automation: &Automation,
+        runs: &[AutomationRun],
+        run: &AutomationRun,
+        summary: &mut AutomationSchedulerTickSummary,
+    ) -> AppResult<()> {
+        let parsed = match self
+            .invoke_and_parse_judge(automation, runs, run, false)
+            .await
+        {
+            Ok(parsed) => parsed,
+            Err(JudgeInvocationFailure::InvalidOutput { .. }) => match self
+                .invoke_and_parse_judge(automation, runs, run, true)
+                .await
+            {
+                Ok(parsed) => parsed,
+                Err(error) => {
+                    self.mark_judge_failed(automation, run, error.detail(), summary)
+                        .await?;
+                    return Ok(());
+                }
+            },
+            Err(error) => {
+                self.mark_judge_failed(automation, run, error.detail(), summary)
+                    .await?;
+                return Ok(());
+            }
+        };
+
+        let outcome = self
+            .service
+            .complete_judge_verdict(CompleteAutomationJudgeInput {
+                automation: automation.clone(),
+                previous_run: run.clone(),
+                verdict: parsed.verdict,
+                verdict_json: parsed.verdict_json,
+                judge_model_id: parsed.model_id,
+            })
+            .await?;
+        summary.judges_succeeded += 1;
+        self.record_judge_apply_outcome(outcome, summary);
+        Ok(())
+    }
+
+    async fn invoke_and_parse_judge(
+        &self,
+        automation: &Automation,
+        runs: &[AutomationRun],
+        run: &AutomationRun,
+        retry_reminder: bool,
+    ) -> Result<ParsedJudgeInvocation, JudgeInvocationFailure> {
+        let output = self
+            .judge_invoker
+            .invoke(AutomationJudgeInvocation {
+                automation: automation.clone(),
+                runs: runs.to_vec(),
+                previous_run: run.clone(),
+                retry_reminder,
+                timeout: self.config.judge_timeout,
+            })
+            .await
+            .map_err(|error| JudgeInvocationFailure::Invocation {
+                detail: error.to_string(),
+            })?;
+        let verdict = parse_automation_judge_verdict(
+            &output.raw_output,
+            AutomationJudgeValidationContext {
+                automation,
+                previous_run: run,
+            },
+        )
+        .map_err(|error| JudgeInvocationFailure::InvalidOutput {
+            detail: error.to_string(),
+            raw_output: output.raw_output.clone(),
+        })?;
+        let verdict_json = serde_json::to_string(&verdict).map_err(|error| {
+            JudgeInvocationFailure::InvalidOutput {
+                detail: format!("failed to serialize normalized judge verdict: {error}"),
+                raw_output: output.raw_output,
+            }
+        })?;
+        Ok(ParsedJudgeInvocation {
+            verdict,
+            verdict_json,
+            model_id: output.model_id,
+        })
+    }
+
+    async fn mark_judge_failed(
+        &self,
+        automation: &Automation,
+        run: &AutomationRun,
+        detail: String,
+        summary: &mut AutomationSchedulerTickSummary,
+    ) -> AppResult<()> {
+        if self
+            .transition_service
+            .transition_judge_state(
+                &run.id,
+                AutomationJudgeState::InProgress,
+                AutomationJudgeState::Failed,
+                None,
+                None,
+                None,
+                Some(detail.clone()),
+            )
+            .await?
+        {
+            summary.judge_failures += 1;
+            if self
+                .transition_service
+                .transition_automation_status(
+                    &automation.id,
+                    AutomationStatus::Active,
+                    AutomationStatus::Paused,
+                    Some("judge_failed".to_string()),
+                    Some(detail),
+                )
+                .await?
+            {
+                summary.paused_automations += 1;
+            }
+        }
+        Ok(())
+    }
+
+    async fn apply_stored_judge_verdict(
+        &self,
+        automation: &Automation,
+        run: &AutomationRun,
+        summary: &mut AutomationSchedulerTickSummary,
+    ) -> AppResult<()> {
+        let Some(verdict_json) = run.judge_verdict_json.as_deref() else {
+            return Ok(());
+        };
+        let verdict = parse_automation_judge_verdict(
+            verdict_json,
+            AutomationJudgeValidationContext {
+                automation,
+                previous_run: run,
+            },
+        )?;
+        let outcome = self
+            .service
+            .apply_persisted_judge_verdict(ApplyAutomationJudgeVerdictInput {
+                automation: automation.clone(),
+                previous_run: run.clone(),
+                verdict,
+            })
+            .await?;
+        self.record_judge_apply_outcome(outcome, summary);
+        Ok(())
+    }
+
+    fn record_judge_apply_outcome(
+        &self,
+        outcome: crate::application::automation::service::AutomationJudgeApplyOutcome,
+        summary: &mut AutomationSchedulerTickSummary,
+    ) {
+        if outcome.successor_run.is_some() {
+            summary.successor_runs += 1;
+        }
+        match outcome.terminal_automation_status {
+            Some(AutomationStatus::Paused) => summary.paused_automations += 1,
+            Some(AutomationStatus::Completed) => summary.completed_automations += 1,
+            _ => {}
+        }
     }
 
     async fn observe_published_run(
@@ -620,9 +996,46 @@ fn parse_github_datetime(value: Option<&str>) -> Option<DateTime<Utc>> {
     })
 }
 
+struct ParsedJudgeInvocation {
+    verdict: crate::application::automation::judge::AutomationJudgeVerdict,
+    verdict_json: String,
+    model_id: Option<String>,
+}
+
+enum JudgeInvocationFailure {
+    Invocation { detail: String },
+    InvalidOutput { detail: String, raw_output: String },
+}
+
+impl JudgeInvocationFailure {
+    fn detail(self) -> String {
+        match self {
+            Self::Invocation { detail } => detail,
+            Self::InvalidOutput { detail, raw_output } => {
+                let raw_excerpt = raw_output.chars().take(1000).collect::<String>();
+                format!("{detail}; raw_output: {raw_excerpt}")
+            }
+        }
+    }
+}
+
 fn run_has_exceeded(run: &AutomationRun, limit: Duration) -> bool {
     let started_at = run.started_at.unwrap_or(run.created_at);
     elapsed_since(started_at).is_some_and(|elapsed| elapsed >= limit)
+}
+
+fn judge_has_exceeded(run: &AutomationRun, limit: Duration) -> bool {
+    if let Some(expires_at) = run.judge_lease_expires_at {
+        return Utc::now() >= expires_at;
+    }
+    elapsed_since(run.updated_at).is_some_and(|elapsed| elapsed >= limit)
+}
+
+fn judge_lease_expires_at(limit: Duration) -> DateTime<Utc> {
+    let Ok(limit) = chrono::Duration::from_std(limit) else {
+        return Utc::now();
+    };
+    Utc::now() + limit
 }
 
 fn elapsed_since(started_at: DateTime<Utc>) -> Option<Duration> {

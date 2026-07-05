@@ -4,11 +4,13 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use chrono::{TimeZone, Utc};
+use serde_json::{json, Value};
 
 use super::provisioning::{
     AutomationRunStartOutcome, AutomationRunStartRequest, AutomationRunStarter,
 };
 use super::scheduler::{
+    AutomationJudgeInvocation, AutomationJudgeInvocationOutput, AutomationJudgeInvoker,
     AutomationScheduler, AutomationSchedulerConfig, AutomationSchedulerRegistry,
     AutomationSignalChecker,
 };
@@ -63,6 +65,51 @@ impl RecordingSignalChecker {
     }
 }
 
+#[derive(Default)]
+struct RecordingJudgeInvoker {
+    calls: Mutex<Vec<AutomationRunId>>,
+    responses: Mutex<VecDeque<Result<String, String>>>,
+}
+
+impl RecordingJudgeInvoker {
+    fn with_outputs(outputs: Vec<String>) -> Self {
+        Self {
+            calls: Mutex::new(Vec::new()),
+            responses: Mutex::new(VecDeque::from(
+                outputs.into_iter().map(Ok).collect::<Vec<_>>(),
+            )),
+        }
+    }
+
+    fn call_count(&self) -> usize {
+        self.calls.lock().unwrap().len()
+    }
+}
+
+#[async_trait]
+impl AutomationJudgeInvoker for RecordingJudgeInvoker {
+    async fn invoke(
+        &self,
+        input: AutomationJudgeInvocation,
+    ) -> AppResult<AutomationJudgeInvocationOutput> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(input.previous_run.id.clone());
+        match self.responses.lock().unwrap().pop_front() {
+            Some(Ok(raw_output)) => Ok(AutomationJudgeInvocationOutput {
+                raw_output,
+                model_id: Some("haiku".to_string()),
+            }),
+            Some(Err(error)) => Err(AppError::Validation(error)),
+            None => Ok(AutomationJudgeInvocationOutput {
+                raw_output: valid_continue_verdict(),
+                model_id: Some("haiku".to_string()),
+            }),
+        }
+    }
+}
+
 #[async_trait]
 impl AutomationSignalChecker for RecordingSignalChecker {
     async fn check_pr_status(
@@ -111,6 +158,18 @@ fn automation(id: &str, status: AutomationStatus) -> Automation {
         created_at: now,
         updated_at: now,
     }
+}
+
+fn automation_with_goal_items(id: &str, status: AutomationStatus) -> Automation {
+    let mut automation = automation(id, status);
+    automation.goal_items_json = Some(
+        json!([
+            { "id": "item-1", "title": "First", "status": "done" },
+            { "id": "item-2", "title": "Second", "status": "pending" }
+        ])
+        .to_string(),
+    );
+    automation
 }
 
 fn automation_run(
@@ -176,6 +235,24 @@ fn scheduler_with(
     signal_checker: Arc<dyn AutomationSignalChecker>,
     config: AutomationSchedulerConfig,
 ) -> AutomationScheduler {
+    scheduler_with_judge(
+        automation_repo,
+        run_repo,
+        workspace_repo,
+        signal_checker,
+        Arc::new(RecordingJudgeInvoker::default()),
+        config,
+    )
+}
+
+fn scheduler_with_judge(
+    automation_repo: Arc<MemoryAutomationRepository>,
+    run_repo: Arc<MemoryAutomationRunRepository>,
+    workspace_repo: Arc<MemoryAgentConversationWorkspaceRepository>,
+    signal_checker: Arc<dyn AutomationSignalChecker>,
+    judge_invoker: Arc<dyn AutomationJudgeInvoker>,
+    config: AutomationSchedulerConfig,
+) -> AutomationScheduler {
     AutomationScheduler::new(
         automation_repo,
         run_repo,
@@ -183,9 +260,51 @@ fn scheduler_with(
         workspace_repo,
         Arc::new(RecordingStarter),
         signal_checker,
+        judge_invoker,
         Arc::new(AutomationSchedulerRegistry::default()),
         config,
     )
+}
+
+fn valid_continue_verdict() -> String {
+    json!({
+        "decision": "continue",
+        "goalMet": false,
+        "reason": "The next item remains and should be implemented in a scoped PR.",
+        "confidence": 0.87,
+        "goalProgress": { "completedItems": 1, "totalItems": 2, "summary": "One item complete." },
+        "updatedItemStatuses": [{ "id": "item-2", "status": "done" }],
+        "nextRunPrompt": "Implement item 2 from the automation goal. Keep the change scoped, include targeted tests, and publish the PR.",
+        "nextBaseBranch": "automation_base"
+    })
+    .to_string()
+}
+
+fn valid_stop_verdict(goal_met: bool) -> String {
+    json!({
+        "decision": "stop",
+        "goalMet": goal_met,
+        "reason": "The automation should stop based on the latest run evidence.",
+        "confidence": 0.9,
+        "goalProgress": { "completedItems": 2, "totalItems": 2, "summary": "No remaining runnable work." },
+        "updatedItemStatuses": null,
+        "nextRunPrompt": null,
+        "nextBaseBranch": null
+    })
+    .to_string()
+}
+
+fn item_status(goal_items_json: &str, id: &str) -> String {
+    let value: Value = serde_json::from_str(goal_items_json).unwrap();
+    value
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item.get("id").and_then(Value::as_str) == Some(id))
+        .and_then(|item| item.get("status"))
+        .and_then(Value::as_str)
+        .unwrap()
+        .to_string()
 }
 
 #[test]
@@ -266,6 +385,7 @@ async fn automation_scheduler_tick_only_leases_active_automations() {
         workspace_repo,
         Arc::new(RecordingStarter),
         Arc::new(RecordingSignalChecker::default()),
+        Arc::new(RecordingJudgeInvoker::default()),
         registry,
         AutomationSchedulerConfig::from_runtime(&AutomationsRuntimeConfig::default()),
     );
@@ -734,4 +854,252 @@ async fn automation_scheduler_marks_publish_failure_as_agent_failed() {
         .unwrap();
     assert_eq!(latest.status, AutomationRunStatus::AgentFailed);
     assert_eq!(latest.error_code.as_deref(), Some("publish_failed"));
+}
+
+#[tokio::test]
+async fn automation_scheduler_judges_terminal_run_and_schedules_successor() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let automation_id = AutomationId::from_string("automation-1");
+    automation_repo
+        .create(automation_with_goal_items(
+            automation_id.as_str(),
+            AutomationStatus::Active,
+        ))
+        .await
+        .unwrap();
+    let mut run = automation_run("run-1", &automation_id, AutomationRunStatus::Merged, None);
+    run.pr_number = Some(81);
+    run.pr_base_ref_name = Some("main".to_string());
+    run_repo.create_run(run).await.unwrap();
+    let judge = Arc::new(RecordingJudgeInvoker::with_outputs(vec![
+        valid_continue_verdict(),
+    ]));
+    let scheduler = scheduler_with_judge(
+        Arc::clone(&automation_repo),
+        Arc::clone(&run_repo),
+        workspace_repo,
+        Arc::new(RecordingSignalChecker::default()),
+        judge.clone(),
+        AutomationSchedulerConfig::default(),
+    );
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.judges_started, 1);
+    assert_eq!(summary.judges_succeeded, 1);
+    assert_eq!(summary.successor_runs, 1);
+    assert_eq!(judge.call_count(), 1);
+    let runs = run_repo.list_for_automation(&automation_id).await.unwrap();
+    assert_eq!(runs.len(), 2);
+    assert_eq!(runs[0].judge_state, AutomationJudgeState::Done);
+    assert!(runs[0].judge_verdict_json.is_some());
+    assert_eq!(runs[0].judge_model_id.as_deref(), Some("haiku"));
+    assert_eq!(runs[1].status, AutomationRunStatus::Pending);
+    assert_eq!(runs[1].prompt_author, AutomationPromptAuthor::Judge);
+    assert_eq!(runs[1].base_from_run_id, Some(runs[0].id.clone()));
+    assert_eq!(
+        runs[1].run_prompt,
+        "Implement item 2 from the automation goal. Keep the change scoped, include targeted tests, and publish the PR."
+    );
+    let automation = automation_repo
+        .get_by_id(&automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        item_status(automation.goal_items_json.as_deref().unwrap(), "item-2"),
+        "done"
+    );
+}
+
+#[tokio::test]
+async fn automation_scheduler_retries_invalid_judge_output_once_then_pauses() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let automation_id = AutomationId::from_string("automation-1");
+    automation_repo
+        .create(automation_with_goal_items(
+            automation_id.as_str(),
+            AutomationStatus::Active,
+        ))
+        .await
+        .unwrap();
+    run_repo
+        .create_run(automation_run(
+            "run-1",
+            &automation_id,
+            AutomationRunStatus::AgentFailed,
+            None,
+        ))
+        .await
+        .unwrap();
+    let judge = Arc::new(RecordingJudgeInvoker::with_outputs(vec![
+        "{\"decision\":\"continue\"}".to_string(),
+        "still not json".to_string(),
+    ]));
+    let scheduler = scheduler_with_judge(
+        Arc::clone(&automation_repo),
+        Arc::clone(&run_repo),
+        workspace_repo,
+        Arc::new(RecordingSignalChecker::default()),
+        judge.clone(),
+        AutomationSchedulerConfig::default(),
+    );
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.judges_started, 1);
+    assert_eq!(summary.judge_failures, 1);
+    assert_eq!(summary.successor_runs, 0);
+    assert_eq!(judge.call_count(), 2);
+    let latest = run_repo
+        .latest_for_automation(&automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest.judge_state, AutomationJudgeState::Failed);
+    assert!(latest.judge_verdict_json.is_none());
+    assert!(latest
+        .error_detail
+        .as_deref()
+        .unwrap()
+        .contains("still not json"));
+    let automation = automation_repo
+        .get_by_id(&automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(automation.status, AutomationStatus::Paused);
+    assert_eq!(
+        automation.paused_reason_code.as_deref(),
+        Some("judge_failed")
+    );
+}
+
+#[tokio::test]
+async fn automation_scheduler_marks_stale_in_progress_judge_failed() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let automation_id = AutomationId::from_string("automation-1");
+    automation_repo
+        .create(automation(automation_id.as_str(), AutomationStatus::Active))
+        .await
+        .unwrap();
+    let mut run = automation_run("run-1", &automation_id, AutomationRunStatus::Merged, None);
+    run.judge_state = AutomationJudgeState::InProgress;
+    run.judge_lease_expires_at = Some(Utc::now() - chrono::Duration::minutes(1));
+    run.updated_at = Utc::now();
+    run_repo.create_run(run).await.unwrap();
+    let mut config = AutomationSchedulerConfig::default();
+    config.judge_timeout = Duration::from_secs(60);
+    let judge = Arc::new(RecordingJudgeInvoker::default());
+    let scheduler = scheduler_with_judge(
+        Arc::clone(&automation_repo),
+        Arc::clone(&run_repo),
+        workspace_repo,
+        Arc::new(RecordingSignalChecker::default()),
+        judge.clone(),
+        config,
+    );
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.judge_failures, 1);
+    assert_eq!(summary.paused_automations, 1);
+    assert_eq!(judge.call_count(), 0);
+    let latest = run_repo
+        .latest_for_automation(&automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest.judge_state, AutomationJudgeState::Failed);
+    assert_eq!(
+        latest.error_detail.as_deref(),
+        Some("Automation judge exceeded judge_timeout_secs")
+    );
+}
+
+#[tokio::test]
+async fn automation_scheduler_redrives_failed_judge_after_resume() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let automation_id = AutomationId::from_string("automation-1");
+    automation_repo
+        .create(automation(automation_id.as_str(), AutomationStatus::Active))
+        .await
+        .unwrap();
+    let mut run = automation_run("run-1", &automation_id, AutomationRunStatus::Merged, None);
+    run.judge_state = AutomationJudgeState::Failed;
+    run.error_detail = Some("prior invalid output".to_string());
+    run_repo.create_run(run).await.unwrap();
+    let judge = Arc::new(RecordingJudgeInvoker::with_outputs(vec![
+        valid_stop_verdict(true),
+    ]));
+    let scheduler = scheduler_with_judge(
+        Arc::clone(&automation_repo),
+        Arc::clone(&run_repo),
+        workspace_repo,
+        Arc::new(RecordingSignalChecker::default()),
+        judge,
+        AutomationSchedulerConfig::default(),
+    );
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.judges_started, 1);
+    assert_eq!(summary.judges_succeeded, 1);
+    let latest = run_repo
+        .latest_for_automation(&automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest.judge_state, AutomationJudgeState::Done);
+    let automation = automation_repo
+        .get_by_id(&automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(automation.status, AutomationStatus::Completed);
+}
+
+#[tokio::test]
+async fn automation_scheduler_consumes_stored_continue_verdict_without_duplicate_judge() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let automation_id = AutomationId::from_string("automation-1");
+    automation_repo
+        .create(automation_with_goal_items(
+            automation_id.as_str(),
+            AutomationStatus::Active,
+        ))
+        .await
+        .unwrap();
+    let mut run = automation_run("run-1", &automation_id, AutomationRunStatus::Merged, None);
+    run.judge_state = AutomationJudgeState::Done;
+    run.judge_verdict_json = Some(valid_continue_verdict());
+    run_repo.create_run(run).await.unwrap();
+    let judge = Arc::new(RecordingJudgeInvoker::default());
+    let scheduler = scheduler_with_judge(
+        Arc::clone(&automation_repo),
+        Arc::clone(&run_repo),
+        workspace_repo,
+        Arc::new(RecordingSignalChecker::default()),
+        judge.clone(),
+        AutomationSchedulerConfig::default(),
+    );
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.judges_started, 0);
+    assert_eq!(summary.successor_runs, 1);
+    assert_eq!(judge.call_count(), 0);
+    let runs = run_repo.list_for_automation(&automation_id).await.unwrap();
+    assert_eq!(runs.len(), 2);
+    assert_eq!(runs[1].prompt_author, AutomationPromptAuthor::Judge);
 }

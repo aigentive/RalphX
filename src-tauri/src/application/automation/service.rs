@@ -2,6 +2,10 @@ use std::sync::Arc;
 
 use chrono::Utc;
 
+use crate::application::automation::judge::{
+    apply_updated_item_statuses, automation_judge_loop_suspected, AutomationJudgeDecision,
+    AutomationJudgeVerdict,
+};
 use crate::application::automation::transition::{
     AutomationEvent, AutomationEventEmitter, AutomationTransitionService,
 };
@@ -75,6 +79,29 @@ pub struct AutomationSuccessorRunOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AutomationScheduleOutcome {
     pub scheduled: bool,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompleteAutomationJudgeInput {
+    pub automation: Automation,
+    pub previous_run: AutomationRun,
+    pub verdict: AutomationJudgeVerdict,
+    pub verdict_json: String,
+    pub judge_model_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ApplyAutomationJudgeVerdictInput {
+    pub automation: Automation,
+    pub previous_run: AutomationRun,
+    pub verdict: AutomationJudgeVerdict,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AutomationJudgeApplyOutcome {
+    pub successor_run: Option<AutomationRun>,
+    pub terminal_automation_status: Option<AutomationStatus>,
     pub reason: Option<String>,
 }
 
@@ -468,6 +495,57 @@ impl AutomationService {
         })
     }
 
+    pub async fn complete_judge_verdict(
+        &self,
+        input: CompleteAutomationJudgeInput,
+    ) -> AppResult<AutomationJudgeApplyOutcome> {
+        let applied_goal_items = apply_updated_item_statuses(
+            input.automation.goal_items_json.as_deref(),
+            input.verdict.updated_item_statuses.as_deref(),
+        )?;
+        let changed = self
+            .transition_service
+            .transition_judge_state(
+                &input.previous_run.id,
+                AutomationJudgeState::InProgress,
+                AutomationJudgeState::Done,
+                Some(input.verdict_json),
+                input.judge_model_id,
+                None,
+                None,
+            )
+            .await?;
+        if !changed {
+            return Ok(AutomationJudgeApplyOutcome {
+                successor_run: None,
+                terminal_automation_status: None,
+                reason: Some("judge state changed before verdict persistence".to_string()),
+            });
+        }
+
+        self.apply_judge_verdict_effects(
+            ApplyAutomationJudgeVerdictInput {
+                automation: input.automation,
+                previous_run: input.previous_run,
+                verdict: input.verdict,
+            },
+            applied_goal_items,
+        )
+        .await
+    }
+
+    pub async fn apply_persisted_judge_verdict(
+        &self,
+        input: ApplyAutomationJudgeVerdictInput,
+    ) -> AppResult<AutomationJudgeApplyOutcome> {
+        let applied_goal_items = apply_updated_item_statuses(
+            input.automation.goal_items_json.as_deref(),
+            input.verdict.updated_item_statuses.as_deref(),
+        )?;
+        self.apply_judge_verdict_effects(input, applied_goal_items)
+            .await
+    }
+
     async fn require_automation(&self, id: &AutomationId) -> AppResult<Automation> {
         self.automation_repo
             .get_by_id(id)
@@ -538,6 +616,92 @@ impl AutomationService {
             .get_by_id(id)
             .await?
             .ok_or_else(|| automation_run_not_found(id))
+    }
+
+    async fn apply_judge_verdict_effects(
+        &self,
+        input: ApplyAutomationJudgeVerdictInput,
+        applied_goal_items: Option<String>,
+    ) -> AppResult<AutomationJudgeApplyOutcome> {
+        if applied_goal_items.as_deref() != input.automation.goal_items_json.as_deref() {
+            self.automation_repo
+                .update_goal_items_json(&input.automation.id, applied_goal_items.clone())
+                .await?
+                .ok_or_else(|| automation_not_found(&input.automation.id))?;
+        }
+
+        match input.verdict.decision {
+            AutomationJudgeDecision::Continue => {
+                if automation_judge_loop_suspected(&input.previous_run, &input.verdict) {
+                    self.transition_automation_status_or_conflict(
+                        &input.automation.id,
+                        AutomationStatus::Active,
+                        AutomationStatus::Paused,
+                        Some("judge_loop_suspected".to_string()),
+                        Some(
+                            "Automation judge produced the same next run prompt after a non-merged run"
+                                .to_string(),
+                        ),
+                    )
+                    .await?;
+                    return Ok(AutomationJudgeApplyOutcome {
+                        successor_run: None,
+                        terminal_automation_status: Some(AutomationStatus::Paused),
+                        reason: Some("judge_loop_suspected".to_string()),
+                    });
+                }
+                let next_prompt = input
+                    .verdict
+                    .next_run_prompt
+                    .as_deref()
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                let outcome = self
+                    .create_merged_base_successor_run(CreateMergedBaseSuccessorRunInput {
+                        automation_id: input.automation.id,
+                        previous_run_id: input.previous_run.id,
+                        run_prompt: next_prompt,
+                        prompt_author: AutomationPromptAuthor::Judge,
+                    })
+                    .await?;
+                Ok(AutomationJudgeApplyOutcome {
+                    successor_run: outcome.run,
+                    terminal_automation_status: None,
+                    reason: outcome.reason,
+                })
+            }
+            AutomationJudgeDecision::Stop if input.verdict.goal_met => {
+                self.transition_automation_status_or_conflict(
+                    &input.automation.id,
+                    AutomationStatus::Active,
+                    AutomationStatus::Completed,
+                    None,
+                    None,
+                )
+                .await?;
+                Ok(AutomationJudgeApplyOutcome {
+                    successor_run: None,
+                    terminal_automation_status: Some(AutomationStatus::Completed),
+                    reason: None,
+                })
+            }
+            AutomationJudgeDecision::Stop => {
+                self.transition_automation_status_or_conflict(
+                    &input.automation.id,
+                    AutomationStatus::Active,
+                    AutomationStatus::Paused,
+                    Some("judge_stopped_unmet".to_string()),
+                    Some(input.verdict.reason.clone()),
+                )
+                .await?;
+                Ok(AutomationJudgeApplyOutcome {
+                    successor_run: None,
+                    terminal_automation_status: Some(AutomationStatus::Paused),
+                    reason: Some("judge_stopped_unmet".to_string()),
+                })
+            }
+        }
     }
 }
 

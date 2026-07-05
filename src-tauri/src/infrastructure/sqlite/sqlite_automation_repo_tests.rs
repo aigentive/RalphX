@@ -203,6 +203,8 @@ async fn sqlite_run_repo_latest_and_single_open_index() {
             AutomationJudgeState::Done,
             None,
             None,
+            None,
+            None,
         )
         .await
         .unwrap());
@@ -260,12 +262,15 @@ async fn sqlite_run_repo_clears_stale_judge_verdict_when_retry_starts() {
     failed.error_detail = Some("previous judge attempt failed".to_string());
     run_repo.create_run(failed.clone()).await.unwrap();
 
+    let lease_expires_at = Utc::now() + chrono::Duration::minutes(3);
     assert!(run_repo
         .compare_and_swap_judge_state(
             &failed.id,
             AutomationJudgeState::Failed,
             AutomationJudgeState::InProgress,
             None,
+            None,
+            Some(lease_expires_at),
             None,
         )
         .await
@@ -275,4 +280,5 @@ async fn sqlite_run_repo_clears_stale_judge_verdict_when_retry_starts() {
     assert_eq!(updated.judge_state, AutomationJudgeState::InProgress);
     assert_eq!(updated.judge_verdict_json, None);
     assert_eq!(updated.error_detail, None);
+    assert_eq!(updated.judge_lease_expires_at, Some(lease_expires_at));
 }
