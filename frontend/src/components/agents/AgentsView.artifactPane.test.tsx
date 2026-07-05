@@ -8,6 +8,7 @@ import {
   selectSidebarConversationRow,
   setupAgentsViewTest,
 } from "./AgentsView.testSetup";
+import { QueryClient } from "@tanstack/react-query";
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -16,6 +17,7 @@ import {
   conversationFixture as conversation,
   conversationWorkspaceFixture as conversationWorkspace,
 } from "./agentsTestFixtures";
+import { agentWorkspaceKeys } from "./agentWorkspaceQueries";
 import { useAgentArtifactUiStore } from "./agentArtifactUiStore";
 
 const {
@@ -346,6 +348,39 @@ describe("AgentsView artifact pane", () => {
     });
 
     expect(startWorkspaceReviewMock).not.toHaveBeenCalled();
+  });
+
+  it("does not invalidate selected workspace Review queries for unrelated child lifecycle events", async () => {
+    const invalidateQueriesSpy = vi.spyOn(QueryClient.prototype, "invalidateQueries");
+    mockAgentViewData(conversation({ agentMode: "edit" }));
+    getAgentConversationWorkspaceMock.mockResolvedValue(conversationWorkspace({ mode: "edit" }));
+    getWorkspaceReviewContextMock.mockResolvedValue(
+      workspaceReviewContext({ isOutdated: true, shouldShowTab: true }),
+    );
+    resetAgentSessionState({
+      selectedProjectId: "project-1",
+      selectedConversationId: "conversation-1",
+    });
+
+    renderAgentsView();
+
+    await waitFor(() =>
+      expect(getWorkspaceReviewContextMock).toHaveBeenCalledWith("conversation-1"),
+    );
+    invalidateQueriesSpy.mockClear();
+
+    act(() => {
+      fireAgentViewEvent("agent:run_started", {
+        conversationId: "task-conversation-1",
+        contextId: "task-1",
+        taskId: "task-1",
+      });
+    });
+
+    expect(invalidateQueriesSpy).not.toHaveBeenCalledWith({
+      queryKey: agentWorkspaceKeys.workspaceReview("conversation-1"),
+    });
+    invalidateQueriesSpy.mockRestore();
   });
 
   it("does not auto-start Review from the UI when retained related runtimes are only waiting for input", async () => {

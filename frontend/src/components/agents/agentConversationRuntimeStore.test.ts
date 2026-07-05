@@ -61,6 +61,50 @@ describe("reconcileAgentConversationRuntimeStatus", () => {
     expect(state.activeConversationIds[storeKey]).toBeUndefined();
   });
 
+  it("mirrors only the selected visible chat status from mixed aggregate runtime rows", () => {
+    const storeKey = buildStoreKey("project", "conversation-1");
+    const childItem = runtimeStatus().items[0]!;
+    const workspaceItem = {
+      ...childItem,
+      source: "workspace" as const,
+      contextType: "project" as const,
+      contextId: "conversation-1",
+      label: "Waiting",
+      title: "Workspace chat",
+      agentStatus: "waiting_for_input" as const,
+      taskId: null,
+      internalStatus: null,
+      conversationId: "conversation-1",
+    };
+
+    reconcileAgentConversationRuntimeStatus(
+      "conversation-1",
+      runtimeStatus({
+        primarySource: "task_execution",
+        summaryLabel: "Executing task",
+        agentStatus: "generating",
+        items: [workspaceItem, childItem],
+      }),
+      {
+        storeKey,
+        selectVisibleChatStatus: (status) =>
+          status
+            ? {
+                ...status,
+                primarySource: "workspace",
+                summaryLabel: "Waiting",
+                agentStatus: "waiting_for_input",
+                items: [workspaceItem],
+              }
+            : status,
+      },
+    );
+
+    const state = useChatStore.getState();
+    expect(state.agentStatus[storeKey]).toBe("waiting_for_input");
+    expect(state.agentActivityLabels[storeKey]).toBeUndefined();
+  });
+
   it("clears stale visible chat status when child-only status stops mirroring", () => {
     const storeKey = buildStoreKey("project", "conversation-1");
     const workspaceItem = runtimeStatus().items[0]!;

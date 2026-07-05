@@ -1015,7 +1015,7 @@ describe("AgentsActiveConversationPanel", () => {
     ).toHaveTextContent("Workspace chat");
   });
 
-  it("opens the task artifact and focuses task chat from the runtime status CTA", async () => {
+  it("keeps nonfocused task runtime rows out of workspace composer chrome", async () => {
     const onFocusTaskRuntime = vi.fn();
     const onOpenTaskArtifact = vi.fn();
     const workspaceItem = workspaceRuntimeStatus().items[0]!;
@@ -1046,10 +1046,59 @@ describe("AgentsActiveConversationPanel", () => {
 
     renderPanel({ onFocusTaskRuntime, onOpenTaskArtifact });
 
-    fireEvent.click(await screen.findByRole("button", { name: "View Task" }));
+    await waitFor(() =>
+      expect(getAgentConversationRuntimeStatusesMock).toHaveBeenCalledWith([
+        "conversation-1",
+      ]),
+    );
 
-    expect(onFocusTaskRuntime).toHaveBeenCalledWith("task-2", "review");
-    expect(onOpenTaskArtifact).toHaveBeenCalledWith("task-2");
+    expect(screen.queryByTestId("agents-runtime-status-widget")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "View Task" })).not.toBeInTheDocument();
+    expect(onFocusTaskRuntime).not.toHaveBeenCalled();
+    expect(onOpenTaskArtifact).not.toHaveBeenCalled();
+  });
+
+  it("shows focused task runtime rows in the composer runtime widget", async () => {
+    const workspaceItem = workspaceRuntimeStatus().items[0]!;
+    getAgentConversationRuntimeStatusesMock.mockResolvedValue({
+      "conversation-1": workspaceRuntimeStatus({
+        primarySource: "review",
+        summaryLabel: "Runtime activity",
+        items: [
+          { ...workspaceItem, agentStatus: "waiting_for_input" },
+          {
+            source: "review",
+            contextType: "review",
+            contextId: "task-2",
+            label: "Reviewing",
+            title: "Review task",
+            agentStatus: "generating",
+            taskId: "task-2",
+            internalStatus: "reviewing",
+            runningProcess: null,
+            ideationSession: null,
+            parentSessionId: null,
+            childSessionId: null,
+            conversationId: "review-conversation-1",
+          },
+        ],
+      }),
+    });
+
+    renderPanel({
+      chatFocus: {
+        type: "task_runtime",
+        taskId: "task-2",
+        contextType: "review",
+      },
+    });
+
+    expect(
+      await screen.findByTestId("agents-runtime-status-widget"),
+    ).toHaveTextContent("Review task");
+    expect(
+      screen.getByTestId("agents-runtime-status-current-review"),
+    ).toHaveAttribute("aria-label", "Currently viewing Review task");
   });
 
   it("renders the composer task ledger for a focused task runtime chat", async () => {
@@ -1110,7 +1159,7 @@ describe("AgentsActiveConversationPanel", () => {
     );
   });
 
-  it("focuses the workspace Review chat from the runtime status CTA", async () => {
+  it("keeps nonfocused workspace Review runtime query rows out of workspace composer chrome", async () => {
     const onFocusWorkspaceReview = vi.fn();
     const workspaceItem = workspaceRuntimeStatus().items[0]!;
     getAgentConversationRuntimeStatusesMock.mockResolvedValue({
@@ -1140,12 +1189,20 @@ describe("AgentsActiveConversationPanel", () => {
 
     renderPanel({ onFocusWorkspaceReview });
 
-    fireEvent.click(await screen.findByRole("button", { name: "View Review" }));
+    await waitFor(() =>
+      expect(getAgentConversationRuntimeStatusesMock).toHaveBeenCalledWith([
+        "conversation-1",
+      ]),
+    );
 
-    expect(onFocusWorkspaceReview).toHaveBeenCalledWith("review-conversation-1");
+    expect(screen.queryByTestId("agents-runtime-status-widget")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "View Review" }),
+    ).not.toBeInTheDocument();
+    expect(onFocusWorkspaceReview).not.toHaveBeenCalled();
   });
 
-  it("shows the workspace Review runtime widget from monitor fallback while workspace chat is focused", async () => {
+  it("keeps the workspace Review runtime widget out of workspace composer chrome when workspace chat is focused", () => {
     const onFocusWorkspaceReview = vi.fn();
     getAgentConversationRuntimeStatusesMock.mockResolvedValue({
       "conversation-1": workspaceRuntimeStatus({
@@ -1183,13 +1240,58 @@ describe("AgentsActiveConversationPanel", () => {
       }),
     });
 
+    expect(screen.queryByTestId("agents-runtime-status-widget")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "View Review" }),
+    ).not.toBeInTheDocument();
+    expect(onFocusWorkspaceReview).not.toHaveBeenCalled();
+  });
+
+  it("shows the workspace Review runtime widget from monitor fallback while workspace Review chat is focused", async () => {
+    getAgentConversationRuntimeStatusesMock.mockResolvedValue({
+      "conversation-1": workspaceRuntimeStatus({
+        isRunning: false,
+        agentStatus: "idle",
+        primarySource: null,
+        summaryLabel: null,
+        items: [],
+      }),
+    });
+
+    renderPanel({
+      chatFocus: {
+        type: "workspace_review",
+        conversationId: "review-conversation-1",
+      },
+      workspaceReviewRuntimeStatus: workspaceRuntimeStatus({
+        primarySource: "workspace_review",
+        summaryLabel: "Reviewing",
+        items: [
+          {
+            source: "workspace_review",
+            contextType: "project",
+            contextId: "review-conversation-1",
+            label: "Reviewing",
+            title: "Review workspace changes",
+            agentStatus: "generating",
+            taskId: null,
+            internalStatus: "reviewing",
+            runningProcess: null,
+            ideationSession: null,
+            parentSessionId: null,
+            childSessionId: null,
+            conversationId: "review-conversation-1",
+          },
+        ],
+      }),
+    });
+
     expect(
       await screen.findByTestId("agents-runtime-status-widget"),
     ).toHaveTextContent("Review workspace changes");
-
-    fireEvent.click(screen.getByRole("button", { name: "View Review" }));
-
-    expect(onFocusWorkspaceReview).toHaveBeenCalledWith("review-conversation-1");
+    expect(
+      screen.getByTestId("agents-runtime-status-current-workspace_review"),
+    ).toHaveAttribute("aria-label", "Currently viewing Review workspace changes");
   });
 
   it("queries parent runtime status when the selected conversation is a Review child", async () => {

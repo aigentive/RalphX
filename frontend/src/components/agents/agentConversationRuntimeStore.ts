@@ -9,9 +9,15 @@ export type AgentConversationRuntimeStatusMirrorOption =
       context: { conversationId: string; storeKey: string },
     ) => boolean);
 
+export type AgentConversationRuntimeStatusMirrorSelector = (
+  status: AgentConversationRuntimeStatus | null | undefined,
+  context: { conversationId: string; storeKey: string },
+) => AgentConversationRuntimeStatus | null | undefined;
+
 interface ReconcileAgentConversationRuntimeStatusOptions {
   storeKey?: string | null | undefined;
   mirrorToVisibleChatStatus?: AgentConversationRuntimeStatusMirrorOption;
+  selectVisibleChatStatus?: AgentConversationRuntimeStatusMirrorSelector;
 }
 
 export function normalizeAgentConversationRuntimeStatus(
@@ -70,6 +76,16 @@ function resolveVisibleChatStatusMirrorDecision(
   };
 }
 
+function selectVisibleChatStatus(
+  status: AgentConversationRuntimeStatus | null | undefined,
+  options: ReconcileAgentConversationRuntimeStatusOptions,
+  context: { conversationId: string; storeKey: string },
+): AgentConversationRuntimeStatus | null | undefined {
+  return options.selectVisibleChatStatus
+    ? options.selectVisibleChatStatus(status, context)
+    : status;
+}
+
 export function reconcileAgentConversationRuntimeStatus(
   conversationId: string,
   status: AgentConversationRuntimeStatus | null | undefined,
@@ -95,9 +111,13 @@ export function reconcileAgentConversationRuntimeStatus(
     return;
   }
 
+  const visibleChatStatus = selectVisibleChatStatus(status, options, {
+    conversationId,
+    storeKey,
+  });
   const { isRunning, agentStatus } =
-    normalizeAgentConversationRuntimeStatus(status);
-  const activityLabel = agentConversationRuntimeActivityLabel(status);
+    normalizeAgentConversationRuntimeStatus(visibleChatStatus);
+  const activityLabel = agentConversationRuntimeActivityLabel(visibleChatStatus);
   const currentStatus = chatState.agentStatus[storeKey] ?? "idle";
 
   if (isRunning) {

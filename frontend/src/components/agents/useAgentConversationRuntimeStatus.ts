@@ -8,6 +8,7 @@ import { useEventBus } from "@/providers/EventProvider";
 import {
   reconcileAgentConversationRuntimeStatus,
   type AgentConversationRuntimeStatusMirrorOption,
+  type AgentConversationRuntimeStatusMirrorSelector,
 } from "./agentConversationRuntimeStore";
 
 export const agentConversationRuntimeStatusKeys = {
@@ -20,6 +21,7 @@ interface UseAgentConversationRuntimeStatusOptions {
   enabled?: boolean;
   invalidateUnknownRuntimeIds?: boolean;
   mirrorToVisibleChatStatus?: AgentConversationRuntimeStatusMirrorOption;
+  selectVisibleChatStatus?: AgentConversationRuntimeStatusMirrorSelector;
   storeKey?: string | null | undefined;
 }
 
@@ -202,12 +204,16 @@ export function useAgentConversationRuntimeStatus(
       ...(options.mirrorToVisibleChatStatus !== undefined
         ? { mirrorToVisibleChatStatus: options.mirrorToVisibleChatStatus }
         : {}),
+      ...(options.selectVisibleChatStatus !== undefined
+        ? { selectVisibleChatStatus: options.selectVisibleChatStatus }
+        : {}),
       ...(options.storeKey !== undefined ? { storeKey: options.storeKey } : {}),
     });
   }, [
     conversationId,
     enabled,
     options.mirrorToVisibleChatStatus,
+    options.selectVisibleChatStatus,
     options.storeKey,
     query.data,
     query.isSuccess,

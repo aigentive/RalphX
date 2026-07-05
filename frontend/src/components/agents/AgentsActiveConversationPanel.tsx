@@ -15,6 +15,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
 import type {
+  AgentConversationRuntimeItem,
   AgentConversationRuntimeStatus,
   AgentConversationWorkspace,
   AgentConversationWorkspaceFreshness,
@@ -205,14 +206,78 @@ function hasWorkspaceReviewRuntime(
   );
 }
 
-function hasWorkspaceRuntime(
-  status: AgentConversationRuntimeStatus | null | undefined,
+function isRuntimeItemOwnedByFocus(
+  item: AgentConversationRuntimeItem,
+  chatFocus: AgentsChatFocus,
 ): boolean {
+  if (chatFocus.type === "workspace") {
+    return item.source === "workspace";
+  }
+  if (chatFocus.type === "ideation") {
+    return item.source === "ideation" && item.contextId === chatFocus.sessionId;
+  }
+  if (chatFocus.type === "verification") {
+    return (
+      item.source === "verification" &&
+      item.parentSessionId === chatFocus.parentSessionId &&
+      (item.childSessionId ?? item.contextId) === chatFocus.childSessionId
+    );
+  }
+  if (chatFocus.type === "workspace_review") {
+    return (
+      item.source === "workspace_review" &&
+      (item.conversationId ?? item.contextId) === chatFocus.conversationId
+    );
+  }
   return (
-    status?.primarySource === "workspace" ||
-    status?.items.some((item) => item.source === "workspace") ||
-    false
+    item.taskId === chatFocus.taskId &&
+    item.contextType === chatFocus.contextType &&
+    isTaskRuntimeContextType(item.contextType)
   );
+}
+
+function runtimeStatusForChatFocus(
+  status: AgentConversationRuntimeStatus | null | undefined,
+  chatFocus: AgentsChatFocus,
+): AgentConversationRuntimeStatus | null | undefined {
+  if (!status?.items.length) {
+    return status;
+  }
+
+  const focusedItems = status.items.filter((item) =>
+    isRuntimeItemOwnedByFocus(item, chatFocus),
+  );
+  if (focusedItems.length === status.items.length) {
+    return status;
+  }
+  if (focusedItems.length === 0) {
+    return {
+      ...status,
+      isRunning: false,
+      agentStatus: "idle",
+      primarySource: null,
+      summaryLabel: null,
+      items: [],
+    };
+  }
+
+  const hasGeneratingItem = focusedItems.some(
+    (item) => item.agentStatus === "generating",
+  );
+  const primarySource = focusedItems.some(
+    (item) => item.source === status.primarySource,
+  )
+    ? status.primarySource
+    : focusedItems[0]?.source ?? status.primarySource;
+
+  return {
+    ...status,
+    isRunning: true,
+    agentStatus: hasGeneratingItem ? "generating" : "waiting_for_input",
+    primarySource,
+    summaryLabel: focusedItems[0]?.label ?? status.summaryLabel,
+    items: focusedItems,
+  };
 }
 
 function mergeWorkspaceReviewRuntimeFallback(
@@ -840,27 +905,29 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   const runtimeStatusStoreKey = runtimeStatusConversationId
     ? buildStoreKey("project", runtimeStatusConversationId)
     : null;
-  const shouldMirrorRuntimeStatusToVisibleChat = useCallback(
+  const selectVisibleRuntimeStatus = useCallback(
     (status: AgentConversationRuntimeStatus | null | undefined) =>
-      isFocusedChildChat || !status?.isRunning || hasWorkspaceRuntime(status),
-    [isFocusedChildChat],
+      runtimeStatusForChatFocus(status, chatFocus),
+    [chatFocus],
   );
   const runtimeStatusQuery = useAgentConversationRuntimeStatus(
     runtimeStatusConversationId,
     {
       enabled: activeConversation.contextType === "project",
       invalidateUnknownRuntimeIds: isFocusedChildChat,
-      mirrorToVisibleChatStatus: shouldMirrorRuntimeStatusToVisibleChat,
+      selectVisibleChatStatus: selectVisibleRuntimeStatus,
       storeKey: runtimeStatusStoreKey,
     },
   );
   const runtimeStatusForWidget = useMemo(
-    () =>
-      mergeWorkspaceReviewRuntimeFallback(
+    () => {
+      const mergedStatus = mergeWorkspaceReviewRuntimeFallback(
         runtimeStatusQuery.data,
-        workspaceReviewRuntimeStatus,
-      ),
-    [runtimeStatusQuery.data, workspaceReviewRuntimeStatus],
+        chatFocus.type === "workspace_review" ? workspaceReviewRuntimeStatus : null,
+      );
+      return runtimeStatusForChatFocus(mergedStatus, chatFocus);
+    },
+    [chatFocus, runtimeStatusQuery.data, workspaceReviewRuntimeStatus],
   );
   const hasLinkedChatFocusTargets = chatFocusOptions.some(
     (option) => option.type !== "workspace",
