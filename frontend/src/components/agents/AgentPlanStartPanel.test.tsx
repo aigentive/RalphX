@@ -321,6 +321,50 @@ describe("AgentPlanStartPanel", () => {
     );
   });
 
+  it("shows copy errors without creating a draft", async () => {
+    const onDraftCreated = vi.fn();
+    const user = userEvent.setup();
+    copyAgentConversationPlanMock.mockRejectedValueOnce(
+      new Error("Source version no longer exists"),
+    );
+    confirmMock.mockImplementationOnce(async (options) => {
+      try {
+        await options.onConfirm?.();
+        return true;
+      } catch {
+        return false;
+      }
+    });
+
+    renderPanel({
+      projectId: "project-1",
+      conversationId: "conversation-1",
+      onDraftCreated,
+    });
+
+    await user.click(
+      await screen.findByRole("button", {
+        name: /select plan existing rollout plan/i,
+      }),
+    );
+    await waitFor(() =>
+      expect(getAtVersionMock).toHaveBeenCalledWith("source-plan-1", 2),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Copy plan" }));
+
+    expect(copyAgentConversationPlanMock).toHaveBeenCalledWith({
+      conversationId: "conversation-1",
+      sourceSessionId: "source-session-1",
+      sourceArtifactId: "source-plan-1",
+      sourceVersion: 2,
+    });
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Source version no longer exists",
+    );
+    expect(onDraftCreated).not.toHaveBeenCalled();
+  });
+
   it("imports dropped markdown through the frontend-read content path", async () => {
     const onDraftCreated = vi.fn();
 

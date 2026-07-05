@@ -4,7 +4,7 @@
  * Tests in-flight deduplication guard for plan import handlers.
  */
 
-import { describe, it, expect, vi, beforeEach, beforeAll } from "vitest";
+import { describe, it, expect, vi, beforeEach, beforeAll, afterEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 import { useIdeationHandlers } from "./useIdeationHandlers";
 import type { IdeationSession } from "@/types/ideation";
@@ -88,6 +88,10 @@ describe("useIdeationHandlers — in-flight guard", () => {
     global.fetch = mockFetch;
   });
 
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   // ---------------------------------------------------------------------------
   // handleFileDrop
   // ---------------------------------------------------------------------------
@@ -129,10 +133,11 @@ describe("useIdeationHandlers — in-flight guard", () => {
 
       const { result } = renderHook(() => useIdeationHandlers(...buildProps()));
       const file = makeFileWithText();
+      let firstImport!: Promise<void>;
 
       // First call starts (in-flight)
       act(() => {
-        void result.current.handleFileDrop(file, "# content");
+        firstImport = result.current.handleFileDrop(file, "# content");
       });
 
       // Second call arrives before first resolves — must be blocked
@@ -143,7 +148,10 @@ describe("useIdeationHandlers — in-flight guard", () => {
       expect(mockFetch).toHaveBeenCalledTimes(1);
 
       // Cleanup: resolve first fetch to avoid open handles
-      resolveFetch(new Response(JSON.stringify({ id: "art-1" }), { status: 200 }));
+      await act(async () => {
+        resolveFetch(new Response(JSON.stringify({ id: "art-1" }), { status: 200 }));
+        await firstImport;
+      });
     });
 
     it("resets guard after successful import so next import can proceed", async () => {
@@ -165,6 +173,9 @@ describe("useIdeationHandlers — in-flight guard", () => {
     });
 
     it("resets guard after error so future imports can proceed", async () => {
+      const consoleErrorSpy = vi
+        .spyOn(console, "error")
+        .mockImplementation(() => undefined);
       mockFetch
         .mockResolvedValueOnce(new Response(null, { status: 500 }))
         .mockResolvedValueOnce(new Response(JSON.stringify({ id: "art-2" }), { status: 200 }));
@@ -183,6 +194,10 @@ describe("useIdeationHandlers — in-flight guard", () => {
       });
 
       expect(mockFetch).toHaveBeenCalledTimes(2);
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        "Plan import error:",
+        expect.any(Error),
+      );
     });
   });
 
@@ -200,10 +215,11 @@ describe("useIdeationHandlers — in-flight guard", () => {
       );
 
       const { result } = renderHook(() => useIdeationHandlers(...buildProps()));
+      let firstImport!: Promise<void>;
 
       // First call starts (in-flight)
       act(() => {
-        void result.current.handleFileSelected(createFileEvent());
+        firstImport = result.current.handleFileSelected(createFileEvent());
       });
 
       // Yield a microtask so file.text() resolves and fetch is entered before second call
@@ -219,10 +235,16 @@ describe("useIdeationHandlers — in-flight guard", () => {
       expect(mockFetch).toHaveBeenCalledTimes(1);
 
       // Cleanup
-      resolveFetch(new Response(JSON.stringify({ id: "art-1" }), { status: 200 }));
+      await act(async () => {
+        resolveFetch(new Response(JSON.stringify({ id: "art-1" }), { status: 200 }));
+        await firstImport;
+      });
     });
 
     it("resets guard after error so future imports can proceed", async () => {
+      const consoleErrorSpy = vi
+        .spyOn(console, "error")
+        .mockImplementation(() => undefined);
       mockFetch
         .mockResolvedValueOnce(new Response(null, { status: 500 }))
         .mockResolvedValueOnce(new Response(JSON.stringify({ id: "art-2" }), { status: 200 }));
@@ -237,6 +259,10 @@ describe("useIdeationHandlers — in-flight guard", () => {
       });
 
       expect(mockFetch).toHaveBeenCalledTimes(2);
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        "Plan import error:",
+        expect.any(Error),
+      );
     });
   });
 
@@ -255,10 +281,11 @@ describe("useIdeationHandlers — in-flight guard", () => {
 
       const { result } = renderHook(() => useIdeationHandlers(...buildProps()));
       const file = makeFileWithText();
+      let firstImport!: Promise<void>;
 
       // handleFileSelected starts first
       act(() => {
-        void result.current.handleFileSelected(createFileEvent());
+        firstImport = result.current.handleFileSelected(createFileEvent());
       });
 
       // Yield microtask so file.text() resolves and fetch is entered
@@ -274,7 +301,10 @@ describe("useIdeationHandlers — in-flight guard", () => {
       expect(mockFetch).toHaveBeenCalledTimes(1);
 
       // Cleanup
-      resolveFetch(new Response(JSON.stringify({ id: "art-1" }), { status: 200 }));
+      await act(async () => {
+        resolveFetch(new Response(JSON.stringify({ id: "art-1" }), { status: 200 }));
+        await firstImport;
+      });
     });
 
     it("blocks handleFileSelected while handleFileDrop is in-flight", async () => {
@@ -287,10 +317,11 @@ describe("useIdeationHandlers — in-flight guard", () => {
 
       const { result } = renderHook(() => useIdeationHandlers(...buildProps()));
       const file = makeFileWithText();
+      let firstImport!: Promise<void>;
 
       // handleFileDrop starts first
       act(() => {
-        void result.current.handleFileDrop(file, "# content");
+        firstImport = result.current.handleFileDrop(file, "# content");
       });
 
       // handleFileSelected must be blocked (handleFileDrop has no file.text() await, so guard is set synchronously)
@@ -301,7 +332,10 @@ describe("useIdeationHandlers — in-flight guard", () => {
       expect(mockFetch).toHaveBeenCalledTimes(1);
 
       // Cleanup
-      resolveFetch(new Response(JSON.stringify({ id: "art-1" }), { status: 200 }));
+      await act(async () => {
+        resolveFetch(new Response(JSON.stringify({ id: "art-1" }), { status: 200 }));
+        await firstImport;
+      });
     });
   });
 });

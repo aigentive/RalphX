@@ -7,7 +7,8 @@ use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, Artifact, ArtifactBucketId,
     ArtifactContent, ArtifactId, ArtifactMetadata, ArtifactType, ChatConversation,
     IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow, IdeationSessionStatus,
-    Project, ProjectId,
+    Priority, Project, ProjectId, ProposalCategory, TaskProposal, VerificationGap,
+    VerificationRoundSnapshot, VerificationRunSnapshot, VerificationStatus,
 };
 
 async fn seed_project(state: &AppState, name: &str) -> Project {
@@ -43,6 +44,23 @@ async fn seed_source_plan(
     v1_content: &str,
     v2_content: &str,
 ) -> (IdeationSession, Artifact, Artifact) {
+    seed_source_plan_with_status(
+        state,
+        project_id,
+        v1_content,
+        v2_content,
+        IdeationSessionStatus::Active,
+    )
+    .await
+}
+
+async fn seed_source_plan_with_status(
+    state: &AppState,
+    project_id: &ProjectId,
+    v1_content: &str,
+    v2_content: &str,
+    status: IdeationSessionStatus,
+) -> (IdeationSession, Artifact, Artifact) {
     let v1 = state
         .artifact_repo
         .create(plan_artifact("Source plan", v1_content, 1))
@@ -58,7 +76,7 @@ async fn seed_source_plan(
         .create(
             IdeationSession::builder()
                 .project_id(project_id.clone())
-                .status(IdeationSessionStatus::Active)
+                .status(status)
                 .plan_artifact_id(v2.id.clone())
                 .build(),
         )
@@ -108,11 +126,186 @@ async fn approval_count(state: &AppState, session_id: String) -> i64 {
         .unwrap()
 }
 
+#[derive(Debug, PartialEq)]
+struct ProposalIsolationSnapshot {
+    proposals: Vec<(
+        String,
+        String,
+        String,
+        i32,
+        bool,
+        Option<String>,
+        Option<u32>,
+    )>,
+    dependencies: Vec<(String, String, Option<String>, String)>,
+}
+
+async fn seed_source_proposal_dependency(
+    state: &AppState,
+    session: &IdeationSession,
+) -> ProposalIsolationSnapshot {
+    let mut foundation = TaskProposal::new(
+        session.id.clone(),
+        "Source foundation",
+        ProposalCategory::Feature,
+        Priority::High,
+    );
+    foundation.description = Some("Must remain on source session".to_string());
+    foundation.priority_score = 85;
+    foundation.selected = true;
+    foundation.sort_order = 1;
+    foundation.plan_artifact_id = session.plan_artifact_id.clone();
+    foundation.plan_version_at_creation = Some(2);
+    let foundation = state.task_proposal_repo.create(foundation).await.unwrap();
+
+    let mut dependent = TaskProposal::new(
+        session.id.clone(),
+        "Source dependent",
+        ProposalCategory::Test,
+        Priority::Medium,
+    );
+    dependent.priority_score = 65;
+    dependent.sort_order = 2;
+    let dependent = state.task_proposal_repo.create(dependent).await.unwrap();
+
+    state
+        .proposal_dependency_repo
+        .add_dependency(
+            &dependent.id,
+            &foundation.id,
+            Some("target copy must not rewrite source dependency graph"),
+            Some("manual"),
+        )
+        .await
+        .unwrap();
+
+    proposal_isolation_snapshot(state, &session.id).await
+}
+
+async fn proposal_isolation_snapshot(
+    state: &AppState,
+    session_id: &crate::domain::entities::IdeationSessionId,
+) -> ProposalIsolationSnapshot {
+    let mut proposals = state
+        .task_proposal_repo
+        .get_by_session(session_id)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|proposal| {
+            (
+                proposal.id.as_str().to_string(),
+                proposal.title,
+                proposal.status.to_string(),
+                proposal.priority_score,
+                proposal.selected,
+                proposal
+                    .plan_artifact_id
+                    .as_ref()
+                    .map(|artifact_id| artifact_id.as_str().to_string()),
+                proposal.plan_version_at_creation,
+            )
+        })
+        .collect::<Vec<_>>();
+    proposals.sort_by(|left, right| left.0.cmp(&right.0));
+
+    let mut dependencies = state
+        .proposal_dependency_repo
+        .get_all_for_session_with_source(session_id)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|(proposal_id, depends_on_id, reason, source)| {
+            (
+                proposal_id.as_str().to_string(),
+                depends_on_id.as_str().to_string(),
+                reason,
+                source,
+            )
+        })
+        .collect::<Vec<_>>();
+    dependencies.sort_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
+
+    ProposalIsolationSnapshot {
+        proposals,
+        dependencies,
+    }
+}
+
+async fn seed_source_verification_state(
+    state: &AppState,
+    session: &IdeationSession,
+) -> VerificationRunSnapshot {
+    state
+        .ideation_session_repo
+        .increment_verification_generation(&session.id)
+        .await
+        .unwrap();
+    state
+        .ideation_session_repo
+        .update_verification_state(&session.id, VerificationStatus::NeedsRevision, false)
+        .await
+        .unwrap();
+
+    let refreshed = state
+        .ideation_session_repo
+        .get_by_id(&session.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let gap = VerificationGap {
+        severity: "high".to_string(),
+        category: "correctness".to_string(),
+        description: "Source verifier finding should stay on the source session".to_string(),
+        why_it_matters: Some("Copy/import must not reset source verification state".to_string()),
+        source: Some("review-regression".to_string()),
+    };
+    let snapshot = VerificationRunSnapshot {
+        generation: refreshed.verification_generation,
+        status: VerificationStatus::NeedsRevision,
+        in_progress: false,
+        current_round: 2,
+        max_rounds: 4,
+        best_round_index: Some(1),
+        convergence_reason: Some("source still needs revision".to_string()),
+        current_gaps: vec![gap.clone()],
+        rounds: vec![VerificationRoundSnapshot {
+            round: 2,
+            gap_score: 3,
+            fingerprints: vec!["source-verification-fingerprint".to_string()],
+            gaps: vec![gap],
+            parse_failed: false,
+        }],
+    };
+    state
+        .ideation_session_repo
+        .save_verification_run_snapshot(&session.id, &snapshot)
+        .await
+        .unwrap();
+    snapshot
+}
+
 fn content_text(artifact: &Artifact) -> &str {
     match &artifact.content {
         ArtifactContent::Inline { text } => text.as_str(),
         ArtifactContent::File { .. } => panic!("expected inline artifact content"),
     }
+}
+
+async fn assert_no_target_workspace(state: &AppState, conversation: &ChatConversation) {
+    assert!(state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation.id)
+        .await
+        .unwrap()
+        .is_none());
+    let conversation = state
+        .chat_conversation_repo
+        .get_by_id(&conversation.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(conversation.agent_mode, None);
 }
 
 #[tokio::test]
@@ -129,6 +322,9 @@ async fn copy_into_conversation_without_workspace_creates_planning_session_and_d
         source_v2.metadata.version,
     )
     .await;
+    let source_proposal_snapshot = seed_source_proposal_dependency(&state, &source_session).await;
+    let source_verification_snapshot =
+        seed_source_verification_state(&state, &source_session).await;
 
     let response = copy_agent_conversation_plan(
         &state,
@@ -212,6 +408,42 @@ async fn copy_into_conversation_without_workspace_creates_planning_session_and_d
     assert_eq!(
         approval_count(&state, response.planning_session_id).await,
         0
+    );
+
+    assert_eq!(
+        proposal_isolation_snapshot(&state, &source_session.id).await,
+        source_proposal_snapshot
+    );
+    assert!(state
+        .task_proposal_repo
+        .get_by_session(&target_session.id)
+        .await
+        .unwrap()
+        .is_empty());
+    let source_after_copy = state
+        .ideation_session_repo
+        .get_by_id(&source_session.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        source_after_copy.verification_generation,
+        source_verification_snapshot.generation
+    );
+    assert_eq!(
+        source_after_copy.verification_status,
+        VerificationStatus::NeedsRevision
+    );
+    assert_eq!(
+        state
+            .ideation_session_repo
+            .get_verification_run_snapshot(
+                &source_session.id,
+                source_verification_snapshot.generation,
+            )
+            .await
+            .unwrap(),
+        Some(source_verification_snapshot)
     );
 }
 
@@ -458,4 +690,174 @@ async fn copy_rejects_project_mismatch_without_creating_target_workspace() {
         .unwrap()
         .unwrap();
     assert_eq!(conversation.agent_mode, None);
+}
+
+#[tokio::test]
+async fn copy_rejects_source_session_without_plan_before_target_mutation() {
+    let state = AppState::new_sqlite_test();
+    let project = seed_project(&state, "source-without-plan").await;
+    let conversation = seed_project_conversation(&state, &project.id).await;
+    let source_session = state
+        .ideation_session_repo
+        .create(
+            IdeationSession::builder()
+                .project_id(project.id.clone())
+                .status(IdeationSessionStatus::Active)
+                .build(),
+        )
+        .await
+        .unwrap();
+
+    let err = copy_agent_conversation_plan(
+        &state,
+        AgentConversationPlanCopyRequest {
+            conversation_id: conversation.id.as_str(),
+            source_session_id: source_session.id.as_str().to_string(),
+            source_artifact_id: "missing-plan-artifact".to_string(),
+            source_version: 1,
+        },
+    )
+    .await
+    .unwrap_err();
+
+    assert!(err.contains("does not have a plan artifact"));
+    assert_no_target_workspace(&state, &conversation).await;
+}
+
+#[tokio::test]
+async fn copy_rejects_missing_source_artifact_before_target_mutation() {
+    let state = AppState::new_sqlite_test();
+    let project = seed_project(&state, "missing-source-artifact").await;
+    let conversation = seed_project_conversation(&state, &project.id).await;
+    let missing_artifact_id = ArtifactId::new();
+    let source_session = state
+        .ideation_session_repo
+        .create(
+            IdeationSession::builder()
+                .project_id(project.id.clone())
+                .status(IdeationSessionStatus::Active)
+                .plan_artifact_id(missing_artifact_id.clone())
+                .build(),
+        )
+        .await
+        .unwrap();
+
+    let err = copy_agent_conversation_plan(
+        &state,
+        AgentConversationPlanCopyRequest {
+            conversation_id: conversation.id.as_str(),
+            source_session_id: source_session.id.as_str().to_string(),
+            source_artifact_id: missing_artifact_id.as_str().to_string(),
+            source_version: 1,
+        },
+    )
+    .await
+    .unwrap_err();
+
+    assert!(err.contains("Source plan version 1 was not found"));
+    assert_no_target_workspace(&state, &conversation).await;
+}
+
+#[tokio::test]
+async fn copy_rejects_archived_source_session_before_target_mutation() {
+    let state = AppState::new_sqlite_test();
+    let project = seed_project(&state, "archived-source").await;
+    let conversation = seed_project_conversation(&state, &project.id).await;
+    let (source_session, _source_v1, source_v2) = seed_source_plan_with_status(
+        &state,
+        &project.id,
+        "source v1",
+        "source v2",
+        IdeationSessionStatus::Archived,
+    )
+    .await;
+
+    let err = copy_agent_conversation_plan(
+        &state,
+        AgentConversationPlanCopyRequest {
+            conversation_id: conversation.id.as_str(),
+            source_session_id: source_session.id.as_str().to_string(),
+            source_artifact_id: source_v2.id.as_str().to_string(),
+            source_version: 2,
+        },
+    )
+    .await
+    .unwrap_err();
+
+    assert!(err.contains("archived source session"));
+    assert_no_target_workspace(&state, &conversation).await;
+}
+
+#[tokio::test]
+async fn copy_rejects_non_specification_source_artifact_before_target_mutation() {
+    let state = AppState::new_sqlite_test();
+    let project = seed_project(&state, "non-spec-source").await;
+    let conversation = seed_project_conversation(&state, &project.id).await;
+    let mut source_artifact = plan_artifact("Research note", "not a plan", 1);
+    source_artifact.artifact_type = ArtifactType::ResearchDocument;
+    let source_artifact = state.artifact_repo.create(source_artifact).await.unwrap();
+    let source_session = state
+        .ideation_session_repo
+        .create(
+            IdeationSession::builder()
+                .project_id(project.id.clone())
+                .status(IdeationSessionStatus::Active)
+                .plan_artifact_id(source_artifact.id.clone())
+                .build(),
+        )
+        .await
+        .unwrap();
+
+    let err = copy_agent_conversation_plan(
+        &state,
+        AgentConversationPlanCopyRequest {
+            conversation_id: conversation.id.as_str(),
+            source_session_id: source_session.id.as_str().to_string(),
+            source_artifact_id: source_artifact.id.as_str().to_string(),
+            source_version: 1,
+        },
+    )
+    .await
+    .unwrap_err();
+
+    assert!(err.contains("not a specification/plan type"));
+    assert_no_target_workspace(&state, &conversation).await;
+}
+
+#[tokio::test]
+async fn copy_rejects_zero_or_stale_source_version_before_target_mutation() {
+    let state = AppState::new_sqlite_test();
+    let project = seed_project(&state, "stale-source-version").await;
+    let zero_version_conversation = seed_project_conversation(&state, &project.id).await;
+    let stale_artifact_conversation = seed_project_conversation(&state, &project.id).await;
+    let (source_session, source_v1, source_v2) =
+        seed_source_plan(&state, &project.id, "source v1", "source v2").await;
+
+    let zero_version_err = copy_agent_conversation_plan(
+        &state,
+        AgentConversationPlanCopyRequest {
+            conversation_id: zero_version_conversation.id.as_str(),
+            source_session_id: source_session.id.as_str().to_string(),
+            source_artifact_id: source_v2.id.as_str().to_string(),
+            source_version: 0,
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(zero_version_err.contains("version is required"));
+    assert_no_target_workspace(&state, &zero_version_conversation).await;
+
+    let stale_artifact_err = copy_agent_conversation_plan(
+        &state,
+        AgentConversationPlanCopyRequest {
+            conversation_id: stale_artifact_conversation.id.as_str(),
+            source_session_id: source_session.id.as_str().to_string(),
+            source_artifact_id: source_v1.id.as_str().to_string(),
+            source_version: 1,
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(stale_artifact_err.contains("stale"));
+    assert_no_target_workspace(&state, &stale_artifact_conversation).await;
 }

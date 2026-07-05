@@ -2,7 +2,7 @@ import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { chatApi, type ConversationStatsResponse } from "@/api/chat";
+import { chatApi } from "@/api/chat";
 import { useConversationTicket } from "@/hooks/useTicketing";
 import { useChatStore } from "@/stores/chatStore";
 import { useProjectStore } from "@/stores/projectStore";
@@ -26,58 +26,6 @@ vi.mock("sonner", () => ({
 vi.mock("@/hooks/useTicketing", () => ({
   useConversationTicket: vi.fn(),
 }));
-
-function conversationStats(
-  overrides: Partial<ConversationStatsResponse> = {},
-): ConversationStatsResponse {
-  return {
-    conversationId: "conversation-1",
-    contextType: "project",
-    contextId: "project-1",
-    providerHarness: "codex",
-    upstreamProvider: null,
-    providerProfile: null,
-    messageUsageTotals: {
-      inputTokens: 0,
-      outputTokens: 0,
-      cacheCreationTokens: 0,
-      cacheReadTokens: 0,
-      estimatedUsd: null,
-    },
-    runUsageTotals: {
-      inputTokens: 0,
-      outputTokens: 0,
-      cacheCreationTokens: 0,
-      cacheReadTokens: 0,
-      estimatedUsd: null,
-    },
-    effectiveUsageTotals: {
-      inputTokens: 0,
-      outputTokens: 0,
-      cacheCreationTokens: 0,
-      cacheReadTokens: 0,
-      estimatedUsd: null,
-    },
-    usageCoverage: {
-      providerMessageCount: 0,
-      providerMessagesWithUsage: 0,
-      runCount: 0,
-      runsWithUsage: 0,
-      effectiveTotalsSource: "none",
-    },
-    attributionCoverage: {
-      providerMessageCount: 0,
-      providerMessagesWithAttribution: 0,
-      runCount: 0,
-      runsWithAttribution: 0,
-    },
-    byHarness: [],
-    byUpstreamProvider: [],
-    byModel: [],
-    byEffort: [],
-    ...overrides,
-  };
-}
 
 describe("AgentsChatHeader", () => {
   beforeEach(() => {
@@ -417,7 +365,7 @@ describe("AgentsChatHeader", () => {
         onRenameConversation={vi.fn().mockResolvedValue(undefined)}
         onToggleArtifacts={vi.fn()}
         onSelectArtifact={vi.fn()}
-      />
+      />,
     );
 
     expect(screen.getByTestId("chat-session-chips")).toBeInTheDocument();
@@ -622,12 +570,16 @@ describe("AgentsChatHeader", () => {
   });
 
   it("marks conversation stats as pending while the active Agents turn has no usage yet", async () => {
-    vi.spyOn(chatApi, "getConversationStats").mockResolvedValue(conversationStats());
-    useChatStore
-      .getState()
-      .setAgentStatus("project:conversation-1", "generating");
+    vi.spyOn(chatApi, "getConversationStats").mockImplementation(
+      () => new Promise(() => undefined),
+    );
+    act(() => {
+      useChatStore
+        .getState()
+        .setAgentStatus("project:conversation-1", "generating");
+    });
 
-    renderWithProviders(
+    const { unmount } = renderWithProviders(
       <AgentsChatHeader
         conversation={conversation()}
         workspace={null}
@@ -640,7 +592,12 @@ describe("AgentsChatHeader", () => {
       />
     );
 
-    fireEvent.click(screen.getByTestId("chat-session-stats-button"));
+    await waitFor(() =>
+      expect(chatApi.getConversationStats).toHaveBeenCalledWith("conversation-1"),
+    );
+    act(() => {
+      fireEvent.click(screen.getByTestId("chat-session-stats-button"));
+    });
 
     expect(
       await screen.findByText(
@@ -648,6 +605,20 @@ describe("AgentsChatHeader", () => {
       ),
     ).toBeInTheDocument();
     expect(screen.getAllByText("Pending")).toHaveLength(4);
+
+    act(() => {
+      fireEvent.keyDown(document, { key: "Escape" });
+    });
+    await waitFor(() =>
+      expect(
+        screen.queryByText(
+          "Usage totals are pending until the provider reports the current turn.",
+        ),
+      ).not.toBeInTheDocument(),
+    );
+    act(() => {
+      unmount();
+    });
   });
 
   it("shows workspace status in the left header group", () => {
