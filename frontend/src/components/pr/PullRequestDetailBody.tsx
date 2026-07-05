@@ -31,20 +31,29 @@ import { normalizePrStatus } from "./PullRequestDetailUtils";
 import {
   PrChecksSection,
   PrCommentsSection,
-  PrReviewThreadSection,
   PrRxConversationSection,
 } from "./PullRequestDetailSections";
+import { PullRequestReviewSection } from "./PullRequestReviewSection";
+import { PullRequestStatusStrip } from "./PullRequestStatusStrip";
+import { partitionIssueComments } from "./pullRequestComments";
 
 interface PullRequestDetailBodyProps {
   selector: PullRequestDetailSelector | null;
   shell: PullRequestShell | null;
   className?: string | undefined;
+  /**
+   * Whether to embed the linked RalphX conversation. Defaults to true.
+   * The agent-workspace PR tab sets this false because it already renders
+   * inside that same conversation, making the embed redundant.
+   */
+  showRxConversation?: boolean | undefined;
 }
 
 export function PullRequestDetailBody({
   selector,
   shell,
   className,
+  showRxConversation = true,
 }: PullRequestDetailBodyProps) {
   const shouldFetchDetail = useAfterPaint(Boolean(selector));
   const detailQuery = usePullRequestDetail(selector, { enabled: shouldFetchDetail });
@@ -64,6 +73,15 @@ export function PullRequestDetailBody({
   const loading =
     detailQuery.isLoading ||
     (shouldFetchDetail && !detail && detailQuery.fetchStatus !== "idle");
+
+  const reviewSummary = detail?.reviewSummary ?? null;
+  const checks = detail?.checks ?? [];
+  const checksUnavailable = unavailable.includes("checks");
+  const issueComments = detail?.issueComments;
+  const { human: humanComments, hiddenBotCount } = useMemo(
+    () => partitionIssueComments(issueComments ?? []),
+    [issueComments],
+  );
 
   const meta = useMemo(
     () =>
@@ -135,6 +153,13 @@ export function PullRequestDetailBody({
 
       <PrStateNotice state={state} />
 
+      <PullRequestStatusStrip
+        reviewSummary={reviewSummary}
+        checks={checks}
+        checksUnavailable={checksUnavailable}
+        loading={loading}
+      />
+
       <PrSection title="Description">
         {description?.body ? (
           <PrMarkdown content={description.body} />
@@ -145,14 +170,24 @@ export function PullRequestDetailBody({
         )}
       </PrSection>
 
-      <PrCommentsSection comments={detail?.issueComments ?? []} loading={loading} />
-      <PrReviewThreadSection reviewThread={detail?.reviewThread ?? []} loading={loading} />
-      <PrRxConversationSection
-        projectId={shell?.projectId ?? selector?.projectId ?? ""}
-        conversations={detail?.rxConversations ?? []}
-        fallbackConversationId={shell?.conversationId}
+      <PullRequestReviewSection
+        reviewSummary={reviewSummary}
+        reviewThread={detail?.reviewThread ?? []}
+        loading={loading}
       />
       <PrChecksSection detail={detail} conversationId={shell?.conversationId} />
+      {showRxConversation ? (
+        <PrRxConversationSection
+          projectId={shell?.projectId ?? selector?.projectId ?? ""}
+          conversations={detail?.rxConversations ?? []}
+          fallbackConversationId={shell?.conversationId}
+        />
+      ) : null}
+      <PrCommentsSection
+        comments={humanComments}
+        hiddenBotCount={hiddenBotCount}
+        loading={loading}
+      />
 
       {unavailable.length > 0 ? (
         <div className="flex items-start gap-2 text-xs text-[var(--text-muted)]">
