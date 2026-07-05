@@ -221,6 +221,7 @@ function AppContent() {
   const currentView = useUiStore((s) => s.currentView);
   const setCurrentView = useUiStore((s) => s.setCurrentView);
   const setSelectedTaskId = useUiStore((s) => s.setSelectedTaskId);
+  const [selectedAutomationId, setSelectedAutomationId] = useState<string | null>(null);
   const toggleGraphRightPanelUserOpen = useUiStore((s) => s.toggleGraphRightPanel);
   const toggleGraphRightPanelCompactOpen = useUiStore(
     (s) => s.toggleGraphRightPanelCompactOpen
@@ -903,6 +904,15 @@ function AppContent() {
     setCurrentView("agents");
   }, [setCurrentView, setFocusedAgentProject]);
 
+  const handleOpenAutomationDetail = useCallback((automationId: string) => {
+    setSelectedAutomationId(automationId);
+    setCurrentView("automations");
+  }, [setCurrentView]);
+
+  useEffect(() => {
+    setSelectedAutomationId(null);
+  }, [currentProjectId]);
+
   const handleEditProposal = useCallback((proposalId: string) => {
     setEditingProposalId(proposalId);
   }, []);
@@ -1282,6 +1292,7 @@ function AppContent() {
                   footer={executionFooter}
                   projectId={currentProjectId}
                   onCreateProject={handleOpenProjectWizard}
+                  onOpenAutomation={handleOpenAutomationDetail}
                 />
               )}
               {currentView === "automations" && (
@@ -1291,6 +1302,8 @@ function AppContent() {
                       <LazyAutomationsView
                         projectId={currentProjectId || null}
                         projectName={activeProject?.name ?? null}
+                        selectedAutomationId={selectedAutomationId}
+                        onSelectedAutomationChange={setSelectedAutomationId}
                         onOpenRunConversation={handleNavigateToWorkspace}
                       />
                     </Suspense>

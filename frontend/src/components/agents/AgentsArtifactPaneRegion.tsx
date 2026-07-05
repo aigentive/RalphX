@@ -55,6 +55,7 @@ interface AgentsArtifactPaneRegionProps {
   onResizeReset: (event: ReactMouseEvent) => void;
   onTabChange: (tab: AgentArtifactTab) => void;
   onOpenPublish: () => void;
+  onOpenAutomation?: (automationId: string) => void;
   onTaskModeChange: (mode: AgentTaskArtifactMode) => void;
   onPublishWorkspace: (conversationId: string) => Promise<void>;
   isPublishingWorkspace: boolean;
@@ -83,6 +84,7 @@ export function AgentsArtifactPaneRegion({
   onResizeReset,
   onTabChange,
   onOpenPublish,
+  onOpenAutomation,
   onTaskModeChange,
   onPublishWorkspace,
   isPublishingWorkspace,
@@ -148,6 +150,7 @@ export function AgentsArtifactPaneRegion({
                     taskMode={artifactState.taskMode}
                     onTabChange={onTabChange}
                     onOpenPublish={onOpenPublish}
+                    {...(onOpenAutomation ? { onOpenAutomation } : {})}
                     onTaskModeChange={onTaskModeChange}
                     onPublishWorkspace={onPublishWorkspace}
                     isPublishingWorkspace={isPublishingWorkspace}

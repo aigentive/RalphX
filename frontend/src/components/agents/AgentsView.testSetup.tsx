@@ -936,6 +936,7 @@ vi.mock("./AgentsArtifactPane", () => {
     publishFocusRequest,
     onClose,
     onFocusVerificationSession,
+    onOpenAutomation,
     onPublishWorkspace,
   }: {
     conversation: AgentConversation | null;
@@ -944,6 +945,7 @@ vi.mock("./AgentsArtifactPane", () => {
     publishFocusRequest?: { filePath: string; mode: string } | null;
     onClose?: () => void;
     onFocusVerificationSession?: (parentSessionId: string, childSessionId: string) => void;
+    onOpenAutomation?: (automationId: string) => void;
     onPublishWorkspace?: (conversationId: string) => Promise<void>;
   }) => (
     <div
@@ -952,6 +954,7 @@ vi.mock("./AgentsArtifactPane", () => {
       data-focused-ideation-session-id={focusedIdeationSessionId ?? ""}
       data-publish-focus-path={publishFocusRequest?.filePath ?? ""}
       data-publish-focus-mode={publishFocusRequest?.mode ?? ""}
+      data-automation-id={conversation?.automationId ?? ""}
     >
       {onClose ? (
         <button type="button" data-testid="agents-artifact-pane-close" onClick={onClose}>
@@ -976,6 +979,15 @@ vi.mock("./AgentsArtifactPane", () => {
           onClick={() => void onPublishWorkspace(conversation.id)}
         >
           Publish
+        </button>
+      ) : null}
+      {conversation?.automationId && onOpenAutomation ? (
+        <button
+          type="button"
+          data-testid="mock-open-automation"
+          onClick={() => onOpenAutomation(conversation.automationId ?? "")}
+        >
+          Open automation
         </button>
       ) : null}
     </div>
@@ -1250,12 +1262,20 @@ export function resetAgentSessionState(
   });
 }
 
-export function renderAgentsView(options: { footer?: ReactNode } = {}) {
+export function renderAgentsView(
+  options: {
+    footer?: ReactNode;
+    onOpenAutomation?: (automationId: string) => void;
+  } = {},
+) {
   return renderWithProviders(
     <AgentsView
       projectId="project-1"
       onCreateProject={vi.fn()}
       {...(options.footer !== undefined ? { footer: options.footer } : {})}
+      {...(options.onOpenAutomation
+        ? { onOpenAutomation: options.onOpenAutomation }
+        : {})}
     />
   );
 }

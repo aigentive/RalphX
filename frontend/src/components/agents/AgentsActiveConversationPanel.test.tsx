@@ -37,6 +37,7 @@ const {
   listAgentTaskListTasksMock,
   listAgentTaskListsMock,
   listAgentTasksMock,
+  useAutomationDetailMock,
   openUrlMock,
 } = vi.hoisted(() => ({
   getSessionPlanMock: vi.fn(),
@@ -56,6 +57,7 @@ const {
   listAgentTaskListTasksMock: vi.fn(),
   listAgentTaskListsMock: vi.fn(),
   listAgentTasksMock: vi.fn(),
+  useAutomationDetailMock: vi.fn(),
   openUrlMock: vi.fn(),
 }));
 
@@ -405,6 +407,10 @@ vi.mock("@/hooks/useHarnessProviders", () => ({
   }),
 }));
 
+vi.mock("@/hooks/useAutomations", () => ({
+  useAutomationDetail: (...args: unknown[]) => useAutomationDetailMock(...args),
+}));
+
 vi.mock("@/stores/chatStore", () => {
   type ChatStoreMockState = {
     activeConversationIds: Record<string, string | null>;
@@ -482,6 +488,8 @@ vi.mock("./AgentComposerSurface", () => ({
     effort,
     mode,
     showHelperText,
+    isReadOnly,
+    sendDisabledReason,
     onSend,
     onForkSession,
     onLayoutChange,
@@ -506,6 +514,8 @@ vi.mock("./AgentComposerSurface", () => ({
       }>;
     };
     showHelperText?: boolean;
+    isReadOnly?: boolean;
+    sendDisabledReason?: string | null;
     onSend: (message: string) => Promise<void> | void;
     onForkSession?: () => Promise<unknown> | void;
     onLayoutChange?: () => void;
@@ -515,6 +525,10 @@ vi.mock("./AgentComposerSurface", () => ({
       <div data-testid="workspace-model-value">{model.value}</div>
       <div data-testid="workspace-effort-value">{effort.value}</div>
       <div data-testid="workspace-helper-enabled">{String(showHelperText !== false)}</div>
+      <div data-testid="workspace-composer-readonly">{String(Boolean(isReadOnly))}</div>
+      <div data-testid="workspace-composer-disabled-reason">
+        {sendDisabledReason ?? ""}
+      </div>
       {mode && (
         <div>
           <button
@@ -932,6 +946,11 @@ describe("AgentsActiveConversationPanel", () => {
     listAgentTasksMock.mockResolvedValue([]);
     listAgentTaskListsMock.mockResolvedValue([]);
     listAgentTaskListTasksMock.mockResolvedValue([]);
+    useAutomationDetailMock.mockReturnValue({
+      data: null,
+      isLoading: false,
+      isError: false,
+    });
   });
 
   it("normalizes workspace runtime and forwards provider-supported capabilities", () => {
@@ -958,6 +977,55 @@ describe("AgentsActiveConversationPanel", () => {
       "high",
       "max",
     ], null);
+  });
+
+  it("locks automation-owned run conversations while the run is non-terminal", () => {
+    useAutomationDetailMock.mockReturnValue({
+      data: {
+        runs: [{ id: "run-1", status: "published" }],
+      },
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel({
+      activeConversation: {
+        ...projectConversation(),
+        agentMode: "automation",
+        automationId: "automation-1",
+        automationRunId: "run-1",
+      },
+    });
+
+    expect(screen.getByTestId("agents-automation-run-readonly-banner")).toHaveTextContent(
+      "Automation run conversations are read-only until the run reaches a terminal state.",
+    );
+    expect(screen.getByTestId("workspace-composer-readonly")).toHaveTextContent("true");
+    expect(screen.getByTestId("workspace-composer-disabled-reason")).toHaveTextContent(
+      "Automation run conversations are read-only until the run reaches a terminal state.",
+    );
+  });
+
+  it("keeps automation-owned run conversations editable after terminal run status", () => {
+    useAutomationDetailMock.mockReturnValue({
+      data: {
+        runs: [{ id: "run-1", status: "merged" }],
+      },
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel({
+      activeConversation: {
+        ...projectConversation(),
+        agentMode: "automation",
+        automationId: "automation-1",
+        automationRunId: "run-1",
+      },
+    });
+
+    expect(screen.queryByTestId("agents-automation-run-readonly-banner")).not.toBeInTheDocument();
+    expect(screen.getByTestId("workspace-composer-readonly")).toHaveTextContent("false");
   });
 
   it("uses workspace runtime controls while focused on the workspace Review chat", () => {

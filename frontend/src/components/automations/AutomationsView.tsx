@@ -13,6 +13,8 @@ interface AutomationsViewProps {
   projectId: string | null;
   projectName?: string | null;
   onNewAutomation?: () => void;
+  selectedAutomationId?: string | null;
+  onSelectedAutomationChange?: (automationId: string | null) => void;
   onOpenAutomation?: (automationId: string) => void;
   onOpenRunConversation?: (projectId: string, conversationId: string) => void;
 }
@@ -272,32 +274,50 @@ export function AutomationsView({
   projectId,
   projectName,
   onNewAutomation,
+  selectedAutomationId,
+  onSelectedAutomationChange,
   onOpenAutomation,
   onOpenRunConversation,
 }: AutomationsViewProps) {
-  const [selectedAutomationId, setSelectedAutomationId] = useState<string | null>(null);
+  const [localSelectedAutomationId, setLocalSelectedAutomationId] = useState<string | null>(null);
+  const isSelectionControlled = selectedAutomationId !== undefined;
+  const activeAutomationId = isSelectionControlled
+    ? selectedAutomationId
+    : localSelectedAutomationId;
+  const setSelectedAutomation = useCallback(
+    (automationId: string | null) => {
+      if (isSelectionControlled) {
+        onSelectedAutomationChange?.(automationId);
+        return;
+      }
+      setLocalSelectedAutomationId(automationId);
+    },
+    [isSelectionControlled, onSelectedAutomationChange],
+  );
   const afterPaint = useAfterPaintMounted(Boolean(projectId));
   const automations = useAutomationsList(projectId, { enabled: afterPaint });
   const projectLabel = projectName ?? projectId ?? "Current project";
   const rows = automations.data ?? [];
   const showSkeleton = Boolean(projectId) && (!afterPaint || automations.isLoading);
   const handleOpenAutomation = useCallback((automationId: string) => {
-    setSelectedAutomationId(automationId);
+    setSelectedAutomation(automationId);
     onOpenAutomation?.(automationId);
-  }, [onOpenAutomation]);
+  }, [onOpenAutomation, setSelectedAutomation]);
   const handleBackToList = useCallback(() => {
-    setSelectedAutomationId(null);
-  }, []);
+    setSelectedAutomation(null);
+  }, [setSelectedAutomation]);
 
   useEffect(() => {
-    setSelectedAutomationId(null);
-  }, [projectId]);
+    if (!isSelectionControlled) {
+      setLocalSelectedAutomationId(null);
+    }
+  }, [isSelectionControlled, projectId]);
 
-  if (selectedAutomationId) {
+  if (activeAutomationId) {
     return (
       <Suspense fallback={<AutomationDetailShell onBack={handleBackToList} />}>
         <LazyAutomationDetailView
-          automationId={selectedAutomationId}
+          automationId={activeAutomationId}
           projectId={projectId}
           projectName={projectName ?? null}
           onBack={handleBackToList}

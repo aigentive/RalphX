@@ -1645,6 +1645,8 @@ pub struct AgentConversationResponse {
     pub service_tier: Option<String>,
     pub agent_mode: Option<String>,
     pub coordination_mode: String,
+    pub automation_id: Option<String>,
+    pub automation_run_id: Option<String>,
     pub parent_conversation_id: Option<String>,
     pub title: Option<String>,
     pub message_count: i64,
@@ -1675,6 +1677,8 @@ impl From<ChatConversation> for AgentConversationResponse {
             service_tier: None,
             agent_mode: c.agent_mode.map(|mode| mode.to_string()),
             coordination_mode: CoordinationMode::Solo.to_string(),
+            automation_id: c.automation_id.map(|id| id.as_str().to_string()),
+            automation_run_id: c.automation_run_id.map(|id| id.as_str().to_string()),
             parent_conversation_id: c.parent_conversation_id,
             title: c.title,
             message_count: c.message_count,
@@ -9906,12 +9910,13 @@ mod tests {
         AgentConversationWorkspaceMode, AgentConversationWorkspacePublicationEvent, AgentRun,
         AgentWorkspacePrDescription, AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor,
         AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
-        AgentWorkspaceSourcePullRequest, ArtifactId, ChatContextType, ChatConversation,
-        ChatConversationId, ChatMessage, ChatMessageId, ChatTimelineItem, ChatTimelineItemId,
-        ChatTimelineItemKind, ChatTimelineItemStatus, ExecutionPlan, ExecutionPlanId,
-        ExecutionPlanStatus, IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow,
-        IdeationSessionId, InternalStatus, MessageRole, PlanBranch, PlanBranchId, PlanBranchStatus,
-        Project, ProjectId, SessionPurpose, Task, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+        AgentWorkspaceSourcePullRequest, ArtifactId, AutomationId, AutomationRunId,
+        ChatContextType, ChatConversation, ChatConversationId, ChatMessage, ChatMessageId,
+        ChatTimelineItem, ChatTimelineItemId, ChatTimelineItemKind, ChatTimelineItemStatus,
+        ExecutionPlan, ExecutionPlanId, ExecutionPlanStatus, IdeationAnalysisBaseRefKind,
+        IdeationSession, IdeationSessionFlow, IdeationSessionId, InternalStatus, MessageRole,
+        PlanBranch, PlanBranchId, PlanBranchStatus, Project, ProjectId, SessionPurpose, Task,
+        DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
     };
     use crate::domain::execution::ExecutionSettings;
     use crate::domain::repositories::AgentConversationWorkspaceRepository;
@@ -14890,6 +14895,19 @@ mod tests {
             Some("claude-session-456".to_string())
         );
         assert_eq!(response.provider_harness, Some("claude".to_string()));
+    }
+
+    #[test]
+    fn agent_conversation_response_includes_automation_ownership() {
+        let mut conversation =
+            ChatConversation::new_project(ProjectId::from_string("project-1".to_string()));
+        conversation.automation_id = Some(AutomationId::from_string("automation-1"));
+        conversation.automation_run_id = Some(AutomationRunId::from_string("run-1"));
+
+        let response = AgentConversationResponse::from(conversation);
+
+        assert_eq!(response.automation_id.as_deref(), Some("automation-1"));
+        assert_eq!(response.automation_run_id.as_deref(), Some("run-1"));
     }
 
     #[tokio::test]

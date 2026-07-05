@@ -52,6 +52,7 @@ import { formatQueuedMessageExcerpt } from "@/lib/queuedMessageExcerpt";
 import { useAgentModels } from "@/hooks/useAgentModels";
 import { useConfirmation } from "@/hooks/useConfirmation";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
+import { useAutomationDetail } from "@/hooks/useAutomations";
 import type { SubmitQuestionAnswerResult } from "@/hooks/useAskUserQuestion";
 import { ideationKeys } from "@/hooks/useIdeation";
 import { useVerificationStatus, verificationStatusKey } from "@/hooks/useVerificationStatus";
@@ -135,6 +136,12 @@ const PLAN_MODE_PROPOSAL_ACCEPT_VALUE = "switch_to_plan";
 const PLAN_MODE_SWITCH_EVENT_RETRY_DELAY_MS = 150;
 const PLAN_MODE_SWITCH_FALLBACK_RETRY_DELAY_MS = 750;
 const PLAN_MODE_SWITCH_MAX_RETRY_ATTEMPTS = 40;
+const TERMINAL_AUTOMATION_RUN_STATUSES = new Set([
+  "merged",
+  "pr_closed",
+  "agent_failed",
+  "cancelled",
+]);
 
 function getWorkspaceBasePickerKey(
   workspace: AgentConversationWorkspace | null,
@@ -855,6 +862,29 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     ? `workspace_review:${focusedWorkspaceReviewConversationId}`
     : focusedChatSessionId ?? "workspace";
   const isFocusedChildChat = chatFocus.type !== "workspace";
+  const automationRunConversationId =
+    activeConversation.automationId && activeConversation.automationRunId
+      ? activeConversation.automationRunId
+      : null;
+  const automationRunDetailQuery = useAutomationDetail(
+    activeConversation.automationId,
+    {
+      enabled: Boolean(automationRunConversationId) && !isFocusedChildChat,
+    },
+  );
+  const automationRun = useMemo(
+    () =>
+      automationRunDetailQuery.data?.runs.find(
+        (run) => run.id === automationRunConversationId,
+      ) ?? null,
+    [automationRunConversationId, automationRunDetailQuery.data?.runs],
+  );
+  const automationRunReadOnlyReason =
+    automationRunConversationId &&
+    !isFocusedChildChat &&
+    (!automationRun || !TERMINAL_AUTOMATION_RUN_STATUSES.has(automationRun.status))
+      ? "Automation run conversations are read-only until the run reaches a terminal state."
+      : null;
   const usesWorkspaceRuntimeControls =
     !isFocusedChildChat || chatFocus.type === "workspace_review";
   const runtimeStatusConversationId =
@@ -2257,6 +2287,26 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                       viewPlanAction={planComposerViewPlanAction}
                     />
                   )}
+                  {automationRunReadOnlyReason && (
+                    <div
+                      className="flex items-start gap-2 rounded-md px-3 py-2 text-xs"
+                      style={{
+                        backgroundColor: "var(--bg-surface)",
+                        borderColor: "var(--border-default)",
+                        borderStyle: "solid",
+                        borderWidth: "1px",
+                        color: "var(--text-muted)",
+                      }}
+                      data-testid="agents-automation-run-readonly-banner"
+                    >
+                      <ShieldCheck
+                        className="mt-0.5 h-4 w-4 shrink-0"
+                        style={{ color: "#ff6b35" }}
+                        aria-hidden="true"
+                      />
+                      <span>{automationRunReadOnlyReason}</span>
+                    </div>
+                  )}
                   <AgentComposerSurface
                     dataTestId="agents-conversation-composer"
                     actionTestId="agents-conversation-submit"
@@ -2265,7 +2315,11 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                     onStop={composerProps.onStop}
                     agentStatus={composerProps.agentStatus}
                     isSubmitting={composerProps.isSending || isForkingConversation}
-                    isReadOnly={composerProps.isReadOnly || isForkingConversation}
+                    isReadOnly={
+                      composerProps.isReadOnly ||
+                      isForkingConversation ||
+                      Boolean(automationRunReadOnlyReason)
+                    }
                     autoFocus={composerProps.autoFocus}
                     conversationId={selectedConversationId}
                     {...(!isFocusedChildChat
@@ -2286,9 +2340,10 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                     }}
                     onLayoutChange={composerProps.onLayoutChange}
                     sendDisabledReason={
-                      usesWorkspaceRuntimeControls
+                      automationRunReadOnlyReason ??
+                      (usesWorkspaceRuntimeControls
                         ? workspaceProviderStatusMessage
-                        : null
+                        : null)
                     }
                     hasQueuedMessages={composerProps.hasQueuedMessages}
                     onEditLastQueued={composerProps.onEditLastQueued}

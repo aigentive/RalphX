@@ -81,6 +81,7 @@ import {
 interface UseAgentsViewControllerParams {
   projectId: string;
   onCreateProject: () => void;
+  onOpenAutomation?: (automationId: string) => void;
 }
 
 type AgentConversationListPage = Omit<
@@ -164,6 +165,7 @@ function lifecyclePayloadOwnsWorkspaceReviewQuery(
 export function useAgentsViewController({
   projectId,
   onCreateProject,
+  onOpenAutomation,
 }: UseAgentsViewControllerParams) {
   const queryClient = useQueryClient();
   const eventBus = useEventBus();
@@ -1285,6 +1287,7 @@ export function useAgentsViewController({
       terminalUnavailableReason,
       onFocusVerificationSession: handleFocusVerificationSession,
       onFocusWorkspaceReview: handleFocusWorkspaceReview,
+      ...(onOpenAutomation ? { onOpenAutomation } : {}),
       onOpenPublish: handleOpenPublishPaneWithChatFocus,
       onTaskArtifactSelectionChange: handleTaskArtifactSelectionChange,
       onPublishWorkspace: handlePublishWorkspace,

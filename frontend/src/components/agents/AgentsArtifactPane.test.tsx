@@ -12,6 +12,7 @@ import type {
   AgentConversationWorkspace,
   AgentConversationWorkspaceFreshness,
 } from "@/api/chat";
+import type { Automation, AutomationDetail, AutomationRun } from "@/api/automations";
 import { buildStoreKey } from "@/lib/chat-context-registry";
 import { useAgentSessionStore, type AgentArtifactTab } from "@/stores/agentSessionStore";
 import { usePlanStore } from "@/stores/planStore";
@@ -74,6 +75,10 @@ const {
   sendAgentMessageMock,
   switchAgentConversationModeMock,
   listAgentConversationIssuesMock,
+  getAutomationMock,
+  pauseAutomationMock,
+  resumeAutomationMock,
+  stopAutomationMock,
   loadBranchBaseOptionsMock,
   getArtifactMock,
   getSessionPlanMock,
@@ -130,6 +135,10 @@ const {
   sendAgentMessageMock: vi.fn(),
   switchAgentConversationModeMock: vi.fn(),
   listAgentConversationIssuesMock: vi.fn(),
+  getAutomationMock: vi.fn(),
+  pauseAutomationMock: vi.fn(),
+  resumeAutomationMock: vi.fn(),
+  stopAutomationMock: vi.fn(),
   loadBranchBaseOptionsMock: vi.fn(),
   getArtifactMock: vi.fn(),
   getSessionPlanMock: vi.fn(),
@@ -195,6 +204,20 @@ vi.mock("@/api/chat", async (importOriginal) => {
         switchAgentConversationModeMock(...args),
       listAgentConversationIssues: (...args: unknown[]) =>
         listAgentConversationIssuesMock(...args),
+    },
+  };
+});
+
+vi.mock("@/api/automations", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/api/automations")>();
+  return {
+    ...actual,
+    automationsApi: {
+      ...actual.automationsApi,
+      get: (...args: unknown[]) => getAutomationMock(...args),
+      pause: (...args: unknown[]) => pauseAutomationMock(...args),
+      resume: (...args: unknown[]) => resumeAutomationMock(...args),
+      stop: (...args: unknown[]) => stopAutomationMock(...args),
     },
   };
 });
@@ -531,6 +554,82 @@ const conversation = () => ({
   createdAt: "2026-04-23T09:00:00Z",
   updatedAt: "2026-04-23T09:00:00Z",
   archivedAt: null,
+});
+
+const automationFixture = (
+  overrides: Partial<Automation> = {},
+): Automation => ({
+  id: "automation-1",
+  projectId: "project-1",
+  name: "Release automation",
+  status: "active",
+  pausedReasonCode: null,
+  pausedReasonDetail: null,
+  goalPrompt: "Ship the remaining release tasks.",
+  setupConversationId: "conversation-setup",
+  providerHarness: "codex",
+  modelId: "gpt-5.4",
+  logicalEffort: "medium",
+  runMode: "edit",
+  baseRefKind: "project_default",
+  baseRef: "",
+  baseDisplayName: "Project default (main)",
+  baseSourcePullRequestJson: null,
+  goalItemsJson: null,
+  chainMode: "merged_base",
+  completionSignal: "pr_merged",
+  maxRuns: 25,
+  maxConsecutiveFailures: 3,
+  firstRunPrompt: null,
+  setupAnalysisSummary: null,
+  createdAt: "2026-07-05T10:00:00Z",
+  updatedAt: "2026-07-05T10:00:00Z",
+  ...overrides,
+});
+
+const automationRunFixture = (
+  overrides: Partial<AutomationRun> = {},
+): AutomationRun => ({
+  id: "run-1",
+  automationId: "automation-1",
+  runIndex: 3,
+  status: "published",
+  judgeState: "none",
+  judgeLeaseExpiresAt: null,
+  conversationId: "conversation-1",
+  runPrompt: "Continue the release automation.",
+  promptAuthor: "judge",
+  baseRefKind: "project_default",
+  baseRefUsed: "main",
+  baseFromRunId: "run-0",
+  branchName: "ralphx/release/agent-1",
+  prNumber: 593,
+  prUrl: "https://github.com/aigentive/ralphx.app/pull/593",
+  prTitle: "Release automation task",
+  prHeadRefName: "ralphx/release/agent-1",
+  prBaseRefName: "main",
+  prMergedAt: null,
+  mergeCommitSha: null,
+  diffStatsJson: null,
+  agentSummary: null,
+  judgeVerdictJson: null,
+  judgeModelId: null,
+  errorCode: null,
+  errorDetail: null,
+  signalCheckFailures: 0,
+  startedAt: "2026-07-05T10:00:00Z",
+  finishedAt: null,
+  createdAt: "2026-07-05T10:00:00Z",
+  updatedAt: "2026-07-05T10:00:00Z",
+  ...overrides,
+});
+
+const automationDetailFixture = (
+  overrides: Partial<AutomationDetail> = {},
+): AutomationDetail => ({
+  automation: automationFixture(),
+  runs: [automationRunFixture()],
+  ...overrides,
 });
 
 function conversationRuntimeStatus(
@@ -1163,6 +1262,10 @@ describe("AgentsArtifactPane", () => {
       }),
     });
     listAgentConversationIssuesMock.mockResolvedValue([]);
+    getAutomationMock.mockResolvedValue(automationDetailFixture());
+    pauseAutomationMock.mockResolvedValue(automationFixture({ status: "paused" }));
+    resumeAutomationMock.mockResolvedValue(automationFixture({ status: "active" }));
+    stopAutomationMock.mockResolvedValue(automationFixture({ status: "stopped" }));
     getArtifactMock.mockResolvedValue(null);
     getSessionPlanMock.mockResolvedValue(null);
     approvePlanArtifactMock.mockResolvedValue(null);
@@ -1428,6 +1531,49 @@ describe("AgentsArtifactPane", () => {
       "task-1",
     );
     expect(onTaskArtifactSelectionChange).toHaveBeenCalledWith("task-1");
+  });
+
+  it("shows the automation artifact tab and opens the automation detail route", async () => {
+    const onOpenAutomation = vi.fn();
+    const automationConversation = {
+      ...conversation(),
+      agentMode: "automation" as const,
+      automationId: "automation-1",
+      automationRunId: "run-1",
+    };
+
+    renderPane(
+      "automation",
+      workspace({ mode: "edit" }),
+      vi.fn(),
+      false,
+      automationConversation,
+      { onOpenAutomation },
+    );
+
+    expect(screen.getByTestId("agents-artifact-tab-automation")).toBeInTheDocument();
+    expect(await screen.findByTestId("agents-automation-panel-loading")).toBeInTheDocument();
+    await waitFor(() => expect(getAutomationMock).toHaveBeenCalledWith("automation-1"));
+  });
+
+  it("uses the automation tab as the setup-conversation fallback", async () => {
+    const automationConversation = {
+      ...conversation(),
+      agentMode: "automation" as const,
+      automationId: "automation-1",
+      automationRunId: null,
+    };
+
+    renderPane(
+      "plan",
+      workspace({ mode: "edit" }),
+      vi.fn(),
+      false,
+      automationConversation,
+    );
+
+    expect(await screen.findByTestId("agents-automation-panel-loading")).toBeInTheDocument();
+    expect(screen.getByTestId("agents-artifact-tab-automation")).toBeInTheDocument();
   });
 
   it("selects task details from an external task focus request", async () => {

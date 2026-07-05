@@ -100,6 +100,8 @@ export const ChatConversationSchema = z.object({
   serviceTier: z.string().nullable().optional(),
   agentMode: AgentConversationModeSchema.nullable().optional(),
   coordinationMode: CoordinationModeSchema.default("solo"),
+  automationId: z.string().nullable().optional(),
+  automationRunId: z.string().nullable().optional(),
   parentConversationId: z.string().nullable().optional(),
   title: z.string().nullable(),
   messageCount: z.number().int().min(0),

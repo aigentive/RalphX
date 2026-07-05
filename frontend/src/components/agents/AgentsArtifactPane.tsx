@@ -8,6 +8,7 @@ import {
   ClipboardList,
   ScrollText,
   Ticket,
+  Workflow,
   X,
 } from "lucide-react";
 import type { ElementType } from "react";
@@ -230,6 +231,11 @@ const LazyPullRequestDetailPanel = lazy(() =>
     default: module.PullRequestDetailPanel,
   })),
 );
+const LazyAgentsAutomationPanel = lazy(() =>
+  import("@/components/agents/AgentsAutomationPanel").then((module) => ({
+    default: module.AgentsAutomationPanel,
+  })),
+);
 
 const ARTIFACT_TABS: Array<{
   id: IdeationArtifactTab;
@@ -247,6 +253,12 @@ const REVIEW_TAB = {
   id: "review" as const,
   label: "Review",
   icon: FileText,
+};
+
+const AUTOMATION_TAB = {
+  id: "automation" as const,
+  label: "Automation",
+  icon: Workflow,
 };
 
 const PUBLISH_TAB = {
@@ -334,6 +346,7 @@ interface AgentsArtifactPaneProps {
   isPublishingWorkspace?: boolean;
   publishFocusRequest?: AgentPublishFocusRequest | null;
   taskFocusRequest?: AgentTaskArtifactFocusRequest | null;
+  onOpenAutomation?: (automationId: string) => void;
   onFocusVerificationSession: ((parentSessionId: string, childSessionId: string) => void) | undefined;
   onFocusWorkspaceReview?: (conversationId: string) => void;
   onTaskArtifactSelectionChange?: (taskId: string | null) => void;
@@ -355,6 +368,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   isPublishingWorkspace = false,
   publishFocusRequest = null,
   taskFocusRequest = null,
+  onOpenAutomation,
   onFocusVerificationSession,
   onFocusWorkspaceReview,
   onTaskArtifactSelectionChange,
@@ -628,6 +642,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     (conversation?.contextType === "ideation" ? "ideation" : null);
   const issueConversationId =
     conversation?.contextType === "project" ? conversation.id : null;
+  const automationId = conversation?.automationId ?? null;
   const conversationIssuesQuery = useAgentConversationIssues(issueConversationId);
   const hasConversationIssues = hasOpenAgentConversationIssues(
     conversationIssuesQuery.data,
@@ -680,6 +695,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   const visibleTabs = useMemo(
     () => [
       ...ARTIFACT_TABS.filter((tab) => availableArtifactTabIds.includes(tab.id)),
+      ...(automationId ? [AUTOMATION_TAB] : []),
       ...(showPullRequestTab ? [PR_TAB] : []),
       ...(showJiraTab ? [JIRA_TAB] : []),
       ...(showLinearTab ? [LINEAR_TAB] : []),
@@ -689,6 +705,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     ],
     [
       availableArtifactTabIds,
+      automationId,
       showGranolaTab,
       showJiraTab,
       showLinearTab,
@@ -697,7 +714,9 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     ],
   );
   const fallbackActiveTab =
-    workspaceReviewContext?.shouldShowTab || reviewArtifactId
+    automationId && conversation?.agentMode === "automation"
+      ? "automation"
+      : workspaceReviewContext?.shouldShowTab || reviewArtifactId
       ? "review"
       : showPullRequestTab
         ? "pr"
@@ -1103,6 +1122,8 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
           conversationId={conversationId}
           activeWorkspaceFreshness={activeWorkspaceFreshness}
           conversationTitle={conversation?.title ?? null}
+          automationId={automationId}
+          {...(onOpenAutomation ? { onOpenAutomation } : {})}
           projectBaseBranch={projectBaseBranch}
           isLoading={conversationQuery.isLoading || sessionQuery.isLoading}
           attachedSessionId={attachedSessionId}
@@ -1158,6 +1179,8 @@ type ArtifactContentProps = {
   conversationId: string | null;
   activeWorkspaceFreshness: AgentConversationWorkspaceFreshness | undefined;
   conversationTitle: string | null;
+  automationId: string | null;
+  onOpenAutomation?: (automationId: string) => void;
   projectBaseBranch: string | null;
   isLoading: boolean;
   attachedSessionId: string | null;
@@ -1206,6 +1229,8 @@ function ArtifactContent({
   conversationId,
   activeWorkspaceFreshness,
   conversationTitle,
+  automationId,
+  onOpenAutomation,
   projectBaseBranch,
   isLoading,
   attachedSessionId,
@@ -1259,6 +1284,17 @@ function ArtifactContent({
     },
     [onDisplayedVerificationStatusChange],
   );
+
+  if (activeTab === "automation" && automationId) {
+    return (
+      <Suspense fallback={<EmptyArtifactState title="Loading automation..." />}>
+        <LazyAgentsAutomationPanel
+          automationId={automationId}
+          {...(onOpenAutomation ? { onOpenAutomation } : {})}
+        />
+      </Suspense>
+    );
+  }
 
   if (activeTab === "publish") {
     return (
