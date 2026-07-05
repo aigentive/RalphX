@@ -11,7 +11,8 @@ use crate::application::automation::service::{
 use crate::application::automation::transition::NoopAutomationEventEmitter;
 use crate::application::AppState;
 use crate::domain::entities::{
-    Automation, AutomationId, AutomationRun, AutomationRunId, ProjectId,
+    AgentConversationWorkspaceMode, Automation, AutomationId, AutomationRun, AutomationRunId,
+    ChatConversation, ProjectId,
 };
 
 #[derive(Debug, Clone, Deserialize)]
@@ -184,15 +185,44 @@ pub async fn create_automation_draft(
     input: CreateAutomationDraftInput,
     state: State<'_, AppState>,
 ) -> Result<CreateAutomationDraftResponse, String> {
+    create_automation_draft_for_state(input, &state).await
+}
+
+pub(crate) async fn create_automation_draft_for_state(
+    input: CreateAutomationDraftInput,
+    state: &AppState,
+) -> Result<CreateAutomationDraftResponse, String> {
     let project_id = parse_project_id(&input.project_id)?;
-    automation_service(&state)
+    let automation_id = AutomationId::new();
+    let mut setup_conversation = ChatConversation::new_project(project_id.clone());
+    setup_conversation.set_agent_mode(Some(AgentConversationWorkspaceMode::Automation));
+    setup_conversation.automation_id = Some(automation_id.clone());
+    let setup_conversation = state
+        .chat_conversation_repo
+        .create(setup_conversation)
+        .await
+        .map_err(|error| error.to_string())?;
+
+    let setup_conversation_id = setup_conversation.id;
+    let result = automation_service(state)
         .create_draft(ServiceCreateDraftInput {
+            id: Some(automation_id),
             project_id,
             name: input.name,
+            setup_conversation_id: Some(setup_conversation_id),
         })
-        .await
-        .map(CreateAutomationDraftResponse::from)
-        .map_err(|error| error.to_string())
+        .await;
+
+    match result {
+        Ok(automation) => Ok(CreateAutomationDraftResponse::from(automation)),
+        Err(error) => {
+            let _ = state
+                .chat_conversation_repo
+                .delete(&setup_conversation_id)
+                .await;
+            Err(error.to_string())
+        }
+    }
 }
 
 #[tauri::command]
@@ -455,7 +485,10 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::domain::entities::{AutomationStatus, ProjectId};
+    use crate::domain::entities::{
+        AgentConversationWorkspaceMode, AutomationStatus, ChatContextType, ChatConversationId,
+        ProjectId,
+    };
 
     fn automation() -> Automation {
         let now = Utc::now();
@@ -530,5 +563,94 @@ mod tests {
 
         assert_eq!(value["scheduled"], false);
         assert_eq!(value["reason"], "deferred");
+    }
+
+    #[tokio::test]
+    async fn create_draft_creates_bound_setup_conversation_without_worktree() {
+        let state = AppState::new_test();
+
+        let response = create_automation_draft_for_state(
+            CreateAutomationDraftInput {
+                project_id: "project-1".to_string(),
+                name: Some("Nightly cleanup".to_string()),
+            },
+            &state,
+        )
+        .await
+        .unwrap();
+
+        let setup_conversation_id = response
+            .setup_conversation_id
+            .as_deref()
+            .expect("draft response should expose setup conversation id");
+        assert_eq!(
+            response.automation.setup_conversation_id.as_deref(),
+            Some(setup_conversation_id)
+        );
+
+        let automation_id = AutomationId::from_string(response.automation.id.clone());
+        let persisted = state
+            .automation_repo
+            .get_by_id(&automation_id)
+            .await
+            .unwrap()
+            .expect("automation should be persisted");
+        let setup_conversation_id =
+            ChatConversationId::from_string(setup_conversation_id.to_string());
+        assert_eq!(persisted.setup_conversation_id, Some(setup_conversation_id));
+
+        let setup_conversation = state
+            .chat_conversation_repo
+            .get_by_id(&setup_conversation_id)
+            .await
+            .unwrap()
+            .expect("setup conversation should be persisted");
+        assert_eq!(setup_conversation.context_type, ChatContextType::Project);
+        assert_eq!(setup_conversation.context_id, "project-1");
+        assert_eq!(
+            setup_conversation.agent_mode,
+            Some(AgentConversationWorkspaceMode::Automation)
+        );
+        assert_eq!(setup_conversation.automation_id, Some(automation_id));
+        assert!(setup_conversation.automation_run_id.is_none());
+
+        let workspace = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&setup_conversation_id)
+            .await
+            .unwrap();
+        assert!(
+            workspace.is_none(),
+            "setup conversations must not create a worktree"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_draft_cleans_setup_conversation_when_draft_validation_fails() {
+        let state = AppState::new_test();
+
+        let error = create_automation_draft_for_state(
+            CreateAutomationDraftInput {
+                project_id: "project-1".to_string(),
+                name: Some("   ".to_string()),
+            },
+            &state,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.contains("automation name cannot be empty"));
+        let conversations = state
+            .chat_conversation_repo
+            .get_by_context(ChatContextType::Project, "project-1")
+            .await
+            .unwrap();
+        assert!(conversations.is_empty());
+        let automations = state
+            .automation_repo
+            .list(Some(ProjectId::from_string("project-1".to_string())))
+            .await
+            .unwrap();
+        assert!(automations.is_empty());
     }
 }

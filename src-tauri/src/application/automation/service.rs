@@ -7,7 +7,7 @@ use crate::application::automation::transition::{
 };
 use crate::domain::entities::{
     Automation, AutomationId, AutomationJudgeState, AutomationPromptAuthor, AutomationRun,
-    AutomationRunId, AutomationRunStatus, AutomationStatus, ProjectId,
+    AutomationRunId, AutomationRunStatus, AutomationStatus, ChatConversationId, ProjectId,
 };
 use crate::domain::repositories::{
     AutomationRepository, AutomationRunRepository, AutomationSettingsPatch,
@@ -32,8 +32,10 @@ pub struct AutomationDetail {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CreateAutomationDraftInput {
+    pub id: Option<AutomationId>,
     pub project_id: ProjectId,
     pub name: Option<String>,
+    pub setup_conversation_id: Option<ChatConversationId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,14 +91,14 @@ impl AutomationService {
     pub async fn create_draft(&self, input: CreateAutomationDraftInput) -> AppResult<Automation> {
         let now = Utc::now();
         let automation = Automation {
-            id: AutomationId::new(),
+            id: input.id.unwrap_or_else(AutomationId::new),
             project_id: input.project_id,
             name: normalize_name(input.name.as_deref())?,
             status: AutomationStatus::Draft,
             paused_reason_code: None,
             paused_reason_detail: None,
             goal_prompt: String::new(),
-            setup_conversation_id: None,
+            setup_conversation_id: input.setup_conversation_id,
             provider_harness: DEFAULT_PROVIDER_HARNESS.to_string(),
             model_id: DEFAULT_MODEL_ID.to_string(),
             logical_effort: None,

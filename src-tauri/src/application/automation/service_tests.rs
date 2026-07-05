@@ -188,8 +188,10 @@ async fn service_creates_lists_gets_and_updates_mechanical_settings() {
 
     let draft = service
         .create_draft(CreateAutomationDraftInput {
+            id: None,
             project_id: project_id.clone(),
             name: Some("  Large migration  ".to_string()),
+            setup_conversation_id: None,
         })
         .await
         .unwrap();
