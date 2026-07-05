@@ -17,6 +17,7 @@ const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
   activityPage: true,
   extensibilityPage: true,
   ideationPage: false,
+  automationsPage: false,
   battleMode: true,
   teamMode: false,
   atlassianOauth: false,
@@ -61,6 +62,8 @@ export function isViewEnabled(view: string, flags: FeatureFlags): boolean {
       return flags.extensibilityPage;
     case "ideation":
       return flags.ideationPage;
+    case "automations":
+      return flags.automationsPage;
     case "ticketing":
       return true;
     default:

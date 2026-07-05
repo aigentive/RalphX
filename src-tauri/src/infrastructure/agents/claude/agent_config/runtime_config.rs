@@ -1083,6 +1083,10 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
     if let Some(v) = lookup("RALPHX_UI_IDEATION_PAGE") {
         cfg.ui_feature_flags.ideation_page = matches!(v.to_lowercase().as_str(), "true" | "1");
     }
+    if let Some(v) = lookup("RALPHX_UI_AUTOMATIONS_PAGE") {
+        cfg.ui_feature_flags.automations_page =
+            matches!(v.to_lowercase().as_str(), "true" | "1");
+    }
     if let Some(v) = lookup("RALPHX_UI_BATTLE_MODE") {
         cfg.ui_feature_flags.battle_mode = matches!(v.to_lowercase().as_str(), "true" | "1");
     }

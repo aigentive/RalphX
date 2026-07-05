@@ -3315,6 +3315,10 @@ fn test_ui_feature_flags_default_standalone_ideation_hidden() {
         !flags.ideation_page,
         "ideation_page should default to false"
     );
+    assert!(
+        !flags.automations_page,
+        "automations_page should default to false"
+    );
     assert!(flags.battle_mode, "battle_mode should default to true");
     assert!(!flags.team_mode, "team_mode should default to false");
     assert!(
@@ -3344,6 +3348,7 @@ ui:
     activity_page: false
     extensibility_page: true
     ticketing_dashboard: true
+    automations_page: true
     ideation_page: true
 "#;
     let cfg = parse_config_no_env_overrides(yaml).expect("should parse yaml with ui section");
@@ -3362,6 +3367,10 @@ ui:
     assert!(
         cfg.runtime.ui_feature_flags.ticketing_dashboard,
         "ticketing_dashboard should be true from yaml"
+    );
+    assert!(
+        cfg.runtime.ui_feature_flags.automations_page,
+        "automations_page should be true from yaml"
     );
 }
 
@@ -3391,6 +3400,10 @@ agents: []
     assert!(
         !cfg.runtime.ui_feature_flags.ideation_page,
         "ideation_page should default to false when ui section absent"
+    );
+    assert!(
+        !cfg.runtime.ui_feature_flags.automations_page,
+        "automations_page should default to false when ui section absent"
     );
     assert!(
         !cfg.runtime.ui_feature_flags.team_mode,
@@ -3455,6 +3468,7 @@ fn test_env_override_true_value_enables_flag() {
             activity_page: false,
             extensibility_page: false,
             ideation_page: false,
+            automations_page: false,
             battle_mode: false,
             team_mode: false,
             atlassian_oauth: false,
@@ -3478,14 +3492,23 @@ fn test_env_override_true_value_enables_flag() {
         !cfg.ui_feature_flags.ideation_page,
         "ideation_page untouched"
     );
+    assert!(
+        !cfg.ui_feature_flags.automations_page,
+        "automations_page untouched"
+    );
 
     runtime_config::apply_env_overrides_with_lookup(&mut cfg, &|name| match name {
         "RALPHX_UI_IDEATION_PAGE" => Some("true".to_string()),
+        "RALPHX_UI_AUTOMATIONS_PAGE" => Some("1".to_string()),
         _ => None,
     });
     assert!(
         cfg.ui_feature_flags.ideation_page,
         "env 'true' should enable ideation_page"
+    );
+    assert!(
+        cfg.ui_feature_flags.automations_page,
+        "env '1' should enable automations_page"
     );
     assert!(!cfg.ui_feature_flags.team_mode, "team_mode untouched");
     assert!(
@@ -3532,6 +3555,10 @@ fn test_env_override_battle_mode() {
     assert!(
         !cfg.ui_feature_flags.ideation_page,
         "ideation_page untouched"
+    );
+    assert!(
+        !cfg.ui_feature_flags.automations_page,
+        "automations_page untouched"
     );
     assert!(!cfg.ui_feature_flags.team_mode, "team_mode untouched");
     assert!(
@@ -3665,6 +3692,7 @@ fn test_ui_feature_flags_config_accessor_returns_defaults() {
     let _ = flags.activity_page;
     let _ = flags.extensibility_page;
     let _ = flags.ideation_page;
+    let _ = flags.automations_page;
     let _ = flags.battle_mode;
     let _ = flags.team_mode;
     let _ = flags.atlassian_oauth;

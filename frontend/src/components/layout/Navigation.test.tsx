@@ -27,6 +27,7 @@ const allNavFlags: FeatureFlags = {
   activityPage: true,
   extensibilityPage: true,
   ideationPage: true,
+  automationsPage: true,
   battleMode: true,
   teamMode: false,
   atlassianOauth: false,
@@ -64,6 +65,7 @@ describe("Navigation", () => {
     expect(screen.getByTestId("nav-ideation")).toBeInTheDocument();
     expect(screen.getByTestId("nav-kanban")).toBeInTheDocument();
     expect(screen.getByTestId("nav-graph")).toBeInTheDocument();
+    expect(screen.getByTestId("nav-automations")).toBeInTheDocument();
     expect(screen.getByTestId("nav-insights")).toBeInTheDocument();
     expect(screen.getByTestId("nav-activity")).toBeInTheDocument();
   });
@@ -100,11 +102,12 @@ describe("Navigation", () => {
       element.getAttribute("data-testid")
     );
 
-    expect(navItemIds.slice(0, 5)).toEqual([
+    expect(navItemIds.slice(0, 6)).toEqual([
       "nav-agents",
       "nav-ideation",
       "nav-graph",
       "nav-kanban",
+      "nav-automations",
       "nav-insights",
     ]);
     expect(screen.getByText("⌘1")).toBeInTheDocument();
@@ -205,14 +208,23 @@ describe("Navigation — feature flag filtering", () => {
     expect(screen.queryByTestId("nav-ideation")).toBeNull();
   });
 
+  it("hides Automations when automationsPage flag is false", () => {
+    mockFeatureFlags = { ...allNavFlags, automationsPage: false };
+
+    render(<Navigation {...defaultProps} />);
+
+    expect(screen.queryByTestId("nav-automations")).toBeNull();
+  });
+
   it("always renders unflagged core nav items regardless of optional-page flags", () => {
-    mockFeatureFlags = { ...allNavFlags, activityPage: false, extensibilityPage: false, ideationPage: false };
+    mockFeatureFlags = { ...allNavFlags, activityPage: false, extensibilityPage: false, ideationPage: false, automationsPage: false };
 
     render(<Navigation {...defaultProps} />);
 
     expect(screen.getByTestId("nav-agents")).toBeInTheDocument();
     expect(screen.getByTestId("nav-graph")).toBeInTheDocument();
     expect(screen.getByTestId("nav-kanban")).toBeInTheDocument();
+    expect(screen.queryByTestId("nav-automations")).toBeNull();
     expect(screen.getByTestId("nav-settings")).toBeInTheDocument();
   });
 });
@@ -237,6 +249,7 @@ describe("Navigation — hideViews (welcome mode)", () => {
     expect(screen.queryByTestId("nav-graph")).toBeNull();
     expect(screen.queryByTestId("nav-kanban")).toBeNull();
     expect(screen.queryByTestId("nav-insights")).toBeNull();
+    expect(screen.queryByTestId("nav-automations")).toBeNull();
     expect(screen.queryByTestId("nav-activity")).toBeNull();
     expect(screen.queryByTestId("nav-extensibility")).toBeNull();
   });

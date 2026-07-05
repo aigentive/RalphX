@@ -51,6 +51,7 @@ let mockUiStoreState: Record<string, unknown> = {
     activityPage: true,
     extensibilityPage: true,
     ideationPage: false,
+    automationsPage: false,
     battleMode: true,
     teamMode: false,
     atlassianOauth: false,

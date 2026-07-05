@@ -3,7 +3,7 @@
  * Root component with QueryClientProvider and EventProvider
  */
 
-import { useMemo, useState, useEffect, useCallback, useRef } from "react";
+import { lazy, Suspense, useMemo, useState, useEffect, useCallback, useRef } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -88,9 +88,11 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/sonner";
 import { ScreenshotGalleryTestPage } from "@/test-pages/ScreenshotGalleryTest";
+import { preloadAutomationsView } from "@/components/automations/preloadAutomationsView";
 
 const queryClient = getQueryClient();
 const ATLASSIAN_AWARENESS_TOAST_KEY = "ralphx.atlassianIntegrationAwareness.v1";
+const LazyAutomationsView = lazy(() => preloadAutomationsView());
 
 function ensureCreatedProjectVisibleInAgentFilters(projectId: string) {
   const {
@@ -161,6 +163,46 @@ function FeatureDisabledPlaceholder({
             <pre>{`${envVar}=true`}</pre>
           </>
         )}
+      </div>
+    </div>
+  );
+}
+
+function AutomationsRouteShell() {
+  return (
+    <div
+      className="flex h-full min-h-0 flex-col"
+      style={{ backgroundColor: "var(--app-content-bg)" }}
+      data-testid="automations-view-shell"
+    >
+      <div
+        className="flex items-center justify-between border-b px-6 py-5"
+        style={{
+          backgroundColor: "var(--app-content-bg)",
+          borderBottomColor: "var(--border-default)",
+          borderBottomStyle: "solid",
+          borderBottomWidth: "1px",
+        }}
+      >
+        <div>
+          <div className="h-3 w-24 rounded" style={{ backgroundColor: "var(--bg-surface)" }} />
+          <div className="mt-3 h-6 w-48 rounded" style={{ backgroundColor: "var(--bg-surface)" }} />
+        </div>
+        <div className="h-9 w-36 rounded-md" style={{ backgroundColor: "var(--bg-surface)" }} />
+      </div>
+      <div className="space-y-3 p-6">
+        {[0, 1, 2].map((index) => (
+          <div
+            key={index}
+            className="h-[72px] rounded-md"
+            style={{
+              backgroundColor: "var(--bg-surface)",
+              borderColor: "var(--border-default)",
+              borderStyle: "solid",
+              borderWidth: "1px",
+            }}
+          />
+        ))}
       </div>
     </div>
   );
@@ -1239,6 +1281,20 @@ function AppContent() {
                   projectId={currentProjectId}
                   onCreateProject={handleOpenProjectWizard}
                 />
+              )}
+              {currentView === "automations" && (
+                isViewEnabled("automations", featureFlags)
+                  ? (
+                    <Suspense fallback={<AutomationsRouteShell />}>
+                      <LazyAutomationsView
+                        projectId={currentProjectId || null}
+                        projectName={activeProject?.name ?? null}
+                      />
+                    </Suspense>
+                  )
+                  : import.meta.env.DEV
+                    ? <FeatureDisabledPlaceholder view="automations" yamlKey="automations_page" envVar="RALPHX_UI_AUTOMATIONS_PAGE" />
+                    : null
               )}
               {currentView === "extensibility" && (
                 isViewEnabled("extensibility", featureFlags)
