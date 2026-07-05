@@ -182,6 +182,11 @@ const CROSS_HARNESS_CHAT_AGENTS: &[(&str, &str, &str)] = &[
 ];
 
 const CROSS_HARNESS_SUPPORT_AGENTS: &[(&str, &str, &str)] = &[
+    (
+        "ralphx-automation-judge",
+        "automation-judge",
+        "ralphx-automation-judge",
+    ),
     ("ralphx-review-history", "review_history", "review-history"),
     (
         "ralphx-project-analyzer",
@@ -262,6 +267,7 @@ const CANONICAL_MCP_TOOL_OWNED_AGENTS: &[&str] = &[
     "ralphx-utility-session-namer",
     "ralphx-utility-pr-describer",
     "ralphx-utility-plan-complexity",
+    "ralphx-automation-judge",
     "ralphx-automation-setup",
     "ralphx-chat-task",
     "ralphx-chat-project",
@@ -288,6 +294,7 @@ const CANONICAL_MCP_TOOL_OWNED_AGENTS: &[&str] = &[
 
 const CANONICAL_CODEX_RUNTIME_FEATURE_OWNED_AGENTS: &[&str] = &[
     "ralphx-general-explorer",
+    "ralphx-automation-judge",
     "ralphx-automation-setup",
     "ralphx-utility-pr-describer",
     "ralphx-utility-plan-complexity",
@@ -393,6 +400,7 @@ const CANONICAL_CLAUDE_HARNESS_OWNED_AGENTS: &[&str] = &[
     "ralphx-pr-reviewer",
     "ralphx-workspace-reviewer",
     "ralphx-automation-setup",
+    "ralphx-automation-judge",
     "ralphx-execution-worker",
     "ralphx-execution-coder",
     "ralphx-execution-merger",
@@ -451,6 +459,7 @@ const CANONICAL_CLAUDE_MODEL_OWNED_AGENTS: &[(&str, &str)] = &[
     ("ralphx-pr-reviewer", "sonnet"),
     ("ralphx-workspace-reviewer", "sonnet"),
     ("ralphx-automation-setup", "sonnet"),
+    ("ralphx-automation-judge", "haiku"),
     ("ralphx-utility-session-namer", "haiku"),
     ("ralphx-utility-plan-complexity", "haiku"),
     ("ralphx-chat-task", "sonnet"),
@@ -1519,6 +1528,56 @@ fn plan_complexity_codex_surface_uses_shared_prompt_and_submit_tool() {
         "Codex plan complexity prompt should not use Claude-style MCP names"
     );
     assert_eq!(metadata.runtime_features.get("shell_tool"), Some(&false));
+}
+
+#[test]
+fn automation_judge_surface_is_output_only_and_zero_tool() {
+    let root = project_root();
+    let definition = load_canonical_agent_definition(&root, "ralphx-automation-judge")
+        .expect("expected canonical automation judge definition");
+    let claude_prompt =
+        load_harness_agent_prompt(&root, "ralphx-automation-judge", AgentPromptHarness::Claude)
+            .expect("expected automation judge Claude prompt");
+    let codex_prompt =
+        load_harness_agent_prompt(&root, "ralphx-automation-judge", AgentPromptHarness::Codex)
+            .expect("expected automation judge Codex prompt");
+    let codex_metadata = load_canonical_codex_metadata(&root, "ralphx-automation-judge");
+    let runtime_config = get_agent_config("ralphx-automation-judge")
+        .expect("expected runtime config for automation judge");
+
+    assert_eq!(definition.capabilities.mcp_tools, Vec::<String>::new());
+    assert_eq!(runtime_config.allowed_mcp_tools, Vec::<String>::new());
+    assert!(
+        runtime_config.mcp_only,
+        "automation judge should not receive general Claude tools"
+    );
+    assert_eq!(
+        codex_metadata.runtime_features.get("shell_tool"),
+        Some(&false)
+    );
+
+    for prompt in [&claude_prompt, &codex_prompt] {
+        assert!(
+            prompt.contains("Return only one JSON object"),
+            "judge prompt should require an output-only JSON verdict"
+        );
+        assert!(
+            prompt.contains("\"updatedItemStatuses\""),
+            "judge prompt should declare item status updates"
+        );
+        assert!(
+            prompt.contains("\"nextBaseBranch\""),
+            "judge prompt should declare next base selection"
+        );
+        assert!(
+            !prompt.contains("mcp__ralphx__"),
+            "judge prompt must not mention Claude-style MCP names"
+        );
+        assert!(
+            !prompt.contains("MCP Tools Available"),
+            "judge prompt must not describe an unavailable MCP surface"
+        );
+    }
 }
 
 #[test]
