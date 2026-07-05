@@ -213,3 +213,41 @@ async fn sqlite_run_repo_latest_and_single_open_index() {
         AutomationRunId::from_string("run-2")
     );
 }
+
+#[tokio::test]
+async fn sqlite_run_repo_clears_stale_judge_verdict_when_retry_starts() {
+    let (_db, project_id, automation_repo, run_repo) = setup_repos();
+    automation_repo
+        .create(automation(
+            "automation-1",
+            project_id,
+            AutomationStatus::Active,
+        ))
+        .await
+        .unwrap();
+    let mut failed = run(
+        "run-1",
+        1,
+        AutomationRunStatus::AgentFailed,
+        AutomationJudgeState::Failed,
+    );
+    failed.judge_verdict_json = Some(r#"{"result":"old"}"#.to_string());
+    failed.error_detail = Some("previous judge attempt failed".to_string());
+    run_repo.create_run(failed.clone()).await.unwrap();
+
+    assert!(run_repo
+        .compare_and_swap_judge_state(
+            &failed.id,
+            AutomationJudgeState::Failed,
+            AutomationJudgeState::InProgress,
+            None,
+            None,
+        )
+        .await
+        .unwrap());
+
+    let updated = run_repo.get_by_id(&failed.id).await.unwrap().unwrap();
+    assert_eq!(updated.judge_state, AutomationJudgeState::InProgress);
+    assert_eq!(updated.judge_verdict_json, None);
+    assert_eq!(updated.error_detail, None);
+}

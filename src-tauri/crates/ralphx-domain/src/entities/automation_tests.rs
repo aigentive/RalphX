@@ -1,6 +1,7 @@
 use super::{
     automation_is_transition_allowed, automation_run_is_transition_allowed, is_open_automation_run,
-    judge_is_transition_allowed, AutomationJudgeState, AutomationRunStatus, AutomationStatus,
+    judge_is_transition_allowed, judge_transition_clears_verdict, AutomationJudgeState,
+    AutomationRunStatus, AutomationStatus,
 };
 
 #[test]
@@ -90,6 +91,26 @@ fn judge_lifecycle_transition_matrix_matches_spec() {
             );
         }
     }
+}
+
+#[test]
+fn judge_retry_entry_clears_previous_verdict_only_when_no_new_verdict_exists() {
+    assert!(judge_transition_clears_verdict(
+        AutomationJudgeState::InProgress,
+        None
+    ));
+    assert!(!judge_transition_clears_verdict(
+        AutomationJudgeState::InProgress,
+        Some(r#"{"result":"new"}"#)
+    ));
+    assert!(!judge_transition_clears_verdict(
+        AutomationJudgeState::Failed,
+        None
+    ));
+    assert!(!judge_transition_clears_verdict(
+        AutomationJudgeState::Skipped,
+        None
+    ));
 }
 
 #[test]

@@ -6,8 +6,9 @@ use rusqlite::{params, Connection, ErrorCode, OptionalExtension};
 use tokio::sync::Mutex;
 
 use crate::domain::entities::{
-    Automation, AutomationId, AutomationJudgeState, AutomationPromptAuthor, AutomationRun,
-    AutomationRunId, AutomationRunStatus, AutomationStatus, ChatConversationId, ProjectId,
+    judge_transition_clears_verdict, Automation, AutomationId, AutomationJudgeState,
+    AutomationPromptAuthor, AutomationRun, AutomationRunId, AutomationRunStatus, AutomationStatus,
+    ChatConversationId, ProjectId,
 };
 use crate::domain::repositories::{
     AutomationRepository, AutomationRunRepository, AutomationSettingsPatch,
@@ -457,17 +458,25 @@ impl AutomationRunRepository for SqliteAutomationRunRepository {
         error_detail: Option<String>,
     ) -> AppResult<bool> {
         let id = id.as_str().to_string();
+        let clear_judge_verdict = i64::from(judge_transition_clears_verdict(
+            to,
+            judge_verdict_json.as_deref(),
+        ));
         self.db
             .run(move |conn| {
                 let affected = conn.execute(
                     "UPDATE automation_runs
                      SET judge_state = ?1,
-                         judge_verdict_json = COALESCE(?2, judge_verdict_json),
-                         error_detail = ?3,
-                         updated_at = ?4
-                     WHERE id = ?5 AND judge_state = ?6",
+                         judge_verdict_json = CASE
+                             WHEN ?2 = 1 THEN NULL
+                             ELSE COALESCE(?3, judge_verdict_json)
+                         END,
+                         error_detail = ?4,
+                         updated_at = ?5
+                     WHERE id = ?6 AND judge_state = ?7",
                     params![
                         to.as_str(),
+                        clear_judge_verdict,
                         judge_verdict_json,
                         error_detail,
                         Utc::now().to_rfc3339(),

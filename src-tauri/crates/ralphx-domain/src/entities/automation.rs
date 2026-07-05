@@ -377,6 +377,13 @@ pub fn judge_is_transition_allowed(from: AutomationJudgeState, to: AutomationJud
     )
 }
 
+pub fn judge_transition_clears_verdict(
+    to: AutomationJudgeState,
+    judge_verdict_json: Option<&str>,
+) -> bool {
+    to == AutomationJudgeState::InProgress && judge_verdict_json.is_none()
+}
+
 pub fn is_open_automation_run(
     status: AutomationRunStatus,
     judge_state: AutomationJudgeState,

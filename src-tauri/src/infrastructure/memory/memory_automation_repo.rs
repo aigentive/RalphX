@@ -4,8 +4,9 @@ use async_trait::async_trait;
 use chrono::Utc;
 
 use crate::domain::entities::{
-    is_open_automation_run, Automation, AutomationId, AutomationJudgeState, AutomationRun,
-    AutomationRunId, AutomationRunStatus, AutomationStatus, ProjectId,
+    is_open_automation_run, judge_transition_clears_verdict, Automation, AutomationId,
+    AutomationJudgeState, AutomationRun, AutomationRunId, AutomationRunStatus, AutomationStatus,
+    ProjectId,
 };
 use crate::domain::repositories::{
     AutomationRepository, AutomationRunRepository, AutomationSettingsPatch,
@@ -256,8 +257,12 @@ impl AutomationRunRepository for MemoryAutomationRunRepository {
         if run.judge_state != from {
             return Ok(false);
         }
+        let clear_judge_verdict =
+            judge_transition_clears_verdict(to, judge_verdict_json.as_deref());
         run.judge_state = to;
-        if let Some(verdict) = judge_verdict_json {
+        if clear_judge_verdict {
+            run.judge_verdict_json = None;
+        } else if let Some(verdict) = judge_verdict_json {
             run.judge_verdict_json = Some(verdict);
         }
         run.error_detail = error_detail;

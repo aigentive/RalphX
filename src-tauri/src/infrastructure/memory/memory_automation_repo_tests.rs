@@ -187,3 +187,34 @@ async fn memory_run_repo_enforces_open_run_single_flight() {
     .await
     .unwrap();
 }
+
+#[tokio::test]
+async fn memory_run_repo_clears_stale_judge_verdict_when_retry_starts() {
+    let repo = MemoryAutomationRunRepository::new();
+    let mut failed = run(
+        "run-1",
+        "automation-1",
+        1,
+        AutomationRunStatus::AgentFailed,
+        AutomationJudgeState::Failed,
+    );
+    failed.judge_verdict_json = Some(r#"{"result":"old"}"#.to_string());
+    failed.error_detail = Some("previous judge attempt failed".to_string());
+    repo.create_run(failed.clone()).await.unwrap();
+
+    assert!(repo
+        .compare_and_swap_judge_state(
+            &failed.id,
+            AutomationJudgeState::Failed,
+            AutomationJudgeState::InProgress,
+            None,
+            None,
+        )
+        .await
+        .unwrap());
+
+    let updated = repo.get_by_id(&failed.id).await.unwrap().unwrap();
+    assert_eq!(updated.judge_state, AutomationJudgeState::InProgress);
+    assert_eq!(updated.judge_verdict_json, None);
+    assert_eq!(updated.error_detail, None);
+}

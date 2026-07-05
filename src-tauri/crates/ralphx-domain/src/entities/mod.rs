@@ -50,9 +50,10 @@ pub use activity_event::{
 };
 pub use automation::{
     automation_is_transition_allowed, automation_run_is_transition_allowed,
-    is_open_automation_run, judge_is_transition_allowed, Automation, AutomationAttachment,
-    AutomationContextRef, AutomationContextRefKind, AutomationId, AutomationJudgeState,
-    AutomationPromptAuthor, AutomationRun, AutomationRunId, AutomationRunStatus, AutomationStatus,
+    is_open_automation_run, judge_is_transition_allowed, judge_transition_clears_verdict,
+    Automation, AutomationAttachment, AutomationContextRef, AutomationContextRefKind,
+    AutomationId, AutomationJudgeState, AutomationPromptAuthor, AutomationRun, AutomationRunId,
+    AutomationRunStatus, AutomationStatus,
 };
 pub use agent_conversation_granola_note::{
     AgentConversationGranolaNoteLink, AgentConversationGranolaRefreshStatus,
