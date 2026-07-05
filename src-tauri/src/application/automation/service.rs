@@ -192,6 +192,19 @@ impl AutomationService {
         .await
     }
 
+    pub async fn finalize(&self, id: &AutomationId) -> AppResult<Automation> {
+        let automation = self.require_automation(id).await?;
+        validate_finalizable(&automation)?;
+        self.transition_automation_status_or_conflict(
+            id,
+            automation.status,
+            AutomationStatus::Active,
+            None,
+            None,
+        )
+        .await
+    }
+
     pub async fn create_run(&self, input: CreateAutomationRunInput) -> AppResult<AutomationRun> {
         let automation = self.require_automation(&input.automation_id).await?;
         if automation.status != AutomationStatus::Active {
@@ -292,6 +305,68 @@ fn validate_positive(field: &str, value: Option<i64>) -> AppResult<()> {
     if value.is_some_and(|value| value <= 0) {
         return Err(AppError::Validation(format!("{field} must be positive")));
     }
+    Ok(())
+}
+
+fn validate_finalizable(automation: &Automation) -> AppResult<()> {
+    if automation.status != AutomationStatus::Draft {
+        return Err(AppError::InvalidTransition {
+            from: automation.status.as_str().to_string(),
+            to: AutomationStatus::Active.as_str().to_string(),
+        });
+    }
+    if automation.goal_prompt.trim().is_empty() {
+        return Err(AppError::Validation(
+            "automation goal_prompt is required before activation".to_string(),
+        ));
+    }
+    if automation.provider_harness.trim().is_empty() {
+        return Err(AppError::Validation(
+            "automation provider_harness is required before activation".to_string(),
+        ));
+    }
+    if automation.model_id.trim().is_empty() {
+        return Err(AppError::Validation(
+            "automation model_id is required before activation".to_string(),
+        ));
+    }
+    if automation
+        .first_run_prompt
+        .as_deref()
+        .unwrap_or("")
+        .trim()
+        .is_empty()
+    {
+        return Err(AppError::Validation(
+            "automation first_run_prompt is required before activation".to_string(),
+        ));
+    }
+    if automation.completion_signal == DEFAULT_COMPLETION_SIGNAL
+        && automation.run_mode != DEFAULT_RUN_MODE
+    {
+        return Err(AppError::Validation(
+            "pr_merged automations require edit run_mode".to_string(),
+        ));
+    }
+    match automation.base_ref_kind.as_str() {
+        DEFAULT_BASE_REF_KIND => {}
+        "local_branch" if !automation.base_ref.trim().is_empty() => {}
+        "current_branch" => {
+            return Err(AppError::Validation(
+                "current_branch must be resolved before activation".to_string(),
+            ))
+        }
+        _ => {
+            return Err(AppError::Validation(
+                "automation base_ref_kind/base_ref is not activation-ready".to_string(),
+            ))
+        }
+    }
+    validate_positive("max_runs", Some(automation.max_runs))?;
+    validate_positive(
+        "max_consecutive_failures",
+        Some(automation.max_consecutive_failures),
+    )?;
     Ok(())
 }
 

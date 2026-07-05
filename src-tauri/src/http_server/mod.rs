@@ -283,6 +283,10 @@ pub async fn start_http_server(
         .route("/api/agent_tasks/update", post(update_agent_task))
         .route("/api/agent_tasks/claim", post(claim_agent_task))
         .route("/api/agent_tasks/complete", post(complete_agent_task))
+        // Automation setup-agent tools; caller identity is header-derived.
+        .route("/api/get_automation", post(get_automation))
+        .route("/api/update_automation", post(update_automation))
+        .route("/api/finalize_automation", post(finalize_automation))
         // Task tools (ralphx-chat-task agent)
         .route("/api/update_task", post(update_task))
         .route("/api/add_task_note", post(add_task_note))

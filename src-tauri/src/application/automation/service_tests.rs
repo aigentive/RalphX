@@ -323,6 +323,68 @@ async fn service_status_controls_use_transition_service_and_fail_closed() {
 }
 
 #[tokio::test]
+async fn service_finalizes_complete_draft_through_transition_service() {
+    let emitter = Arc::new(RecordingEmitter::default());
+    let (service, automation_repo, _run_repo) = service_with_emitter(emitter.clone());
+    let draft = automation("automation-1", AutomationStatus::Draft);
+    automation_repo.create(draft.clone()).await.unwrap();
+
+    let finalized = service.finalize(&draft.id).await.unwrap();
+
+    assert_eq!(finalized.status, AutomationStatus::Active);
+    assert_eq!(
+        emitter.events(),
+        vec![AutomationEvent::AutomationUpdated {
+            automation_id: draft.id
+        }]
+    );
+}
+
+#[tokio::test]
+async fn service_finalize_fails_closed_for_incomplete_or_unresolved_drafts() {
+    let emitter = Arc::new(RecordingEmitter::default());
+    let (service, automation_repo, _run_repo) = service_with_emitter(emitter.clone());
+
+    let mut missing_prompt = automation("automation-missing", AutomationStatus::Draft);
+    missing_prompt.first_run_prompt = None;
+    automation_repo
+        .create(missing_prompt.clone())
+        .await
+        .unwrap();
+    let missing_error = service.finalize(&missing_prompt.id).await.unwrap_err();
+    assert!(matches!(missing_error, AppError::Validation(_)));
+    assert_eq!(
+        automation_repo
+            .get_by_id(&missing_prompt.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        AutomationStatus::Draft
+    );
+
+    let mut unresolved_base = automation("automation-current", AutomationStatus::Draft);
+    unresolved_base.base_ref_kind = "current_branch".to_string();
+    automation_repo
+        .create(unresolved_base.clone())
+        .await
+        .unwrap();
+    let base_error = service.finalize(&unresolved_base.id).await.unwrap_err();
+    assert!(matches!(base_error, AppError::Validation(_)));
+    assert_eq!(
+        automation_repo
+            .get_by_id(&unresolved_base.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        AutomationStatus::Draft
+    );
+
+    assert!(emitter.events().is_empty());
+}
+
+#[tokio::test]
 async fn service_creates_pending_runs_without_bypassing_single_flight() {
     let (service, automation_repo, run_repo) =
         service_with_emitter(Arc::new(NoopAutomationEventEmitter));
