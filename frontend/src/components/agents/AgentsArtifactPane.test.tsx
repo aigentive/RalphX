@@ -63,6 +63,8 @@ const {
   getIdeationChildrenMock,
   useConversationMock,
   useDependencyGraphMock,
+  useAgentComposerPlanReferencesMock,
+  useFileDropMock,
   useVerificationStatusMock,
   useGitAuthDiagnosticsMock,
   useGhAuthStatusMock,
@@ -117,6 +119,8 @@ const {
   getIdeationChildrenMock: vi.fn(),
   useConversationMock: vi.fn(),
   useDependencyGraphMock: vi.fn(),
+  useAgentComposerPlanReferencesMock: vi.fn(),
+  useFileDropMock: vi.fn(),
   useVerificationStatusMock: vi.fn(),
   useGitAuthDiagnosticsMock: vi.fn(),
   useGhAuthStatusMock: vi.fn(),
@@ -316,6 +320,15 @@ vi.mock("@/hooks/useChat", async (importOriginal) => {
 
 vi.mock("@/hooks/useDependencyGraph", () => ({
   useDependencyGraph: (...args: unknown[]) => useDependencyGraphMock(...args),
+}));
+
+vi.mock("@/hooks/useAgentComposerResources", () => ({
+  useAgentComposerPlanReferences: (...args: unknown[]) =>
+    useAgentComposerPlanReferencesMock(...args),
+}));
+
+vi.mock("@/hooks/useFileDrop", () => ({
+  useFileDrop: (...args: unknown[]) => useFileDropMock(...args),
 }));
 
 vi.mock("@/hooks/useVerificationStatus", () => ({
@@ -995,6 +1008,24 @@ describe("AgentsArtifactPane", () => {
     useDependencyGraphMock.mockReturnValue({
       data: null,
       isLoading: false,
+    });
+    useAgentComposerPlanReferencesMock.mockReturnValue({
+      data: { plans: [], truncated: false },
+      isLoading: false,
+      isFetching: false,
+      isError: false,
+      error: null,
+    });
+    useFileDropMock.mockReturnValue({
+      isDragging: false,
+      dropProps: {
+        onDragEnter: vi.fn(),
+        onDragOver: vi.fn(),
+        onDragLeave: vi.fn(),
+        onDrop: vi.fn(),
+      },
+      error: null,
+      clearError: vi.fn(),
     });
     useVerificationStatusMock.mockReturnValue({
       data: null,

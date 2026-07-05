@@ -23,6 +23,7 @@ import { ideationApi, toTaskProposal } from "@/api/ideation";
 import { verificationApi } from "@/api/verification";
 import {
   chatApi,
+  type AgentConversationPlanDraft,
   type AgentConversationWorkspace,
   type AgentConversationWorkspaceFreshness,
   type AgentConversationRuntimeStatus,
@@ -294,7 +295,7 @@ interface AgentsArtifactPaneProps {
 
 export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   conversation,
-  workspace = null,
+  workspace: workspaceProp = null,
   activeWorkspaceFreshness,
   projectBaseBranch = null,
   focusedIdeationSessionId = null,
@@ -313,6 +314,16 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   onClose,
 }: AgentsArtifactPaneProps) {
   const queryClient = useQueryClient();
+  const conversationId = conversation?.id ?? null;
+  const [createdPlanDraft, setCreatedPlanDraft] =
+    useState<AgentConversationPlanDraft | null>(null);
+  useEffect(() => {
+    setCreatedPlanDraft(null);
+  }, [conversationId]);
+  const workspace =
+    createdPlanDraft?.conversationId === conversationId
+      ? createdPlanDraft.workspace
+      : workspaceProp;
   const canHydrateIdeationArtifacts = Boolean(
     conversation?.contextType === "ideation" ||
       focusedIdeationSessionId ||
@@ -387,7 +398,6 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     status: VerificationStatus;
     inProgress: boolean;
   } | null>(null);
-  const conversationId = conversation?.id ?? null;
   const prReviewConversationId =
     workspace?.mode === "review_pr" ? workspace.conversationId : null;
   const shouldLoadPrReviewContext = Boolean(prReviewConversationId);
@@ -731,6 +741,42 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     },
     [attachedSessionId, queryClient],
   );
+  const handlePlanDraftCreated = useCallback(
+    async (draft: AgentConversationPlanDraft) => {
+      if (draft.conversationId !== conversationId) {
+        return;
+      }
+      setCreatedPlanDraft(draft);
+      queryClient.setQueryData(
+        agentWorkspaceKeys.workspace(draft.conversationId),
+        draft.workspace,
+      );
+      invalidateConversationDataQueries(queryClient, draft.conversationId);
+      await Promise.all([
+        invalidateWorkspaceQueries(queryClient, draft.conversationId),
+        queryClient.invalidateQueries({
+          queryKey: ideationKeys.sessionWithData(draft.planningSessionId),
+        }),
+        queryClient.invalidateQueries({ queryKey: ideationKeys.sessions() }),
+        queryClient.invalidateQueries({
+          queryKey: [
+            "agents",
+            "session-plan",
+            draft.planningSessionId,
+            draft.planArtifactId,
+          ],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["agents", "artifact", draft.planArtifactId],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["agents", "plan-approval", draft.planningSessionId],
+        }),
+      ]);
+      toast.success("Draft plan ready");
+    },
+    [conversationId, queryClient],
+  );
   const handleStartReview = useCallback((force: boolean) => {
     if (
       !conversationId ||
@@ -990,6 +1036,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
           planArtifact={planArtifact}
           isPlanLoading={isPlanHydrating}
           onPlanUpdated={handlePlanUpdated}
+          onPlanDraftCreated={handlePlanDraftCreated}
           dependencyGraph={dependencyGraph}
           proposals={proposals}
           onPublishWorkspace={onPublishWorkspace}
@@ -1034,6 +1081,7 @@ type ArtifactContentProps = {
   planArtifact: Artifact | null;
   isPlanLoading: boolean;
   onPlanUpdated: (updatedPlan: Artifact) => void;
+  onPlanDraftCreated: (draft: AgentConversationPlanDraft) => void | Promise<void>;
   dependencyGraph: DependencyGraphResponse | null;
   proposals: TaskProposal[];
   onPublishWorkspace: ((conversationId: string) => Promise<void>) | undefined;
@@ -1077,6 +1125,7 @@ function ArtifactContent({
   planArtifact,
   isPlanLoading,
   onPlanUpdated,
+  onPlanDraftCreated,
   dependencyGraph,
   proposals,
   onPublishWorkspace,
@@ -1214,7 +1263,14 @@ function ArtifactContent({
 
   if (activeTab === "plan") {
     if (!attachedSessionId) {
-      return <AgentPlanStartPanel status={isLoading ? "loading" : "idle"} />;
+      return (
+        <AgentPlanStartPanel
+          status={isLoading ? "loading" : "idle"}
+          projectId={projectId}
+          conversationId={conversationId}
+          onDraftCreated={onPlanDraftCreated}
+        />
+      );
     }
 
     return (
@@ -1227,6 +1283,7 @@ function ArtifactContent({
         isPlanLoading={isPlanLoading}
         proposals={proposals}
         onPlanUpdated={onPlanUpdated}
+        onPlanDraftCreated={onPlanDraftCreated}
         verificationState={verificationState}
         verificationInProgress={verificationInProgress}
         onOpenVerification={onOpenVerification}
@@ -1326,6 +1383,7 @@ function AgentPlanPanel({
   isPlanLoading,
   proposals,
   onPlanUpdated,
+  onPlanDraftCreated,
   verificationState,
   verificationInProgress,
   onOpenVerification,
@@ -1338,6 +1396,7 @@ function AgentPlanPanel({
   isPlanLoading: boolean;
   proposals: TaskProposal[];
   onPlanUpdated: (updatedPlan: Artifact) => void;
+  onPlanDraftCreated: (draft: AgentConversationPlanDraft) => void | Promise<void>;
   verificationState: VerificationStatus | null;
   verificationInProgress: boolean;
   onOpenVerification: () => void;
@@ -1619,7 +1678,14 @@ function AgentPlanPanel({
   }, [canVerifyPlan, onOpenVerification, queryClient, session, verificationInProgress]);
 
   if (isPlanLoading) {
-    return <AgentPlanStartPanel status="loading" />;
+    return (
+      <AgentPlanStartPanel
+        status="loading"
+        projectId={session?.projectId ?? workspace?.projectId ?? null}
+        conversationId={workspace?.conversationId ?? null}
+        onDraftCreated={onPlanDraftCreated}
+      />
+    );
   }
 
   return (
@@ -1680,7 +1746,11 @@ function AgentPlanPanel({
           </Suspense>
         )
       ) : (
-        <AgentPlanStartPanel />
+        <AgentPlanStartPanel
+          projectId={session?.projectId ?? workspace?.projectId ?? null}
+          conversationId={workspace?.conversationId ?? null}
+          onDraftCreated={onPlanDraftCreated}
+        />
       )}
 
       {session && exportDialogOpen && (

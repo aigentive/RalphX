@@ -1613,6 +1613,8 @@ export const chatApi = {
   publishAgentConversationWorkspace,
   setAgentConversationWorkspaceAutoPublish,
   setAgentConversationWorkspacePrSupervision,
+  copyAgentConversationPlan,
+  importAgentConversationPlanMarkdown,
   closeAgentWorkspacePr,
   getAgentWorkspacePrReviewContext,
   getAgentWorkspaceReviewContext,
@@ -1757,6 +1759,30 @@ export interface AgentConversationWorkspace {
   status: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface CopyAgentConversationPlanInput {
+  conversationId: string;
+  sourceSessionId: string;
+  sourceArtifactId: string;
+  sourceVersion: number;
+}
+
+export interface ImportAgentConversationPlanMarkdownInput {
+  conversationId: string;
+  title: string;
+  content: string;
+}
+
+export interface AgentConversationPlanDraft {
+  conversationId: string;
+  projectId: string;
+  planningSessionId: string;
+  planArtifactId: string;
+  planArtifactVersion: number;
+  sourceArtifactId: string | null;
+  sourceVersion: number | null;
+  workspace: AgentConversationWorkspace;
 }
 
 export type WorkspaceOpenTargetKind = "editor" | "fileManager";
@@ -2134,6 +2160,16 @@ const AgentConversationWorkspaceResponseSchema = z.object({
 const AgentConversationWorkspaceListResponseSchema = z.array(
   AgentConversationWorkspaceResponseSchema,
 );
+const AgentConversationPlanDraftResponseSchema = z.object({
+  conversation_id: z.string(),
+  project_id: z.string(),
+  planning_session_id: z.string(),
+  plan_artifact_id: z.string(),
+  plan_artifact_version: z.number().int().positive(),
+  source_artifact_id: z.string().nullable(),
+  source_version: z.number().int().positive().nullable(),
+  workspace: AgentConversationWorkspaceResponseSchema,
+});
 const AgentSidebarConversationRowResponseSchema = z.object({
   conversation: ChatConversationResponseSchema,
   workspace: AgentConversationWorkspaceResponseSchema.nullable(),
@@ -2398,6 +2434,9 @@ const UpdateAgentConversationWorkspaceFromBaseResponseSchema = z.object({
 type RawAgentConversationWorkspace = z.infer<
   typeof AgentConversationWorkspaceResponseSchema
 >;
+type RawAgentConversationPlanDraft = z.infer<
+  typeof AgentConversationPlanDraftResponseSchema
+>;
 type RawAgentSidebarConversationGroups = z.infer<
   typeof AgentSidebarConversationGroupsResponseSchema
 >;
@@ -2514,6 +2553,21 @@ function transformAgentConversationWorkspace(
     status: raw.status,
     createdAt: raw.created_at,
     updatedAt: raw.updated_at,
+  };
+}
+
+function transformAgentConversationPlanDraft(
+  raw: RawAgentConversationPlanDraft,
+): AgentConversationPlanDraft {
+  return {
+    conversationId: raw.conversation_id,
+    projectId: raw.project_id,
+    planningSessionId: raw.planning_session_id,
+    planArtifactId: raw.plan_artifact_id,
+    planArtifactVersion: raw.plan_artifact_version,
+    sourceArtifactId: raw.source_artifact_id,
+    sourceVersion: raw.source_version,
+    workspace: transformAgentConversationWorkspace(raw.workspace),
   };
 }
 
@@ -3338,6 +3392,41 @@ export async function setAgentConversationWorkspaceAutoPublish(
     AgentConversationWorkspaceResponseSchema,
   );
   return transformAgentConversationWorkspace(raw);
+}
+
+export async function copyAgentConversationPlan(
+  input: CopyAgentConversationPlanInput,
+): Promise<AgentConversationPlanDraft> {
+  const raw = await typedInvoke(
+    "copy_agent_conversation_plan",
+    {
+      input: {
+        conversationId: input.conversationId,
+        sourceSessionId: input.sourceSessionId,
+        sourceArtifactId: input.sourceArtifactId,
+        sourceVersion: input.sourceVersion,
+      },
+    },
+    AgentConversationPlanDraftResponseSchema,
+  );
+  return transformAgentConversationPlanDraft(raw);
+}
+
+export async function importAgentConversationPlanMarkdown(
+  input: ImportAgentConversationPlanMarkdownInput,
+): Promise<AgentConversationPlanDraft> {
+  const raw = await typedInvoke(
+    "import_agent_conversation_plan_markdown",
+    {
+      input: {
+        conversationId: input.conversationId,
+        title: input.title,
+        content: input.content,
+      },
+    },
+    AgentConversationPlanDraftResponseSchema,
+  );
+  return transformAgentConversationPlanDraft(raw);
 }
 
 export async function precomputeAgentConversationWorkspacePrDescription(

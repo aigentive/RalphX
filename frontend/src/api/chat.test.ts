@@ -36,6 +36,8 @@ import {
   precomputeAgentConversationWorkspacePrDescription,
   setAgentConversationWorkspaceAutoPublish,
   setAgentConversationWorkspacePrSupervision,
+  copyAgentConversationPlan,
+  importAgentConversationPlanMarkdown,
   startAgentConversation,
   startAgentConversationInvokeInput,
   transformStartAgentConversationResponse,
@@ -61,6 +63,32 @@ import { backendApiUrl } from "./backend";
 const mockInvoke = invoke as ReturnType<typeof vi.fn>;
 
 describe("chat api", () => {
+  const rawAgentWorkspace = (overrides: Record<string, unknown> = {}) => ({
+    conversation_id: "conversation-1",
+    project_id: "project-1",
+    mode: "plan",
+    base_ref_kind: "project_default",
+    base_ref: "main",
+    base_display_name: "Project default (main)",
+    base_commit: null,
+    branch_name: "ralphx/demo/agent-conversation-1",
+    worktree_path: "/tmp/ralphx/conversation-1",
+    linked_ideation_session_id: "planning-session-1",
+    linked_plan_branch_id: null,
+    publication_pr_number: null,
+    publication_pr_url: null,
+    publication_pr_status: null,
+    publication_push_status: null,
+    auto_publish_enabled: true,
+    auto_publish_initial_pr_enabled: false,
+    auto_publish_paused_pr_autofix_enabled: null,
+    auto_publish_paused_pr_auto_merge_desired: null,
+    status: "active",
+    created_at: "2026-01-24T10:00:00Z",
+    updated_at: "2026-01-24T10:01:00Z",
+    ...overrides,
+  });
+
   beforeEach(() => {
     mockInvoke.mockReset();
     delete window.__TAURI_INTERNALS__;
@@ -1260,29 +1288,10 @@ describe("chat api", () => {
 
   it("lists agent conversation workspaces for a project", async () => {
     mockInvoke.mockResolvedValue([
-      {
-        conversation_id: "conversation-1",
-        project_id: "project-1",
+      rawAgentWorkspace({
         mode: "edit",
-        base_ref_kind: "project_default",
-        base_ref: "main",
-        base_display_name: "Project default (main)",
-        base_commit: null,
-        branch_name: "ralphx/demo/agent-conversation-1",
-        worktree_path: "/tmp/ralphx/conversation-1",
         linked_ideation_session_id: null,
-        linked_plan_branch_id: null,
-        publication_pr_number: null,
-        publication_pr_url: null,
-        publication_pr_status: null,
-        publication_push_status: null,
-        auto_publish_enabled: true,
-        auto_publish_paused_pr_autofix_enabled: null,
-        auto_publish_paused_pr_auto_merge_desired: null,
-        status: "active",
-        created_at: "2026-01-24T10:00:00Z",
-        updated_at: "2026-01-24T10:01:00Z",
-      },
+      }),
     ]);
 
     const result = await listAgentConversationWorkspacesByProject("project-1");
@@ -1296,6 +1305,90 @@ describe("chat api", () => {
       projectId: "project-1",
       branchName: "ralphx/demo/agent-conversation-1",
       autoPublishInitialPrEnabled: false,
+    });
+  });
+
+  it("copies a selected plan version into the current agent conversation", async () => {
+    mockInvoke.mockResolvedValue({
+      conversation_id: "conversation-1",
+      project_id: "project-1",
+      planning_session_id: "planning-session-1",
+      plan_artifact_id: "target-plan-1",
+      plan_artifact_version: 1,
+      source_artifact_id: "source-plan-1",
+      source_version: 2,
+      workspace: rawAgentWorkspace(),
+    });
+
+    const result = await copyAgentConversationPlan({
+      conversationId: "conversation-1",
+      sourceSessionId: "source-session-1",
+      sourceArtifactId: "source-plan-1",
+      sourceVersion: 2,
+    });
+
+    expect(mockInvoke).toHaveBeenCalledWith("copy_agent_conversation_plan", {
+      input: {
+        conversationId: "conversation-1",
+        sourceSessionId: "source-session-1",
+        sourceArtifactId: "source-plan-1",
+        sourceVersion: 2,
+      },
+    });
+    expect(result).toMatchObject({
+      conversationId: "conversation-1",
+      projectId: "project-1",
+      planningSessionId: "planning-session-1",
+      planArtifactId: "target-plan-1",
+      planArtifactVersion: 1,
+      sourceArtifactId: "source-plan-1",
+      sourceVersion: 2,
+      workspace: {
+        conversationId: "conversation-1",
+        mode: "plan",
+        linkedIdeationSessionId: "planning-session-1",
+      },
+    });
+  });
+
+  it("imports markdown content into the current agent conversation plan", async () => {
+    mockInvoke.mockResolvedValue({
+      conversation_id: "conversation-1",
+      project_id: "project-1",
+      planning_session_id: "planning-session-1",
+      plan_artifact_id: "target-plan-2",
+      plan_artifact_version: 3,
+      source_artifact_id: null,
+      source_version: null,
+      workspace: rawAgentWorkspace({ updated_at: "2026-01-24T10:04:00Z" }),
+    });
+
+    const result = await importAgentConversationPlanMarkdown({
+      conversationId: "conversation-1",
+      title: "Imported plan",
+      content: "# Imported plan",
+    });
+
+    expect(mockInvoke).toHaveBeenCalledWith(
+      "import_agent_conversation_plan_markdown",
+      {
+        input: {
+          conversationId: "conversation-1",
+          title: "Imported plan",
+          content: "# Imported plan",
+        },
+      },
+    );
+    expect(result).toMatchObject({
+      conversationId: "conversation-1",
+      planningSessionId: "planning-session-1",
+      planArtifactId: "target-plan-2",
+      planArtifactVersion: 3,
+      sourceArtifactId: null,
+      sourceVersion: null,
+      workspace: {
+        updatedAt: "2026-01-24T10:04:00Z",
+      },
     });
   });
 
@@ -2532,6 +2625,10 @@ describe("chat api", () => {
     );
     expect(chatApi.setAgentConversationWorkspaceAutoPublish).toBe(
       setAgentConversationWorkspaceAutoPublish
+    );
+    expect(chatApi.copyAgentConversationPlan).toBe(copyAgentConversationPlan);
+    expect(chatApi.importAgentConversationPlanMarkdown).toBe(
+      importAgentConversationPlanMarkdown
     );
     expect(chatApi.getAgentWorkspacePrReviewContext).toBe(
       getAgentWorkspacePrReviewContext
