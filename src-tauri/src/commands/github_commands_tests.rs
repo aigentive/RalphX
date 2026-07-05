@@ -225,6 +225,7 @@ async fn get_github_branch_overview_lists_pr_rx_and_ticket_indicators() {
             url: "https://github.com/aigentive/ralphx.app/pull/11".to_string(),
             status: PrStatus::Merged {
                 merge_commit_sha: Some("abc123".to_string()),
+                merged_at: None,
             },
             is_draft: false,
             head_ref_name: "feature/merged".to_string(),

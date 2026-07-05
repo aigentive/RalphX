@@ -17,6 +17,8 @@ pub enum PrStatus {
     Merged {
         /// SHA of the merge commit, if available
         merge_commit_sha: Option<String>,
+        /// Timestamp when GitHub marked the pull request merged, if available
+        merged_at: Option<String>,
     },
 }
 

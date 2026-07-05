@@ -814,6 +814,7 @@ async fn marks_terminal_pr_status_during_blocked_pr_supervision_recovery() {
             "pr-supervision-terminal-merged",
             PrStatus::Merged {
                 merge_commit_sha: Some("merge-sha".to_string()),
+                merged_at: None,
             },
             "merged",
             "pr_merged",

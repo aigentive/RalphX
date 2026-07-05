@@ -7057,6 +7057,7 @@ mod tests {
         let github = Arc::new(MockGithubService::new());
         github.will_return_status(PrStatus::Merged {
             merge_commit_sha: Some("a".repeat(40)),
+            merged_at: None,
         });
         app_state.github_service = Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>);
         let app_state = Arc::new(app_state);
