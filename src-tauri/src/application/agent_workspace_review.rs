@@ -309,6 +309,14 @@ fn settle_completed_workspace_review_monitor_on_startup(
             clear_review_blocking_state(monitor);
             true
         }
+        AgentWorkspaceReviewOutcome::RunFailed
+            if workspace_review_monitor_has_current_run_failure(monitor, run) =>
+        {
+            monitor.status = AgentWorkspaceReviewMonitorStatus::Blocked;
+            monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Failed;
+            clear_review_blocking_state(monitor);
+            true
+        }
         AgentWorkspaceReviewOutcome::NoChanges => {
             monitor.status = AgentWorkspaceReviewMonitorStatus::Idle;
             monitor.review_gate_status = AgentWorkspaceReviewGateStatus::NotRequired;
@@ -318,6 +326,28 @@ fn settle_completed_workspace_review_monitor_on_startup(
         }
         _ => false,
     }
+}
+
+fn workspace_review_monitor_has_current_run_failure(
+    monitor: &AgentWorkspaceReviewMonitor,
+    run: Option<&AgentRun>,
+) -> bool {
+    let Some(run) = run else {
+        return false;
+    };
+    let run_id = run.id.as_str();
+    monitor.review_outcome == AgentWorkspaceReviewOutcome::RunFailed
+        && monitor.review_gate_status == AgentWorkspaceReviewGateStatus::Failed
+        && monitor.last_run_id.as_deref() == Some(run_id.as_str())
+        && monitor
+            .last_error
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+        && monitor.current_target_scope.is_some()
+        && monitor
+            .current_diff_fingerprint
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
 }
 
 fn workspace_review_monitor_has_current_artifact(monitor: &AgentWorkspaceReviewMonitor) -> bool {
@@ -1473,6 +1503,28 @@ fn spawn_workspace_review_waiter(
                         "Verified workspace Review after child chat completion"
                     );
                 }
+                Ok(Some(monitor))
+                    if workspace_review_monitor_has_terminal_run_failure_for_target(
+                        &monitor, &target, &run_id,
+                    ) =>
+                {
+                    warn!(
+                        target: WORKSPACE_REVIEW_LOG_TARGET,
+                        operation = "child_chat_preserved_run_failed_review",
+                        conversation_id = %workspace.conversation_id,
+                        project_id = %workspace.project_id,
+                        branch = %workspace.branch_name,
+                        run_id = %run_id,
+                        elapsed_ms = wait_started.elapsed().as_millis(),
+                        monitor_status = %monitor.status,
+                        review_outcome = %monitor.review_outcome,
+                        review_gate_status = %monitor.review_gate_status,
+                        target_scope = %target.scope,
+                        diff_fingerprint = %compact_log_fingerprint(Some(&target.diff_fingerprint)),
+                        error = %monitor.last_error.as_deref().unwrap_or("none"),
+                        "Preserved workspace Review run_failed completion from child chat"
+                    );
+                }
                 Ok(_) => {
                     warn!(
                         target: WORKSPACE_REVIEW_LOG_TARGET,
@@ -1613,6 +1665,43 @@ fn workspace_review_block_matches_active_monitor(
         _ => true,
     };
     run_matches && target_matches
+}
+
+fn workspace_review_monitor_current_target_matches(
+    monitor: &AgentWorkspaceReviewMonitor,
+    target: &AgentWorkspaceReviewTarget,
+) -> bool {
+    if monitor.current_target_scope != Some(target.scope)
+        || monitor.current_diff_fingerprint.as_deref() != Some(target.diff_fingerprint.as_str())
+    {
+        return false;
+    }
+
+    match target.scope {
+        AgentWorkspaceReviewTargetScope::SelectedSource => {
+            monitor.selected_source_head_sha.as_deref() == target.head_sha.as_deref()
+        }
+        AgentWorkspaceReviewTargetScope::WorkspaceDelta => target
+            .head_sha
+            .as_deref()
+            .is_none_or(|head_sha| monitor.workspace_head_sha.as_deref() == Some(head_sha)),
+    }
+}
+
+fn workspace_review_monitor_has_terminal_run_failure_for_target(
+    monitor: &AgentWorkspaceReviewMonitor,
+    target: &AgentWorkspaceReviewTarget,
+    run_id: &str,
+) -> bool {
+    monitor.status == AgentWorkspaceReviewMonitorStatus::Blocked
+        && monitor.review_outcome == AgentWorkspaceReviewOutcome::RunFailed
+        && monitor.review_gate_status == AgentWorkspaceReviewGateStatus::Failed
+        && monitor.last_run_id.as_deref() == Some(run_id)
+        && monitor
+            .last_error
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+        && workspace_review_monitor_current_target_matches(monitor, target)
 }
 
 pub async fn complete_agent_workspace_review_run(
@@ -4612,7 +4701,7 @@ x
         spawn_workspace_review_waiter(
             Arc::clone(&state),
             workspace.clone(),
-            target,
+            target.clone(),
             completed_run_id.clone(),
         );
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -4630,6 +4719,70 @@ x
         );
         assert_eq!(monitor.review_artifact_version, Some(4));
         assert_eq!(monitor.last_error, None);
+
+        let mut run_failed_completion = AgentRun::new(ChatConversationId::new());
+        let run_failed_completion_id = run_failed_completion.id.as_str().to_string();
+        run_failed_completion.complete();
+        state
+            .agent_run_repo
+            .create(run_failed_completion)
+            .await
+            .expect("run_failed completion run should persist");
+        let specific_error =
+            "Workspace review packet requires additional hunk annotations".to_string();
+        let mut run_failed_monitor = monitor;
+        apply_current_target_to_monitor(&mut run_failed_monitor, Some(&target));
+        apply_review_artifact_to_monitor(
+            &mut run_failed_monitor,
+            target.scope,
+            target.head_sha.clone(),
+            target.diff_fingerprint.clone(),
+            Some(run_failed_completion_id.clone()),
+            ArtifactId::from_string("artifact-run-failed"),
+            5,
+            Utc::now(),
+            None,
+        );
+        run_failed_monitor.status = AgentWorkspaceReviewMonitorStatus::Blocked;
+        run_failed_monitor.review_outcome = AgentWorkspaceReviewOutcome::RunFailed;
+        run_failed_monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Failed;
+        run_failed_monitor.last_run_id = Some(run_failed_completion_id.clone());
+        run_failed_monitor.last_error = Some(specific_error.clone());
+        state
+            .agent_conversation_workspace_repo
+            .upsert_workspace_review_monitor(run_failed_monitor)
+            .await
+            .expect("run_failed monitor should persist");
+
+        spawn_workspace_review_waiter(
+            Arc::clone(&state),
+            workspace.clone(),
+            target,
+            run_failed_completion_id.clone(),
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let monitor = state
+            .agent_conversation_workspace_repo
+            .get_workspace_review_monitor(&workspace.conversation_id)
+            .await
+            .expect("monitor read should succeed")
+            .expect("monitor should exist");
+        assert_eq!(monitor.status, AgentWorkspaceReviewMonitorStatus::Blocked);
+        assert_eq!(
+            monitor.review_outcome,
+            AgentWorkspaceReviewOutcome::RunFailed
+        );
+        assert_eq!(
+            monitor.review_gate_status,
+            AgentWorkspaceReviewGateStatus::Failed
+        );
+        assert_eq!(
+            monitor.last_run_id.as_deref(),
+            Some(run_failed_completion_id.as_str())
+        );
+        assert_eq!(monitor.review_artifact_version, Some(5));
+        assert_eq!(monitor.last_error.as_deref(), Some(specific_error.as_str()));
     }
 
     #[tokio::test]
@@ -5003,6 +5156,89 @@ x
         );
         assert_eq!(monitor.review_artifact_version, Some(10));
         assert_eq!(monitor.last_error, None);
+    }
+
+    #[tokio::test]
+    async fn startup_reconciliation_preserves_completed_run_failed_current_artifact_error() {
+        let (_temp, repo, base_sha) = init_repo();
+        committed_workspace_delta(&repo);
+
+        let state = AppState::new_test();
+        let project = seed_project(&state, &repo).await;
+        let workspace = workspace(
+            &project,
+            &repo,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main",
+            Some(base_sha),
+        );
+        let context = load_agent_workspace_review_context(&state, &workspace)
+            .await
+            .expect("context should load");
+        let target = context.target.expect("target should exist");
+
+        let child_conversation_id = ChatConversationId::new();
+        let mut completed_run = AgentRun::new(child_conversation_id.clone());
+        let run_id = completed_run.id.as_str().to_string();
+        completed_run.complete();
+        state
+            .agent_run_repo
+            .create(completed_run)
+            .await
+            .expect("completed run should persist");
+
+        let mut monitor = context.monitor;
+        apply_current_target_to_monitor(&mut monitor, Some(&target));
+        apply_review_artifact_to_monitor(
+            &mut monitor,
+            target.scope,
+            target.head_sha.clone(),
+            target.diff_fingerprint.clone(),
+            Some(run_id.clone()),
+            ArtifactId::from_string("artifact-startup-run-failed"),
+            11,
+            Utc::now(),
+            None,
+        );
+        let specific_error =
+            "Workspace review packet requires additional hunk annotations".to_string();
+        monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
+        monitor.review_outcome = AgentWorkspaceReviewOutcome::RunFailed;
+        monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Failed;
+        monitor.review_conversation_id = Some(child_conversation_id);
+        monitor.last_run_id = Some(run_id.clone());
+        monitor.last_error = Some(specific_error.clone());
+        state
+            .agent_conversation_workspace_repo
+            .upsert_workspace_review_monitor(monitor)
+            .await
+            .expect("reviewing monitor should persist");
+
+        let reconciled = reconcile_interrupted_agent_workspace_reviews_on_startup(
+            Arc::clone(&state.agent_conversation_workspace_repo),
+            Arc::clone(&state.agent_run_repo),
+        )
+        .await
+        .expect("startup reconciliation should succeed");
+
+        assert_eq!(reconciled, 1);
+        let monitor = state
+            .agent_conversation_workspace_repo
+            .get_workspace_review_monitor(&workspace.conversation_id)
+            .await
+            .expect("monitor read should succeed")
+            .expect("monitor should exist");
+        assert_eq!(monitor.status, AgentWorkspaceReviewMonitorStatus::Blocked);
+        assert_eq!(
+            monitor.review_outcome,
+            AgentWorkspaceReviewOutcome::RunFailed
+        );
+        assert_eq!(
+            monitor.review_gate_status,
+            AgentWorkspaceReviewGateStatus::Failed
+        );
+        assert_eq!(monitor.review_artifact_version, Some(11));
+        assert_eq!(monitor.last_error.as_deref(), Some(specific_error.as_str()));
     }
 
     #[tokio::test]
