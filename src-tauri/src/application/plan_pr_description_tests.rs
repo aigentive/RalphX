@@ -15,8 +15,8 @@ use crate::domain::agents::{
     ClientCapabilities, ResponseChunk, DEFAULT_AGENT_HARNESS,
 };
 use crate::domain::entities::{
-    AgentWorkspacePrDescription, ArtifactId, ChatConversationId, IdeationSessionId, PlanBranch,
-    Project,
+    AgentWorkspacePrDescription, ArtifactId, ChatContextType, ChatConversationId,
+    IdeationSessionId, PlanBranch, Project,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentProviderSettingsRepository,
@@ -375,6 +375,45 @@ async fn draft_plan_description_with_sqlite_repo_cleans_synthetic_rows_when_agen
         tag_value(&prompt, "conversation_id").expect("prompt should include conversation_id"),
     );
     assert_no_synthetic_sqlite_rows(&db, &conversation_id);
+}
+
+#[tokio::test]
+async fn draft_plan_description_cleans_synthetic_conversation_when_workspace_insert_fails() {
+    let repo = setup_plan_repo();
+    let (project, plan_branch) = project_and_plan_branch(repo.path());
+    let db = SqliteTestDb::new("plan-pr-description-workspace-insert-failure");
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> = Arc::new(
+        SqliteAgentConversationWorkspaceRepository::from_shared(db.shared_conn()),
+    );
+    let chat_conversation_repo = Arc::new(MemoryChatConversationRepository::new());
+    let chat_conversation_repo_trait: Arc<dyn ChatConversationRepository> =
+        chat_conversation_repo.clone();
+    let client = Arc::new(SubmittingPlanPrAgentClient::new(
+        Arc::clone(&workspace_repo),
+        true,
+        true,
+    ));
+    let client_trait: Arc<dyn AgenticClient> = client;
+    let drafter = build_drafter_with_repos(
+        Arc::clone(&workspace_repo),
+        chat_conversation_repo_trait,
+        client_trait,
+    )
+    .await;
+
+    let body = drafter
+        .draft_plan_description(&project, &plan_branch, "main", PrReviewState::Ready)
+        .await;
+
+    assert!(body.is_err());
+    assert!(
+        chat_conversation_repo
+            .get_by_context_filtered(ChatContextType::Project, project.id.as_str(), true)
+            .await
+            .expect("conversation lookup should succeed")
+            .is_empty(),
+        "synthetic chat conversation should be removed when workspace insert fails"
+    );
 }
 
 #[tokio::test]
