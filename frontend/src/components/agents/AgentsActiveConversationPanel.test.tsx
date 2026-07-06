@@ -1347,8 +1347,16 @@ describe("AgentsActiveConversationPanel", () => {
     expect(screen.getByTestId("agents-composer-runtime-row-task")).toHaveTextContent(
       "Agent mode",
     );
+    fireEvent.click(screen.getByTestId("agents-composer-workspace-changes-header"));
+    expect(screen.queryByTestId("agents-composer-runtimes-list")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("agents-composer-runtimes-toggle"));
+    const reopenedWorkspaceRow = await screen.findByTestId(
+      "agents-composer-runtime-row-workspace",
+      undefined,
+      deferredHydrationTimeout,
+    );
 
-    fireEvent.click(workspaceRow);
+    fireEvent.click(reopenedWorkspaceRow);
     fireEvent.click(screen.getByTestId("agents-composer-runtime-row-ideation"));
     fireEvent.click(screen.getByTestId("agents-composer-runtime-row-verification"));
     fireEvent.click(screen.getByTestId("agents-composer-runtime-row-workspace_review"));

@@ -932,16 +932,13 @@ function AgentsComposerWorkspaceChangesCardContent({
   }, [activePanel, tasks]);
 
   useEffect(() => {
-    if (activePanel === "runtimes" && !shouldShowRuntime) {
-      setActivePanel(null);
-    }
     if (activePanel === "tasks" && !shouldShowTasks) {
       setActivePanel(null);
     }
     if (activePanel === "changes" && !shouldShowChanges) {
       setActivePanel(null);
     }
-  }, [activePanel, shouldShowChanges, shouldShowRuntime, shouldShowTasks]);
+  }, [activePanel, shouldShowChanges, shouldShowTasks]);
 
   const taskWindow = useMemo(
     () => visibleTaskWindow(tasks, showAllTasks, VISIBLE_TASK_COUNT),

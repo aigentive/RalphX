@@ -300,6 +300,12 @@ describe("AgentsView publish", () => {
   });
 
   it("auto-expands the composer task ledger for live task updates", async () => {
+    const scrollIntoViewMock = vi.fn();
+    const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: scrollIntoViewMock,
+    });
     const activeConversation = conversation({ agentMode: "edit" });
     mockAgentViewData(activeConversation);
     getAgentConversationWorkspaceMock.mockResolvedValue(conversationWorkspace({ mode: "edit" }));
@@ -350,6 +356,14 @@ describe("AgentsView publish", () => {
     );
     expect(screen.getByTestId("agents-composer-task-1")).toHaveStyle({
       backgroundColor: "var(--bg-hover)",
+    });
+    expect(scrollIntoViewMock).toHaveBeenCalledWith({
+      block: "nearest",
+      behavior: "smooth",
+    });
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: originalScrollIntoView,
     });
   });
 
@@ -688,6 +702,16 @@ describe("AgentsView publish", () => {
         "agents-composer-task-list-list-previous-task-1",
       ),
     ).toHaveTextContent("Previous slice task");
+
+    fireEvent.click(previousSlice.querySelector("button")!);
+    expect(
+      screen.queryByTestId("agents-composer-task-list-slice-list-previous-tasks"),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(previousListsToggle);
+    expect(
+      screen.queryByTestId("agents-composer-task-list-slice-list-previous"),
+    ).not.toBeInTheDocument();
   });
 
   it("opens the publish pane with a focused file request from the composer summary", async () => {
