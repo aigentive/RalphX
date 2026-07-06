@@ -214,6 +214,7 @@ struct MergePromptContext {
     is_plan_update_conflict: bool,
     is_source_update_conflict: bool,
     is_pr_branch_update_conflict: bool,
+    is_pr_branch_publication_conflict: bool,
     freshness_conflict_count: u32,
     base_branch: Option<String>,
     source_branch: Option<String>,

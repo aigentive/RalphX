@@ -31,7 +31,8 @@ use crate::domain::services::payload_enrichment::{
 };
 
 use super::merge_helpers::{
-    merge_metadata_into, sync_plan_branch_pr_after_regular_task_merge, PlanBranchPrSyncServices,
+    compute_merge_worktree_path, merge_metadata_into, sync_plan_branch_pr_after_regular_task_merge,
+    PlanBranchPrSyncOutcome, PlanBranchPrSyncServices, PrBranchPublicationConflict,
 };
 use super::merge_validation::emit_merge_progress;
 
@@ -201,7 +202,80 @@ async fn complete_merge_internal_impl<R: tauri::Runtime>(
         "Finalizing merge and cleaning up".to_string(),
     );
 
-    // 1. Append attempt_succeeded event to merge recovery metadata
+    // STATE FRESHNESS CHECK: Re-fetch task from DB to detect concurrent transitions
+    // (e.g., reconciler may have moved task to MergeIncomplete while we were running).
+    // This guards against "ghost merges" — writing Merged over a reconciler transition.
+    if let Ok(Some(current_task)) = task_repo.get_by_id(&task_id).await {
+        if !matches!(
+            current_task.internal_status,
+            InternalStatus::PendingMerge | InternalStatus::Merging
+        ) {
+            tracing::warn!(
+                task_id = task_id_str,
+                expected = "PendingMerge|Merging",
+                actual = ?current_task.internal_status,
+                "merge completion aborted — task was concurrently transitioned (likely by reconciler)"
+            );
+            return Ok(());
+        }
+    }
+
+    if let Some(pr_sync_services) = pr_sync_services.as_ref() {
+        match sync_plan_branch_pr_after_regular_task_merge(task, project, pr_sync_services).await {
+            Ok(PlanBranchPrSyncOutcome::Complete) => {}
+            Ok(PlanBranchPrSyncOutcome::Conflict(conflict)) => {
+                tracing::warn!(
+                    task_id = task_id_str,
+                    remote_ref = %conflict.remote_ref,
+                    "complete_merge_internal: PR branch publication requires conflict resolution before Merged status"
+                );
+                route_pr_branch_publication_conflict(
+                    task,
+                    project,
+                    &conflict,
+                    commit_sha,
+                    source_branch,
+                    target_branch,
+                    task_repo,
+                    old_status.clone(),
+                )
+                .await?;
+                return Err(conflict.routed_error());
+            }
+            Err(error) => {
+                tracing::warn!(
+                    task_id = task_id_str,
+                    error = %error,
+                    "complete_merge_internal: PR branch publication failed before Merged status"
+                );
+                merge_metadata_into(
+                    task,
+                    &serde_json::json!({
+                        "error": format!("PR branch publication failed: {}", error),
+                        "error_code": "pr_branch_publication_failed",
+                        "target_branch": target_branch,
+                        "source_branch": source_branch,
+                        "commit_sha": commit_sha,
+                    }),
+                );
+                task.internal_status = InternalStatus::MergeIncomplete;
+                task.touch();
+                task_repo.update(task).await?;
+                let _ = task_repo
+                    .persist_status_change(
+                        &task_id,
+                        old_status,
+                        InternalStatus::MergeIncomplete,
+                        "pr_branch_publication_failed",
+                    )
+                    .await;
+                return Err(error);
+            }
+        }
+    }
+
+    // 1. Append attempt_succeeded event to merge recovery metadata after every
+    // required completion gate has passed, including PR branch publication.
     let mut recovery = MergeRecoveryMetadata::from_task_metadata(task.metadata.as_deref())
         .unwrap_or(None)
         .unwrap_or_else(MergeRecoveryMetadata::new);
@@ -232,58 +306,6 @@ async fn complete_merge_internal_impl<R: tauri::Runtime>(
             task_id = task_id_str,
             "Failed to serialize merge recovery metadata on success (non-fatal)"
         );
-    }
-
-    // STATE FRESHNESS CHECK: Re-fetch task from DB to detect concurrent transitions
-    // (e.g., reconciler may have moved task to MergeIncomplete while we were running).
-    // This guards against "ghost merges" — writing Merged over a reconciler transition.
-    if let Ok(Some(current_task)) = task_repo.get_by_id(&task_id).await {
-        if !matches!(
-            current_task.internal_status,
-            InternalStatus::PendingMerge | InternalStatus::Merging
-        ) {
-            tracing::warn!(
-                task_id = task_id_str,
-                expected = "PendingMerge|Merging",
-                actual = ?current_task.internal_status,
-                "merge completion aborted — task was concurrently transitioned (likely by reconciler)"
-            );
-            return Ok(());
-        }
-    }
-
-    if let Some(pr_sync_services) = pr_sync_services.as_ref() {
-        if let Err(error) =
-            sync_plan_branch_pr_after_regular_task_merge(task, project, pr_sync_services).await
-        {
-            tracing::warn!(
-                task_id = task_id_str,
-                error = %error,
-                "complete_merge_internal: PR branch publication failed before Merged status"
-            );
-            merge_metadata_into(
-                task,
-                &serde_json::json!({
-                    "error": format!("PR branch publication failed: {}", error),
-                    "error_code": "pr_branch_publication_failed",
-                    "target_branch": target_branch,
-                    "source_branch": source_branch,
-                    "commit_sha": commit_sha,
-                }),
-            );
-            task.internal_status = InternalStatus::MergeIncomplete;
-            task.touch();
-            task_repo.update(task).await?;
-            let _ = task_repo
-                .persist_status_change(
-                    &task_id,
-                    old_status,
-                    InternalStatus::MergeIncomplete,
-                    "pr_branch_publication_failed",
-                )
-                .await;
-            return Err(error);
-        }
     }
 
     // 2. Update task with merge commit SHA, status, and pending_cleanup in ONE write.
@@ -503,6 +525,65 @@ async fn complete_merge_internal_impl<R: tauri::Runtime>(
         commit_sha = %commit_sha,
         "complete_merge_internal: merge completed successfully"
     );
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn route_pr_branch_publication_conflict(
+    task: &mut Task,
+    project: &Project,
+    conflict: &PrBranchPublicationConflict,
+    commit_sha: &str,
+    source_branch: &str,
+    target_branch: &str,
+    task_repo: &Arc<dyn TaskRepository>,
+    old_status: InternalStatus,
+) -> AppResult<()> {
+    let repo_path = Path::new(&project.working_directory);
+    let merge_worktree = compute_merge_worktree_path(project, task.id.as_str());
+    let merge_worktree_path = PathBuf::from(&merge_worktree);
+
+    if merge_worktree_path.exists() {
+        let _ = GitService::delete_worktree(repo_path, &merge_worktree_path).await;
+    }
+    GitService::checkout_existing_branch_worktree(repo_path, &merge_worktree_path, target_branch)
+        .await?;
+
+    merge_metadata_into(
+        task,
+        &serde_json::json!({
+            "error": conflict.description(),
+            "error_code": "pr_branch_publication_conflict",
+            "branch_freshness_conflict": true,
+            "freshness_origin_state": "pr_branch_publication",
+            "plan_update_conflict": true,
+            "pr_branch_update_conflict": true,
+            "pr_branch_publication_conflict": true,
+            "github_pr_number": conflict.pr_number,
+            "pr_branch_update_source": "pr_branch_publication",
+            "source_branch": source_branch,
+            "target_branch": target_branch,
+            "base_branch": conflict.remote_ref,
+            "publication_remote_ref": conflict.remote_ref,
+            "commit_sha": commit_sha,
+            "conflict_files": conflict.conflict_files_as_strings(),
+        }),
+    );
+    task.internal_status = InternalStatus::Merging;
+    task.worktree_path = Some(merge_worktree);
+    task.touch();
+    task_repo.update(task).await?;
+    if old_status != InternalStatus::Merging {
+        let _ = task_repo
+            .persist_status_change(
+                &task.id,
+                old_status,
+                InternalStatus::Merging,
+                "pr_branch_publication_conflict",
+            )
+            .await;
+    }
 
     Ok(())
 }

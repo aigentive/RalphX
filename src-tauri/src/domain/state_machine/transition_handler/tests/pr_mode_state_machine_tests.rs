@@ -14,6 +14,7 @@
 use super::helpers::*;
 use crate::application::PrPollerRegistry;
 use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
+use crate::domain::entities::task_metadata::{MergeRecoveryEventKind, MergeRecoveryMetadata};
 use crate::domain::entities::{
     types::IdeationSessionId, Artifact, ArtifactId, ArtifactType, IdeationSession, InternalStatus,
     PlanBranch, PlanBranchStatus, Project, ProjectId, Task, TaskCategory, TaskId,
@@ -133,6 +134,102 @@ fn setup_plan_git_repo(branch_name: &str, ahead_of_base: bool) -> tempfile::Temp
     dir
 }
 
+fn run_git(repo_path: &std::path::Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(repo_path)
+        .output()
+        .unwrap_or_else(|error| panic!("git {:?} failed to start: {}", args, error));
+    assert!(
+        output.status.success(),
+        "git {:?} failed\nstdout: {}\nstderr: {}",
+        args,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+fn setup_origin_with_remote_plan_branch_ahead(
+    repo_path: &std::path::Path,
+    branch_name: &str,
+) -> (tempfile::TempDir, String, String) {
+    let remote = tempfile::tempdir().expect("create bare origin dir");
+    let output = std::process::Command::new("git")
+        .args(["init", "--bare"])
+        .current_dir(remote.path())
+        .output()
+        .expect("git init bare origin");
+    assert!(
+        output.status.success(),
+        "git init bare failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let remote_path = remote.path().to_string_lossy().into_owned();
+    run_git(repo_path, &["remote", "add", "origin", &remote_path]);
+    run_git(repo_path, &["push", "origin", "main", branch_name]);
+
+    let original_local_sha = run_git(repo_path, &["rev-parse", branch_name]);
+    run_git(repo_path, &["checkout", branch_name]);
+    std::fs::write(
+        repo_path.join("remote-only.txt"),
+        "remote plan branch commit\n",
+    )
+    .expect("write remote-only file");
+    run_git(repo_path, &["add", "remote-only.txt"]);
+    run_git(repo_path, &["commit", "-m", "remote plan branch update"]);
+    run_git(repo_path, &["push", "origin", branch_name]);
+    let remote_sha = run_git(repo_path, &["rev-parse", branch_name]);
+    run_git(repo_path, &["reset", "--hard", &original_local_sha]);
+    run_git(repo_path, &["checkout", "main"]);
+
+    (remote, original_local_sha, remote_sha)
+}
+
+fn setup_origin_with_conflicting_remote_plan_branch_ahead(
+    repo_path: &std::path::Path,
+    branch_name: &str,
+) -> (tempfile::TempDir, String, String) {
+    let remote = tempfile::tempdir().expect("create bare origin dir");
+    let output = std::process::Command::new("git")
+        .args(["init", "--bare"])
+        .current_dir(remote.path())
+        .output()
+        .expect("git init bare origin");
+    assert!(
+        output.status.success(),
+        "git init bare failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let remote_path = remote.path().to_string_lossy().into_owned();
+    run_git(repo_path, &["remote", "add", "origin", &remote_path]);
+    run_git(repo_path, &["push", "origin", "main", branch_name]);
+
+    let original_local_sha = run_git(repo_path, &["rev-parse", branch_name]);
+    run_git(repo_path, &["checkout", branch_name]);
+    std::fs::write(repo_path.join("plan.txt"), "remote PR branch version\n")
+        .expect("write remote conflicting file");
+    run_git(repo_path, &["add", "plan.txt"]);
+    run_git(
+        repo_path,
+        &["commit", "-m", "remote conflicting plan update"],
+    );
+    run_git(repo_path, &["push", "origin", branch_name]);
+    let remote_sha = run_git(repo_path, &["rev-parse", branch_name]);
+
+    run_git(repo_path, &["reset", "--hard", &original_local_sha]);
+    std::fs::write(repo_path.join("plan.txt"), "local task merge version\n")
+        .expect("write local conflicting file");
+    run_git(repo_path, &["add", "plan.txt"]);
+    run_git(repo_path, &["commit", "-m", "local task merge update"]);
+    let local_sha = run_git(repo_path, &["rev-parse", branch_name]);
+    run_git(repo_path, &["checkout", "main"]);
+
+    (remote, local_sha, remote_sha)
+}
+
 async fn create_pending_merge_task(task_repo: &MemoryTaskRepository, task_id_str: &str) -> TaskId {
     let mut task = Task::new(
         ProjectId::from_string("proj-1".to_string()),
@@ -184,6 +281,216 @@ impl PlanPrDescriptionDrafter for FailingPlanPrDescriptionDrafter {
     ) -> crate::error::AppResult<crate::domain::entities::AgentWorkspacePrDescription> {
         Err(AppError::Infrastructure("draft failed".to_string()))
     }
+}
+
+#[test]
+fn pr_branch_publication_failure_classifier_matches_non_fast_forward_pushes() {
+    let cases = [
+        "! [rejected] plan/test -> plan/test (non-fast-forward)",
+        "failed to push some refs to 'github.com:owner/repo.git'",
+        "updates were rejected because the tip of your current branch is behind",
+        "hint: Updates were rejected because the remote contains work that you do not have locally",
+        "fetch first",
+    ];
+
+    for case in cases {
+        assert!(
+            super::super::merge_helpers::is_non_fast_forward_pr_branch_publication_failure(case),
+            "case should be classified as non-fast-forward: {case}"
+        );
+    }
+
+    assert!(
+        !super::super::merge_helpers::is_non_fast_forward_pr_branch_publication_failure(
+            "remote rejected freshness branch"
+        ),
+        "generic push failures should stay fail-closed"
+    );
+}
+
+#[test]
+fn pr_branch_publication_conflict_helpers_format_and_classify_metadata() {
+    let conflict = super::super::merge_helpers::PrBranchPublicationConflict {
+        branch_name: "plan/feature".to_string(),
+        remote_ref: "origin/plan/feature".to_string(),
+        conflict_files: vec![
+            std::path::PathBuf::from("src/lib.rs"),
+            std::path::PathBuf::from("Cargo.toml"),
+        ],
+        pr_number: Some(42),
+    };
+
+    assert_eq!(
+        conflict.conflict_files_as_strings(),
+        vec!["src/lib.rs".to_string(), "Cargo.toml".to_string()]
+    );
+    assert!(conflict
+        .description()
+        .contains("origin/plan/feature into plan/feature: src/lib.rs, Cargo.toml"));
+
+    let conflict_error = conflict.conflict_error();
+    assert!(conflict_error
+        .to_string()
+        .contains("pr_branch_publication_conflict"));
+    assert!(
+        !super::super::merge_helpers::is_pr_branch_publication_conflict_routed_error(
+            &conflict_error
+        ),
+        "plain conflict errors are not the routed sentinel"
+    );
+
+    let routed_error = conflict.routed_error();
+    assert!(
+        super::super::merge_helpers::is_pr_branch_publication_conflict_routed_error(&routed_error)
+    );
+    assert!(
+        super::super::merge_helpers::is_pr_branch_publication_conflict_routed_error(
+            &AppError::GitOperation("pr_branch_publication_conflict_routed".to_string())
+        )
+    );
+    assert!(
+        !super::super::merge_helpers::is_pr_branch_publication_conflict_routed_error(
+            &AppError::Validation("plain validation failure".to_string())
+        )
+    );
+
+    let unknown_files = super::super::merge_helpers::PrBranchPublicationConflict {
+        branch_name: "plan/feature".to_string(),
+        remote_ref: "origin/plan/feature".to_string(),
+        conflict_files: Vec::new(),
+        pr_number: None,
+    };
+    assert!(
+        unknown_files.description().contains("unknown files"),
+        "empty conflict lists should still produce actionable text"
+    );
+
+    let mut failed_task = make_task(None, None);
+    failed_task.metadata = Some(
+        serde_json::json!({
+            "error_code": "pr_branch_publication_failed",
+        })
+        .to_string(),
+    );
+    assert!(super::super::merge_helpers::task_has_pr_branch_publication_failure(&failed_task));
+    assert!(!super::super::merge_helpers::task_has_pr_branch_publication_conflict(&failed_task));
+
+    let mut conflict_task = make_task(None, None);
+    conflict_task.metadata = Some(
+        serde_json::json!({
+            "error_code": "pr_branch_publication_conflict",
+        })
+        .to_string(),
+    );
+    assert!(super::super::merge_helpers::task_has_pr_branch_publication_conflict(&conflict_task));
+
+    let mut conflict_flag_task = make_task(None, None);
+    conflict_flag_task.metadata = Some(
+        serde_json::json!({
+            "pr_branch_publication_conflict": true,
+        })
+        .to_string(),
+    );
+    assert!(
+        super::super::merge_helpers::task_has_pr_branch_publication_conflict(&conflict_flag_task)
+    );
+}
+
+#[tokio::test]
+async fn sync_plan_branch_pr_if_needed_pushes_pending_existing_pr_and_marks_pushed() {
+    let project_repo = Arc::new(MemoryProjectRepository::new());
+    let plan_branch_repo = Arc::new(MemoryPlanBranchRepository::new());
+    setup_project(&project_repo).await;
+    let project = project_repo
+        .get_by_id(&ProjectId::from_string("proj-1".to_string()))
+        .await
+        .unwrap()
+        .unwrap();
+
+    let mut plan_branch = make_plan_branch(
+        "artifact-1",
+        "plan/sync-existing-pr",
+        PlanBranchStatus::Active,
+        None,
+    );
+    plan_branch.pr_eligible = true;
+    plan_branch.pr_number = Some(42);
+    plan_branch.pr_push_status = PrPushStatus::Pending;
+    let branch_id = plan_branch.id.clone();
+    plan_branch_repo.create(plan_branch.clone()).await.unwrap();
+
+    let github = Arc::new(MockGithubService::new());
+    let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
+    let plan_branch_repo_trait: Arc<dyn PlanBranchRepository> = plan_branch_repo.clone();
+    super::super::merge_helpers::sync_plan_branch_pr_if_needed(
+        &project,
+        &plan_branch,
+        &github_trait,
+        &plan_branch_repo_trait,
+    )
+    .await
+    .expect("pending existing PR branch should be pushed");
+
+    assert_eq!(github.state().push_branch_calls, 1);
+    let updated_plan_branch = plan_branch_repo
+        .get_by_id(&branch_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(updated_plan_branch.pr_push_status, PrPushStatus::Pushed);
+}
+
+#[tokio::test]
+async fn sync_plan_branch_pr_if_needed_marks_failed_for_generic_push_error() {
+    let project_repo = Arc::new(MemoryProjectRepository::new());
+    let plan_branch_repo = Arc::new(MemoryPlanBranchRepository::new());
+    setup_project(&project_repo).await;
+    let project = project_repo
+        .get_by_id(&ProjectId::from_string("proj-1".to_string()))
+        .await
+        .unwrap()
+        .unwrap();
+
+    let mut plan_branch = make_plan_branch(
+        "artifact-1",
+        "plan/sync-existing-pr-push-fails",
+        PlanBranchStatus::Active,
+        None,
+    );
+    plan_branch.pr_eligible = true;
+    plan_branch.pr_number = Some(43);
+    plan_branch.pr_push_status = PrPushStatus::Pending;
+    let branch_id = plan_branch.id.clone();
+    plan_branch_repo.create(plan_branch.clone()).await.unwrap();
+
+    let github = Arc::new(MockGithubService::new());
+    github.state().push_branch_result = Some(Err(AppError::GitOperation(
+        "remote rejected freshness branch".to_string(),
+    )));
+    let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
+    let plan_branch_repo_trait: Arc<dyn PlanBranchRepository> = plan_branch_repo.clone();
+    let error = super::super::merge_helpers::sync_plan_branch_pr_if_needed(
+        &project,
+        &plan_branch,
+        &github_trait,
+        &plan_branch_repo_trait,
+    )
+    .await
+    .expect_err("generic push failure should fail closed");
+
+    assert!(
+        error
+            .to_string()
+            .contains("remote rejected freshness branch"),
+        "unexpected error: {error}"
+    );
+    assert_eq!(github.state().push_branch_calls, 1);
+    let updated_plan_branch = plan_branch_repo
+        .get_by_id(&branch_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(updated_plan_branch.pr_push_status, PrPushStatus::Failed);
 }
 
 #[tokio::test]
@@ -1654,6 +1961,16 @@ async fn test_regular_plan_task_completion_push_failure_does_not_mark_task_merge
         InternalStatus::MergeIncomplete,
         "failed PR branch publication must not mark the task Merged"
     );
+    let recovery = MergeRecoveryMetadata::from_task_metadata(final_task.metadata.as_deref())
+        .unwrap()
+        .unwrap_or_else(MergeRecoveryMetadata::new);
+    assert!(
+        !recovery
+            .events
+            .iter()
+            .any(|event| matches!(event.kind, MergeRecoveryEventKind::AttemptSucceeded)),
+        "failed PR branch publication must not record a successful merge attempt"
+    );
 
     let updated_plan_branch = plan_branch_repo
         .get_by_id(&branch_id)
@@ -1661,6 +1978,275 @@ async fn test_regular_plan_task_completion_push_failure_does_not_mark_task_merge
         .unwrap()
         .unwrap();
     assert_eq!(updated_plan_branch.pr_push_status, PrPushStatus::Failed);
+}
+
+#[tokio::test]
+async fn test_regular_plan_task_completion_repairs_non_fast_forward_pr_publication() {
+    let task_repo = Arc::new(MemoryTaskRepository::new());
+    let project_repo = Arc::new(MemoryProjectRepository::new());
+    let plan_branch_repo = Arc::new(MemoryPlanBranchRepository::new());
+
+    let branch_name = "plan/existing-pr-non-fast-forward";
+    let repo = setup_plan_git_repo(branch_name, true);
+    let (_remote, commit_sha, remote_sha) =
+        setup_origin_with_remote_plan_branch_ahead(repo.path(), branch_name);
+    setup_project_with_path(&project_repo, repo.path().to_string_lossy().into_owned()).await;
+    let project = project_repo
+        .get_by_id(&ProjectId::from_string("proj-1".to_string()))
+        .await
+        .unwrap()
+        .unwrap();
+
+    let mut task = Task::new(
+        ProjectId::from_string("proj-1".to_string()),
+        "Merged follow-up with stale local PR branch".to_string(),
+    );
+    task.id = TaskId::from_string("task-programmatic-plan-pr-nff".to_string());
+    task.internal_status = InternalStatus::PendingMerge;
+    task.category = TaskCategory::Regular;
+    task.ideation_session_id = Some(IdeationSessionId::from_string("sess-1".to_string()));
+    let task_id = task.id.clone();
+    task_repo.create(task).await.unwrap();
+
+    let mut plan_branch =
+        make_plan_branch("artifact-1", branch_name, PlanBranchStatus::Active, None);
+    plan_branch.pr_eligible = true;
+    plan_branch.pr_number = Some(789);
+    plan_branch.pr_url = Some("https://github.com/owner/repo/pull/789".to_string());
+    plan_branch.pr_push_status = PrPushStatus::Pushed;
+    let branch_id = plan_branch.id.clone();
+    plan_branch_repo.create(plan_branch).await.unwrap();
+
+    let mock_github = Arc::new(MockGithubService::new());
+    mock_github.state().push_branch_result = Some(Err(AppError::GitOperation(
+        "! [rejected] plan/existing-pr-non-fast-forward -> plan/existing-pr-non-fast-forward (non-fast-forward)\nupdates were rejected because the tip of your current branch is behind its remote counterpart".to_string(),
+    )));
+
+    let mut task_for_merge = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
+    let task_repo_dyn: Arc<dyn TaskRepository> = Arc::clone(&task_repo) as Arc<dyn TaskRepository>;
+    let result = complete_merge_internal_with_pr_sync::<tauri::Wry>(
+        &mut task_for_merge,
+        &project,
+        &commit_sha,
+        "task/feature",
+        branch_name,
+        &task_repo_dyn,
+        None,
+        None,
+        None,
+        None,
+        Some(PlanBranchPrSyncServices {
+            task_repo: Some(Arc::clone(&task_repo) as Arc<dyn TaskRepository>),
+            plan_branch_repo: Some(Arc::clone(&plan_branch_repo) as Arc<dyn PlanBranchRepository>),
+            pr_creation_guard: Some(Arc::new(dashmap::DashMap::new())),
+            github_service: Some(Arc::clone(&mock_github) as Arc<dyn GithubServiceTrait>),
+            ideation_session_repo: None,
+            artifact_repo: None,
+            plan_pr_description_drafter: Some(Arc::new(StaticPlanPrDescriptionDrafter::default())),
+        }),
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "non-fast-forward PR branch publication should repair and finish: {:?}",
+        result
+    );
+
+    {
+        let state = mock_github.state();
+        assert_eq!(
+            state.push_branch_calls, 2,
+            "publication should retry the PR branch push after repair"
+        );
+        assert_eq!(
+            state.last_push_branch_name.as_deref(),
+            Some(branch_name),
+            "push should still target the plan branch"
+        );
+    }
+
+    let final_task = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
+    assert_eq!(final_task.internal_status, InternalStatus::Merged);
+    let recovery = MergeRecoveryMetadata::from_task_metadata(final_task.metadata.as_deref())
+        .unwrap()
+        .expect("successful completion should write merge recovery metadata");
+    assert!(
+        recovery
+            .events
+            .iter()
+            .any(|event| matches!(event.kind, MergeRecoveryEventKind::AttemptSucceeded)),
+        "successful publication should record attempt success"
+    );
+
+    let updated_plan_branch = plan_branch_repo
+        .get_by_id(&branch_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(updated_plan_branch.pr_push_status, PrPushStatus::Pushed);
+
+    let contains_remote_sha = std::process::Command::new("git")
+        .args(["merge-base", "--is-ancestor", &remote_sha, branch_name])
+        .current_dir(repo.path())
+        .status()
+        .expect("check repaired branch ancestry")
+        .success();
+    assert!(
+        contains_remote_sha,
+        "local plan branch should include the remote PR branch head after repair"
+    );
+}
+
+#[tokio::test]
+async fn test_regular_plan_task_completion_routes_conflicting_pr_publication_to_merger() {
+    let task_repo = Arc::new(MemoryTaskRepository::new());
+    let project_repo = Arc::new(MemoryProjectRepository::new());
+    let plan_branch_repo = Arc::new(MemoryPlanBranchRepository::new());
+
+    let branch_name = "plan/existing-pr-publication-conflict";
+    let repo = setup_plan_git_repo(branch_name, true);
+    let (_remote, local_commit_sha, remote_sha) =
+        setup_origin_with_conflicting_remote_plan_branch_ahead(repo.path(), branch_name);
+    setup_project_with_path(&project_repo, repo.path().to_string_lossy().into_owned()).await;
+    let project = project_repo
+        .get_by_id(&ProjectId::from_string("proj-1".to_string()))
+        .await
+        .unwrap()
+        .unwrap();
+
+    let mut task = Task::new(
+        ProjectId::from_string("proj-1".to_string()),
+        "Merged follow-up with conflicting remote PR branch".to_string(),
+    );
+    task.id = TaskId::from_string("task-programmatic-plan-pr-conflict".to_string());
+    task.internal_status = InternalStatus::PendingMerge;
+    task.category = TaskCategory::Regular;
+    task.ideation_session_id = Some(IdeationSessionId::from_string("sess-1".to_string()));
+    let task_id = task.id.clone();
+    task_repo.create(task).await.unwrap();
+
+    let mut plan_branch =
+        make_plan_branch("artifact-1", branch_name, PlanBranchStatus::Active, None);
+    plan_branch.pr_eligible = true;
+    plan_branch.pr_number = Some(789);
+    plan_branch.pr_url = Some("https://github.com/owner/repo/pull/789".to_string());
+    plan_branch.pr_push_status = PrPushStatus::Pushed;
+    let branch_id = plan_branch.id.clone();
+    plan_branch_repo.create(plan_branch).await.unwrap();
+
+    let mock_github = Arc::new(MockGithubService::new());
+    mock_github.state().push_branch_result = Some(Err(AppError::GitOperation(
+        "! [rejected] plan/existing-pr-publication-conflict -> plan/existing-pr-publication-conflict (non-fast-forward)\nupdates were rejected because the tip of your current branch is behind its remote counterpart".to_string(),
+    )));
+
+    let mut task_for_merge = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
+    let task_repo_dyn: Arc<dyn TaskRepository> = Arc::clone(&task_repo) as Arc<dyn TaskRepository>;
+    let result = complete_merge_internal_with_pr_sync::<tauri::Wry>(
+        &mut task_for_merge,
+        &project,
+        &local_commit_sha,
+        "task/feature",
+        branch_name,
+        &task_repo_dyn,
+        None,
+        None,
+        None,
+        None,
+        Some(PlanBranchPrSyncServices {
+            task_repo: Some(Arc::clone(&task_repo) as Arc<dyn TaskRepository>),
+            plan_branch_repo: Some(Arc::clone(&plan_branch_repo) as Arc<dyn PlanBranchRepository>),
+            pr_creation_guard: Some(Arc::new(dashmap::DashMap::new())),
+            github_service: Some(Arc::clone(&mock_github) as Arc<dyn GithubServiceTrait>),
+            ideation_session_repo: None,
+            artifact_repo: None,
+            plan_pr_description_drafter: Some(Arc::new(StaticPlanPrDescriptionDrafter::default())),
+        }),
+    )
+    .await;
+
+    let error = result.expect_err("conflicting publication repair should route, not finish");
+    assert!(
+        super::super::merge_helpers::is_pr_branch_publication_conflict_routed_error(&error),
+        "unexpected error: {error}"
+    );
+
+    let final_task = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
+    assert_eq!(
+        final_task.internal_status,
+        InternalStatus::Merging,
+        "publication conflicts should route to the merger, not MergeIncomplete"
+    );
+    assert!(
+        final_task
+            .worktree_path
+            .as_deref()
+            .map(|path| std::path::Path::new(path).exists())
+            .unwrap_or(false),
+        "routed publication conflict should create a merge worktree"
+    );
+    let metadata: serde_json::Value =
+        serde_json::from_str(final_task.metadata.as_deref().unwrap()).unwrap();
+    assert_eq!(
+        metadata["error_code"], "pr_branch_publication_conflict",
+        "metadata should distinguish conflict routing from failed publication"
+    );
+    assert_eq!(
+        metadata["freshness_origin_state"], "pr_branch_publication",
+        "regular-task publication conflicts need a distinct finalizer route"
+    );
+    assert_eq!(metadata["pr_branch_update_conflict"], true);
+    assert_eq!(metadata["pr_branch_publication_conflict"], true);
+    assert_eq!(metadata["base_branch"], format!("origin/{branch_name}"));
+    assert_eq!(metadata["target_branch"], branch_name);
+    assert_eq!(
+        metadata["conflict_files"]
+            .as_array()
+            .expect("conflict files")
+            .iter()
+            .filter_map(|value| value.as_str())
+            .collect::<Vec<_>>(),
+        vec!["plan.txt"]
+    );
+
+    let recovery = MergeRecoveryMetadata::from_task_metadata(final_task.metadata.as_deref())
+        .unwrap()
+        .unwrap_or_else(MergeRecoveryMetadata::new);
+    assert!(
+        !recovery
+            .events
+            .iter()
+            .any(|event| matches!(event.kind, MergeRecoveryEventKind::AttemptSucceeded)),
+        "routed conflict must not record a successful merge attempt yet"
+    );
+
+    let updated_plan_branch = plan_branch_repo
+        .get_by_id(&branch_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(updated_plan_branch.pr_push_status, PrPushStatus::Pending);
+    assert_eq!(
+        mock_github.state().push_branch_calls,
+        1,
+        "conflicting repair should not retry push until the merger resolves conflicts"
+    );
+
+    let remote_still_missing_local = std::process::Command::new("git")
+        .args([
+            "merge-base",
+            "--is-ancestor",
+            &local_commit_sha,
+            &remote_sha,
+        ])
+        .current_dir(repo.path())
+        .status()
+        .expect("check remote ancestry")
+        .success();
+    assert!(
+        !remote_still_missing_local,
+        "test setup must keep local and remote PR branch heads diverged"
+    );
 }
 
 #[tokio::test]

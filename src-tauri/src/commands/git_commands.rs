@@ -270,6 +270,14 @@ pub async fn resolve_merge_conflict(
 
     // Validate task is in a resolvable merge state
     ensure_resolve_merge_status(task.internal_status)?;
+    if crate::domain::state_machine::transition_handler::task_has_pr_branch_publication_failure(
+        &task,
+    ) {
+        return Err(
+            "This merge was verified locally, but publishing the PR branch failed. Retry PR publication instead of marking the merge resolved manually."
+                .to_string(),
+        );
+    }
 
     let linked_plan_branch = if task.category == TaskCategory::PlanMerge {
         state
@@ -456,6 +464,10 @@ async fn retry_merge_inner(
         .as_ref()
         .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
         .unwrap_or_else(|| serde_json::json!({}));
+    let is_pr_branch_publication_failure =
+        crate::domain::state_machine::transition_handler::task_has_pr_branch_publication_failure(
+            &task,
+        );
 
     // Check with 60s staleness: timestamp-based guard auto-expires if background task crashed
     let retry_in_progress = metadata_json
@@ -501,12 +513,15 @@ async fn retry_merge_inner(
     // explicit user actions.
     meta_obj.insert("validation_revert_count".to_string(), serde_json::json!(0));
     meta_obj.remove("merge_failure_source");
-    // Reset merge recovery event log so auto-retry counters (which count
-    // AutoRetryTriggered / AttemptFailed events) restart from zero.
+    // Reset generic merge recovery event logs so auto-retry counters restart from zero.
+    // PR branch publication failures keep their event history for incident visibility because
+    // the retry re-enters the same merge path only to re-run the publication gate.
     // Also clear the circuit breaker on manual retry — user is explicitly requesting a retry.
     if let Some(recovery_val) = meta_obj.get_mut("merge_recovery") {
         if let Some(recovery_obj) = recovery_val.as_object_mut() {
-            recovery_obj.insert("events".to_string(), serde_json::json!([]));
+            if !is_pr_branch_publication_failure {
+                recovery_obj.insert("events".to_string(), serde_json::json!([]));
+            }
             recovery_obj.insert("last_state".to_string(), serde_json::json!("retrying"));
             // Clear circuit breaker on manual retry
             recovery_obj.insert(
@@ -527,6 +542,7 @@ async fn retry_merge_inner(
     tracing::info!(
         task_id = task_id_parsed.as_str(),
         skip_validation = skip_validation.unwrap_or(false),
+        pr_branch_publication_failure = is_pr_branch_publication_failure,
         "Retry merge accepted, spawning background execution"
     );
 

@@ -16,7 +16,8 @@ use super::merge_completion::complete_merge_internal_with_pr_sync;
 use super::merge_helpers::{
     clear_merge_deferred_metadata, compute_merge_worktree_path, has_merge_deferred_metadata,
     has_prior_rebase_conflict, has_prior_validation_failure, has_source_conflict_resolved,
-    parse_metadata, task_targets_branch,
+    is_pr_branch_publication_conflict_routed_error, parse_metadata,
+    task_has_pr_branch_publication_conflict, task_targets_branch,
 };
 use super::merge_outcome_handler::{MergeContext, MergeHandlerOptions};
 use super::merge_strategies::MergeOutcome;
@@ -49,6 +50,38 @@ pub(super) enum ConcurrentGuardResult {
 }
 
 impl<'a> super::TransitionHandler<'a> {
+    async fn start_pr_publication_conflict_entry_if_routed(
+        &self,
+        task_id: &TaskId,
+        task: &Task,
+        error: &AppError,
+        context: &str,
+    ) -> bool {
+        if !is_pr_branch_publication_conflict_routed_error(error)
+            && !task_has_pr_branch_publication_conflict(task)
+        {
+            return false;
+        }
+
+        tracing::info!(
+            task_id = task_id.as_str(),
+            context,
+            "PR branch publication conflict routed to merger"
+        );
+        if let Some(transition_service) = &self.machine.context.services.transition_service {
+            transition_service
+                .execute_entry_actions(task_id, task, InternalStatus::Merging)
+                .await;
+        } else {
+            tracing::warn!(
+                task_id = task_id.as_str(),
+                context,
+                "PR branch publication conflict routed but transition_service is unavailable to start merger"
+            );
+        }
+        true
+    }
+
     /// Load task and project from repositories for the merge workflow.
     ///
     /// Returns `None` if repos are unavailable or records not found (caller should return early).
@@ -213,10 +246,20 @@ impl<'a> super::TransitionHandler<'a> {
                                     )
                                     .await
                                     {
-                                        tracing::error!(
-                                            error = %e,
-                                            "Failed to complete already-merged task (plan branch)"
-                                        );
+                                        if !self
+                                            .start_pr_publication_conflict_entry_if_routed(
+                                                task_id,
+                                                task,
+                                                &e,
+                                                "already_merged_plan_branch",
+                                            )
+                                            .await
+                                        {
+                                            tracing::error!(
+                                                error = %e,
+                                                "Failed to complete already-merged task (plan branch)"
+                                            );
+                                        }
                                     } else {
                                         self.post_merge_cleanup(
                                             task_id_str,
@@ -371,7 +414,17 @@ impl<'a> super::TransitionHandler<'a> {
         )
         .await
         {
-            tracing::error!(error = %e, "Failed to complete already-merged task");
+            if !self
+                .start_pr_publication_conflict_entry_if_routed(
+                    task_id,
+                    task,
+                    &e,
+                    "already_merged_target_branch",
+                )
+                .await
+            {
+                tracing::error!(error = %e, "Failed to complete already-merged task");
+            }
         } else {
             self.post_merge_cleanup(task_id_str, task_id, repo_path, plan_branch_repo)
                 .await;
@@ -516,10 +569,20 @@ impl<'a> super::TransitionHandler<'a> {
                                 )
                                 .await
                                 {
-                                    tracing::error!(
-                                        error = %e,
-                                        "Failed to complete recovered task (plan branch)"
-                                    );
+                                    if !self
+                                        .start_pr_publication_conflict_entry_if_routed(
+                                            task_id,
+                                            task,
+                                            &e,
+                                            "deleted_source_plan_branch",
+                                        )
+                                        .await
+                                    {
+                                        tracing::error!(
+                                            error = %e,
+                                            "Failed to complete recovered task (plan branch)"
+                                        );
+                                    }
                                 } else {
                                     self.post_merge_cleanup(
                                         task_id_str,
@@ -626,7 +689,17 @@ impl<'a> super::TransitionHandler<'a> {
                 )
                 .await
                 {
-                    tracing::error!(error = %e, "Failed to complete merge for recovered task");
+                    if !self
+                        .start_pr_publication_conflict_entry_if_routed(
+                            task_id,
+                            task,
+                            &e,
+                            "deleted_source_target_branch",
+                        )
+                        .await
+                    {
+                        tracing::error!(error = %e, "Failed to complete merge for recovered task");
+                    }
                 } else {
                     self.post_merge_cleanup(task_id_str, task_id, repo_path, plan_branch_repo)
                         .await;
