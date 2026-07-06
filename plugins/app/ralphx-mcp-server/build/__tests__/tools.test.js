@@ -1762,6 +1762,10 @@ describe('delegation bridge tools', () => {
         expect(toolsByAgent()[agent]).toContain('delegate_wait');
         expect(toolsByAgent()[agent]).toContain('delegate_cancel');
     });
+    it('PR_REVIEWER should expose get_artifact for selected plan references', () => {
+        expect(toolsByAgent()[PR_REVIEWER]).toEqual(loadCanonicalMcpTools(PR_REVIEWER));
+        expect(toolsByAgent()[PR_REVIEWER]).toContain('get_artifact');
+    });
     it.each([WORKER, REVIEWER, MERGER])('%s should expose delegation bridge tools in the fallback allowlist', (agent) => {
         expect(toolsByAgent()[agent]).toContain('delegate_start');
         expect(toolsByAgent()[agent]).toContain('delegate_wait');

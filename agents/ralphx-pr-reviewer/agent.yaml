@@ -7,6 +7,7 @@ capabilities:
     - fs_list_dir
     - fs_grep
     - fs_glob
+    - get_artifact
     - get_pr_review_context
     - write_pr_review_artifact
     - propose_pr_review_action

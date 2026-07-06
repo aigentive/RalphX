@@ -168,9 +168,11 @@ pub(crate) fn agent_mode_requires_workspace(mode: AgentConversationWorkspaceMode
 pub(crate) fn agent_mode_should_create_workspace(
     mode: AgentConversationWorkspaceMode,
     source_pull_request: Option<&AgentWorkspaceSourcePullRequest>,
+    has_plan_reference: bool,
 ) -> bool {
     agent_mode_requires_workspace(mode)
-        || (mode == AgentConversationWorkspaceMode::Chat && source_pull_request.is_some())
+        || (mode == AgentConversationWorkspaceMode::Chat
+            && (source_pull_request.is_some() || has_plan_reference))
 }
 
 pub(crate) async fn ensure_linked_branch_workspace_available(
