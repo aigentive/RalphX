@@ -647,13 +647,22 @@ async fn recover_missing_draft_prs_for_project(
                     push_status = %plan_branch.pr_push_status,
                     "PR startup recovery: syncing pending PR branch push for active plan branch"
                 );
-                sync_plan_branch_pr_if_needed(
+                if let Err(error) = sync_plan_branch_pr_if_needed(
                     &project,
                     &plan_branch,
                     &github_service,
                     &plan_branch_repo,
                 )
-                .await;
+                .await
+                {
+                    tracing::warn!(
+                        branch_id = plan_branch.id.as_str(),
+                        branch = %plan_branch.branch_name,
+                        merge_task_id = merge_task.id.as_str(),
+                        error = %error,
+                        "PR startup recovery: pending PR branch push sync failed"
+                    );
+                }
             }
 
             let refresh_lookup_started_at = Instant::now();
@@ -2140,7 +2149,6 @@ mod tests {
     use std::process::Command;
     use std::sync::LazyLock;
 
-    use async_trait::async_trait;
     use crate::application::agent_conversation_workspace::{
         agent_conversation_branch_name, resolve_agent_conversation_workspace_path,
     };
@@ -2158,6 +2166,7 @@ mod tests {
     };
     use crate::domain::services::RunningAgentKey;
     use crate::tests::mock_github_service::MockGithubService;
+    use async_trait::async_trait;
     use tokio::sync::Mutex as TokioMutex;
 
     static TERMINAL_CLEANUP_FETCH_TEST_LOCK: LazyLock<TokioMutex<()>> =
@@ -2173,8 +2182,7 @@ mod tests {
             _plan_branch: &PlanBranch,
             _review_base: &str,
             _review_state: PrReviewState,
-        ) -> crate::error::AppResult<crate::domain::entities::AgentWorkspacePrDescription>
-        {
+        ) -> crate::error::AppResult<crate::domain::entities::AgentWorkspacePrDescription> {
             Ok(crate::domain::entities::AgentWorkspacePrDescription::new(
                 None,
                 "## Summary\n\nStartup recovery drafted body".to_string(),

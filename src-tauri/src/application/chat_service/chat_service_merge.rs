@@ -36,7 +36,8 @@ use crate::domain::services::{MessageQueue, RunningAgentRegistry};
 use crate::domain::state_machine::resolve_merge_branches;
 use crate::domain::state_machine::services::TaskScheduler;
 use crate::domain::state_machine::transition_handler::{
-    complete_merge_internal_with_pr_sync, PlanBranchPrSyncServices,
+    complete_merge_internal_with_pr_sync, is_pr_branch_publication_conflict_routed_error,
+    task_has_pr_branch_publication_conflict, PlanBranchPrSyncServices,
 };
 use crate::domain::state_machine::transition_handler::{
     format_validation_error_metadata, merge_metadata_into, parse_metadata, run_validation_commands,
@@ -1111,6 +1112,18 @@ async fn complete_merge_and_schedule<R: Runtime + 'static>(
     )
     .await
     {
+        if is_pr_branch_publication_conflict_routed_error(&e)
+            || task_has_pr_branch_publication_conflict(task)
+        {
+            tracing::info!(
+                task_id = ctx.task_id_str,
+                "attempt_merge_auto_complete: PR branch publication conflict routed to merger"
+            );
+            let ts = ctx.build_transition_service();
+            ts.execute_entry_actions(&ctx.task_id, task, InternalStatus::Merging)
+                .await;
+            return;
+        }
         tracing::error!(
             task_id = ctx.task_id_str,
             error = %e,

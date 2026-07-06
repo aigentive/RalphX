@@ -103,6 +103,24 @@ describe("MergeIncompleteTaskDetail", () => {
     expect(screen.getByText("Merge Incomplete")).toBeInTheDocument();
   });
 
+  it("shows PR branch publication recovery copy and hides manual resolve", () => {
+    const task = createTestTask({
+      metadata: JSON.stringify({
+        error_code: "pr_branch_publication_failed",
+        error: "PR branch publication failed: non-fast-forward",
+        source_branch: "ralphx/ralphx/task-123",
+        target_branch: "ralphx/ralphx/plan-main",
+      }),
+    });
+
+    render(<MergeIncompleteTaskDetail task={task} />, { wrapper: TestWrapper });
+
+    expect(screen.getByText("PR Branch Publication Incomplete")).toBeInTheDocument();
+    expect(screen.getByText("Merge verified — PR branch publication needs retry")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Retry PR Publish" })).toBeInTheDocument();
+    expect(screen.queryByText("Mark Resolved")).not.toBeInTheDocument();
+  });
+
   it("shows fallback message when no recovery events exist", () => {
     const task = createTestTask();
     render(<MergeIncompleteTaskDetail task={task} />, { wrapper: TestWrapper });
