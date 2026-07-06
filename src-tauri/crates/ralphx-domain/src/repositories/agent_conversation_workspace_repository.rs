@@ -142,6 +142,14 @@ pub trait AgentConversationWorkspaceRepository: Send + Sync {
         Ok(Vec::new())
     }
 
+    async fn list_active_linked_plan_pr_supervision_recovery_candidates(
+        &self,
+        limit: usize,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        let _ = limit;
+        Ok(Vec::new())
+    }
+
     async fn list_active_needs_agent_workspaces(
         &self,
     ) -> AppResult<Vec<AgentConversationWorkspace>>;

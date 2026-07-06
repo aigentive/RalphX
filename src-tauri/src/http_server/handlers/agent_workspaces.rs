@@ -3,6 +3,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     future::Future,
+    path::PathBuf,
     pin::Pin,
     str::FromStr,
     sync::Arc,
@@ -23,8 +24,8 @@ use crate::application::agent_conversation_workspace::{
 use crate::application::agent_workspace_pr_description::validate_agent_workspace_pr_description_body;
 use crate::application::agent_workspace_review::{
     apply_review_artifact_to_monitor, load_agent_workspace_review_context,
-    review_gate_publish_blocker, start_agent_workspace_review, AgentWorkspaceReviewHunkAnchor,
-    AgentWorkspaceReviewGoalContext, AgentWorkspaceReviewStart, AgentWorkspaceReviewTarget,
+    review_gate_publish_blocker, start_agent_workspace_review, AgentWorkspaceReviewGoalContext,
+    AgentWorkspaceReviewHunkAnchor, AgentWorkspaceReviewStart, AgentWorkspaceReviewTarget,
 };
 use crate::application::publish_resilience::{
     inspect_publish_branch_freshness_for_source, push_publish_branch,
@@ -41,7 +42,7 @@ use crate::commands::unified_chat_commands::{
     AgentConversationWorkspacePublicationEventResponse, AgentConversationWorkspaceResponse,
     AgentWorkspacePostRepairAction, AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE,
 };
-use crate::domain::entities::plan_branch::PrPushStatus;
+use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus as PlanDbPrStatus};
 use crate::domain::entities::{
     pr_comment_body_excerpt, AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentWorkspacePrCommentEvidence,
@@ -49,8 +50,8 @@ use crate::domain::entities::{
     AgentWorkspacePrReviewActionStatus, AgentWorkspacePrReviewMonitor,
     AgentWorkspacePrReviewMonitorStatus, AgentWorkspaceReviewGateStatus,
     AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor,
-    AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewTargetScope,
-    Artifact, ArtifactId, ArtifactType, ChatConversationId, IdeationAnalysisBaseRefKind, ProjectId,
+    AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewTargetScope, Artifact, ArtifactId,
+    ArtifactType, ChatConversationId, IdeationAnalysisBaseRefKind, PlanBranch, ProjectId,
 };
 use crate::domain::services::github_service::{
     GithubServiceTrait, PrHealth, PrReviewFeedback, PrReviewSubmissionEvent, PrStatus,
@@ -139,6 +140,9 @@ pub struct AgentWorkspacePrFixContextResponse {
     pub success: bool,
     pub workspace: AgentConversationWorkspaceResponse,
     pub events: Vec<AgentConversationWorkspacePublicationEventResponse>,
+    pub target_kind: Option<String>,
+    pub target_branch: Option<String>,
+    pub target_base_branch: Option<String>,
     pub pr_number: Option<i64>,
     pub pr_url: Option<String>,
     pub health: Option<PrHealth>,
@@ -236,6 +240,36 @@ pub struct CompleteAgentWorkspacePrFixResponse {
     pub created_pr: Option<bool>,
     pub pr_number: Option<i64>,
     pub pr_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AgentWorkspacePrFixTargetKind {
+    DirectWorkspace,
+    IdeationPlan,
+}
+
+#[derive(Debug, Clone)]
+struct AgentWorkspacePrFixTarget {
+    kind: AgentWorkspacePrFixTargetKind,
+    pr_number: i64,
+    pr_url: Option<String>,
+    working_dir: PathBuf,
+    branch_name: String,
+    base_branch: String,
+    plan_branch: Option<PlanBranch>,
+}
+
+impl AgentWorkspacePrFixTarget {
+    fn kind_name(&self) -> &'static str {
+        match self.kind {
+            AgentWorkspacePrFixTargetKind::DirectWorkspace => "direct_workspace_pr",
+            AgentWorkspacePrFixTargetKind::IdeationPlan => "ideation_plan_pr",
+        }
+    }
+
+    fn is_ideation_plan(&self) -> bool {
+        self.kind == AgentWorkspacePrFixTargetKind::IdeationPlan
+    }
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -984,23 +1018,28 @@ pub async fn get_agent_workspace_pr_fix_context(
     Path(conversation_id): Path<String>,
 ) -> Result<Json<AgentWorkspacePrFixContextResponse>, JsonError> {
     let conversation_id = ChatConversationId::from_string(conversation_id);
-    let workspace =
-        load_agent_workspace_response(state.app_state.as_ref(), &conversation_id).await?;
+    let workspace_entity =
+        load_agent_workspace_entity(state.app_state.as_ref(), &conversation_id).await?;
+    let target =
+        resolve_agent_workspace_pr_fix_target(state.app_state.as_ref(), &workspace_entity).await?;
+    let workspace = agent_workspace_response_for_state(state.app_state.as_ref(), workspace_entity)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error, None))?;
     let events =
         load_agent_workspace_publication_events(state.app_state.as_ref(), &conversation_id).await?;
 
-    let (health, review_feedback) = match (
-        state.app_state.github_service.as_ref(),
-        workspace.publication_pr_number,
-    ) {
-        (Some(github), Some(pr_number)) => {
-            let working_dir = std::path::Path::new(&workspace.worktree_path);
-            let mut health = github.fetch_pr_health(working_dir, pr_number).await.ok();
+    let (health, review_feedback) = match (state.app_state.github_service.as_ref(), target.as_ref())
+    {
+        (Some(github), Some(target)) => {
+            let mut health = github
+                .fetch_pr_health(&target.working_dir, target.pr_number)
+                .await
+                .ok();
             if let Some(health) = health.as_ref() {
                 import_agent_workspace_pr_comment_evidence(
                     Arc::clone(&state.app_state.agent_conversation_workspace_repo),
                     &conversation_id,
-                    pr_number,
+                    target.pr_number,
                     health,
                 )
                 .await
@@ -1012,7 +1051,7 @@ pub async fn get_agent_workspace_pr_fix_context(
                 truncate_pr_health_issue_comments(health);
             }
             let review_feedback = github
-                .check_pr_review_feedback(working_dir, pr_number)
+                .check_pr_review_feedback(&target.working_dir, target.pr_number)
                 .await
                 .ok()
                 .flatten();
@@ -1021,8 +1060,8 @@ pub async fn get_agent_workspace_pr_fix_context(
         _ => (None, None),
     };
 
-    let pr_number = workspace.publication_pr_number;
-    let pr_url = workspace.publication_pr_url.clone();
+    let pr_number = target.as_ref().map(|target| target.pr_number);
+    let pr_url = target.as_ref().and_then(|target| target.pr_url.clone());
     let issue_comment_evidence = match pr_number {
         Some(pr_number) => {
             let comments = state
@@ -1056,6 +1095,9 @@ pub async fn get_agent_workspace_pr_fix_context(
         success: true,
         workspace,
         events,
+        target_kind: target.as_ref().map(|target| target.kind_name().to_string()),
+        target_branch: target.as_ref().map(|target| target.branch_name.clone()),
+        target_base_branch: target.as_ref().map(|target| target.base_branch.clone()),
         pr_number,
         pr_url,
         health,
@@ -2245,13 +2287,16 @@ pub async fn read_agent_workspace_pr_comment(
         .await
         .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?
         .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "Agent workspace not found", None))?;
-    let pr_number = workspace.publication_pr_number.ok_or_else(|| {
-        json_error(
-            StatusCode::BAD_REQUEST,
-            "Agent workspace has no linked pull request",
-            None,
-        )
-    })?;
+    let target = resolve_agent_workspace_pr_fix_target(state.app_state.as_ref(), &workspace)
+        .await?
+        .ok_or_else(|| {
+            json_error(
+                StatusCode::BAD_REQUEST,
+                "Agent workspace has no linked pull request",
+                None,
+            )
+        })?;
+    let pr_number = target.pr_number;
     let comment = state
         .app_state
         .agent_conversation_workspace_repo
@@ -2311,16 +2356,33 @@ pub async fn complete_agent_workspace_pr_fix(
         .await
         .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?
         .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "Agent workspace not found", None))?;
+    let target = resolve_agent_workspace_pr_fix_target(state.app_state.as_ref(), &workspace)
+        .await?
+        .ok_or_else(|| {
+            json_error(
+                StatusCode::BAD_REQUEST,
+                "Agent workspace has no linked pull request",
+                None,
+            )
+        })?;
 
-    if let (Some(github), Some(pr_number)) = (
-        state.app_state.github_service.as_ref(),
-        workspace.publication_pr_number,
-    ) {
+    if let Some(github) = state.app_state.github_service.as_ref() {
         match github
-            .check_pr_status(std::path::Path::new(&workspace.worktree_path), pr_number)
+            .check_pr_status(&target.working_dir, target.pr_number)
             .await
         {
             Ok(PrStatus::Merged { .. }) => {
+                if target.is_ideation_plan() {
+                    return complete_ideation_plan_pr_fix_for_terminal_pr(
+                        state.app_state.as_ref(),
+                        &conversation_id,
+                        &workspace,
+                        &target,
+                        "merged",
+                        "Pull request already merged; skipping PR fix publish.",
+                    )
+                    .await;
+                }
                 return complete_pr_fix_for_terminal_pr(
                     state.app_state.as_ref(),
                     &conversation_id,
@@ -2331,6 +2393,17 @@ pub async fn complete_agent_workspace_pr_fix(
                 .await;
             }
             Ok(PrStatus::Closed) => {
+                if target.is_ideation_plan() {
+                    return complete_ideation_plan_pr_fix_for_terminal_pr(
+                        state.app_state.as_ref(),
+                        &conversation_id,
+                        &workspace,
+                        &target,
+                        "closed",
+                        "Pull request already closed; skipping PR fix publish.",
+                    )
+                    .await;
+                }
                 return complete_pr_fix_for_terminal_pr(
                     state.app_state.as_ref(),
                     &conversation_id,
@@ -2344,7 +2417,7 @@ pub async fn complete_agent_workspace_pr_fix(
             Err(error) => {
                 tracing::warn!(
                     conversation_id = conversation_id.as_str(),
-                    pr_number,
+                    pr_number = target.pr_number,
                     error = %error,
                     "complete_agent_workspace_pr_fix: failed to recheck PR status before publish"
                 );
@@ -2397,8 +2470,8 @@ pub async fn complete_agent_workspace_pr_fix(
             commit_sha: None,
             pushed: None,
             created_pr: None,
-            pr_number: None,
-            pr_url: None,
+            pr_number: Some(target.pr_number),
+            pr_url: target.pr_url.clone(),
         }));
     }
 
@@ -2443,6 +2516,17 @@ pub async fn complete_agent_workspace_pr_fix(
         )
         .await
         .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+
+    if target.is_ideation_plan() {
+        return complete_ideation_plan_pr_fix_publish(
+            &state,
+            &conversation_id,
+            &workspace,
+            &target,
+            summary,
+        )
+        .await;
+    }
 
     match publish_agent_conversation_workspace_for_app_state(
         state.app_state.as_ref(),
@@ -2536,6 +2620,319 @@ pub async fn complete_agent_workspace_pr_fix(
             }))
         }
     }
+}
+
+async fn complete_ideation_plan_pr_fix_for_terminal_pr(
+    state: &AppState,
+    conversation_id: &ChatConversationId,
+    workspace: &AgentConversationWorkspace,
+    target: &AgentWorkspacePrFixTarget,
+    terminal_status: &str,
+    message: &str,
+) -> Result<Json<CompleteAgentWorkspacePrFixResponse>, JsonError> {
+    let plan_branch = target.plan_branch.as_ref().ok_or_else(|| {
+        json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "PR fix target is missing its linked plan branch",
+            None,
+        )
+    })?;
+    let db_status = match terminal_status {
+        "merged" => PlanDbPrStatus::Merged,
+        _ => PlanDbPrStatus::Closed,
+    };
+    state
+        .plan_branch_repo
+        .update_pr_status(&plan_branch.id, db_status)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    state
+        .agent_conversation_workspace_repo
+        .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+            conversation_id.clone(),
+            "pr_autofix_skipped_terminal",
+            "skipped",
+            message,
+            Some(format!("pr_autofix_skipped_terminal:{terminal_status}")),
+        ))
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    state
+        .agent_conversation_workspace_repo
+        .update_pr_auto_merge_state(
+            conversation_id,
+            workspace.pr_auto_merge_current,
+            None,
+            Some(message),
+        )
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    let workspace = load_agent_workspace_response(state, conversation_id).await?;
+    Ok(Json(CompleteAgentWorkspacePrFixResponse {
+        success: true,
+        status: "skipped_terminal".to_string(),
+        message: message.to_string(),
+        workspace: Some(workspace),
+        publish_status: Some("skipped".to_string()),
+        publish_error: None,
+        commit_sha: None,
+        pushed: None,
+        created_pr: None,
+        pr_number: Some(target.pr_number),
+        pr_url: target.pr_url.clone(),
+    }))
+}
+
+async fn complete_ideation_plan_pr_fix_publish(
+    state: &HttpServerState,
+    conversation_id: &ChatConversationId,
+    workspace: &AgentConversationWorkspace,
+    target: &AgentWorkspacePrFixTarget,
+    summary: &str,
+) -> Result<Json<CompleteAgentWorkspacePrFixResponse>, JsonError> {
+    let plan_branch = target.plan_branch.as_ref().ok_or_else(|| {
+        json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "PR fix target is missing its linked plan branch",
+            None,
+        )
+    })?;
+    if plan_branch.status != crate::domain::entities::PlanBranchStatus::Active {
+        return finish_ideation_plan_pr_fix_publish_failed(
+            state,
+            conversation_id,
+            workspace,
+            target,
+            "Cannot publish a plan branch that is no longer active".to_string(),
+            None,
+        )
+        .await;
+    }
+
+    let current_branch = GitService::get_current_branch(&target.working_dir)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    if current_branch != target.branch_name {
+        return finish_ideation_plan_pr_fix_publish_failed(
+            state,
+            conversation_id,
+            workspace,
+            target,
+            format!(
+                "PR fix workspace is on branch `{current_branch}`, expected `{}`",
+                target.branch_name
+            ),
+            None,
+        )
+        .await;
+    }
+    if GitService::has_uncommitted_changes(&target.working_dir)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?
+    {
+        return finish_ideation_plan_pr_fix_publish_failed(
+            state,
+            conversation_id,
+            workspace,
+            target,
+            "PR fix has uncommitted changes; commit the focused fix before completing.".to_string(),
+            None,
+        )
+        .await;
+    }
+    if GitService::has_conflict_markers(&target.working_dir)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?
+    {
+        return finish_ideation_plan_pr_fix_publish_failed(
+            state,
+            conversation_id,
+            workspace,
+            target,
+            "PR fix workspace still contains conflict markers.".to_string(),
+            None,
+        )
+        .await;
+    }
+
+    let commit_sha = GitService::get_head_sha(&target.working_dir)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    let Some(github) = state.app_state.github_service.as_ref() else {
+        state
+            .app_state
+            .plan_branch_repo
+            .update_pr_push_status(&plan_branch.id, PrPushStatus::Failed)
+            .await
+            .map_err(|error| {
+                json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
+            })?;
+        return finish_ideation_plan_pr_fix_publish_failed(
+            state,
+            conversation_id,
+            workspace,
+            target,
+            "GitHub integration is not available".to_string(),
+            Some(commit_sha),
+        )
+        .await;
+    };
+
+    state
+        .app_state
+        .plan_branch_repo
+        .update_pr_push_status(&plan_branch.id, PrPushStatus::Pending)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+
+    if let Err(error) = push_publish_branch(github, &target.working_dir, &target.branch_name).await
+    {
+        let message = format!("PR fix push failed: {error}");
+        state
+            .app_state
+            .plan_branch_repo
+            .update_pr_push_status(&plan_branch.id, PrPushStatus::Failed)
+            .await
+            .map_err(|repo_error| {
+                json_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    repo_error.to_string(),
+                    None,
+                )
+            })?;
+        return finish_ideation_plan_pr_fix_publish_failed(
+            state,
+            conversation_id,
+            workspace,
+            target,
+            message,
+            Some(commit_sha),
+        )
+        .await;
+    }
+
+    state
+        .app_state
+        .plan_branch_repo
+        .update_pr_push_status(&plan_branch.id, PrPushStatus::Pushed)
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    state
+        .app_state
+        .agent_conversation_workspace_repo
+        .update_pr_auto_merge_state(
+            conversation_id,
+            workspace.pr_auto_merge_current,
+            Some("monitoring"),
+            Some("PR fix pushed to the linked plan branch; RalphX is monitoring the pull request."),
+        )
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    state
+        .app_state
+        .agent_conversation_workspace_repo
+        .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+            conversation_id.clone(),
+            "pr_autofix_published",
+            "succeeded",
+            format!("PR fix pushed to the linked plan branch. Fix summary: {summary}"),
+            Some(format!(
+                "pr_autofix_published:{}:{commit_sha}",
+                target.pr_number
+            )),
+        ))
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+
+    if let Some(task_id) = plan_branch.merge_task_id.as_ref() {
+        if let Some(project) = state
+            .app_state
+            .project_repo
+            .get_by_id(&plan_branch.project_id)
+            .await
+            .map_err(|error| {
+                json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
+            })?
+        {
+            let transition_service = state
+                .app_state
+                .build_transition_service_with_execution_state(Arc::clone(&state.execution_state))
+                .into_arc();
+            state.app_state.pr_poller_registry.start_polling(
+                task_id.clone(),
+                plan_branch.id.clone(),
+                target.pr_number,
+                PathBuf::from(project.working_directory),
+                plan_branch.source_branch.clone(),
+                transition_service,
+            );
+        }
+    }
+
+    let workspace_response =
+        load_agent_workspace_response(state.app_state.as_ref(), conversation_id).await?;
+    Ok(Json(CompleteAgentWorkspacePrFixResponse {
+        success: true,
+        status: "published".to_string(),
+        message: "PR fix pushed to the linked plan branch; RalphX is monitoring the pull request."
+            .to_string(),
+        workspace: Some(workspace_response),
+        publish_status: Some("succeeded".to_string()),
+        publish_error: None,
+        commit_sha: Some(commit_sha),
+        pushed: Some(true),
+        created_pr: Some(false),
+        pr_number: Some(target.pr_number),
+        pr_url: target.pr_url.clone(),
+    }))
+}
+
+async fn finish_ideation_plan_pr_fix_publish_failed(
+    state: &HttpServerState,
+    conversation_id: &ChatConversationId,
+    workspace: &AgentConversationWorkspace,
+    target: &AgentWorkspacePrFixTarget,
+    message: String,
+    commit_sha: Option<String>,
+) -> Result<Json<CompleteAgentWorkspacePrFixResponse>, JsonError> {
+    state
+        .app_state
+        .agent_conversation_workspace_repo
+        .update_pr_auto_merge_state(
+            conversation_id,
+            workspace.pr_auto_merge_current,
+            Some("blocked"),
+            Some(&message),
+        )
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    state
+        .app_state
+        .agent_conversation_workspace_repo
+        .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
+            conversation_id.clone(),
+            "pr_autofix_publish_failed",
+            "failed",
+            message.clone(),
+            Some(format!("pr_autofix_publish_failed:{}", target.pr_number)),
+        ))
+        .await
+        .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
+    let workspace_response =
+        load_agent_workspace_response(state.app_state.as_ref(), conversation_id).await?;
+    Ok(Json(CompleteAgentWorkspacePrFixResponse {
+        success: true,
+        status: "publish_failed".to_string(),
+        message: message.clone(),
+        workspace: Some(workspace_response),
+        publish_status: Some("failed".to_string()),
+        publish_error: Some(message),
+        commit_sha,
+        pushed: Some(false),
+        created_pr: Some(false),
+        pr_number: Some(target.pr_number),
+        pr_url: target.pr_url.clone(),
+    }))
 }
 
 async fn start_workspace_review_for_pr_fix_if_required(
@@ -3284,6 +3681,71 @@ async fn load_agent_workspace_entity(
         .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "Agent workspace not found", None))
 }
 
+async fn resolve_agent_workspace_pr_fix_target(
+    state: &AppState,
+    workspace: &AgentConversationWorkspace,
+) -> Result<Option<AgentWorkspacePrFixTarget>, JsonError> {
+    if workspace.mode == AgentConversationWorkspaceMode::Ideation {
+        let Some(plan_branch_id) = workspace.linked_plan_branch_id.as_ref() else {
+            return Ok(None);
+        };
+        let plan_branch = state
+            .plan_branch_repo
+            .get_by_id(plan_branch_id)
+            .await
+            .map_err(|error| {
+                json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
+            })?
+            .ok_or_else(|| {
+                json_error(
+                    StatusCode::NOT_FOUND,
+                    format!("Linked plan branch not found: {plan_branch_id}"),
+                    None,
+                )
+            })?;
+        let Some(pr_number) = plan_branch.pr_number else {
+            return Ok(None);
+        };
+        let project = state
+            .project_repo
+            .get_by_id(&workspace.project_id)
+            .await
+            .map_err(|error| {
+                json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None)
+            })?
+            .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "Project not found", None))?;
+        let working_dir =
+            crate::application::agent_conversation_workspace::ensure_linked_plan_branch_agent_worktree(
+                &project,
+                &plan_branch,
+            )
+            .await
+            .map_err(|error| json_error(StatusCode::CONFLICT, error.to_string(), None))?;
+        return Ok(Some(AgentWorkspacePrFixTarget {
+            kind: AgentWorkspacePrFixTargetKind::IdeationPlan,
+            pr_number,
+            pr_url: plan_branch.pr_url.clone(),
+            working_dir,
+            branch_name: plan_branch.branch_name.clone(),
+            base_branch: plan_branch.source_branch.clone(),
+            plan_branch: Some(plan_branch),
+        }));
+    }
+
+    let Some(pr_number) = workspace.publication_pr_number else {
+        return Ok(None);
+    };
+    Ok(Some(AgentWorkspacePrFixTarget {
+        kind: AgentWorkspacePrFixTargetKind::DirectWorkspace,
+        pr_number,
+        pr_url: workspace.publication_pr_url.clone(),
+        working_dir: PathBuf::from(&workspace.worktree_path),
+        branch_name: workspace.branch_name.clone(),
+        base_branch: workspace.base_ref.clone(),
+        plan_branch: None,
+    }))
+}
+
 async fn load_agent_workspace_publication_events(
     state: &AppState,
     conversation_id: &ChatConversationId,
@@ -3597,7 +4059,9 @@ fn validate_workspace_review_tool_target_metadata(
     {
         return Err(json_error(
             StatusCode::CONFLICT,
-            format!("{operation} target metadata does not match the current workspace Review target"),
+            format!(
+                "{operation} target metadata does not match the current workspace Review target"
+            ),
             None,
         ));
     }
@@ -5135,7 +5599,9 @@ mod tests {
         Arc,
     };
 
-    use crate::application::agent_conversation_workspace::resolve_agent_conversation_workspace_path;
+    use crate::application::agent_conversation_workspace::{
+        resolve_agent_conversation_workspace_path, resolve_linked_plan_branch_agent_worktree_path,
+    };
     use crate::application::agent_workspace_review::{
         AgentWorkspaceReviewChangedFile, AgentWorkspaceReviewContext,
         AgentWorkspaceReviewDiffSummary, AgentWorkspaceReviewHunkAnchor,
@@ -5147,12 +5613,16 @@ mod tests {
         AgentConfig, AgentHandle, AgentOutput, AgentResponse, AgentResult, AgenticClient,
         ClientCapabilities, ResponseChunk,
     };
+    use crate::domain::entities::plan_branch::{
+        PrPushStatus as PlanPrPushStatus, PrStatus as PlanPrStatus,
+    };
     use crate::domain::entities::{
         AgentConversationWorkspace, AgentConversationWorkspaceMode,
         AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrDescription,
         AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitorStatus,
         AgentWorkspaceReviewOutcome, AgentWorkspaceSourcePullRequest, ArtifactId, ChatContextType,
-        ChatConversation, IdeationAnalysisBaseRefKind, Project, ProjectId,
+        ChatConversation, IdeationAnalysisBaseRefKind, IdeationSessionId, PlanBranch, PlanBranchId,
+        Project, ProjectId, TaskId,
     };
     use crate::domain::repositories::AgentConversationWorkspaceRepository;
     use crate::domain::review::ReviewSettings;
@@ -7454,6 +7924,146 @@ mod tests {
         assert_eq!(stored.body, long_body);
         assert!(stored.last_included_at.is_some());
         assert_eq!(github.state().fetch_pr_health_calls, 1);
+    }
+
+    #[tokio::test]
+    async fn pr_fix_context_uses_linked_plan_branch_pr_target() {
+        let repo = tempfile::TempDir::new().expect("repo tempdir");
+        let worktrees = tempfile::TempDir::new().expect("worktree tempdir");
+        git(repo.path(), &["init", "-b", "main"]);
+        git(repo.path(), &["config", "user.email", "test@example.com"]);
+        git(repo.path(), &["config", "user.name", "RalphX Test"]);
+        std::fs::write(repo.path().join("README.md"), "base\n").expect("write base");
+        git(repo.path(), &["add", "README.md"]);
+        git(repo.path(), &["commit", "-m", "base"]);
+        let base_sha = git(repo.path(), &["rev-parse", "HEAD"]);
+
+        let github = Arc::new(MockGithubService::new());
+        github.state().fetch_pr_health_result = Some(Ok(PrHealth {
+            sync_state: PrSyncState {
+                status: PrStatus::Open,
+                merge_state_status: None,
+                mergeable: None,
+                is_draft: false,
+                head_ref_name: "ralphx/test/plan-pr-context".to_string(),
+                base_ref_name: "main".to_string(),
+                head_ref_oid: Some("plan-context-head".to_string()),
+                base_ref_oid: None,
+            },
+            review_decision: None,
+            checks: Vec::new(),
+            issue_comments: Vec::new(),
+            auto_merge_request: None,
+        }));
+        let mut app_state = AppState::new_test();
+        app_state.github_service = Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>);
+        let app_state = Arc::new(app_state);
+
+        let mut project = Project::new(
+            "Plan PR Context".to_string(),
+            repo.path().to_string_lossy().to_string(),
+        );
+        project.base_branch = Some("main".to_string());
+        project.worktree_parent_directory = Some(worktrees.path().to_string_lossy().to_string());
+        app_state
+            .project_repo
+            .create(project.clone())
+            .await
+            .expect("seed project");
+
+        let conversation_id = ChatConversationId::from_string("conversation-plan-pr-context");
+        let session_id = IdeationSessionId::from_string("session-plan-pr-context");
+        let plan_branch_id = PlanBranchId::from_string("plan-branch-pr-context");
+        let mut conversation = ChatConversation::new_project(project.id.clone());
+        conversation.id = conversation_id.clone();
+        conversation.context_type = ChatContextType::Project;
+        conversation.context_id = project.id.as_str().to_string();
+        app_state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .expect("seed conversation");
+
+        let branch_name = "ralphx/test/plan-pr-context";
+        let mut plan_branch = PlanBranch::new(
+            ArtifactId::from_string("artifact-plan-pr-context"),
+            session_id.clone(),
+            project.id.clone(),
+            branch_name.to_string(),
+            "main".to_string(),
+        );
+        plan_branch.id = plan_branch_id.clone();
+        plan_branch.pr_eligible = true;
+        plan_branch.merge_task_id = Some(TaskId::from_string(
+            "merge-task-plan-pr-context".to_string(),
+        ));
+        plan_branch.pr_number = Some(602);
+        plan_branch.pr_url = Some("https://github.com/owner/repo/pull/602".to_string());
+        plan_branch.pr_status = Some(PlanPrStatus::Open);
+        plan_branch.pr_push_status = PlanPrPushStatus::Pushed;
+        let plan_worktree = resolve_linked_plan_branch_agent_worktree_path(&project, &plan_branch)
+            .expect("plan worktree path");
+        git(
+            repo.path(),
+            &[
+                "worktree",
+                "add",
+                "-b",
+                branch_name,
+                plan_worktree.to_str().unwrap(),
+                "main",
+            ],
+        );
+        app_state
+            .plan_branch_repo
+            .create(plan_branch)
+            .await
+            .expect("seed plan branch");
+
+        let mut workspace = AgentConversationWorkspace::new(
+            conversation_id.clone(),
+            project.id.clone(),
+            AgentConversationWorkspaceMode::Ideation,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main".to_string(),
+            Some("Project default (main)".to_string()),
+            Some(base_sha),
+            branch_name.to_string(),
+            plan_worktree.to_string_lossy().to_string(),
+        );
+        workspace.linked_ideation_session_id = Some(session_id);
+        workspace.linked_plan_branch_id = Some(plan_branch_id);
+        workspace.publication_pr_number = None;
+        workspace.pr_supervision_status = Some("fixing".to_string());
+        workspace.pr_autofix_enabled = true;
+        app_state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("seed workspace");
+
+        let state = test_http_state(Arc::clone(&app_state));
+        let Json(response) =
+            get_agent_workspace_pr_fix_context(State(state), Path(conversation_id.to_string()))
+                .await
+                .expect("PR fix context should load");
+
+        assert_eq!(response.target_kind.as_deref(), Some("ideation_plan_pr"));
+        assert_eq!(response.pr_number, Some(602));
+        assert_eq!(
+            response.pr_url.as_deref(),
+            Some("https://github.com/owner/repo/pull/602")
+        );
+        assert_eq!(response.target_branch.as_deref(), Some(branch_name));
+        assert_eq!(response.target_base_branch.as_deref(), Some("main"));
+        assert_eq!(response.workspace.publication_pr_number, Some(602));
+        let stored = app_state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .unwrap()
+            .expect("workspace row should exist");
+        assert_eq!(stored.publication_pr_number, None);
     }
 
     #[test]

@@ -511,6 +511,12 @@ fn build_runtime_factory_deps<R: Runtime>(
         plan_branch_repo,
         interactive_process_registry,
     )
+    .with_agent_conversation_workspace_repo(
+        app_handle
+            .as_ref()
+            .and_then(|handle| handle.try_state::<AppState>())
+            .map(|app_state| Arc::clone(&app_state.agent_conversation_workspace_repo)),
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
