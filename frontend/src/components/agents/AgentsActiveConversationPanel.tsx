@@ -77,7 +77,6 @@ import {
 import { AgentConversationBaseLine } from "./AgentConversationBaseLine";
 import { AgentConversationWorkspaceLine } from "./AgentConversationWorkspaceLine";
 import { AgentWorkspacePrReviewCard } from "./AgentWorkspacePrReviewCard";
-import { AgentRuntimeStatusWidget } from "./AgentRuntimeStatusWidget";
 import { useAgentConversationRuntimeStatus } from "./useAgentConversationRuntimeStatus";
 import { AgentsComposerWorkspaceChangesCard } from "./AgentsComposerWorkspaceChangesCard";
 import { AgentsChatHeaderController } from "./AgentsChatHeaderController";
@@ -198,14 +197,6 @@ function isRunningModeSwitchError(err: unknown): boolean {
   return message.includes("Cannot change mode while the agent is running");
 }
 
-function hasWorkspaceReviewRuntime(
-  status: AgentConversationRuntimeStatus | null | undefined,
-): boolean {
-  return (
-    status?.items.some((item) => item.source === "workspace_review") ?? false
-  );
-}
-
 function isRuntimeItemOwnedByFocus(
   item: AgentConversationRuntimeItem,
   chatFocus: AgentsChatFocus,
@@ -277,38 +268,6 @@ function runtimeStatusForChatFocus(
     primarySource,
     summaryLabel: focusedItems[0]?.label ?? status.summaryLabel,
     items: focusedItems,
-  };
-}
-
-function mergeWorkspaceReviewRuntimeFallback(
-  status: AgentConversationRuntimeStatus | null | undefined,
-  workspaceReviewRuntimeStatus: AgentConversationRuntimeStatus | null | undefined,
-): AgentConversationRuntimeStatus | null | undefined {
-  if (
-    !workspaceReviewRuntimeStatus?.isRunning ||
-    workspaceReviewRuntimeStatus.items.length === 0 ||
-    hasWorkspaceReviewRuntime(status)
-  ) {
-    return status;
-  }
-
-  if (!status?.isRunning || status.items.length === 0) {
-    return workspaceReviewRuntimeStatus;
-  }
-
-  const agentStatus =
-    status.agentStatus === "generating" ||
-    workspaceReviewRuntimeStatus.agentStatus === "generating"
-      ? "generating"
-      : "waiting_for_input";
-
-  return {
-    ...status,
-    isRunning: true,
-    agentStatus,
-    primarySource: workspaceReviewRuntimeStatus.primarySource ?? status.primarySource,
-    summaryLabel: workspaceReviewRuntimeStatus.summaryLabel ?? status.summaryLabel,
-    items: [...status.items, ...workspaceReviewRuntimeStatus.items],
   };
 }
 
@@ -607,7 +566,6 @@ interface AgentsActiveConversationPanelProps {
   chatFocusOptions: readonly AgentsChatFocusSwitchOption[];
   hasAutoOpenArtifacts: boolean;
   normalizedActiveRuntime: AgentRuntimeSelection;
-  workspaceReviewRuntimeStatus?: AgentConversationRuntimeStatus | null;
   onActiveConversationModeChange: (mode: AgentConversationWorkspaceMode) => void;
   onActiveConversationModeMenuOpen: () => void;
   onActiveEffortChange: (
@@ -682,7 +640,6 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   chatFocusOptions,
   hasAutoOpenArtifacts,
   normalizedActiveRuntime,
-  workspaceReviewRuntimeStatus = null,
   onActiveConversationModeChange,
   onActiveConversationModeMenuOpen,
   onActiveEffortChange,
@@ -920,16 +877,6 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     },
   );
   const runtimeStatusItems = runtimeStatusQuery.data?.items;
-  const runtimeStatusForWidget = useMemo(
-    () => {
-      const mergedStatus = mergeWorkspaceReviewRuntimeFallback(
-        runtimeStatusQuery.data,
-        chatFocus.type === "workspace_review" ? workspaceReviewRuntimeStatus : null,
-      );
-      return runtimeStatusForChatFocus(mergedStatus, chatFocus);
-    },
-    [chatFocus, runtimeStatusQuery.data, workspaceReviewRuntimeStatus],
-  );
   const belowTranscriptLayoutOwnedByVisibleRuntime = useMemo(() => {
     if (isFocusedChildChat) {
       return true;
@@ -940,9 +887,6 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     }
     return runtimeItems.some((item) => isRuntimeItemOwnedByFocus(item, chatFocus));
   }, [chatFocus, isFocusedChildChat, runtimeStatusItems]);
-  const hasLinkedChatFocusTargets = chatFocusOptions.some(
-    (option) => option.type !== "workspace",
-  );
   useEffect(() => {
     if (!selectedTaskArtifactId) {
       return;
@@ -2294,25 +2238,17 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                     projectId={activeProjectId}
                     workspace={activeWorkspace}
                     isFocusedChildChat={isFocusedChildChat}
+                    currentFocus={chatFocus}
                     taskLedgerContext={composerTaskLedgerContext}
                     isAgentGenerating={composerProps.agentStatus === "generating"}
                     pauseHydration={isComposerHydrationPaused}
-                    onOpenFile={onOpenPublishFile}
-                    onPreloadPublishPane={onPreloadArtifacts}
-                  />
-                  <AgentRuntimeStatusWidget
-                    status={runtimeStatusForWidget}
-                    showSingleWorkspaceRuntime={
-                      activeWorkspace?.mode === "ideation" &&
-                      hasLinkedChatFocusTargets
-                    }
-                    currentFocus={chatFocus}
-                    selectedTaskId={selectedTaskArtifactId}
                     onViewWorkspace={handleViewRuntimeWorkspace}
                     onViewIdeation={onFocusIdeationSession}
                     onViewVerification={onFocusVerificationSession}
                     onViewWorkspaceReview={handleViewRuntimeWorkspaceReview}
                     onViewTaskRuntime={handleViewRuntimeTask}
+                    onOpenFile={onOpenPublishFile}
+                    onPreloadPublishPane={onPreloadArtifacts}
                   />
                   {shouldShowPlanComposerCta && (
                     <PlanComposerCtaRow

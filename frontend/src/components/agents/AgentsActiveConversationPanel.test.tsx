@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   chatApi,
+  type AgentConversationRuntimeIndexRow,
   type AgentConversationRuntimeStatus,
   type AgentConversationWorkspace,
   type AgentConversationWorkspaceFreshness,
@@ -24,6 +25,7 @@ const {
   approvePlanArtifactMock,
   sendAgentMessageMock,
   switchAgentConversationModeMock,
+  getAgentConversationRuntimeIndexMock,
   getAgentConversationRuntimeStatusesMock,
   useVerificationStatusMock,
   getVerificationSpecialistsMock,
@@ -42,6 +44,7 @@ const {
   approvePlanArtifactMock: vi.fn(),
   sendAgentMessageMock: vi.fn(),
   switchAgentConversationModeMock: vi.fn(),
+  getAgentConversationRuntimeIndexMock: vi.fn(),
   getAgentConversationRuntimeStatusesMock: vi.fn(),
   useVerificationStatusMock: vi.fn(),
   getVerificationSpecialistsMock: vi.fn(),
@@ -270,6 +273,7 @@ vi.mock("@/api/chat", async (importOriginal) => {
       ...actual.chatApi,
       listWorkspaceOpenTargets: vi.fn().mockResolvedValue([]),
       openAgentConversationWorkspacePath: vi.fn().mockResolvedValue(undefined),
+      getAgentConversationRuntimeIndex: getAgentConversationRuntimeIndexMock,
       getAgentConversationRuntimeStatuses: getAgentConversationRuntimeStatusesMock,
       sendAgentMessage: sendAgentMessageMock,
       switchAgentConversationMode: switchAgentConversationModeMock,
@@ -706,6 +710,34 @@ function workspaceRuntimeStatus(
   };
 }
 
+function runtimeIndexWorkspaceRow(
+  overrides: Partial<AgentConversationRuntimeIndexRow> = {},
+): AgentConversationRuntimeIndexRow {
+  return {
+    id: "workspace:conversation-1",
+    group: "main",
+    kind: "workspace",
+    lifecycle: "running",
+    statusLabel: "Running",
+    title: "Workspace chat",
+    mode: "agent",
+    orderIndex: 0,
+    orderStartedAt: "2026-05-16T00:00:00.000Z",
+    completedAt: null,
+    conversationId: "conversation-1",
+    contextType: "project",
+    contextId: "conversation-1",
+    taskId: null,
+    agentRunId: "run-1",
+    parentSessionId: null,
+    childSessionId: null,
+    providerHarness: "codex",
+    providerSessionId: "session-1",
+    errorMessage: null,
+    ...overrides,
+  };
+}
+
 function workspaceFreshness(
   overrides: Partial<AgentConversationWorkspaceFreshness> = {},
 ): AgentConversationWorkspaceFreshness {
@@ -872,6 +904,10 @@ describe("AgentsActiveConversationPanel", () => {
     switchAgentConversationModeMock.mockResolvedValue({
       workspace: { ...workspace(), mode: "ideation" },
     });
+    getAgentConversationRuntimeIndexMock.mockResolvedValue({
+      conversationId: "conversation-1",
+      rows: [runtimeIndexWorkspaceRow()],
+    });
     getAgentConversationRuntimeStatusesMock.mockResolvedValue({});
     useVerificationStatusMock.mockReturnValue({
       data: {
@@ -1011,9 +1047,13 @@ describe("AgentsActiveConversationPanel", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("keeps the composer runtime status for a single ideation workspace runtime when linked chats exist", async () => {
+  it("shows a single workspace runtime inside the Runtimes tab", async () => {
     getAgentConversationRuntimeStatusesMock.mockResolvedValue({
       "conversation-1": workspaceRuntimeStatus(),
+    });
+    getAgentConversationRuntimeIndexMock.mockResolvedValue({
+      conversationId: "conversation-1",
+      rows: [runtimeIndexWorkspaceRow({ mode: "ideation" })],
     });
 
     renderPanel({
@@ -1035,9 +1075,16 @@ describe("AgentsActiveConversationPanel", () => {
       ],
     });
 
+    fireEvent.click(await screen.findByTestId("agents-composer-runtimes-toggle"));
+
     expect(
-      await screen.findByTestId("agents-runtime-status-widget"),
+      await screen.findByTestId(
+        "agents-composer-runtime-row-workspace",
+        undefined,
+        deferredHydrationTimeout,
+      ),
     ).toHaveTextContent("Workspace chat");
+    expect(screen.queryByTestId("agents-runtime-status-widget")).not.toBeInTheDocument();
   });
 
   it("keeps nonfocused task runtime rows out of workspace composer chrome", async () => {
@@ -1123,7 +1170,7 @@ describe("AgentsActiveConversationPanel", () => {
     expect(composerLayoutChangeMock).toHaveBeenCalledWith();
   });
 
-  it("shows focused task runtime rows in the composer runtime widget", async () => {
+  it("shows focused task runtime rows in the Runtimes tab", async () => {
     const workspaceItem = workspaceRuntimeStatus().items[0]!;
     getAgentConversationRuntimeStatusesMock.mockResolvedValue({
       "conversation-1": workspaceRuntimeStatus({
@@ -1149,6 +1196,26 @@ describe("AgentsActiveConversationPanel", () => {
         ],
       }),
     });
+    getAgentConversationRuntimeIndexMock.mockResolvedValue({
+      conversationId: "conversation-1",
+      rows: [
+        runtimeIndexWorkspaceRow({ lifecycle: "waiting", statusLabel: "Waiting" }),
+        runtimeIndexWorkspaceRow({
+          id: "task:task-2",
+          group: "pipeline",
+          kind: "task",
+          lifecycle: "running",
+          statusLabel: "Reviewing",
+          title: "Review task",
+          mode: null,
+          orderIndex: 1,
+          conversationId: "review-conversation-1",
+          contextType: "review",
+          contextId: "task-2",
+          taskId: "task-2",
+        }),
+      ],
+    });
 
     renderPanel({
       chatFocus: {
@@ -1158,16 +1225,160 @@ describe("AgentsActiveConversationPanel", () => {
       },
     });
 
+    fireEvent.click(await screen.findByTestId("agents-composer-runtimes-toggle"));
+
     expect(
-      await screen.findByTestId("agents-runtime-status-widget"),
+      await screen.findByTestId(
+        "agents-composer-runtime-row-task",
+        undefined,
+        deferredHydrationTimeout,
+      ),
     ).toHaveTextContent("Review task");
-    expect(
-      screen.getByTestId("agents-runtime-status-current-review"),
-    ).toHaveAttribute("aria-label", "Currently viewing Review task");
+    expect(screen.getByText("Viewing")).toBeInTheDocument();
     expect(screen.getByTestId("integrated-chat-panel")).toHaveAttribute(
       "data-below-transcript-layout-owned",
       "true",
     );
+  });
+
+  it("routes clicks from every Runtimes tab row kind", async () => {
+    const onSelectChatFocus = vi.fn();
+    const onFocusIdeationSession = vi.fn();
+    const onFocusVerificationSession = vi.fn();
+    const onFocusWorkspaceReview = vi.fn();
+    const onFocusTaskRuntime = vi.fn();
+    const onOpenTaskArtifact = vi.fn();
+    getAgentConversationRuntimeStatusesMock.mockResolvedValue({
+      "conversation-1": workspaceRuntimeStatus({
+        isRunning: false,
+        agentStatus: "idle",
+        primarySource: null,
+        summaryLabel: null,
+        items: [],
+      }),
+    });
+    getAgentConversationRuntimeIndexMock.mockResolvedValue({
+      conversationId: "conversation-1",
+      rows: [
+        runtimeIndexWorkspaceRow({ lifecycle: "waiting", mode: "chat", statusLabel: "Waiting" }),
+        runtimeIndexWorkspaceRow({
+          id: "ideation:session-1",
+          group: "ideation_verification",
+          kind: "ideation",
+          lifecycle: "completed",
+          statusLabel: "Done",
+          title: "Plan ideation",
+          mode: "ideation",
+          orderIndex: 1,
+          conversationId: null,
+          contextType: "ideation",
+          contextId: "session-1",
+          taskId: null,
+          agentRunId: null,
+        }),
+        runtimeIndexWorkspaceRow({
+          id: "verification:verification-child",
+          group: "ideation_verification",
+          kind: "verification",
+          lifecycle: "failed",
+          statusLabel: "Failed",
+          title: "Verification",
+          mode: "pr_review",
+          orderIndex: 2,
+          conversationId: null,
+          contextType: "verification",
+          contextId: "verification-child",
+          taskId: null,
+          agentRunId: null,
+          parentSessionId: "session-parent",
+          childSessionId: "verification-child",
+        }),
+        runtimeIndexWorkspaceRow({
+          id: "workspace_review:review-conversation-1",
+          group: "ideation_verification",
+          kind: "workspace_review",
+          lifecycle: "blocked",
+          statusLabel: "Blocked",
+          title: "Review workspace changes",
+          mode: null,
+          orderIndex: 3,
+          conversationId: "review-conversation-1",
+          contextType: "project",
+          contextId: "review-conversation-1",
+          taskId: null,
+          agentRunId: null,
+          providerHarness: "claude",
+        }),
+        runtimeIndexWorkspaceRow({
+          id: "task:task-3",
+          group: "pipeline",
+          kind: "task",
+          lifecycle: "running",
+          statusLabel: "Merging",
+          title: "Merge task",
+          mode: "agent",
+          orderIndex: 4,
+          conversationId: "merge-conversation-1",
+          contextType: "merge",
+          contextId: "task-3",
+          taskId: "task-3",
+          agentRunId: null,
+        }),
+      ],
+    });
+
+    renderPanel({
+      onSelectChatFocus,
+      onFocusIdeationSession,
+      onFocusVerificationSession,
+      onFocusWorkspaceReview,
+      onFocusTaskRuntime,
+      onOpenTaskArtifact,
+    });
+
+    fireEvent.click(await screen.findByTestId("agents-composer-runtimes-toggle"));
+    const workspaceRow = await screen.findByTestId(
+      "agents-composer-runtime-row-workspace",
+      undefined,
+      deferredHydrationTimeout,
+    );
+    expect(workspaceRow).toHaveTextContent("Chat mode");
+    expect(screen.getByTestId("agents-composer-runtime-row-ideation")).toHaveTextContent(
+      "Ideation mode",
+    );
+    expect(screen.getByTestId("agents-composer-runtime-row-verification")).toHaveTextContent(
+      "PR Review",
+    );
+    expect(screen.getByTestId("agents-composer-runtime-row-workspace_review")).toHaveTextContent(
+      "claude",
+    );
+    expect(screen.getByTestId("agents-composer-runtime-row-task")).toHaveTextContent(
+      "Agent mode",
+    );
+    fireEvent.click(screen.getByTestId("agents-composer-workspace-changes-header"));
+    expect(screen.queryByTestId("agents-composer-runtimes-list")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("agents-composer-runtimes-toggle"));
+    const reopenedWorkspaceRow = await screen.findByTestId(
+      "agents-composer-runtime-row-workspace",
+      undefined,
+      deferredHydrationTimeout,
+    );
+
+    fireEvent.click(reopenedWorkspaceRow);
+    fireEvent.click(screen.getByTestId("agents-composer-runtime-row-ideation"));
+    fireEvent.click(screen.getByTestId("agents-composer-runtime-row-verification"));
+    fireEvent.click(screen.getByTestId("agents-composer-runtime-row-workspace_review"));
+    fireEvent.click(screen.getByTestId("agents-composer-runtime-row-task"));
+
+    expect(onSelectChatFocus).toHaveBeenCalledWith("workspace");
+    expect(onFocusIdeationSession).toHaveBeenCalledWith("session-1");
+    expect(onFocusVerificationSession).toHaveBeenCalledWith(
+      "session-parent",
+      "verification-child",
+    );
+    expect(onFocusWorkspaceReview).toHaveBeenCalledWith("review-conversation-1");
+    expect(onFocusTaskRuntime).toHaveBeenCalledWith("task-3", "merge");
+    expect(onOpenTaskArtifact).toHaveBeenCalledWith("task-3");
   });
 
   it("renders the composer task ledger for a focused task runtime chat", async () => {
@@ -1212,12 +1423,16 @@ describe("AgentsActiveConversationPanel", () => {
       deferredHydrationTimeout,
     );
 
-    expect(listAgentTasksMock).toHaveBeenCalledWith({
-      contextType: "task_execution",
-      contextId: "task-42",
-      projectId: "project-1",
-      includeDone: true,
-    });
+    await waitFor(
+      () =>
+        expect(listAgentTasksMock).toHaveBeenCalledWith({
+          contextType: "task_execution",
+          contextId: "task-42",
+          projectId: "project-1",
+          includeDone: true,
+        }),
+      deferredHydrationTimeout,
+    );
 
     fireEvent.click(screen.getByTestId("agents-composer-tasks-toggle"));
 
@@ -1286,27 +1501,6 @@ describe("AgentsActiveConversationPanel", () => {
     renderPanel({
       chatFocus: { type: "workspace" },
       onFocusWorkspaceReview,
-      workspaceReviewRuntimeStatus: workspaceRuntimeStatus({
-        primarySource: "workspace_review",
-        summaryLabel: "Reviewing",
-        items: [
-          {
-            source: "workspace_review",
-            contextType: "project",
-            contextId: "review-conversation-1",
-            label: "Reviewing",
-            title: "Review workspace changes",
-            agentStatus: "generating",
-            taskId: null,
-            internalStatus: "reviewing",
-            runningProcess: null,
-            ideationSession: null,
-            parentSessionId: null,
-            childSessionId: null,
-            conversationId: "review-conversation-1",
-          },
-        ],
-      }),
     });
 
     expect(screen.queryByTestId("agents-runtime-status-widget")).not.toBeInTheDocument();
@@ -1316,7 +1510,7 @@ describe("AgentsActiveConversationPanel", () => {
     expect(onFocusWorkspaceReview).not.toHaveBeenCalled();
   });
 
-  it("shows the workspace Review runtime widget from monitor fallback while workspace Review chat is focused", async () => {
+  it("shows the workspace Review row in the Runtimes tab while workspace Review chat is focused", async () => {
     getAgentConversationRuntimeStatusesMock.mockResolvedValue({
       "conversation-1": workspaceRuntimeStatus({
         isRunning: false,
@@ -1326,41 +1520,44 @@ describe("AgentsActiveConversationPanel", () => {
         items: [],
       }),
     });
+    getAgentConversationRuntimeIndexMock.mockResolvedValue({
+      conversationId: "conversation-1",
+      rows: [
+        runtimeIndexWorkspaceRow(),
+        runtimeIndexWorkspaceRow({
+          id: "workspace_review:review-conversation-1",
+          group: "ideation_verification",
+          kind: "workspace_review",
+          lifecycle: "running",
+          statusLabel: "Reviewing",
+          title: "Review workspace changes",
+          mode: null,
+          orderIndex: 1,
+          conversationId: "review-conversation-1",
+          contextType: "project",
+          contextId: "review-conversation-1",
+          taskId: null,
+        }),
+      ],
+    });
 
     renderPanel({
       chatFocus: {
         type: "workspace_review",
         conversationId: "review-conversation-1",
       },
-      workspaceReviewRuntimeStatus: workspaceRuntimeStatus({
-        primarySource: "workspace_review",
-        summaryLabel: "Reviewing",
-        items: [
-          {
-            source: "workspace_review",
-            contextType: "project",
-            contextId: "review-conversation-1",
-            label: "Reviewing",
-            title: "Review workspace changes",
-            agentStatus: "generating",
-            taskId: null,
-            internalStatus: "reviewing",
-            runningProcess: null,
-            ideationSession: null,
-            parentSessionId: null,
-            childSessionId: null,
-            conversationId: "review-conversation-1",
-          },
-        ],
-      }),
     });
 
+    fireEvent.click(await screen.findByTestId("agents-composer-runtimes-toggle"));
+
     expect(
-      await screen.findByTestId("agents-runtime-status-widget"),
+      await screen.findByTestId(
+        "agents-composer-runtime-row-workspace_review",
+        undefined,
+        deferredHydrationTimeout,
+      ),
     ).toHaveTextContent("Review workspace changes");
-    expect(
-      screen.getByTestId("agents-runtime-status-current-workspace_review"),
-    ).toHaveAttribute("aria-label", "Currently viewing Review workspace changes");
+    expect(screen.getByText("Viewing")).toBeInTheDocument();
   });
 
   it("queries parent runtime status when the selected conversation is a Review child", async () => {
