@@ -15,7 +15,6 @@ use axum::{
     http::StatusCode,
     Json,
 };
-use tauri::Emitter;
 
 use super::*;
 use crate::application::agent_conversation_workspace::{
@@ -1448,24 +1447,23 @@ pub async fn write_agent_workspace_review_artifact(
     } else {
         "workspace_review_artifact:created"
     };
-    if let Some(app_handle) = &state.app_state.app_handle {
-        let _ = app_handle.emit(
-            event_name,
-            serde_json::json!({
-                "conversationId": conversation_id.as_str(),
-                "targetScope": target_scope.to_string(),
-                "headSha": target_head_sha,
-                "diffFingerprint": target_diff_fingerprint,
-                "previousArtifactId": previous_artifact_id,
-                "artifact": {
-                    "id": created.id.as_str(),
-                    "name": created.name.clone(),
-                    "content": content_text,
-                    "version": created.metadata.version,
-                }
-            }),
-        );
-    }
+    crate::http_server::emit_http_event(
+        &state,
+        event_name,
+        serde_json::json!({
+            "conversationId": conversation_id.as_str(),
+            "targetScope": target_scope.to_string(),
+            "headSha": target_head_sha,
+            "diffFingerprint": target_diff_fingerprint,
+            "previousArtifactId": previous_artifact_id,
+            "artifact": {
+                "id": created.id.as_str(),
+                "name": created.name.clone(),
+                "content": content_text,
+                "version": created.metadata.version,
+            }
+        }),
+    );
 
     let mut artifact_response = ArtifactResponse::from(created);
     artifact_response.previous_artifact_id = previous_artifact_id.clone();
@@ -1609,22 +1607,21 @@ pub async fn write_agent_workspace_review_hunk_annotations(
         .await
         .map_err(|error| json_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string(), None))?;
 
-    if let Some(app_handle) = &state.app_state.app_handle {
-        let _ = app_handle.emit(
-            "workspace_review_artifact:updated",
-            serde_json::json!({
-                "conversationId": conversation_id.as_str(),
-                "targetScope": target_scope.to_string(),
-                "headSha": target_head_sha,
-                "diffFingerprint": target_diff_fingerprint,
-                "artifact": {
-                    "id": artifact_id.as_str(),
-                    "version": artifact_version,
-                    "hunkAnnotationCount": stored_count,
-                }
-            }),
-        );
-    }
+    crate::http_server::emit_http_event(
+        &state,
+        "workspace_review_artifact:updated",
+        serde_json::json!({
+            "conversationId": conversation_id.as_str(),
+            "targetScope": target_scope.to_string(),
+            "headSha": target_head_sha,
+            "diffFingerprint": target_diff_fingerprint,
+            "artifact": {
+                "id": artifact_id.as_str(),
+                "version": artifact_version,
+                "hunkAnnotationCount": stored_count,
+            }
+        }),
+    );
 
     tracing::info!(
         target: "ralphx_lib::http_server::agent_workspaces",
@@ -1839,23 +1836,22 @@ pub async fn write_agent_workspace_pr_review_artifact(
     } else {
         "pr_review_artifact:created"
     };
-    if let Some(app_handle) = &state.app_state.app_handle {
-        let _ = app_handle.emit(
-            event_name,
-            serde_json::json!({
-                "conversationId": conversation_id.as_str(),
-                "prNumber": pr_number,
-                "headSha": head_sha,
-                "previousArtifactId": previous_artifact_id,
-                "artifact": {
-                    "id": created.id.as_str(),
-                    "name": created.name.clone(),
-                    "content": content_text,
-                    "version": created.metadata.version,
-                }
-            }),
-        );
-    }
+    crate::http_server::emit_http_event(
+        &state,
+        event_name,
+        serde_json::json!({
+            "conversationId": conversation_id.as_str(),
+            "prNumber": pr_number,
+            "headSha": head_sha,
+            "previousArtifactId": previous_artifact_id,
+            "artifact": {
+                "id": created.id.as_str(),
+                "name": created.name.clone(),
+                "content": content_text,
+                "version": created.metadata.version,
+            }
+        }),
+    );
 
     let mut artifact_response = ArtifactResponse::from(created);
     artifact_response.previous_artifact_id = previous_artifact_id.clone();

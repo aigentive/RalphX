@@ -92,24 +92,23 @@ pub async fn create_plan_artifact(
                 map_app_err(e)
             })?;
 
-    if let Some(app_handle) = &state.app_state.app_handle {
-        let content_text = match &created.content {
-            ArtifactContent::Inline { text } => text.clone(),
-            ArtifactContent::File { path } => format!("[File: {}]", path),
-        };
-        let _ = app_handle.emit(
-            "plan_artifact:created",
-            serde_json::json!({
-                "sessionId": session_id.as_str(),
-                "artifact": {
-                    "id": created.id.as_str(),
-                    "name": created.name,
-                    "content": content_text,
-                    "version": created.metadata.version,
-                }
-            }),
-        );
-    }
+    let content_text = match &created.content {
+        ArtifactContent::Inline { text } => text.clone(),
+        ArtifactContent::File { path } => format!("[File: {}]", path),
+    };
+    crate::http_server::emit_http_event(
+        &state,
+        "plan_artifact:created",
+        serde_json::json!({
+            "sessionId": session_id.as_str(),
+            "artifact": {
+                "id": created.id.as_str(),
+                "name": created.name,
+                "content": content_text,
+                "version": created.metadata.version,
+            }
+        }),
+    );
 
     // Project lookup for webhook enrichment (non-fatal if not found)
     let project_name = state
@@ -136,10 +135,12 @@ pub async fn create_plan_artifact(
         "timestamp": chrono::Utc::now().to_rfc3339(),
     });
 
-    // Tauri frontend-only emit — unenriched (frontend payload unchanged)
-    if let Some(app_handle) = &state.app_state.app_handle {
-        let _ = app_handle.emit("ideation:plan_created", &ideation_plan_payload);
-    }
+    // Tauri/frontend payload is intentionally emitted before external enrichment.
+    crate::http_server::emit_http_event(
+        &state,
+        "ideation:plan_created",
+        ideation_plan_payload.clone(),
+    );
 
     // Enrich payload for external channel
     presentation_ctx.inject_into(&mut ideation_plan_payload);

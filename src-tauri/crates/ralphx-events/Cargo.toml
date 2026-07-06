@@ -1,0 +1,23 @@
+[package]
+name = "ralphx-events"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
+uuid = { workspace = true, features = ["serde", "v4"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+[lints.clippy]
+derivable_impls = "allow"
+redundant_closure = "allow"
+too_many_arguments = "allow"
+type_complexity = "allow"
+unnecessary_literal_unwrap = "allow"
+bool_comparison = "allow"
+useless_vec = "allow"
+let_and_return = "allow"
