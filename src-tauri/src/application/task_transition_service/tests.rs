@@ -317,6 +317,67 @@ async fn push_and_refresh_pr_branch_uses_drafted_description() {
     assert_eq!(updated_plan_branch.pr_push_status, PrPushStatus::Pushed);
 }
 
+#[tokio::test]
+async fn push_and_refresh_pr_branch_stops_before_pr_refresh_when_push_fails() {
+    let app_state = AppState::new_test();
+    let github = Arc::new(MockGithubService::new());
+    github.state().push_branch_result = Some(Err(AppError::GitOperation(
+        "remote rejected freshness branch".to_string(),
+    )));
+    let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
+    let service = build_test_service(&app_state)
+        .with_plan_branch_repo(Arc::clone(&app_state.plan_branch_repo))
+        .with_github_service(github_trait)
+        .with_plan_pr_description_drafter(Arc::new(StaticPlanPrDescriptionDrafter));
+
+    let mut project = Project::new("Test Project".to_string(), "/test/path".to_string());
+    project.id = ProjectId::from_string("proj-1".to_string());
+    project.base_branch = Some("main".to_string());
+    let task = Task::new(project.id.clone(), "Refresh PR branch".to_string());
+
+    let mut plan_branch = PlanBranch::new(
+        ArtifactId::from_string("artifact-1".to_string()),
+        IdeationSessionId::from_string("session-1".to_string()),
+        project.id.clone(),
+        "plan/feature".to_string(),
+        "main".to_string(),
+    );
+    plan_branch.pr_eligible = true;
+    plan_branch.pr_number = Some(42);
+    plan_branch.pr_push_status = PrPushStatus::Pushed;
+    let plan_branch_id = plan_branch.id.clone();
+    app_state
+        .plan_branch_repo
+        .create(plan_branch.clone())
+        .await
+        .unwrap();
+
+    let result = service
+        .push_and_refresh_pr_branch(&task, &project, &plan_branch)
+        .await;
+
+    assert!(
+        result.is_err(),
+        "PR freshness should not report success when branch publication fails"
+    );
+    {
+        let state = github.state();
+        assert_eq!(state.push_branch_calls, 1);
+        assert_eq!(
+            state.update_pr_details_calls, 0,
+            "PR details must not refresh after a failed branch push"
+        );
+    }
+
+    let updated_plan_branch = app_state
+        .plan_branch_repo
+        .get_by_id(&plan_branch_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(updated_plan_branch.pr_push_status, PrPushStatus::Failed);
+}
+
 fn init_git_repo(path: &std::path::Path) {
     let run = |args: &[&str]| {
         let output = std::process::Command::new("git")

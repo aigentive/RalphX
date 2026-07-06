@@ -248,11 +248,13 @@ function RecoverySteps({
   targetBranch,
   hasValidationFailures,
   hookBlockedReason,
+  isPrBranchPublicationFailure,
 }: {
   branchName: string;
   targetBranch?: string | null;
   hasValidationFailures: boolean;
   hookBlockedReason?: string | null;
+  isPrBranchPublicationFailure?: boolean;
 }) {
   return (
     <div className="space-y-3">
@@ -281,6 +283,20 @@ function RecoverySteps({
             <li>
               Click <strong className="text-text-primary/70">Retry after fix</strong> only after the cause is addressed
             </li>
+          </ol>
+        </>
+      ) : isPrBranchPublicationFailure ? (
+        <>
+          <p className="text-[0.8125rem] text-text-primary/60">
+            The merge commit was verified, but RalphX could not publish the plan PR branch.
+            Retrying will refresh the PR branch and finish publication before the task is marked merged.
+          </p>
+          <ol className="list-decimal list-inside space-y-2 text-[0.8125rem] text-text-primary/50">
+            <li>Confirm the PR branch still exists on the remote</li>
+            <li>
+              Click <strong className="text-text-primary/70">Retry PR Publish</strong> to refresh and publish the branch
+            </li>
+            <li>If the branch refresh conflicts, RalphX will keep the task in a repair state instead of marking it merged</li>
           </ol>
         </>
       ) : hasValidationFailures ? (
@@ -632,6 +648,7 @@ function ActionButtons({
   onCancel,
   isProcessing,
   retryLabel = "Retry Merge",
+  showResolve = true,
 }: {
   onRetry: () => void;
   onRetrySkipValidation?: (() => void) | undefined;
@@ -639,6 +656,7 @@ function ActionButtons({
   onCancel: () => void;
   isProcessing: boolean;
   retryLabel?: string;
+  showResolve?: boolean;
 }) {
   return (
     <div className="flex gap-2 justify-end flex-wrap">
@@ -678,7 +696,7 @@ function ActionButtons({
           Retry (Skip Validation)
         </Button>
       )}
-      {onResolve && (
+      {showResolve && onResolve && (
         <Button
           data-testid="resolve-merge-button"
           onClick={onResolve}
@@ -732,6 +750,8 @@ export function MergeIncompleteTaskDetail({
   const hookBlockCopy = getHookBlockCopy(mergeError);
   const isHookEscalation = mergeError?.hookBlockedReason === "hook_environment_failure"
     || mergeError?.hookBlockedReason === "repeated_hook_failure";
+  const isPrBranchPublicationFailure =
+    mergeError?.errorCode === "pr_branch_publication_failed";
   const { data: planBranch } = usePlanBranchForTask(task.id);
   const awaitingPlanBranchForPlanMerge =
     task.category === "plan_merge" && planBranch == null;
@@ -874,10 +894,12 @@ export function MergeIncompleteTaskDetail({
       {/* Status Banner - error (red) variant */}
       <StatusBanner
         icon={AlertTriangle}
-        title={hookBlockCopy?.title ?? "Merge Incomplete"}
+        title={hookBlockCopy?.title ?? (isPrBranchPublicationFailure ? "PR Branch Publication Incomplete" : "Merge Incomplete")}
         subtitle={
           hookBlockCopy
             ? hookBlockCopy.subtitle
+            : isPrBranchPublicationFailure
+              ? "Merge verified — PR branch publication needs retry"
             : mergeError?.hasValidationFailures
             ? isHistorical
               ? "Merge validation failed"
@@ -915,7 +937,9 @@ export function MergeIncompleteTaskDetail({
               <div className="flex items-center gap-2">
                 <AlertTriangle className="w-4 h-4" style={{ color: "var(--status-error)" }} />
                 <span className="text-[0.8125rem] text-text-primary/70">
-                  PR operation failed (PR #{planBranch.prNumber})
+                  {isPrBranchPublicationFailure
+                    ? `PR branch publication failed (PR #${planBranch.prNumber})`
+                    : `PR operation failed (PR #${planBranch.prNumber})`}
                 </span>
               </div>
             </DetailCard>
@@ -923,7 +947,9 @@ export function MergeIncompleteTaskDetail({
             <DetailCard variant="error">
               <div className="flex items-center gap-2">
                 <AlertTriangle className="w-4 h-4" style={{ color: "var(--status-error)" }} />
-                <span className="text-[0.8125rem] text-text-primary/70">PR operation failed</span>
+                <span className="text-[0.8125rem] text-text-primary/70">
+                  {isPrBranchPublicationFailure ? "PR branch publication failed" : "PR operation failed"}
+                </span>
               </div>
             </DetailCard>
           )}
@@ -982,6 +1008,7 @@ export function MergeIncompleteTaskDetail({
               targetBranch={resolvedTargetBranch}
               hasValidationFailures={mergeError?.hasValidationFailures ?? false}
               hookBlockedReason={mergeError?.hookBlockedReason ?? null}
+              isPrBranchPublicationFailure={isPrBranchPublicationFailure}
             />
           </DetailCard>
         </section>
@@ -1022,12 +1049,15 @@ export function MergeIncompleteTaskDetail({
             onCancel={handleCancel}
             isProcessing={isProcessing}
             retryLabel={
-              mergeError?.hookBlockedReason === "hook_environment_failure"
+              isPrBranchPublicationFailure
+                ? "Retry PR Publish"
+                : mergeError?.hookBlockedReason === "hook_environment_failure"
                 ? "Retry after environment fix"
                 : mergeError?.hookBlockedReason === "repeated_hook_failure"
                   ? "Retry after fix"
                   : "Retry Merge"
             }
+            showResolve={!isPrBranchPublicationFailure}
           />
         </section>
       )}
