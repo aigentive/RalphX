@@ -189,7 +189,7 @@ pub struct CreateFollowupAgentConversationResponse {
 // Request/Response Types - Agent Conversation Issues
 // ============================================================================
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct RegisterAgentConversationIssueRequest {
     pub origin_conversation_id: Option<String>,
     pub source_task_id: Option<String>,
@@ -204,6 +204,11 @@ pub struct RegisterAgentConversationIssueRequest {
     pub evidence: Option<String>,
     pub recommendation: Option<String>,
     pub blocker_fingerprint: Option<String>,
+    pub attach_to_issue_id: Option<String>,
+    #[serde(default)]
+    pub confirm_new: bool,
+    pub new_issue_reason: Option<String>,
+    pub issue_check_token: Option<String>,
     pub followup_title: Option<String>,
     pub followup_prompt: Option<String>,
     #[serde(default)]
@@ -237,6 +242,53 @@ pub struct ConvertAgentConversationIssueFollowupRequest {
 }
 
 #[derive(Debug, Serialize)]
+pub struct AgentConversationIssueOccurrenceResponse {
+    pub id: String,
+    pub issue_id: String,
+    pub source_task_id: Option<String>,
+    pub source_context_type: Option<String>,
+    pub source_context_id: Option<String>,
+    pub source_agent_name: Option<String>,
+    pub issue_kind: String,
+    pub severity: String,
+    pub blocking_scope: String,
+    pub title: String,
+    pub summary: String,
+    pub evidence: Option<String>,
+    pub recommendation: Option<String>,
+    pub raw_blocker_fingerprint: Option<String>,
+    pub canonical_fingerprint: Option<String>,
+    pub dedupe_decision: Option<String>,
+    pub created_at: String,
+}
+
+impl From<crate::domain::entities::AgentConversationIssueOccurrence>
+    for AgentConversationIssueOccurrenceResponse
+{
+    fn from(occurrence: crate::domain::entities::AgentConversationIssueOccurrence) -> Self {
+        Self {
+            id: occurrence.id,
+            issue_id: occurrence.issue_id,
+            source_task_id: occurrence.source_task_id,
+            source_context_type: occurrence.source_context_type,
+            source_context_id: occurrence.source_context_id,
+            source_agent_name: occurrence.source_agent_name,
+            issue_kind: occurrence.issue_kind,
+            severity: occurrence.severity,
+            blocking_scope: occurrence.blocking_scope,
+            title: occurrence.title,
+            summary: occurrence.summary,
+            evidence: occurrence.evidence,
+            recommendation: occurrence.recommendation,
+            raw_blocker_fingerprint: occurrence.raw_blocker_fingerprint,
+            canonical_fingerprint: occurrence.canonical_fingerprint,
+            dedupe_decision: occurrence.dedupe_decision,
+            created_at: occurrence.created_at.to_rfc3339(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
 pub struct AgentConversationIssueResponse {
     pub id: String,
     pub project_id: String,
@@ -254,6 +306,13 @@ pub struct AgentConversationIssueResponse {
     pub evidence: Option<String>,
     pub recommendation: Option<String>,
     pub blocker_fingerprint: Option<String>,
+    pub canonical_fingerprint: Option<String>,
+    pub canonical_scope_kind: Option<String>,
+    pub canonical_scope_subject: Option<String>,
+    pub canonical_family: Option<String>,
+    pub superseded_by_issue_id: Option<String>,
+    pub occurrence_count: Option<usize>,
+    pub occurrences: Vec<AgentConversationIssueOccurrenceResponse>,
     pub followup_title: Option<String>,
     pub followup_prompt: Option<String>,
     pub auto_followup_eligible: bool,
@@ -282,6 +341,13 @@ impl From<crate::domain::entities::AgentConversationIssue> for AgentConversation
             evidence: issue.evidence,
             recommendation: issue.recommendation,
             blocker_fingerprint: issue.blocker_fingerprint,
+            canonical_fingerprint: issue.canonical_fingerprint,
+            canonical_scope_kind: issue.canonical_scope_kind,
+            canonical_scope_subject: issue.canonical_scope_subject,
+            canonical_family: issue.canonical_family,
+            superseded_by_issue_id: issue.superseded_by_issue_id,
+            occurrence_count: None,
+            occurrences: Vec::new(),
             followup_title: issue.followup_title,
             followup_prompt: issue.followup_prompt,
             auto_followup_eligible: issue.auto_followup_eligible,
@@ -295,16 +361,34 @@ impl From<crate::domain::entities::AgentConversationIssue> for AgentConversation
     }
 }
 
+impl AgentConversationIssueResponse {
+    pub fn with_occurrences(
+        mut self,
+        occurrences: Vec<crate::domain::entities::AgentConversationIssueOccurrence>,
+    ) -> Self {
+        self.occurrence_count = Some(occurrences.len());
+        self.occurrences = occurrences.into_iter().map(Into::into).collect();
+        self
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct RegisterAgentConversationIssueResponse {
     pub issue: AgentConversationIssueResponse,
     pub auto_followup_created: bool,
     pub followup: Option<CreateFollowupAgentConversationResponse>,
+    pub dedupe_result: String,
+    pub canonical_fingerprint: Option<String>,
+    pub occurrence_id: Option<String>,
+    pub occurrence_count: Option<usize>,
+    pub candidate_issues: Vec<AgentConversationIssueResponse>,
+    pub issue_check_token: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct ListAgentConversationIssuesResponse {
     pub issues: Vec<AgentConversationIssueResponse>,
+    pub issue_check_token: String,
 }
 
 #[derive(Debug, Serialize)]

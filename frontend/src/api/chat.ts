@@ -3054,6 +3054,26 @@ export async function startAgentWorkspaceReview(
   return transformStartAgentWorkspaceReviewResponse(raw);
 }
 
+const AgentConversationIssueOccurrenceResponseSchema = z.object({
+  id: z.string(),
+  issue_id: z.string(),
+  source_task_id: z.string().nullable(),
+  source_context_type: z.string().nullable(),
+  source_context_id: z.string().nullable(),
+  source_agent_name: z.string().nullable(),
+  issue_kind: z.string(),
+  severity: z.string(),
+  blocking_scope: z.string(),
+  title: z.string(),
+  summary: z.string(),
+  evidence: z.string().nullable(),
+  recommendation: z.string().nullable(),
+  raw_blocker_fingerprint: z.string().nullable(),
+  canonical_fingerprint: z.string().nullable(),
+  dedupe_decision: z.string().nullable(),
+  created_at: z.string(),
+});
+
 const AgentConversationIssueResponseSchema = z.object({
   id: z.string(),
   project_id: z.string(),
@@ -3071,6 +3091,13 @@ const AgentConversationIssueResponseSchema = z.object({
   evidence: z.string().nullable(),
   recommendation: z.string().nullable(),
   blocker_fingerprint: z.string().nullable(),
+  canonical_fingerprint: z.string().nullable().optional().default(null),
+  canonical_scope_kind: z.string().nullable().optional().default(null),
+  canonical_scope_subject: z.string().nullable().optional().default(null),
+  canonical_family: z.string().nullable().optional().default(null),
+  superseded_by_issue_id: z.string().nullable().optional().default(null),
+  occurrence_count: z.number().nullable().optional().default(null),
+  occurrences: z.array(AgentConversationIssueOccurrenceResponseSchema).optional().default([]),
   followup_title: z.string().nullable(),
   followup_prompt: z.string().nullable(),
   auto_followup_eligible: z.boolean(),
@@ -3091,6 +3118,29 @@ const AgentConversationIssueMutationResponseSchema = z.object({
 type RawAgentConversationIssue = z.infer<
   typeof AgentConversationIssueResponseSchema
 >;
+type RawAgentConversationIssueOccurrence = z.infer<
+  typeof AgentConversationIssueOccurrenceResponseSchema
+>;
+
+export interface AgentConversationIssueOccurrence {
+  id: string;
+  issueId: string;
+  sourceTaskId: string | null;
+  sourceContextType: string | null;
+  sourceContextId: string | null;
+  sourceAgentName: string | null;
+  issueKind: string;
+  severity: string;
+  blockingScope: string;
+  title: string;
+  summary: string;
+  evidence: string | null;
+  recommendation: string | null;
+  rawBlockerFingerprint: string | null;
+  canonicalFingerprint: string | null;
+  dedupeDecision: string | null;
+  createdAt: string;
+}
 
 export interface AgentConversationIssue {
   id: string;
@@ -3109,6 +3159,13 @@ export interface AgentConversationIssue {
   evidence: string | null;
   recommendation: string | null;
   blockerFingerprint: string | null;
+  canonicalFingerprint: string | null;
+  canonicalScopeKind: string | null;
+  canonicalScopeSubject: string | null;
+  canonicalFamily: string | null;
+  supersededByIssueId: string | null;
+  occurrenceCount: number | null;
+  occurrences: AgentConversationIssueOccurrence[];
   followupTitle: string | null;
   followupPrompt: string | null;
   autoFollowupEligible: boolean;
@@ -3116,6 +3173,30 @@ export interface AgentConversationIssue {
   createdAt: string;
   updatedAt: string;
   resolvedAt: string | null;
+}
+
+function transformAgentConversationIssueOccurrence(
+  raw: RawAgentConversationIssueOccurrence,
+): AgentConversationIssueOccurrence {
+  return {
+    id: raw.id,
+    issueId: raw.issue_id,
+    sourceTaskId: raw.source_task_id,
+    sourceContextType: raw.source_context_type,
+    sourceContextId: raw.source_context_id,
+    sourceAgentName: raw.source_agent_name,
+    issueKind: raw.issue_kind,
+    severity: raw.severity,
+    blockingScope: raw.blocking_scope,
+    title: raw.title,
+    summary: raw.summary,
+    evidence: raw.evidence,
+    recommendation: raw.recommendation,
+    rawBlockerFingerprint: raw.raw_blocker_fingerprint,
+    canonicalFingerprint: raw.canonical_fingerprint,
+    dedupeDecision: raw.dedupe_decision,
+    createdAt: raw.created_at,
+  };
 }
 
 function transformAgentConversationIssue(
@@ -3138,6 +3219,13 @@ function transformAgentConversationIssue(
     evidence: raw.evidence,
     recommendation: raw.recommendation,
     blockerFingerprint: raw.blocker_fingerprint,
+    canonicalFingerprint: raw.canonical_fingerprint,
+    canonicalScopeKind: raw.canonical_scope_kind,
+    canonicalScopeSubject: raw.canonical_scope_subject,
+    canonicalFamily: raw.canonical_family,
+    supersededByIssueId: raw.superseded_by_issue_id,
+    occurrenceCount: raw.occurrence_count,
+    occurrences: raw.occurrences.map(transformAgentConversationIssueOccurrence),
     followupTitle: raw.followup_title,
     followupPrompt: raw.followup_prompt,
     autoFollowupEligible: raw.auto_followup_eligible,
