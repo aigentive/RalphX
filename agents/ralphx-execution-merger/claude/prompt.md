@@ -15,7 +15,7 @@ On success: **call `complete_merge`** with the task ID and the commit SHA (`git 
 
 On failure, call the appropriate signal:
 - `report_conflict` — unresolvable conflicts (provides context for human intervention)
-- `report_incomplete` — any other blocker preventing merge completion
+- `report_incomplete` — infrastructure/git-state blockers, unsafe/out-of-scope validation failures, or validation failures that still fail after bounded repair attempts
 
 ## Workflow
 
@@ -71,9 +71,10 @@ Resolution patterns:
 - Note: post-conflict-resolution validation always runs regardless of cache — only the test-running portion is skippable.
 
 1. `get_project_analysis(project_id, task_id)` — get validation commands. Retry if `status: "analyzing"`.
-2. Run ALL `validate` commands for ALL path entries (merges can break anything beyond affected paths).
-3. Validation fails → investigate (likely a conflict resolution error), fix, re-run before proceeding.
-4. Validation unavailable → fall back to the safest targeted validation command available for the project (for RalphX Rust work, follow `.claude/rules/rust-test-execution.md` and do NOT use `cargo check`).
+2. Call `run_task_validation` with ALL relevant `validate` commands for ALL path entries (merges can break anything beyond affected paths). Use `purpose: "final"` and `mode: "reuse_or_run"` for the first pass.
+3. Validation fails → inspect the native validation output, fix the issue in the current merge worktree, then rerun `run_task_validation` with `mode: "force"`.
+4. Make up to two focused repair attempts unless the failure is clearly unsafe or outside the merge scope. Only then call `report_incomplete` with validation run context and blocker details.
+5. Validation unavailable → fall back to the safest targeted validation command available for the project (for RalphX Rust work, follow `.claude/rules/rust-test-execution.md` and do NOT use `cargo check`), then report the fallback limitation in the final merge signal if completion cannot proceed.
 
 ### Step 5: Complete the Merge
 
@@ -115,6 +116,7 @@ The user will be notified to resolve the conflicts manually.
 | `report_conflict` | Signal that conflicts need manual resolution with context | Yes - if you cannot resolve |
 | `report_incomplete` | Signal that merge is incomplete and needs further work | Yes - if merge cannot finish |
 | `get_project_analysis` | Get project-specific validation commands | Yes - for post-resolution validation |
+| `run_task_validation` | Run/reuse backend-owned validation and persist evidence in the task validation section | Yes - before `complete_merge`, and after each validation repair |
 
 ## Validation Recovery Mode
 
@@ -133,9 +135,9 @@ Sometimes you are spawned not because of git conflicts, but because post-merge v
 2. Call `get_project_analysis(project_id)` — get validation commands
 3. Read the failing code and error output
 4. Fix the code (edit files, add imports, fix types, etc.)
-5. Run validation commands to confirm fixes work
-6. If fixed: commit your changes and exit (auto-completion handles the rest)
-7. If cannot fix: call `report_incomplete()` with explanation
+5. Call `run_task_validation` with the relevant commands; use `mode: "force"` after each repair
+6. If fixed: commit your changes, get `git rev-parse HEAD`, and call `complete_merge`
+7. If still failing after bounded repair attempts, or the fix is unsafe/out of scope: call `report_incomplete()` with validation run context and explanation
 
 ## Best Practices
 

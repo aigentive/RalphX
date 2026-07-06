@@ -17,10 +17,10 @@
 //     calls restore_task_worktree, and updates the task in the repo with the correct path.
 
 use super::helpers::*;
-use crate::application::AppState;
 use crate::application::chat_service::freshness_routing::{
-    FreshnessRouteResult, freshness_return_route,
+    freshness_return_route, FreshnessRouteResult,
 };
+use crate::application::AppState;
 use crate::commands::ExecutionState;
 use crate::domain::entities::{InternalStatus, Project, ProjectId, Task};
 use crate::domain::services::{MemoryRunningAgentRegistry, MessageQueue};
@@ -324,6 +324,8 @@ async fn freshness_return_to_ready_restores_merge_prefixed_worktree_path() {
         &service,
         &project,
         None,
+        None,
+        None,
     )
     .await
     .expect("freshness return to execution must succeed");
@@ -479,7 +481,10 @@ async fn on_enter_reexecuting_restores_execution_worktree_before_spawn() {
 
     let project_id = ProjectId::from_string("proj-1".to_string());
 
-    let mut task = Task::new(project_id.clone(), "L2 re-executing restore test".to_string());
+    let mut task = Task::new(
+        project_id.clone(),
+        "L2 re-executing restore test".to_string(),
+    );
     let task_id = task.id.clone();
     let task_id_str = task_id.as_str().to_string();
     task.internal_status = InternalStatus::ReExecuting;

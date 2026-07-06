@@ -21,7 +21,7 @@ use crate::domain::entities::{task_metadata::MergeFailureSource, InternalStatus,
 use crate::domain::state_machine::resolve_merge_branches;
 use crate::domain::state_machine::services::TaskScheduler;
 use crate::domain::state_machine::transition_handler::{
-    parse_metadata, set_source_conflict_resolved,
+    parse_metadata, set_source_conflict_resolved, PlanBranchPrSyncServices,
 };
 
 // ============================================================================
@@ -153,6 +153,7 @@ pub async fn complete_merge(
     // Hoist transition service construction — reused by all early-return paths below
     // (freshness intercept, rebase retry, source-update retry, and normal Merged path).
     let transition_service = build_transition_service(&state);
+    let pr_sync_services = build_pr_sync_services(&state);
 
     // 5a. Freshness intercept — MUST fire before step 6 (merge_commit_sha) and before
     //     the rebase check. If plan_update_conflict=true, the merger resolved a plan←main
@@ -164,6 +165,8 @@ pub async fn complete_merge(
         &transition_service,
         &project,
         Some(&*state.app_state.interactive_process_registry),
+        Some(&pr_sync_services),
+        Some(&req.commit_sha),
     )
     .await
     .map_err(|e| json_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None))?
@@ -1049,6 +1052,27 @@ fn build_transition_service(state: &HttpServerState) -> TaskTransitionService<ta
             &state.execution_state,
         ))
         .with_task_scheduler(task_scheduler)
+}
+
+fn build_pr_sync_services(state: &HttpServerState) -> PlanBranchPrSyncServices {
+    PlanBranchPrSyncServices {
+        task_repo: Some(Arc::clone(&state.app_state.task_repo)),
+        plan_branch_repo: Some(Arc::clone(&state.app_state.plan_branch_repo)),
+        pr_creation_guard: Some(Arc::clone(
+            &state.app_state.pr_poller_registry.pr_creation_guard,
+        )),
+        github_service: state.app_state.github_service.clone(),
+        ideation_session_repo: Some(Arc::clone(&state.app_state.ideation_session_repo)),
+        artifact_repo: Some(Arc::clone(&state.app_state.artifact_repo)),
+        plan_pr_description_drafter: Some(
+            crate::application::plan_pr_description::build_app_state_plan_pr_description_drafter(
+                Arc::clone(&state.app_state.agent_conversation_workspace_repo),
+                Arc::clone(&state.app_state.chat_conversation_repo),
+                Arc::clone(&state.app_state.agent_provider_settings_repo),
+                state.app_state.agent_clients.clone(),
+            ),
+        ),
+    }
 }
 
 // ============================================================================

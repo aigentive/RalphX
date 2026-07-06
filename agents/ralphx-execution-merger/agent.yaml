@@ -7,6 +7,7 @@ capabilities:
     - report_incomplete
     - complete_merge
     - get_merge_target
+    - run_task_validation
     - delegate_start
     - delegate_wait
     - delegate_cancel

@@ -454,11 +454,18 @@ describe("chat widget families without prior direct coverage", () => {
             },
           })}
         />
+        <MergeWidget
+          toolCall={makeToolCall("complete_merge", {
+            result: { status: "aborted", reason: "stopped" },
+          })}
+        />
       </>,
     );
 
     expect(screen.getByText("Merge completed")).toBeInTheDocument();
     expect(screen.getByText("Branch update applied")).toBeInTheDocument();
+    expect(screen.getByText("Merge stopped")).toBeInTheDocument();
+    expect(screen.getByText("Stopped before merge completion settled")).toBeInTheDocument();
     expect(screen.getByText("Task returned to execution after freshness resolution")).toBeInTheDocument();
     await user.click(screen.getByText(/Conflict: Manual resolution required/i));
     expect(screen.getByText(/MessageItem.tsx/)).toBeInTheDocument();

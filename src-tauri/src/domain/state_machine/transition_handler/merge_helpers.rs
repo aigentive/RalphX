@@ -1242,6 +1242,64 @@ async fn push_pr_branch_to_remote(
     }
 }
 
+/// Publish and refresh an existing PR branch after a PR freshness update.
+///
+/// Unlike regular task merge completion, this path is called before routing a
+/// PR-backed task back to `WaitingOnPr`; failing to push here leaves the remote
+/// PR branch stale and causes the poller to spawn another merger.
+pub(crate) async fn publish_plan_branch_pr_after_freshness_update(
+    task: &Task,
+    project: &Project,
+    services: &PlanBranchPrSyncServices,
+) -> AppResult<()> {
+    let Some(plan_branch_repo) = services.plan_branch_repo.as_ref() else {
+        return Ok(());
+    };
+    let Some(plan_branch) = resolve_task_plan_branch_record(task, plan_branch_repo).await else {
+        return Ok(());
+    };
+
+    if !plan_branch.pr_eligible || plan_branch.status != PlanBranchStatus::Active {
+        return Ok(());
+    }
+    if plan_branch.pr_number.is_none() {
+        return Ok(());
+    }
+
+    let _ = plan_branch_repo
+        .update_pr_push_status(&plan_branch.id, PrPushStatus::Pending)
+        .await;
+
+    let Some(github_service) = services.github_service.as_ref() else {
+        return Err(AppError::GitOperation(format!(
+            "Cannot publish plan PR branch {}: GitHub service unavailable",
+            plan_branch.branch_name
+        )));
+    };
+
+    let mut refreshed_plan_branch = plan_branch.clone();
+    refreshed_plan_branch.pr_push_status = PrPushStatus::Pending;
+    push_pr_branch_to_remote(
+        project,
+        &refreshed_plan_branch,
+        github_service,
+        plan_branch_repo,
+    )
+    .await?;
+
+    sync_existing_plan_branch_pr_details(
+        task,
+        project,
+        &refreshed_plan_branch,
+        github_service,
+        services.plan_pr_description_drafter.as_ref(),
+        services.ideation_session_repo.as_ref(),
+        services.artifact_repo.as_ref(),
+        PrReviewState::Draft,
+    )
+    .await
+}
+
 pub(crate) async fn sync_plan_branch_pr_if_needed(
     project: &Project,
     pb: &PlanBranch,

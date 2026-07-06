@@ -197,7 +197,7 @@ After adding a tool, verify MCP server stderr shows:
 | `ralphx-execution-coder` | `start_step`, `complete_step`, `skip_step`, `fail_step`, `add_step`, `get_step_progress`, `get_step_context`, `get_task_context`, `get_artifact`, `get_artifact_version`, `get_related_artifacts`, `search_project_artifacts`, `get_review_notes`, `get_task_steps`, `get_task_issues`, `mark_issue_in_progress`, `mark_issue_addressed`, `get_project_analysis`, `search_memories`, `get_memory`, `get_memories_for_paths` |
 | `ralphx-execution-team-lead` | Extends `ralphx-execution-worker`, does NOT override `mcp_tools` → **inherits** full list from `ralphx-execution-worker` (see above) |
 | `ralphx-execution-reviewer` | `complete_review`, `get_task_context`, `get_artifact`, `get_artifact_version`, `get_related_artifacts`, `search_project_artifacts`, `get_review_notes`, `get_task_steps`, `get_task_issues`, `get_step_progress`, `get_issue_progress`, `get_project_analysis`, `create_followup_session`, `search_memories`, `get_memory`, `get_memories_for_paths` |
-| `ralphx-execution-merger` | `report_conflict`, `report_incomplete`, `complete_merge`, `get_merge_target`, `get_task_context`, `get_project_analysis`, `search_memories`, `get_memory`, `get_memories_for_paths` |
+| `ralphx-execution-merger` | `report_conflict`, `report_incomplete`, `complete_merge`, `get_merge_target`, `run_task_validation`, `get_task_context`, `get_project_analysis`, `search_memories`, `get_memory`, `get_memories_for_paths` |
 | `ralphx-execution-orchestrator` | `search_memories`, `get_memory`, `get_memories_for_paths` |
 | `ralphx-research-deep-researcher` | `search_memories`, `get_memory`, `get_memories_for_paths` |
 | `ralphx-qa-prep` | `[]` (empty — no MCP tools) |
