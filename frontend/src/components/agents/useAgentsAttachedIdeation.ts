@@ -99,17 +99,28 @@ export function useAgentsAttachedIdeation({
           "unverified" ||
         attachedIdeationSession?.gapScore != null,
     );
+    const canStartPlan = Boolean(
+      activeConversation?.contextType === "project" &&
+        (activeWorkspace?.mode
+          ? activeWorkspace.mode === "edit" || activeWorkspace.mode === "plan"
+          : !activeConversationMode ||
+            activeConversationMode === "edit" ||
+            activeConversationMode === "plan"),
+    );
 
     return getVisibleIdeationArtifactTabs({
       hasAttachedIdeationSession: Boolean(attachedIdeationSession),
       hasPlanArtifact,
+      canStartPlan,
       hasProposals: Boolean(attachedIdeationSessionData?.proposals.length),
       hasVerificationEvidence,
       hasExecutionTasks,
       artifactMode: attachedArtifactMode,
     });
   }, [
-    activeWorkspace?.linkedPlanBranchId,
+    activeConversation?.contextType,
+    activeConversationMode,
+    activeWorkspace,
     attachedIdeationSession,
     attachedIdeationSessionData?.proposals.length,
     attachedArtifactMode,

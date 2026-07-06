@@ -6,13 +6,25 @@ describe("getVisibleIdeationArtifactTabs", () => {
   const baseAvailability = {
     hasAttachedIdeationSession: true,
     hasPlanArtifact: true,
+    canStartPlan: false,
     hasProposals: false,
     hasVerificationEvidence: false,
     hasExecutionTasks: false,
     artifactMode: "plan",
   };
 
-  it("returns no tabs before an attached ideation run has a plan", () => {
+  it("returns the Plan tab for a plan-capable project conversation before a run is attached", () => {
+    expect(
+      getVisibleIdeationArtifactTabs({
+        ...baseAvailability,
+        hasAttachedIdeationSession: false,
+        hasPlanArtifact: false,
+        canStartPlan: true,
+      }),
+    ).toEqual(["plan"]);
+  });
+
+  it("returns no tabs before an attached non-project ideation run has a plan", () => {
     expect(
       getVisibleIdeationArtifactTabs({
         ...baseAvailability,

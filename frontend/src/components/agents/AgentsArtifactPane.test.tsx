@@ -336,6 +336,15 @@ vi.mock("@/hooks/useVerificationStatus", () => ({
   verificationStatusKey: (sessionId: string) => ["verification", sessionId] as const,
 }));
 
+vi.mock("@/hooks/useFileDrop", () => ({
+  useFileDrop: () => ({
+    isDragging: false,
+    dropProps: {},
+    error: null,
+    clearError: vi.fn(),
+  }),
+}));
+
 vi.mock("@/hooks/useGithubSettings", () => ({
   useGitAuthDiagnostics: (...args: unknown[]) => useGitAuthDiagnosticsMock(...args),
   useGhAuthStatus: (...args: unknown[]) => useGhAuthStatusMock(...args),
@@ -1262,12 +1271,20 @@ describe("AgentsArtifactPane", () => {
     expect(onTaskArtifactSelectionChange).toHaveBeenCalledWith("task-42");
   });
 
-  it("renders only the publish tab for edit workspaces", () => {
+  it("renders the Plan start panel for edit workspaces before an ideation run is attached", () => {
+    renderPane("plan", workspace({ mode: "edit" }), vi.fn(), false, conversation());
+
+    expect(screen.getByTestId("agents-artifact-tab-plan")).toBeInTheDocument();
+    expect(screen.getByTestId("agent-plan-start-panel")).toBeInTheDocument();
+    expect(screen.queryByText("No ideation run attached")).not.toBeInTheDocument();
+  });
+
+  it("keeps non-plan ideation tabs hidden for edit workspaces without plan data", () => {
     renderPane("publish", workspace({ mode: "edit" }));
 
     expect(screen.getByTestId("agents-artifact-tab-publish")).toBeInTheDocument();
     expect(screen.getByTestId("agents-publish-pane")).toBeInTheDocument();
-    expect(screen.queryByTestId("agents-artifact-tab-plan")).not.toBeInTheDocument();
+    expect(screen.getByTestId("agents-artifact-tab-plan")).toBeInTheDocument();
     expect(screen.queryByTestId("agents-artifact-tab-verification")).not.toBeInTheDocument();
     expect(screen.queryByTestId("agents-artifact-tab-proposal")).not.toBeInTheDocument();
     expect(screen.queryByTestId("agents-artifact-tab-tasks")).not.toBeInTheDocument();

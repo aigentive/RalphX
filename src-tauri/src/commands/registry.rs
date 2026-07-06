@@ -100,6 +100,8 @@ macro_rules! register_tauri_commands {
             commands::agent_composer_commands::project_entries::search_agent_composer_entries,
             commands::agent_composer_commands::plan_references::search_agent_composer_plan_references,
             commands::agent_composer_commands::skills::list_agent_composer_skills,
+            commands::agent_plan_commands::copy_agent_conversation_plan,
+            commands::agent_plan_commands::import_agent_conversation_plan,
             commands::qa_commands::get_qa_settings,
             commands::qa_commands::update_qa_settings,
             commands::qa_commands::get_task_qa,

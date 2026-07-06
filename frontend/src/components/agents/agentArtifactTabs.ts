@@ -8,6 +8,7 @@ export type IdeationArtifactTab = Exclude<
 export interface IdeationArtifactAvailability {
   hasAttachedIdeationSession: boolean;
   hasPlanArtifact: boolean;
+  canStartPlan: boolean;
   hasProposals: boolean;
   hasVerificationEvidence: boolean;
   hasExecutionTasks: boolean;
@@ -17,21 +18,23 @@ export interface IdeationArtifactAvailability {
 export function getVisibleIdeationArtifactTabs({
   hasAttachedIdeationSession,
   hasPlanArtifact,
+  canStartPlan,
   hasProposals,
   hasVerificationEvidence,
   hasExecutionTasks,
   artifactMode,
 }: IdeationArtifactAvailability): IdeationArtifactTab[] {
-  if (!hasAttachedIdeationSession || !hasPlanArtifact) {
+  if (!hasPlanArtifact && !canStartPlan) {
     return [];
   }
 
+  const canShowDataDrivenTabs = hasAttachedIdeationSession && hasPlanArtifact;
   const canShowProposalTab = artifactMode === "plan" || artifactMode === "ideation";
 
   return [
     "plan",
-    ...(hasVerificationEvidence ? ["verification" as const] : []),
-    ...(hasProposals && canShowProposalTab ? ["proposal" as const] : []),
-    ...(hasExecutionTasks ? ["tasks" as const] : []),
+    ...(canShowDataDrivenTabs && hasVerificationEvidence ? ["verification" as const] : []),
+    ...(canShowDataDrivenTabs && hasProposals && canShowProposalTab ? ["proposal" as const] : []),
+    ...(canShowDataDrivenTabs && hasExecutionTasks ? ["tasks" as const] : []),
   ];
 }

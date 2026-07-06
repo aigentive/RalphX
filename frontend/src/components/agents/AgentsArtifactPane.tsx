@@ -23,6 +23,7 @@ import { ideationApi, toTaskProposal } from "@/api/ideation";
 import { verificationApi } from "@/api/verification";
 import {
   chatApi,
+  type AgentConversationPlanSeedResult,
   type AgentConversationWorkspace,
   type AgentConversationWorkspaceFreshness,
   type AgentConversationRuntimeStatus,
@@ -64,6 +65,7 @@ import {
   type AgentConversation,
 } from "./agentConversations";
 import { AgentReviewPanel } from "./AgentReviewPanel";
+import { AgentPlanStartPanel } from "./AgentPlanStartPanel";
 import {
   getVisibleIdeationArtifactTabs,
   type IdeationArtifactTab,
@@ -92,6 +94,7 @@ import {
   PLAN_TO_PROPOSALS_REQUEST,
 } from "./agentPlanModeActions";
 import { useAgentConversationRuntimeStatus } from "./useAgentConversationRuntimeStatus";
+import { agentConversationKeys } from "./useProjectAgentConversations";
 
 const EMPTY_PROPOSAL_HIGHLIGHTS = new Set<string>();
 
@@ -391,7 +394,15 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     status: VerificationStatus;
     inProgress: boolean;
   } | null>(null);
-  const conversationId = conversation?.id ?? null;
+  const conversationId = conversation?.id ?? workspace?.conversationId ?? null;
+  const conversationProjectId = conversation?.projectId ?? workspace?.projectId ?? null;
+  const canStartPlan = Boolean(
+    conversationId &&
+      conversationProjectId &&
+      (workspace
+        ? workspace.mode === "edit" || workspace.mode === "plan"
+        : conversation?.contextType === "project"),
+  );
   const prReviewConversationId =
     workspace?.mode === "review_pr" ? workspace.conversationId : null;
   const shouldLoadPrReviewContext = Boolean(prReviewConversationId);
@@ -541,6 +552,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       getVisibleIdeationArtifactTabs({
         hasAttachedIdeationSession: Boolean(sessionData),
         hasPlanArtifact: Boolean(planArtifactId),
+        canStartPlan,
         hasProposals: proposalCount > 0,
         hasVerificationEvidence,
         hasExecutionTasks: Boolean(
@@ -552,6 +564,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       }),
     [
       artifactMode,
+      canStartPlan,
       hasVerificationEvidence,
       planArtifactId,
       proposalCount,
@@ -614,8 +627,15 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
                   : visibleTabs.some((tab) => tab.id === "review")
                     ? "review"
                     : "plan";
+  const shouldPreferReviewOverEmptyPlan =
+    activeTab === "plan" &&
+    !planArtifactId &&
+    canStartPlan &&
+    (workspaceReviewContext?.shouldShowTab || reviewArtifactId);
   const effectiveActiveTab =
-    visibleTabs.some((tab) => tab.id === activeTab)
+    shouldPreferReviewOverEmptyPlan
+      ? "review"
+      : visibleTabs.some((tab) => tab.id === activeTab)
       ? activeTab
       : fallbackActiveTab;
   const runtimeStatusStoreKey = conversation
@@ -731,6 +751,34 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
       }
     },
     [attachedSessionId, queryClient],
+  );
+  const handlePlanSeeded = useCallback(
+    (result: AgentConversationPlanSeedResult) => {
+      queryClient.setQueryData(
+        agentWorkspaceKeys.workspace(result.workspace.conversationId),
+        result.workspace,
+      );
+      queryClient.setQueryData(["agents", "artifact", result.artifact.id], result.artifact);
+      queryClient.setQueryData(
+        ["agents", "session-plan", result.sessionId, result.artifact.id],
+        result.artifact,
+      );
+      queryClient.setQueryData(
+        ["agents", "plan-approval", result.sessionId],
+        result.artifact,
+      );
+      void invalidateWorkspaceQueries(queryClient, result.workspace.conversationId);
+      void invalidateConversationDataQueries(queryClient, result.conversation.id);
+      void queryClient.invalidateQueries({
+        queryKey: ideationKeys.sessionWithData(result.sessionId),
+      });
+      if (result.conversation.contextType === "project") {
+        void queryClient.invalidateQueries({
+          queryKey: agentConversationKeys.project(result.conversation.contextId),
+        });
+      }
+    },
+    [queryClient],
   );
   const handleStartReview = useCallback((force: boolean) => {
     if (
@@ -970,7 +1018,8 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
           projectBaseBranch={projectBaseBranch}
           isLoading={conversationQuery.isLoading || sessionQuery.isLoading}
           attachedSessionId={attachedSessionId}
-          projectId={conversation?.projectId ?? null}
+          projectId={conversationProjectId}
+          canStartPlan={canStartPlan}
           session={session}
           sessionTitle={sessionData?.session.title ?? null}
           taskMode={taskMode}
@@ -991,6 +1040,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
           planArtifact={planArtifact}
           isPlanLoading={isPlanHydrating}
           onPlanUpdated={handlePlanUpdated}
+          onPlanSeeded={handlePlanSeeded}
           dependencyGraph={dependencyGraph}
           proposals={proposals}
           onPublishWorkspace={onPublishWorkspace}
@@ -1021,6 +1071,7 @@ type ArtifactContentProps = {
   isLoading: boolean;
   attachedSessionId: string | null;
   projectId: string | null;
+  canStartPlan: boolean;
   session: IdeationSession | null;
   sessionTitle: string | null;
   taskMode: AgentTaskArtifactMode;
@@ -1035,6 +1086,7 @@ type ArtifactContentProps = {
   planArtifact: Artifact | null;
   isPlanLoading: boolean;
   onPlanUpdated: (updatedPlan: Artifact) => void;
+  onPlanSeeded: (result: AgentConversationPlanSeedResult) => void;
   dependencyGraph: DependencyGraphResponse | null;
   proposals: TaskProposal[];
   onPublishWorkspace: ((conversationId: string) => Promise<void>) | undefined;
@@ -1064,6 +1116,7 @@ function ArtifactContent({
   isLoading,
   attachedSessionId,
   projectId,
+  canStartPlan,
   session,
   sessionTitle,
   taskMode,
@@ -1078,6 +1131,7 @@ function ArtifactContent({
   planArtifact,
   isPlanLoading,
   onPlanUpdated,
+  onPlanSeeded,
   dependencyGraph,
   proposals,
   onPublishWorkspace,
@@ -1213,20 +1267,27 @@ function ArtifactContent({
     );
   }
 
-  if (isLoading) {
-    return <EmptyArtifactState title="Loading attached run..." />;
-  }
-
-  if (!attachedSessionId) {
-    return (
-      <EmptyArtifactState
-        title="No ideation run attached"
-        detail="Start ideation from this agent chat to populate plan, verification, proposals, and tasks here."
-      />
-    );
-  }
-
   if (activeTab === "plan") {
+    if ((isLoading && attachedSessionId) || isPlanLoading) {
+      return <EmptyArtifactState title="Loading attached run..." />;
+    }
+    if (!planArtifact && canStartPlan && conversationId && projectId) {
+      return (
+        <AgentPlanStartPanel
+          conversationId={conversationId}
+          projectId={projectId}
+          onPlanSeeded={onPlanSeeded}
+        />
+      );
+    }
+    if (!attachedSessionId) {
+      return (
+        <EmptyArtifactState
+          title="No ideation run attached"
+          detail="Start ideation from this agent chat to populate plan, verification, proposals, and tasks here."
+        />
+      );
+    }
     return (
       <AgentPlanPanel
         workspace={workspace}
@@ -1240,6 +1301,19 @@ function ArtifactContent({
         verificationState={verificationState}
         verificationInProgress={verificationInProgress}
         onOpenVerification={onOpenVerification}
+      />
+    );
+  }
+
+  if (isLoading) {
+    return <EmptyArtifactState title="Loading attached run..." />;
+  }
+
+  if (!attachedSessionId) {
+    return (
+      <EmptyArtifactState
+        title="No ideation run attached"
+        detail="Start ideation from this agent chat to populate plan, verification, proposals, and tasks here."
       />
     );
   }

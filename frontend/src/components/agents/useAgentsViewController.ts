@@ -467,6 +467,7 @@ export function useAgentsViewController({
     ],
   );
   const {
+    attachedIdeationSessionData,
     attachedIdeationSessionId,
     availableArtifactTabs,
     hasAutoOpenArtifacts,
@@ -690,7 +691,10 @@ export function useAgentsViewController({
     workspaceReviewContext?.monitor.reviewFixerRunId,
     workspaceReviewContext?.monitor.reviewFixerStatus,
   ]);
-  const hasAttachedPlanArtifact = availableArtifactTabs.includes("plan");
+  const hasAttachedPlanArtifact = Boolean(
+    attachedIdeationSessionData?.planArtifactId ||
+      attachedIdeationSessionData?.inheritedPlanArtifactId,
+  );
   const chatFocusOptions = useMemo(() => {
     return getAgentChatFocusSwitchOptions({
       mode: activeConversationMode,

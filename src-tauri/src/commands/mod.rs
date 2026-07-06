@@ -7,6 +7,9 @@ pub mod agent_issue_report_commands;
 #[cfg(test)]
 mod agent_issue_report_commands_tests;
 pub mod agent_model_commands;
+pub mod agent_plan_commands;
+#[cfg(test)]
+mod agent_plan_commands_tests;
 pub mod agent_profile_commands;
 pub mod agent_sidebar_commands;
 pub mod agent_terminal_commands;
@@ -94,6 +97,11 @@ pub use agent_issue_report_commands::{build_agent_issue_report, submit_agent_iss
 pub use agent_model_commands::{
     delete_custom_agent_model, list_agent_models, upsert_custom_agent_model, AgentModelResponse,
     UpsertCustomAgentModelInput,
+};
+pub use agent_plan_commands::{
+    copy_agent_conversation_plan, import_agent_conversation_plan,
+    AgentConversationPlanSeedResponse, CopyAgentConversationPlanInput,
+    ImportAgentConversationPlanInput,
 };
 pub use agent_profile_commands::{
     get_agent_profile, get_agent_profiles_by_role, get_builtin_agent_profiles,
