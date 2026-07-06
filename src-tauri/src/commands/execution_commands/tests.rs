@@ -2253,7 +2253,10 @@ async fn test_get_running_processes_reports_scoped_lanes_and_capacity() {
         response.workspace_sessions[0].conversation_id,
         conversation.id.as_str()
     );
-    assert_eq!(response.workspace_sessions[0].project_id, project.id.as_str());
+    assert_eq!(
+        response.workspace_sessions[0].project_id,
+        project.id.as_str()
+    );
     assert_eq!(response.workspace_sessions[0].title, "Feature workspace");
     assert_eq!(
         response.workspace_sessions[0].model.as_deref(),
@@ -2344,21 +2347,31 @@ async fn test_get_running_processes_reports_scoped_lanes_and_capacity() {
 
 #[test]
 fn test_workspace_capacity_available_respects_all_global_guards() {
-    assert!(crate::application::workspace_capacity::workspace_capacity_available(
-        1, 3, 1, 5, false, false
-    ));
-    assert!(!crate::application::workspace_capacity::workspace_capacity_available(
-        1, 3, 1, 5, true, false
-    ));
-    assert!(!crate::application::workspace_capacity::workspace_capacity_available(
-        1, 3, 1, 5, false, true
-    ));
-    assert!(!crate::application::workspace_capacity::workspace_capacity_available(
-        3, 3, 0, 10, false, false
-    ));
-    assert!(!crate::application::workspace_capacity::workspace_capacity_available(
-        2, 3, 3, 5, false, false
-    ));
+    assert!(
+        crate::application::workspace_capacity::workspace_capacity_available(
+            1, 3, 1, 5, false, false
+        )
+    );
+    assert!(
+        !crate::application::workspace_capacity::workspace_capacity_available(
+            1, 3, 1, 5, true, false
+        )
+    );
+    assert!(
+        !crate::application::workspace_capacity::workspace_capacity_available(
+            1, 3, 1, 5, false, true
+        )
+    );
+    assert!(
+        !crate::application::workspace_capacity::workspace_capacity_available(
+            3, 3, 0, 10, false, false
+        )
+    );
+    assert!(
+        !crate::application::workspace_capacity::workspace_capacity_available(
+            2, 3, 3, 5, false, false
+        )
+    );
 }
 
 #[tokio::test]
@@ -2392,7 +2405,10 @@ async fn test_workspace_capacity_resolves_conversation_backed_queues_and_session
         .unwrap();
     let task = app_state
         .task_repo
-        .create(Task::new(project.id.clone(), "Non-workspace chat".to_string()))
+        .create(Task::new(
+            project.id.clone(),
+            "Non-workspace chat".to_string(),
+        ))
         .await
         .unwrap();
     let task_conversation = app_state
@@ -5569,7 +5585,10 @@ async fn test_stop_execution_persists_stopped_and_clears_project_queues() {
 
     let task = app_state
         .task_repo
-        .create(Task::new(project.id.clone(), "Queued task chat".to_string()))
+        .create(Task::new(
+            project.id.clone(),
+            "Queued task chat".to_string(),
+        ))
         .await
         .unwrap();
     let other_task = app_state

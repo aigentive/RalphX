@@ -770,6 +770,32 @@ describe("PlanDisplay", () => {
       expect(screen.getByText("Plan Approved")).toBeInTheDocument();
     });
 
+    it("renders the proposal count toggle after the approved badge in chromeless mode", () => {
+      const onBodyModeChange = vi.fn();
+      render(
+        <PlanDisplay
+          plan={mockPlan}
+          chromeless={true}
+          isApproved={true}
+          linkedProposalsCount={2}
+          bodyMode="plan"
+          onBodyModeChange={onBodyModeChange}
+        />,
+      );
+
+      const approvedBadge = screen.getByText("Plan Approved");
+      const proposalsButton = screen.getByRole("button", {
+        name: /2 Proposals/i,
+      });
+      expect(approvedBadge.compareDocumentPosition(proposalsButton)).toBe(
+        Node.DOCUMENT_POSITION_FOLLOWING,
+      );
+
+      fireEvent.click(proposalsButton);
+
+      expect(onBodyModeChange).toHaveBeenCalledWith("proposals");
+    });
+
     it("renders Create Proposals in chromeless mode and dispatches handler", () => {
       const onCreateProposals = vi.fn();
       render(

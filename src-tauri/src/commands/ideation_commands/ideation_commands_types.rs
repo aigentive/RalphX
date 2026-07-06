@@ -507,6 +507,40 @@ impl From<ApplyProposalsResult> for ApplyProposalsResultResponse {
     }
 }
 
+/// Core result of restarting an accepted implementation attempt.
+#[derive(Debug)]
+pub struct RestartImplementationResult {
+    pub session_id: String,
+    pub project_id: String,
+    pub old_execution_plan_id: String,
+    pub execution_plan_id: String,
+    pub archived_task_count: usize,
+    pub created_task_ids: Vec<String>,
+    pub any_ready_tasks: bool,
+}
+
+/// Response for restarting implementation from an accepted plan.
+#[derive(Debug, Serialize)]
+pub struct RestartImplementationResultResponse {
+    pub session_id: String,
+    pub old_execution_plan_id: String,
+    pub execution_plan_id: String,
+    pub archived_task_count: usize,
+    pub created_task_ids: Vec<String>,
+}
+
+impl From<RestartImplementationResult> for RestartImplementationResultResponse {
+    fn from(r: RestartImplementationResult) -> Self {
+        Self {
+            session_id: r.session_id,
+            old_execution_plan_id: r.old_execution_plan_id,
+            execution_plan_id: r.execution_plan_id,
+            archived_task_count: r.archived_task_count,
+            created_task_ids: r.created_task_ids,
+        }
+    }
+}
+
 // ============================================================================
 // Chat Message Types
 // ============================================================================

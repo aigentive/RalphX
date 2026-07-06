@@ -25,13 +25,13 @@ export function getVisibleIdeationArtifactTabs({
   if (!hasAttachedIdeationSession || !hasPlanArtifact) {
     return [];
   }
-
-  const canShowProposalTab = artifactMode === "plan" || artifactMode === "ideation";
+  const shouldShowProposals =
+    hasProposals && (artifactMode === "plan" || artifactMode === "ideation");
 
   return [
     "plan",
+    ...(shouldShowProposals ? ["proposal" as const] : []),
     ...(hasVerificationEvidence ? ["verification" as const] : []),
-    ...(hasProposals && canShowProposalTab ? ["proposal" as const] : []),
     ...(hasExecutionTasks ? ["tasks" as const] : []),
   ];
 }
