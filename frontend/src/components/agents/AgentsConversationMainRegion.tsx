@@ -24,7 +24,6 @@ interface AgentsConversationMainRegionProps {
   isLoadingProjects: StartConversationPanelProps["isLoadingProjects"];
   modelRegistry: StartConversationPanelProps["modelRegistry"];
   normalizedActiveRuntime: ActiveConversationPanelProps["normalizedActiveRuntime"];
-  workspaceReviewRuntimeStatus: ActiveConversationPanelProps["workspaceReviewRuntimeStatus"];
   onActiveConversationModeChange: ActiveConversationPanelProps["onActiveConversationModeChange"];
   onActiveConversationModeMenuOpen: ActiveConversationPanelProps["onActiveConversationModeMenuOpen"];
   onActiveEffortChange: ActiveConversationPanelProps["onActiveEffortChange"];
@@ -80,7 +79,6 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
   isLoadingProjects,
   modelRegistry,
   normalizedActiveRuntime,
-  workspaceReviewRuntimeStatus = null,
   onActiveConversationModeChange,
   onActiveConversationModeMenuOpen,
   onActiveEffortChange,
@@ -133,7 +131,6 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
         chatFocusOptions={chatFocusOptions}
         hasAutoOpenArtifacts={hasAutoOpenArtifacts}
         normalizedActiveRuntime={normalizedActiveRuntime}
-        workspaceReviewRuntimeStatus={workspaceReviewRuntimeStatus}
         onActiveConversationModeChange={onActiveConversationModeChange}
         onActiveConversationModeMenuOpen={onActiveConversationModeMenuOpen}
         onActiveEffortChange={onActiveEffortChange}

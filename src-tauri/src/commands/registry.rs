@@ -357,6 +357,7 @@ macro_rules! register_tauri_commands {
             commands::unified_chat_commands::is_agent_running,
             commands::unified_chat_commands::get_agent_running_states,
             commands::unified_chat_commands::get_agent_conversation_runtime_statuses,
+            commands::unified_chat_commands::get_agent_conversation_runtime_index,
             commands::agent_terminal_commands::open_agent_terminal,
             commands::agent_terminal_commands::write_agent_terminal,
             commands::agent_terminal_commands::resize_agent_terminal,

@@ -23,23 +23,6 @@ vi.mock("@/stores/teamStore", () => ({
     ),
 }));
 
-// Mock useProjectStore — Navigation reads activeProjectId from it
-vi.mock("@/stores/projectStore", () => ({
-  useProjectStore: vi.fn((selector: (s: { activeProjectId: string | null }) => unknown) =>
-    selector({ activeProjectId: "proj-1" })
-  ),
-}));
-
-// Mock useProjectStats — avoids needing QueryClientProvider in Navigation tests
-let mockTaskCount = 0;
-vi.mock("@/hooks/useProjectStats", () => ({
-  useProjectStats: vi.fn(() => ({
-    data: { taskCount: mockTaskCount },
-    isLoading: false,
-    isError: false,
-  })),
-}));
-
 const allNavFlags: FeatureFlags = {
   activityPage: true,
   extensibilityPage: true,
@@ -72,7 +55,6 @@ describe("Navigation", () => {
   beforeEach(() => {
     mockState = { activeTeams: {} };
     mockFeatureFlags = allNavFlags;
-    mockTaskCount = 0;
   });
 
   it("renders all nav items", () => {
@@ -82,6 +64,7 @@ describe("Navigation", () => {
     expect(screen.getByTestId("nav-ideation")).toBeInTheDocument();
     expect(screen.getByTestId("nav-kanban")).toBeInTheDocument();
     expect(screen.getByTestId("nav-graph")).toBeInTheDocument();
+    expect(screen.getByTestId("nav-insights")).toBeInTheDocument();
     expect(screen.getByTestId("nav-activity")).toBeInTheDocument();
   });
 
@@ -110,8 +93,6 @@ describe("Navigation", () => {
   });
 
   it("orders the shortcut-backed main views as Agents, Ideation, Graph, Kanban, Insights", () => {
-    mockTaskCount = 10;
-
     render(<Navigation {...defaultProps} />);
 
     const nav = screen.getByRole("navigation");
@@ -178,7 +159,6 @@ describe("Navigation — feature flag filtering", () => {
   beforeEach(() => {
     mockState = { activeTeams: {} };
     mockFeatureFlags = allNavFlags;
-    mockTaskCount = 0;
   });
 
   it("renders activity and extensibility nav items when flags are enabled", () => {
@@ -247,7 +227,6 @@ describe("Navigation — hideViews (welcome mode)", () => {
   beforeEach(() => {
     mockState = { activeTeams: {} };
     mockFeatureFlags = allNavFlags;
-    mockTaskCount = 10;
   });
 
   it("hides every view nav item when hideViews is true", () => {
