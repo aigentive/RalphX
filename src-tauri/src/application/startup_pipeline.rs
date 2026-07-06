@@ -579,8 +579,10 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
             crate::application::agent_workspace_pr_supervision_recovery::AgentWorkspacePrSupervisionRecoveryDeps {
                 workspace_repo: Arc::clone(&agent_conversation_workspace_repo),
                 project_repo: Arc::clone(&project_repo),
+                plan_branch_repo: Arc::clone(&plan_branch_repo),
                 github: github_service,
                 pr_poller_registry: Some(Arc::clone(&pr_poller_registry)),
+                transition_service: Some(Arc::clone(&transition_service)),
                 chat_service: Some(Arc::clone(&recovery_chat_service)),
                 agent_run_repo: Arc::clone(&agent_run_repo),
                 app_handle: Some(app_handle.clone()),

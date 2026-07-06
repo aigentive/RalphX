@@ -1,3 +1,4 @@
+import { useEffect, useMemo, useState } from "react";
 import {
   AlertCircle,
   CheckCircle2,
@@ -7,14 +8,24 @@ import {
   TestTube2,
   XCircle,
 } from "lucide-react";
+import {
+  useDisplayTaskValidationSummary,
+  useTaskValidationLiveState,
+  type LiveValidationCommand,
+} from "@/hooks/useTaskValidationEvents";
 import { useTaskValidationSummary } from "@/hooks/useTaskValidationSummary";
 import type {
   TaskValidationSummary,
   ValidationCommandSummary,
   ValidationRunStatus,
 } from "@/hooks/useTaskValidationSummary";
+import type { MergeValidationStepEvent } from "@/types/events";
 import { DetailCard } from "./DetailCard";
+import { SectionTitle } from "./SectionTitle";
 import { StatusPill } from "./StatusPill";
+import { ValidationProgress } from "./ValidationProgress";
+
+type DisplayCommand = ValidationCommandSummary | LiveValidationCommand;
 
 function formatTimestamp(value: string | null | undefined): string | null {
   if (!value) return null;
@@ -39,12 +50,6 @@ function humanize(value: string): string {
     .split("_")
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(" ");
-}
-
-function truncateMiddle(value: string, max = 96): string {
-  if (value.length <= max) return value;
-  const edge = Math.floor((max - 3) / 2);
-  return `${value.slice(0, edge)}...${value.slice(value.length - edge)}`;
 }
 
 function runPresentation(summary: TaskValidationSummary) {
@@ -88,7 +93,7 @@ function runPresentation(summary: TaskValidationSummary) {
       label: "Running",
       variant: "info" as const,
       animated: true,
-      message: "A task validation run is still in progress.",
+      message: "Task validation is running.",
     };
   }
   if (status === "skipped") {
@@ -118,126 +123,199 @@ function runPresentation(summary: TaskValidationSummary) {
   };
 }
 
-function commandTone(command: ValidationCommandSummary) {
-  if (command.status === "passed" && command.cache_decision === "cached") {
-    return "cached";
-  }
-  if (command.status === "passed") return command.cache_decision;
-  return command.status;
+function commandStatusToStepStatus(
+  status: DisplayCommand["status"],
+): MergeValidationStepEvent["status"] {
+  if (status === "running") return "running";
+  if (status === "passed") return "success";
+  if (status === "cached") return "cached";
+  if (status === "skipped") return "skipped";
+  return "failed";
 }
 
-function CommandRow({ command }: { command: ValidationCommandSummary }) {
-  const duration = formatDuration(command.duration_ms);
-  const label = command.label || humanize(command.category);
-  const tone = commandTone(command);
+function commandPhase(category: string): MergeValidationStepEvent["phase"] {
+  const normalized = category.toLowerCase();
+  if (normalized === "setup" || normalized === "install") return normalized;
+  return "validate";
+}
+
+function commandStartedAt(command: DisplayCommand): string | null {
+  return "started_at" in command ? command.started_at : null;
+}
+
+function commandElapsed(command: DisplayCommand, now: number): number | undefined {
+  if (command.duration_ms != null) return command.duration_ms;
+  if (command.status !== "running") return undefined;
+  const startedAt = commandStartedAt(command) ?? command.created_at;
+  const startedTime = new Date(startedAt).getTime();
+  if (Number.isNaN(startedTime)) return undefined;
+  return Math.max(now - startedTime, 0);
+}
+
+function commandLabel(command: DisplayCommand): string {
+  return command.label || humanize(command.category);
+}
+
+function commandToStep(
+  taskId: string,
+  command: DisplayCommand,
+  now: number,
+): MergeValidationStepEvent {
+  return {
+    task_id: taskId,
+    phase: commandPhase(command.category),
+    command: command.command,
+    path: command.cwd,
+    label: commandLabel(command),
+    status: commandStatusToStepStatus(command.status),
+    exit_code: command.exit_code,
+    stdout: command.stdout_snippet ?? undefined,
+    stderr: command.stderr_snippet ?? undefined,
+    duration_ms: commandElapsed(command, now),
+    context: "execution",
+  };
+}
+
+function useValidationClock(enabled: boolean): number {
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!enabled) return;
+    setNow(Date.now());
+    const interval = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(interval);
+  }, [enabled]);
+
+  return now;
+}
+
+function hasRunningCommand(summary: TaskValidationSummary | undefined): boolean {
+  return Boolean(
+    summary?.latest_run?.status === "running" ||
+      summary?.commands.some((command) => command.status === "running"),
+  );
+}
+
+export function TaskValidationSection({
+  taskId,
+  isHistorical = false,
+}: {
+  taskId: string;
+  isHistorical?: boolean;
+}) {
+  const { data, isLoading, isError } = useTaskValidationSummary(taskId);
+  const live = useTaskValidationLiveState(taskId, { enabled: !isHistorical });
+  const displaySummary = useDisplayTaskValidationSummary(data, live);
+  const usingLive = Boolean(
+    live?.latest_run &&
+      displaySummary?.latest_run?.id === live.latest_run.id &&
+      (live.latest_run.status === "running" ||
+        data?.latest_run?.id !== live.latest_run.id),
+  );
+  const now = useValidationClock(hasRunningCommand(displaySummary));
+  const validationSteps = useMemo(
+    () =>
+      displaySummary
+        ? displaySummary.commands.map((command) =>
+            commandToStep(displaySummary.task_id, command, now),
+          )
+        : [],
+    [displaySummary, now],
+  );
+
+  if (isLoading && !displaySummary) {
+    return (
+      <section data-testid="task-validation-section" className="space-y-2">
+        <SectionTitle>Task Validation</SectionTitle>
+        <DetailCard>
+          <div className="flex items-center gap-2 text-[0.75rem] text-text-primary/45">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            <span>Loading validation evidence</span>
+          </div>
+        </DetailCard>
+      </section>
+    );
+  }
+
+  if (isError || !displaySummary) {
+    return (
+      <section data-testid="task-validation-section" className="space-y-2">
+        <SectionTitle>Task Validation</SectionTitle>
+        <DetailCard>
+          <div className="flex items-center gap-2 text-[0.75rem] text-text-primary/55">
+            <AlertCircle className="h-3.5 w-3.5 text-[var(--status-warning)]" />
+            <span>Validation evidence unavailable</span>
+          </div>
+        </DetailCard>
+      </section>
+    );
+  }
+
+  const presentation = runPresentation(displaySummary);
+  const completedAt = formatTimestamp(displaySummary.latest_run?.completed_at);
+  const startedAt = formatTimestamp(displaySummary.latest_run?.started_at);
+  const baseRef = displaySummary.latest_run?.base_ref;
+  const head = displaySummary.latest_run?.head_short_sha;
+  const totalDuration = displaySummary.commands.reduce(
+    (sum, command) => sum + (command.duration_ms ?? 0),
+    0,
+  );
+  const duration = totalDuration > 0 ? formatDuration(totalDuration) : null;
 
   return (
-    <div className="space-y-1 rounded-lg bg-[var(--bg-elevated)] px-2.5 py-2">
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
-          <div className="truncate text-[0.75rem] font-medium text-text-primary/75">
-            {label}
+    <section data-testid="task-validation-section" className="space-y-3">
+      <SectionTitle>Task Validation</SectionTitle>
+      <DetailCard>
+        <div className="space-y-3">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex min-w-0 items-center gap-2">
+              <TestTube2 className="h-4 w-4 shrink-0 text-text-primary/45" />
+              <div className="min-w-0">
+                <div className="text-[0.8125rem] font-medium text-text-primary/80">
+                  {usingLive ? "Live validation run" : "Latest validation run"}
+                </div>
+                <div className="truncate text-[0.75rem] text-text-primary/45">
+                  {head ? `HEAD ${head}` : baseRef ? `Base ${baseRef}` : "Persisted evidence"}
+                </div>
+              </div>
+            </div>
+            <StatusPill
+              icon={presentation.icon}
+              label={presentation.label}
+              variant={presentation.variant}
+              animated={presentation.animated}
+            />
           </div>
-          <div className="truncate font-mono text-[0.6875rem] text-text-primary/45">
-            {truncateMiddle(command.command)}
+
+          <p className="text-[0.75rem] leading-relaxed text-text-primary/50">
+            {presentation.message}
+          </p>
+
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[0.6875rem] text-text-primary/40">
+            {(completedAt || startedAt) && (
+              <span className="flex items-center gap-1.5">
+                <Clock3 className="h-3 w-3" />
+                {completedAt ? `Completed ${completedAt}` : `Started ${startedAt}`}
+              </span>
+            )}
+            {duration && <span>{duration} total</span>}
+            {baseRef && head && <span>{baseRef}</span>}
           </div>
         </div>
-        <span className="shrink-0 rounded-full bg-[var(--bg-surface)] px-2 py-0.5 text-[0.625rem] font-medium text-text-primary/55">
-          {humanize(tone)}
-        </span>
-      </div>
-      {(command.reason || duration) && (
-        <div className="flex items-center justify-between gap-2 text-[0.6875rem] text-text-primary/40">
-          {command.reason && <span className="truncate">{command.reason}</span>}
-          {duration && <span className="shrink-0">{duration}</span>}
-        </div>
+      </DetailCard>
+
+      {validationSteps.length > 0 && (
+        <ValidationProgress
+          taskId={taskId}
+          steps={validationSteps}
+          sourceLabel={usingLive ? "live" : null}
+          title="Validation Commands"
+        />
       )}
-    </div>
+    </section>
   );
 }
 
 export function TaskValidationEvidenceCard({ taskId }: { taskId: string }) {
-  const { data, isLoading, isError } = useTaskValidationSummary(taskId);
-
-  if (isLoading) {
-    return (
-      <DetailCard>
-        <div className="flex items-center gap-2 text-[0.75rem] text-text-primary/45">
-          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          <span>Loading validation evidence</span>
-        </div>
-      </DetailCard>
-    );
-  }
-
-  if (isError || !data) {
-    return (
-      <DetailCard variant="warning">
-        <div className="flex items-center gap-2 text-[0.75rem] text-text-primary/55">
-          <AlertCircle className="h-3.5 w-3.5 text-[var(--status-warning)]" />
-          <span>Validation evidence unavailable</span>
-        </div>
-      </DetailCard>
-    );
-  }
-
-  const presentation = runPresentation(data);
-  const completedAt = formatTimestamp(data.latest_run?.completed_at);
-  const startedAt = formatTimestamp(data.latest_run?.started_at);
-  const visibleCommands = data.commands.slice(0, 4);
-  const extraCommandCount = Math.max(data.commands.length - visibleCommands.length, 0);
-  const cardVariant =
-    presentation.variant === "neutral" ? "default" : presentation.variant;
-
-  return (
-    <DetailCard variant={cardVariant}>
-      <div className="space-y-3">
-        <div className="flex items-start justify-between gap-3">
-          <div className="flex min-w-0 items-center gap-2">
-            <TestTube2 className="h-4 w-4 shrink-0 text-text-primary/45" />
-            <div className="min-w-0">
-              <div className="text-[0.8125rem] font-medium text-text-primary/80">
-                Task Validation
-              </div>
-              <div className="truncate text-[0.75rem] text-text-primary/45">
-                {data.latest_run?.head_short_sha
-                  ? `HEAD ${data.latest_run.head_short_sha}`
-                  : "Persisted evidence"}
-              </div>
-            </div>
-          </div>
-          <StatusPill
-            icon={presentation.icon}
-            label={presentation.label}
-            variant={presentation.variant}
-            animated={presentation.animated}
-          />
-        </div>
-
-        <p className="text-[0.75rem] leading-relaxed text-text-primary/50">
-          {presentation.message}
-        </p>
-
-        {(completedAt || startedAt) && (
-          <div className="flex items-center gap-1.5 text-[0.6875rem] text-text-primary/40">
-            <Clock3 className="h-3 w-3" />
-            <span>{completedAt ? `Completed ${completedAt}` : `Started ${startedAt}`}</span>
-          </div>
-        )}
-
-        {visibleCommands.length > 0 && (
-          <div className="space-y-2">
-            {visibleCommands.map((command) => (
-              <CommandRow key={command.id} command={command} />
-            ))}
-            {extraCommandCount > 0 && (
-              <div className="text-[0.6875rem] text-text-primary/40">
-                {extraCommandCount} more command{extraCommandCount === 1 ? "" : "s"}
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-    </DetailCard>
-  );
+  return <TaskValidationSection taskId={taskId} />;
 }

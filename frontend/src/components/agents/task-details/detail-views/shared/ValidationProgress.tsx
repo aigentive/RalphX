@@ -290,23 +290,27 @@ function parseMetadataValidationLog(
  */
 export function ValidationProgress({
   taskId,
+  steps: explicitSteps,
   metadata,
   liveSteps,
   title = "Merge Validation",
   metadataLogKey = "validation_log",
+  sourceLabel,
 }: {
   taskId: string;
+  steps?: MergeValidationStepEvent[] | undefined;
   metadata?: string | Record<string, unknown> | null | undefined;
   liveSteps?: MergeValidationStepEvent[] | undefined;
   title?: string;
   metadataLogKey?: string;
+  sourceLabel?: "live" | "historical" | null;
 }) {
   const metadataSteps = useMemo(() => parseMetadataValidationLog(metadata, metadataLogKey), [metadata, metadataLogKey]);
-  const steps = liveSteps && liveSteps.length > 0 ? liveSteps : metadataSteps;
+  const steps = explicitSteps ?? (liveSteps && liveSteps.length > 0 ? liveSteps : metadataSteps);
 
   if (steps.length === 0) return null;
 
-  const source = liveSteps && liveSteps.length > 0 ? "live" : "historical";
+  const source = sourceLabel ?? (liveSteps && liveSteps.length > 0 ? "live" : "historical");
   const setupSteps = steps.filter((s) => s.phase === "setup");
   const installSteps = steps.filter((s) => s.phase === "install");
   const validateSteps = steps.filter((s) => s.phase !== "setup" && s.phase !== "install");

@@ -98,6 +98,65 @@ describe("atlassianApi", () => {
     );
   });
 
+  it("returns per-url resource resolutions from the URL resolver wrapper", async () => {
+    vi.mocked(typedInvoke).mockResolvedValue({
+      results: [
+        {
+          inputUrl: "https://example.atlassian.net/browse/RX-42",
+          resource: {
+            kind: "jira",
+            id: "RX-42",
+            key: "RX-42",
+            title: "Fix Jira tab",
+            url: "https://example.atlassian.net/browse/RX-42",
+            excerpt: null,
+          },
+        },
+        {
+          inputUrl: "https://other.atlassian.net/browse/RX-99",
+          resource: null,
+        },
+      ],
+    });
+
+    await expect(
+      atlassianApi.resolveResourceUrls({
+        urls: [
+          "https://example.atlassian.net/browse/RX-42",
+          "https://other.atlassian.net/browse/RX-99",
+        ],
+      }),
+    ).resolves.toEqual([
+      {
+        inputUrl: "https://example.atlassian.net/browse/RX-42",
+        resource: {
+          kind: "jira",
+          id: "RX-42",
+          key: "RX-42",
+          title: "Fix Jira tab",
+          url: "https://example.atlassian.net/browse/RX-42",
+          excerpt: null,
+        },
+      },
+      {
+        inputUrl: "https://other.atlassian.net/browse/RX-99",
+        resource: null,
+      },
+    ]);
+    expect(typedInvoke).toHaveBeenCalledWith(
+      "resolve_atlassian_resource_urls",
+      {
+        input: {
+          urls: [
+            "https://example.atlassian.net/browse/RX-42",
+            "https://other.atlassian.net/browse/RX-99",
+          ],
+        },
+      },
+      expect.any(Object),
+    );
+  });
+
   it("normalizes nullable Jira assignment command responses", async () => {
     const input = {
       conversationId: "11111111-1111-1111-1111-111111111111",

@@ -118,6 +118,7 @@ pub mod ticketing_cache_invalidator;
 pub mod ticketing_pr_summary;
 pub mod ticketing_service;
 pub mod ticketing_status_catalog_service;
+pub(crate) mod validation_events;
 pub mod validation_service;
 pub mod webhook_service;
 pub(crate) mod workspace_capacity;
@@ -144,8 +145,8 @@ pub use atlassian_integration_service::{
     AtlassianIntegrationService, AtlassianJiraAttachment, AtlassianJiraComment,
     AtlassianJiraTransition, AtlassianOAuthAuthorization, AtlassianOAuthResource,
     AtlassianOAuthTokenResponse, AtlassianResourceContent, AtlassianResourceKind,
-    AtlassianResourceSummary, EmptyAtlassianApiClient, JiraIssueDetail, JiraProjectSummary,
-    JiraStatusSummary, UnavailableAtlassianApiClient,
+    AtlassianResourceSummary, AtlassianResourceUrlResolution, EmptyAtlassianApiClient,
+    JiraIssueDetail, JiraProjectSummary, JiraStatusSummary, UnavailableAtlassianApiClient,
 };
 pub use chat_attachment_service::ChatAttachmentService;
 pub use chat_resumption::ChatResumptionRunner;

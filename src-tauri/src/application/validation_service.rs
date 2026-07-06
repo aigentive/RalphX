@@ -4,9 +4,13 @@ use std::time::{Duration, Instant};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tokio::io::AsyncReadExt;
+use tauri::AppHandle;
 
 use crate::application::git_service::GitService;
+use crate::application::validation_events::{
+    emit_task_validation_event, read_stream_with_events, TaskValidationEventPayload,
+    ValidationCommandEventContext,
+};
 use crate::application::AppState;
 use crate::domain::entities::{
     InternalStatus, Project, Task, TaskId, ValidationCacheData, ValidationCacheDecision,
@@ -166,6 +170,7 @@ impl TaskValidationService {
             completed_at: None,
         };
         state.validation_run_repo.create_run(&run).await?;
+        emit_task_validation_event(state, &TaskValidationEventPayload::run_started(&run));
 
         let prior_results = state
             .validation_run_repo
@@ -176,6 +181,7 @@ impl TaskValidationService {
 
         for command in request.commands {
             let result = build_or_run_command(
+                state,
                 &run,
                 &task,
                 &project,
@@ -192,6 +198,10 @@ impl TaskValidationService {
                 .validation_run_repo
                 .add_command_result(&result)
                 .await?;
+            emit_task_validation_event(
+                state,
+                &TaskValidationEventPayload::command_completed(&run, &result),
+            );
             summaries.push(ValidationCommandSummary::from(&result));
         }
 
@@ -205,6 +215,10 @@ impl TaskValidationService {
         let mut completed_run = run;
         completed_run.status = status;
         completed_run.completed_at = Some(completed_at);
+        emit_task_validation_event(
+            state,
+            &TaskValidationEventPayload::run_completed(&completed_run),
+        );
 
         Ok(TaskValidationSummary {
             task_id: task.id.as_str().to_string(),
@@ -283,6 +297,7 @@ impl TaskValidationService {
 }
 
 async fn build_or_run_command(
+    state: &AppState,
     run: &ValidationRun,
     task: &Task,
     project: &Project,
@@ -312,13 +327,14 @@ async fn build_or_run_command(
         analysis_fingerprint,
         status_episode_entered_at,
     );
+    let command_id = uuid::Uuid::new_v4().to_string();
 
     if mode == ValidationRunMode::ReuseOrRun && status_episode_entered_at.is_some() {
         if let Some(cached) = prior_results
             .iter()
             .find(|result| result.cache_key == cache_key && result.status.is_success_like())
         {
-            return Ok(cached_as_command_result(run, cached));
+            return Ok(cached_as_command_result(run, cached, command_id));
         }
     }
 
@@ -326,6 +342,7 @@ async fn build_or_run_command(
         return Ok(skipped_command_result(
             run,
             task,
+            command_id,
             &command,
             &cwd,
             command_source,
@@ -349,9 +366,31 @@ async fn build_or_run_command(
         ValidationCacheDecision::Ran
     };
 
-    let command_id = uuid::Uuid::new_v4().to_string();
     let started = Instant::now();
-    let execution = execute_shell_command(&command, &cwd, DEFAULT_VALIDATION_TIMEOUT_SECS).await;
+    let command_started_at = Utc::now();
+    let event_context = ValidationCommandEventContext::from_request(
+        run,
+        &command_id,
+        command_source,
+        &request,
+        &command,
+        &cwd,
+        category,
+        cache_decision,
+        command_started_at,
+    );
+    emit_task_validation_event(
+        state,
+        &TaskValidationEventPayload::command_started(&event_context),
+    );
+    let execution = execute_shell_command(
+        &command,
+        &cwd,
+        DEFAULT_VALIDATION_TIMEOUT_SECS,
+        state.app_handle.clone(),
+        Some(event_context),
+    )
+    .await;
     let duration_ms = started.elapsed().as_millis() as u64;
     let created_at = Utc::now();
     let shell_path = resolve_shell_cli_path().to_string_lossy().to_string();
@@ -423,6 +462,8 @@ async fn execute_shell_command(
     command_text: &str,
     cwd: &Path,
     timeout_secs: u64,
+    app_handle: Option<AppHandle>,
+    event_context: Option<ValidationCommandEventContext>,
 ) -> AppResult<std::process::Output> {
     let mut command = tokio::process::Command::new(resolve_shell_cli_path());
     crate::infrastructure::login_shell_env::apply_to(&mut command);
@@ -444,20 +485,13 @@ async fn execute_shell_command(
     let stdout_handle = child.stdout.take();
     let stderr_handle = child.stderr.take();
 
-    let stdout_fut = async {
-        let mut buf = Vec::new();
-        if let Some(mut out) = stdout_handle {
-            let _ = out.read_to_end(&mut buf).await;
-        }
-        buf
-    };
-    let stderr_fut = async {
-        let mut buf = Vec::new();
-        if let Some(mut err) = stderr_handle {
-            let _ = err.read_to_end(&mut buf).await;
-        }
-        buf
-    };
+    let stdout_fut = read_stream_with_events(
+        stdout_handle,
+        app_handle.clone(),
+        event_context.clone(),
+        "stdout",
+    );
+    let stderr_fut = read_stream_with_events(stderr_handle, app_handle, event_context, "stderr");
 
     tokio::select! {
         (status, stdout, stderr) = async { tokio::join!(child.wait(), stdout_fut, stderr_fut) } => {
@@ -614,9 +648,10 @@ fn validation_cache_key(
 fn cached_as_command_result(
     run: &ValidationRun,
     cached: &ValidationCommandResult,
+    command_id: String,
 ) -> ValidationCommandResult {
     let mut result = cached.clone();
-    result.id = uuid::Uuid::new_v4().to_string();
+    result.id = command_id;
     result.validation_run_id = run.id.clone();
     result.cache_decision = ValidationCacheDecision::Cached;
     result.status = ValidationCommandStatus::Cached;
@@ -628,6 +663,7 @@ fn cached_as_command_result(
 fn skipped_command_result(
     run: &ValidationRun,
     task: &Task,
+    command_id: String,
     command: &str,
     cwd: &Path,
     command_source: ValidationCommandSource,
@@ -639,7 +675,7 @@ fn skipped_command_result(
     status_episode_entered_at: Option<DateTime<Utc>>,
 ) -> ValidationCommandResult {
     ValidationCommandResult {
-        id: uuid::Uuid::new_v4().to_string(),
+        id: command_id,
         validation_run_id: run.id.clone(),
         task_id: task.id.clone(),
         project_id: task.project_id.clone(),
@@ -817,6 +853,7 @@ impl From<&ValidationCommandResult> for ValidationCommandSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::application::validation_events::emit_task_validation_event_to_handle;
     use crate::domain::review::ReviewSettings;
 
     async fn seeded_state() -> (AppState, tempfile::TempDir, TaskId) {
@@ -860,6 +897,121 @@ mod tests {
                 source: None,
             }],
         }
+    }
+
+    fn event_payload_run() -> (ValidationRun, Task) {
+        let project = Project::new(
+            "Event project".to_string(),
+            "/tmp/event-project".to_string(),
+        );
+        let task = Task::new(project.id.clone(), "Event task".to_string());
+        let run = ValidationRun {
+            id: "run-123".to_string(),
+            task_id: task.id.clone(),
+            project_id: project.id.clone(),
+            purpose: ValidationPurpose::Final,
+            context_type: ValidationContextType::Execution,
+            requested_by_agent: Some("ralphx-execution-worker".to_string()),
+            status: ValidationRunStatus::Running,
+            mode: ValidationRunMode::Force,
+            policy_enabled: true,
+            head_sha: Some("abcdef1234567890".to_string()),
+            base_ref: Some("main".to_string()),
+            analysis_fingerprint: Some("analysis".to_string()),
+            status_episode_entered_at: None,
+            started_at: Utc::now(),
+            completed_at: None,
+        };
+        (run, task)
+    }
+
+    #[test]
+    fn task_validation_command_output_event_serializes_current_command_ids() {
+        let (run, _task) = event_payload_run();
+        let request = ValidationCommandRequest {
+            command: "npm test".to_string(),
+            cwd: None,
+            label: Some("Unit tests".to_string()),
+            category: Some("test".to_string()),
+            reason: Some("current run proof".to_string()),
+            related_files: Vec::new(),
+            command_ref: Some("unit-tests".to_string()),
+            source: Some("project_analysis_ref".to_string()),
+        };
+        let context = ValidationCommandEventContext::from_request(
+            &run,
+            "command-123",
+            ValidationCommandSource::ProjectAnalysisRef,
+            &request,
+            "npm test",
+            Path::new("/tmp/event-project"),
+            ValidationCommandCategory::Test,
+            ValidationCacheDecision::Ran,
+            Utc::now(),
+        );
+
+        let payload =
+            TaskValidationEventPayload::command_output(&context, "stderr", "failure\n".to_string());
+        emit_task_validation_event_to_handle(None, &payload);
+        let value = serde_json::to_value(payload).expect("payload should serialize");
+
+        assert_eq!(value["type"], "command_output");
+        assert_eq!(value["task_id"], run.task_id.as_str());
+        assert_eq!(value["run_id"], "run-123");
+        assert_eq!(value["command_id"], "command-123");
+        assert_eq!(value["command_ref"], "unit-tests");
+        assert_eq!(value["cache_decision"], "ran");
+        assert_eq!(value["stream"], "stderr");
+        assert_eq!(value["stderr_delta"], "failure\n");
+        assert!(value.get("stdout_delta").is_none());
+    }
+
+    #[test]
+    fn task_validation_command_completed_event_carries_persisted_evidence() {
+        let (run, task) = event_payload_run();
+        let result = ValidationCommandResult {
+            id: "command-456".to_string(),
+            validation_run_id: run.id.clone(),
+            task_id: task.id.clone(),
+            project_id: task.project_id.clone(),
+            command_source: ValidationCommandSource::AgentSelected,
+            command_ref: None,
+            command: "cargo test validation".to_string(),
+            cwd: "/tmp/event-project".to_string(),
+            label: Some("Rust validation".to_string()),
+            category: ValidationCommandCategory::Test,
+            reason: None,
+            related_files: Vec::new(),
+            cache_key: "cache-key".to_string(),
+            cache_decision: ValidationCacheDecision::Forced,
+            status: ValidationCommandStatus::Failed,
+            exit_code: Some(101),
+            duration_ms: Some(42),
+            stdout_snippet: Some("stdout".to_string()),
+            stderr_snippet: Some("stderr".to_string()),
+            stdout_log_path: Some("/logs/stdout.log".to_string()),
+            stderr_log_path: Some("/logs/stderr.log".to_string()),
+            launcher_kind: Some("production_shell_resolver".to_string()),
+            resolved_shell_path: Some("/bin/sh".to_string()),
+            head_sha: run.head_sha.clone(),
+            analysis_fingerprint: run.analysis_fingerprint.clone(),
+            status_episode_entered_at: None,
+            created_at: Utc::now(),
+        };
+
+        let value =
+            serde_json::to_value(TaskValidationEventPayload::command_completed(&run, &result))
+                .expect("payload should serialize");
+
+        assert_eq!(value["type"], "command_completed");
+        assert_eq!(value["status"], "failed");
+        assert_eq!(value["run_id"], "run-123");
+        assert_eq!(value["command_id"], "command-456");
+        assert_eq!(value["exit_code"], 101);
+        assert_eq!(value["duration_ms"], 42);
+        assert_eq!(value["stdout_snippet"], "stdout");
+        assert_eq!(value["stderr_log_path"], "/logs/stderr.log");
+        assert_eq!(value["head_short_sha"], "abcdef12");
     }
 
     #[tokio::test]
