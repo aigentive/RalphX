@@ -130,7 +130,7 @@ pub(crate) async fn create_verification_child_session(
         .clone()
         .unwrap_or_else(|| title.to_string());
     crate::http_server::emit_http_event(
-        &state,
+        state,
         "ideation:child_session_created",
         serde_json::json!({
             "sessionId": child_session_str,

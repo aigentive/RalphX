@@ -12,7 +12,7 @@ pub fn get_default_db_path() -> PathBuf {
 
 /// Get the database path inside the app data directory
 pub fn get_app_data_db_path(app_data_dir: &Path) -> AppResult<PathBuf> {
-    std::fs::create_dir_all(&app_data_dir)
+    std::fs::create_dir_all(app_data_dir)
         .map_err(|e| AppError::Infrastructure(format!("Failed to create app data dir: {}", e)))?;
 
     Ok(app_data_dir.join("ralphx.db"))
