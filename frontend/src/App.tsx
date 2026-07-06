@@ -71,7 +71,7 @@ import { useHarnessProviders } from "@/hooks/useHarnessProviders";
 import { useNavCompactBreakpoint } from "@/hooks";
 import { usePostUpdatePreparing } from "@/hooks/usePostUpdatePreparing";
 import { useTicketingCacheEvents } from "@/hooks/useTicketingEvents";
-import { useAutomationEvents } from "@/hooks/useAutomations";
+import { useAutomationEvents, useCreateAutomationDraft } from "@/hooks/useAutomations";
 import { extractErrorMessage } from "@/lib/errors";
 import { resolveIdeationSession } from "@/lib/resolveIdeationSession";
 import { readFreshPostUpdatePreparingMarker } from "@/lib/postUpdatePreparing";
@@ -909,6 +909,33 @@ function AppContent() {
     setCurrentView("automations");
   }, [setCurrentView]);
 
+  const createAutomationDraft = useCreateAutomationDraft();
+  const handleNewAutomation = useCallback(() => {
+    if (!currentProjectId || createAutomationDraft.isPending) {
+      return;
+    }
+    createAutomationDraft.mutate(
+      { projectId: currentProjectId },
+      {
+        onSuccess: ({ automation, setupConversationId }) => {
+          if (setupConversationId) {
+            handleNavigateToWorkspace(currentProjectId, setupConversationId);
+          } else {
+            handleOpenAutomationDetail(automation.id);
+          }
+        },
+        onError: (error) => {
+          toast.error(extractErrorMessage(error, "Failed to create automation"));
+        },
+      },
+    );
+  }, [
+    currentProjectId,
+    createAutomationDraft,
+    handleNavigateToWorkspace,
+    handleOpenAutomationDetail,
+  ]);
+
   useEffect(() => {
     setSelectedAutomationId(null);
   }, [currentProjectId]);
@@ -1304,6 +1331,7 @@ function AppContent() {
                         projectName={activeProject?.name ?? null}
                         selectedAutomationId={selectedAutomationId}
                         onSelectedAutomationChange={setSelectedAutomationId}
+                        onNewAutomation={handleNewAutomation}
                         onOpenRunConversation={handleNavigateToWorkspace}
                       />
                     </Suspense>

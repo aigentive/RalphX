@@ -1028,6 +1028,74 @@ describe("AgentsActiveConversationPanel", () => {
     expect(screen.getByTestId("workspace-composer-readonly")).toHaveTextContent("false");
   });
 
+  it("shows the automation setup banner for a setup conversation and returns to the automation", () => {
+    const onOpenAutomation = vi.fn();
+    renderPanel({
+      onOpenAutomation,
+      activeConversation: {
+        ...projectConversation(),
+        agentMode: "automation",
+        automationId: "automation-7",
+        automationRunId: null,
+      },
+    });
+
+    const banner = screen.getByTestId("agents-automation-setup-banner");
+    expect(banner).toHaveTextContent("Automation setup");
+    // Setup conversations stay editable — the user configures by chatting.
+    expect(screen.getByTestId("workspace-composer-readonly")).toHaveTextContent(
+      "false",
+    );
+    // Setup and run banners are mutually exclusive.
+    expect(
+      screen.queryByTestId("agents-automation-run-readonly-banner"),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("agents-automation-setup-open"));
+    expect(onOpenAutomation).toHaveBeenCalledWith("automation-7");
+  });
+
+  it("does not show the setup banner for automation run conversations", () => {
+    useAutomationDetailMock.mockReturnValue({
+      data: {
+        runs: [{ id: "run-1", status: "published" }],
+      },
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel({
+      onOpenAutomation: vi.fn(),
+      activeConversation: {
+        ...projectConversation(),
+        agentMode: "automation",
+        automationId: "automation-1",
+        automationRunId: "run-1",
+      },
+    });
+
+    expect(
+      screen.getByTestId("agents-automation-run-readonly-banner"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agents-automation-setup-banner"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows no automation banners for a plain conversation", () => {
+    renderPanel({
+      onOpenAutomation: vi.fn(),
+      activeConversation: { ...projectConversation(), agentMode: "chat" },
+    });
+
+    expect(
+      screen.queryByTestId("agents-automation-setup-banner"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agents-automation-run-readonly-banner"),
+    ).not.toBeInTheDocument();
+  });
+
   it("uses workspace runtime controls while focused on the workspace Review chat", () => {
     const onActiveModelChange = vi.fn();
     const onActiveEffortChange = vi.fn();

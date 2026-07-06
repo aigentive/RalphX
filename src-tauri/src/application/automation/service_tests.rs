@@ -10,7 +10,7 @@ use crate::application::automation::judge::{
 use crate::application::automation::service::{
     ApplyAutomationJudgeVerdictInput, AutomationRunNowAction, AutomationService,
     CreateAutomationDraftInput, CreateAutomationRunInput, CreateMergedBaseSuccessorRunInput,
-    UpdateAutomationSettingsInput,
+    UpdateAutomationConfigInput, UpdateAutomationSettingsInput,
 };
 use crate::application::automation::transition::{
     AutomationEvent, AutomationEventEmitter, NoopAutomationEventEmitter,
@@ -20,7 +20,7 @@ use crate::domain::entities::{
     AutomationRunId, AutomationRunStatus, AutomationStatus, ChatConversationId, ProjectId,
 };
 use crate::domain::repositories::{
-    AutomationRepository, AutomationRunRepository, AutomationSettingsPatch,
+    AutomationConfigPatch, AutomationRepository, AutomationRunRepository, AutomationSettingsPatch,
 };
 use crate::error::AppError;
 use crate::infrastructure::memory::{MemoryAutomationRepository, MemoryAutomationRunRepository};
@@ -207,6 +207,40 @@ impl AutomationRepository for LostStatusAutomationRepository {
         }
         if let Some(max_consecutive_failures) = patch.max_consecutive_failures {
             automation.max_consecutive_failures = max_consecutive_failures;
+        }
+        automation.updated_at = Utc::now();
+        Ok(Some(automation.clone()))
+    }
+
+    async fn update_config(
+        &self,
+        id: &AutomationId,
+        patch: AutomationConfigPatch,
+    ) -> crate::error::AppResult<Option<Automation>> {
+        let mut automation = self.automation.lock().unwrap();
+        if automation.id != *id {
+            return Ok(None);
+        }
+        if let Some(goal_prompt) = patch.goal_prompt {
+            automation.goal_prompt = goal_prompt;
+        }
+        if let Some(first_run_prompt) = patch.first_run_prompt {
+            automation.first_run_prompt = Some(first_run_prompt);
+        }
+        if let Some(provider_harness) = patch.provider_harness {
+            automation.provider_harness = provider_harness;
+        }
+        if let Some(model_id) = patch.model_id {
+            automation.model_id = model_id;
+        }
+        if let Some(run_mode) = patch.run_mode {
+            automation.run_mode = run_mode;
+        }
+        if let Some(base_ref_kind) = patch.base_ref_kind {
+            automation.base_ref_kind = base_ref_kind;
+        }
+        if let Some(base_ref) = patch.base_ref {
+            automation.base_ref = base_ref;
         }
         automation.updated_at = Utc::now();
         Ok(Some(automation.clone()))
@@ -463,6 +497,153 @@ async fn service_creates_lists_gets_and_updates_mechanical_settings() {
         vec![AutomationEvent::AutomationUpdated {
             automation_id: draft.id
         }]
+    );
+}
+
+#[tokio::test]
+async fn service_update_config_writes_provided_fields_on_draft_and_emits_event() {
+    let emitter = Arc::new(RecordingEmitter::default());
+    let (service, automation_repo, _run_repo) = service_with_emitter(emitter.clone());
+    let mut draft = automation("automation-1", AutomationStatus::Draft);
+    draft.goal_prompt = String::new();
+    draft.first_run_prompt = None;
+    draft.base_ref = String::new();
+    automation_repo.create(draft.clone()).await.unwrap();
+
+    let updated = service
+        .update_config(UpdateAutomationConfigInput {
+            id: draft.id.clone(),
+            goal_prompt: Some("Migrate the payments module".to_string()),
+            first_run_prompt: Some("Implement item 1 in a scoped PR and publish it.".to_string()),
+            provider_harness: Some("codex".to_string()),
+            model_id: Some("gpt-5.4".to_string()),
+            logical_effort: Some("high".to_string()),
+            run_mode: Some("edit".to_string()),
+            base_ref_kind: Some("local_branch".to_string()),
+            base_ref: Some("main".to_string()),
+            base_display_name: Some("main".to_string()),
+            chain_mode: None,
+            completion_signal: None,
+            setup_analysis_summary: Some("Setup summary".to_string()),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(updated.goal_prompt, "Migrate the payments module");
+    assert_eq!(
+        updated.first_run_prompt.as_deref(),
+        Some("Implement item 1 in a scoped PR and publish it.")
+    );
+    assert_eq!(updated.provider_harness, "codex");
+    assert_eq!(updated.model_id, "gpt-5.4");
+    assert_eq!(updated.base_ref_kind, "local_branch");
+    assert_eq!(updated.base_ref, "main");
+    // Fields left None keep their pre-existing values.
+    assert_eq!(updated.chain_mode, "merged_base");
+    assert_eq!(updated.completion_signal, "pr_merged");
+    assert_eq!(updated.status, AutomationStatus::Draft);
+
+    assert_eq!(
+        emitter.events(),
+        vec![AutomationEvent::AutomationUpdated {
+            automation_id: draft.id
+        }]
+    );
+}
+
+#[tokio::test]
+async fn service_update_config_rejects_active_automation_and_leaves_row_intact() {
+    let emitter = Arc::new(RecordingEmitter::default());
+    let (service, automation_repo, _run_repo) = service_with_emitter(emitter.clone());
+    let active = automation("automation-1", AutomationStatus::Active);
+    automation_repo.create(active.clone()).await.unwrap();
+
+    let error = service
+        .update_config(UpdateAutomationConfigInput {
+            id: active.id.clone(),
+            goal_prompt: Some("Should not persist".to_string()),
+            first_run_prompt: None,
+            provider_harness: None,
+            model_id: None,
+            logical_effort: None,
+            run_mode: None,
+            base_ref_kind: None,
+            base_ref: None,
+            base_display_name: None,
+            chain_mode: None,
+            completion_signal: None,
+            setup_analysis_summary: None,
+        })
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, AppError::Validation(message) if message.contains("draft or paused")));
+    let stored = automation_repo
+        .get_by_id(&active.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.goal_prompt, "Goal");
+    assert_eq!(stored.status, AutomationStatus::Active);
+    assert!(emitter.events().is_empty());
+}
+
+#[tokio::test]
+async fn service_create_draft_then_config_then_finalize_activates_automation() {
+    // KEY acceptance test: an empty draft can be populated via update_config
+    // and then finalized to Active — proving the config-write path unblocks
+    // the previously stuck draft->active transition.
+    let emitter = Arc::new(RecordingEmitter::default());
+    let (service, automation_repo, _run_repo) = service_with_emitter(emitter.clone());
+    let project_id = ProjectId::from_string("project-1".to_string());
+
+    let draft = service
+        .create_draft(CreateAutomationDraftInput {
+            id: None,
+            project_id,
+            name: Some("Payments automation".to_string()),
+            setup_conversation_id: None,
+        })
+        .await
+        .unwrap();
+    // Freshly created drafts start with empty goal/prompt/base — not finalizable.
+    assert_eq!(draft.status, AutomationStatus::Draft);
+    assert!(draft.goal_prompt.is_empty());
+    assert!(draft.first_run_prompt.is_none());
+    let premature = service.finalize(&draft.id).await.unwrap_err();
+    assert!(matches!(premature, AppError::Validation(_)));
+
+    service
+        .update_config(UpdateAutomationConfigInput {
+            id: draft.id.clone(),
+            goal_prompt: Some("Ship the migration in a serial PR chain".to_string()),
+            first_run_prompt: Some(
+                "Implement the first slice in a scoped PR and publish it.".to_string(),
+            ),
+            provider_harness: None,
+            model_id: None,
+            logical_effort: None,
+            run_mode: Some("edit".to_string()),
+            base_ref_kind: Some("local_branch".to_string()),
+            base_ref: Some("main".to_string()),
+            base_display_name: Some("main".to_string()),
+            chain_mode: None,
+            completion_signal: None,
+            setup_analysis_summary: None,
+        })
+        .await
+        .unwrap();
+
+    let finalized = service.finalize(&draft.id).await.unwrap();
+    assert_eq!(finalized.status, AutomationStatus::Active);
+    assert_eq!(
+        automation_repo
+            .get_by_id(&draft.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        AutomationStatus::Active
     );
 }
 

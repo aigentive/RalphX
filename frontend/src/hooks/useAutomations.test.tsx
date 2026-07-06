@@ -3,10 +3,13 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { automationsApi } from "@/api/automations";
+
 import {
   automationKeys,
   invalidateAutomationQueries,
   useAutomationEvents,
+  useCreateAutomationDraft,
 } from "./useAutomations";
 
 const subscribeMock = vi.fn();
@@ -15,6 +18,12 @@ vi.mock("@/providers/EventProvider", () => ({
   useEventBus: () => ({
     subscribe: subscribeMock,
   }),
+}));
+
+vi.mock("@/api/automations", () => ({
+  automationsApi: {
+    createDraft: vi.fn(),
+  },
 }));
 
 function wrapperFor(queryClient: QueryClient) {
@@ -82,5 +91,34 @@ describe("useAutomations", () => {
 
     expect(unsubscribeAutomation).toHaveBeenCalledTimes(1);
     expect(unsubscribeRun).toHaveBeenCalledTimes(1);
+  });
+
+  it("useCreateAutomationDraft creates a draft and invalidates list + detail scopes", async () => {
+    const queryClient = new QueryClient();
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+    const createDraftMock = vi.mocked(automationsApi.createDraft);
+    createDraftMock.mockResolvedValue({
+      automation: { id: "automation-1" } as never,
+      setupConversationId: "conversation-9",
+    });
+
+    const { result } = renderHook(() => useCreateAutomationDraft(), {
+      wrapper: wrapperFor(queryClient),
+    });
+
+    let response: Awaited<ReturnType<typeof result.current.mutateAsync>> | undefined;
+    await act(async () => {
+      response = await result.current.mutateAsync({ projectId: "project-1" });
+    });
+
+    expect(createDraftMock).toHaveBeenCalledWith({ projectId: "project-1" });
+    expect(response).toEqual({
+      automation: { id: "automation-1" },
+      setupConversationId: "conversation-9",
+    });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: automationKeys.lists() });
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: automationKeys.detail("automation-1"),
+    });
   });
 });

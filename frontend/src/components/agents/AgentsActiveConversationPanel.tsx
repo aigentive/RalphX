@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CheckCircle2,
   Clock,
+  ExternalLink,
   GitPullRequestArrow,
   Lightbulb,
   Loader2,
@@ -9,6 +10,7 @@ import {
   PanelRightOpen,
   Play,
   ShieldCheck,
+  Workflow,
   type LucideIcon,
 } from "lucide-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -610,6 +612,7 @@ interface AgentsActiveConversationPanelProps {
     contextType: AgentTaskRuntimeContextType
   ) => void;
   onOpenTaskArtifact: (taskId: string) => void;
+  onOpenAutomation?: (automationId: string) => void;
   onForkConversation: (
     conversationId: string
   ) => Promise<ForkAgentConversationResult>;
@@ -659,6 +662,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   onFocusVerificationSession,
   onFocusTaskRuntime,
   onOpenTaskArtifact,
+  onOpenAutomation,
   onForkConversation,
   onOpenPlanArtifact,
   onOpenPublishPane,
@@ -884,6 +888,16 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     !isFocusedChildChat &&
     (!automationRun || !TERMINAL_AUTOMATION_RUN_STATUSES.has(automationRun.status))
       ? "Automation run conversations are read-only until the run reaches a terminal state."
+      : null;
+  // Automation SETUP conversation: automationId present, no run yet. Editable —
+  // the user configures the automation by chatting with the setup agent. Mutually
+  // exclusive with automationRunConversationId (which requires automationRunId).
+  const automationSetupConversationId =
+    !isFocusedChildChat &&
+    activeConversation.agentMode === "automation" &&
+    activeConversation.automationId &&
+    !activeConversation.automationRunId
+      ? activeConversation.automationId
       : null;
   const usesWorkspaceRuntimeControls =
     !isFocusedChildChat || chatFocus.type === "workspace_review";
@@ -2286,6 +2300,51 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                       actions={planComposerCtaActions}
                       viewPlanAction={planComposerViewPlanAction}
                     />
+                  )}
+                  {automationSetupConversationId && (
+                    <div
+                      className="flex items-start gap-2 rounded-md px-3 py-2 text-xs"
+                      style={{
+                        backgroundColor: "var(--bg-surface)",
+                        borderColor: "var(--border-default)",
+                        borderStyle: "solid",
+                        borderWidth: "1px",
+                        color: "var(--text-muted)",
+                      }}
+                      data-testid="agents-automation-setup-banner"
+                    >
+                      <Workflow
+                        className="mt-0.5 h-4 w-4 shrink-0"
+                        style={{ color: "var(--accent-primary)" }}
+                        aria-hidden="true"
+                      />
+                      <div className="flex min-w-0 flex-1 flex-col gap-2">
+                        <span>
+                          Automation setup — configure this automation by
+                          chatting with the setup agent.
+                        </span>
+                        {onOpenAutomation && (
+                          <div>
+                            <Button
+                              type="button"
+                              variant="secondary"
+                              size="sm"
+                              className="gap-2"
+                              onClick={() =>
+                                onOpenAutomation(automationSetupConversationId)
+                              }
+                              data-testid="agents-automation-setup-open"
+                            >
+                              <ExternalLink
+                                className="h-3.5 w-3.5"
+                                aria-hidden="true"
+                              />
+                              Open automation
+                            </Button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
                   )}
                   {automationRunReadOnlyReason && (
                     <div

@@ -6,8 +6,8 @@ use crate::domain::entities::{
     ProjectId,
 };
 use crate::domain::repositories::{
-    AutomationRepository, AutomationRunPublicationMetadata, AutomationRunRepository,
-    AutomationSettingsPatch,
+    AutomationConfigPatch, AutomationRepository, AutomationRunPublicationMetadata,
+    AutomationRunRepository, AutomationSettingsPatch,
 };
 use crate::error::AppError;
 use crate::testing::SqliteTestDb;
@@ -239,6 +239,63 @@ async fn sqlite_automation_repo_updates_goal_items_and_maps_optional_fields() {
                 name: Some("No row".to_string()),
                 max_runs: None,
                 max_consecutive_failures: None,
+            },
+        )
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn sqlite_automation_repo_update_config_writes_only_provided_fields() {
+    let (_db, project_id, repo, _run_repo) = setup_repos();
+    let mut automation = automation("automation-1", project_id, AutomationStatus::Draft);
+    automation.goal_prompt = String::new();
+    automation.first_run_prompt = None;
+    automation.base_ref = String::new();
+    repo.create(automation.clone()).await.unwrap();
+
+    let updated = repo
+        .update_config(
+            &automation.id,
+            AutomationConfigPatch {
+                goal_prompt: Some("Ship the migration".to_string()),
+                first_run_prompt: Some("Implement item 1 in a scoped PR.".to_string()),
+                base_ref_kind: Some("local_branch".to_string()),
+                base_ref: Some("main".to_string()),
+                model_id: Some("gpt-5.4".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+        .expect("config should update");
+
+    assert_eq!(updated.goal_prompt, "Ship the migration");
+    assert_eq!(
+        updated.first_run_prompt.as_deref(),
+        Some("Implement item 1 in a scoped PR.")
+    );
+    assert_eq!(updated.base_ref_kind, "local_branch");
+    assert_eq!(updated.base_ref, "main");
+    assert_eq!(updated.model_id, "gpt-5.4");
+    // Fields left None keep their pre-existing values.
+    assert_eq!(updated.provider_harness, "claude");
+    assert_eq!(updated.chain_mode, "merged_base");
+    assert_eq!(updated.completion_signal, "pr_merged");
+    assert_eq!(updated.status, AutomationStatus::Draft);
+
+    // Persisted round-trip matches the returned row.
+    let stored = repo.get_by_id(&automation.id).await.unwrap().unwrap();
+    assert_eq!(stored, updated);
+
+    // Unknown id yields None without writing.
+    assert!(repo
+        .update_config(
+            &AutomationId::from_string("missing-automation"),
+            AutomationConfigPatch {
+                goal_prompt: Some("nope".to_string()),
+                ..Default::default()
             },
         )
         .await

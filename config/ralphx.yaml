@@ -37,7 +37,7 @@ ui:
     activity_page: false
     extensibility_page: false
     ideation_page: false
-    automations_page: false
+    automations_page: true
     battle_mode: false
     team_mode: false
     atlassian_oauth: false

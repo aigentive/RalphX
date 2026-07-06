@@ -17,7 +17,7 @@ use crate::http_server::types::{HttpError, HttpServerState};
 
 pub const CALLER_SESSION_ID_HEADER: &str = "x-ralphx-caller-session-id";
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 pub struct UpdateAutomationRequest {
     #[serde(default)]
     pub name: Option<String>,
@@ -25,6 +25,47 @@ pub struct UpdateAutomationRequest {
     pub max_runs: Option<i64>,
     #[serde(default)]
     pub max_consecutive_failures: Option<i64>,
+    #[serde(default)]
+    pub goal_prompt: Option<String>,
+    #[serde(default)]
+    pub first_run_prompt: Option<String>,
+    #[serde(default)]
+    pub provider_harness: Option<String>,
+    #[serde(default)]
+    pub model_id: Option<String>,
+    #[serde(default)]
+    pub logical_effort: Option<String>,
+    #[serde(default)]
+    pub run_mode: Option<String>,
+    #[serde(default)]
+    pub base_ref_kind: Option<String>,
+    #[serde(default)]
+    pub base_ref: Option<String>,
+    #[serde(default)]
+    pub base_display_name: Option<String>,
+    #[serde(default)]
+    pub chain_mode: Option<String>,
+    #[serde(default)]
+    pub completion_signal: Option<String>,
+    #[serde(default)]
+    pub setup_analysis_summary: Option<String>,
+}
+
+impl UpdateAutomationRequest {
+    fn has_config_fields(&self) -> bool {
+        self.goal_prompt.is_some()
+            || self.first_run_prompt.is_some()
+            || self.provider_harness.is_some()
+            || self.model_id.is_some()
+            || self.logical_effort.is_some()
+            || self.run_mode.is_some()
+            || self.base_ref_kind.is_some()
+            || self.base_ref.is_some()
+            || self.base_display_name.is_some()
+            || self.chain_mode.is_some()
+            || self.completion_signal.is_some()
+            || self.setup_analysis_summary.is_some()
+    }
 }
 
 pub async fn get_automation(
@@ -47,11 +88,17 @@ pub async fn update_automation(
     headers: HeaderMap,
     Json(request): Json<UpdateAutomationRequest>,
 ) -> Result<Json<AutomationResponse>, HttpError> {
+    // Ownership resolution keeps the caller-conversation -> automation binding
+    // authorization intact before any mutation is applied.
     let automation = resolve_bound_automation(&state, &headers).await?;
-    let updated = automation_service_for_state(&state.app_state)
+    let automation_id = automation.id;
+    let apply_config = request.has_config_fields();
+    let service = automation_service_for_state(&state.app_state);
+
+    let mut updated = service
         .update_settings(
             crate::application::automation::service::UpdateAutomationSettingsInput {
-                id: automation.id,
+                id: automation_id.clone(),
                 name: request.name,
                 max_runs: request.max_runs,
                 max_consecutive_failures: request.max_consecutive_failures,
@@ -59,6 +106,30 @@ pub async fn update_automation(
         )
         .await
         .map_err(map_app_err)?;
+
+    if apply_config {
+        updated = service
+            .update_config(
+                crate::application::automation::service::UpdateAutomationConfigInput {
+                    id: automation_id,
+                    goal_prompt: request.goal_prompt,
+                    first_run_prompt: request.first_run_prompt,
+                    provider_harness: request.provider_harness,
+                    model_id: request.model_id,
+                    logical_effort: request.logical_effort,
+                    run_mode: request.run_mode,
+                    base_ref_kind: request.base_ref_kind,
+                    base_ref: request.base_ref,
+                    base_display_name: request.base_display_name,
+                    chain_mode: request.chain_mode,
+                    completion_signal: request.completion_signal,
+                    setup_analysis_summary: request.setup_analysis_summary,
+                },
+            )
+            .await
+            .map_err(map_app_err)?;
+    }
+
     Ok(Json(AutomationResponse::from(updated)))
 }
 

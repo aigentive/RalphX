@@ -94,6 +94,7 @@ async fn get_and_update_automation_use_server_bound_conversation() {
             name: Some("Renamed automation".to_string()),
             max_runs: Some(9),
             max_consecutive_failures: None,
+            ..Default::default()
         }),
     )
     .await
@@ -110,6 +111,102 @@ async fn get_and_update_automation_use_server_bound_conversation() {
             .unwrap()
             .name,
         "Renamed automation"
+    );
+}
+
+#[tokio::test]
+async fn update_automation_persists_config_fields_for_bound_conversation() {
+    let app_state = Arc::new(AppState::new_test());
+    let (project_id, automation_id, conversation) = seed_bound_conversation(&app_state).await;
+    let mut automation = automation(&automation_id, project_id, AutomationStatus::Draft);
+    automation.setup_conversation_id = Some(conversation.id);
+    automation.goal_prompt = String::new();
+    automation.first_run_prompt = None;
+    automation.base_ref = String::new();
+    app_state
+        .automation_repo
+        .create(automation.clone())
+        .await
+        .unwrap();
+    let state = HttpServerState::new_test(app_state.clone());
+
+    let Json(updated) = update_automation(
+        State(state),
+        caller_headers(&conversation.id),
+        Json(UpdateAutomationRequest {
+            goal_prompt: Some("Ship the migration".to_string()),
+            first_run_prompt: Some("Implement item 1 in a scoped PR.".to_string()),
+            base_ref_kind: Some("local_branch".to_string()),
+            base_ref: Some("main".to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(updated.goal_prompt, "Ship the migration");
+    assert_eq!(
+        updated.first_run_prompt.as_deref(),
+        Some("Implement item 1 in a scoped PR.")
+    );
+    assert_eq!(updated.base_ref_kind, "local_branch");
+    assert_eq!(updated.base_ref, "main");
+
+    let stored = app_state
+        .automation_repo
+        .get_by_id(&automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.goal_prompt, "Ship the migration");
+    assert_eq!(
+        stored.first_run_prompt.as_deref(),
+        Some("Implement item 1 in a scoped PR.")
+    );
+    assert_eq!(stored.base_ref, "main");
+}
+
+#[tokio::test]
+async fn update_automation_config_rejects_mismatched_conversation_binding() {
+    let app_state = Arc::new(AppState::new_test());
+    let (project_id, automation_id, conversation) = seed_bound_conversation(&app_state).await;
+    let mut automation = automation(&automation_id, project_id, AutomationStatus::Draft);
+    // Binding points at a different setup conversation than the caller.
+    automation.setup_conversation_id = Some(ChatConversationId::new());
+    app_state
+        .automation_repo
+        .create(automation.clone())
+        .await
+        .unwrap();
+    let state = HttpServerState::new_test(app_state.clone());
+
+    let error = update_automation(
+        State(state),
+        caller_headers(&conversation.id),
+        Json(UpdateAutomationRequest {
+            goal_prompt: Some("Should not persist".to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.status, StatusCode::FORBIDDEN);
+    assert!(error
+        .message
+        .as_deref()
+        .unwrap_or("")
+        .contains("automation_conversation_mismatch"));
+    // Config write must not have leaked through the rejected binding.
+    assert_eq!(
+        app_state
+            .automation_repo
+            .get_by_id(&automation_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .goal_prompt,
+        "Implement the plan"
     );
 }
 

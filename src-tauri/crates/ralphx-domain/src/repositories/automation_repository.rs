@@ -10,6 +10,25 @@ pub struct AutomationSettingsPatch {
     pub max_consecutive_failures: Option<i64>,
 }
 
+/// Partial patch for the automation configuration fields the setup agent
+/// populates after draft creation. Every field is apply-only-if-`Some`; a
+/// `None` field leaves the existing column value untouched.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AutomationConfigPatch {
+    pub goal_prompt: Option<String>,
+    pub first_run_prompt: Option<String>,
+    pub provider_harness: Option<String>,
+    pub model_id: Option<String>,
+    pub logical_effort: Option<String>,
+    pub run_mode: Option<String>,
+    pub base_ref_kind: Option<String>,
+    pub base_ref: Option<String>,
+    pub base_display_name: Option<String>,
+    pub chain_mode: Option<String>,
+    pub completion_signal: Option<String>,
+    pub setup_analysis_summary: Option<String>,
+}
+
 #[async_trait]
 pub trait AutomationRepository: Send + Sync {
     async fn create(&self, automation: Automation) -> AppResult<Automation>;
@@ -24,6 +43,14 @@ pub trait AutomationRepository: Send + Sync {
         &self,
         id: &AutomationId,
         patch: AutomationSettingsPatch,
+    ) -> AppResult<Option<Automation>>;
+
+    /// Apply the setup-agent config patch, writing only the fields present in
+    /// `patch` and returning the updated row (or `None` if the id is unknown).
+    async fn update_config(
+        &self,
+        id: &AutomationId,
+        patch: AutomationConfigPatch,
     ) -> AppResult<Option<Automation>>;
 
     async fn update_goal_items_json(

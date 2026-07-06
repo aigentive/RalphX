@@ -9,8 +9,8 @@ use crate::domain::entities::{
     ChatConversationId, ProjectId,
 };
 use crate::domain::repositories::{
-    AutomationRepository, AutomationRunPublicationMetadata, AutomationRunRepository,
-    AutomationSettingsPatch,
+    AutomationConfigPatch, AutomationRepository, AutomationRunPublicationMetadata,
+    AutomationRunRepository, AutomationSettingsPatch,
 };
 use crate::error::{AppError, AppResult};
 
@@ -96,6 +96,59 @@ impl AutomationRepository for MemoryAutomationRepository {
         }
         if let Some(max_consecutive_failures) = patch.max_consecutive_failures {
             automation.max_consecutive_failures = max_consecutive_failures;
+        }
+        automation.updated_at = Utc::now();
+        Ok(Some(automation.clone()))
+    }
+
+    async fn update_config(
+        &self,
+        id: &AutomationId,
+        patch: AutomationConfigPatch,
+    ) -> AppResult<Option<Automation>> {
+        let mut automations = self.automations.write().unwrap();
+        let Some(automation) = automations
+            .iter_mut()
+            .find(|automation| automation.id == *id)
+        else {
+            return Ok(None);
+        };
+
+        if let Some(goal_prompt) = patch.goal_prompt {
+            automation.goal_prompt = goal_prompt;
+        }
+        if let Some(first_run_prompt) = patch.first_run_prompt {
+            automation.first_run_prompt = Some(first_run_prompt);
+        }
+        if let Some(provider_harness) = patch.provider_harness {
+            automation.provider_harness = provider_harness;
+        }
+        if let Some(model_id) = patch.model_id {
+            automation.model_id = model_id;
+        }
+        if let Some(logical_effort) = patch.logical_effort {
+            automation.logical_effort = Some(logical_effort);
+        }
+        if let Some(run_mode) = patch.run_mode {
+            automation.run_mode = run_mode;
+        }
+        if let Some(base_ref_kind) = patch.base_ref_kind {
+            automation.base_ref_kind = base_ref_kind;
+        }
+        if let Some(base_ref) = patch.base_ref {
+            automation.base_ref = base_ref;
+        }
+        if let Some(base_display_name) = patch.base_display_name {
+            automation.base_display_name = Some(base_display_name);
+        }
+        if let Some(chain_mode) = patch.chain_mode {
+            automation.chain_mode = chain_mode;
+        }
+        if let Some(completion_signal) = patch.completion_signal {
+            automation.completion_signal = completion_signal;
+        }
+        if let Some(setup_analysis_summary) = patch.setup_analysis_summary {
+            automation.setup_analysis_summary = Some(setup_analysis_summary);
         }
         automation.updated_at = Utc::now();
         Ok(Some(automation.clone()))

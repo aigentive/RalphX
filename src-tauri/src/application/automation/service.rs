@@ -16,7 +16,7 @@ use crate::domain::entities::{
     ProjectId,
 };
 use crate::domain::repositories::{
-    AutomationRepository, AutomationRunRepository, AutomationSettingsPatch,
+    AutomationConfigPatch, AutomationRepository, AutomationRunRepository, AutomationSettingsPatch,
 };
 use crate::error::{AppError, AppResult};
 
@@ -51,6 +51,23 @@ pub struct UpdateAutomationSettingsInput {
     pub name: Option<String>,
     pub max_runs: Option<i64>,
     pub max_consecutive_failures: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdateAutomationConfigInput {
+    pub id: AutomationId,
+    pub goal_prompt: Option<String>,
+    pub first_run_prompt: Option<String>,
+    pub provider_harness: Option<String>,
+    pub model_id: Option<String>,
+    pub logical_effort: Option<String>,
+    pub run_mode: Option<String>,
+    pub base_ref_kind: Option<String>,
+    pub base_ref: Option<String>,
+    pub base_display_name: Option<String>,
+    pub chain_mode: Option<String>,
+    pub completion_signal: Option<String>,
+    pub setup_analysis_summary: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -219,6 +236,51 @@ impl AutomationService {
         let updated = self
             .automation_repo
             .update_settings(&input.id, patch)
+            .await?
+            .ok_or_else(|| automation_not_found(&input.id))?;
+        self.event_emitter.emit(AutomationEvent::AutomationUpdated {
+            automation_id: updated.id.clone(),
+        });
+        Ok(updated)
+    }
+
+    /// Persist the setup-agent config patch (goal/prompt/provider/model/base).
+    ///
+    /// This is a configuration write, NOT a status change, so it never routes
+    /// through `AutomationTransitionService`. It is only permitted while the
+    /// automation is still editable (`Draft` or `Paused`); `Active`,
+    /// `Completed`, and `Stopped` automations reject the write.
+    pub async fn update_config(
+        &self,
+        input: UpdateAutomationConfigInput,
+    ) -> AppResult<Automation> {
+        let automation = self.require_automation(&input.id).await?;
+        if !matches!(
+            automation.status,
+            AutomationStatus::Draft | AutomationStatus::Paused
+        ) {
+            return Err(AppError::Validation(format!(
+                "automation config can only be updated while draft or paused, not {}",
+                automation.status.as_str()
+            )));
+        }
+        let patch = AutomationConfigPatch {
+            goal_prompt: input.goal_prompt,
+            first_run_prompt: input.first_run_prompt,
+            provider_harness: input.provider_harness,
+            model_id: input.model_id,
+            logical_effort: input.logical_effort,
+            run_mode: input.run_mode,
+            base_ref_kind: input.base_ref_kind,
+            base_ref: input.base_ref,
+            base_display_name: input.base_display_name,
+            chain_mode: input.chain_mode,
+            completion_signal: input.completion_signal,
+            setup_analysis_summary: input.setup_analysis_summary,
+        };
+        let updated = self
+            .automation_repo
+            .update_config(&input.id, patch)
             .await?
             .ok_or_else(|| automation_not_found(&input.id))?;
         self.event_emitter.emit(AutomationEvent::AutomationUpdated {

@@ -1,7 +1,16 @@
 import { useEffect } from "react";
-import { type QueryClient, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  type QueryClient,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 
 import { automationsApi } from "@/api/automations";
+import type {
+  CreateAutomationDraftInput,
+  CreateAutomationDraftResponse,
+} from "@/api/automations";
 import { useEventBus } from "@/providers/EventProvider";
 
 export const automationKeys = {
@@ -84,6 +93,20 @@ export function useAutomationEvents(automationId?: string | null) {
       unsubscribeRun();
     };
   }, [automationId, bus, queryClient]);
+}
+
+export function useCreateAutomationDraft() {
+  const queryClient = useQueryClient();
+  return useMutation<
+    CreateAutomationDraftResponse,
+    Error,
+    CreateAutomationDraftInput
+  >({
+    mutationFn: (input) => automationsApi.createDraft(input),
+    onSuccess: (result) => {
+      invalidateAutomationQueries(queryClient, result.automation.id);
+    },
+  });
 }
 
 export function useAutomationDetail(

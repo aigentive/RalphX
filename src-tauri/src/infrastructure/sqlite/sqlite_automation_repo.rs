@@ -11,8 +11,8 @@ use crate::domain::entities::{
     ChatConversationId, ProjectId,
 };
 use crate::domain::repositories::{
-    AutomationRepository, AutomationRunPublicationMetadata, AutomationRunRepository,
-    AutomationSettingsPatch,
+    AutomationConfigPatch, AutomationRepository, AutomationRunPublicationMetadata,
+    AutomationRunRepository, AutomationSettingsPatch,
 };
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::sqlite::DbConnection;
@@ -184,6 +184,59 @@ impl AutomationRepository for SqliteAutomationRepository {
                         patch.name,
                         patch.max_runs,
                         patch.max_consecutive_failures,
+                        Utc::now().to_rfc3339(),
+                        id,
+                    ],
+                )?;
+                if affected == 0 {
+                    return Ok(None);
+                }
+
+                let sql = format!("{SELECT_AUTOMATION} WHERE id = ?1");
+                conn.query_row(&sql, [id], Self::row_to_automation)
+                    .optional()
+                    .map_err(AppError::from)
+            })
+            .await
+    }
+
+    async fn update_config(
+        &self,
+        id: &AutomationId,
+        patch: AutomationConfigPatch,
+    ) -> AppResult<Option<Automation>> {
+        let id = id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                let affected = conn.execute(
+                    "UPDATE automations
+                     SET goal_prompt = COALESCE(?1, goal_prompt),
+                         first_run_prompt = COALESCE(?2, first_run_prompt),
+                         provider_harness = COALESCE(?3, provider_harness),
+                         model_id = COALESCE(?4, model_id),
+                         logical_effort = COALESCE(?5, logical_effort),
+                         run_mode = COALESCE(?6, run_mode),
+                         base_ref_kind = COALESCE(?7, base_ref_kind),
+                         base_ref = COALESCE(?8, base_ref),
+                         base_display_name = COALESCE(?9, base_display_name),
+                         chain_mode = COALESCE(?10, chain_mode),
+                         completion_signal = COALESCE(?11, completion_signal),
+                         setup_analysis_summary = COALESCE(?12, setup_analysis_summary),
+                         updated_at = ?13
+                     WHERE id = ?14",
+                    params![
+                        patch.goal_prompt,
+                        patch.first_run_prompt,
+                        patch.provider_harness,
+                        patch.model_id,
+                        patch.logical_effort,
+                        patch.run_mode,
+                        patch.base_ref_kind,
+                        patch.base_ref,
+                        patch.base_display_name,
+                        patch.chain_mode,
+                        patch.completion_signal,
+                        patch.setup_analysis_summary,
                         Utc::now().to_rfc3339(),
                         id,
                     ],

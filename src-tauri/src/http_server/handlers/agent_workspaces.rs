@@ -7631,7 +7631,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn passed_workspace_review_resumes_blocked_pr_fix_publish() {
+    async fn passed_workspace_review_resumes_pr_fix_publish_after_missing_review_failure() {
         let repo = tempfile::TempDir::new().expect("repo tempdir");
         let worktrees = tempfile::TempDir::new().expect("worktree tempdir");
         git(repo.path(), &["init", "-b", "main"]);
@@ -7708,7 +7708,7 @@ mod tests {
         workspace.auto_publish_enabled = true;
         workspace.pr_supervision_status = Some("blocked".to_string());
         workspace.pr_supervision_summary =
-            Some("Workspace Review is required before publishing".to_string());
+            Some("Workspace reviewer completed without writing a current Review".to_string());
         workspace.pr_autofix_enabled = true;
         workspace.pr_auto_merge_desired = true;
         app_state

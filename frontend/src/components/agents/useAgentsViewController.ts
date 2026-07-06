@@ -1231,6 +1231,7 @@ export function useAgentsViewController({
       onFocusVerificationSession: handleFocusVerificationSession,
       onFocusTaskRuntime: handleFocusTaskRuntime,
       onOpenTaskArtifact: handleOpenTaskArtifact,
+      ...(onOpenAutomation ? { onOpenAutomation } : {}),
       onForkConversation: handleForkConversation,
       onOpenPlanArtifact: handleOpenPlanArtifact,
       onOpenPublishPane: handleOpenPublishPaneWithChatFocus,
