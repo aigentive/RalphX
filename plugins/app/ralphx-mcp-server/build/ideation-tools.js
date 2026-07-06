@@ -662,7 +662,23 @@ export const IDEATION_TOOLS = [
                 },
                 blocker_fingerprint: {
                     type: "string",
-                    description: "Stable dedupe key for this issue, for example scope-drift:<task-id>:<file-or-check>.",
+                    description: "Optional legacy/debug dedupe key. The backend computes the canonical issue identity.",
+                },
+                attach_to_issue_id: {
+                    type: "string",
+                    description: "Retry field when the backend returns candidate issues. Set this to attach this report to an existing open issue.",
+                },
+                confirm_new: {
+                    type: "boolean",
+                    description: "Retry field when candidates exist. Set true only when this is a separate issue from all returned candidates.",
+                },
+                new_issue_reason: {
+                    type: "string",
+                    description: "Concise reason required with confirm_new when candidates exist.",
+                },
+                issue_check_token: {
+                    type: "string",
+                    description: "Current issue-set token returned by the backend when candidate disambiguation is required.",
                 },
                 followup_title: {
                     type: "string",

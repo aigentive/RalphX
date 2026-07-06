@@ -5,8 +5,9 @@ use async_trait::async_trait;
 use tokio::sync::RwLock;
 
 use crate::domain::entities::{
-    AgentConversationIssue, ChatConversationId, AGENT_CONVERSATION_ISSUE_STATUS_DISMISSED,
-    AGENT_CONVERSATION_ISSUE_STATUS_OPEN, AGENT_CONVERSATION_ISSUE_STATUS_RESOLVED,
+    AgentConversationIssue, AgentConversationIssueOccurrence, ChatConversationId,
+    AGENT_CONVERSATION_ISSUE_STATUS_DISMISSED, AGENT_CONVERSATION_ISSUE_STATUS_OPEN,
+    AGENT_CONVERSATION_ISSUE_STATUS_RESOLVED,
 };
 use crate::domain::repositories::AgentConversationIssueRepository;
 use crate::error::AppResult;
@@ -14,6 +15,7 @@ use crate::error::AppResult;
 #[derive(Default)]
 pub struct MemoryAgentConversationIssueRepository {
     issues: Arc<RwLock<HashMap<String, AgentConversationIssue>>>,
+    occurrences: Arc<RwLock<HashMap<String, AgentConversationIssueOccurrence>>>,
 }
 
 impl MemoryAgentConversationIssueRepository {
@@ -77,6 +79,79 @@ impl AgentConversationIssueRepository for MemoryAgentConversationIssueRepository
             })
             .max_by(|a, b| a.updated_at.cmp(&b.updated_at))
             .cloned())
+    }
+
+    async fn find_open_by_canonical_fingerprint(
+        &self,
+        conversation_id: &ChatConversationId,
+        canonical_fingerprint: &str,
+    ) -> AppResult<Option<AgentConversationIssue>> {
+        Ok(self
+            .issues
+            .read()
+            .await
+            .values()
+            .filter(|issue| {
+                issue.conversation_id == *conversation_id
+                    && issue.status == AGENT_CONVERSATION_ISSUE_STATUS_OPEN
+                    && issue.canonical_fingerprint.as_deref() == Some(canonical_fingerprint)
+            })
+            .max_by(|a, b| a.updated_at.cmp(&b.updated_at))
+            .cloned())
+    }
+
+    async fn list_open_candidates_by_identity(
+        &self,
+        conversation_id: &ChatConversationId,
+        canonical_scope_kind: &str,
+        canonical_scope_subject: &str,
+        canonical_family: &str,
+        exclude_canonical_fingerprint: &str,
+        limit: usize,
+    ) -> AppResult<Vec<AgentConversationIssue>> {
+        let mut results: Vec<_> = self
+            .issues
+            .read()
+            .await
+            .values()
+            .filter(|issue| {
+                issue.conversation_id == *conversation_id
+                    && issue.status == AGENT_CONVERSATION_ISSUE_STATUS_OPEN
+                    && issue.canonical_scope_kind.as_deref() == Some(canonical_scope_kind)
+                    && issue.canonical_scope_subject.as_deref() == Some(canonical_scope_subject)
+                    && issue.canonical_family.as_deref() == Some(canonical_family)
+                    && issue.canonical_fingerprint.as_deref() != Some(exclude_canonical_fingerprint)
+            })
+            .cloned()
+            .collect();
+        results.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        results.truncate(limit);
+        Ok(results)
+    }
+
+    async fn append_occurrence(
+        &self,
+        occurrence: &AgentConversationIssueOccurrence,
+    ) -> AppResult<AgentConversationIssueOccurrence> {
+        let mut occurrences = self.occurrences.write().await;
+        occurrences.insert(occurrence.id.clone(), occurrence.clone());
+        Ok(occurrence.clone())
+    }
+
+    async fn list_occurrences_by_issue(
+        &self,
+        issue_id: &str,
+    ) -> AppResult<Vec<AgentConversationIssueOccurrence>> {
+        let mut results: Vec<_> = self
+            .occurrences
+            .read()
+            .await
+            .values()
+            .filter(|occurrence| occurrence.issue_id == issue_id)
+            .cloned()
+            .collect();
+        results.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        Ok(results)
     }
 
     async fn update_status(
