@@ -190,6 +190,14 @@ export const automationsApi = {
       transformAutomation,
     ),
 
+  finalize: (id: string): Promise<Automation> =>
+    typedInvokeWithTransform(
+      "finalize_automation",
+      { input: { id } },
+      AutomationSchema,
+      transformAutomation,
+    ),
+
   stop: (id: string): Promise<Automation> =>
     typedInvokeWithTransform(
       "stop_automation",

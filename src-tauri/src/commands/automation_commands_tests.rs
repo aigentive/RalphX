@@ -2,10 +2,11 @@ use chrono::Utc;
 use serde_json::json;
 
 use super::automation_commands::{
-    create_automation_draft_for_state, parse_automation_id, parse_automation_run_id,
-    parse_project_id, trigger_automation_run_now_for_state, trim_optional,
+    automation_service, create_automation_draft_for_state, parse_automation_id,
+    parse_automation_run_id, parse_project_id, trigger_automation_run_now_for_state, trim_optional,
     AutomationRunScopedInput, CreateAutomationDraftInput, UpdateAutomationSettingsInput,
 };
+use crate::error::AppError;
 use crate::application::automation::api::{
     automation_detail_response_for_state, AutomationResponse, AutomationScheduleResponse,
 };
@@ -300,6 +301,61 @@ async fn create_draft_cleans_setup_conversation_when_draft_validation_fails() {
         .await
         .unwrap();
     assert!(automations.is_empty());
+}
+
+#[tokio::test]
+async fn finalize_command_activates_configured_draft() {
+    let state = AppState::new_test();
+    let automation = automation();
+    assert_eq!(automation.status, AutomationStatus::Draft);
+    state
+        .automation_repo
+        .create(automation.clone())
+        .await
+        .unwrap();
+
+    let finalized = automation_service(&state)
+        .finalize(&automation.id)
+        .await
+        .unwrap();
+    assert_eq!(finalized.status, AutomationStatus::Active);
+
+    let persisted = state
+        .automation_repo
+        .get_by_id(&automation.id)
+        .await
+        .unwrap()
+        .expect("automation should be persisted");
+    assert_eq!(persisted.status, AutomationStatus::Active);
+}
+
+#[tokio::test]
+async fn finalize_command_rejects_unconfigured_draft() {
+    let state = AppState::new_test();
+    let mut automation = automation();
+    automation.goal_prompt = String::new();
+    state
+        .automation_repo
+        .create(automation.clone())
+        .await
+        .unwrap();
+
+    let error = automation_service(&state)
+        .finalize(&automation.id)
+        .await
+        .unwrap_err();
+    assert!(matches!(error, AppError::Validation(_)));
+    assert!(error
+        .to_string()
+        .contains("automation goal_prompt is required before activation"));
+
+    let persisted = state
+        .automation_repo
+        .get_by_id(&automation.id)
+        .await
+        .unwrap()
+        .expect("automation should be persisted");
+    assert_eq!(persisted.status, AutomationStatus::Draft);
 }
 
 #[tokio::test]

@@ -11,6 +11,7 @@ const {
   getAutomationMock,
   pauseAutomationMock,
   resumeAutomationMock,
+  finalizeAutomationMock,
   stopAutomationMock,
   triggerRunNowMock,
   skipJudgeMock,
@@ -22,6 +23,7 @@ const {
   getAutomationMock: vi.fn(),
   pauseAutomationMock: vi.fn(),
   resumeAutomationMock: vi.fn(),
+  finalizeAutomationMock: vi.fn(),
   stopAutomationMock: vi.fn(),
   triggerRunNowMock: vi.fn(),
   skipJudgeMock: vi.fn(),
@@ -44,6 +46,7 @@ vi.mock("@/api/automations", () => ({
     get: getAutomationMock,
     pause: pauseAutomationMock,
     resume: resumeAutomationMock,
+    finalize: finalizeAutomationMock,
     stop: stopAutomationMock,
     triggerRunNow: triggerRunNowMock,
     skipJudge: skipJudgeMock,
@@ -199,6 +202,7 @@ describe("AutomationDetailView", () => {
     getAutomationMock.mockReset();
     pauseAutomationMock.mockReset().mockResolvedValue(automation({ status: "paused" }));
     resumeAutomationMock.mockReset().mockResolvedValue(automation());
+    finalizeAutomationMock.mockReset().mockResolvedValue(automation({ status: "active" }));
     stopAutomationMock.mockReset().mockResolvedValue(automation({ status: "stopped" }));
     triggerRunNowMock.mockReset().mockResolvedValue({ scheduled: true, reason: null });
     skipJudgeMock.mockReset().mockResolvedValue({ scheduled: true, reason: null });
@@ -404,6 +408,84 @@ describe("AutomationDetailView", () => {
 
     await waitFor(() => expect(triggerRunNowMock).toHaveBeenCalledWith("automation-1"));
     expect(toastSuccessMock).toHaveBeenCalledWith("Automation run scheduled");
+  });
+
+  it("shows the Activate button only for draft automations", async () => {
+    const draftView = renderDetail({
+      automation: automation({ status: "draft" }),
+      runs: [],
+      usage,
+    });
+
+    await screen.findByTestId("automation-detail-view");
+    expect(screen.getByRole("button", { name: "Activate" })).toBeInTheDocument();
+    draftView.unmount();
+
+    renderDetail({ automation: automation({ status: "active" }), runs: [], usage });
+
+    await screen.findByTestId("automation-detail-view");
+    expect(screen.queryByRole("button", { name: "Activate" })).not.toBeInTheDocument();
+  });
+
+  it("activates a draft automation and invalidates the detail query", async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false, gcTime: 0 },
+        mutations: { retry: false },
+      },
+    });
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+    getAutomationMock.mockResolvedValue({
+      automation: automation({ status: "draft" }),
+      runs: [],
+      usage,
+    });
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <TooltipProvider>
+          <AutomationDetailView
+            automationId="automation-1"
+            projectId="project-1"
+            projectName="Demo Project"
+            onBack={vi.fn()}
+            onOpenRunConversation={vi.fn()}
+          />
+        </TooltipProvider>
+      </QueryClientProvider>,
+    );
+
+    await screen.findByTestId("automation-detail-view");
+    await userEvent.click(screen.getByRole("button", { name: "Activate" }));
+
+    await waitFor(() => expect(finalizeAutomationMock).toHaveBeenCalledWith("automation-1"));
+    expect(toastSuccessMock).toHaveBeenCalledWith("Automation activated");
+    await waitFor(() =>
+      expect(invalidateSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          queryKey: ["automations", "detail", "automation-1"],
+        }),
+      ),
+    );
+  });
+
+  it("surfaces the backend validation message when activation fails", async () => {
+    finalizeAutomationMock.mockReset().mockRejectedValue(
+      "automation goal_prompt is required before activation",
+    );
+    renderDetail({
+      automation: automation({ status: "draft" }),
+      runs: [],
+      usage,
+    });
+
+    await screen.findByTestId("automation-detail-view");
+    await userEvent.click(screen.getByRole("button", { name: "Activate" }));
+
+    await waitFor(() => expect(finalizeAutomationMock).toHaveBeenCalledWith("automation-1"));
+    expect(toastErrorMock).toHaveBeenCalledWith(
+      "automation goal_prompt is required before activation",
+    );
   });
 
   it("renders fallback run metadata and deletes terminal automations after confirmation", async () => {

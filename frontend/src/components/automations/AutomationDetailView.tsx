@@ -161,6 +161,16 @@ function isAutomationTerminal(status: Automation["status"]): boolean {
   return status === "completed" || status === "stopped";
 }
 
+function activationErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message.trim()) {
+    return error.message;
+  }
+  if (typeof error === "string" && error.trim()) {
+    return error;
+  }
+  return "Failed to activate automation";
+}
+
 function statusClass(status: string): string {
   if (["active", "running", "published", "merged", "completed", "done"].includes(status)) {
     return "text-[var(--status-success)]";
@@ -662,6 +672,14 @@ export function AutomationDetailView({
     },
     onError: () => toast.error("Failed to resume automation"),
   });
+  const finalizeMutation = useMutation({
+    mutationFn: () => automationsApi.finalize(automationId),
+    onSuccess: () => {
+      invalidate();
+      toast.success("Automation activated");
+    },
+    onError: (error) => toast.error(activationErrorMessage(error)),
+  });
   const stopMutation = useMutation({
     mutationFn: () => automationsApi.stop(automationId),
     onSuccess: () => {
@@ -740,6 +758,7 @@ export function AutomationDetailView({
   const skipJudgeRun = isSignalTerminalUnjudged(latest) ? latest : null;
   const actionPending = pauseMutation.isPending
     || resumeMutation.isPending
+    || finalizeMutation.isPending
     || stopMutation.isPending
     || runNowMutation.isPending
     || skipJudgeMutation.isPending
@@ -824,6 +843,18 @@ export function AutomationDetailView({
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {automation.status === "draft" && (
+            <Button
+              type="button"
+              variant="outline"
+              className="gap-2"
+              disabled={actionPending}
+              onClick={() => finalizeMutation.mutate()}
+            >
+              <PlayCircle className="h-4 w-4" />
+              Activate
+            </Button>
+          )}
           {automation.status === "paused" ? (
             <TooltipIconButton
               label="Resume automation"

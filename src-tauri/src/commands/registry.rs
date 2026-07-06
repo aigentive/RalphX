@@ -32,6 +32,7 @@ macro_rules! register_tauri_commands {
             commands::automation_commands::update_automation_settings,
             commands::automation_commands::pause_automation,
             commands::automation_commands::resume_automation,
+            commands::automation_commands::finalize_automation,
             commands::automation_commands::stop_automation,
             commands::automation_commands::trigger_automation_run_now,
             commands::automation_commands::skip_automation_judge,

@@ -202,6 +202,19 @@ pub async fn resume_automation(
 }
 
 #[tauri::command]
+pub async fn finalize_automation(
+    input: AutomationIdInput,
+    state: State<'_, AppState>,
+) -> Result<AutomationResponse, String> {
+    let id = parse_automation_id(&input.id)?;
+    automation_service(&state)
+        .finalize(&id)
+        .await
+        .map(AutomationResponse::from)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 pub async fn stop_automation(
     input: AutomationIdInput,
     state: State<'_, AppState>,
