@@ -110,7 +110,7 @@ fn continue_verdict(next_prompt: &str) -> String {
 }
 
 #[tokio::test]
-async fn automation_command_wrappers_drive_draft_listing_and_controls() {
+async fn ipc_contract_automation_command_wrappers_drive_draft_listing_and_controls() {
     let app = automation_command_app();
 
     let draft = create_automation_draft(
@@ -208,7 +208,7 @@ async fn automation_command_wrappers_drive_draft_listing_and_controls() {
 }
 
 #[tokio::test]
-async fn automation_command_wrappers_drive_run_controls_and_scheduling() {
+async fn ipc_contract_automation_command_wrappers_drive_run_controls_and_scheduling() {
     let app = automation_command_app();
     let state = app.state::<AppState>();
 

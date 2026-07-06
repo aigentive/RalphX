@@ -21,6 +21,8 @@ pub mod api_key_commands;
 pub mod artifact_commands;
 pub mod atlassian_commands;
 pub mod automation_commands;
+#[cfg(test)]
+mod automation_commands_tests;
 pub mod branch_helpers;
 pub mod chat_attachment_commands;
 pub mod chat_responses;
