@@ -4,13 +4,16 @@
 // and tasks needing attention (merge_conflict, merge_incomplete).
 
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 use tauri::State;
 
 use crate::application::AppState;
 use crate::commands::execution_commands::ActiveProjectState;
 use crate::domain::entities::ProjectId;
-use crate::domain::entities::{InternalStatus, PlanBranch, Project, Task, TaskCategory};
+use crate::domain::entities::{
+    AgentConversationWorkspace, AgentConversationWorkspaceStatus, IdeationSessionId,
+    InternalStatus, PlanBranch, PlanBranchId, Project, Task, TaskCategory,
+};
 use crate::domain::state_machine::transition_handler::{
     has_main_merge_deferred_metadata, has_merge_deferred_metadata,
 };
@@ -28,6 +31,93 @@ fn is_visible_merge_pipeline_status(status: InternalStatus) -> bool {
 
 fn is_visible_merge_pipeline_task(task: &Task) -> bool {
     task.archived_at.is_none() && is_visible_merge_pipeline_status(task.internal_status)
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct ArchivedParentMergeVisibility {
+    archived_plan_branch_ids: HashSet<PlanBranchId>,
+    archived_ideation_session_ids: HashSet<IdeationSessionId>,
+}
+
+impl ArchivedParentMergeVisibility {
+    pub(crate) fn from_workspaces(workspaces: &[AgentConversationWorkspace]) -> Self {
+        let mut archived_plan_branch_ids = HashSet::new();
+        let mut archived_ideation_session_ids = HashSet::new();
+        let mut active_plan_branch_ids = HashSet::new();
+        let mut active_ideation_session_ids = HashSet::new();
+
+        for workspace in workspaces {
+            match workspace.status {
+                AgentConversationWorkspaceStatus::Archived => {
+                    if let Some(plan_branch_id) = workspace.linked_plan_branch_id.clone() {
+                        archived_plan_branch_ids.insert(plan_branch_id);
+                    }
+
+                    if let Some(session_id) = workspace.linked_ideation_session_id.clone() {
+                        archived_ideation_session_ids.insert(session_id);
+                    }
+                }
+                AgentConversationWorkspaceStatus::Active => {
+                    if let Some(plan_branch_id) = workspace.linked_plan_branch_id.clone() {
+                        active_plan_branch_ids.insert(plan_branch_id);
+                    }
+
+                    if let Some(session_id) = workspace.linked_ideation_session_id.clone() {
+                        active_ideation_session_ids.insert(session_id);
+                    }
+                }
+                AgentConversationWorkspaceStatus::Missing => {}
+            }
+        }
+
+        archived_plan_branch_ids.retain(|id| !active_plan_branch_ids.contains(id));
+        archived_ideation_session_ids.retain(|id| !active_ideation_session_ids.contains(id));
+
+        Self {
+            archived_plan_branch_ids,
+            archived_ideation_session_ids,
+        }
+    }
+
+    pub(crate) fn hides_task(&self, task: &Task, plan_branches: &[PlanBranch]) -> bool {
+        if task
+            .ideation_session_id
+            .as_ref()
+            .is_some_and(|session_id| self.archived_ideation_session_ids.contains(session_id))
+        {
+            return true;
+        }
+
+        plan_branches.iter().any(|branch| {
+            self.archived_plan_branch_ids.contains(&branch.id) && branch_owns_task(branch, task)
+        })
+    }
+}
+
+fn branch_owns_task(branch: &PlanBranch, task: &Task) -> bool {
+    if task.category == TaskCategory::PlanMerge
+        && branch
+            .merge_task_id
+            .as_ref()
+            .is_some_and(|merge_task_id| merge_task_id == &task.id)
+    {
+        return true;
+    }
+
+    if branch
+        .execution_plan_id
+        .as_ref()
+        .zip(task.execution_plan_id.as_ref())
+        .is_some_and(|(branch_execution_plan_id, task_execution_plan_id)| {
+            branch_execution_plan_id == task_execution_plan_id
+        })
+    {
+        return true;
+    }
+
+    task.ideation_session_id
+        .as_ref()
+        .is_some_and(|session_id| branch.session_id == *session_id)
 }
 
 /// A task in the merge pipeline
@@ -176,11 +266,20 @@ pub async fn get_merge_pipeline(
             .plan_branch_repo
             .get_by_project_id(&project.id)
             .await
-            .unwrap_or_default();
+            .map_err(|e| e.to_string())?;
+        let agent_workspaces = state
+            .agent_conversation_workspace_repo
+            .get_by_project_id(&project.id)
+            .await
+            .map_err(|e| e.to_string())?;
+        let archived_parent_visibility =
+            ArchivedParentMergeVisibility::from_workspaces(&agent_workspaces);
 
         for task in tasks {
             // Merge pipeline should only show live merge work, never archived stale rows.
-            if !is_visible_merge_pipeline_task(&task) {
+            if !is_visible_merge_pipeline_task(&task)
+                || archived_parent_visibility.hides_task(&task, &plan_branches)
+            {
                 continue;
             }
 
@@ -279,7 +378,8 @@ pub async fn get_merge_phase_list(
 mod tests {
     use super::*;
     use crate::domain::entities::{
-        artifact::ArtifactId, types::IdeationSessionId, PlanBranchId, PlanBranchStatus, ProjectId,
+        artifact::ArtifactId, types::IdeationSessionId, AgentConversationWorkspaceMode,
+        ChatConversationId, IdeationAnalysisBaseRefKind, PlanBranchId, PlanBranchStatus, ProjectId,
         TaskId,
     };
     use chrono::Utc;
@@ -327,6 +427,28 @@ mod tests {
             pr_draft: None,
             base_branch_override: None,
         }
+    }
+
+    fn make_agent_workspace(
+        status: AgentConversationWorkspaceStatus,
+        linked_plan_branch_id: Option<PlanBranchId>,
+        linked_session_id: Option<IdeationSessionId>,
+    ) -> AgentConversationWorkspace {
+        let mut workspace = AgentConversationWorkspace::new(
+            ChatConversationId::from_string("conversation-1".to_string()),
+            ProjectId::from_string("proj-1".to_string()),
+            AgentConversationWorkspaceMode::Ideation,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main".to_string(),
+            Some("main".to_string()),
+            Some("base-sha".to_string()),
+            "ralphx/agent-conversation-1".to_string(),
+            "/tmp/ralphx-agent-conversation-1".to_string(),
+        );
+        workspace.status = status;
+        workspace.linked_plan_branch_id = linked_plan_branch_id;
+        workspace.linked_ideation_session_id = linked_session_id;
+        workspace
     }
 
     #[test]
@@ -420,6 +542,97 @@ mod tests {
         assert!(
             is_visible_merge_pipeline_task(&task),
             "active pending-merge tasks should remain visible in the merge pipeline"
+        );
+    }
+
+    #[test]
+    fn archived_agent_workspace_hides_linked_plan_merge_task() {
+        let mut task = make_task("merge-1", TaskCategory::PlanMerge);
+        task.internal_status = InternalStatus::PendingMerge;
+
+        let mut branch = make_plan_branch("sess-1", "feature/plan-1", PlanBranchStatus::Active);
+        branch.id = PlanBranchId::from_string("plan-branch-1");
+        branch.merge_task_id = Some(task.id.clone());
+
+        let workspace = make_agent_workspace(
+            AgentConversationWorkspaceStatus::Archived,
+            Some(branch.id.clone()),
+            Some(branch.session_id.clone()),
+        );
+        let visibility = ArchivedParentMergeVisibility::from_workspaces(&[workspace]);
+
+        assert!(
+            visibility.hides_task(&task, &[branch]),
+            "merge tasks owned by archived Agent workspace parents should be hidden"
+        );
+    }
+
+    #[test]
+    fn active_agent_workspace_does_not_hide_linked_plan_merge_task() {
+        let mut task = make_task("merge-1", TaskCategory::PlanMerge);
+        task.internal_status = InternalStatus::PendingMerge;
+
+        let mut branch = make_plan_branch("sess-1", "feature/plan-1", PlanBranchStatus::Active);
+        branch.id = PlanBranchId::from_string("plan-branch-1");
+        branch.merge_task_id = Some(task.id.clone());
+
+        let workspace = make_agent_workspace(
+            AgentConversationWorkspaceStatus::Active,
+            Some(branch.id.clone()),
+            Some(branch.session_id.clone()),
+        );
+        let visibility = ArchivedParentMergeVisibility::from_workspaces(&[workspace]);
+
+        assert!(
+            !visibility.hides_task(&task, &[branch]),
+            "active Agent workspace parents should not hide live merge tasks"
+        );
+    }
+
+    #[test]
+    fn active_agent_workspace_link_overrides_archived_link_for_same_plan_branch() {
+        let mut task = make_task("merge-1", TaskCategory::PlanMerge);
+        task.internal_status = InternalStatus::PendingMerge;
+
+        let mut branch = make_plan_branch("sess-1", "feature/plan-1", PlanBranchStatus::Active);
+        branch.id = PlanBranchId::from_string("plan-branch-1");
+        branch.merge_task_id = Some(task.id.clone());
+
+        let archived_workspace = make_agent_workspace(
+            AgentConversationWorkspaceStatus::Archived,
+            Some(branch.id.clone()),
+            Some(branch.session_id.clone()),
+        );
+        let active_workspace = make_agent_workspace(
+            AgentConversationWorkspaceStatus::Active,
+            Some(branch.id.clone()),
+            Some(branch.session_id.clone()),
+        );
+        let visibility =
+            ArchivedParentMergeVisibility::from_workspaces(&[archived_workspace, active_workspace]);
+
+        assert!(
+            !visibility.hides_task(&task, &[branch]),
+            "active Agent workspace links should win over stale archived links for the same plan"
+        );
+    }
+
+    #[test]
+    fn archived_agent_workspace_hides_linked_session_task() {
+        let mut task = make_task("task-1", TaskCategory::Regular);
+        task.internal_status = InternalStatus::PendingMerge;
+        task.ideation_session_id = Some(IdeationSessionId::from_string("sess-1"));
+
+        let workspace = make_agent_workspace(
+            AgentConversationWorkspaceStatus::Archived,
+            None,
+            task.ideation_session_id.clone(),
+        );
+        let visibility = ArchivedParentMergeVisibility::from_workspaces(&[workspace]);
+
+        assert!(
+            visibility.hides_task(&task, &[]),
+            "session-owned tasks should be hidden when their linked Agent workspace parent is archived"
         );
     }
 }
