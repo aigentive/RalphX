@@ -1389,6 +1389,38 @@ describe("AgentComposerSurface", () => {
       expect(textarea.style.height).toBe("92px");
     });
 
+    it("notifies layout changes when textarea content resizes the visible composer", () => {
+      let measuredScrollHeight = 96;
+      const scrollHeightSpy = vi
+        .spyOn(HTMLTextAreaElement.prototype, "scrollHeight", "get")
+        .mockImplementation(() => measuredScrollHeight);
+      const onLayoutChange = vi.fn();
+
+      try {
+        renderComposer({
+          dataTestId: "agent-composer",
+          collapsible: false,
+          onLayoutChange,
+        });
+
+        const textarea = screen.getByLabelText(
+          "Message input",
+        ) as HTMLTextAreaElement;
+        expect(textarea.style.height).toBe("96px");
+
+        onLayoutChange.mockClear();
+        measuredScrollHeight = 132;
+        fireEvent.change(textarea, {
+          target: { value: "line one\nline two\nline three" },
+        });
+
+        expect(textarea.style.height).toBe("132px");
+        expect(onLayoutChange).toHaveBeenCalledTimes(1);
+      } finally {
+        scrollHeightSpy.mockRestore();
+      }
+    });
+
     it("stays expanded after blur while the prompt has content", () => {
       renderComposer({ dataTestId: "agent-composer", collapsible: true });
 

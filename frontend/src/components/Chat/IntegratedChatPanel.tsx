@@ -112,6 +112,10 @@ const EMPTY_TASKS: never[] = [];
 // Main Component
 // ============================================================================
 
+interface TranscriptLayoutChangeOptions {
+  ownedByVisibleRuntime?: boolean;
+}
+
 interface IntegratedChatPanelProps {
   /** Project ID for context */
   projectId: string;
@@ -172,6 +176,8 @@ interface IntegratedChatPanelProps {
   };
   /** Optional host-owned child session navigation. Falls back to transcript modal. */
   onChildSessionNavigate?: (sessionId: string) => void | Promise<void>;
+  /** Whether ResizeObserver-driven below-transcript chrome changes belong to the visible runtime. */
+  belowTranscriptLayoutOwnedByVisibleRuntime?: boolean;
   renderComposer?: (props: IntegratedChatComposerRenderProps) => React.ReactNode;
   onUserMessageSent?: (payload: {
     content: string;
@@ -214,7 +220,7 @@ export interface IntegratedChatComposerRenderProps {
   /** Provider harness label (e.g. "claude", "codex") for this chat context. */
   providerHarness?: string | null | undefined;
   /** Notify the transcript that composer chrome is resizing outside ResizeObserver timing. */
-  onLayoutChange: () => void;
+  onLayoutChange: (options?: TranscriptLayoutChangeOptions) => void;
 }
 
 export function IntegratedChatPanel({
@@ -242,6 +248,7 @@ export function IntegratedChatPanel({
   agentProcessContextIdOverride,
   sendOptions,
   onChildSessionNavigate,
+  belowTranscriptLayoutOwnedByVisibleRuntime = true,
   renderComposer,
   onUserMessageSent,
   onQuestionAnswered,
@@ -809,20 +816,49 @@ export function IntegratedChatPanel({
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const belowTranscriptChromeRef = useRef<HTMLDivElement | null>(null);
   const belowTranscriptChromeHeightRef = useRef<number | null>(null);
-  const [transcriptLayoutVersion, setTranscriptLayoutVersion] = useState(0);
+  const belowTranscriptLayoutOwnedByVisibleRuntimeRef = useRef(
+    belowTranscriptLayoutOwnedByVisibleRuntime,
+  );
+  const [transcriptLayoutSignal, setTranscriptLayoutSignal] = useState({
+    version: 0,
+    ownedByVisibleRuntime: true,
+  });
+  const transcriptLayoutVersion = transcriptLayoutSignal.version;
+  const transcriptLayoutOwnedByVisibleRuntime =
+    transcriptLayoutSignal.ownedByVisibleRuntime;
 
-  const updateBelowTranscriptChromeHeight = useCallback((height: number, { force = false } = {}) => {
-    const nextHeight = Math.round(height);
-    if (!force && belowTranscriptChromeHeightRef.current === nextHeight) {
-      return;
-    }
-    belowTranscriptChromeHeightRef.current = nextHeight;
-    setTranscriptLayoutVersion((version) => version + 1);
+  const incrementTranscriptLayoutVersion = useCallback((ownedByVisibleRuntime: boolean) => {
+    setTranscriptLayoutSignal((current) => ({
+      version: current.version + 1,
+      ownedByVisibleRuntime,
+    }));
   }, []);
 
-  const notifyInputLayoutChanged = useCallback(() => {
-    setTranscriptLayoutVersion((version) => version + 1);
-  }, []);
+  const updateBelowTranscriptChromeHeight = useCallback(
+    (height: number, { force = false } = {}) => {
+      const nextHeight = Math.round(height);
+      if (!force && belowTranscriptChromeHeightRef.current === nextHeight) {
+        return;
+      }
+      belowTranscriptChromeHeightRef.current = nextHeight;
+      incrementTranscriptLayoutVersion(
+        belowTranscriptLayoutOwnedByVisibleRuntimeRef.current,
+      );
+    },
+    [incrementTranscriptLayoutVersion],
+  );
+
+  const notifyInputLayoutChanged = useCallback(
+    (options?: TranscriptLayoutChangeOptions) => {
+      incrementTranscriptLayoutVersion(options?.ownedByVisibleRuntime ?? true);
+    },
+    [incrementTranscriptLayoutVersion],
+  );
+
+  useLayoutEffect(() => {
+    belowTranscriptLayoutOwnedByVisibleRuntimeRef.current =
+      belowTranscriptLayoutOwnedByVisibleRuntime;
+  }, [belowTranscriptLayoutOwnedByVisibleRuntime]);
 
   useLayoutEffect(() => {
     const container = belowTranscriptChromeRef.current;
@@ -1436,6 +1472,7 @@ export function IntegratedChatPanel({
                   : primaryTranscriptWindow.fetchOlderMessages
               }
               externalLayoutVersion={transcriptLayoutVersion}
+              externalLayoutOwnedByVisibleRuntime={transcriptLayoutOwnedByVisibleRuntime}
             />
           )}
 
