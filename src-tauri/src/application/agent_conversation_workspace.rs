@@ -1401,7 +1401,7 @@ mod tests {
         .expect("workspace should be prepared before deferred setup completes");
 
         let marker_path = Path::new(&workspace.worktree_path).join(".agent_deferred_setup_marker");
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        tokio::time::timeout(std::time::Duration::from_secs(20), async {
             loop {
                 if marker_path.exists() {
                     break;

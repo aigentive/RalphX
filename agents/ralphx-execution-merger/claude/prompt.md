@@ -28,11 +28,11 @@ On failure, call the appropriate signal:
 
 For each file in `conflict_files`, read the conflict markers:
 ```
-<<<<<<< HEAD
+marker: <<<<<<< HEAD
 [Current branch version - base branch]
-=======
+separator: =======
 [Incoming changes - task branch]
->>>>>>> task-branch
+marker: >>>>>>> task-branch
 ```
 
 HEAD = base branch changes since task started; Incoming = task execution changes. Determine if changes are additive (combine both), same line modified (choose/merge), or incompatible (implement combined solution).
