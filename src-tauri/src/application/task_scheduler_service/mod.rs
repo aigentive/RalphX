@@ -599,3 +599,69 @@ impl<R: Runtime + 'static> TaskScheduler for TaskSchedulerService<R> {
         self.retry_main_merges_impl().await;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::application::AppState;
+    use crate::domain::entities::{AgentWorkspacePrDescription, PlanBranch, Project};
+    use crate::domain::services::PrReviewState;
+    use crate::error::AppResult;
+    use tauri::test::MockRuntime;
+
+    struct StaticPlanPrDescriptionDrafter;
+
+    #[async_trait]
+    impl PlanPrDescriptionDrafter for StaticPlanPrDescriptionDrafter {
+        async fn draft_plan_description(
+            &self,
+            _project: &Project,
+            _plan_branch: &PlanBranch,
+            _review_base: &str,
+            _review_state: PrReviewState,
+        ) -> AppResult<AgentWorkspacePrDescription> {
+            Ok(AgentWorkspacePrDescription::new(
+                None,
+                "## Summary\n\nScheduler test PR description".to_string(),
+            ))
+        }
+    }
+
+    fn scheduler_for_state(state: &AppState) -> TaskSchedulerService<MockRuntime> {
+        TaskSchedulerService::new(
+            Arc::new(ExecutionState::new()),
+            Arc::clone(&state.project_repo),
+            Arc::clone(&state.task_repo),
+            Arc::clone(&state.task_dependency_repo),
+            Arc::clone(&state.artifact_repo),
+            Arc::clone(&state.chat_message_repo),
+            Arc::clone(&state.chat_attachment_repo),
+            Arc::clone(&state.chat_conversation_repo),
+            Arc::clone(&state.agent_run_repo),
+            Arc::clone(&state.ideation_session_repo),
+            Arc::clone(&state.activity_event_repo),
+            Arc::clone(&state.message_queue),
+            Arc::clone(&state.running_agent_registry),
+            Arc::clone(&state.memory_event_repo),
+            None,
+        )
+    }
+
+    #[test]
+    fn scheduler_plan_pr_description_drafter_defaults_to_none() {
+        let state = AppState::new_test();
+        let scheduler = scheduler_for_state(&state);
+
+        assert!(scheduler.plan_pr_description_drafter.is_none());
+    }
+
+    #[test]
+    fn scheduler_build_transition_service_carries_plan_pr_description_drafter() {
+        let state = AppState::new_test();
+        let scheduler = scheduler_for_state(&state)
+            .with_plan_pr_description_drafter(Arc::new(StaticPlanPrDescriptionDrafter));
+
+        assert!(scheduler.plan_pr_description_drafter.is_some());
+        let _service = scheduler.build_transition_service();
+    }
+}
