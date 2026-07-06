@@ -1558,4 +1558,80 @@ mod tests {
             vec![second.conversation_id, first.conversation_id]
         );
     }
+
+    #[tokio::test]
+    async fn linked_plan_pr_supervision_recovery_candidates_filter_ideation_rows() {
+        let repo = MemoryAgentConversationWorkspaceRepository::new();
+
+        let mut blocked = candidate_workspace("linked-blocked");
+        blocked.mode = AgentConversationWorkspaceMode::Ideation;
+        blocked.linked_plan_branch_id = Some(PlanBranchId::from_string("plan-linked-1"));
+        blocked.pr_supervision_status = Some("blocked".to_string());
+        blocked.pr_autofix_enabled = true;
+
+        let mut fixing = candidate_workspace("linked-fixing");
+        fixing.mode = AgentConversationWorkspaceMode::Ideation;
+        fixing.linked_plan_branch_id = Some(PlanBranchId::from_string("plan-linked-2"));
+        fixing.pr_supervision_status = Some("fixing".to_string());
+        fixing.pr_auto_merge_desired = true;
+
+        let mut direct = candidate_workspace("direct");
+        direct.linked_plan_branch_id = Some(PlanBranchId::from_string("plan-direct"));
+        direct.pr_supervision_status = Some("blocked".to_string());
+        direct.pr_autofix_enabled = true;
+
+        let mut unlinked = candidate_workspace("unlinked");
+        unlinked.mode = AgentConversationWorkspaceMode::Ideation;
+        unlinked.pr_supervision_status = Some("blocked".to_string());
+        unlinked.pr_autofix_enabled = true;
+
+        let mut disabled = candidate_workspace("disabled");
+        disabled.mode = AgentConversationWorkspaceMode::Ideation;
+        disabled.linked_plan_branch_id = Some(PlanBranchId::from_string("plan-disabled"));
+        disabled.pr_supervision_status = Some("blocked".to_string());
+
+        let mut monitoring = candidate_workspace("monitoring");
+        monitoring.mode = AgentConversationWorkspaceMode::Ideation;
+        monitoring.linked_plan_branch_id = Some(PlanBranchId::from_string("plan-monitoring"));
+        monitoring.pr_supervision_status = Some("monitoring".to_string());
+        monitoring.pr_autofix_enabled = true;
+
+        let mut paused = candidate_workspace("paused");
+        paused.mode = AgentConversationWorkspaceMode::Ideation;
+        paused.linked_plan_branch_id = Some(PlanBranchId::from_string("plan-paused"));
+        paused.pr_supervision_status = Some("blocked".to_string());
+        paused.pr_autofix_enabled = true;
+        paused.auto_publish_enabled = false;
+
+        for workspace in [
+            blocked.clone(),
+            fixing.clone(),
+            direct,
+            unlinked,
+            disabled,
+            monitoring,
+            paused,
+        ] {
+            repo.create_or_update(workspace).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+
+        let limited = repo
+            .list_active_linked_plan_pr_supervision_recovery_candidates(1)
+            .await
+            .unwrap();
+        assert_eq!(limited.len(), 1);
+        assert_eq!(limited[0].conversation_id, fixing.conversation_id);
+
+        let all = repo
+            .list_active_linked_plan_pr_supervision_recovery_candidates(10)
+            .await
+            .unwrap();
+        assert_eq!(
+            all.into_iter()
+                .map(|workspace| workspace.conversation_id)
+                .collect::<Vec<_>>(),
+            vec![fixing.conversation_id, blocked.conversation_id]
+        );
+    }
 }
