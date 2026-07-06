@@ -4,7 +4,7 @@
  * Handles: complete_merge, report_conflict, report_incomplete, get_merge_target
  *
  * Design:
- * - complete_merge: green success card with commit SHA badge and branch info
+ * - complete_merge: status-aware card with commit SHA badge and branch info
  * - report_conflict: red card with conflict file list
  * - report_incomplete: amber/orange card with error details
  * - get_merge_target: compact card showing source → target branch arrows
@@ -53,7 +53,7 @@ function continuationLabel(status: string | undefined): string | null {
 }
 
 // ============================================================================
-// complete_merge — Green success card
+// complete_merge — Status-aware merge result card
 // ============================================================================
 
 function CompleteMergeWidget({ toolCall, compact = false }: ToolCallWidgetProps) {
@@ -63,19 +63,59 @@ function CompleteMergeWidget({ toolCall, compact = false }: ToolCallWidgetProps)
   const commitSha = getString(args, "commit_sha") ?? getString(result, "commit_sha");
   const success = getBool(result, "success");
   const message = getString(result, "message");
+  const resultStatus = getString(result, "status");
+  const resultReason = getString(result, "reason");
   const newStatus = getString(result, "new_status");
+  const wasStopped = resultReason === "stopped";
+  const wasAborted = resultStatus === "aborted" || wasStopped;
+  const failed = success === false;
   const continuationStatus = isContinuationStatus(newStatus);
-  const title = success === false
+  const title = wasAborted
+    ? wasStopped
+      ? "Merge stopped"
+      : "Merge aborted"
+    : failed
     ? "Merge failed"
     : continuationStatus
     ? "Branch update applied"
     : newStatus === "already_merged"
     ? "Merge already applied"
     : "Merge completed";
-  const detail = continuationLabel(newStatus) ?? message;
-  const accentColor = continuationStatus ? colors.blue : colors.success;
-  const surfaceTint = continuationStatus ? colors.blueDim : colors.successDim;
-  const detailColor = continuationStatus ? "var(--status-info)" : "var(--status-success)";
+  const stoppedDetail = wasStopped
+    ? "Stopped before merge completion settled"
+    : resultReason
+    ? `Aborted before merge completion settled (${resultReason})`
+    : "Aborted before merge completion settled";
+  const detail = wasAborted ? message ?? stoppedDetail : continuationLabel(newStatus) ?? message;
+  const accentColor = wasAborted
+    ? "var(--status-warning)"
+    : failed
+    ? colors.error
+    : continuationStatus
+    ? colors.blue
+    : colors.success;
+  const surfaceTint = wasAborted
+    ? "var(--status-warning-muted)"
+    : failed
+    ? colors.errorDim
+    : continuationStatus
+    ? colors.blueDim
+    : colors.successDim;
+  const detailColor = wasAborted
+    ? "var(--status-warning)"
+    : failed
+    ? "var(--status-error)"
+    : continuationStatus
+    ? "var(--status-info)"
+    : "var(--status-success)";
+  const statusBadge = wasAborted ? resultStatus ?? resultReason : newStatus;
+  const statusVariant = wasAborted
+    ? "warning"
+    : failed
+    ? "error"
+    : continuationStatus
+    ? "blue"
+    : "success";
 
   // If tool errored, show inline error
   if (toolCall.error) {
@@ -138,7 +178,7 @@ function CompleteMergeWidget({ toolCall, compact = false }: ToolCallWidgetProps)
               padding: "1px 6px",
               borderRadius: 6,
               fontWeight: 500,
-              background: continuationStatus ? colors.blueDim : "var(--status-success-muted)",
+              background: surfaceTint,
               color: accentColor,
               flexShrink: 0,
             }}
@@ -148,8 +188,8 @@ function CompleteMergeWidget({ toolCall, compact = false }: ToolCallWidgetProps)
         )}
 
         {/* Status badge */}
-        {newStatus && (
-          <Badge variant={continuationStatus ? "blue" : "success"} compact>{newStatus}</Badge>
+        {statusBadge && (
+          <Badge variant={statusVariant} compact>{statusBadge}</Badge>
         )}
       </div>
 

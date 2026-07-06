@@ -1233,6 +1233,29 @@ pub(crate) async fn attempt_merge_auto_complete<R: Runtime + 'static>(
             Some(v) => v,
             None => return,
         };
+    let app_state = ctx
+        .app_handle
+        .and_then(|handle| handle.try_state::<AppState>());
+    let pr_sync_services = PlanBranchPrSyncServices {
+        task_repo: Some(Arc::clone(ctx.task_repo)),
+        plan_branch_repo: ctx.plan_branch_repo.clone(),
+        pr_creation_guard: app_state
+            .as_ref()
+            .map(|state| Arc::clone(&state.pr_poller_registry.pr_creation_guard)),
+        github_service: app_state
+            .as_ref()
+            .and_then(|state| state.github_service.clone()),
+        ideation_session_repo: Some(Arc::clone(ctx.ideation_session_repo)),
+        artifact_repo: Some(Arc::clone(ctx.artifact_repo)),
+        plan_pr_description_drafter: app_state.as_ref().map(|state| {
+            crate::application::plan_pr_description::build_app_state_plan_pr_description_drafter(
+                Arc::clone(&state.agent_conversation_workspace_repo),
+                Arc::clone(&state.chat_conversation_repo),
+                Arc::clone(&state.agent_provider_settings_repo),
+                state.agent_clients.clone(),
+            )
+        }),
+    };
 
     // 5. Handle freshness conflict return routing.
     // Uses shared freshness_return_route() which checks plan_update_conflict (more robust
@@ -1246,6 +1269,8 @@ pub(crate) async fn attempt_merge_auto_complete<R: Runtime + 'static>(
         ctx.interactive_process_registry
             .as_ref()
             .map(|arc| arc.as_ref()),
+        Some(&pr_sync_services),
+        None,
     )
     .await
     {

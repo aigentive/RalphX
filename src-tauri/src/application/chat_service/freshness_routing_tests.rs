@@ -16,6 +16,8 @@
 
 use std::sync::Arc;
 
+use async_trait::async_trait;
+
 use crate::application::chat_service::freshness_routing::{
     freshness_return_route, FreshnessRouteResult,
 };
@@ -24,8 +26,16 @@ use crate::application::interactive_process_registry::{
 };
 use crate::application::{AppState, TaskTransitionService};
 use crate::commands::ExecutionState;
-use crate::domain::entities::{InternalStatus, Project, ProjectId, Task};
+use crate::domain::entities::plan_branch::PrPushStatus;
+use crate::domain::entities::{
+    AgentWorkspacePrDescription, ArtifactId, IdeationSessionId, InternalStatus, PlanBranch,
+    PlanBranchStatus, Project, ProjectId, Task, TaskCategory,
+};
 use crate::domain::repositories::TaskRepository;
+use crate::domain::services::{GithubServiceTrait, PlanPrDescriptionDrafter, PrReviewState};
+use crate::domain::state_machine::transition_handler::PlanBranchPrSyncServices;
+use crate::tests::mock_github_service::MockGithubService;
+use crate::AppError;
 
 // ============================================================================
 // Helpers
@@ -97,6 +107,68 @@ fn freshness_meta(plan_update_conflict: bool, origin_state: Option<&str>) -> ser
     obj
 }
 
+#[derive(Default)]
+struct StaticPlanPrDescriptionDrafter;
+
+#[async_trait]
+impl PlanPrDescriptionDrafter for StaticPlanPrDescriptionDrafter {
+    async fn draft_plan_description(
+        &self,
+        _project: &Project,
+        _plan_branch: &PlanBranch,
+        _review_base: &str,
+        _review_state: PrReviewState,
+    ) -> crate::error::AppResult<AgentWorkspacePrDescription> {
+        Ok(AgentWorkspacePrDescription::new(
+            None,
+            "## Summary\n\nFreshness PR update".to_string(),
+        ))
+    }
+}
+
+async fn insert_pr_backed_plan_branch(app_state: &AppState, task: &mut Task) -> String {
+    let session_id = IdeationSessionId::from_string(format!("session-{}", task.id.as_str()));
+    task.category = TaskCategory::Regular;
+    task.ideation_session_id = Some(session_id.clone());
+    task.touch();
+    app_state.task_repo.update(task).await.unwrap();
+
+    let branch_name = format!("plan/freshness-{}", task.id.as_str());
+    let mut plan_branch = PlanBranch::new(
+        ArtifactId::from_string(format!("artifact-{}", task.id.as_str())),
+        session_id,
+        task.project_id.clone(),
+        branch_name.clone(),
+        "main".to_string(),
+    );
+    plan_branch.pr_eligible = true;
+    plan_branch.status = PlanBranchStatus::Active;
+    plan_branch.pr_number = Some(123);
+    plan_branch.pr_url = Some("https://github.test/owner/repo/pull/123".to_string());
+    plan_branch.pr_push_status = PrPushStatus::Pending;
+    app_state
+        .plan_branch_repo
+        .create(plan_branch)
+        .await
+        .unwrap();
+    branch_name
+}
+
+fn pr_sync_services(
+    app_state: &AppState,
+    github: Arc<MockGithubService>,
+) -> PlanBranchPrSyncServices {
+    PlanBranchPrSyncServices {
+        task_repo: Some(Arc::clone(&app_state.task_repo)),
+        plan_branch_repo: Some(Arc::clone(&app_state.plan_branch_repo)),
+        pr_creation_guard: Some(Arc::new(dashmap::DashMap::new())),
+        github_service: Some(github as Arc<dyn GithubServiceTrait>),
+        ideation_session_repo: Some(Arc::clone(&app_state.ideation_session_repo)),
+        artifact_repo: Some(Arc::clone(&app_state.artifact_repo)),
+        plan_pr_description_drafter: Some(Arc::new(StaticPlanPrDescriptionDrafter)),
+    }
+}
+
 // ============================================================================
 // Test 1: NormalMerge when plan_update_conflict absent
 // ============================================================================
@@ -114,10 +186,17 @@ async fn test_normal_merge_when_plan_update_conflict_absent() {
     )
     .await;
 
-    let result =
-        freshness_return_route(&task, Arc::clone(&app_state.task_repo), &ts, &project, None)
-            .await
-            .expect("Should not error");
+    let result = freshness_return_route(
+        &task,
+        Arc::clone(&app_state.task_repo),
+        &ts,
+        &project,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("Should not error");
 
     assert!(
         matches!(result, FreshnessRouteResult::NormalMerge),
@@ -146,10 +225,17 @@ async fn test_normal_merge_when_plan_update_conflict_false() {
     )
     .await;
 
-    let result =
-        freshness_return_route(&task, Arc::clone(&app_state.task_repo), &ts, &project, None)
-            .await
-            .expect("Should not error");
+    let result = freshness_return_route(
+        &task,
+        Arc::clone(&app_state.task_repo),
+        &ts,
+        &project,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("Should not error");
 
     assert!(
         matches!(result, FreshnessRouteResult::NormalMerge),
@@ -169,10 +255,17 @@ async fn test_normal_merge_when_metadata_none() {
 
     let task = insert_task_with_metadata(&app_state.task_repo, project.id.clone(), None).await;
 
-    let result =
-        freshness_return_route(&task, Arc::clone(&app_state.task_repo), &ts, &project, None)
-            .await
-            .expect("Should not error");
+    let result = freshness_return_route(
+        &task,
+        Arc::clone(&app_state.task_repo),
+        &ts,
+        &project,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("Should not error");
 
     assert!(
         matches!(result, FreshnessRouteResult::NormalMerge),
@@ -202,10 +295,17 @@ async fn test_defaults_to_pending_review_when_origin_state_absent() {
     )
     .await;
 
-    let result =
-        freshness_return_route(&task, Arc::clone(&app_state.task_repo), &ts, &project, None)
-            .await
-            .expect("Should succeed");
+    let result = freshness_return_route(
+        &task,
+        Arc::clone(&app_state.task_repo),
+        &ts,
+        &project,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("Should succeed");
 
     match result {
         FreshnessRouteResult::FreshnessRouted(state) => {
@@ -255,10 +355,17 @@ async fn test_freshness_routed_when_plan_update_conflict_true_reviewing() {
     )
     .await;
 
-    let result =
-        freshness_return_route(&task, Arc::clone(&app_state.task_repo), &ts, &project, None)
-            .await
-            .expect("Should succeed");
+    let result = freshness_return_route(
+        &task,
+        Arc::clone(&app_state.task_repo),
+        &ts,
+        &project,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("Should succeed");
 
     match result {
         FreshnessRouteResult::FreshnessRouted(state) => {
@@ -302,10 +409,17 @@ async fn test_freshness_routed_routes_to_ready_for_executing_origin() {
     )
     .await;
 
-    let result =
-        freshness_return_route(&task, Arc::clone(&app_state.task_repo), &ts, &project, None)
-            .await
-            .expect("Should succeed");
+    let result = freshness_return_route(
+        &task,
+        Arc::clone(&app_state.task_repo),
+        &ts,
+        &project,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("Should succeed");
 
     match result {
         FreshnessRouteResult::FreshnessRouted(state) => {
@@ -348,11 +462,21 @@ async fn test_freshness_routed_routes_pr_branch_update_conflict_to_waiting_on_pr
     task.internal_status = InternalStatus::Merging;
     task.touch();
     app_state.task_repo.update(&task).await.unwrap();
+    insert_pr_backed_plan_branch(&app_state, &mut task).await;
+    let github = Arc::new(MockGithubService::new());
+    let services = pr_sync_services(&app_state, Arc::clone(&github));
 
-    let result =
-        freshness_return_route(&task, Arc::clone(&app_state.task_repo), &ts, &project, None)
-            .await
-            .expect("Should succeed");
+    let result = freshness_return_route(
+        &task,
+        Arc::clone(&app_state.task_repo),
+        &ts,
+        &project,
+        None,
+        Some(&services),
+        Some("0000000000000000000000000000000000000000"),
+    )
+    .await
+    .expect("Should succeed");
 
     match result {
         FreshnessRouteResult::FreshnessRouted(state) => {
@@ -385,6 +509,162 @@ async fn test_freshness_routed_routes_pr_branch_update_conflict_to_waiting_on_pr
     );
 }
 
+#[tokio::test]
+async fn test_pr_branch_update_conflict_publishes_before_waiting_on_pr() {
+    let app_state = AppState::new_test();
+    let ts = build_transition_service(&app_state);
+    let project = insert_test_project(&app_state).await;
+
+    let mut task = insert_task_with_metadata(
+        &app_state.task_repo,
+        project.id.clone(),
+        Some(serde_json::json!({
+            "plan_update_conflict": true,
+            "branch_freshness_conflict": true,
+            "pr_branch_update_conflict": true,
+            "pr_branch_update_source": "poller",
+            "freshness_origin_state": "waiting_on_pr",
+        })),
+    )
+    .await;
+    task.internal_status = InternalStatus::Merging;
+    let branch_name = insert_pr_backed_plan_branch(&app_state, &mut task).await;
+
+    let github = Arc::new(MockGithubService::new());
+    let services = pr_sync_services(&app_state, Arc::clone(&github));
+    let result = freshness_return_route(
+        &task,
+        Arc::clone(&app_state.task_repo),
+        &ts,
+        &project,
+        None,
+        Some(&services),
+        Some("1111111111111111111111111111111111111111"),
+    )
+    .await
+    .expect("PR branch publication should allow freshness route");
+
+    match result {
+        FreshnessRouteResult::FreshnessRouted(state) => assert_eq!(state, "waiting_on_pr"),
+        FreshnessRouteResult::NormalMerge => panic!("Expected FreshnessRouted"),
+    }
+
+    {
+        let state = github.state();
+        assert_eq!(state.push_branch_calls, 1);
+        assert_eq!(
+            state.last_push_branch_name.as_deref(),
+            Some(branch_name.as_str())
+        );
+        assert_eq!(state.update_pr_details_calls, 1);
+    }
+
+    let updated = app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(updated.internal_status, InternalStatus::WaitingOnPr);
+    let meta: serde_json::Value = updated
+        .metadata
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or_default();
+    assert!(meta.get("plan_update_conflict").is_none());
+    assert!(meta.get("pr_branch_update_conflict").is_none());
+
+    let plan_branch = app_state
+        .plan_branch_repo
+        .get_by_session_id(updated.ideation_session_id.as_ref().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(plan_branch.pr_push_status, PrPushStatus::Pushed);
+}
+
+#[tokio::test]
+async fn test_pr_branch_update_push_failure_routes_to_merge_incomplete() {
+    let app_state = AppState::new_test();
+    let ts = build_transition_service(&app_state);
+    let project = insert_test_project(&app_state).await;
+
+    let mut task = insert_task_with_metadata(
+        &app_state.task_repo,
+        project.id.clone(),
+        Some(serde_json::json!({
+            "plan_update_conflict": true,
+            "branch_freshness_conflict": true,
+            "pr_branch_update_conflict": true,
+            "pr_branch_update_source": "poller",
+            "freshness_origin_state": "waiting_on_pr",
+        })),
+    )
+    .await;
+    task.internal_status = InternalStatus::Merging;
+    insert_pr_backed_plan_branch(&app_state, &mut task).await;
+
+    let github = Arc::new(MockGithubService::new());
+    github.state().push_branch_result = Some(Err(AppError::GitOperation(
+        "remote rejected freshness branch".to_string(),
+    )));
+    let services = pr_sync_services(&app_state, Arc::clone(&github));
+    let result = freshness_return_route(
+        &task,
+        Arc::clone(&app_state.task_repo),
+        &ts,
+        &project,
+        None,
+        Some(&services),
+        Some("2222222222222222222222222222222222222222"),
+    )
+    .await;
+
+    assert!(
+        result.is_err(),
+        "push failure should stop freshness routing"
+    );
+    assert_eq!(github.state().push_branch_calls, 1);
+
+    let updated = app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(updated.internal_status, InternalStatus::MergeIncomplete);
+    let meta: serde_json::Value = updated
+        .metadata
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or_default();
+    assert_eq!(
+        meta.get("plan_update_conflict").and_then(|v| v.as_bool()),
+        Some(true)
+    );
+    assert_eq!(
+        meta.get("pr_branch_update_conflict")
+            .and_then(|v| v.as_bool()),
+        Some(true)
+    );
+    assert_eq!(
+        meta.get("error_code").and_then(|v| v.as_str()),
+        Some("pr_branch_publication_failed")
+    );
+    assert_eq!(
+        meta.get("commit_sha").and_then(|v| v.as_str()),
+        Some("2222222222222222222222222222222222222222")
+    );
+
+    let plan_branch = app_state
+        .plan_branch_repo
+        .get_by_session_id(updated.ideation_session_id.as_ref().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(plan_branch.pr_push_status, PrPushStatus::Failed);
+}
+
 // ============================================================================
 // Test 8: Targeted field cleanup — plan_update_conflict, branch_freshness_conflict,
 //         freshness_backoff_until removed; freshness_origin_state preserved
@@ -409,9 +689,17 @@ async fn test_targeted_metadata_cleanup_on_success() {
     )
     .await;
 
-    freshness_return_route(&task, Arc::clone(&app_state.task_repo), &ts, &project, None)
-        .await
-        .expect("Should succeed");
+    freshness_return_route(
+        &task,
+        Arc::clone(&app_state.task_repo),
+        &ts,
+        &project,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("Should succeed");
 
     let updated = app_state
         .task_repo
@@ -486,6 +774,8 @@ async fn test_re_inserts_flags_when_transition_fails() {
         &ts,
         &project,
         None,
+        None,
+        None,
     )
     .await;
 
@@ -547,6 +837,8 @@ async fn test_ipr_entry_removed_on_success() {
         &ts,
         &project,
         Some(&ipr),
+        None,
+        None,
     )
     .await
     .expect("Should succeed");
@@ -597,10 +889,17 @@ async fn test_freshness_routed_when_plan_update_conflict_true_branch_freshness_c
     )
     .await;
 
-    let result =
-        freshness_return_route(&task, Arc::clone(&app_state.task_repo), &ts, &project, None)
-            .await
-            .expect("Should succeed even when branch_freshness_conflict=false");
+    let result = freshness_return_route(
+        &task,
+        Arc::clone(&app_state.task_repo),
+        &ts,
+        &project,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("Should succeed even when branch_freshness_conflict=false");
 
     // Must return FreshnessRouted — NOT NormalMerge — because plan_update_conflict=true
     match result {
@@ -794,6 +1093,8 @@ async fn test_integration_full_chain_reviewing_through_freshness_conflict_return
         &ts,
         &project,
         None, // No IPR in this test
+        None,
+        None,
     )
     .await
     .expect("freshness_return_route must succeed");
