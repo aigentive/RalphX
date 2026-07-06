@@ -330,8 +330,8 @@ impl<'a> TransitionHandler<'a> {
                         "Decremented running count on state exit"
                     );
 
-                    if let Some(ref handle) = self.machine.context.services.app_handle {
-                        exec.emit_status_changed(handle, "task_completed");
+                    if let Some(handle) = self.machine.context.services.event_sink.as_deref() {
+                        exec.emit_status_changed_to_sink(handle, "task_completed");
                     }
 
                     if new_count == 0 {

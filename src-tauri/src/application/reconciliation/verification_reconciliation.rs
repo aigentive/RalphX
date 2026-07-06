@@ -22,6 +22,9 @@ use crate::application::reconciliation::recovery_queue::{
     RecoveryItem, RecoveryKind, RecoveryMetadata, RecoveryQueue,
 };
 use crate::application::reconciliation::verification_handoff::ReconcileChildCompleteResult;
+use crate::application::verification_event_emitters::{
+    emit_verification_status_changed, event_sink_from_app_handle,
+};
 use crate::domain::entities::{
     ChatContextType, IdeationSession, IdeationSessionId, IdeationSessionStatus, SessionPurpose,
     VerificationRunSnapshot, VerificationStatus,
@@ -29,8 +32,7 @@ use crate::domain::entities::{
 use crate::domain::repositories::IdeationSessionRepository;
 use crate::domain::services::{
     build_blank_verification_snapshot, clear_verification_snapshot,
-    emit_verification_status_changed, is_process_alive,
-    load_current_verification_snapshot_or_default, RunningAgentRegistry,
+    is_process_alive, load_current_verification_snapshot_or_default, RunningAgentRegistry,
 };
 
 #[derive(Debug, Clone)]
@@ -268,11 +270,15 @@ impl VerificationReconciliationService {
                         );
                     }
                     // Emit UI event so the frontend reflects the reset immediately
-                    if let Some(ref handle) = self.app_handle {
+                    if let Some(event_sink) = self
+                        .app_handle
+                        .as_ref()
+                        .and_then(event_sink_from_app_handle)
+                    {
                         let convergence_reason =
                             if cold_boot { Some("app_restart") } else { None };
                         emit_verification_status_changed(
-                            handle,
+                            event_sink.as_ref(),
                             session.id.as_str(),
                             VerificationStatus::Unverified,
                             false,
@@ -1132,9 +1138,9 @@ pub(crate) async fn reconcile_verification_on_child_complete<R: Runtime>(
     }
 
     // Emit frontend event so UI updates immediately
-    if let Some(handle) = app_handle {
+    if let Some(event_sink) = app_handle.and_then(event_sink_from_app_handle) {
         emit_verification_status_changed(
-            handle,
+            event_sink.as_ref(),
             parent_id.as_str(),
             terminal_status,
             false,
@@ -1325,9 +1331,9 @@ pub(crate) async fn reset_verification_on_child_error<R: Runtime>(
     }
 
     // Emit frontend event
-    if let Some(handle) = app_handle {
+    if let Some(event_sink) = app_handle.and_then(event_sink_from_app_handle) {
         emit_verification_status_changed(
-            handle,
+            event_sink.as_ref(),
             parent_id.as_str(),
             VerificationStatus::Unverified,
             false,

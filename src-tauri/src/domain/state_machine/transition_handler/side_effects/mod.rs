@@ -20,7 +20,6 @@ use crate::domain::entities::{ActivityEvent, ActivityEventRole, ActivityEventTyp
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use tauri::Emitter;
 
 use super::super::machine::State;
 use crate::application::GitService;

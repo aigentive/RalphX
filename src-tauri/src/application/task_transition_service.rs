@@ -61,6 +61,7 @@ use crate::domain::state_machine::transition_handler::set_trigger_origin;
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::spawner::AgenticClientSpawner;
 use ralphx_domain::entities::EventType;
+use ralphx_events::EventSink;
 
 #[allow(clippy::too_many_arguments)]
 fn build_transition_chat_service_fallback<R: Runtime>(
@@ -848,6 +849,7 @@ pub struct TaskTransitionService<R: Runtime = tauri::Wry> {
     memory_event_repo: Arc<dyn MemoryEventRepository>,
     execution_state: Arc<ExecutionState>,
     _app_handle: Option<AppHandle<R>>,
+    event_sink: Option<Arc<dyn EventSink>>,
     /// Task scheduler for auto-scheduling Ready tasks when slots are available.
     /// Passed to TaskServices so TransitionHandler can trigger scheduling on
     /// state exits and Ready state entry.
@@ -1220,6 +1222,11 @@ impl<R: Runtime> TaskTransitionService<R> {
         Self::log_build_step("dependency_manager", started_at);
         let review_starter: Arc<dyn ReviewStarter> = Arc::new(NoOpReviewStarter);
 
+        let event_sink = app_handle
+            .as_ref()
+            .and_then(|handle| handle.try_state::<AppState>())
+            .map(|state| Arc::clone(&state.events));
+
         let service = Self {
             task_repo,
             task_dependency_repo: task_dep_repo,
@@ -1239,6 +1246,7 @@ impl<R: Runtime> TaskTransitionService<R> {
             memory_event_repo,
             execution_state,
             _app_handle: app_handle,
+            event_sink,
             task_scheduler: None,
             plan_branch_repo: None,
             step_repo: None,
@@ -1557,6 +1565,11 @@ impl<R: Runtime> TaskTransitionService<R> {
         };
         self.event_emitter = Arc::new(emitter);
         self.external_events_repo = Some(repo);
+        self
+    }
+
+    pub fn with_event_sink(mut self, sink: Arc<dyn EventSink>) -> Self {
+        self.event_sink = Some(sink);
         self
     }
 
@@ -2816,8 +2829,8 @@ impl<R: Runtime> TaskTransitionService<R> {
         .with_task_repo(Arc::clone(&self.task_repo))
         .with_project_repo(Arc::clone(&self.project_repo));
 
-        if let Some(ref handle) = self._app_handle {
-            services = services.try_with_app_handle(handle.clone());
+        if let Some(ref event_sink) = self.event_sink {
+            services = services.with_event_sink(Arc::clone(event_sink));
         }
         if let Some(ref drafter) = self.plan_pr_description_drafter {
             services = services.with_plan_pr_description_drafter(Arc::clone(drafter));

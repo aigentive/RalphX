@@ -9,7 +9,7 @@ pub(super) async fn cancel_validation_and_stop_agents<'a>(
     handler: &TransitionHandler<'a>,
     task_id_str: &str,
     task: &crate::domain::entities::Task,
-    app_handle: Option<&tauri::AppHandle>,
+    event_sink: Option<&dyn ralphx_events::EventSink>,
 ) {
     // --- Step 0a: Cancel in-flight validation for this task ---
     if let Some((_, token)) = handler
@@ -29,7 +29,7 @@ pub(super) async fn cancel_validation_and_stop_agents<'a>(
     // --- Step 0b: Stop running agents (SIGKILL immediate for merge cleanup) ---
     let step_start = std::time::Instant::now();
     emit_merge_progress(
-        app_handle,
+        event_sink,
         task_id_str,
         MergePhase::new(MergePhase::MERGE_CLEANUP),
         MergePhaseStatus::Started,
@@ -102,7 +102,7 @@ pub(super) async fn cancel_validation_and_stop_agents<'a>(
     // Scan for OS-level processes still holding worktree files open — only if agents were running
     if any_agent_was_running {
         emit_merge_progress(
-            app_handle,
+            event_sink,
             task_id_str,
             MergePhase::new(MergePhase::MERGE_CLEANUP),
             MergePhaseStatus::Started,

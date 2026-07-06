@@ -101,7 +101,7 @@ impl<'a> TransitionHandler<'a> {
                 )
                 .await;
                 let config = reconciliation_config();
-                let app_handle = self.machine.context.services.app_handle.as_ref();
+                let event_sink = self.machine.context.services.event_sink.as_deref();
                 let activity_event_repo =
                     self.machine.context.services.activity_event_repo.as_ref();
                 let freshness_result = freshness::ensure_branches_fresh(
@@ -115,7 +115,7 @@ impl<'a> TransitionHandler<'a> {
                     plan_branch
                         .as_ref()
                         .map(|branch| branch.source_branch.as_str()),
-                    app_handle,
+                    event_sink,
                     activity_event_repo,
                     "reviewing",
                     config,

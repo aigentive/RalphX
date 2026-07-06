@@ -319,7 +319,7 @@ pub async fn ensure_branches_fresh(
     task_id_str: &str,
     plan_branch: Option<&str>,
     plan_source_branch: Option<&str>,
-    app_handle: Option<&tauri::AppHandle>,
+    event_sink: Option<&dyn ralphx_events::EventSink>,
     activity_event_repo: Option<&Arc<dyn ActivityEventRepository>>,
     origin_state: &str,
     config: &ReconciliationConfig,
@@ -446,7 +446,7 @@ pub async fn ensure_branches_fresh(
                 base_branch,
                 project,
                 task_id_str,
-                app_handle,
+                event_sink,
             )),
         )
         .await;
@@ -561,7 +561,7 @@ pub async fn ensure_branches_fresh(
                 target_branch,
                 project,
                 task_id_str,
-                app_handle,
+                event_sink,
             )),
         )
         .await;

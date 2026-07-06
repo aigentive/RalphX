@@ -19,11 +19,14 @@ use tokio::sync::mpsc;
 
 use crate::application::chat_service::{ChatService, SendMessageOptions};
 use crate::application::interactive_process_registry::{InteractiveProcessKey, InteractiveProcessRegistry};
+use crate::application::verification_event_emitters::{
+    emit_verification_status_changed, event_sink_from_app_handle,
+};
 use crate::domain::entities::{ChatContextType, IdeationSessionId, IdeationSessionStatus, VerificationStatus};
 use crate::domain::repositories::IdeationSessionRepository;
 use crate::domain::services::{
-    clear_verification_snapshot, emit_verification_status_changed,
-    load_current_verification_snapshot_or_default, RunningAgentRegistry,
+    clear_verification_snapshot, load_current_verification_snapshot_or_default,
+    RunningAgentRegistry,
 };
 
 /// Configuration for the recovery queue processor.
@@ -417,15 +420,17 @@ impl RecoveryQueueProcessor {
                         .ok();
 
                     // Emit verification status change so VerificationBadge shows Unverified
-                    emit_verification_status_changed(
-                        handle,
-                        parent_session_id,
-                        VerificationStatus::Unverified,
-                        false,
-                        None,
-                        Some("recovery_failed"),
-                        None, // generation not available without re-reading from DB
-                    );
+                    if let Some(event_sink) = event_sink_from_app_handle(handle) {
+                        emit_verification_status_changed(
+                            event_sink.as_ref(),
+                            parent_session_id,
+                            VerificationStatus::Unverified,
+                            false,
+                            None,
+                            Some("recovery_failed"),
+                            None, // generation not available without re-reading from DB
+                        );
+                    }
                 }
             }
         }

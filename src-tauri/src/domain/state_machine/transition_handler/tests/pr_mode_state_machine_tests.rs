@@ -1616,7 +1616,7 @@ async fn test_regular_plan_task_completion_creates_draft_pr_after_first_local_me
 
     let mut task_for_merge = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
     let task_repo_dyn: Arc<dyn TaskRepository> = Arc::clone(&task_repo) as Arc<dyn TaskRepository>;
-    let result = complete_merge_internal_with_pr_sync::<tauri::Wry>(
+    let result = complete_merge_internal_with_pr_sync(
         &mut task_for_merge,
         &project,
         &commit_sha,
@@ -1719,7 +1719,7 @@ async fn test_regular_plan_task_completion_pushes_existing_pr_after_local_merge(
 
     let mut task_for_merge = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
     let task_repo_dyn: Arc<dyn TaskRepository> = Arc::clone(&task_repo) as Arc<dyn TaskRepository>;
-    let result = complete_merge_internal_with_pr_sync::<tauri::Wry>(
+    let result = complete_merge_internal_with_pr_sync(
         &mut task_for_merge,
         &project,
         &commit_sha,
@@ -1927,7 +1927,7 @@ async fn test_regular_plan_task_completion_push_failure_does_not_mark_task_merge
 
     let mut task_for_merge = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
     let task_repo_dyn: Arc<dyn TaskRepository> = Arc::clone(&task_repo) as Arc<dyn TaskRepository>;
-    let result = complete_merge_internal_with_pr_sync::<tauri::Wry>(
+    let result = complete_merge_internal_with_pr_sync(
         &mut task_for_merge,
         &project,
         &commit_sha,
@@ -2024,7 +2024,7 @@ async fn test_regular_plan_task_completion_repairs_non_fast_forward_pr_publicati
 
     let mut task_for_merge = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
     let task_repo_dyn: Arc<dyn TaskRepository> = Arc::clone(&task_repo) as Arc<dyn TaskRepository>;
-    let result = complete_merge_internal_with_pr_sync::<tauri::Wry>(
+    let result = complete_merge_internal_with_pr_sync(
         &mut task_for_merge,
         &project,
         &commit_sha,
@@ -2142,7 +2142,7 @@ async fn test_regular_plan_task_completion_routes_conflicting_pr_publication_to_
 
     let mut task_for_merge = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
     let task_repo_dyn: Arc<dyn TaskRepository> = Arc::clone(&task_repo) as Arc<dyn TaskRepository>;
-    let result = complete_merge_internal_with_pr_sync::<tauri::Wry>(
+    let result = complete_merge_internal_with_pr_sync(
         &mut task_for_merge,
         &project,
         &local_commit_sha,
@@ -2299,7 +2299,7 @@ async fn test_regular_plan_task_completion_without_github_service_does_not_mark_
 
     let mut task_for_merge = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
     let task_repo_dyn: Arc<dyn TaskRepository> = Arc::clone(&task_repo) as Arc<dyn TaskRepository>;
-    let result = complete_merge_internal_with_pr_sync::<tauri::Wry>(
+    let result = complete_merge_internal_with_pr_sync(
         &mut task_for_merge,
         &project,
         &commit_sha,

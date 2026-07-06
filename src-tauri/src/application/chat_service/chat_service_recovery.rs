@@ -13,6 +13,9 @@ use super::chat_service_replay::{
 };
 use super::chat_service_streaming::process_stream_background;
 use super::streaming_state_cache::StreamingStateCache;
+use crate::application::verification_event_emitters::{
+    emit_verification_status_changed, event_sink_from_app_handle,
+};
 use crate::application::AppState;
 use crate::domain::agents::{AgentHarnessKind, ProviderSessionRef};
 use crate::domain::entities::VerificationStatus;
@@ -22,8 +25,7 @@ use crate::domain::repositories::{
     ChatMessageRepository, IdeationSessionRepository, TaskProposalRepository,
 };
 use crate::domain::services::{
-    clear_verification_snapshot, emit_verification_status_changed,
-    load_current_verification_snapshot_or_default,
+    clear_verification_snapshot, load_current_verification_snapshot_or_default,
 };
 use crate::error::{AppError, AppResult};
 use tauri::{Manager, Runtime};
@@ -397,9 +399,9 @@ async fn build_ideation_recovery_metadata<R: Runtime>(
                 "Verification in-progress reset during session recovery"
             );
             // Emit UI event so the frontend reflects the reset immediately (B2)
-            if let Some(handle) = app_handle {
+            if let Some(event_sink) = app_handle.and_then(event_sink_from_app_handle) {
                 emit_verification_status_changed(
-                    handle,
+                    event_sink.as_ref(),
                     session_id.as_str(),
                     VerificationStatus::Unverified,
                     false,

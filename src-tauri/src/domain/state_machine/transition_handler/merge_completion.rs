@@ -8,8 +8,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use tauri::{AppHandle, Emitter};
-
 use crate::application::GitService;
 use crate::domain::entities::{
     merge_progress_event::{MergePhase, MergePhaseStatus},
@@ -25,6 +23,7 @@ use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::git_runtime_config;
 use crate::utils::path_safety::validate_absolute_non_root_path;
 use ralphx_domain::repositories::ExternalEventsRepository;
+use ralphx_events::EventSink;
 
 use crate::domain::services::payload_enrichment::{
     emit_external_webhook_event, PresentationKind, WebhookPresentationContext,
@@ -53,7 +52,7 @@ use super::merge_validation::emit_merge_progress;
 /// * `commit_sha` - The merge commit SHA (must be on target_branch)
 /// * `target_branch` - The branch the merge was supposed to happen on
 /// * `task_repo` - Repository to persist task changes
-/// * `app_handle` - Optional Tauri handle for emitting events
+/// * `event_sink` - Optional event sink for emitting frontend/runtime events
 ///
 /// # Side Effects
 /// 1. Updates task.merge_commit_sha
@@ -67,7 +66,7 @@ use super::merge_validation::emit_merge_progress;
 /// Returns `AppError::GitOperation` if git verification itself fails (protects against
 /// ghost merges — setting Merged status without confirmation is a data integrity error).
 #[allow(clippy::too_many_arguments)]
-pub async fn complete_merge_internal<R: tauri::Runtime>(
+pub async fn complete_merge_internal(
     task: &mut Task,
     project: &Project,
     commit_sha: &str,
@@ -76,7 +75,7 @@ pub async fn complete_merge_internal<R: tauri::Runtime>(
     task_repo: &Arc<dyn TaskRepository>,
     external_events_repo: Option<&Arc<dyn ExternalEventsRepository>>,
     webhook_publisher: Option<&Arc<dyn WebhookPublisher>>,
-    app_handle: Option<&AppHandle<R>>,
+    event_sink: Option<&dyn EventSink>,
     session_title: Option<String>,
 ) -> AppResult<()> {
     complete_merge_internal_impl(
@@ -88,7 +87,7 @@ pub async fn complete_merge_internal<R: tauri::Runtime>(
         task_repo,
         external_events_repo,
         webhook_publisher,
-        app_handle,
+        event_sink,
         session_title,
         None,
     )
@@ -96,7 +95,7 @@ pub async fn complete_merge_internal<R: tauri::Runtime>(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn complete_merge_internal_with_pr_sync<R: tauri::Runtime>(
+pub(crate) async fn complete_merge_internal_with_pr_sync(
     task: &mut Task,
     project: &Project,
     commit_sha: &str,
@@ -105,7 +104,7 @@ pub(crate) async fn complete_merge_internal_with_pr_sync<R: tauri::Runtime>(
     task_repo: &Arc<dyn TaskRepository>,
     external_events_repo: Option<&Arc<dyn ExternalEventsRepository>>,
     webhook_publisher: Option<&Arc<dyn WebhookPublisher>>,
-    app_handle: Option<&AppHandle<R>>,
+    event_sink: Option<&dyn EventSink>,
     session_title: Option<String>,
     pr_sync_services: Option<PlanBranchPrSyncServices>,
 ) -> AppResult<()> {
@@ -118,7 +117,7 @@ pub(crate) async fn complete_merge_internal_with_pr_sync<R: tauri::Runtime>(
         task_repo,
         external_events_repo,
         webhook_publisher,
-        app_handle,
+        event_sink,
         session_title,
         pr_sync_services,
     )
@@ -126,7 +125,7 @@ pub(crate) async fn complete_merge_internal_with_pr_sync<R: tauri::Runtime>(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn complete_merge_internal_impl<R: tauri::Runtime>(
+async fn complete_merge_internal_impl(
     task: &mut Task,
     project: &Project,
     commit_sha: &str,
@@ -135,7 +134,7 @@ async fn complete_merge_internal_impl<R: tauri::Runtime>(
     task_repo: &Arc<dyn TaskRepository>,
     external_events_repo: Option<&Arc<dyn ExternalEventsRepository>>,
     webhook_publisher: Option<&Arc<dyn WebhookPublisher>>,
-    app_handle: Option<&AppHandle<R>>,
+    event_sink: Option<&dyn EventSink>,
     session_title: Option<String>,
     pr_sync_services: Option<PlanBranchPrSyncServices>,
 ) -> AppResult<()> {
@@ -195,7 +194,7 @@ async fn complete_merge_internal_impl<R: tauri::Runtime>(
 
     // Emit finalize merge progress event
     emit_merge_progress(
-        app_handle,
+        event_sink,
         task_id_str,
         MergePhase::finalize(),
         MergePhaseStatus::Started,
@@ -334,16 +333,16 @@ async fn complete_merge_internal_impl<R: tauri::Runtime>(
         tracing::warn!(error = %e, task_id = task_id_str, "Failed to record merge transition (non-fatal)");
     }
 
-    // 4. Emit Tauri events (intentional: no frontend listeners is OK)
-    if let Some(handle) = app_handle {
-        let _ = handle.emit(
+    // 4. Emit frontend/runtime events (intentional: no frontend listeners is OK)
+    if let Some(sink) = event_sink {
+        sink.emit(
             "task:merged",
             serde_json::json!({
                 "task_id": task_id_str,
                 "commit_sha": commit_sha,
             }),
         );
-        let _ = handle.emit(
+        sink.emit(
             "task:status_changed",
             serde_json::json!({
                 "task_id": task_id_str,
@@ -351,7 +350,7 @@ async fn complete_merge_internal_impl<R: tauri::Runtime>(
                 "new_status": "merged",
             }),
         );
-        let _ = handle.emit(
+        sink.emit(
             "merge:completed",
             serde_json::json!({
                 "task_id": task_id_str,
@@ -507,7 +506,7 @@ async fn complete_merge_internal_impl<R: tauri::Runtime>(
 
     // Emit finalize success merge progress event
     emit_merge_progress(
-        app_handle,
+        event_sink,
         task_id_str,
         MergePhase::finalize(),
         MergePhaseStatus::Passed,
@@ -1019,7 +1018,7 @@ mod tests {
         let task_repo_arc: Arc<dyn TaskRepository> = Arc::new(MemoryTaskRepository::new());
         task_repo_arc.create(task.clone()).await.unwrap();
 
-        let result = complete_merge_internal::<tauri::Wry>(
+        let result = complete_merge_internal(
             &mut task,
             &project,
             invalid_sha,
@@ -1081,7 +1080,7 @@ mod tests {
         project.base_branch = Some("main".to_string());
         project.merge_strategy = MergeStrategy::Merge;
 
-        complete_merge_internal::<tauri::Wry>(
+        complete_merge_internal(
             &mut task,
             &project,
             &head_sha,

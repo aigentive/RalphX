@@ -20,12 +20,12 @@ impl<'a> TransitionHandler<'a> {
         task_repo: &Arc<dyn TaskRepository>,
         attempt_start: std::time::Instant,
     ) {
-        let app_handle = self.machine.context.services.app_handle.as_ref();
+        let event_sink = self.machine.context.services.event_sink.as_deref();
 
         // Emit early phase list so the frontend can show pre-merge phases immediately
         // (validation start emits the full list including dynamic validation phases later)
-        if let Some(handle) = app_handle {
-            let _ = handle.emit(
+        if let Some(sink) = event_sink {
+            sink.emit(
                 "task:merge_phases",
                 serde_json::json!({
                     "task_id": task_id_str,
@@ -44,7 +44,7 @@ impl<'a> TransitionHandler<'a> {
 
         // Signal that merge preparation has started
         emit_merge_progress(
-            app_handle,
+            event_sink,
             task_id_str,
             MergePhase::new(MergePhase::MERGE_PREPARATION),
             MergePhaseStatus::Started,
@@ -57,7 +57,7 @@ impl<'a> TransitionHandler<'a> {
 
         // Preparation complete (branch discovery + context loaded)
         emit_merge_progress(
-            app_handle,
+            event_sink,
             task_id_str,
             MergePhase::new(MergePhase::MERGE_PREPARATION),
             MergePhaseStatus::Passed,
@@ -66,7 +66,7 @@ impl<'a> TransitionHandler<'a> {
 
         // Pre-merge validation for plan_merge tasks
         emit_merge_progress(
-            app_handle,
+            event_sink,
             task_id_str,
             MergePhase::new(MergePhase::PRECONDITION_CHECK),
             MergePhaseStatus::Started,
@@ -241,7 +241,7 @@ impl<'a> TransitionHandler<'a> {
             },
             base_branch.as_str(),
             running_count,
-            self.machine.context.services.app_handle.as_ref(),
+            self.machine.context.services.event_sink.as_deref(),
         )
         .await
         {
@@ -250,7 +250,7 @@ impl<'a> TransitionHandler<'a> {
 
         // Preconditions validated, branches resolved
         emit_merge_progress(
-            app_handle,
+            event_sink,
             task_id_str,
             MergePhase::new(MergePhase::PRECONDITION_CHECK),
             MergePhaseStatus::Passed,
@@ -269,7 +269,7 @@ impl<'a> TransitionHandler<'a> {
         // Pre-merge cleanup: runs before freshness checks so all worktrees are
         // cleaned before freshness checks try to create new ones.
         emit_merge_progress(
-            app_handle,
+            event_sink,
             task_id_str,
             MergePhase::new(MergePhase::MERGE_CLEANUP),
             MergePhaseStatus::Started,
@@ -291,7 +291,7 @@ impl<'a> TransitionHandler<'a> {
         {
             Ok(()) => {
                 emit_merge_progress(
-                    app_handle,
+                    event_sink,
                     task_id_str,
                     MergePhase::new(MergePhase::MERGE_CLEANUP),
                     MergePhaseStatus::Passed,
@@ -328,7 +328,7 @@ impl<'a> TransitionHandler<'a> {
                     );
                 }
                 emit_merge_progress(
-                    app_handle,
+                    event_sink,
                     task_id_str,
                     MergePhase::new(MergePhase::MERGE_CLEANUP),
                     MergePhaseStatus::Passed,
@@ -346,7 +346,7 @@ impl<'a> TransitionHandler<'a> {
 
         // Branch freshness: ensure plan branch, update from its source branch, update source from target
         emit_merge_progress(
-            app_handle,
+            event_sink,
             task_id_str,
             MergePhase::new(MergePhase::BRANCH_FRESHNESS),
             MergePhaseStatus::Started,
@@ -364,7 +364,7 @@ impl<'a> TransitionHandler<'a> {
 
         // Update plan branch from its source branch if behind (prevents false validation failures)
         emit_merge_progress(
-            app_handle,
+            event_sink,
             task_id_str,
             MergePhase::new(MergePhase::BRANCH_FRESHNESS),
             MergePhaseStatus::Started,
@@ -381,7 +381,7 @@ impl<'a> TransitionHandler<'a> {
                 base_branch.as_str(),
                 project,
                 task_id_str,
-                self.machine.context.services.app_handle.as_ref(),
+                self.machine.context.services.event_sink.as_deref(),
             ),
         )
         .await;
@@ -536,7 +536,7 @@ impl<'a> TransitionHandler<'a> {
 
         // Update source branch from target if behind (prevents validation failures from stale code)
         emit_merge_progress(
-            app_handle,
+            event_sink,
             task_id_str,
             MergePhase::new(MergePhase::BRANCH_FRESHNESS),
             MergePhaseStatus::Started,
@@ -551,7 +551,7 @@ impl<'a> TransitionHandler<'a> {
                 &target_branch,
                 project,
                 task_id_str,
-                self.machine.context.services.app_handle.as_ref(),
+                self.machine.context.services.event_sink.as_deref(),
             ),
         )
         .await;
@@ -691,7 +691,7 @@ impl<'a> TransitionHandler<'a> {
 
         // Branch freshness checks complete
         emit_merge_progress(
-            app_handle,
+            event_sink,
             task_id_str,
             MergePhase::new(MergePhase::BRANCH_FRESHNESS),
             MergePhaseStatus::Passed,
@@ -749,7 +749,7 @@ impl<'a> TransitionHandler<'a> {
 
         // Emit merge progress event
         emit_merge_progress(
-            app_handle,
+            event_sink,
             task_id_str,
             MergePhase::programmatic_merge(),
             MergePhaseStatus::Started,

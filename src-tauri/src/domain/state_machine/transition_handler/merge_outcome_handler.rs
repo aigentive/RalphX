@@ -298,7 +298,7 @@ impl<'a> super::TransitionHandler<'a> {
         tracing::info!(task_id = task_id_str, commit_sha = %commit_sha, strategy = opts.strategy_label, "Merge succeeded");
 
         emit_merge_progress(
-            self.machine.context.services.app_handle.as_ref(),
+            self.machine.context.services.event_sink.as_deref(),
             task_id_str,
             MergePhase::programmatic_merge(),
             MergePhaseStatus::Passed,
@@ -341,7 +341,7 @@ impl<'a> super::TransitionHandler<'a> {
                     task,
                     merge_path,
                     task_id_str,
-                    self.machine.context.services.app_handle.as_ref(),
+                    self.machine.context.services.event_sink.as_deref(),
                     cached_log.as_deref(),
                     validation_mode,
                     &validation_cancel,
@@ -462,7 +462,7 @@ impl<'a> super::TransitionHandler<'a> {
         }
 
         // Complete merge
-        let app_handle = self.machine.context.services.app_handle.as_ref();
+        let event_sink = self.machine.context.services.event_sink.as_deref();
         let external_events_repo = self.machine.context.services.external_events_repo.as_ref();
         let webhook_publisher = self.machine.context.services.webhook_publisher.as_ref();
         if let Err(e) = complete_merge_internal_with_pr_sync(
@@ -474,7 +474,7 @@ impl<'a> super::TransitionHandler<'a> {
             task_repo,
             external_events_repo,
             webhook_publisher,
-            app_handle,
+            event_sink,
             None,
             Some(
                 super::merge_helpers::PlanBranchPrSyncServices::from_task_services(
@@ -586,7 +586,7 @@ impl<'a> super::TransitionHandler<'a> {
         );
 
         emit_merge_progress(
-            self.machine.context.services.app_handle.as_ref(),
+            self.machine.context.services.event_sink.as_deref(),
             task_id_str,
             MergePhase::programmatic_merge(),
             MergePhaseStatus::Failed,

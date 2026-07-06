@@ -11,7 +11,7 @@ use crate::domain::entities::{
     ChatContextType, IdeationSession, IdeationSessionId, IdeationSessionStatus, SessionLink,
     SessionPurpose, SessionRelationship, VerificationStatus,
 };
-use crate::domain::services::{emit_verification_started, emit_verification_status_changed};
+use crate::application::verification_event_emitters::{emit_verification_started, emit_verification_status_changed};
 use crate::infrastructure::agents::claude::{
     get_team_constraints, team_constraints_config, validate_child_team_config, TeamConstraints,
 };

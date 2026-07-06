@@ -157,7 +157,6 @@ pub(super) async fn rollback_verification_state(
     let parent_id_str = parent_id.as_str().to_string();
     let pid_for_reset = parent_id_str.clone();
     let db = state.app_state.db.clone();
-    let app_handle = state.app_state.app_handle.clone();
 
     if let Err(re) = db
         .run(move |conn| SessionRepo::reset_auto_verify_sync(conn, &pid_for_reset))
@@ -167,9 +166,9 @@ pub(super) async fn rollback_verification_state(
             "Failed to rollback verification state after {}: {}",
             failure_context, re
         );
-    } else if let Some(handle) = app_handle {
+    } else {
         emit_verification_status_changed(
-            &handle,
+            state.app_state.events.as_ref(),
             &parent_id_str,
             VerificationStatus::Unverified,
             false,

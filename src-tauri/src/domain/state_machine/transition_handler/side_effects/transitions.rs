@@ -91,7 +91,7 @@ impl<'a> TransitionHandler<'a> {
         repo_path: &Path,
         plan_branch_repo: &Option<Arc<dyn PlanBranchRepository>>,
     ) {
-        let app_handle = self.machine.context.services.app_handle.as_ref();
+        let event_sink = self.machine.context.services.event_sink.as_deref();
 
         if let Some(ref plan_branch_repo) = plan_branch_repo {
             if let Ok(Some(pb)) = plan_branch_repo.get_by_merge_task_id(task_id).await {
@@ -181,8 +181,8 @@ impl<'a> TransitionHandler<'a> {
                     );
                 }
 
-                if let Some(handle) = app_handle {
-                    let _ = handle.emit(
+                if let Some(sink) = event_sink {
+                    sink.emit(
                         "plan:merge_complete",
                         serde_json::json!({
                             "plan_artifact_id": pb.plan_artifact_id.as_str(),
