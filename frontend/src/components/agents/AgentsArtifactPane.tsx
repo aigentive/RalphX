@@ -236,6 +236,7 @@ const ARTIFACT_TABS: Array<{
   { id: "issues", label: "Issues", icon: AlertCircle },
   { id: "plan", label: "Plan", icon: FileText },
   { id: "verification", label: "Verification", icon: CheckCircle2 },
+  { id: "proposal", label: "Proposals", icon: GitPullRequestArrow },
   { id: "tasks", label: "Tasks", icon: ClipboardList },
 ];
 
@@ -606,9 +607,13 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
             displayedVerificationStatus.status !== "unverified"))),
   );
   const proposalCount = proposals.length;
+  const conversationArtifactMode =
+    conversation?.agentMode === "plan" || conversation?.agentMode === "ideation"
+      ? conversation.agentMode
+      : null;
   const artifactMode =
+    conversationArtifactMode ??
     workspace?.mode ??
-    conversation?.agentMode ??
     (conversation?.contextType === "ideation" ? "ideation" : null);
   const issueConversationId =
     conversation?.contextType === "project" ? conversation.id : null;

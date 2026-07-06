@@ -3350,7 +3350,7 @@ describe("AgentsArtifactPane", () => {
     expect(screen.queryByTestId("agents-artifact-tab-verification")).not.toBeInTheDocument();
   });
 
-  it("surfaces proposals through the Plan tab instead of a top-level tab", async () => {
+  it("shows the Proposals tab when a plan session has proposal content", async () => {
     const user = userEvent.setup();
     getIdeationSessionMock.mockResolvedValue({
       session: {
@@ -3437,7 +3437,7 @@ describe("AgentsArtifactPane", () => {
     );
 
     expect(await screen.findByTestId("agents-artifact-tab-plan")).toBeInTheDocument();
-    expect(screen.queryByTestId("agents-artifact-tab-proposal")).not.toBeInTheDocument();
+    expect(screen.getByTestId("agents-artifact-tab-proposal")).toBeInTheDocument();
     expect(screen.queryByTestId("agents-artifact-tab-verification")).not.toBeInTheDocument();
     const proposalsToggle = await screen.findByRole("button", {
       name: /1 Proposal/i,
