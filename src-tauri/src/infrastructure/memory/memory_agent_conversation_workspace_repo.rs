@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use tokio::sync::RwLock;
 
 use crate::domain::entities::{
@@ -30,6 +30,7 @@ pub struct MemoryAgentConversationWorkspaceRepository {
     workspace_review_hunk_annotations:
         RwLock<HashMap<(ChatConversationId, ArtifactId), Vec<AgentWorkspaceReviewHunkAnnotation>>>,
     pr_review_actions: RwLock<HashMap<String, AgentWorkspacePrReviewAction>>,
+    local_cleanup_markers: RwLock<HashMap<ChatConversationId, (String, DateTime<Utc>)>>,
 }
 
 impl MemoryAgentConversationWorkspaceRepository {
@@ -44,7 +45,19 @@ impl MemoryAgentConversationWorkspaceRepository {
             workspace_review_monitors: RwLock::new(HashMap::new()),
             workspace_review_hunk_annotations: RwLock::new(HashMap::new()),
             pr_review_actions: RwLock::new(HashMap::new()),
+            local_cleanup_markers: RwLock::new(HashMap::new()),
         }
+    }
+
+    pub async fn local_cleanup_status_for_test(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> Option<String> {
+        self.local_cleanup_markers
+            .read()
+            .await
+            .get(conversation_id)
+            .map(|(status, _)| status.clone())
     }
 }
 
@@ -88,6 +101,19 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             .filter(|workspace| workspace.project_id == *project_id)
             .cloned()
             .collect())
+    }
+
+    async fn mark_local_cleanup_status(
+        &self,
+        conversation_id: &ChatConversationId,
+        status: &str,
+        checked_at: DateTime<Utc>,
+    ) -> AppResult<()> {
+        self.local_cleanup_markers
+            .write()
+            .await
+            .insert(conversation_id.clone(), (status.to_string(), checked_at));
+        Ok(())
     }
 
     async fn get_by_linked_ideation_session_id(

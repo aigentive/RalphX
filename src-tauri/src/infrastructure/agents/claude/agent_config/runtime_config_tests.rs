@@ -31,6 +31,8 @@ fn test_all_defaults_are_sensible() {
         cfg.git.agent_workspace_pr_reconciliation_cache_ttl_ms,
         30_000
     );
+    assert_eq!(cfg.git.terminal_pr_local_cleanup_interval_secs, 900);
+    assert_eq!(cfg.git.terminal_pr_local_cleanup_retry_secs, 3_600);
     assert_eq!(cfg.git.orphan_worktree_cleanup_marker_retry_secs, 86_400);
     assert_eq!(cfg.scheduler.watchdog_interval_secs, 60);
     assert_eq!(cfg.supervisor.time_threshold_secs, 600);
@@ -135,6 +137,8 @@ fn test_env_overrides_apply() {
         "RALPHX_GIT_WORKSPACE_PR_ANNOTATIONS_CACHE_TTL_MS" => Some("45000".to_string()),
         "RALPHX_GIT_WORKSPACE_PR_ANNOTATIONS_CHECK_RUN_FETCH_LIMIT" => Some("7".to_string()),
         "RALPHX_GIT_AGENT_WORKSPACE_PR_RECONCILIATION_CACHE_TTL_MS" => Some("45000".to_string()),
+        "RALPHX_GIT_TERMINAL_PR_LOCAL_CLEANUP_INTERVAL_SECS" => Some("300".to_string()),
+        "RALPHX_GIT_TERMINAL_PR_LOCAL_CLEANUP_RETRY_SECS" => Some("1800".to_string()),
         "RALPHX_GIT_ORPHAN_WORKTREE_CLEANUP_MARKER_RETRY_SECS" => Some("3600".to_string()),
         "RALPHX_SCHEDULER_READY_SETTLE_MS" => Some("500".to_string()),
         "RALPHX_SUPERVISOR_MAX_TOKENS" => Some("200000".to_string()),
@@ -158,6 +162,8 @@ fn test_env_overrides_apply() {
         cfg.git.agent_workspace_pr_reconciliation_cache_ttl_ms,
         45_000
     );
+    assert_eq!(cfg.git.terminal_pr_local_cleanup_interval_secs, 300);
+    assert_eq!(cfg.git.terminal_pr_local_cleanup_retry_secs, 1800);
     assert_eq!(cfg.git.orphan_worktree_cleanup_marker_retry_secs, 3600);
     assert_eq!(cfg.scheduler.ready_settle_ms, 500);
     assert_eq!(cfg.supervisor.max_tokens, 200000);

@@ -427,8 +427,9 @@ async fn agent_workspace_pr_conflict_marks_supervision_blocked_without_autofix()
     workspace.pr_autofix_enabled = false;
     workspace.pr_auto_merge_desired = false;
     let conversation_id = workspace.conversation_id.clone();
+    let memory_workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
-        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+        memory_workspace_repo.clone();
     workspace_repo
         .create_or_update(workspace)
         .await
@@ -3118,8 +3119,9 @@ async fn terminal_agent_workspace_pr_cleanup_fetches_base_and_deletes_merged_art
     let workspace = cleanup_workspace_with_conversation(&project, &branch, conversation_id_str);
     let conversation_id = workspace.conversation_id.clone();
     let worktree_path = std::path::PathBuf::from(&workspace.worktree_path);
+    let memory_workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
-        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+        memory_workspace_repo.clone();
     workspace_repo
         .create_or_update(workspace)
         .await
@@ -3151,6 +3153,13 @@ async fn terminal_agent_workspace_pr_cleanup_fetches_base_and_deletes_merged_art
     let state = github.state();
     assert_eq!(state.fetch_remote_calls, 1);
     assert_eq!(state.last_fetch_remote_branch_name.as_deref(), Some("main"));
+    assert_eq!(
+        memory_workspace_repo
+            .local_cleanup_status_for_test(&conversation_id)
+            .await
+            .as_deref(),
+        Some("cleaned")
+    );
 }
 
 #[tokio::test]
@@ -3163,8 +3172,9 @@ async fn terminal_agent_workspace_pr_cleanup_continues_after_fetch_failure() {
     let workspace = cleanup_workspace_with_conversation(&project, &branch, conversation_id_str);
     let conversation_id = workspace.conversation_id.clone();
     let worktree_path = std::path::PathBuf::from(&workspace.worktree_path);
+    let memory_workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
-        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+        memory_workspace_repo.clone();
     workspace_repo
         .create_or_update(workspace)
         .await
@@ -3197,6 +3207,51 @@ async fn terminal_agent_workspace_pr_cleanup_continues_after_fetch_failure() {
     assert!(!worktree_path.exists());
     assert!(!branch_exists(repo.path(), &branch));
     assert_eq!(github.state().fetch_remote_calls, 1);
+    assert_eq!(
+        memory_workspace_repo
+            .local_cleanup_status_for_test(&conversation_id)
+            .await
+            .as_deref(),
+        Some("cleaned")
+    );
+}
+
+#[tokio::test]
+async fn terminal_agent_workspace_pr_cleanup_preserves_non_owned_branch_marker() {
+    let repo = init_cleanup_repo();
+    let worktrees = tempfile::tempdir().expect("worktree parent");
+    let project = cleanup_project(repo.path(), worktrees.path());
+    let branch = "feature/user-owned-agent-workspace";
+    run_git(repo.path(), &["branch", branch, "main"]);
+
+    let workspace =
+        cleanup_workspace_with_conversation(&project, branch, "poller-non-owned-cleanup");
+    let conversation_id = workspace.conversation_id.clone();
+    let memory_workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        memory_workspace_repo.clone();
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+
+    cleanup_terminal_agent_workspace_after_pr(
+        Arc::clone(&workspace_repo),
+        &conversation_id,
+        &project,
+        None,
+        true,
+    )
+    .await;
+
+    assert!(branch_exists(repo.path(), branch));
+    assert_eq!(
+        memory_workspace_repo
+            .local_cleanup_status_for_test(&conversation_id)
+            .await
+            .as_deref(),
+        Some("branch_preserved_non_owned")
+    );
 }
 
 #[tokio::test]
@@ -3204,8 +3259,9 @@ async fn terminal_agent_workspace_pr_cleanup_returns_when_workspace_missing() {
     let repo = init_cleanup_repo();
     let worktrees = tempfile::tempdir().expect("worktree parent");
     let project = cleanup_project(repo.path(), worktrees.path());
+    let memory_workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
-        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+        memory_workspace_repo.clone();
     let conversation_id = ChatConversationId::new();
 
     cleanup_terminal_agent_workspace_after_pr(
@@ -3274,8 +3330,9 @@ async fn agent_workspace_closed_pr_polling_removes_worktree_but_keeps_branch() {
     workspace.publication_pr_status = Some("open".to_string());
     let conversation_id = workspace.conversation_id.clone();
     let worktree_path = std::path::PathBuf::from(&workspace.worktree_path);
+    let memory_workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
-        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+        memory_workspace_repo.clone();
     workspace_repo
         .create_or_update(workspace)
         .await
@@ -3322,6 +3379,21 @@ async fn agent_workspace_closed_pr_polling_removes_worktree_but_keeps_branch() {
     assert_eq!(updated.publication_pr_status.as_deref(), Some("closed"));
     assert!(branch_exists(repo.path(), branch));
     assert_eq!(github.state().fetch_remote_calls, 0);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if memory_workspace_repo
+                .local_cleanup_status_for_test(&conversation_id)
+                .await
+                .as_deref()
+                == Some("cleaned")
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("poller should mark closed PR local cleanup as cleaned");
 }
 
 // ────────────────────────────────────────────────────────────────────
