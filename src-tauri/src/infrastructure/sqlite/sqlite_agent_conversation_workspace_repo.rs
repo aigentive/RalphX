@@ -984,6 +984,34 @@ impl AgentConversationWorkspaceRepository for SqliteAgentConversationWorkspaceRe
             .await
     }
 
+    async fn list_active_linked_plan_pr_supervision_recovery_candidates(
+        &self,
+        limit: usize,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        self.db
+            .run(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT * FROM agent_conversation_workspaces
+                     WHERE status = 'active'
+                       AND mode = 'ideation'
+                       AND linked_plan_branch_id IS NOT NULL
+                       AND pr_supervision_status IN ('blocked', 'fixing')
+                       AND auto_publish_enabled = 1
+                       AND (pr_autofix_enabled = 1 OR pr_auto_merge_desired = 1)
+                     ORDER BY updated_at DESC
+                     LIMIT ?1",
+                )?;
+                let rows = stmt.query_map(rusqlite::params![limit], row_to_workspace)?;
+                let mut workspaces = Vec::new();
+                for row in rows {
+                    workspaces.push(row?);
+                }
+                Ok(workspaces)
+            })
+            .await
+    }
+
     async fn update_links(
         &self,
         conversation_id: &ChatConversationId,

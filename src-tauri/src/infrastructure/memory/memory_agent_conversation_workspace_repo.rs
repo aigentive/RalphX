@@ -13,8 +13,7 @@ use crate::domain::entities::{
     AgentWorkspacePrReviewMonitor, AgentWorkspacePrReviewMonitorStatus,
     AgentWorkspaceReviewHunkAnnotation, AgentWorkspaceReviewMonitor,
     AgentWorkspaceReviewMonitorStatus, ArtifactId, ChatConversationId, IdeationSessionId,
-    PlanBranchId, ProjectId,
-    DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+    PlanBranchId, ProjectId, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::repositories::AgentConversationWorkspaceRepository;
 use crate::error::AppResult;
@@ -225,6 +224,23 @@ impl AgentConversationWorkspaceRepository for MemoryAgentConversationWorkspaceRe
             .await
             .values()
             .filter(|workspace| is_active_direct_pr_supervision_recovery_candidate(workspace))
+            .cloned()
+            .collect::<Vec<_>>();
+        workspaces.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+        workspaces.truncate(limit);
+        Ok(workspaces)
+    }
+
+    async fn list_active_linked_plan_pr_supervision_recovery_candidates(
+        &self,
+        limit: usize,
+    ) -> AppResult<Vec<AgentConversationWorkspace>> {
+        let mut workspaces = self
+            .workspaces
+            .read()
+            .await
+            .values()
+            .filter(|workspace| is_active_linked_plan_pr_supervision_recovery_candidate(workspace))
             .cloned()
             .collect::<Vec<_>>();
         workspaces.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
@@ -894,6 +910,20 @@ fn is_active_direct_pr_supervision_recovery_candidate(
         && !matches!(
             workspace.publication_pr_status.as_deref(),
             Some("closed") | Some("merged")
+        )
+}
+
+fn is_active_linked_plan_pr_supervision_recovery_candidate(
+    workspace: &AgentConversationWorkspace,
+) -> bool {
+    workspace.status == AgentConversationWorkspaceStatus::Active
+        && workspace.mode == AgentConversationWorkspaceMode::Ideation
+        && workspace.linked_plan_branch_id.is_some()
+        && workspace.auto_publish_enabled
+        && (workspace.pr_autofix_enabled || workspace.pr_auto_merge_desired)
+        && matches!(
+            workspace.pr_supervision_status.as_deref(),
+            Some("blocked" | "fixing")
         )
 }
 

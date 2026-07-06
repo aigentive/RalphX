@@ -974,8 +974,10 @@ fn schedule_pr_supervision_recovery_for_workspace(
         AgentWorkspacePrSupervisionRecoveryDeps {
             workspace_repo: Arc::clone(&state.agent_conversation_workspace_repo),
             project_repo: Arc::clone(&state.project_repo),
+            plan_branch_repo: Arc::clone(&state.plan_branch_repo),
             github,
             pr_poller_registry: Some(Arc::clone(&state.pr_poller_registry)),
+            transition_service: None,
             chat_service: Some(chat_service),
             agent_run_repo: Arc::clone(&state.agent_run_repo),
             app_handle: state.app_handle.clone(),

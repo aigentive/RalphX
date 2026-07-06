@@ -22,13 +22,14 @@ use crate::application::agent_conversation_workspace::{
 use crate::application::chat_service::MockChatService;
 use crate::application::git_service::GitService;
 use crate::domain::agents::{AgentHarnessKind, LogicalEffort};
+use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus as DbPrStatus};
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode,
     AgentConversationWorkspacePublicationEvent, AgentConversationWorkspaceStatus, AgentRun,
     AgentWorkspacePrDescription, AgentWorkspacePrReviewAction, AgentWorkspacePrReviewActionKind,
     AgentWorkspacePrReviewMonitor, AgentWorkspacePrReviewMonitorStatus,
-    AgentWorkspaceSourcePullRequest, ChatConversationId, IdeationAnalysisBaseRefKind,
-    IdeationSessionId, PlanBranchId, Project, TaskId,
+    AgentWorkspaceSourcePullRequest, ArtifactId, ChatConversationId, IdeationAnalysisBaseRefKind,
+    IdeationSessionId, PlanBranch, PlanBranchId, Project, TaskId,
 };
 use crate::domain::repositories::{AgentConversationWorkspaceRepository, AgentRunRepository};
 use crate::domain::services::github_service::{
@@ -165,6 +166,50 @@ fn supervised_workspace(
     workspace.publication_push_status = Some("pushed".to_string());
     workspace.pr_autofix_enabled = true;
     workspace
+}
+
+fn ideation_plan_workspace(
+    conversation_id: &str,
+    project_id: &str,
+    session_id: IdeationSessionId,
+    plan_branch_id: PlanBranchId,
+    plan_branch_name: &str,
+    worktree_path: &std::path::Path,
+) -> AgentConversationWorkspace {
+    let mut workspace = supervised_workspace(conversation_id, project_id, worktree_path);
+    workspace.mode = AgentConversationWorkspaceMode::Ideation;
+    workspace.linked_ideation_session_id = Some(session_id);
+    workspace.linked_plan_branch_id = Some(plan_branch_id);
+    workspace.branch_name = plan_branch_name.to_string();
+    workspace.publication_pr_number = None;
+    workspace.publication_pr_url = None;
+    workspace.publication_pr_status = None;
+    workspace.publication_push_status = None;
+    workspace
+}
+
+fn active_plan_pr_branch(
+    session_id: IdeationSessionId,
+    project_id: &str,
+    branch_id: PlanBranchId,
+    branch_name: &str,
+    pr_number: i64,
+) -> PlanBranch {
+    let mut plan_branch = PlanBranch::new(
+        ArtifactId::from_string("plan-artifact-autofix"),
+        session_id,
+        crate::domain::entities::ProjectId::from_string(project_id.to_string()),
+        branch_name.to_string(),
+        "main".to_string(),
+    );
+    plan_branch.id = branch_id;
+    plan_branch.pr_eligible = true;
+    plan_branch.pr_polling_active = true;
+    plan_branch.pr_number = Some(pr_number);
+    plan_branch.pr_url = Some(format!("https://github.com/owner/repo/pull/{pr_number}"));
+    plan_branch.pr_status = Some(DbPrStatus::Open);
+    plan_branch.pr_push_status = PrPushStatus::Pushed;
+    plan_branch
 }
 
 fn review_pr_workspace(
@@ -1056,7 +1101,13 @@ fn supervised_agent_workspace_pr_message_includes_fix_context_entrypoint() {
         classification: "github_pr_autofix:101:head:fingerprint".to_string(),
     };
 
-    let message = super::build_agent_workspace_pr_autofix_message(101, &workspace, &issue);
+    let message = super::build_agent_workspace_pr_autofix_message(
+        101,
+        workspace.publication_pr_url.as_deref(),
+        "agent workspace",
+        &workspace,
+        &issue,
+    );
     assert!(message.contains("RalphX PR supervision detected"));
     assert!(message.contains("complete_agent_workspace_pr_fix"));
     assert!(message.contains("get_agent_workspace_pr_fix_context"));
@@ -1145,6 +1196,101 @@ async fn supervised_agent_workspace_pr_autofix_routes_failure_to_pr_fixer() {
                 .as_deref()
                 .unwrap_or_default()
                 .starts_with("github_pr_autofix:101:routehead")
+    }));
+}
+
+#[tokio::test]
+async fn ideation_plan_pr_autofix_routes_failure_without_workspace_publication_pr() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let project_id = "project-plan-autofix";
+    let session_id = IdeationSessionId::from_string("session-plan-autofix");
+    let plan_branch_id = PlanBranchId::from_string("plan-branch-autofix");
+    let plan_branch_name = "ralphx/test/plan-autofix";
+    let workspace = ideation_plan_workspace(
+        "plan-autofix-route-conversation",
+        project_id,
+        session_id.clone(),
+        plan_branch_id.clone(),
+        plan_branch_name,
+        worktree.path(),
+    );
+    let conversation_id = workspace.conversation_id.clone();
+    let plan_branch = active_plan_pr_branch(
+        session_id,
+        project_id,
+        plan_branch_id,
+        plan_branch_name,
+        602,
+    );
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+
+    let mut health = open_pr_health("plan-route-head");
+    health.checks.push(PrHealthCheck {
+        name: "Frontend Tests".to_string(),
+        status: Some("completed".to_string()),
+        conclusion: Some("failure".to_string()),
+        details_url: Some("https://github.com/owner/repo/actions/runs/602".to_string()),
+    });
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(health));
+    let chat = Arc::new(MockChatService::new());
+
+    let routed = super::route_ideation_plan_pr_autofix_if_needed(
+        github.clone() as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        &plan_branch,
+        &conversation_id,
+        Arc::clone(&workspace_repo),
+        None,
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect("plan PR autofix routing should succeed");
+
+    assert!(routed);
+    let messages = chat.get_sent_messages().await;
+    assert_eq!(messages.len(), 1);
+    assert!(messages[0].contains("Frontend Tests (failure)"));
+    assert!(messages[0].contains("Pull request: https://github.com/owner/repo/pull/602"));
+    let options = chat.get_sent_options().await;
+    assert_eq!(
+        options[0].agent_name_override.as_deref(),
+        Some(crate::infrastructure::agents::claude::agent_names::AGENT_WORKSPACE_PR_FIXER)
+    );
+    assert_eq!(
+        options[0].working_directory_override.as_deref(),
+        Some(worktree.path())
+    );
+
+    let updated = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should exist");
+    assert_eq!(updated.publication_pr_number, None);
+    assert_eq!(updated.pr_supervision_status.as_deref(), Some("fixing"));
+    assert!(updated
+        .pr_supervision_summary
+        .as_deref()
+        .unwrap_or_default()
+        .contains("failing check"));
+    let events = workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("events should list");
+    assert!(events.iter().any(|event| {
+        event.step == "pr_autofix"
+            && event.status == "needs_agent"
+            && event
+                .classification
+                .as_deref()
+                .unwrap_or_default()
+                .starts_with("github_pr_autofix:602:planroutehea")
     }));
 }
 

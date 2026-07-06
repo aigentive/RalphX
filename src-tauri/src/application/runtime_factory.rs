@@ -49,6 +49,7 @@ pub(crate) struct RuntimeFactoryDeps {
     pub agent_provider_settings_repo: Option<Arc<dyn AgentProviderSettingsRepository>>,
     pub review_repo: Option<Arc<dyn ReviewRepository>>,
     pub plan_branch_repo: Option<Arc<dyn PlanBranchRepository>>,
+    pub agent_conversation_workspace_repo: Option<Arc<dyn AgentConversationWorkspaceRepository>>,
     pub interactive_process_registry: Option<Arc<InteractiveProcessRegistry>>,
     pub github_service: Option<Arc<dyn GithubServiceTrait>>,
     pub pr_poller_registry: Option<Arc<PrPollerRegistry>>,
@@ -93,6 +94,7 @@ impl RuntimeFactoryDeps {
             agent_provider_settings_repo: None,
             review_repo: None,
             plan_branch_repo: None,
+            agent_conversation_workspace_repo: None,
             interactive_process_registry: None,
             github_service: None,
             pr_poller_registry: None,
@@ -152,6 +154,14 @@ impl RuntimeFactoryDeps {
         self
     }
 
+    pub(crate) fn with_agent_conversation_workspace_repo(
+        mut self,
+        repo: Option<Arc<dyn AgentConversationWorkspaceRepository>>,
+    ) -> Self {
+        self.agent_conversation_workspace_repo = repo;
+        self
+    }
+
     pub(crate) fn from_app_state(state: &AppState) -> Self {
         let started_at = Instant::now();
         let deps = Self::from_core(
@@ -179,6 +189,9 @@ impl RuntimeFactoryDeps {
             Some(Arc::clone(&state.plan_branch_repo)),
             Some(Arc::clone(&state.interactive_process_registry)),
         )
+        .with_agent_conversation_workspace_repo(Some(Arc::clone(
+            &state.agent_conversation_workspace_repo,
+        )))
         .with_github_runtime_support(
             state.github_service.as_ref().map(Arc::clone),
             Some(Arc::clone(&state.pr_poller_registry)),
@@ -751,6 +764,9 @@ pub(crate) fn build_transition_service_from_deps<R: Runtime>(
 
     if let Some(repo) = deps.review_repo.as_ref() {
         service = service.with_review_repo(Arc::clone(repo));
+    }
+    if let Some(repo) = deps.agent_conversation_workspace_repo.as_ref() {
+        service = service.with_agent_conversation_workspace_repo(Arc::clone(repo));
     }
     service = service.with_artifact_repo(Arc::clone(&deps.artifact_repo));
     if let Some(registry) = deps.pr_poller_registry.as_ref() {

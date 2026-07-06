@@ -124,6 +124,11 @@ impl<'a, R: Runtime + 'static> MergeAutoCompleteContext<'a, R> {
             self.plan_branch_repo.clone(),
             self.interactive_process_registry.clone(),
         )
+        .with_agent_conversation_workspace_repo(self.app_handle.and_then(|handle| {
+            handle
+                .try_state::<AppState>()
+                .map(|app_state| Arc::clone(&app_state.agent_conversation_workspace_repo))
+        }))
     }
 
     fn build_transition_service(&self) -> Arc<TaskTransitionService<R>> {
