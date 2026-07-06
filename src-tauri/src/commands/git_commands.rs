@@ -13,7 +13,9 @@ use crate::application::runtime_factory::{
 use crate::application::{AppState, TaskTransitionService};
 use crate::commands::execution_commands::AGENT_ACTIVE_STATUSES;
 use crate::commands::ExecutionState;
-use crate::domain::entities::{GitMode, InternalStatus, PlanBranch, ProjectId, TaskId};
+use crate::domain::entities::{
+    GitMode, InternalStatus, PlanBranch, ProjectId, TaskCategory, TaskId,
+};
 use crate::domain::repositories::ExecutionSettingsRepository;
 use crate::domain::state_machine::services::TaskScheduler;
 
@@ -276,6 +278,22 @@ pub async fn resolve_merge_conflict(
                 .to_string(),
         );
     }
+
+    let linked_plan_branch = if task.category == TaskCategory::PlanMerge {
+        state
+            .plan_branch_repo
+            .get_by_merge_task_id(&task_id_parsed)
+            .await
+            .map_err(|e| {
+                format!(
+                    "Failed to verify linked plan branch before marking merge resolved: {}",
+                    e
+                )
+            })?
+    } else {
+        None
+    };
+    ensure_manual_plan_merge_resolution_allowed(&task, linked_plan_branch.as_ref())?;
 
     // Get project
     let project = state
@@ -742,6 +760,43 @@ fn ensure_resolve_merge_status(status: InternalStatus) -> Result<(), String> {
     ))
 }
 
+fn ensure_manual_plan_merge_resolution_allowed(
+    task: &crate::domain::entities::Task,
+    plan_branch: Option<&PlanBranch>,
+) -> Result<(), String> {
+    if task.category != TaskCategory::PlanMerge {
+        return Ok(());
+    }
+
+    let Some(plan_branch) = plan_branch else {
+        return Err(
+            "Cannot mark plan merge as resolved because the linked plan branch could not be verified. Use Retry Merge or wait for plan branch recovery before completing the merge."
+                .to_string(),
+        );
+    };
+
+    if !plan_branch.pr_eligible || plan_branch.pr_number.is_none() {
+        return Ok(());
+    }
+
+    if matches!(
+        plan_branch.pr_status,
+        Some(crate::domain::entities::plan_branch::PrStatus::Merged)
+    ) {
+        return Ok(());
+    }
+
+    let pr_number = plan_branch.pr_number.expect("checked above");
+    let pr_status = plan_branch
+        .pr_status
+        .map(|status| status.to_db_string())
+        .unwrap_or("unknown");
+    Err(format!(
+        "Cannot mark PR-backed plan merge as resolved while PR #{} is {}. Use Retry Merge for local recovery, or merge/reopen the PR and let RalphX finish the PR flow.",
+        pr_number, pr_status
+    ))
+}
+
 fn ensure_retry_merge_status(status: InternalStatus) -> Result<(), String> {
     if matches!(
         status,
@@ -809,7 +864,9 @@ mod transition_guard_tests {
     use super::*;
     use crate::application::AppState;
     use crate::commands::ExecutionState;
-    use crate::domain::entities::{Project, Task};
+    use crate::domain::entities::{
+        plan_branch::PrStatus, ArtifactId, IdeationSessionId, Project, Task, TaskCategory,
+    };
     use std::sync::Arc;
 
     #[test]
@@ -825,6 +882,74 @@ mod transition_guard_tests {
         assert!(error.contains("MergeConflict"));
         assert!(error.contains("MergeIncomplete"));
         assert!(error.contains("Approved"));
+    }
+
+    #[test]
+    fn resolve_merge_rejects_open_pr_backed_plan_merge() {
+        let project = Project::new("Test Project".to_string(), "/test/path".to_string());
+        let task = Task::new_with_category(
+            project.id.clone(),
+            "Merge plan into main".to_string(),
+            TaskCategory::PlanMerge,
+        );
+        let mut plan_branch = PlanBranch::new(
+            ArtifactId::new(),
+            IdeationSessionId::new(),
+            project.id.clone(),
+            "ralphx/test/agent-plan".to_string(),
+            "main".to_string(),
+        );
+        plan_branch.merge_task_id = Some(task.id.clone());
+        plan_branch.pr_eligible = true;
+        plan_branch.pr_number = Some(600);
+        plan_branch.pr_status = Some(PrStatus::Open);
+
+        let error = ensure_manual_plan_merge_resolution_allowed(&task, Some(&plan_branch))
+            .expect_err("open PR-backed plan merge must not be marked resolved manually");
+
+        assert!(error.contains("PR #600"));
+        assert!(error.contains("Open"));
+        assert!(error.contains("Retry Merge"));
+    }
+
+    #[test]
+    fn resolve_merge_rejects_plan_merge_without_linked_branch() {
+        let project = Project::new("Test Project".to_string(), "/test/path".to_string());
+        let task = Task::new_with_category(
+            project.id.clone(),
+            "Merge plan into main".to_string(),
+            TaskCategory::PlanMerge,
+        );
+
+        let error = ensure_manual_plan_merge_resolution_allowed(&task, None)
+            .expect_err("plan merge must not complete without a linked plan branch");
+
+        assert!(error.contains("linked plan branch"));
+        assert!(error.contains("Retry Merge"));
+    }
+
+    #[test]
+    fn resolve_merge_allows_merged_pr_backed_plan_merge() {
+        let project = Project::new("Test Project".to_string(), "/test/path".to_string());
+        let task = Task::new_with_category(
+            project.id.clone(),
+            "Merge plan into main".to_string(),
+            TaskCategory::PlanMerge,
+        );
+        let mut plan_branch = PlanBranch::new(
+            ArtifactId::new(),
+            IdeationSessionId::new(),
+            project.id.clone(),
+            "ralphx/test/agent-plan".to_string(),
+            "main".to_string(),
+        );
+        plan_branch.merge_task_id = Some(task.id.clone());
+        plan_branch.pr_eligible = true;
+        plan_branch.pr_number = Some(600);
+        plan_branch.pr_status = Some(PrStatus::Merged);
+
+        ensure_manual_plan_merge_resolution_allowed(&task, Some(&plan_branch))
+            .expect("merged PR-backed plan merge may complete");
     }
 
     #[test]

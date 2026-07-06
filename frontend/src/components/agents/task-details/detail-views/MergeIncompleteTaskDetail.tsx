@@ -652,7 +652,7 @@ function ActionButtons({
 }: {
   onRetry: () => void;
   onRetrySkipValidation?: (() => void) | undefined;
-  onResolve: () => void;
+  onResolve?: (() => void) | undefined;
   onCancel: () => void;
   isProcessing: boolean;
   retryLabel?: string;
@@ -696,7 +696,7 @@ function ActionButtons({
           Retry (Skip Validation)
         </Button>
       )}
-      {showResolve && (
+      {showResolve && onResolve && (
         <Button
           data-testid="resolve-merge-button"
           onClick={onResolve}
@@ -753,6 +753,17 @@ export function MergeIncompleteTaskDetail({
   const isPrBranchPublicationFailure =
     mergeError?.errorCode === "pr_branch_publication_failed";
   const { data: planBranch } = usePlanBranchForTask(task.id);
+  const awaitingPlanBranchForPlanMerge =
+    task.category === "plan_merge" && planBranch == null;
+  const blocksPrBackedPlanMergeResolution =
+    task.category === "plan_merge" &&
+    Boolean(
+      planBranch?.prEligible &&
+        planBranch.prNumber != null &&
+        planBranch.prStatus !== "Merged",
+    );
+  const blocksManualResolution =
+    awaitingPlanBranchForPlanMerge || blocksPrBackedPlanMergeResolution;
 
   // Use merge pipeline data for correct branch resolution (metadata may have stale target_branch)
   const { data: pipelineData } = useMergePipeline(task.projectId);
@@ -1018,11 +1029,23 @@ export function MergeIncompleteTaskDetail({
 
       {/* Actions (hidden in historical mode) */}
       {!isHistorical && (
-        <section data-testid="action-buttons">
+        <section data-testid="action-buttons" className="space-y-3">
+          {blocksPrBackedPlanMergeResolution && (
+            <div
+              data-testid="pr-backed-resolution-guard"
+              className="rounded-lg px-3 py-2 text-[0.8125rem] text-text-primary/65"
+              style={{
+                backgroundColor: withAlpha("var(--status-warning)", 12),
+                border: "1px solid var(--status-warning-border)",
+              }}
+            >
+              PR-backed plan merge is tied to PR #{planBranch?.prNumber}. Use Retry Merge for local recovery; RalphX will finish the merge after GitHub reports the PR as merged.
+            </div>
+          )}
           <ActionButtons
             onRetry={handleRetryMerge}
             onRetrySkipValidation={mergeError?.hasValidationFailures ? handleRetrySkipValidation : undefined}
-            onResolve={handleMarkResolved}
+            onResolve={blocksManualResolution ? undefined : handleMarkResolved}
             onCancel={handleCancel}
             isProcessing={isProcessing}
             retryLabel={
