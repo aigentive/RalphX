@@ -286,6 +286,14 @@ pub(crate) async fn ensure_plan_workspace_planning_session_link(
     project: &Project,
     workspace: &mut AgentConversationWorkspace,
 ) -> Result<bool, String> {
+    if workspace.mode != AgentConversationWorkspaceMode::Plan {
+        return Ok(false);
+    }
+
+    if linked_ideation_session_is_planning(state, workspace).await? {
+        return Ok(false);
+    }
+
     let analysis = prepare_ideation_analysis_state_from_agent_workspace(project, workspace)
         .await
         .map_err(|error| error.to_string())?;
