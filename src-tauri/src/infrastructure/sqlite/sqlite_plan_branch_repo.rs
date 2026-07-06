@@ -15,6 +15,7 @@ use crate::domain::entities::{
 };
 use crate::domain::repositories::PlanBranchRepository;
 use crate::error::{AppError, AppResult};
+use crate::infrastructure::agents::claude::git_runtime_config;
 
 pub struct SqlitePlanBranchRepository {
     db: DbConnection,
@@ -310,6 +311,10 @@ impl PlanBranchRepository for SqlitePlanBranchRepository {
         project_id: &ProjectId,
     ) -> AppResult<Vec<PlanBranch>> {
         let project_id = project_id.as_str().to_string();
+        let retry_secs = git_runtime_config()
+            .terminal_pr_local_cleanup_retry_secs
+            .min(i64::MAX as u64) as i64;
+        let retry_cutoff = (Utc::now() - chrono::Duration::seconds(retry_secs)).to_rfc3339();
         self.db
             .run(move |conn| {
                 let mut stmt = conn
@@ -320,9 +325,9 @@ impl PlanBranchRepository for SqlitePlanBranchRepository {
                            AND (
                              local_cleanup_status IS NULL
                              OR (
-                               local_cleanup_status IN ('unsafe', 'target_ref_missing')
+                               local_cleanup_status IN ('unsafe', 'target_ref_missing', 'workspace_dirty')
                                AND local_cleanup_checked_at IS NOT NULL
-                               AND local_cleanup_checked_at < strftime('%Y-%m-%dT%H:%M:%S+00:00', 'now', '-24 hours')
+                               AND local_cleanup_checked_at < ?2
                              )
                            )
                          ORDER BY created_at DESC",
@@ -334,7 +339,7 @@ impl PlanBranchRepository for SqlitePlanBranchRepository {
                         ))
                     })?;
                 let branches = stmt
-                    .query_map(rusqlite::params![project_id.as_str()], |row| {
+                    .query_map(rusqlite::params![project_id.as_str(), retry_cutoff], |row| {
                         PlanBranch::from_row(row)
                     })
                     .map_err(|e| {

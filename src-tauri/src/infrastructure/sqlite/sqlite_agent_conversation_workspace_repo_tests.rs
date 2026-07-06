@@ -376,7 +376,7 @@ async fn terminal_cleanup_candidates_retry_unsafe_after_ttl() {
     workspace.publication_pr_status = Some("closed".to_string());
     repo.create_or_update(workspace).await.unwrap();
 
-    let old_timestamp = chrono::Utc::now() - chrono::Duration::hours(25);
+    let old_timestamp = chrono::Utc::now() - chrono::Duration::hours(2);
     repo.mark_local_cleanup_status(&conversation_id, "unsafe", old_timestamp)
         .await
         .unwrap();
@@ -390,7 +390,7 @@ async fn terminal_cleanup_candidates_retry_unsafe_after_ttl() {
     assert_eq!(
         candidates.len(),
         1,
-        "unsafe with expired TTL should be retryable"
+        "unsafe after retry window should be retryable"
     );
 
     let recent_timestamp = chrono::Utc::now();
@@ -406,7 +406,7 @@ async fn terminal_cleanup_candidates_retry_unsafe_after_ttl() {
         .unwrap();
     assert!(
         candidates.is_empty(),
-        "unsafe with fresh TTL should not be retryable"
+        "unsafe before retry window should not be retryable"
     );
 
     let _ = db;
@@ -420,7 +420,7 @@ async fn terminal_cleanup_candidates_retry_target_ref_missing_after_ttl() {
     workspace.publication_pr_status = Some("merged".to_string());
     repo.create_or_update(workspace).await.unwrap();
 
-    let old_timestamp = chrono::Utc::now() - chrono::Duration::hours(25);
+    let old_timestamp = chrono::Utc::now() - chrono::Duration::hours(2);
     repo.mark_local_cleanup_status(&conversation_id, "target_ref_missing", old_timestamp)
         .await
         .unwrap();
@@ -434,7 +434,51 @@ async fn terminal_cleanup_candidates_retry_target_ref_missing_after_ttl() {
     assert_eq!(
         candidates.len(),
         1,
-        "target_ref_missing with expired TTL should be retryable"
+        "target_ref_missing after retry window should be retryable"
+    );
+
+    let _ = db;
+}
+
+#[tokio::test]
+async fn terminal_cleanup_candidates_retry_workspace_dirty_after_retry_window() {
+    let (db, repo, conversation_id) = setup_repo();
+    let mut workspace = make_workspace(conversation_id);
+    workspace.publication_pr_number = Some(82);
+    workspace.publication_pr_status = Some("closed".to_string());
+    repo.create_or_update(workspace).await.unwrap();
+
+    let old_timestamp = chrono::Utc::now() - chrono::Duration::hours(2);
+    repo.mark_local_cleanup_status(&conversation_id, "workspace_dirty", old_timestamp)
+        .await
+        .unwrap();
+
+    let candidates = repo
+        .get_terminal_local_cleanup_candidates_by_project_id(&ProjectId::from_string(
+            "project-1".to_string(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        candidates.len(),
+        1,
+        "workspace_dirty after retry window should be retryable"
+    );
+
+    let recent_timestamp = chrono::Utc::now();
+    repo.mark_local_cleanup_status(&conversation_id, "workspace_dirty", recent_timestamp)
+        .await
+        .unwrap();
+
+    let candidates = repo
+        .get_terminal_local_cleanup_candidates_by_project_id(&ProjectId::from_string(
+            "project-1".to_string(),
+        ))
+        .await
+        .unwrap();
+    assert!(
+        candidates.is_empty(),
+        "workspace_dirty before retry window should not be retryable"
     );
 
     let _ = db;

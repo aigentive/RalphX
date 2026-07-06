@@ -15,6 +15,7 @@ use tokio::task::JoinHandle;
 
 use crate::application::agent_conversation_workspace::agent_name_for_workspace_mode;
 use crate::application::chat_service::{ChatService, SendMessageOptions};
+use crate::application::git_artifact_cleanup::terminal_agent_workspace_cleanup_marker_for_report;
 use crate::application::git_service::git_cmd::{self, GitCommandLane};
 use crate::application::task_transition_service::PrBranchFreshnessOutcome;
 use crate::application::TaskTransitionService;
@@ -1576,6 +1577,25 @@ pub(crate) async fn cleanup_terminal_agent_workspace_after_pr(
 
     match cleanup_result {
         Ok(report) => {
+            if let Some(status) =
+                terminal_agent_workspace_cleanup_marker_for_report(&report, delete_branch_if_merged)
+            {
+                if let Err(error) = workspace_repo
+                    .mark_local_cleanup_status(
+                        &workspace.conversation_id,
+                        status,
+                        chrono::Utc::now(),
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        conversation_id = conversation_id.as_str(),
+                        status,
+                        error = %error,
+                        "Agent workspace PR cleanup: failed to persist local cleanup marker"
+                    );
+                }
+            }
             tracing::info!(
                 conversation_id = conversation_id.as_str(),
                 worktree_removed = report.worktree_removed,
