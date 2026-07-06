@@ -20,7 +20,7 @@ use crate::domain::entities::plan_branch::{
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus,
     AgentRun, ArtifactId, ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSessionId,
-    PlanBranch, PlanBranchId, Project, ProjectId, TaskId,
+    PlanBranch, PlanBranchId, PlanBranchStatus, Project, ProjectId, TaskId,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, PlanBranchRepository,
@@ -162,6 +162,62 @@ async fn setup_recovery_workspace(
         .await
         .expect("read workspace head");
     (temp_dir, project, workspace, head_sha)
+}
+
+async fn setup_linked_plan_recovery_workspace(
+    name: &str,
+    pr_number: i64,
+) -> (
+    tempfile::TempDir,
+    Project,
+    AgentConversationWorkspace,
+    PlanBranch,
+    String,
+) {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let repo_path = temp_dir.path().join("repo");
+    init_repo(&repo_path);
+    let project = recovery_project(&temp_dir, &repo_path, name);
+    let conversation_id = ChatConversationId::new();
+    let session_id = IdeationSessionId::from_string(format!("session-{name}"));
+    let plan_branch_id = PlanBranchId::from_string(format!("plan-branch-{name}"));
+    let branch_name = format!("ralphx/test/{name}");
+    let mut plan_branch = PlanBranch::new(
+        ArtifactId::from_string(format!("artifact-{name}")),
+        session_id.clone(),
+        project.id.clone(),
+        branch_name.clone(),
+        "main".to_string(),
+    );
+    plan_branch.id = plan_branch_id.clone();
+    plan_branch.pr_eligible = true;
+    plan_branch.merge_task_id = Some(TaskId::from_string(format!("merge-task-{name}")));
+    plan_branch.pr_number = Some(pr_number);
+    plan_branch.pr_url = Some(format!("https://github.com/owner/repo/pull/{pr_number}"));
+    plan_branch.pr_status = Some(PlanPrStatus::Open);
+    plan_branch.pr_push_status = PlanPrPushStatus::Failed;
+
+    let plan_worktree = resolve_linked_plan_branch_agent_worktree_path(&project, &plan_branch)
+        .expect("plan worktree path should resolve");
+    GitService::create_worktree(&repo_path, &plan_worktree, &branch_name, "main")
+        .await
+        .expect("create linked plan worktree");
+    let head_sha = GitService::get_head_sha(&plan_worktree)
+        .await
+        .expect("read plan worktree head");
+
+    let mut workspace = blocked_workspace(&project, conversation_id, &branch_name);
+    workspace.mode = AgentConversationWorkspaceMode::Ideation;
+    workspace.linked_ideation_session_id = Some(session_id);
+    workspace.linked_plan_branch_id = Some(plan_branch_id);
+    workspace.worktree_path = plan_worktree.to_string_lossy().to_string();
+    workspace.publication_pr_number = None;
+    workspace.publication_pr_url = None;
+    workspace.publication_pr_status = None;
+    workspace.publication_push_status = None;
+    workspace.pr_supervision_status = Some("blocked".to_string());
+
+    (temp_dir, project, workspace, plan_branch, head_sha)
 }
 
 async fn wait_for_sync_state_calls(github: &MockGithubService, expected: u32) {
@@ -476,6 +532,168 @@ async fn recovers_linked_plan_pr_supervision_without_workspace_publication_pr() 
                 .unwrap_or_default()
                 .starts_with("github_pr_supervision_recovered:602:")
     }));
+}
+
+#[tokio::test]
+async fn marks_terminal_linked_plan_pr_status_without_workspace_publication_pr() {
+    let cases = [
+        (
+            "plan-pr-supervision-terminal-merged",
+            PrStatus::Merged {
+                merge_commit_sha: Some("merge-sha".to_string()),
+            },
+            PlanPrStatus::Merged,
+            "merged",
+            "pr_merged",
+        ),
+        (
+            "plan-pr-supervision-terminal-closed",
+            PrStatus::Closed,
+            PlanPrStatus::Closed,
+            "closed",
+            "pr_closed",
+        ),
+    ];
+
+    for (name, remote_status, expected_plan_status, expected_status, expected_step) in cases {
+        let (_temp_dir, project, workspace, plan_branch, head_sha) =
+            setup_linked_plan_recovery_workspace(name, 702).await;
+        let conversation_id = workspace.conversation_id.clone();
+        let plan_branch_id = plan_branch.id.clone();
+        let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+        workspace_repo
+            .create_or_update(workspace.clone())
+            .await
+            .expect("seed workspace");
+        let plan_branch_repo = Arc::new(MemoryPlanBranchRepository::new());
+        plan_branch_repo
+            .create(plan_branch)
+            .await
+            .expect("seed plan branch");
+        let github = Arc::new(MockGithubService::new());
+        let mut sync_state = open_sync_state(&workspace.branch_name, &head_sha);
+        sync_state.status = remote_status;
+        github.will_return_sync_state(sync_state);
+
+        let outcome = recover_agent_workspace_pr_supervision(
+            AgentWorkspacePrSupervisionRecoveryDeps {
+                workspace_repo: Arc::clone(&workspace_repo)
+                    as Arc<dyn AgentConversationWorkspaceRepository>,
+                project_repo: Arc::new(MemoryProjectRepository::with_projects(vec![project])),
+                plan_branch_repo: Arc::clone(&plan_branch_repo) as Arc<dyn PlanBranchRepository>,
+                github: github as Arc<dyn GithubServiceTrait>,
+                pr_poller_registry: None,
+                transition_service: None,
+                chat_service: None,
+                agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
+                app_handle: None,
+            },
+            conversation_id.clone(),
+            AgentWorkspacePrSupervisionRecoveryTrigger::WorkspaceLoad,
+        )
+        .await
+        .expect("terminal linked plan PR status should update plan branch");
+
+        assert_eq!(
+            outcome,
+            AgentWorkspacePrSupervisionRecoveryOutcome::Terminal {
+                pr_number: 702,
+                pr_status: expected_status.to_string(),
+            }
+        );
+        let updated = workspace_repo
+            .get_by_conversation_id(&conversation_id)
+            .await
+            .unwrap()
+            .expect("workspace should still exist");
+        assert_eq!(updated.publication_pr_number, None);
+        assert_eq!(updated.publication_push_status, None);
+        assert!(updated
+            .pr_supervision_summary
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Pull request"));
+        let updated_plan = plan_branch_repo
+            .get_by_id(&plan_branch_id)
+            .await
+            .unwrap()
+            .expect("plan branch should exist");
+        assert_eq!(updated_plan.pr_status, Some(expected_plan_status));
+        assert_eq!(updated_plan.pr_push_status, PlanPrPushStatus::Pushed);
+        let events = workspace_repo
+            .list_publication_events(&conversation_id)
+            .await
+            .unwrap();
+        assert!(events.iter().any(|event| event.step == expected_step));
+    }
+}
+
+#[tokio::test]
+async fn skips_linked_plan_pr_supervision_when_plan_branch_is_not_current() {
+    let cases = [
+        ("missing-plan-row", "linked_plan_branch_missing"),
+        ("inactive-plan", "linked_plan_branch_not_current"),
+        ("closed-plan-pr", "linked_plan_branch_not_current"),
+        ("session-mismatch", "linked_plan_branch_not_current"),
+        ("branch-mismatch", "linked_plan_branch_not_current"),
+        ("missing-pr-number", "missing_pr_number"),
+    ];
+
+    for (name, expected_reason) in cases {
+        let (_temp_dir, project, mut workspace, mut plan_branch, _head_sha) =
+            setup_linked_plan_recovery_workspace(name, 703).await;
+        match name {
+            "inactive-plan" => plan_branch.status = PlanBranchStatus::Abandoned,
+            "closed-plan-pr" => plan_branch.pr_status = Some(PlanPrStatus::Closed),
+            "session-mismatch" => {
+                workspace.linked_ideation_session_id =
+                    Some(IdeationSessionId::from_string("other-session"));
+            }
+            "branch-mismatch" => {
+                workspace.branch_name = "ralphx/test/different-plan-branch".to_string();
+            }
+            "missing-pr-number" => plan_branch.pr_number = None,
+            _ => {}
+        }
+        let conversation_id = workspace.conversation_id.clone();
+        let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+        workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("seed workspace");
+        let plan_branch_repo = Arc::new(MemoryPlanBranchRepository::new());
+        if name != "missing-plan-row" {
+            plan_branch_repo
+                .create(plan_branch)
+                .await
+                .expect("seed plan branch");
+        }
+        let github = Arc::new(MockGithubService::new());
+
+        let outcome = recover_agent_workspace_pr_supervision(
+            AgentWorkspacePrSupervisionRecoveryDeps {
+                workspace_repo: workspace_repo as Arc<dyn AgentConversationWorkspaceRepository>,
+                project_repo: Arc::new(MemoryProjectRepository::with_projects(vec![project])),
+                plan_branch_repo: plan_branch_repo as Arc<dyn PlanBranchRepository>,
+                github: Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+                pr_poller_registry: None,
+                transition_service: None,
+                chat_service: None,
+                agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
+                app_handle: None,
+            },
+            conversation_id,
+            AgentWorkspacePrSupervisionRecoveryTrigger::WorkspaceLoad,
+        )
+        .await
+        .expect("linked plan recovery should skip stale linkage");
+
+        assert_eq!(
+            outcome,
+            AgentWorkspacePrSupervisionRecoveryOutcome::Skipped(expected_reason)
+        );
+        assert_eq!(github.state().check_pr_sync_state_calls, 0);
+    }
 }
 
 #[tokio::test]

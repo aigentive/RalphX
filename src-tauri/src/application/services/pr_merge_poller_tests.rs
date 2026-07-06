@@ -1295,6 +1295,90 @@ async fn ideation_plan_pr_autofix_routes_failure_without_workspace_publication_p
 }
 
 #[tokio::test]
+async fn ideation_plan_pr_autofix_skips_non_current_workspace_or_plan_shapes() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let project_id = "project-plan-autofix-skips";
+    let session_id = IdeationSessionId::from_string("session-plan-autofix-skips");
+    let plan_branch_id = PlanBranchId::from_string("plan-branch-autofix-skips");
+    let plan_branch_name = "ralphx/test/plan-autofix-skips";
+    let base_workspace = ideation_plan_workspace(
+        "plan-autofix-skip-conversation",
+        project_id,
+        session_id.clone(),
+        plan_branch_id.clone(),
+        plan_branch_name,
+        worktree.path(),
+    );
+    let conversation_id = base_workspace.conversation_id.clone();
+    let base_plan_branch = active_plan_pr_branch(
+        session_id.clone(),
+        project_id,
+        plan_branch_id.clone(),
+        plan_branch_name,
+        603,
+    );
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(open_pr_health("unused")));
+    let chat = Arc::new(MockChatService::new());
+
+    let mut cases: Vec<(AgentConversationWorkspace, PlanBranch)> = Vec::new();
+
+    let mut missing_pr = base_plan_branch.clone();
+    missing_pr.pr_number = None;
+    cases.push((base_workspace.clone(), missing_pr));
+
+    let mut archived = base_workspace.clone();
+    archived.status = AgentConversationWorkspaceStatus::Archived;
+    cases.push((archived, base_plan_branch.clone()));
+
+    let mut edit_mode = base_workspace.clone();
+    edit_mode.mode = AgentConversationWorkspaceMode::Edit;
+    cases.push((edit_mode, base_plan_branch.clone()));
+
+    let mut plan_mismatch = base_workspace.clone();
+    plan_mismatch.linked_plan_branch_id = Some(PlanBranchId::from_string("other-plan"));
+    cases.push((plan_mismatch, base_plan_branch.clone()));
+
+    let mut session_mismatch = base_workspace.clone();
+    session_mismatch.linked_ideation_session_id =
+        Some(IdeationSessionId::from_string("other-session"));
+    cases.push((session_mismatch, base_plan_branch.clone()));
+
+    let mut branch_mismatch = base_workspace.clone();
+    branch_mismatch.branch_name = "ralphx/test/other-plan-branch".to_string();
+    cases.push((branch_mismatch, base_plan_branch.clone()));
+
+    let mut terminal_plan = base_plan_branch.clone();
+    terminal_plan.pr_status = Some(DbPrStatus::Closed);
+    cases.push((base_workspace.clone(), terminal_plan));
+
+    for (workspace, plan_branch) in cases {
+        workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("workspace should persist");
+        let routed = super::route_ideation_plan_pr_autofix_if_needed(
+            Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+            worktree.path(),
+            &plan_branch,
+            &conversation_id,
+            Arc::clone(&workspace_repo),
+            None,
+            chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+        )
+        .await
+        .expect("skip routing should succeed");
+
+        assert!(!routed);
+    }
+
+    assert_eq!(github.state().fetch_pr_health_calls, 0);
+    assert!(chat.get_sent_messages().await.is_empty());
+}
+
+#[tokio::test]
 async fn review_pr_monitor_routes_new_head_to_reviewer_agent() {
     let worktree = tempfile::tempdir().expect("worktree path");
     let workspace = review_pr_workspace(
