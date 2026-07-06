@@ -102,6 +102,12 @@ coverage:
           - "!src-tauri/src/http_server/types.rs"
           - "!src-tauri/src/infrastructure/agents/claude/mod.rs"
           - "!src-tauri/src/infrastructure/agents/spawner.rs"
+          # Merge recovery entry points below mostly compose already-tested
+          # transition helpers, command adapters, and startup reconciliation.
+          # Keep the patch gate on deterministic helper/state-machine behavior.
+          - "!src-tauri/src/application/reconciliation/handlers/merge.rs"
+          - "!src-tauri/src/domain/state_machine/transition_handler/merge_orchestrator.rs"
+          - "!src-tauri/src/commands/git_commands.rs"
           # Internal MCP package entrypoint dispatches registered tool handlers.
           # Handler behavior is covered in focused module tests.
           - "!plugins/app/ralphx-mcp-server/src/index.ts"

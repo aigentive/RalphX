@@ -308,6 +308,191 @@ fn pr_branch_publication_failure_classifier_matches_non_fast_forward_pushes() {
     );
 }
 
+#[test]
+fn pr_branch_publication_conflict_helpers_format_and_classify_metadata() {
+    let conflict = super::super::merge_helpers::PrBranchPublicationConflict {
+        branch_name: "plan/feature".to_string(),
+        remote_ref: "origin/plan/feature".to_string(),
+        conflict_files: vec![
+            std::path::PathBuf::from("src/lib.rs"),
+            std::path::PathBuf::from("Cargo.toml"),
+        ],
+        pr_number: Some(42),
+    };
+
+    assert_eq!(
+        conflict.conflict_files_as_strings(),
+        vec!["src/lib.rs".to_string(), "Cargo.toml".to_string()]
+    );
+    assert!(conflict
+        .description()
+        .contains("origin/plan/feature into plan/feature: src/lib.rs, Cargo.toml"));
+
+    let conflict_error = conflict.conflict_error();
+    assert!(conflict_error
+        .to_string()
+        .contains("pr_branch_publication_conflict"));
+    assert!(
+        !super::super::merge_helpers::is_pr_branch_publication_conflict_routed_error(
+            &conflict_error
+        ),
+        "plain conflict errors are not the routed sentinel"
+    );
+
+    let routed_error = conflict.routed_error();
+    assert!(
+        super::super::merge_helpers::is_pr_branch_publication_conflict_routed_error(&routed_error)
+    );
+    assert!(
+        super::super::merge_helpers::is_pr_branch_publication_conflict_routed_error(
+            &AppError::GitOperation("pr_branch_publication_conflict_routed".to_string())
+        )
+    );
+    assert!(
+        !super::super::merge_helpers::is_pr_branch_publication_conflict_routed_error(
+            &AppError::Validation("plain validation failure".to_string())
+        )
+    );
+
+    let unknown_files = super::super::merge_helpers::PrBranchPublicationConflict {
+        branch_name: "plan/feature".to_string(),
+        remote_ref: "origin/plan/feature".to_string(),
+        conflict_files: Vec::new(),
+        pr_number: None,
+    };
+    assert!(
+        unknown_files.description().contains("unknown files"),
+        "empty conflict lists should still produce actionable text"
+    );
+
+    let mut failed_task = make_task(None, None);
+    failed_task.metadata = Some(
+        serde_json::json!({
+            "error_code": "pr_branch_publication_failed",
+        })
+        .to_string(),
+    );
+    assert!(super::super::merge_helpers::task_has_pr_branch_publication_failure(&failed_task));
+    assert!(!super::super::merge_helpers::task_has_pr_branch_publication_conflict(&failed_task));
+
+    let mut conflict_task = make_task(None, None);
+    conflict_task.metadata = Some(
+        serde_json::json!({
+            "error_code": "pr_branch_publication_conflict",
+        })
+        .to_string(),
+    );
+    assert!(super::super::merge_helpers::task_has_pr_branch_publication_conflict(&conflict_task));
+
+    let mut conflict_flag_task = make_task(None, None);
+    conflict_flag_task.metadata = Some(
+        serde_json::json!({
+            "pr_branch_publication_conflict": true,
+        })
+        .to_string(),
+    );
+    assert!(
+        super::super::merge_helpers::task_has_pr_branch_publication_conflict(&conflict_flag_task)
+    );
+}
+
+#[tokio::test]
+async fn sync_plan_branch_pr_if_needed_pushes_pending_existing_pr_and_marks_pushed() {
+    let project_repo = Arc::new(MemoryProjectRepository::new());
+    let plan_branch_repo = Arc::new(MemoryPlanBranchRepository::new());
+    setup_project(&project_repo).await;
+    let project = project_repo
+        .get_by_id(&ProjectId::from_string("proj-1".to_string()))
+        .await
+        .unwrap()
+        .unwrap();
+
+    let mut plan_branch = make_plan_branch(
+        "artifact-1",
+        "plan/sync-existing-pr",
+        PlanBranchStatus::Active,
+        None,
+    );
+    plan_branch.pr_eligible = true;
+    plan_branch.pr_number = Some(42);
+    plan_branch.pr_push_status = PrPushStatus::Pending;
+    let branch_id = plan_branch.id.clone();
+    plan_branch_repo.create(plan_branch.clone()).await.unwrap();
+
+    let github = Arc::new(MockGithubService::new());
+    let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
+    let plan_branch_repo_trait: Arc<dyn PlanBranchRepository> = plan_branch_repo.clone();
+    super::super::merge_helpers::sync_plan_branch_pr_if_needed(
+        &project,
+        &plan_branch,
+        &github_trait,
+        &plan_branch_repo_trait,
+    )
+    .await
+    .expect("pending existing PR branch should be pushed");
+
+    assert_eq!(github.state().push_branch_calls, 1);
+    let updated_plan_branch = plan_branch_repo
+        .get_by_id(&branch_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(updated_plan_branch.pr_push_status, PrPushStatus::Pushed);
+}
+
+#[tokio::test]
+async fn sync_plan_branch_pr_if_needed_marks_failed_for_generic_push_error() {
+    let project_repo = Arc::new(MemoryProjectRepository::new());
+    let plan_branch_repo = Arc::new(MemoryPlanBranchRepository::new());
+    setup_project(&project_repo).await;
+    let project = project_repo
+        .get_by_id(&ProjectId::from_string("proj-1".to_string()))
+        .await
+        .unwrap()
+        .unwrap();
+
+    let mut plan_branch = make_plan_branch(
+        "artifact-1",
+        "plan/sync-existing-pr-push-fails",
+        PlanBranchStatus::Active,
+        None,
+    );
+    plan_branch.pr_eligible = true;
+    plan_branch.pr_number = Some(43);
+    plan_branch.pr_push_status = PrPushStatus::Pending;
+    let branch_id = plan_branch.id.clone();
+    plan_branch_repo.create(plan_branch.clone()).await.unwrap();
+
+    let github = Arc::new(MockGithubService::new());
+    github.state().push_branch_result = Some(Err(AppError::GitOperation(
+        "remote rejected freshness branch".to_string(),
+    )));
+    let github_trait: Arc<dyn GithubServiceTrait> = github.clone();
+    let plan_branch_repo_trait: Arc<dyn PlanBranchRepository> = plan_branch_repo.clone();
+    let error = super::super::merge_helpers::sync_plan_branch_pr_if_needed(
+        &project,
+        &plan_branch,
+        &github_trait,
+        &plan_branch_repo_trait,
+    )
+    .await
+    .expect_err("generic push failure should fail closed");
+
+    assert!(
+        error
+            .to_string()
+            .contains("remote rejected freshness branch"),
+        "unexpected error: {error}"
+    );
+    assert_eq!(github.state().push_branch_calls, 1);
+    let updated_plan_branch = plan_branch_repo
+        .get_by_id(&branch_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(updated_plan_branch.pr_push_status, PrPushStatus::Failed);
+}
+
 #[tokio::test]
 async fn draft_plan_pr_description_for_write_uses_resolved_base() {
     let mut project = Project::new(
