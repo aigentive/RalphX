@@ -247,15 +247,20 @@ vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
   ),
 }));
 
-vi.mock("@/api/artifact", () => ({
-  artifactApi: {
-    getSessionPlan: (...args: unknown[]) => getSessionPlanMock(...args),
-    getPlanComplexityAssessment: (...args: unknown[]) =>
-      getPlanComplexityAssessmentMock(...args),
-    approvePlanArtifact: (...args: unknown[]) =>
-      approvePlanArtifactMock(...args),
-  },
-}));
+vi.mock("@/api/artifact", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/api/artifact")>();
+  return {
+    ...actual,
+    artifactApi: {
+      ...actual.artifactApi,
+      getSessionPlan: (...args: unknown[]) => getSessionPlanMock(...args),
+      getPlanComplexityAssessment: (...args: unknown[]) =>
+        getPlanComplexityAssessmentMock(...args),
+      approvePlanArtifact: (...args: unknown[]) =>
+        approvePlanArtifactMock(...args),
+    },
+  };
+});
 
 vi.mock("@/api/verification", () => ({
   verificationApi: {

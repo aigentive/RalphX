@@ -21,6 +21,11 @@ import type { ContentBlockItem } from "../components/Chat/MessageItem";
 import type { MessageAttachment } from "../components/Chat/MessageAttachments";
 import { isWebMode } from "@/lib/tauri-detection";
 import { backendApiUrl } from "@/api/backend";
+import {
+  ArtifactResponseSchema,
+  transformArtifactResponse,
+} from "@/api/artifact";
+import type { Artifact } from "@/types/artifact";
 import { FileDiffSchema, transformFileDiff, type FileDiff } from "./diff";
 import {
   RunningIdeationSessionSchema,
@@ -1635,6 +1640,8 @@ export const chatApi = {
   startAgentConversation,
   forkAgentConversation,
   switchAgentConversationMode,
+  copyAgentConversationPlan,
+  importAgentConversationPlan,
   sendAgentMessage,
   getQueuedAgentMessages,
   deleteQueuedAgentMessage,
@@ -1832,6 +1839,26 @@ export interface SwitchAgentConversationModeInput {
 export interface SwitchAgentConversationModeResult {
   conversation: ChatConversation;
   workspace: AgentConversationWorkspace | null;
+}
+
+export interface CopyAgentConversationPlanInput {
+  conversationId: string;
+  sourceSessionId: string;
+  sourceArtifactId: string;
+  sourceVersion: number;
+}
+
+export interface ImportAgentConversationPlanInput {
+  conversationId: string;
+  title: string;
+  content: string;
+}
+
+export interface AgentConversationPlanSeedResult {
+  conversation: ChatConversation;
+  workspace: AgentConversationWorkspace;
+  sessionId: string;
+  artifact: Artifact;
 }
 
 export interface PublishAgentConversationWorkspaceResult {
@@ -2392,6 +2419,13 @@ const SwitchAgentConversationModeResponseSchema = z.object({
   workspace: AgentConversationWorkspaceResponseSchema.nullable(),
 });
 
+const AgentConversationPlanSeedResponseSchema = z.object({
+  conversation: ChatConversationResponseSchema,
+  workspace: AgentConversationWorkspaceResponseSchema,
+  session_id: z.string(),
+  artifact: ArtifactResponseSchema,
+});
+
 const PublishAgentConversationWorkspaceResponseSchema = z.object({
   workspace: AgentConversationWorkspaceResponseSchema,
   commit_sha: z.string().nullable(),
@@ -2433,6 +2467,9 @@ type RawForkAgentConversationResponse = z.infer<
 >;
 type RawSwitchAgentConversationModeResponse = z.infer<
   typeof SwitchAgentConversationModeResponseSchema
+>;
+type RawAgentConversationPlanSeedResponse = z.infer<
+  typeof AgentConversationPlanSeedResponseSchema
 >;
 type RawPublishAgentConversationWorkspaceResponse = z.infer<
   typeof PublishAgentConversationWorkspaceResponseSchema
@@ -2660,6 +2697,17 @@ function transformSwitchAgentConversationModeResponse(
     workspace: raw.workspace
       ? transformAgentConversationWorkspace(raw.workspace)
       : null,
+  };
+}
+
+function transformAgentConversationPlanSeedResponse(
+  raw: RawAgentConversationPlanSeedResponse,
+): AgentConversationPlanSeedResult {
+  return {
+    conversation: transformConversation(raw.conversation),
+    workspace: transformAgentConversationWorkspace(raw.workspace),
+    sessionId: raw.session_id,
+    artifact: transformArtifactResponse(raw.artifact),
   };
 }
 
@@ -3536,6 +3584,41 @@ export async function switchAgentConversationMode(
     SwitchAgentConversationModeResponseSchema,
   );
   return transformSwitchAgentConversationModeResponse(raw);
+}
+
+export async function copyAgentConversationPlan(
+  input: CopyAgentConversationPlanInput,
+): Promise<AgentConversationPlanSeedResult> {
+  const raw = await typedInvoke(
+    "copy_agent_conversation_plan",
+    {
+      input: {
+        conversationId: input.conversationId,
+        sourceSessionId: input.sourceSessionId,
+        sourceArtifactId: input.sourceArtifactId,
+        sourceVersion: input.sourceVersion,
+      },
+    },
+    AgentConversationPlanSeedResponseSchema,
+  );
+  return transformAgentConversationPlanSeedResponse(raw);
+}
+
+export async function importAgentConversationPlan(
+  input: ImportAgentConversationPlanInput,
+): Promise<AgentConversationPlanSeedResult> {
+  const raw = await typedInvoke(
+    "import_agent_conversation_plan",
+    {
+      input: {
+        conversationId: input.conversationId,
+        title: input.title,
+        content: input.content,
+      },
+    },
+    AgentConversationPlanSeedResponseSchema,
+  );
+  return transformAgentConversationPlanSeedResponse(raw);
 }
 
 /**
