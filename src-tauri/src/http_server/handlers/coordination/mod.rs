@@ -4,7 +4,6 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
-use tauri::Emitter;
 
 use crate::application::agent_conversation_workspace::resolve_agent_conversation_workspace_path_for_send;
 use crate::application::agent_lane_resolution::{
@@ -59,24 +58,23 @@ fn resolve_delegation_policy(
     ),
     JsonError,
 > {
-    let caller =
-        load_canonical_agent_definition_for_profile(
-            project_root,
-            caller_agent_name,
-            caller_agent_profile,
+    let caller = load_canonical_agent_definition_for_profile(
+        project_root,
+        caller_agent_name,
+        caller_agent_profile,
+    )
+    .ok_or_else(|| {
+        json_error(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "Unknown canonical caller agent '{}'{}",
+                caller_agent_name,
+                caller_agent_profile
+                    .map(|profile| format!(" profile '{profile}'"))
+                    .unwrap_or_default()
+            ),
         )
-        .ok_or_else(|| {
-            json_error(
-                StatusCode::BAD_REQUEST,
-                format!(
-                    "Unknown canonical caller agent '{}'{}",
-                    caller_agent_name,
-                    caller_agent_profile
-                        .map(|profile| format!(" profile '{profile}'"))
-                        .unwrap_or_default()
-                ),
-            )
-        })?;
+    })?;
     let target =
         load_canonical_agent_definition(project_root, target_agent_name).ok_or_else(|| {
             json_error(
@@ -1164,13 +1162,12 @@ pub(crate) async fn start_delegate_impl(
     .await;
     let plugin_dir = resolve_harness_plugin_dir(harness, &parent.working_directory);
     let project_root = resolve_project_root_from_plugin_dir(&plugin_dir);
-    let (_caller_definition, definition) =
-        resolve_delegation_policy(
-            &project_root,
-            caller_agent_name,
-            req.caller_agent_profile.as_deref(),
-            &req.agent_name,
-        )?;
+    let (_caller_definition, definition) = resolve_delegation_policy(
+        &project_root,
+        caller_agent_name,
+        req.caller_agent_profile.as_deref(),
+        &req.agent_name,
+    )?;
     let delegated_session_id = resolve_delegated_session_id(state, &req, &parent, harness).await?;
     let logical_effort = req
         .logical_effort
@@ -1282,16 +1279,14 @@ pub(crate) async fn start_delegate_impl(
                 cached_streaming_task_from_started_payload(&payload),
             )
             .await;
-        if let Some(app_handle) = state.app_state.app_handle.as_ref() {
-            let _ = app_handle.emit(events::AGENT_TASK_STARTED, payload);
-        }
+        crate::http_server::emit_serialized_http_event(state, events::AGENT_TASK_STARTED, &payload);
     }
 
     let delegation_service = state.delegation_service.clone();
     let delegated_session_repo = state.app_state.delegated_session_repo.clone();
     let chat_message_repo = state.app_state.chat_message_repo.clone();
     let agent_run_repo = state.app_state.agent_run_repo.clone();
-    let app_handle = state.app_state.app_handle.clone();
+    let app_events = Arc::clone(&state.app_state.events);
     let streaming_state_cache = state.app_state.streaming_state_cache.clone();
     let snapshot_for_events = snapshot.clone();
     let agent_run_id = send_result.agent_run_id.clone();
@@ -1323,8 +1318,16 @@ pub(crate) async fn start_delegate_impl(
                                 cached_streaming_task_from_completed_payload(&payload),
                             )
                             .await;
-                        if let Some(handle) = app_handle.as_ref() {
-                            let _ = handle.emit(events::AGENT_TASK_COMPLETED, payload);
+                        if let Err(error) = ralphx_events::emit_serialized(
+                            app_events.as_ref(),
+                            events::AGENT_TASK_COMPLETED,
+                            &payload,
+                        ) {
+                            tracing::warn!(
+                                event = events::AGENT_TASK_COMPLETED,
+                                %error,
+                                "Failed to serialize delegated task completion event payload"
+                            );
                         }
                     }
                     delegation_service
@@ -1378,8 +1381,16 @@ pub(crate) async fn start_delegate_impl(
                                 cached_streaming_task_from_completed_payload(&payload),
                             )
                             .await;
-                        if let Some(handle) = app_handle.as_ref() {
-                            let _ = handle.emit(events::AGENT_TASK_COMPLETED, payload);
+                        if let Err(error) = ralphx_events::emit_serialized(
+                            app_events.as_ref(),
+                            events::AGENT_TASK_COMPLETED,
+                            &payload,
+                        ) {
+                            tracing::warn!(
+                                event = events::AGENT_TASK_COMPLETED,
+                                %error,
+                                "Failed to serialize delegated task completion event payload"
+                            );
                         }
                     }
                     delegation_service.mark_completed(&job_id, content).await;
@@ -1410,8 +1421,16 @@ pub(crate) async fn start_delegate_impl(
                                 cached_streaming_task_from_completed_payload(&payload),
                             )
                             .await;
-                        if let Some(handle) = app_handle.as_ref() {
-                            let _ = handle.emit(events::AGENT_TASK_COMPLETED, payload);
+                        if let Err(error) = ralphx_events::emit_serialized(
+                            app_events.as_ref(),
+                            events::AGENT_TASK_COMPLETED,
+                            &payload,
+                        ) {
+                            tracing::warn!(
+                                event = events::AGENT_TASK_COMPLETED,
+                                %error,
+                                "Failed to serialize delegated task completion event payload"
+                            );
                         }
                     }
                     delegation_service
@@ -1441,8 +1460,16 @@ pub(crate) async fn start_delegate_impl(
                                 cached_streaming_task_from_completed_payload(&payload),
                             )
                             .await;
-                        if let Some(handle) = app_handle.as_ref() {
-                            let _ = handle.emit(events::AGENT_TASK_COMPLETED, payload);
+                        if let Err(error) = ralphx_events::emit_serialized(
+                            app_events.as_ref(),
+                            events::AGENT_TASK_COMPLETED,
+                            &payload,
+                        ) {
+                            tracing::warn!(
+                                event = events::AGENT_TASK_COMPLETED,
+                                %error,
+                                "Failed to serialize delegated task completion event payload"
+                            );
                         }
                     }
                     let _ = delegated_session_repo

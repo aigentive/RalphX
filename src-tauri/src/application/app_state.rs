@@ -9,7 +9,7 @@ use tauri::{AppHandle, Runtime};
 use tokio::sync::Mutex;
 
 use super::services::PrPollerRegistry;
-use crate::application::chat_attachment_storage::chat_attachment_storage_path;
+use crate::application::app_paths::AppPaths;
 use crate::application::chat_service::AppChatService;
 use crate::application::runtime_factory::{
     build_chat_service_from_deps, build_task_scheduler_from_deps,
@@ -98,14 +98,13 @@ use crate::infrastructure::memory::{
     MemoryTaskRepository, MemoryTaskStepRepository, MemoryTeamMessageRepository,
     MemoryTeamSessionRepository, MemoryTicketCanonicalBranchRepository,
     MemoryTicketingStatusCatalogRepository, MemoryValidationRunRepository,
-    MemoryWebhookRegistrationRepository,
-    MemoryWorkflowRepository, MemoryWorkspaceReviewRuntimeSettingsRepository,
+    MemoryWebhookRegistrationRepository, MemoryWorkflowRepository,
+    MemoryWorkspaceReviewRuntimeSettingsRepository,
 };
 use crate::infrastructure::secret_store::MacosKeychainSecretStore;
 use crate::infrastructure::sqlite::ReviewIssueRepository;
 use crate::infrastructure::sqlite::{
-    get_app_data_db_path, get_default_db_path, open_connection, run_migrations,
-    SqliteActivePlanRepository, SqliteActivityEventRepository,
+    open_connection, run_migrations, SqliteActivePlanRepository, SqliteActivityEventRepository,
     SqliteAgentConversationGranolaNoteRepository, SqliteAgentConversationIssueRepository,
     SqliteAgentConversationJiraIssueRepository, SqliteAgentConversationLinearIssueRepository,
     SqliteAgentConversationWorkspaceRepository, SqliteAgentLaneSettingsRepository,
@@ -139,6 +138,7 @@ use crate::infrastructure::HyperAtlassianApiClient;
 use crate::infrastructure::HyperClickUpApiClient;
 use crate::infrastructure::HyperLinearApiClient;
 use crate::infrastructure::{GhCliGithubService, HyperGranolaApiClient};
+use ralphx_events::{EventSink, InternalEventBus, NullEventSink};
 
 pub(crate) struct ResolvedBackgroundAgentRuntime {
     pub client: Arc<dyn AgenticClient>,
@@ -316,6 +316,12 @@ pub struct AppState {
     pub interactive_process_registry: Arc<crate::application::InteractiveProcessRegistry>,
     /// Tauri app handle for emitting events to frontend (None in tests)
     pub app_handle: Option<AppHandle>,
+    /// Provider-neutral event sink for backend UI/runtime events.
+    pub events: Arc<dyn EventSink>,
+    /// Shared backend event bus used by the event sink and later internal subscribers.
+    pub internal_event_bus: InternalEventBus,
+    /// Process-owned app paths resolved once at the shell boundary.
+    pub app_paths: AppPaths,
     /// Shared database connection for raw SQL queries (e.g. external_events table).
     /// All accesses MUST go through `db.run(|conn| { ... })` for non-blocking operation.
     pub db: crate::infrastructure::sqlite::DbConnection,
@@ -344,6 +350,10 @@ pub struct AppState {
 }
 
 impl AppState {
+    fn null_event_runtime() -> (Arc<dyn EventSink>, InternalEventBus) {
+        (Arc::new(NullEventSink), InternalEventBus::new())
+    }
+
     fn production_agent_clients() -> AgentClientBundle {
         AgentClientBundle::standard_production_runtime_clients()
     }
@@ -1062,16 +1072,34 @@ impl AppState {
     /// Create AppState for production use with SQLite repositories.
     /// Opens the database at the default path and runs migrations.
     pub fn new_production(app_handle: AppHandle) -> AppResult<Self> {
-        let path = if cfg!(debug_assertions) {
-            get_default_db_path()
-        } else {
-            get_app_data_db_path(&app_handle)?
-        };
+        let app_paths = AppPaths::from_app_handle(&app_handle)?;
+        let (events, internal_event_bus) = Self::null_event_runtime();
+        Self::new_production_with_paths_and_events(
+            app_handle,
+            app_paths,
+            events,
+            internal_event_bus,
+        )
+    }
+
+    pub fn new_production_with_paths_and_events(
+        app_handle: AppHandle,
+        app_paths: AppPaths,
+        events: Arc<dyn EventSink>,
+        internal_event_bus: InternalEventBus,
+    ) -> AppResult<Self> {
+        let path = app_paths.database_path()?;
         let conn = open_connection(&path)?;
         run_migrations(&conn)?;
 
         let shared_conn = Arc::new(Mutex::new(conn));
-        Self::build_from_shared_conn(app_handle, shared_conn)
+        Self::build_from_shared_conn(
+            app_handle,
+            shared_conn,
+            app_paths,
+            events,
+            internal_event_bus,
+        )
     }
 
     /// Create AppState sharing an existing DB connection (no new connection or migrations).
@@ -1080,13 +1108,40 @@ impl AppState {
         app_handle: AppHandle,
         shared_conn: Arc<Mutex<rusqlite::Connection>>,
     ) -> AppResult<Self> {
-        Self::build_from_shared_conn(app_handle, shared_conn)
+        let app_paths = AppPaths::from_app_handle(&app_handle)?;
+        let (events, internal_event_bus) = Self::null_event_runtime();
+        Self::new_production_shared_with_paths_and_events(
+            app_handle,
+            shared_conn,
+            app_paths,
+            events,
+            internal_event_bus,
+        )
+    }
+
+    pub fn new_production_shared_with_paths_and_events(
+        app_handle: AppHandle,
+        shared_conn: Arc<Mutex<rusqlite::Connection>>,
+        app_paths: AppPaths,
+        events: Arc<dyn EventSink>,
+        internal_event_bus: InternalEventBus,
+    ) -> AppResult<Self> {
+        Self::build_from_shared_conn(
+            app_handle,
+            shared_conn,
+            app_paths,
+            events,
+            internal_event_bus,
+        )
     }
 
     /// Internal helper: build all SQLite repositories from a pre-existing shared connection.
     fn build_from_shared_conn(
         app_handle: AppHandle,
         shared_conn: Arc<Mutex<rusqlite::Connection>>,
+        app_paths: AppPaths,
+        events: Arc<dyn EventSink>,
+        internal_event_bus: InternalEventBus,
     ) -> AppResult<Self> {
         // Create repositories that are used by services
         let task_repo: Arc<dyn TaskRepository> =
@@ -1102,7 +1157,7 @@ impl AppState {
         let chat_attachment_repo: Arc<dyn ChatAttachmentRepository> = Arc::new(
             SqliteChatAttachmentRepository::from_shared(Arc::clone(&shared_conn)),
         );
-        let attachment_storage_path = chat_attachment_storage_path(&app_handle)?;
+        let attachment_storage_path = app_paths.attachment_storage_path();
 
         let gh_svc: Arc<dyn GithubServiceTrait> = Arc::new(GhCliGithubService::new());
 
@@ -1320,16 +1375,27 @@ impl AppState {
                 crate::application::InteractiveProcessRegistry::new(),
             ),
             app_handle: Some(app_handle),
+            events,
+            internal_event_bus,
+            app_paths,
         })
     }
 
     /// Create AppState with a specific database path
     pub fn with_db_path(db_path: &str, app_handle: AppHandle) -> AppResult<Self> {
+        let app_paths = AppPaths::from_app_handle(&app_handle)?;
+        let (events, internal_event_bus) = Self::null_event_runtime();
         let path = PathBuf::from(db_path);
         let conn = open_connection(&path)?;
         run_migrations(&conn)?;
         let shared_conn = Arc::new(Mutex::new(conn));
-        Self::build_from_shared_conn(app_handle, shared_conn)
+        Self::build_from_shared_conn(
+            app_handle,
+            shared_conn,
+            app_paths,
+            events,
+            internal_event_bus,
+        )
     }
 
     /// Create AppState for testing with in-memory repositories
@@ -1362,7 +1428,9 @@ impl AppState {
 
         let chat_attachment_repo: Arc<dyn ChatAttachmentRepository> =
             Arc::new(MemoryChatAttachmentRepository::new());
-        let attachment_storage_path = std::env::temp_dir();
+        let app_paths = AppPaths::for_tests();
+        let attachment_storage_path = app_paths.attachment_storage_path();
+        let (events, internal_event_bus) = Self::null_event_runtime();
 
         Self {
             task_repo: Arc::new(MemoryTaskRepository::new()),
@@ -1487,6 +1555,9 @@ impl AppState {
                 crate::application::InteractiveProcessRegistry::new(),
             ),
             app_handle: None,
+            events,
+            internal_event_bus,
+            app_paths,
             github_service: None,
             pr_poller_registry: Arc::new(PrPollerRegistry::new(
                 None,
@@ -1512,7 +1583,9 @@ impl AppState {
 
         let chat_attachment_repo: Arc<dyn ChatAttachmentRepository> =
             Arc::new(MemoryChatAttachmentRepository::new());
-        let attachment_storage_path = std::env::temp_dir();
+        let app_paths = AppPaths::for_tests();
+        let attachment_storage_path = app_paths.attachment_storage_path();
+        let (events, internal_event_bus) = Self::null_event_runtime();
 
         Self {
             task_repo: Arc::new(MemoryTaskRepository::new()),
@@ -1637,6 +1710,9 @@ impl AppState {
                 crate::application::InteractiveProcessRegistry::new(),
             ),
             app_handle: None,
+            events,
+            internal_event_bus,
+            app_paths,
             github_service: None,
             pr_poller_registry: Arc::new(PrPollerRegistry::new(
                 None,
@@ -1668,7 +1744,9 @@ impl AppState {
 
         let chat_attachment_repo: Arc<dyn ChatAttachmentRepository> =
             Arc::new(MemoryChatAttachmentRepository::new());
-        let attachment_storage_path = std::env::temp_dir();
+        let app_paths = AppPaths::for_tests();
+        let attachment_storage_path = app_paths.attachment_storage_path();
+        let (events, internal_event_bus) = Self::null_event_runtime();
 
         Self {
             task_repo: Arc::new(SqliteTaskRepository::from_shared(Arc::clone(&shared_conn))),
@@ -1807,6 +1885,9 @@ impl AppState {
                 crate::application::InteractiveProcessRegistry::new(),
             ),
             app_handle: None,
+            events,
+            internal_event_bus,
+            app_paths,
             github_service: None,
             pr_poller_registry: Arc::new(PrPollerRegistry::new(
                 None,
@@ -1828,7 +1909,9 @@ impl AppState {
         // Chat attachment repository for tests
         let chat_attachment_repo: Arc<dyn ChatAttachmentRepository> =
             Arc::new(MemoryChatAttachmentRepository::new());
-        let attachment_storage_path = std::env::temp_dir();
+        let app_paths = AppPaths::for_tests();
+        let attachment_storage_path = app_paths.attachment_storage_path();
+        let (events, internal_event_bus) = Self::null_event_runtime();
 
         Self {
             task_repo: Arc::clone(&task_repo),
@@ -1941,6 +2024,9 @@ impl AppState {
                 crate::application::InteractiveProcessRegistry::new(),
             ),
             app_handle: None,
+            events,
+            internal_event_bus,
+            app_paths,
             github_service: None,
             pr_poller_registry: Arc::new(PrPollerRegistry::new(
                 None,

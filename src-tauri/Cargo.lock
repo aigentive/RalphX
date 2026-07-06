@@ -3558,6 +3558,7 @@ dependencies = [
  "objc2-foundation",
  "portable-pty",
  "ralphx-domain",
+ "ralphx-events",
  "rand 0.8.6",
  "regex",
  "rusqlite",
@@ -3608,6 +3609,16 @@ dependencies = [
  "tokio",
  "uuid",
  "which",
+]
+
+[[package]]
+name = "ralphx-events"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

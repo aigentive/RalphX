@@ -867,9 +867,11 @@ pub async fn start_ideation_http(
         "sessionId": session_id_str,
         "projectId": project_id.to_string(),
     });
-    if let Some(ref handle) = state.app_state.app_handle {
-        let _ = handle.emit("ideation:session_created", &session_created_payload);
-    }
+    crate::http_server::emit_http_event(
+        &state,
+        "ideation:session_created",
+        session_created_payload.clone(),
+    );
 
     if let Err(e) = state
         .app_state
