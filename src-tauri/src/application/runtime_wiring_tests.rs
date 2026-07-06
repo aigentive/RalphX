@@ -31,13 +31,9 @@ fn traffic_light_origin_centers_button_on_converted_parent_coordinate() {
 fn traffic_light_centering_reapplies_after_native_layout_events() {
     use tauri::{PhysicalSize, WindowEvent};
 
-    assert!(should_recenter_macos_traffic_lights(&WindowEvent::Focused(
-        true
-    )));
+    assert!(should_recenter_macos_traffic_lights(&WindowEvent::Focused(true)));
     assert!(should_recenter_macos_traffic_lights(&WindowEvent::Resized(
         PhysicalSize::new(1200, 800),
     )));
-    assert!(!should_recenter_macos_traffic_lights(
-        &WindowEvent::Focused(false)
-    ));
+    assert!(!should_recenter_macos_traffic_lights(&WindowEvent::Focused(false)));
 }

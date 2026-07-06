@@ -620,7 +620,10 @@ impl LinearIntegrationService {
             .await
     }
 
-    pub async fn list_issue_team_labels(&self, issue_id: &str) -> Result<Vec<LinearLabel>, String> {
+    pub async fn list_issue_team_labels(
+        &self,
+        issue_id: &str,
+    ) -> Result<Vec<LinearLabel>, String> {
         let auth = self.enabled_auth_context().await?;
         self.client.list_issue_team_labels(&auth, issue_id).await
     }

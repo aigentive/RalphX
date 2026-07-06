@@ -94,10 +94,7 @@ pub(crate) fn parse_provider_env_file_contents(
             continue;
         }
 
-        values.insert(
-            key.to_string(),
-            strip_surrounding_double_quotes(value.trim()),
-        );
+        values.insert(key.to_string(), strip_surrounding_double_quotes(value.trim()));
     }
 
     Ok(values)

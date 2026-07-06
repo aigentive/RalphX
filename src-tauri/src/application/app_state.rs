@@ -98,8 +98,8 @@ use crate::infrastructure::memory::{
     MemoryTaskRepository, MemoryTaskStepRepository, MemoryTeamMessageRepository,
     MemoryTeamSessionRepository, MemoryTicketCanonicalBranchRepository,
     MemoryTicketingStatusCatalogRepository, MemoryValidationRunRepository,
-    MemoryWebhookRegistrationRepository, MemoryWorkflowRepository,
-    MemoryWorkspaceReviewRuntimeSettingsRepository,
+    MemoryWebhookRegistrationRepository,
+    MemoryWorkflowRepository, MemoryWorkspaceReviewRuntimeSettingsRepository,
 };
 use crate::infrastructure::secret_store::MacosKeychainSecretStore;
 use crate::infrastructure::sqlite::ReviewIssueRepository;

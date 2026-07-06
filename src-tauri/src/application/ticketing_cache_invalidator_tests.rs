@@ -96,9 +96,8 @@ fn linear_issue_attachment_alias_uses_nested_issue_identity() {
     })
     .to_string();
 
-    let event =
-        TicketingCacheInvalidator::linear_webhook_event(body.as_bytes(), "attachment_alias")
-            .expect("issue attachment alias should be parsed");
+    let event = TicketingCacheInvalidator::linear_webhook_event(body.as_bytes(), "attachment_alias")
+        .expect("issue attachment alias should be parsed");
 
     assert_eq!(event.ticket_id.as_deref(), Some("issue-4"));
     assert_eq!(event.ticket_key.as_deref(), Some("LIN-4"));

@@ -198,10 +198,9 @@ pub(crate) async fn ensure_linked_branch_workspace_available(
         .find_active_by_project_and_branch_name(project_id, branch_name)
         .await
         .map_err(|error| error.to_string())?;
-    if let Some(conflict) = active_workspaces
-        .into_iter()
-        .find(|workspace| current_conversation_id != Some(&workspace.conversation_id))
-    {
+    if let Some(conflict) = active_workspaces.into_iter().find(|workspace| {
+        current_conversation_id != Some(&workspace.conversation_id)
+    }) {
         return Err(format!(
             "Selected branch '{}' is already linked to active conversation {}; choose isolated branch mode or continue in that conversation",
             branch_name, conflict.conversation_id

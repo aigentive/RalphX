@@ -87,7 +87,9 @@ impl RecoveryPolicy {
                     if evidence.can_start {
                         return RecoveryDecision {
                             action: RecoveryActionKind::ExecuteEntryActions,
-                            reason: Some("Agent run cancelled/failed — re-executing.".to_string()),
+                            reason: Some(
+                                "Agent run cancelled/failed — re-executing.".to_string(),
+                            ),
                         };
                     }
                     return RecoveryDecision {

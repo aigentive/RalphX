@@ -14,8 +14,10 @@ fn test_service_with_repos() -> (
     Arc<dyn TeamMessageRepository>,
 ) {
     let tracker = Arc::new(TeamStateTracker::new());
-    let session_repo: Arc<dyn TeamSessionRepository> = Arc::new(MemoryTeamSessionRepository::new());
-    let message_repo: Arc<dyn TeamMessageRepository> = Arc::new(MemoryTeamMessageRepository::new());
+    let session_repo: Arc<dyn TeamSessionRepository> =
+        Arc::new(MemoryTeamSessionRepository::new());
+    let message_repo: Arc<dyn TeamMessageRepository> =
+        Arc::new(MemoryTeamMessageRepository::new());
     let svc = TeamService::new_with_repos_for_testing(
         tracker,
         Arc::clone(&session_repo),
@@ -340,10 +342,7 @@ async fn test_persist_message_db_fallback_when_cache_empty() {
         Arc::clone(&session_repo),
         Arc::clone(&message_repo),
     );
-    svc_a
-        .create_team("team-x", "ctx-99", "ideation")
-        .await
-        .unwrap();
+    svc_a.create_team("team-x", "ctx-99", "ideation").await.unwrap();
 
     // Service B: simulates the HTTP service — same tracker + repos, but fresh empty cache
     let svc_b = TeamService::new_with_repos_for_testing(
@@ -367,10 +366,7 @@ async fn test_persist_message_db_fallback_when_cache_empty() {
     assert_eq!(msg.content, "Here are the results");
 
     // Verify message was actually persisted to the DB (not just in-memory tracker)
-    let sessions = session_repo
-        .get_by_context("ideation", "ctx-99")
-        .await
-        .unwrap();
+    let sessions = session_repo.get_by_context("ideation", "ctx-99").await.unwrap();
     let sid = &sessions[0].id;
     let persisted = message_repo.get_by_session(sid).await.unwrap();
     assert_eq!(persisted.len(), 1);
@@ -405,9 +401,7 @@ async fn test_disband_empty_team_succeeds() {
 async fn test_persist_conversation_id_round_trip() {
     let (svc, session_repo, _msg_repo) = test_service_with_repos();
 
-    svc.create_team("t-conv", "ctx-1", "ideation")
-        .await
-        .unwrap();
+    svc.create_team("t-conv", "ctx-1", "ideation").await.unwrap();
     svc.add_teammate("t-conv", "worker", "#ff6b35", "sonnet", "code")
         .await
         .unwrap();
@@ -424,10 +418,7 @@ async fn test_persist_conversation_id_round_trip() {
         .unwrap();
 
     // Read back from DB
-    let sessions = session_repo
-        .get_by_context("ideation", "ctx-1")
-        .await
-        .unwrap();
+    let sessions = session_repo.get_by_context("ideation", "ctx-1").await.unwrap();
     assert_eq!(sessions.len(), 1);
     let snap = &sessions[0].teammates;
     assert_eq!(snap.len(), 1);
@@ -444,9 +435,7 @@ async fn test_persist_conversation_id_round_trip() {
 async fn test_stop_team_persists_shutdown_status() {
     let (svc, session_repo, _msg_repo) = test_service_with_repos();
 
-    svc.create_team("t-stop", "ctx-2", "ideation")
-        .await
-        .unwrap();
+    svc.create_team("t-stop", "ctx-2", "ideation").await.unwrap();
     svc.add_teammate("t-stop", "w1", "#ff0000", "sonnet", "code")
         .await
         .unwrap();
@@ -465,10 +454,7 @@ async fn test_stop_team_persists_shutdown_status() {
     // Stop team — should persist final "shutdown" status, not stale "running"/"idle"
     svc.stop_team("t-stop").await.unwrap();
 
-    let sessions = session_repo
-        .get_by_context("ideation", "ctx-2")
-        .await
-        .unwrap();
+    let sessions = session_repo.get_by_context("ideation", "ctx-2").await.unwrap();
     assert_eq!(sessions.len(), 1);
     for snap in &sessions[0].teammates {
         assert_eq!(
@@ -484,9 +470,7 @@ async fn test_stop_team_persists_shutdown_status() {
 async fn test_disband_persists_shutdown_and_disbanded_at() {
     let (svc, session_repo, _msg_repo) = test_service_with_repos();
 
-    svc.create_team("t-disband", "ctx-3", "ideation")
-        .await
-        .unwrap();
+    svc.create_team("t-disband", "ctx-3", "ideation").await.unwrap();
     svc.add_teammate("t-disband", "alpha", "#ff6b35", "opus", "explore")
         .await
         .unwrap();
@@ -514,10 +498,7 @@ async fn test_disband_persists_shutdown_and_disbanded_at() {
 
     svc.disband_team("t-disband").await.unwrap();
 
-    let sessions = session_repo
-        .get_by_context("ideation", "ctx-3")
-        .await
-        .unwrap();
+    let sessions = session_repo.get_by_context("ideation", "ctx-3").await.unwrap();
     assert_eq!(sessions.len(), 1);
     let session = &sessions[0];
 
@@ -538,11 +519,7 @@ async fn test_disband_persists_shutdown_and_disbanded_at() {
     }
 
     // conversation_ids must survive disband persist
-    let alpha_snap = session
-        .teammates
-        .iter()
-        .find(|t| t.name == "alpha")
-        .unwrap();
+    let alpha_snap = session.teammates.iter().find(|t| t.name == "alpha").unwrap();
     assert_eq!(alpha_snap.conversation_id.as_deref(), Some("conv-alpha"));
     let beta_snap = session.teammates.iter().find(|t| t.name == "beta").unwrap();
     assert_eq!(beta_snap.conversation_id.as_deref(), Some("conv-beta"));
@@ -587,8 +564,5 @@ async fn test_backward_compat_teammate_json_without_conversation_id() {
     }]"##;
 
     let snapshots: Vec<TeammateSnapshot> = serde_json::from_str(new_json).unwrap();
-    assert_eq!(
-        snapshots[0].conversation_id.as_deref(),
-        Some("conv-new-123")
-    );
+    assert_eq!(snapshots[0].conversation_id.as_deref(), Some("conv-new-123"));
 }

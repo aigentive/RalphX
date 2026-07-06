@@ -28,21 +28,23 @@ impl<R: Runtime> ThrottledEmitter<R> {
 
         let weak = Arc::downgrade(&emitter);
         let handle_clone = emitter.handle.clone();
-        thread::spawn(move || loop {
-            thread::sleep(Duration::from_millis(100));
-            let Some(strong) = weak.upgrade() else {
-                break;
-            };
-            let events = {
-                let mut guard = strong
-                    .pending
-                    .lock()
-                    .expect("ThrottledEmitter pending lock poisoned");
-                std::mem::take(&mut *guard)
-            };
-            drop(strong);
-            for (event, payload) in events {
-                let _ = handle_clone.emit(&event, payload);
+        thread::spawn(move || {
+            loop {
+                thread::sleep(Duration::from_millis(100));
+                let Some(strong) = weak.upgrade() else {
+                    break;
+                };
+                let events = {
+                    let mut guard = strong
+                        .pending
+                        .lock()
+                        .expect("ThrottledEmitter pending lock poisoned");
+                    std::mem::take(&mut *guard)
+                };
+                drop(strong);
+                for (event, payload) in events {
+                    let _ = handle_clone.emit(&event, payload);
+                }
             }
         });
 

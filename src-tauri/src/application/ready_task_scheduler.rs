@@ -21,8 +21,9 @@ pub fn spawn_ready_task_scheduler_if_needed<R: Runtime + 'static>(
         return;
     }
 
-    let scheduler =
-        Arc::new(app_state.build_task_scheduler_for_runtime(execution_state, app_handle));
+    let scheduler = Arc::new(
+        app_state.build_task_scheduler_for_runtime(execution_state, app_handle),
+    );
     scheduler.set_self_ref(Arc::clone(&scheduler) as Arc<dyn TaskScheduler>);
 
     let settle_ms = default_scheduler_ready_settle_ms();

@@ -1,5 +1,7 @@
 use crate::domain::execution::{ExecutionSettings, GlobalExecutionSettings};
-use crate::domain::repositories::{ExecutionSettingsRepository, GlobalExecutionSettingsRepository};
+use crate::domain::repositories::{
+    ExecutionSettingsRepository, GlobalExecutionSettingsRepository,
+};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]

@@ -2140,6 +2140,7 @@ mod tests {
     use std::process::Command;
     use std::sync::LazyLock;
 
+    use async_trait::async_trait;
     use crate::application::agent_conversation_workspace::{
         agent_conversation_branch_name, resolve_agent_conversation_workspace_path,
     };
@@ -2157,7 +2158,6 @@ mod tests {
     };
     use crate::domain::services::RunningAgentKey;
     use crate::tests::mock_github_service::MockGithubService;
-    use async_trait::async_trait;
     use tokio::sync::Mutex as TokioMutex;
 
     static TERMINAL_CLEANUP_FETCH_TEST_LOCK: LazyLock<TokioMutex<()>> =
@@ -2173,7 +2173,8 @@ mod tests {
             _plan_branch: &PlanBranch,
             _review_base: &str,
             _review_state: PrReviewState,
-        ) -> crate::error::AppResult<crate::domain::entities::AgentWorkspacePrDescription> {
+        ) -> crate::error::AppResult<crate::domain::entities::AgentWorkspacePrDescription>
+        {
             Ok(crate::domain::entities::AgentWorkspacePrDescription::new(
                 None,
                 "## Summary\n\nStartup recovery drafted body".to_string(),

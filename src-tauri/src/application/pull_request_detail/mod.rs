@@ -135,8 +135,7 @@ pub async fn load_pull_request_detail(
         request.pr_number,
         request.branch.as_deref(),
     )
-    .await
-    else {
+    .await else {
         return PullRequestDetail::empty(PullRequestDetailState::NoPr);
     };
 
@@ -183,9 +182,7 @@ pub async fn load_pull_request_detail(
         .as_ref()
         .map(|health| health.checks.iter().map(map_check).collect())
         .unwrap_or_default();
-    let review_decision = health
-        .as_ref()
-        .and_then(|health| health.review_decision.clone());
+    let review_decision = health.as_ref().and_then(|health| health.review_decision.clone());
 
     let review_feedback = match feedback_result {
         Ok(feedback) => feedback,
@@ -344,10 +341,7 @@ async fn resolve_pr(
         });
     }
     // External: a single live head-branch lookup.
-    if let Ok(Some(found)) = github
-        .find_latest_pr_by_head_branch(working_dir, branch)
-        .await
-    {
+    if let Ok(Some(found)) = github.find_latest_pr_by_head_branch(working_dir, branch).await {
         return Some(ResolvedPr {
             number: found.number,
             head_ref: Some(branch.to_string()),
@@ -386,7 +380,13 @@ async fn build_issue_comments(
             .collect()
     } else {
         health
-            .map(|health| health.issue_comments.iter().map(map_live_comment).collect())
+            .map(|health| {
+                health
+                    .issue_comments
+                    .iter()
+                    .map(map_live_comment)
+                    .collect()
+            })
             .unwrap_or_default()
     }
 }

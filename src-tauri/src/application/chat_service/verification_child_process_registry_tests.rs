@@ -98,6 +98,6 @@ fn test_register_overwrites_previous_entry() {
     let registry = VerificationChildProcessRegistry::new();
     registry.register("ctx", 1_000);
     registry.register("ctx", 2_000); // second registration should overwrite the first
-                                     // remove_and_kill will try to kill 2_000 (non-existent) — must not panic.
+    // remove_and_kill will try to kill 2_000 (non-existent) — must not panic.
     registry.remove_and_kill("ctx");
 }
