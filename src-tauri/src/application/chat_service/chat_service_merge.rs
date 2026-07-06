@@ -1725,8 +1725,30 @@ mod tests {
         assert!(services.plan_pr_description_drafter.is_none());
     }
 
-    #[tokio::test]
-    async fn source_update_conflict_auto_complete_scope_drift_routes_to_reexecution() {
+    #[test]
+    fn source_update_conflict_auto_complete_scope_drift_routes_to_reexecution() {
+        // Linux coverage shards run this deep merge-retry regression on a
+        // smaller worker stack than local macOS nextest runs.
+        let handle = std::thread::Builder::new()
+            .name("source-update-scope-drift-auto-complete".to_string())
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build test runtime");
+                runtime.block_on(
+                    source_update_conflict_auto_complete_scope_drift_routes_to_reexecution_body(),
+                );
+            })
+            .expect("spawn stack-sized test thread");
+
+        if let Err(payload) = handle.join() {
+            std::panic::resume_unwind(payload);
+        }
+    }
+
+    async fn source_update_conflict_auto_complete_scope_drift_routes_to_reexecution_body() {
         let repo = setup_source_update_scope_drift_repo();
         let repo_path = repo.path();
         let app_state = AppState::new_test();
