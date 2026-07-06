@@ -14,7 +14,6 @@ import {
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { useFeatureFlags } from "@/hooks/useFeatureFlags";
-import { useProjectStats } from "@/hooks/useProjectStats";
 import { useTicketingProviders } from "@/hooks/useTicketing";
 import { useGranolaIntegration } from "@/hooks/useGranolaIntegration";
 import { hasValidTicketingProvider } from "@/lib/ticketing-provider-state";
@@ -109,7 +108,6 @@ export function LeftNavRail({
   hideViews = false,
 }: LeftNavRailProps) {
   const activeProjectId = useProjectStore((s) => s.activeProjectId);
-  const { data: stats } = useProjectStats(activeProjectId ?? undefined);
   const { data: featureFlags } = useFeatureFlags();
   const { data: ticketingProviders } = useTicketingProviders(
     activeProjectId ?? undefined,
@@ -118,10 +116,9 @@ export function LeftNavRail({
   const { connected: hasGranolaDashboardProvider } = useGranolaIntegration();
   const hasTicketingDashboardProvider = hasValidTicketingProvider(ticketingProviders);
 
-  const taskCount = stats?.taskCount ?? 0;
   const visibleItems = hideViews
     ? []
-    : ALL_NAV_ITEMS.filter((item) => item.visible(featureFlags, taskCount));
+    : ALL_NAV_ITEMS.filter((item) => item.visible(featureFlags));
   const dashboardViews = new Set<ViewType>(["ticketing", "github", "granola"]);
   const primaryItems = visibleItems.filter((item) => !dashboardViews.has(item.view));
   const dashboardItems = visibleItems.filter((item) => {
