@@ -3,7 +3,6 @@ use axum::{
     http::StatusCode,
     Json,
 };
-use tauri::Emitter;
 use tracing::error;
 
 use super::*;
@@ -93,16 +92,14 @@ pub async fn start_step_http(
 
     let response = StepResponse::from(step);
 
-    // Emit event to frontend
-    if let Some(app_handle) = &state.app_state.app_handle {
-        let _ = app_handle.emit(
-            "step:updated",
-            serde_json::json!({
-                "step": &response,
-                "task_id": &response.task_id
-            }),
-        );
-    }
+    crate::http_server::emit_http_event(
+        &state,
+        "step:updated",
+        serde_json::json!({
+            "step": &response,
+            "task_id": &response.task_id
+        }),
+    );
 
     Ok(Json(response))
 }
@@ -149,16 +146,14 @@ pub async fn complete_step_http(
 
     let response = StepResponse::from(step);
 
-    // Emit event to frontend
-    if let Some(app_handle) = &state.app_state.app_handle {
-        let _ = app_handle.emit(
-            "step:updated",
-            serde_json::json!({
-                "step": &response,
-                "task_id": &response.task_id
-            }),
-        );
-    }
+    crate::http_server::emit_http_event(
+        &state,
+        "step:updated",
+        serde_json::json!({
+            "step": &response,
+            "task_id": &response.task_id
+        }),
+    );
 
     // Fallback: if all steps for this task are now done, close the worker's IPR to signal EOF
     {
@@ -195,15 +190,14 @@ pub async fn complete_step_http(
                             response.task_id
                         );
                     }
-                    if let Some(app_handle) = &state.app_state.app_handle {
-                        let _ = app_handle.emit(
-                            "execution:completed",
-                            serde_json::json!({
-                                "task_id": &response.task_id,
-                                "trigger": "all_steps_done_fallback",
-                            }),
-                        );
-                    }
+                    crate::http_server::emit_http_event(
+                        &state,
+                        "execution:completed",
+                        serde_json::json!({
+                            "task_id": &response.task_id,
+                            "trigger": "all_steps_done_fallback",
+                        }),
+                    );
                 }
             }
             Err(e) => {
@@ -262,16 +256,14 @@ pub async fn skip_step_http(
 
     let response = StepResponse::from(step);
 
-    // Emit event to frontend
-    if let Some(app_handle) = &state.app_state.app_handle {
-        let _ = app_handle.emit(
-            "step:updated",
-            serde_json::json!({
-                "step": &response,
-                "task_id": &response.task_id
-            }),
-        );
-    }
+    crate::http_server::emit_http_event(
+        &state,
+        "step:updated",
+        serde_json::json!({
+            "step": &response,
+            "task_id": &response.task_id
+        }),
+    );
 
     // Fallback: if all steps for this task are now done, close the worker's IPR to signal EOF
     {
@@ -308,15 +300,14 @@ pub async fn skip_step_http(
                             response.task_id
                         );
                     }
-                    if let Some(app_handle) = &state.app_state.app_handle {
-                        let _ = app_handle.emit(
-                            "execution:completed",
-                            serde_json::json!({
-                                "task_id": &response.task_id,
-                                "trigger": "all_steps_done_fallback",
-                            }),
-                        );
-                    }
+                    crate::http_server::emit_http_event(
+                        &state,
+                        "execution:completed",
+                        serde_json::json!({
+                            "task_id": &response.task_id,
+                            "trigger": "all_steps_done_fallback",
+                        }),
+                    );
                 }
             }
             Err(e) => {
@@ -375,16 +366,14 @@ pub async fn fail_step_http(
 
     let response = StepResponse::from(step);
 
-    // Emit event to frontend
-    if let Some(app_handle) = &state.app_state.app_handle {
-        let _ = app_handle.emit(
-            "step:updated",
-            serde_json::json!({
-                "step": &response,
-                "task_id": &response.task_id
-            }),
-        );
-    }
+    crate::http_server::emit_http_event(
+        &state,
+        "step:updated",
+        serde_json::json!({
+            "step": &response,
+            "task_id": &response.task_id
+        }),
+    );
 
     Ok(Json(response))
 }
@@ -443,16 +432,14 @@ pub async fn add_step_http(
 
     let response = StepResponse::from(step);
 
-    // Emit event to frontend
-    if let Some(app_handle) = &state.app_state.app_handle {
-        let _ = app_handle.emit(
-            "step:created",
-            serde_json::json!({
-                "step": &response,
-                "task_id": &response.task_id
-            }),
-        );
-    }
+    crate::http_server::emit_http_event(
+        &state,
+        "step:created",
+        serde_json::json!({
+            "step": &response,
+            "task_id": &response.task_id
+        }),
+    );
 
     Ok(Json(response))
 }
@@ -799,16 +786,14 @@ pub async fn execution_complete_http(
         );
     }
 
-    // Notify frontend
-    if let Some(app_handle) = &state.app_state.app_handle {
-        let _ = app_handle.emit(
-            "execution:completed",
-            serde_json::json!({
-                "task_id": task_id_str,
-                "summary": req.summary,
-            }),
-        );
-    }
+    crate::http_server::emit_http_event(
+        &state,
+        "execution:completed",
+        serde_json::json!({
+            "task_id": task_id_str,
+            "summary": req.summary,
+        }),
+    );
 
     // Dual-channel emission of task:execution_completed
     let project_id_str = task.project_id.as_str().to_string();

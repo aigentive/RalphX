@@ -113,23 +113,20 @@ pub async fn request_team_plan_register(
 
         match execute_team_spawn(&state, plan, &plan_id).await {
             Ok(spawn_result) => {
-                if let Some(app_handle) = &state.app_state.app_handle {
-                    app_handle
-                        .emit(
-                            "team:plan_auto_approved",
-                            serde_json::json!({
-                                "plan_id": plan_id,
-                                "context_type": req.context_type,
-                                "context_id": req.context_id,
-                                "process": req.process,
-                                "team_name": spawn_result.team_name,
-                                "teammates_spawned": spawn_result.spawned_teammates,
-                                "message": spawn_result.message,
-                            }),
-                        )
-                        .ok();
-                    info!(plan_id = %plan_id, "Emitted team:plan_auto_approved event");
-                }
+                crate::http_server::emit_http_event(
+                    &state,
+                    "team:plan_auto_approved",
+                    serde_json::json!({
+                        "plan_id": plan_id,
+                        "context_type": req.context_type,
+                        "context_id": req.context_id,
+                        "process": req.process,
+                        "team_name": spawn_result.team_name,
+                        "teammates_spawned": spawn_result.spawned_teammates,
+                        "message": spawn_result.message,
+                    }),
+                );
+                info!(plan_id = %plan_id, "Emitted team:plan_auto_approved event");
                 state.team_tracker.remove_plan_channel(&plan_id).await;
                 Ok(Json(TeamPlanRegisterResponse {
                     success: true,
@@ -146,23 +143,20 @@ pub async fn request_team_plan_register(
         }
     } else {
         // Manual flow: emit team:plan_requested for frontend approval dialog
-        if let Some(app_handle) = &state.app_state.app_handle {
-            let emit_result = app_handle.emit(
-                "team:plan_requested",
-                serde_json::json!({
-                    "plan_id": plan_id,
-                    "context_type": req.context_type,
-                    "context_id": req.context_id,
-                    "process": req.process,
-                    "teammates": req.teammates,
-                    "validated": true,
-                    "created_at": Utc::now().to_rfc3339(),
-                }),
-            );
-            info!(plan_id = %plan_id, emit_ok = emit_result.is_ok(), "Emitted team:plan_requested event");
-        } else {
-            warn!("No app_handle available — team:plan_requested event NOT emitted");
-        }
+        crate::http_server::emit_http_event(
+            &state,
+            "team:plan_requested",
+            serde_json::json!({
+                "plan_id": plan_id,
+                "context_type": req.context_type,
+                "context_id": req.context_id,
+                "process": req.process,
+                "teammates": req.teammates,
+                "validated": true,
+                "created_at": Utc::now().to_rfc3339(),
+            }),
+        );
+        info!(plan_id = %plan_id, "Emitted team:plan_requested event");
 
         Ok(Json(TeamPlanRegisterResponse {
             success: true,

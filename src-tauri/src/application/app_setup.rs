@@ -1,13 +1,17 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use ralphx_events::{BusEventSink, EventSink, InternalEventBus, TeeEventSink};
+
 use crate::application::runtime_wiring::{create_main_window, register_managed_state};
 use crate::application::server_boot::start_server_boot;
 use crate::application::setup_settings::initialize_settings_defaults;
 use crate::application::startup_cleanup::run_startup_cleanup;
 use crate::application::startup_pipeline_launch::launch_startup_pipeline;
+use crate::application::AppPaths;
 use crate::application::TeamStateTracker;
 use crate::commands::{ActiveProjectState, ExecutionState};
+use crate::shell::event_sink::TauriEventSink;
 use crate::AppState;
 use tauri::Manager;
 use tracing::warn;
@@ -117,8 +121,19 @@ pub(crate) fn run_app_setup(
     configure_bundled_runtime_env(app);
 
     // Create application state with production SQLite repositories
-    let mut app_state =
-        AppState::new_production(app_handle.clone()).expect("Failed to initialize AppState");
+    let app_paths = AppPaths::from_app_handle(&app_handle).expect("Failed to resolve app paths");
+    let internal_event_bus = InternalEventBus::new();
+    let events: Arc<dyn EventSink> = Arc::new(TeeEventSink::new(vec![
+        Arc::new(TauriEventSink::new(app_handle.clone())) as Arc<dyn EventSink>,
+        Arc::new(BusEventSink::new(internal_event_bus.clone())) as Arc<dyn EventSink>,
+    ]));
+    let mut app_state = AppState::new_production_with_paths_and_events(
+        app_handle.clone(),
+        app_paths,
+        events,
+        internal_event_bus,
+    )
+    .expect("Failed to initialize AppState");
     crate::commands::workspace_open_commands::warm_workspace_open_target_cache();
 
     // Construct WebhookPublisher ONCE — Arc-clone into both AppState instances.

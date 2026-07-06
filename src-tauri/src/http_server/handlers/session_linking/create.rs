@@ -609,22 +609,20 @@ pub(crate) async fn create_child_session_impl(
             None
         };
 
-    if let Some(app_handle) = &state.app_state.app_handle {
-        let mut event_payload = serde_json::json!({
-            "sessionId": child_session_str,
-            "parentSessionId": parent_session_str,
-            "title": title,
-            "purpose": created_session.session_purpose.to_string(),
-            "orchestrationTriggered": orchestration_triggered
-        });
-        if let Some(ref prompt) = req.initial_prompt {
-            event_payload["initialPrompt"] = serde_json::json!(prompt);
-        }
-        if let Some(ref pending_prompt) = persisted_pending_prompt {
-            event_payload["pendingInitialPrompt"] = serde_json::json!(pending_prompt);
-        }
-        let _ = app_handle.emit("ideation:child_session_created", event_payload);
+    let mut event_payload = serde_json::json!({
+        "sessionId": child_session_str,
+        "parentSessionId": parent_session_str,
+        "title": title,
+        "purpose": created_session.session_purpose.to_string(),
+        "orchestrationTriggered": orchestration_triggered
+    });
+    if let Some(ref prompt) = req.initial_prompt {
+        event_payload["initialPrompt"] = serde_json::json!(prompt);
     }
+    if let Some(ref pending_prompt) = persisted_pending_prompt {
+        event_payload["pendingInitialPrompt"] = serde_json::json!(pending_prompt);
+    }
+    crate::http_server::emit_http_event(state, "ideation:child_session_created", event_payload);
 
     Ok(build_child_session_response(
         &created_session,

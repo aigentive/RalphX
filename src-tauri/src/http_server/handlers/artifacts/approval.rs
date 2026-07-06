@@ -66,17 +66,16 @@ pub async fn approve_plan_artifact(
         PlanApprovalView::approved(response_id.clone(), response_version, approved_at.clone()),
     );
 
-    if let Some(app_handle) = &state.app_state.app_handle {
-        let _ = app_handle.emit(
-            "plan_artifact:approved",
-            serde_json::json!({
-                "sessionId": session_id.as_str(),
-                "artifactId": response_id.clone(),
-                "version": response_version,
-                "approvedAt": approved_at,
-            }),
-        );
-    }
+    crate::http_server::emit_http_event(
+        &state,
+        "plan_artifact:approved",
+        serde_json::json!({
+            "sessionId": session_id.as_str(),
+            "artifactId": response_id.clone(),
+            "version": response_version,
+            "approvedAt": approved_at,
+        }),
+    );
 
     crate::application::plan_complexity_assessment::spawn_plan_complexity_assessor_after_approval(
         std::sync::Arc::clone(&state.app_state),
