@@ -63,6 +63,7 @@ pub(crate) mod orphan_worktree_cleanup;
 pub mod pending_session_drain;
 pub mod permission_state;
 pub(crate) mod plan_complexity_assessment;
+pub(crate) mod plan_reference_import;
 pub(crate) mod plan_pr_description;
 pub mod plan_ranking;
 pub mod pr_startup_recovery;
