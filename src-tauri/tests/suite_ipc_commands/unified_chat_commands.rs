@@ -1480,15 +1480,16 @@ mod ipc_contract {
         AgentConversationWorkspace, AgentConversationWorkspaceBranchMode,
         AgentConversationWorkspaceMode,
         AgentConversationWorkspaceStatus, AgentRun, Artifact, ArtifactId, ArtifactType,
-        ChatContextType, ChatConversation, ChatConversationId, ChatMessage,
+        ChatContextType, ChatConversation, ChatConversationId, ChatMessage, ExecutionPlan,
+        ExecutionPlanStatus,
         IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow,
-        IdeationSessionId, IdeationSessionStatus, MessageRole, PlanBranch, Priority, Project,
-        ProjectId, ProposalCategory, TaskProposal, VerificationStatus,
+        IdeationSessionId, IdeationSessionStatus, MessageRole, PlanBranch, PlanBranchStatus,
+        Priority, Project, ProjectId, ProposalCategory, Task, TaskProposal, VerificationStatus,
     };
     use ralphx_lib::domain::repositories::{
         AgentConversationWorkspaceRepository, AgentModelRegistryRepository,
     };
-    use ralphx_lib::domain::services::ComposerArtifactReference;
+    use ralphx_lib::domain::services::{ComposerArtifactReference, RunningAgentKey};
     use ralphx_lib::infrastructure::memory::MemoryAgentModelRegistryRepository;
     use ralphx_lib::infrastructure::sqlite::sqlite_agent_conversation_workspace_repo::SqliteAgentConversationWorkspaceRepository;
     use ralphx_lib::testing::SqliteTestDb;
@@ -3478,6 +3479,58 @@ mod ipc_contract {
     // Archive conversation: PR close + workspace status
     // -----------------------------------------------------------------------
 
+    async fn set_archive_test_workspace_mode(
+        state: &AppState,
+        conversation_id: &ChatConversationId,
+        mode: AgentConversationWorkspaceMode,
+    ) -> AgentConversationWorkspace {
+        let mut workspace = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(conversation_id)
+            .await
+            .expect("workspace read should succeed")
+            .expect("workspace should exist");
+        workspace.mode = mode;
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace.clone())
+            .await
+            .expect("workspace mode update should succeed");
+        workspace
+    }
+
+    async fn create_archive_test_plan_branch(
+        state: &AppState,
+        conversation_id: &ChatConversationId,
+        workspace: &AgentConversationWorkspace,
+        session_suffix: &str,
+        execution_plan: Option<&ExecutionPlan>,
+    ) -> PlanBranch {
+        let session_id = execution_plan
+            .map(|plan| plan.session_id.clone())
+            .unwrap_or_else(|| IdeationSessionId::from_string(format!("session-{session_suffix}")));
+        let mut plan_branch = PlanBranch::new(
+            ArtifactId::from_string(format!("artifact-{session_suffix}")),
+            session_id.clone(),
+            workspace.project_id.clone(),
+            format!("plan/{session_suffix}"),
+            "main".to_string(),
+        );
+        plan_branch.execution_plan_id = execution_plan.map(|plan| plan.id.clone());
+        let plan_branch_id = plan_branch.id.clone();
+        let created = state
+            .plan_branch_repo
+            .create(plan_branch)
+            .await
+            .expect("plan branch should be created");
+        state
+            .agent_conversation_workspace_repo
+            .update_links(conversation_id, Some(&session_id), Some(&plan_branch_id))
+            .await
+            .expect("workspace links should be updated");
+        created
+    }
+
     #[tokio::test]
     async fn archive_conversation_sets_workspace_status_to_archived() {
         let github = Arc::new(crate::common::MockGithubService::new());
@@ -3495,6 +3548,32 @@ mod ipc_contract {
             .expect("repo call should succeed")
             .expect("workspace should exist");
         assert_eq!(ws.status, AgentConversationWorkspaceStatus::Archived);
+    }
+
+    #[tokio::test]
+    async fn archive_conversation_stops_project_agent() {
+        let github = Arc::new(crate::common::MockGithubService::new());
+        let (_temp, state, conv_id, _github) =
+            super::setup_ipc_workspace_state("archive-stop-agent", true, None, github).await;
+        let key = RunningAgentKey::new(ChatContextType::Project.to_string(), conv_id.as_str());
+        state
+            .running_agent_registry
+            .register(
+                key.clone(),
+                0,
+                conv_id.as_str().to_string(),
+                "run-archive-stop-agent".to_string(),
+                None,
+                None,
+            )
+            .await;
+        assert!(state.running_agent_registry.is_running(&key).await);
+
+        archive_agent_conversation_inner(&conv_id, &state)
+            .await
+            .expect("archive should succeed");
+
+        assert!(!state.running_agent_registry.is_running(&key).await);
     }
 
     #[tokio::test]
@@ -3565,23 +3644,19 @@ mod ipc_contract {
     #[tokio::test]
     async fn archive_conversation_closes_linked_plan_branch_pr() {
         let github = Arc::new(crate::common::MockGithubService::new());
-        let (_temp, state, conv_id, _github) =
-            super::setup_ipc_workspace_state("archive-plan-branch", true, Some(55), github.clone())
+        let (_temp, state, conv_id, github) =
+            super::setup_ipc_workspace_state("archive-plan-branch", true, None, github.clone())
                 .await;
-
-        let plan_branch = PlanBranch::new(
-            ArtifactId::from_string("artifact-1".to_string()),
-            IdeationSessionId::from_string("session-1".to_string()),
-            ProjectId::from_string("project-1".to_string()),
-            "plan/feature".to_string(),
-            "main".to_string(),
-        );
+        let workspace = set_archive_test_workspace_mode(
+            &state,
+            &conv_id,
+            AgentConversationWorkspaceMode::Ideation,
+        )
+        .await;
+        let plan_branch =
+            create_archive_test_plan_branch(&state, &conv_id, &workspace, "plan-branch-pr", None)
+                .await;
         let plan_branch_id = plan_branch.id.clone();
-        state
-            .plan_branch_repo
-            .create(plan_branch)
-            .await
-            .expect("plan branch should be created");
         state
             .plan_branch_repo
             .update_pr_info(
@@ -3596,13 +3671,15 @@ mod ipc_contract {
 
         state
             .agent_conversation_workspace_repo
-            .update_links(&conv_id, None, Some(&plan_branch_id))
+            .update_publication(&conv_id, None, None, None, None)
             .await
-            .expect("link plan branch should succeed");
+            .expect("workspace publication clear should succeed");
 
         archive_agent_conversation_inner(&conv_id, &state)
             .await
             .expect("archive should succeed");
+
+        assert_eq!(*github.close_pr_calls.lock().unwrap(), 1);
 
         let updated_branch = state
             .plan_branch_repo
@@ -3611,6 +3688,166 @@ mod ipc_contract {
             .unwrap()
             .expect("plan branch should still exist");
         assert_eq!(updated_branch.pr_status, Some(DbPrStatus::Closed));
+        let ws = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conv_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(ws.publication_pr_number, Some(55));
+        assert_eq!(ws.publication_pr_status.as_deref(), Some("closed"));
+    }
+
+    #[tokio::test]
+    async fn archive_ideation_workspace_archives_current_execution_tasks_only() {
+        let github = Arc::new(crate::common::MockGithubService::new());
+        let (_temp, state, conv_id, _github) =
+            super::setup_ipc_workspace_state("archive-current-tasks", true, None, github).await;
+        let workspace = set_archive_test_workspace_mode(
+            &state,
+            &conv_id,
+            AgentConversationWorkspaceMode::Ideation,
+        )
+        .await;
+        let session_id = IdeationSessionId::from_string("session-current-tasks".to_string());
+        let current_plan = state
+            .execution_plan_repo
+            .create(ExecutionPlan::new(session_id.clone()))
+            .await
+            .expect("current execution plan should be created");
+        let mut stale_plan = ExecutionPlan::new(session_id.clone());
+        stale_plan.status = ExecutionPlanStatus::Superseded;
+        let stale_plan = state
+            .execution_plan_repo
+            .create(stale_plan)
+            .await
+            .expect("stale execution plan should be created");
+        let plan_branch = create_archive_test_plan_branch(
+            &state,
+            &conv_id,
+            &workspace,
+            "current-tasks",
+            Some(&current_plan),
+        )
+        .await;
+
+        let mut current_task = Task::new(workspace.project_id.clone(), "current task".to_string());
+        current_task.ideation_session_id = Some(session_id.clone());
+        current_task.execution_plan_id = Some(current_plan.id.clone());
+        let current_task_id = current_task.id.clone();
+        state
+            .task_repo
+            .create(current_task)
+            .await
+            .expect("current task should be created");
+
+        let mut stale_task = Task::new(workspace.project_id.clone(), "stale task".to_string());
+        stale_task.ideation_session_id = Some(session_id);
+        stale_task.execution_plan_id = Some(stale_plan.id.clone());
+        let stale_task_id = stale_task.id.clone();
+        state
+            .task_repo
+            .create(stale_task)
+            .await
+            .expect("stale task should be created");
+
+        archive_agent_conversation_inner(&conv_id, &state)
+            .await
+            .expect("archive should succeed");
+
+        let current_task = state
+            .task_repo
+            .get_by_id(&current_task_id)
+            .await
+            .unwrap()
+            .expect("current task should exist");
+        assert!(current_task.archived_at.is_some());
+        let stale_task = state
+            .task_repo
+            .get_by_id(&stale_task_id)
+            .await
+            .unwrap()
+            .expect("stale task should exist");
+        assert!(stale_task.archived_at.is_none());
+
+        let current_plan = state
+            .execution_plan_repo
+            .get_by_id(&current_plan.id)
+            .await
+            .unwrap()
+            .expect("current plan should exist");
+        assert_eq!(current_plan.status, ExecutionPlanStatus::Superseded);
+        let updated_branch = state
+            .plan_branch_repo
+            .get_by_id(&plan_branch.id)
+            .await
+            .unwrap()
+            .expect("plan branch should exist");
+        assert_eq!(updated_branch.status, PlanBranchStatus::Abandoned);
+    }
+
+    #[tokio::test]
+    async fn archive_conversation_does_not_archive_tasks_for_direct_edit_workspace() {
+        let github = Arc::new(crate::common::MockGithubService::new());
+        let (_temp, state, conv_id, _github) =
+            super::setup_ipc_workspace_state("archive-edit-task-scope", true, None, github).await;
+        let workspace = state
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&conv_id)
+            .await
+            .unwrap()
+            .expect("workspace should exist");
+        assert_eq!(workspace.mode, AgentConversationWorkspaceMode::Edit);
+        let session_id = IdeationSessionId::from_string("session-edit-task-scope".to_string());
+        let current_plan = state
+            .execution_plan_repo
+            .create(ExecutionPlan::new(session_id.clone()))
+            .await
+            .expect("execution plan should be created");
+        let plan_branch = create_archive_test_plan_branch(
+            &state,
+            &conv_id,
+            &workspace,
+            "edit-task-scope",
+            Some(&current_plan),
+        )
+        .await;
+
+        let mut task = Task::new(workspace.project_id.clone(), "edit scoped task".to_string());
+        task.ideation_session_id = Some(session_id);
+        task.execution_plan_id = Some(current_plan.id.clone());
+        let task_id = task.id.clone();
+        state
+            .task_repo
+            .create(task)
+            .await
+            .expect("task should be created");
+
+        archive_agent_conversation_inner(&conv_id, &state)
+            .await
+            .expect("archive should succeed");
+
+        let task = state
+            .task_repo
+            .get_by_id(&task_id)
+            .await
+            .unwrap()
+            .expect("task should exist");
+        assert!(task.archived_at.is_none());
+        let current_plan = state
+            .execution_plan_repo
+            .get_by_id(&current_plan.id)
+            .await
+            .unwrap()
+            .expect("execution plan should exist");
+        assert_eq!(current_plan.status, ExecutionPlanStatus::Active);
+        let updated_branch = state
+            .plan_branch_repo
+            .get_by_id(&plan_branch.id)
+            .await
+            .unwrap()
+            .expect("plan branch should exist");
+        assert_eq!(updated_branch.status, PlanBranchStatus::Active);
     }
 
     #[tokio::test]

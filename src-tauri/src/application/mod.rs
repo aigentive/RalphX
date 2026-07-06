@@ -2,6 +2,7 @@
 // This layer bridges the domain and infrastructure layers
 
 pub mod agent_client_bundle;
+pub mod agent_conversation_archive;
 pub mod agent_conversation_fork;
 pub mod agent_conversation_granola_note;
 pub mod agent_conversation_jira_issue;
