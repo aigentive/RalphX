@@ -3150,9 +3150,15 @@ async fn terminal_agent_workspace_pr_cleanup_fetches_base_and_deletes_merged_art
 
     assert!(!worktree_path.exists());
     assert!(!branch_exists(repo.path(), &branch));
-    let state = github.state();
-    assert_eq!(state.fetch_remote_calls, 1);
-    assert_eq!(state.last_fetch_remote_branch_name.as_deref(), Some("main"));
+    let (fetch_remote_calls, last_fetch_remote_branch_name) = {
+        let state = github.state();
+        (
+            state.fetch_remote_calls,
+            state.last_fetch_remote_branch_name.clone(),
+        )
+    };
+    assert_eq!(fetch_remote_calls, 1);
+    assert_eq!(last_fetch_remote_branch_name.as_deref(), Some("main"));
     assert_eq!(
         memory_workspace_repo
             .local_cleanup_status_for_test(&conversation_id)
