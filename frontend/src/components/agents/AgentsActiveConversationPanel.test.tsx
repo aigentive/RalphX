@@ -1233,6 +1233,138 @@ describe("AgentsActiveConversationPanel", () => {
     );
   });
 
+  it("routes clicks from every Runtimes tab row kind", async () => {
+    const onSelectChatFocus = vi.fn();
+    const onFocusIdeationSession = vi.fn();
+    const onFocusVerificationSession = vi.fn();
+    const onFocusWorkspaceReview = vi.fn();
+    const onFocusTaskRuntime = vi.fn();
+    const onOpenTaskArtifact = vi.fn();
+    getAgentConversationRuntimeStatusesMock.mockResolvedValue({
+      "conversation-1": workspaceRuntimeStatus({
+        isRunning: false,
+        agentStatus: "idle",
+        primarySource: null,
+        summaryLabel: null,
+        items: [],
+      }),
+    });
+    getAgentConversationRuntimeIndexMock.mockResolvedValue({
+      conversationId: "conversation-1",
+      rows: [
+        runtimeIndexWorkspaceRow({ lifecycle: "waiting", mode: "chat", statusLabel: "Waiting" }),
+        runtimeIndexWorkspaceRow({
+          id: "ideation:session-1",
+          group: "ideation_verification",
+          kind: "ideation",
+          lifecycle: "completed",
+          statusLabel: "Done",
+          title: "Plan ideation",
+          mode: "ideation",
+          orderIndex: 1,
+          conversationId: null,
+          contextType: "ideation",
+          contextId: "session-1",
+          taskId: null,
+          agentRunId: null,
+        }),
+        runtimeIndexWorkspaceRow({
+          id: "verification:verification-child",
+          group: "ideation_verification",
+          kind: "verification",
+          lifecycle: "failed",
+          statusLabel: "Failed",
+          title: "Verification",
+          mode: "pr_review",
+          orderIndex: 2,
+          conversationId: null,
+          contextType: "verification",
+          contextId: "verification-child",
+          taskId: null,
+          agentRunId: null,
+          parentSessionId: "session-parent",
+          childSessionId: "verification-child",
+        }),
+        runtimeIndexWorkspaceRow({
+          id: "workspace_review:review-conversation-1",
+          group: "ideation_verification",
+          kind: "workspace_review",
+          lifecycle: "blocked",
+          statusLabel: "Blocked",
+          title: "Review workspace changes",
+          mode: null,
+          orderIndex: 3,
+          conversationId: "review-conversation-1",
+          contextType: "project",
+          contextId: "review-conversation-1",
+          taskId: null,
+          agentRunId: null,
+          providerHarness: "claude",
+        }),
+        runtimeIndexWorkspaceRow({
+          id: "task:task-3",
+          group: "pipeline",
+          kind: "task",
+          lifecycle: "running",
+          statusLabel: "Merging",
+          title: "Merge task",
+          mode: "agent",
+          orderIndex: 4,
+          conversationId: "merge-conversation-1",
+          contextType: "merge",
+          contextId: "task-3",
+          taskId: "task-3",
+          agentRunId: null,
+        }),
+      ],
+    });
+
+    renderPanel({
+      onSelectChatFocus,
+      onFocusIdeationSession,
+      onFocusVerificationSession,
+      onFocusWorkspaceReview,
+      onFocusTaskRuntime,
+      onOpenTaskArtifact,
+    });
+
+    fireEvent.click(await screen.findByTestId("agents-composer-runtimes-toggle"));
+    const workspaceRow = await screen.findByTestId(
+      "agents-composer-runtime-row-workspace",
+      undefined,
+      deferredHydrationTimeout,
+    );
+    expect(workspaceRow).toHaveTextContent("Chat mode");
+    expect(screen.getByTestId("agents-composer-runtime-row-ideation")).toHaveTextContent(
+      "Ideation mode",
+    );
+    expect(screen.getByTestId("agents-composer-runtime-row-verification")).toHaveTextContent(
+      "PR Review",
+    );
+    expect(screen.getByTestId("agents-composer-runtime-row-workspace_review")).toHaveTextContent(
+      "claude",
+    );
+    expect(screen.getByTestId("agents-composer-runtime-row-task")).toHaveTextContent(
+      "Agent mode",
+    );
+
+    fireEvent.click(workspaceRow);
+    fireEvent.click(screen.getByTestId("agents-composer-runtime-row-ideation"));
+    fireEvent.click(screen.getByTestId("agents-composer-runtime-row-verification"));
+    fireEvent.click(screen.getByTestId("agents-composer-runtime-row-workspace_review"));
+    fireEvent.click(screen.getByTestId("agents-composer-runtime-row-task"));
+
+    expect(onSelectChatFocus).toHaveBeenCalledWith("workspace");
+    expect(onFocusIdeationSession).toHaveBeenCalledWith("session-1");
+    expect(onFocusVerificationSession).toHaveBeenCalledWith(
+      "session-parent",
+      "verification-child",
+    );
+    expect(onFocusWorkspaceReview).toHaveBeenCalledWith("review-conversation-1");
+    expect(onFocusTaskRuntime).toHaveBeenCalledWith("task-3", "merge");
+    expect(onOpenTaskArtifact).toHaveBeenCalledWith("task-3");
+  });
+
   it("renders the composer task ledger for a focused task runtime chat", async () => {
     listAgentTasksMock.mockResolvedValue([
       {

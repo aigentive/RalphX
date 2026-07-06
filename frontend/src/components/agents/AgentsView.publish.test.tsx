@@ -29,6 +29,7 @@ const {
   listAgentTaskListTasksMock,
   listAgentTaskListsMock,
   listAgentTasksMock,
+  preloadAgentsArtifactPaneMock,
   publishAgentConversationWorkspaceMock,
   sendAgentMessageMock,
   toastErrorMock,
@@ -97,6 +98,10 @@ describe("AgentsView publish", () => {
     );
     expect(screen.getByTestId("agents-composer-workspace-changes-deletions")).toHaveTextContent(
       "−2",
+    );
+    fireEvent.focus(changesToggle);
+    await waitFor(() =>
+      expect(preloadAgentsArtifactPaneMock).toHaveBeenCalledTimes(1),
     );
 
     expect(
@@ -509,6 +514,80 @@ describe("AgentsView publish", () => {
     expect(screen.getByTestId("agents-composer-task-4")).toBeInTheDocument();
     expect(screen.queryByTestId("agents-composer-tasks-show-older")).not.toBeInTheDocument();
     expect(screen.queryByTestId("agents-composer-tasks-show-more")).not.toBeInTheDocument();
+  });
+
+  it("reveals earlier tasks from the composer task window", async () => {
+    mockAgentViewData(conversation({ agentMode: "edit" }));
+    getAgentConversationWorkspaceMock.mockResolvedValue(conversationWorkspace({ mode: "edit" }));
+    listAgentTasksMock.mockResolvedValue([
+      {
+        taskId: "task-1",
+        taskNumber: 1,
+        title: "First task",
+        state: "done",
+        ownerAgent: "worker",
+        blockedBy: [],
+        blocks: [],
+        availability: "ready",
+        updatedAt: "2026-05-20T10:00:00Z",
+      },
+      {
+        taskId: "task-2",
+        taskNumber: 2,
+        title: "Second task",
+        state: "done",
+        ownerAgent: "worker",
+        blockedBy: [],
+        blocks: [],
+        availability: "ready",
+        updatedAt: "2026-05-20T10:01:00Z",
+      },
+      {
+        taskId: "task-3",
+        taskNumber: 3,
+        title: "Active task",
+        state: "active",
+        ownerAgent: "worker",
+        blockedBy: [],
+        blocks: [],
+        availability: "ready",
+        updatedAt: "2026-05-20T10:02:00Z",
+      },
+      {
+        taskId: "task-4",
+        taskNumber: 4,
+        title: "Fourth task",
+        state: "open",
+        ownerAgent: null,
+        blockedBy: [],
+        blocks: [],
+        availability: "ready",
+        updatedAt: "2026-05-20T10:03:00Z",
+      },
+    ]);
+
+    renderAgentsView();
+    selectSidebarConversationRow();
+
+    fireEvent.click(
+      await screen.findByTestId(
+        "agents-composer-tasks-toggle",
+        undefined,
+        deferredHydrationTimeout,
+      ),
+    );
+
+    expect(screen.queryByTestId("agents-composer-task-1")).not.toBeInTheDocument();
+    expect(screen.getByTestId("agents-composer-task-2")).toBeInTheDocument();
+    expect(screen.getByTestId("agents-composer-task-3")).toHaveTextContent("Active task");
+
+    const showOlderButton = screen.getByTestId("agents-composer-tasks-show-older");
+    expect(showOlderButton).toHaveTextContent("Show 1 earlier in this list");
+
+    fireEvent.click(showOlderButton);
+
+    expect(screen.getByTestId("agents-composer-task-1")).toHaveTextContent("First task");
+    expect(screen.queryByTestId("agents-composer-tasks-show-older")).not.toBeInTheDocument();
   });
 
   it("loads previous task lists as grouped history inside the tasks tray", async () => {

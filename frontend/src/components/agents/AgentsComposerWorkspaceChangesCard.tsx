@@ -1006,9 +1006,6 @@ function AgentsComposerWorkspaceChangesCardContent({
     }
   };
   const handleRuntimeRowClick = (row: AgentConversationRuntimeIndexRow) => {
-    if (!runtimeRowIsClickable(row)) {
-      return;
-    }
     if (row.kind === "workspace") {
       onViewWorkspace();
       return;
