@@ -28,6 +28,10 @@ vi.mock("@/hooks/useVerificationEvents", () => ({
   useVerificationEvents: vi.fn(),
 }));
 
+vi.mock("@/hooks/useTaskValidationEvents", () => ({
+  useTaskValidationEventInvalidation: vi.fn(),
+}));
+
 vi.mock("@/hooks/useFreshnessBlockedNotification", () => ({
   useFreshnessBlockedNotification: vi.fn(),
 }));

@@ -9,6 +9,7 @@ import { SectionTitle } from "./SectionTitle";
 import { DescriptionBlock } from "./DescriptionBlock";
 import { useTaskDetailContextModel } from "./TaskDetailContext";
 import { TaskContextRail } from "./TaskDetailContextRail";
+import { TaskValidationSection } from "./TaskValidationEvidenceCard";
 
 interface TwoColumnLayoutProps {
   description: string | null | undefined;
@@ -47,7 +48,15 @@ export function TwoColumnLayout({
       <div className="min-w-0">{rail}</div>
 
       {/* Right column - Main content */}
-      <div className="space-y-6 min-w-0">{children}</div>
+      <div className="space-y-6 min-w-0">
+        {children}
+        {detailContext && (
+          <TaskValidationSection
+            taskId={detailContext.task.id}
+            isHistorical={detailContext.viewMode.kind === "historical"}
+          />
+        )}
+      </div>
     </div>
   );
 }

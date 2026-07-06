@@ -10,6 +10,7 @@ export type ValidationRunStatus =
   | "skipped";
 
 export type ValidationCommandStatus =
+  | "running"
   | "passed"
   | "failed"
   | "error"
