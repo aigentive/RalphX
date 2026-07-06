@@ -10,9 +10,9 @@
 // - StartupJobRunner after resuming agent-active tasks
 // - resume_execution and set_max_concurrent commands (future Phase 26 tasks)
 
-mod watchdog;
 mod helpers;
 mod merge_retry;
+mod watchdog;
 
 pub use watchdog::ReadyWatchdog;
 
@@ -25,11 +25,13 @@ use std::sync::{
 use tauri::{AppHandle, Runtime};
 use tokio::sync::{Mutex as TokioMutex, RwLock};
 
-use crate::commands::ExecutionState;
-use crate::application::harness_runtime_registry::default_scheduler_runtime_config;
-use crate::application::runtime_factory::{RuntimeFactoryDeps, build_transition_service_with_fallback};
 use crate::application::chat_service::uses_execution_slot;
+use crate::application::harness_runtime_registry::default_scheduler_runtime_config;
+use crate::application::runtime_factory::{
+    build_transition_service_with_fallback, RuntimeFactoryDeps,
+};
 use crate::commands::execution_commands::context_matches_running_status_for_gc;
+use crate::commands::ExecutionState;
 use crate::domain::entities::{
     task_metadata::{
         MergeFailureSource, MergeRecoveryEvent, MergeRecoveryEventKind, MergeRecoveryMetadata,
@@ -44,12 +46,16 @@ use crate::domain::repositories::{
     IdeationSessionRepository, MemoryEventRepository, PlanBranchRepository, ProjectRepository,
     TaskDependencyRepository, TaskRepository,
 };
-use crate::domain::services::{GithubServiceTrait, MessageQueue, RunningAgentRegistry};
+use crate::domain::services::{
+    GithubServiceTrait, MessageQueue, PlanPrDescriptionDrafter, RunningAgentRegistry,
+};
 use crate::domain::state_machine::services::TaskScheduler;
 
-use super::{AgentClientBundle, InteractiveProcessRegistry, PrPollerRegistry, TaskTransitionService};
-use crate::domain::state_machine::transition_handler::{get_trigger_origin, set_trigger_origin};
+use super::{
+    AgentClientBundle, InteractiveProcessRegistry, PrPollerRegistry, TaskTransitionService,
+};
 use crate::domain::state_machine::transition_handler::freshness::FreshnessMetadata;
+use crate::domain::state_machine::transition_handler::{get_trigger_origin, set_trigger_origin};
 
 /// Production implementation of TaskScheduler for auto-scheduling Ready tasks.
 ///
@@ -92,6 +98,8 @@ pub struct TaskSchedulerService<R: Runtime = tauri::Wry> {
     pub(super) pr_poller_registry: Option<Arc<PrPollerRegistry>>,
     /// Optional GitHub service so scheduled plan merges can take the PR-mode path.
     pub(super) github_service: Option<Arc<dyn GithubServiceTrait>>,
+    /// Optional PR description drafter required before PR body writes.
+    pub(super) plan_pr_description_drafter: Option<Arc<dyn PlanPrDescriptionDrafter>>,
     /// Self-reference for propagating scheduler through build_transition_service().
     /// Set after Arc-wrapping via set_self_ref(). Uses Mutex since it's written once at init.
     pub(super) self_ref: Mutex<Option<Arc<dyn TaskScheduler>>>,
@@ -155,6 +163,7 @@ impl<R: Runtime> TaskSchedulerService<R> {
             agent_clients: None,
             pr_poller_registry: None,
             github_service: None,
+            plan_pr_description_drafter: None,
             self_ref: Mutex::new(None),
             active_project_id: RwLock::new(None),
             scheduling_lock: TokioMutex::new(()),
@@ -218,6 +227,14 @@ impl<R: Runtime> TaskSchedulerService<R> {
 
     pub fn with_github_service(mut self, github: Arc<dyn GithubServiceTrait>) -> Self {
         self.github_service = Some(github);
+        self
+    }
+
+    pub fn with_plan_pr_description_drafter(
+        mut self,
+        drafter: Arc<dyn PlanPrDescriptionDrafter>,
+    ) -> Self {
+        self.plan_pr_description_drafter = Some(drafter);
         self
     }
 
@@ -372,7 +389,8 @@ impl<R: Runtime> TaskSchedulerService<R> {
 
     #[doc(hidden)]
     pub fn set_contention_retry_pending_for_test(&self, value: u32) {
-        self.contention_retry_pending.store(value, Ordering::Relaxed);
+        self.contention_retry_pending
+            .store(value, Ordering::Relaxed);
     }
 
     /// Build a TaskTransitionService for transitioning tasks.
@@ -410,6 +428,11 @@ impl<R: Runtime> TaskSchedulerService<R> {
             self.github_service.as_ref().map(Arc::clone),
             self.pr_poller_registry.as_ref().map(Arc::clone),
         );
+        let deps = if let Some(drafter) = self.plan_pr_description_drafter.as_ref() {
+            deps.with_plan_pr_description_drafter(Arc::clone(drafter))
+        } else {
+            deps
+        };
         let mut service = build_transition_service_with_fallback(
             &self.app_handle,
             Arc::clone(&self.execution_state),
@@ -574,5 +597,71 @@ impl<R: Runtime + 'static> TaskScheduler for TaskSchedulerService<R> {
     /// Retry main-branch merges that were deferred because agents were running.
     async fn try_retry_main_merges(&self) {
         self.retry_main_merges_impl().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::application::AppState;
+    use crate::domain::entities::{AgentWorkspacePrDescription, PlanBranch, Project};
+    use crate::domain::services::PrReviewState;
+    use crate::error::AppResult;
+    use tauri::test::MockRuntime;
+
+    struct StaticPlanPrDescriptionDrafter;
+
+    #[async_trait]
+    impl PlanPrDescriptionDrafter for StaticPlanPrDescriptionDrafter {
+        async fn draft_plan_description(
+            &self,
+            _project: &Project,
+            _plan_branch: &PlanBranch,
+            _review_base: &str,
+            _review_state: PrReviewState,
+        ) -> AppResult<AgentWorkspacePrDescription> {
+            Ok(AgentWorkspacePrDescription::new(
+                None,
+                "## Summary\n\nScheduler test PR description".to_string(),
+            ))
+        }
+    }
+
+    fn scheduler_for_state(state: &AppState) -> TaskSchedulerService<MockRuntime> {
+        TaskSchedulerService::new(
+            Arc::new(ExecutionState::new()),
+            Arc::clone(&state.project_repo),
+            Arc::clone(&state.task_repo),
+            Arc::clone(&state.task_dependency_repo),
+            Arc::clone(&state.artifact_repo),
+            Arc::clone(&state.chat_message_repo),
+            Arc::clone(&state.chat_attachment_repo),
+            Arc::clone(&state.chat_conversation_repo),
+            Arc::clone(&state.agent_run_repo),
+            Arc::clone(&state.ideation_session_repo),
+            Arc::clone(&state.activity_event_repo),
+            Arc::clone(&state.message_queue),
+            Arc::clone(&state.running_agent_registry),
+            Arc::clone(&state.memory_event_repo),
+            None,
+        )
+    }
+
+    #[test]
+    fn scheduler_plan_pr_description_drafter_defaults_to_none() {
+        let state = AppState::new_test();
+        let scheduler = scheduler_for_state(&state);
+
+        assert!(scheduler.plan_pr_description_drafter.is_none());
+    }
+
+    #[test]
+    fn scheduler_build_transition_service_carries_plan_pr_description_drafter() {
+        let state = AppState::new_test();
+        let scheduler = scheduler_for_state(&state)
+            .with_plan_pr_description_drafter(Arc::new(StaticPlanPrDescriptionDrafter));
+
+        assert!(scheduler.plan_pr_description_drafter.is_some());
+        let _service = scheduler.build_transition_service();
     }
 }

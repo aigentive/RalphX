@@ -177,6 +177,37 @@ pub struct StartupJobRunner<R: Runtime = tauri::Wry> {
     git_startup_blocked_project_ids: Arc<HashSet<ProjectId>>,
 }
 
+struct StartupSafetyNet<R: Runtime = tauri::Wry> {
+    task_repo: Arc<dyn TaskRepository>,
+    task_dep_repo: Arc<dyn TaskDependencyRepository>,
+    project_repo: Arc<dyn ProjectRepository>,
+    app_handle: Option<AppHandle<R>>,
+}
+
+impl<R: Runtime> StartupSafetyNet<R> {
+    async fn run(self) {
+        let step_started_at = startup_job_step_started("ready_task_unblock");
+        StartupJobRunner::<R>::unblock_ready_tasks_for(
+            Arc::clone(&self.task_repo),
+            Arc::clone(&self.task_dep_repo),
+            Arc::clone(&self.project_repo),
+            self.app_handle.clone(),
+        )
+        .await;
+        startup_job_step_completed("ready_task_unblock", step_started_at);
+
+        let step_started_at = startup_job_step_started("dependency_violation_reconcile");
+        StartupJobRunner::<R>::reconcile_dependency_violations_for(
+            self.task_repo,
+            self.task_dep_repo,
+            self.project_repo,
+            self.app_handle,
+        )
+        .await;
+        startup_job_step_completed("dependency_violation_reconcile", step_started_at);
+    }
+}
+
 impl<R: Runtime> StartupJobRunner<R> {
     async fn persist_startup_status_change(
         &self,
@@ -559,35 +590,27 @@ impl<R: Runtime> StartupJobRunner<R> {
     where
         R: 'static,
     {
-        let task_repo = Arc::clone(&self.task_repo);
-        let task_dep_repo = Arc::clone(&self.task_dep_repo);
-        let project_repo = Arc::clone(&self.project_repo);
-        let app_handle = self.app_handle.clone();
+        let runner = self.clone_for_safety_net();
         tauri::async_runtime::spawn(async move {
             if delay > Duration::ZERO {
                 tokio::time::sleep(delay).await;
             }
 
-            let step_started_at = startup_job_step_started("ready_task_unblock");
-            Self::unblock_ready_tasks_for(
-                Arc::clone(&task_repo),
-                Arc::clone(&task_dep_repo),
-                Arc::clone(&project_repo),
-                app_handle.clone(),
-            )
-            .await;
-            startup_job_step_completed("ready_task_unblock", step_started_at);
-
-            let step_started_at = startup_job_step_started("dependency_violation_reconcile");
-            Self::reconcile_dependency_violations_for(
-                task_repo,
-                task_dep_repo,
-                project_repo,
-                app_handle,
-            )
-            .await;
-            startup_job_step_completed("dependency_violation_reconcile", step_started_at);
+            runner.run().await;
         });
+    }
+
+    fn clone_for_safety_net(&self) -> StartupSafetyNet<R> {
+        StartupSafetyNet {
+            task_repo: Arc::clone(&self.task_repo),
+            task_dep_repo: Arc::clone(&self.task_dep_repo),
+            project_repo: Arc::clone(&self.project_repo),
+            app_handle: self.app_handle.clone(),
+        }
+    }
+
+    async fn run_post_ready_safety_net(&self) {
+        self.clone_for_safety_net().run().await;
     }
 
     /// Run startup jobs, resuming tasks in agent-active states.
@@ -724,6 +747,8 @@ impl<R: Runtime> StartupJobRunner<R> {
             }
         }
         startup_job_step_completed("app_state_load_and_quota", step_started_at);
+
+        self.run_post_ready_safety_net().await;
 
         match app_settings.execution_halt_mode {
             ExecutionHaltMode::Running => {}

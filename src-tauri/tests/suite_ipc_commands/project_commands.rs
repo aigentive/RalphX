@@ -3,7 +3,7 @@ mod project_pr_template_ipc_contract_coverage;
 
 use std::sync::Arc;
 
-use crate::common::MockGithubService;
+use crate::common::{MockGithubService, SubmittingPlanPrAgentClient};
 use ralphx_lib::application::services::PrPollerRegistry;
 use ralphx_lib::application::AppState;
 use ralphx_lib::commands::project_commands::*;
@@ -649,6 +649,8 @@ mod mode_switch_tests {
 
         let mut state = AppState::with_repos(task_repo.clone(), project_repo.clone());
         state.plan_branch_repo = plan_branch_repo.clone();
+        let workspace_repo = Arc::clone(&state.agent_conversation_workspace_repo);
+        state = state.with_agent_client(Arc::new(SubmittingPlanPrAgentClient::new(workspace_repo)));
 
         let mock_github = Arc::new(MockGithubService::new());
         let github_trait: Arc<dyn GithubServiceTrait> = mock_github.clone();

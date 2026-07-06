@@ -25,7 +25,7 @@ use ralphx_lib::infrastructure::memory::{
     MemoryPlanBranchRepository, MemoryProjectRepository, MemoryTaskRepository,
 };
 
-use crate::common::MockGithubService;
+use crate::common::{MockGithubService, SubmittingPlanPrAgentClient};
 
 // ============================================================================
 // Shared helpers (copied from pr_reconciler_tests.rs)
@@ -182,6 +182,9 @@ async fn app_state_scheduler_uses_pr_mode_and_starts_poller_for_new_plan_merge()
 
     let mut app_state = AppState::with_repos(task_repo.clone(), project_repo.clone());
     app_state.plan_branch_repo = plan_branch_repo.clone();
+    let workspace_repo = Arc::clone(&app_state.agent_conversation_workspace_repo);
+    app_state =
+        app_state.with_agent_client(Arc::new(SubmittingPlanPrAgentClient::new(workspace_repo)));
 
     let mock_github = Arc::new(MockGithubService::new());
     let github_trait: Arc<dyn GithubServiceTrait> = mock_github.clone();
