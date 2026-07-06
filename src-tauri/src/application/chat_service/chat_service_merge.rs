@@ -191,19 +191,23 @@ impl<'a, R: Runtime + 'static> MergeAutoCompleteContext<'a, R> {
 
     async fn retry_pending_merge(&self, reason: &str) {
         let transition_service = self.build_transition_service();
-        match transition_service
-            .transition_task_corrective_with_exit(
+        match Box::pin(
+            transition_service.transition_task_corrective_with_exit(
                 &self.task_id,
                 InternalStatus::PendingMerge,
                 None,
                 "merge_auto_complete",
-            )
-            .await
+            ),
+        )
+        .await
         {
             Ok(updated) => {
-                transition_service
-                    .execute_entry_actions(&self.task_id, &updated, InternalStatus::PendingMerge)
-                    .await;
+                Box::pin(transition_service.execute_entry_actions(
+                    &self.task_id,
+                    &updated,
+                    InternalStatus::PendingMerge,
+                ))
+                .await;
             }
             Err(e) => {
                 tracing::error!(
