@@ -3446,7 +3446,65 @@ describe("AgentsArtifactPane", () => {
     await user.click(proposalsToggle);
 
     expect(await screen.findByText("Gate proposal tab visibility")).toBeInTheDocument();
+    await user.click(screen.getByTestId("proposal-card-proposal-1"));
+    expect(await screen.findByTestId("proposal-detail-sheet")).toBeInTheDocument();
+    await user.click(screen.getByTestId("close-sheet-button"));
+    await waitFor(() =>
+      expect(screen.queryByTestId("proposal-detail-sheet")).not.toBeInTheDocument(),
+    );
     expect(useDependencyGraphMock).toHaveBeenLastCalledWith("session-1");
+  });
+
+  it("opens the Plan export action from the artifact overflow menu", async () => {
+    const user = userEvent.setup();
+    getIdeationSessionMock.mockResolvedValue(
+      ideationSessionResponse({
+        status: "active",
+        acceptanceStatus: null,
+      }),
+    );
+    getSessionPlanMock.mockResolvedValue(approvedPlanArtifact());
+
+    renderPane(
+      "plan",
+      workspace({
+        mode: "plan",
+        linkedIdeationSessionId: "session-1",
+      }),
+      vi.fn(),
+      false,
+      conversation(),
+    );
+
+    await user.click(await screen.findByRole("button", { name: /Plan actions/i }));
+    await user.click(await screen.findByRole("menuitem", { name: /Export/i }));
+    expect(await screen.findByText("Export Plan")).toBeInTheDocument();
+  });
+
+  it("opens the Plan editor from the artifact overflow menu", async () => {
+    const user = userEvent.setup();
+    getIdeationSessionMock.mockResolvedValue(
+      ideationSessionResponse({
+        status: "active",
+        acceptanceStatus: null,
+      }),
+    );
+    getSessionPlanMock.mockResolvedValue(approvedPlanArtifact());
+
+    renderPane(
+      "plan",
+      workspace({
+        mode: "plan",
+        linkedIdeationSessionId: "session-1",
+      }),
+      vi.fn(),
+      false,
+      conversation(),
+    );
+
+    await user.click(await screen.findByRole("button", { name: /Plan actions/i }));
+    await user.click(await screen.findByRole("menuitem", { name: /Edit/i }));
+    expect(await screen.findByRole("textbox")).toBeInTheDocument();
   });
 
   it("shows active execution-plan progress in the Plan banner and Tasks tab badge", async () => {
@@ -3504,6 +3562,59 @@ describe("AgentsArtifactPane", () => {
       "1 task",
     );
     expect(screen.getByText("1 in progress")).toBeInTheDocument();
+    expect(await screen.findByTestId("agents-artifact-tab-tasks")).toHaveTextContent(
+      "1",
+    );
+  });
+
+  it("falls back to proposal-created tasks when active execution plan is unavailable", async () => {
+    usePlanStore.setState({
+      activeExecutionPlanIdByProject: {},
+    });
+    useTasksMock.mockReturnValue({
+      data: [
+        task({
+          id: "task-created",
+          title: "Created from proposal",
+          internalStatus: "executing",
+          executionPlanId: "exec-created",
+        }),
+        task({
+          id: "task-other",
+          title: "Unrelated task",
+          executionPlanId: "exec-other",
+        }),
+      ],
+      isLoading: false,
+      isFetching: false,
+    });
+    getIdeationSessionMock.mockResolvedValue(
+      ideationSessionResponse(
+        {
+          status: "accepted",
+          acceptanceStatus: "accepted",
+          convertedAt: "2026-04-23T10:00:00Z",
+        },
+        [taskProposal({ createdTaskId: "task-created" })],
+      ),
+    );
+    getSessionPlanMock.mockResolvedValue(approvedPlanArtifact());
+
+    renderPane(
+      "plan",
+      workspace({
+        mode: "ideation",
+        linkedIdeationSessionId: "session-1",
+        linkedPlanBranchId: "plan-branch-1",
+      }),
+      vi.fn(),
+      false,
+      conversation(),
+    );
+
+    expect(await screen.findByTestId("accepted-session-banner")).toHaveTextContent(
+      "1 task",
+    );
     expect(await screen.findByTestId("agents-artifact-tab-tasks")).toHaveTextContent(
       "1",
     );
@@ -3613,6 +3724,55 @@ describe("AgentsArtifactPane", () => {
     expect(loadActivePlan).toHaveBeenCalledWith("project-1");
     expect(toastSuccessMock).toHaveBeenCalledWith(
       "Implementation restarted with 1 task",
+    );
+  });
+
+  it("reports restart implementation failures from the confirmation action", async () => {
+    const user = userEvent.setup();
+    restartImplementationMock.mockRejectedValueOnce(new Error("Restart failed"));
+    usePlanStore.setState({
+      activeExecutionPlanIdByProject: { "project-1": "exec-current" },
+    });
+    useTasksMock.mockReturnValue({
+      data: [
+        task({
+          id: "task-current",
+          executionPlanId: "exec-current",
+        }),
+      ],
+      isLoading: false,
+      isFetching: false,
+    });
+    getIdeationSessionMock.mockResolvedValue(
+      ideationSessionResponse({
+        status: "accepted",
+        acceptanceStatus: "accepted",
+        convertedAt: "2026-04-23T10:00:00Z",
+      }),
+    );
+    getSessionPlanMock.mockResolvedValue(approvedPlanArtifact());
+
+    renderPane(
+      "plan",
+      workspace({
+        mode: "ideation",
+        linkedIdeationSessionId: "session-1",
+        linkedPlanBranchId: "plan-branch-1",
+      }),
+      vi.fn(),
+      false,
+      conversation(),
+    );
+
+    await user.click(await screen.findByTestId("restart-implementation-button"));
+    await user.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", {
+        name: "Restart Implementation",
+      }),
+    );
+
+    await waitFor(() =>
+      expect(toastErrorMock).toHaveBeenCalledWith("Restart failed"),
     );
   });
 

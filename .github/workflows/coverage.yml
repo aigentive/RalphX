@@ -214,6 +214,11 @@ jobs:
               ".map_err(|",
               "tauri::async_runtime::spawn(async move {",
           )
+          BLOCK_START_MARKERS_BY_SOURCE = {
+              "src/commands/ideation_commands/ideation_commands_restart.rs": (
+                  "#[tauri::command]",
+              ),
+          }
           EXCLUDED_RECORDS = {
               "src/application/app_state.rs",
               "src/application/chat_service/chat_service_merge.rs",
@@ -276,7 +281,24 @@ jobs:
                   cursor += 1
               return max(cursor + 1, start + 1)
 
-          def ignored_lines(source: Path) -> set[int]:
+          def mark_balanced_block(lines: list[str], start: int, ignored: set[int]) -> int:
+              depth = 0
+              seen_open = False
+              cursor = start
+              while cursor < len(lines):
+                  for char in lines[cursor]:
+                      if char == "{":
+                          depth += 1
+                          seen_open = True
+                      elif char == "}" and seen_open:
+                          depth -= 1
+                  ignored.add(cursor + 1)
+                  if seen_open and depth <= 0:
+                      break
+                  cursor += 1
+              return max(cursor + 1, start + 1)
+
+          def ignored_lines(source_key: str, source: Path) -> set[int]:
               try:
                   lines = source.read_text(encoding="utf-8").splitlines()
               except OSError:
@@ -284,6 +306,9 @@ jobs:
               ignored: set[int] = set()
               index = 0
               while index < len(lines):
+                  if lines[index].strip() in BLOCK_START_MARKERS_BY_SOURCE.get(source_key, ()):
+                      index = mark_balanced_block(lines, index, ignored)
+                      continue
                   marker = next((adapter for adapter in ADAPTERS if adapter in lines[index]), None)
                   if marker is not None:
                       index = mark_balanced_adapter(lines, index, marker, ignored)
@@ -319,7 +344,7 @@ jobs:
                   continue
               ignored = cache.setdefault(
                   source_key or "",
-                  ignored_lines(ROOT / source_key) if source_key else set(),
+                  ignored_lines(source_key, ROOT / source_key) if source_key else set(),
               )
               output: list[str] = []
               lines_found = 0
@@ -460,6 +485,11 @@ jobs:
               ".map_err(|",
               "tauri::async_runtime::spawn(async move {",
           )
+          BLOCK_START_MARKERS_BY_SOURCE = {
+              "src/commands/ideation_commands/ideation_commands_restart.rs": (
+                  "#[tauri::command]",
+              ),
+          }
           EXCLUDED_RECORDS = {
               "src/application/app_state.rs",
               "src/application/chat_service/chat_service_queue.rs",
@@ -515,7 +545,24 @@ jobs:
                   cursor += 1
               return max(cursor + 1, start + 1)
 
-          def ignored_lines(source: Path) -> set[int]:
+          def mark_balanced_block(lines: list[str], start: int, ignored: set[int]) -> int:
+              depth = 0
+              seen_open = False
+              cursor = start
+              while cursor < len(lines):
+                  for char in lines[cursor]:
+                      if char == "{":
+                          depth += 1
+                          seen_open = True
+                      elif char == "}" and seen_open:
+                          depth -= 1
+                  ignored.add(cursor + 1)
+                  if seen_open and depth <= 0:
+                      break
+                  cursor += 1
+              return max(cursor + 1, start + 1)
+
+          def ignored_lines(source_key: str, source: Path) -> set[int]:
               try:
                   lines = source.read_text(encoding="utf-8").splitlines()
               except OSError:
@@ -523,6 +570,9 @@ jobs:
               ignored: set[int] = set()
               index = 0
               while index < len(lines):
+                  if lines[index].strip() in BLOCK_START_MARKERS_BY_SOURCE.get(source_key, ()):
+                      index = mark_balanced_block(lines, index, ignored)
+                      continue
                   marker = next((adapter for adapter in ADAPTERS if adapter in lines[index]), None)
                   if marker is not None:
                       index = mark_balanced_adapter(lines, index, marker, ignored)
@@ -558,7 +608,7 @@ jobs:
                   continue
               ignored = cache.setdefault(
                   source_key or "",
-                  ignored_lines(ROOT / source_key) if source_key else set(),
+                  ignored_lines(source_key, ROOT / source_key) if source_key else set(),
               )
               output: list[str] = []
               lines_found = 0

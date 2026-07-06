@@ -2097,6 +2097,26 @@ async fn test_restart_ideation_implementation_core_rejects_accepted_without_acti
     );
 }
 
+#[test]
+fn test_restart_ideation_implementation_core_response_conversion_preserves_public_fields() {
+    let response: RestartImplementationResultResponse = RestartImplementationResult {
+        session_id: "session-1".to_string(),
+        project_id: "project-1".to_string(),
+        old_execution_plan_id: "exec-old".to_string(),
+        execution_plan_id: "exec-new".to_string(),
+        archived_task_count: 2,
+        created_task_ids: vec!["task-1".to_string(), "task-2".to_string()],
+        any_ready_tasks: true,
+    }
+    .into();
+
+    assert_eq!(response.session_id, "session-1");
+    assert_eq!(response.old_execution_plan_id, "exec-old");
+    assert_eq!(response.execution_plan_id, "exec-new");
+    assert_eq!(response.archived_task_count, 2);
+    assert_eq!(response.created_task_ids, ["task-1", "task-2"]);
+}
+
 #[tokio::test]
 async fn test_apply_proposals_core_partial_apply_does_not_convert_session() {
     let state = setup_apply_test_state();
