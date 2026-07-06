@@ -3,7 +3,6 @@ use axum::{
     http::StatusCode,
     Json,
 };
-use tauri::Emitter;
 use uuid::Uuid;
 
 use super::*;
@@ -45,24 +44,22 @@ pub async fn request_question(
         )
         .await;
 
-    // Emit Tauri event to frontend
-    if let Some(ref app_handle) = state.app_state.app_handle {
-        let _ = app_handle.emit(
-            "agent:ask_user_question",
-            serde_json::json!({
-                "requestId": &request_id,
-                "sessionId": &input.session_id,
-                "question": &input.question,
-                "header": &input.header,
-                "options": &input.options,
-                "multiSelect": input.multi_select,
-                "allowSkip": input.allow_skip,
-                "batchIndex": input.batch_index,
-                "batchTotal": input.batch_total,
-                "metadata": &input.metadata,
-            }),
-        );
-    }
+    crate::http_server::emit_http_event(
+        &state,
+        "agent:ask_user_question",
+        serde_json::json!({
+            "requestId": &request_id,
+            "sessionId": &input.session_id,
+            "question": &input.question,
+            "header": &input.header,
+            "options": &input.options,
+            "multiSelect": input.multi_select,
+            "allowSkip": input.allow_skip,
+            "batchIndex": input.batch_index,
+            "batchTotal": input.batch_total,
+            "metadata": &input.metadata,
+        }),
+    );
 
     Json(QuestionRequestResponse { request_id })
 }
@@ -192,15 +189,14 @@ pub async fn resolve_question(
 
     if result.resolved {
         if let Some(ref sid) = result.session_id {
-            if let Some(ref app_handle) = state.app_state.app_handle {
-                let _ = app_handle.emit(
-                    "agent:question_resolved",
-                    serde_json::json!({
-                        "sessionId": sid,
-                        "requestId": &input.request_id,
-                    }),
-                );
-            }
+            crate::http_server::emit_http_event(
+                &state,
+                "agent:question_resolved",
+                serde_json::json!({
+                    "sessionId": sid,
+                    "requestId": &input.request_id,
+                }),
+            );
         }
         StatusCode::OK
     } else {

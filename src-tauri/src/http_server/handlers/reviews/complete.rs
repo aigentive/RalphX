@@ -485,33 +485,33 @@ pub async fn complete_review(
     )
     .await;
 
-    // 7. Emit events
-    if let Some(app_handle) = &state.app_state.app_handle {
-        let _ = app_handle.emit(
-            "review:completed",
+    crate::http_server::emit_http_event(
+        &state,
+        "review:completed",
+        serde_json::json!({
+            "task_id": task_id.as_str(),
+            "decision": req.decision,
+            "new_status": new_status.as_str(),
+        }),
+    );
+    crate::http_server::emit_http_event(
+        &state,
+        "task:status_changed",
+        serde_json::json!({
+            "task_id": task_id.as_str(),
+            "old_status": task.internal_status.as_str(),
+            "new_status": new_status.as_str(),
+        }),
+    );
+    // For direct-to-Merged (approved_no_changes, no human review gate), emit task:merged
+    if new_status == InternalStatus::Merged {
+        crate::http_server::emit_http_event(
+            &state,
+            "task:merged",
             serde_json::json!({
                 "task_id": task_id.as_str(),
-                "decision": req.decision,
-                "new_status": new_status.as_str(),
             }),
         );
-        let _ = app_handle.emit(
-            "task:status_changed",
-            serde_json::json!({
-                "task_id": task_id.as_str(),
-                "old_status": task.internal_status.as_str(),
-                "new_status": new_status.as_str(),
-            }),
-        );
-        // For direct-to-Merged (approved_no_changes, no human review gate), emit task:merged
-        if new_status == InternalStatus::Merged {
-            let _ = app_handle.emit(
-                "task:merged",
-                serde_json::json!({
-                    "task_id": task_id.as_str(),
-                }),
-            );
-        }
     }
 
     // 8. Notify completion signal then close stdin via IPR

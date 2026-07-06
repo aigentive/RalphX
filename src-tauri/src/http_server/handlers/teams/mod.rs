@@ -22,7 +22,6 @@ use axum::{
     Json,
 };
 use chrono::Utc;
-use tauri::Emitter;
 use tracing::{error, info, warn};
 
 use super::HttpServerState;

@@ -293,16 +293,15 @@ pub(super) async fn execute_team_spawn(
                     .update_teammate_status(&team_name, &teammate_name, TeammateStatus::Failed)
                     .await;
 
-                if let Some(app_handle) = &state.app_state.app_handle {
-                    let _ = app_handle.emit(
-                        "team:teammate_spawn_failed",
-                        serde_json::json!({
-                            "team_name": team_name,
-                            "teammate_name": teammate_name,
-                            "error": e.to_string(),
-                        }),
-                    );
-                }
+                crate::http_server::emit_http_event(
+                    state,
+                    "team:teammate_spawn_failed",
+                    serde_json::json!({
+                        "team_name": team_name,
+                        "teammate_name": teammate_name,
+                        "error": e.to_string(),
+                    }),
+                );
 
                 spawn_error = Some(e.to_string());
                 break 'spawn_loop;

@@ -125,23 +125,22 @@ pub(crate) async fn create_verification_child_session(
         }
     };
 
-    if let Some(app_handle) = &state.app_state.app_handle {
-        let session_title = created_session
-            .title
-            .clone()
-            .unwrap_or_else(|| title.to_string());
-        let _ = app_handle.emit(
-            "ideation:child_session_created",
-            serde_json::json!({
-                "sessionId": child_session_str,
-                "parentSessionId": parent_session_str,
-                "title": session_title,
-                "purpose": "verification",
-                "orchestrationTriggered": orchestration_triggered,
-                "pendingInitialPrompt": if orchestration_triggered { serde_json::Value::Null } else { serde_json::json!(description) }
-            }),
-        );
-    }
+    let session_title = created_session
+        .title
+        .clone()
+        .unwrap_or_else(|| title.to_string());
+    crate::http_server::emit_http_event(
+        &state,
+        "ideation:child_session_created",
+        serde_json::json!({
+            "sessionId": child_session_str,
+            "parentSessionId": parent_session_str,
+            "title": session_title,
+            "purpose": "verification",
+            "orchestrationTriggered": orchestration_triggered,
+            "pendingInitialPrompt": if orchestration_triggered { serde_json::Value::Null } else { serde_json::json!(description) }
+        }),
+    );
 
     Ok(orchestration_triggered)
 }

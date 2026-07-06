@@ -186,7 +186,16 @@ pub fn build_http_app_state(
     let shared_interactive_process_registry = Arc::clone(&app_state.interactive_process_registry);
     let shared_github_service = app_state.github_service.clone();
     let shared_pr_poller_registry = Arc::clone(&app_state.pr_poller_registry);
-    let mut http_app_state_inner = AppState::new_production_shared(app_handle, shared_db_conn)?;
+    let shared_events = Arc::clone(&app_state.events);
+    let shared_internal_event_bus = app_state.internal_event_bus.clone();
+    let shared_app_paths = app_state.app_paths.clone();
+    let mut http_app_state_inner = AppState::new_production_shared_with_paths_and_events(
+        app_handle,
+        shared_db_conn,
+        shared_app_paths,
+        shared_events,
+        shared_internal_event_bus,
+    )?;
     http_app_state_inner.question_state = shared_question_state;
     http_app_state_inner.permission_state = shared_permission_state;
     http_app_state_inner.message_queue = shared_message_queue;

@@ -23,6 +23,7 @@ pub(crate) mod agent_workspace_pr_supervision_recovery;
 pub mod agent_workspace_publish_recovery;
 pub mod agent_workspace_review;
 pub mod app_setup;
+pub mod app_paths;
 pub mod app_state;
 pub mod apply_service;
 pub mod atlassian_integration_service;
@@ -137,6 +138,7 @@ pub use agent_lane_settings_bootstrap::{
 pub use agent_task_service::AgentTaskService;
 pub use agent_terminal::AgentTerminalService;
 pub use app_state::AppState;
+pub use app_paths::AppPaths;
 pub use apply_service::{
     ApplyProposalsOptions, ApplyProposalsResult, ApplyService, SelectionValidation, TargetColumn,
 };

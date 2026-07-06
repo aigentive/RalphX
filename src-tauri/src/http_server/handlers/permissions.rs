@@ -3,7 +3,6 @@ use axum::{
     http::StatusCode,
     Json,
 };
-use tauri::Emitter;
 use uuid::Uuid;
 
 use super::*;
@@ -30,22 +29,20 @@ pub async fn request_permission(
     // Store pending request with metadata
     state.app_state.permission_state.register(info).await;
 
-    // Emit Tauri event to frontend
-    if let Some(ref app_handle) = state.app_state.app_handle {
-        let _ = app_handle.emit(
-            "permission:request",
-            serde_json::json!({
-                "request_id": &request_id,
-                "tool_name": &input.tool_name,
-                "tool_input": &input.tool_input,
-                "context": &input.context,
-                "agent_type": &input.agent_type,
-                "task_id": &input.task_id,
-                "context_type": &input.context_type,
-                "context_id": &input.context_id,
-            }),
-        );
-    }
+    crate::http_server::emit_http_event(
+        &state,
+        "permission:request",
+        serde_json::json!({
+            "request_id": &request_id,
+            "tool_name": &input.tool_name,
+            "tool_input": &input.tool_input,
+            "context": &input.context,
+            "agent_type": &input.agent_type,
+            "task_id": &input.task_id,
+            "context_type": &input.context_type,
+            "context_id": &input.context_id,
+        }),
+    );
 
     Json(PermissionRequestResponse { request_id })
 }
@@ -69,12 +66,11 @@ pub(crate) async fn expire_permission_and_emit(
     code: StatusCode,
 ) -> Result<Json<PermissionDecision>, StatusCode> {
     state.app_state.permission_state.remove(request_id).await;
-    if let Some(ref app_handle) = state.app_state.app_handle {
-        let _ = app_handle.emit(
-            "permission:expired",
-            serde_json::json!({ "request_id": request_id }),
-        );
-    }
+    crate::http_server::emit_http_event(
+        state,
+        "permission:expired",
+        serde_json::json!({ "request_id": request_id }),
+    );
     Err(code)
 }
 

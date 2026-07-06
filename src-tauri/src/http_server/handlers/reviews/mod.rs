@@ -4,7 +4,6 @@ use axum::{
     Json,
 };
 use std::sync::Arc;
-use tauri::Emitter;
 
 use super::*;
 use crate::application::{GitService, TaskTransitionService};
