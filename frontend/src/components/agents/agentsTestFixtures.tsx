@@ -40,6 +40,7 @@ export const conversationFixture = (
   claudeSessionId: null,
   providerSessionId: "thread-1",
   providerHarness: "codex",
+  coordinationMode: "solo",
   upstreamProvider: null,
   providerProfile: null,
   title: "Untitled agent",
