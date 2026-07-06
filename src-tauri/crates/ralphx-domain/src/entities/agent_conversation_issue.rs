@@ -162,7 +162,7 @@ impl AgentConversationIssueOccurrence {
             id: Uuid::new_v4().to_string(),
             issue_id: issue.id.clone(),
             project_id: issue.project_id.clone(),
-            conversation_id: issue.conversation_id.clone(),
+            conversation_id: issue.conversation_id,
             source_task_id: issue.source_task_id.clone(),
             source_context_type: issue.source_context_type.clone(),
             source_context_id: issue.source_context_id.clone(),
@@ -331,7 +331,7 @@ fn is_frontend_dependency_setup(text: &str) -> bool {
         || text.contains("not found")
         || text.contains("cannot find")
         || text.contains("path");
-    (mentions_frontend && dependency_signal) || (mentions_tsc && dependency_signal)
+    (mentions_frontend || mentions_tsc) && dependency_signal
 }
 
 fn is_package_lock_drift(text: &str) -> bool {
