@@ -343,6 +343,8 @@ interface PlanComposerCtaAction {
 
 interface PlanComposerViewPlanAction {
   available: boolean;
+  conversationId: string;
+  hasAutoOpenArtifacts: boolean;
   onClick: () => void;
 }
 
@@ -391,13 +393,17 @@ function PlanComposerCtaRow({
   hint,
   actions,
   viewPlanAction,
-  isPlanArtifactVisible,
 }: {
   hint: string;
   actions: PlanComposerCtaAction[];
   viewPlanAction?: PlanComposerViewPlanAction | undefined;
-  isPlanArtifactVisible: boolean;
 }) {
+  const { artifactState } = useResolvedAgentArtifactState(
+    viewPlanAction?.conversationId ?? null,
+    viewPlanAction?.hasAutoOpenArtifacts ?? false,
+  );
+  const isPlanArtifactVisible =
+    artifactState.isOpen && artifactState.activeTab === "plan";
   const resolvedActions = useMemo<PlanComposerCtaAction[]>(() => {
     if (!viewPlanAction?.available || isPlanArtifactVisible) {
       return actions;
@@ -1357,8 +1363,6 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     activeWorkspace?.modeSwitchLockReason,
   ]);
 
-  const { artifactState: activeArtifactState, artifactPaneOpen } =
-    useResolvedAgentArtifactState(selectedConversationId, hasAutoOpenArtifacts);
   const hasPlanArtifactTab = availableArtifactTabs.includes("plan");
   const canUsePlanComposerActions =
     !isFocusedChildChat &&
@@ -1366,14 +1370,8 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     activeWorkspace?.mode === "plan" &&
     hasPlanArtifactTab &&
     Boolean(attachedIdeationSessionId);
-  const isPlanArtifactVisible =
-    canUsePlanComposerActions &&
-    artifactPaneOpen &&
-    activeArtifactState.activeTab === "plan";
-  const shouldOfferViewPlanComposerAction =
-    canUsePlanComposerActions && !isPlanArtifactVisible;
   const planApprovalSessionId =
-    isPlanArtifactVisible && attachedIdeationSessionId
+    canUsePlanComposerActions && attachedIdeationSessionId
       ? attachedIdeationSessionId
       : null;
   const additionalQuestionSessionIds = useMemo(() => {
@@ -1694,9 +1692,6 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     queryClient,
   ]);
   const planComposerHint = useMemo(() => {
-    if (shouldOfferViewPlanComposerAction) {
-      return "Review the plan before taking action.";
-    }
     if (canApproveComposerPlan) {
       return "Approve the draft plan when it matches the intended scope, or verify it first for adversarial review.";
     }
@@ -1711,7 +1706,6 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     canImplementPlanDirectly,
     isPlanRecommendationPending,
     planComplexityQuery.data,
-    shouldOfferViewPlanComposerAction,
   ]);
   const planComposerCtaActions = useMemo<PlanComposerCtaAction[]>(() => {
     if (!planApprovalSessionId || !planApprovalArtifact) {
@@ -1827,16 +1821,20 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   const planComposerViewPlanAction = useMemo<
     PlanComposerViewPlanAction | undefined
   >(() => {
-    if (!shouldOfferViewPlanComposerAction) {
+    if (!canUsePlanComposerActions) {
       return undefined;
     }
     return {
       available: true,
+      conversationId: selectedConversationId,
+      hasAutoOpenArtifacts,
       onClick: onOpenPlanArtifact,
     };
   }, [
+    canUsePlanComposerActions,
+    hasAutoOpenArtifacts,
     onOpenPlanArtifact,
-    shouldOfferViewPlanComposerAction,
+    selectedConversationId,
   ]);
   const planApprovalAction = useMemo(() => {
     if (!canApproveComposerPlan) {
@@ -2299,7 +2297,6 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                     <PlanComposerCtaRow
                       hint={planComposerHint}
                       actions={planComposerCtaActions}
-                      isPlanArtifactVisible={isPlanArtifactVisible}
                       viewPlanAction={planComposerViewPlanAction}
                     />
                   )}

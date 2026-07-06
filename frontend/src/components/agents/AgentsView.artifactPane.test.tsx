@@ -697,7 +697,7 @@ describe("AgentsView artifact pane", () => {
     );
   });
 
-  it("shows the Proposals shortcut after a plan-mode session has proposals", async () => {
+  it("keeps proposals out of the top-level artifact shortcuts", async () => {
     mockAgentViewData(conversation({ agentMode: "plan" }));
     getAgentConversationWorkspaceMock.mockResolvedValue(
       conversationWorkspace({
@@ -751,7 +751,7 @@ describe("AgentsView artifact pane", () => {
       expect(screen.getByLabelText("Open artifacts")).toBeInTheDocument()
     );
     expect(screen.getByLabelText("Plan")).toBeInTheDocument();
-    expect(screen.getByLabelText("Proposals")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Proposals")).not.toBeInTheDocument();
   });
 
 });
