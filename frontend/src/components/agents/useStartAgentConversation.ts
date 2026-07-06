@@ -248,6 +248,7 @@ export function useStartAgentConversation({
         claudeSessionId: null,
         providerSessionId: null,
         providerHarness: normalizedRuntime.provider,
+        coordinationMode: "solo",
         upstreamProvider: null,
         providerProfile: null,
         agentMode: mode,

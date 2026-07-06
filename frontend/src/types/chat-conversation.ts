@@ -68,6 +68,14 @@ export const AgentConversationModeSchema = z.enum(
 );
 export type AgentConversationMode = z.infer<typeof AgentConversationModeSchema>;
 
+export const COORDINATION_MODE_VALUES = [
+  "solo",
+  "legacy_claude_team",
+  "rx_native_team",
+] as const;
+export const CoordinationModeSchema = z.enum(COORDINATION_MODE_VALUES);
+export type CoordinationMode = z.infer<typeof CoordinationModeSchema>;
+
 // ============================================================================
 // Chat Conversation
 // ============================================================================
@@ -90,6 +98,7 @@ export const ChatConversationSchema = z.object({
   effectiveEffort: z.string().nullable().optional(),
   serviceTier: z.string().nullable().optional(),
   agentMode: AgentConversationModeSchema.nullable().optional(),
+  coordinationMode: CoordinationModeSchema.default("solo"),
   parentConversationId: z.string().nullable().optional(),
   title: z.string().nullable(),
   messageCount: z.number().int().min(0),

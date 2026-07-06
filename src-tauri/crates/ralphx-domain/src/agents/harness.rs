@@ -63,8 +63,17 @@ pub enum HarnessStreamMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HarnessTeamCapabilities {
+    pub rx_native_team: bool,
+    pub legacy_native_team_tools: bool,
+    pub interactive_delivery: bool,
+    pub resume_delivery: bool,
+    pub stream_projection: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HarnessBehavior {
-    pub honors_team_mode: bool,
+    pub team: HarnessTeamCapabilities,
     pub supports_merge_completion_watcher: bool,
     pub model_label_strategy: HarnessModelLabelStrategy,
     pub effort_strategy: HarnessEffortStrategy,
@@ -74,14 +83,26 @@ pub struct HarnessBehavior {
 pub fn standard_harness_behavior(harness: AgentHarnessKind) -> HarnessBehavior {
     match harness {
         AgentHarnessKind::Claude => HarnessBehavior {
-            honors_team_mode: true,
+            team: HarnessTeamCapabilities {
+                rx_native_team: false,
+                legacy_native_team_tools: true,
+                interactive_delivery: true,
+                resume_delivery: true,
+                stream_projection: true,
+            },
             supports_merge_completion_watcher: true,
             model_label_strategy: HarnessModelLabelStrategy::ClaudeMapped,
             effort_strategy: HarnessEffortStrategy::ClaudeEffortFirst,
             stream_mode: HarnessStreamMode::ClaudeEvents,
         },
         AgentHarnessKind::Codex => HarnessBehavior {
-            honors_team_mode: false,
+            team: HarnessTeamCapabilities {
+                rx_native_team: false,
+                legacy_native_team_tools: false,
+                interactive_delivery: false,
+                resume_delivery: true,
+                stream_projection: true,
+            },
             supports_merge_completion_watcher: false,
             model_label_strategy: HarnessModelLabelStrategy::RawModelId,
             effort_strategy: HarnessEffortStrategy::LogicalOnly,

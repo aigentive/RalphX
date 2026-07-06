@@ -3734,6 +3734,7 @@ fn ticket_start_input(
             composer_project_references: Vec::new(),
             composer_integration_references: Vec::new(),
             composer_artifact_references: Vec::new(),
+            team_intent: None,
         },
         ticket_ref,
     }
@@ -3899,6 +3900,7 @@ async fn start_agent_conversation_with_ticket_default_base_uses_canonical_branch
             include_transcript: None,
         }],
         composer_artifact_references: Vec::new(),
+        team_intent: None,
     })
     .await
     .expect("start should succeed by queueing while paused");
@@ -4315,6 +4317,7 @@ fn base_test_start_input() -> StartAgentConversationInput {
         composer_project_references: Vec::new(),
         composer_integration_references: Vec::new(),
         composer_artifact_references: Vec::new(),
+        team_intent: None,
     }
 }
 

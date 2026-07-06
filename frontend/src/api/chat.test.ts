@@ -2291,6 +2291,41 @@ describe("chat api", () => {
     });
   });
 
+  it("sends unified agent message with native team target fields", async () => {
+    mockInvoke.mockResolvedValue({
+      conversation_id: "c1",
+      agent_run_id: "r1",
+      is_new_conversation: false,
+    });
+
+    await sendAgentMessage("project", "p1", "Update member", undefined, undefined, {
+      conversationId: "c1",
+      teamIntent: { coordinationMode: "rx_native_team" },
+      teamMessageTarget: {
+        kind: "member",
+        teamId: "team-1",
+        teamMemberId: "member-1",
+        conversationId: "member-conversation-1",
+      },
+    });
+
+    expect(mockInvoke).toHaveBeenCalledWith("send_agent_message", {
+      input: {
+        contextType: "project",
+        contextId: "p1",
+        content: "Update member",
+        conversationId: "c1",
+        teamIntent: { coordinationMode: "rx_native_team" },
+        teamMessageTarget: {
+          kind: "member",
+          teamId: "team-1",
+          teamMemberId: "member-1",
+          conversationId: "member-conversation-1",
+        },
+      },
+    });
+  });
+
   it("sends unified agent message with hidden user-message handoff", async () => {
     mockInvoke.mockResolvedValue({
       conversation_id: "c1",
@@ -3153,6 +3188,10 @@ describe("startAgentConversationInvokeInput", () => {
       logicalEffort: "xhigh",
       codexFastMode: true,
       mode: "chat",
+      teamIntent: {
+        coordinationMode: "rx_native_team",
+        strategy: "execution",
+      },
       composerProjectReferences: [{ path: "src/main.ts", kind: "file" }],
       composerIntegrationReferences: [
         { provider: "linear", kind: "linear", id: "ISS-1" },
@@ -3183,6 +3222,10 @@ describe("startAgentConversationInvokeInput", () => {
       logicalEffort: "xhigh",
       codexFastMode: true,
       mode: "chat",
+      teamIntent: {
+        coordinationMode: "rx_native_team",
+        strategy: "execution",
+      },
       composerProjectReferences: [{ path: "src/main.ts", kind: "file" }],
       composerIntegrationReferences: [
         { provider: "linear", kind: "linear", id: "ISS-1" },
@@ -3250,6 +3293,7 @@ describe("transformStartAgentConversationResponse", () => {
         provider_harness: "codex",
         service_tier: "fast",
         agent_mode: "chat",
+        coordination_mode: "rx_native_team",
         title: "Chat",
         message_count: 1,
         last_message_at: null,
@@ -3297,6 +3341,7 @@ describe("transformStartAgentConversationResponse", () => {
 
     expect(result.conversation.id).toBe("conversation-chat");
     expect(result.conversation.agentMode).toBe("chat");
+    expect(result.conversation.coordinationMode).toBe("rx_native_team");
     expect(result.conversation.serviceTier).toBe("fast");
     expect(result.workspace).toMatchObject({
       conversationId: "conversation-chat",
