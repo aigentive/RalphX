@@ -243,10 +243,7 @@ export function extractComposerArtifactTokens(
 export function extractPastedAtlassianResourceUrls(text: string): string[] {
   const urls = new Set<string>();
   for (const match of text.matchAll(ATLASSIAN_URL_PATTERN)) {
-    const rawUrl = match[0]?.replace(/[),.;:!?]+$/g, "");
-    if (!rawUrl) {
-      continue;
-    }
+    const rawUrl = match[0].replace(/[),.;:!?]+$/g, "");
     let parsed: URL;
     try {
       parsed = new URL(rawUrl);

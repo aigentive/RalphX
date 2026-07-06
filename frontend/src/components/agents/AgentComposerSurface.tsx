@@ -599,9 +599,6 @@ export function AgentComposerSurface({
     (references: readonly AgentComposerIntegrationReference[]) => {
       const normalizedReferences =
         normalizeComposerIntegrationReferences(references);
-      if (normalizedReferences.length === 0) {
-        return;
-      }
       setSelectedIntegrationReferences((current) => {
         const nextSet = new Map(current);
         for (const reference of normalizedReferences) {
@@ -1600,9 +1597,6 @@ export function AgentComposerSurface({
 
   const resolvePastedAtlassianUrls = useCallback(
     async (urls: readonly string[]) => {
-      if (urls.length === 0) {
-        return;
-      }
       try {
         const results = await atlassianApi.resolveResourceUrls({
           urls: [...urls],

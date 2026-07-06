@@ -361,6 +361,42 @@ async fn resolve_atlassian_resource_urls_returns_resources_for_owned_urls() {
 }
 
 #[tokio::test]
+async fn resolve_atlassian_resource_urls_rejects_oauth_when_feature_disabled() {
+    let app_state = AppState::new_test();
+    app_state
+        .atlassian_integration_service
+        .save_settings(
+            Some(AtlassianAuthMethod::OAuth),
+            Some("https://example.atlassian.net".to_string()),
+            None,
+            None,
+            Some("client-id".to_string()),
+            Some("client-secret".to_string()),
+            Some("http://127.0.0.1:8765/atlassian/oauth/callback".to_string()),
+        )
+        .await
+        .expect("save OAuth settings");
+    let app = mock_builder()
+        .manage(app_state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app");
+
+    let error = resolve_atlassian_resource_urls(
+        ResolveAtlassianResourceUrlsInput {
+            urls: vec!["https://example.atlassian.net/browse/RX-42".to_string()],
+        },
+        app.state::<AppState>(),
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(
+        error,
+        "Atlassian OAuth setup is disabled. Use API token setup for now."
+    );
+}
+
+#[tokio::test]
 async fn disconnect_atlassian_integration_resets_saved_connection() {
     let app_state = AppState::new_test();
     app_state

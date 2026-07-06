@@ -204,7 +204,7 @@ describe("agentComposerCore", () => {
   it("extracts plausible pasted Atlassian resource URLs", () => {
     expect(
       extractPastedAtlassianResourceUrls(
-        "See https://example.atlassian.net/browse/rx-42, docs https://example.atlassian.net/wiki/spaces/OPS/pages/123456/Deploy and https://example.com/browse/RX-99",
+        "See https://example.atlassian.net/browse/rx-42, docs https://example.atlassian.net/wiki/spaces/OPS/pages/123456/Deploy and https://example.com/browse/RX-99 plus https://example.atlassian.net/admin and https://%",
       ),
     ).toEqual([
       "https://example.atlassian.net/browse/rx-42",
@@ -217,7 +217,7 @@ describe("agentComposerCore", () => {
     expect(
       removeResolvedAtlassianResourceUrls(
         "See https://example.atlassian.net/browse/RX-42 and https://other.atlassian.net/browse/RX-99",
-        ["https://example.atlassian.net/browse/RX-42"],
+        ["", "https://example.atlassian.net/browse/RX-42"],
       ),
     ).toBe("See and https://other.atlassian.net/browse/RX-99");
   });

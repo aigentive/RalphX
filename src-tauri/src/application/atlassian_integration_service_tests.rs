@@ -747,6 +747,41 @@ async fn resolve_resource_urls_leaves_wrong_site_and_unsupported_urls_unresolved
 }
 
 #[tokio::test]
+async fn resolve_resource_urls_skips_blank_and_handles_url_edge_cases() {
+    let client = Arc::new(TestAtlassianClient::default());
+    let service = enabled_service(client.clone()).await;
+
+    let results = service
+        .resolve_resource_urls(&[
+            "   ".to_string(),
+            "http://example.atlassian.net/browse/RX-42".to_string(),
+            "https://example.atlassian.net/browse/123-abc".to_string(),
+            "https://example.atlassian.net/projects/RX".to_string(),
+            "https://example.atlassian.net/wiki/spaces/OPS/pages/not-number/Deploy".to_string(),
+            "https://example.atlassian.net/wiki/spaces/OPS?focusedCommentId=1&pageId=7890"
+                .to_string(),
+        ])
+        .await
+        .expect("url resolution");
+
+    assert_eq!(results.len(), 5);
+    assert!(results[..4]
+        .iter()
+        .all(|result| result.resource.is_none()));
+    let resource = results[4]
+        .resource
+        .as_ref()
+        .expect("query pageId resource");
+    assert_eq!(resource.kind, AtlassianResourceKind::Confluence);
+    assert_eq!(resource.id, "7890");
+
+    let fetches = client.fetches.lock().await;
+    assert_eq!(fetches.len(), 1);
+    assert_eq!(fetches[0].kind, "confluence");
+    assert_eq!(fetches[0].id, "7890");
+}
+
+#[tokio::test]
 async fn resolve_resource_urls_requires_enabled_settings() {
     let client = Arc::new(TestAtlassianClient::default());
     let service = disabled_service(client.clone());
