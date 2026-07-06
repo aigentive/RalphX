@@ -2,8 +2,6 @@ import { render, screen } from "@testing-library/react";
 import type { ComponentProps, ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { AgentConversationRuntimeStatus } from "@/api/chat";
-
 import { AgentsConversationMainRegion } from "./AgentsConversationMainRegion";
 import {
   agentProjectFixture,
@@ -27,33 +25,6 @@ vi.mock("./AgentsStartConversationPanel", () => ({
     startPanelMock(props),
 }));
 
-function workspaceReviewRuntimeStatus(): AgentConversationRuntimeStatus {
-  return {
-    conversationId: "conversation-1",
-    isRunning: true,
-    agentStatus: "generating",
-    primarySource: "workspace_review",
-    summaryLabel: "Reviewing",
-    items: [
-      {
-        source: "workspace_review",
-        contextType: "project",
-        contextId: "review-conversation-1",
-        label: "Reviewing",
-        title: "Review workspace changes",
-        agentStatus: "generating",
-        taskId: null,
-        internalStatus: "reviewing",
-        runningProcess: null,
-        ideationSession: null,
-        parentSessionId: null,
-        childSessionId: null,
-        conversationId: "review-conversation-1",
-      },
-    ],
-  };
-}
-
 function mainRegionProps(
   overrides: Partial<ComponentProps<typeof AgentsConversationMainRegion>> = {},
 ): ComponentProps<typeof AgentsConversationMainRegion> {
@@ -75,7 +46,6 @@ function mainRegionProps(
     isLoadingProjects: false,
     modelRegistry: null,
     normalizedActiveRuntime: agentRuntimeFixture,
-    workspaceReviewRuntimeStatus: null,
     onActiveConversationModeChange: vi.fn(),
     onActiveConversationModeMenuOpen: vi.fn(),
     onActiveEffortChange: vi.fn(),
@@ -119,19 +89,13 @@ describe("AgentsConversationMainRegion", () => {
     vi.clearAllMocks();
   });
 
-  it("forwards workspace Review runtime fallback status to the active conversation panel", () => {
-    const runtimeStatus = workspaceReviewRuntimeStatus();
-
-    render(
-      <AgentsConversationMainRegion
-        {...mainRegionProps({ workspaceReviewRuntimeStatus: runtimeStatus })}
-      />,
-    );
+  it("renders the active conversation panel for a selected workspace conversation", () => {
+    render(<AgentsConversationMainRegion {...mainRegionProps()} />);
 
     expect(screen.getByTestId("active-panel")).toBeInTheDocument();
     expect(activePanelMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        workspaceReviewRuntimeStatus: runtimeStatus,
+        selectedConversationId: "conversation-1",
       }),
     );
   });
