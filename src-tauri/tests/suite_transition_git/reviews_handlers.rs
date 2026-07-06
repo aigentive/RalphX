@@ -16,15 +16,17 @@
 //   3. Stale reviewer call on Ready task → 400 BAD_REQUEST (guard fires for non-review states).
 //   4. Valid reviewer call on Reviewing task → guard does NOT fire (proceeds past guard line 32).
 
+use crate::support::real_git_repo::setup_real_git_repo;
 use axum::{extract::State, http::StatusCode, Json};
 use ralphx_lib::application::{
     interactive_process_registry::InteractiveProcessKey, AppState, TeamService, TeamStateTracker,
 };
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::entities::{
-    ActivityEventRole, ActivityEventType, IdeationSession, InternalStatus, Priority, Project,
-    ProjectId, ProposalCategory, ReviewNote, ReviewOutcome, ReviewScopeMetadata, ReviewerType,
-    Task, TaskProposal,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentWorkspaceFollowupProvenance,
+    ChatConversation, IdeationAnalysisBaseRefKind, IdeationSession, InternalStatus, Priority,
+    Project, ProjectId, ProposalCategory, ReviewNote, ReviewOutcome, ReviewScopeMetadata,
+    ReviewerType, Task, TaskProposal,
 };
 use ralphx_lib::domain::review::ReviewSettings;
 use ralphx_lib::http_server::handlers::*;
@@ -34,7 +36,6 @@ use ralphx_lib::http_server::types::{
     CreateChildSessionRequest, HttpServerState, ReviewIssueRequest,
 };
 use std::sync::Arc;
-use crate::support::real_git_repo::setup_real_git_repo;
 
 /// Build a minimal HttpServerState backed by in-memory repos (no SQLite, no Tauri app handle).
 async fn setup_review_test_state() -> HttpServerState {
@@ -73,7 +74,10 @@ async fn setup_review_scope_drift_state() -> (HttpServerState, Task) {
         .current_dir(&repo_path)
         .status()
         .expect("checkout task branch");
-    assert!(checkout_status.success(), "task branch checkout must succeed");
+    assert!(
+        checkout_status.success(),
+        "task branch checkout must succeed"
+    );
 
     let mut project = Project::new("Review Scope Project".to_string(), repo_path_string);
     project.base_branch = Some("main".to_string());
@@ -88,6 +92,31 @@ async fn setup_review_scope_drift_state() -> (HttpServerState, Task) {
         .create(session)
         .await
         .unwrap();
+    let origin_conversation = ChatConversation::new_project(project_id.clone());
+    state
+        .app_state
+        .chat_conversation_repo
+        .create(origin_conversation.clone())
+        .await
+        .unwrap();
+    let mut origin_workspace = AgentConversationWorkspace::new(
+        origin_conversation.id,
+        project_id.clone(),
+        AgentConversationWorkspaceMode::Ideation,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("main".to_string()),
+        None,
+        "ralphx/test/review-origin".to_string(),
+        "/tmp/ralphx-review-origin".to_string(),
+    );
+    origin_workspace.linked_ideation_session_id = Some(session_id.clone());
+    state
+        .app_state
+        .agent_conversation_workspace_repo
+        .create_or_update(origin_workspace)
+        .await
+        .unwrap();
 
     let mut proposal = TaskProposal::new(
         session_id.clone(),
@@ -95,9 +124,8 @@ async fn setup_review_scope_drift_state() -> (HttpServerState, Task) {
         ProposalCategory::Feature,
         Priority::Medium,
     );
-    proposal.affected_paths = Some(
-        serde_json::to_string(&vec!["src-tauri/src/http_server".to_string()]).unwrap(),
-    );
+    proposal.affected_paths =
+        Some(serde_json::to_string(&vec!["src-tauri/src/http_server".to_string()]).unwrap());
     let proposal_id = proposal.id.clone();
     state
         .app_state
@@ -111,7 +139,12 @@ async fn setup_review_scope_drift_state() -> (HttpServerState, Task) {
     task.source_proposal_id = Some(proposal_id);
     task.ideation_session_id = Some(session_id);
     task.task_branch = Some(repo.task_branch);
-    state.app_state.task_repo.create(task.clone()).await.unwrap();
+    state
+        .app_state
+        .task_repo
+        .create(task.clone())
+        .await
+        .unwrap();
 
     let context = get_task_context_impl(&state.app_state, &task.id)
         .await
@@ -172,8 +205,14 @@ async fn test_get_task_context_includes_existing_task_followup_sessions() {
         followup.title.as_deref(),
         Some("Out-of-scope blocker follow-up")
     );
-    assert_eq!(followup.source_context_type.as_deref(), Some("task_execution"));
-    assert_eq!(followup.spawn_reason.as_deref(), Some("out_of_scope_failure"));
+    assert_eq!(
+        followup.source_context_type.as_deref(),
+        Some("task_execution")
+    );
+    assert_eq!(
+        followup.spawn_reason.as_deref(),
+        Some("out_of_scope_failure")
+    );
     assert_eq!(
         followup.blocker_fingerprint.as_deref(),
         context.out_of_scope_blocker_fingerprint.as_deref()
@@ -185,7 +224,12 @@ async fn seed_task_with_status(state: &HttpServerState, status: InternalStatus) 
     let project_id = ProjectId::new();
     let mut task = Task::new(project_id, "RC3 test task".to_string());
     task.internal_status = status;
-    state.app_state.task_repo.create(task.clone()).await.unwrap();
+    state
+        .app_state
+        .task_repo
+        .create(task.clone())
+        .await
+        .unwrap();
     task
 }
 
@@ -200,7 +244,12 @@ async fn seed_project_task_with_status(
 
     let mut task = Task::new(project_id, format!("{name} task"));
     task.internal_status = status;
-    state.app_state.task_repo.create(task.clone()).await.unwrap();
+    state
+        .app_state
+        .task_repo
+        .create(task.clone())
+        .await
+        .unwrap();
     task
 }
 
@@ -208,7 +257,10 @@ async fn seed_project_task_with_status(
 async fn test_complete_review_approved_without_human_review_succeeds_for_branchless_task() {
     let state = setup_review_test_state().await;
 
-    let project = Project::new("Branchless Review Project".to_string(), "/tmp/test".to_string());
+    let project = Project::new(
+        "Branchless Review Project".to_string(),
+        "/tmp/test".to_string(),
+    );
     state
         .app_state
         .project_repo
@@ -228,7 +280,12 @@ async fn test_complete_review_approved_without_human_review_succeeds_for_branchl
 
     let mut task = Task::new(project.id.clone(), "Branchless reviewed task".to_string());
     task.internal_status = InternalStatus::Reviewing;
-    state.app_state.task_repo.create(task.clone()).await.unwrap();
+    state
+        .app_state
+        .task_repo
+        .create(task.clone())
+        .await
+        .unwrap();
 
     let req = CompleteReviewRequest {
         task_id: task.id.as_str().to_string(),
@@ -247,7 +304,10 @@ async fn test_complete_review_approved_without_human_review_succeeds_for_branchl
         .0;
 
     assert!(
-        matches!(response.new_status.as_str(), "approved" | "pending_merge" | "merged"),
+        matches!(
+            response.new_status.as_str(),
+            "approved" | "pending_merge" | "merged"
+        ),
         "approved review without human gate must advance past reviewing; got {}",
         response.new_status
     );
@@ -265,8 +325,8 @@ async fn test_complete_review_approved_without_human_review_succeeds_for_branchl
 #[tokio::test]
 async fn test_approve_task_rejects_merged_status() {
     let state = setup_review_test_state().await;
-    let task = seed_project_task_with_status(&state, "Human approve reject", InternalStatus::Merged)
-        .await;
+    let task =
+        seed_project_task_with_status(&state, "Human approve reject", InternalStatus::Merged).await;
 
     let result = approve_task(
         State(state.clone()),
@@ -360,12 +420,9 @@ async fn test_approve_task_accepts_review_passed_status() {
 #[tokio::test]
 async fn test_request_task_changes_accepts_escalated_status() {
     let state = setup_review_test_state().await;
-    let task = seed_project_task_with_status(
-        &state,
-        "Human request changes",
-        InternalStatus::Escalated,
-    )
-    .await;
+    let task =
+        seed_project_task_with_status(&state, "Human request changes", InternalStatus::Escalated)
+            .await;
 
     let response = request_task_changes(
         State(state.clone()),
@@ -509,14 +566,14 @@ async fn test_complete_review_late_guard_rejects_midflight_state_drift() {
         .expect("task should exist");
     transitioned.internal_status = InternalStatus::Merged;
     transitioned.touch();
-    state.app_state.task_repo.update(&transitioned).await.unwrap();
+    state
+        .app_state
+        .task_repo
+        .update(&transitioned)
+        .await
+        .unwrap();
 
-    let result = ensure_task_still_reviewing_before_transition(
-        &state,
-        &task.id,
-        "approved",
-    )
-    .await;
+    let result = ensure_task_still_reviewing_before_transition(&state, &task.id, "approved").await;
 
     match result {
         Err((status, msg)) => {
@@ -765,7 +822,10 @@ async fn test_complete_review_persists_review_scope_snapshot_for_merge_backstop(
     };
 
     let result = complete_review(State(state.clone()), ProjectScope(None), Json(req)).await;
-    assert!(result.is_ok(), "needs_changes with structured issues should succeed");
+    assert!(
+        result.is_ok(),
+        "needs_changes with structured issues should succeed"
+    );
 
     let updated_task = state
         .app_state
@@ -818,7 +878,9 @@ async fn test_complete_review_thin_legacy_issue_payload_backfills_first_class_is
         }]),
         escalation_reason: None,
         scope_drift_classification: Some("unrelated_drift".to_string()),
-        scope_drift_notes: Some("Legacy payload should still produce a real issue row.".to_string()),
+        scope_drift_notes: Some(
+            "Legacy payload should still produce a real issue row.".to_string(),
+        ),
     };
 
     let result = complete_review(State(state.clone()), ProjectScope(None), Json(req)).await;
@@ -852,13 +914,18 @@ async fn test_complete_review_rejects_unrelated_drift_escalation_while_revision_
         task_id: task.id.as_str().to_string(),
         decision: "escalate".to_string(),
         summary: Some("Out-of-scope blocker".to_string()),
-        feedback: Some("This branch contains unrelated drift and should be revised first.".to_string()),
+        feedback: Some(
+            "This branch contains unrelated drift and should be revised first.".to_string(),
+        ),
         issues: Some(vec![ReviewIssueRequest {
             severity: "major".to_string(),
             title: Some("feature.rs is outside task scope".to_string()),
             step_id: None,
             no_step_reason: Some("Scope drift spans the task branch".to_string()),
-            description: Some("The branch contains unrelated changes that should be removed from this task.".to_string()),
+            description: Some(
+                "The branch contains unrelated changes that should be removed from this task."
+                    .to_string(),
+            ),
             category: Some("quality".to_string()),
             file_path: Some("src/feature.rs".to_string()),
             line_number: Some(1),
@@ -922,7 +989,9 @@ async fn test_complete_review_allows_unrelated_drift_escalation_after_revision_b
             title: Some("feature.rs is outside task scope".to_string()),
             step_id: None,
             no_step_reason: Some("Scope drift spans the task branch".to_string()),
-            description: Some("Repeated revise rounds did not remove the unrelated change.".to_string()),
+            description: Some(
+                "Repeated revise rounds did not remove the unrelated change.".to_string(),
+            ),
             category: Some("quality".to_string()),
             file_path: Some("src/feature.rs".to_string()),
             line_number: Some(1),
@@ -930,65 +999,40 @@ async fn test_complete_review_allows_unrelated_drift_escalation_after_revision_b
         }]),
         escalation_reason: Some("Revision budget exhausted for unrelated scope drift".to_string()),
         scope_drift_classification: Some("unrelated_drift".to_string()),
-        scope_drift_notes: Some("Escalation is now allowed because revise budget is exhausted.".to_string()),
+        scope_drift_notes: Some(
+            "Escalation is now allowed because revise budget is exhausted.".to_string(),
+        ),
     };
 
     let result = complete_review(State(state.clone()), ProjectScope(None), Json(req)).await;
-    let response = result.expect("escalation should be allowed after revision budget exhaustion").0;
-    let followup_session_id = response
-        .followup_session_id
-        .clone()
-        .expect("exhausted unrelated drift should spawn a follow-up session");
-
-    let child_id = ralphx_lib::domain::entities::IdeationSessionId::from_string(followup_session_id);
-    let child = state
-        .app_state
-        .ideation_session_repo
-        .get_by_id(&child_id)
-        .await
-        .unwrap()
-        .expect("follow-up session must exist");
-    assert_eq!(child.parent_session_id, task.ideation_session_id);
-    assert_eq!(
-        child.source_task_id.as_ref().map(|id| id.as_str()),
-        Some(task.id.as_str())
+    let response = result
+        .expect("escalation should be allowed after revision budget exhaustion")
+        .0;
+    assert!(
+        response.followup_conversation_id.is_none(),
+        "Wry-free review fixture should register the Agent issue without spawning a new conversation"
     );
-    assert_eq!(child.source_context_type.as_deref(), Some("review"));
-    assert_eq!(child.spawn_reason.as_deref(), Some("out_of_scope_failure"));
 
-    let activity_events = state
+    let issues = state
         .app_state
-        .activity_event_repo
-        .list_by_task_id(&task.id, None, 100, None)
+        .agent_conversation_issue_repo
+        .list_by_conversation(
+            &state
+                .app_state
+                .agent_conversation_workspace_repo
+                .get_by_linked_ideation_session_id(task.ideation_session_id.as_ref().unwrap())
+                .await
+                .unwrap()
+                .unwrap()
+                .conversation_id,
+            false,
+        )
         .await
-        .expect("activity events should load");
-    let followup_event = activity_events
-        .events
-        .iter()
-        .find(|event| {
-            event.event_type == ActivityEventType::System
-                && event.role == ActivityEventRole::System
-                && event.content.contains("follow-up ideation session")
-        })
-        .expect("follow-up escalation should persist a system activity event");
-    let metadata: serde_json::Value = serde_json::from_str(
-        followup_event
-            .metadata
-            .as_deref()
-            .expect("follow-up activity event should include metadata"),
-    )
-    .expect("follow-up activity metadata should parse");
-    assert_eq!(
-        metadata
-            .get("followupSessionId")
-            .and_then(serde_json::Value::as_str),
-        Some(child_id.as_str())
-    );
-    assert_eq!(
-        metadata
-            .get("spawnReason")
-            .and_then(serde_json::Value::as_str),
-        Some("out_of_scope_failure")
+        .unwrap();
+    assert_eq!(issues.len(), 1);
+    assert!(
+        issues[0].linked_followup_conversation_id.is_none(),
+        "new follow-up creation requires a Wry app handle; this fixture should only record the issue"
     );
 }
 
@@ -1029,31 +1073,57 @@ async fn test_complete_review_reuses_existing_unrelated_drift_followup_session()
         .clone()
         .expect("scope drift fixture should compute blocker fingerprint");
 
-    let existing_req = CreateChildSessionRequest {
-        parent_session_id: task
-            .ideation_session_id
-            .as_ref()
-            .expect("task should have ideation session")
-            .as_str()
-            .to_string(),
-        title: Some("Existing unrelated drift follow-up".to_string()),
-        description: None,
-        inherit_context: true,
-        initial_prompt: None,
-        source_task_id: Some(task.id.as_str().to_string()),
-        source_context_type: Some("task_execution".to_string()),
-        source_context_id: Some(task.id.as_str().to_string()),
-        spawn_reason: Some("worker_blocker_followup".to_string()),
-        blocker_fingerprint: Some(blocker_fingerprint),
-        team_mode: None,
-        team_config: None,
-        purpose: Some("general".to_string()),
-        is_external_trigger: false,
-    };
-    let existing_response = create_child_session(State(state.clone()), Json(existing_req))
+    let origin_workspace = state
+        .app_state
+        .agent_conversation_workspace_repo
+        .get_by_linked_ideation_session_id(
+            task.ideation_session_id
+                .as_ref()
+                .expect("task should have ideation session"),
+        )
         .await
-        .expect("existing follow-up creation should succeed")
-        .0;
+        .unwrap()
+        .expect("origin Agent workspace should exist");
+    let followup = ChatConversation::new_project(task.project_id.clone());
+    state
+        .app_state
+        .chat_conversation_repo
+        .create(followup.clone())
+        .await
+        .unwrap();
+    state
+        .app_state
+        .agent_conversation_workspace_repo
+        .create_or_update(AgentConversationWorkspace::new(
+            followup.id,
+            task.project_id.clone(),
+            AgentConversationWorkspaceMode::Edit,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main".to_string(),
+            Some("main".to_string()),
+            None,
+            "ralphx/test/review-followup".to_string(),
+            "/tmp/ralphx-review-followup".to_string(),
+        ))
+        .await
+        .unwrap();
+    state
+        .app_state
+        .agent_conversation_workspace_repo
+        .save_followup_provenance(
+            &followup.id,
+            AgentWorkspaceFollowupProvenance {
+                origin_conversation_id: origin_workspace.conversation_id,
+                source_task_id: Some(task.id.as_str().to_string()),
+                source_context_type: Some("review".to_string()),
+                source_context_id: None,
+                source_agent_name: Some("ralphx-execution-reviewer".to_string()),
+                spawn_reason: Some("out_of_scope_failure".to_string()),
+                blocker_fingerprint: Some(blocker_fingerprint),
+            },
+        )
+        .await
+        .unwrap();
 
     let req = CompleteReviewRequest {
         task_id: task.id.as_str().to_string(),
@@ -1065,7 +1135,9 @@ async fn test_complete_review_reuses_existing_unrelated_drift_followup_session()
             title: Some("feature.rs is outside task scope".to_string()),
             step_id: None,
             no_step_reason: Some("Scope drift spans the task branch".to_string()),
-            description: Some("Repeated revise rounds did not remove the unrelated change.".to_string()),
+            description: Some(
+                "Repeated revise rounds did not remove the unrelated change.".to_string(),
+            ),
             category: Some("quality".to_string()),
             file_path: Some("src/feature.rs".to_string()),
             line_number: Some(1),
@@ -1073,7 +1145,9 @@ async fn test_complete_review_reuses_existing_unrelated_drift_followup_session()
         }]),
         escalation_reason: Some("Revision budget exhausted for unrelated scope drift".to_string()),
         scope_drift_classification: Some("unrelated_drift".to_string()),
-        scope_drift_notes: Some("Escalation is now allowed because revise budget is exhausted.".to_string()),
+        scope_drift_notes: Some(
+            "Escalation is now allowed because revise budget is exhausted.".to_string(),
+        ),
     };
 
     let response = complete_review(State(state.clone()), ProjectScope(None), Json(req))
@@ -1082,28 +1156,28 @@ async fn test_complete_review_reuses_existing_unrelated_drift_followup_session()
         .0;
 
     assert_eq!(
-        response.followup_session_id.as_deref(),
-        Some(existing_response.session_id.as_str())
+        response.followup_conversation_id,
+        Some(followup.id.as_str())
     );
-
-    let children = state
-        .app_state
-        .ideation_session_repo
-        .get_children(task.ideation_session_id.as_ref().unwrap())
-        .await
-        .unwrap();
     let expected_fingerprint = task_context
         .out_of_scope_blocker_fingerprint
         .as_deref()
         .expect("task context should expose blocker fingerprint");
-    let followups: Vec<_> = children
-        .into_iter()
-        .filter(|session| {
-            session.source_task_id.as_ref().map(|id| id.as_str()) == Some(task.id.as_str())
-                && session.blocker_fingerprint.as_deref() == Some(expected_fingerprint)
-        })
-        .collect();
-    assert_eq!(followups.len(), 1, "review should reuse existing follow-up");
+    let issues = state
+        .app_state
+        .agent_conversation_issue_repo
+        .list_by_conversation(&origin_workspace.conversation_id, false)
+        .await
+        .unwrap();
+    assert_eq!(issues.len(), 1, "review should reuse existing follow-up");
+    assert_eq!(
+        issues[0].blocker_fingerprint.as_deref(),
+        Some(expected_fingerprint)
+    );
+    assert_eq!(
+        issues[0].linked_followup_conversation_id.as_ref(),
+        Some(&followup.id)
+    );
 }
 
 #[tokio::test]
@@ -1174,18 +1248,19 @@ async fn test_unrelated_drift_revise_first_then_followup_after_budget_exhausted(
         scope_drift_notes: Some("Send the task back through revise before escalating.".to_string()),
     };
 
-    let revise_response = complete_review(
-        State(state.clone()),
-        ProjectScope(None),
-        Json(revise_req),
-    )
-    .await
-    .expect("first unrelated drift review should go through revise")
-    .0;
+    let revise_response =
+        complete_review(State(state.clone()), ProjectScope(None), Json(revise_req))
+            .await
+            .expect("first unrelated drift review should go through revise")
+            .0;
     assert_eq!(revise_response.new_status, "revision_needed");
     assert!(
         revise_response.followup_session_id.is_none(),
         "revise-first path must not spawn a follow-up session immediately"
+    );
+    assert!(
+        revise_response.followup_conversation_id.is_none(),
+        "revise-first path must not spawn a follow-up Agent conversation immediately"
     );
 
     let review_issues = state
@@ -1240,30 +1315,34 @@ async fn test_unrelated_drift_revise_first_then_followup_after_budget_exhausted(
         ),
     };
 
-    let escalate_response = complete_review(
-        State(state.clone()),
-        ProjectScope(None),
-        Json(escalate_req),
-    )
-    .await
-    .expect("exhausted unrelated drift should escalate after revise-first")
-    .0;
+    let escalate_response =
+        complete_review(State(state.clone()), ProjectScope(None), Json(escalate_req))
+            .await
+            .expect("exhausted unrelated drift should escalate after revise-first")
+            .0;
 
-    let followup_session_id = escalate_response
-        .followup_session_id
-        .clone()
-        .expect("follow-up session should be created after revision budget exhaustion");
-    let child_id = ralphx_lib::domain::entities::IdeationSessionId::from_string(followup_session_id);
-    let child = state
+    assert!(
+        escalate_response.followup_conversation_id.is_none(),
+        "Wry-free review fixture should register the Agent issue without spawning a new conversation"
+    );
+    let origin_workspace = state
         .app_state
-        .ideation_session_repo
-        .get_by_id(&child_id)
+        .agent_conversation_workspace_repo
+        .get_by_linked_ideation_session_id(task.ideation_session_id.as_ref().unwrap())
         .await
         .unwrap()
-        .expect("follow-up session must exist");
-    assert_eq!(child.parent_session_id, task.ideation_session_id);
-    assert_eq!(child.source_context_type.as_deref(), Some("review"));
-    assert_eq!(child.spawn_reason.as_deref(), Some("out_of_scope_failure"));
+        .expect("origin Agent workspace should exist");
+    let issues = state
+        .app_state
+        .agent_conversation_issue_repo
+        .list_by_conversation(&origin_workspace.conversation_id, false)
+        .await
+        .unwrap();
+    assert_eq!(issues.len(), 1);
+    assert!(
+        issues[0].linked_followup_conversation_id.is_none(),
+        "new follow-up creation requires a Wry app handle; this fixture should only record the issue"
+    );
 }
 
 // ============================================================================
