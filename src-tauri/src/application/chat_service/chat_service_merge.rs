@@ -1229,6 +1229,14 @@ pub(crate) async fn attempt_merge_auto_complete<R: Runtime + 'static>(
         task_id: ctx.task_id_str.to_string(),
     };
 
+    // Heap-allocate the large merge auto-complete future to avoid overflowing
+    // debug/test worker stacks as the merge recovery graph grows.
+    Box::pin(attempt_merge_auto_complete_body(ctx)).await;
+}
+
+async fn attempt_merge_auto_complete_body<R: Runtime + 'static>(
+    ctx: &MergeAutoCompleteContext<'_, R>,
+) {
     // 1. Get task — verify it is still in Merging state
     let mut task = match get_task_in_merging_state(ctx).await {
         Some(t) => t,
