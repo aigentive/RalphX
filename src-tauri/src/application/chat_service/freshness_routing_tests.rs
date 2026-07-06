@@ -33,7 +33,9 @@ use crate::domain::entities::{
 };
 use crate::domain::repositories::TaskRepository;
 use crate::domain::services::{GithubServiceTrait, PlanPrDescriptionDrafter, PrReviewState};
-use crate::domain::state_machine::transition_handler::PlanBranchPrSyncServices;
+use crate::domain::state_machine::transition_handler::{
+    publish_plan_branch_pr_after_freshness_update, PlanBranchPrSyncServices,
+};
 use crate::tests::mock_github_service::MockGithubService;
 use crate::AppError;
 
@@ -126,7 +128,13 @@ impl PlanPrDescriptionDrafter for StaticPlanPrDescriptionDrafter {
     }
 }
 
-async fn insert_pr_backed_plan_branch(app_state: &AppState, task: &mut Task) -> String {
+async fn insert_plan_branch_for_task(
+    app_state: &AppState,
+    task: &mut Task,
+    pr_eligible: bool,
+    status: PlanBranchStatus,
+    pr_number: Option<i64>,
+) -> String {
     let session_id = IdeationSessionId::from_string(format!("session-{}", task.id.as_str()));
     task.category = TaskCategory::Regular;
     task.ideation_session_id = Some(session_id.clone());
@@ -141,10 +149,11 @@ async fn insert_pr_backed_plan_branch(app_state: &AppState, task: &mut Task) -> 
         branch_name.clone(),
         "main".to_string(),
     );
-    plan_branch.pr_eligible = true;
-    plan_branch.status = PlanBranchStatus::Active;
-    plan_branch.pr_number = Some(123);
-    plan_branch.pr_url = Some("https://github.test/owner/repo/pull/123".to_string());
+    plan_branch.pr_eligible = pr_eligible;
+    plan_branch.status = status;
+    plan_branch.pr_number = pr_number;
+    plan_branch.pr_url =
+        pr_number.map(|number| format!("https://github.test/owner/repo/pull/{number}"));
     plan_branch.pr_push_status = PrPushStatus::Pending;
     app_state
         .plan_branch_repo
@@ -152,6 +161,10 @@ async fn insert_pr_backed_plan_branch(app_state: &AppState, task: &mut Task) -> 
         .await
         .unwrap();
     branch_name
+}
+
+async fn insert_pr_backed_plan_branch(app_state: &AppState, task: &mut Task) -> String {
+    insert_plan_branch_for_task(app_state, task, true, PlanBranchStatus::Active, Some(123)).await
 }
 
 fn pr_sync_services(
@@ -163,6 +176,18 @@ fn pr_sync_services(
         plan_branch_repo: Some(Arc::clone(&app_state.plan_branch_repo)),
         pr_creation_guard: Some(Arc::new(dashmap::DashMap::new())),
         github_service: Some(github as Arc<dyn GithubServiceTrait>),
+        ideation_session_repo: Some(Arc::clone(&app_state.ideation_session_repo)),
+        artifact_repo: Some(Arc::clone(&app_state.artifact_repo)),
+        plan_pr_description_drafter: Some(Arc::new(StaticPlanPrDescriptionDrafter)),
+    }
+}
+
+fn pr_sync_services_without_github(app_state: &AppState) -> PlanBranchPrSyncServices {
+    PlanBranchPrSyncServices {
+        task_repo: Some(Arc::clone(&app_state.task_repo)),
+        plan_branch_repo: Some(Arc::clone(&app_state.plan_branch_repo)),
+        pr_creation_guard: Some(Arc::new(dashmap::DashMap::new())),
+        github_service: None,
         ideation_session_repo: Some(Arc::clone(&app_state.ideation_session_repo)),
         artifact_repo: Some(Arc::clone(&app_state.artifact_repo)),
         plan_pr_description_drafter: Some(Arc::new(StaticPlanPrDescriptionDrafter)),
@@ -510,6 +535,60 @@ async fn test_freshness_routed_routes_pr_branch_update_conflict_to_waiting_on_pr
 }
 
 #[tokio::test]
+async fn test_pr_branch_update_missing_sync_services_routes_to_merge_incomplete() {
+    let app_state = AppState::new_test();
+    let ts = build_transition_service(&app_state);
+    let project = insert_test_project(&app_state).await;
+
+    let mut task = insert_task_with_metadata(
+        &app_state.task_repo,
+        project.id.clone(),
+        Some(serde_json::json!({
+            "plan_update_conflict": true,
+            "branch_freshness_conflict": true,
+            "pr_branch_update_conflict": true,
+            "freshness_origin_state": "waiting_on_pr",
+        })),
+    )
+    .await;
+    task.internal_status = InternalStatus::Merging;
+    insert_pr_backed_plan_branch(&app_state, &mut task).await;
+
+    let result = freshness_return_route(
+        &task,
+        Arc::clone(&app_state.task_repo),
+        &ts,
+        &project,
+        None,
+        None,
+        Some("3333333333333333333333333333333333333333"),
+    )
+    .await;
+
+    assert!(result.is_err(), "missing sync services should fail closed");
+    let updated = app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(updated.internal_status, InternalStatus::MergeIncomplete);
+    let meta: serde_json::Value = updated
+        .metadata
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or_default();
+    assert_eq!(
+        meta.get("error_code").and_then(|v| v.as_str()),
+        Some("pr_branch_publication_failed")
+    );
+    assert_eq!(
+        meta.get("commit_sha").and_then(|v| v.as_str()),
+        Some("3333333333333333333333333333333333333333")
+    );
+}
+
+#[tokio::test]
 async fn test_pr_branch_update_conflict_publishes_before_waiting_on_pr() {
     let app_state = AppState::new_test();
     let ts = build_transition_service(&app_state);
@@ -581,6 +660,55 @@ async fn test_pr_branch_update_conflict_publishes_before_waiting_on_pr() {
         .unwrap()
         .unwrap();
     assert_eq!(plan_branch.pr_push_status, PrPushStatus::Pushed);
+}
+
+#[tokio::test]
+async fn test_pr_branch_update_missing_github_service_routes_to_merge_incomplete() {
+    let app_state = AppState::new_test();
+    let ts = build_transition_service(&app_state);
+    let project = insert_test_project(&app_state).await;
+
+    let mut task = insert_task_with_metadata(
+        &app_state.task_repo,
+        project.id.clone(),
+        Some(serde_json::json!({
+            "plan_update_conflict": true,
+            "branch_freshness_conflict": true,
+            "pr_branch_update_conflict": true,
+            "freshness_origin_state": "waiting_on_pr",
+        })),
+    )
+    .await;
+    task.internal_status = InternalStatus::Merging;
+    insert_pr_backed_plan_branch(&app_state, &mut task).await;
+
+    let services = pr_sync_services_without_github(&app_state);
+    let result = freshness_return_route(
+        &task,
+        Arc::clone(&app_state.task_repo),
+        &ts,
+        &project,
+        None,
+        Some(&services),
+        Some("4444444444444444444444444444444444444444"),
+    )
+    .await;
+
+    let error = match result {
+        Ok(_) => panic!("missing GitHub service should fail closed"),
+        Err(error) => error,
+    };
+    assert!(
+        error.to_string().contains("GitHub service unavailable"),
+        "unexpected error: {error}"
+    );
+    let updated = app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(updated.internal_status, InternalStatus::MergeIncomplete);
 }
 
 #[tokio::test]
@@ -663,6 +791,69 @@ async fn test_pr_branch_update_push_failure_routes_to_merge_incomplete() {
         .unwrap()
         .unwrap();
     assert_eq!(plan_branch.pr_push_status, PrPushStatus::Failed);
+}
+
+#[tokio::test]
+async fn test_publish_plan_pr_after_freshness_noops_without_plan_branch_repo() {
+    let app_state = AppState::new_test();
+    let project = insert_test_project(&app_state).await;
+    let task = insert_task_with_metadata(&app_state.task_repo, project.id.clone(), None).await;
+
+    let services = PlanBranchPrSyncServices {
+        task_repo: Some(Arc::clone(&app_state.task_repo)),
+        plan_branch_repo: None,
+        ..PlanBranchPrSyncServices::default()
+    };
+
+    publish_plan_branch_pr_after_freshness_update(&task, &project, &services)
+        .await
+        .expect("missing plan branch repo should be a no-op");
+}
+
+#[tokio::test]
+async fn test_publish_plan_pr_after_freshness_noops_for_non_pr_branch_shapes() {
+    let app_state = AppState::new_test();
+    let project = insert_test_project(&app_state).await;
+
+    let mut ineligible_task =
+        insert_task_with_metadata(&app_state.task_repo, project.id.clone(), None).await;
+    insert_plan_branch_for_task(
+        &app_state,
+        &mut ineligible_task,
+        false,
+        PlanBranchStatus::Active,
+        Some(123),
+    )
+    .await;
+
+    let mut merged_task =
+        insert_task_with_metadata(&app_state.task_repo, project.id.clone(), None).await;
+    insert_plan_branch_for_task(
+        &app_state,
+        &mut merged_task,
+        true,
+        PlanBranchStatus::Merged,
+        Some(124),
+    )
+    .await;
+
+    let mut no_pr_task =
+        insert_task_with_metadata(&app_state.task_repo, project.id.clone(), None).await;
+    insert_plan_branch_for_task(
+        &app_state,
+        &mut no_pr_task,
+        true,
+        PlanBranchStatus::Active,
+        None,
+    )
+    .await;
+
+    let services = pr_sync_services_without_github(&app_state);
+    for task in [&ineligible_task, &merged_task, &no_pr_task] {
+        publish_plan_branch_pr_after_freshness_update(task, &project, &services)
+            .await
+            .expect("non-publishable plan branch should no-op before GitHub lookup");
+    }
 }
 
 // ============================================================================

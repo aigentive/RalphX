@@ -295,3 +295,83 @@ impl PruneEngine {
         true
     }
 }
+
+#[cfg(test)]
+mod terminal_settlement_prune_tests {
+    use super::*;
+    use crate::domain::entities::ChatConversationId;
+
+    fn running_info(last_active_at: Option<chrono::DateTime<chrono::Utc>>) -> RunningAgentInfo {
+        RunningAgentInfo {
+            pid: 12_345,
+            conversation_id: "conversation-test".to_string(),
+            agent_run_id: "run-test".to_string(),
+            started_at: chrono::Utc::now(),
+            worktree_path: None,
+            cancellation_token: None,
+            last_active_at,
+            model: None,
+        }
+    }
+
+    fn running_run() -> AgentRun {
+        AgentRun::new(ChatConversationId::new())
+    }
+
+    #[test]
+    fn terminal_settlement_prune_defers_recent_live_merge_status_mismatch() {
+        let info = running_info(Some(chrono::Utc::now()));
+        let run = running_run();
+
+        assert!(should_defer_terminal_settlement_prune(
+            Some(ChatContextType::Merge),
+            &["task_status_mismatch"],
+            &info,
+            Some(&run),
+            true,
+        ));
+    }
+
+    #[test]
+    fn terminal_settlement_prune_rejects_non_settlement_shapes() {
+        let info = running_info(Some(chrono::Utc::now()));
+        let missing_heartbeat = running_info(None);
+        let run = running_run();
+
+        assert!(!should_defer_terminal_settlement_prune(
+            Some(ChatContextType::Merge),
+            &["task_status_mismatch"],
+            &info,
+            Some(&run),
+            false,
+        ));
+        assert!(!should_defer_terminal_settlement_prune(
+            Some(ChatContextType::Merge),
+            &["task_status_mismatch", "pid_missing"],
+            &info,
+            Some(&run),
+            true,
+        ));
+        assert!(!should_defer_terminal_settlement_prune(
+            Some(ChatContextType::TaskExecution),
+            &["task_status_mismatch"],
+            &info,
+            Some(&run),
+            true,
+        ));
+        assert!(!should_defer_terminal_settlement_prune(
+            Some(ChatContextType::Review),
+            &["task_status_mismatch"],
+            &info,
+            None,
+            true,
+        ));
+        assert!(!should_defer_terminal_settlement_prune(
+            Some(ChatContextType::Review),
+            &["task_status_mismatch"],
+            &missing_heartbeat,
+            Some(&run),
+            true,
+        ));
+    }
+}
