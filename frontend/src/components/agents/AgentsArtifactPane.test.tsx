@@ -12,6 +12,7 @@ import type {
   AgentConversationWorkspace,
   AgentConversationWorkspaceFreshness,
 } from "@/api/chat";
+import { buildStoreKey } from "@/lib/chat-context-registry";
 import { useAgentSessionStore, type AgentArtifactTab } from "@/stores/agentSessionStore";
 import { useChatStore } from "@/stores/chatStore";
 import { useUiStore } from "@/stores/uiStore";
@@ -706,6 +707,7 @@ function renderControlledPane(
 
 describe("AgentsArtifactPane", () => {
   beforeEach(() => {
+    vi.mocked(invoke).mockReset();
     reviewSettingsResponse = reviewSettings();
     vi.mocked(invoke).mockImplementation((command) => {
       if (command === "get_review_settings") {
@@ -1746,6 +1748,53 @@ describe("AgentsArtifactPane", () => {
     fireEvent.click(updateReviewButton);
 
     expect(startWorkspaceReviewMock).not.toHaveBeenCalled();
+  });
+
+  it("does not mirror review-tab child runtime status into the visible workspace chat key", async () => {
+    getWorkspaceReviewContextMock.mockResolvedValue(
+      workspaceReviewContext({
+        target: workspaceReviewTarget,
+        status: "ready",
+        reviewArtifactId: "review-artifact-2",
+        reviewArtifactVersion: 2,
+        isOutdated: true,
+        shouldShowTab: true,
+      }),
+    );
+    getArtifactMock.mockResolvedValue(workspaceReviewArtifact(2));
+    getAgentConversationRuntimeStatusesMock.mockResolvedValue({
+      "conversation-1": conversationRuntimeStatus({
+        primarySource: "workspace_review",
+        summaryLabel: "Reviewing",
+        items: [
+          {
+            ...conversationRuntimeStatus().items[0]!,
+            source: "workspace_review",
+            contextType: "project",
+            contextId: "review-conversation-1",
+            label: "Reviewing",
+            title: "Review workspace",
+            conversationId: "review-conversation-1",
+          },
+        ],
+      }),
+    });
+
+    const storeKey = buildStoreKey("project", "conversation-1");
+    useChatStore.getState().setAgentStatus(storeKey, "generating");
+    useChatStore.getState().setAgentActivityLabel(storeKey, "running");
+
+    renderPane("review", workspace({ mode: "edit" }), vi.fn(), false, conversation());
+
+    expect(await screen.findByText("Review is outdated")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Update review" })).toBeDisabled();
+    });
+
+    expect(useChatStore.getState().agentStatus[storeKey]).toBe("generating");
+    expect(
+      useChatStore.getState().agentActivityLabels[storeKey],
+    ).toBe("running");
   });
 
   it("keeps the Review update action enabled while a related runtime is waiting for input", async () => {

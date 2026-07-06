@@ -126,6 +126,79 @@ describe("useAgentConversationRuntimeStatus", () => {
     expect(state.activeConversationIds[storeKey]).toBe("conversation-1");
   });
 
+  it("can read child-only aggregate runtime status without mirroring into visible chat state", async () => {
+    mockGetAgentConversationRuntimeStatuses.mockResolvedValueOnce({
+      "conversation-1": runtimeStatus(),
+    });
+
+    const storeKey = buildStoreKey("project", "conversation-1");
+    const { result } = renderHook(
+      () =>
+        useAgentConversationRuntimeStatus("conversation-1", {
+          mirrorToVisibleChatStatus: false,
+          storeKey,
+        }),
+      {
+        wrapper: createWrapper(),
+      },
+    );
+
+    await waitFor(() => {
+      expect(result.current.data?.conversationId).toBe("conversation-1");
+    });
+
+    const state = useChatStore.getState();
+    expect(state.agentStatus[storeKey]).toBeUndefined();
+    expect(state.agentActivityLabels[storeKey]).toBeUndefined();
+    expect(state.activeConversationIds[storeKey]).toBeUndefined();
+  });
+
+  it("can mirror only true workspace runtime status for visible workspace chat surfaces", async () => {
+    mockGetAgentConversationRuntimeStatuses.mockResolvedValueOnce({
+      "conversation-1": runtimeStatus({
+        primarySource: "workspace",
+        summaryLabel: "Agent running",
+        items: [
+          {
+            source: "workspace",
+            contextType: "project",
+            contextId: "conversation-1",
+            label: "Running",
+            title: "Workspace agent",
+            agentStatus: "generating",
+            taskId: null,
+            internalStatus: null,
+            runningProcess: null,
+            ideationSession: null,
+            parentSessionId: null,
+            childSessionId: null,
+            conversationId: "conversation-1",
+          },
+        ],
+      }),
+    });
+
+    const storeKey = buildStoreKey("project", "conversation-1");
+    renderHook(
+      () =>
+        useAgentConversationRuntimeStatus("conversation-1", {
+          mirrorToVisibleChatStatus: (status) =>
+            status?.items.some((item) => item.source === "workspace") ?? false,
+          storeKey,
+        }),
+      {
+        wrapper: createWrapper(),
+      },
+    );
+
+    await waitFor(() => {
+      expect(useChatStore.getState().agentStatus[storeKey]).toBe("generating");
+    });
+    expect(useChatStore.getState().activeConversationIds[storeKey]).toBe(
+      "conversation-1",
+    );
+  });
+
   it("clears stale parent sidebar runtime state after an idle lookup", async () => {
     const storeKey = buildStoreKey("project", "conversation-1");
     useChatStore.getState().setAgentStatus(storeKey, "generating");
@@ -315,6 +388,76 @@ describe("useAgentConversationRuntimeStatus", () => {
       conversation_id: "review-conversation-2",
       context_type: "project",
       context_id: "review-conversation-2",
+    });
+
+    await waitFor(() => {
+      expect(mockGetAgentConversationRuntimeStatuses).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it("does not fail open for unknown child run starts when unknown runtime discovery is disabled", async () => {
+    mockGetAgentConversationRuntimeStatuses.mockResolvedValue({
+      "conversation-1": runtimeStatus({
+        items: [],
+      }),
+    });
+
+    const { result } = renderHook(
+      () =>
+        useAgentConversationRuntimeStatus("conversation-1", {
+          invalidateUnknownRuntimeIds: false,
+          mirrorToVisibleChatStatus: false,
+        }),
+      {
+        wrapper: createWrapper(),
+      },
+    );
+
+    await waitFor(() => {
+      expect(result.current.data?.conversationId).toBe("conversation-1");
+    });
+    expect(mockGetAgentConversationRuntimeStatuses).toHaveBeenCalledTimes(1);
+
+    emitEvent("agent:run_started", {
+      run_id: "run-1",
+      conversation_id: "review-conversation-2",
+      context_type: "project",
+      context_id: "review-conversation-2",
+    });
+
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+    expect(mockGetAgentConversationRuntimeStatuses).toHaveBeenCalledTimes(1);
+  });
+
+  it("still refreshes workspace-owned run starts when unknown runtime discovery is disabled", async () => {
+    mockGetAgentConversationRuntimeStatuses.mockResolvedValue({
+      "conversation-1": runtimeStatus({
+        items: [],
+      }),
+    });
+
+    const { result } = renderHook(
+      () =>
+        useAgentConversationRuntimeStatus("conversation-1", {
+          invalidateUnknownRuntimeIds: false,
+          mirrorToVisibleChatStatus: false,
+        }),
+      {
+        wrapper: createWrapper(),
+      },
+    );
+
+    await waitFor(() => {
+      expect(result.current.data?.conversationId).toBe("conversation-1");
+    });
+    expect(mockGetAgentConversationRuntimeStatuses).toHaveBeenCalledTimes(1);
+
+    emitEvent("agent:run_started", {
+      run_id: "run-1",
+      conversation_id: "conversation-1",
+      context_type: "project",
+      context_id: "conversation-1",
     });
 
     await waitFor(() => {

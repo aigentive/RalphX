@@ -102,6 +102,12 @@ type PrReviewArtifactEventPayload = {
 type AgentConversationLifecyclePayload = {
   conversationId?: string;
   conversation_id?: string;
+  parentConversationId?: string;
+  parent_conversation_id?: string;
+  childConversationId?: string;
+  child_conversation_id?: string;
+  contextId?: string;
+  context_id?: string;
 };
 
 type WorkspaceReviewPublishPromotionState = Pick<
@@ -120,6 +126,40 @@ function hasCurrentPassedWorkspaceReview(
     return gateStatus === "passed";
   }
   return context.monitor.reviewOutcome === "passed";
+}
+
+function addLifecyclePayloadId(ids: Set<string>, value: string | undefined) {
+  const trimmed = value?.trim();
+  if (trimmed) {
+    ids.add(trimmed);
+  }
+}
+
+function lifecyclePayloadIds(payload: AgentConversationLifecyclePayload): Set<string> {
+  const ids = new Set<string>();
+  addLifecyclePayloadId(ids, payload.conversationId);
+  addLifecyclePayloadId(ids, payload.conversation_id);
+  addLifecyclePayloadId(ids, payload.parentConversationId);
+  addLifecyclePayloadId(ids, payload.parent_conversation_id);
+  addLifecyclePayloadId(ids, payload.childConversationId);
+  addLifecyclePayloadId(ids, payload.child_conversation_id);
+  addLifecyclePayloadId(ids, payload.contextId);
+  addLifecyclePayloadId(ids, payload.context_id);
+  return ids;
+}
+
+function lifecyclePayloadOwnsWorkspaceReviewQuery(
+  payload: AgentConversationLifecyclePayload,
+  selectedConversationId: string,
+  workspaceReviewChildConversationId: string | null | undefined,
+): boolean {
+  const ids = lifecyclePayloadIds(payload);
+  return (
+    ids.has(selectedConversationId) ||
+    (workspaceReviewChildConversationId
+      ? ids.has(workspaceReviewChildConversationId)
+      : false)
+  );
 }
 
 export function useAgentsViewController({
@@ -841,7 +881,15 @@ export function useAgentsViewController({
           queryKey: agentConversationIssueKeys.list(conversationId),
         });
       }
-      if (selectedConversationId && activeConversation?.contextType === "project") {
+      if (
+        selectedConversationId &&
+        activeConversation?.contextType === "project" &&
+        lifecyclePayloadOwnsWorkspaceReviewQuery(
+          payload,
+          selectedConversationId,
+          workspaceReviewChildConversationId,
+        )
+      ) {
         void queryClient.invalidateQueries({
           queryKey: agentWorkspaceKeys.workspaceReview(selectedConversationId),
         });
@@ -869,7 +917,13 @@ export function useAgentsViewController({
       unsubscribeRunCompleted();
       unsubscribeTurnCompleted();
     };
-  }, [activeConversation?.contextType, eventBus, queryClient, selectedConversationId]);
+  }, [
+    activeConversation?.contextType,
+    eventBus,
+    queryClient,
+    selectedConversationId,
+    workspaceReviewChildConversationId,
+  ]);
 
   useEffect(() => {
     const unsubscribeCreated = eventBus.subscribe<unknown>(
