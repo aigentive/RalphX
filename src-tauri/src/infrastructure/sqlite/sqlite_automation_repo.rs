@@ -219,11 +219,12 @@ impl AutomationRepository for SqliteAutomationRepository {
                          base_ref_kind = COALESCE(?7, base_ref_kind),
                          base_ref = COALESCE(?8, base_ref),
                          base_display_name = COALESCE(?9, base_display_name),
-                         chain_mode = COALESCE(?10, chain_mode),
-                         completion_signal = COALESCE(?11, completion_signal),
-                         setup_analysis_summary = COALESCE(?12, setup_analysis_summary),
-                         updated_at = ?13
-                     WHERE id = ?14",
+                         goal_items_json = COALESCE(?10, goal_items_json),
+                         chain_mode = COALESCE(?11, chain_mode),
+                         completion_signal = COALESCE(?12, completion_signal),
+                         setup_analysis_summary = COALESCE(?13, setup_analysis_summary),
+                         updated_at = ?14
+                     WHERE id = ?15",
                     params![
                         patch.goal_prompt,
                         patch.first_run_prompt,
@@ -234,6 +235,7 @@ impl AutomationRepository for SqliteAutomationRepository {
                         patch.base_ref_kind,
                         patch.base_ref,
                         patch.base_display_name,
+                        patch.goal_items_json,
                         patch.chain_mode,
                         patch.completion_signal,
                         patch.setup_analysis_summary,

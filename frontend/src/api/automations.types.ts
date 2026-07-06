@@ -156,4 +156,17 @@ export interface UpdateAutomationSetupInput {
   name?: string | undefined;
   maxRuns?: number | undefined;
   maxConsecutiveFailures?: number | undefined;
+  goalPrompt?: string | undefined;
+  firstRunPrompt?: string | undefined;
+  providerHarness?: string | undefined;
+  modelId?: string | undefined;
+  logicalEffort?: string | null | undefined;
+  runMode?: AutomationRunMode | undefined;
+  baseRefKind?: AutomationBaseRefKind | undefined;
+  baseRef?: string | undefined;
+  baseDisplayName?: string | undefined;
+  goalItemsJson?: string | undefined;
+  chainMode?: AutomationChainMode | undefined;
+  completionSignal?: AutomationCompletionSignal | undefined;
+  setupAnalysisSummary?: string | undefined;
 }

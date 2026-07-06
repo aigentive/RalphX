@@ -41,7 +41,9 @@ fn automation(id: &AutomationId, project_id: ProjectId, status: AutomationStatus
         base_ref: String::new(),
         base_display_name: None,
         base_source_pull_request_json: None,
-        goal_items_json: None,
+        goal_items_json: Some(
+            r#"[{"id":"phase-1","title":"Run 1","status":"pending"}]"#.to_string(),
+        ),
         chain_mode: "merged_base".to_string(),
         completion_signal: "pr_merged".to_string(),
         max_runs: 25,
@@ -112,6 +114,17 @@ async fn get_and_update_automation_use_server_bound_conversation() {
             .name,
         "Renamed automation"
     );
+    assert_eq!(
+        app_state
+            .chat_conversation_repo
+            .get_by_id(&conversation.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .title
+            .as_deref(),
+        Some("Renamed automation")
+    );
 }
 
 #[tokio::test]
@@ -138,6 +151,10 @@ async fn update_automation_persists_config_fields_for_bound_conversation() {
             first_run_prompt: Some("Implement item 1 in a scoped PR.".to_string()),
             base_ref_kind: Some("local_branch".to_string()),
             base_ref: Some("main".to_string()),
+            goal_items_json: Some(
+                r#"[{"id":"phase-1","title":"Build shared context model","status":"pending"}]"#
+                    .to_string(),
+            ),
             ..Default::default()
         }),
     )
@@ -151,6 +168,10 @@ async fn update_automation_persists_config_fields_for_bound_conversation() {
     );
     assert_eq!(updated.base_ref_kind, "local_branch");
     assert_eq!(updated.base_ref, "main");
+    assert_eq!(
+        updated.goal_items_json.as_deref(),
+        Some(r#"[{"id":"phase-1","title":"Build shared context model","status":"pending"}]"#),
+    );
 
     let stored = app_state
         .automation_repo
@@ -164,6 +185,10 @@ async fn update_automation_persists_config_fields_for_bound_conversation() {
         Some("Implement item 1 in a scoped PR.")
     );
     assert_eq!(stored.base_ref, "main");
+    assert_eq!(
+        stored.goal_items_json.as_deref(),
+        Some(r#"[{"id":"phase-1","title":"Build shared context model","status":"pending"}]"#),
+    );
 }
 
 #[tokio::test]

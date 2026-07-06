@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use chrono::Utc;
+use serde_json::Value;
 
 use crate::application::automation::judge::{
     apply_updated_item_statuses, automation_judge_loop_suspected, parse_automation_judge_verdict,
@@ -20,7 +21,7 @@ use crate::domain::repositories::{
 };
 use crate::error::{AppError, AppResult};
 
-const DEFAULT_AUTOMATION_NAME: &str = "Untitled automation";
+const DEFAULT_AUTOMATION_NAME: &str = "Automation setup";
 const DEFAULT_PROVIDER_HARNESS: &str = "claude";
 const DEFAULT_MODEL_ID: &str = "sonnet";
 const DEFAULT_RUN_MODE: &str = "edit";
@@ -65,6 +66,7 @@ pub struct UpdateAutomationConfigInput {
     pub base_ref_kind: Option<String>,
     pub base_ref: Option<String>,
     pub base_display_name: Option<String>,
+    pub goal_items_json: Option<String>,
     pub chain_mode: Option<String>,
     pub completion_signal: Option<String>,
     pub setup_analysis_summary: Option<String>,
@@ -250,10 +252,7 @@ impl AutomationService {
     /// through `AutomationTransitionService`. It is only permitted while the
     /// automation is still editable (`Draft` or `Paused`); `Active`,
     /// `Completed`, and `Stopped` automations reject the write.
-    pub async fn update_config(
-        &self,
-        input: UpdateAutomationConfigInput,
-    ) -> AppResult<Automation> {
+    pub async fn update_config(&self, input: UpdateAutomationConfigInput) -> AppResult<Automation> {
         let automation = self.require_automation(&input.id).await?;
         if !matches!(
             automation.status,
@@ -274,6 +273,7 @@ impl AutomationService {
             base_ref_kind: input.base_ref_kind,
             base_ref: input.base_ref,
             base_display_name: input.base_display_name,
+            goal_items_json: input.goal_items_json,
             chain_mode: input.chain_mode,
             completion_signal: input.completion_signal,
             setup_analysis_summary: input.setup_analysis_summary,
@@ -1185,17 +1185,17 @@ fn validate_finalizable(automation: &Automation) -> AppResult<()> {
     }
     if automation.goal_prompt.trim().is_empty() {
         return Err(AppError::Validation(
-            "automation goal_prompt is required before activation".to_string(),
+            "automation goal_prompt is required before approval".to_string(),
         ));
     }
     if automation.provider_harness.trim().is_empty() {
         return Err(AppError::Validation(
-            "automation provider_harness is required before activation".to_string(),
+            "automation provider_harness is required before approval".to_string(),
         ));
     }
     if automation.model_id.trim().is_empty() {
         return Err(AppError::Validation(
-            "automation model_id is required before activation".to_string(),
+            "automation model_id is required before approval".to_string(),
         ));
     }
     if automation
@@ -1206,9 +1206,10 @@ fn validate_finalizable(automation: &Automation) -> AppResult<()> {
         .is_empty()
     {
         return Err(AppError::Validation(
-            "automation first_run_prompt is required before activation".to_string(),
+            "automation first_run_prompt is required before approval".to_string(),
         ));
     }
+    validate_goal_items_json(automation.goal_items_json.as_deref())?;
     if automation.completion_signal == DEFAULT_COMPLETION_SIGNAL
         && automation.run_mode != DEFAULT_RUN_MODE
     {
@@ -1221,12 +1222,12 @@ fn validate_finalizable(automation: &Automation) -> AppResult<()> {
         "local_branch" if !automation.base_ref.trim().is_empty() => {}
         "current_branch" => {
             return Err(AppError::Validation(
-                "current_branch must be resolved before activation".to_string(),
+                "current_branch must be resolved before approval".to_string(),
             ))
         }
         _ => {
             return Err(AppError::Validation(
-                "automation base_ref_kind/base_ref is not activation-ready".to_string(),
+                "automation base_ref_kind/base_ref is not approval-ready".to_string(),
             ))
         }
     }
@@ -1236,6 +1237,28 @@ fn validate_finalizable(automation: &Automation) -> AppResult<()> {
         Some(automation.max_consecutive_failures),
     )?;
     Ok(())
+}
+
+fn validate_goal_items_json(goal_items_json: Option<&str>) -> AppResult<()> {
+    let Some(goal_items_json) = goal_items_json
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Err(AppError::Validation(
+            "automation phase spec is required before approval".to_string(),
+        ));
+    };
+    let parsed = serde_json::from_str::<Value>(goal_items_json).map_err(|error| {
+        AppError::Validation(format!(
+            "automation phase spec must be valid JSON before approval: {error}"
+        ))
+    })?;
+    match parsed {
+        Value::Array(items) if !items.is_empty() => Ok(()),
+        _ => Err(AppError::Validation(
+            "automation phase spec must include at least one phase before approval".to_string(),
+        )),
+    }
 }
 
 fn automation_not_found(id: &AutomationId) -> AppError {

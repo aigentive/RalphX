@@ -176,5 +176,32 @@ export function transformUpdateAutomationSetupInput(
     ...(input.maxConsecutiveFailures !== undefined && {
       max_consecutive_failures: input.maxConsecutiveFailures,
     }),
+    ...(input.goalPrompt !== undefined && { goal_prompt: input.goalPrompt }),
+    ...(input.firstRunPrompt !== undefined && {
+      first_run_prompt: input.firstRunPrompt,
+    }),
+    ...(input.providerHarness !== undefined && {
+      provider_harness: input.providerHarness,
+    }),
+    ...(input.modelId !== undefined && { model_id: input.modelId }),
+    ...(input.logicalEffort !== undefined && {
+      logical_effort: input.logicalEffort,
+    }),
+    ...(input.runMode !== undefined && { run_mode: input.runMode }),
+    ...(input.baseRefKind !== undefined && { base_ref_kind: input.baseRefKind }),
+    ...(input.baseRef !== undefined && { base_ref: input.baseRef }),
+    ...(input.baseDisplayName !== undefined && {
+      base_display_name: input.baseDisplayName,
+    }),
+    ...(input.goalItemsJson !== undefined && {
+      goal_items_json: input.goalItemsJson,
+    }),
+    ...(input.chainMode !== undefined && { chain_mode: input.chainMode }),
+    ...(input.completionSignal !== undefined && {
+      completion_signal: input.completionSignal,
+    }),
+    ...(input.setupAnalysisSummary !== undefined && {
+      setup_analysis_summary: input.setupAnalysisSummary,
+    }),
   };
 }

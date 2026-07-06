@@ -27,6 +27,12 @@ import type {
 } from "@/api/chat";
 import { chatApi } from "@/api/chat";
 import { artifactApi } from "@/api/artifact";
+import {
+  automationsApi,
+  type Automation,
+  type AutomationRun,
+  type AutomationRunMode,
+} from "@/api/automations";
 import { verificationApi } from "@/api/verification";
 import {
   IntegratedChatPanel,
@@ -54,7 +60,10 @@ import { formatQueuedMessageExcerpt } from "@/lib/queuedMessageExcerpt";
 import { useAgentModels } from "@/hooks/useAgentModels";
 import { useConfirmation } from "@/hooks/useConfirmation";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
-import { useAutomationDetail } from "@/hooks/useAutomations";
+import {
+  invalidateAutomationQueries,
+  useAutomationDetail,
+} from "@/hooks/useAutomations";
 import type { SubmitQuestionAnswerResult } from "@/hooks/useAskUserQuestion";
 import { ideationKeys } from "@/hooks/useIdeation";
 import { useVerificationStatus, verificationStatusKey } from "@/hooks/useVerificationStatus";
@@ -63,6 +72,7 @@ import { selectQueuedMessages, useChatStore } from "@/stores/chatStore";
 import { useUiStore } from "@/stores/uiStore";
 import type {
   AgentArtifactTab,
+  AgentEffort,
   AgentProvider,
   AgentRuntimeSelection,
 } from "@/stores/agentSessionStore";
@@ -90,7 +100,11 @@ import type { DiffFilterMode } from "./AgentsPublishDiffFilter";
 import {
   AGENT_PROVIDER_OPTIONS,
   agentEffortOptions,
+  type AgentEffortOption,
+  type AgentModelOption,
   agentModelOptions,
+  defaultEffortForModel,
+  defaultModelForProvider,
   normalizeRuntimeSelection,
 } from "./agentOptions";
 import { AgentProviderSettingsButton } from "./AgentProviderSettingsButton";
@@ -108,6 +122,7 @@ import {
 } from "./agentExecutionPause";
 import type { IdeationArtifactTab } from "./agentArtifactTabs";
 import {
+  getFocusedAutomationRunConversationId,
   getFocusedChatSessionId,
   getFocusedWorkspaceReviewConversationId,
   type AgentsChatFocus,
@@ -144,6 +159,37 @@ const TERMINAL_AUTOMATION_RUN_STATUSES = new Set([
   "agent_failed",
   "cancelled",
 ]);
+const OPEN_AUTOMATION_RUN_STATUSES = new Set<AutomationRun["status"]>([
+  "pending",
+  "provisioning",
+  "running",
+  "published",
+]);
+const AUTOMATION_RUN_MODE_OPTIONS: Array<{
+  id: AutomationRunMode;
+  label: string;
+  description: string;
+  icon: LucideIcon;
+}> = [
+  {
+    id: "edit",
+    label: "Build",
+    description: "Builds scoped PRs and publishes them.",
+    icon: Workflow,
+  },
+  {
+    id: "plan",
+    label: "Plan",
+    description: "Creates or refines implementation plans.",
+    icon: MessageSquare,
+  },
+  {
+    id: "ideation",
+    label: "Ideation",
+    description: "Runs exploration and proposal workflows.",
+    icon: Lightbulb,
+  },
+];
 
 function getWorkspaceBasePickerKey(
   workspace: AgentConversationWorkspace | null,
@@ -228,6 +274,9 @@ function isRuntimeItemOwnedByFocus(
       item.source === "workspace_review" &&
       (item.conversationId ?? item.contextId) === chatFocus.conversationId
     );
+  }
+  if (chatFocus.type === "automation_run") {
+    return (item.conversationId ?? item.contextId) === chatFocus.conversationId;
   }
   return (
     item.taskId === chatFocus.taskId &&
@@ -362,10 +411,16 @@ function PlanComposerCtaRow({
   hint,
   actions,
   viewPlanAction,
+  testIdPrefix = "agents-plan-composer-cta",
+  actionGroupLabel = "Plan actions",
+  compactHintOverride,
 }: {
   hint: string;
   actions: PlanComposerCtaAction[];
   viewPlanAction?: PlanComposerViewPlanAction | undefined;
+  testIdPrefix?: string;
+  actionGroupLabel?: string;
+  compactHintOverride?: string | undefined;
 }) {
   const { artifactState } = useResolvedAgentArtifactState(
     viewPlanAction?.conversationId ?? null,
@@ -395,7 +450,8 @@ function PlanComposerCtaRow({
   if (resolvedActions.length === 0) {
     return null;
   }
-  const compactHint = getPlanComposerCompactHint(hint, resolvedActions);
+  const compactHint =
+    compactHintOverride ?? getPlanComposerCompactHint(hint, resolvedActions);
   const hintDetails = getPlanComposerHintDetails(hint, compactHint);
   const isRecommendation = compactHint.startsWith("Recommended:");
   const isRecommendationCheckPending = compactHint.startsWith(
@@ -413,7 +469,7 @@ function PlanComposerCtaRow({
             borderWidth: "1px",
             color: "var(--text-muted)",
           }}
-          data-testid="agents-plan-composer-cta-details"
+          data-testid={`${testIdPrefix}-details`}
         >
           why?
         </button>
@@ -437,7 +493,7 @@ function PlanComposerCtaRow({
         variant={action.isPrimary ? "default" : "outline"}
         onClick={action.onClick}
         disabled={action.disabled || action.isPending}
-        data-testid={`agents-plan-composer-cta-${action.id}`}
+        data-testid={`${testIdPrefix}-${action.id}`}
       >
         <Icon
           className={
@@ -461,13 +517,13 @@ function PlanComposerCtaRow({
         borderStyle: "solid",
         borderWidth: "1px",
       }}
-      data-testid="agents-plan-composer-cta-row"
+      data-testid={`${testIdPrefix}-row`}
     >
       {isSingleAction ? (
         <div className="flex items-center gap-2">
           <div
             className="flex min-w-0 flex-1 items-center gap-2"
-            data-testid="agents-plan-composer-cta-copy"
+            data-testid={`${testIdPrefix}-copy`}
           >
             {isRecommendation && (
               <Lightbulb
@@ -490,7 +546,7 @@ function PlanComposerCtaRow({
                   : "min-w-0 truncate text-[0.8125rem] font-medium leading-5"
               }
               style={{ color: "var(--text-primary)" }}
-              data-testid="agents-plan-composer-cta-hint"
+              data-testid={`${testIdPrefix}-hint`}
             >
               {compactHint}
             </p>
@@ -499,8 +555,8 @@ function PlanComposerCtaRow({
           <div
             className="flex shrink-0 items-center"
             role="group"
-            aria-label="Plan actions"
-            data-testid="agents-plan-composer-cta-actions"
+            aria-label={actionGroupLabel}
+            data-testid={`${testIdPrefix}-actions`}
           >
             {renderActionButton(resolvedActions[0]!)}
           </div>
@@ -517,7 +573,7 @@ function PlanComposerCtaRow({
           >
             <div
               className="flex min-w-0 items-center gap-2 pr-1"
-              data-testid="agents-plan-composer-cta-copy"
+              data-testid={`${testIdPrefix}-copy`}
             >
               {isRecommendation && (
                 <Lightbulb
@@ -540,7 +596,7 @@ function PlanComposerCtaRow({
                     : "min-w-0 truncate text-[0.8125rem] font-medium leading-5"
                 }
                 style={{ color: "var(--text-primary)" }}
-                data-testid="agents-plan-composer-cta-hint"
+                data-testid={`${testIdPrefix}-hint`}
               >
                 {compactHint}
               </p>
@@ -550,14 +606,439 @@ function PlanComposerCtaRow({
           <div
             className="mt-2 flex flex-wrap items-center gap-2"
             role="group"
-            aria-label="Plan actions"
-            data-testid="agents-plan-composer-cta-actions"
+            aria-label={actionGroupLabel}
+            data-testid={`${testIdPrefix}-actions`}
           >
             {resolvedActions.map(renderActionButton)}
           </div>
         </>
       )}
     </div>
+  );
+}
+
+function formatAutomationRunStatus(status: AutomationRun["status"]): string {
+  if (OPEN_AUTOMATION_RUN_STATUSES.has(status)) {
+    return "Running";
+  }
+  return status
+    .split("_")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function hasPersistedAutomationPhaseSpec(goalItemsJson: string | null): boolean {
+  const trimmed = goalItemsJson?.trim() ?? "";
+  if (!trimmed) {
+    return false;
+  }
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    return Array.isArray(parsed) && parsed.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+function isAutomationApprovalReady(automation: Automation): boolean {
+  if (automation.status !== "draft") {
+    return false;
+  }
+  if (!automation.goalPrompt.trim()) {
+    return false;
+  }
+  if (!automation.firstRunPrompt?.trim()) {
+    return false;
+  }
+  if (!automation.providerHarness.trim() || !automation.modelId.trim()) {
+    return false;
+  }
+  if (!hasPersistedAutomationPhaseSpec(automation.goalItemsJson)) {
+    return false;
+  }
+  if (automation.completionSignal === "pr_merged" && automation.runMode !== "edit") {
+    return false;
+  }
+  if (automation.baseRefKind === "project_default") {
+    return true;
+  }
+  if (automation.baseRefKind === "local_branch") {
+    return Boolean(automation.baseRef.trim());
+  }
+  return false;
+}
+
+function hasOpenAutomationRun(runs: readonly AutomationRun[]): boolean {
+  return runs.some((run) => OPEN_AUTOMATION_RUN_STATUSES.has(run.status));
+}
+
+function formatAutomationRunModeLabel(runMode: AutomationRunMode): string {
+  return (
+    AUTOMATION_RUN_MODE_OPTIONS.find((option) => option.id === runMode)?.label ??
+    runMode
+  );
+}
+
+function automationProviderFromValue(value: string): AgentProvider {
+  return value === "codex" ? "codex" : "claude";
+}
+
+function automationEffortFromValue(value: string | null): AgentEffort | undefined {
+  return value === "low" ||
+    value === "medium" ||
+    value === "high" ||
+    value === "xhigh" ||
+    value === "max"
+    ? value
+    : undefined;
+}
+
+function automationRuntimeFromConfig(automation: Automation): AgentRuntimeSelection {
+  return {
+    provider: automationProviderFromValue(automation.providerHarness),
+    modelId: automation.modelId,
+    effort: automationEffortFromValue(automation.logicalEffort) ?? "medium",
+  };
+}
+
+function AutomationRunsWidget({
+  automationId,
+  runs,
+  currentRunId,
+  onOpenRun,
+}: {
+  automationId: string;
+  runs: readonly AutomationRun[];
+  currentRunId: string | null;
+  onOpenRun: (automationId: string, run: AutomationRun) => void;
+}) {
+  if (runs.length === 0) {
+    return null;
+  }
+
+  return (
+    <div
+      className="mx-2 mb-2 rounded-md border px-3 py-2"
+      style={{
+        backgroundColor: "var(--bg-surface)",
+        borderColor: "var(--border-subtle)",
+        borderStyle: "solid",
+        borderWidth: "1px",
+      }}
+      data-testid="agents-automation-runs-widget"
+    >
+      <div className="mb-2 flex items-center gap-2">
+        <Workflow
+          className="h-4 w-4 shrink-0"
+          style={{ color: "var(--accent-primary)" }}
+          aria-hidden="true"
+        />
+        <span
+          className="text-[0.8125rem] font-medium"
+          style={{ color: "var(--text-primary)" }}
+        >
+          Runs
+        </span>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        {runs.map((run) => {
+          const disabled = !run.conversationId;
+          const isCurrent = run.id === currentRunId;
+          return (
+            <button
+              key={run.id}
+              type="button"
+              disabled={disabled}
+              onClick={() => onOpenRun(automationId, run)}
+              className="inline-flex min-w-0 items-center gap-2 rounded-md border px-2.5 py-1.5 text-left text-[0.75rem] transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+              style={{
+                backgroundColor: isCurrent
+                  ? "var(--bg-surface-hover)"
+                  : "transparent",
+                borderColor: isCurrent
+                  ? "var(--accent-primary)"
+                  : "var(--border-subtle)",
+                borderStyle: "solid",
+                borderWidth: "1px",
+                color: "var(--text-primary)",
+              }}
+              data-testid={`agents-automation-run-${run.id}`}
+            >
+              <Clock
+                className="h-3.5 w-3.5 shrink-0"
+                style={{ color: "var(--text-muted)" }}
+                aria-hidden="true"
+              />
+              <span className="shrink-0 font-medium">Run {run.runIndex}</span>
+              <span
+                className="min-w-0 truncate"
+                style={{ color: "var(--text-muted)" }}
+              >
+                {formatAutomationRunStatus(run.status)}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function AutomationRunModeSelector({
+  runMode,
+  disabled,
+  isUpdating,
+  onChange,
+}: {
+  runMode: AutomationRunMode;
+  disabled: boolean;
+  isUpdating: boolean;
+  onChange: (runMode: AutomationRunMode) => void;
+}) {
+  return (
+    <div
+      className="flex flex-col gap-2"
+      data-testid="agents-automation-run-mode-selector"
+    >
+      <div className="flex flex-wrap items-end justify-between gap-2">
+        <div>
+          <span
+            className="block text-[0.6875rem] font-semibold uppercase tracking-[0.08em]"
+            style={{ color: "var(--text-muted)" }}
+          >
+            Run type
+          </span>
+          <span className="text-[0.75rem]" style={{ color: "var(--text-muted)" }}>
+            Choose which agent mode future runs use.
+          </span>
+        </div>
+        {isUpdating ? (
+          <span
+            className="inline-flex items-center gap-1.5 text-[0.75rem]"
+            style={{ color: "var(--text-muted)" }}
+          >
+            <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+            Saving
+          </span>
+        ) : null}
+      </div>
+      <div
+        className="inline-flex w-fit flex-wrap rounded-md border p-1"
+        style={{
+          backgroundColor: "var(--bg-base)",
+          borderColor: "var(--border-subtle)",
+          borderStyle: "solid",
+          borderWidth: "1px",
+        }}
+        role="group"
+        aria-label="Automation run type"
+      >
+        {AUTOMATION_RUN_MODE_OPTIONS.map((option) => {
+          const selected = option.id === runMode;
+          const Icon = option.icon;
+          return (
+            <Tooltip key={option.id}>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  disabled={disabled || isUpdating || selected}
+                  onClick={() => onChange(option.id)}
+                  className="inline-flex h-8 items-center gap-2 rounded px-2.5 text-[0.75rem] font-medium outline-none transition-colors disabled:cursor-not-allowed disabled:opacity-60 focus-visible:ring-2 focus-visible:ring-[var(--accent-primary)]"
+                  style={{
+                    backgroundColor: selected
+                      ? "var(--bg-surface-hover)"
+                      : "transparent",
+                    color: selected ? "var(--text-primary)" : "var(--text-muted)",
+                  }}
+                  aria-pressed={selected}
+                  data-testid={`agents-automation-run-mode-${option.id}`}
+                >
+                  <Icon
+                    className="h-3.5 w-3.5 shrink-0"
+                    style={{
+                      color: selected
+                        ? "var(--accent-primary)"
+                        : "var(--text-muted)",
+                    }}
+                    aria-hidden="true"
+                  />
+                  <span>{option.label}</span>
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="top" className="max-w-[16rem] text-xs">
+                {option.description}
+              </TooltipContent>
+            </Tooltip>
+          );
+        })}
+      </div>
+      <p className="text-[0.75rem] leading-5" style={{ color: "var(--text-muted)" }}>
+        {
+          AUTOMATION_RUN_MODE_OPTIONS.find((option) => option.id === runMode)
+            ?.description
+        }
+      </p>
+    </div>
+  );
+}
+
+function AutomationRuntimeSelector({
+  runtime,
+  providerOptions,
+  modelOptions,
+  effortOptions,
+  disabled,
+  isUpdating,
+  onProviderChange,
+  onModelChange,
+  onEffortChange,
+}: {
+  runtime: AgentRuntimeSelection;
+  providerOptions: readonly {
+    id: AgentProvider;
+    label: string;
+    disabled?: boolean;
+    disabledReason?: string;
+  }[];
+  modelOptions: readonly AgentModelOption[];
+  effortOptions: readonly AgentEffortOption[];
+  disabled: boolean;
+  isUpdating: boolean;
+  onProviderChange: (provider: AgentProvider) => void;
+  onModelChange: (modelId: string) => void;
+  onEffortChange: (effort: AgentEffort) => void;
+}) {
+  const controlDisabled = disabled || isUpdating;
+  const selectedProvider = providerOptions.find(
+    (option) => option.id === runtime.provider,
+  );
+  const selectedProviderDisabledReason =
+    selectedProvider?.disabledReason && !disabled
+      ? selectedProvider.disabledReason
+      : null;
+
+  return (
+    <div
+      className="flex flex-col gap-2"
+      data-testid="agents-automation-runtime-selector"
+    >
+      <div className="flex flex-wrap items-end justify-between gap-2">
+        <div>
+          <span
+            className="block text-[0.6875rem] font-semibold uppercase tracking-[0.08em]"
+            style={{ color: "var(--text-muted)" }}
+          >
+            Run agent
+          </span>
+          <span className="text-[0.75rem]" style={{ color: "var(--text-muted)" }}>
+            Provider, model, and effort future automation runs use.
+          </span>
+        </div>
+        {isUpdating ? (
+          <span
+            className="inline-flex items-center gap-1.5 text-[0.75rem]"
+            style={{ color: "var(--text-muted)" }}
+          >
+            <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+            Saving
+          </span>
+        ) : null}
+      </div>
+      <div className="grid gap-2 sm:grid-cols-[minmax(7rem,0.8fr)_minmax(9rem,1fr)_minmax(7rem,0.75fr)]">
+        <AutomationSelect
+          label="Provider"
+          value={runtime.provider}
+          disabled={controlDisabled}
+          testId="agents-automation-provider"
+          onChange={(value) => onProviderChange(value as AgentProvider)}
+          options={providerOptions.map((option) => ({
+            value: option.id,
+            label: option.label,
+            ...(option.disabled !== undefined
+              ? { disabled: option.disabled }
+              : {}),
+          }))}
+        />
+        <AutomationSelect
+          label="Model"
+          value={runtime.modelId}
+          disabled={controlDisabled}
+          testId="agents-automation-model"
+          onChange={onModelChange}
+          options={modelOptions.map((option) => ({
+            value: option.id,
+            label: option.label,
+          }))}
+        />
+        <AutomationSelect
+          label="Effort"
+          value={runtime.effort}
+          disabled={controlDisabled}
+          testId="agents-automation-effort"
+          onChange={(value) => onEffortChange(value as AgentEffort)}
+          options={effortOptions.map((option) => ({
+            value: option.id,
+            label: option.label,
+          }))}
+        />
+      </div>
+      {selectedProviderDisabledReason ? (
+        <p className="text-[0.75rem] leading-5" style={{ color: "var(--text-muted)" }}>
+          {selectedProviderDisabledReason}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function AutomationSelect({
+  label,
+  value,
+  options,
+  disabled,
+  testId,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  options: readonly { value: string; label: string; disabled?: boolean }[];
+  disabled: boolean;
+  testId: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label className="flex min-w-0 flex-col gap-1">
+      <span
+        className="text-[0.6875rem] font-medium uppercase tracking-[0.06em]"
+        style={{ color: "var(--text-muted)" }}
+      >
+        {label}
+      </span>
+      <select
+        value={value}
+        disabled={disabled}
+        onChange={(event) => onChange(event.currentTarget.value)}
+        className="h-8 min-w-0 rounded-md border px-2 text-[0.75rem] outline-none transition-colors focus-visible:ring-2 focus-visible:ring-[var(--accent-primary)] disabled:cursor-not-allowed disabled:opacity-60"
+        style={{
+          backgroundColor: "var(--bg-base)",
+          borderColor: "var(--border-subtle)",
+          borderStyle: "solid",
+          borderWidth: "1px",
+          color: "var(--text-primary)",
+        }}
+        data-testid={testId}
+      >
+        {options.map((option) => (
+          <option
+            key={option.value}
+            value={option.value}
+            disabled={option.disabled}
+          >
+            {option.label}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }
 
@@ -611,6 +1092,11 @@ interface AgentsActiveConversationPanelProps {
     taskId: string,
     contextType: AgentTaskRuntimeContextType
   ) => void;
+  onFocusAutomationRun: (
+    automationId: string,
+    runId: string,
+    conversationId: string
+  ) => void;
   onOpenTaskArtifact: (taskId: string) => void;
   onOpenAutomation?: (automationId: string) => void;
   onForkConversation: (
@@ -661,6 +1147,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   onFocusWorkspaceReview,
   onFocusVerificationSession,
   onFocusTaskRuntime,
+  onFocusAutomationRun,
   onOpenTaskArtifact,
   onOpenAutomation,
   onForkConversation,
@@ -715,6 +1202,12 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   const [isCreatingPlanProposals, setIsCreatingPlanProposals] = useState(false);
   const [isImplementingPlanDirectly, setIsImplementingPlanDirectly] = useState(false);
   const [isStartingPlanVerification, setIsStartingPlanVerification] = useState(false);
+  const [isApprovingAutomation, setIsApprovingAutomation] = useState(false);
+  const [isRunningAutomation, setIsRunningAutomation] = useState(false);
+  const [isUpdatingAutomationRunMode, setIsUpdatingAutomationRunMode] =
+    useState(false);
+  const [isUpdatingAutomationRuntime, setIsUpdatingAutomationRuntime] =
+    useState(false);
   const [codexFastModeByConversationId, setCodexFastModeByConversationId] =
     useState<Record<string, boolean>>({});
   const [
@@ -857,6 +1350,8 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   const panelIdeationSessionId =
     focusedChatSessionId ??
     (activeConversation.contextType === "ideation" ? activeConversation.contextId : undefined);
+  const focusedAutomationRunConversationId =
+    getFocusedAutomationRunConversationId(chatFocus);
   const taskRuntimeFocus = chatFocus.type === "task_runtime" ? chatFocus : null;
   const panelSelectedTaskId = taskRuntimeFocus?.taskId ?? null;
   const panelTaskRuntimeContextType = taskRuntimeFocus?.contextType;
@@ -864,28 +1359,31 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     ? `${taskRuntimeFocus.contextType}:${taskRuntimeFocus.taskId}`
     : focusedWorkspaceReviewConversationId
     ? `workspace_review:${focusedWorkspaceReviewConversationId}`
+    : focusedAutomationRunConversationId
+    ? `automation_run:${focusedAutomationRunConversationId}`
     : focusedChatSessionId ?? "workspace";
   const isFocusedChildChat = chatFocus.type !== "workspace";
-  const automationRunConversationId =
-    activeConversation.automationId && activeConversation.automationRunId
-      ? activeConversation.automationRunId
-      : null;
-  const automationRunDetailQuery = useAutomationDetail(
+  const activeAutomationRunId =
+    chatFocus.type === "automation_run"
+      ? chatFocus.runId
+      : activeConversation.automationRunId ?? null;
+  const automationDetailQuery = useAutomationDetail(
     activeConversation.automationId,
     {
-      enabled: Boolean(automationRunConversationId) && !isFocusedChildChat,
+      enabled:
+        Boolean(activeConversation.automationId) &&
+        (!isFocusedChildChat || chatFocus.type === "automation_run"),
     },
   );
   const automationRun = useMemo(
     () =>
-      automationRunDetailQuery.data?.runs.find(
-        (run) => run.id === automationRunConversationId,
+      automationDetailQuery.data?.runs.find(
+        (run) => run.id === activeAutomationRunId,
       ) ?? null,
-    [automationRunConversationId, automationRunDetailQuery.data?.runs],
+    [activeAutomationRunId, automationDetailQuery.data?.runs],
   );
   const automationRunReadOnlyReason =
-    automationRunConversationId &&
-    !isFocusedChildChat &&
+    activeAutomationRunId &&
     (!automationRun || !TERMINAL_AUTOMATION_RUN_STATUSES.has(automationRun.status))
       ? "Automation run conversations are read-only until the run reaches a terminal state."
       : null;
@@ -898,6 +1396,10 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     activeConversation.automationId &&
     !activeConversation.automationRunId
       ? activeConversation.automationId
+      : null;
+  const automationSetupDetail =
+    automationSetupConversationId && automationDetailQuery.data
+      ? automationDetailQuery.data
       : null;
   const usesWorkspaceRuntimeControls =
     !isFocusedChildChat || chatFocus.type === "workspace_review";
@@ -1175,12 +1677,16 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     if (focusedWorkspaceReviewConversationId) {
       return buildStoreKey("project", focusedWorkspaceReviewConversationId);
     }
+    if (focusedAutomationRunConversationId) {
+      return buildStoreKey("project", focusedAutomationRunConversationId);
+    }
     if (focusedChatSessionId) {
       return buildStoreKey("ideation", focusedChatSessionId);
     }
     return getAgentConversationStoreKey(activeConversation);
   }, [
     activeConversation,
+    focusedAutomationRunConversationId,
     focusedChatSessionId,
     focusedWorkspaceReviewConversationId,
     taskRuntimeFocus,
@@ -1191,15 +1697,18 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   );
   const panelConversationIdOverride =
     focusedWorkspaceReviewConversationId ??
+    focusedAutomationRunConversationId ??
     (!isFocusedChildChat ? selectedConversationId : null);
   const panelAgentProcessContextIdOverride = taskRuntimeFocus
     ? taskRuntimeFocus.taskId
     : focusedWorkspaceReviewConversationId ??
+      focusedAutomationRunConversationId ??
       (!isFocusedChildChat && activeConversation.contextType === "project"
         ? selectedConversationId
         : null);
   const panelSendConversationId =
     focusedWorkspaceReviewConversationId ??
+    focusedAutomationRunConversationId ??
     (!isFocusedChildChat ? selectedConversationId : null);
   const queuedMessages = useChatStore(queuedMessagesSelector);
   const executionHaltState = useUiStore((s) =>
@@ -1284,6 +1793,15 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     },
     [onFocusWorkspaceReview],
   );
+  const handleOpenAutomationRun = useCallback(
+    (automationId: string, run: AutomationRun) => {
+      if (!run.conversationId) {
+        return;
+      }
+      onFocusAutomationRun(automationId, run.id, run.conversationId);
+    },
+    [onFocusAutomationRun],
+  );
   const composerTaskLedgerContext = useMemo(() => {
     if (taskRuntimeFocus) {
       return {
@@ -1330,6 +1848,50 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       selectableWorkspaceRuntime.provider,
       workspaceProviderSupportedEfforts,
     ]
+  );
+  const automationConfig = automationSetupDetail?.automation ?? null;
+  const automationConfigId =
+    automationConfig?.id ?? activeConversation.automationId ?? null;
+  const selectableAutomationRuntime = useMemo<AgentRuntimeSelection | null>(() => {
+    if (!automationConfig) {
+      return null;
+    }
+    const provider = automationProviderFromValue(automationConfig.providerHarness);
+    return normalizeRuntimeSelection(
+      automationRuntimeFromConfig(automationConfig),
+      modelRegistry,
+      supportedEffortsForProvider(providerOptions, provider),
+      supportedModelAliasesForProvider(providerOptions, provider),
+    );
+  }, [automationConfig, modelRegistry, providerOptions]);
+  const automationModelOptions = useMemo(
+    () =>
+      selectableAutomationRuntime
+        ? agentModelOptions(
+            selectableAutomationRuntime.provider,
+            modelRegistry,
+            supportedModelAliasesForProvider(
+              providerOptions,
+              selectableAutomationRuntime.provider,
+            ),
+          )
+        : [],
+    [modelRegistry, providerOptions, selectableAutomationRuntime],
+  );
+  const automationEffortOptions = useMemo(
+    () =>
+      selectableAutomationRuntime
+        ? agentEffortOptions(
+            selectableAutomationRuntime.provider,
+            selectableAutomationRuntime.modelId,
+            modelRegistry,
+            supportedEffortsForProvider(
+              providerOptions,
+              selectableAutomationRuntime.provider,
+            ),
+          )
+        : [],
+    [modelRegistry, providerOptions, selectableAutomationRuntime],
   );
   const modeOptions = useMemo(() => {
     if (!activeConversationModeLocked) {
@@ -1845,6 +2407,215 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     onOpenPlanArtifact,
     selectedConversationId,
   ]);
+  const handleApproveAutomation = useCallback(async () => {
+    if (!automationConfigId || isApprovingAutomation) {
+      return;
+    }
+    setIsApprovingAutomation(true);
+    try {
+      await automationsApi.finalize(automationConfigId);
+      invalidateAutomationQueries(queryClient, automationConfigId);
+      toast.success("Automation spec approved");
+    } catch (err) {
+      console.error("Failed to approve automation:", err);
+      toast.error(err instanceof Error ? err.message : "Failed to approve automation");
+    } finally {
+      setIsApprovingAutomation(false);
+    }
+  }, [automationConfigId, isApprovingAutomation, queryClient]);
+  const handleRunAutomation = useCallback(async () => {
+    if (!automationConfigId || isRunningAutomation) {
+      return;
+    }
+    setIsRunningAutomation(true);
+    try {
+      const schedule = await automationsApi.triggerRunNow(automationConfigId);
+      invalidateAutomationQueries(queryClient, automationConfigId);
+      toast.success(
+        schedule.scheduled ? "Automation run queued" : schedule.reason ?? "Automation run requested",
+      );
+    } catch (err) {
+      console.error("Failed to run automation:", err);
+      toast.error(err instanceof Error ? err.message : "Failed to run automation");
+    } finally {
+      setIsRunningAutomation(false);
+    }
+  }, [automationConfigId, isRunningAutomation, queryClient]);
+  const handleAutomationRunModeChange = useCallback(
+    async (runMode: AutomationRunMode) => {
+      if (
+        !automationSetupConversationId ||
+        isUpdatingAutomationRunMode ||
+        automationSetupDetail?.automation.runMode === runMode
+      ) {
+        return;
+      }
+      setIsUpdatingAutomationRunMode(true);
+      try {
+        await automationsApi.setupAgent.updateAutomation(selectedConversationId, {
+          runMode,
+        });
+        invalidateAutomationQueries(queryClient, automationConfigId);
+        toast.success(`Automation will run as ${formatAutomationRunModeLabel(runMode)}`);
+      } catch (err) {
+        console.error("Failed to update automation run type:", err);
+        toast.error(err instanceof Error ? err.message : "Failed to update automation run type");
+      } finally {
+        setIsUpdatingAutomationRunMode(false);
+      }
+    },
+    [
+      automationSetupConversationId,
+      automationSetupDetail?.automation.runMode,
+      automationConfigId,
+      isUpdatingAutomationRunMode,
+      queryClient,
+      selectedConversationId,
+    ],
+  );
+  const updateAutomationRuntime = useCallback(
+    async (runtime: AgentRuntimeSelection) => {
+      if (!automationSetupConversationId || isUpdatingAutomationRuntime) {
+        return;
+      }
+      setIsUpdatingAutomationRuntime(true);
+      try {
+        await automationsApi.setupAgent.updateAutomation(selectedConversationId, {
+          providerHarness: runtime.provider,
+          modelId: runtime.modelId,
+          logicalEffort: runtime.effort,
+        });
+        invalidateAutomationQueries(queryClient, automationConfigId);
+        toast.success("Automation run agent updated");
+      } catch (err) {
+        console.error("Failed to update automation run agent:", err);
+        toast.error(
+          err instanceof Error
+            ? err.message
+            : "Failed to update automation run agent",
+        );
+      } finally {
+        setIsUpdatingAutomationRuntime(false);
+      }
+    },
+    [
+      automationSetupConversationId,
+      automationConfigId,
+      isUpdatingAutomationRuntime,
+      queryClient,
+      selectedConversationId,
+    ],
+  );
+  const handleAutomationProviderChange = useCallback(
+    (provider: AgentProvider) => {
+      if (!selectableAutomationRuntime) {
+        return;
+      }
+      const modelId = defaultModelForProvider(provider, modelRegistry);
+      const nextRuntime = normalizeRuntimeSelection(
+        {
+          provider,
+          modelId,
+          effort: defaultEffortForModel(provider, modelId, modelRegistry),
+        },
+        modelRegistry,
+        supportedEffortsForProvider(providerOptions, provider),
+        supportedModelAliasesForProvider(providerOptions, provider),
+      );
+      void updateAutomationRuntime(nextRuntime);
+    },
+    [
+      modelRegistry,
+      providerOptions,
+      selectableAutomationRuntime,
+      updateAutomationRuntime,
+    ],
+  );
+  const handleAutomationModelChange = useCallback(
+    (modelId: string) => {
+      if (!selectableAutomationRuntime) {
+        return;
+      }
+      const provider = selectableAutomationRuntime.provider;
+      const nextRuntime = normalizeRuntimeSelection(
+        {
+          ...selectableAutomationRuntime,
+          modelId,
+        },
+        modelRegistry,
+        supportedEffortsForProvider(providerOptions, provider),
+        supportedModelAliasesForProvider(providerOptions, provider),
+      );
+      void updateAutomationRuntime(nextRuntime);
+    },
+    [
+      modelRegistry,
+      providerOptions,
+      selectableAutomationRuntime,
+      updateAutomationRuntime,
+    ],
+  );
+  const handleAutomationEffortChange = useCallback(
+    (effort: AgentEffort) => {
+      if (!selectableAutomationRuntime) {
+        return;
+      }
+      void updateAutomationRuntime({
+        ...selectableAutomationRuntime,
+        effort,
+      });
+    },
+    [selectableAutomationRuntime, updateAutomationRuntime],
+  );
+  const automationComposerCtaActions = useMemo<PlanComposerCtaAction[]>(() => {
+    const automation = automationSetupDetail?.automation;
+    if (!automation) {
+      return [];
+    }
+    if (automation.status === "draft") {
+      if (!isAutomationApprovalReady(automation)) {
+        return [];
+      }
+      return [
+        {
+          id: "approve",
+          label: "Approve",
+          icon: CheckCircle2,
+          isPrimary: true,
+          isPending: isApprovingAutomation,
+          disabled: false,
+          onClick: () => {
+            void handleApproveAutomation();
+          },
+        },
+      ];
+    }
+    if (
+      automation.status === "active" &&
+      !hasOpenAutomationRun(automationSetupDetail.runs)
+    ) {
+      return [
+        {
+          id: "run",
+          label: "Run",
+          icon: Play,
+          isPrimary: true,
+          isPending: isRunningAutomation,
+          disabled: false,
+          onClick: () => {
+            void handleRunAutomation();
+          },
+        },
+      ];
+    }
+    return [];
+  }, [
+    automationSetupDetail,
+    handleApproveAutomation,
+    handleRunAutomation,
+    isApprovingAutomation,
+    isRunningAutomation,
+  ]);
   const planApprovalAction = useMemo(() => {
     if (!canApproveComposerPlan) {
       return undefined;
@@ -2264,6 +3035,9 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
               };
               const shouldShowPlanComposerCta =
                 !!planComposerHint && composerProps.questionMode === undefined;
+              const shouldShowAutomationComposerCta =
+                automationComposerCtaActions.length > 0 &&
+                composerProps.questionMode === undefined;
               return (
                 <>
                   {!isFocusedChildChat &&
@@ -2294,11 +3068,36 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                     onOpenFile={onOpenPublishFile}
                     onPreloadPublishPane={onPreloadArtifacts}
                   />
+                  {automationSetupConversationId && automationSetupDetail && (
+                    <AutomationRunsWidget
+                      automationId={automationSetupConversationId}
+                      runs={automationSetupDetail.runs}
+                      currentRunId={activeAutomationRunId}
+                      onOpenRun={handleOpenAutomationRun}
+                    />
+                  )}
                   {shouldShowPlanComposerCta && (
                     <PlanComposerCtaRow
                       hint={planComposerHint}
                       actions={planComposerCtaActions}
                       viewPlanAction={planComposerViewPlanAction}
+                    />
+                  )}
+                  {shouldShowAutomationComposerCta && (
+                    <PlanComposerCtaRow
+                      hint={
+                        automationSetupDetail?.automation.status === "draft"
+                          ? "Approve the automation spec. The setup has a goal, phase spec, run mode, model, base, and first-run prompt."
+                          : "Run the approved automation now."
+                      }
+                      actions={automationComposerCtaActions}
+                      testIdPrefix="agents-automation-composer-cta"
+                      actionGroupLabel="Automation actions"
+                      compactHintOverride={
+                        automationSetupDetail?.automation.status === "draft"
+                          ? "Ready for approval"
+                          : "Ready to run"
+                      }
                     />
                   )}
                   {automationSetupConversationId && (
@@ -2320,9 +3119,39 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                       />
                       <div className="flex min-w-0 flex-1 flex-col gap-2">
                         <span>
-                          Automation setup — configure this automation by
-                          chatting with the setup agent.
+                          Automation setup — draft and approve this automation
+                          spec by chatting with the setup agent.
                         </span>
+                        {automationSetupDetail?.automation &&
+                          selectableAutomationRuntime && (
+                            <AutomationRuntimeSelector
+                              runtime={selectableAutomationRuntime}
+                              providerOptions={
+                                providerOptions.length > 0
+                                  ? providerOptions
+                                  : AGENT_PROVIDER_OPTIONS
+                              }
+                              modelOptions={automationModelOptions}
+                              effortOptions={automationEffortOptions}
+                              disabled={
+                                automationSetupDetail.automation.status !== "draft"
+                              }
+                              isUpdating={isUpdatingAutomationRuntime}
+                              onProviderChange={handleAutomationProviderChange}
+                              onModelChange={handleAutomationModelChange}
+                              onEffortChange={handleAutomationEffortChange}
+                            />
+                          )}
+                        {automationSetupDetail?.automation && (
+                          <AutomationRunModeSelector
+                            runMode={automationSetupDetail.automation.runMode}
+                            disabled={
+                              automationSetupDetail.automation.status !== "draft"
+                            }
+                            isUpdating={isUpdatingAutomationRunMode}
+                            onChange={handleAutomationRunModeChange}
+                          />
+                        )}
                         {onOpenAutomation && (
                           <div>
                             <Button

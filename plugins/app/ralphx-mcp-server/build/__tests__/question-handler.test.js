@@ -60,6 +60,40 @@ describe("handleAskUserQuestion", () => {
         expect(requestBody.batch_index).toBeUndefined();
         expect(requestBody.batch_total).toBeUndefined();
     });
+    it("uses the runtime conversation id and forwards metadata when session_id is omitted", async () => {
+        process.env.RALPHX_CONVERSATION_ID = "conversation-automation";
+        const fetchMock = vi
+            .fn()
+            .mockResolvedValueOnce(jsonResponse({ request_id: "req-automation" }))
+            .mockResolvedValueOnce(jsonResponse({
+            selected_options: ["apply_automation_proposal"],
+            text: null,
+            skipped: false,
+        }));
+        vi.stubGlobal("fetch", fetchMock);
+        const result = await handleAskUserQuestion({
+            header: "Apply automation proposal?",
+            question: "Apply this automation proposal?",
+            options: [{ label: "Apply proposal", value: "apply_automation_proposal" }],
+            allow_skip: false,
+            metadata: {
+                kind: "automation_setup_proposal",
+            },
+        });
+        expect(parsedToolText(result)).toMatchObject({
+            selected_options: ["apply_automation_proposal"],
+            skipped: false,
+        });
+        const requestBody = JSON.parse(fetchMock.mock.calls[0]?.[1]?.body);
+        expect(requestBody).toMatchObject({
+            session_id: "conversation-automation",
+            header: "Apply automation proposal?",
+            allow_skip: false,
+            metadata: {
+                kind: "automation_setup_proposal",
+            },
+        });
+    });
     it("asks batched interview questions sequentially", async () => {
         const fetchMock = vi
             .fn()

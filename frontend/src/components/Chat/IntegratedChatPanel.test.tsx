@@ -245,6 +245,8 @@ vi.mock("@/hooks/useQuestionInput", () => ({
     handleChipClick: vi.fn(),
     handleMatchedOptions: vi.fn(),
     handleQuestionSend: vi.fn(),
+    handleQuestionSkip: vi.fn(),
+    handleQuestionOptionSubmit: vi.fn(),
   }),
 }));
 

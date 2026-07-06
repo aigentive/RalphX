@@ -6,7 +6,6 @@ use super::automation_commands::{
     parse_automation_run_id, parse_project_id, trigger_automation_run_now_for_state, trim_optional,
     AutomationRunScopedInput, CreateAutomationDraftInput, UpdateAutomationSettingsInput,
 };
-use crate::error::AppError;
 use crate::application::automation::api::{
     automation_detail_response_for_state, AutomationResponse, AutomationScheduleResponse,
 };
@@ -17,6 +16,7 @@ use crate::domain::entities::{
     AutomationPromptAuthor, AutomationRun, AutomationRunId, AutomationRunStatus, AutomationStatus,
     ChatContextType, ChatConversationId, ProjectId,
 };
+use crate::error::AppError;
 
 fn automation() -> Automation {
     let now = Utc::now();
@@ -37,7 +37,9 @@ fn automation() -> Automation {
         base_ref: String::new(),
         base_display_name: None,
         base_source_pull_request_json: None,
-        goal_items_json: None,
+        goal_items_json: Some(
+            r#"[{"id":"phase-1","title":"Run 1","status":"pending"}]"#.to_string(),
+        ),
         chain_mode: "merged_base".to_string(),
         completion_signal: "pr_merged".to_string(),
         max_runs: 25,
@@ -237,6 +239,7 @@ async fn create_draft_creates_bound_setup_conversation_without_worktree() {
         response.automation.setup_conversation_id.as_deref(),
         Some(setup_conversation_id)
     );
+    assert_eq!(response.automation.name, "Nightly cleanup");
 
     let automation_id = AutomationId::from_string(response.automation.id.clone());
     let persisted = state
@@ -256,6 +259,7 @@ async fn create_draft_creates_bound_setup_conversation_without_worktree() {
         .expect("setup conversation should be persisted");
     assert_eq!(setup_conversation.context_type, ChatContextType::Project);
     assert_eq!(setup_conversation.context_id, "project-1");
+    assert_eq!(setup_conversation.title.as_deref(), Some("Nightly cleanup"));
     assert_eq!(
         setup_conversation.agent_mode,
         Some(AgentConversationWorkspaceMode::Automation)
@@ -347,7 +351,7 @@ async fn finalize_command_rejects_unconfigured_draft() {
     assert!(matches!(error, AppError::Validation(_)));
     assert!(error
         .to_string()
-        .contains("automation goal_prompt is required before activation"));
+        .contains("automation goal_prompt is required before approval"));
 
     let persisted = state
         .automation_repo

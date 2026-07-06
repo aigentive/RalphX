@@ -1237,6 +1237,7 @@ describe('getAllowedToolNames - CLI arg priority chain', () => {
       'fs_grep',
       'fs_glob',
       'list_projects',
+      'ask_user_question',
       'get_automation',
       'update_automation',
       'finalize_automation',

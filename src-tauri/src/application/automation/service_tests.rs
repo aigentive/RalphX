@@ -74,7 +74,9 @@ fn automation(id: &str, status: AutomationStatus) -> Automation {
         base_ref: String::new(),
         base_display_name: None,
         base_source_pull_request_json: None,
-        goal_items_json: None,
+        goal_items_json: Some(
+            r#"[{"id":"phase-1","title":"Run 1","status":"pending"}]"#.to_string(),
+        ),
         chain_mode: "merged_base".to_string(),
         completion_signal: "pr_merged".to_string(),
         max_runs: 25,
@@ -522,6 +524,10 @@ async fn service_update_config_writes_provided_fields_on_draft_and_emits_event()
             base_ref_kind: Some("local_branch".to_string()),
             base_ref: Some("main".to_string()),
             base_display_name: Some("main".to_string()),
+            goal_items_json: Some(
+                r#"[{"id":"phase-1","title":"Build shared context model","status":"pending"}]"#
+                    .to_string(),
+            ),
             chain_mode: None,
             completion_signal: None,
             setup_analysis_summary: Some("Setup summary".to_string()),
@@ -538,6 +544,10 @@ async fn service_update_config_writes_provided_fields_on_draft_and_emits_event()
     assert_eq!(updated.model_id, "gpt-5.4");
     assert_eq!(updated.base_ref_kind, "local_branch");
     assert_eq!(updated.base_ref, "main");
+    assert_eq!(
+        updated.goal_items_json.as_deref(),
+        Some(r#"[{"id":"phase-1","title":"Build shared context model","status":"pending"}]"#),
+    );
     // Fields left None keep their pre-existing values.
     assert_eq!(updated.chain_mode, "merged_base");
     assert_eq!(updated.completion_signal, "pr_merged");
@@ -570,6 +580,7 @@ async fn service_update_config_rejects_active_automation_and_leaves_row_intact()
             base_ref_kind: None,
             base_ref: None,
             base_display_name: None,
+            goal_items_json: None,
             chain_mode: None,
             completion_signal: None,
             setup_analysis_summary: None,
@@ -627,6 +638,10 @@ async fn service_create_draft_then_config_then_finalize_activates_automation() {
             base_ref_kind: Some("local_branch".to_string()),
             base_ref: Some("main".to_string()),
             base_display_name: Some("main".to_string()),
+            goal_items_json: Some(
+                r#"[{"id":"phase-1","title":"Implement first slice","status":"pending"}]"#
+                    .to_string(),
+            ),
             chain_mode: None,
             completion_signal: None,
             setup_analysis_summary: None,
@@ -787,6 +802,24 @@ async fn service_finalize_fails_closed_for_incomplete_or_unresolved_drafts() {
     assert_eq!(
         automation_repo
             .get_by_id(&unresolved_base.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        AutomationStatus::Draft
+    );
+
+    let mut missing_phase_spec = automation("automation-no-phases", AutomationStatus::Draft);
+    missing_phase_spec.goal_items_json = None;
+    automation_repo
+        .create(missing_phase_spec.clone())
+        .await
+        .unwrap();
+    let phase_error = service.finalize(&missing_phase_spec.id).await.unwrap_err();
+    assert!(matches!(phase_error, AppError::Validation(message) if message.contains("phase spec")));
+    assert_eq!(
+        automation_repo
+            .get_by_id(&missing_phase_spec.id)
             .await
             .unwrap()
             .unwrap()

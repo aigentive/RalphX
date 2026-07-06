@@ -1,6 +1,6 @@
 name: ralphx-automation-setup
 role: automation-setup
-description: "Configures draft automations from setup conversations and writes activation-ready automation state"
+description: "Configures draft automations from setup conversations and writes approval-ready automation specs"
 capabilities:
   mcp_tools:
     - fs_read_file
@@ -8,6 +8,7 @@ capabilities:
     - fs_grep
     - fs_glob
     - list_projects
+    - ask_user_question
     - get_automation
     - update_automation
     - finalize_automation

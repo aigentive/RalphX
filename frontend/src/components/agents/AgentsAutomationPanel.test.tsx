@@ -72,13 +72,14 @@ const automationFixture = (
   baseRef: "",
   baseDisplayName: "Project default (main)",
   baseSourcePullRequestJson: null,
-  goalItemsJson: null,
+  goalItemsJson:
+    '[{"id":"phase-1","title":"Build shared context model","status":"pending"}]',
   chainMode: "merged_base",
   completionSignal: "pr_merged",
   maxRuns: 25,
   maxConsecutiveFailures: 3,
-  firstRunPrompt: null,
-  setupAnalysisSummary: null,
+  firstRunPrompt: "Build the shared context model in a scoped PR.",
+  setupAnalysisSummary: "Configure selected artifact context for chat.",
   createdAt: "2026-07-05T10:00:00Z",
   updatedAt: "2026-07-05T10:00:00Z",
   ...overrides,
@@ -171,9 +172,21 @@ describe("AgentsAutomationPanel", () => {
 
     expect(screen.getByTestId("agents-automation-panel")).toBeInTheDocument();
     expect(screen.getByText("Release automation")).toBeInTheDocument();
-    expect(screen.getByText("Active")).toBeInTheDocument();
+    expect(screen.getByText("Approved")).toBeInTheDocument();
     expect(screen.getByText("3 of 25")).toBeInTheDocument();
-    expect(screen.getByText("PR #593 · published")).toBeInTheDocument();
+    expect(screen.getByText("PR #593 · Running")).toBeInTheDocument();
+    expect(screen.getByTestId("agents-automation-goal")).toHaveTextContent(
+      "Ship the remaining release tasks.",
+    );
+    expect(screen.getByTestId("agents-automation-phases")).toHaveTextContent(
+      "Build shared context model",
+    );
+    expect(screen.getByTestId("agents-automation-setup-summary")).toHaveTextContent(
+      "Configure selected artifact context for chat.",
+    );
+    expect(screen.getByTestId("agents-automation-first-run")).toHaveTextContent(
+      "Build the shared context model in a scoped PR.",
+    );
     expect(screen.getByTestId("agents-automation-stage")).toHaveTextContent(
       "Waiting for PR #593 to merge",
     );
@@ -227,7 +240,7 @@ describe("AgentsAutomationPanel", () => {
     renderPanel();
 
     expect(screen.getByText("Paused")).toBeInTheDocument();
-    expect(screen.getByText("running")).toBeInTheDocument();
+    expect(screen.getByText("Running")).toBeInTheDocument();
     expect(screen.queryByTestId("agents-automation-pause")).not.toBeInTheDocument();
     expect(screen.getByTestId("agents-automation-resume")).toBeInTheDocument();
 

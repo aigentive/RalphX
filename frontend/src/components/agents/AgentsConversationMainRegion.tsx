@@ -36,6 +36,7 @@ interface AgentsConversationMainRegionProps {
   onFocusWorkspaceReview: ActiveConversationPanelProps["onFocusWorkspaceReview"];
   onFocusVerificationSession: ActiveConversationPanelProps["onFocusVerificationSession"];
   onFocusTaskRuntime: ActiveConversationPanelProps["onFocusTaskRuntime"];
+  onFocusAutomationRun: ActiveConversationPanelProps["onFocusAutomationRun"];
   onOpenTaskArtifact: ActiveConversationPanelProps["onOpenTaskArtifact"];
   onOpenAutomation?: ActiveConversationPanelProps["onOpenAutomation"];
   onForkConversation: ActiveConversationPanelProps["onForkConversation"];
@@ -92,6 +93,7 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
   onFocusWorkspaceReview,
   onFocusVerificationSession,
   onFocusTaskRuntime,
+  onFocusAutomationRun,
   onOpenTaskArtifact,
   onOpenAutomation,
   onForkConversation,
@@ -144,6 +146,7 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
         onFocusWorkspaceReview={onFocusWorkspaceReview}
         onFocusVerificationSession={onFocusVerificationSession}
         onFocusTaskRuntime={onFocusTaskRuntime}
+        onFocusAutomationRun={onFocusAutomationRun}
         onOpenTaskArtifact={onOpenTaskArtifact}
         {...(onOpenAutomation ? { onOpenAutomation } : {})}
         onForkConversation={onForkConversation}

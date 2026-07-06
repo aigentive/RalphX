@@ -66,8 +66,8 @@ describe("isWorkspaceModeLocked", () => {
 });
 
 describe("AGENT_CONVERSATION_MODE_OPTIONS", () => {
-  it("keeps automation out of the manual conversation mode picker", () => {
-    expect(AGENT_CONVERSATION_MODE_OPTIONS.map((option) => option.id)).not.toContain(
+  it("offers automation as a first-class starter mode", () => {
+    expect(AGENT_CONVERSATION_MODE_OPTIONS.map((option) => option.id)).toContain(
       "automation",
     );
   });

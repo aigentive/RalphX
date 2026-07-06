@@ -28,7 +28,7 @@ const LazyAutomationDetailView = lazy(() => preloadAutomationDetailView());
 
 const STATUS_LABELS: Record<Automation["status"], string> = {
   draft: "Draft",
-  active: "Active",
+  active: "Approved",
   paused: "Paused",
   completed: "Completed",
   stopped: "Stopped",
@@ -48,7 +48,12 @@ function formatLastRun(run: AutomationRun | null): string {
     return "No runs yet";
   }
   const pr = run.prNumber ? ` · PR #${run.prNumber}` : "";
-  return `Run ${run.runIndex} ${run.status}${pr}`;
+  const status = ["pending", "provisioning", "running", "published"].includes(
+    run.status,
+  )
+    ? "Running"
+    : run.status;
+  return `Run ${run.runIndex} ${status}${pr}`;
 }
 
 function AutomationsListSkeleton() {

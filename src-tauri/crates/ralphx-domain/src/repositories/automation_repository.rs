@@ -24,6 +24,7 @@ pub struct AutomationConfigPatch {
     pub base_ref_kind: Option<String>,
     pub base_ref: Option<String>,
     pub base_display_name: Option<String>,
+    pub goal_items_json: Option<String>,
     pub chain_mode: Option<String>,
     pub completion_signal: Option<String>,
     pub setup_analysis_summary: Option<String>,

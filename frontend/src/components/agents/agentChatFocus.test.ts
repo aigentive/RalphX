@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   getAgentChatFocusSwitchOptions,
   getAgentsChatFocusDisplay,
+  getFocusedAutomationRunConversationId,
   getFocusedChatSessionId,
   getFocusedWorkspaceReviewConversationId,
   type AgentsChatFocus,
@@ -25,6 +26,12 @@ const workspaceReviewFocus: Extract<
   type: "workspace_review",
   conversationId: "review-conversation-1",
 };
+const automationRunFocus: Extract<AgentsChatFocus, { type: "automation_run" }> = {
+  type: "automation_run",
+  automationId: "automation-1",
+  runId: "run-1",
+  conversationId: "automation-run-conversation-1",
+};
 
 describe("getAgentChatFocusSwitchOptions", () => {
   it("keeps the full ideation focus switcher in ideation mode", () => {
@@ -34,6 +41,7 @@ describe("getAgentChatFocusSwitchOptions", () => {
       verificationFocusTarget: verificationFocus,
       taskRuntimeFocusTarget: null,
       workspaceReviewFocusTarget: null,
+      automationRunFocusTarget: null,
       hasPlanArtifact: true,
     });
 
@@ -51,6 +59,7 @@ describe("getAgentChatFocusSwitchOptions", () => {
       verificationFocusTarget: verificationFocus,
       taskRuntimeFocusTarget: null,
       workspaceReviewFocusTarget: null,
+      automationRunFocusTarget: null,
       hasPlanArtifact: true,
     });
 
@@ -67,6 +76,7 @@ describe("getAgentChatFocusSwitchOptions", () => {
       verificationFocusTarget: verificationFocus,
       taskRuntimeFocusTarget: null,
       workspaceReviewFocusTarget: null,
+      automationRunFocusTarget: null,
       hasPlanArtifact: false,
     });
 
@@ -80,6 +90,7 @@ describe("getAgentChatFocusSwitchOptions", () => {
       verificationFocusTarget: verificationFocus,
       taskRuntimeFocusTarget: null,
       workspaceReviewFocusTarget: null,
+      automationRunFocusTarget: null,
       hasPlanArtifact: true,
     });
 
@@ -93,6 +104,7 @@ describe("getAgentChatFocusSwitchOptions", () => {
       verificationFocusTarget: null,
       taskRuntimeFocusTarget: taskRuntimeFocus,
       workspaceReviewFocusTarget: null,
+      automationRunFocusTarget: null,
       hasPlanArtifact: false,
     });
 
@@ -114,6 +126,7 @@ describe("getAgentChatFocusSwitchOptions", () => {
       verificationFocusTarget: null,
       taskRuntimeFocusTarget: null,
       workspaceReviewFocusTarget: workspaceReviewFocus,
+      automationRunFocusTarget: null,
       hasPlanArtifact: false,
     });
 
@@ -127,6 +140,28 @@ describe("getAgentChatFocusSwitchOptions", () => {
       tone: "warning",
     });
   });
+
+  it("adds automation run focus when a run conversation is selected from setup", () => {
+    const options = getAgentChatFocusSwitchOptions({
+      mode: "automation",
+      focusSwitcherIdeationSessionId: null,
+      verificationFocusTarget: null,
+      taskRuntimeFocusTarget: null,
+      workspaceReviewFocusTarget: null,
+      automationRunFocusTarget: automationRunFocus,
+      hasPlanArtifact: false,
+    });
+
+    expect(options.map((option) => option.type)).toEqual([
+      "workspace",
+      "automation_run",
+    ]);
+    expect(options[1]).toMatchObject({
+      label: "Run",
+      description: "Show the automation run chat",
+      tone: "accent",
+    });
+  });
 });
 
 describe("task runtime focus helpers", () => {
@@ -138,6 +173,21 @@ describe("task runtime focus helpers", () => {
       tone: "accent",
     });
     expect(getFocusedChatSessionId(taskRuntimeFocus)).toBeNull();
+  });
+});
+
+describe("automation run focus helpers", () => {
+  it("describes automation run focus and maps it to a child conversation", () => {
+    expect(getAgentsChatFocusDisplay(automationRunFocus)).toEqual({
+      type: "automation_run",
+      label: "Run",
+      description: "Focused on an automation run",
+      tone: "accent",
+    });
+    expect(getFocusedAutomationRunConversationId(automationRunFocus)).toBe(
+      "automation-run-conversation-1",
+    );
+    expect(getFocusedChatSessionId(automationRunFocus)).toBeNull();
   });
 });
 

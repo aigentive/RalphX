@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, type ReactNode } from "react";
 import { ExternalLink, Pause, Play, Square, Workflow } from "lucide-react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -22,16 +22,85 @@ import { withAlpha } from "@/lib/theme-colors";
 
 interface AgentsAutomationPanelProps {
   automationId: string;
+  conversationTitle?: string | null;
   onOpenAutomation?: (automationId: string) => void;
 }
 
 const STATUS_LABELS: Record<Automation["status"], string> = {
   draft: "Draft",
-  active: "Active",
+  active: "Approved",
   paused: "Paused",
   completed: "Completed",
   stopped: "Stopped",
 };
+const OPEN_RUN_STATUSES = new Set<AutomationRun["status"]>([
+  "pending",
+  "provisioning",
+  "running",
+  "published",
+]);
+
+type AutomationGoalItem = {
+  id: string;
+  title: string;
+  status: string;
+};
+
+function parseAutomationGoalItems(value: string | null): AutomationGoalItem[] {
+  if (!value?.trim()) {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return parsed.flatMap((item, index) => {
+      if (!item || typeof item !== "object") {
+        return [];
+      }
+      const record = item as Record<string, unknown>;
+      const title =
+        typeof record.title === "string" && record.title.trim()
+          ? record.title.trim()
+          : typeof record.text === "string" && record.text.trim()
+            ? record.text.trim()
+            : `Phase ${index + 1}`;
+      const id =
+        typeof record.id === "string" && record.id.trim()
+          ? record.id.trim()
+          : `phase-${index + 1}`;
+      const status =
+        typeof record.status === "string" && record.status.trim()
+          ? record.status.trim()
+          : "pending";
+      return [{ id, title, status }];
+    });
+  } catch {
+    return [];
+  }
+}
+
+function formatBase(automation: Automation): string {
+  return (automation.baseDisplayName ?? automation.baseRef) || automation.baseRefKind;
+}
+
+function formatModel(automation: Automation): string {
+  const effort = automation.logicalEffort ? `/${automation.logicalEffort}` : "";
+  return `${automation.providerHarness}/${automation.modelId}${effort}`;
+}
+
+function automationDisplayName(
+  automation: Automation,
+  conversationTitle?: string | null,
+): string {
+  const name = automation.name.trim();
+  if (name && name.toLowerCase() !== "untitled automation") {
+    return name;
+  }
+  const title = conversationTitle?.trim();
+  return title || "Automation setup";
+}
 
 function formatRunSummary(run: AutomationRun | null, maxRuns: number): string {
   if (!run) {
@@ -44,10 +113,11 @@ function formatPrState(run: AutomationRun | null): string {
   if (!run) {
     return "No PR yet";
   }
+  const status = OPEN_RUN_STATUSES.has(run.status) ? "Running" : run.status;
   if (!run.prNumber) {
-    return run.status;
+    return status;
   }
-  return `PR #${run.prNumber} · ${run.status}`;
+  return `PR #${run.prNumber} · ${status}`;
 }
 
 function PanelShell() {
@@ -77,6 +147,7 @@ function PanelShell() {
 
 export function AgentsAutomationPanel({
   automationId,
+  conversationTitle,
   onOpenAutomation,
 }: AgentsAutomationPanelProps) {
   const afterPaint = useAfterPaintMounted(Boolean(automationId));
@@ -145,7 +216,9 @@ export function AgentsAutomationPanel({
   }
 
   const { automation, runs } = detail.data;
+  const displayName = automationDisplayName(automation, conversationTitle);
   const run = latestRun(runs);
+  const goalItems = parseAutomationGoalItems(automation.goalItemsJson);
   const stage = describeAutomationStage(automation, run);
   const failureReason = describeRunFailure(run);
   const showPausedReason =
@@ -168,7 +241,7 @@ export function AgentsAutomationPanel({
         </div>
         <div className="min-w-0">
           <h2 className="truncate text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
-            {automation.name}
+            {displayName}
           </h2>
           <p className="mt-1 text-xs" style={{ color: "var(--text-muted)" }}>
             Automation-owned conversation
@@ -187,9 +260,57 @@ export function AgentsAutomationPanel({
       >
         <SummaryRow label="Status" value={STATUS_LABELS[automation.status]} />
         <SummaryRow label="Stage" value={stage} testId="agents-automation-stage" />
+        <SummaryRow label="Run type" value={automation.runMode} />
+        <SummaryRow label="Model" value={formatModel(automation)} />
+        <SummaryRow label="Base" value={formatBase(automation)} />
         <SummaryRow label="Run" value={formatRunSummary(run, automation.maxRuns)} />
         <SummaryRow label="Current PR" value={formatPrState(run)} />
       </div>
+
+      <DetailSection title="Goal" testId="agents-automation-goal">
+        <p className="text-xs leading-5" style={{ color: "var(--text-primary)" }}>
+          {automation.goalPrompt.trim() || "No goal configured yet."}
+        </p>
+      </DetailSection>
+
+      <DetailSection title="Phases" testId="agents-automation-phases">
+        {goalItems.length > 0 ? (
+          <div className="space-y-2">
+            {goalItems.map((item, index) => (
+              <div
+                key={`${item.id}:${index}`}
+                className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 text-xs"
+              >
+                <span
+                  className="min-w-0 truncate font-medium"
+                  style={{ color: "var(--text-primary)" }}
+                >
+                  {item.title}
+                </span>
+                <span style={{ color: "var(--text-muted)" }}>{item.status}</span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-xs" style={{ color: "var(--text-muted)" }}>
+            No phases configured yet.
+          </p>
+        )}
+      </DetailSection>
+
+      {automation.setupAnalysisSummary ? (
+        <DetailSection title="Setup summary" testId="agents-automation-setup-summary">
+          <p className="text-xs leading-5" style={{ color: "var(--text-primary)" }}>
+            {automation.setupAnalysisSummary}
+          </p>
+        </DetailSection>
+      ) : null}
+
+      <DetailSection title="First run" testId="agents-automation-first-run">
+        <p className="text-xs leading-5" style={{ color: "var(--text-primary)" }}>
+          {automation.firstRunPrompt?.trim() || "No first run prompt configured yet."}
+        </p>
+      </DetailSection>
 
       {failureReason ? (
         <div
@@ -300,5 +421,36 @@ function SummaryRow({
         {value}
       </span>
     </div>
+  );
+}
+
+function DetailSection({
+  title,
+  children,
+  testId,
+}: {
+  title: string;
+  children: ReactNode;
+  testId?: string;
+}) {
+  return (
+    <section
+      className="rounded-md p-4"
+      style={{
+        backgroundColor: "var(--bg-surface)",
+        borderColor: "var(--border-default)",
+        borderStyle: "solid",
+        borderWidth: "1px",
+      }}
+      {...(testId ? { "data-testid": testId } : {})}
+    >
+      <h3
+        className="mb-3 text-xs font-semibold uppercase tracking-[0.08em]"
+        style={{ color: "var(--text-muted)" }}
+      >
+        {title}
+      </h3>
+      {children}
+    </section>
   );
 }

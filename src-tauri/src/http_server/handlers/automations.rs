@@ -44,6 +44,8 @@ pub struct UpdateAutomationRequest {
     #[serde(default)]
     pub base_display_name: Option<String>,
     #[serde(default)]
+    pub goal_items_json: Option<String>,
+    #[serde(default)]
     pub chain_mode: Option<String>,
     #[serde(default)]
     pub completion_signal: Option<String>,
@@ -62,6 +64,7 @@ impl UpdateAutomationRequest {
             || self.base_ref_kind.is_some()
             || self.base_ref.is_some()
             || self.base_display_name.is_some()
+            || self.goal_items_json.is_some()
             || self.chain_mode.is_some()
             || self.completion_signal.is_some()
             || self.setup_analysis_summary.is_some()
@@ -91,8 +94,15 @@ pub async fn update_automation(
     // Ownership resolution keeps the caller-conversation -> automation binding
     // authorization intact before any mutation is applied.
     let automation = resolve_bound_automation(&state, &headers).await?;
+    let setup_conversation_id = automation.setup_conversation_id.clone();
     let automation_id = automation.id;
     let apply_config = request.has_config_fields();
+    let requested_name = request
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_string);
     let service = automation_service_for_state(&state.app_state);
 
     let mut updated = service
@@ -121,6 +131,7 @@ pub async fn update_automation(
                     base_ref_kind: request.base_ref_kind,
                     base_ref: request.base_ref,
                     base_display_name: request.base_display_name,
+                    goal_items_json: request.goal_items_json,
                     chain_mode: request.chain_mode,
                     completion_signal: request.completion_signal,
                     setup_analysis_summary: request.setup_analysis_summary,
@@ -128,6 +139,17 @@ pub async fn update_automation(
             )
             .await
             .map_err(map_app_err)?;
+    }
+
+    if requested_name.is_some() {
+        if let Some(conversation_id) = setup_conversation_id {
+            state
+                .app_state
+                .chat_conversation_repo
+                .update_title(&conversation_id, &updated.name)
+                .await
+                .map_err(map_app_err)?;
+        }
     }
 
     Ok(Json(AutomationResponse::from(updated)))

@@ -141,6 +141,9 @@ impl AutomationRepository for MemoryAutomationRepository {
         if let Some(base_display_name) = patch.base_display_name {
             automation.base_display_name = Some(base_display_name);
         }
+        if let Some(goal_items_json) = patch.goal_items_json {
+            automation.goal_items_json = Some(goal_items_json);
+        }
         if let Some(chain_mode) = patch.chain_mode {
             automation.chain_mode = chain_mode;
         }

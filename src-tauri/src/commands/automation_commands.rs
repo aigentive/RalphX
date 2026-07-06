@@ -126,6 +126,13 @@ pub(crate) async fn create_automation_draft_for_state(
     let project_id = parse_project_id(&input.project_id)?;
     let automation_id = AutomationId::new();
     let mut setup_conversation = ChatConversation::new_project(project_id.clone());
+    let setup_title = input
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .unwrap_or("Automation setup");
+    setup_conversation.set_title(setup_title.to_string());
     setup_conversation.set_agent_mode(Some(AgentConversationWorkspaceMode::Automation));
     setup_conversation.automation_id = Some(automation_id.clone());
     let setup_conversation = state

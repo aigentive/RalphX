@@ -57,17 +57,17 @@ type JsonRecord = Record<string, unknown>;
 
 const AUTOMATION_STATUS_LABELS: Record<Automation["status"], string> = {
   draft: "Draft",
-  active: "Active",
+  active: "Approved",
   paused: "Paused",
   completed: "Completed",
   stopped: "Stopped",
 };
 
 const RUN_STATUS_LABELS: Record<AutomationRun["status"], string> = {
-  pending: "Pending",
-  provisioning: "Provisioning",
+  pending: "Running",
+  provisioning: "Running",
   running: "Running",
-  published: "Published",
+  published: "Running",
   merged: "Merged",
   pr_closed: "PR closed",
   agent_failed: "Agent failed",
@@ -158,14 +158,14 @@ function isAutomationTerminal(status: Automation["status"]): boolean {
   return status === "completed" || status === "stopped";
 }
 
-function activationErrorMessage(error: unknown): string {
+function approvalErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim()) {
     return error.message;
   }
   if (typeof error === "string" && error.trim()) {
     return error;
   }
-  return "Failed to activate automation";
+  return "Failed to approve automation";
 }
 
 function statusClass(status: string): string {
@@ -687,9 +687,9 @@ export function AutomationDetailView({
     mutationFn: () => automationsApi.finalize(automationId),
     onSuccess: () => {
       invalidate();
-      toast.success("Automation activated");
+      toast.success("Automation spec approved");
     },
-    onError: (error) => toast.error(activationErrorMessage(error)),
+    onError: (error) => toast.error(approvalErrorMessage(error)),
   });
   const stopMutation = useMutation({
     mutationFn: () => automationsApi.stop(automationId),
@@ -863,7 +863,7 @@ export function AutomationDetailView({
               onClick={() => finalizeMutation.mutate()}
             >
               <PlayCircle className="h-4 w-4" />
-              Activate
+              Approve
             </Button>
           )}
           {automation.status === "paused" ? (

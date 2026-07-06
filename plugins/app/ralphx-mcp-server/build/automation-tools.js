@@ -65,6 +65,10 @@ export const AUTOMATION_SETUP_TOOLS = [
                     type: "string",
                     description: "Optional human-readable base label shown in the UI.",
                 },
+                goal_items_json: {
+                    type: "string",
+                    description: "Optional JSON array of automation phases or goal items. Use stable item ids and status values such as pending, in_progress, done, or skipped.",
+                },
                 chain_mode: {
                     type: "string",
                     description: "Successor chaining mode (e.g. 'merged_base').",
@@ -83,7 +87,7 @@ export const AUTOMATION_SETUP_TOOLS = [
     },
     {
         name: "finalize_automation",
-        description: "Activate the draft automation bound to the current setup conversation after backend validation passes. " +
+        description: "Mark the draft automation spec approved after backend validation passes. " +
             "The backend resolves ownership from the caller conversation; do not pass an automation id.",
         inputSchema: {
             type: "object",
@@ -107,6 +111,7 @@ const UPDATE_AUTOMATION_FIELDS = [
     "base_ref_kind",
     "base_ref",
     "base_display_name",
+    "goal_items_json",
     "chain_mode",
     "completion_signal",
     "setup_analysis_summary",

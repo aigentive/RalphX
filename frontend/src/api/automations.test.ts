@@ -243,6 +243,12 @@ describe("automationsApi", () => {
       automationsApi.setupAgent.updateAutomation("conversation-setup-1", {
         name: "Updated",
         maxRuns: 9,
+        providerHarness: "codex",
+        modelId: "gpt-5.5",
+        logicalEffort: "xhigh",
+        runMode: "plan",
+        goalItemsJson:
+          '[{"id":"phase-1","title":"Build shared context model","status":"pending"}]',
       }),
     ).resolves.toEqual(
       expect.objectContaining({
@@ -260,6 +266,12 @@ describe("automationsApi", () => {
       body: JSON.stringify({
         name: "Updated",
         max_runs: 9,
+        provider_harness: "codex",
+        model_id: "gpt-5.5",
+        logical_effort: "xhigh",
+        run_mode: "plan",
+        goal_items_json:
+          '[{"id":"phase-1","title":"Build shared context model","status":"pending"}]',
       }),
     });
     const [, init] = fetchMock.mock.calls[0]!;

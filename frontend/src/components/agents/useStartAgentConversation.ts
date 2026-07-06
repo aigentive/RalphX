@@ -14,6 +14,7 @@ import {
   type ConversationMessagesPageResponse,
   type ConversationTimelinePageResponse,
 } from "@/api/chat";
+import { automationsApi } from "@/api/automations";
 import type { MessageAttachment } from "@/components/Chat/MessageAttachments";
 import { serializeComposerReferencesMetadata } from "@/components/Chat/MessageReferences.parse";
 import {
@@ -21,6 +22,7 @@ import {
   createOptimisticConversationId,
   invalidateConversationDataQueries,
 } from "@/hooks/useChat";
+import { invalidateAutomationQueries } from "@/hooks/useAutomations";
 import { useAgentModels } from "@/hooks/useAgentModels";
 import { getModelLabel } from "@/lib/model-utils";
 import {
@@ -86,6 +88,24 @@ interface UseStartAgentConversationArgs {
   onJiraLinked?: (conversationId: string) => void;
   onLinearLinked?: (conversationId: string) => void;
   onGranolaLinked?: (conversationId: string) => void;
+}
+
+const AUTOMATION_DRAFT_TITLE_MAX_LENGTH = 80;
+
+function automationDraftNameFromContent(content: string): string | undefined {
+  const normalized = content.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return undefined;
+  }
+  const withoutTrailingPunctuation = normalized.replace(/[.!?;:,\s]+$/u, "");
+  const title =
+    withoutTrailingPunctuation.length > 0
+      ? withoutTrailingPunctuation
+      : normalized;
+  if (title.length <= AUTOMATION_DRAFT_TITLE_MAX_LENGTH) {
+    return title;
+  }
+  return `${title.slice(0, AUTOMATION_DRAFT_TITLE_MAX_LENGTH - 3).trimEnd()}...`;
 }
 
 export function useStartAgentConversation({
@@ -282,14 +302,55 @@ export function useStartAgentConversation({
 
       let seededStoreKey: string | null = null;
       try {
-        const resultConversationSeed = await chatApi.createConversation(
-          "project",
-          targetProjectId
-        );
-        const seededConversation: ChatConversation = {
-          ...resultConversationSeed,
-          agentMode: mode,
-        };
+        const automationDraft =
+          mode === "automation"
+            ? await automationsApi.createDraft({
+                projectId: targetProjectId,
+                name: automationDraftNameFromContent(content),
+              })
+            : null;
+        const setupConversationId = automationDraft?.setupConversationId ?? null;
+        if (mode === "automation" && !setupConversationId) {
+          throw new Error("Automation draft did not create a setup conversation");
+        }
+        if (automationDraft) {
+          await automationsApi.setupAgent.updateAutomation(setupConversationId!, {
+            providerHarness: normalizedRuntime.provider,
+            modelId: normalizedRuntime.modelId,
+            logicalEffort: normalizedRuntime.effort,
+          });
+          invalidateAutomationQueries(queryClient, automationDraft.automation.id);
+        }
+
+        const resultConversationSeed =
+          mode === "automation"
+            ? null
+            : await chatApi.createConversation("project", targetProjectId);
+        const seededConversation: ChatConversation = resultConversationSeed
+          ? {
+              ...resultConversationSeed,
+              agentMode: mode,
+            }
+          : {
+              id: setupConversationId!,
+              contextType: "project",
+              contextId: targetProjectId,
+              claudeSessionId: null,
+              providerSessionId: null,
+              providerHarness: normalizedRuntime.provider,
+              upstreamProvider: null,
+              providerProfile: null,
+              agentMode: "automation",
+              automationId: automationDraft!.automation.id,
+              automationRunId: null,
+              parentConversationId: null,
+              title: automationDraft!.automation.name,
+              messageCount: 1,
+              lastMessageAt: now,
+              createdAt: now,
+              updatedAt: now,
+              archivedAt: null,
+            };
         const storeKey = getAgentConversationStoreKey({
           id: seededConversation.id,
           contextType: "project",

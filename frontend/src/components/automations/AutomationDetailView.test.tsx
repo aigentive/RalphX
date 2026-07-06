@@ -410,7 +410,7 @@ describe("AutomationDetailView", () => {
     expect(toastSuccessMock).toHaveBeenCalledWith("Automation run scheduled");
   });
 
-  it("shows the Activate button only for draft automations", async () => {
+  it("shows the Approve button only for draft automations", async () => {
     const draftView = renderDetail({
       automation: automation({ status: "draft" }),
       runs: [],
@@ -418,16 +418,16 @@ describe("AutomationDetailView", () => {
     });
 
     await screen.findByTestId("automation-detail-view");
-    expect(screen.getByRole("button", { name: "Activate" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Approve" })).toBeInTheDocument();
     draftView.unmount();
 
     renderDetail({ automation: automation({ status: "active" }), runs: [], usage });
 
     await screen.findByTestId("automation-detail-view");
-    expect(screen.queryByRole("button", { name: "Activate" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
   });
 
-  it("activates a draft automation and invalidates the detail query", async () => {
+  it("approves a draft automation and invalidates the detail query", async () => {
     const queryClient = new QueryClient({
       defaultOptions: {
         queries: { retry: false, gcTime: 0 },
@@ -456,10 +456,10 @@ describe("AutomationDetailView", () => {
     );
 
     await screen.findByTestId("automation-detail-view");
-    await userEvent.click(screen.getByRole("button", { name: "Activate" }));
+    await userEvent.click(screen.getByRole("button", { name: "Approve" }));
 
     await waitFor(() => expect(finalizeAutomationMock).toHaveBeenCalledWith("automation-1"));
-    expect(toastSuccessMock).toHaveBeenCalledWith("Automation activated");
+    expect(toastSuccessMock).toHaveBeenCalledWith("Automation spec approved");
     await waitFor(() =>
       expect(invalidateSpy).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -469,9 +469,9 @@ describe("AutomationDetailView", () => {
     );
   });
 
-  it("surfaces the backend validation message when activation fails", async () => {
+  it("surfaces the backend validation message when approval fails", async () => {
     finalizeAutomationMock.mockReset().mockRejectedValue(
-      "automation goal_prompt is required before activation",
+      "automation goal_prompt is required before approval",
     );
     renderDetail({
       automation: automation({ status: "draft" }),
@@ -480,11 +480,11 @@ describe("AutomationDetailView", () => {
     });
 
     await screen.findByTestId("automation-detail-view");
-    await userEvent.click(screen.getByRole("button", { name: "Activate" }));
+    await userEvent.click(screen.getByRole("button", { name: "Approve" }));
 
     await waitFor(() => expect(finalizeAutomationMock).toHaveBeenCalledWith("automation-1"));
     expect(toastErrorMock).toHaveBeenCalledWith(
-      "automation goal_prompt is required before activation",
+      "automation goal_prompt is required before approval",
     );
   });
 

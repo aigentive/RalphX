@@ -1290,6 +1290,7 @@ function ArtifactContent({
       <Suspense fallback={<EmptyArtifactState title="Loading automation..." />}>
         <LazyAgentsAutomationPanel
           automationId={automationId}
+          conversationTitle={conversationTitle}
           {...(onOpenAutomation ? { onOpenAutomation } : {})}
         />
       </Suspense>

@@ -3844,7 +3844,7 @@ async fn filter_agent_list_visible_conversations(
 ) -> Result<Vec<ChatConversation>, String> {
     let mut visible = Vec::with_capacity(conversations.len());
     for conversation in conversations {
-        if conversation.automation_id.is_some() {
+        if conversation.automation_run_id.is_some() {
             continue;
         }
         if conversation.parent_conversation_id.is_none()
@@ -15653,7 +15653,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn agent_list_endpoints_hide_automation_owned_conversations_but_direct_fetch_works() {
+    async fn agent_list_endpoints_show_automation_setup_and_hide_runs_but_direct_fetch_works() {
         let state = AppState::new_test();
         let project_id = ProjectId::from_string("project-command-automation-hidden".to_string());
         let mut visible = ChatConversation::new_project(project_id.clone());
@@ -15694,7 +15694,7 @@ mod tests {
             .iter()
             .map(|conversation| conversation.id.as_str())
             .collect::<Vec<_>>();
-        assert_eq!(filtered_ids, vec![visible.id.as_str()]);
+        assert_eq!(filtered_ids, vec![visible.id.as_str(), setup.id.as_str()]);
 
         let setup_conversation = state
             .chat_conversation_repo
@@ -15702,12 +15702,14 @@ mod tests {
             .await
             .expect("direct setup conversation fetch should load")
             .expect("direct setup conversation should exist");
-        let setup_response =
-            agent_conversation_response_for_state(&state, setup_conversation)
-                .await
-                .expect("setup response should hydrate");
+        let setup_response = agent_conversation_response_for_state(&state, setup_conversation)
+            .await
+            .expect("setup response should hydrate");
         assert_eq!(setup_response.id, setup.id.as_str());
-        assert_eq!(setup_response.automation_id.as_deref(), Some("automation-1"));
+        assert_eq!(
+            setup_response.automation_id.as_deref(),
+            Some("automation-1")
+        );
 
         let run_conversation = state
             .chat_conversation_repo
@@ -15743,7 +15745,7 @@ mod tests {
             .iter()
             .map(|conversation| conversation.id.as_str())
             .collect::<Vec<_>>();
-        assert_eq!(page_ids, vec![visible.id.as_str()]);
+        assert_eq!(page_ids, vec![visible.id.as_str(), setup.id.as_str()]);
     }
 
     fn mode_lock_test_workspace(

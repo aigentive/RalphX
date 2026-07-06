@@ -30,6 +30,7 @@ import { useStartAgentConversation } from "./useStartAgentConversation";
 
 const {
   archiveConversationMock,
+  createAutomationDraftMock,
   createConversationMock,
   getTicketAssociationsMock,
   integratedChatPanelRenderMock,
@@ -40,6 +41,7 @@ const {
   listIdeationSessionsMock,
   spawnConversationSessionNamerMock,
   startAgentConversationMock,
+  updateAutomationSetupMock,
   useHarnessProvidersMock,
   useConversationMock,
   useProjectAgentConversationsMock,
@@ -1996,6 +1998,105 @@ describe("AgentsView start conversation", () => {
     );
     expect(screen.getByTestId("agents-conversation-workspace-line")).toHaveTextContent(
       "agent-conversation-chat"
+    );
+  });
+
+  it("starts automation mode by creating a bound setup conversation before sending", async () => {
+    mockAgentViewData();
+    createAutomationDraftMock.mockResolvedValue({
+      automation: {
+        id: "automation-setup-flow",
+        projectId: "project-1",
+        name: "set up a weekly dependency cleanup automation",
+        status: "draft",
+        pausedReasonCode: null,
+        pausedReasonDetail: null,
+        goalPrompt: "",
+        setupConversationId: "automation-setup-conversation",
+        providerHarness: "codex",
+        modelId: "gpt-5.5",
+        logicalEffort: "xhigh",
+        runMode: "edit",
+        baseRefKind: "project_default",
+        baseRef: "main",
+        baseDisplayName: "Project default (main)",
+        baseSourcePullRequestJson: null,
+        goalItemsJson: null,
+        chainMode: "merged_base",
+        completionSignal: "pr_merged",
+        maxRuns: 25,
+        maxConsecutiveFailures: 3,
+        firstRunPrompt: null,
+        setupAnalysisSummary: null,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+      setupConversationId: "automation-setup-conversation",
+    });
+    startAgentConversationMock.mockResolvedValue({
+      conversation: conversation({
+        id: "automation-setup-conversation",
+        contextId: "project-1",
+        title: "Automation setup",
+        agentMode: "automation",
+        automationId: "automation-setup-flow",
+        automationRunId: null,
+      }),
+      workspace: null,
+      sendResult: {
+        conversationId: "automation-setup-conversation",
+        agentRunId: "run-automation-setup",
+        isNewConversation: false,
+        wasQueued: false,
+        queuedAsPending: false,
+        queuedMessageId: null,
+      },
+    });
+
+    renderAgentsView();
+
+    await userEvent.click(screen.getByTestId("agents-start-mode-chip"));
+    await userEvent.click(screen.getByTestId("agents-start-mode-automation"));
+    fireEvent.change(screen.getByTestId("agents-start-textarea"), {
+      target: { value: "set up a weekly dependency cleanup automation" },
+    });
+    fireEvent.click(screen.getByTestId("agents-start-submit"));
+
+    await waitFor(() =>
+      expect(createAutomationDraftMock).toHaveBeenCalledWith({
+        projectId: "project-1",
+        name: "set up a weekly dependency cleanup automation",
+      })
+    );
+    await waitFor(() =>
+      expect(updateAutomationSetupMock).toHaveBeenCalledWith(
+        "automation-setup-conversation",
+        {
+          providerHarness: "codex",
+          modelId: "gpt-5.5",
+          logicalEffort: "xhigh",
+        },
+      ),
+    );
+    expect(createConversationMock).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(startAgentConversationMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectId: "project-1",
+          content: "set up a weekly dependency cleanup automation",
+          conversationId: "automation-setup-conversation",
+          providerHarness: "codex",
+          modelId: "gpt-5.5",
+          logicalEffort: "xhigh",
+          mode: "automation",
+        })
+      )
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("integrated-chat-panel")).toBeInTheDocument()
+    );
+    expect(useAgentSessionStore.getState().selectedConversationId).toBe(
+      "automation-setup-conversation",
     );
   });
 

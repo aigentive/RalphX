@@ -195,6 +195,10 @@ async fn memory_automation_repo_update_config_writes_only_provided_fields() {
                 base_ref_kind: Some("local_branch".to_string()),
                 base_ref: Some("main".to_string()),
                 model_id: Some("gpt-5.4".to_string()),
+                goal_items_json: Some(
+                    r#"[{"id":"phase-1","title":"Create context model","status":"pending"}]"#
+                        .to_string(),
+                ),
                 ..Default::default()
             },
         )
@@ -210,6 +214,10 @@ async fn memory_automation_repo_update_config_writes_only_provided_fields() {
     assert_eq!(updated.base_ref_kind, "local_branch");
     assert_eq!(updated.base_ref, "main");
     assert_eq!(updated.model_id, "gpt-5.4");
+    assert_eq!(
+        updated.goal_items_json.as_deref(),
+        Some(r#"[{"id":"phase-1","title":"Create context model","status":"pending"}]"#),
+    );
     // Fields left None keep their pre-existing values (parity with SQLite).
     assert_eq!(updated.provider_harness, "claude");
     assert_eq!(updated.chain_mode, "merged_base");
