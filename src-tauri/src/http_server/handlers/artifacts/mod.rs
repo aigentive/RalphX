@@ -4,7 +4,6 @@ use axum::{
     Json,
 };
 use rusqlite::Connection;
-use tauri::Emitter;
 use tracing::error;
 
 use super::*;

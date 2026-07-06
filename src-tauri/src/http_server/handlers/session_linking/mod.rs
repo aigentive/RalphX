@@ -4,7 +4,6 @@ use axum::{
     Json,
 };
 use std::sync::Arc;
-use tauri::Emitter;
 use tracing::error;
 
 use crate::application::chat_service::ChatService;

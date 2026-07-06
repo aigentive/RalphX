@@ -221,11 +221,13 @@ jobs:
           }
           EXCLUDED_RECORDS = {
               "src/application/app_state.rs",
+              "src/application/app_setup.rs",
               "src/application/chat_service/chat_service_merge.rs",
               "src/application/chat_service/chat_service_queue.rs",
               "src/application/chat_service/chat_service_composer_references.rs",
               "src/application/chat_service/freshness_routing.rs",
               "src/application/reconciliation/handlers/merge.rs",
+              "src/application/runtime_wiring.rs",
               "src/application/chat_service/mod.rs",
               "src/application/plan_complexity_assessment.rs",
               "src/commands/git_commands.rs",

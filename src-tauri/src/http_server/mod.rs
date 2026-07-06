@@ -7,6 +7,8 @@ use axum::{
     routing::{delete, get, post, put},
     Router,
 };
+use serde::Serialize;
+use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
@@ -35,6 +37,25 @@ pub use types::*;
 /// Must be unauthenticated and registered before any auth middleware layers.
 pub(crate) async fn health_handler() -> StatusCode {
     StatusCode::OK
+}
+
+pub(crate) fn emit_app_event(app_state: &AppState, event: &str, payload: Value) {
+    app_state.events.emit(event, payload);
+}
+
+pub(crate) fn emit_http_event(state: &HttpServerState, event: &str, payload: Value) {
+    emit_app_event(&state.app_state, event, payload);
+}
+
+pub(crate) fn emit_serialized_http_event<T: Serialize + ?Sized>(
+    state: &HttpServerState,
+    event: &str,
+    payload: &T,
+) {
+    if let Err(error) = ralphx_events::emit_serialized(state.app_state.events.as_ref(), event, payload)
+    {
+        tracing::warn!(%event, %error, "Failed to serialize HTTP event payload");
+    }
 }
 
 pub async fn start_http_server(

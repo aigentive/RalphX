@@ -10,7 +10,6 @@ use axum::{
 };
 use std::path::PathBuf;
 use std::sync::Arc;
-use tauri::Emitter;
 
 use super::*;
 use crate::application::chat_service::freshness_routing::{
@@ -494,24 +493,23 @@ pub async fn complete_merge(
         }
     }
 
-    // 11. Emit events
-    if let Some(app_handle) = &state.app_state.app_handle {
-        let _ = app_handle.emit(
-            "merge:completed",
-            serde_json::json!({
-                "task_id": task_id.as_str(),
-                "commit_sha": req.commit_sha,
-            }),
-        );
-        let _ = app_handle.emit(
-            "task:status_changed",
-            serde_json::json!({
-                "task_id": task_id.as_str(),
-                "old_status": "merging",
-                "new_status": "merged",
-            }),
-        );
-    }
+    crate::http_server::emit_http_event(
+        &state,
+        "merge:completed",
+        serde_json::json!({
+            "task_id": task_id.as_str(),
+            "commit_sha": req.commit_sha,
+        }),
+    );
+    crate::http_server::emit_http_event(
+        &state,
+        "task:status_changed",
+        serde_json::json!({
+            "task_id": task_id.as_str(),
+            "old_status": "merging",
+            "new_status": "merged",
+        }),
+    );
 
     // 11b. Dual-channel emission: external_events table (SSE/poll) + webhook publisher
     {
@@ -663,25 +661,24 @@ pub async fn report_conflict(
         .await
         .map_err(|e| json_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None))?;
 
-    // 4. Emit events
-    if let Some(app_handle) = &state.app_state.app_handle {
-        let _ = app_handle.emit(
-            "merge:conflict",
-            serde_json::json!({
-                "task_id": task_id.as_str(),
-                "conflict_files": req.conflict_files,
-                "reason": req.reason,
-            }),
-        );
-        let _ = app_handle.emit(
-            "task:status_changed",
-            serde_json::json!({
-                "task_id": task_id.as_str(),
-                "old_status": "merging",
-                "new_status": "merge_conflict",
-            }),
-        );
-    }
+    crate::http_server::emit_http_event(
+        &state,
+        "merge:conflict",
+        serde_json::json!({
+            "task_id": task_id.as_str(),
+            "conflict_files": req.conflict_files,
+            "reason": req.reason,
+        }),
+    );
+    crate::http_server::emit_http_event(
+        &state,
+        "task:status_changed",
+        serde_json::json!({
+            "task_id": task_id.as_str(),
+            "old_status": "merging",
+            "new_status": "merge_conflict",
+        }),
+    );
 
     // 4b. Dual-channel emission: external_events table (SSE/poll) + webhook publisher
     {
@@ -814,25 +811,24 @@ pub async fn report_incomplete(
         .await
         .map_err(|e| json_error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None))?;
 
-    // 4. Emit events
-    if let Some(app_handle) = &state.app_state.app_handle {
-        let _ = app_handle.emit(
-            "merge:incomplete",
-            serde_json::json!({
-                "task_id": task_id.as_str(),
-                "reason": req.reason,
-                "diagnostic_info": req.diagnostic_info,
-            }),
-        );
-        let _ = app_handle.emit(
-            "task:status_changed",
-            serde_json::json!({
-                "task_id": task_id.as_str(),
-                "old_status": "merging",
-                "new_status": "merge_incomplete",
-            }),
-        );
-    }
+    crate::http_server::emit_http_event(
+        &state,
+        "merge:incomplete",
+        serde_json::json!({
+            "task_id": task_id.as_str(),
+            "reason": req.reason,
+            "diagnostic_info": req.diagnostic_info,
+        }),
+    );
+    crate::http_server::emit_http_event(
+        &state,
+        "task:status_changed",
+        serde_json::json!({
+            "task_id": task_id.as_str(),
+            "old_status": "merging",
+            "new_status": "merge_incomplete",
+        }),
+    );
 
     // 5. Notify completion signal then close stdin via IPR
     {
