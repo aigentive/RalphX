@@ -76,17 +76,33 @@ mod tests {
     use crate::domain::entities::TeamIntentStrategy;
 
     #[test]
+    fn native_team_overlay_error_codes_and_messages() {
+        let disabled = NativeTeamOverlayError::Disabled;
+        assert_eq!(disabled.code(), "team_mode_disabled");
+        assert_eq!(
+            disabled.to_string(),
+            "team_mode_disabled: RX-native team mode is disabled in this build"
+        );
+
+        let unsupported = NativeTeamOverlayError::HarnessUnsupported {
+            harness: AgentHarnessKind::Codex,
+        };
+        assert_eq!(unsupported.code(), "harness_unsupported");
+        assert_eq!(
+            unsupported.to_string(),
+            "harness_unsupported: harness 'codex' does not support RX-native team mode"
+        );
+    }
+
+    #[test]
     fn omitted_or_solo_team_intent_is_noop() {
         assert_eq!(
             validate_native_team_intent(None, AgentHarnessKind::Claude).unwrap(),
             None
         );
         assert_eq!(
-            validate_native_team_intent(
-                Some(&TeamIntent::default()),
-                AgentHarnessKind::Codex
-            )
-            .unwrap(),
+            validate_native_team_intent(Some(&TeamIntent::default()), AgentHarnessKind::Codex)
+                .unwrap(),
             None
         );
     }
