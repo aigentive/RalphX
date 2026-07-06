@@ -56,6 +56,7 @@ pub mod interactive_process_registry;
 pub mod linear_integration_service;
 pub mod linear_webhook_reconciliation_service;
 pub(crate) mod managed_provider_cli;
+pub mod managed_team;
 pub mod memory_archive_service;
 pub mod memory_orchestration;
 pub(crate) mod native_menu;

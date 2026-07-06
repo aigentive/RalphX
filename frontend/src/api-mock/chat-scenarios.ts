@@ -26,7 +26,11 @@ export type MockChatScenario = {
 };
 
 function createConversation(
-  conversation: Omit<ChatConversation, "claudeSessionId" | "providerSessionId" | "providerHarness"> &
+  conversation: Omit<
+    ChatConversation,
+    "claudeSessionId" | "providerSessionId" | "providerHarness" | "coordinationMode"
+  > &
+    Partial<Pick<ChatConversation, "coordinationMode">> &
     Parameters<typeof normalizeConversationProviderMetadata>[0]
 ): ChatConversation {
   return {
@@ -38,6 +42,7 @@ function createConversation(
       providerSessionId: conversation.providerSessionId,
       providerHarness: conversation.providerHarness,
     }),
+    coordinationMode: conversation.coordinationMode ?? "solo",
     title: conversation.title,
     messageCount: conversation.messageCount,
     lastMessageAt: conversation.lastMessageAt,
