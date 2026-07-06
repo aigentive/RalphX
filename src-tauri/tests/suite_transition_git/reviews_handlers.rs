@@ -100,7 +100,7 @@ async fn setup_review_scope_drift_state() -> (HttpServerState, Task) {
         .await
         .unwrap();
     let mut origin_workspace = AgentConversationWorkspace::new(
-        origin_conversation.id.clone(),
+        origin_conversation.id,
         project_id.clone(),
         AgentConversationWorkspaceMode::Ideation,
         IdeationAnalysisBaseRefKind::ProjectDefault,
@@ -1095,7 +1095,7 @@ async fn test_complete_review_reuses_existing_unrelated_drift_followup_session()
         .app_state
         .agent_conversation_workspace_repo
         .create_or_update(AgentConversationWorkspace::new(
-            followup.id.clone(),
+            followup.id,
             task.project_id.clone(),
             AgentConversationWorkspaceMode::Edit,
             IdeationAnalysisBaseRefKind::ProjectDefault,
@@ -1113,7 +1113,7 @@ async fn test_complete_review_reuses_existing_unrelated_drift_followup_session()
         .save_followup_provenance(
             &followup.id,
             AgentWorkspaceFollowupProvenance {
-                origin_conversation_id: origin_workspace.conversation_id.clone(),
+                origin_conversation_id: origin_workspace.conversation_id,
                 source_task_id: Some(task.id.as_str().to_string()),
                 source_context_type: Some("review".to_string()),
                 source_context_id: None,
