@@ -1221,3 +1221,57 @@ async fn startup_recovery_processes_candidates_and_skips_blocked_projects() {
 
     assert_eq!(blocked_github.state().check_pr_sync_state_calls, 0);
 }
+
+#[tokio::test]
+async fn startup_recovery_processes_linked_plan_pr_supervision_candidates() {
+    let (_temp_dir, project, workspace, plan_branch, head_sha) =
+        setup_linked_plan_recovery_workspace("pr-supervision-startup-linked", 704).await;
+    let conversation_id = workspace.conversation_id.clone();
+    let plan_branch_id = plan_branch.id.clone();
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .expect("seed workspace");
+    let plan_branch_repo = Arc::new(MemoryPlanBranchRepository::new());
+    plan_branch_repo
+        .create(plan_branch)
+        .await
+        .expect("seed plan branch");
+    let project_repo = Arc::new(MemoryProjectRepository::with_projects(vec![project]));
+    let github = Arc::new(MockGithubService::new());
+    github.will_return_sync_state(open_sync_state(&workspace.branch_name, &head_sha));
+
+    recover_recent_agent_workspace_pr_supervision_on_startup(
+        AgentWorkspacePrSupervisionRecoveryDeps {
+            workspace_repo: Arc::clone(&workspace_repo)
+                as Arc<dyn AgentConversationWorkspaceRepository>,
+            project_repo,
+            plan_branch_repo: Arc::clone(&plan_branch_repo) as Arc<dyn PlanBranchRepository>,
+            github: Arc::clone(&github) as Arc<dyn GithubServiceTrait>,
+            pr_poller_registry: None,
+            transition_service: None,
+            chat_service: None,
+            agent_run_repo: Arc::new(MemoryAgentRunRepository::new()),
+            app_handle: None,
+        },
+        Arc::new(HashSet::new()),
+    )
+    .await;
+
+    let updated = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("workspace should still exist");
+    assert_eq!(updated.publication_pr_number, None);
+    assert_eq!(updated.publication_push_status, None);
+    assert_eq!(updated.pr_supervision_status.as_deref(), Some("monitoring"));
+    let updated_plan = plan_branch_repo
+        .get_by_id(&plan_branch_id)
+        .await
+        .unwrap()
+        .expect("plan branch should exist");
+    assert_eq!(updated_plan.pr_push_status, PlanPrPushStatus::Pushed);
+    assert_eq!(github.state().check_pr_sync_state_calls, 1);
+}

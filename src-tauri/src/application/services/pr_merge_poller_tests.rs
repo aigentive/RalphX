@@ -1379,6 +1379,75 @@ async fn ideation_plan_pr_autofix_skips_non_current_workspace_or_plan_shapes() {
 }
 
 #[tokio::test]
+async fn ideation_plan_pr_autofix_records_terminal_status_without_workspace_publication_update() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let project_id = "project-plan-autofix-terminal";
+    let session_id = IdeationSessionId::from_string("session-plan-autofix-terminal");
+    let plan_branch_id = PlanBranchId::from_string("plan-branch-autofix-terminal");
+    let plan_branch_name = "ralphx/test/plan-autofix-terminal";
+    let workspace = ideation_plan_workspace(
+        "plan-autofix-terminal-conversation",
+        project_id,
+        session_id.clone(),
+        plan_branch_id.clone(),
+        plan_branch_name,
+        worktree.path(),
+    );
+    let conversation_id = workspace.conversation_id.clone();
+    let plan_branch = active_plan_pr_branch(
+        session_id,
+        project_id,
+        plan_branch_id,
+        plan_branch_name,
+        604,
+    );
+    let workspace_repo: Arc<dyn AgentConversationWorkspaceRepository> =
+        Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo
+        .create_or_update(workspace)
+        .await
+        .expect("workspace should persist");
+
+    let mut health = open_pr_health("terminal-plan-head");
+    health.sync_state.status = PrStatus::Closed;
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(health));
+    let chat = Arc::new(MockChatService::new());
+
+    let routed = super::route_ideation_plan_pr_autofix_if_needed(
+        github as Arc<dyn GithubServiceTrait>,
+        worktree.path(),
+        &plan_branch,
+        &conversation_id,
+        Arc::clone(&workspace_repo),
+        None,
+        chat.clone() as Arc<dyn crate::application::chat_service::ChatService>,
+    )
+    .await
+    .expect("terminal linked plan status should be handled");
+
+    assert!(!routed);
+    assert!(chat.get_sent_messages().await.is_empty());
+    let updated = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .expect("workspace lookup should succeed")
+        .expect("workspace should exist");
+    assert_eq!(updated.publication_pr_number, None);
+    assert_eq!(updated.publication_pr_url, None);
+    assert_eq!(updated.publication_push_status, None);
+    let events = workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .expect("events should list");
+    assert!(events.iter().any(|event| {
+        event.step == "pr_terminal"
+            && event.status == "closed"
+            && event.classification.as_deref() == Some("github_pr_terminal:604:closed")
+    }));
+}
+
+#[tokio::test]
 async fn review_pr_monitor_routes_new_head_to_reviewer_agent() {
     let worktree = tempfile::tempdir().expect("worktree path");
     let workspace = review_pr_workspace(

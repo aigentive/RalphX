@@ -8,8 +8,8 @@ use crate::domain::entities::{
     ArtifactId, ChatConversation, ChatConversationId, ExecutionFailureSource,
     ExecutionRecoveryEventKind, ExecutionRecoveryMetadata, ExecutionRecoveryReasonCode,
     ExecutionRecoverySource, ExecutionRecoveryState, IdeationAnalysisBaseRefKind,
-    IdeationSessionId, InternalStatus, PlanBranch, PlanBranchId, Project, ProjectId, Task,
-    TaskCategory,
+    IdeationSessionId, InternalStatus, PlanBranch, PlanBranchId, PlanBranchStatus, Project,
+    ProjectId, Task, TaskCategory,
 };
 use crate::domain::services::github_service::{PrHealth, PrHealthCheck};
 use crate::domain::services::{
@@ -516,6 +516,141 @@ async fn route_plan_pr_autofix_uses_linked_ideation_workspace_without_workspace_
                 .unwrap_or_default()
                 .starts_with("github_pr_autofix:609:routehead")
     }));
+}
+
+#[tokio::test]
+async fn route_plan_pr_autofix_skips_incomplete_or_stale_linked_plan_context() {
+    let app_state = AppState::new_test();
+    let plan_branch_id = PlanBranchId::from_string("plan-branch-autofix-skip-current");
+    let github = Arc::new(MockGithubService::new());
+    let github_trait: Arc<dyn GithubServiceTrait> = github;
+
+    assert!(!build_test_service(&app_state)
+        .route_plan_pr_autofix_if_needed(&plan_branch_id, 609)
+        .await
+        .expect("missing plan repo should skip"));
+    assert!(!build_test_service(&app_state)
+        .with_plan_branch_repo(Arc::clone(&app_state.plan_branch_repo))
+        .route_plan_pr_autofix_if_needed(&plan_branch_id, 609)
+        .await
+        .expect("missing workspace repo should skip"));
+    assert!(!build_test_service(&app_state)
+        .with_plan_branch_repo(Arc::clone(&app_state.plan_branch_repo))
+        .with_agent_conversation_workspace_repo(Arc::clone(
+            &app_state.agent_conversation_workspace_repo,
+        ))
+        .route_plan_pr_autofix_if_needed(&plan_branch_id, 609)
+        .await
+        .expect("missing GitHub service should skip"));
+
+    let service = build_test_service(&app_state)
+        .with_plan_branch_repo(Arc::clone(&app_state.plan_branch_repo))
+        .with_agent_conversation_workspace_repo(Arc::clone(
+            &app_state.agent_conversation_workspace_repo,
+        ))
+        .with_github_service(github_trait);
+    let missing = service
+        .route_plan_pr_autofix_if_needed(&plan_branch_id, 609)
+        .await;
+    assert!(matches!(
+        missing,
+        Err(AppError::NotFound(message))
+            if message.contains("No plan branch found for PR supervision")
+    ));
+
+    let project_id = ProjectId::from_string("project-plan-autofix-skip".to_string());
+    let make_plan_branch = |suffix: &str, pr_number: Option<i64>| {
+        let session_id = IdeationSessionId::from_string(format!("session-{suffix}"));
+        let mut plan_branch = PlanBranch::new(
+            ArtifactId::from_string(format!("artifact-{suffix}")),
+            session_id,
+            project_id.clone(),
+            format!("ralphx/test/{suffix}"),
+            "main".to_string(),
+        );
+        plan_branch.id = PlanBranchId::from_string(format!("plan-branch-{suffix}"));
+        plan_branch.pr_eligible = true;
+        plan_branch.pr_number = pr_number;
+        plan_branch.pr_url = Some("https://github.com/owner/repo/pull/609".to_string());
+        plan_branch.pr_status = Some(DbPrStatus::Open);
+        plan_branch.pr_push_status = PrPushStatus::Pushed;
+        plan_branch
+    };
+
+    let mut ineligible = make_plan_branch("ineligible", Some(609));
+    ineligible.pr_eligible = false;
+    app_state
+        .plan_branch_repo
+        .create(ineligible.clone())
+        .await
+        .unwrap();
+    assert!(!service
+        .route_plan_pr_autofix_if_needed(&ineligible.id, 609)
+        .await
+        .expect("ineligible branch should skip"));
+
+    let mut merged_branch = make_plan_branch("merged", Some(609));
+    merged_branch.status = PlanBranchStatus::Merged;
+    app_state
+        .plan_branch_repo
+        .create(merged_branch.clone())
+        .await
+        .unwrap();
+    assert!(!service
+        .route_plan_pr_autofix_if_needed(&merged_branch.id, 609)
+        .await
+        .expect("inactive branch should skip"));
+
+    let wrong_pr = make_plan_branch("wrong-pr", Some(610));
+    app_state
+        .plan_branch_repo
+        .create(wrong_pr.clone())
+        .await
+        .unwrap();
+    assert!(!service
+        .route_plan_pr_autofix_if_needed(&wrong_pr.id, 609)
+        .await
+        .expect("PR number mismatch should skip"));
+
+    let no_workspace = make_plan_branch("no-workspace", Some(609));
+    app_state
+        .plan_branch_repo
+        .create(no_workspace.clone())
+        .await
+        .unwrap();
+    assert!(!service
+        .route_plan_pr_autofix_if_needed(&no_workspace.id, 609)
+        .await
+        .expect("missing linked workspace should skip"));
+
+    let mismatched_workspace_plan = make_plan_branch("workspace-mismatch", Some(609));
+    app_state
+        .plan_branch_repo
+        .create(mismatched_workspace_plan.clone())
+        .await
+        .unwrap();
+    let mut workspace = AgentConversationWorkspace::new(
+        ChatConversationId::from_string("60916091-6091-6091-6091-609160916091"),
+        project_id,
+        AgentConversationWorkspaceMode::Ideation,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("Project default (main)".to_string()),
+        Some("base-sha".to_string()),
+        mismatched_workspace_plan.branch_name.clone(),
+        "/tmp/unused-linked-plan-worktree".to_string(),
+    );
+    workspace.linked_ideation_session_id = Some(mismatched_workspace_plan.session_id.clone());
+    workspace.linked_plan_branch_id = Some(PlanBranchId::from_string("other-plan-branch"));
+    app_state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .unwrap();
+    assert!(!service
+        .route_plan_pr_autofix_if_needed(&mismatched_workspace_plan.id, 609)
+        .await
+        .expect("workspace linked to another plan branch should skip"));
 }
 
 #[tokio::test]
