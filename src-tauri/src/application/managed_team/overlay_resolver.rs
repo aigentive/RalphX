@@ -49,6 +49,20 @@ pub fn validate_native_team_intent(
     team_intent: Option<&TeamIntent>,
     harness: AgentHarnessKind,
 ) -> Result<Option<ResolvedTeamOverlay>, NativeTeamOverlayError> {
+    validate_native_team_intent_with_capabilities(
+        team_intent,
+        harness,
+        harness_supports_team_mode(harness),
+        harness_supports_rx_native_team(harness),
+    )
+}
+
+fn validate_native_team_intent_with_capabilities(
+    team_intent: Option<&TeamIntent>,
+    harness: AgentHarnessKind,
+    supports_legacy_team: bool,
+    supports_rx_native_team: bool,
+) -> Result<Option<ResolvedTeamOverlay>, NativeTeamOverlayError> {
     let Some(team_intent) = team_intent else {
         return Ok(None);
     };
@@ -56,7 +70,7 @@ pub fn validate_native_team_intent(
         return Ok(None);
     }
     if team_intent.coordination_mode == CoordinationMode::LegacyClaudeTeam {
-        if !harness_supports_team_mode(harness) {
+        if !supports_legacy_team {
             return Err(NativeTeamOverlayError::HarnessUnsupported { harness });
         }
         return Ok(Some(ResolvedTeamOverlay {
@@ -64,7 +78,7 @@ pub fn validate_native_team_intent(
             harness,
         }));
     }
-    if !harness_supports_rx_native_team(harness) {
+    if !supports_rx_native_team {
         return Err(NativeTeamOverlayError::HarnessUnsupported { harness });
     }
     Err(NativeTeamOverlayError::Disabled)
@@ -73,7 +87,7 @@ pub fn validate_native_team_intent(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::entities::TeamIntentStrategy;
+    use crate::domain::entities::{TeamIntentStrategy, TeamMessageTarget, TeamMessageTargetKind};
 
     #[test]
     fn native_team_overlay_error_codes_and_messages() {
@@ -126,6 +140,21 @@ mod tests {
     }
 
     #[test]
+    fn rx_native_team_returns_disabled_when_capability_is_present() {
+        let intent = TeamIntent::rx_native(Some(TeamIntentStrategy::Execution));
+
+        assert!(matches!(
+            validate_native_team_intent_with_capabilities(
+                Some(&intent),
+                AgentHarnessKind::Codex,
+                false,
+                true
+            ),
+            Err(NativeTeamOverlayError::Disabled)
+        ));
+    }
+
+    #[test]
     fn legacy_claude_team_intent_is_adapter_overlay() {
         let intent = TeamIntent {
             coordination_mode: CoordinationMode::LegacyClaudeTeam,
@@ -156,5 +185,62 @@ mod tests {
                 harness: AgentHarnessKind::Codex
             })
         ));
+    }
+
+    #[test]
+    fn root_lib_coverage_exercises_team_domain_request_contract() {
+        for (mode, value) in [
+            (CoordinationMode::Solo, "solo"),
+            (CoordinationMode::LegacyClaudeTeam, "legacy_claude_team"),
+            (CoordinationMode::RxNativeTeam, "rx_native_team"),
+        ] {
+            assert_eq!(mode.to_string(), value);
+            assert_eq!(value.parse::<CoordinationMode>().unwrap(), mode);
+        }
+        assert_eq!(
+            "unexpected".parse::<CoordinationMode>().unwrap_err(),
+            "Invalid coordination mode 'unexpected'. Valid values: solo, legacy_claude_team, rx_native_team"
+        );
+
+        let solo_intent = TeamIntent::default();
+        assert!(solo_intent.is_solo());
+        assert_eq!(
+            serde_json::to_value(&solo_intent).unwrap()["coordinationMode"],
+            "solo"
+        );
+
+        for (strategy, value) in [
+            (TeamIntentStrategy::Research, "research"),
+            (TeamIntentStrategy::Debate, "debate"),
+            (TeamIntentStrategy::Execution, "execution"),
+        ] {
+            let intent = TeamIntent::rx_native(Some(strategy));
+            let json = serde_json::to_value(&intent).unwrap();
+            assert_eq!(json["coordinationMode"], "rx_native_team");
+            assert_eq!(json["strategy"], value);
+        }
+
+        let no_strategy = TeamIntent::rx_native(None);
+        let no_strategy_json = serde_json::to_value(&no_strategy).unwrap();
+        assert_eq!(no_strategy_json["coordinationMode"], "rx_native_team");
+        assert!(no_strategy_json.get("strategy").is_none());
+
+        for (kind, value) in [
+            (TeamMessageTargetKind::Coordinator, "coordinator"),
+            (TeamMessageTargetKind::Member, "member"),
+            (TeamMessageTargetKind::Broadcast, "broadcast"),
+        ] {
+            let target = TeamMessageTarget {
+                kind,
+                team_id: Some("team-1".to_string()),
+                team_member_id: Some("member-1".to_string()),
+                conversation_id: Some("conversation-1".to_string()),
+            };
+            let json = serde_json::to_value(&target).unwrap();
+            assert_eq!(json["kind"], value);
+            assert_eq!(json["teamId"], "team-1");
+            assert_eq!(json["teamMemberId"], "member-1");
+            assert_eq!(json["conversationId"], "conversation-1");
+        }
     }
 }
