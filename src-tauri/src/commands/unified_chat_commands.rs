@@ -8947,6 +8947,898 @@ pub async fn get_agent_conversation_runtime_statuses_for_app_state(
     Ok(response)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentConversationRuntimeIndexGroup {
+    Main,
+    IdeationVerification,
+    Pipeline,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentConversationRuntimeIndexKind {
+    Workspace,
+    WorkspaceReview,
+    Ideation,
+    Verification,
+    Delegation,
+    Task,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentConversationRuntimeLifecycle {
+    Planned,
+    Queued,
+    Running,
+    Waiting,
+    Completed,
+    Failed,
+    Cancelled,
+    Blocked,
+    Dropped,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentConversationRuntimeIndexMode {
+    Chat,
+    Agent,
+    Plan,
+    PrReview,
+    Ideation,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentConversationRuntimeIndexRow {
+    pub id: String,
+    pub group: AgentConversationRuntimeIndexGroup,
+    pub kind: AgentConversationRuntimeIndexKind,
+    pub lifecycle: AgentConversationRuntimeLifecycle,
+    pub status_label: String,
+    pub title: String,
+    pub mode: Option<AgentConversationRuntimeIndexMode>,
+    pub order_index: usize,
+    pub order_started_at: Option<String>,
+    pub completed_at: Option<String>,
+    pub conversation_id: Option<String>,
+    pub context_type: Option<String>,
+    pub context_id: Option<String>,
+    pub task_id: Option<String>,
+    pub agent_run_id: Option<String>,
+    pub parent_session_id: Option<String>,
+    pub child_session_id: Option<String>,
+    pub provider_harness: Option<String>,
+    pub provider_session_id: Option<String>,
+    pub error_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentConversationRuntimeIndexResponse {
+    pub conversation_id: String,
+    pub rows: Vec<AgentConversationRuntimeIndexRow>,
+}
+
+#[derive(Debug, Clone)]
+struct RuntimeIndexDraftRow {
+    row: AgentConversationRuntimeIndexRow,
+    order_started_at: Option<chrono::DateTime<chrono::Utc>>,
+    fallback_order: chrono::DateTime<chrono::Utc>,
+}
+
+impl RuntimeIndexDraftRow {
+    fn new(
+        row: AgentConversationRuntimeIndexRow,
+        order_started_at: Option<chrono::DateTime<chrono::Utc>>,
+        fallback_order: chrono::DateTime<chrono::Utc>,
+    ) -> Self {
+        Self {
+            row,
+            order_started_at,
+            fallback_order,
+        }
+    }
+}
+
+fn runtime_index_mode(mode: AgentConversationWorkspaceMode) -> AgentConversationRuntimeIndexMode {
+    match mode {
+        AgentConversationWorkspaceMode::Chat => AgentConversationRuntimeIndexMode::Chat,
+        AgentConversationWorkspaceMode::Edit => AgentConversationRuntimeIndexMode::Agent,
+        AgentConversationWorkspaceMode::Plan => AgentConversationRuntimeIndexMode::Plan,
+        AgentConversationWorkspaceMode::Ideation => AgentConversationRuntimeIndexMode::Ideation,
+        AgentConversationWorkspaceMode::ReviewPr => AgentConversationRuntimeIndexMode::PrReview,
+    }
+}
+
+fn lifecycle_label(lifecycle: AgentConversationRuntimeLifecycle) -> &'static str {
+    match lifecycle {
+        AgentConversationRuntimeLifecycle::Planned => "Planned",
+        AgentConversationRuntimeLifecycle::Queued => "Queued",
+        AgentConversationRuntimeLifecycle::Running => "Running",
+        AgentConversationRuntimeLifecycle::Waiting => "Waiting",
+        AgentConversationRuntimeLifecycle::Completed => "Completed",
+        AgentConversationRuntimeLifecycle::Failed => "Failed",
+        AgentConversationRuntimeLifecycle::Cancelled => "Cancelled",
+        AgentConversationRuntimeLifecycle::Blocked => "Blocked",
+        AgentConversationRuntimeLifecycle::Dropped => "Dropped",
+    }
+}
+
+fn lifecycle_from_agent_run(
+    run: Option<&AgentRun>,
+    running_state: Option<AgentRunningState>,
+    fallback: AgentConversationRuntimeLifecycle,
+) -> AgentConversationRuntimeLifecycle {
+    match run.map(|run| run.status) {
+        Some(AgentRunStatus::Running) => {
+            if running_state
+                .map(|state| state.agent_status == AgentRuntimeStatus::WaitingForInput)
+                .unwrap_or(false)
+            {
+                AgentConversationRuntimeLifecycle::Waiting
+            } else {
+                AgentConversationRuntimeLifecycle::Running
+            }
+        }
+        Some(AgentRunStatus::Completed) => AgentConversationRuntimeLifecycle::Completed,
+        Some(AgentRunStatus::Failed) => AgentConversationRuntimeLifecycle::Failed,
+        Some(AgentRunStatus::Cancelled) => AgentConversationRuntimeLifecycle::Cancelled,
+        None => match running_state {
+            Some(state) if state.is_running => {
+                if state.agent_status == AgentRuntimeStatus::WaitingForInput {
+                    AgentConversationRuntimeLifecycle::Waiting
+                } else {
+                    AgentConversationRuntimeLifecycle::Running
+                }
+            }
+            _ => fallback,
+        },
+    }
+}
+
+fn provider_harness_for_row(
+    run: Option<&AgentRun>,
+    conversation: Option<&ChatConversation>,
+) -> Option<String> {
+    run.and_then(|run| run.harness)
+        .or_else(|| conversation.and_then(|conversation| conversation.provider_harness))
+        .map(|harness| harness.to_string())
+}
+
+fn provider_session_for_row(
+    run: Option<&AgentRun>,
+    conversation: Option<&ChatConversation>,
+) -> Option<String> {
+    run.and_then(|run| run.provider_session_id.clone())
+        .or_else(|| conversation.and_then(|conversation| conversation.provider_session_id.clone()))
+}
+
+async fn latest_runtime_conversation_and_run(
+    state: &AppState,
+    context_type: ChatContextType,
+    context_id: &str,
+) -> Result<(Option<ChatConversation>, Option<AgentRun>), String> {
+    let conversation = state
+        .chat_conversation_repo
+        .get_active_for_context(context_type, context_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let run = match conversation.as_ref() {
+        Some(conversation) => state
+            .agent_run_repo
+            .get_latest_for_conversation(&conversation.id)
+            .await
+            .map_err(|error| error.to_string())?,
+        None => None,
+    };
+    Ok((conversation, run))
+}
+
+async fn runtime_index_row_for_main_workspace(
+    state: &AppState,
+    execution_state: &ExecutionState,
+    conversation_id: &ChatConversationId,
+    workspace: Option<&AgentConversationWorkspace>,
+) -> Result<RuntimeIndexDraftRow, String> {
+    let conversation = state
+        .chat_conversation_repo
+        .get_by_id(conversation_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let run = state
+        .agent_run_repo
+        .get_latest_for_conversation(conversation_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let running_state = direct_agent_running_state_for_context(
+        state,
+        execution_state,
+        ChatContextType::Project,
+        &conversation_id.as_str(),
+    )
+    .await?;
+    let lifecycle = lifecycle_from_agent_run(
+        run.as_ref(),
+        running_state,
+        AgentConversationRuntimeLifecycle::Planned,
+    );
+    let title = conversation
+        .as_ref()
+        .and_then(|conversation| conversation.title.clone())
+        .filter(|title| !title.trim().is_empty())
+        .unwrap_or_else(|| "Workspace chat".to_string());
+    let fallback_order = run
+        .as_ref()
+        .map(|run| run.started_at)
+        .or_else(|| workspace.map(|workspace| workspace.created_at))
+        .or_else(|| {
+            conversation
+                .as_ref()
+                .map(|conversation| conversation.created_at)
+        })
+        .unwrap_or_else(chrono::Utc::now);
+    let mode = workspace
+        .map(|workspace| runtime_index_mode(workspace.mode))
+        .or_else(|| {
+            conversation
+                .as_ref()
+                .and_then(|conversation| conversation.agent_mode)
+                .map(runtime_index_mode)
+        });
+
+    Ok(RuntimeIndexDraftRow::new(
+        AgentConversationRuntimeIndexRow {
+            id: format!("workspace:{}", conversation_id.as_str()),
+            group: AgentConversationRuntimeIndexGroup::Main,
+            kind: AgentConversationRuntimeIndexKind::Workspace,
+            lifecycle,
+            status_label: lifecycle_label(lifecycle).to_string(),
+            title,
+            mode,
+            order_index: 0,
+            order_started_at: run.as_ref().map(|run| run.started_at.to_rfc3339()),
+            completed_at: run.as_ref().and_then(|run| {
+                run.completed_at
+                    .map(|completed_at| completed_at.to_rfc3339())
+            }),
+            conversation_id: Some(conversation_id.as_str()),
+            context_type: Some(ChatContextType::Project.to_string()),
+            context_id: Some(conversation_id.as_str()),
+            task_id: None,
+            agent_run_id: run.as_ref().map(|run| run.id.as_str()),
+            parent_session_id: None,
+            child_session_id: None,
+            provider_harness: provider_harness_for_row(run.as_ref(), conversation.as_ref()),
+            provider_session_id: provider_session_for_row(run.as_ref(), conversation.as_ref()),
+            error_message: run.as_ref().and_then(|run| run.error_message.clone()),
+        },
+        run.as_ref().map(|run| run.started_at),
+        fallback_order,
+    ))
+}
+
+async fn runtime_index_row_for_ideation_session(
+    state: &AppState,
+    execution_state: &ExecutionState,
+    session: &IdeationSession,
+    kind: AgentConversationRuntimeIndexKind,
+    parent_session_id: Option<&IdeationSessionId>,
+) -> Result<RuntimeIndexDraftRow, String> {
+    let session_id = session.id.as_str().to_string();
+    let (conversation, run) =
+        latest_runtime_conversation_and_run(state, ChatContextType::Ideation, &session_id).await?;
+    let running_state = direct_agent_running_state_for_context(
+        state,
+        execution_state,
+        ChatContextType::Ideation,
+        &session_id,
+    )
+    .await?;
+    let fallback_lifecycle = match session.status {
+        crate::domain::entities::IdeationSessionStatus::Archived
+        | crate::domain::entities::IdeationSessionStatus::Accepted => {
+            AgentConversationRuntimeLifecycle::Completed
+        }
+        crate::domain::entities::IdeationSessionStatus::Active => {
+            AgentConversationRuntimeLifecycle::Planned
+        }
+    };
+    let lifecycle = lifecycle_from_agent_run(run.as_ref(), running_state, fallback_lifecycle);
+    let title = session
+        .title
+        .clone()
+        .filter(|title| !title.trim().is_empty())
+        .unwrap_or_else(|| {
+            if kind == AgentConversationRuntimeIndexKind::Verification {
+                "Verification run".to_string()
+            } else {
+                "Ideation run".to_string()
+            }
+        });
+    let row_id = match kind {
+        AgentConversationRuntimeIndexKind::Verification => format!(
+            "verification:{}:{}",
+            parent_session_id
+                .map(|id| id.as_str().to_string())
+                .unwrap_or_default(),
+            session_id
+        ),
+        _ => format!("ideation:{session_id}"),
+    };
+
+    Ok(RuntimeIndexDraftRow::new(
+        AgentConversationRuntimeIndexRow {
+            id: row_id,
+            group: AgentConversationRuntimeIndexGroup::IdeationVerification,
+            kind,
+            lifecycle,
+            status_label: lifecycle_label(lifecycle).to_string(),
+            title,
+            mode: None,
+            order_index: 0,
+            order_started_at: run.as_ref().map(|run| run.started_at.to_rfc3339()),
+            completed_at: run.as_ref().and_then(|run| {
+                run.completed_at
+                    .map(|completed_at| completed_at.to_rfc3339())
+            }),
+            conversation_id: conversation
+                .as_ref()
+                .map(|conversation| conversation.id.as_str()),
+            context_type: Some(ChatContextType::Ideation.to_string()),
+            context_id: Some(session_id.clone()),
+            task_id: None,
+            agent_run_id: run.as_ref().map(|run| run.id.as_str()),
+            parent_session_id: parent_session_id.map(|id| id.as_str().to_string()),
+            child_session_id: (kind == AgentConversationRuntimeIndexKind::Verification)
+                .then_some(session_id),
+            provider_harness: provider_harness_for_row(run.as_ref(), conversation.as_ref()),
+            provider_session_id: provider_session_for_row(run.as_ref(), conversation.as_ref()),
+            error_message: run.as_ref().and_then(|run| run.error_message.clone()),
+        },
+        run.as_ref().map(|run| run.started_at),
+        run.as_ref()
+            .map(|run| run.started_at)
+            .unwrap_or(session.created_at),
+    ))
+}
+
+fn workspace_review_fallback_lifecycle(
+    status: AgentWorkspaceReviewMonitorStatus,
+) -> AgentConversationRuntimeLifecycle {
+    match status {
+        AgentWorkspaceReviewMonitorStatus::Reviewing => AgentConversationRuntimeLifecycle::Running,
+        AgentWorkspaceReviewMonitorStatus::Ready => AgentConversationRuntimeLifecycle::Queued,
+        AgentWorkspaceReviewMonitorStatus::Blocked => AgentConversationRuntimeLifecycle::Blocked,
+        AgentWorkspaceReviewMonitorStatus::Idle => AgentConversationRuntimeLifecycle::Planned,
+    }
+}
+
+async fn maybe_runtime_index_row_for_workspace_review(
+    state: &AppState,
+    execution_state: &ExecutionState,
+    workspace: &AgentConversationWorkspace,
+) -> Result<Option<RuntimeIndexDraftRow>, String> {
+    let Some(monitor) = state
+        .agent_conversation_workspace_repo
+        .get_workspace_review_monitor(&workspace.conversation_id)
+        .await
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(None);
+    };
+    if monitor.status == AgentWorkspaceReviewMonitorStatus::Idle
+        && monitor.review_conversation_id.is_none()
+        && monitor.last_run_id.is_none()
+    {
+        return Ok(None);
+    }
+
+    let conversation = match monitor.review_conversation_id.as_ref() {
+        Some(conversation_id) => state
+            .chat_conversation_repo
+            .get_by_id(conversation_id)
+            .await
+            .map_err(|error| error.to_string())?,
+        None => None,
+    };
+    let run = match conversation.as_ref() {
+        Some(conversation) => state
+            .agent_run_repo
+            .get_latest_for_conversation(&conversation.id)
+            .await
+            .map_err(|error| error.to_string())?,
+        None => match monitor.last_run_id.as_deref() {
+            Some(run_id) => state
+                .agent_run_repo
+                .get_by_id(&AgentRunId::from_string(run_id))
+                .await
+                .map_err(|error| error.to_string())?,
+            None => None,
+        },
+    };
+    let running_state = match monitor.review_conversation_id.as_ref() {
+        Some(conversation_id) => {
+            direct_agent_running_state_for_context(
+                state,
+                execution_state,
+                ChatContextType::Project,
+                &conversation_id.as_str(),
+            )
+            .await?
+        }
+        None => None,
+    };
+    let lifecycle = lifecycle_from_agent_run(
+        run.as_ref(),
+        running_state,
+        workspace_review_fallback_lifecycle(monitor.status),
+    );
+    let title = conversation
+        .as_ref()
+        .and_then(|conversation| conversation.title.clone())
+        .filter(|title| !title.trim().is_empty())
+        .unwrap_or_else(|| "Review workspace changes".to_string());
+    let context_id = monitor
+        .review_conversation_id
+        .as_ref()
+        .map(|id| id.as_str())
+        .unwrap_or_else(|| workspace.conversation_id.as_str());
+    let fallback_order = run
+        .as_ref()
+        .map(|run| run.started_at)
+        .unwrap_or(monitor.created_at);
+
+    Ok(Some(RuntimeIndexDraftRow::new(
+        AgentConversationRuntimeIndexRow {
+            id: format!("workspace_review:{context_id}"),
+            group: AgentConversationRuntimeIndexGroup::IdeationVerification,
+            kind: AgentConversationRuntimeIndexKind::WorkspaceReview,
+            lifecycle,
+            status_label: lifecycle_label(lifecycle).to_string(),
+            title,
+            mode: None,
+            order_index: 0,
+            order_started_at: run.as_ref().map(|run| run.started_at.to_rfc3339()),
+            completed_at: run.as_ref().and_then(|run| {
+                run.completed_at
+                    .map(|completed_at| completed_at.to_rfc3339())
+            }),
+            conversation_id: monitor
+                .review_conversation_id
+                .as_ref()
+                .map(|id| id.as_str()),
+            context_type: Some(ChatContextType::Project.to_string()),
+            context_id: Some(context_id),
+            task_id: None,
+            agent_run_id: run.as_ref().map(|run| run.id.as_str()),
+            parent_session_id: None,
+            child_session_id: None,
+            provider_harness: provider_harness_for_row(run.as_ref(), conversation.as_ref()),
+            provider_session_id: provider_session_for_row(run.as_ref(), conversation.as_ref()),
+            error_message: run
+                .as_ref()
+                .and_then(|run| run.error_message.clone())
+                .or_else(|| monitor.last_error.clone()),
+        },
+        run.as_ref().map(|run| run.started_at),
+        fallback_order,
+    )))
+}
+
+fn delegated_lifecycle(status: &str) -> AgentConversationRuntimeLifecycle {
+    match status {
+        "running" => AgentConversationRuntimeLifecycle::Running,
+        "queued" => AgentConversationRuntimeLifecycle::Queued,
+        "completed" | "done" => AgentConversationRuntimeLifecycle::Completed,
+        "failed" | "error" => AgentConversationRuntimeLifecycle::Failed,
+        "cancelled" | "canceled" => AgentConversationRuntimeLifecycle::Cancelled,
+        "blocked" => AgentConversationRuntimeLifecycle::Blocked,
+        _ => AgentConversationRuntimeLifecycle::Planned,
+    }
+}
+
+async fn add_delegated_runtime_index_rows(
+    state: &AppState,
+    rows: &mut Vec<RuntimeIndexDraftRow>,
+    parent_context_type: ChatContextType,
+    parent_context_id: &str,
+) -> Result<(), String> {
+    let delegated_sessions = state
+        .delegated_session_repo
+        .get_by_parent_context(&parent_context_type.to_string(), parent_context_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    for session in delegated_sessions {
+        let session_id = session.id.as_str().to_string();
+        let (conversation, run) =
+            latest_runtime_conversation_and_run(state, ChatContextType::Delegation, &session_id)
+                .await?;
+        let lifecycle = lifecycle_from_agent_run(
+            run.as_ref(),
+            None,
+            delegated_lifecycle(session.status.as_str()),
+        );
+        let title = session
+            .title
+            .clone()
+            .filter(|title| !title.trim().is_empty())
+            .unwrap_or_else(|| session.agent_name.clone());
+        rows.push(RuntimeIndexDraftRow::new(
+            AgentConversationRuntimeIndexRow {
+                id: format!("delegation:{session_id}"),
+                group: AgentConversationRuntimeIndexGroup::IdeationVerification,
+                kind: AgentConversationRuntimeIndexKind::Delegation,
+                lifecycle,
+                status_label: lifecycle_label(lifecycle).to_string(),
+                title,
+                mode: None,
+                order_index: 0,
+                order_started_at: run.as_ref().map(|run| run.started_at.to_rfc3339()),
+                completed_at: run
+                    .as_ref()
+                    .and_then(|run| {
+                        run.completed_at
+                            .map(|completed_at| completed_at.to_rfc3339())
+                    })
+                    .or_else(|| {
+                        session
+                            .completed_at
+                            .map(|completed_at| completed_at.to_rfc3339())
+                    }),
+                conversation_id: conversation
+                    .as_ref()
+                    .map(|conversation| conversation.id.as_str()),
+                context_type: Some(ChatContextType::Delegation.to_string()),
+                context_id: Some(session_id.clone()),
+                task_id: None,
+                agent_run_id: run.as_ref().map(|run| run.id.as_str()),
+                parent_session_id: None,
+                child_session_id: None,
+                provider_harness: provider_harness_for_row(run.as_ref(), conversation.as_ref())
+                    .or_else(|| Some(session.harness.to_string())),
+                provider_session_id: provider_session_for_row(run.as_ref(), conversation.as_ref())
+                    .or_else(|| session.provider_session_id.clone()),
+                error_message: run
+                    .as_ref()
+                    .and_then(|run| run.error_message.clone())
+                    .or_else(|| session.error.clone()),
+            },
+            run.as_ref().map(|run| run.started_at),
+            run.as_ref()
+                .map(|run| run.started_at)
+                .unwrap_or(session.created_at),
+        ));
+    }
+    Ok(())
+}
+
+fn task_runtime_context_type_for_index(status: InternalStatus) -> ChatContextType {
+    match status {
+        InternalStatus::Reviewing
+        | InternalStatus::PendingReview
+        | InternalStatus::ReviewPassed
+        | InternalStatus::Escalated
+        | InternalStatus::RevisionNeeded => ChatContextType::Review,
+        InternalStatus::PendingMerge
+        | InternalStatus::Merging
+        | InternalStatus::WaitingOnPr
+        | InternalStatus::MergeIncomplete
+        | InternalStatus::MergeConflict
+        | InternalStatus::Merged
+        | InternalStatus::Approved => ChatContextType::Merge,
+        _ => ChatContextType::TaskExecution,
+    }
+}
+
+fn task_lifecycle(
+    status: InternalStatus,
+    run: Option<&AgentRun>,
+) -> AgentConversationRuntimeLifecycle {
+    if matches!(run.map(|run| run.status), Some(AgentRunStatus::Running)) {
+        return AgentConversationRuntimeLifecycle::Running;
+    }
+    match status {
+        InternalStatus::Backlog => AgentConversationRuntimeLifecycle::Planned,
+        InternalStatus::Ready
+        | InternalStatus::PendingReview
+        | InternalStatus::QaPassed
+        | InternalStatus::PendingMerge
+        | InternalStatus::ReviewPassed
+        | InternalStatus::Approved => AgentConversationRuntimeLifecycle::Queued,
+        InternalStatus::Blocked | InternalStatus::MergeConflict => {
+            AgentConversationRuntimeLifecycle::Blocked
+        }
+        InternalStatus::Executing
+        | InternalStatus::QaRefining
+        | InternalStatus::QaTesting
+        | InternalStatus::Reviewing
+        | InternalStatus::ReExecuting
+        | InternalStatus::Merging
+        | InternalStatus::WaitingOnPr => AgentConversationRuntimeLifecycle::Running,
+        InternalStatus::RevisionNeeded => AgentConversationRuntimeLifecycle::Blocked,
+        InternalStatus::Merged => AgentConversationRuntimeLifecycle::Completed,
+        InternalStatus::Failed | InternalStatus::QaFailed | InternalStatus::MergeIncomplete => {
+            AgentConversationRuntimeLifecycle::Failed
+        }
+        InternalStatus::Cancelled | InternalStatus::Stopped => {
+            AgentConversationRuntimeLifecycle::Cancelled
+        }
+        InternalStatus::Paused => AgentConversationRuntimeLifecycle::Waiting,
+        InternalStatus::Escalated => AgentConversationRuntimeLifecycle::Waiting,
+    }
+}
+
+fn task_status_label(
+    status: InternalStatus,
+    lifecycle: AgentConversationRuntimeLifecycle,
+) -> String {
+    match status {
+        InternalStatus::Reviewing
+        | InternalStatus::PendingReview
+        | InternalStatus::ReviewPassed => "Reviewing".to_string(),
+        InternalStatus::ReExecuting | InternalStatus::RevisionNeeded => "Revising".to_string(),
+        InternalStatus::Merging | InternalStatus::PendingMerge | InternalStatus::WaitingOnPr => {
+            "Merging".to_string()
+        }
+        _ => lifecycle_label(lifecycle).to_string(),
+    }
+}
+
+fn task_order_started_at(
+    task: &Task,
+    history: Option<&Vec<crate::domain::repositories::StatusTransition>>,
+) -> chrono::DateTime<chrono::Utc> {
+    history
+        .and_then(|entries| {
+            entries
+                .iter()
+                .filter(|entry| {
+                    matches!(
+                        entry.to,
+                        InternalStatus::Executing
+                            | InternalStatus::ReExecuting
+                            | InternalStatus::Reviewing
+                            | InternalStatus::Merging
+                            | InternalStatus::WaitingOnPr
+                    )
+                })
+                .map(|entry| entry.timestamp)
+                .min()
+        })
+        .unwrap_or(task.created_at)
+}
+
+async fn add_task_runtime_index_rows(
+    state: &AppState,
+    rows: &mut Vec<RuntimeIndexDraftRow>,
+    workspace: &AgentConversationWorkspace,
+) -> Result<(), String> {
+    let Some(plan_branch_id) = workspace.linked_plan_branch_id.as_ref() else {
+        return Ok(());
+    };
+    let Some(plan_branch) = state
+        .plan_branch_repo
+        .get_by_id(plan_branch_id)
+        .await
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(());
+    };
+    let Some(execution_plan_id) = plan_branch.execution_plan_id.as_ref() else {
+        return Ok(());
+    };
+
+    let tasks = state
+        .task_repo
+        .list_paginated(
+            &workspace.project_id,
+            None,
+            0,
+            1000,
+            false,
+            None,
+            Some(execution_plan_id.as_str()),
+            None,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    let task_ids = tasks.iter().map(|task| task.id.clone()).collect::<Vec<_>>();
+    let history_by_task = state
+        .task_repo
+        .get_status_history_batch(&task_ids)
+        .await
+        .map_err(|error| error.to_string())?;
+
+    for task in tasks {
+        let context_type = task_runtime_context_type_for_index(task.internal_status);
+        let task_id = task.id.as_str().to_string();
+        let (conversation, run) =
+            latest_runtime_conversation_and_run(state, context_type, &task_id).await?;
+        let lifecycle = task_lifecycle(task.internal_status, run.as_ref());
+        let order_started_at = task_order_started_at(&task, history_by_task.get(&task.id));
+        rows.push(RuntimeIndexDraftRow::new(
+            AgentConversationRuntimeIndexRow {
+                id: format!("task:{task_id}"),
+                group: AgentConversationRuntimeIndexGroup::Pipeline,
+                kind: AgentConversationRuntimeIndexKind::Task,
+                lifecycle,
+                status_label: task_status_label(task.internal_status, lifecycle),
+                title: task.title.clone(),
+                mode: None,
+                order_index: 0,
+                order_started_at: Some(order_started_at.to_rfc3339()),
+                completed_at: task
+                    .completed_at
+                    .map(|completed_at| completed_at.to_rfc3339()),
+                conversation_id: conversation
+                    .as_ref()
+                    .map(|conversation| conversation.id.as_str()),
+                context_type: Some(context_type.to_string()),
+                context_id: Some(task_id.clone()),
+                task_id: Some(task_id),
+                agent_run_id: run.as_ref().map(|run| run.id.as_str()),
+                parent_session_id: None,
+                child_session_id: None,
+                provider_harness: provider_harness_for_row(run.as_ref(), conversation.as_ref()),
+                provider_session_id: provider_session_for_row(run.as_ref(), conversation.as_ref()),
+                error_message: run.as_ref().and_then(|run| run.error_message.clone()),
+            },
+            Some(order_started_at),
+            order_started_at,
+        ));
+    }
+
+    Ok(())
+}
+
+fn runtime_index_group_rank(group: AgentConversationRuntimeIndexGroup) -> u8 {
+    match group {
+        AgentConversationRuntimeIndexGroup::Main => 0,
+        AgentConversationRuntimeIndexGroup::IdeationVerification => 1,
+        AgentConversationRuntimeIndexGroup::Pipeline => 2,
+    }
+}
+
+fn finalize_runtime_index_rows(
+    mut rows: Vec<RuntimeIndexDraftRow>,
+) -> Vec<AgentConversationRuntimeIndexRow> {
+    rows.sort_by(|left, right| {
+        runtime_index_group_rank(left.row.group)
+            .cmp(&runtime_index_group_rank(right.row.group))
+            .then_with(|| {
+                left.order_started_at
+                    .unwrap_or(left.fallback_order)
+                    .cmp(&right.order_started_at.unwrap_or(right.fallback_order))
+            })
+            .then_with(|| left.row.id.cmp(&right.row.id))
+    });
+    for (index, row) in rows.iter_mut().enumerate() {
+        row.row.order_index = index;
+        if row.row.order_started_at.is_none() {
+            row.row.order_started_at = Some(row.fallback_order.to_rfc3339());
+        }
+    }
+    rows.into_iter().map(|row| row.row).collect()
+}
+
+#[tauri::command]
+pub async fn get_agent_conversation_runtime_index(
+    conversation_id: String,
+    state: State<'_, AppState>,
+    execution_state: State<'_, Arc<ExecutionState>>,
+) -> Result<AgentConversationRuntimeIndexResponse, String> {
+    get_agent_conversation_runtime_index_for_app_state(
+        &state,
+        execution_state.inner().as_ref(),
+        conversation_id,
+    )
+    .await
+}
+
+#[doc(hidden)]
+pub async fn get_agent_conversation_runtime_index_for_app_state(
+    state: &AppState,
+    execution_state: &ExecutionState,
+    conversation_id: String,
+) -> Result<AgentConversationRuntimeIndexResponse, String> {
+    let conversation_id = conversation_id.trim().to_string();
+    if conversation_id.is_empty() {
+        return Err("conversationId is required".to_string());
+    }
+    let conversation_id_typed = ChatConversationId::from_string(conversation_id.clone());
+    let workspace = state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id_typed)
+        .await
+        .map_err(|error| error.to_string())?;
+    let mut rows = vec![
+        runtime_index_row_for_main_workspace(
+            state,
+            execution_state,
+            &conversation_id_typed,
+            workspace.as_ref(),
+        )
+        .await?,
+    ];
+
+    if let Some(workspace) = workspace.as_ref() {
+        if let Some(session_id) = workspace.linked_ideation_session_id.as_ref() {
+            if let Some(session) = state
+                .ideation_session_repo
+                .get_by_id(session_id)
+                .await
+                .map_err(|error| error.to_string())?
+            {
+                rows.push(
+                    runtime_index_row_for_ideation_session(
+                        state,
+                        execution_state,
+                        &session,
+                        AgentConversationRuntimeIndexKind::Ideation,
+                        None,
+                    )
+                    .await?,
+                );
+
+                let verification_children = state
+                    .ideation_session_repo
+                    .get_children(session_id)
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .into_iter()
+                    .filter(|child| {
+                        child.session_purpose
+                            == crate::domain::entities::SessionPurpose::Verification
+                    })
+                    .collect::<Vec<_>>();
+                for child in verification_children {
+                    rows.push(
+                        runtime_index_row_for_ideation_session(
+                            state,
+                            execution_state,
+                            &child,
+                            AgentConversationRuntimeIndexKind::Verification,
+                            Some(session_id),
+                        )
+                        .await?,
+                    );
+                }
+
+                add_delegated_runtime_index_rows(
+                    state,
+                    &mut rows,
+                    ChatContextType::Ideation,
+                    session_id.as_str(),
+                )
+                .await?;
+            }
+        }
+
+        if let Some(review_row) =
+            maybe_runtime_index_row_for_workspace_review(state, execution_state, workspace).await?
+        {
+            rows.push(review_row);
+        }
+
+        add_delegated_runtime_index_rows(
+            state,
+            &mut rows,
+            ChatContextType::Project,
+            &conversation_id_typed.as_str(),
+        )
+        .await?;
+        add_task_runtime_index_rows(state, &mut rows, workspace).await?;
+    }
+
+    Ok(AgentConversationRuntimeIndexResponse {
+        conversation_id,
+        rows: finalize_runtime_index_rows(rows),
+    })
+}
+
 /// Input for create_agent_conversation command
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -9078,6 +9970,7 @@ mod tests {
         ensure_plan_workspace_planning_session_link_for_send, existing_pr_retarget_block_reason,
         fork_agent_conversation, fork_agent_conversation_response_for_state,
         fork_terminal_agent_conversation_for_send,
+        get_agent_conversation_runtime_index_for_app_state,
         get_agent_conversation_runtime_statuses_for_app_state,
         get_agent_conversation_summary_for_app_state,
         get_agent_conversation_timeline_page_for_app_state,
@@ -9107,17 +10000,19 @@ mod tests {
         try_acquire_agent_workspace_publish_guard,
         update_agent_conversation_workspace_from_base_for_app_state,
         validate_explicit_publish_base_ref, AgentConversationResponse,
-        AgentConversationRuntimeSource, AgentConversationWorkspaceAutoPublishInput,
-        AgentConversationWorkspaceFreshnessResponse, AgentConversationWorkspacePrSupervisionInput,
-        AgentConversationWorkspacePublishTarget, AgentConversationWorkspaceRepairTarget,
-        AgentConversationWorkspaceResponse, AgentTimelineItemResponse,
-        AgentWorkspaceExternalPrReconciliationTrigger, AgentWorkspaceFreshnessCacheEntry,
-        AgentWorkspaceFreshnessCacheStatus, AgentWorkspaceFreshnessInvalidationGuard,
-        AgentWorkspaceFreshnessScope, AgentWorkspacePostRepairAction,
-        AgentWorkspacePrDescriptionInvalidationGuard, AgentWorkspaceRepairRuntimeOverrides,
-        AgentWorkspaceSourcePullRequestInput, CreateAgentConversationInput,
-        DelegatedToolRuntimeSnapshot, ForkAgentConversationInput, ForkAgentConversationResponse,
-        SwitchAgentConversationModeInput, AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE,
+        AgentConversationRuntimeIndexGroup, AgentConversationRuntimeIndexKind,
+        AgentConversationRuntimeLifecycle, AgentConversationRuntimeSource,
+        AgentConversationWorkspaceAutoPublishInput, AgentConversationWorkspaceFreshnessResponse,
+        AgentConversationWorkspacePrSupervisionInput, AgentConversationWorkspacePublishTarget,
+        AgentConversationWorkspaceRepairTarget, AgentConversationWorkspaceResponse,
+        AgentTimelineItemResponse, AgentWorkspaceExternalPrReconciliationTrigger,
+        AgentWorkspaceFreshnessCacheEntry, AgentWorkspaceFreshnessCacheStatus,
+        AgentWorkspaceFreshnessInvalidationGuard, AgentWorkspaceFreshnessScope,
+        AgentWorkspacePostRepairAction, AgentWorkspacePrDescriptionInvalidationGuard,
+        AgentWorkspaceRepairRuntimeOverrides, AgentWorkspaceSourcePullRequestInput,
+        CreateAgentConversationInput, DelegatedToolRuntimeSnapshot, ForkAgentConversationInput,
+        ForkAgentConversationResponse, SwitchAgentConversationModeInput,
+        AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE,
     };
     use crate::application::agent_conversation_workspace::{
         ensure_linked_plan_branch_agent_worktree, prepare_agent_conversation_workspace,
@@ -9423,6 +10318,191 @@ mod tests {
 
         assert!(!runtime.is_running);
         assert!(runtime.items.is_empty());
+    }
+
+    #[tokio::test]
+    async fn agent_conversation_runtime_index_keeps_terminal_workspace_review_row() {
+        let state = AppState::new_sqlite_test();
+        let execution_state = ExecutionState::new();
+        let project_id =
+            ProjectId::from_string("project-workspace-review-index-terminal".to_string());
+        let conversation_id = ChatConversationId::new();
+        let review_conversation_id = ChatConversationId::new();
+
+        let workspace = workspace_for_runtime_test(&conversation_id, &project_id);
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .unwrap();
+
+        let mut review_conversation = ChatConversation::new_project(project_id.clone());
+        review_conversation.id = review_conversation_id.clone();
+        review_conversation.parent_conversation_id = Some(conversation_id.as_str());
+        review_conversation.title = Some("Review workspace changes".to_string());
+        state
+            .chat_conversation_repo
+            .create(review_conversation)
+            .await
+            .unwrap();
+
+        let mut review_run = AgentRun::new(review_conversation_id.clone());
+        let review_run_id = review_run.id;
+        review_run.fail("Workspace reviewer stopped by user");
+        state.agent_run_repo.create(review_run).await.unwrap();
+
+        let mut monitor =
+            AgentWorkspaceReviewMonitor::new(conversation_id.clone(), project_id.clone());
+        monitor.status = AgentWorkspaceReviewMonitorStatus::Reviewing;
+        monitor.review_conversation_id = Some(review_conversation_id.clone());
+        monitor.last_run_id = Some(review_run_id.as_str().to_string());
+        state
+            .agent_conversation_workspace_repo
+            .upsert_workspace_review_monitor(monitor)
+            .await
+            .unwrap();
+
+        let index = get_agent_conversation_runtime_index_for_app_state(
+            &state,
+            &execution_state,
+            conversation_id.as_str(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            index.rows[0].group,
+            AgentConversationRuntimeIndexGroup::Main
+        );
+        assert_eq!(
+            index.rows[0].kind,
+            AgentConversationRuntimeIndexKind::Workspace
+        );
+        let review = index
+            .rows
+            .iter()
+            .find(|row| row.kind == AgentConversationRuntimeIndexKind::WorkspaceReview)
+            .expect("durable workspace review row");
+        assert_eq!(review.lifecycle, AgentConversationRuntimeLifecycle::Failed);
+        assert_eq!(
+            review.conversation_id.as_deref(),
+            Some(review_conversation_id.as_str().as_str())
+        );
+        assert_eq!(
+            review.error_message.as_deref(),
+            Some("Workspace reviewer stopped by user")
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_conversation_runtime_index_includes_terminal_children_and_planned_tasks() {
+        let state = AppState::new_sqlite_test();
+        let execution_state = ExecutionState::new();
+        let project_id = ProjectId::from_string("project-runtime-index-children".to_string());
+        let conversation_id = ChatConversationId::new();
+        let plan_branch_id = PlanBranchId::from_string("plan-branch-runtime-index");
+        let execution_plan_id = ExecutionPlanId::from_string("execution-plan-runtime-index");
+
+        let parent = IdeationSession::new_with_title(project_id.clone(), "Plan draft");
+        let parent_id = parent.id.clone();
+        state.ideation_session_repo.create(parent).await.unwrap();
+
+        let mut parent_conversation = ChatConversation::new_ideation(parent_id.clone());
+        parent_conversation.provider_harness = Some(AgentHarnessKind::Codex);
+        parent_conversation.provider_session_id = Some("codex-session-parent".to_string());
+        let parent_conversation = state
+            .chat_conversation_repo
+            .create(parent_conversation)
+            .await
+            .unwrap();
+        let mut parent_run = AgentRun::new(parent_conversation.id.clone());
+        parent_run.harness = Some(AgentHarnessKind::Codex);
+        parent_run.provider_session_id = Some("codex-run-parent".to_string());
+        parent_run.complete();
+        state.agent_run_repo.create(parent_run).await.unwrap();
+
+        let mut child = IdeationSession::new_with_title(project_id.clone(), "Verification run");
+        child.parent_session_id = Some(parent_id.clone());
+        child.session_purpose = SessionPurpose::Verification;
+        child.status = crate::domain::entities::IdeationSessionStatus::Accepted;
+        let child_id = child.id.clone();
+        state.ideation_session_repo.create(child).await.unwrap();
+
+        let mut plan_branch = PlanBranch::new(
+            ArtifactId::from_string("artifact-runtime-index"),
+            parent_id.clone(),
+            project_id.clone(),
+            "ralphx/test-plan".to_string(),
+            "main".to_string(),
+        );
+        plan_branch.id = plan_branch_id.clone();
+        plan_branch.execution_plan_id = Some(execution_plan_id.clone());
+        state.plan_branch_repo.create(plan_branch).await.unwrap();
+
+        let mut workspace = workspace_for_runtime_test(&conversation_id, &project_id);
+        workspace.linked_ideation_session_id = Some(parent_id.clone());
+        workspace.linked_plan_branch_id = Some(plan_branch_id);
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .unwrap();
+
+        let mut planned_task = Task::new(project_id.clone(), "Planned pipeline task".to_string());
+        planned_task.internal_status = InternalStatus::Ready;
+        planned_task.execution_plan_id = Some(execution_plan_id);
+        let planned_task = state.task_repo.create(planned_task).await.unwrap();
+
+        let index = get_agent_conversation_runtime_index_for_app_state(
+            &state,
+            &execution_state,
+            conversation_id.as_str(),
+        )
+        .await
+        .unwrap();
+
+        let ideation = index
+            .rows
+            .iter()
+            .find(|row| row.kind == AgentConversationRuntimeIndexKind::Ideation)
+            .expect("ideation row");
+        assert_eq!(
+            ideation.lifecycle,
+            AgentConversationRuntimeLifecycle::Completed
+        );
+        assert_eq!(ideation.provider_harness.as_deref(), Some("codex"));
+        assert_eq!(
+            ideation.provider_session_id.as_deref(),
+            Some("codex-run-parent")
+        );
+
+        let verification = index
+            .rows
+            .iter()
+            .find(|row| row.kind == AgentConversationRuntimeIndexKind::Verification)
+            .expect("verification row");
+        assert_eq!(
+            verification.parent_session_id.as_deref(),
+            Some(parent_id.as_str())
+        );
+        assert_eq!(
+            verification.child_session_id.as_deref(),
+            Some(child_id.as_str())
+        );
+        assert_eq!(
+            verification.lifecycle,
+            AgentConversationRuntimeLifecycle::Completed
+        );
+
+        let task = index
+            .rows
+            .iter()
+            .find(|row| row.kind == AgentConversationRuntimeIndexKind::Task)
+            .expect("planned task row");
+        assert_eq!(task.task_id.as_deref(), Some(planned_task.id.as_str()));
+        assert_eq!(task.lifecycle, AgentConversationRuntimeLifecycle::Queued);
+        assert_eq!(task.status_label, "Queued");
+        assert_eq!(task.group, AgentConversationRuntimeIndexGroup::Pipeline);
     }
 
     #[tokio::test]
