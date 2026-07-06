@@ -56,6 +56,7 @@ export interface AgentComposerArtifactReference {
 }
 
 const TOKEN_BOUNDARY_PATTERN = /\s/;
+const ATLASSIAN_URL_PATTERN = /https:\/\/[^\s<>"'`]+/gi;
 
 export function detectAgentComposerTrigger(
   text: string,
@@ -239,6 +240,41 @@ export function extractComposerArtifactTokens(
   return [...references.values()];
 }
 
+export function extractPastedAtlassianResourceUrls(text: string): string[] {
+  const urls = new Set<string>();
+  for (const match of text.matchAll(ATLASSIAN_URL_PATTERN)) {
+    const rawUrl = match[0].replace(/[),.;:!?]+$/g, "");
+    let parsed: URL;
+    try {
+      parsed = new URL(rawUrl);
+    } catch {
+      continue;
+    }
+    if (
+      parsed.protocol !== "https:" ||
+      !isPlausibleAtlassianResourcePath(parsed.pathname)
+    ) {
+      continue;
+    }
+    urls.add(rawUrl);
+  }
+  return [...urls];
+}
+
+export function removeResolvedAtlassianResourceUrls(
+  text: string,
+  urls: readonly string[],
+): string {
+  let nextText = text;
+  for (const url of [...urls].sort((a, b) => b.length - a.length)) {
+    if (!url) {
+      continue;
+    }
+    nextText = nextText.split(url).join("");
+  }
+  return nextText.replace(/[ \t]{2,}/g, " ");
+}
+
 export function appendInternalSkillDirectives(
   text: string,
   skillNames: readonly string[],
@@ -402,6 +438,15 @@ function isIntegrationReferenceToken(token: string): boolean {
 
 function isPlanReferenceToken(token: string): boolean {
   return /^plan:/i.test(token);
+}
+
+function isPlausibleAtlassianResourcePath(pathname: string): boolean {
+  return (
+    pathname.includes("/browse/") ||
+    pathname.includes("/issues/") ||
+    pathname === "/wiki" ||
+    pathname.startsWith("/wiki/")
+  );
 }
 
 function detectIntegrationTriggerInLine(

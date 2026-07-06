@@ -20,6 +20,7 @@ macro_rules! register_tauri_commands {
             commands::atlassian_commands::validate_atlassian_integration,
             commands::atlassian_commands::disconnect_atlassian_integration,
             commands::atlassian_commands::search_atlassian_resources,
+            commands::atlassian_commands::resolve_atlassian_resource_urls,
             commands::atlassian_commands::get_agent_conversation_jira_issue,
             commands::atlassian_commands::assign_agent_conversation_jira_issue,
             commands::atlassian_commands::refresh_agent_conversation_jira_issue,

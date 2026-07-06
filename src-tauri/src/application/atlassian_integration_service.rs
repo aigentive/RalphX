@@ -72,6 +72,13 @@ pub struct AtlassianResourceSummary {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct AtlassianResourceUrlResolution {
+    pub input_url: String,
+    pub resource: Option<AtlassianResourceSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct AtlassianJiraComment {
     pub id: Option<String>,
     pub author: Option<String>,
@@ -928,6 +935,37 @@ impl AtlassianIntegrationService {
         self.client.fetch(&auth, reference).await
     }
 
+    pub async fn resolve_resource_urls(
+        &self,
+        urls: &[String],
+    ) -> Result<Vec<AtlassianResourceUrlResolution>, String> {
+        let auth = self.enabled_auth_context().await?;
+        let site_origin = normalized_site_origin(&auth.site_url)?;
+        let mut results = Vec::with_capacity(urls.len().min(25));
+
+        for url in urls.iter().take(25) {
+            let input_url = url.trim().to_string();
+            if input_url.is_empty() {
+                continue;
+            }
+            let resource = match reference_from_atlassian_url(&input_url, &site_origin) {
+                Some(reference) => self
+                    .client
+                    .fetch(&auth, &reference)
+                    .await
+                    .ok()
+                    .map(resource_summary_from_content),
+                None => None,
+            };
+            results.push(AtlassianResourceUrlResolution {
+                input_url,
+                resource,
+            });
+        }
+
+        Ok(results)
+    }
+
     pub async fn assign_jira_issue_to_current_user(
         &self,
         issue_key: &str,
@@ -1286,6 +1324,146 @@ fn normalize_site_url(raw: &str) -> Result<String, String> {
         return Err("Atlassian site URL must include a host".to_string());
     }
     Ok(candidate)
+}
+
+fn normalized_site_origin(site_url: &str) -> Result<String, String> {
+    let normalized = normalize_site_url(site_url)?;
+    let uri = normalized
+        .parse::<hyper::Uri>()
+        .map_err(|error| format!("Invalid Atlassian site URL: {error}"))?;
+    let scheme = uri
+        .scheme_str()
+        .ok_or_else(|| "Atlassian site URL must use https".to_string())?;
+    let authority = uri
+        .authority()
+        .ok_or_else(|| "Atlassian site URL must include a host".to_string())?;
+    Ok(format!(
+        "{}://{}",
+        scheme.to_ascii_lowercase(),
+        authority.as_str().to_ascii_lowercase()
+    ))
+}
+
+fn reference_from_atlassian_url(
+    raw_url: &str,
+    site_origin: &str,
+) -> Option<ComposerIntegrationReference> {
+    let uri = raw_url.parse::<hyper::Uri>().ok()?;
+    if uri.scheme_str() != Some("https") {
+        return None;
+    }
+    let origin = uri_origin(&uri)?;
+    if origin != site_origin {
+        return None;
+    }
+    let segments = uri_path_segments(&uri);
+    if let Some(key) = jira_key_from_path(&segments) {
+        return Some(ComposerIntegrationReference {
+            provider: "atlassian".to_string(),
+            kind: AtlassianResourceKind::Jira.as_str().to_string(),
+            id: key.clone(),
+            key: Some(key.clone()),
+            title: None,
+            url: Some(format!("{site_origin}/browse/{key}")),
+            summary_excerpt: None,
+            include_transcript: None,
+        });
+    }
+    let page_id = confluence_page_id_from_uri(&uri, &segments)?;
+    Some(ComposerIntegrationReference {
+        provider: "atlassian".to_string(),
+        kind: AtlassianResourceKind::Confluence.as_str().to_string(),
+        id: page_id,
+        key: None,
+        title: None,
+        url: Some(raw_url.to_string()),
+        summary_excerpt: None,
+        include_transcript: None,
+    })
+}
+
+fn uri_origin(uri: &hyper::Uri) -> Option<String> {
+    let scheme = uri.scheme_str()?;
+    let authority = uri.authority()?;
+    Some(format!(
+        "{}://{}",
+        scheme.to_ascii_lowercase(),
+        authority.as_str().to_ascii_lowercase()
+    ))
+}
+
+fn uri_path_segments(uri: &hyper::Uri) -> Vec<&str> {
+    uri.path()
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect()
+}
+
+fn jira_key_from_path(segments: &[&str]) -> Option<String> {
+    let key = segments
+        .windows(2)
+        .find(|window| matches!(window[0], "browse" | "issues"))
+        .map(|window| window[1])?;
+    normalize_jira_issue_key(key)
+}
+
+fn normalize_jira_issue_key(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    let (project, number) = trimmed.split_once('-')?;
+    let mut project_chars = project.chars();
+    let first_project_char = project_chars.next()?;
+    if project.is_empty()
+        || number.is_empty()
+        || !first_project_char.is_ascii_alphabetic()
+        || !project_chars.all(|ch| ch.is_ascii_alphanumeric())
+        || !number.chars().all(|ch| ch.is_ascii_digit())
+    {
+        return None;
+    }
+    Some(format!("{}-{number}", project.to_ascii_uppercase()))
+}
+
+fn confluence_page_id_from_uri(uri: &hyper::Uri, segments: &[&str]) -> Option<String> {
+    if segments.first().copied() != Some("wiki") {
+        return None;
+    }
+    if let Some(page_id) = segments
+        .windows(2)
+        .find(|window| window[0] == "pages")
+        .map(|window| window[1])
+        .and_then(normalize_confluence_page_id)
+    {
+        return Some(page_id);
+    }
+    uri.query()
+        .and_then(confluence_page_id_from_query)
+        .and_then(normalize_confluence_page_id)
+}
+
+fn normalize_confluence_page_id(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() || !trimmed.chars().all(|ch| ch.is_ascii_digit()) {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
+fn confluence_page_id_from_query(query: &str) -> Option<&str> {
+    query.split('&').find_map(|pair| {
+        let (key, value) = pair.split_once('=')?;
+        (key == "pageId").then_some(value)
+    })
+}
+
+fn resource_summary_from_content(content: AtlassianResourceContent) -> AtlassianResourceSummary {
+    AtlassianResourceSummary {
+        kind: content.kind,
+        id: content.id,
+        key: content.key,
+        title: content.title,
+        url: content.url,
+        excerpt: None,
+    }
 }
 
 fn build_oauth_authorization(

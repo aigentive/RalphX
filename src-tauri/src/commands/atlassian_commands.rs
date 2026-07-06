@@ -5,7 +5,7 @@ use tauri::State;
 use crate::application::harness_runtime_registry::default_ui_feature_flags;
 use crate::application::{
     AppState, AtlassianJiraAttachment, AtlassianJiraComment, AtlassianOAuthAuthorization,
-    AtlassianResourceKind, AtlassianResourceSummary,
+    AtlassianResourceKind, AtlassianResourceSummary, AtlassianResourceUrlResolution,
 };
 use crate::domain::entities::{
     AgentConversationJiraIssueLink, ChatContextType, ChatConversationId, ProjectId,
@@ -98,6 +98,18 @@ pub struct SearchAtlassianResourcesInput {
 #[serde(rename_all = "camelCase")]
 pub struct SearchAtlassianResourcesResponse {
     pub resources: Vec<AtlassianResourceSummary>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolveAtlassianResourceUrlsInput {
+    pub urls: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolveAtlassianResourceUrlsResponse {
+    pub results: Vec<AtlassianResourceUrlResolution>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -422,6 +434,22 @@ pub async fn search_atlassian_resources(
         .search_resources(kind, query, input.limit.unwrap_or(10))
         .await?;
     Ok(SearchAtlassianResourcesResponse { resources })
+}
+
+#[tauri::command]
+pub async fn resolve_atlassian_resource_urls(
+    input: ResolveAtlassianResourceUrlsInput,
+    state: State<'_, AppState>,
+) -> Result<ResolveAtlassianResourceUrlsResponse, String> {
+    let settings = state.atlassian_integration_service.get_settings().await?;
+    if settings.auth_method == AtlassianAuthMethod::OAuth {
+        ensure_atlassian_oauth_enabled()?;
+    }
+    let results = state
+        .atlassian_integration_service
+        .resolve_resource_urls(&input.urls)
+        .await?;
+    Ok(ResolveAtlassianResourceUrlsResponse { results })
 }
 
 #[tauri::command]

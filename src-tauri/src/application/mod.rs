@@ -145,8 +145,8 @@ pub use atlassian_integration_service::{
     AtlassianIntegrationService, AtlassianJiraAttachment, AtlassianJiraComment,
     AtlassianJiraTransition, AtlassianOAuthAuthorization, AtlassianOAuthResource,
     AtlassianOAuthTokenResponse, AtlassianResourceContent, AtlassianResourceKind,
-    AtlassianResourceSummary, EmptyAtlassianApiClient, JiraIssueDetail, JiraProjectSummary,
-    JiraStatusSummary, UnavailableAtlassianApiClient,
+    AtlassianResourceSummary, AtlassianResourceUrlResolution, EmptyAtlassianApiClient,
+    JiraIssueDetail, JiraProjectSummary, JiraStatusSummary, UnavailableAtlassianApiClient,
 };
 pub use chat_attachment_service::ChatAttachmentService;
 pub use chat_resumption::ChatResumptionRunner;
