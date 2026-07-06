@@ -175,7 +175,7 @@ Calling \`v1_accept_plan_and_schedule\` on an already-accepted session is safe â
 
 ### Appending one-off tasks after acceptance
 
-Use \`v1_append_task_to_plan\` only for small follow-up work after a plan has been accepted while the plan branch is still active. Open PR / waiting-on-PR plans are still open and can receive appended tasks. The backend links the new task to the existing session/execution plan and blocks the plan merge on it. Once the PR/plan is closed, merged, terminal, or actively merging/repairing, start a new ideation continuation instead of appending.
+Use \`v1_append_task_to_plan\` only for small follow-up work after a plan has been accepted while the plan branch is still active. Open PR / waiting-on-PR plans are still open and can receive appended tasks. The backend links the new task to the existing session/execution plan, infers its default graph placement, and blocks the plan merge on it. Once the PR/plan is closed, merged, terminal, or actively merging/repairing, start a new ideation continuation instead of appending.
 `,
 
   tasks: `## Flow 2b: Task Operations (2 tools)

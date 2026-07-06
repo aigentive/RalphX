@@ -446,7 +446,7 @@ export const WORKFLOW_TOOLS = [
         name: "append_task_to_ideation_plan",
         description: "Append a one-off task to an already accepted ideation plan while its plan branch is still active, including when its PR is open and waiting. " +
             "Use this instead of starting a new ideation when the user asks for a small follow-up on an accepted, still-open plan. " +
-            "The backend links the task to the existing session/execution plan, creates steps, and blocks the plan merge on the new task.",
+            "The backend links the task to the existing session/execution plan, infers the default graph placement, creates steps, and blocks the plan merge on the new task.",
         inputSchema: {
             type: "object",
             properties: {
@@ -479,7 +479,7 @@ export const WORKFLOW_TOOLS = [
                 depends_on_task_ids: {
                     type: "array",
                     items: { type: "string" },
-                    description: "Optional existing tasks that must complete before this one starts.",
+                    description: "Optional advanced backend-validated task IDs to use instead of inferred placement blockers.",
                 },
                 priority: {
                     type: "number",
