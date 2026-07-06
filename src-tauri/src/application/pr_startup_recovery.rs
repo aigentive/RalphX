@@ -1760,33 +1760,44 @@ pub async fn run_periodic_terminal_pr_local_cleanup(
 
     loop {
         tokio::time::sleep(interval).await;
-
-        let plan_branch_repo = Arc::clone(&plan_branch_repo);
-        let workspace_repo = Arc::clone(&workspace_repo);
-        let project_repo = Arc::clone(&project_repo);
-        let github_service = github_service.as_ref().map(Arc::clone);
-        let running_agent_registry = Arc::clone(&running_agent_registry);
-        git_cmd::with_git_command_lane(git_cmd::GitCommandLane::Background, async move {
-            let unblocked_git_projects = Arc::new(HashSet::new());
-            cleanup_terminal_plan_branch_local_artifacts_on_startup(
-                Arc::clone(&plan_branch_repo),
-                Arc::clone(&project_repo),
-                github_service.as_ref().map(Arc::clone),
-                Arc::clone(&unblocked_git_projects),
-                Arc::clone(&running_agent_registry),
-            )
-            .await;
-            cleanup_terminal_agent_workspace_local_artifacts_on_startup(
-                workspace_repo,
-                project_repo,
-                github_service,
-                unblocked_git_projects,
-                running_agent_registry,
-            )
-            .await;
-        })
+        run_terminal_pr_local_cleanup_once(
+            Arc::clone(&plan_branch_repo),
+            Arc::clone(&workspace_repo),
+            Arc::clone(&project_repo),
+            github_service.as_ref().map(Arc::clone),
+            Arc::clone(&running_agent_registry),
+        )
         .await;
     }
+}
+
+pub(crate) async fn run_terminal_pr_local_cleanup_once(
+    plan_branch_repo: Arc<dyn PlanBranchRepository>,
+    workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    project_repo: Arc<dyn ProjectRepository>,
+    github_service: Option<Arc<dyn GithubServiceTrait>>,
+    running_agent_registry: Arc<dyn RunningAgentRegistry>,
+) {
+    git_cmd::with_git_command_lane(git_cmd::GitCommandLane::Background, async move {
+        let unblocked_git_projects = Arc::new(HashSet::new());
+        cleanup_terminal_plan_branch_local_artifacts_on_startup(
+            Arc::clone(&plan_branch_repo),
+            Arc::clone(&project_repo),
+            github_service.as_ref().map(Arc::clone),
+            Arc::clone(&unblocked_git_projects),
+            Arc::clone(&running_agent_registry),
+        )
+        .await;
+        cleanup_terminal_agent_workspace_local_artifacts_on_startup(
+            workspace_repo,
+            project_repo,
+            github_service,
+            unblocked_git_projects,
+            running_agent_registry,
+        )
+        .await;
+    })
+    .await;
 }
 
 fn terminal_pr_local_cleanup_interval() -> Option<Duration> {
@@ -3114,14 +3125,14 @@ mod tests {
             .unwrap();
         let branch = startup_workspace_branch(&project);
         let workspace = startup_workspace(&project, &branch);
-        let worktree_path = Path::new(&workspace.worktree_path);
+        let worktree_path = std::path::PathBuf::from(&workspace.worktree_path);
 
-        GitService::create_worktree(repo.path(), worktree_path, &branch, "main")
+        GitService::create_worktree(repo.path(), &worktree_path, &branch, "main")
             .await
             .expect("create worktree");
         std::fs::write(worktree_path.join("agent.txt"), "agent\n").expect("write agent");
-        run_git(worktree_path, &["add", "."]);
-        run_git(worktree_path, &["commit", "-m", "agent work"]);
+        run_git(&worktree_path, &["add", "."]);
+        run_git(&worktree_path, &["commit", "-m", "agent work"]);
         run_git(
             repo.path(),
             &["merge", "--no-ff", &branch, "-m", "merge agent"],
@@ -3149,6 +3160,51 @@ mod tests {
             0,
             "startup cleanup should use GitService maintenance fetches, not GithubService fetch_remote"
         );
+    }
+
+    #[tokio::test]
+    async fn periodic_terminal_cleanup_once_removes_merged_workspace_artifacts() {
+        let app_state = AppState::new_test();
+        let repo = init_cleanup_repo();
+        let worktrees = tempfile::tempdir().expect("worktree parent");
+        let project = app_state
+            .project_repo
+            .create(cleanup_project(repo.path(), worktrees.path()))
+            .await
+            .unwrap();
+        let branch = startup_workspace_branch(&project);
+        let workspace = startup_workspace(&project, &branch);
+        let worktree_path = std::path::PathBuf::from(&workspace.worktree_path);
+
+        GitService::create_worktree(repo.path(), &worktree_path, &branch, "main")
+            .await
+            .expect("create worktree");
+        std::fs::write(worktree_path.join("agent.txt"), "agent\n").expect("write agent");
+        run_git(&worktree_path, &["add", "."]);
+        run_git(&worktree_path, &["commit", "-m", "agent work"]);
+        run_git(
+            repo.path(),
+            &["merge", "--no-ff", &branch, "-m", "merge agent"],
+        );
+        app_state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .unwrap();
+        let github = Arc::new(MockGithubService::new());
+
+        run_terminal_pr_local_cleanup_once(
+            Arc::clone(&app_state.plan_branch_repo),
+            Arc::clone(&app_state.agent_conversation_workspace_repo),
+            Arc::clone(&app_state.project_repo),
+            Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),
+            Arc::clone(&app_state.running_agent_registry),
+        )
+        .await;
+
+        assert!(!worktree_path.exists());
+        assert!(!branch_exists(repo.path(), &branch));
+        assert_eq!(github.state().fetch_remote_calls, 0);
     }
 
     #[tokio::test]
