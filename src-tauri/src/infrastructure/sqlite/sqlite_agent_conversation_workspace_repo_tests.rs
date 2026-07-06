@@ -1367,6 +1367,91 @@ async fn list_active_direct_pr_supervision_recovery_candidates_filters_blocked_f
 }
 
 #[tokio::test]
+async fn linked_plan_pr_supervision_recovery_candidates_filter_ideation_rows() {
+    let (db, repo, conversation_id) = setup_repo();
+    let mut blocked = make_workspace(conversation_id);
+    blocked.mode = AgentConversationWorkspaceMode::Ideation;
+    blocked.linked_plan_branch_id = Some(PlanBranchId::from_string("plan-linked-1"));
+    blocked.pr_supervision_status = Some("blocked".to_string());
+    blocked.pr_autofix_enabled = true;
+    repo.create_or_update(blocked.clone()).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+
+    let fixing_id = ChatConversationId::from_string("99999999-9999-9999-9999-999999999999");
+    seed_conversation(&db, &fixing_id);
+    let mut fixing = make_workspace(fixing_id);
+    fixing.mode = AgentConversationWorkspaceMode::Ideation;
+    fixing.linked_plan_branch_id = Some(PlanBranchId::from_string("plan-linked-2"));
+    fixing.pr_supervision_status = Some("fixing".to_string());
+    fixing.pr_auto_merge_desired = true;
+    repo.create_or_update(fixing.clone()).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+
+    let direct_id = ChatConversationId::from_string("10101010-1010-1010-1010-101010101010");
+    seed_conversation(&db, &direct_id);
+    let mut direct = make_workspace(direct_id);
+    direct.linked_plan_branch_id = Some(PlanBranchId::from_string("plan-direct"));
+    direct.pr_supervision_status = Some("blocked".to_string());
+    direct.pr_autofix_enabled = true;
+    repo.create_or_update(direct).await.unwrap();
+
+    let unlinked_id = ChatConversationId::from_string("20202020-2020-2020-2020-202020202020");
+    seed_conversation(&db, &unlinked_id);
+    let mut unlinked = make_workspace(unlinked_id);
+    unlinked.mode = AgentConversationWorkspaceMode::Ideation;
+    unlinked.pr_supervision_status = Some("blocked".to_string());
+    unlinked.pr_autofix_enabled = true;
+    repo.create_or_update(unlinked).await.unwrap();
+
+    let disabled_id = ChatConversationId::from_string("30303030-3030-3030-3030-303030303030");
+    seed_conversation(&db, &disabled_id);
+    let mut disabled = make_workspace(disabled_id);
+    disabled.mode = AgentConversationWorkspaceMode::Ideation;
+    disabled.linked_plan_branch_id = Some(PlanBranchId::from_string("plan-disabled"));
+    disabled.pr_supervision_status = Some("blocked".to_string());
+    repo.create_or_update(disabled).await.unwrap();
+
+    let monitoring_id = ChatConversationId::from_string("40404040-4040-4040-4040-404040404040");
+    seed_conversation(&db, &monitoring_id);
+    let mut monitoring = make_workspace(monitoring_id);
+    monitoring.mode = AgentConversationWorkspaceMode::Ideation;
+    monitoring.linked_plan_branch_id = Some(PlanBranchId::from_string("plan-monitoring"));
+    monitoring.pr_supervision_status = Some("monitoring".to_string());
+    monitoring.pr_autofix_enabled = true;
+    repo.create_or_update(monitoring).await.unwrap();
+
+    let paused_id = ChatConversationId::from_string("50505050-5050-5050-5050-505050505050");
+    seed_conversation(&db, &paused_id);
+    let mut paused = make_workspace(paused_id);
+    paused.mode = AgentConversationWorkspaceMode::Ideation;
+    paused.linked_plan_branch_id = Some(PlanBranchId::from_string("plan-paused"));
+    paused.pr_supervision_status = Some("blocked".to_string());
+    paused.pr_autofix_enabled = true;
+    paused.auto_publish_enabled = false;
+    repo.create_or_update(paused).await.unwrap();
+
+    let limited = repo
+        .list_active_linked_plan_pr_supervision_recovery_candidates(1)
+        .await
+        .unwrap();
+    assert_eq!(limited.len(), 1);
+    assert_eq!(limited[0].conversation_id, fixing.conversation_id);
+
+    let workspaces = repo
+        .list_active_linked_plan_pr_supervision_recovery_candidates(10)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        workspaces
+            .into_iter()
+            .map(|workspace| workspace.conversation_id)
+            .collect::<Vec<_>>(),
+        vec![fixing.conversation_id, blocked.conversation_id]
+    );
+}
+
+#[tokio::test]
 async fn list_active_needs_agent_workspaces_filters_to_open_active_workspaces() {
     let (db, repo, conversation_id) = setup_repo();
     let mut needs_agent = make_workspace(conversation_id);

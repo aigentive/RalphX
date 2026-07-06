@@ -25,7 +25,7 @@ use crate::domain::entities::{
     AgentWorkspacePrCommentEvidenceUpsert, AgentWorkspacePrReviewMonitorStatus, ChatContextType,
     ChatConversationId,
 };
-use crate::domain::entities::{InternalStatus, PlanBranchId, Project, TaskId};
+use crate::domain::entities::{InternalStatus, PlanBranch, PlanBranchId, Project, TaskId};
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, PlanBranchRepository,
 };
@@ -686,6 +686,31 @@ async fn poll_loop(
                             pr_number,
                             error = %error,
                             "PR poller: failed to inspect GitHub review feedback"
+                        );
+                    }
+                }
+
+                match transition_service
+                    .route_plan_pr_autofix_if_needed(&plan_branch_id, pr_number)
+                    .await
+                {
+                    Ok(true) => {
+                        tracing::info!(
+                            task_id = task_id.as_str(),
+                            pr_number,
+                            "PR poller: supervised plan PR issue routed to fixer agent"
+                        );
+                        active.remove(&task_id);
+                        stopping.remove(&task_id);
+                        return;
+                    }
+                    Ok(false) => {}
+                    Err(error) => {
+                        tracing::warn!(
+                            task_id = task_id.as_str(),
+                            pr_number,
+                            error = %error,
+                            "PR poller: failed to inspect supervised plan PR health"
                         );
                     }
                 }
@@ -1602,6 +1627,48 @@ struct AgentWorkspacePrAutofixIssue {
     classification: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AgentWorkspacePrAutofixTargetKind {
+    DirectWorkspace,
+    IdeationPlan,
+}
+
+#[derive(Debug, Clone)]
+struct AgentWorkspacePrAutofixTarget {
+    kind: AgentWorkspacePrAutofixTargetKind,
+    pr_number: i64,
+    pr_url: Option<String>,
+}
+
+impl AgentWorkspacePrAutofixTarget {
+    fn direct(workspace: &AgentConversationWorkspace, pr_number: i64) -> Self {
+        Self {
+            kind: AgentWorkspacePrAutofixTargetKind::DirectWorkspace,
+            pr_number,
+            pr_url: workspace.publication_pr_url.clone(),
+        }
+    }
+
+    fn ideation_plan(plan_branch: &PlanBranch, pr_number: i64) -> Self {
+        Self {
+            kind: AgentWorkspacePrAutofixTargetKind::IdeationPlan,
+            pr_number,
+            pr_url: plan_branch.pr_url.clone(),
+        }
+    }
+
+    fn label(&self) -> &'static str {
+        match self.kind {
+            AgentWorkspacePrAutofixTargetKind::DirectWorkspace => "agent workspace",
+            AgentWorkspacePrAutofixTargetKind::IdeationPlan => "linked ideation plan",
+        }
+    }
+
+    fn updates_workspace_publication(&self) -> bool {
+        self.kind == AgentWorkspacePrAutofixTargetKind::DirectWorkspace
+    }
+}
+
 async fn route_agent_workspace_pr_autofix_if_needed(
     github: Arc<dyn GithubServiceTrait>,
     working_dir: &Path,
@@ -1621,6 +1688,80 @@ async fn route_agent_workspace_pr_autofix_if_needed(
             ))
         })?;
 
+    let target = AgentWorkspacePrAutofixTarget::direct(&workspace, pr_number);
+    route_agent_workspace_pr_autofix_for_target(
+        github,
+        working_dir,
+        target,
+        workspace,
+        conversation_id,
+        workspace_repo,
+        agent_run_repo,
+        chat_service,
+    )
+    .await
+}
+
+pub(crate) async fn route_ideation_plan_pr_autofix_if_needed(
+    github: Arc<dyn GithubServiceTrait>,
+    working_dir: &Path,
+    plan_branch: &PlanBranch,
+    conversation_id: &ChatConversationId,
+    workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    agent_run_repo: Option<Arc<dyn AgentRunRepository>>,
+    chat_service: Arc<dyn ChatService>,
+) -> crate::AppResult<bool> {
+    let Some(pr_number) = plan_branch.pr_number else {
+        return Ok(false);
+    };
+
+    let workspace = workspace_repo
+        .get_by_conversation_id(conversation_id)
+        .await?
+        .ok_or_else(|| {
+            AppError::NotFound(format!(
+                "Agent conversation workspace not found for conversation {}",
+                conversation_id
+            ))
+        })?;
+
+    if workspace.status != AgentConversationWorkspaceStatus::Active
+        || workspace.mode != AgentConversationWorkspaceMode::Ideation
+        || workspace.linked_plan_branch_id.as_ref() != Some(&plan_branch.id)
+        || workspace.linked_ideation_session_id.as_ref() != Some(&plan_branch.session_id)
+        || workspace.branch_name != plan_branch.branch_name
+        || matches!(
+            plan_branch.pr_status,
+            Some(DbPrStatus::Closed | DbPrStatus::Merged)
+        )
+    {
+        return Ok(false);
+    }
+
+    let target = AgentWorkspacePrAutofixTarget::ideation_plan(plan_branch, pr_number);
+    route_agent_workspace_pr_autofix_for_target(
+        github,
+        working_dir,
+        target,
+        workspace,
+        conversation_id,
+        workspace_repo,
+        agent_run_repo,
+        chat_service,
+    )
+    .await
+}
+
+async fn route_agent_workspace_pr_autofix_for_target(
+    github: Arc<dyn GithubServiceTrait>,
+    working_dir: &Path,
+    target: AgentWorkspacePrAutofixTarget,
+    workspace: AgentConversationWorkspace,
+    conversation_id: &ChatConversationId,
+    workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    agent_run_repo: Option<Arc<dyn AgentRunRepository>>,
+    chat_service: Arc<dyn ChatService>,
+) -> crate::AppResult<bool> {
     if !workspace.auto_publish_enabled {
         return Ok(false);
     }
@@ -1635,7 +1776,7 @@ async fn route_agent_workspace_pr_autofix_if_needed(
     if agent_workspace_pr_autofix_repair_in_flight(&workspace, agent_run_repo.as_ref()).await? {
         tracing::info!(
             conversation_id = conversation_id.as_str(),
-            pr_number,
+            pr_number = target.pr_number,
             publication_push_status = workspace.publication_push_status.as_deref(),
             pr_supervision_status = workspace.pr_supervision_status.as_deref(),
             "Agent workspace PR poller: skipping autofix route because repair is already active"
@@ -1643,33 +1784,40 @@ async fn route_agent_workspace_pr_autofix_if_needed(
         return Ok(false);
     }
 
-    let health = github.fetch_pr_health(working_dir, pr_number).await?;
+    let health = github
+        .fetch_pr_health(working_dir, target.pr_number)
+        .await?;
     import_agent_workspace_pr_comment_evidence(
         Arc::clone(&workspace_repo),
         conversation_id,
-        pr_number,
+        target.pr_number,
         &health,
     )
     .await?;
     if let Some((terminal_status, summary)) =
         agent_workspace_terminal_status_from_pr_health(&health)
     {
-        workspace_repo
-            .update_publication(
-                conversation_id,
-                workspace.publication_pr_number,
-                workspace.publication_pr_url.as_deref(),
-                Some(terminal_status),
-                workspace.publication_push_status.as_deref(),
-            )
-            .await?;
+        if target.updates_workspace_publication() {
+            workspace_repo
+                .update_publication(
+                    conversation_id,
+                    workspace.publication_pr_number,
+                    workspace.publication_pr_url.as_deref(),
+                    Some(terminal_status),
+                    workspace.publication_push_status.as_deref(),
+                )
+                .await?;
+        }
         workspace_repo
             .append_publication_event(AgentConversationWorkspacePublicationEvent::new(
                 conversation_id.clone(),
                 "pr_terminal",
                 terminal_status,
                 summary,
-                Some(format!("github_pr_terminal:{pr_number}:{terminal_status}")),
+                Some(format!(
+                    "github_pr_terminal:{}:{terminal_status}",
+                    target.pr_number
+                )),
             ))
             .await?;
         return Ok(false);
@@ -1677,7 +1825,7 @@ async fn route_agent_workspace_pr_autofix_if_needed(
     let auto_merge_current = sync_agent_workspace_auto_merge_preference(
         Arc::clone(&github),
         working_dir,
-        pr_number,
+        target.pr_number,
         &workspace,
         &health,
         Arc::clone(&workspace_repo),
@@ -1688,7 +1836,7 @@ async fn route_agent_workspace_pr_autofix_if_needed(
         return Ok(false);
     }
 
-    let Some(issue) = classify_agent_workspace_pr_autofix_issue(pr_number, &health) else {
+    let Some(issue) = classify_agent_workspace_pr_autofix_issue(target.pr_number, &health) else {
         let auto_merge_pending = workspace.pr_auto_merge_desired && !auto_merge_current;
         if !auto_merge_pending
             && (workspace.pr_supervision_status.as_deref() != Some("monitoring")
@@ -1715,7 +1863,13 @@ async fn route_agent_workspace_pr_autofix_if_needed(
         return Ok(false);
     }
 
-    let message = build_agent_workspace_pr_autofix_message(pr_number, &workspace, &issue);
+    let message = build_agent_workspace_pr_autofix_message(
+        target.pr_number,
+        target.pr_url.as_deref(),
+        target.label(),
+        &workspace,
+        &issue,
+    );
     chat_service
         .send_message(
             ChatContextType::Project,
@@ -1736,15 +1890,17 @@ async fn route_agent_workspace_pr_autofix_if_needed(
     } else {
         Some("open")
     };
-    workspace_repo
-        .update_publication(
-            conversation_id,
-            workspace.publication_pr_number,
-            workspace.publication_pr_url.as_deref(),
-            pr_status,
-            Some("needs_agent"),
-        )
-        .await?;
+    if target.updates_workspace_publication() {
+        workspace_repo
+            .update_publication(
+                conversation_id,
+                workspace.publication_pr_number,
+                workspace.publication_pr_url.as_deref(),
+                pr_status,
+                Some("needs_agent"),
+            )
+            .await?;
+    }
     workspace_repo
         .update_pr_auto_merge_state(
             conversation_id,
@@ -2377,12 +2533,14 @@ fn build_agent_workspace_pr_conflict_repair_message(
 
 fn build_agent_workspace_pr_autofix_message(
     pr_number: i64,
+    pr_url: Option<&str>,
+    target_label: &str,
     workspace: &AgentConversationWorkspace,
     issue: &AgentWorkspacePrAutofixIssue,
 ) -> String {
     let mut out = String::new();
     out.push_str(&format!(
-        "RalphX PR supervision detected a merge-blocking issue on GitHub PR #{pr_number} for this agent workspace.\n\n"
+        "RalphX PR supervision detected a merge-blocking issue on GitHub PR #{pr_number} for this {target_label}.\n\n"
     ));
     out.push_str(
         "Please fix the PR in the current workspace branch, commit any focused changes, then call `complete_agent_workspace_pr_fix`.\n\n",
@@ -2392,7 +2550,7 @@ fn build_agent_workspace_pr_autofix_message(
         workspace.conversation_id.as_str()
     ));
     out.push_str(&format!("Workspace branch: {}\n", workspace.branch_name));
-    if let Some(pr_url) = workspace.publication_pr_url.as_deref() {
+    if let Some(pr_url) = pr_url {
         out.push_str(&format!("Pull request: {pr_url}\n"));
     }
     out.push_str(&format!("Detected issue: {}\n", issue.summary));
