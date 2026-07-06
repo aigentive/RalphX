@@ -32,14 +32,16 @@ use crate::domain::entities::task_metadata::GIT_ISOLATION_ERROR_PREFIX;
 use crate::domain::entities::{
     ExecutionFailureSource, ExecutionRecoveryEvent, ExecutionRecoveryEventKind,
     ExecutionRecoveryMetadata, ExecutionRecoveryReasonCode, ExecutionRecoverySource,
-    InternalStatus, ReviewNote, ReviewOutcome, ReviewerType, Task, TaskCategory, TaskId,
+    InternalStatus, PlanBranchId, ReviewNote, ReviewOutcome, ReviewerType, Task, TaskCategory,
+    TaskId,
 };
 use crate::domain::repositories::{
-    ActivityEventRepository, AgentLaneSettingsRepository, AgentProviderSettingsRepository,
-    AgentRunRepository, ArtifactRepository, ChatAttachmentRepository, ChatConversationRepository,
-    ChatMessageRepository, ExecutionSettingsRepository, ExternalEventsRepository,
-    IdeationSessionRepository, MemoryEventRepository, PlanBranchRepository, ProjectRepository,
-    ReviewRepository, TaskDependencyRepository, TaskRepository, TaskStepRepository,
+    ActivityEventRepository, AgentConversationWorkspaceRepository, AgentLaneSettingsRepository,
+    AgentProviderSettingsRepository, AgentRunRepository, ArtifactRepository,
+    ChatAttachmentRepository, ChatConversationRepository, ChatMessageRepository,
+    ExecutionSettingsRepository, ExternalEventsRepository, IdeationSessionRepository,
+    MemoryEventRepository, PlanBranchRepository, ProjectRepository, ReviewRepository,
+    TaskDependencyRepository, TaskRepository, TaskStepRepository,
 };
 use crate::domain::services::{
     github_service::{
@@ -854,6 +856,9 @@ pub struct TaskTransitionService<R: Runtime = tauri::Wry> {
     /// Passed to TaskServices so TransitionHandler can override merge targets.
     plan_branch_repo: Option<Arc<dyn PlanBranchRepository>>,
 
+    /// Agent conversation workspace repository for linked plan-branch PR supervision.
+    agent_conversation_workspace_repo: Option<Arc<dyn AgentConversationWorkspaceRepository>>,
+
     /// Task step repository for updating step statuses.
     /// Passed to TaskServices so TransitionHandler can fail in-progress steps.
     step_repo: Option<Arc<dyn TaskStepRepository>>,
@@ -1253,6 +1258,7 @@ impl<R: Runtime> TaskTransitionService<R> {
             running_agent_registry,
             pr_poller_registry: None,
             github_service: None,
+            agent_conversation_workspace_repo: None,
             webhook_publisher: None,
             plan_pr_description_drafter: None,
             session_merge_locks: Arc::new(dashmap::DashMap::new()),
@@ -1300,6 +1306,15 @@ impl<R: Runtime> TaskTransitionService<R> {
     pub fn with_plan_branch_repo(mut self, repo: Arc<dyn PlanBranchRepository>) -> Self {
         self.chat_service.set_plan_branch_repo(Arc::clone(&repo));
         self.plan_branch_repo = Some(repo);
+        self
+    }
+
+    /// Set the Agent conversation workspace repository for plan-owned PR supervision.
+    pub fn with_agent_conversation_workspace_repo(
+        mut self,
+        repo: Arc<dyn AgentConversationWorkspaceRepository>,
+    ) -> Self {
+        self.agent_conversation_workspace_repo = Some(repo);
         self
     }
 
@@ -2195,6 +2210,78 @@ impl<R: Runtime> TaskTransitionService<R> {
                 ))),
             }
         }
+    }
+
+    /// Route fixable PR health for a plan-owned PR into the Agent workspace PR fixer.
+    ///
+    /// The plan branch remains the PR identity owner; the linked Agent workspace row
+    /// supplies user preferences, visible supervision status, and the fixer conversation.
+    pub(crate) async fn route_plan_pr_autofix_if_needed(
+        &self,
+        expected_plan_branch_id: &PlanBranchId,
+        pr_number: i64,
+    ) -> AppResult<bool> {
+        let Some(plan_branch_repo) = self.plan_branch_repo.as_ref() else {
+            return Ok(false);
+        };
+        let Some(workspace_repo) = self.agent_conversation_workspace_repo.as_ref() else {
+            return Ok(false);
+        };
+        let Some(github_service) = self.github_service.as_ref() else {
+            return Ok(false);
+        };
+
+        let plan_branch = plan_branch_repo
+            .get_by_id(expected_plan_branch_id)
+            .await?
+            .ok_or_else(|| {
+                AppError::NotFound(format!(
+                    "No plan branch found for PR supervision {}",
+                    expected_plan_branch_id.as_str()
+                ))
+            })?;
+        if plan_branch.id != *expected_plan_branch_id
+            || !plan_branch.pr_eligible
+            || plan_branch.status != crate::domain::entities::PlanBranchStatus::Active
+            || plan_branch.pr_number != Some(pr_number)
+        {
+            return Ok(false);
+        }
+
+        let Some(workspace) = workspace_repo
+            .get_by_linked_ideation_session_id(&plan_branch.session_id)
+            .await?
+        else {
+            return Ok(false);
+        };
+        if workspace.linked_plan_branch_id.as_ref() != Some(&plan_branch.id) {
+            return Ok(false);
+        }
+
+        let project = self
+            .project_repo
+            .get_by_id(&plan_branch.project_id)
+            .await?
+            .ok_or_else(|| {
+                AppError::ProjectNotFound(plan_branch.project_id.as_str().to_string())
+            })?;
+        let working_dir =
+            crate::application::agent_conversation_workspace::ensure_linked_plan_branch_agent_worktree(
+                &project,
+                &plan_branch,
+            )
+            .await?;
+
+        crate::application::services::pr_merge_poller::route_ideation_plan_pr_autofix_if_needed(
+            Arc::clone(github_service),
+            &working_dir,
+            &plan_branch,
+            &workspace.conversation_id,
+            Arc::clone(workspace_repo),
+            Some(Arc::clone(&self.agent_run_repo)),
+            Arc::clone(&self.chat_service),
+        )
+        .await
     }
 
     async fn push_and_refresh_pr_branch(

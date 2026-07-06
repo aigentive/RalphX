@@ -623,6 +623,10 @@ async fn execute_merge_retry_background(
             .and_then(|handle| handle.try_state::<AppState>())
             .map(|app_state| Arc::clone(&app_state.review_repo)),
         plan_branch_repo: Some(Arc::clone(&plan_branch_repo)),
+        agent_conversation_workspace_repo: app_handle_opt
+            .as_ref()
+            .and_then(|handle| handle.try_state::<AppState>())
+            .map(|app_state| Arc::clone(&app_state.agent_conversation_workspace_repo)),
         interactive_process_registry: Some(Arc::clone(&interactive_process_registry)),
         github_service: None,
         pr_poller_registry: None,

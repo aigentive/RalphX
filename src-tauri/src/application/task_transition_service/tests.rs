@@ -1,13 +1,17 @@
 use super::*;
+use crate::application::agent_conversation_workspace::resolve_linked_plan_branch_agent_worktree_path;
 use crate::application::AppState;
-use crate::domain::entities::plan_branch::PrPushStatus;
+use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus as DbPrStatus};
 use crate::domain::entities::task_metadata::GIT_ISOLATION_ERROR_PREFIX;
 use crate::domain::entities::{
-    AgentWorkspacePrDescription, ArtifactId, ExecutionFailureSource, ExecutionRecoveryEventKind,
-    ExecutionRecoveryMetadata, ExecutionRecoveryReasonCode, ExecutionRecoverySource,
-    ExecutionRecoveryState, IdeationSessionId, InternalStatus, PlanBranch, Project, ProjectId,
-    Task, TaskCategory,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentWorkspacePrDescription,
+    ArtifactId, ChatConversation, ChatConversationId, ExecutionFailureSource,
+    ExecutionRecoveryEventKind, ExecutionRecoveryMetadata, ExecutionRecoveryReasonCode,
+    ExecutionRecoverySource, ExecutionRecoveryState, IdeationAnalysisBaseRefKind,
+    IdeationSessionId, InternalStatus, PlanBranch, PlanBranchId, PlanBranchStatus, Project,
+    ProjectId, Task, TaskCategory,
 };
+use crate::domain::services::github_service::{PrHealth, PrHealthCheck};
 use crate::domain::services::{
     GithubServiceTrait, MemoryRunningAgentRegistry, MessageQueue, PlanPrDescriptionDrafter,
     PrReviewState,
@@ -139,6 +143,13 @@ async fn test_is_blocker_complete_with_merge_incomplete_state() {
 
 fn build_test_service(app_state: &AppState) -> TaskTransitionService<tauri::Wry> {
     let execution_state = Arc::new(ExecutionState::new());
+    build_test_service_with_execution_state(app_state, execution_state)
+}
+
+fn build_test_service_with_execution_state(
+    app_state: &AppState,
+    execution_state: Arc<ExecutionState>,
+) -> TaskTransitionService<tauri::Wry> {
     let message_queue = Arc::new(MessageQueue::new());
     let running_registry = Arc::new(MemoryRunningAgentRegistry::new());
 
@@ -308,11 +319,18 @@ async fn push_and_refresh_pr_branch_uses_drafted_description() {
 
 fn init_git_repo(path: &std::path::Path) {
     let run = |args: &[&str]| {
-        std::process::Command::new("git")
+        let output = std::process::Command::new("git")
             .args(args)
             .current_dir(path)
             .output()
             .expect("git command failed");
+        assert!(
+            output.status.success(),
+            "git {:?} failed\nstdout:\n{}\nstderr:\n{}",
+            args,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     };
     run(&["init", "-b", "main"]);
     run(&["config", "user.email", "test@test.com"]);
@@ -320,6 +338,319 @@ fn init_git_repo(path: &std::path::Path) {
     std::fs::write(path.join("README.md"), "# test").expect("write README");
     run(&["add", "."]);
     run(&["commit", "-m", "initial"]);
+}
+
+fn init_git_repo_on_branch(path: &std::path::Path, branch: &str) {
+    std::fs::create_dir_all(path).expect("create repo dir");
+    let run = |args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(path)
+            .output()
+            .expect("git command failed");
+        assert!(
+            output.status.success(),
+            "git {:?} failed\nstdout:\n{}\nstderr:\n{}",
+            args,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    run(&["init", "-b", branch]);
+    run(&["config", "user.email", "test@test.com"]);
+    run(&["config", "user.name", "Test"]);
+    std::fs::write(path.join("README.md"), "# linked plan").expect("write README");
+    run(&["add", "."]);
+    run(&["commit", "-m", "initial"]);
+}
+
+fn pr_health_with_failing_check(head: &str, check_name: &str) -> PrHealth {
+    PrHealth {
+        sync_state: PrSyncState {
+            status: PrStatus::Open,
+            merge_state_status: None,
+            mergeable: Some(PrMergeableState::Mergeable),
+            is_draft: false,
+            head_ref_name: "ralphx/test/plan-route".to_string(),
+            base_ref_name: "main".to_string(),
+            head_ref_oid: Some(head.to_string()),
+            base_ref_oid: Some("base".to_string()),
+        },
+        review_decision: None,
+        checks: vec![PrHealthCheck {
+            name: check_name.to_string(),
+            status: Some("completed".to_string()),
+            conclusion: Some("failure".to_string()),
+            details_url: Some("https://github.com/owner/repo/actions/runs/609".to_string()),
+        }],
+        issue_comments: Vec::new(),
+        auto_merge_request: None,
+    }
+}
+
+#[tokio::test]
+async fn route_plan_pr_autofix_uses_linked_ideation_workspace_without_workspace_pr() {
+    let app_state = AppState::new_test();
+    let project_root = tempfile::tempdir().expect("project root");
+    init_git_repo(project_root.path());
+    let worktree_parent = tempfile::tempdir().expect("worktree parent");
+
+    let mut project = Project::new(
+        "Plan Autofix Project".to_string(),
+        project_root.path().to_string_lossy().into_owned(),
+    );
+    project.id = ProjectId::from_string("project-plan-autofix-route".to_string());
+    project.base_branch = Some("main".to_string());
+    project.worktree_parent_directory = Some(worktree_parent.path().to_string_lossy().into_owned());
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+
+    let session_id = IdeationSessionId::from_string("session-plan-autofix-route");
+    let plan_branch_id = PlanBranchId::from_string("plan-branch-autofix-route");
+    let branch_name = "ralphx/test/plan-route";
+    let mut plan_branch = PlanBranch::new(
+        ArtifactId::from_string("artifact-plan-autofix-route"),
+        session_id.clone(),
+        project.id.clone(),
+        branch_name.to_string(),
+        "main".to_string(),
+    );
+    plan_branch.id = plan_branch_id.clone();
+    plan_branch.pr_eligible = true;
+    plan_branch.pr_number = Some(609);
+    plan_branch.pr_url = Some("https://github.com/owner/repo/pull/609".to_string());
+    plan_branch.pr_status = Some(DbPrStatus::Open);
+    plan_branch.pr_push_status = PrPushStatus::Pushed;
+    app_state
+        .plan_branch_repo
+        .create(plan_branch.clone())
+        .await
+        .unwrap();
+
+    let linked_worktree =
+        resolve_linked_plan_branch_agent_worktree_path(&project, &plan_branch).unwrap();
+    init_git_repo_on_branch(&linked_worktree, branch_name);
+
+    let conversation_id = ChatConversationId::from_string("60906090-6090-6090-6090-609060906090");
+    let mut conversation = ChatConversation::new_project(project.id.clone());
+    conversation.id = conversation_id;
+    conversation.agent_mode = Some(AgentConversationWorkspaceMode::Ideation);
+    app_state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .unwrap();
+
+    let mut workspace = AgentConversationWorkspace::new(
+        conversation_id,
+        project.id.clone(),
+        AgentConversationWorkspaceMode::Ideation,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("Project default (main)".to_string()),
+        Some("base-sha".to_string()),
+        branch_name.to_string(),
+        linked_worktree.to_string_lossy().into_owned(),
+    );
+    workspace.linked_ideation_session_id = Some(session_id);
+    workspace.linked_plan_branch_id = Some(plan_branch_id.clone());
+    workspace.publication_pr_number = None;
+    workspace.publication_pr_url = None;
+    workspace.publication_pr_status = None;
+    workspace.publication_push_status = None;
+    workspace.pr_autofix_enabled = true;
+    app_state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .unwrap();
+
+    let github = Arc::new(MockGithubService::new());
+    github.state().fetch_pr_health_result = Some(Ok(pr_health_with_failing_check(
+        "route-head",
+        "Coverage Gate",
+    )));
+    let github_trait: Arc<dyn GithubServiceTrait> = github;
+    let execution_state = Arc::new(ExecutionState::new());
+    execution_state.pause();
+    let service = build_test_service_with_execution_state(&app_state, execution_state)
+        .with_plan_branch_repo(Arc::clone(&app_state.plan_branch_repo))
+        .with_agent_conversation_workspace_repo(Arc::clone(
+            &app_state.agent_conversation_workspace_repo,
+        ))
+        .with_github_service(github_trait);
+
+    let routed = service
+        .route_plan_pr_autofix_if_needed(&plan_branch_id, 609)
+        .await
+        .expect("linked plan PR autofix routing should succeed");
+
+    assert!(routed);
+    let updated = app_state
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("workspace should exist");
+    assert_eq!(updated.publication_pr_number, None);
+    assert_eq!(updated.pr_supervision_status.as_deref(), Some("fixing"));
+    assert!(updated
+        .pr_supervision_summary
+        .as_deref()
+        .unwrap_or_default()
+        .contains("failing check"));
+    let events = app_state
+        .agent_conversation_workspace_repo
+        .list_publication_events(&conversation_id)
+        .await
+        .unwrap();
+    assert!(events.iter().any(|event| {
+        event.step == "pr_autofix"
+            && event.status == "needs_agent"
+            && event
+                .classification
+                .as_deref()
+                .unwrap_or_default()
+                .starts_with("github_pr_autofix:609:routehead")
+    }));
+}
+
+#[tokio::test]
+async fn route_plan_pr_autofix_skips_incomplete_or_stale_linked_plan_context() {
+    let app_state = AppState::new_test();
+    let plan_branch_id = PlanBranchId::from_string("plan-branch-autofix-skip-current");
+    let github = Arc::new(MockGithubService::new());
+    let github_trait: Arc<dyn GithubServiceTrait> = github;
+
+    assert!(!build_test_service(&app_state)
+        .route_plan_pr_autofix_if_needed(&plan_branch_id, 609)
+        .await
+        .expect("missing plan repo should skip"));
+    assert!(!build_test_service(&app_state)
+        .with_plan_branch_repo(Arc::clone(&app_state.plan_branch_repo))
+        .route_plan_pr_autofix_if_needed(&plan_branch_id, 609)
+        .await
+        .expect("missing workspace repo should skip"));
+    assert!(!build_test_service(&app_state)
+        .with_plan_branch_repo(Arc::clone(&app_state.plan_branch_repo))
+        .with_agent_conversation_workspace_repo(Arc::clone(
+            &app_state.agent_conversation_workspace_repo,
+        ))
+        .route_plan_pr_autofix_if_needed(&plan_branch_id, 609)
+        .await
+        .expect("missing GitHub service should skip"));
+
+    let service = build_test_service(&app_state)
+        .with_plan_branch_repo(Arc::clone(&app_state.plan_branch_repo))
+        .with_agent_conversation_workspace_repo(Arc::clone(
+            &app_state.agent_conversation_workspace_repo,
+        ))
+        .with_github_service(github_trait);
+    let missing = service
+        .route_plan_pr_autofix_if_needed(&plan_branch_id, 609)
+        .await;
+    assert!(matches!(
+        missing,
+        Err(AppError::NotFound(message))
+            if message.contains("No plan branch found for PR supervision")
+    ));
+
+    let project_id = ProjectId::from_string("project-plan-autofix-skip".to_string());
+    let make_plan_branch = |suffix: &str, pr_number: Option<i64>| {
+        let session_id = IdeationSessionId::from_string(format!("session-{suffix}"));
+        let mut plan_branch = PlanBranch::new(
+            ArtifactId::from_string(format!("artifact-{suffix}")),
+            session_id,
+            project_id.clone(),
+            format!("ralphx/test/{suffix}"),
+            "main".to_string(),
+        );
+        plan_branch.id = PlanBranchId::from_string(format!("plan-branch-{suffix}"));
+        plan_branch.pr_eligible = true;
+        plan_branch.pr_number = pr_number;
+        plan_branch.pr_url = Some("https://github.com/owner/repo/pull/609".to_string());
+        plan_branch.pr_status = Some(DbPrStatus::Open);
+        plan_branch.pr_push_status = PrPushStatus::Pushed;
+        plan_branch
+    };
+
+    let mut ineligible = make_plan_branch("ineligible", Some(609));
+    ineligible.pr_eligible = false;
+    app_state
+        .plan_branch_repo
+        .create(ineligible.clone())
+        .await
+        .unwrap();
+    assert!(!service
+        .route_plan_pr_autofix_if_needed(&ineligible.id, 609)
+        .await
+        .expect("ineligible branch should skip"));
+
+    let mut merged_branch = make_plan_branch("merged", Some(609));
+    merged_branch.status = PlanBranchStatus::Merged;
+    app_state
+        .plan_branch_repo
+        .create(merged_branch.clone())
+        .await
+        .unwrap();
+    assert!(!service
+        .route_plan_pr_autofix_if_needed(&merged_branch.id, 609)
+        .await
+        .expect("inactive branch should skip"));
+
+    let wrong_pr = make_plan_branch("wrong-pr", Some(610));
+    app_state
+        .plan_branch_repo
+        .create(wrong_pr.clone())
+        .await
+        .unwrap();
+    assert!(!service
+        .route_plan_pr_autofix_if_needed(&wrong_pr.id, 609)
+        .await
+        .expect("PR number mismatch should skip"));
+
+    let no_workspace = make_plan_branch("no-workspace", Some(609));
+    app_state
+        .plan_branch_repo
+        .create(no_workspace.clone())
+        .await
+        .unwrap();
+    assert!(!service
+        .route_plan_pr_autofix_if_needed(&no_workspace.id, 609)
+        .await
+        .expect("missing linked workspace should skip"));
+
+    let mismatched_workspace_plan = make_plan_branch("workspace-mismatch", Some(609));
+    app_state
+        .plan_branch_repo
+        .create(mismatched_workspace_plan.clone())
+        .await
+        .unwrap();
+    let mut workspace = AgentConversationWorkspace::new(
+        ChatConversationId::from_string("60916091-6091-6091-6091-609160916091"),
+        project_id,
+        AgentConversationWorkspaceMode::Ideation,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("Project default (main)".to_string()),
+        Some("base-sha".to_string()),
+        mismatched_workspace_plan.branch_name.clone(),
+        "/tmp/unused-linked-plan-worktree".to_string(),
+    );
+    workspace.linked_ideation_session_id = Some(mismatched_workspace_plan.session_id.clone());
+    workspace.linked_plan_branch_id = Some(PlanBranchId::from_string("other-plan-branch"));
+    app_state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .unwrap();
+    assert!(!service
+        .route_plan_pr_autofix_if_needed(&mismatched_workspace_plan.id, 609)
+        .await
+        .expect("workspace linked to another plan branch should skip"));
 }
 
 #[tokio::test]
