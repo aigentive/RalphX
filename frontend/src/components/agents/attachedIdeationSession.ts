@@ -17,11 +17,13 @@ export function resolveAttachedIdeationSessionId(
   }
 
   for (const message of [...messages].reverse()) {
-    const referencedSessionId = extractComposerReferencedSessionId(
-      message.metadata,
-    );
-    if (referencedSessionId) {
-      return referencedSessionId;
+    if (!fallbackSessionId) {
+      const referencedSessionId = extractComposerReferencedSessionId(
+        message.metadata,
+      );
+      if (referencedSessionId) {
+        return referencedSessionId;
+      }
     }
 
     const toolCalls = [

@@ -102,6 +102,27 @@ describe("resolveAttachedIdeationSessionId", () => {
     expect(result).toBe("ideation-session-1");
   });
 
+  it("prefers the workspace-linked session over composer source-session metadata", () => {
+    const result = resolveAttachedIdeationSessionId(
+      conversation,
+      [
+        messageWithMetadata({
+          composer_artifact_references: [
+            {
+              artifactId: "source-plan-artifact",
+              kind: "plan",
+              sessionId: "source-session",
+              title: "Original plan",
+            },
+          ],
+        }),
+      ],
+      "fresh-linked-session",
+    );
+
+    expect(result).toBe("fresh-linked-session");
+  });
+
   it("extracts attached plan sessions from user composer artifact references", () => {
     const result = resolveAttachedIdeationSessionId(conversation, [
       messageWithMetadata({
@@ -231,6 +252,16 @@ describe("resolveAttachedIdeationSessionId", () => {
     ]);
 
     expect(result).toBe("session-reused");
+  });
+
+  it("prefers transcript tool session evidence over the workspace fallback", () => {
+    const result = resolveAttachedIdeationSessionId(
+      conversation,
+      [messageWithToolCall({ session_id: "session-from-tool" })],
+      "session-linked",
+    );
+
+    expect(result).toBe("session-from-tool");
   });
 
   it("extracts session ids from encoded MCP text payloads", () => {

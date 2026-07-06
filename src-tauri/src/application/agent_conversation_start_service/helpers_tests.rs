@@ -412,10 +412,13 @@ fn requires_workspace_is_true_for_non_chat_modes() {
 fn should_create_workspace_covers_chat_with_source_pr() {
     use AgentConversationWorkspaceMode::*;
     // Non-chat modes always create a workspace regardless of PR.
-    assert!(agent_mode_should_create_workspace(Edit, None));
+    assert!(agent_mode_should_create_workspace(Edit, None, false));
 
     // Chat without a source PR does not create a workspace.
-    assert!(!agent_mode_should_create_workspace(Chat, None));
+    assert!(!agent_mode_should_create_workspace(Chat, None, false));
+
+    // Chat with a selected plan reference needs workspace-linked plan context.
+    assert!(agent_mode_should_create_workspace(Chat, None, true));
 
     // Chat WITH a source PR does create a workspace.
     let source = AgentWorkspaceSourcePullRequest {
@@ -426,7 +429,11 @@ fn should_create_workspace_covers_chat_with_source_pr() {
         base_ref_name: None,
         head_ref_oid: None,
     };
-    assert!(agent_mode_should_create_workspace(Chat, Some(&source)));
+    assert!(agent_mode_should_create_workspace(
+        Chat,
+        Some(&source),
+        false
+    ));
 }
 
 // ── linked branch availability / PR hydration ────────────────────────────────
