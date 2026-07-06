@@ -136,7 +136,7 @@ const automationDetailFixture = (
   ...overrides,
 });
 
-function renderPanel(onOpenAutomation = vi.fn()) {
+function renderPanel(onOpenAutomation: ((automationId: string) => void) | null = vi.fn()) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
@@ -145,7 +145,7 @@ function renderPanel(onOpenAutomation = vi.fn()) {
     <QueryClientProvider client={queryClient}>
       <AgentsAutomationPanel
         automationId="automation-1"
-        onOpenAutomation={onOpenAutomation}
+        {...(onOpenAutomation ? { onOpenAutomation } : {})}
       />
     </QueryClientProvider>,
   );
@@ -231,5 +231,50 @@ describe("AgentsAutomationPanel", () => {
 
     await waitFor(() => expect(resumeAutomationMock).toHaveBeenCalledWith("automation-1"));
     expect(toastSuccessMock).toHaveBeenCalledWith("Automation resumed");
+  });
+
+  it("pauses active automations and confirms stop requests", async () => {
+    renderPanel();
+
+    fireEvent.click(screen.getByTestId("agents-automation-pause"));
+    await waitFor(() =>
+      expect(pauseAutomationMock).toHaveBeenCalledWith({
+        id: "automation-1",
+        reasonCode: "user",
+        reasonDetail: "Paused from Agents automation panel",
+      }),
+    );
+    expect(toastSuccessMock).toHaveBeenCalledWith("Automation paused");
+
+    fireEvent.click(screen.getByTestId("agents-automation-stop"));
+    expect(await screen.findByText("Stop automation?")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+
+    await waitFor(() => expect(stopAutomationMock).toHaveBeenCalledWith("automation-1"));
+    expect(toastSuccessMock).toHaveBeenCalledWith("Automation stopped");
+  });
+
+  it("renders terminal automations without mutation controls", () => {
+    useAutomationDetailMock.mockReturnValue({
+      data: automationDetailFixture({
+        automation: automationFixture({
+          status: "completed",
+          maxRuns: 3,
+        }),
+        runs: [],
+      }),
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel(null);
+
+    expect(screen.getByText("Completed")).toBeInTheDocument();
+    expect(screen.getByText("0 of 3")).toBeInTheDocument();
+    expect(screen.getByText("No PR yet")).toBeInTheDocument();
+    expect(screen.queryByTestId("agents-automation-pause")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("agents-automation-resume")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("agents-automation-stop")).not.toBeInTheDocument();
+    expect(screen.getByTestId("agents-automation-open")).toBeDisabled();
   });
 });

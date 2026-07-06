@@ -22,7 +22,7 @@ use crate::domain::services::{
     ComposerArtifactReference, ComposerIntegrationReference, ComposerProjectReference,
     ComposerProjectReferenceKind,
 };
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 use crate::infrastructure::memory::{
     MemoryAgentConversationWorkspaceRepository, MemoryAutomationRepository,
     MemoryAutomationRunRepository, MemoryChatConversationRepository,
@@ -140,6 +140,18 @@ impl AutomationRunStarter for RecordingStarter {
     }
 }
 
+struct FailingStarter;
+
+#[async_trait]
+impl AutomationRunStarter for FailingStarter {
+    async fn start_run(
+        &self,
+        _request: AutomationRunStartRequest,
+    ) -> AppResult<AutomationRunStartOutcome> {
+        Err(AppError::Validation("starter failed".to_string()))
+    }
+}
+
 #[test]
 fn automation_run_start_request_maps_to_manual_start_input() {
     let mut automation = automation("automation-1");
@@ -203,6 +215,49 @@ fn automation_run_start_request_maps_to_manual_start_input() {
 }
 
 #[test]
+fn automation_run_start_request_trims_optional_fields_and_rejects_invalid_values() {
+    let automation = automation("automation-1");
+    let run = run(automation.id.clone());
+    let mut request = AutomationRunStartRequest::from_automation_run(
+        &automation,
+        &run,
+        crate::domain::entities::ChatConversationId::from_string(
+            "33333333-3333-4333-8333-333333333333",
+        ),
+    );
+    request.provider_harness = "  ".to_string();
+    request.model_id = "  ".to_string();
+    request.logical_effort = Some("  ".to_string());
+    request.run_mode = "  ".to_string();
+    request.base_ref_kind = "  ".to_string();
+    request.base_ref = "  ".to_string();
+    request.base_display_name = Some("  ".to_string());
+
+    let input = request.clone().into_start_input().unwrap();
+
+    assert!(input.provider_harness.is_none());
+    assert!(input.model_override.is_none());
+    assert!(input.logical_effort.is_none());
+    assert!(input.mode.is_none());
+    assert!(input.base_ref_kind.is_none());
+    assert!(input.base_ref.is_none());
+    assert!(input.base_display_name.is_none());
+
+    request.logical_effort = Some("impossible".to_string());
+    assert!(matches!(
+        request.clone().into_start_input().unwrap_err(),
+        AppError::Validation(_)
+    ));
+
+    request.logical_effort = None;
+    request.base_source_pull_request_json = Some("{not-json".to_string());
+    assert!(matches!(
+        request.into_start_input().unwrap_err(),
+        AppError::Validation(_)
+    ));
+}
+
+#[test]
 fn automation_run_start_request_drops_source_pr_after_run_one() {
     let mut automation = automation("automation-1");
     automation.base_display_name = Some("Source PR #42".to_string());
@@ -232,6 +287,51 @@ fn automation_run_start_request_drops_source_pr_after_run_one() {
     assert_eq!(input.base_ref.as_deref(), Some("release/2026"));
     assert_eq!(input.base_display_name.as_deref(), Some("release/2026"));
     assert!(input.base_source_pull_request.is_none());
+}
+
+#[tokio::test]
+async fn provision_first_run_noops_or_rejects_when_not_ready() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let conversation_repo = Arc::new(MemoryChatConversationRepository::new());
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let starter = RecordingStarter::new(Arc::clone(&workspace_repo));
+    let existing_automation = automation("automation-1");
+    automation_repo
+        .create(existing_automation.clone())
+        .await
+        .unwrap();
+    run_repo
+        .create_run(run(existing_automation.id.clone()))
+        .await
+        .unwrap();
+    let provisioner = AutomationRunProvisioner::new(
+        automation_repo.clone(),
+        run_repo.clone(),
+        conversation_repo.clone(),
+        workspace_repo.clone(),
+        Arc::new(starter.clone()),
+        Arc::new(NoopAutomationEventEmitter),
+    );
+
+    assert!(provisioner
+        .provision_first_run(&existing_automation)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(starter.requests().is_empty());
+
+    let mut missing_prompt = automation("automation-2");
+    missing_prompt.first_run_prompt = Some("   ".to_string());
+    automation_repo
+        .create(missing_prompt.clone())
+        .await
+        .unwrap();
+    let error = provisioner
+        .provision_first_run(&missing_prompt)
+        .await
+        .unwrap_err();
+    assert!(matches!(error, AppError::Validation(_)));
 }
 
 #[tokio::test]
@@ -307,4 +407,80 @@ async fn provision_first_run_creates_owned_draft_and_marks_workspace_for_initial
         .expect("latest run should exist");
     assert_eq!(latest.id, started.id);
     assert_eq!(latest.status, AutomationRunStatus::Running);
+}
+
+#[tokio::test]
+async fn provision_pending_run_noops_for_non_pending_and_conflicts_on_stale_status() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let conversation_repo = Arc::new(MemoryChatConversationRepository::new());
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let starter = RecordingStarter::new(Arc::clone(&workspace_repo));
+    let automation = automation("automation-1");
+    automation_repo.create(automation.clone()).await.unwrap();
+    let provisioner = AutomationRunProvisioner::new(
+        automation_repo,
+        run_repo.clone(),
+        conversation_repo,
+        workspace_repo,
+        Arc::new(starter),
+        Arc::new(NoopAutomationEventEmitter),
+    );
+
+    let mut running = run(automation.id.clone());
+    running.status = AutomationRunStatus::Running;
+    assert!(provisioner
+        .provision_pending_run(&automation, &running)
+        .await
+        .unwrap()
+        .is_none());
+
+    let mut stored = running.clone();
+    stored.id = AutomationRunId::from_string("run-stale");
+    run_repo.create_run(stored.clone()).await.unwrap();
+    let mut stale_input = stored;
+    stale_input.status = AutomationRunStatus::Pending;
+    let error = provisioner
+        .provision_pending_run(&automation, &stale_input)
+        .await
+        .unwrap_err();
+    assert!(matches!(error, AppError::Conflict(_)));
+}
+
+#[tokio::test]
+async fn provision_pending_run_marks_agent_failed_when_starter_errors() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let conversation_repo = Arc::new(MemoryChatConversationRepository::new());
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let automation = automation("automation-1");
+    automation_repo.create(automation.clone()).await.unwrap();
+    let pending = run(automation.id.clone());
+    run_repo.create_run(pending.clone()).await.unwrap();
+    let provisioner = AutomationRunProvisioner::new(
+        automation_repo,
+        run_repo.clone(),
+        conversation_repo,
+        workspace_repo,
+        Arc::new(FailingStarter),
+        Arc::new(NoopAutomationEventEmitter),
+    );
+
+    let error = provisioner
+        .provision_pending_run(&automation, &pending)
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, AppError::Validation(_)));
+    let failed = run_repo
+        .get_by_id(&pending.id)
+        .await
+        .unwrap()
+        .expect("run should remain persisted");
+    assert_eq!(failed.status, AutomationRunStatus::AgentFailed);
+    assert_eq!(failed.error_code.as_deref(), Some("start_failed"));
+    assert!(failed
+        .error_detail
+        .as_deref()
+        .is_some_and(|detail| detail.contains("starter failed")));
 }

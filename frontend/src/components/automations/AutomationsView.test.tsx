@@ -5,7 +5,7 @@ import type { ComponentProps } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AutomationsView } from "./AutomationsView";
-import type { Automation } from "@/api/automations";
+import type { Automation, AutomationRun } from "@/api/automations";
 
 const { listAutomationsMock, getAutomationMock, preloadAutomationDetailViewMock } = vi.hoisted(() => ({
   listAutomationsMock: vi.fn(),
@@ -77,6 +77,44 @@ function automation(overrides: Partial<Automation> = {}): Automation {
     maxConsecutiveFailures: 3,
     firstRunPrompt: null,
     setupAnalysisSummary: null,
+    createdAt: now,
+    updatedAt: now,
+    ...overrides,
+  };
+}
+
+function run(overrides: Partial<AutomationRun> = {}): AutomationRun {
+  const now = "2026-07-05T00:00:00Z";
+  return {
+    id: "run-1",
+    automationId: "automation-1",
+    runIndex: 1,
+    status: "merged",
+    judgeState: "done",
+    judgeLeaseExpiresAt: null,
+    conversationId: "conversation-1",
+    runPrompt: "Continue the automation.",
+    promptAuthor: "judge",
+    baseRefKind: "project_default",
+    baseRefUsed: "main",
+    baseFromRunId: null,
+    branchName: "ralphx/test",
+    prNumber: null,
+    prUrl: null,
+    prTitle: null,
+    prHeadRefName: null,
+    prBaseRefName: "main",
+    prMergedAt: null,
+    mergeCommitSha: null,
+    diffStatsJson: null,
+    agentSummary: null,
+    judgeVerdictJson: null,
+    judgeModelId: null,
+    errorCode: null,
+    errorDetail: null,
+    signalCheckFailures: 0,
+    startedAt: now,
+    finishedAt: null,
     createdAt: now,
     updatedAt: now,
     ...overrides,
@@ -189,5 +227,56 @@ describe("AutomationsView", () => {
     await userEvent.click(screen.getByRole("button", { name: "Back" }));
 
     expect(onSelectedAutomationChange).toHaveBeenCalledWith(null);
+  });
+
+  it("summarizes all automation statuses and next-action branches", async () => {
+    const rows = [
+      automation({ id: "draft", name: "Draft automation", status: "draft", logicalEffort: null }),
+      automation({ id: "paused", name: "Paused automation", status: "paused", pausedReasonCode: "review_gate" }),
+      automation({ id: "completed", name: "Completed automation", status: "completed" }),
+      automation({ id: "stopped", name: "Stopped automation", status: "stopped" }),
+      automation({ id: "empty-active", name: "Empty active automation", baseDisplayName: null, baseRef: "", baseRefKind: "current_branch" }),
+      automation({ id: "judging", name: "Judging automation" }),
+      automation({ id: "judge-failed", name: "Judge failed automation" }),
+      automation({ id: "running", name: "Running automation" }),
+      automation({ id: "published-no-pr", name: "Published without PR automation" }),
+      automation({ id: "published-with-pr", name: "Published with PR automation" }),
+      automation({ id: "waiting-judge", name: "Waiting judge automation" }),
+      automation({ id: "scheduling", name: "Scheduling automation" }),
+    ];
+    const runsByAutomation = new Map<string, AutomationRun[]>([
+      ["judging", [run({ automationId: "judging", judgeState: "in_progress" })]],
+      ["judge-failed", [run({ automationId: "judge-failed", judgeState: "failed" })]],
+      ["running", [run({ automationId: "running", runIndex: 2, status: "running", judgeState: "none" })]],
+      ["published-no-pr", [run({ automationId: "published-no-pr", status: "published", judgeState: "none" })]],
+      ["published-with-pr", [run({ automationId: "published-with-pr", status: "published", judgeState: "none", prNumber: 593 })]],
+      ["waiting-judge", [run({ automationId: "waiting-judge", status: "merged", judgeState: "none" })]],
+      ["scheduling", [run({ automationId: "scheduling", status: "merged", judgeState: "done" })]],
+    ]);
+
+    listAutomationsMock.mockResolvedValue(rows);
+    getAutomationMock.mockImplementation((id: string) => Promise.resolve({
+      automation: rows.find((item) => item.id === id) ?? automation({ id }),
+      runs: runsByAutomation.get(id) ?? [],
+      usage: emptyUsage,
+    }));
+
+    renderView({ onOpenAutomation: vi.fn() });
+
+    expect(await screen.findByText("Draft automation")).toBeInTheDocument();
+    expect(await screen.findByText("Draft setup")).toBeInTheDocument();
+    expect(screen.getByText("Paused: review_gate")).toBeInTheDocument();
+    expect(screen.getByText("Goal completed")).toBeInTheDocument();
+    expect(screen.getAllByText("Stopped").length).toBeGreaterThan(0);
+    expect(screen.getByText("Waiting for first run")).toBeInTheDocument();
+    expect(screen.getByText("Judging")).toBeInTheDocument();
+    expect(screen.getByText("Paused: judge failed")).toBeInTheDocument();
+    expect(screen.getByText("Run 2 in progress")).toBeInTheDocument();
+    expect(screen.getByText("Waiting for PR merge")).toBeInTheDocument();
+    expect(screen.getByText("Waiting for PR #593 to merge")).toBeInTheDocument();
+    expect(screen.getByText("Waiting for judge")).toBeInTheDocument();
+    expect(screen.getByText("Scheduling next run")).toBeInTheDocument();
+    expect(screen.getByText("current_branch")).toBeInTheDocument();
+    expect(screen.getAllByText("0 / 25").length).toBeGreaterThan(0);
   });
 });

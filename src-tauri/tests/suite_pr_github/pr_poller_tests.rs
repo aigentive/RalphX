@@ -867,6 +867,7 @@ async fn test_poller_merged_stops_poller() {
     // Return Merged — the poller should process the transition and exit
     mock.will_return_status(PrStatus::Merged {
         merge_commit_sha: Some("abc123".to_string()),
+        merged_at: None,
     });
 
     let registry = Arc::new(PrPollerRegistry::new(

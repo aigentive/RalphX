@@ -223,7 +223,11 @@ describe("AutomationDetailView", () => {
       promptAuthor: "judge",
     });
 
-    renderDetail({ automation: automation(), runs: [olderRun, latestRun], usage });
+    const { onOpenRunConversation } = renderDetail({
+      automation: automation(),
+      runs: [olderRun, latestRun],
+      usage,
+    });
 
     expect(await screen.findByTestId("automation-detail-view")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Ship migration loop" })).toBeInTheDocument();
@@ -246,6 +250,12 @@ describe("AutomationDetailView", () => {
     await userEvent.click(screen.getAllByRole("button", { name: "Expand" })[0]);
 
     expect(goalCard).toHaveTextContent("Goal line 11");
+
+    await userEvent.click(within(runTwo).getByRole("button", { name: "Open conversation" }));
+    expect(onOpenRunConversation).toHaveBeenCalledWith("project-1", "conversation-2");
+
+    await userEvent.click(within(runTwo).getByRole("button", { name: "Show next prompt" }));
+    expect(within(runTwo).getByText("Continue with the next scoped automation task.")).toBeInTheDocument();
   });
 
   it("calls pause and skip-judge controls through the automation API", async () => {
@@ -330,12 +340,154 @@ describe("AutomationDetailView", () => {
       scheduled: false,
       reason: "run in flight",
     });
-    renderDetail({ automation: automation(), runs: [run()], usage });
+    renderDetail({
+      automation: automation({
+        baseSourcePullRequestJson: "not-json",
+        goalItemsJson: null,
+      }),
+      runs: [run({
+        diffStatsJson: null,
+        judgeVerdictJson: "not-json",
+      })],
+      usage,
+    });
 
     await screen.findByTestId("automation-detail-view");
+    expect(screen.getByText("No setup input references are attached to this automation record.")).toBeInTheDocument();
+    expect(screen.getByText("Diff not recorded")).toBeInTheDocument();
+
     await userEvent.click(screen.getByLabelText("Run now"));
 
     await waitFor(() => expect(triggerRunNowMock).toHaveBeenCalledWith("automation-1"));
     expect(toastInfoMock).toHaveBeenCalledWith("run in flight");
+  });
+
+  it("confirms stop requests before terminal mutation", async () => {
+    renderDetail({ automation: automation(), runs: [run()], usage });
+
+    await screen.findByTestId("automation-detail-view");
+    await userEvent.click(screen.getByLabelText("Stop automation"));
+
+    expect(await screen.findByText("Stop automation?")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Stop" }));
+
+    await waitFor(() => expect(stopAutomationMock).toHaveBeenCalledWith("automation-1"));
+    expect(toastSuccessMock).toHaveBeenCalledWith("Automation stopped");
+  });
+
+  it("does not run paused automations when the resume confirmation is canceled", async () => {
+    renderDetail({
+      automation: automation({ status: "paused" }),
+      runs: [run({ status: "published", judgeState: "none" })],
+      usage,
+    });
+
+    await screen.findByTestId("automation-detail-view");
+    await userEvent.click(screen.getByLabelText("Run now"));
+    await userEvent.click(await screen.findByRole("button", { name: "Cancel" }));
+
+    expect(triggerRunNowMock).not.toHaveBeenCalled();
+  });
+
+  it("confirms paused run-now before scheduling the override", async () => {
+    renderDetail({
+      automation: automation({ status: "paused" }),
+      runs: [run({ status: "published", judgeState: "none" })],
+      usage,
+    });
+
+    await screen.findByTestId("automation-detail-view");
+    await userEvent.click(screen.getByLabelText("Run now"));
+
+    expect(await screen.findByText("Resume and run now?")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Resume and run" }));
+
+    await waitFor(() => expect(triggerRunNowMock).toHaveBeenCalledWith("automation-1"));
+    expect(toastSuccessMock).toHaveBeenCalledWith("Automation run scheduled");
+  });
+
+  it("renders fallback run metadata and deletes terminal automations after confirmation", async () => {
+    const onBack = vi.fn();
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false, gcTime: 0 },
+        mutations: { retry: false },
+      },
+    });
+    getAutomationMock.mockResolvedValue({
+      automation: automation({
+        status: "stopped",
+        setupConversationId: null,
+        baseDisplayName: null,
+        baseRef: "",
+        baseRefKind: "current_branch",
+        baseSourcePullRequestJson: JSON.stringify({ number: 41 }),
+        goalItemsJson: JSON.stringify([{ id: "item-fallback" }, "ignored"]),
+        createdAt: "not-a-date",
+        updatedAt: "not-a-date",
+      }),
+      runs: [
+        run({
+          id: "run-fallback",
+          status: "cancelled",
+          judgeState: "failed",
+          conversationId: null,
+          promptAuthor: "skip_judge_template",
+          baseRefUsed: "",
+          baseRefKind: "local_branch",
+          prNumber: 41,
+          prUrl: null,
+          diffStatsJson: JSON.stringify({ files_changed: 2 }),
+          agentSummary: null,
+          judgeVerdictJson: null,
+          finishedAt: null,
+          updatedAt: "invalid-date",
+        }),
+      ],
+      usage: {
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 0,
+        estimatedUsd: null,
+      },
+    });
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <TooltipProvider>
+          <AutomationDetailView
+            automationId="automation-1"
+            projectId="project-1"
+            projectName={null}
+            onBack={onBack}
+            onOpenRunConversation={vi.fn()}
+          />
+        </TooltipProvider>
+      </QueryClientProvider>,
+    );
+
+    await screen.findByTestId("automation-detail-view");
+    expect(screen.getByText("Stopped")).toBeInTheDocument();
+    expect(screen.getByText("current_branch")).toBeInTheDocument();
+    expect(screen.getAllByText("PR #41").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText("item-fallback")).toBeInTheDocument();
+    expect(screen.getByText("2 files, +0 / -0")).toBeInTheDocument();
+    expect(screen.getByText("invalid-date")).toBeInTheDocument();
+    expect(screen.getByText("Skip-judge template")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Not started" })).toBeDisabled();
+    expect(screen.getAllByText("Not recorded").length).toBeGreaterThan(0);
+    expect(screen.getByLabelText("Run now")).toBeDisabled();
+    expect(screen.getByLabelText("Stop automation")).toBeDisabled();
+
+    await userEvent.click(screen.getByLabelText("More automation actions"));
+    await userEvent.click(screen.getByText("Delete"));
+
+    expect(await screen.findByText("Delete automation?")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Delete" }));
+
+    await waitFor(() => expect(deleteAutomationMock).toHaveBeenCalledWith("automation-1"));
+    expect(toastSuccessMock).toHaveBeenCalledWith("Automation deleted");
+    expect(onBack).toHaveBeenCalled();
   });
 });

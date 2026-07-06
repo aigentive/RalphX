@@ -747,8 +747,10 @@ async fn automation_scheduler_pauses_after_bounded_signal_check_errors() {
     workspace.publication_pr_status = Some("open".to_string());
     workspace.publication_push_status = Some("pushed".to_string());
     workspace_repo.create_or_update(workspace).await.unwrap();
-    let mut config = AutomationSchedulerConfig::default();
-    config.signal_failure_pause_threshold = 2;
+    let config = AutomationSchedulerConfig {
+        signal_failure_pause_threshold: 2,
+        ..AutomationSchedulerConfig::default()
+    };
     let scheduler = scheduler_with(
         Arc::clone(&automation_repo),
         Arc::clone(&run_repo),
@@ -847,8 +849,10 @@ async fn automation_scheduler_times_out_running_run() {
     run.started_at = Some(old);
     run.created_at = old;
     run_repo.create_run(run).await.unwrap();
-    let mut config = AutomationSchedulerConfig::default();
-    config.max_run_duration = Duration::from_secs(60);
+    let config = AutomationSchedulerConfig {
+        max_run_duration: Duration::from_secs(60),
+        ..AutomationSchedulerConfig::default()
+    };
     let scheduler = scheduler_with(
         Arc::clone(&automation_repo),
         Arc::clone(&run_repo),
@@ -1168,8 +1172,10 @@ async fn automation_scheduler_marks_stale_in_progress_judge_failed() {
     run.judge_lease_expires_at = Some(Utc::now() - chrono::Duration::minutes(1));
     run.updated_at = Utc::now();
     run_repo.create_run(run).await.unwrap();
-    let mut config = AutomationSchedulerConfig::default();
-    config.judge_timeout = Duration::from_secs(60);
+    let config = AutomationSchedulerConfig {
+        judge_timeout: Duration::from_secs(60),
+        ..AutomationSchedulerConfig::default()
+    };
     let judge = Arc::new(RecordingJudgeInvoker::default());
     let scheduler = scheduler_with_judge(
         Arc::clone(&automation_repo),

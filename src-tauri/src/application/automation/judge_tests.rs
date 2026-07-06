@@ -4,7 +4,8 @@ use serde_json::json;
 use super::judge::{
     append_automation_judge_retry_instruction, apply_updated_item_statuses,
     automation_judge_loop_suspected, build_automation_judge_prompt, parse_automation_judge_verdict,
-    AutomationJudgeDecision, AutomationJudgeNextBaseBranch, AutomationJudgeValidationContext,
+    AutomationGoalItemStatus, AutomationJudgeDecision, AutomationJudgeItemStatusUpdate,
+    AutomationJudgeNextBaseBranch, AutomationJudgeValidationContext, AutomationJudgeVerdict,
     BuildAutomationJudgePromptInput, AUTOMATION_JUDGE_PROMPT_MAX_BYTES,
 };
 use crate::domain::entities::{
@@ -253,6 +254,67 @@ fn rejects_continue_without_substantive_prompt() {
 }
 
 #[test]
+fn rejects_continue_without_next_base_branch() {
+    let automation = automation_with_goal_items(Some(goal_items_json()));
+    let run = automation_run(1, AutomationRunStatus::Merged);
+    let output = json!({
+        "decision": "continue",
+        "goalMet": false,
+        "reason": "There is still work to continue.",
+        "confidence": 0.8,
+        "goalProgress": null,
+        "updatedItemStatuses": null,
+        "nextRunPrompt": "Implement the next scoped migration item with tests and publish the follow-up pull request.",
+        "nextBaseBranch": null
+    })
+    .to_string();
+
+    let error =
+        parse_automation_judge_verdict(&output, validation_context(&automation, &run)).unwrap_err();
+
+    assert!(matches!(error, AppError::Validation(_)));
+}
+
+#[test]
+fn rejects_empty_reason_and_stop_with_next_run_payload() {
+    let automation = automation_with_goal_items(Some(goal_items_json()));
+    let run = automation_run(1, AutomationRunStatus::Merged);
+    let empty_reason = json!({
+        "decision": "stop",
+        "goalMet": true,
+        "reason": "   ",
+        "confidence": 0.8,
+        "goalProgress": null,
+        "updatedItemStatuses": null,
+        "nextRunPrompt": null,
+        "nextBaseBranch": null
+    })
+    .to_string();
+
+    let error =
+        parse_automation_judge_verdict(&empty_reason, validation_context(&automation, &run))
+            .unwrap_err();
+    assert!(matches!(error, AppError::Validation(_)));
+
+    let stop_with_next_run = json!({
+        "decision": "stop",
+        "goalMet": true,
+        "reason": "The judge is stopping.",
+        "confidence": 0.8,
+        "goalProgress": null,
+        "updatedItemStatuses": null,
+        "nextRunPrompt": "Do more work even though this is a stop verdict.",
+        "nextBaseBranch": "automation_base"
+    })
+    .to_string();
+
+    let error =
+        parse_automation_judge_verdict(&stop_with_next_run, validation_context(&automation, &run))
+            .unwrap_err();
+    assert!(matches!(error, AppError::Validation(_)));
+}
+
+#[test]
 fn rejects_previous_pr_head_without_stacked_mode() {
     let automation = automation_with_goal_items(Some(goal_items_json()));
     let run = automation_run(1, AutomationRunStatus::Merged);
@@ -329,6 +391,49 @@ fn applies_updated_item_statuses_to_stored_goal_items() {
 }
 
 #[test]
+fn applies_all_goal_item_status_variants_and_rejects_missing_storage() {
+    let updates = vec![
+        AutomationJudgeItemStatusUpdate {
+            id: "item-1".to_string(),
+            status: AutomationGoalItemStatus::Pending,
+        },
+        AutomationJudgeItemStatusUpdate {
+            id: "item-2".to_string(),
+            status: AutomationGoalItemStatus::InProgress,
+        },
+        AutomationJudgeItemStatusUpdate {
+            id: "item-3".to_string(),
+            status: AutomationGoalItemStatus::Skipped,
+        },
+    ];
+
+    let missing_storage = apply_updated_item_statuses(None, Some(&updates)).unwrap_err();
+    assert!(matches!(missing_storage, AppError::Validation(_)));
+
+    let goal_items = json!([
+        { "id": "item-1", "status": "done" },
+        { "id": "item-2", "status": "pending" },
+        { "id": "item-3", "status": "pending" },
+        { "id": "item-4", "status": "unknown" }
+    ])
+    .to_string();
+    let updated = apply_updated_item_statuses(Some(&goal_items), Some(&updates))
+        .unwrap()
+        .unwrap();
+
+    assert!(updated.contains("\"status\":\"pending\""));
+    assert!(updated.contains("\"status\":\"in_progress\""));
+    assert!(updated.contains("\"status\":\"skipped\""));
+
+    let unmatched = [AutomationJudgeItemStatusUpdate {
+        id: "missing".to_string(),
+        status: AutomationGoalItemStatus::Done,
+    }];
+    let error = apply_updated_item_statuses(Some(&goal_items), Some(&unmatched)).unwrap_err();
+    assert!(matches!(error, AppError::Validation(_)));
+}
+
+#[test]
 fn detects_continue_loop_when_prompt_repeats_after_non_merged_run() {
     let automation = automation_with_goal_items(Some(goal_items_json()));
     let mut run = automation_run(1, AutomationRunStatus::AgentFailed);
@@ -342,6 +447,63 @@ fn detects_continue_loop_when_prompt_repeats_after_non_merged_run() {
         parse_automation_judge_verdict(&output, validation_context(&automation, &run)).unwrap();
 
     assert!(automation_judge_loop_suspected(&run, &verdict));
+}
+
+#[test]
+fn loop_detection_stays_false_for_stop_merged_or_missing_prompt() {
+    let mut run = automation_run(1, AutomationRunStatus::AgentFailed);
+    run.run_prompt =
+        "Implement item 2 from spec with targeted tests and publish the scoped PR".to_string();
+    let stop = AutomationJudgeVerdict {
+        decision: AutomationJudgeDecision::Stop,
+        goal_met: false,
+        reason: "Stop instead of continuing.".to_string(),
+        confidence: 0.5,
+        goal_progress: None,
+        updated_item_statuses: None,
+        next_run_prompt: None,
+        next_base_branch: None,
+    };
+    assert!(!automation_judge_loop_suspected(&run, &stop));
+
+    let missing_prompt = AutomationJudgeVerdict {
+        decision: AutomationJudgeDecision::Continue,
+        next_base_branch: Some(AutomationJudgeNextBaseBranch::AutomationBase),
+        ..stop.clone()
+    };
+    assert!(!automation_judge_loop_suspected(&run, &missing_prompt));
+
+    let mut merged = run.clone();
+    merged.status = AutomationRunStatus::Merged;
+    let repeating_prompt = AutomationJudgeVerdict {
+        decision: AutomationJudgeDecision::Continue,
+        next_run_prompt: Some(run.run_prompt.clone()),
+        next_base_branch: Some(AutomationJudgeNextBaseBranch::AutomationBase),
+        ..stop
+    };
+    assert!(!automation_judge_loop_suspected(&merged, &repeating_prompt));
+}
+
+#[test]
+fn parses_uppercase_fence_after_invalid_fence_and_escaped_text_json() {
+    let automation = automation_with_goal_items(Some(goal_items_json()));
+    let run = automation_run(1, AutomationRunStatus::Merged);
+    let output = format!(
+        "```json\nnot-json\n```\nnoise\n```JSON\n{}\n```",
+        valid_continue_output()
+    );
+
+    let verdict =
+        parse_automation_judge_verdict(&output, validation_context(&automation, &run)).unwrap();
+    assert_eq!(verdict.decision, AutomationJudgeDecision::Continue);
+
+    let escaped_stop = r#"draft {"ignored":true}
+final: {"decision":"stop","goalMet":true,"reason":"done with \"quoted\" path C:\\tmp","confidence":1.8,"goalProgress":null,"updatedItemStatuses":null,"nextRunPrompt":null,"nextBaseBranch":null}"#;
+    let verdict =
+        parse_automation_judge_verdict(escaped_stop, validation_context(&automation, &run))
+            .unwrap();
+    assert_eq!(verdict.confidence, 1.0);
+    assert!(verdict.reason.contains("\"quoted\""));
 }
 
 #[test]
@@ -372,6 +534,50 @@ fn prompt_builder_keeps_goal_full_and_truncates_history_within_budget() {
     assert!(prompt.len() <= AUTOMATION_JUDGE_PROMPT_MAX_BYTES);
     assert_eq!(xml_section_body(&prompt, "goal"), goal.trim());
     assert!(prompt.contains("<run_history truncated=\"true\">"));
+}
+
+#[test]
+fn prompt_builder_counts_goal_statuses_and_consecutive_failures() {
+    let goal_items = json!([
+        { "id": "item-1", "status": "done" },
+        { "id": "item-2", "status": "skipped" },
+        { "id": "item-3", "status": "pending" },
+        { "id": "item-4", "status": "in_progress" },
+        { "id": "item-5", "status": "unknown" }
+    ]);
+    let automation = automation_with_goal_items(Some(goal_items.to_string()));
+    let runs = vec![
+        automation_run(1, AutomationRunStatus::Merged),
+        automation_run(2, AutomationRunStatus::PrClosed),
+        automation_run(3, AutomationRunStatus::AgentFailed),
+    ];
+    let previous = runs.last().unwrap();
+
+    let prompt = build_automation_judge_prompt(BuildAutomationJudgePromptInput {
+        automation: &automation,
+        runs: &runs,
+        previous_run: previous,
+        attachments: &[],
+        context_refs: &[],
+    })
+    .unwrap();
+
+    assert!(prompt.contains("\"goalItemsTotal\": 5"));
+    assert!(prompt.contains("\"goalItemsDone\": 2"));
+    assert!(prompt.contains("\"goalItemsPending\": 2"));
+    assert!(prompt.contains("\"consecutiveFailureCount\": 2"));
+
+    let mut invalid_items = automation.clone();
+    invalid_items.goal_items_json = Some("not-json".to_string());
+    let prompt = build_automation_judge_prompt(BuildAutomationJudgePromptInput {
+        automation: &invalid_items,
+        runs: std::slice::from_ref(previous),
+        previous_run: previous,
+        attachments: &[],
+        context_refs: &[],
+    })
+    .unwrap();
+    assert!(prompt.contains("\"goalItemsTotal\": 0"));
 }
 
 #[test]

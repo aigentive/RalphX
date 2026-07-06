@@ -8,8 +8,9 @@ use crate::application::automation::judge::{
     AutomationJudgeDecision, AutomationJudgeNextBaseBranch, AutomationJudgeVerdict,
 };
 use crate::application::automation::service::{
-    ApplyAutomationJudgeVerdictInput, AutomationService, CreateAutomationDraftInput,
-    CreateAutomationRunInput, CreateMergedBaseSuccessorRunInput, UpdateAutomationSettingsInput,
+    ApplyAutomationJudgeVerdictInput, AutomationRunNowAction, AutomationService,
+    CreateAutomationDraftInput, CreateAutomationRunInput, CreateMergedBaseSuccessorRunInput,
+    UpdateAutomationSettingsInput,
 };
 use crate::application::automation::transition::{
     AutomationEvent, AutomationEventEmitter, NoopAutomationEventEmitter,
@@ -1235,6 +1236,360 @@ async fn service_skip_judge_loses_cleanly_when_scheduler_started_judge() {
     assert_eq!(outcome.reason.as_deref(), Some("judge already started"));
 }
 
+#[tokio::test]
+async fn service_run_now_reports_all_unscheduled_readiness_reasons() {
+    let (service, automation_repo, run_repo) =
+        service_with_emitter(Arc::new(NoopAutomationEventEmitter));
+
+    let stopped = automation("automation-stopped", AutomationStatus::Stopped);
+    automation_repo.create(stopped.clone()).await.unwrap();
+    let stopped_outcome = service.trigger_run_now(&stopped.id).await.unwrap();
+    assert_eq!(
+        stopped_outcome.reason.as_deref(),
+        Some("automation is not active")
+    );
+
+    let active_without_runs = automation("automation-empty", AutomationStatus::Active);
+    automation_repo
+        .create(active_without_runs.clone())
+        .await
+        .unwrap();
+    let no_runs = service
+        .trigger_run_now(&active_without_runs.id)
+        .await
+        .unwrap();
+    assert_eq!(no_runs.reason.as_deref(), Some("automation has no runs"));
+
+    let active_with_cancelled = automation("automation-cancelled", AutomationStatus::Active);
+    automation_repo
+        .create(active_with_cancelled.clone())
+        .await
+        .unwrap();
+    run_repo
+        .create_run(automation_run(
+            "run-cancelled",
+            &active_with_cancelled.id,
+            1,
+            AutomationRunStatus::Cancelled,
+            AutomationJudgeState::None,
+        ))
+        .await
+        .unwrap();
+    let not_ready = service
+        .trigger_run_now(&active_with_cancelled.id)
+        .await
+        .unwrap();
+    assert_eq!(not_ready.reason.as_deref(), Some("latest run is not ready"));
+
+    let active_missing_verdict = automation("automation-missing-verdict", AutomationStatus::Active);
+    automation_repo
+        .create(active_missing_verdict.clone())
+        .await
+        .unwrap();
+    let mut missing_verdict_run = automation_run(
+        "run-missing-verdict",
+        &active_missing_verdict.id,
+        1,
+        AutomationRunStatus::Merged,
+        AutomationJudgeState::Done,
+    );
+    missing_verdict_run.judge_verdict_json = None;
+    run_repo.create_run(missing_verdict_run).await.unwrap();
+    let missing_verdict = service
+        .trigger_run_now(&active_missing_verdict.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        missing_verdict.reason.as_deref(),
+        Some("judge verdict is missing")
+    );
+
+    let active_skipped = automation("automation-skipped", AutomationStatus::Active);
+    automation_repo
+        .create(active_skipped.clone())
+        .await
+        .unwrap();
+    run_repo
+        .create_run(automation_run(
+            "run-skipped",
+            &active_skipped.id,
+            1,
+            AutomationRunStatus::Merged,
+            AutomationJudgeState::Skipped,
+        ))
+        .await
+        .unwrap();
+    let skipped = service.trigger_run_now(&active_skipped.id).await.unwrap();
+    assert_eq!(skipped.reason.as_deref(), Some("judge already skipped"));
+
+    let active_failed = automation("automation-failed-judge", AutomationStatus::Active);
+    automation_repo.create(active_failed.clone()).await.unwrap();
+    let failed_run = automation_run(
+        "run-failed-judge",
+        &active_failed.id,
+        1,
+        AutomationRunStatus::AgentFailed,
+        AutomationJudgeState::Failed,
+    );
+    run_repo.create_run(failed_run.clone()).await.unwrap();
+    let action = service
+        .trigger_run_now_action(&active_failed.id)
+        .await
+        .unwrap();
+    match action {
+        AutomationRunNowAction::StartJudge {
+            automation, run, ..
+        } => {
+            assert_eq!(automation.id, active_failed.id);
+            assert_eq!(run.id, failed_run.id);
+        }
+        AutomationRunNowAction::Outcome(outcome) => {
+            panic!("expected judge start, got {outcome:?}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn service_skip_judge_reports_fail_closed_readiness_reasons() {
+    let (service, automation_repo, run_repo) =
+        service_with_emitter(Arc::new(NoopAutomationEventEmitter));
+
+    let paused = automation("automation-paused", AutomationStatus::Paused);
+    automation_repo.create(paused.clone()).await.unwrap();
+    let paused_error = service
+        .skip_judge(&paused.id, &AutomationRunId::from_string("missing"))
+        .await
+        .unwrap_err();
+    assert!(matches!(paused_error, AppError::Validation(message) if message.contains("active")));
+
+    let mut wrong_chain = automation("automation-chain", AutomationStatus::Active);
+    wrong_chain.chain_mode = "unsupported".to_string();
+    automation_repo.create(wrong_chain.clone()).await.unwrap();
+    let chain_error = service
+        .skip_judge(&wrong_chain.id, &AutomationRunId::from_string("missing"))
+        .await
+        .unwrap_err();
+    assert!(matches!(chain_error, AppError::Validation(message) if message.contains("chain_mode")));
+
+    let active_done = automation("automation-done", AutomationStatus::Active);
+    automation_repo.create(active_done.clone()).await.unwrap();
+    let done_run = automation_run(
+        "run-done",
+        &active_done.id,
+        1,
+        AutomationRunStatus::Merged,
+        AutomationJudgeState::Done,
+    );
+    run_repo.create_run(done_run.clone()).await.unwrap();
+    let already_started = service
+        .skip_judge(&active_done.id, &done_run.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        already_started.reason.as_deref(),
+        Some("judge already started")
+    );
+
+    let active_running = automation("automation-running", AutomationStatus::Active);
+    automation_repo
+        .create(active_running.clone())
+        .await
+        .unwrap();
+    let running_run = automation_run(
+        "run-running",
+        &active_running.id,
+        1,
+        AutomationRunStatus::Running,
+        AutomationJudgeState::None,
+    );
+    run_repo.create_run(running_run.clone()).await.unwrap();
+    let not_ready = service
+        .skip_judge(&active_running.id, &running_run.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        not_ready.reason.as_deref(),
+        Some("run is not ready for judge skipping")
+    );
+}
+
+#[tokio::test]
+async fn service_create_run_and_successor_validate_inputs_before_writes() {
+    let (service, automation_repo, run_repo) =
+        service_with_emitter(Arc::new(NoopAutomationEventEmitter));
+    let draft = automation("automation-draft", AutomationStatus::Draft);
+    automation_repo.create(draft.clone()).await.unwrap();
+
+    let inactive_run = service
+        .create_run(CreateAutomationRunInput {
+            automation_id: draft.id.clone(),
+            run_prompt: "will not run".to_string(),
+            prompt_author: AutomationPromptAuthor::SetupAgent,
+            base_ref_kind: "project_default".to_string(),
+            base_ref_used: String::new(),
+            base_from_run_id: None,
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(inactive_run, AppError::Validation(message) if message.contains("active")));
+
+    let active = automation("automation-active", AutomationStatus::Active);
+    automation_repo.create(active.clone()).await.unwrap();
+    let empty_prompt = service
+        .create_run(CreateAutomationRunInput {
+            automation_id: active.id.clone(),
+            run_prompt: "   ".to_string(),
+            prompt_author: AutomationPromptAuthor::SetupAgent,
+            base_ref_kind: "project_default".to_string(),
+            base_ref_used: String::new(),
+            base_from_run_id: None,
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(empty_prompt, AppError::Validation(message) if message.contains("prompt")));
+
+    let previous = automation_run(
+        "run-previous",
+        &active.id,
+        1,
+        AutomationRunStatus::Merged,
+        AutomationJudgeState::Done,
+    );
+    let latest = automation_run(
+        "run-latest",
+        &active.id,
+        2,
+        AutomationRunStatus::Merged,
+        AutomationJudgeState::Done,
+    );
+    run_repo.create_run(previous.clone()).await.unwrap();
+    run_repo.create_run(latest).await.unwrap();
+    let stale_previous = service
+        .create_merged_base_successor_run(CreateMergedBaseSuccessorRunInput {
+            automation_id: active.id.clone(),
+            previous_run_id: previous.id,
+            run_prompt: "Continue".to_string(),
+            prompt_author: AutomationPromptAuthor::Judge,
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(stale_previous, AppError::Validation(message) if message.contains("latest")));
+
+    let mut wrong_chain = automation("automation-wrong-chain", AutomationStatus::Active);
+    wrong_chain.chain_mode = "unsupported".to_string();
+    automation_repo.create(wrong_chain.clone()).await.unwrap();
+    let chain_error = service
+        .create_merged_base_successor_run(CreateMergedBaseSuccessorRunInput {
+            automation_id: wrong_chain.id.clone(),
+            previous_run_id: AutomationRunId::from_string("missing"),
+            run_prompt: "Continue".to_string(),
+            prompt_author: AutomationPromptAuthor::Judge,
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(chain_error, AppError::Validation(message) if message.contains("chain_mode")));
+
+    let active_without_runs = automation("automation-no-runs", AutomationStatus::Active);
+    automation_repo
+        .create(active_without_runs.clone())
+        .await
+        .unwrap();
+    let missing_run = service
+        .create_merged_base_successor_run(CreateMergedBaseSuccessorRunInput {
+            automation_id: active_without_runs.id.clone(),
+            previous_run_id: AutomationRunId::from_string("missing"),
+            run_prompt: "   ".to_string(),
+            prompt_author: AutomationPromptAuthor::Judge,
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(missing_run, AppError::Validation(message) if message.contains("prompt")));
+}
+
+#[tokio::test]
+async fn service_judge_verdict_stop_and_loop_outcomes_update_automation_state() {
+    let (service, automation_repo, run_repo) =
+        service_with_emitter(Arc::new(NoopAutomationEventEmitter));
+
+    let active_complete = automation("automation-complete", AutomationStatus::Active);
+    automation_repo
+        .create(active_complete.clone())
+        .await
+        .unwrap();
+    let complete_run = automation_run(
+        "run-complete",
+        &active_complete.id,
+        1,
+        AutomationRunStatus::Merged,
+        AutomationJudgeState::Done,
+    );
+    run_repo.create_run(complete_run.clone()).await.unwrap();
+    let complete = service
+        .apply_persisted_judge_verdict(ApplyAutomationJudgeVerdictInput {
+            automation: active_complete.clone(),
+            previous_run: complete_run,
+            verdict: stop_verdict(true, "Goal is complete"),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        complete.terminal_automation_status,
+        Some(AutomationStatus::Completed)
+    );
+
+    let active_unmet = automation("automation-unmet", AutomationStatus::Active);
+    automation_repo.create(active_unmet.clone()).await.unwrap();
+    let unmet_run = automation_run(
+        "run-unmet",
+        &active_unmet.id,
+        1,
+        AutomationRunStatus::PrClosed,
+        AutomationJudgeState::Done,
+    );
+    run_repo.create_run(unmet_run.clone()).await.unwrap();
+    let unmet = service
+        .apply_persisted_judge_verdict(ApplyAutomationJudgeVerdictInput {
+            automation: active_unmet.clone(),
+            previous_run: unmet_run,
+            verdict: stop_verdict(false, "The goal is not met but should not continue"),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        unmet.terminal_automation_status,
+        Some(AutomationStatus::Paused)
+    );
+    assert_eq!(unmet.reason.as_deref(), Some("judge_stopped_unmet"));
+
+    let active_loop = automation("automation-loop", AutomationStatus::Active);
+    automation_repo.create(active_loop.clone()).await.unwrap();
+    let mut loop_run = automation_run(
+        "run-loop",
+        &active_loop.id,
+        1,
+        AutomationRunStatus::PrClosed,
+        AutomationJudgeState::Done,
+    );
+    loop_run.run_prompt = "repeat me".to_string();
+    run_repo.create_run(loop_run.clone()).await.unwrap();
+    let suspected = service
+        .apply_persisted_judge_verdict(ApplyAutomationJudgeVerdictInput {
+            automation: active_loop.clone(),
+            previous_run: loop_run,
+            verdict: continue_verdict_struct(
+                "repeat me",
+                AutomationJudgeNextBaseBranch::AutomationBase,
+            ),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        suspected.terminal_automation_status,
+        Some(AutomationStatus::Paused)
+    );
+    assert_eq!(suspected.reason.as_deref(), Some("judge_loop_suspected"));
+}
+
 fn continue_verdict(next_prompt: &str) -> String {
     json!({
         "decision": "continue",
@@ -1247,4 +1602,33 @@ fn continue_verdict(next_prompt: &str) -> String {
         "nextBaseBranch": "automation_base"
     })
     .to_string()
+}
+
+fn continue_verdict_struct(
+    next_prompt: &str,
+    next_base_branch: AutomationJudgeNextBaseBranch,
+) -> AutomationJudgeVerdict {
+    AutomationJudgeVerdict {
+        decision: AutomationJudgeDecision::Continue,
+        goal_met: false,
+        reason: "The next item remains.".to_string(),
+        confidence: 0.87,
+        goal_progress: None,
+        updated_item_statuses: None,
+        next_run_prompt: Some(next_prompt.to_string()),
+        next_base_branch: Some(next_base_branch),
+    }
+}
+
+fn stop_verdict(goal_met: bool, reason: &str) -> AutomationJudgeVerdict {
+    AutomationJudgeVerdict {
+        decision: AutomationJudgeDecision::Stop,
+        goal_met,
+        reason: reason.to_string(),
+        confidence: 0.91,
+        goal_progress: None,
+        updated_item_statuses: None,
+        next_run_prompt: None,
+        next_base_branch: None,
+    }
 }
