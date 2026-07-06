@@ -5,11 +5,13 @@ import { z } from "zod";
 import type {
   AgentConversationMode,
   ChatConversation,
+  CoordinationMode,
   AgentRun,
   ContextType,
 } from "../types/chat-conversation";
 import {
   AgentConversationModeSchema,
+  CoordinationModeSchema,
   ContextTypeSchema,
   normalizeConversationProviderMetadata,
 } from "../types/chat-conversation";
@@ -656,6 +658,7 @@ const ChatConversationResponseSchema = z.object({
   effective_effort: z.string().nullable().optional(),
   service_tier: z.string().nullable().optional(),
   agent_mode: AgentConversationModeSchema.nullable().optional(),
+  coordination_mode: CoordinationModeSchema.optional().default("solo"),
   parent_conversation_id: z.string().nullable().optional(),
   title: z.string().nullable(),
   message_count: z.number(),
@@ -710,6 +713,7 @@ function transformConversation(raw: RawConversation): ChatConversation {
     effectiveEffort: raw.effective_effort ?? null,
     serviceTier: raw.service_tier ?? null,
     agentMode: raw.agent_mode ?? null,
+    coordinationMode: raw.coordination_mode ?? "solo",
     parentConversationId: raw.parent_conversation_id ?? null,
     title: raw.title,
     messageCount: raw.message_count,
@@ -1687,6 +1691,22 @@ export interface ComposerArtifactReference {
   status?: string;
 }
 
+export type TeamIntentStrategy = "research" | "debate" | "execution";
+
+export interface TeamIntent {
+  coordinationMode: CoordinationMode;
+  strategy?: TeamIntentStrategy | null;
+}
+
+export type TeamMessageTargetKind = "coordinator" | "member" | "broadcast";
+
+export interface TeamMessageTarget {
+  kind: TeamMessageTargetKind;
+  teamId?: string | null;
+  teamMemberId?: string | null;
+  conversationId?: string | null;
+}
+
 export interface SendAgentMessageOptions {
   conversationId?: string | null;
   providerHarness?: string | null;
@@ -1694,6 +1714,8 @@ export interface SendAgentMessageOptions {
   logicalEffort?: string | null;
   codexFastMode?: boolean | null;
   suppressUserMessage?: boolean;
+  teamIntent?: TeamIntent | null;
+  teamMessageTarget?: TeamMessageTarget | null;
   composerProjectReferences?: ComposerProjectReference[];
   composerIntegrationReferences?: ComposerIntegrationReference[];
   composerArtifactReferences?: ComposerArtifactReference[];
@@ -1779,6 +1801,7 @@ export interface StartAgentConversationInput {
   codexFastMode?: boolean | null;
   mode?: AgentConversationWorkspaceMode;
   base?: AgentConversationBaseSelection | null;
+  teamIntent?: TeamIntent | null;
   composerProjectReferences?: ComposerProjectReference[];
   composerIntegrationReferences?: ComposerIntegrationReference[];
   composerArtifactReferences?: ComposerArtifactReference[];
@@ -2583,6 +2606,7 @@ export function startAgentConversationInvokeInput(
       ? { codexFastMode: input.codexFastMode }
       : {}),
     ...(input.mode ? { mode: input.mode } : {}),
+    ...(input.teamIntent ? { teamIntent: input.teamIntent } : {}),
     ...(input.composerProjectReferences?.length
       ? { composerProjectReferences: input.composerProjectReferences }
       : {}),
@@ -3467,6 +3491,10 @@ export async function sendAgentMessage(
           ? { codexFastMode: options.codexFastMode }
           : {}),
         ...(options?.suppressUserMessage ? { suppressUserMessage: true } : {}),
+        ...(options?.teamIntent ? { teamIntent: options.teamIntent } : {}),
+        ...(options?.teamMessageTarget
+          ? { teamMessageTarget: options.teamMessageTarget }
+          : {}),
         ...(options?.composerProjectReferences?.length
           ? { composerProjectReferences: options.composerProjectReferences }
           : {}),

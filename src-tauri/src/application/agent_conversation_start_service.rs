@@ -12,9 +12,10 @@ use crate::application::chat_service::{AgentConversationCreatedPayload, SendMess
 use crate::application::ticket_canonical_branch::ensure_ticket_canonical_branch;
 use crate::application::{AppState, ChatService, SendResult, TeamService};
 use crate::commands::ExecutionState;
-use crate::domain::agents::{AgentHarnessKind, LogicalEffort};
+use crate::domain::agents::{AgentHarnessKind, LogicalEffort, DEFAULT_AGENT_HARNESS};
 use crate::domain::entities::{
     AgentConversationWorkspace, ChatContextType, ChatConversation, ChatConversationId, ProjectId,
+    TeamIntent,
 };
 use crate::domain::services::{
     ComposerArtifactReference, ComposerIntegrationReference, ComposerProjectReference,
@@ -85,6 +86,9 @@ pub struct StartAgentConversationInput {
     /// Structured artifact references for runtime-only prompt expansion.
     #[serde(default)]
     pub composer_artifact_references: Vec<ComposerArtifactReference>,
+    /// Optional native team-mode overlay request. Disabled by default until the
+    /// managed-team runtime is authoritative.
+    pub team_intent: Option<TeamIntent>,
 }
 
 #[derive(Debug)]
@@ -146,6 +150,11 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             harness_override,
         )
         .await?;
+        crate::application::managed_team::validate_native_team_intent(
+            input.team_intent.as_ref(),
+            harness_override.unwrap_or(DEFAULT_AGENT_HARNESS),
+        )
+        .map_err(|error| error.to_string())?;
         log_start_agent_conversation_phase(
             &input.project_id,
             None,
@@ -525,6 +534,7 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
                     composer_project_references: input.composer_project_references.clone(),
                     composer_integration_references: input.composer_integration_references.clone(),
                     composer_artifact_references: input.composer_artifact_references.clone(),
+                    team_intent: input.team_intent.clone(),
                     ..Default::default()
                 },
             )

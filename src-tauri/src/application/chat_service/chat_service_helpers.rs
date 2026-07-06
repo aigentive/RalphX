@@ -103,7 +103,13 @@ pub fn effective_team_mode_for_harness(
 }
 
 pub fn harness_supports_team_mode(harness: AgentHarnessKind) -> bool {
-    standard_harness_behavior(harness).honors_team_mode
+    standard_harness_behavior(harness)
+        .team
+        .legacy_native_team_tools
+}
+
+pub fn harness_supports_rx_native_team(harness: AgentHarnessKind) -> bool {
+    standard_harness_behavior(harness).team.rx_native_team
 }
 
 pub fn effective_effort_for_harness(

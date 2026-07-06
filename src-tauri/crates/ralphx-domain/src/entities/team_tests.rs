@@ -1,6 +1,40 @@
 use super::*;
 
 #[test]
+fn coordination_mode_serializes_snake_case() {
+    let json = serde_json::to_string(&CoordinationMode::RxNativeTeam).unwrap();
+    assert_eq!(json, "\"rx_native_team\"");
+
+    let parsed: CoordinationMode = serde_json::from_str("\"legacy_claude_team\"").unwrap();
+    assert_eq!(parsed, CoordinationMode::LegacyClaudeTeam);
+}
+
+#[test]
+fn team_intent_serializes_camel_case_request_shape() {
+    let intent = TeamIntent::rx_native(Some(TeamIntentStrategy::Research));
+    let json = serde_json::to_value(&intent).unwrap();
+
+    assert_eq!(json["coordinationMode"], "rx_native_team");
+    assert_eq!(json["strategy"], "research");
+}
+
+#[test]
+fn team_message_target_serializes_native_ids() {
+    let target = TeamMessageTarget {
+        kind: TeamMessageTargetKind::Member,
+        team_id: Some("team-1".to_string()),
+        team_member_id: Some("member-1".to_string()),
+        conversation_id: Some("conversation-1".to_string()),
+    };
+    let json = serde_json::to_value(&target).unwrap();
+
+    assert_eq!(json["kind"], "member");
+    assert_eq!(json["teamId"], "team-1");
+    assert_eq!(json["teamMemberId"], "member-1");
+    assert_eq!(json["conversationId"], "conversation-1");
+}
+
+#[test]
 fn team_session_id_generates_unique() {
     let id1 = TeamSessionId::new();
     let id2 = TeamSessionId::new();

@@ -60,7 +60,7 @@ use crate::domain::entities::{
     AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitorStatus, AgentWorkspaceReviewOutcome,
     Artifact, ChatAttachment, ChatAttachmentId, ChatContextType, ChatConversation,
     ChatConversationId, ChatMessage, ChatMessageAttribution, ChatMessageId, IdeationSessionId,
-    InternalStatus, MessageRole, ProjectId, TaskId,
+    InternalStatus, MessageRole, ProjectId, TaskId, TeamIntent, TeamMessageTarget,
 };
 use crate::domain::repositories::{
     ActivityEventRepository, AgentConversationGranolaNoteRepository,
@@ -114,7 +114,7 @@ pub use chat_service_errors::{
     parse_retry_after_from_message, truncate_error_message, PauseReason, ProviderErrorCategory,
     ProviderErrorMetadata, StreamError, STALE_SESSION_ERROR,
 };
-pub use chat_service_helpers::harness_supports_team_mode;
+pub use chat_service_helpers::{harness_supports_rx_native_team, harness_supports_team_mode};
 pub use chat_service_helpers::{
     context_type_to_process, get_agent_name, get_assistant_role, resolve_agent_with_team_mode,
 };
@@ -806,6 +806,10 @@ pub struct SendMessageOptions {
     pub composer_artifact_references: Vec<ComposerArtifactReference>,
     /// Chat attachment IDs explicitly selected by the composer for this user turn.
     pub attachment_ids: Vec<ChatAttachmentId>,
+    /// Optional native team-mode overlay request.
+    pub team_intent: Option<TeamIntent>,
+    /// Optional native mailbox target for team-directed messages.
+    pub team_message_target: Option<TeamMessageTarget>,
     /// Start a fresh provider-native session even when the conversation has a stored
     /// provider session or an idle interactive process.
     pub force_new_provider_session: bool,
