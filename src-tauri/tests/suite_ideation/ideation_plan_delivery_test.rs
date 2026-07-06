@@ -479,7 +479,7 @@ async fn test_plan_delivered_fires_from_complete_merge_internal() {
         Arc::clone(&raw_publisher) as Arc<dyn WebhookPublisherTrait>;
 
     // Call complete_merge_internal directly — the primary fix path from PDM-307
-    let result = complete_merge_internal::<tauri::test::MockRuntime>(
+    let result = complete_merge_internal(
         &mut task,
         &project,
         &commit_sha,
@@ -617,7 +617,7 @@ async fn test_plan_delivered_idempotent_from_complete_merge_internal() {
         Arc::clone(&raw_publisher) as Arc<dyn WebhookPublisherTrait>;
 
     // First call: inserts plan:delivered
-    let result1 = complete_merge_internal::<tauri::test::MockRuntime>(
+    let result1 = complete_merge_internal(
         &mut task,
         &project,
         &commit_sha,
@@ -638,7 +638,7 @@ async fn test_plan_delivered_idempotent_from_complete_merge_internal() {
     task_repo.update(&task).await.expect("reset task to PendingMerge");
 
     // Second call: event_exists returns true → idempotency guard prevents duplicate
-    let result2 = complete_merge_internal::<tauri::test::MockRuntime>(
+    let result2 = complete_merge_internal(
         &mut task,
         &project,
         &commit_sha,
@@ -708,7 +708,7 @@ async fn test_merge_completed_includes_presentation_fields() {
     let publisher_dyn: Arc<dyn WebhookPublisherTrait> =
         Arc::clone(&raw_publisher) as Arc<dyn WebhookPublisherTrait>;
 
-    let result = complete_merge_internal::<tauri::test::MockRuntime>(
+    let result = complete_merge_internal(
         &mut task,
         &project,
         &commit_sha,

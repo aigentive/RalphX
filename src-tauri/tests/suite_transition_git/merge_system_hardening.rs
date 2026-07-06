@@ -317,7 +317,7 @@ async fn gap_complete_merge_rejects_commit_not_on_target() {
     let task_repo: Arc<dyn TaskRepository> = Arc::new(MemoryTaskRepository::new());
 
     // Try to complete merge with a SHA that's NOT on main
-    let result = complete_merge_internal::<tauri::test::MockRuntime>(
+    let result = complete_merge_internal(
         &mut task, &project, &task_sha, "", "main", &task_repo, None, None, None, None,
     )
     .await;
@@ -350,7 +350,7 @@ async fn fix_complete_merge_accepts_commit_on_target() {
     let task_repo: Arc<dyn TaskRepository> = Arc::new(MemoryTaskRepository::new());
 
     // Complete merge with the SHA that IS on main
-    let result = complete_merge_internal::<tauri::test::MockRuntime>(
+    let result = complete_merge_internal(
         &mut task, &project, &merge_sha, "", "main", &task_repo, None, None, None, None,
     )
     .await;
@@ -379,7 +379,7 @@ async fn fix_complete_merge_rejects_sha_on_wrong_branch() {
     let task_repo: Arc<dyn TaskRepository> = Arc::new(MemoryTaskRepository::new());
 
     // Try to complete merge with target="main" (wrong - SHA is on plan/feature, not main)
-    let result = complete_merge_internal::<tauri::test::MockRuntime>(
+    let result = complete_merge_internal(
         &mut task, &project, &merge_sha, "", "main", &task_repo, None, None, None, None,
     )
     .await;
@@ -412,7 +412,7 @@ async fn fix_complete_merge_accepts_plan_branch_target() {
     let task_repo: Arc<dyn TaskRepository> = Arc::new(MemoryTaskRepository::new());
 
     // Complete merge with target="plan/feature" (correct)
-    let result = complete_merge_internal::<tauri::test::MockRuntime>(
+    let result = complete_merge_internal(
         &mut task,
         &project,
         &merge_sha,
@@ -584,7 +584,7 @@ async fn fix_full_pipeline_task_to_plan_branch() {
 
     // Complete merge internal - should succeed
     let task_repo: Arc<dyn TaskRepository> = Arc::new(MemoryTaskRepository::new());
-    let result = complete_merge_internal::<tauri::test::MockRuntime>(
+    let result = complete_merge_internal(
         &mut task,
         &project,
         &commit_sha,
@@ -665,7 +665,7 @@ async fn fix_full_pipeline_task_to_main_direct() {
 
     // Complete merge internal - should succeed
     let task_repo: Arc<dyn TaskRepository> = Arc::new(MemoryTaskRepository::new());
-    let result = complete_merge_internal::<tauri::test::MockRuntime>(
+    let result = complete_merge_internal(
         &mut task,
         &project,
         &commit_sha,
@@ -738,7 +738,7 @@ async fn fix_full_pipeline_plan_merge_to_main() {
 
     // Complete merge internal - should succeed
     let task_repo: Arc<dyn TaskRepository> = Arc::new(MemoryTaskRepository::new());
-    let result = complete_merge_internal::<tauri::test::MockRuntime>(
+    let result = complete_merge_internal(
         &mut task,
         &project,
         &commit_sha,
@@ -803,7 +803,7 @@ async fn fix_full_pipeline_squash_merge_to_plan_branch() {
 
     // Complete merge internal - should succeed
     let task_repo: Arc<dyn TaskRepository> = Arc::new(MemoryTaskRepository::new());
-    let result = complete_merge_internal::<tauri::test::MockRuntime>(
+    let result = complete_merge_internal(
         &mut task,
         &project,
         &commit_sha,
@@ -1338,7 +1338,7 @@ async fn fix_concurrent_merge_attempts_sequential() {
     task_1.ideation_session_id = Some(session_id.clone());
     let task_repo: Arc<dyn TaskRepository> = Arc::new(MemoryTaskRepository::new());
 
-    let result_1 = complete_merge_internal::<tauri::test::MockRuntime>(
+    let result_1 = complete_merge_internal(
         &mut task_1,
         &project,
         &commit_1_sha,
@@ -1372,7 +1372,7 @@ async fn fix_concurrent_merge_attempts_sequential() {
     let mut task_2 = create_pending_merge_task(&project, "task-2");
     task_2.ideation_session_id = Some(session_id);
 
-    let result_2 = complete_merge_internal::<tauri::test::MockRuntime>(
+    let result_2 = complete_merge_internal(
         &mut task_2,
         &project,
         &commit_2_sha,
@@ -1482,7 +1482,7 @@ async fn gap_plan_merge_verification_failure() {
     // Attempt complete_merge_internal with a SHA on plan branch but target="main"
     // (without actually merging plan to main first)
     let task_repo: Arc<dyn TaskRepository> = Arc::new(MemoryTaskRepository::new());
-    let result = complete_merge_internal::<tauri::test::MockRuntime>(
+    let result = complete_merge_internal(
         &mut task, &project, &plan_sha, "", "main", &task_repo, None, None, None, None,
     )
     .await;
