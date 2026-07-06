@@ -342,13 +342,16 @@ pub(crate) fn query_all_projects_eme(
 
     let earliest = task_rows.first().and_then(|row| row.2.clone());
     let latest = task_rows.last().and_then(|row| row.2.clone());
-    let (low_total, high_total) = task_rows.iter().fold(
-        (0.0f64, 0.0f64),
-        |acc, (steps, reviews, _, config)| {
-            let (_weight, base_hours) = complexity_tier(*steps, *reviews, config);
-            (acc.0 + base_hours, acc.1 + (base_hours * config.calendar_factor))
-        },
-    );
+    let (low_total, high_total) =
+        task_rows
+            .iter()
+            .fold((0.0f64, 0.0f64), |acc, (steps, reviews, _, config)| {
+                let (_weight, base_hours) = complexity_tier(*steps, *reviews, config);
+                (
+                    acc.0 + base_hours,
+                    acc.1 + (base_hours * config.calendar_factor),
+                )
+            });
 
     Ok(Some(EmeEstimate {
         low_hours: (low_total * 10.0).round() / 10.0,

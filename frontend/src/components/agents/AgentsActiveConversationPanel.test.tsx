@@ -842,6 +842,14 @@ function renderPanel(
   return props;
 }
 
+function setPlanArtifactVisible(conversationId = "conversation-1") {
+  useAgentArtifactUiStore.getState().setArtifactState(conversationId, {
+    isOpen: true,
+    activeTab: "plan",
+    taskMode: "graph",
+  });
+}
+
 describe("AgentsActiveConversationPanel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -1691,6 +1699,7 @@ describe("AgentsActiveConversationPanel", () => {
         approvedAt: "2026-05-23T05:01:00Z",
       },
     });
+    setPlanArtifactVisible();
 
     renderPanel({
       activeConversation: { ...projectConversation(), agentMode: "plan" },
@@ -1717,6 +1726,7 @@ describe("AgentsActiveConversationPanel", () => {
     const user = userEvent.setup();
     getSessionPlanMock.mockResolvedValue(planArtifact("draft"));
     approvePlanArtifactMock.mockResolvedValue(planArtifact("approved"));
+    setPlanArtifactVisible();
 
     renderPanel({
       activeConversation: { ...projectConversation(), agentMode: "plan" },
@@ -1752,6 +1762,7 @@ describe("AgentsActiveConversationPanel", () => {
         { name: "scope", enabled_by_default: true },
       ],
     });
+    setPlanArtifactVisible();
 
     renderPanel({
       activeConversation: { ...projectConversation(), agentMode: "plan" },
@@ -1784,7 +1795,7 @@ describe("AgentsActiveConversationPanel", () => {
     expect(approvePlanArtifactMock).not.toHaveBeenCalled();
   });
 
-  it("shows View Plan before Approve Plan when the plan tab is not visible", async () => {
+  it("shows only View Plan when the plan tab is not visible", async () => {
     const user = userEvent.setup();
     const onOpenPlanArtifact = vi.fn();
     getSessionPlanMock.mockResolvedValue(planArtifact("draft"));
@@ -1813,11 +1824,16 @@ describe("AgentsActiveConversationPanel", () => {
     );
     const actionButtons = actionGroup.getAllByRole("button");
     const viewPlanButton = actionButtons[0];
-    const approvePlanButton = actionButtons[1];
     expect(viewPlanButton).toBeDefined();
-    expect(approvePlanButton).toBeDefined();
+    expect(actionButtons).toHaveLength(1);
     expect(viewPlanButton!).toHaveTextContent("View Plan");
-    expect(approvePlanButton!).toHaveTextContent("Approve Plan");
+    expect(
+      actionGroup.queryByRole("button", { name: /Approve Plan/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      actionGroup.queryByRole("button", { name: /Verify Plan/i }),
+    ).not.toBeInTheDocument();
+    expect(getSessionPlanMock).not.toHaveBeenCalled();
 
     await user.click(viewPlanButton!);
 
@@ -1854,6 +1870,41 @@ describe("AgentsActiveConversationPanel", () => {
     ).toBeInTheDocument();
   });
 
+  it("shows only View Plan when a non-Plan artifact tab is visible", async () => {
+    const onOpenPlanArtifact = vi.fn();
+    getSessionPlanMock.mockResolvedValue(planArtifact("draft"));
+    useAgentArtifactUiStore.getState().setArtifactState("conversation-1", {
+      isOpen: true,
+      activeTab: "tasks",
+      taskMode: "graph",
+    });
+
+    renderPanel({
+      activeConversation: { ...projectConversation(), agentMode: "plan" },
+      activeConversationMode: "plan",
+      activeWorkspace: {
+        ...workspace(),
+        mode: "plan",
+        linkedIdeationSessionId: "planning-session-1",
+      },
+      attachedIdeationSessionId: "planning-session-1",
+      availableArtifactTabs: ["plan", "tasks"],
+      onOpenPlanArtifact,
+    });
+
+    const row = await screen.findByTestId("agents-plan-composer-cta-row");
+    expect(
+      within(row).getByRole("button", { name: /View Plan/i }),
+    ).toBeInTheDocument();
+    expect(
+      within(row).queryByRole("button", { name: /Approve Plan/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(row).queryByRole("button", { name: /Verify Plan/i }),
+    ).not.toBeInTheDocument();
+    expect(getSessionPlanMock).not.toHaveBeenCalled();
+  });
+
   it("emphasizes Create Proposals in the composer CTA row when complexity recommends it", async () => {
     const user = userEvent.setup();
     getSessionPlanMock.mockResolvedValue(planArtifact("approved"));
@@ -1872,6 +1923,7 @@ describe("AgentsActiveConversationPanel", () => {
       createdAt: "2026-05-23T05:02:00Z",
       updatedAt: "2026-05-23T05:02:00Z",
     });
+    setPlanArtifactVisible();
     const promotedWorkspace = {
       ...workspace(),
       mode: "ideation" as const,
@@ -1961,6 +2013,7 @@ describe("AgentsActiveConversationPanel", () => {
       },
     });
     getPlanComplexityAssessmentMock.mockReturnValue(assessment.promise);
+    setPlanArtifactVisible();
 
     renderPanel({
       activeConversation: { ...projectConversation(), agentMode: "plan" },
@@ -2003,6 +2056,7 @@ describe("AgentsActiveConversationPanel", () => {
 
   it("hides approved plan composer CTAs when the workspace has changes", async () => {
     getSessionPlanMock.mockResolvedValue(planArtifact("approved"));
+    setPlanArtifactVisible();
 
     renderPanel({
       activeConversation: { ...projectConversation(), agentMode: "plan" },
@@ -2066,6 +2120,7 @@ describe("AgentsActiveConversationPanel", () => {
       multiSelect: false,
     };
     getSessionPlanMock.mockResolvedValue(planArtifact("approved"));
+    setPlanArtifactVisible();
 
     renderPanel({
       activeConversation: { ...projectConversation(), agentMode: "plan" },
@@ -2262,6 +2317,7 @@ describe("AgentsActiveConversationPanel", () => {
   it("starts direct implementation from the composer CTA row with the selected runtime", async () => {
     const user = userEvent.setup();
     getSessionPlanMock.mockResolvedValue(planArtifact("approved"));
+    setPlanArtifactVisible();
     const editWorkspace = {
       ...workspace(),
       mode: "edit" as const,
@@ -2329,6 +2385,7 @@ describe("AgentsActiveConversationPanel", () => {
     const user = userEvent.setup();
     const onSelectArtifact = vi.fn();
     getSessionPlanMock.mockResolvedValue(planArtifact("approved"));
+    setPlanArtifactVisible();
     getVerificationSpecialistsMock.mockResolvedValue({
       specialists: [
         { name: "risk", enabled_by_default: false },

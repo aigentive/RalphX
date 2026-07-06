@@ -21,6 +21,7 @@ import type {
   PriorityAssessmentResponse,
   DependencyGraphResponse,
   ApplyProposalsResultResponse,
+  RestartImplementationResultResponse,
   CreateChildSessionResponse,
   ParentSessionContextResponse,
 } from "./ideation.types";
@@ -32,6 +33,7 @@ import {
   PriorityAssessmentResponseSchema,
   DependencyGraphResponseSchema,
   ApplyProposalsResultResponseSchema,
+  RestartImplementationResultResponseSchema,
   CreateChildSessionResponseSchema,
   ParentSessionContextResponseSchema,
   SessionListResponseSchema,
@@ -234,6 +236,18 @@ export function transformApplyResult(raw: z.infer<typeof ApplyProposalsResultRes
     sessionConverted: raw.session_converted,
     executionPlanId: raw.execution_plan_id ?? null,
     ...(raw.message !== undefined && { message: raw.message }),
+  };
+}
+
+export function transformRestartImplementationResult(
+  raw: z.infer<typeof RestartImplementationResultResponseSchema>,
+): RestartImplementationResultResponse {
+  return {
+    sessionId: raw.session_id,
+    oldExecutionPlanId: raw.old_execution_plan_id,
+    executionPlanId: raw.execution_plan_id,
+    archivedTaskCount: raw.archived_task_count,
+    createdTaskIds: raw.created_task_ids,
   };
 }
 

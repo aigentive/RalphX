@@ -29,14 +29,14 @@ describe("getVisibleIdeationArtifactTabs", () => {
     ).toEqual(["plan"]);
   });
 
-  it("adds proposals only when proposal content exists in plan or ideation mode", () => {
+  it("keeps proposals out of top-level tabs in plan and ideation mode", () => {
     expect(
       getVisibleIdeationArtifactTabs({
         ...baseAvailability,
         hasProposals: true,
         artifactMode: "plan",
       }),
-    ).toEqual(["plan", "proposal"]);
+    ).toEqual(["plan"]);
 
     expect(
       getVisibleIdeationArtifactTabs({
@@ -44,7 +44,7 @@ describe("getVisibleIdeationArtifactTabs", () => {
         hasProposals: true,
         artifactMode: "ideation",
       }),
-    ).toEqual(["plan", "proposal"]);
+    ).toEqual(["plan"]);
   });
 
   it("omits proposals outside plan and ideation modes even when proposals exist", () => {
@@ -74,6 +74,6 @@ describe("getVisibleIdeationArtifactTabs", () => {
         hasVerificationEvidence: true,
         hasExecutionTasks: true,
       }),
-    ).toEqual(["plan", "verification", "proposal", "tasks"]);
+    ).toEqual(["plan", "verification", "tasks"]);
   });
 });

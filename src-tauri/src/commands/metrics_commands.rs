@@ -173,7 +173,8 @@ pub async fn get_insights_stats(
     let wsd = week_start_day.unwrap_or(0);
     let tz = validate_tz_offset(tz_offset_minutes)?;
     let project_id = normalize_optional_project_id(project_id);
-    let cache_key = MetricsScope::from_optional_project_id(project_id.as_deref()).cache_key(wsd, tz);
+    let cache_key =
+        MetricsScope::from_optional_project_id(project_id.as_deref()).cache_key(wsd, tz);
 
     if let Some(entry) = STATS_CACHE.get(&cache_key) {
         let (ts, stats) = &*entry;
@@ -248,7 +249,8 @@ pub async fn get_insights_trends(
     let wsd = week_start_day.unwrap_or(0);
     let tz = validate_tz_offset(tz_offset_minutes)?;
     let project_id = normalize_optional_project_id(project_id);
-    let cache_key = MetricsScope::from_optional_project_id(project_id.as_deref()).cache_key(wsd, tz);
+    let cache_key =
+        MetricsScope::from_optional_project_id(project_id.as_deref()).cache_key(wsd, tz);
 
     if let Some(entry) = TRENDS_CACHE.get(&cache_key) {
         let (ts, trends) = &*entry;
@@ -324,7 +326,8 @@ pub async fn get_insights_pr_insights(
     let wsd = week_start_day.unwrap_or(0);
     let tz = validate_tz_offset(tz_offset_minutes)?;
     let project_id = normalize_optional_project_id(project_id);
-    let cache_key = MetricsScope::from_optional_project_id(project_id.as_deref()).cache_key(wsd, tz);
+    let cache_key =
+        MetricsScope::from_optional_project_id(project_id.as_deref()).cache_key(wsd, tz);
 
     if let Some(entry) = PR_INSIGHTS_CACHE.get(&cache_key) {
         let (ts, insights) = &*entry;

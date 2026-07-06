@@ -1867,6 +1867,237 @@ async fn test_apply_proposals_core_session_converts_to_accepted() {
 }
 
 #[tokio::test]
+async fn test_restart_ideation_implementation_core_rebuilds_current_attempt_only() {
+    use std::collections::HashSet;
+
+    use ralphx_lib::domain::entities::{ExecutionPlan, ExecutionPlanId, ExecutionPlanStatus, Task};
+
+    let state = setup_apply_test_state();
+    let (project_id, session, proposal_ids) = setup_session_with_proposals(&state, 2).await;
+
+    state
+        .ideation_session_repo
+        .set_dependencies_acknowledged(session.id.as_str())
+        .await
+        .expect("Failed to acknowledge dependencies");
+
+    let apply_result = apply_proposals_core(
+        &state,
+        ApplyProposalsInput {
+            session_id: session.id.as_str().to_string(),
+            proposal_ids: proposal_ids.clone(),
+            target_column: "auto".to_string(),
+            base_branch_override: None,
+        },
+    )
+    .await
+    .expect("apply_proposals_core should accept the session");
+    let old_execution_plan_id = apply_result
+        .execution_plan_id
+        .clone()
+        .expect("accepted session should have an execution plan");
+    let old_execution_plan = ExecutionPlanId::from_string(old_execution_plan_id.clone());
+
+    state
+        .active_plan_repo
+        .set(&project_id, &session.id)
+        .await
+        .expect("accepted session should become active plan");
+    state
+        .active_plan_repo
+        .set_execution_plan_id(&project_id, &old_execution_plan)
+        .await
+        .expect("active plan should track old execution plan");
+
+    let historical_plan = state
+        .execution_plan_repo
+        .create(ExecutionPlan::new(session.id.clone()))
+        .await
+        .expect("historical execution plan should be created");
+    state
+        .execution_plan_repo
+        .mark_superseded(&historical_plan.id)
+        .await
+        .expect("historical execution plan should be superseded");
+    let mut historical_task = Task::new(project_id.clone(), "Historical task".to_string());
+    historical_task.ideation_session_id = Some(session.id.clone());
+    historical_task.execution_plan_id = Some(historical_plan.id.clone());
+    let historical_task = state
+        .task_repo
+        .create(historical_task)
+        .await
+        .expect("historical task should be created");
+
+    let old_attempt_task_count = state
+        .task_repo
+        .count_tasks(&project_id, false, None, Some(old_execution_plan.as_str()))
+        .await
+        .expect("old attempt count should load");
+    assert!(
+        old_attempt_task_count > proposal_ids.len() as u32,
+        "old attempt count should include the merge task"
+    );
+
+    let result = restart_ideation_implementation_core(&state, session.id.as_str().to_string())
+        .await
+        .expect("restart should rebuild implementation attempt");
+
+    assert_eq!(result.old_execution_plan_id, old_execution_plan_id);
+    assert_ne!(result.execution_plan_id, old_execution_plan_id);
+    assert_eq!(
+        result.archived_task_count, old_attempt_task_count as usize,
+        "restart should archive exactly the current active attempt"
+    );
+    assert_eq!(
+        result.created_task_ids.len(),
+        proposal_ids.len(),
+        "restart should recreate one task per local proposal"
+    );
+
+    let old_plan = state
+        .execution_plan_repo
+        .get_by_id(&old_execution_plan)
+        .await
+        .expect("old plan lookup should succeed")
+        .expect("old plan should exist");
+    assert_eq!(old_plan.status, ExecutionPlanStatus::Superseded);
+
+    let new_execution_plan = ExecutionPlanId::from_string(result.execution_plan_id.clone());
+    let new_plan = state
+        .execution_plan_repo
+        .get_by_id(&new_execution_plan)
+        .await
+        .expect("new plan lookup should succeed")
+        .expect("new plan should exist");
+    assert_eq!(new_plan.status, ExecutionPlanStatus::Active);
+
+    let old_attempt_tasks = state
+        .task_repo
+        .list_paginated(
+            &project_id,
+            None,
+            0,
+            old_attempt_task_count,
+            true,
+            None,
+            Some(old_execution_plan.as_str()),
+            None,
+        )
+        .await
+        .expect("old attempt tasks should load");
+    assert!(
+        old_attempt_tasks
+            .iter()
+            .all(|task| task.archived_at.is_some()),
+        "all old active-attempt tasks should be archived"
+    );
+
+    let historical_task_after_restart = state
+        .task_repo
+        .get_by_id(&historical_task.id)
+        .await
+        .expect("historical task lookup should succeed")
+        .expect("historical task should still exist");
+    assert!(
+        historical_task_after_restart.archived_at.is_none(),
+        "restart must not archive superseded historical attempts"
+    );
+
+    for task_id in &result.created_task_ids {
+        let task = state
+            .task_repo
+            .get_by_id(&ralphx_lib::domain::entities::TaskId::from_string(
+                task_id.clone(),
+            ))
+            .await
+            .expect("new task lookup should succeed")
+            .expect("new task should exist");
+        assert_eq!(task.execution_plan_id, Some(new_execution_plan.clone()));
+        assert!(task.archived_at.is_none());
+    }
+
+    let proposal_task_ids: HashSet<String> = state
+        .task_proposal_repo
+        .get_by_session(&session.id)
+        .await
+        .expect("proposals should load")
+        .into_iter()
+        .map(|proposal| {
+            proposal
+                .created_task_id
+                .expect("proposal should point to recreated task")
+                .as_str()
+                .to_string()
+        })
+        .collect();
+    let created_task_ids: HashSet<String> = result.created_task_ids.iter().cloned().collect();
+    assert_eq!(proposal_task_ids, created_task_ids);
+
+    assert_eq!(
+        state
+            .active_plan_repo
+            .get(&project_id)
+            .await
+            .expect("active plan should load"),
+        Some(session.id.clone())
+    );
+    assert_eq!(
+        state
+            .active_plan_repo
+            .get_execution_plan_id(&project_id)
+            .await
+            .expect("active execution plan should load"),
+        Some(new_execution_plan)
+    );
+
+    let updated_session = state
+        .ideation_session_repo
+        .get_by_id(&session.id)
+        .await
+        .expect("session lookup should succeed")
+        .expect("session should exist");
+    assert_eq!(updated_session.status, IdeationSessionStatus::Accepted);
+}
+
+#[tokio::test]
+async fn test_restart_ideation_implementation_core_rejects_active_session() {
+    let state = setup_apply_test_state();
+    let (_project_id, session, _proposal_ids) = setup_session_with_proposals(&state, 1).await;
+
+    let err = restart_ideation_implementation_core(&state, session.id.as_str().to_string())
+        .await
+        .expect_err("restart should reject active sessions");
+
+    assert!(
+        err.to_string().contains("accepted"),
+        "error should require an accepted session: {}",
+        err
+    );
+}
+
+#[tokio::test]
+async fn test_restart_ideation_implementation_core_rejects_accepted_without_active_plan() {
+    let state = setup_apply_test_state();
+    let (_project_id, session, _proposal_ids) = setup_session_with_proposals(&state, 1).await;
+
+    state
+        .ideation_session_repo
+        .update_status(&session.id, IdeationSessionStatus::Accepted)
+        .await
+        .expect("session should become accepted");
+
+    let err = restart_ideation_implementation_core(&state, session.id.as_str().to_string())
+        .await
+        .expect_err("restart should require an active execution plan");
+
+    assert!(
+        err.to_string().contains("active implementation attempt"),
+        "error should mention missing active implementation attempt: {}",
+        err
+    );
+}
+
+#[tokio::test]
 async fn test_apply_proposals_core_partial_apply_does_not_convert_session() {
     let state = setup_apply_test_state();
     let (_project_id, session, proposal_ids) = setup_session_with_proposals(&state, 2).await;
@@ -2820,7 +3051,7 @@ async fn test_apply_proposals_core_linked_agent_workspace_reuses_conversation_br
         AgentConversationWorkspaceMode::Ideation,
         AgentConversationWorkspaceBaseSelection {
             kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
-                branch_mode: None,
+            branch_mode: None,
             base_ref: Some("main".to_string()),
             display_name: Some("Project default (main)".to_string()),
             source_pull_request: None,
