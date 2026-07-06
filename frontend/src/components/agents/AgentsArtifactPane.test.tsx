@@ -343,6 +343,7 @@ vi.mock("@/hooks/useChat", async (importOriginal) => {
 
 vi.mock("@/hooks/useDependencyGraph", () => ({
   useDependencyGraph: (...args: unknown[]) => useDependencyGraphMock(...args),
+  useDependencyTiers: () => ({ tierMap: new Map(), maxTier: 0 }),
 }));
 
 vi.mock("@/hooks/useTasks", () => ({
@@ -3590,7 +3591,7 @@ describe("AgentsArtifactPane", () => {
     );
 
     await user.click(await screen.findByTestId("restart-implementation-button"));
-    let dialog = await screen.findByRole("dialog");
+    let dialog = await screen.findByRole("alertdialog");
     expect(dialog).toHaveTextContent("Restart implementation?");
     expect(dialog).toHaveTextContent(
       "Running work will be stopped, the current task attempt will be archived",
@@ -3601,7 +3602,7 @@ describe("AgentsArtifactPane", () => {
     expect(restartImplementationMock).not.toHaveBeenCalled();
 
     await user.click(await screen.findByTestId("restart-implementation-button"));
-    dialog = await screen.findByRole("dialog");
+    dialog = await screen.findByRole("alertdialog");
     await user.click(
       within(dialog).getByRole("button", { name: "Restart Implementation" }),
     );
