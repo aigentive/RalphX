@@ -126,6 +126,7 @@ function makeConversation(overrides: Partial<ChatConversation> = {}): ChatConver
     claudeSessionId: null,
     providerSessionId: null,
     providerHarness: null,
+    coordinationMode: "solo",
     title: "Execution",
     messageCount: 0,
     lastMessageAt: null,

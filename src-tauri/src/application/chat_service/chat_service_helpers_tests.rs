@@ -102,6 +102,12 @@ fn test_harness_supports_team_mode_only_for_claude() {
 }
 
 #[test]
+fn test_rx_native_team_is_disabled_by_default_for_standard_harnesses() {
+    assert!(!harness_supports_rx_native_team(AgentHarnessKind::Claude));
+    assert!(!harness_supports_rx_native_team(AgentHarnessKind::Codex));
+}
+
+#[test]
 fn test_effective_team_mode_for_harness_respects_requested_false() {
     assert!(!effective_team_mode_for_harness(
         false,

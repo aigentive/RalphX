@@ -95,6 +95,7 @@ use crate::commands::agent_model_commands::load_agent_model_registry;
 use crate::commands::ExecutionState;
 use crate::domain::agents::{
     default_effort_for_provider, default_efforts_for_provider, AgentHarnessKind, LogicalEffort,
+    DEFAULT_AGENT_HARNESS,
 };
 use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
 use crate::domain::entities::task_step::StepProgressSummary;
@@ -107,7 +108,7 @@ use crate::domain::entities::{
     ChatMessageId, ChatTimelineItem, DelegatedSessionId, ExecutionPlanStatus,
     IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow, IdeationSessionId,
     InternalStatus, PlanBranch, PlanBranchStatus, Project, ProjectId, Task, TaskCategory, TaskId,
-    DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+    CoordinationMode, TeamIntent, TeamMessageTarget, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::execution::{
     build_running_ideation_session, build_running_process, context_matches_running_status,
@@ -169,6 +170,10 @@ pub struct SendAgentMessageInput {
     /// Structured artifact references for runtime-only prompt expansion.
     #[serde(default)]
     pub composer_artifact_references: Vec<ComposerArtifactReference>,
+    /// Optional native team-mode overlay request for this send.
+    pub team_intent: Option<TeamIntent>,
+    /// Optional native team mailbox target.
+    pub team_message_target: Option<TeamMessageTarget>,
     /// Attachment IDs selected by the composer for this message.
     #[serde(default)]
     pub attachment_ids: Vec<String>,
@@ -1636,6 +1641,7 @@ pub struct AgentConversationResponse {
     pub effective_effort: Option<String>,
     pub service_tier: Option<String>,
     pub agent_mode: Option<String>,
+    pub coordination_mode: String,
     pub parent_conversation_id: Option<String>,
     pub title: Option<String>,
     pub message_count: i64,
@@ -1665,6 +1671,7 @@ impl From<ChatConversation> for AgentConversationResponse {
             effective_effort: None,
             service_tier: None,
             agent_mode: c.agent_mode.map(|mode| mode.to_string()),
+            coordination_mode: CoordinationMode::Solo.to_string(),
             parent_conversation_id: c.parent_conversation_id,
             title: c.title,
             message_count: c.message_count,
@@ -3390,6 +3397,20 @@ pub async fn send_agent_message(
         .as_deref()
         .map(str::parse::<AgentHarnessKind>)
         .transpose()?;
+    let requested_harness = harness_override.unwrap_or(DEFAULT_AGENT_HARNESS);
+    crate::application::managed_team::validate_native_team_intent(
+        input.team_intent.as_ref(),
+        requested_harness,
+    )
+    .map_err(|error| error.to_string())?;
+    if input.team_message_target.is_some() {
+        let native_message_intent = TeamIntent::rx_native(None);
+        crate::application::managed_team::validate_native_team_intent(
+            Some(&native_message_intent),
+            requested_harness,
+        )
+        .map_err(|error| error.to_string())?;
+    }
 
     let mut service = create_chat_service(
         &state,
@@ -3563,6 +3584,8 @@ pub async fn send_agent_message(
                 composer_project_references: input.composer_project_references,
                 composer_integration_references: input.composer_integration_references,
                 composer_artifact_references: input.composer_artifact_references,
+                team_intent: input.team_intent,
+                team_message_target: input.team_message_target,
                 attachment_ids,
                 ..Default::default()
             },
@@ -14960,6 +14983,7 @@ mod tests {
             Some("claude-session-123".to_string())
         );
         assert_eq!(response.provider_harness, Some("claude".to_string()));
+        assert_eq!(response.coordination_mode, "solo");
     }
 
     #[test]

@@ -355,6 +355,7 @@ pub(crate) async fn create_followup_agent_conversation_for_request(
             composer_project_references: Vec::new(),
             composer_integration_references: Vec::new(),
             composer_artifact_references: Vec::new(),
+            team_intent: None,
         },
         &state.app_state,
         &state.execution_state,

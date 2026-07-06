@@ -176,7 +176,9 @@ pub use task_metadata::{
 pub use task_qa::TaskQA;
 pub use task_step::{StepProgressSummary, TaskStep, TaskStepStatus};
 pub use team::{
-    TeamMessageId, TeamMessageRecord, TeamSession, TeamSessionId, TeammateCost, TeammateSnapshot,
+    CoordinationMode, TeamIntent, TeamIntentStrategy, TeamMessageId, TeamMessageRecord,
+    TeamMessageTarget, TeamMessageTargetKind, TeamSession, TeamSessionId, TeammateCost,
+    TeammateSnapshot,
 };
 pub use ticket_canonical_branch::TicketCanonicalBranch;
 pub use types::{

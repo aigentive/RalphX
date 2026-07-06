@@ -15,6 +15,7 @@ const conversation: ChatConversation = {
   providerSessionId: "provider-session-1",
   providerHarness: "codex",
   upstreamProvider: "openai",
+  coordinationMode: "solo",
   providerProfile: null,
   title: null,
   messageCount: 3,
