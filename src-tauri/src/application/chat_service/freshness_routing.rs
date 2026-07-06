@@ -18,7 +18,8 @@ use crate::application::task_transition_service::TaskTransitionService;
 use crate::domain::entities::{InternalStatus, Project, Task};
 use crate::domain::repositories::TaskRepository;
 use crate::domain::state_machine::transition_handler::{
-    is_merge_worktree_path, restore_task_worktree,
+    is_merge_worktree_path, merge_metadata_into, publish_plan_branch_pr_after_freshness_update,
+    restore_task_worktree, PlanBranchPrSyncServices,
 };
 use crate::error::{AppError, AppResult};
 
@@ -64,6 +65,8 @@ pub(crate) async fn freshness_return_route<R: Runtime>(
     transition_service: &TaskTransitionService<R>,
     project: &Project,
     interactive_process_registry: Option<&InteractiveProcessRegistry>,
+    pr_sync_services: Option<&PlanBranchPrSyncServices>,
+    commit_sha: Option<&str>,
 ) -> AppResult<FreshnessRouteResult> {
     // -----------------------------------------------------------------------
     // Step 1: Check plan_update_conflict in task metadata.
@@ -166,6 +169,46 @@ pub(crate) async fn freshness_return_route<R: Runtime>(
         .as_deref()
         .and_then(|s| serde_json::from_str(s).ok())
         .unwrap_or_else(|| serde_json::json!({}));
+
+    if target_status == InternalStatus::WaitingOnPr {
+        let publication_result = match pr_sync_services {
+            Some(services) => {
+                publish_plan_branch_pr_after_freshness_update(&fresh_task, project, services).await
+            }
+            None => Err(AppError::GitOperation(
+                "Cannot publish PR branch during freshness return: PR sync services unavailable"
+                    .to_string(),
+            )),
+        };
+
+        if let Err(error) = publication_result {
+            tracing::warn!(
+                task_id = %task.id,
+                error = %error,
+                "freshness_return_route: PR branch publication failed before returning to WaitingOnPr"
+            );
+            merge_metadata_into(
+                &mut fresh_task,
+                &serde_json::json!({
+                    "error": format!("PR branch publication failed: {}", error),
+                    "error_code": "pr_branch_publication_failed",
+                    "commit_sha": commit_sha,
+                }),
+            );
+            fresh_task.internal_status = InternalStatus::MergeIncomplete;
+            fresh_task.touch();
+            task_repo.update(&fresh_task).await?;
+            let _ = task_repo
+                .persist_status_change(
+                    &task.id,
+                    InternalStatus::Merging,
+                    InternalStatus::MergeIncomplete,
+                    "pr_branch_publication_failed",
+                )
+                .await;
+            return Err(error);
+        }
+    }
 
     // -----------------------------------------------------------------------
     // Step 4 (continued): Targeted metadata cleanup BEFORE transition.

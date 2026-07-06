@@ -25,10 +25,11 @@ use crate::application::interactive_process_registry::{
     InteractiveProcessKey, InteractiveProcessRegistry,
 };
 use crate::domain::entities::{
-    AgentRunId, AgentRunStatus, ChatContextType, InternalStatus, TaskId,
+    AgentRun, AgentRunId, AgentRunStatus, ChatContextType, InternalStatus, TaskId,
 };
 use crate::domain::repositories::{AgentRunRepository, TaskRepository};
 use crate::domain::services::{RunningAgentInfo, RunningAgentKey, RunningAgentRegistry};
+use crate::infrastructure::agents::claude::stream_timeouts;
 
 /// Returns true when a task-backed context has a status consistent with an active agent.
 ///
@@ -43,6 +44,34 @@ fn context_matches_running_status(context_type: ChatContextType, status: Interna
         ChatContextType::Merge => status == InternalStatus::Merging,
         _ => false,
     }
+}
+
+fn should_defer_terminal_settlement_prune(
+    context_type: Option<ChatContextType>,
+    reasons: &[&'static str],
+    info: &RunningAgentInfo,
+    run: Option<&AgentRun>,
+    pid_alive: bool,
+) -> bool {
+    if !pid_alive || reasons.len() != 1 || reasons[0] != "task_status_mismatch" {
+        return false;
+    }
+    if !matches!(
+        context_type,
+        Some(ChatContextType::Merge | ChatContextType::Review)
+    ) {
+        return false;
+    }
+    if !matches!(run, Some(agent_run) if agent_run.status == AgentRunStatus::Running) {
+        return false;
+    }
+
+    let Some(last_active_at) = info.last_active_at else {
+        return false;
+    };
+    let grace_secs = i64::try_from(stream_timeouts().completion_grace_secs).unwrap_or(i64::MAX);
+    let age = chrono::Utc::now().signed_duration_since(last_active_at);
+    age.num_seconds() <= grace_secs
 }
 
 /// Shared per-entry prune logic for the GC pruner and the reconciliation pruner.
@@ -205,6 +234,22 @@ impl PruneEngine {
             return false;
         }
 
+        if should_defer_terminal_settlement_prune(
+            context_type,
+            &reasons,
+            info,
+            run.as_ref(),
+            pid_alive,
+        ) {
+            tracing::debug!(
+                context_type = key.context_type,
+                context_id = key.context_id,
+                run_id = info.agent_run_id,
+                "Deferring prune for live terminal-tool settlement"
+            );
+            return false;
+        }
+
         // Execute prune: stop (if pid alive) or unregister, then cancel the agent_run.
         if pid_alive {
             let _ = self.running_agent_registry.stop(key).await;
@@ -248,5 +293,85 @@ impl PruneEngine {
         }
 
         true
+    }
+}
+
+#[cfg(test)]
+mod terminal_settlement_prune_tests {
+    use super::*;
+    use crate::domain::entities::ChatConversationId;
+
+    fn running_info(last_active_at: Option<chrono::DateTime<chrono::Utc>>) -> RunningAgentInfo {
+        RunningAgentInfo {
+            pid: 12_345,
+            conversation_id: "conversation-test".to_string(),
+            agent_run_id: "run-test".to_string(),
+            started_at: chrono::Utc::now(),
+            worktree_path: None,
+            cancellation_token: None,
+            last_active_at,
+            model: None,
+        }
+    }
+
+    fn running_run() -> AgentRun {
+        AgentRun::new(ChatConversationId::new())
+    }
+
+    #[test]
+    fn terminal_settlement_prune_defers_recent_live_merge_status_mismatch() {
+        let info = running_info(Some(chrono::Utc::now()));
+        let run = running_run();
+
+        assert!(should_defer_terminal_settlement_prune(
+            Some(ChatContextType::Merge),
+            &["task_status_mismatch"],
+            &info,
+            Some(&run),
+            true,
+        ));
+    }
+
+    #[test]
+    fn terminal_settlement_prune_rejects_non_settlement_shapes() {
+        let info = running_info(Some(chrono::Utc::now()));
+        let missing_heartbeat = running_info(None);
+        let run = running_run();
+
+        assert!(!should_defer_terminal_settlement_prune(
+            Some(ChatContextType::Merge),
+            &["task_status_mismatch"],
+            &info,
+            Some(&run),
+            false,
+        ));
+        assert!(!should_defer_terminal_settlement_prune(
+            Some(ChatContextType::Merge),
+            &["task_status_mismatch", "pid_missing"],
+            &info,
+            Some(&run),
+            true,
+        ));
+        assert!(!should_defer_terminal_settlement_prune(
+            Some(ChatContextType::TaskExecution),
+            &["task_status_mismatch"],
+            &info,
+            Some(&run),
+            true,
+        ));
+        assert!(!should_defer_terminal_settlement_prune(
+            Some(ChatContextType::Review),
+            &["task_status_mismatch"],
+            &info,
+            None,
+            true,
+        ));
+        assert!(!should_defer_terminal_settlement_prune(
+            Some(ChatContextType::Review),
+            &["task_status_mismatch"],
+            &missing_heartbeat,
+            Some(&run),
+            true,
+        ));
     }
 }

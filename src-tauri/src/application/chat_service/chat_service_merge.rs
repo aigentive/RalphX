@@ -216,6 +216,32 @@ impl<'a, R: Runtime + 'static> MergeAutoCompleteContext<'a, R> {
     }
 }
 
+fn build_pr_sync_services_for_auto_complete(
+    task_repo: &Arc<dyn TaskRepository>,
+    plan_branch_repo: &Option<Arc<dyn PlanBranchRepository>>,
+    ideation_session_repo: &Arc<dyn IdeationSessionRepository>,
+    artifact_repo: &Arc<dyn ArtifactRepository>,
+    app_state: Option<&AppState>,
+) -> PlanBranchPrSyncServices {
+    PlanBranchPrSyncServices {
+        task_repo: Some(Arc::clone(task_repo)),
+        plan_branch_repo: plan_branch_repo.clone(),
+        pr_creation_guard: app_state
+            .map(|state| Arc::clone(&state.pr_poller_registry.pr_creation_guard)),
+        github_service: app_state.and_then(|state| state.github_service.clone()),
+        ideation_session_repo: Some(Arc::clone(ideation_session_repo)),
+        artifact_repo: Some(Arc::clone(artifact_repo)),
+        plan_pr_description_drafter: app_state.map(|state| {
+            crate::application::plan_pr_description::build_app_state_plan_pr_description_drafter(
+                Arc::clone(&state.agent_conversation_workspace_repo),
+                Arc::clone(&state.chat_conversation_repo),
+                Arc::clone(&state.agent_provider_settings_repo),
+                state.agent_clients.clone(),
+            )
+        }),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Sub-functions: each handles one phase of the merge auto-complete pipeline.
 // ---------------------------------------------------------------------------
@@ -1062,26 +1088,13 @@ async fn complete_merge_and_schedule<R: Runtime + 'static>(
     let app_state = ctx
         .app_handle
         .and_then(|handle| handle.try_state::<AppState>());
-    let pr_sync_services = PlanBranchPrSyncServices {
-        task_repo: Some(Arc::clone(ctx.task_repo)),
-        plan_branch_repo: ctx.plan_branch_repo.clone(),
-        pr_creation_guard: app_state
-            .as_ref()
-            .map(|state| Arc::clone(&state.pr_poller_registry.pr_creation_guard)),
-        github_service: app_state
-            .as_ref()
-            .and_then(|state| state.github_service.clone()),
-        ideation_session_repo: Some(Arc::clone(ctx.ideation_session_repo)),
-        artifact_repo: Some(Arc::clone(ctx.artifact_repo)),
-        plan_pr_description_drafter: app_state.as_ref().map(|state| {
-            crate::application::plan_pr_description::build_app_state_plan_pr_description_drafter(
-                Arc::clone(&state.agent_conversation_workspace_repo),
-                Arc::clone(&state.chat_conversation_repo),
-                Arc::clone(&state.agent_provider_settings_repo),
-                state.agent_clients.clone(),
-            )
-        }),
-    };
+    let pr_sync_services = build_pr_sync_services_for_auto_complete(
+        ctx.task_repo,
+        ctx.plan_branch_repo,
+        ctx.ideation_session_repo,
+        ctx.artifact_repo,
+        app_state.as_deref(),
+    );
 
     if let Err(e) = complete_merge_internal_with_pr_sync(
         task,
@@ -1238,6 +1251,16 @@ pub(crate) async fn attempt_merge_auto_complete<R: Runtime + 'static>(
             Some(v) => v,
             None => return,
         };
+    let app_state = ctx
+        .app_handle
+        .and_then(|handle| handle.try_state::<AppState>());
+    let pr_sync_services = build_pr_sync_services_for_auto_complete(
+        ctx.task_repo,
+        ctx.plan_branch_repo,
+        ctx.ideation_session_repo,
+        ctx.artifact_repo,
+        app_state.as_deref(),
+    );
 
     // 5. Handle freshness conflict return routing.
     // Uses shared freshness_return_route() which checks plan_update_conflict (more robust
@@ -1251,6 +1274,8 @@ pub(crate) async fn attempt_merge_auto_complete<R: Runtime + 'static>(
         ctx.interactive_process_registry
             .as_ref()
             .map(|arc| arc.as_ref()),
+        Some(&pr_sync_services),
+        None,
     )
     .await
     {
@@ -1630,6 +1655,49 @@ mod tests {
             "task did not reach expected status {:?}; last state was {:?}",
             expected, last
         );
+    }
+
+    #[test]
+    fn build_pr_sync_services_includes_app_state_bound_pr_helpers() {
+        let app_state = AppState::new_test();
+        let plan_branch_repo = Some(Arc::clone(&app_state.plan_branch_repo));
+
+        let services = build_pr_sync_services_for_auto_complete(
+            &app_state.task_repo,
+            &plan_branch_repo,
+            &app_state.ideation_session_repo,
+            &app_state.artifact_repo,
+            Some(&app_state),
+        );
+
+        assert!(services.task_repo.is_some());
+        assert!(services.plan_branch_repo.is_some());
+        assert!(services.pr_creation_guard.is_some());
+        assert!(services.ideation_session_repo.is_some());
+        assert!(services.artifact_repo.is_some());
+        assert!(services.plan_pr_description_drafter.is_some());
+    }
+
+    #[test]
+    fn build_pr_sync_services_without_app_state_keeps_repo_helpers_only() {
+        let app_state = AppState::new_test();
+        let plan_branch_repo = Some(Arc::clone(&app_state.plan_branch_repo));
+
+        let services = build_pr_sync_services_for_auto_complete(
+            &app_state.task_repo,
+            &plan_branch_repo,
+            &app_state.ideation_session_repo,
+            &app_state.artifact_repo,
+            None,
+        );
+
+        assert!(services.task_repo.is_some());
+        assert!(services.plan_branch_repo.is_some());
+        assert!(services.pr_creation_guard.is_none());
+        assert!(services.github_service.is_none());
+        assert!(services.ideation_session_repo.is_some());
+        assert!(services.artifact_repo.is_some());
+        assert!(services.plan_pr_description_drafter.is_none());
     }
 
     #[tokio::test]
