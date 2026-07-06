@@ -1,6 +1,8 @@
 use super::*;
-use crate::application::task_restart::prepare_terminal_task_for_ready_restart;
-use crate::commands::merge_pipeline_commands::ArchivedParentMergeVisibility;
+use crate::application::{
+    merge_pipeline_visibility::ArchivedParentMergeVisibility,
+    task_restart::prepare_terminal_task_for_ready_restart,
+};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]

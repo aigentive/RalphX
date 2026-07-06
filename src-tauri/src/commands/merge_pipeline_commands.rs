@@ -4,16 +4,14 @@
 // and tasks needing attention (merge_conflict, merge_incomplete).
 
 use serde::{Deserialize, Serialize};
-use std::{collections::HashSet, sync::Arc};
+use std::sync::Arc;
 use tauri::State;
 
+use crate::application::merge_pipeline_visibility::ArchivedParentMergeVisibility;
 use crate::application::AppState;
 use crate::commands::execution_commands::ActiveProjectState;
 use crate::domain::entities::ProjectId;
-use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceStatus, IdeationSessionId,
-    InternalStatus, PlanBranch, PlanBranchId, Project, Task, TaskCategory,
-};
+use crate::domain::entities::{InternalStatus, PlanBranch, Project, Task, TaskCategory};
 use crate::domain::state_machine::transition_handler::{
     has_main_merge_deferred_metadata, has_merge_deferred_metadata,
 };
@@ -31,93 +29,6 @@ fn is_visible_merge_pipeline_status(status: InternalStatus) -> bool {
 
 fn is_visible_merge_pipeline_task(task: &Task) -> bool {
     task.archived_at.is_none() && is_visible_merge_pipeline_status(task.internal_status)
-}
-
-#[derive(Debug, Default)]
-pub(crate) struct ArchivedParentMergeVisibility {
-    archived_plan_branch_ids: HashSet<PlanBranchId>,
-    archived_ideation_session_ids: HashSet<IdeationSessionId>,
-}
-
-impl ArchivedParentMergeVisibility {
-    pub(crate) fn from_workspaces(workspaces: &[AgentConversationWorkspace]) -> Self {
-        let mut archived_plan_branch_ids = HashSet::new();
-        let mut archived_ideation_session_ids = HashSet::new();
-        let mut active_plan_branch_ids = HashSet::new();
-        let mut active_ideation_session_ids = HashSet::new();
-
-        for workspace in workspaces {
-            match workspace.status {
-                AgentConversationWorkspaceStatus::Archived => {
-                    if let Some(plan_branch_id) = workspace.linked_plan_branch_id.clone() {
-                        archived_plan_branch_ids.insert(plan_branch_id);
-                    }
-
-                    if let Some(session_id) = workspace.linked_ideation_session_id.clone() {
-                        archived_ideation_session_ids.insert(session_id);
-                    }
-                }
-                AgentConversationWorkspaceStatus::Active => {
-                    if let Some(plan_branch_id) = workspace.linked_plan_branch_id.clone() {
-                        active_plan_branch_ids.insert(plan_branch_id);
-                    }
-
-                    if let Some(session_id) = workspace.linked_ideation_session_id.clone() {
-                        active_ideation_session_ids.insert(session_id);
-                    }
-                }
-                AgentConversationWorkspaceStatus::Missing => {}
-            }
-        }
-
-        archived_plan_branch_ids.retain(|id| !active_plan_branch_ids.contains(id));
-        archived_ideation_session_ids.retain(|id| !active_ideation_session_ids.contains(id));
-
-        Self {
-            archived_plan_branch_ids,
-            archived_ideation_session_ids,
-        }
-    }
-
-    pub(crate) fn hides_task(&self, task: &Task, plan_branches: &[PlanBranch]) -> bool {
-        if task
-            .ideation_session_id
-            .as_ref()
-            .is_some_and(|session_id| self.archived_ideation_session_ids.contains(session_id))
-        {
-            return true;
-        }
-
-        plan_branches.iter().any(|branch| {
-            self.archived_plan_branch_ids.contains(&branch.id) && branch_owns_task(branch, task)
-        })
-    }
-}
-
-fn branch_owns_task(branch: &PlanBranch, task: &Task) -> bool {
-    if task.category == TaskCategory::PlanMerge
-        && branch
-            .merge_task_id
-            .as_ref()
-            .is_some_and(|merge_task_id| merge_task_id == &task.id)
-    {
-        return true;
-    }
-
-    if branch
-        .execution_plan_id
-        .as_ref()
-        .zip(task.execution_plan_id.as_ref())
-        .is_some_and(|(branch_execution_plan_id, task_execution_plan_id)| {
-            branch_execution_plan_id == task_execution_plan_id
-        })
-    {
-        return true;
-    }
-
-    task.ideation_session_id
-        .as_ref()
-        .is_some_and(|session_id| branch.session_id == *session_id)
 }
 
 /// A task in the merge pipeline
@@ -378,9 +289,9 @@ pub async fn get_merge_phase_list(
 mod tests {
     use super::*;
     use crate::domain::entities::{
-        artifact::ArtifactId, types::IdeationSessionId, AgentConversationWorkspaceMode,
-        ChatConversationId, IdeationAnalysisBaseRefKind, PlanBranchId, PlanBranchStatus, ProjectId,
-        TaskId,
+        artifact::ArtifactId, types::IdeationSessionId, AgentConversationWorkspace,
+        AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus, ChatConversationId,
+        IdeationAnalysisBaseRefKind, PlanBranchId, PlanBranchStatus, ProjectId, TaskId,
     };
     use chrono::Utc;
 

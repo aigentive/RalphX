@@ -59,6 +59,7 @@ pub mod linear_webhook_reconciliation_service;
 pub(crate) mod managed_provider_cli;
 pub mod managed_team;
 pub mod memory_archive_service;
+pub(crate) mod merge_pipeline_visibility;
 pub mod memory_orchestration;
 pub(crate) mod native_menu;
 pub(crate) mod orphan_worktree_cleanup;
