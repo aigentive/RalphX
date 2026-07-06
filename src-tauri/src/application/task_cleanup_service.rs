@@ -12,14 +12,14 @@ use tauri::AppHandle;
 
 use crate::application::chat_service::AgentRunCompletedPayload;
 use crate::application::git_service::GitService;
+use crate::application::interactive_process_registry::{
+    InteractiveProcessKey, InteractiveProcessRegistry,
+};
 use crate::commands::execution_commands::AGENT_ACTIVE_STATUSES;
 use crate::domain::entities::{
     IdeationSessionId, InternalStatus, ProjectId, Task, TaskCategory, TaskId,
 };
 use crate::domain::repositories::{ProjectRepository, TaskRepository};
-use crate::application::interactive_process_registry::{
-    InteractiveProcessKey, InteractiveProcessRegistry,
-};
 use crate::domain::services::{RunningAgentKey, RunningAgentRegistry};
 use crate::error::AppResult;
 
@@ -132,7 +132,10 @@ impl TaskCleanupService {
     }
 
     /// Set the interactive process registry for IPR cleanup on stop (builder pattern).
-    pub fn with_interactive_process_registry(mut self, ipr: Arc<InteractiveProcessRegistry>) -> Self {
+    pub fn with_interactive_process_registry(
+        mut self,
+        ipr: Arc<InteractiveProcessRegistry>,
+    ) -> Self {
         self.interactive_process_registry = Some(ipr);
         self
     }
@@ -256,6 +259,49 @@ impl TaskCleanupService {
                 if emit_events {
                     self.emit_task_archived(task.id.as_str(), &project_id_str);
                 }
+            }
+        }
+
+        if stop_mode == StopMode::DirectStop {
+            for task in &current_tasks {
+                if self.stop_task_contexts_by_identity(&task.id).await
+                    && stopped_task_ids.insert(task.id.clone())
+                {
+                    report.tasks_stopped += 1;
+                }
+            }
+        }
+
+        report
+    }
+
+    /// Stop task runtimes and clean task git resources without archiving rows.
+    ///
+    /// Use this when the caller needs to perform a larger database transition atomically
+    /// after runtime resources have been torn down.
+    pub async fn prepare_tasks_for_replacement(
+        &self,
+        tasks: &[Task],
+        stop_mode: StopMode,
+    ) -> CleanupReport {
+        let mut report = CleanupReport::default();
+        let mut stopped_task_ids = HashSet::new();
+        let mut current_tasks = Vec::with_capacity(tasks.len());
+
+        for task in tasks {
+            let current_task = self.load_current_task(task).await;
+            if self.stop_task_for_cleanup(&current_task, stop_mode).await
+                && stopped_task_ids.insert(current_task.id.clone())
+            {
+                report.tasks_stopped += 1;
+            }
+            current_tasks.push(current_task);
+        }
+
+        for task in &current_tasks {
+            if task.task_branch.is_some() || task.worktree_path.is_some() {
+                self.cleanup_git_resources(task).await;
+                report.git_cleanups += 1;
             }
         }
 

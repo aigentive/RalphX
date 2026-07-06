@@ -24,17 +24,20 @@ export function getVisibleIdeationArtifactTabs({
   hasExecutionTasks,
   artifactMode,
 }: IdeationArtifactAvailability): IdeationArtifactTab[] {
-  if (!hasPlanArtifact && !canStartPlan) {
-    return [];
+  if (!hasPlanArtifact) {
+    return canStartPlan ? ["plan"] : [];
   }
 
-  const canShowDataDrivenTabs = hasAttachedIdeationSession && hasPlanArtifact;
-  const canShowProposalTab = artifactMode === "plan" || artifactMode === "ideation";
+  const canShowDataDrivenTabs = hasAttachedIdeationSession;
+  const shouldShowProposals =
+    canShowDataDrivenTabs &&
+    hasProposals &&
+    (artifactMode === "plan" || artifactMode === "ideation");
 
   return [
     "plan",
+    ...(shouldShowProposals ? ["proposal" as const] : []),
     ...(canShowDataDrivenTabs && hasVerificationEvidence ? ["verification" as const] : []),
-    ...(canShowDataDrivenTabs && hasProposals && canShowProposalTab ? ["proposal" as const] : []),
     ...(canShowDataDrivenTabs && hasExecutionTasks ? ["tasks" as const] : []),
   ];
 }

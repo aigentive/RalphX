@@ -203,6 +203,7 @@ macro_rules! register_tauri_commands {
             commands::ideation_commands::get_proposal_dependents,
             commands::ideation_commands::analyze_dependencies,
             commands::ideation_commands::apply_proposals_to_kanban,
+            commands::ideation_commands::restart_ideation_implementation,
             commands::ideation_commands::get_task_blockers,
             commands::ideation_commands::get_blocked_tasks,
             // Chat message commands

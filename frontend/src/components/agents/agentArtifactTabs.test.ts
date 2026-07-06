@@ -41,7 +41,7 @@ describe("getVisibleIdeationArtifactTabs", () => {
     ).toEqual(["plan"]);
   });
 
-  it("adds proposals only when proposal content exists in plan or ideation mode", () => {
+  it("adds proposals to top-level tabs in plan and ideation mode", () => {
     expect(
       getVisibleIdeationArtifactTabs({
         ...baseAvailability,
@@ -86,6 +86,6 @@ describe("getVisibleIdeationArtifactTabs", () => {
         hasVerificationEvidence: true,
         hasExecutionTasks: true,
       }),
-    ).toEqual(["plan", "verification", "proposal", "tasks"]);
+    ).toEqual(["plan", "proposal", "verification", "tasks"]);
   });
 });
