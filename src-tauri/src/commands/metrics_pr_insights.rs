@@ -616,7 +616,7 @@ fn optional_f64(
     conn.query_row(sql, params_from_iter(scope.project_params()), |row| {
         row.get(0)
     })
-        .map_err(|error| AppError::Database(error.to_string()))
+    .map_err(|error| AppError::Database(error.to_string()))
 }
 
 fn ratio(numerator: i64, denominator: i64) -> f64 {

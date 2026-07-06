@@ -17,12 +17,11 @@ use crate::application::{
     },
     AppState, AtlassianResourceContent, AtlassianResourceKind, AtlassianResourceSummary,
     ClickUpComment, ClickUpSpace, ClickUpTaskContent, ClickUpTaskSummary, ClickUpUser,
-    JiraIssueDetail, JiraProjectSummary, LinearComment,
-    LinearIntegrationSettings, LinearIssueContent, LinearIssueSummary, LinearLabel,
-    TauriTicketingEventSink, TeamService, TicketAssignRequest, TicketCommentRequest,
-    TicketSetLabelsRequest, TicketTransitionRequest, TicketingCommentResult, TicketingLabelResult,
-    TicketingMutationResult, TicketingPersonResult, TicketingService, TicketingTicketIdentity,
-    TicketingTransitionOption,
+    JiraIssueDetail, JiraProjectSummary, LinearComment, LinearIntegrationSettings,
+    LinearIssueContent, LinearIssueSummary, LinearLabel, TauriTicketingEventSink, TeamService,
+    TicketAssignRequest, TicketCommentRequest, TicketSetLabelsRequest, TicketTransitionRequest,
+    TicketingCommentResult, TicketingLabelResult, TicketingMutationResult, TicketingPersonResult,
+    TicketingService, TicketingTicketIdentity, TicketingTransitionOption,
 };
 use crate::commands::unified_chat_commands::{
     agent_conversation_response_for_state, agent_workspace_response_for_state,
@@ -132,17 +131,14 @@ pub async fn list_ticketing_containers(
             }),
         // ClickUp loads Spaces first, then folders/lists lazily for a selected
         // Space so the dashboard shell does not block on the full workspace tree.
-        PROVIDER_CLICKUP => {
-            match clickup_selected_space_id(parent_container_id.as_deref()) {
-                Some(space_id) => clickup_location_containers_for_space(state.inner(), space_id)
-                    .await,
-                None => state
-                    .clickup_integration_service
-                    .list_spaces()
-                    .await
-                    .map(|spaces| spaces.into_iter().map(clickup_space_to_container).collect()),
-            }
-        }
+        PROVIDER_CLICKUP => match clickup_selected_space_id(parent_container_id.as_deref()) {
+            Some(space_id) => clickup_location_containers_for_space(state.inner(), space_id).await,
+            None => state
+                .clickup_integration_service
+                .list_spaces()
+                .await
+                .map(|spaces| spaces.into_iter().map(clickup_space_to_container).collect()),
+        },
         _ => unreachable!("provider validated above"),
     }
 }
@@ -174,7 +170,12 @@ pub async fn list_ticketing_status_catalog(
         .ticketing_status_catalog_service
         .list_status_catalog(&scope.provider, &scope.scope_kind, &scope.scope_id)
         .await
-        .map(|entries| entries.into_iter().map(status_catalog_entry_response).collect())
+        .map(|entries| {
+            entries
+                .into_iter()
+                .map(status_catalog_entry_response)
+                .collect()
+        })
         .map_err(|error| error.to_string())
 }
 
@@ -188,7 +189,12 @@ pub async fn refresh_ticketing_status_catalog(
     let scope = normalize_status_catalog_scope(provider, scope_kind, scope_id)?;
     sync_status_catalog_for_scope(state.inner(), &scope)
         .await
-        .map(|entries| entries.into_iter().map(status_catalog_entry_response).collect())
+        .map(|entries| {
+            entries
+                .into_iter()
+                .map(status_catalog_entry_response)
+                .collect()
+        })
 }
 
 #[tauri::command]
@@ -206,7 +212,12 @@ pub async fn update_ticketing_status_presentation(
         .ticketing_status_catalog_service
         .update_status_presentation(&scope.provider, &scope.scope_kind, &scope.scope_id, patches)
         .await
-        .map(|entries| entries.into_iter().map(status_catalog_entry_response).collect())
+        .map(|entries| {
+            entries
+                .into_iter()
+                .map(status_catalog_entry_response)
+                .collect()
+        })
         .map_err(|error| error.to_string())
 }
 
@@ -323,7 +334,9 @@ fn ticket_page_from_loaded_summaries(
     let page_items: Vec<TicketSummaryResponse> =
         items.into_iter().skip(offset).take(limit).collect();
     let next_cursor = if total_loaded > offset.saturating_add(page_items.len()) {
-        Some(encode_ticket_offset_cursor(offset.saturating_add(page_items.len())))
+        Some(encode_ticket_offset_cursor(
+            offset.saturating_add(page_items.len()),
+        ))
     } else {
         None
     };
@@ -438,9 +451,9 @@ fn ticket_provider_container_scope<'a>(
             .map(str::trim)
             .is_some_and(|value| !value.is_empty())
     {
-        if container_selected_key(container_id).is_some_and(|container_id| {
-            container_id.strip_prefix("list:").is_some()
-        }) {
+        if container_selected_key(container_id)
+            .is_some_and(|container_id| container_id.strip_prefix("list:").is_some())
+        {
             return container_id;
         }
         return None;
@@ -608,18 +621,24 @@ async fn load_ticket_summaries(
                 ClickUpContainerScope::Space(_) | ClickUpContainerScope::List(_)
             );
             let summaries = match &clickup_scope {
-                ClickUpContainerScope::Space(space_id) => state
-                    .clickup_integration_service
-                    .list_tasks(vec![space_id.clone()], options)
-                    .await?,
-                ClickUpContainerScope::List(list_id) => state
-                    .clickup_integration_service
-                    .list_tasks_for_list(list_id, options)
-                    .await?,
-                _ => state
-                    .clickup_integration_service
-                    .list_tasks(Vec::new(), options)
-                    .await?,
+                ClickUpContainerScope::Space(space_id) => {
+                    state
+                        .clickup_integration_service
+                        .list_tasks(vec![space_id.clone()], options)
+                        .await?
+                }
+                ClickUpContainerScope::List(list_id) => {
+                    state
+                        .clickup_integration_service
+                        .list_tasks_for_list(list_id, options)
+                        .await?
+                }
+                _ => {
+                    state
+                        .clickup_integration_service
+                        .list_tasks(Vec::new(), options)
+                        .await?
+                }
             };
             Ok(summaries
                 .into_iter()
@@ -1284,7 +1303,9 @@ fn column_status_catalog_scope(
                 scope_id: "all".to_string(),
             }))
         }
-        PROVIDER_CLICKUP => Ok(clickup_status_catalog_scope(clickup_container_scope(container_id))),
+        PROVIDER_CLICKUP => Ok(clickup_status_catalog_scope(clickup_container_scope(
+            container_id,
+        ))),
         _ => Err(format!("Unsupported ticketing provider: {provider}")),
     }
 }
@@ -1342,7 +1363,12 @@ async fn sync_status_catalog_for_scope(
     let observed = observed_statuses_for_scope(state, scope).await?;
     state
         .ticketing_status_catalog_service
-        .sync_observed_statuses(&scope.provider, &scope.scope_kind, &scope.scope_id, observed)
+        .sync_observed_statuses(
+            &scope.provider,
+            &scope.scope_kind,
+            &scope.scope_id,
+            observed,
+        )
         .await
         .map_err(|error| error.to_string())
 }
@@ -1415,7 +1441,10 @@ async fn observed_statuses_for_scope(
                 })
                 .collect())
         }
-        _ => Err(format!("Unsupported ticketing provider: {}", scope.provider)),
+        _ => Err(format!(
+            "Unsupported ticketing provider: {}",
+            scope.provider
+        )),
     }
 }
 
@@ -1425,10 +1454,12 @@ async fn clickup_statuses_for_catalog_scope(
 ) -> Result<Vec<ClickUpStatus>, String> {
     match scope.scope_kind.as_str() {
         "clickup_space" => clickup_aggregate_space_statuses(state, &scope.scope_id).await,
-        "clickup_folder" => state
-            .clickup_integration_service
-            .list_folder_statuses(&scope.scope_id)
-            .await,
+        "clickup_folder" => {
+            state
+                .clickup_integration_service
+                .list_folder_statuses(&scope.scope_id)
+                .await
+        }
         "clickup_list" => {
             state
                 .clickup_integration_service
@@ -1457,7 +1488,10 @@ async fn clickup_aggregate_space_statuses(
             .await?,
     );
 
-    let folders = state.clickup_integration_service.list_folders(space_id).await?;
+    let folders = state
+        .clickup_integration_service
+        .list_folders(space_id)
+        .await?;
     for folder in folders {
         append_clickup_statuses(
             &mut statuses,
@@ -1569,7 +1603,10 @@ fn status_catalog_entry_column(
     entry: TicketingStatusCatalogEntry,
     order: usize,
 ) -> TicketingColumnResponse {
-    let color = entry.color_override.clone().or_else(|| entry.provider_color.clone());
+    let color = entry
+        .color_override
+        .clone()
+        .or_else(|| entry.provider_color.clone());
     TicketingColumnResponse {
         id: entry.provider_status_id,
         name: entry.provider_status_name,
@@ -1593,7 +1630,10 @@ fn status_catalog_entry_column(
 fn status_catalog_entry_response(
     entry: TicketingStatusCatalogEntry,
 ) -> TicketingStatusCatalogEntryResponse {
-    let color = entry.color_override.clone().or_else(|| entry.provider_color.clone());
+    let color = entry
+        .color_override
+        .clone()
+        .or_else(|| entry.provider_color.clone());
     TicketingStatusCatalogEntryResponse {
         id: entry.id,
         provider: entry.provider,
@@ -1963,20 +2003,24 @@ fn ticket_matches_filters(ticket: &TicketSummaryResponse, filters: &TicketFilter
 
     let assignees = ticket_assignee_filters(filters);
     if !assignees.is_empty() {
-        let ticket_assignees: Vec<&TicketingPersonResponse> =
-            ticket.assignees.iter().chain(ticket.assignee.iter()).collect();
+        let ticket_assignees: Vec<&TicketingPersonResponse> = ticket
+            .assignees
+            .iter()
+            .chain(ticket.assignee.iter())
+            .collect();
         let matches_named_assignee = assignees
             .iter()
             .filter(|assignee| assignee.as_str() != UNASSIGNED_ASSIGNEE_FILTER)
             .map(|assignee| assignee.to_ascii_lowercase())
             .any(|assignee| {
-                ticket_assignees
-                    .iter()
-                    .any(|ticket_assignee| ticket_assignee_matches_filter(ticket_assignee, &assignee))
+                ticket_assignees.iter().any(|ticket_assignee| {
+                    ticket_assignee_matches_filter(ticket_assignee, &assignee)
+                })
             });
-        let matches_unassigned =
-            assignees.iter().any(|assignee| assignee == UNASSIGNED_ASSIGNEE_FILTER)
-                && ticket_assignees.is_empty();
+        let matches_unassigned = assignees
+            .iter()
+            .any(|assignee| assignee == UNASSIGNED_ASSIGNEE_FILTER)
+            && ticket_assignees.is_empty();
         if !matches_named_assignee && !matches_unassigned {
             return false;
         }
@@ -2212,7 +2256,10 @@ async fn clickup_location_containers_for_space(
     space_id: &str,
 ) -> Result<Vec<TicketingContainerResponse>, String> {
     let mut containers = Vec::new();
-    let folders = state.clickup_integration_service.list_folders(space_id).await?;
+    let folders = state
+        .clickup_integration_service
+        .list_folders(space_id)
+        .await?;
     for folder in folders {
         let folder_id = folder.id.clone();
         containers.push(clickup_folder_to_container(folder, space_id));
@@ -2385,7 +2432,10 @@ fn clickup_summary_assigned_to_user(summary: &ClickUpTaskSummary, user: &ClickUp
 }
 
 fn clickup_summary_watched_by_user(summary: &ClickUpTaskSummary, user: &ClickUpUser) -> bool {
-    summary.watchers.iter().any(|watcher| clickup_users_match(watcher, user))
+    summary
+        .watchers
+        .iter()
+        .any(|watcher| clickup_users_match(watcher, user))
 }
 
 fn clickup_users_match(left: &ClickUpUser, right: &ClickUpUser) -> bool {
