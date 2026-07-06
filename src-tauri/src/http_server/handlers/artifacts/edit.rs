@@ -107,16 +107,14 @@ pub async fn edit_plan_artifact(
             map_app_err(e)
         })?;
 
-    if let Some(app_handle) = &state.app_state.app_handle {
-        emit_plan_update_events(
-            app_handle,
-            &created,
-            &old_artifact_id_str,
-            &sessions,
-            linked_proposal_ids,
-            verification_reset,
-        );
-    }
+    emit_plan_update_events(
+        &state,
+        &created,
+        &old_artifact_id_str,
+        &sessions,
+        linked_proposal_ids,
+        verification_reset,
+    );
 
     let mut response = ArtifactResponse::from(created);
     response.previous_artifact_id = Some(old_artifact_id_str);

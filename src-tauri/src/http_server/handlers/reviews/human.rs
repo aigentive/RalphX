@@ -69,23 +69,22 @@ pub async fn approve_task(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    // 4. Emit events
-    if let Some(app_handle) = &state.app_state.app_handle {
-        let _ = app_handle.emit(
-            "review:human_approved",
-            serde_json::json!({
-                "task_id": task_id.as_str(),
-            }),
-        );
-        let _ = app_handle.emit(
-            "task:status_changed",
-            serde_json::json!({
-                "task_id": task_id.as_str(),
-                "old_status": task.internal_status.as_str(),
-                "new_status": "approved",
-            }),
-        );
-    }
+    crate::http_server::emit_http_event(
+        &state,
+        "review:human_approved",
+        serde_json::json!({
+            "task_id": task_id.as_str(),
+        }),
+    );
+    crate::http_server::emit_http_event(
+        &state,
+        "task:status_changed",
+        serde_json::json!({
+            "task_id": task_id.as_str(),
+            "old_status": task.internal_status.as_str(),
+            "new_status": "approved",
+        }),
+    );
 
     Ok(Json(CompleteReviewResponse {
         success: true,
@@ -156,24 +155,23 @@ pub async fn request_task_changes(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    // 4. Emit events
-    if let Some(app_handle) = &state.app_state.app_handle {
-        let _ = app_handle.emit(
-            "review:human_changes_requested",
-            serde_json::json!({
-                "task_id": task_id.as_str(),
-                "feedback": req.feedback,
-            }),
-        );
-        let _ = app_handle.emit(
-            "task:status_changed",
-            serde_json::json!({
-                "task_id": task_id.as_str(),
-                "old_status": task.internal_status.as_str(),
-                "new_status": "revision_needed",
-            }),
-        );
-    }
+    crate::http_server::emit_http_event(
+        &state,
+        "review:human_changes_requested",
+        serde_json::json!({
+            "task_id": task_id.as_str(),
+            "feedback": req.feedback,
+        }),
+    );
+    crate::http_server::emit_http_event(
+        &state,
+        "task:status_changed",
+        serde_json::json!({
+            "task_id": task_id.as_str(),
+            "old_status": task.internal_status.as_str(),
+            "new_status": "revision_needed",
+        }),
+    );
 
     Ok(Json(CompleteReviewResponse {
         success: true,

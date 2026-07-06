@@ -127,7 +127,6 @@ pub(crate) async fn stop_and_archive_children(
     filter: ChildFilter,
     archive_after_stop: bool,
 ) -> Result<(), AppError> {
-    use tauri::Emitter;
     let session_id_typed = IdeationSessionId::from_string(session_id.to_string());
     let children = match filter {
         ChildFilter::VerificationOnly => {
@@ -163,32 +162,34 @@ pub(crate) async fn stop_and_archive_children(
                     .await
                     .ok();
 
-                // Emit frontend events
-                if let Some(ref app_handle) = app_state.app_handle {
-                    app_handle
-                        .emit(
-                            "agent:stopped",
-                            serde_json::json!({
-                                "conversation_id": info.conversation_id,
-                                "agent_run_id": info.agent_run_id,
-                                "context_type": "ideation",
-                                "context_id": child.id.as_str(),
-                            }),
-                        )
-                        .ok();
-                    app_handle
-                        .emit(
-                            "agent:run_completed",
-                            AgentRunCompletedPayload::with_provider_session(
-                                info.conversation_id.clone(),
-                                "ideation".to_string(),
-                                child.id.as_str().to_string(),
-                                None,
-                                None,
-                                None,
-                            ),
-                        )
-                        .ok();
+                crate::http_server::emit_app_event(
+                    app_state,
+                    "agent:stopped",
+                    serde_json::json!({
+                        "conversation_id": info.conversation_id.clone(),
+                        "agent_run_id": info.agent_run_id,
+                        "context_type": "ideation",
+                        "context_id": child.id.as_str(),
+                    }),
+                );
+                let completed_payload = AgentRunCompletedPayload::with_provider_session(
+                    info.conversation_id.clone(),
+                    "ideation".to_string(),
+                    child.id.as_str().to_string(),
+                    None,
+                    None,
+                    None,
+                );
+                if let Err(error) = ralphx_events::emit_serialized(
+                    app_state.events.as_ref(),
+                    "agent:run_completed",
+                    &completed_payload,
+                ) {
+                    tracing::warn!(
+                        event = "agent:run_completed",
+                        %error,
+                        "Failed to serialize agent run completion event payload"
+                    );
                 }
             }
         }

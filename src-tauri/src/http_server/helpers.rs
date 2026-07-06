@@ -30,7 +30,6 @@ use crate::infrastructure::sqlite::{
     SqliteTaskProposalRepository as ProposalRepo,
 };
 use ralphx_domain::repositories::IdeationSessionRepository;
-use tauri::Emitter;
 
 // ============================================================================
 // Parsing Functions
@@ -192,15 +191,14 @@ pub fn assert_session_mutable(session: &IdeationSession) -> AppResult<()> {
 /// contexts don't fail. Payload matches `DependencyEventSchema` in `useIdeationEvents.ts`:
 /// `{ proposalId: String, dependsOnId: String }`.
 pub fn emit_dependency_added(state: &AppState, proposal_id: &str, depends_on_id: &str) {
-    if let Some(app_handle) = &state.app_handle {
-        let _ = app_handle.emit(
-            "dependency:added",
-            serde_json::json!({
-                "proposalId": proposal_id,
-                "dependsOnId": depends_on_id
-            }),
-        );
-    }
+    crate::http_server::emit_app_event(
+        state,
+        "dependency:added",
+        serde_json::json!({
+            "proposalId": proposal_id,
+            "dependsOnId": depends_on_id
+        }),
+    );
 }
 
 // ============================================================================
@@ -359,13 +357,12 @@ pub async fn create_proposal_impl(
         .await?;
 
     // Emit event after transaction (acceptable crash-consistency gap)
-    if let Some(app_handle) = &state.app_handle {
-        let response = TaskProposalResponse::from(proposal.clone());
-        let _ = app_handle.emit(
-            "proposal:created",
-            serde_json::json!({ "proposal": response }),
-        );
-    }
+    let response = TaskProposalResponse::from(proposal.clone());
+    crate::http_server::emit_app_event(
+        state,
+        "proposal:created",
+        serde_json::json!({ "proposal": response }),
+    );
 
     // Process depends_on deps in separate db.run() calls (AD5: deadlock avoidance)
     // Each dep: validate session membership + cycle check + insert + emit
@@ -631,13 +628,12 @@ pub async fn update_proposal_impl(
         .await?;
 
     // Emit event after transaction (acceptable crash-consistency gap)
-    if let Some(app_handle) = &state.app_handle {
-        let response = TaskProposalResponse::from(updated.clone());
-        let _ = app_handle.emit(
-            "proposal:updated",
-            serde_json::json!({ "proposal": response }),
-        );
-    }
+    let response = TaskProposalResponse::from(updated.clone());
+    crate::http_server::emit_app_event(
+        state,
+        "proposal:updated",
+        serde_json::json!({ "proposal": response }),
+    );
 
     // Process add_depends_on and add_blocks deps in separate db.run() calls (AD5: deadlock avoidance)
     let mut dep_errors: Vec<String> = Vec::new();
@@ -911,12 +907,11 @@ pub async fn archive_proposal_impl(
         .await?;
 
     // Emit event after transaction (acceptable crash-consistency gap)
-    if let Some(app_handle) = &state.app_handle {
-        let _ = app_handle.emit(
-            "proposal:archived",
-            serde_json::json!({ "proposalId": proposal_id.as_str() }),
-        );
-    }
+    crate::http_server::emit_app_event(
+        state,
+        "proposal:archived",
+        serde_json::json!({ "proposalId": proposal_id.as_str() }),
+    );
 
     Ok(session_id)
 }
@@ -1035,16 +1030,14 @@ pub async fn finalize_proposals_impl(
                 .update_acceptance_status(&session_id_typed, None, Some(AcceptanceStatus::Pending))
                 .await?;
 
-            // Emit Tauri event to notify frontend
-            if let Some(ref handle) = state.app_handle {
-                let _ = handle.emit(
-                    "ideation:finalize_pending_confirmation",
-                    serde_json::json!({
-                        "sessionId": session_id,
-                        "sessionTitle": session.title,
-                    }),
-                );
-            }
+            crate::http_server::emit_app_event(
+                state,
+                "ideation:finalize_pending_confirmation",
+                serde_json::json!({
+                    "sessionId": session_id,
+                    "sessionTitle": session.title,
+                }),
+            );
 
             return Ok(crate::http_server::types::FinalizeProposalsResponse {
                 created_task_ids: vec![],

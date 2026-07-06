@@ -4,7 +4,6 @@ use axum::{
     Json,
 };
 use serde::Deserialize;
-use tauri::Emitter;
 use tracing::error;
 
 use super::*;
@@ -111,16 +110,14 @@ pub async fn mark_issue_in_progress_http(
 
     let response = ReviewIssueResponse::from(issue);
 
-    // Emit event to frontend
-    if let Some(app_handle) = &state.app_state.app_handle {
-        let _ = app_handle.emit(
-            "issue:updated",
-            serde_json::json!({
-                "issue": &response,
-                "task_id": &response.task_id
-            }),
-        );
-    }
+    crate::http_server::emit_http_event(
+        &state,
+        "issue:updated",
+        serde_json::json!({
+            "issue": &response,
+            "task_id": &response.task_id
+        }),
+    );
 
     Ok(Json(response))
 }
@@ -159,16 +156,14 @@ pub async fn mark_issue_addressed_http(
 
     let response = ReviewIssueResponse::from(issue);
 
-    // Emit event to frontend
-    if let Some(app_handle) = &state.app_state.app_handle {
-        let _ = app_handle.emit(
-            "issue:updated",
-            serde_json::json!({
-                "issue": &response,
-                "task_id": &response.task_id
-            }),
-        );
-    }
+    crate::http_server::emit_http_event(
+        &state,
+        "issue:updated",
+        serde_json::json!({
+            "issue": &response,
+            "task_id": &response.task_id
+        }),
+    );
 
     Ok(Json(response))
 }
