@@ -9,6 +9,10 @@ use crate::application::agent_conversation_workspace::{
     AgentConversationWorkspaceBaseSelection, AgentConversationWorkspaceSetupMode,
 };
 use crate::application::chat_service::{AgentConversationCreatedPayload, SendMessageOptions};
+use crate::application::plan_reference_import::{
+    import_agent_conversation_plan_reference, rewrite_imported_plan_reference,
+    selected_plan_reference,
+};
 use crate::application::ticket_canonical_branch::ensure_ticket_canonical_branch;
 use crate::application::{AppState, ChatService, SendResult, TeamService};
 use crate::commands::ExecutionState;
@@ -165,7 +169,8 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
         let parse_input_started = Instant::now();
         let mode = parse_agent_workspace_mode(input.mode.as_deref())?;
         let mut base_ref_kind = parse_agent_workspace_base_kind(input.base_ref_kind.as_deref())?;
-        let base_branch_mode = parse_agent_workspace_branch_mode(input.base_branch_mode.as_deref())?;
+        let base_branch_mode =
+            parse_agent_workspace_branch_mode(input.base_branch_mode.as_deref())?;
         let mut base_ref = trim_optional_input(input.base_ref);
         let mut base_display_name = trim_optional_input(input.base_display_name);
         let parent_conversation_id = trim_optional_input(input.parent_conversation_id);
@@ -183,8 +188,12 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             base_ref_kind,
             base_ref.as_deref(),
         )?;
-        let should_create_workspace =
-            agent_mode_should_create_workspace(mode, source_pull_request.as_ref());
+        let selected_plan_reference = selected_plan_reference(&input.composer_artifact_references)?;
+        let should_create_workspace = agent_mode_should_create_workspace(
+            mode,
+            source_pull_request.as_ref(),
+            selected_plan_reference.is_some(),
+        );
         let project_id = ProjectId::from_string(input.project_id.clone());
         log_start_agent_conversation_phase(
             &input.project_id,
@@ -337,6 +346,7 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
                 "Setup workspace",
             );
         }
+        let mut composer_artifact_references = input.composer_artifact_references.clone();
         let workspace = if should_create_workspace {
             let pr_automation_defaults =
                 agent_workspace_pr_automation_defaults_for_project(self.deps.state, &project.id)
@@ -357,8 +367,27 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             )
             .await
             .map_err(|error| error.to_string())?;
-            ensure_plan_workspace_planning_session_link(self.deps.state, &project, &mut workspace)
+            if let Some(plan_reference) = selected_plan_reference.as_ref() {
+                let import = import_agent_conversation_plan_reference(
+                    self.deps.state,
+                    &project,
+                    &mut workspace,
+                    plan_reference,
+                )
                 .await?;
+                composer_artifact_references = rewrite_imported_plan_reference(
+                    &composer_artifact_references,
+                    plan_reference,
+                    &import.composer_reference,
+                );
+            } else {
+                ensure_plan_workspace_planning_session_link(
+                    self.deps.state,
+                    &project,
+                    &mut workspace,
+                )
+                .await?;
+            }
             Some(workspace)
         } else {
             None
@@ -533,7 +562,7 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
                     working_directory_override,
                     composer_project_references: input.composer_project_references.clone(),
                     composer_integration_references: input.composer_integration_references.clone(),
-                    composer_artifact_references: input.composer_artifact_references.clone(),
+                    composer_artifact_references,
                     team_intent: input.team_intent.clone(),
                     ..Default::default()
                 },
