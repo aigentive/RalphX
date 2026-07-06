@@ -1090,24 +1090,29 @@ describe("AgentsChatHeader", () => {
     expect(screen.getByTestId("agents-workspace-status")).toBeInTheDocument();
   });
 
-  it("hides ideation artifact shortcuts for edit-mode conversations", () => {
+  it("shows the Plan shortcut for edit-mode project conversations", () => {
+    const onSelectArtifact = vi.fn();
     renderWithProviders(
       <AgentsChatHeader
         conversation={conversation({ agentMode: "edit" })}
         workspace={conversationWorkspace({ mode: "edit" })}
+        availableArtifactTabs={["plan"]}
         artifactOpen={false}
         activeArtifactTab="plan"
         onRenameConversation={vi.fn().mockResolvedValue(undefined)}
         onToggleTerminal={vi.fn()}
         onToggleArtifacts={vi.fn()}
-        onSelectArtifact={vi.fn()}
+        onSelectArtifact={onSelectArtifact}
       />
     );
 
-    expect(screen.queryByLabelText("Plan")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("Plan"));
+
+    expect(onSelectArtifact).toHaveBeenCalledWith("plan");
     expect(screen.queryByLabelText("Verification")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Proposals")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Tasks")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Open artifacts")).toBeInTheDocument();
   });
 
   it("shows the attached Plan shortcut for linked edit workspaces", () => {
@@ -1180,24 +1185,27 @@ describe("AgentsChatHeader", () => {
     expect(screen.getByLabelText("Open artifacts")).toBeInTheDocument();
   });
 
-  it("hides plan-mode artifact controls until a plan exists", () => {
+  it("shows plan-mode artifact controls before a plan exists", () => {
+    const onSelectArtifact = vi.fn();
     renderWithProviders(
       <AgentsChatHeader
         conversation={conversation({ agentMode: "plan" })}
         workspace={conversationWorkspace({ mode: "plan" })}
-        availableArtifactTabs={[]}
+        availableArtifactTabs={["plan"]}
         artifactOpen={false}
         activeArtifactTab="plan"
         onRenameConversation={vi.fn().mockResolvedValue(undefined)}
         onToggleTerminal={vi.fn()}
         onToggleArtifacts={vi.fn()}
-        onSelectArtifact={vi.fn()}
+        onSelectArtifact={onSelectArtifact}
       />
     );
 
-    expect(screen.queryByLabelText("Plan")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("Plan"));
+
+    expect(onSelectArtifact).toHaveBeenCalledWith("plan");
     expect(screen.queryByLabelText("Verification")).not.toBeInTheDocument();
-    expect(screen.queryByLabelText("Open artifacts")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Open artifacts")).toBeInTheDocument();
   });
 
   it("hides ideation artifact shortcuts when no artifact tabs are available yet", () => {
