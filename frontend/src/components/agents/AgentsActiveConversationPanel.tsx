@@ -1364,18 +1364,19 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     activeConversationModeLocked,
     activeWorkspace?.modeSwitchLockReason,
   ]);
-  const canShowPlanComposerViewPrompt =
+  const isPlanWorkspaceComposer =
     !isFocusedChildChat &&
     activeConversationMode === "plan" &&
-    activeWorkspace?.mode === "plan" &&
-    availableArtifactTabs.includes("plan");
+    activeWorkspace?.mode === "plan";
+  const canShowPlanComposerViewPrompt =
+    isPlanWorkspaceComposer && availableArtifactTabs.includes("plan");
   const { artifactState: resolvedArtifactState, artifactPaneOpen } =
     useResolvedAgentArtifactState(
-      canShowPlanComposerViewPrompt ? selectedConversationId : null,
+      isPlanWorkspaceComposer ? selectedConversationId : null,
       hasAutoOpenArtifacts,
     );
   const isPlanArtifactVisible =
-    canShowPlanComposerViewPrompt &&
+    isPlanWorkspaceComposer &&
     artifactPaneOpen &&
     resolvedArtifactState.activeTab === "plan";
 

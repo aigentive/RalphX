@@ -17,6 +17,7 @@ export interface IdeationArtifactAvailability {
 export function getVisibleIdeationArtifactTabs({
   hasAttachedIdeationSession,
   hasPlanArtifact,
+  hasProposals,
   hasVerificationEvidence,
   hasExecutionTasks,
 }: IdeationArtifactAvailability): IdeationArtifactTab[] {
@@ -26,6 +27,7 @@ export function getVisibleIdeationArtifactTabs({
 
   return [
     "plan",
+    ...(hasProposals ? ["proposal" as const] : []),
     ...(hasVerificationEvidence ? ["verification" as const] : []),
     ...(hasExecutionTasks ? ["tasks" as const] : []),
   ];
