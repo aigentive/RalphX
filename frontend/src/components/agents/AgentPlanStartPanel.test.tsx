@@ -282,4 +282,77 @@ describe("AgentPlanStartPanel", () => {
       expect.objectContaining({ sessionId: "target-session-1" }),
     );
   });
+
+  it("falls back to selected plan metadata when version history is unavailable", async () => {
+    const user = userEvent.setup();
+    planReferencesState.current = {
+      data: {
+        plans: [
+          {
+            sessionId: "source-session-2",
+            artifactId: "source-plan-file",
+            title: "File backed plan",
+            status: "draft",
+            artifactVersion: 3,
+            updatedAt: "2026-04-23T10:00:00Z",
+            approvedAt: null,
+          },
+        ],
+        truncated: false,
+      },
+      isFetching: false,
+      isLoading: false,
+      isError: false,
+      error: null,
+    };
+    getVersionHistoryMock.mockResolvedValue([]);
+    getAtVersionMock.mockResolvedValue({
+      id: "source-plan-file",
+      type: "specification",
+      name: "File backed plan",
+      content: { type: "file", path: "/tmp/file-backed-plan.md" },
+      metadata: {
+        createdAt: "2026-04-23T10:00:00Z",
+        createdBy: "orchestrator",
+        version: 3,
+      },
+      derivedFrom: [],
+      bucketId: "prd-library",
+    });
+
+    renderPanel();
+
+    await user.click(screen.getByLabelText("Search project plans"));
+    await user.click(screen.getByRole("button", { name: /File backed plan/ }));
+
+    expect(await screen.findByRole("option", { name: "v3" })).toBeInTheDocument();
+    expect(
+      await screen.findByText("File-backed preview unavailable"),
+    ).toBeInTheDocument();
+  });
+
+  it("surfaces file drop and import errors", async () => {
+    const { onPlanSeeded } = renderPanel();
+    importAgentConversationPlanMock.mockRejectedValueOnce(
+      new Error("Import failed"),
+    );
+
+    fileDropConfig.current?.onError({
+      message: "Only Markdown files are supported",
+    });
+
+    expect(toastErrorMock).toHaveBeenCalledWith(
+      "Only Markdown files are supported",
+    );
+
+    fileDropConfig.current?.onFileDrop(
+      new File(["# Broken plan"], "broken.md", { type: "text/markdown" }),
+      "# Broken plan",
+    );
+
+    await waitFor(() =>
+      expect(toastErrorMock).toHaveBeenCalledWith("Import failed"),
+    );
+    expect(onPlanSeeded).not.toHaveBeenCalled();
+  });
 });

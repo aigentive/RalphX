@@ -42,6 +42,8 @@ import {
   StartAgentConversationResponseSchema,
   forkAgentConversation,
   switchAgentConversationMode,
+  copyAgentConversationPlan,
+  importAgentConversationPlan,
   sendAgentMessage,
   getQueuedAgentMessages,
   deleteQueuedAgentMessage,
@@ -59,6 +61,68 @@ import type { ConversationActiveStateResponse } from "./chat";
 import { backendApiUrl } from "./backend";
 
 const mockInvoke = invoke as ReturnType<typeof vi.fn>;
+
+function planSeedConversationResponse() {
+  return {
+    id: "conversation-plan",
+    context_type: "project",
+    context_id: "project-1",
+    claude_session_id: null,
+    provider_session_id: null,
+    provider_harness: null,
+    agent_mode: "plan",
+    title: "Plan chat",
+    message_count: 2,
+    last_message_at: null,
+    created_at: "2026-01-24T10:00:00Z",
+    updated_at: "2026-01-24T10:05:00Z",
+    archived_at: null,
+  };
+}
+
+function planSeedWorkspaceResponse() {
+  return {
+    conversation_id: "conversation-plan",
+    project_id: "project-1",
+    mode: "plan",
+    base_ref_kind: "project_default",
+    base_ref: "main",
+    base_display_name: "Project default (main)",
+    base_commit: null,
+    branch_name: "ralphx/demo/agent-conversation-plan",
+    worktree_path: "/tmp/ralphx/conversation-plan",
+    linked_ideation_session_id: "session-plan",
+    linked_plan_branch_id: null,
+    publication_pr_number: null,
+    publication_pr_url: null,
+    publication_pr_status: null,
+    publication_push_status: null,
+    status: "active",
+    created_at: "2026-01-24T10:00:00Z",
+    updated_at: "2026-01-24T10:05:00Z",
+  };
+}
+
+function planSeedArtifactResponse() {
+  return {
+    id: "artifact-plan",
+    name: "Imported plan",
+    artifact_type: "specification",
+    content_type: "inline",
+    content: "# Imported plan",
+    created_at: "2026-01-24T10:05:00Z",
+    created_by: "user",
+    version: 1,
+    bucket_id: "prd-library",
+    task_id: null,
+    process_id: null,
+    derived_from: ["source-plan:v2"],
+    plan_approval_status: "draft",
+    plan_approved_artifact_id: null,
+    plan_approved_version: null,
+    plan_approved_at: null,
+  };
+}
 
 describe("chat api", () => {
   beforeEach(() => {
@@ -2121,6 +2185,75 @@ describe("chat api", () => {
       },
     });
     expect(result.workspace?.sourcePullRequest?.number).toBe(42);
+  });
+
+  it("copies an existing plan into an Agent conversation and transforms the seed result", async () => {
+    mockInvoke.mockResolvedValue({
+      conversation: planSeedConversationResponse(),
+      workspace: planSeedWorkspaceResponse(),
+      session_id: "session-plan",
+      artifact: planSeedArtifactResponse(),
+    });
+
+    const result = await copyAgentConversationPlan({
+      conversationId: "conversation-plan",
+      sourceSessionId: "source-session",
+      sourceArtifactId: "source-artifact",
+      sourceVersion: 2,
+    });
+
+    expect(mockInvoke).toHaveBeenCalledWith("copy_agent_conversation_plan", {
+      input: {
+        conversationId: "conversation-plan",
+        sourceSessionId: "source-session",
+        sourceArtifactId: "source-artifact",
+        sourceVersion: 2,
+      },
+    });
+    expect(result.conversation.agentMode).toBe("plan");
+    expect(result.workspace.linkedIdeationSessionId).toBe("session-plan");
+    expect(result.sessionId).toBe("session-plan");
+    expect(result.artifact).toMatchObject({
+      id: "artifact-plan",
+      name: "Imported plan",
+      content: { type: "inline", text: "# Imported plan" },
+      planApproval: { status: "draft" },
+    });
+  });
+
+  it("imports markdown into an Agent conversation plan and transforms the seed result", async () => {
+    mockInvoke.mockResolvedValue({
+      conversation: planSeedConversationResponse(),
+      workspace: planSeedWorkspaceResponse(),
+      session_id: "session-plan",
+      artifact: {
+        ...planSeedArtifactResponse(),
+        id: "artifact-imported",
+        name: "Dropped plan",
+        content: "# Dropped plan",
+        derived_from: [],
+      },
+    });
+
+    const result = await importAgentConversationPlan({
+      conversationId: "conversation-plan",
+      title: "Dropped plan",
+      content: "# Dropped plan",
+    });
+
+    expect(mockInvoke).toHaveBeenCalledWith("import_agent_conversation_plan", {
+      input: {
+        conversationId: "conversation-plan",
+        title: "Dropped plan",
+        content: "# Dropped plan",
+      },
+    });
+    expect(result.sessionId).toBe("session-plan");
+    expect(result.artifact).toMatchObject({
+      id: "artifact-imported",
+      content: { type: "inline", text: "# Dropped plan" },
+      derivedFrom: [],
+    });
   });
 
   it("forks an agent conversation and transforms child workspace metadata", async () => {

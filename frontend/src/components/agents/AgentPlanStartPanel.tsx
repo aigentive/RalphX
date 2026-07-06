@@ -138,7 +138,7 @@ export function AgentPlanStartPanel({
         .replace(/\.md$/i, "")
         .replace(/_/g, " ")
         .trim();
-      void importMutation.mutateAsync({
+      importMutation.mutate({
         title: title || "Imported plan",
         content,
       });
