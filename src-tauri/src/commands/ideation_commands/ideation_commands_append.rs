@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::application::AppState;
 use crate::domain::entities::{
     ExecutionPlan, IdeationSessionId, IdeationSessionStatus, InternalStatus, PlanBranch,
-    PlanBranchStatus, Task, TaskCategory, TaskId, TaskStep,
+    PlanBranchStatus, Task, TaskCategory, TaskStep,
 };
 use crate::error::{AppError, AppResult};
 
@@ -590,7 +590,7 @@ mod tests {
     use crate::domain::entities::{
         ArtifactId, ExecutionPlan, ExecutionPlanId, IdeationSession, IdeationSessionStatus,
         InternalStatus, PlanBranch, PlanBranchId, PlanBranchStatus, Project, ProjectId, Task,
-        TaskCategory,
+        TaskCategory, TaskId,
     };
 
     struct AcceptedPlanFixture {
