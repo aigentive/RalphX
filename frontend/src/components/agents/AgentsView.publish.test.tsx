@@ -29,6 +29,7 @@ const {
   listAgentTaskListTasksMock,
   listAgentTaskListsMock,
   listAgentTasksMock,
+  preloadAgentsArtifactPaneMock,
   publishAgentConversationWorkspaceMock,
   sendAgentMessageMock,
   toastErrorMock,
@@ -83,12 +84,12 @@ describe("AgentsView publish", () => {
     renderAgentsView();
     selectSidebarConversationRow();
 
-    await screen.findByTestId(
-      "agents-composer-workspace-changes",
+    const changesToggle = await screen.findByTestId(
+      "diff-filter-trigger",
       undefined,
       deferredHydrationTimeout,
     );
-    expect(screen.getByTestId("diff-filter-trigger")).toHaveTextContent("Unstaged");
+    expect(changesToggle).toHaveTextContent("Unstaged");
     expect(screen.getByTestId("agents-composer-workspace-changes-count")).toHaveTextContent(
       "2 files",
     );
@@ -98,6 +99,10 @@ describe("AgentsView publish", () => {
     expect(screen.getByTestId("agents-composer-workspace-changes-deletions")).toHaveTextContent(
       "−2",
     );
+    fireEvent.focus(changesToggle);
+    await waitFor(() =>
+      expect(preloadAgentsArtifactPaneMock).toHaveBeenCalledTimes(1),
+    );
 
     expect(
       screen.queryByTestId("agents-composer-workspace-changes-list"),
@@ -106,7 +111,7 @@ describe("AgentsView publish", () => {
     expect(getWorkspaceUnstagedChangesMock).not.toHaveBeenCalled();
     expect(getWorkspaceStagedChangesMock).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByTestId("agents-composer-workspace-changes-header"));
+    fireEvent.click(changesToggle);
 
     await waitFor(() =>
       expect(getWorkspaceUnstagedChangesMock).toHaveBeenCalledWith("conversation-1"),
@@ -151,14 +156,12 @@ describe("AgentsView publish", () => {
     renderAgentsView();
     selectSidebarConversationRow();
 
-    await screen.findByTestId(
-      "agents-composer-workspace-changes",
+    const changesToggle = await screen.findByTestId(
+      "diff-filter-trigger",
       undefined,
       deferredHydrationTimeout,
     );
-    await waitFor(() =>
-      expect(screen.getByTestId("diff-filter-trigger")).toHaveTextContent("Unstaged"),
-    );
+    expect(changesToggle).toHaveTextContent("Unstaged");
     expect(screen.getByTestId("agents-composer-workspace-changes-count")).toHaveTextContent(
       "1 file",
     );
@@ -171,7 +174,7 @@ describe("AgentsView publish", () => {
     expect(getWorkspaceStagedChangesMock).not.toHaveBeenCalled();
     expect(getWorkspaceUnstagedChangesMock).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByTestId("diff-filter-trigger"));
+    fireEvent.click(changesToggle);
 
     await waitFor(() =>
       expect(getWorkspaceUnstagedChangesMock).toHaveBeenCalledWith("conversation-1"),
@@ -206,14 +209,12 @@ describe("AgentsView publish", () => {
     renderAgentsView();
     selectSidebarConversationRow();
 
-    await screen.findByTestId(
-      "agents-composer-workspace-changes",
+    const changesToggle = await screen.findByTestId(
+      "diff-filter-trigger",
       undefined,
       deferredHydrationTimeout,
     );
-    await waitFor(() =>
-      expect(screen.getByTestId("diff-filter-trigger")).toHaveTextContent("Staged"),
-    );
+    expect(changesToggle).toHaveTextContent("Staged");
     expect(screen.getByTestId("agents-composer-workspace-changes-count")).toHaveTextContent(
       "1 file",
     );
@@ -261,14 +262,12 @@ describe("AgentsView publish", () => {
     renderAgentsView();
     selectSidebarConversationRow();
 
-    await screen.findByTestId(
-      "agents-composer-context-tray",
+    const taskToggle = await screen.findByTestId(
+      "agents-composer-tasks-toggle",
       undefined,
       deferredHydrationTimeout,
     );
-
-    const taskToggle = screen.getByTestId("agents-composer-tasks-toggle");
-    const changesToggle = screen.getByTestId("diff-filter-trigger");
+    const changesToggle = await screen.findByTestId("diff-filter-trigger");
     expect(taskToggle.compareDocumentPosition(changesToggle)).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING,
     );
@@ -301,6 +300,12 @@ describe("AgentsView publish", () => {
   });
 
   it("auto-expands the composer task ledger for live task updates", async () => {
+    const scrollIntoViewMock = vi.fn();
+    const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: scrollIntoViewMock,
+    });
     const activeConversation = conversation({ agentMode: "edit" });
     mockAgentViewData(activeConversation);
     getAgentConversationWorkspaceMock.mockResolvedValue(conversationWorkspace({ mode: "edit" }));
@@ -352,6 +357,14 @@ describe("AgentsView publish", () => {
     expect(screen.getByTestId("agents-composer-task-1")).toHaveStyle({
       backgroundColor: "var(--bg-hover)",
     });
+    expect(scrollIntoViewMock).toHaveBeenCalledWith({
+      block: "nearest",
+      behavior: "smooth",
+    });
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: originalScrollIntoView,
+    });
   });
 
   it("shows a check icon when all tasks are done", async () => {
@@ -385,12 +398,11 @@ describe("AgentsView publish", () => {
     renderAgentsView();
     selectSidebarConversationRow();
 
-    await screen.findByTestId(
-      "agents-composer-context-tray",
+    const toggle = await screen.findByTestId(
+      "agents-composer-tasks-toggle",
       undefined,
       deferredHydrationTimeout,
     );
-    const toggle = screen.getByTestId("agents-composer-tasks-toggle");
     expect(toggle).toHaveTextContent("Tasks");
     expect(screen.getByTestId("agents-composer-tasks-count")).toHaveTextContent("2");
     expect(toggle.querySelector("svg.lucide-check")).toBeInTheDocument();
@@ -428,12 +440,11 @@ describe("AgentsView publish", () => {
     renderAgentsView();
     selectSidebarConversationRow();
 
-    await screen.findByTestId(
-      "agents-composer-context-tray",
+    const toggle = await screen.findByTestId(
+      "agents-composer-tasks-toggle",
       undefined,
       deferredHydrationTimeout,
     );
-    const toggle = screen.getByTestId("agents-composer-tasks-toggle");
     expect(screen.getByTestId("agents-composer-tasks-count")).toHaveTextContent("1/2");
     expect(toggle.querySelector("svg.lucide-loader-circle")).toBeInTheDocument();
     expect(toggle.querySelector("svg.lucide-check")).not.toBeInTheDocument();
@@ -492,13 +503,13 @@ describe("AgentsView publish", () => {
     renderAgentsView();
     selectSidebarConversationRow();
 
-    await screen.findByTestId(
-      "agents-composer-context-tray",
+    const taskToggle = await screen.findByTestId(
+      "agents-composer-tasks-toggle",
       undefined,
       deferredHydrationTimeout,
     );
 
-    fireEvent.click(screen.getByTestId("agents-composer-tasks-toggle"));
+    fireEvent.click(taskToggle);
 
     await waitFor(() =>
       expect(screen.getByTestId("agents-composer-task-list")).toBeInTheDocument(),
@@ -517,6 +528,80 @@ describe("AgentsView publish", () => {
     expect(screen.getByTestId("agents-composer-task-4")).toBeInTheDocument();
     expect(screen.queryByTestId("agents-composer-tasks-show-older")).not.toBeInTheDocument();
     expect(screen.queryByTestId("agents-composer-tasks-show-more")).not.toBeInTheDocument();
+  });
+
+  it("reveals earlier tasks from the composer task window", async () => {
+    mockAgentViewData(conversation({ agentMode: "edit" }));
+    getAgentConversationWorkspaceMock.mockResolvedValue(conversationWorkspace({ mode: "edit" }));
+    listAgentTasksMock.mockResolvedValue([
+      {
+        taskId: "task-1",
+        taskNumber: 1,
+        title: "First task",
+        state: "done",
+        ownerAgent: "worker",
+        blockedBy: [],
+        blocks: [],
+        availability: "ready",
+        updatedAt: "2026-05-20T10:00:00Z",
+      },
+      {
+        taskId: "task-2",
+        taskNumber: 2,
+        title: "Second task",
+        state: "done",
+        ownerAgent: "worker",
+        blockedBy: [],
+        blocks: [],
+        availability: "ready",
+        updatedAt: "2026-05-20T10:01:00Z",
+      },
+      {
+        taskId: "task-3",
+        taskNumber: 3,
+        title: "Active task",
+        state: "active",
+        ownerAgent: "worker",
+        blockedBy: [],
+        blocks: [],
+        availability: "ready",
+        updatedAt: "2026-05-20T10:02:00Z",
+      },
+      {
+        taskId: "task-4",
+        taskNumber: 4,
+        title: "Fourth task",
+        state: "open",
+        ownerAgent: null,
+        blockedBy: [],
+        blocks: [],
+        availability: "ready",
+        updatedAt: "2026-05-20T10:03:00Z",
+      },
+    ]);
+
+    renderAgentsView();
+    selectSidebarConversationRow();
+
+    fireEvent.click(
+      await screen.findByTestId(
+        "agents-composer-tasks-toggle",
+        undefined,
+        deferredHydrationTimeout,
+      ),
+    );
+
+    expect(screen.queryByTestId("agents-composer-task-1")).not.toBeInTheDocument();
+    expect(screen.getByTestId("agents-composer-task-2")).toBeInTheDocument();
+    expect(screen.getByTestId("agents-composer-task-3")).toHaveTextContent("Active task");
+
+    const showOlderButton = screen.getByTestId("agents-composer-tasks-show-older");
+    expect(showOlderButton).toHaveTextContent("Show 1 earlier in this list");
+
+    fireEvent.click(showOlderButton);
+
+    expect(screen.getByTestId("agents-composer-task-1")).toHaveTextContent("First task");
+    expect(screen.queryByTestId("agents-composer-tasks-show-older")).not.toBeInTheDocument();
   });
 
   it("loads previous task lists as grouped history inside the tasks tray", async () => {
@@ -576,13 +661,13 @@ describe("AgentsView publish", () => {
     renderAgentsView();
     selectSidebarConversationRow();
 
-    await screen.findByTestId(
-      "agents-composer-context-tray",
+    const taskToggle = await screen.findByTestId(
+      "agents-composer-tasks-toggle",
       undefined,
       deferredHydrationTimeout,
     );
 
-    fireEvent.click(screen.getByTestId("agents-composer-tasks-toggle"));
+    fireEvent.click(taskToggle);
 
     const previousListsToggle = await screen.findByTestId(
       "agents-composer-task-lists-show-previous",
@@ -617,6 +702,16 @@ describe("AgentsView publish", () => {
         "agents-composer-task-list-list-previous-task-1",
       ),
     ).toHaveTextContent("Previous slice task");
+
+    fireEvent.click(previousSlice.querySelector("button")!);
+    expect(
+      screen.queryByTestId("agents-composer-task-list-slice-list-previous-tasks"),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(previousListsToggle);
+    expect(
+      screen.queryByTestId("agents-composer-task-list-slice-list-previous"),
+    ).not.toBeInTheDocument();
   });
 
   it("opens the publish pane with a focused file request from the composer summary", async () => {
@@ -640,12 +735,12 @@ describe("AgentsView publish", () => {
     renderAgentsView();
     selectSidebarConversationRow();
 
-    await screen.findByTestId(
-      "agents-composer-workspace-changes",
+    const changesToggle = await screen.findByTestId(
+      "diff-filter-trigger",
       undefined,
       deferredHydrationTimeout,
     );
-    fireEvent.click(screen.getByTestId("agents-composer-workspace-changes-count"));
+    fireEvent.click(changesToggle);
     await waitFor(() =>
       expect(getWorkspaceUnstagedChangesMock).toHaveBeenCalledWith("conversation-1"),
     );
