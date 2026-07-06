@@ -173,7 +173,11 @@ describe("AgentsAutomationPanel", () => {
     expect(screen.getByText("Release automation")).toBeInTheDocument();
     expect(screen.getByText("Active")).toBeInTheDocument();
     expect(screen.getByText("3 of 25")).toBeInTheDocument();
-    expect(screen.getByText(/PR #593/)).toBeInTheDocument();
+    expect(screen.getByText("PR #593 · published")).toBeInTheDocument();
+    expect(screen.getByTestId("agents-automation-stage")).toHaveTextContent(
+      "Waiting for PR #593 to merge",
+    );
+    expect(screen.queryByTestId("agents-automation-failure")).not.toBeInTheDocument();
     expect(screen.getByTestId("agents-automation-pause")).toBeInTheDocument();
     expect(screen.getByTestId("agents-automation-stop")).toBeInTheDocument();
 
@@ -252,6 +256,68 @@ describe("AgentsAutomationPanel", () => {
 
     await waitFor(() => expect(stopAutomationMock).toHaveBeenCalledWith("automation-1"));
     expect(toastSuccessMock).toHaveBeenCalledWith("Automation stopped");
+  });
+
+  it("surfaces the latest run failure reason as an error line", () => {
+    useAutomationDetailMock.mockReturnValue({
+      data: automationDetailFixture({
+        runs: [
+          automationRunFixture({
+            status: "agent_failed",
+            judgeState: "none",
+            prNumber: null,
+            errorCode: "publish_failed",
+            errorDetail: "Publish step exited with code 1",
+          }),
+        ],
+      }),
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel();
+
+    const failure = screen.getByTestId("agents-automation-failure");
+    expect(failure).toHaveTextContent("Publish step exited with code 1");
+    expect(screen.queryByTestId("agents-automation-paused")).not.toBeInTheDocument();
+  });
+
+  it("shows the paused reason when paused without a failed run", () => {
+    useAutomationDetailMock.mockReturnValue({
+      data: automationDetailFixture({
+        automation: automationFixture({
+          status: "paused",
+          pausedReasonCode: "release_freeze",
+          pausedReasonDetail: "Waiting on base branch",
+        }),
+        runs: [automationRunFixture({ status: "running", judgeState: "none", prNumber: null })],
+      }),
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel();
+
+    expect(screen.getByTestId("agents-automation-paused")).toHaveTextContent(
+      "Paused: release_freeze - Waiting on base branch",
+    );
+    expect(screen.queryByTestId("agents-automation-failure")).not.toBeInTheDocument();
+  });
+
+  it("does not render a failure or paused line for a healthy running automation", () => {
+    useAutomationDetailMock.mockReturnValue({
+      data: automationDetailFixture({
+        runs: [automationRunFixture({ status: "running", judgeState: "none", prNumber: null })],
+      }),
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel();
+
+    expect(screen.getByTestId("agents-automation-stage")).toHaveTextContent("Run 3 in progress");
+    expect(screen.queryByTestId("agents-automation-failure")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("agents-automation-paused")).not.toBeInTheDocument();
   });
 
   it("renders terminal automations without mutation controls", () => {

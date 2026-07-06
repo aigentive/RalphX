@@ -24,6 +24,10 @@ import {
   type AutomationUsage,
 } from "@/api/automations";
 import { useAfterPaintMounted } from "@/components/agents/agentDeferredFrame";
+import {
+  describeRunFailure,
+  latestRun,
+} from "@/components/automations/automationStage";
 import { Button, type ButtonProps } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -140,13 +144,6 @@ function formatMode(automation: Automation): string {
 
 function sortedNewestRuns(runs: AutomationRun[]): AutomationRun[] {
   return [...runs].sort((a, b) => b.runIndex - a.runIndex);
-}
-
-function latestRun(runs: AutomationRun[]): AutomationRun | null {
-  return runs.reduce<AutomationRun | null>(
-    (latest, run) => (!latest || run.runIndex > latest.runIndex ? run : latest),
-    null,
-  );
 }
 
 function isSignalTerminalUnjudged(run: AutomationRun | null): run is AutomationRun {
@@ -479,6 +476,7 @@ const RunTimelineItem = memo(function RunTimelineItem({
   onOpenRunConversation?: (projectId: string, conversationId: string) => void;
 }) {
   const canOpenConversation = Boolean(projectId && run.conversationId && onOpenRunConversation);
+  const failureReason = describeRunFailure(run);
   const openConversation = useCallback(() => {
     if (projectId && run.conversationId) {
       onOpenRunConversation?.(projectId, run.conversationId);
@@ -517,6 +515,19 @@ const RunTimelineItem = memo(function RunTimelineItem({
             {formatDate(run.updatedAt)}
           </span>
         </div>
+
+        {failureReason && (
+          <div
+            className="mt-3 rounded-md px-3 py-2 text-sm font-medium"
+            style={{
+              backgroundColor: "var(--bg-hover)",
+              color: "var(--status-error)",
+            }}
+            data-testid={`automation-run-${run.id}-failure`}
+          >
+            {failureReason}
+          </div>
+        )}
 
         <div className="mt-3 grid grid-cols-1 gap-3 text-sm md:grid-cols-2">
           <div>

@@ -5,6 +5,10 @@ import type { Automation, AutomationRun } from "@/api/automations";
 import { useAfterPaintMounted } from "@/components/agents/agentDeferredFrame";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  describeAutomationStage,
+  latestRun,
+} from "@/components/automations/automationStage";
 import { preloadAutomationDetailView } from "@/components/automations/preloadAutomationDetailView";
 import { useAutomationDetail, useAutomationsList } from "@/hooks/useAutomations";
 import { withAlpha } from "@/lib/theme-colors";
@@ -30,13 +34,6 @@ const STATUS_LABELS: Record<Automation["status"], string> = {
   stopped: "Stopped",
 };
 
-function latestRun(runs: AutomationRun[]): AutomationRun | null {
-  return runs.reduce<AutomationRun | null>(
-    (latest, run) => (!latest || run.runIndex > latest.runIndex ? run : latest),
-    null,
-  );
-}
-
 function formatBase(automation: Automation): string {
   return (automation.baseDisplayName ?? automation.baseRef) || automation.baseRefKind;
 }
@@ -52,44 +49,6 @@ function formatLastRun(run: AutomationRun | null): string {
   }
   const pr = run.prNumber ? ` · PR #${run.prNumber}` : "";
   return `Run ${run.runIndex} ${run.status}${pr}`;
-}
-
-function nextAction(automation: Automation, run: AutomationRun | null): string {
-  if (automation.status === "draft") {
-    return "Draft setup";
-  }
-  if (automation.status === "paused") {
-    return automation.pausedReasonCode
-      ? `Paused: ${automation.pausedReasonCode}`
-      : "Paused";
-  }
-  if (automation.status === "completed") {
-    return "Goal completed";
-  }
-  if (automation.status === "stopped") {
-    return "Stopped";
-  }
-  if (!run) {
-    return "Waiting for first run";
-  }
-  if (run.judgeState === "in_progress") {
-    return "Judging";
-  }
-  if (run.judgeState === "failed") {
-    return "Paused: judge failed";
-  }
-  if (["pending", "provisioning", "running"].includes(run.status)) {
-    return `Run ${run.runIndex} in progress`;
-  }
-  if (run.status === "published") {
-    return run.prNumber
-      ? `Waiting for PR #${run.prNumber} to merge`
-      : "Waiting for PR merge";
-  }
-  if (run.judgeState === "none") {
-    return "Waiting for judge";
-  }
-  return "Scheduling next run";
 }
 
 function AutomationsListSkeleton() {
@@ -192,7 +151,7 @@ function AutomationRow({
         {detail.isLoading ? "Loading runs..." : formatLastRun(run)}
       </div>
       <div className="truncate text-xs font-medium" style={{ color: "var(--text-secondary)" }}>
-        {detail.isLoading ? "Hydrating status" : nextAction(automation, run)}
+        {detail.isLoading ? "Hydrating status" : describeAutomationStage(automation, run)}
       </div>
       <ChevronRight className="h-4 w-4" style={{ color: "var(--text-muted)" }} aria-hidden="true" />
     </button>

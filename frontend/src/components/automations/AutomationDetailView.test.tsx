@@ -488,6 +488,27 @@ describe("AutomationDetailView", () => {
     );
   });
 
+  it("renders the failure reason for a failed run in the timeline", async () => {
+    renderDetail({
+      automation: automation(),
+      runs: [
+        run({
+          id: "run-failed",
+          status: "agent_failed",
+          judgeState: "none",
+          errorCode: "publish_failed",
+          errorDetail: "Publish step exited with code 1",
+        }),
+      ],
+      usage,
+    });
+
+    await screen.findByTestId("automation-detail-view");
+
+    const failure = screen.getByTestId("automation-run-run-failed-failure");
+    expect(failure).toHaveTextContent("Publish step exited with code 1");
+  });
+
   it("renders fallback run metadata and deletes terminal automations after confirmation", async () => {
     const onBack = vi.fn();
     const queryClient = new QueryClient({

@@ -8,6 +8,11 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useAfterPaintMounted } from "@/components/agents/agentDeferredFrame";
 import {
+  describeAutomationStage,
+  describeRunFailure,
+  latestRun,
+} from "@/components/automations/automationStage";
+import {
   invalidateAutomationQueries,
   useAutomationDetail,
   useAutomationEvents,
@@ -27,13 +32,6 @@ const STATUS_LABELS: Record<Automation["status"], string> = {
   completed: "Completed",
   stopped: "Stopped",
 };
-
-function latestRun(runs: AutomationRun[]): AutomationRun | null {
-  return runs.reduce<AutomationRun | null>(
-    (latest, run) => (!latest || run.runIndex > latest.runIndex ? run : latest),
-    null,
-  );
-}
 
 function formatRunSummary(run: AutomationRun | null, maxRuns: number): string {
   if (!run) {
@@ -148,6 +146,10 @@ export function AgentsAutomationPanel({
 
   const { automation, runs } = detail.data;
   const run = latestRun(runs);
+  const stage = describeAutomationStage(automation, run);
+  const failureReason = describeRunFailure(run);
+  const showPausedReason =
+    !failureReason && automation.status === "paused" && Boolean(automation.pausedReasonCode);
   const actionPending =
     pauseMutation.isPending || resumeMutation.isPending || stopMutation.isPending;
   const canPause = automation.status === "active";
@@ -184,9 +186,38 @@ export function AgentsAutomationPanel({
         }}
       >
         <SummaryRow label="Status" value={STATUS_LABELS[automation.status]} />
+        <SummaryRow label="Stage" value={stage} testId="agents-automation-stage" />
         <SummaryRow label="Run" value={formatRunSummary(run, automation.maxRuns)} />
         <SummaryRow label="Current PR" value={formatPrState(run)} />
       </div>
+
+      {failureReason ? (
+        <div
+          className="rounded-md px-3 py-2 text-xs font-medium"
+          style={{
+            backgroundColor: "var(--bg-surface)",
+            borderColor: "var(--border-default)",
+            borderStyle: "solid",
+            borderWidth: "1px",
+            color: "var(--status-error)",
+          }}
+          data-testid="agents-automation-failure"
+        >
+          {failureReason}
+        </div>
+      ) : showPausedReason ? (
+        <div
+          className="rounded-md px-3 py-2 text-xs"
+          style={{
+            backgroundColor: "var(--bg-hover)",
+            color: "var(--text-secondary)",
+          }}
+          data-testid="agents-automation-paused"
+        >
+          Paused: {automation.pausedReasonCode}
+          {automation.pausedReasonDetail ? ` - ${automation.pausedReasonDetail}` : ""}
+        </div>
+      ) : null}
 
       <div className="flex flex-wrap gap-2">
         {canPause ? (
@@ -248,9 +279,20 @@ export function AgentsAutomationPanel({
   );
 }
 
-function SummaryRow({ label, value }: { label: string; value: string }) {
+function SummaryRow({
+  label,
+  value,
+  testId,
+}: {
+  label: string;
+  value: string;
+  testId?: string;
+}) {
   return (
-    <div className="grid grid-cols-[96px_minmax(0,1fr)] gap-3">
+    <div
+      className="grid grid-cols-[96px_minmax(0,1fr)] gap-3"
+      {...(testId ? { "data-testid": testId } : {})}
+    >
       <span className="text-xs font-medium" style={{ color: "var(--text-muted)" }}>
         {label}
       </span>
