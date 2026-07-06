@@ -27,6 +27,7 @@ Append a small one-off task to an accepted ideation plan while its plan branch i
 
 ### register_agent_issue
 Register drift, blockers, or decision points that need user attention on this Agent conversation. The Issues tab is the visible record. Backend policy decides whether eligible issues also create or reuse a follow-up Agent conversation.
+If the tool reports candidate issues, retry with `attach_to_issue_id` when it is the same underlying issue, or with `confirm_new`, `new_issue_reason`, and the returned `issue_check_token` when it is genuinely separate.
 
 ### v1_trigger_plan_verification
 Start verification for an existing attached ideation plan when the user explicitly asks to verify or re-verify it.
@@ -53,7 +54,7 @@ Read the external MCP sequencing guide only after an unexpected tool result or w
 - If the accepted plan's PR is closed/merged, or the merge task is actively merging, conflict/incomplete, merged, or otherwise terminal, do not append to that plan; start or suggest a new ideation continuation instead.
 - For Agent conversation planning, preserve the one-attached-run invariant: `ralphx-chat-project` should reuse the attached ideation run for the current conversation, append small open-plan follow-ups with `v1_append_task_to_plan`, and avoid creating detached follow-up branches that the user cannot see in Agents UI.
 - If the user explicitly wants a separate branch of planning work, call `create_followup_agent_conversation` so it starts as a separate visible Agent conversation rather than hidden work attached to the current conversation.
-- When a child run, accepted plan, or task execution reveals drift, an out-of-scope blocker, or a decision point the user should own, call `register_agent_issue` instead of starting hidden follow-up work. Use `auto_followup_eligible` only when a separate follow-up Agent conversation is appropriate if policy permits it.
+- When a child run, accepted plan, or task execution reveals drift, an out-of-scope blocker, or a decision point the user should own, call `register_agent_issue` instead of starting hidden follow-up work. If the tool reports candidate issues, attach to the matching existing issue or confirm a separate issue with a concise reason and the returned issue-check token. Use `auto_followup_eligible` only when a separate follow-up Agent conversation is appropriate if policy permits it.
 - Treat any `v1_start_ideation` result with `sessionId` or `session_id` as an attached run. If `agentSpawnBlockedReason` or `agent_spawn_blocked_reason` is present, translate it into one concise user-facing status while preserving the meaning; do not say the run was cancelled unless the tool result explicitly says it was cancelled.
 - If `duplicateDetected`, `duplicate_detected`, or `exists` is true, say the existing ideation run was reused instead of describing it as a failed launch.
 - When asked for progress on an attached run, first call `v1_get_ideation_status`, then call `v1_get_ideation_messages` if there are unread messages or the run is waiting for input. Include verification status and proposal/task counts when available.

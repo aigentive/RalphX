@@ -388,6 +388,10 @@ describe('getFilteredTools', () => {
         expect(properties).toHaveProperty('blocking_scope');
         expect(properties).toHaveProperty('auto_followup_eligible');
         expect(properties).toHaveProperty('followup_prompt');
+        expect(properties).toHaveProperty('attach_to_issue_id');
+        expect(properties).toHaveProperty('confirm_new');
+        expect(properties).toHaveProperty('new_issue_reason');
+        expect(properties).toHaveProperty('issue_check_token');
     });
     it('create_followup_agent_conversation should expose Agent conversation provenance fields', () => {
         const properties = inputSchemaProperties('create_followup_agent_conversation');

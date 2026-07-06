@@ -400,6 +400,9 @@ mod v20260701174810_workspace_review_hunk_annotations;
 #[cfg(test)]
 mod v20260701174810_workspace_review_hunk_annotations_tests;
 mod v20260703143000_task_validation_runs;
+mod v20260706113000_agent_conversation_issue_identity;
+#[cfg(test)]
+mod v20260706113000_agent_conversation_issue_identity_tests;
 #[cfg(test)]
 mod v20_merge_validation_mode_tests;
 #[cfg(test)]
@@ -490,7 +493,7 @@ mod v8_task_git_fields_tests;
 mod v9_project_git_fields_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260703143000;
+pub const SCHEMA_VERSION: i64 = 20260706113000;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -1364,6 +1367,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260703143000,
         name: "task_validation_runs",
         migrate: v20260703143000_task_validation_runs::migrate,
+    },
+    Migration {
+        version: 20260706113000,
+        name: "agent_conversation_issue_identity",
+        migrate: v20260706113000_agent_conversation_issue_identity::migrate,
     },
 ];
 
