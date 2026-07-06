@@ -470,5 +470,8 @@ async fn import_agent_conversation_plan_rejects_accepted_target_session() {
     .await
     .unwrap_err();
 
-    assert_eq!(error, "Cannot modify accepted session. Reopen it first.");
+    assert_eq!(
+        error,
+        "Validation error: Cannot modify accepted session. Reopen it first."
+    );
 }
