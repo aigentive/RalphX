@@ -424,6 +424,13 @@ jobs:
             -E 'test(metrics_commands) or test(metrics_delivery_trends) or test(metrics_integration) or test(metrics_pr_insights)' \
             --remap-path-prefix \
             | tee -a ../coverage/rust-ipc/summary.txt
+          cargo llvm-cov nextest \
+            --profile ci \
+            --features test-utils \
+            --test suite_ideation \
+            -E 'test(test_restart_ideation_implementation_core)' \
+            --remap-path-prefix \
+            | tee -a ../coverage/rust-ipc/summary.txt
           cargo llvm-cov report --lcov --output-path ../coverage/rust-ipc/lcov.info
           cargo llvm-cov report --json --output-path ../coverage/rust-ipc/coverage.json
           cargo llvm-cov report --html --output-dir ../coverage/rust-ipc/html
