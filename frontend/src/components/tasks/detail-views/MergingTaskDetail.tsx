@@ -465,7 +465,10 @@ export function MergingTaskDetail({ task, isHistorical, viewStatus }: MergingTas
       const fallback = task.taskBranch ?? "task branch";
       if (parsed?.pr_branch_update_conflict === true) {
         return {
-          type: "pr_branch_update" as const,
+          type:
+            parsed?.pr_branch_publication_conflict === true
+              ? ("pr_branch_publication" as const)
+              : ("pr_branch_update" as const),
           base: String(parsed.base_branch ?? parsed.source_branch ?? "main"),
           target: String(parsed.target_branch ?? fallback),
         };
@@ -541,7 +544,9 @@ export function MergingTaskDetail({ task, isHistorical, viewStatus }: MergingTas
 
   // PR mode: fetch plan branch for PR status display
   const { data: planBranch } = usePlanBranchForTask(task.id);
-  const isPrBranchUpdateConflict = mergeConflictContext?.type === "pr_branch_update";
+  const isPrBranchUpdateConflict =
+    mergeConflictContext?.type === "pr_branch_update" ||
+    mergeConflictContext?.type === "pr_branch_publication";
   const isPrMode =
     (isWaitingOnPr || (isAgentPhase && !isPrBranchUpdateConflict)) &&
     planBranch?.prEligible === true &&
@@ -667,6 +672,8 @@ export function MergingTaskDetail({ task, isHistorical, viewStatus }: MergingTas
               ? "Merge Attempted"
               : isValidationRecovery
               ? "Fixing Validation Errors"
+              : mergeConflictContext?.type === "pr_branch_publication"
+              ? "Publishing PR Branch"
               : mergeConflictContext?.type === "pr_branch_update"
               ? "Updating PR Branch"
               : mergeConflictContext?.type === "plan_update"
@@ -680,6 +687,8 @@ export function MergingTaskDetail({ task, isHistorical, viewStatus }: MergingTas
             ? "Waiting on Pull Request"
             : isValidationRecovery
             ? "Fixing Validation Errors..."
+            : mergeConflictContext?.type === "pr_branch_publication"
+            ? "Publishing PR Branch"
             : mergeConflictContext?.type === "pr_branch_update"
             ? "Updating PR Branch"
             : mergeConflictContext?.type === "plan_update"
@@ -698,6 +707,8 @@ export function MergingTaskDetail({ task, isHistorical, viewStatus }: MergingTas
               ? "Merge attempt captured in history"
               : isValidationRecovery
               ? "Agent was fixing build errors"
+              : mergeConflictContext?.type === "pr_branch_publication"
+              ? "Merger agent was reconciling the remote PR branch before publication"
               : mergeConflictContext?.type === "pr_branch_update"
               ? "Merger agent was updating the PR branch from its base branch"
               : mergeConflictContext?.type === "plan_update"
@@ -713,6 +724,10 @@ export function MergingTaskDetail({ task, isHistorical, viewStatus }: MergingTas
               : "Review and merge the GitHub PR. RalphX will finish this plan after GitHub reports it merged."
             : isValidationRecovery
             ? "AI agent is fixing build errors"
+            : mergeConflictContext?.type === "pr_branch_publication"
+            ? planBranch?.prNumber
+              ? `A merger agent is incorporating remote updates into PR #${planBranch.prNumber} so publication can finish.`
+              : `A merger agent is incorporating remote PR branch updates from ${mergeConflictContext.base} so publication can finish.`
             : mergeConflictContext?.type === "pr_branch_update"
             ? planBranch?.prNumber
               ? `A merger agent is updating PR #${planBranch.prNumber} with the latest changes from ${mergeConflictContext.base} so GitHub review can continue.`
@@ -905,7 +920,8 @@ export function MergingTaskDetail({ task, isHistorical, viewStatus }: MergingTas
         <SectionTitle muted>Branch</SectionTitle>
         {isPrWait && planBranch ? (
           <BranchFlow source={planBranch.branchName} target={planBranch.sourceBranch} size="sm" />
-        ) : mergeConflictContext?.type === "pr_branch_update" ? (
+        ) : mergeConflictContext?.type === "pr_branch_update" ||
+          mergeConflictContext?.type === "pr_branch_publication" ? (
           <BranchFlow source={mergeConflictContext.base} target={mergeConflictContext.target} size="sm" />
         ) : mergeConflictContext?.type === "plan_update" ? (
           <BranchFlow source={mergeConflictContext.base} target={mergeConflictContext.target} size="sm" />

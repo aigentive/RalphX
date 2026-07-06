@@ -73,11 +73,14 @@ pub(crate) use merge_helpers::{
     extract_commit_hook_merge_error, get_trigger_origin, has_branch_missing_metadata,
     has_main_merge_deferred_metadata, has_merge_deferred_metadata, is_commit_hook_merge_error_text,
     is_main_merge_deferred_timed_out, is_merge_deferred_timed_out, is_merge_worktree_path,
-    is_repeated_commit_hook_failure, merge_metadata_into, plan_branch_has_reviewable_diff,
-    plan_regular_tasks_complete, publish_plan_branch_pr_after_freshness_update,
-    resolve_plan_branch_pr_base, restore_task_worktree, set_conflict_metadata,
-    set_source_conflict_resolved, sync_plan_branch_pr_if_needed,
-    task_has_commit_hook_merge_failure, CommitHookFailureKind, PlanBranchPrSyncServices,
+    is_pr_branch_publication_conflict_routed_error, is_repeated_commit_hook_failure,
+    merge_metadata_into, plan_branch_has_reviewable_diff, plan_regular_tasks_complete,
+    publish_plan_branch_pr_after_freshness_update, resolve_plan_branch_pr_base,
+    restore_task_worktree, set_conflict_metadata, set_source_conflict_resolved,
+    sync_plan_branch_pr_after_regular_task_merge, sync_plan_branch_pr_if_needed,
+    task_has_commit_hook_merge_failure, task_has_pr_branch_publication_conflict,
+    task_has_pr_branch_publication_failure, CommitHookFailureKind, PlanBranchPrSyncServices,
+    PlanBranchPrSyncOutcome,
 };
 #[doc(hidden)]
 pub use merge_helpers::{parse_metadata, set_trigger_origin};

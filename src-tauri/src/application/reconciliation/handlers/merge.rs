@@ -905,6 +905,10 @@ impl<R: Runtime> ReconciliationRunner<R> {
                         && e.reason_code == MergeRecoveryReasonCode::TargetBranchBusy
                 })
                 .unwrap_or(false);
+        let is_pr_branch_publication_failure =
+            crate::domain::state_machine::transition_handler::task_has_pr_branch_publication_failure(
+                task,
+            );
         let failure_source = if last_is_target_branch_busy {
             MergeFailureSource::TargetBranchBusy
         } else {
@@ -917,11 +921,15 @@ impl<R: Runtime> ReconciliationRunner<R> {
         };
         let retry_reason = if last_is_target_branch_busy {
             "MergeIncomplete auto-retry — target branch busy (deferred)"
+        } else if is_pr_branch_publication_failure {
+            "MergeIncomplete auto-retry — PR branch publication failed"
         } else {
             "MergeIncomplete auto-retry — transient git failure"
         };
         let failure_source_str = if last_is_target_branch_busy {
             "target_branch_busy"
+        } else if is_pr_branch_publication_failure {
+            "pr_branch_publication_failed"
         } else {
             "transient_git"
         };

@@ -36,7 +36,8 @@ use crate::domain::services::{MessageQueue, RunningAgentRegistry};
 use crate::domain::state_machine::resolve_merge_branches;
 use crate::domain::state_machine::services::TaskScheduler;
 use crate::domain::state_machine::transition_handler::{
-    complete_merge_internal_with_pr_sync, PlanBranchPrSyncServices,
+    complete_merge_internal_with_pr_sync, is_pr_branch_publication_conflict_routed_error,
+    task_has_pr_branch_publication_conflict, PlanBranchPrSyncServices,
 };
 use crate::domain::state_machine::transition_handler::{
     format_validation_error_metadata, merge_metadata_into, parse_metadata, run_validation_commands,
@@ -190,19 +191,23 @@ impl<'a, R: Runtime + 'static> MergeAutoCompleteContext<'a, R> {
 
     async fn retry_pending_merge(&self, reason: &str) {
         let transition_service = self.build_transition_service();
-        match transition_service
-            .transition_task_corrective_with_exit(
+        match Box::pin(
+            transition_service.transition_task_corrective_with_exit(
                 &self.task_id,
                 InternalStatus::PendingMerge,
                 None,
                 "merge_auto_complete",
-            )
-            .await
+            ),
+        )
+        .await
         {
             Ok(updated) => {
-                transition_service
-                    .execute_entry_actions(&self.task_id, &updated, InternalStatus::PendingMerge)
-                    .await;
+                Box::pin(transition_service.execute_entry_actions(
+                    &self.task_id,
+                    &updated,
+                    InternalStatus::PendingMerge,
+                ))
+                .await;
             }
             Err(e) => {
                 tracing::error!(
@@ -1111,6 +1116,18 @@ async fn complete_merge_and_schedule<R: Runtime + 'static>(
     )
     .await
     {
+        if is_pr_branch_publication_conflict_routed_error(&e)
+            || task_has_pr_branch_publication_conflict(task)
+        {
+            tracing::info!(
+                task_id = ctx.task_id_str,
+                "attempt_merge_auto_complete: PR branch publication conflict routed to merger"
+            );
+            let ts = ctx.build_transition_service();
+            ts.execute_entry_actions(&ctx.task_id, task, InternalStatus::Merging)
+                .await;
+            return;
+        }
         tracing::error!(
             task_id = ctx.task_id_str,
             error = %e,
@@ -1216,6 +1233,14 @@ pub(crate) async fn attempt_merge_auto_complete<R: Runtime + 'static>(
         task_id: ctx.task_id_str.to_string(),
     };
 
+    // Heap-allocate the large merge auto-complete future to avoid overflowing
+    // debug/test worker stacks as the merge recovery graph grows.
+    Box::pin(attempt_merge_auto_complete_body(ctx)).await;
+}
+
+async fn attempt_merge_auto_complete_body<R: Runtime + 'static>(
+    ctx: &MergeAutoCompleteContext<'_, R>,
+) {
     // 1. Get task — verify it is still in Merging state
     let mut task = match get_task_in_merging_state(ctx).await {
         Some(t) => t,
@@ -1700,8 +1725,30 @@ mod tests {
         assert!(services.plan_pr_description_drafter.is_none());
     }
 
-    #[tokio::test]
-    async fn source_update_conflict_auto_complete_scope_drift_routes_to_reexecution() {
+    #[test]
+    fn source_update_conflict_auto_complete_scope_drift_routes_to_reexecution() {
+        // Linux coverage shards run this deep merge-retry regression on a
+        // smaller worker stack than local macOS nextest runs.
+        let handle = std::thread::Builder::new()
+            .name("source-update-scope-drift-auto-complete".to_string())
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build test runtime");
+                runtime.block_on(
+                    source_update_conflict_auto_complete_scope_drift_routes_to_reexecution_body(),
+                );
+            })
+            .expect("spawn stack-sized test thread");
+
+        if let Err(payload) = handle.join() {
+            std::panic::resume_unwind(payload);
+        }
+    }
+
+    async fn source_update_conflict_auto_complete_scope_drift_routes_to_reexecution_body() {
         let repo = setup_source_update_scope_drift_repo();
         let repo_path = repo.path();
         let app_state = AppState::new_test();

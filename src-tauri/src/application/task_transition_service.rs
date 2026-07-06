@@ -2312,7 +2312,7 @@ impl<R: Runtime> TaskTransitionService<R> {
             github_service,
             plan_branch_repo,
         )
-        .await;
+        .await?;
 
         let refreshed_plan_branch = plan_branch_repo
             .get_by_id(&plan_branch.id)
