@@ -76,7 +76,10 @@ impl PermissionState {
     /// Log a repo operation error without blocking the channel signaling path.
     fn log_repo_err<T>(result: AppResult<T>, request_id: &str, context: &str) {
         if let Err(e) = result {
-            error!("Failed to persist permission {} {}: {}", context, request_id, e);
+            error!(
+                "Failed to persist permission {} {}: {}",
+                context, request_id, e
+            );
         }
     }
 
@@ -103,7 +106,11 @@ impl PermissionState {
 
             // Fire-and-forget persist to repo
             if let Some(repo) = &self.repo {
-                Self::log_repo_err(repo.resolve(request_id, &decision).await, request_id, "resolution");
+                Self::log_repo_err(
+                    repo.resolve(request_id, &decision).await,
+                    request_id,
+                    "resolution",
+                );
             }
 
             true

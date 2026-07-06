@@ -94,7 +94,10 @@ impl ResumeValidator {
     }
 
     /// Set the interactive process registry for IPR cleanup on stop (builder pattern).
-    pub fn with_interactive_process_registry(mut self, ipr: Arc<InteractiveProcessRegistry>) -> Self {
+    pub fn with_interactive_process_registry(
+        mut self,
+        ipr: Arc<InteractiveProcessRegistry>,
+    ) -> Self {
         self.interactive_process_registry = Some(ipr);
         self
     }
@@ -135,8 +138,12 @@ impl ResumeValidator {
         if let Some(ref base_branch) = project.base_branch {
             if let Some(ref task_branch) = task.task_branch {
                 let repo_path = PathBuf::from(&project.working_directory);
-                if GitService::branch_exists(&repo_path, base_branch).await.unwrap_or(false)
-                    && GitService::branch_exists(&repo_path, task_branch).await.unwrap_or(false)
+                if GitService::branch_exists(&repo_path, base_branch)
+                    .await
+                    .unwrap_or(false)
+                    && GitService::branch_exists(&repo_path, task_branch)
+                        .await
+                        .unwrap_or(false)
                 {
                     // Check if base branch has commits not on task branch
                     if self
@@ -181,7 +188,10 @@ impl ResumeValidator {
 
         // 1. Check task branch exists
         if let Some(ref task_branch) = task.task_branch {
-            if !GitService::branch_exists(&repo_path, task_branch).await.unwrap_or(false) {
+            if !GitService::branch_exists(&repo_path, task_branch)
+                .await
+                .unwrap_or(false)
+            {
                 result = result.with_error(format!("Task branch '{}' does not exist", task_branch));
                 return Ok(result);
             }

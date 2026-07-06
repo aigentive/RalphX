@@ -143,10 +143,9 @@ pub fn provider_origin_for_harness(
     match harness {
         AgentHarnessKind::Codex => (Some("openai".to_string()), None),
         AgentHarnessKind::Claude => {
-            let profile = crate::infrastructure::agents::claude::get_effective_settings_profile(
-                agent_name,
-            )
-            .map(str::to_string);
+            let profile =
+                crate::infrastructure::agents::claude::get_effective_settings_profile(agent_name)
+                    .map(str::to_string);
             let upstream_provider = profile
                 .as_deref()
                 .and_then(classify_claude_profile_provider)

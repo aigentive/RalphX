@@ -118,6 +118,9 @@ describe("AgentComposerSurface", () => {
       if (cmd === "search_atlassian_resources") {
         return Promise.resolve({ resources: [] });
       }
+      if (cmd === "resolve_atlassian_resource_urls") {
+        return Promise.resolve({ results: [] });
+      }
       return Promise.resolve(undefined);
     });
   });
@@ -806,6 +809,90 @@ describe("AgentComposerSurface", () => {
         },
       ],
     });
+  });
+
+  it("turns resolved pasted Atlassian URLs into structured integration references", async () => {
+    const onSend = vi.fn();
+    const pastedText =
+      "Please check https://example.atlassian.net/browse/RX-42 and https://other.atlassian.net/browse/RX-99";
+    vi.mocked(invoke).mockImplementation((cmd) => {
+      if (cmd === "resolve_atlassian_resource_urls") {
+        return Promise.resolve({
+          results: [
+            {
+              inputUrl: "https://example.atlassian.net/browse/RX-42",
+              resource: {
+                kind: "jira",
+                id: "RX-42",
+                key: "RX-42",
+                title: "Fix composer paste",
+                url: "https://example.atlassian.net/browse/RX-42",
+                excerpt: null,
+              },
+            },
+            {
+              inputUrl: "https://other.atlassian.net/browse/RX-99",
+              resource: null,
+            },
+          ],
+        });
+      }
+      if (cmd === "list_agent_composer_skills") {
+        return Promise.resolve({ skills: [] });
+      }
+      return Promise.resolve({ entries: [], truncated: false });
+    });
+    renderComposer({ onSend });
+
+    const textarea = screen.getByLabelText(
+      "Message input",
+    ) as HTMLTextAreaElement;
+    fireEvent.focus(textarea);
+    fireEvent.paste(textarea, {
+      clipboardData: {
+        getData: () => pastedText,
+      },
+    });
+
+    expect(textarea).toHaveValue(pastedText);
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("resolve_atlassian_resource_urls", {
+        input: {
+          urls: [
+            "https://example.atlassian.net/browse/RX-42",
+            "https://other.atlassian.net/browse/RX-99",
+          ],
+        },
+      }),
+    );
+    expect(
+      await screen.findByTestId(
+        "agent-composer-reference-pill-integration:jira:RX-42",
+      ),
+    ).toHaveTextContent("Fix composer paste");
+    await waitFor(() =>
+      expect(textarea).toHaveValue(
+        "Please check and https://other.atlassian.net/browse/RX-99",
+      ),
+    );
+
+    fireEvent.click(screen.getByTestId("agent-composer-submit"));
+
+    expect(onSend).toHaveBeenCalledWith(
+      "Please check and https://other.atlassian.net/browse/RX-99",
+      {
+        integrationReferences: [
+          {
+            provider: "atlassian",
+            kind: "jira",
+            id: "RX-42",
+            key: "RX-42",
+            title: "Fix composer paste",
+            url: "https://example.atlassian.net/browse/RX-42",
+          },
+        ],
+      },
+    );
   });
 
   it("hydrates initial ticket references and waits for the user prompt before sending", async () => {

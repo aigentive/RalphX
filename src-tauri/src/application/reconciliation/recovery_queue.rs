@@ -18,8 +18,12 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 
 use crate::application::chat_service::{ChatService, SendMessageOptions};
-use crate::application::interactive_process_registry::{InteractiveProcessKey, InteractiveProcessRegistry};
-use crate::domain::entities::{ChatContextType, IdeationSessionId, IdeationSessionStatus, VerificationStatus};
+use crate::application::interactive_process_registry::{
+    InteractiveProcessKey, InteractiveProcessRegistry,
+};
+use crate::domain::entities::{
+    ChatContextType, IdeationSessionId, IdeationSessionStatus, VerificationStatus,
+};
 use crate::domain::repositories::IdeationSessionRepository;
 use crate::domain::services::{
     clear_verification_snapshot, emit_verification_status_changed,
@@ -554,7 +558,10 @@ mod tests {
         assert_eq!(config.delay_between_spawns, Duration::from_secs(3));
         assert_eq!(config.max_concurrent_recoveries, 2);
         assert_eq!(config.recovery_timeout, Duration::from_secs(30));
-        assert_eq!(config.max_retries, 0, "max_retries must be 0 per Constraint 8");
+        assert_eq!(
+            config.max_retries, 0,
+            "max_retries must be 0 per Constraint 8"
+        );
     }
 
     #[tokio::test]
@@ -571,7 +578,10 @@ mod tests {
             .expect("submit should succeed on open channel");
         let received = rx.recv().await.expect("channel should deliver item");
         assert_eq!(received.priority, 10);
-        assert!(matches!(received.recovery_kind, RecoveryKind::IdeationAgent));
+        assert!(matches!(
+            received.recovery_kind,
+            RecoveryKind::IdeationAgent
+        ));
     }
 
     #[tokio::test]
@@ -618,12 +628,8 @@ mod tests {
 
     #[test]
     fn test_build_verification_recovery_metadata() {
-        let metadata = build_verification_recovery_metadata(
-            "parent-session-123",
-            3,
-            2,
-            Some("artifact-456"),
-        );
+        let metadata =
+            build_verification_recovery_metadata("parent-session-123", 3, 2, Some("artifact-456"));
         let parsed: serde_json::Value =
             serde_json::from_str(&metadata).expect("metadata must be valid JSON");
         assert_eq!(parsed["recovery_type"], "verification_agent");
@@ -635,8 +641,7 @@ mod tests {
 
     #[test]
     fn test_build_verification_recovery_metadata_no_artifact() {
-        let metadata =
-            build_verification_recovery_metadata("parent-123", 1, 1, None);
+        let metadata = build_verification_recovery_metadata("parent-123", 1, 1, None);
         let parsed: serde_json::Value =
             serde_json::from_str(&metadata).expect("metadata must be valid JSON");
         assert!(

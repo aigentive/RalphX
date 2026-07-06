@@ -717,13 +717,11 @@ mod tests {
         assert_eq!(result.session_ref.harness, AgentHarnessKind::Codex);
         assert_ne!(result.session_ref.provider_session_id, "parent-session");
         assert!(result.destination_path.exists());
-        assert!(
-            result
-                .destination_path
-                .file_name()
-                .and_then(|value| value.to_str())
-                .is_some_and(|name| name.contains(&result.session_ref.provider_session_id))
-        );
+        assert!(result
+            .destination_path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .is_some_and(|name| name.contains(&result.session_ref.provider_session_id)));
         let copied = fs::read_to_string(&result.destination_path).expect("read copied session");
         assert!(copied.contains(&result.session_ref.provider_session_id));
     }

@@ -97,8 +97,10 @@ pub async fn ensure_ticket_canonical_branch(
         }
         // Row exists but the push was never confirmed (e.g. a prior attempt that
         // created the row then failed at push). Complete it idempotently.
-        return complete_unpushed_canonical_branch(state, project_id, provider, issue_key, existing)
-            .await;
+        return complete_unpushed_canonical_branch(
+            state, project_id, provider, issue_key, existing,
+        )
+        .await;
     }
 
     establish_canonical_branch(state, project_id, provider, issue_key).await

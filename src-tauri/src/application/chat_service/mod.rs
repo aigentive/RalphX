@@ -4964,26 +4964,26 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         let provider_spawn_check_started = Instant::now();
         let provider_settings_for_spawn =
             if let Some(provider_repo) = self.agent_provider_settings_repo.as_ref() {
-            if let Err(error) = crate::application::ensure_provider_spawn_enabled(
-                provider_repo,
-                resolved_spawn_settings.effective_harness,
-                "send_agent_message",
-            )
-            .await
-            {
-                cleanup_and_err!(ChatServiceError::SpawnFailed(error));
-            }
-            match provider_repo
-                .get(resolved_spawn_settings.effective_harness)
+                if let Err(error) = crate::application::ensure_provider_spawn_enabled(
+                    provider_repo,
+                    resolved_spawn_settings.effective_harness,
+                    "send_agent_message",
+                )
                 .await
-                .map_err(|error| error.to_string())
-            {
-                Ok(settings) => settings,
-                Err(error) => cleanup_and_err!(ChatServiceError::RepositoryError(error)),
-            }
-        } else {
-            None
-        };
+                {
+                    cleanup_and_err!(ChatServiceError::SpawnFailed(error));
+                }
+                match provider_repo
+                    .get(resolved_spawn_settings.effective_harness)
+                    .await
+                    .map_err(|error| error.to_string())
+                {
+                    Ok(settings) => settings,
+                    Err(error) => cleanup_and_err!(ChatServiceError::RepositoryError(error)),
+                }
+            } else {
+                None
+            };
         if options.service_tier_override.is_none() && resolved_spawn_settings.service_tier.is_none()
         {
             if let Some(service_tier) = provider_settings_for_spawn
@@ -5112,25 +5112,22 @@ impl<R: Runtime + 'static> ChatService for AppChatService<R> {
         ));
 
         // 3. Emit run started event (deferred from step 3 to include effective model info)
-        self.emit_event(
-            "agent:run_started",
-            {
-                let mut payload = AgentRunStartedPayload::with_provider_session(
-                    agent_run_id.clone(),
-                    conversation_id.as_str().to_string(),
-                    context_type.to_string(),
-                    context_id.to_string(),
-                    run_chain_id.clone(),
-                    None,
-                    Some(effective_model_id.clone()),
-                    effective_model_label,
-                    Some(resolved_spawn_settings.effective_harness),
-                    stored_session_id.clone(),
-                );
-                payload.service_tier = resolved_spawn_settings.service_tier.clone();
-                payload
-            },
-        );
+        self.emit_event("agent:run_started", {
+            let mut payload = AgentRunStartedPayload::with_provider_session(
+                agent_run_id.clone(),
+                conversation_id.as_str().to_string(),
+                context_type.to_string(),
+                context_id.to_string(),
+                run_chain_id.clone(),
+                None,
+                Some(effective_model_id.clone()),
+                effective_model_label,
+                Some(resolved_spawn_settings.effective_harness),
+                stored_session_id.clone(),
+            );
+            payload.service_tier = resolved_spawn_settings.service_tier.clone();
+            payload
+        });
 
         // Fetch recent session messages when spawning a new process. The agent has no prior
         // context at spawn time, so we inject the history into the bootstrap prompt.

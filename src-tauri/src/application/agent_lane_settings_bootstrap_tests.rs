@@ -193,8 +193,8 @@ async fn test_load_or_seed_agent_lane_settings_defaults_upgrades_legacy_codex_gl
 }
 
 #[tokio::test]
-async fn test_load_or_seed_agent_lane_settings_defaults_upgrades_stale_never_workspace_write_codex_rows()
-{
+async fn test_load_or_seed_agent_lane_settings_defaults_upgrades_stale_never_workspace_write_codex_rows(
+) {
     let app_state = AppState::new_test();
     let desired_defaults = HashMap::from([(
         AgentLane::ExecutionWorker,
@@ -218,7 +218,10 @@ async fn test_load_or_seed_agent_lane_settings_defaults_upgrades_stale_never_wor
     .unwrap();
 
     assert!(result.seeded_global_lanes.is_empty());
-    assert_eq!(result.upgraded_global_lanes, vec![AgentLane::ExecutionWorker]);
+    assert_eq!(
+        result.upgraded_global_lanes,
+        vec![AgentLane::ExecutionWorker]
+    );
     assert_eq!(
         result.global_defaults.get(&AgentLane::ExecutionWorker),
         desired_defaults.get(&AgentLane::ExecutionWorker)

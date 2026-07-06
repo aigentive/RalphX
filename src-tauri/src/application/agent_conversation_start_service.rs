@@ -156,7 +156,8 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
         let parse_input_started = Instant::now();
         let mode = parse_agent_workspace_mode(input.mode.as_deref())?;
         let mut base_ref_kind = parse_agent_workspace_base_kind(input.base_ref_kind.as_deref())?;
-        let base_branch_mode = parse_agent_workspace_branch_mode(input.base_branch_mode.as_deref())?;
+        let base_branch_mode =
+            parse_agent_workspace_branch_mode(input.base_branch_mode.as_deref())?;
         let mut base_ref = trim_optional_input(input.base_ref);
         let mut base_display_name = trim_optional_input(input.base_display_name);
         let parent_conversation_id = trim_optional_input(input.parent_conversation_id);

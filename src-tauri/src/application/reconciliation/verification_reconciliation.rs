@@ -78,11 +78,11 @@ impl VerificationReconciliationConfig {
 impl Default for VerificationReconciliationConfig {
     fn default() -> Self {
         Self {
-            stale_after_secs: 5400,                      // 90 minutes for manual verify (D14)
-            auto_verify_stale_secs: 600,                 // 10 minutes for auto-verify
-            interval_secs: 300,                          // 5 minutes
-            external_session_stale_secs: 7200,           // 2 hours (matches ExternalMcpConfig default)
-            external_session_startup_grace_secs: None,   // falls back to external_session_stale_secs
+            stale_after_secs: 5400,            // 90 minutes for manual verify (D14)
+            auto_verify_stale_secs: 600,       // 10 minutes for auto-verify
+            interval_secs: 300,                // 5 minutes
+            external_session_stale_secs: 7200, // 2 hours (matches ExternalMcpConfig default)
+            external_session_startup_grace_secs: None, // falls back to external_session_stale_secs
         }
     }
 }
@@ -150,7 +150,8 @@ impl VerificationReconciliationService {
     ///
     /// Returns the number of sessions reset.
     pub async fn scan_and_reset(&self, cold_boot: bool) -> u32 {
-        self.scan_and_reset_excluding(cold_boot, &HashSet::new()).await
+        self.scan_and_reset_excluding(cold_boot, &HashSet::new())
+            .await
     }
 
     /// Internal variant of `scan_and_reset` that skips parent session IDs in `skip_parent_ids`.
@@ -162,12 +163,16 @@ impl VerificationReconciliationService {
         cold_boot: bool,
         skip_parent_ids: &HashSet<String>,
     ) -> u32 {
-        let manual_stale_before = Utc::now()
-            - chrono::Duration::seconds(self.config.stale_after_secs as i64);
+        let manual_stale_before =
+            Utc::now() - chrono::Duration::seconds(self.config.stale_after_secs as i64);
 
         let sessions = if cold_boot {
             // Cold boot: all agent processes are dead. Reset unconditionally — no TTL filter.
-            match self.ideation_session_repo.get_all_in_progress_sessions().await {
+            match self
+                .ideation_session_repo
+                .get_all_in_progress_sessions()
+                .await
+            {
                 Ok(s) => s,
                 Err(e) => {
                     tracing::error!(
@@ -180,8 +185,8 @@ impl VerificationReconciliationService {
         } else {
             // Periodic: query with the shorter auto-verify threshold to get all candidates.
             // Manual sessions that haven't passed the longer threshold will be skipped below.
-            let auto_stale_before = Utc::now()
-                - chrono::Duration::seconds(self.config.auto_verify_stale_secs as i64);
+            let auto_stale_before =
+                Utc::now() - chrono::Duration::seconds(self.config.auto_verify_stale_secs as i64);
             match self
                 .ideation_session_repo
                 .get_stale_in_progress_sessions(auto_stale_before)
@@ -269,8 +274,7 @@ impl VerificationReconciliationService {
                     }
                     // Emit UI event so the frontend reflects the reset immediately
                     if let Some(ref handle) = self.app_handle {
-                        let convergence_reason =
-                            if cold_boot { Some("app_restart") } else { None };
+                        let convergence_reason = if cold_boot { Some("app_restart") } else { None };
                         emit_verification_status_changed(
                             handle,
                             session.id.as_str(),
@@ -390,7 +394,9 @@ impl VerificationReconciliationService {
             .await
             {
                 ResolvedParent::Ready(p) => *p,
-                ResolvedParent::NotFound | ResolvedParent::ImportedVerified | ResolvedParent::AlreadyResolved => {
+                ResolvedParent::NotFound
+                | ResolvedParent::ImportedVerified
+                | ResolvedParent::AlreadyResolved => {
                     continue;
                 }
             };
@@ -658,7 +664,10 @@ impl VerificationReconciliationService {
         let recovery_claimed = self.scan_for_recoverable_orphans().await;
         let count = self.scan_and_reset_excluding(true, &recovery_claimed).await;
         if count > 0 {
-            tracing::info!(count, "Startup: reset orphaned verification in_progress states");
+            tracing::info!(
+                count,
+                "Startup: reset orphaned verification in_progress states"
+            );
         }
         self.scan_and_archive_stale_external_sessions_excluding(true, skip_external_archive_ids)
             .await;
@@ -831,8 +840,8 @@ impl VerificationReconciliationService {
     /// (not 'error' or 'stalled') but has had no activity for longer than
     /// `external_session_stale_secs`. Detection is DB-only via `updated_at` timestamp.
     async fn detect_and_mark_stalled_external_sessions(&self) {
-        let stalled_before = Utc::now()
-            - chrono::Duration::seconds(self.config.external_session_stale_secs as i64);
+        let stalled_before =
+            Utc::now() - chrono::Duration::seconds(self.config.external_session_stale_secs as i64);
 
         let sessions = match self
             .ideation_session_repo
@@ -1067,43 +1076,45 @@ pub(crate) async fn reconcile_verification_on_child_complete<R: Runtime>(
         .unwrap_or(false);
 
     // Determine terminal status and emit native snapshot state based on what the agent produced.
-    let (terminal_status, emit_snapshot, convergence_reason_override) =
-        if has_convergence_reason {
-            // Branch 1: Agent completed with convergence_reason — map to terminal status
-            let reason = snapshot
-                .as_ref()
-                .unwrap()
-                .convergence_reason
-                .as_deref()
-                .unwrap_or("");
-            let status = convergence_reason_to_status(reason);
-            let mut updated_snapshot = snapshot.clone().unwrap();
-            updated_snapshot.status = status;
-            updated_snapshot.in_progress = false;
-            (status, Some(updated_snapshot), None::<String>)
-        } else if has_rounds {
-            // Branch 2: Agent crashed mid-round with partial progress
-            let mut updated_snapshot = snapshot.clone().unwrap();
-            updated_snapshot.status = VerificationStatus::NeedsRevision;
-            updated_snapshot.in_progress = false;
-            updated_snapshot.convergence_reason = Some("agent_crashed_mid_round".to_string());
-            (
-                VerificationStatus::NeedsRevision,
-                Some(updated_snapshot),
-                None::<String>,
-            )
-        } else {
-            // Branch 3: No snapshot or empty rounds — agent completed without any updates
-            (
-                VerificationStatus::Unverified,
-                None::<VerificationRunSnapshot>,
-                Some("agent_completed_without_update".to_string()),
-            )
-        };
+    let (terminal_status, emit_snapshot, convergence_reason_override) = if has_convergence_reason {
+        // Branch 1: Agent completed with convergence_reason — map to terminal status
+        let reason = snapshot
+            .as_ref()
+            .unwrap()
+            .convergence_reason
+            .as_deref()
+            .unwrap_or("");
+        let status = convergence_reason_to_status(reason);
+        let mut updated_snapshot = snapshot.clone().unwrap();
+        updated_snapshot.status = status;
+        updated_snapshot.in_progress = false;
+        (status, Some(updated_snapshot), None::<String>)
+    } else if has_rounds {
+        // Branch 2: Agent crashed mid-round with partial progress
+        let mut updated_snapshot = snapshot.clone().unwrap();
+        updated_snapshot.status = VerificationStatus::NeedsRevision;
+        updated_snapshot.in_progress = false;
+        updated_snapshot.convergence_reason = Some("agent_crashed_mid_round".to_string());
+        (
+            VerificationStatus::NeedsRevision,
+            Some(updated_snapshot),
+            None::<String>,
+        )
+    } else {
+        // Branch 3: No snapshot or empty rounds — agent completed without any updates
+        (
+            VerificationStatus::Unverified,
+            None::<VerificationRunSnapshot>,
+            Some("agent_completed_without_update".to_string()),
+        )
+    };
 
     let authoritative_snapshot = emit_snapshot.unwrap_or_else(|| {
-        let mut snapshot =
-            build_blank_verification_snapshot(parent.verification_generation, terminal_status, false);
+        let mut snapshot = build_blank_verification_snapshot(
+            parent.verification_generation,
+            terminal_status,
+            false,
+        );
         snapshot.convergence_reason = convergence_reason_override.clone();
         snapshot
     });
@@ -1211,24 +1222,21 @@ pub(crate) async fn reset_verification_on_child_error<R: Runtime>(
     };
 
     // Resolve parent (fetch + 3-guard check)
-    let parent = match resolve_verification_parent(
-        &parent_id,
-        repo,
-        "reset_verification_on_child_error",
-    )
-    .await
-    {
-        ResolvedParent::Ready(p) => p,
-        ResolvedParent::NotFound => {
-            archive_verification_session(repo, child_id).await;
-            return None;
-        }
-        ResolvedParent::ImportedVerified => return None,
-        ResolvedParent::AlreadyResolved => {
-            archive_verification_session(repo, child_id).await;
-            return None;
-        }
-    };
+    let parent =
+        match resolve_verification_parent(&parent_id, repo, "reset_verification_on_child_error")
+            .await
+        {
+            ResolvedParent::Ready(p) => p,
+            ResolvedParent::NotFound => {
+                archive_verification_session(repo, child_id).await;
+                return None;
+            }
+            ResolvedParent::ImportedVerified => return None,
+            ResolvedParent::AlreadyResolved => {
+                archive_verification_session(repo, child_id).await;
+                return None;
+            }
+        };
 
     let snapshot = load_effective_verification_view(repo, &parent).await;
     if convergence_reason == "agent_error" {
@@ -1301,7 +1309,8 @@ pub(crate) async fn reset_verification_on_child_error<R: Runtime>(
         )
         .await?;
         clear_verification_snapshot(&mut snapshot, VerificationStatus::Unverified, false);
-        repo.save_verification_run_snapshot(&parent_id, &snapshot).await
+        repo.save_verification_run_snapshot(&parent_id, &snapshot)
+            .await
     }
     .await;
 
@@ -1433,7 +1442,10 @@ async fn repair_parent_verification_from_snapshot(
     parent_id: &IdeationSessionId,
     snapshot: &VerificationRunSnapshot,
 ) {
-    if let Err(error) = repo.save_verification_run_snapshot(parent_id, snapshot).await {
+    if let Err(error) = repo
+        .save_verification_run_snapshot(parent_id, snapshot)
+        .await
+    {
         tracing::warn!(
             parent_id = %parent_id.as_str(),
             generation = snapshot.generation,
@@ -1442,7 +1454,6 @@ async fn repair_parent_verification_from_snapshot(
         );
     }
 }
-
 
 /// Map a `convergence_reason` string to the appropriate `VerificationStatus`.
 ///
@@ -1458,7 +1469,10 @@ fn convergence_reason_to_status(reason: &str) -> VerificationStatus {
             VerificationStatus::Verified
         }
         "max_rounds" | "escalated_to_parent" => VerificationStatus::NeedsRevision,
-        "agent_error" | "user_skipped" | "user_reverted" | "critic_parse_failure"
+        "agent_error"
+        | "user_skipped"
+        | "user_reverted"
+        | "critic_parse_failure"
         | "user_stopped" => VerificationStatus::Skipped,
         _ => VerificationStatus::NeedsRevision, // defensive default for unrecognized reasons
     }

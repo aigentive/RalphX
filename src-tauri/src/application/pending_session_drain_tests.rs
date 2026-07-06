@@ -436,7 +436,10 @@ async fn pending_drain_restores_prompt_when_send_fails() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(fetched.pending_initial_prompt.as_deref(), Some("retry later"));
+    assert_eq!(
+        fetched.pending_initial_prompt.as_deref(),
+        Some("retry later")
+    );
 }
 
 #[tokio::test]
@@ -476,10 +479,7 @@ async fn pending_drain_respects_running_task_project_capacity() {
         .unwrap();
     app_state
         .ideation_session_repo
-        .set_pending_initial_prompt(
-            pending.id.as_str(),
-            Some("wait for task slot".to_string()),
-        )
+        .set_pending_initial_prompt(pending.id.as_str(), Some("wait for task slot".to_string()))
         .await
         .unwrap();
     let running_task = app_state

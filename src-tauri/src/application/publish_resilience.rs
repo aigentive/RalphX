@@ -661,8 +661,7 @@ mod tests {
                 "base-sha",
             ),
             PublishBranchFreshnessOutcome::NeedsAgent {
-                message: "Merge conflict updating plan branch from main: unknown files"
-                    .to_string(),
+                message: "Merge conflict updating plan branch from main: unknown files".to_string(),
                 conflict_files: Vec::new(),
                 base_commit: "base-sha".to_string(),
                 target_ref: "main".to_string(),

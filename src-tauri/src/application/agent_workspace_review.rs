@@ -13,10 +13,10 @@ use crate::application::chat_service::{ChatService, SendCallerContext, SendMessa
 use crate::application::git_service::git_cmd::{self, GitCommandLane};
 use crate::application::{AppState, GitService};
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentRun, AgentRunId, AgentRunStatus, Artifact, ArtifactContent,
+    AgentConversationWorkspace, AgentRun, AgentRunId, AgentRunStatus,
     AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewMonitor, AgentWorkspaceReviewMonitorStatus,
-    AgentWorkspaceReviewOutcome, AgentWorkspaceReviewTargetScope, ChatContextType,
-    ChatConversation, ChatConversationId, MessageRole, Project,
+    AgentWorkspaceReviewOutcome, AgentWorkspaceReviewTargetScope, Artifact, ArtifactContent,
+    ChatContextType, ChatConversation, ChatConversationId, MessageRole, Project,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, ORPHANED_AGENT_RUN_ON_APP_RESTART,
@@ -1116,11 +1116,19 @@ fn workspace_review_integration_reference_label(
         reference.kind,
         reference.key.as_deref().unwrap_or(reference.id.as_str())
     );
-    if let Some(title) = reference.title.as_deref().filter(|title| !title.trim().is_empty()) {
+    if let Some(title) = reference
+        .title
+        .as_deref()
+        .filter(|title| !title.trim().is_empty())
+    {
         label.push_str(": ");
         label.push_str(title.trim());
     }
-    if let Some(url) = reference.url.as_deref().filter(|url| !url.trim().is_empty()) {
+    if let Some(url) = reference
+        .url
+        .as_deref()
+        .filter(|url| !url.trim().is_empty())
+    {
         label.push_str(" (");
         label.push_str(url.trim());
         label.push(')');
@@ -1130,7 +1138,11 @@ fn workspace_review_integration_reference_label(
 
 fn workspace_review_artifact_reference_label(reference: &ComposerArtifactReference) -> String {
     let mut label = format!("{} {}", reference.kind, reference.artifact_id);
-    if let Some(title) = reference.title.as_deref().filter(|title| !title.trim().is_empty()) {
+    if let Some(title) = reference
+        .title
+        .as_deref()
+        .filter(|title| !title.trim().is_empty())
+    {
         label.push_str(": ");
         label.push_str(title.trim());
     }
@@ -1228,10 +1240,12 @@ where
 async fn linked_workspace_plan_artifact_context(
     state: &AppState,
     workspace: &AgentConversationWorkspace,
-) -> AppResult<Option<(
-    ComposerArtifactReference,
-    Option<AgentWorkspaceReviewResolvedArtifactContext>,
-)>> {
+) -> AppResult<
+    Option<(
+        ComposerArtifactReference,
+        Option<AgentWorkspaceReviewResolvedArtifactContext>,
+    )>,
+> {
     let Some(session_id) = workspace.linked_ideation_session_id.as_ref() else {
         return Ok(None);
     };
@@ -1282,7 +1296,10 @@ fn workspace_review_resolved_artifact_context(
     Some(AgentWorkspaceReviewResolvedArtifactContext {
         artifact_id: reference.artifact_id.clone(),
         kind: reference.kind.clone(),
-        title: reference.title.clone().or_else(|| Some(artifact.name.clone())),
+        title: reference
+            .title
+            .clone()
+            .or_else(|| Some(artifact.name.clone())),
         session_id: reference.session_id.clone(),
         version: reference.version.or(Some(artifact.metadata.version)),
         content,
@@ -3222,9 +3239,8 @@ mod tests {
         AgentConversationJiraIssueLink, AgentConversationWorkspaceMode, AgentRun,
         AgentWorkspaceReviewGateStatus, AgentWorkspaceReviewOutcome,
         AgentWorkspaceSourcePullRequest, Artifact, ArtifactId, ArtifactType, ChatConversation,
-        ChatConversationId, ChatMessage,
-        IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow, IdeationSessionId,
-        ProjectId, TaskId,
+        ChatConversationId, ChatMessage, IdeationAnalysisBaseRefKind, IdeationSession,
+        IdeationSessionFlow, IdeationSessionId, ProjectId, TaskId,
     };
     use crate::infrastructure::MockAgenticClient;
     use std::process::Command;
@@ -4325,8 +4341,10 @@ x
             .goal_context
             .artifact_references
             .iter()
-            .any(|reference| reference.artifact_id == plan_artifact.id.as_str()
-                && reference.kind == "plan"));
+            .any(
+                |reference| reference.artifact_id == plan_artifact.id.as_str()
+                    && reference.kind == "plan"
+            ));
         assert!(start
             .context
             .goal_context
@@ -4334,7 +4352,9 @@ x
             .iter()
             .any(|artifact| artifact.artifact_id == plan_artifact.id.as_str()
                 && artifact.kind == "plan"
-                && artifact.content.contains("Use the backend-owned Review gate.")
+                && artifact
+                    .content
+                    .contains("Use the backend-owned Review gate.")
                 && !artifact.content_truncated));
         assert!(start.context.monitor.last_run_id.is_some());
         let review_conversation_id = start
@@ -5465,7 +5485,9 @@ x
         assert!(message.contains("Review artifact: review-artifact-1 v7"));
         assert!(message.contains("Review artifact content injected by RalphX"));
         assert!(message.contains("Blocking detail from generated Review."));
-        assert!(message.contains("Call `get_artifact` only if this injected content is truncated or insufficient."));
+        assert!(message.contains(
+            "Call `get_artifact` only if this injected content is truncated or insufficient."
+        ));
         assert!(!message.contains("Fetch the full Review artifact before editing"));
         assert!(message.contains("<workspace_goal_context>"));
         assert!(message.contains("Remove workspace path constraints."));
@@ -5593,10 +5615,12 @@ x
         assert!(options
             .composer_artifact_references
             .iter()
-            .any(|reference| reference.artifact_id == plan_artifact.id.as_str()
-                && reference.kind == "plan"
-                && reference.session_id.as_deref() == Some(planning_session.id.as_str())
-                && reference.version == Some(3)));
+            .any(
+                |reference| reference.artifact_id == plan_artifact.id.as_str()
+                    && reference.kind == "plan"
+                    && reference.session_id.as_deref() == Some(planning_session.id.as_str())
+                    && reference.version == Some(3)
+            ));
 
         let sent_messages = chat_service.get_sent_messages().await;
         assert_eq!(sent_messages.len(), 1);

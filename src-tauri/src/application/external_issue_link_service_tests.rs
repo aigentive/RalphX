@@ -126,7 +126,10 @@ async fn service_covers_provider_neutral_link_and_sync_apis() {
         .unwrap()
         .expect("sync should update");
     assert_eq!(skipped.status, ExternalIssueSyncStatus::Skipped);
-    assert_eq!(skipped.external_version.as_deref(), Some("external-version"));
+    assert_eq!(
+        skipped.external_version.as_deref(),
+        Some("external-version")
+    );
 }
 
 #[tokio::test]
@@ -291,7 +294,10 @@ async fn service_delegates_provider_ticket_operation_apis_to_repo() {
         .expect("operation should update");
     assert_eq!(updated.id, created.id);
     assert_eq!(updated.status, ProviderTicketOperationStatus::Succeeded);
-    assert_eq!(updated.provider_operation_id.as_deref(), Some("provider-op-1"));
+    assert_eq!(
+        updated.provider_operation_id.as_deref(),
+        Some("provider-op-1")
+    );
     assert!(updated.completed_at.is_some());
     // Missing id forwards through and returns None.
     assert!(service

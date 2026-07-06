@@ -219,7 +219,10 @@ fn project_workspace_conversation_send_keeps_mode_agent() {
         None,
         Some(AgentConversationWorkspaceMode::Ideation),
     );
-    assert_eq!(ideation_mode, Some(AgentConversationWorkspaceMode::Ideation));
+    assert_eq!(
+        ideation_mode,
+        Some(AgentConversationWorkspaceMode::Ideation)
+    );
     let project_agent =
         resolve_agent_name_for_send(&ChatContextType::Project, None, false, None, ideation_mode);
     assert_eq!(project_agent, AGENT_CHAT_PROJECT);

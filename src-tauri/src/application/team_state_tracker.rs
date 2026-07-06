@@ -310,7 +310,8 @@ pub struct TeamStateTracker {
     teams: Arc<RwLock<HashMap<String, TeamState>>>,
     pending_plans: Arc<RwLock<HashMap<String, PendingTeamPlan>>>,
     /// Watch channels for blocking plan approval — plan_id → (sender, created_at)
-    plan_channels: Arc<RwLock<HashMap<String, (watch::Sender<Option<PlanDecision>>, std::time::Instant)>>>,
+    plan_channels:
+        Arc<RwLock<HashMap<String, (watch::Sender<Option<PlanDecision>>, std::time::Instant)>>>,
 }
 
 impl std::fmt::Debug for TeamStateTracker {

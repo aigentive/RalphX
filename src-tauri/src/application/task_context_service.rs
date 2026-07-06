@@ -10,8 +10,9 @@
 use std::sync::Arc;
 
 use crate::domain::entities::{
-    create_artifact_content_preview, generate_task_context_hints, ArtifactSummary, ScopeDriftStatus,
-    StepProgressSummary, TaskContext, TaskDependencySummary, TaskId, TaskProposalSummary,
+    create_artifact_content_preview, generate_task_context_hints, ArtifactSummary,
+    ScopeDriftStatus, StepProgressSummary, TaskContext, TaskDependencySummary, TaskId,
+    TaskProposalSummary,
 };
 use crate::domain::repositories::{
     ArtifactRepository, TaskDependencyRepository, TaskProposalRepository, TaskRepository,
@@ -148,10 +149,7 @@ impl TaskContextService {
         let mut blocked_by: Vec<TaskDependencySummary> = Vec::new();
         for blocker_id in &blocker_ids {
             if let Some(blocker_task) = self.task_repo.get_by_id(blocker_id).await? {
-                if !blocker_task
-                    .internal_status
-                    .is_active_dependency_blocker()
-                {
+                if !blocker_task.internal_status.is_active_dependency_blocker() {
                     continue;
                 }
                 blocked_by.push(TaskDependencySummary {

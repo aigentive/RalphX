@@ -138,6 +138,9 @@ struct TestAtlassianClient {
     list_statuses_keys: Mutex<Vec<String>>,
     /// Recorded `(project_key, limit)` tuples for `list_jira_project_issues`.
     list_issues_calls: Mutex<Vec<(String, usize)>>,
+    /// Recorded composer references fetched through `fetch_resource_content` /
+    /// URL resolution.
+    fetches: Mutex<Vec<ComposerIntegrationReference>>,
     /// Optional fetched-resource body override (drives render/truncation paths).
     fetch_body: Mutex<Option<String>>,
     /// Optional canned OAuth token response for `exchange_oauth_code` /
@@ -213,17 +216,25 @@ impl AtlassianApiClient for TestAtlassianClient {
         if let Some(error) = self.error.lock().await.clone() {
             return Err(error);
         }
+        self.fetches.lock().await.push(reference.clone());
         let body = self
             .fetch_body
             .lock()
             .await
             .clone()
             .unwrap_or_else(|| "Issue body".to_string());
+        let kind = reference
+            .kind
+            .parse::<AtlassianResourceKind>()
+            .unwrap_or(AtlassianResourceKind::Jira);
         Ok(AtlassianResourceContent {
-            kind: AtlassianResourceKind::Jira,
+            kind,
             id: reference.id.clone(),
             key: reference.key.clone(),
-            title: reference.title.clone().unwrap_or_else(|| "Example".to_string()),
+            title: reference.title.clone().unwrap_or_else(|| match kind {
+                AtlassianResourceKind::Jira => "Example Jira issue".to_string(),
+                AtlassianResourceKind::Confluence => "Example Confluence page".to_string(),
+            }),
             url: reference.url.clone(),
             body,
             status: None,
@@ -672,6 +683,97 @@ async fn fetch_resource_content_routes_to_client() {
 
     assert_eq!(content.id, "10001");
     assert_eq!(content.body, "Issue body");
+}
+
+#[tokio::test]
+async fn resolve_resource_urls_converts_supported_authorized_urls() {
+    let client = Arc::new(TestAtlassianClient::default());
+    let service = enabled_service(client.clone()).await;
+
+    let results = service
+        .resolve_resource_urls(&[
+            "https://example.atlassian.net/browse/rx-42".to_string(),
+            "https://example.atlassian.net/wiki/spaces/OPS/pages/123456/Deploy-notes".to_string(),
+        ])
+        .await
+        .expect("url resolution");
+
+    assert_eq!(results.len(), 2);
+    let jira = results[0].resource.as_ref().expect("jira resource");
+    assert_eq!(jira.kind, AtlassianResourceKind::Jira);
+    assert_eq!(jira.id, "RX-42");
+    assert_eq!(jira.key.as_deref(), Some("RX-42"));
+    assert_eq!(jira.title, "Example Jira issue");
+    assert_eq!(
+        jira.url.as_deref(),
+        Some("https://example.atlassian.net/browse/RX-42")
+    );
+
+    let confluence = results[1].resource.as_ref().expect("confluence resource");
+    assert_eq!(confluence.kind, AtlassianResourceKind::Confluence);
+    assert_eq!(confluence.id, "123456");
+    assert!(confluence.key.is_none());
+    assert_eq!(confluence.title, "Example Confluence page");
+    assert_eq!(
+        confluence.url.as_deref(),
+        Some("https://example.atlassian.net/wiki/spaces/OPS/pages/123456/Deploy-notes")
+    );
+
+    let fetches = client.fetches.lock().await;
+    assert_eq!(fetches.len(), 2);
+    assert_eq!(fetches[0].kind, "jira");
+    assert_eq!(fetches[0].id, "RX-42");
+    assert_eq!(fetches[0].key.as_deref(), Some("RX-42"));
+    assert_eq!(fetches[1].kind, "confluence");
+    assert_eq!(fetches[1].id, "123456");
+}
+
+#[tokio::test]
+async fn resolve_resource_urls_leaves_wrong_site_and_unsupported_urls_unresolved() {
+    let client = Arc::new(TestAtlassianClient::default());
+    let service = enabled_service(client.clone()).await;
+
+    let results = service
+        .resolve_resource_urls(&[
+            "https://other.atlassian.net/browse/RX-42".to_string(),
+            "https://example.atlassian.net/wiki/spaces/OPS/overview".to_string(),
+        ])
+        .await
+        .expect("url resolution");
+
+    assert_eq!(results.len(), 2);
+    assert!(results.iter().all(|result| result.resource.is_none()));
+    assert!(client.fetches.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn resolve_resource_urls_requires_enabled_settings() {
+    let client = Arc::new(TestAtlassianClient::default());
+    let service = disabled_service(client.clone());
+
+    let error = service
+        .resolve_resource_urls(&["https://example.atlassian.net/browse/RX-42".to_string()])
+        .await
+        .unwrap_err();
+
+    assert_eq!(error, "Atlassian integration is not enabled");
+    assert!(client.fetches.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn resolve_resource_urls_keeps_inaccessible_resources_unresolved() {
+    let client = Arc::new(TestAtlassianClient::default());
+    *client.error.lock().await = Some("Atlassian returned HTTP 404".to_string());
+    let service = enabled_service(client.clone()).await;
+
+    let results = service
+        .resolve_resource_urls(&["https://example.atlassian.net/browse/RX-404".to_string()])
+        .await
+        .expect("url resolution");
+
+    assert_eq!(results.len(), 1);
+    assert!(results[0].resource.is_none());
+    assert_eq!(client.fetches.lock().await.len(), 0);
 }
 
 #[tokio::test]

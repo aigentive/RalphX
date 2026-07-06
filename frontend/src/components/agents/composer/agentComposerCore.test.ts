@@ -7,9 +7,11 @@ import {
   extractComposerIntegrationTokens,
   extractComposerPathTokens,
   extractComposerSkillTokens,
+  extractPastedAtlassianResourceUrls,
   normalizeComposerArtifactReferences,
   normalizeComposerIntegrationReferences,
   normalizeComposerProjectReferences,
+  removeResolvedAtlassianResourceUrls,
   replaceAgentComposerTrigger,
 } from "./agentComposerCore";
 
@@ -197,6 +199,27 @@ describe("agentComposerCore", () => {
     expect(extractComposerArtifactTokens(text)).toEqual([
       { kind: "plan", artifactId: "artifact-1" },
     ]);
+  });
+
+  it("extracts plausible pasted Atlassian resource URLs", () => {
+    expect(
+      extractPastedAtlassianResourceUrls(
+        "See https://example.atlassian.net/browse/rx-42, docs https://example.atlassian.net/wiki/spaces/OPS/pages/123456/Deploy and https://example.com/browse/RX-99",
+      ),
+    ).toEqual([
+      "https://example.atlassian.net/browse/rx-42",
+      "https://example.atlassian.net/wiki/spaces/OPS/pages/123456/Deploy",
+      "https://example.com/browse/RX-99",
+    ]);
+  });
+
+  it("removes only backend-resolved pasted Atlassian URLs", () => {
+    expect(
+      removeResolvedAtlassianResourceUrls(
+        "See https://example.atlassian.net/browse/RX-42 and https://other.atlassian.net/browse/RX-99",
+        ["https://example.atlassian.net/browse/RX-42"],
+      ),
+    ).toBe("See and https://other.atlassian.net/browse/RX-99");
   });
 
   it("appends internal skill directives with safe lowercase names only", () => {

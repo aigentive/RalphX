@@ -53,7 +53,8 @@ impl<R: Runtime> TaskSchedulerService<R> {
                 let Some(metadata_str) = task.metadata.as_deref() else {
                     continue;
                 };
-                let Ok(metadata_val) = serde_json::from_str::<serde_json::Value>(metadata_str) else {
+                let Ok(metadata_val) = serde_json::from_str::<serde_json::Value>(metadata_str)
+                else {
                     continue;
                 };
                 let freshness = FreshnessMetadata::from_task_metadata(&metadata_val);
@@ -224,7 +225,10 @@ impl<R: Runtime> TaskSchedulerService<R> {
             Some(repo) => repo,
             None => return false, // No repo available, fail-open
         };
-        match plan_branch_repo.get_by_execution_plan_id(exec_plan_id).await {
+        match plan_branch_repo
+            .get_by_execution_plan_id(exec_plan_id)
+            .await
+        {
             Ok(Some(branch)) => {
                 use crate::domain::entities::PlanBranchStatus;
                 !matches!(branch.status, PlanBranchStatus::Active)

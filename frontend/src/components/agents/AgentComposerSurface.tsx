@@ -14,6 +14,7 @@ import {
   useAgentComposerPlanReferences,
   useAgentComposerSkills,
 } from "@/hooks/useAgentComposerResources";
+import { atlassianApi, type AtlassianResourceSummary } from "@/api/atlassian";
 import {
   AlertCircle,
   ArrowUp,
@@ -71,10 +72,12 @@ import {
   appendInternalSkillDirectives,
   detectAgentComposerTrigger,
   extractComposerArtifactTokens,
+  extractPastedAtlassianResourceUrls,
   extractComposerSkillTokens,
   normalizeComposerArtifactReferences,
   normalizeComposerIntegrationReferences,
   normalizeComposerProjectReferences,
+  removeResolvedAtlassianResourceUrls,
   replaceAgentComposerTrigger,
   type AgentComposerArtifactReference,
   type AgentComposerIntegrationKind,
@@ -97,6 +100,25 @@ interface ComposerOption {
 
 const PLAN_REFINE_COMMAND_MESSAGE =
   "Please verify and refine the current plan.";
+
+function integrationReferenceKey(
+  reference: AgentComposerIntegrationReference,
+): string {
+  return `${reference.provider}:${reference.kind}:${reference.id}`;
+}
+
+function atlassianResourceToIntegrationReference(
+  resource: AtlassianResourceSummary,
+): AgentComposerIntegrationReference {
+  return {
+    provider: "atlassian",
+    kind: resource.kind,
+    id: resource.id,
+    ...(resource.key ? { key: resource.key } : {}),
+    title: resource.title,
+    ...(resource.url ? { url: resource.url } : {}),
+  };
+}
 
 function getSkillSourceLabel(skill: AgentComposerSkill): string {
   return skill.source === "ralphx-internal"
@@ -385,6 +407,7 @@ export function AgentComposerSurface({
   const hydratedInitialReferencesSignatureRef = useRef<string | null>(null);
   const value = isControlled ? controlledValue : internalValue;
   const textareaValueRef = useRef(value);
+  const latestValueRef = useRef(value);
   const [actionMenuOpen, setActionMenuOpen] = useState(false);
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const isAgentAlive = agentStatus !== "idle";
@@ -503,6 +526,7 @@ export function AgentComposerSurface({
 
   const setValue = useCallback(
     (nextValue: string) => {
+      latestValueRef.current = nextValue;
       if (isControlled) {
         onChangeProp?.(nextValue);
       } else {
@@ -512,6 +536,10 @@ export function AgentComposerSurface({
     },
     [isControlled, matchOptionsFromInput, onChangeProp],
   );
+
+  useEffect(() => {
+    latestValueRef.current = value;
+  }, [value]);
 
   const { addEntry: addHistoryEntry, handleHistoryKeyDown } = useInputHistory({
     setValue,
@@ -565,6 +593,25 @@ export function AgentComposerSurface({
       focusTextareaAtComposerCursor(nextCursor);
     },
     [focusTextareaAtComposerCursor, setValue],
+  );
+
+  const addSelectedIntegrationReferences = useCallback(
+    (references: readonly AgentComposerIntegrationReference[]) => {
+      const normalizedReferences =
+        normalizeComposerIntegrationReferences(references);
+      if (normalizedReferences.length === 0) {
+        return;
+      }
+      setSelectedIntegrationReferences((current) => {
+        const nextSet = new Map(current);
+        for (const reference of normalizedReferences) {
+          nextSet.delete(`${reference.kind}:${reference.id}`);
+          nextSet.set(integrationReferenceKey(reference), reference);
+        }
+        return nextSet;
+      });
+    },
+    [],
   );
 
   const skills = useMemo(
@@ -1146,11 +1193,7 @@ export function AgentComposerSurface({
         if (!reference) {
           return;
         }
-        setSelectedIntegrationReferences((current) => {
-          const nextSet = new Map(current);
-          nextSet.set(`${reference.kind}:${reference.id}`, reference);
-          return nextSet;
-        });
+        addSelectedIntegrationReferences([reference]);
         const next = replaceAgentComposerTrigger(value, activeTrigger, "");
         applyComposerText(next.text, next.cursor);
         return;
@@ -1225,6 +1268,7 @@ export function AgentComposerSurface({
     [
       activeTrigger,
       addHistoryEntry,
+      addSelectedIntegrationReferences,
       applyComposerText,
       canQueue,
       clearValue,
@@ -1554,6 +1598,87 @@ export function AgentComposerSurface({
     [setValue, updateCursorFromTextarea],
   );
 
+  const resolvePastedAtlassianUrls = useCallback(
+    async (urls: readonly string[]) => {
+      if (urls.length === 0) {
+        return;
+      }
+      try {
+        const results = await atlassianApi.resolveResourceUrls({
+          urls: [...urls],
+        });
+        const resolvedUrls: string[] = [];
+        const references: AgentComposerIntegrationReference[] = [];
+        for (const result of results) {
+          if (!result.resource) {
+            continue;
+          }
+          resolvedUrls.push(result.inputUrl.trim());
+          references.push(
+            atlassianResourceToIntegrationReference(result.resource),
+          );
+        }
+        if (references.length === 0) {
+          return;
+        }
+        addSelectedIntegrationReferences(references);
+        const currentValue = latestValueRef.current;
+        const nextValue = removeResolvedAtlassianResourceUrls(
+          currentValue,
+          resolvedUrls,
+        );
+        if (nextValue === currentValue) {
+          return;
+        }
+        const nextCursor = Math.min(
+          textareaRef.current?.selectionStart ?? nextValue.length,
+          nextValue.length,
+        );
+        setValue(nextValue);
+        setCursorPosition(nextCursor);
+      } catch {
+        // Disabled, invalid, or inaccessible integrations leave pasted text intact.
+      }
+    },
+    [addSelectedIntegrationReferences, setValue],
+  );
+
+  const handleTextareaPaste = useCallback(
+    (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+      if (questionMode || isReadOnly || (isSubmitting && !canQueue)) {
+        return;
+      }
+      const pastedText = event.clipboardData.getData("text");
+      const urls = extractPastedAtlassianResourceUrls(pastedText);
+      if (urls.length === 0) {
+        return;
+      }
+      event.preventDefault();
+      const textarea = event.currentTarget;
+      const selectionStart = textarea.selectionStart ?? value.length;
+      const selectionEnd = textarea.selectionEnd ?? selectionStart;
+      const nextValue = `${value.slice(0, selectionStart)}${pastedText}${value.slice(selectionEnd)}`;
+      const nextCursor = selectionStart + pastedText.length;
+      setValue(nextValue);
+      setCursorPosition(nextCursor);
+      restoreTextareaFocusCursorRef.current = nextCursor;
+      window.requestAnimationFrame(() => {
+        window.setTimeout(() => {
+          void resolvePastedAtlassianUrls(urls);
+        }, 0);
+      });
+    },
+    [
+      canQueue,
+      isReadOnly,
+      isSubmitting,
+      questionMode,
+      resolvePastedAtlassianUrls,
+      setValue,
+      value,
+    ],
+  );
+
   const attachmentDropEnabled =
     enableAttachments && !attachmentDisabled && onFilesSelected !== undefined;
   const { isDragging: isAttachmentDragging, dropProps: attachmentDropProps } =
@@ -1605,6 +1730,7 @@ export function AgentComposerSurface({
           data-testid={textareaTestId}
           value={value}
           onChange={handleTextareaChange}
+          onPaste={handleTextareaPaste}
           onKeyDown={handleKeyDown}
           onKeyUp={(event) => updateCursorFromTextarea(event.currentTarget)}
           onClick={(event) => updateCursorFromTextarea(event.currentTarget)}
