@@ -71,11 +71,19 @@ fn parse_codex_cli_capabilities_detects_core_exec_surface() {
 
 #[test]
 fn parse_codex_cli_capabilities_reports_missing_json_feature() {
-    let capabilities =
-        parse_codex_cli_capabilities(ROOT_HELP, &EXEC_HELP.replace("--json", ""), None, None, None);
+    let capabilities = parse_codex_cli_capabilities(
+        ROOT_HELP,
+        &EXEC_HELP.replace("--json", ""),
+        None,
+        None,
+        None,
+    );
 
     assert!(!capabilities.supports_json_output);
-    assert_eq!(capabilities.missing_core_exec_features(), vec!["json_output"]);
+    assert_eq!(
+        capabilities.missing_core_exec_features(),
+        vec!["json_output"]
+    );
 }
 
 #[test]
@@ -106,7 +114,7 @@ fn build_codex_exec_args_maps_lane_settings_to_flags_and_overrides() {
             "-m",
             "gpt-5.4",
             "-s",
-            "workspace-write",
+            "danger-full-access",
             "-C",
             "/tmp/work",
             "--add-dir",
@@ -118,7 +126,7 @@ fn build_codex_exec_args_maps_lane_settings_to_flags_and_overrides() {
             "-c",
             "model_reasoning_effort=\"xhigh\"",
             "-c",
-            "approval_policy=\"on-request\"",
+            "approval_policy=\"never\"",
         ]
     );
 }
@@ -177,9 +185,9 @@ fn build_codex_exec_resume_args_maps_config_to_resume_surface() {
             "-c",
             "model_reasoning_effort=\"xhigh\"",
             "-c",
-            "approval_policy=\"on-request\"",
+            "approval_policy=\"never\"",
             "-c",
-            "sandbox_mode=\"workspace-write\"",
+            "sandbox_mode=\"danger-full-access\"",
         ]
     );
 }
@@ -211,8 +219,12 @@ fn build_spawnable_codex_exec_command_uses_prompt_arg_transport() {
             "--json".to_string(),
             "-m".to_string(),
             "gpt-5.4".to_string(),
+            "-s".to_string(),
+            "danger-full-access".to_string(),
             "-C".to_string(),
             cwd,
+            "-c".to_string(),
+            "approval_policy=\"never\"".to_string(),
             "--".to_string(),
             "Plan the refactor".to_string(),
         ]
@@ -246,6 +258,10 @@ fn build_spawnable_codex_resume_command_uses_resume_subcommand_and_prompt_arg() 
             "resume".to_string(),
             "session-123".to_string(),
             "--json".to_string(),
+            "-c".to_string(),
+            "approval_policy=\"never\"".to_string(),
+            "-c".to_string(),
+            "sandbox_mode=\"danger-full-access\"".to_string(),
             "--".to_string(),
             "Continue the plan".to_string(),
         ]
@@ -338,11 +354,7 @@ fn compose_codex_prompt_injects_agent_prompt_body_when_available() {
         "name: ralphx-execution-worker\nrole: worker\n",
     )
     .expect("agent metadata");
-    std::fs::write(
-        agent_dir.join("prompt.md"),
-        "You are the worker agent.\n",
-    )
-    .expect("agent file");
+    std::fs::write(agent_dir.join("prompt.md"), "You are the worker agent.\n").expect("agent file");
 
     let prompt = compose_codex_prompt(
         "Execute task task-123",

@@ -22,7 +22,9 @@ use crate::domain::repositories::{
     QueuedMessageRepository, ReviewRepository, TaskDependencyRepository, TaskProposalRepository,
     TaskRepository, TaskStepRepository,
 };
-use crate::domain::services::{GithubServiceTrait, MessageQueue, RunningAgentRegistry};
+use crate::domain::services::{
+    GithubServiceTrait, MessageQueue, PlanPrDescriptionDrafter, RunningAgentRegistry,
+};
 use crate::infrastructure::memory::MemoryDelegatedSessionRepository;
 
 #[derive(Clone)]
@@ -50,6 +52,7 @@ pub(crate) struct RuntimeFactoryDeps {
     pub interactive_process_registry: Option<Arc<InteractiveProcessRegistry>>,
     pub github_service: Option<Arc<dyn GithubServiceTrait>>,
     pub pr_poller_registry: Option<Arc<PrPollerRegistry>>,
+    pub plan_pr_description_drafter: Option<Arc<dyn PlanPrDescriptionDrafter>>,
 }
 
 impl RuntimeFactoryDeps {
@@ -93,6 +96,7 @@ impl RuntimeFactoryDeps {
             interactive_process_registry: None,
             github_service: None,
             pr_poller_registry: None,
+            plan_pr_description_drafter: None,
         }
     }
 
@@ -140,6 +144,14 @@ impl RuntimeFactoryDeps {
         self
     }
 
+    pub(crate) fn with_plan_pr_description_drafter(
+        mut self,
+        drafter: Arc<dyn PlanPrDescriptionDrafter>,
+    ) -> Self {
+        self.plan_pr_description_drafter = Some(drafter);
+        self
+    }
+
     pub(crate) fn from_app_state(state: &AppState) -> Self {
         let started_at = Instant::now();
         let deps = Self::from_core(
@@ -170,6 +182,14 @@ impl RuntimeFactoryDeps {
         .with_github_runtime_support(
             state.github_service.as_ref().map(Arc::clone),
             Some(Arc::clone(&state.pr_poller_registry)),
+        )
+        .with_plan_pr_description_drafter(
+            crate::application::plan_pr_description::build_app_state_plan_pr_description_drafter(
+                Arc::clone(&state.agent_conversation_workspace_repo),
+                Arc::clone(&state.chat_conversation_repo),
+                Arc::clone(&state.agent_provider_settings_repo),
+                state.agent_clients.clone(),
+            ),
         );
         tracing::info!(
             elapsed_ms = started_at.elapsed().as_millis(),
@@ -739,6 +759,9 @@ pub(crate) fn build_transition_service_from_deps<R: Runtime>(
     if let Some(github) = deps.github_service.as_ref() {
         service = service.with_github_service(Arc::clone(github));
     }
+    if let Some(drafter) = deps.plan_pr_description_drafter.as_ref() {
+        service = service.with_plan_pr_description_drafter(Arc::clone(drafter));
+    }
     service
 }
 
@@ -804,6 +827,9 @@ pub(crate) fn build_task_scheduler_from_deps<R: Runtime>(
     }
     if let Some(github) = deps.github_service.as_ref() {
         scheduler = scheduler.with_github_service(Arc::clone(github));
+    }
+    if let Some(drafter) = deps.plan_pr_description_drafter.as_ref() {
+        scheduler = scheduler.with_plan_pr_description_drafter(Arc::clone(drafter));
     }
     scheduler
 }

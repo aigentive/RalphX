@@ -626,6 +626,7 @@ async fn execute_merge_retry_background(
         interactive_process_registry: Some(Arc::clone(&interactive_process_registry)),
         github_service: None,
         pr_poller_registry: None,
+        plan_pr_description_drafter: None,
     };
 
     // Create transition service with all necessary dependencies
