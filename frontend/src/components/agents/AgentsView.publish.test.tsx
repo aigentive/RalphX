@@ -151,14 +151,12 @@ describe("AgentsView publish", () => {
     renderAgentsView();
     selectSidebarConversationRow();
 
-    await screen.findByTestId(
-      "agents-composer-workspace-changes",
+    const changesToggle = await screen.findByTestId(
+      "diff-filter-trigger",
       undefined,
       deferredHydrationTimeout,
     );
-    await waitFor(() =>
-      expect(screen.getByTestId("diff-filter-trigger")).toHaveTextContent("Unstaged"),
-    );
+    expect(changesToggle).toHaveTextContent("Unstaged");
     expect(screen.getByTestId("agents-composer-workspace-changes-count")).toHaveTextContent(
       "1 file",
     );
@@ -171,7 +169,7 @@ describe("AgentsView publish", () => {
     expect(getWorkspaceStagedChangesMock).not.toHaveBeenCalled();
     expect(getWorkspaceUnstagedChangesMock).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByTestId("diff-filter-trigger"));
+    fireEvent.click(changesToggle);
 
     await waitFor(() =>
       expect(getWorkspaceUnstagedChangesMock).toHaveBeenCalledWith("conversation-1"),
@@ -206,14 +204,12 @@ describe("AgentsView publish", () => {
     renderAgentsView();
     selectSidebarConversationRow();
 
-    await screen.findByTestId(
-      "agents-composer-workspace-changes",
+    const changesToggle = await screen.findByTestId(
+      "diff-filter-trigger",
       undefined,
       deferredHydrationTimeout,
     );
-    await waitFor(() =>
-      expect(screen.getByTestId("diff-filter-trigger")).toHaveTextContent("Staged"),
-    );
+    expect(changesToggle).toHaveTextContent("Staged");
     expect(screen.getByTestId("agents-composer-workspace-changes-count")).toHaveTextContent(
       "1 file",
     );
