@@ -304,6 +304,7 @@ interface PlanComposerViewPlanAction {
   available: boolean;
   conversationId: string;
   hasAutoOpenArtifacts: boolean;
+  isPlanVisible: boolean;
   onClick: () => void;
 }
 
@@ -361,11 +362,11 @@ function PlanComposerCtaRow({
     viewPlanAction?.conversationId ?? null,
     viewPlanAction?.hasAutoOpenArtifacts ?? false,
   );
+  const isPlanVisible =
+    viewPlanAction?.isPlanVisible ??
+    (artifactState.isOpen && artifactState.activeTab === "plan");
   const resolvedActions = useMemo<PlanComposerCtaAction[]>(() => {
-    if (
-      !viewPlanAction?.available ||
-      (artifactState.isOpen && artifactState.activeTab === "plan")
-    ) {
+    if (!viewPlanAction?.available || isPlanVisible) {
       return actions;
     }
 
@@ -379,9 +380,8 @@ function PlanComposerCtaRow({
         disabled: false,
         onClick: viewPlanAction.onClick,
       },
-      ...actions,
     ];
-  }, [actions, artifactState.activeTab, artifactState.isOpen, viewPlanAction]);
+  }, [actions, isPlanVisible, viewPlanAction]);
 
   if (resolvedActions.length === 0) {
     return null;
@@ -1308,11 +1308,27 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     activeConversationModeLocked,
     activeWorkspace?.modeSwitchLockReason,
   ]);
+  const isPlanWorkspaceComposer =
+    !isFocusedChildChat &&
+    activeConversationMode === "plan" &&
+    activeWorkspace?.mode === "plan";
+  const canShowPlanComposerViewPrompt =
+    isPlanWorkspaceComposer && availableArtifactTabs.includes("plan");
+  const { artifactState: resolvedArtifactState, artifactPaneOpen } =
+    useResolvedAgentArtifactState(
+      isPlanWorkspaceComposer ? selectedConversationId : null,
+      hasAutoOpenArtifacts,
+    );
+  const isPlanArtifactVisible =
+    isPlanWorkspaceComposer &&
+    artifactPaneOpen &&
+    resolvedArtifactState.activeTab === "plan";
 
   const canUsePlanComposerActions =
     !isFocusedChildChat &&
     activeConversationMode === "plan" &&
-    activeWorkspace?.mode === "plan";
+    activeWorkspace?.mode === "plan" &&
+    isPlanArtifactVisible;
   const planApprovalSessionId = canUsePlanComposerActions
     ? attachedIdeationSessionId
     : null;
@@ -1634,6 +1650,9 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     queryClient,
   ]);
   const planComposerHint = useMemo(() => {
+    if (canShowPlanComposerViewPrompt && !isPlanArtifactVisible) {
+      return "Open the plan to review it before taking action.";
+    }
     if (canApproveComposerPlan) {
       return "Approve the draft plan when it matches the intended scope, or verify it first for adversarial review.";
     }
@@ -1643,9 +1662,11 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
       canChoose: canCreatePlanProposals && canImplementPlanDirectly,
     });
   }, [
+    canShowPlanComposerViewPrompt,
     canApproveComposerPlan,
     canCreatePlanProposals,
     canImplementPlanDirectly,
+    isPlanArtifactVisible,
     isPlanRecommendationPending,
     planComplexityQuery.data,
   ]);
@@ -1763,19 +1784,20 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   const planComposerViewPlanAction = useMemo<
     PlanComposerViewPlanAction | undefined
   >(() => {
-    if (!canApproveComposerPlan || !availableArtifactTabs.includes("plan")) {
+    if (!canShowPlanComposerViewPrompt || isPlanArtifactVisible) {
       return undefined;
     }
     return {
       available: true,
       conversationId: selectedConversationId,
       hasAutoOpenArtifacts,
+      isPlanVisible: isPlanArtifactVisible,
       onClick: onOpenPlanArtifact,
     };
   }, [
-    availableArtifactTabs,
-    canApproveComposerPlan,
+    canShowPlanComposerViewPrompt,
     hasAutoOpenArtifacts,
+    isPlanArtifactVisible,
     onOpenPlanArtifact,
     selectedConversationId,
   ]);

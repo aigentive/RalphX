@@ -45,7 +45,7 @@ struct TxOutput {
 // Transaction Phase Helpers
 // ============================================================================
 
-fn phase_insert_execution_plan(
+pub(super) fn phase_insert_execution_plan(
     conn: &rusqlite::Connection,
     session_id_str: &str,
 ) -> AppResult<ExecutionPlan> {
@@ -63,7 +63,7 @@ fn phase_insert_execution_plan(
     Ok(exec_plan)
 }
 
-fn phase_upsert_plan_branch(
+pub(super) fn phase_upsert_plan_branch(
     conn: &rusqlite::Connection,
     plan_artifact_id_tx: &Option<ArtifactId>,
     session_id_str: &str,
@@ -151,7 +151,7 @@ fn phase_upsert_plan_branch(
     Ok((persisted.id, base_branch))
 }
 
-fn phase_insert_tasks_and_steps(
+pub(super) fn phase_insert_tasks_and_steps(
     conn: &rusqlite::Connection,
     proposals_tx: &[TaskProposal],
     project_id_str: &str,
@@ -289,7 +289,7 @@ fn phase_insert_tasks_and_steps(
     Ok((created_tasks, proposal_to_task, any_ready_tasks))
 }
 
-fn phase_insert_dependencies(
+pub(super) fn phase_insert_dependencies(
     conn: &rusqlite::Connection,
     proposals_tx: &[TaskProposal],
     proposal_deps_tx: &HashMap<String, Vec<String>>,
@@ -331,7 +331,7 @@ fn phase_insert_dependencies(
     Ok((dependencies_created, warnings))
 }
 
-fn phase_update_proposals(
+pub(super) fn phase_update_proposals(
     conn: &rusqlite::Connection,
     proposals_tx: &[TaskProposal],
     proposal_to_task: &HashMap<String, String>,
@@ -349,7 +349,7 @@ fn phase_update_proposals(
     Ok(())
 }
 
-fn phase_insert_merge_task(
+pub(super) fn phase_insert_merge_task(
     conn: &rusqlite::Connection,
     branch_id: &PlanBranchId,
     base_branch_name: &str,
@@ -431,7 +431,7 @@ fn phase_insert_merge_task(
     Ok(())
 }
 
-async fn load_linked_agent_conversation_workspace(
+pub(super) async fn load_linked_agent_conversation_workspace(
     app_state: &AppState,
     session_id: &IdeationSessionId,
     project_id: &ProjectId,

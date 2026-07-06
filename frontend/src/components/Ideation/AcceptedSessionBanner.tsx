@@ -6,17 +6,27 @@
  */
 
 import { useMemo } from "react";
-import { CheckCircle2, ArrowRight, Clock, Zap, CircleCheck } from "lucide-react";
+import { CheckCircle2, ArrowRight, Clock, Zap, CircleCheck, RotateCcw } from "lucide-react";
 import { useTasks } from "@/hooks/useTasks";
 import { withAlpha } from "@/lib/theme-colors";
 import type { TaskProposal } from "@/types/ideation";
-import { getStatusCounts } from "@/types/status";
+import type { Task } from "@/types/task";
+import { getStatusCounts, type StatusCounts } from "@/types/status";
 
 interface AcceptedSessionBannerProps {
   projectId: string;
   proposals: TaskProposal[];
   convertedAt: string | null;
   onViewWork: () => void;
+}
+
+interface AcceptedPlanProgressBannerProps {
+  counts: StatusCounts;
+  acceptedAt: string | null;
+  onViewWork: () => void;
+  onRestartImplementation?: () => void;
+  canRestartImplementation?: boolean;
+  isRestartingImplementation?: boolean;
 }
 
 function formatTimestamp(iso: string): string {
@@ -46,7 +56,7 @@ export function AcceptedSessionBanner({
     [proposals]
   );
 
-  const sessionTasks = useMemo(
+  const sessionTasks = useMemo<Task[]>(
     () => (allTasks ?? []).filter((t) => createdTaskIds.has(t.id)),
     [allTasks, createdTaskIds]
   );
@@ -56,12 +66,31 @@ export function AcceptedSessionBanner({
   if (createdTaskIds.size === 0) return null;
 
   return (
+    <AcceptedPlanProgressBanner
+      counts={counts}
+      acceptedAt={convertedAt}
+      onViewWork={onViewWork}
+    />
+  );
+}
+
+export function AcceptedPlanProgressBanner({
+  counts,
+  acceptedAt,
+  onViewWork,
+  onRestartImplementation,
+  canRestartImplementation = false,
+  isRestartingImplementation = false,
+}: AcceptedPlanProgressBannerProps) {
+  return (
     <div
       data-testid="accepted-session-banner"
       className="mb-4 rounded-xl overflow-hidden"
       style={{
-        background: `linear-gradient(135deg, ${withAlpha("var(--status-success)", 12)} 0%, ${withAlpha("var(--status-success)", 4)} 100%)`,
-        border: `1px solid ${withAlpha("var(--status-success)", 35)}`,
+        backgroundColor: withAlpha("var(--status-success)", 8),
+        borderColor: withAlpha("var(--status-success)", 35),
+        borderStyle: "solid",
+        borderWidth: "1px",
         boxShadow: `0 0 32px ${withAlpha("var(--status-success)", 8)}, inset 0 1px 0 ${withAlpha("var(--status-success)", 15)}`,
       }}
     >
@@ -72,8 +101,10 @@ export function AcceptedSessionBanner({
             <div
               className="w-7 h-7 rounded-full flex items-center justify-center"
               style={{
-                background: withAlpha("var(--status-success)", 18),
-                border: `1px solid ${withAlpha("var(--status-success)", 40)}`,
+                backgroundColor: withAlpha("var(--status-success)", 18),
+                borderColor: withAlpha("var(--status-success)", 40),
+                borderStyle: "solid",
+                borderWidth: "1px",
               }}
             >
               <CheckCircle2 className="w-4 h-4" style={{ color: "var(--status-success)" }} />
@@ -82,41 +113,67 @@ export function AcceptedSessionBanner({
               <span className="text-[0.9375rem] font-semibold" style={{ color: "var(--text-primary)" }}>
                 Plan accepted
               </span>
-              {convertedAt && (
+              {acceptedAt && (
                 <span className="text-[0.6875rem]" style={{ color: "var(--text-muted)" }}>
-                  {formatTimestamp(convertedAt)}
+                  {formatTimestamp(acceptedAt)}
                 </span>
               )}
             </div>
           </div>
 
-          <button
-            data-testid="view-work-button"
-            onClick={onViewWork}
-            className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[0.8125rem] font-semibold transition-all duration-150"
-            style={{
-              background: "var(--status-success)",
-              color: "var(--text-inverse)",
-              boxShadow: `0 1px 4px ${withAlpha("var(--status-success)", 30)}`,
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.background = withAlpha("var(--status-success)", 90);
-              e.currentTarget.style.boxShadow = `0 2px 8px ${withAlpha("var(--status-success)", 40)}`;
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.background = "var(--status-success)";
-              e.currentTarget.style.boxShadow = `0 1px 4px ${withAlpha("var(--status-success)", 30)}`;
-            }}
-          >
-            View Work
-            <ArrowRight className="w-3.5 h-3.5" />
-          </button>
+          <div className="flex items-center gap-2">
+            {onRestartImplementation && canRestartImplementation && (
+              <button
+                data-testid="restart-implementation-button"
+                onClick={onRestartImplementation}
+                disabled={isRestartingImplementation}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-[0.75rem] font-semibold transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-60"
+                style={{
+                  backgroundColor: withAlpha("var(--status-error)", 8),
+                  borderColor: withAlpha("var(--status-error)", 35),
+                  borderStyle: "solid",
+                  borderWidth: "1px",
+                  color: "var(--status-error)",
+                }}
+              >
+                <RotateCcw
+                  className={isRestartingImplementation ? "w-3.5 h-3.5 animate-spin" : "w-3.5 h-3.5"}
+                />
+                {isRestartingImplementation ? "Restarting..." : "Restart Implementation"}
+              </button>
+            )}
+            <button
+              data-testid="view-work-button"
+              onClick={onViewWork}
+              className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-[0.8125rem] font-semibold transition-all duration-150"
+              style={{
+                backgroundColor: "var(--status-success)",
+                color: "var(--text-inverse)",
+                boxShadow: `0 1px 4px ${withAlpha("var(--status-success)", 30)}`,
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.backgroundColor = withAlpha("var(--status-success)", 90);
+                e.currentTarget.style.boxShadow = `0 2px 8px ${withAlpha("var(--status-success)", 40)}`;
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.backgroundColor = "var(--status-success)";
+                e.currentTarget.style.boxShadow = `0 1px 4px ${withAlpha("var(--status-success)", 30)}`;
+              }}
+            >
+              View Work
+              <ArrowRight className="w-3.5 h-3.5" />
+            </button>
+          </div>
         </div>
 
         {/* Status summary */}
         <div
           className="flex items-center gap-4 pt-3"
-          style={{ borderTop: `1px solid ${withAlpha("var(--status-success)", 15)}` }}
+          style={{
+            borderTopColor: withAlpha("var(--status-success)", 15),
+            borderTopStyle: "solid",
+            borderTopWidth: "1px",
+          }}
         >
           <span className="text-[0.8125rem] font-medium" style={{ color: "var(--text-secondary)" }}>
             {counts.total} {counts.total === 1 ? "task" : "tasks"}

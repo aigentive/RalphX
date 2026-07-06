@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { AcceptedSessionBanner } from "./AcceptedSessionBanner";
@@ -37,8 +37,11 @@ describe("AcceptedSessionBanner", () => {
         onViewWork={onViewWork}
       />,
     );
-    expect(screen.getByTestId("view-work-button")).toBeInTheDocument();
-    await user.click(screen.getByTestId("view-work-button"));
+    const viewWorkButton = screen.getByTestId("view-work-button");
+    expect(viewWorkButton).toBeInTheDocument();
+    fireEvent.mouseEnter(viewWorkButton);
+    fireEvent.mouseLeave(viewWorkButton);
+    await user.click(viewWorkButton);
     expect(onViewWork).toHaveBeenCalledOnce();
   });
 
