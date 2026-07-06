@@ -11,11 +11,9 @@ use crate::commands::unified_chat_commands::{
 use crate::domain::entities::{
     AgentConversationWorkspaceMode, Artifact, ArtifactBucketId, ArtifactContent, ArtifactId,
     ArtifactMetadata, ArtifactRelation, ArtifactType, ChatContextType, ChatConversationId,
-    IdeationSessionFlow, IdeationSessionId,
+    IdeationSession, IdeationSessionFlow, IdeationSessionId, IdeationSessionStatus,
 };
 use crate::error::{AppError, AppResult};
-use crate::http_server::helpers::assert_session_mutable;
-use crate::http_server::types::ArtifactResponse;
 use crate::infrastructure::sqlite::{
     SqliteArtifactRepository as ArtifactRepo, SqliteIdeationSessionRepository as SessionRepo,
 };
@@ -44,7 +42,60 @@ pub struct AgentConversationPlanSeedResponse {
     pub conversation: AgentConversationResponse,
     pub workspace: AgentConversationWorkspaceResponse,
     pub session_id: String,
-    pub artifact: ArtifactResponse,
+    pub artifact: AgentPlanArtifactResponse,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AgentPlanArtifactResponse {
+    pub id: String,
+    pub artifact_type: String,
+    pub name: String,
+    pub content_type: String,
+    pub content: String,
+    pub version: u32,
+    pub created_at: String,
+    pub created_by: String,
+    pub bucket_id: Option<String>,
+    pub task_id: Option<String>,
+    pub process_id: Option<String>,
+    pub derived_from: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan_approval_status: Option<String>,
+}
+
+impl From<Artifact> for AgentPlanArtifactResponse {
+    fn from(artifact: Artifact) -> Self {
+        let (content_type, content) = match &artifact.content {
+            ArtifactContent::Inline { text } => ("inline".to_string(), text.clone()),
+            ArtifactContent::File { path } => ("file".to_string(), path.clone()),
+        };
+
+        Self {
+            id: artifact.id.as_str().to_string(),
+            artifact_type: artifact.artifact_type.to_string(),
+            name: artifact.name,
+            content_type,
+            content,
+            version: artifact.metadata.version,
+            created_at: artifact.metadata.created_at.to_rfc3339(),
+            created_by: artifact.metadata.created_by,
+            bucket_id: artifact.bucket_id.map(|id| id.as_str().to_string()),
+            task_id: artifact.metadata.task_id.map(|id| id.as_str().to_string()),
+            process_id: artifact
+                .metadata
+                .process_id
+                .map(|id| id.as_str().to_string()),
+            derived_from: artifact
+                .derived_from
+                .iter()
+                .map(|id| id.as_str().to_string())
+                .collect(),
+            session_id: None,
+            plan_approval_status: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -261,7 +312,7 @@ async fn seed_agent_conversation_plan(
 
     let created = create_or_version_target_plan(state, target_session_id.clone(), seed).await?;
     let workspace_response = agent_workspace_response_for_state(state, workspace).await?;
-    let mut artifact_response = ArtifactResponse::from(created);
+    let mut artifact_response = AgentPlanArtifactResponse::from(created);
     artifact_response.session_id = Some(target_session_id.clone());
     artifact_response.plan_approval_status = Some("draft".to_string());
 
@@ -295,7 +346,7 @@ fn create_or_version_target_plan_sync(
     let session = SessionRepo::get_by_id_sync(conn, target_session_id)?.ok_or_else(|| {
         AppError::NotFound(format!("Planning session not found: {target_session_id}"))
     })?;
-    assert_session_mutable(&session)?;
+    assert_planning_session_mutable(&session)?;
     if session.session_flow != IdeationSessionFlow::Planning {
         return Err(AppError::Validation(
             "Linked session is not a planning session".to_string(),
@@ -358,4 +409,16 @@ fn create_or_version_target_plan_sync(
     }
 
     Ok(created)
+}
+
+fn assert_planning_session_mutable(session: &IdeationSession) -> AppResult<()> {
+    match session.status {
+        IdeationSessionStatus::Archived | IdeationSessionStatus::Accepted => {
+            Err(AppError::Validation(format!(
+                "Cannot modify {} session. Reopen it first.",
+                session.status
+            )))
+        }
+        IdeationSessionStatus::Active => Ok(()),
+    }
 }
