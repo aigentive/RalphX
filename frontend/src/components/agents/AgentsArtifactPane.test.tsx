@@ -21,6 +21,7 @@ import { chatKeys } from "@/hooks/useChat";
 import { reviewSettingsKeys } from "@/hooks/useReviewSettings";
 import { AgentsArtifactPane } from "./AgentsArtifactPane";
 import { agentWorkspaceKeys } from "./agentWorkspaceQueries";
+import { agentConversationKeys } from "./useProjectAgentConversations";
 
 const deferredHydrationTimeout = { timeout: 3_000 };
 
@@ -292,6 +293,65 @@ vi.mock("@/components/pr/PullRequestDetailPanel", () => ({
   }) => (
     <div data-testid="mock-pr-detail-panel">
       PR #{workspace?.publicationPrNumber ?? workspace?.sourcePullRequest?.number ?? "none"}
+    </div>
+  ),
+}));
+
+vi.mock("./AgentPlanStartPanel", () => ({
+  AgentPlanStartPanel: ({
+    conversationId,
+    projectId,
+    onPlanSeeded,
+  }: {
+    conversationId: string;
+    projectId: string;
+    onPlanSeeded: (result: {
+      conversation: {
+        id: string;
+        contextType: "project";
+        contextId: string;
+      };
+      workspace: {
+        conversationId: string;
+        projectId: string;
+        mode: "plan";
+      };
+      sessionId: string;
+      artifact: {
+        id: string;
+        name: string;
+      };
+    }) => void;
+  }) => (
+    <div
+      data-testid="agent-plan-start-panel"
+      data-conversation-id={conversationId}
+      data-project-id={projectId}
+    >
+      <button
+        type="button"
+        onClick={() =>
+          onPlanSeeded({
+            conversation: {
+              id: conversationId,
+              contextType: "project",
+              contextId: projectId,
+            },
+            workspace: {
+              conversationId,
+              projectId,
+              mode: "plan",
+            },
+            sessionId: "seeded-session-1",
+            artifact: {
+              id: "seeded-plan-1",
+              name: "Seeded plan",
+            },
+          })
+        }
+      >
+        Seed plan
+      </button>
     </div>
   ),
 }));
@@ -1277,6 +1337,67 @@ describe("AgentsArtifactPane", () => {
     expect(screen.getByTestId("agents-artifact-tab-plan")).toBeInTheDocument();
     expect(screen.getByTestId("agent-plan-start-panel")).toBeInTheDocument();
     expect(screen.queryByText("No ideation run attached")).not.toBeInTheDocument();
+  });
+
+  it("updates workspace and plan caches when the Plan start panel seeds a plan", async () => {
+    const user = userEvent.setup();
+    const queryClient = createTestQueryClient();
+    const setQueryDataSpy = vi.spyOn(queryClient, "setQueryData");
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+
+    renderPane(
+      "plan",
+      workspace({ mode: "edit" }),
+      vi.fn(),
+      false,
+      conversation(),
+      {},
+      queryClient,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Seed plan" }));
+
+    await waitFor(() =>
+      expect(setQueryDataSpy).toHaveBeenCalledWith(
+        agentWorkspaceKeys.workspace("conversation-1"),
+        expect.objectContaining({
+          conversationId: "conversation-1",
+          projectId: "project-1",
+          mode: "plan",
+        }),
+      ),
+    );
+    expect(setQueryDataSpy).toHaveBeenCalledWith(
+      ["agents", "artifact", "seeded-plan-1"],
+      expect.objectContaining({
+        id: "seeded-plan-1",
+        name: "Seeded plan",
+      }),
+    );
+    expect(setQueryDataSpy).toHaveBeenCalledWith(
+      [
+        "agents",
+        "session-plan",
+        "seeded-session-1",
+        "seeded-plan-1",
+      ],
+      expect.objectContaining({
+        id: "seeded-plan-1",
+      }),
+    );
+    expect(setQueryDataSpy).toHaveBeenCalledWith(
+      [
+        "agents",
+        "plan-approval",
+        "seeded-session-1",
+      ],
+      expect.objectContaining({
+        id: "seeded-plan-1",
+      }),
+    );
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: agentConversationKeys.project("project-1"),
+    });
   });
 
   it("keeps non-plan ideation tabs hidden for edit workspaces without plan data", () => {
