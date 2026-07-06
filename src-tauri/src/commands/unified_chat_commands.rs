@@ -28,6 +28,9 @@ use tauri::{Emitter, Manager, Runtime, State};
 use crate::application::agent_conversation_fork::{
     fork_agent_conversation as fork_agent_conversation_in_state, AgentConversationForkResult,
 };
+use crate::application::agent_conversation_archive::{
+    archive_agent_conversation_for_state, close_agent_workspace_pr_for_state,
+};
 use crate::application::agent_conversation_start_service::{
     AgentConversationStartDeps, AgentConversationStartService,
 };
@@ -97,12 +100,12 @@ use crate::domain::agents::{
     default_effort_for_provider, default_efforts_for_provider, AgentHarnessKind, LogicalEffort,
     DEFAULT_AGENT_HARNESS,
 };
-use crate::domain::entities::plan_branch::{PrPushStatus, PrStatus};
+use crate::domain::entities::plan_branch::PrPushStatus;
 use crate::domain::entities::task_step::StepProgressSummary;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceBranchMode,
-    AgentConversationWorkspaceMode, AgentConversationWorkspacePublicationEvent,
-    AgentConversationWorkspaceStatus, AgentRun, AgentRunId, AgentRunStatus,
+    AgentConversationWorkspaceMode, AgentConversationWorkspacePublicationEvent, AgentRun,
+    AgentRunId, AgentRunStatus,
     AgentWorkspaceReviewMonitorStatus, AgentWorkspaceSourcePullRequest, ArtifactContent,
     ChatAttachmentId, ChatContextType, ChatConversation, ChatConversationId, ChatMessage,
     ChatMessageId, ChatTimelineItem, DelegatedSessionId, ExecutionPlanStatus,
@@ -3868,74 +3871,7 @@ pub async fn archive_agent_conversation_inner(
     conversation_id: &ChatConversationId,
     state: &AppState,
 ) -> Result<(), String> {
-    state
-        .chat_conversation_repo
-        .archive(conversation_id)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    if let Ok(Some(workspace)) = state
-        .agent_conversation_workspace_repo
-        .get_by_conversation_id(conversation_id)
-        .await
-    {
-        state
-            .agent_conversation_workspace_repo
-            .update_status(conversation_id, AgentConversationWorkspaceStatus::Archived)
-            .await
-            .map_err(|e| e.to_string())?;
-
-        let has_open_pr = workspace.publication_pr_number.is_some()
-            && workspace.publication_pr_status.as_deref() != Some("closed")
-            && workspace.publication_pr_status.as_deref() != Some("merged");
-
-        if has_open_pr {
-            if let Ok(Some(project)) = state.project_repo.get_by_id(&workspace.project_id).await {
-                let pr_number = workspace.publication_pr_number.unwrap();
-                let working_dir = std::path::Path::new(&project.working_directory);
-
-                if let Some(github_svc) = &state.github_service {
-                    if let Err(e) = github_svc.close_pr(working_dir, pr_number).await {
-                        tracing::warn!(
-                            pr_number,
-                            error = %e,
-                            "archive_agent_conversation: failed to close PR on remote"
-                        );
-                    }
-                }
-
-                state
-                    .agent_conversation_workspace_repo
-                    .update_publication(
-                        conversation_id,
-                        Some(pr_number),
-                        workspace.publication_pr_url.as_deref(),
-                        Some("closed"),
-                        workspace.publication_push_status.as_deref(),
-                    )
-                    .await
-                    .map_err(|e| e.to_string())?;
-            }
-
-            if let Some(plan_branch_id) = &workspace.linked_plan_branch_id {
-                if let Ok(Some(plan_branch)) =
-                    state.plan_branch_repo.get_by_id(plan_branch_id).await
-                {
-                    if plan_branch.pr_number.is_some()
-                        && plan_branch.pr_status != Some(PrStatus::Closed)
-                        && plan_branch.pr_status != Some(PrStatus::Merged)
-                    {
-                        let _ = state
-                            .plan_branch_repo
-                            .update_pr_status(plan_branch_id, PrStatus::Closed)
-                            .await;
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(())
+    archive_agent_conversation_for_state(conversation_id, state).await
 }
 
 /// Archive a conversation.
@@ -5836,77 +5772,7 @@ pub async fn close_agent_workspace_pr(
     let _pr_description_invalidation =
         AgentWorkspacePrDescriptionInvalidationGuard::new(&conversation_id, true);
     let _workspace_changed_event = emit_workspace_changed_when_done(&app, &conversation_id);
-    let workspace = state
-        .agent_conversation_workspace_repo
-        .get_by_conversation_id(&conversation_id)
-        .await
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| {
-            format!(
-                "Agent conversation workspace not found for conversation {}",
-                conversation_id
-            )
-        })?;
-
-    let project = state
-        .project_repo
-        .get_by_id(&workspace.project_id)
-        .await
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("Project not found: {}", workspace.project_id))?;
-
-    let linked_plan_branch = if workspace.mode == AgentConversationWorkspaceMode::Ideation {
-        match workspace.linked_plan_branch_id.as_ref() {
-            Some(plan_branch_id) => state
-                .plan_branch_repo
-                .get_by_id(plan_branch_id)
-                .await
-                .map_err(|e| e.to_string())?,
-            None => None,
-        }
-    } else {
-        None
-    };
-    let pr_number = linked_plan_branch
-        .as_ref()
-        .and_then(|branch| branch.pr_number)
-        .or(workspace.publication_pr_number)
-        .ok_or_else(|| "No PR associated with this workspace".to_string())?;
-
-    let working_dir = std::path::Path::new(&project.working_directory);
-
-    if let Some(github_svc) = &state.github_service {
-        if let Err(e) = github_svc.close_pr(working_dir, pr_number).await {
-            tracing::warn!(
-                pr_number = pr_number,
-                error = %e,
-                "close_agent_workspace_pr: failed to close PR on remote (continuing with local status update)"
-            );
-        }
-    }
-
-    if let Some(plan_branch) = linked_plan_branch.as_ref() {
-        state
-            .plan_branch_repo
-            .update_pr_status(&plan_branch.id, PrStatus::Closed)
-            .await
-            .map_err(|e| e.to_string())?;
-    }
-
-    state
-        .agent_conversation_workspace_repo
-        .update_publication(
-            &conversation_id,
-            Some(pr_number),
-            linked_plan_branch
-                .as_ref()
-                .and_then(|branch| branch.pr_url.as_deref())
-                .or(workspace.publication_pr_url.as_deref()),
-            Some("closed"),
-            workspace.publication_push_status.as_deref(),
-        )
-        .await
-        .map_err(|e| e.to_string())?;
+    close_agent_workspace_pr_for_state(&conversation_id, &state).await?;
 
     let updated = state
         .agent_conversation_workspace_repo
