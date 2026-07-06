@@ -748,31 +748,70 @@ async fn maybe_register_unrelated_drift_issue(
         Some(draft.prompt.clone()),
         true,
     );
+    let canonical_identity =
+        canonicalize_agent_conversation_issue(&AgentConversationIssueCanonicalInput {
+            issue_kind: issue.issue_kind.as_str(),
+            blocking_scope: issue.blocking_scope.as_str(),
+            title: issue.title.as_str(),
+            summary: issue.summary.as_str(),
+            evidence: issue.evidence.as_deref(),
+            recommendation: issue.recommendation.as_deref(),
+            blocker_fingerprint: issue.blocker_fingerprint.as_deref(),
+            source_task_id: issue.source_task_id.as_deref(),
+        });
+    issue.apply_canonical_identity(&canonical_identity);
+    let mut dedupe_decision = AGENT_CONVERSATION_ISSUE_DEDUPE_CREATED;
 
-    if let Some(blocker_fingerprint) = issue.blocker_fingerprint.as_deref() {
-        match state
-            .app_state
-            .agent_conversation_issue_repo
-            .find_open_by_fingerprint(
-                &origin_conversation.id,
-                Some(task.id.as_str()),
-                "plan_drift",
-                blocker_fingerprint,
-            )
-            .await
-        {
-            Ok(Some(mut existing)) => {
-                existing.refresh_from(issue);
-                issue = existing;
+    match state
+        .app_state
+        .agent_conversation_issue_repo
+        .find_open_by_canonical_fingerprint(
+            &origin_conversation.id,
+            &canonical_identity.fingerprint,
+        )
+        .await
+    {
+        Ok(Some(mut existing)) => {
+            existing.refresh_from(issue);
+            issue = existing;
+            dedupe_decision = AGENT_CONVERSATION_ISSUE_DEDUPE_EXACT_ATTACHED;
+        }
+        Ok(None) => {
+            if let Some(blocker_fingerprint) = issue.blocker_fingerprint.as_deref() {
+                match state
+                    .app_state
+                    .agent_conversation_issue_repo
+                    .find_open_by_fingerprint(
+                        &origin_conversation.id,
+                        Some(task.id.as_str()),
+                        "plan_drift",
+                        blocker_fingerprint,
+                    )
+                    .await
+                {
+                    Ok(Some(mut existing)) => {
+                        existing.apply_canonical_identity(&canonical_identity);
+                        existing.refresh_from(issue);
+                        issue = existing;
+                        dedupe_decision = AGENT_CONVERSATION_ISSUE_DEDUPE_EXACT_ATTACHED;
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        tracing::warn!(
+                            task_id = %task.id.as_str(),
+                            error = %error,
+                            "Failed to check for existing unrelated-drift Agent issue"
+                        );
+                    }
+                }
             }
-            Ok(None) => {}
-            Err(error) => {
-                tracing::warn!(
-                    task_id = %task.id.as_str(),
-                    error = %error,
-                    "Failed to check for existing unrelated-drift Agent issue"
-                );
-            }
+        }
+        Err(error) => {
+            tracing::warn!(
+                task_id = %task.id.as_str(),
+                error = %error,
+                "Failed to check canonical unrelated-drift Agent issue identity"
+            );
         }
     }
 
@@ -792,6 +831,20 @@ async fn maybe_register_unrelated_drift_issue(
             return None;
         }
     };
+    let occurrence = AgentConversationIssueOccurrence::from_issue(&saved_issue, dedupe_decision);
+    if let Err(error) = state
+        .app_state
+        .agent_conversation_issue_repo
+        .append_occurrence(&occurrence)
+        .await
+    {
+        tracing::warn!(
+            task_id = %task.id.as_str(),
+            issue_id = %saved_issue.id,
+            error = %error,
+            "Failed to save unrelated-drift Agent issue occurrence"
+        );
+    }
 
     if !review_settings.auto_create_followup_agent_conversation {
         return None;

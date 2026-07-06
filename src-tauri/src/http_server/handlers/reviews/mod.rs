@@ -9,8 +9,10 @@ use tauri::Emitter;
 use super::*;
 use crate::application::{GitService, TaskTransitionService};
 use crate::domain::entities::{
-    AgentConversationIssue, ChatConversationId, InternalStatus, ProjectId, Review, ReviewNote,
-    ReviewOutcome, ReviewerType, TaskId,
+    canonicalize_agent_conversation_issue, AgentConversationIssue,
+    AgentConversationIssueCanonicalInput, AgentConversationIssueOccurrence, ChatConversationId,
+    InternalStatus, ProjectId, Review, ReviewNote, ReviewOutcome, ReviewerType, TaskId,
+    AGENT_CONVERSATION_ISSUE_DEDUPE_CREATED, AGENT_CONVERSATION_ISSUE_DEDUPE_EXACT_ATTACHED,
 };
 use crate::domain::review::{
     apply_review_outcome, build_ai_review_note, build_followup_activity_event,

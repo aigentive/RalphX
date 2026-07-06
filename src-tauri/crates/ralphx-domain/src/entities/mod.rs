@@ -49,7 +49,11 @@ pub use agent_conversation_granola_note::{
     AgentConversationGranolaNoteLink, AgentConversationGranolaRefreshStatus,
 };
 pub use agent_conversation_issue::{
-    AgentConversationIssue, AGENT_CONVERSATION_ISSUE_STATUS_DISMISSED,
+    canonicalize_agent_conversation_issue, AgentConversationIssue,
+    AgentConversationIssueCanonicalIdentity, AgentConversationIssueCanonicalInput,
+    AgentConversationIssueOccurrence, AGENT_CONVERSATION_ISSUE_DEDUPE_CANDIDATE_ATTACHED,
+    AGENT_CONVERSATION_ISSUE_DEDUPE_CONFIRMED_NEW, AGENT_CONVERSATION_ISSUE_DEDUPE_CREATED,
+    AGENT_CONVERSATION_ISSUE_DEDUPE_EXACT_ATTACHED, AGENT_CONVERSATION_ISSUE_STATUS_DISMISSED,
     AGENT_CONVERSATION_ISSUE_STATUS_OPEN, AGENT_CONVERSATION_ISSUE_STATUS_RESOLVED,
 };
 pub use agent_conversation_jira_issue::{
