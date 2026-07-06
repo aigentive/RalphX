@@ -623,6 +623,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     : null;
   const runtimeStatusQuery = useAgentConversationRuntimeStatus(conversationId, {
     enabled: Boolean(conversationId && effectiveActiveTab === "review"),
+    mirrorToVisibleChatStatus: false,
     storeKey: runtimeStatusStoreKey,
   });
   const isWorkspaceRuntimeGenerating = hasGeneratingConversationRuntime(
