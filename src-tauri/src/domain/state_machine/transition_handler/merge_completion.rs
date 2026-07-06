@@ -651,14 +651,26 @@ pub async fn deferred_merge_cleanup(
                 }
                 Ok(_) => {}
                 Err(e) => {
-                    tracing::warn!(
-                        task_id = %task_id_str,
-                        worktree = %wt_path_str,
-                        error = %e,
-                        "Phase 3: could not verify worktree cleanliness; skipping cleanup to \
-                         prevent work loss"
-                    );
-                    return;
+                    let empty_non_git_dir = std::fs::read_dir(&wt_path)
+                        .map(|mut entries| entries.next().is_none())
+                        .unwrap_or(false);
+                    if empty_non_git_dir {
+                        tracing::debug!(
+                            task_id = %task_id_str,
+                            worktree = %wt_path_str,
+                            error = %e,
+                            "Phase 3: empty non-git worktree path; continuing cleanup"
+                        );
+                    } else {
+                        tracing::warn!(
+                            task_id = %task_id_str,
+                            worktree = %wt_path_str,
+                            error = %e,
+                            "Phase 3: could not verify worktree cleanliness; skipping cleanup to \
+                             prevent work loss"
+                        );
+                        return;
+                    }
                 }
             }
         }
