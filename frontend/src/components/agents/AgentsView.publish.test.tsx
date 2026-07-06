@@ -83,12 +83,12 @@ describe("AgentsView publish", () => {
     renderAgentsView();
     selectSidebarConversationRow();
 
-    await screen.findByTestId(
-      "agents-composer-workspace-changes",
+    const changesToggle = await screen.findByTestId(
+      "diff-filter-trigger",
       undefined,
       deferredHydrationTimeout,
     );
-    expect(screen.getByTestId("diff-filter-trigger")).toHaveTextContent("Unstaged");
+    expect(changesToggle).toHaveTextContent("Unstaged");
     expect(screen.getByTestId("agents-composer-workspace-changes-count")).toHaveTextContent(
       "2 files",
     );
@@ -106,7 +106,7 @@ describe("AgentsView publish", () => {
     expect(getWorkspaceUnstagedChangesMock).not.toHaveBeenCalled();
     expect(getWorkspaceStagedChangesMock).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByTestId("agents-composer-workspace-changes-header"));
+    fireEvent.click(changesToggle);
 
     await waitFor(() =>
       expect(getWorkspaceUnstagedChangesMock).toHaveBeenCalledWith("conversation-1"),
@@ -261,14 +261,12 @@ describe("AgentsView publish", () => {
     renderAgentsView();
     selectSidebarConversationRow();
 
-    await screen.findByTestId(
-      "agents-composer-context-tray",
+    const taskToggle = await screen.findByTestId(
+      "agents-composer-tasks-toggle",
       undefined,
       deferredHydrationTimeout,
     );
-
-    const taskToggle = screen.getByTestId("agents-composer-tasks-toggle");
-    const changesToggle = screen.getByTestId("diff-filter-trigger");
+    const changesToggle = await screen.findByTestId("diff-filter-trigger");
     expect(taskToggle.compareDocumentPosition(changesToggle)).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING,
     );
@@ -385,12 +383,11 @@ describe("AgentsView publish", () => {
     renderAgentsView();
     selectSidebarConversationRow();
 
-    await screen.findByTestId(
-      "agents-composer-context-tray",
+    const toggle = await screen.findByTestId(
+      "agents-composer-tasks-toggle",
       undefined,
       deferredHydrationTimeout,
     );
-    const toggle = screen.getByTestId("agents-composer-tasks-toggle");
     expect(toggle).toHaveTextContent("Tasks");
     expect(screen.getByTestId("agents-composer-tasks-count")).toHaveTextContent("2");
     expect(toggle.querySelector("svg.lucide-check")).toBeInTheDocument();
@@ -428,12 +425,11 @@ describe("AgentsView publish", () => {
     renderAgentsView();
     selectSidebarConversationRow();
 
-    await screen.findByTestId(
-      "agents-composer-context-tray",
+    const toggle = await screen.findByTestId(
+      "agents-composer-tasks-toggle",
       undefined,
       deferredHydrationTimeout,
     );
-    const toggle = screen.getByTestId("agents-composer-tasks-toggle");
     expect(screen.getByTestId("agents-composer-tasks-count")).toHaveTextContent("1/2");
     expect(toggle.querySelector("svg.lucide-loader-circle")).toBeInTheDocument();
     expect(toggle.querySelector("svg.lucide-check")).not.toBeInTheDocument();
@@ -492,13 +488,13 @@ describe("AgentsView publish", () => {
     renderAgentsView();
     selectSidebarConversationRow();
 
-    await screen.findByTestId(
-      "agents-composer-context-tray",
+    const taskToggle = await screen.findByTestId(
+      "agents-composer-tasks-toggle",
       undefined,
       deferredHydrationTimeout,
     );
 
-    fireEvent.click(screen.getByTestId("agents-composer-tasks-toggle"));
+    fireEvent.click(taskToggle);
 
     await waitFor(() =>
       expect(screen.getByTestId("agents-composer-task-list")).toBeInTheDocument(),
@@ -576,13 +572,13 @@ describe("AgentsView publish", () => {
     renderAgentsView();
     selectSidebarConversationRow();
 
-    await screen.findByTestId(
-      "agents-composer-context-tray",
+    const taskToggle = await screen.findByTestId(
+      "agents-composer-tasks-toggle",
       undefined,
       deferredHydrationTimeout,
     );
 
-    fireEvent.click(screen.getByTestId("agents-composer-tasks-toggle"));
+    fireEvent.click(taskToggle);
 
     const previousListsToggle = await screen.findByTestId(
       "agents-composer-task-lists-show-previous",
@@ -640,12 +636,12 @@ describe("AgentsView publish", () => {
     renderAgentsView();
     selectSidebarConversationRow();
 
-    await screen.findByTestId(
-      "agents-composer-workspace-changes",
+    const changesToggle = await screen.findByTestId(
+      "diff-filter-trigger",
       undefined,
       deferredHydrationTimeout,
     );
-    fireEvent.click(screen.getByTestId("agents-composer-workspace-changes-count"));
+    fireEvent.click(changesToggle);
     await waitFor(() =>
       expect(getWorkspaceUnstagedChangesMock).toHaveBeenCalledWith("conversation-1"),
     );
