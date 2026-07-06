@@ -3556,10 +3556,14 @@ fn pr_supervision_block_is_workspace_review_gate(workspace: &AgentConversationWo
         return false;
     };
     let summary = summary.trim();
+    let summary = summary
+        .strip_prefix("PR fix publish failed: ")
+        .unwrap_or(summary);
     summary == "Workspace Review is required before publishing"
         || summary == "Workspace Review is still running"
-        || summary == "PR fix publish failed: Workspace Review is required before publishing"
-        || summary == "PR fix publish failed: Workspace Review is still running"
+        || summary == "Workspace Review failed"
+        || summary == "Workspace Review failed; retry before publishing"
+        || summary == "Workspace reviewer completed without writing a current Review"
 }
 
 async fn complete_pr_fix_for_terminal_pr(
@@ -6298,6 +6302,22 @@ mod tests {
         let mut monitor =
             AgentWorkspaceReviewMonitor::new(conversation_id, workspace.project_id.clone());
         monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Passed;
+
+        assert!(pr_fix_publish_can_resume_after_workspace_review(
+            &workspace, &monitor
+        ));
+
+        workspace.pr_supervision_summary =
+            Some("Workspace reviewer completed without writing a current Review".to_string());
+
+        assert!(pr_fix_publish_can_resume_after_workspace_review(
+            &workspace, &monitor
+        ));
+
+        workspace.pr_supervision_summary = Some(
+            "PR fix publish failed: Workspace reviewer completed without writing a current Review"
+                .to_string(),
+        );
 
         assert!(pr_fix_publish_can_resume_after_workspace_review(
             &workspace, &monitor
