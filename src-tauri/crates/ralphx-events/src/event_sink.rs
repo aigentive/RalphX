@@ -134,10 +134,35 @@ mod tests {
         let second = RecordingEventSink::new();
         let tee = TeeEventSink::new(vec![Arc::new(first.clone()), Arc::new(second.clone())]);
 
+        assert_eq!(tee.len(), 2);
+        assert!(!tee.is_empty());
+
         tee.emit("event", serde_json::json!({"ok": true}));
 
-        assert_eq!(first.events().len(), 1);
-        assert_eq!(second.events().len(), 1);
+        assert_eq!(
+            first.events(),
+            vec![RecordedEvent {
+                event: "event".to_string(),
+                payload: serde_json::json!({"ok": true}),
+            }]
+        );
+        assert_eq!(
+            second.events(),
+            vec![RecordedEvent {
+                event: "event".to_string(),
+                payload: serde_json::json!({"ok": true}),
+            }]
+        );
+    }
+
+    #[test]
+    fn empty_tee_sink_reports_no_sinks() {
+        let tee = TeeEventSink::new(Vec::new());
+
+        assert_eq!(tee.len(), 0);
+        assert!(tee.is_empty());
+
+        tee.emit("event", serde_json::json!({"ok": true}));
     }
 
     #[test]
@@ -169,12 +194,15 @@ mod tests {
     fn bus_sink_publishes_envelopes() {
         let bus = InternalEventBus::new();
         let mut sub = bus.subscribe();
-        let sink = BusEventSink::new(bus);
+        let sink = BusEventSink::new(bus.clone());
+
+        assert_eq!(sink.bus().subscriber_count(), 1);
 
         sink.emit("event", serde_json::json!({"value": 1}));
 
         let envelope = sub.try_recv().expect("envelope");
         assert_eq!(envelope.name, "event");
         assert_eq!(envelope.payload, serde_json::json!({"value": 1}));
+        assert_eq!(bus.events_published(), 1);
     }
 }

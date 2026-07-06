@@ -69,7 +69,7 @@ impl<T: Clone> EventSubscriber<T> {
     }
 
     pub fn is_closed(&self) -> bool {
-        self.receiver.is_empty() && self.receiver.is_empty()
+        self.receiver.is_closed()
     }
 }
 
@@ -93,5 +93,17 @@ mod tests {
 
         assert_eq!(sub.recv().await.expect("event"), "event");
         assert_eq!(bus.events_published(), 1);
+    }
+
+    #[test]
+    fn subscriber_reports_closed_after_bus_is_dropped() {
+        let bus = EventBus::<String>::new();
+        let sub = bus.subscribe();
+
+        assert!(!sub.is_closed());
+
+        drop(bus);
+
+        assert!(sub.is_closed());
     }
 }
