@@ -1,7 +1,8 @@
 use crate::domain::entities::{
-    AgentConversationIssue, ChatConversationId, ProjectId,
-    AGENT_CONVERSATION_ISSUE_STATUS_DISMISSED, AGENT_CONVERSATION_ISSUE_STATUS_OPEN,
-    AGENT_CONVERSATION_ISSUE_STATUS_RESOLVED,
+    AgentConversationIssue, AgentConversationIssueCanonicalIdentity,
+    AgentConversationIssueOccurrence, ChatConversationId, ProjectId,
+    AGENT_CONVERSATION_ISSUE_DEDUPE_CREATED, AGENT_CONVERSATION_ISSUE_STATUS_DISMISSED,
+    AGENT_CONVERSATION_ISSUE_STATUS_OPEN, AGENT_CONVERSATION_ISSUE_STATUS_RESOLVED,
 };
 use crate::domain::repositories::AgentConversationIssueRepository;
 use crate::testing::SqliteTestDb;
@@ -28,6 +29,16 @@ fn make_issue(conversation_id: ChatConversationId) -> AgentConversationIssue {
         Some("Inspect and plan the unrelated failure separately.".to_string()),
         true,
     )
+}
+
+fn canonical_identity(fingerprint: &str) -> AgentConversationIssueCanonicalIdentity {
+    AgentConversationIssueCanonicalIdentity {
+        fingerprint: fingerprint.to_string(),
+        scope_kind: "project".to_string(),
+        scope_subject: "frontend-package".to_string(),
+        family: "setup".to_string(),
+        candidate_match_eligible: true,
+    }
 }
 
 #[tokio::test]
@@ -78,6 +89,67 @@ async fn issue_lifecycle_round_trips() {
     assert_eq!(
         all_issues[0].status,
         AGENT_CONVERSATION_ISSUE_STATUS_DISMISSED
+    );
+}
+
+#[tokio::test]
+async fn canonical_lookup_candidates_and_occurrences_round_trip() {
+    let db = SqliteTestDb::new("sqlite_agent_conversation_issue_repo_identity_tests");
+    let repo = SqliteAgentConversationIssueRepository::from_shared(db.shared_conn());
+    let conversation_id = ChatConversationId::from_string("conversation-identity-1");
+
+    let mut exact_issue = make_issue(conversation_id.clone());
+    exact_issue.apply_canonical_identity(&canonical_identity(
+        "v1:setup:project:frontend-package:missing-frontend-dependency",
+    ));
+    let exact_issue = repo.save(&exact_issue).await.unwrap();
+
+    let found = repo
+        .find_open_by_canonical_fingerprint(
+            &conversation_id,
+            "v1:setup:project:frontend-package:missing-frontend-dependency",
+        )
+        .await
+        .unwrap()
+        .expect("canonical lookup should find exact issue");
+    assert_eq!(found.id, exact_issue.id);
+
+    let mut candidate_issue = make_issue(conversation_id.clone());
+    candidate_issue.apply_canonical_identity(&canonical_identity(
+        "v1:setup:project:frontend-package:other-setup-failure",
+    ));
+    candidate_issue.title = "Other setup failure".to_string();
+    let candidate_issue = repo.save(&candidate_issue).await.unwrap();
+
+    let candidates = repo
+        .list_open_candidates_by_identity(
+            &conversation_id,
+            "project",
+            "frontend-package",
+            "setup",
+            "v1:setup:project:frontend-package:missing-frontend-dependency",
+            5,
+        )
+        .await
+        .unwrap();
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].id, candidate_issue.id);
+
+    let occurrence = AgentConversationIssueOccurrence::from_issue(
+        &exact_issue,
+        AGENT_CONVERSATION_ISSUE_DEDUPE_CREATED,
+    );
+    let occurrence = repo.append_occurrence(&occurrence).await.unwrap();
+    let occurrences = repo
+        .list_occurrences_by_issue(&exact_issue.id)
+        .await
+        .unwrap();
+    assert_eq!(occurrences.len(), 1);
+    assert_eq!(occurrences[0].id, occurrence.id);
+    assert_eq!(occurrences[0].issue_id, exact_issue.id);
+    assert_eq!(
+        occurrences[0].canonical_fingerprint.as_deref(),
+        Some("v1:setup:project:frontend-package:missing-frontend-dependency")
     );
 }
 

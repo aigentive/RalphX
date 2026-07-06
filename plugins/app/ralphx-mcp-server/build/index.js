@@ -705,7 +705,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             });
         }
         else if (name === "register_agent_issue") {
-            const { origin_conversation_id, source_task_id, source_context_type, source_context_id, source_agent_name, issue_kind, severity, blocking_scope, title, summary, evidence, recommendation, blocker_fingerprint, followup_title, followup_prompt, auto_followup_eligible, provider_harness, model_override, logical_effort, } = args;
+            const { origin_conversation_id, source_task_id, source_context_type, source_context_id, source_agent_name, issue_kind, severity, blocking_scope, title, summary, evidence, recommendation, blocker_fingerprint, attach_to_issue_id, confirm_new, new_issue_reason, issue_check_token, followup_title, followup_prompt, auto_followup_eligible, provider_harness, model_override, logical_effort, } = args;
             const resolvedSourceTaskId = typeof source_task_id === "string" && source_task_id.trim().length > 0
                 ? source_task_id
                 : RALPHX_TASK_ID || undefined;
@@ -723,6 +723,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 evidence,
                 recommendation,
                 blocker_fingerprint,
+                attach_to_issue_id,
+                confirm_new,
+                new_issue_reason,
+                issue_check_token,
                 followup_title,
                 followup_prompt,
                 auto_followup_eligible: auto_followup_eligible ?? false,
