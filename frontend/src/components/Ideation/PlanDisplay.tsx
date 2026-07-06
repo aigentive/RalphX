@@ -7,7 +7,7 @@
 
 import { useState, useCallback, useEffect } from "react";
 import { toast } from "sonner";
-import { FileEdit, Download, CheckCircle2, ChevronDown, FileText, Sparkles, History, Loader2, ArrowLeft, ListPlus, MoreHorizontal, Copy, ShieldCheck, Rocket, MessageSquarePlus } from "lucide-react";
+import { FileEdit, Download, CheckCircle2, ChevronDown, FileText, Sparkles, History, Loader2, ArrowLeft, ListPlus, MoreHorizontal, Copy, ShieldCheck, Rocket, MessageSquarePlus, GitPullRequestArrow } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Button } from "@/components/ui/button";
@@ -49,11 +49,16 @@ export interface PlanDisplayConversationReference {
   version: number;
 }
 
+export type PlanDisplayBodyMode = "plan" | "proposals";
+
 export interface PlanDisplayProps {
   plan: Artifact;
   artifactLabel?: string;
   showApprove?: boolean;
   linkedProposalsCount?: number;
+  bodyMode?: PlanDisplayBodyMode;
+  onBodyModeChange?: (mode: PlanDisplayBodyMode) => void;
+  hideBody?: boolean;
   onEdit?: () => void;
   onExport?: () => void;
   onStartNewConversationWithPlan?: (
@@ -349,6 +354,9 @@ export function PlanDisplay({
   artifactLabel = "Plan",
   showApprove = false,
   linkedProposalsCount = 0,
+  bodyMode = "plan",
+  onBodyModeChange,
+  hideBody = false,
   onEdit,
   onExport,
   onStartNewConversationWithPlan,
@@ -382,6 +390,8 @@ export function PlanDisplay({
   const showCreateProposals =
     onCreateProposals &&
     (linkedProposalsCount === undefined || linkedProposalsCount === 0);
+  const showProposalBodyToggle =
+    linkedProposalsCount > 0 && onBodyModeChange !== undefined;
   const showImplementDirectly = Boolean(onImplementDirectly);
   const isCreateProposalsPrimary =
     !isPlanActionRecommendationPending &&
@@ -550,6 +560,7 @@ export function PlanDisplay({
     const hasActionCTAs =
       (showApprove && !isApproved) ||
       isApproved ||
+      showProposalBodyToggle ||
       onVerifyPlan ||
       showCreateProposals ||
       showImplementDirectly;
@@ -742,6 +753,41 @@ export function PlanDisplay({
                 </span>
               )}
 
+              {showProposalBodyToggle && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() =>
+                    onBodyModeChange?.(
+                      bodyMode === "proposals" ? "plan" : "proposals",
+                    )
+                  }
+                  aria-pressed={bodyMode === "proposals"}
+                  data-testid="plan-proposals-toggle"
+                  className="h-7 px-2.5 text-[0.6875rem] font-semibold gap-1.5 rounded-lg transition-colors duration-150"
+                  style={{
+                    color:
+                      bodyMode === "proposals"
+                        ? "var(--accent-primary)"
+                        : "var(--text-secondary)",
+                    backgroundColor:
+                      bodyMode === "proposals"
+                        ? withAlpha("var(--accent-primary)", 10)
+                        : "transparent",
+                    borderColor:
+                      bodyMode === "proposals"
+                        ? "var(--accent-border)"
+                        : "var(--border-subtle)",
+                    borderStyle: "solid",
+                    borderWidth: "1px",
+                  }}
+                >
+                  <GitPullRequestArrow className="w-3 h-3" />
+                  {linkedProposalsCount} Proposal{linkedProposalsCount !== 1 ? "s" : ""}
+                </Button>
+              )}
+
               {onVerifyPlan && (
                 <Button
                   type="button"
@@ -912,7 +958,7 @@ export function PlanDisplay({
           </div>
         )}
 
-        {isLoadingVersion ? (
+        {hideBody ? null : isLoadingVersion ? (
           <div className="flex items-center justify-center py-12">
             <Loader2
               className="w-6 h-6 animate-spin"
