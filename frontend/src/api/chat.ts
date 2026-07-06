@@ -1624,6 +1624,7 @@ export const chatApi = {
   skipAgentWorkspacePrReviewAction,
   getAgentRunStatus,
   getAgentRunningStates,
+  getAgentConversationRuntimeIndex,
   getAgentConversationRuntimeStatuses,
   getBulkWorkspacePublicationStates,
   // Message sending & queue
@@ -3743,6 +3744,125 @@ export async function getAgentConversationRuntimeStatuses(
     "get_agent_conversation_runtime_statuses",
     { conversationIds },
     z.record(z.string(), AgentConversationRuntimeStatusSchema),
+  );
+}
+
+const AgentConversationRuntimeIndexGroupSchema = z.enum([
+  "main",
+  "ideation_verification",
+  "pipeline",
+]);
+
+export type AgentConversationRuntimeIndexGroup = z.infer<
+  typeof AgentConversationRuntimeIndexGroupSchema
+>;
+
+const AgentConversationRuntimeIndexKindSchema = z.enum([
+  "workspace",
+  "workspace_review",
+  "ideation",
+  "verification",
+  "delegation",
+  "task",
+]);
+
+export type AgentConversationRuntimeIndexKind = z.infer<
+  typeof AgentConversationRuntimeIndexKindSchema
+>;
+
+const AgentConversationRuntimeLifecycleSchema = z.enum([
+  "planned",
+  "queued",
+  "running",
+  "waiting",
+  "completed",
+  "failed",
+  "cancelled",
+  "blocked",
+  "dropped",
+]);
+
+export type AgentConversationRuntimeLifecycle = z.infer<
+  typeof AgentConversationRuntimeLifecycleSchema
+>;
+
+const AgentConversationRuntimeIndexModeSchema = z.enum([
+  "chat",
+  "agent",
+  "plan",
+  "pr_review",
+  "ideation",
+]);
+
+export type AgentConversationRuntimeIndexMode = z.infer<
+  typeof AgentConversationRuntimeIndexModeSchema
+>;
+
+export interface AgentConversationRuntimeIndexRow {
+  id: string;
+  group: AgentConversationRuntimeIndexGroup;
+  kind: AgentConversationRuntimeIndexKind;
+  lifecycle: AgentConversationRuntimeLifecycle;
+  statusLabel: string;
+  title: string;
+  mode: AgentConversationRuntimeIndexMode | null;
+  orderIndex: number;
+  orderStartedAt: string | null;
+  completedAt: string | null;
+  conversationId: string | null;
+  contextType: ContextType | null;
+  contextId: string | null;
+  taskId: string | null;
+  agentRunId: string | null;
+  parentSessionId: string | null;
+  childSessionId: string | null;
+  providerHarness: string | null;
+  providerSessionId: string | null;
+  errorMessage: string | null;
+}
+
+export interface AgentConversationRuntimeIndexResponse {
+  conversationId: string;
+  rows: AgentConversationRuntimeIndexRow[];
+}
+
+const AgentConversationRuntimeIndexRowSchema =
+  z.object({
+    id: z.string(),
+    group: AgentConversationRuntimeIndexGroupSchema,
+    kind: AgentConversationRuntimeIndexKindSchema,
+    lifecycle: AgentConversationRuntimeLifecycleSchema,
+    statusLabel: z.string(),
+    title: z.string(),
+    mode: AgentConversationRuntimeIndexModeSchema.nullable(),
+    orderIndex: z.number(),
+    orderStartedAt: z.string().nullable(),
+    completedAt: z.string().nullable(),
+    conversationId: z.string().nullable(),
+    contextType: ContextTypeSchema.nullable(),
+    contextId: z.string().nullable(),
+    taskId: z.string().nullable(),
+    agentRunId: z.string().nullable(),
+    parentSessionId: z.string().nullable(),
+    childSessionId: z.string().nullable(),
+    providerHarness: z.string().nullable(),
+    providerSessionId: z.string().nullable(),
+    errorMessage: z.string().nullable(),
+  }) satisfies z.ZodType<AgentConversationRuntimeIndexRow>;
+
+const AgentConversationRuntimeIndexResponseSchema =
+  z.object({
+    conversationId: z.string(),
+    rows: z.array(AgentConversationRuntimeIndexRowSchema),
+  }) satisfies z.ZodType<AgentConversationRuntimeIndexResponse>;
+
+export async function getAgentConversationRuntimeIndex(
+  conversationId: string,
+): Promise<AgentConversationRuntimeIndexResponse> {
+  return typedInvoke(
+    "get_agent_conversation_runtime_index",
+    { conversationId },
+    AgentConversationRuntimeIndexResponseSchema,
   );
 }
 

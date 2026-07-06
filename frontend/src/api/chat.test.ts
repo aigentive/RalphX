@@ -50,6 +50,7 @@ import {
   stopAgent,
   isAgentRunning,
   getAgentRunningStates,
+  getAgentConversationRuntimeIndex,
   getAgentConversationRuntimeStatuses,
   chatApi,
   getConversationActiveState,
@@ -2509,6 +2510,68 @@ describe("chat api", () => {
     );
   });
 
+  it("loads the durable conversation runtime index", async () => {
+    mockInvoke.mockResolvedValueOnce({
+      conversationId: "c1",
+      rows: [
+        {
+          id: "workspace:c1",
+          group: "main",
+          kind: "workspace",
+          lifecycle: "running",
+          statusLabel: "Running",
+          title: "Workspace chat",
+          mode: "agent",
+          orderIndex: 0,
+          orderStartedAt: "2026-07-06T10:00:00Z",
+          completedAt: null,
+          conversationId: "c1",
+          contextType: "project",
+          contextId: "c1",
+          taskId: null,
+          agentRunId: "run-1",
+          parentSessionId: null,
+          childSessionId: null,
+          providerHarness: "codex",
+          providerSessionId: "provider-session-1",
+          errorMessage: null,
+        },
+      ],
+    });
+
+    await expect(getAgentConversationRuntimeIndex("c1")).resolves.toEqual({
+      conversationId: "c1",
+      rows: [
+        {
+          id: "workspace:c1",
+          group: "main",
+          kind: "workspace",
+          lifecycle: "running",
+          statusLabel: "Running",
+          title: "Workspace chat",
+          mode: "agent",
+          orderIndex: 0,
+          orderStartedAt: "2026-07-06T10:00:00Z",
+          completedAt: null,
+          conversationId: "c1",
+          contextType: "project",
+          contextId: "c1",
+          taskId: null,
+          agentRunId: "run-1",
+          parentSessionId: null,
+          childSessionId: null,
+          providerHarness: "codex",
+          providerSessionId: "provider-session-1",
+          errorMessage: null,
+        },
+      ],
+    });
+    expect(mockInvoke).toHaveBeenCalledWith(
+      "get_agent_conversation_runtime_index",
+      { conversationId: "c1" },
+    );
+  });
+
   it("exports chatApi namespace", () => {
     expect(chatApi.sendAgentMessage).toBe(sendAgentMessage);
     expect(chatApi.listConversations).toBe(listConversations);
@@ -2523,6 +2586,9 @@ describe("chat api", () => {
     );
     expect(chatApi.getAgentConversationRuntimeStatuses).toBe(
       getAgentConversationRuntimeStatuses
+    );
+    expect(chatApi.getAgentConversationRuntimeIndex).toBe(
+      getAgentConversationRuntimeIndex
     );
     expect(chatApi.precomputeAgentConversationWorkspacePrDescription).toBe(
       precomputeAgentConversationWorkspacePrDescription
