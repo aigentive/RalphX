@@ -9,14 +9,6 @@ vi.mock("@/stores/projectStore", () => ({
   ),
 }));
 
-vi.mock("@/hooks/useProjectStats", () => ({
-  useProjectStats: vi.fn(() => ({
-    data: { taskCount: 0 },
-    isLoading: false,
-    isError: false,
-  })),
-}));
-
 let mockFeatureFlags: FeatureFlags = {
   activityPage: true,
   extensibilityPage: true,
@@ -100,6 +92,12 @@ describe("LeftNavRail", () => {
 
     fireEvent.click(granolaButton);
     expect(onViewChange).toHaveBeenCalledWith("granola");
+  });
+
+  it("keeps Insights visible when task-pipeline stats are sparse", () => {
+    render(<LeftNavRail currentView="agents" onViewChange={vi.fn()} />);
+
+    expect(screen.getByTestId("nav-insights")).toBeInTheDocument();
   });
 
   it("hides the Ticketing entry but keeps GitHub and Granola when no ticketing provider is enabled", () => {

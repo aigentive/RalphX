@@ -11,8 +11,6 @@ import {
 import { SlidersHorizontal, Users } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTeamStore, selectHasAnyActiveTeam, selectTotalTeammateCount } from "@/stores/teamStore";
-import { useProjectStore } from "@/stores/projectStore";
-import { useProjectStats } from "@/hooks/useProjectStats";
 import { useFeatureFlags } from "@/hooks/useFeatureFlags";
 import { ALL_NAV_ITEMS } from "./nav-items";
 import type { ViewType } from "@/types/chat";
@@ -83,16 +81,13 @@ function NavItem({
 export function Navigation({ currentView, onViewChange, onOpenSettings, hideViews = false }: NavigationProps) {
   const hasActiveTeam = useTeamStore(selectHasAnyActiveTeam);
   const teammateCount = useTeamStore(selectTotalTeammateCount);
-  const activeProjectId = useProjectStore((s) => s.activeProjectId);
-  const { data: stats } = useProjectStats(activeProjectId ?? undefined);
   const { data: featureFlags } = useFeatureFlags();
 
-  const taskCount = stats?.taskCount ?? 0;
   const dashboardViews = new Set<ViewType>(["ticketing", "github", "granola"]);
   const visibleItems = hideViews
     ? []
     : ALL_NAV_ITEMS.filter(
-        (item) => !dashboardViews.has(item.view) && item.visible(featureFlags, taskCount),
+        (item) => !dashboardViews.has(item.view) && item.visible(featureFlags),
       );
 
   return (

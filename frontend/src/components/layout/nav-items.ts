@@ -23,7 +23,7 @@ export interface NavItemConfig {
   label: string;
   icon: React.ElementType;
   shortcut?: string;
-  visible: (flags: FeatureFlags, taskCount: number) => boolean;
+  visible: (flags: FeatureFlags) => boolean;
 }
 
 export const ALL_NAV_ITEMS: NavItemConfig[] = [
@@ -78,7 +78,7 @@ export const ALL_NAV_ITEMS: NavItemConfig[] = [
     label: "Insights",
     icon: TrendingUp,
     shortcut: "⌘5",
-    visible: (_flags, taskCount) => taskCount >= 10,
+    visible: () => true,
   },
   {
     view: "extensibility",
