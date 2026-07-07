@@ -28,6 +28,7 @@ pub struct AutomationConfigPatch {
     pub chain_mode: Option<String>,
     pub completion_signal: Option<String>,
     pub setup_analysis_summary: Option<String>,
+    pub spec_artifact_id: Option<String>,
 }
 
 #[async_trait]

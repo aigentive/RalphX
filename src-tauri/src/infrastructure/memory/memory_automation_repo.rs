@@ -153,6 +153,9 @@ impl AutomationRepository for MemoryAutomationRepository {
         if let Some(setup_analysis_summary) = patch.setup_analysis_summary {
             automation.setup_analysis_summary = Some(setup_analysis_summary);
         }
+        if let Some(spec_artifact_id) = patch.spec_artifact_id {
+            automation.spec_artifact_id = Some(spec_artifact_id);
+        }
         automation.updated_at = Utc::now();
         Ok(Some(automation.clone()))
     }

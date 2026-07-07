@@ -251,6 +251,7 @@ pub struct Automation {
     pub max_consecutive_failures: i64,
     pub first_run_prompt: Option<String>,
     pub setup_analysis_summary: Option<String>,
+    pub spec_artifact_id: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

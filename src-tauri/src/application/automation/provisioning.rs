@@ -16,8 +16,8 @@ use crate::domain::entities::{
     AutomationRunId, AutomationRunStatus, ChatConversation, ChatConversationId,
 };
 use crate::domain::repositories::{
-    AgentConversationWorkspaceRepository, AutomationRepository, AutomationRunRepository,
-    ChatConversationRepository,
+    AgentConversationWorkspaceRepository, ArtifactRepository, AutomationRepository,
+    AutomationRunRepository, ChatConversationRepository,
 };
 use crate::domain::services::{
     ComposerArtifactReference, ComposerIntegrationReference, ComposerProjectReference,
@@ -139,11 +139,13 @@ impl AutomationRunProvisioner {
         workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
         starter: Arc<dyn AutomationRunStarter>,
         event_emitter: Arc<dyn AutomationEventEmitter>,
+        artifact_repo: Arc<dyn ArtifactRepository>,
     ) -> Self {
         let service = AutomationService::new(
             Arc::clone(&automation_repo),
             Arc::clone(&run_repo),
             Arc::clone(&event_emitter),
+            artifact_repo,
         );
         let transition_service = AutomationTransitionService::new(
             Arc::clone(&automation_repo),

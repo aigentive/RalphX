@@ -24,8 +24,8 @@ use crate::domain::services::{
 };
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::memory::{
-    MemoryAgentConversationWorkspaceRepository, MemoryAutomationRepository,
-    MemoryAutomationRunRepository, MemoryChatConversationRepository,
+    MemoryAgentConversationWorkspaceRepository, MemoryArtifactRepository,
+    MemoryAutomationRepository, MemoryAutomationRunRepository, MemoryChatConversationRepository,
 };
 
 fn automation(id: &str) -> Automation {
@@ -54,6 +54,7 @@ fn automation(id: &str) -> Automation {
         max_consecutive_failures: 3,
         first_run_prompt: Some("Build the first PR".to_string()),
         setup_analysis_summary: None,
+        spec_artifact_id: None,
         created_at: now,
         updated_at: now,
     }
@@ -312,6 +313,7 @@ async fn provision_first_run_noops_or_rejects_when_not_ready() {
         workspace_repo.clone(),
         Arc::new(starter.clone()),
         Arc::new(NoopAutomationEventEmitter),
+        Arc::new(MemoryArtifactRepository::new()),
     );
 
     assert!(provisioner
@@ -352,6 +354,7 @@ async fn provision_first_run_creates_owned_draft_and_marks_workspace_for_initial
         workspace_repo.clone(),
         Arc::new(starter.clone()),
         Arc::new(NoopAutomationEventEmitter),
+        Arc::new(MemoryArtifactRepository::new()),
     );
 
     let started = provisioner
@@ -438,6 +441,7 @@ async fn provision_pending_run_noops_for_non_pending_and_conflicts_on_stale_stat
         workspace_repo,
         Arc::new(starter),
         Arc::new(NoopAutomationEventEmitter),
+        Arc::new(MemoryArtifactRepository::new()),
     );
 
     let mut running = run(automation.id.clone());
@@ -477,6 +481,7 @@ async fn provision_pending_run_marks_agent_failed_when_starter_errors() {
         workspace_repo,
         Arc::new(FailingStarter),
         Arc::new(NoopAutomationEventEmitter),
+        Arc::new(MemoryArtifactRepository::new()),
     );
 
     let error = provisioner

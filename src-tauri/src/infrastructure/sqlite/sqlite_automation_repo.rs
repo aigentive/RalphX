@@ -62,8 +62,9 @@ impl SqliteAutomationRepository {
             max_consecutive_failures: row.get(20)?,
             first_run_prompt: row.get(21)?,
             setup_analysis_summary: row.get(22)?,
-            created_at: parse_datetime_required(row.get(23)?),
-            updated_at: parse_datetime_required(row.get(24)?),
+            spec_artifact_id: row.get(23)?,
+            created_at: parse_datetime_required(row.get(24)?),
+            updated_at: parse_datetime_required(row.get(25)?),
         })
     }
 }
@@ -73,7 +74,7 @@ const SELECT_AUTOMATION: &str = "SELECT
     goal_prompt, setup_conversation_id, provider_harness, model_id, logical_effort,
     run_mode, base_ref_kind, base_ref, base_display_name, base_source_pull_request_json,
     goal_items_json, chain_mode, completion_signal, max_runs, max_consecutive_failures,
-    first_run_prompt, setup_analysis_summary, created_at, updated_at
+    first_run_prompt, setup_analysis_summary, spec_artifact_id, created_at, updated_at
 FROM automations";
 
 #[async_trait]
@@ -89,10 +90,10 @@ impl AutomationRepository for SqliteAutomationRepository {
                         logical_effort, run_mode, base_ref_kind, base_ref, base_display_name,
                         base_source_pull_request_json, goal_items_json, chain_mode,
                         completion_signal, max_runs, max_consecutive_failures, first_run_prompt,
-                        setup_analysis_summary, created_at, updated_at
+                        setup_analysis_summary, spec_artifact_id, created_at, updated_at
                     ) VALUES (
                         ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-                        ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25
+                        ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26
                     )",
                     params![
                         to_insert.id.as_str(),
@@ -118,6 +119,7 @@ impl AutomationRepository for SqliteAutomationRepository {
                         to_insert.max_consecutive_failures,
                         to_insert.first_run_prompt,
                         to_insert.setup_analysis_summary,
+                        to_insert.spec_artifact_id,
                         to_insert.created_at.to_rfc3339(),
                         to_insert.updated_at.to_rfc3339(),
                     ],
@@ -223,8 +225,9 @@ impl AutomationRepository for SqliteAutomationRepository {
                          chain_mode = COALESCE(?11, chain_mode),
                          completion_signal = COALESCE(?12, completion_signal),
                          setup_analysis_summary = COALESCE(?13, setup_analysis_summary),
-                         updated_at = ?14
-                     WHERE id = ?15",
+                         spec_artifact_id = COALESCE(?14, spec_artifact_id),
+                         updated_at = ?15
+                     WHERE id = ?16",
                     params![
                         patch.goal_prompt,
                         patch.first_run_prompt,
@@ -239,6 +242,7 @@ impl AutomationRepository for SqliteAutomationRepository {
                         patch.chain_mode,
                         patch.completion_signal,
                         patch.setup_analysis_summary,
+                        patch.spec_artifact_id,
                         Utc::now().to_rfc3339(),
                         id,
                     ],

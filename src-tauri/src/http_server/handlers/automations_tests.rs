@@ -50,6 +50,7 @@ fn automation(id: &AutomationId, project_id: ProjectId, status: AutomationStatus
         max_consecutive_failures: 3,
         first_run_prompt: Some("Run 1".to_string()),
         setup_analysis_summary: None,
+        spec_artifact_id: None,
         created_at: now,
         updated_at: now,
     }
@@ -189,6 +190,55 @@ async fn update_automation_persists_config_fields_for_bound_conversation() {
         stored.goal_items_json.as_deref(),
         Some(r#"[{"id":"phase-1","title":"Build shared context model","status":"pending"}]"#),
     );
+}
+
+#[tokio::test]
+async fn update_automation_materializes_spec_content_for_bound_conversation() {
+    let app_state = Arc::new(AppState::new_test());
+    let (project_id, automation_id, conversation) = seed_bound_conversation(&app_state).await;
+    let mut automation = automation(&automation_id, project_id, AutomationStatus::Draft);
+    automation.setup_conversation_id = Some(conversation.id.clone());
+    app_state
+        .automation_repo
+        .create(automation.clone())
+        .await
+        .unwrap();
+    let state = HttpServerState::new_test(app_state.clone());
+
+    let Json(updated) = update_automation(
+        State(state),
+        caller_headers(&conversation.id),
+        Json(UpdateAutomationRequest {
+            spec_content: Some("# Automation spec\n\nPhase 1: implement it.".to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .unwrap();
+
+    let spec_id = updated.spec_artifact_id.expect("spec artifact linked");
+    let artifact = app_state
+        .artifact_repo
+        .get_by_id(&crate::domain::entities::ArtifactId::from_string(
+            spec_id.clone(),
+        ))
+        .await
+        .unwrap()
+        .expect("spec artifact persisted");
+    match &artifact.content {
+        crate::domain::entities::ArtifactContent::Inline { text } => {
+            assert!(text.contains("Phase 1: implement it."))
+        }
+        other => panic!("expected inline spec content, got {other:?}"),
+    }
+
+    let stored = app_state
+        .automation_repo
+        .get_by_id(&automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.spec_artifact_id.as_deref(), Some(spec_id.as_str()));
 }
 
 #[tokio::test]

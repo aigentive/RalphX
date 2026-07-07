@@ -172,6 +172,7 @@ pub fn spawn_automation_scheduler(
         signal_checker,
         judge_invoker,
         event_emitter,
+        Arc::clone(&state.artifact_repo),
         registry,
         AutomationSchedulerConfig::default(),
     );

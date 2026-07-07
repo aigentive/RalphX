@@ -37,8 +37,9 @@ use crate::domain::entities::{
     AutomationRun, AutomationRunStatus, AutomationStatus,
 };
 use crate::domain::repositories::{
-    AgentConversationWorkspaceRepository, AgentRunRepository, AutomationRepository,
-    AutomationRunPublicationMetadata, AutomationRunRepository, ChatConversationRepository,
+    AgentConversationWorkspaceRepository, AgentRunRepository, ArtifactRepository,
+    AutomationRepository, AutomationRunPublicationMetadata, AutomationRunRepository,
+    ChatConversationRepository,
 };
 use crate::domain::services::github_service::{GithubServiceTrait, PrStatus};
 use crate::error::{AppError, AppResult};
@@ -505,6 +506,7 @@ impl AutomationScheduler {
         signal_checker: Arc<dyn AutomationSignalChecker>,
         judge_invoker: Arc<dyn AutomationJudgeInvoker>,
         event_emitter: Arc<dyn AutomationEventEmitter>,
+        artifact_repo: Arc<dyn ArtifactRepository>,
         registry: Arc<AutomationSchedulerRegistry>,
         config: AutomationSchedulerConfig,
     ) -> Self {
@@ -512,6 +514,7 @@ impl AutomationScheduler {
             Arc::clone(&automation_repo),
             Arc::clone(&run_repo),
             event_emitter.clone(),
+            Arc::clone(&artifact_repo),
         );
         let transition_service = AutomationTransitionService::new(
             Arc::clone(&automation_repo),
@@ -525,6 +528,7 @@ impl AutomationScheduler {
             Arc::clone(&workspace_repo),
             starter,
             event_emitter,
+            artifact_repo,
         );
         Self {
             service,

@@ -31,8 +31,8 @@ use crate::domain::services::github_service::PrStatus;
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::AutomationsRuntimeConfig;
 use crate::infrastructure::memory::{
-    MemoryAgentConversationWorkspaceRepository, MemoryAgentRunRepository, MemoryAutomationRepository,
-    MemoryAutomationRunRepository, MemoryChatConversationRepository,
+    MemoryAgentConversationWorkspaceRepository, MemoryAgentRunRepository, MemoryArtifactRepository,
+    MemoryAutomationRepository, MemoryAutomationRunRepository, MemoryChatConversationRepository,
 };
 
 #[derive(Default)]
@@ -201,6 +201,7 @@ fn automation(id: &str, status: AutomationStatus) -> Automation {
         max_consecutive_failures: 3,
         first_run_prompt: Some("Run 1".to_string()),
         setup_analysis_summary: None,
+        spec_artifact_id: None,
         created_at: now,
         updated_at: now,
     }
@@ -329,6 +330,7 @@ fn scheduler_with_judge_and_agent_runs(
         signal_checker,
         judge_invoker,
         Arc::new(NoopAutomationEventEmitter),
+        Arc::new(MemoryArtifactRepository::new()),
         Arc::new(AutomationSchedulerRegistry::default()),
         config,
     )
@@ -509,6 +511,7 @@ async fn automation_scheduler_tick_only_leases_active_automations() {
         Arc::new(RecordingSignalChecker::default()),
         Arc::new(RecordingJudgeInvoker::default()),
         Arc::new(NoopAutomationEventEmitter),
+        Arc::new(MemoryArtifactRepository::new()),
         registry,
         AutomationSchedulerConfig::from_runtime(&AutomationsRuntimeConfig::default()),
     );

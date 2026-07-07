@@ -47,6 +47,7 @@ fn automation() -> Automation {
         max_consecutive_failures: 3,
         first_run_prompt: Some("Run 1".to_string()),
         setup_analysis_summary: None,
+        spec_artifact_id: None,
         created_at: now,
         updated_at: now,
     }

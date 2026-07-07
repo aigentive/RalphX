@@ -38,6 +38,7 @@ fn automation(id: &str, project_id: &str, status: AutomationStatus) -> Automatio
         max_consecutive_failures: 3,
         first_run_prompt: Some("Run 1".to_string()),
         setup_analysis_summary: None,
+        spec_artifact_id: None,
         created_at: now,
         updated_at: now,
     }
@@ -199,6 +200,7 @@ async fn memory_automation_repo_update_config_writes_only_provided_fields() {
                     r#"[{"id":"phase-1","title":"Create context model","status":"pending"}]"#
                         .to_string(),
                 ),
+                spec_artifact_id: Some("artifact-spec-1".to_string()),
                 ..Default::default()
             },
         )
@@ -207,6 +209,7 @@ async fn memory_automation_repo_update_config_writes_only_provided_fields() {
         .expect("config should update");
 
     assert_eq!(updated.goal_prompt, "Ship the migration");
+    assert_eq!(updated.spec_artifact_id.as_deref(), Some("artifact-spec-1"));
     assert_eq!(
         updated.first_run_prompt.as_deref(),
         Some("Implement item 1 in a scoped PR.")
