@@ -64,8 +64,7 @@ impl<R: Runtime> ReconciliationRunner<R> {
         status: InternalStatus,
         attempt: u32,
     ) -> Result<(), String> {
-        let mut updated = task.clone();
-        let mut json: serde_json::Value = updated
+        let mut json: serde_json::Value = task
             .metadata
             .as_deref()
             .and_then(|m| serde_json::from_str(m).ok())
@@ -76,10 +75,8 @@ impl<R: Runtime> ReconciliationRunner<R> {
             obj.insert(key, serde_json::json!(attempt));
         }
 
-        updated.metadata = Some(json.to_string());
-        updated.touch();
         self.task_repo
-            .update(&updated)
+            .update_metadata(&task.id, Some(json.to_string()))
             .await
             .map_err(|e| e.to_string())
     }

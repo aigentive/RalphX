@@ -4,13 +4,13 @@
 // result mapping, retry counting, and dual-conflict sequential scenarios.
 // Also covers: FreshnessMetadata struct API (cleanup scopes, backoff, serde defaults).
 
+use crate::support::real_git_repo::setup_real_git_repo;
 use chrono::Utc;
 use ralphx_lib::domain::entities::{Project, ProjectId, Task};
 use ralphx_lib::domain::state_machine::transition_handler::freshness::{
     ensure_branches_fresh, FreshnessAction, FreshnessCleanupScope, FreshnessMetadata,
 };
 use ralphx_lib::infrastructure::agents::claude::ReconciliationConfig;
-use crate::support::real_git_repo::setup_real_git_repo;
 
 // ==================
 // Helpers
@@ -93,6 +93,37 @@ async fn config_disabled_returns_ok_without_checking() {
         result.is_ok(),
         "Disabled config must return Ok immediately. Got: {:?}",
         result
+    );
+}
+
+#[tokio::test]
+async fn unreadable_worktree_status_blocks_execution() {
+    let cfg = freshness_config();
+    let task = make_test_task(Some("task/branch"), None);
+    let project = make_test_project("/nonexistent/path/should-block");
+    let nonexistent = std::path::Path::new("/nonexistent/path/should-block");
+
+    let result = ensure_branches_fresh(
+        nonexistent,
+        &task,
+        &project,
+        "task-status-unreadable",
+        None,
+        None,
+        None,
+        None,
+        "executing",
+        &cfg,
+    )
+    .await;
+
+    assert!(
+        matches!(
+            result,
+            Err(FreshnessAction::ExecutionBlocked { ref reason })
+                if reason.contains("Failed to check worktree status")
+        ),
+        "Unreadable worktree status must block execution; got {result:?}"
     );
 }
 
@@ -395,10 +426,10 @@ async fn plan_conflicts_returns_route_to_merging() {
 }
 
 #[tokio::test]
-async fn plan_error_is_non_fatal_continues() {
-    // If plan_branch doesn't exist, update_plan_from_main returns Error (non-fatal).
-    // ensure_branches_fresh should warn and continue to source check.
-    // Source check succeeds → Ok.
+async fn plan_error_after_retry_blocks_execution() {
+    // If plan_branch doesn't exist, update_plan_from_main returns Error.
+    // ensure_branches_fresh retries once, then blocks execution instead of
+    // treating an unreadable freshness update as success.
     let repo = setup_real_git_repo();
     let project = make_test_project(&repo.path_string());
     let task = make_test_task(Some(&repo.task_branch), None);
@@ -409,7 +440,7 @@ async fn plan_error_is_non_fatal_continues() {
         &task,
         &project,
         "task-plan-error",
-        Some("plan/nonexistent-plan-branch"), // branch doesn't exist → Error (non-fatal)
+        Some("plan/nonexistent-plan-branch"), // branch doesn't exist → Error
         None,
         None,
         None,
@@ -419,8 +450,12 @@ async fn plan_error_is_non_fatal_continues() {
     .await;
 
     assert!(
-        result.is_ok(),
-        "Plan check error is non-fatal; source check should succeed → Ok. Got: {:?}",
+        matches!(
+            result,
+            Err(FreshnessAction::ExecutionBlocked { ref reason })
+                if reason.contains("update_plan_from_main failed after retry")
+        ),
+        "Plan check error must block after retry. Got: {:?}",
         result
     );
 }
@@ -555,7 +590,42 @@ async fn source_conflicts_returns_route_to_merging() {
 }
 
 #[tokio::test]
-async fn source_error_is_non_fatal_returns_ok() {
+async fn source_error_after_retry_blocks_execution() {
+    // A missing task branch makes update_source_from_target return Error.
+    // ensure_branches_fresh retries once, then blocks execution instead of
+    // silently marking freshness as passed.
+    let repo = setup_real_git_repo();
+    let project = make_test_project(&repo.path_string());
+    let task = make_test_task(Some("task/nonexistent-source-branch"), None);
+    let cfg = freshness_config();
+
+    let result = ensure_branches_fresh(
+        repo.path(),
+        &task,
+        &project,
+        "task-source-error",
+        None,
+        None,
+        None,
+        None,
+        "executing",
+        &cfg,
+    )
+    .await;
+
+    assert!(
+        matches!(
+            result,
+            Err(FreshnessAction::ExecutionBlocked { ref reason })
+                if reason.contains("update_source_from_target")
+        ),
+        "Source check error must block after retry. Got: {:?}",
+        result
+    );
+}
+
+#[tokio::test]
+async fn missing_task_branch_skips_source_check_returns_ok() {
     // Empty task_branch → source check is skipped entirely → Ok.
     let repo = setup_real_git_repo();
     let project = make_test_project(&repo.path_string());

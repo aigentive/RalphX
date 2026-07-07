@@ -1,5 +1,5 @@
 use super::*;
-use crate::domain::entities::InternalStatus;
+use crate::domain::entities::{GitMode, InternalStatus};
 use crate::domain::state_machine::transition_handler::merge_validation;
 use crate::domain::state_machine::transition_handler::{
     is_merge_worktree_path, restore_task_worktree,
@@ -88,6 +88,11 @@ impl<'a> TransitionHandler<'a> {
             if let (Ok(Some(task)), Ok(Some(project))) = (task_result, project_result) {
                 let exec_cwd = if let Some(ref wt_path) = task.worktree_path {
                     std::path::PathBuf::from(wt_path)
+                } else if project.git_mode == GitMode::Worktree {
+                    return Err(AppError::ExecutionBlocked(format!(
+                        "{}: task has no worktree_path before pre-execution setup",
+                        GIT_ISOLATION_ERROR_PREFIX
+                    )));
                 } else {
                     tracing::warn!(
                         task_id = task_id_str,
@@ -98,6 +103,13 @@ impl<'a> TransitionHandler<'a> {
                 };
 
                 if !exec_cwd.exists() {
+                    if project.git_mode == GitMode::Worktree {
+                        return Err(AppError::ExecutionBlocked(format!(
+                            "{}: task worktree_path '{}' does not exist before pre-execution setup",
+                            GIT_ISOLATION_ERROR_PREFIX,
+                            exec_cwd.display()
+                        )));
+                    }
                     tracing::warn!(
                         task_id = task_id_str,
                         exec_cwd = %exec_cwd.display(),
@@ -193,6 +205,98 @@ impl<'a> TransitionHandler<'a> {
                 }
             }
         }
+        Ok(())
+    }
+
+    async fn persist_execution_task_update(
+        &self,
+        task_repo: &Arc<dyn TaskRepository>,
+        task: &Task,
+        task_id_str: &str,
+        action: &'static str,
+    ) -> AppResult<()> {
+        if let Err(e) = task_repo.update(task).await {
+            tracing::error!(
+                task_id = task_id_str,
+                error = %e,
+                action,
+                "Failed to persist execution task git state"
+            );
+            return Err(AppError::ExecutionBlocked(format!(
+                "{}: failed to persist execution git state during {}: {}",
+                GIT_ISOLATION_ERROR_PREFIX, action, e
+            )));
+        }
+        Ok(())
+    }
+
+    async fn require_persisted_execution_worktree_ready(
+        &self,
+        task_id_str: &str,
+        project: &Project,
+    ) -> AppResult<()> {
+        if project.git_mode != GitMode::Worktree {
+            return Ok(());
+        }
+
+        let Some(ref task_repo) = self.machine.context.services.task_repo else {
+            return Ok(());
+        };
+        let task_id = TaskId::from_string(task_id_str.to_string());
+        let task = task_repo
+            .get_by_id(&task_id)
+            .await
+            .map_err(|e| {
+                AppError::ExecutionBlocked(format!(
+                    "{}: failed to reload task before execution spawn: {}",
+                    GIT_ISOLATION_ERROR_PREFIX, e
+                ))
+            })?
+            .ok_or_else(|| {
+                AppError::ExecutionBlocked(format!(
+                    "{}: task disappeared before execution spawn",
+                    GIT_ISOLATION_ERROR_PREFIX
+                ))
+            })?;
+
+        let worktree_path = task.worktree_path.as_deref().ok_or_else(|| {
+            AppError::ExecutionBlocked(format!(
+                "{}: task has no persisted worktree_path before execution spawn",
+                GIT_ISOLATION_ERROR_PREFIX
+            ))
+        })?;
+        let path = std::path::PathBuf::from(worktree_path);
+        let project_path = std::path::PathBuf::from(&project.working_directory);
+
+        if path == project_path {
+            return Err(AppError::ExecutionBlocked(format!(
+                "{}: task worktree_path points at the main project checkout",
+                GIT_ISOLATION_ERROR_PREFIX
+            )));
+        }
+        if is_merge_worktree_path(worktree_path) {
+            return Err(AppError::ExecutionBlocked(format!(
+                "{}: task worktree_path points at a merge worktree: {}",
+                GIT_ISOLATION_ERROR_PREFIX, worktree_path
+            )));
+        }
+        let expected_worktree_path =
+            std::path::PathBuf::from(compute_task_worktree_path(project, task_id_str));
+        if path != expected_worktree_path {
+            return Err(AppError::ExecutionBlocked(format!(
+                "{}: task worktree_path '{}' does not match expected execution worktree '{}'",
+                GIT_ISOLATION_ERROR_PREFIX,
+                worktree_path,
+                expected_worktree_path.display()
+            )));
+        }
+        if !path.exists() {
+            return Err(AppError::ExecutionBlocked(format!(
+                "{}: persisted task worktree_path '{}' does not exist before execution spawn",
+                GIT_ISOLATION_ERROR_PREFIX, worktree_path
+            )));
+        }
+
         Ok(())
     }
 
@@ -347,13 +451,13 @@ impl<'a> TransitionHandler<'a> {
                                 stale_path,
                                 "Restored stale merge worktree on execution entry"
                             );
-                            if let Err(e) = task_repo.update(&task).await {
-                                tracing::error!(
-                                    task_id = task_id_str,
-                                    error = %e,
-                                    "Failed to persist restored execution worktree_path"
-                                );
-                            }
+                            self.persist_execution_task_update(
+                                task_repo,
+                                &task,
+                                task_id_str,
+                                "restore_task_worktree",
+                            )
+                            .await?;
                         }
                         Err(e) => {
                             tracing::warn!(
@@ -364,13 +468,13 @@ impl<'a> TransitionHandler<'a> {
                             );
                             task.worktree_path = None;
                             task.touch();
-                            if let Err(update_err) = task_repo.update(&task).await {
-                                tracing::error!(
-                                    task_id = task_id_str,
-                                    error = %update_err,
-                                    "Failed to clear stale execution worktree_path"
-                                );
-                            }
+                            self.persist_execution_task_update(
+                                task_repo,
+                                &task,
+                                task_id_str,
+                                "clear_stale_worktree_path",
+                            )
+                            .await?;
                         }
                     }
                 }
@@ -402,13 +506,13 @@ impl<'a> TransitionHandler<'a> {
                         task.worktree_path = None;
                         task.merge_commit_sha = None;
                         task.touch();
-                        if let Err(e) = task_repo.update(&task).await {
-                            tracing::error!(
-                                task_id = task_id_str,
-                                error = %e,
-                                "Failed to clear stale git refs during self-heal"
-                            );
-                        }
+                        self.persist_execution_task_update(
+                            task_repo,
+                            &task,
+                            task_id_str,
+                            "clear_stale_git_refs",
+                        )
+                        .await?;
                         match create_fresh_branch_and_worktree(
                             &task,
                             &project,
@@ -433,13 +537,13 @@ impl<'a> TransitionHandler<'a> {
                                     worktree_path = %new_worktree.display(),
                                     "Self-healed: created fresh branch and worktree for deleted branch"
                                 );
-                                if let Err(e) = task_repo.update(&task).await {
-                                    tracing::error!(
-                                        task_id = task_id_str,
-                                        error = %e,
-                                        "Failed to persist self-healed branch info"
-                                    );
-                                }
+                                self.persist_execution_task_update(
+                                    task_repo,
+                                    &task,
+                                    task_id_str,
+                                    "persist_self_healed_branch",
+                                )
+                                .await?;
                                 branch_self_healed = true;
                             }
                             Err(e) => return Err(e),
@@ -473,9 +577,13 @@ impl<'a> TransitionHandler<'a> {
                                 task.worktree_path =
                                     Some(worktree_path.to_string_lossy().to_string());
                                 task.touch();
-                                if let Err(e) = task_repo.update(&task).await {
-                                    tracing::error!(error = %e, "Failed to persist task branch info");
-                                }
+                                self.persist_execution_task_update(
+                                    task_repo,
+                                    &task,
+                                    task_id_str,
+                                    "persist_new_task_branch",
+                                )
+                                .await?;
                             }
                             Err(e) => return Err(e),
                         }
@@ -486,6 +594,26 @@ impl<'a> TransitionHandler<'a> {
                             let expected_wt_path =
                                 compute_task_worktree_path(&project, task_id_str);
                             let expected_wt_buf = std::path::PathBuf::from(&expected_wt_path);
+                            if let Some(stored_wt) = task.worktree_path.as_deref() {
+                                let stored_wt_buf = std::path::PathBuf::from(stored_wt);
+                                if stored_wt_buf.exists() && stored_wt_buf != expected_wt_buf {
+                                    tracing::warn!(
+                                        task_id = task_id_str,
+                                        stored_wt = %stored_wt_buf.display(),
+                                        expected_wt = %expected_wt_buf.display(),
+                                        "Task worktree_path points at a non-authoritative path — clearing for repair"
+                                    );
+                                    task.worktree_path = None;
+                                    task.touch();
+                                    self.persist_execution_task_update(
+                                        task_repo,
+                                        &task,
+                                        task_id_str,
+                                        "clear_wrong_worktree_path",
+                                    )
+                                    .await?;
+                                }
+                            }
                             let stored_path_exists = task
                                 .worktree_path
                                 .as_ref()
@@ -518,12 +646,13 @@ impl<'a> TransitionHandler<'a> {
                                     Ok(_) => {
                                         task.worktree_path = Some(expected_wt_path);
                                         task.touch();
-                                        if let Err(e) = task_repo.update(&task).await {
-                                            tracing::error!(
-                                                error = %e,
-                                                "Failed to persist re-created worktree_path"
-                                            );
-                                        }
+                                        self.persist_execution_task_update(
+                                            task_repo,
+                                            &task,
+                                            task_id_str,
+                                            "persist_recreated_worktree_path",
+                                        )
+                                        .await?;
                                     }
                                     Err(e) => {
                                         return Err(AppError::ExecutionBlocked(format!(
@@ -535,16 +664,20 @@ impl<'a> TransitionHandler<'a> {
                             } else if !stored_path_exists && expected_path_exists {
                                 task.worktree_path = Some(expected_wt_path);
                                 task.touch();
-                                if let Err(e) = task_repo.update(&task).await {
-                                    tracing::error!(
-                                        error = %e,
-                                        "Failed to update stale worktree_path in DB"
-                                    );
-                                }
+                                self.persist_execution_task_update(
+                                    task_repo,
+                                    &task,
+                                    task_id_str,
+                                    "persist_existing_worktree_path",
+                                )
+                                .await?;
                             }
                         }
                     }
                 }
+
+                self.require_persisted_execution_worktree_ready(task_id_str, &project)
+                    .await?;
             }
         }
 

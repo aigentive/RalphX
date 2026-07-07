@@ -394,38 +394,56 @@ pub async fn ensure_branches_fresh(
     }
 
     // 5. Dirty worktree guard
-    if is_worktree_dirty(repo_path).await {
-        warn!(
-            task_id = task_id_str,
-            "Dirty worktree detected before freshness check — attempting emergency auto-commit"
-        );
-        match GitService::commit_all_including_deletions(
-            repo_path,
-            "chore: auto-commit before freshness check",
-        )
-        .await
-        {
-            Ok(Some(sha)) => {
-                info!(
-                    task_id = task_id_str,
-                    sha = %sha,
-                    "Emergency auto-commit succeeded"
-                );
+    match is_worktree_dirty(repo_path).await {
+        Ok(true) => {
+            warn!(
+                task_id = task_id_str,
+                "Dirty worktree detected before freshness check — attempting emergency auto-commit"
+            );
+            match GitService::commit_all_including_deletions(
+                repo_path,
+                "chore: auto-commit before freshness check",
+            )
+            .await
+            {
+                Ok(Some(sha)) => {
+                    info!(
+                        task_id = task_id_str,
+                        sha = %sha,
+                        "Emergency auto-commit succeeded"
+                    );
+                }
+                Ok(None) => {
+                    info!(
+                        task_id = task_id_str,
+                        "Emergency auto-commit: nothing to commit (race condition)"
+                    );
+                }
+                Err(e) => {
+                    return Err(block_freshness_git_error(
+                        activity_event_repo,
+                        task_id_str,
+                        "dirty_worktree_autocommit_failed",
+                        "dirty_worktree_autocommit",
+                        format!("Emergency auto-commit failed before freshness check: {}", e),
+                    )
+                    .await);
+                }
             }
-            Ok(None) => {
-                info!(
-                    task_id = task_id_str,
-                    "Emergency auto-commit: nothing to commit (race condition)"
-                );
-            }
-            Err(e) => {
-                warn!(
-                    task_id = task_id_str,
-                    error = %e,
-                    "Emergency auto-commit failed — skipping freshness check to unblock execution"
-                );
-                return Ok(freshness);
-            }
+        }
+        Ok(false) => {}
+        Err(e) => {
+            return Err(block_freshness_git_error(
+                activity_event_repo,
+                task_id_str,
+                "worktree_status_unreadable",
+                "worktree_status",
+                format!(
+                    "Failed to check worktree status before freshness check: {}",
+                    e
+                ),
+            )
+            .await);
         }
     }
 
@@ -527,8 +545,62 @@ pub async fn ensure_branches_fresh(
                 warn!(
                     task_id = task_id_str,
                     error = %e,
-                    "update_plan_from_main failed (non-fatal) — continuing to source check"
+                    "update_plan_from_main failed — retrying once before blocking execution"
                 );
+                let retry_result = tokio::time::timeout(
+                    freshness_timeout,
+                    Box::pin(update_plan_from_main(
+                        repo_path,
+                        plan_branch_name,
+                        base_branch,
+                        project,
+                        task_id_str,
+                        event_sink,
+                    )),
+                )
+                .await;
+                match retry_result {
+                    Ok(
+                        PlanUpdateResult::AlreadyUpToDate
+                        | PlanUpdateResult::Updated
+                        | PlanUpdateResult::NotPlanBranch,
+                    ) => {}
+                    Ok(PlanUpdateResult::Conflicts { conflict_files }) => {
+                        return Err(
+                            block_freshness_update_error(
+                                activity_event_repo,
+                                task_id_str,
+                                "plan_update",
+                                format!(
+                                    "update_plan_from_main returned conflicts after retry following error: {:?}",
+                                    conflict_files
+                                ),
+                            )
+                            .await,
+                        );
+                    }
+                    Ok(PlanUpdateResult::Error(retry_error)) => {
+                        return Err(block_freshness_update_error(
+                            activity_event_repo,
+                            task_id_str,
+                            "plan_update",
+                            format!("update_plan_from_main failed after retry: {}", retry_error),
+                        )
+                        .await);
+                    }
+                    Err(_) => {
+                        return Err(block_freshness_update_error(
+                            activity_event_repo,
+                            task_id_str,
+                            "plan_update",
+                            format!(
+                                "update_plan_from_main retry timed out after {}s",
+                                config.branch_freshness_timeout_secs
+                            ),
+                        )
+                        .await);
+                    }
+                }
             }
             Ok(
                 PlanUpdateResult::AlreadyUpToDate
@@ -642,8 +714,61 @@ pub async fn ensure_branches_fresh(
                 warn!(
                     task_id = task_id_str,
                     error = %e,
-                    "update_source_from_target failed (non-fatal) — continuing"
+                    "update_source_from_target failed — retrying once before blocking execution"
                 );
+                let retry_result = tokio::time::timeout(
+                    freshness_timeout,
+                    Box::pin(update_source_from_target(
+                        repo_path,
+                        source_branch,
+                        target_branch,
+                        project,
+                        task_id_str,
+                        event_sink,
+                    )),
+                )
+                .await;
+                match retry_result {
+                    Ok(SourceUpdateResult::AlreadyUpToDate | SourceUpdateResult::Updated) => {}
+                    Ok(SourceUpdateResult::Conflicts { conflict_files }) => {
+                        return Err(
+                            block_freshness_update_error(
+                                activity_event_repo,
+                                task_id_str,
+                                "source_update",
+                                format!(
+                                    "update_source_from_target returned conflicts after retry following error: {:?}",
+                                    conflict_files
+                                ),
+                            )
+                            .await,
+                        );
+                    }
+                    Ok(SourceUpdateResult::Error(retry_error)) => {
+                        return Err(block_freshness_update_error(
+                            activity_event_repo,
+                            task_id_str,
+                            "source_update",
+                            format!(
+                                "update_source_from_target failed after retry: {}",
+                                retry_error
+                            ),
+                        )
+                        .await);
+                    }
+                    Err(_) => {
+                        return Err(block_freshness_update_error(
+                            activity_event_repo,
+                            task_id_str,
+                            "source_update",
+                            format!(
+                                "update_source_from_target retry timed out after {}s",
+                                config.branch_freshness_timeout_secs
+                            ),
+                        )
+                        .await);
+                    }
+                }
             }
             Ok(SourceUpdateResult::AlreadyUpToDate | SourceUpdateResult::Updated) => {
                 // Source is fresh — continue
@@ -671,6 +796,50 @@ pub async fn ensure_branches_fresh(
     .await;
 
     Ok(freshness)
+}
+
+async fn block_freshness_update_error(
+    activity_event_repo: Option<&Arc<dyn ActivityEventRepository>>,
+    task_id_str: &str,
+    check: &'static str,
+    reason: String,
+) -> FreshnessAction {
+    block_freshness_git_error(
+        activity_event_repo,
+        task_id_str,
+        "update_error_after_retry",
+        check,
+        reason,
+    )
+    .await
+}
+
+async fn block_freshness_git_error(
+    activity_event_repo: Option<&Arc<dyn ActivityEventRepository>>,
+    task_id_str: &str,
+    reason_code: &'static str,
+    check: &'static str,
+    reason: String,
+) -> FreshnessAction {
+    warn!(
+        task_id = task_id_str,
+        check,
+        reason = %reason,
+        reason_code,
+        "Freshness git error blocks execution"
+    );
+    emit_freshness_activity(
+        activity_event_repo,
+        task_id_str,
+        "branch_freshness_blocked",
+        serde_json::json!({
+            "reason": reason_code,
+            "check": check,
+            "message": reason,
+        }),
+    )
+    .await;
+    FreshnessAction::ExecutionBlocked { reason }
 }
 
 /// Set exponential backoff on the freshness metadata after a conflict.
@@ -769,12 +938,12 @@ async fn handle_cap_if_needed(
 }
 
 /// Returns true if the git worktree has uncommitted changes.
-async fn is_worktree_dirty(path: &Path) -> bool {
+async fn is_worktree_dirty(path: &Path) -> Result<bool, String> {
     match git_cmd::run(&["status", "--porcelain", "-z"], path).await {
-        Ok(output) => !output.stdout.is_empty(),
+        Ok(output) => Ok(!output.stdout.is_empty()),
         Err(e) => {
-            warn!(path = %path.display(), error = %e, "Failed to check worktree status — assuming clean");
-            false
+            warn!(path = %path.display(), error = %e, "Failed to check worktree status");
+            Err(e.to_string())
         }
     }
 }
