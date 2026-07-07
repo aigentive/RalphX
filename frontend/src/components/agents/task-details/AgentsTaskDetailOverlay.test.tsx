@@ -248,4 +248,22 @@ describe("AgentsTaskDetailOverlay historical runtime focus", () => {
       "reviewing",
     );
   });
+
+  it("keeps transcript-backed history local when the host does not provide a chat focus handler", () => {
+    renderOverlay();
+
+    fireEvent.click(screen.getByRole("button", { name: "Select execution" }));
+
+    expect(screen.getByTestId("history-mode-banner")).toHaveTextContent(
+      "Runtime transcript available",
+    );
+    expect(screen.getByTestId("mock-task-detail-panel")).toHaveAttribute(
+      "data-view-status",
+      "executing",
+    );
+    expect(screen.getByTestId("mock-task-detail-panel")).toHaveAttribute(
+      "data-view-conversation-id",
+      "exec-conversation",
+    );
+  });
 });

@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TaskValidationSummary } from "@/hooks/useTaskValidationSummary";
 import type { Task } from "@/types/task";
@@ -50,7 +50,13 @@ vi.mock("@/hooks/useGitDiff", () => ({
 }));
 
 vi.mock("@/components/reviews/ReviewDetailModal", () => ({
-  ReviewDetailModal: () => <div data-testid="review-detail-modal" />,
+  ReviewDetailModal: ({ onClose }: { onClose: () => void }) => (
+    <div data-testid="review-detail-modal">
+      <button type="button" onClick={onClose}>
+        Close review modal
+      </button>
+    </div>
+  ),
 }));
 
 vi.mock("../TaskRerunDialog", () => ({
@@ -155,6 +161,25 @@ describe("Agents CompletedTaskDetail", () => {
     ).toBeTruthy();
     expect(screen.getByTestId("task-detail-actions")).toBeInTheDocument();
     expect(screen.getByTestId("review-code-button")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("review-code-button"));
+
+    expect(screen.getByTestId("review-detail-modal")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Close review modal" }));
+
+    expect(screen.queryByTestId("review-detail-modal")).not.toBeInTheDocument();
+  });
+
+  it("renders a loading state while review history is loading", () => {
+    historyState.isLoading = true;
+
+    const { container } = render(<CompletedTaskDetail task={task()} />, {
+      wrapper: TestWrapper,
+    });
+
+    expect(container.querySelector(".animate-spin")).toBeInTheDocument();
+    expect(screen.queryByTestId("completed-task-detail")).not.toBeInTheDocument();
   });
 
   it("keeps completed stage evidence but hides mutation actions in historical mode", () => {
