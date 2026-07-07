@@ -28,6 +28,11 @@ import {
   describeRunFailure,
   latestRun,
 } from "@/components/automations/automationStage";
+import {
+  AUTOMATION_PHASES_LABEL,
+  AUTOMATION_STATUS_LABELS,
+  parseAutomationGoalItems,
+} from "@/components/automations/automationGoalItems";
 import { Button, type ButtonProps } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -43,6 +48,7 @@ import {
   invalidateAutomationQueries,
   useAutomationDetail,
 } from "@/hooks/useAutomations";
+import { useArtifact } from "@/hooks/useArtifacts";
 import { cn } from "@/lib/utils";
 
 interface AutomationDetailViewProps {
@@ -54,14 +60,6 @@ interface AutomationDetailViewProps {
 }
 
 type JsonRecord = Record<string, unknown>;
-
-const AUTOMATION_STATUS_LABELS: Record<Automation["status"], string> = {
-  draft: "Draft",
-  active: "Approved",
-  paused: "Paused",
-  completed: "Completed",
-  stopped: "Stopped",
-};
 
 const RUN_STATUS_LABELS: Record<AutomationRun["status"], string> = {
   pending: "Running",
@@ -353,17 +351,10 @@ function SourcePrInput({ automation }: { automation: Automation }) {
 }
 
 function GoalItems({ value }: { value: string | null }) {
-  const parsed = useMemo(() => {
-    if (!value) {
-      return [];
-    }
-    try {
-      const items = JSON.parse(value) as unknown;
-      return Array.isArray(items) ? items.slice(0, 6) : [];
-    } catch {
-      return [];
-    }
-  }, [value]);
+  const parsed = useMemo(
+    () => parseAutomationGoalItems(value, { limit: 6 }),
+    [value],
+  );
 
   if (parsed.length === 0) {
     return null;
@@ -372,21 +363,39 @@ function GoalItems({ value }: { value: string | null }) {
   return (
     <div className="mt-4 space-y-2">
       <div className="text-xs font-medium uppercase tracking-normal" style={{ color: "var(--text-muted)" }}>
-        Goal items
+        {AUTOMATION_PHASES_LABEL}
       </div>
       <div className="space-y-1">
-        {parsed.map((item, index) => {
-          const record = item && typeof item === "object" ? item as JsonRecord : null;
-          const title = stringField(record, "title") ?? stringField(record, "id") ?? `Item ${index + 1}`;
-          const status = stringField(record, "status") ?? "pending";
-          return (
-            <div key={`${title}-${index}`} className="flex items-center justify-between gap-3 text-sm">
-              <span className="truncate" style={{ color: "var(--text-secondary)" }}>{title}</span>
-              <Pill label={status} status={status} />
-            </div>
-          );
-        })}
+        {parsed.map((item, index) => (
+          <div key={`${item.id}-${index}`} className="flex items-center justify-between gap-3 text-sm">
+            <span className="truncate" style={{ color: "var(--text-secondary)" }}>{item.title}</span>
+            <Pill label={item.status} status={item.status} />
+          </div>
+        ))}
       </div>
+    </div>
+  );
+}
+
+function SpecSection({ specArtifactId }: { specArtifactId: string | null }) {
+  // `useArtifact` no-ops on an empty id (`enabled: !!id`).
+  const artifact = useArtifact(specArtifactId ?? "");
+  const data = specArtifactId ? artifact.data : null;
+
+  if (!data) {
+    return (
+      <p className="text-sm" style={{ color: "var(--text-muted)" }}>
+        No spec linked yet.
+      </p>
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
+        {data.name}
+      </div>
+      <ExpandableText text={data.content} emptyLabel="Spec has no content yet." />
     </div>
   );
 }
@@ -965,6 +974,9 @@ export function AutomationDetailView({
             <Section title="Goal" testId="automation-goal-card">
               <ExpandableText text={automation.goalPrompt} />
               <GoalItems value={automation.goalItemsJson} />
+            </Section>
+            <Section title="Spec" testId="automation-spec-card">
+              <SpecSection specArtifactId={automation.specArtifactId} />
             </Section>
             <Section title="Inputs">
               <SourcePrInput automation={automation} />

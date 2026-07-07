@@ -62,6 +62,7 @@ export const AutomationSchema = z.object({
   paused_reason_detail: z.string().nullable(),
   goal_prompt: z.string(),
   setup_conversation_id: z.string().nullable(),
+  spec_artifact_id: z.string().nullable(),
   provider_harness: z.string(),
   model_id: z.string(),
   logical_effort: z.string().nullable(),

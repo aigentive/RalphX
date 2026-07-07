@@ -15,6 +15,7 @@ const {
   sendAgentMessageMock,
   useAskUserQuestionMock,
   submitAutomationSetupAnswerMock,
+  useArtifactMock,
   toastSuccessMock,
   toastErrorMock,
 } = vi.hoisted(() => ({
@@ -27,8 +28,13 @@ const {
   sendAgentMessageMock: vi.fn(),
   useAskUserQuestionMock: vi.fn(),
   submitAutomationSetupAnswerMock: vi.fn(),
+  useArtifactMock: vi.fn(),
   toastSuccessMock: vi.fn(),
   toastErrorMock: vi.fn(),
+}));
+
+vi.mock("@/hooks/useArtifacts", () => ({
+  useArtifact: (...args: unknown[]) => useArtifactMock(...args),
 }));
 
 vi.mock("sonner", () => ({
@@ -148,6 +154,7 @@ const automationFixture = (
   pausedReasonDetail: null,
   goalPrompt: "Ship the remaining release tasks.",
   setupConversationId: "conversation-setup",
+  specArtifactId: null,
   providerHarness: "codex",
   modelId: "gpt-5.4",
   logicalEffort: "medium",
@@ -241,6 +248,11 @@ function renderPanel(onOpenAutomation: ((automationId: string) => void) | null =
 describe("AgentsAutomationPanel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    useArtifactMock.mockReturnValue({
+      data: null,
+      isLoading: false,
+      isError: false,
+    });
     pauseAutomationMock.mockResolvedValue(automationFixture({ status: "paused" }));
     resumeAutomationMock.mockResolvedValue(automationFixture({ status: "active" }));
     stopAutomationMock.mockResolvedValue(automationFixture({ status: "stopped" }));
@@ -283,6 +295,9 @@ describe("AgentsAutomationPanel", () => {
     expect(screen.getByTestId("agents-automation-phases")).toHaveTextContent(
       "Build shared context model",
     );
+    expect(screen.getByTestId("agents-automation-spec")).toHaveTextContent(
+      "No spec linked yet.",
+    );
     expect(screen.getByTestId("agents-automation-setup-summary")).toHaveTextContent(
       "Configure selected artifact context for chat.",
     );
@@ -300,6 +315,41 @@ describe("AgentsAutomationPanel", () => {
 
     expect(onOpenAutomation).toHaveBeenCalledWith("automation-1");
     expect(useAutomationEventsMock).toHaveBeenCalledWith("automation-1");
+  });
+
+  it("renders the linked spec name and preview in the Spec section", () => {
+    useArtifactMock.mockReturnValue({
+      data: {
+        id: "artifact-spec-1",
+        name: "Release automation spec",
+        artifact_type: "specification",
+        content_type: "inline",
+        content: "## Phase 1\nBuild the shared context model in a scoped PR.",
+        created_at: "2026-07-05T10:00:00Z",
+        created_by: "setup-agent",
+        version: 1,
+        bucket_id: null,
+        task_id: null,
+        process_id: null,
+        derived_from: [],
+      },
+      isLoading: false,
+      isError: false,
+    });
+    useAutomationDetailMock.mockReturnValue({
+      data: automationDetailFixture({
+        automation: automationFixture({ specArtifactId: "artifact-spec-1" }),
+      }),
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel();
+
+    const spec = screen.getByTestId("agents-automation-spec");
+    expect(spec).toHaveTextContent("Release automation spec");
+    expect(spec).toHaveTextContent("Build the shared context model in a scoped PR.");
+    expect(useArtifactMock).toHaveBeenCalledWith("artifact-spec-1");
   });
 
   it("updates draft setup settings from the automation artifact panel", async () => {
@@ -339,6 +389,7 @@ describe("AgentsAutomationPanel", () => {
     await waitFor(() =>
       expect(updateAutomationSetupMock).toHaveBeenCalledWith("conversation-setup", {
         runMode: "plan",
+        completionSignal: "agent_completed",
       }),
     );
     await waitFor(() =>

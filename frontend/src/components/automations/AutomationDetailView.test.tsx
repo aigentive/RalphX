@@ -16,6 +16,7 @@ const {
   triggerRunNowMock,
   skipJudgeMock,
   deleteAutomationMock,
+  useArtifactMock,
   toastSuccessMock,
   toastErrorMock,
   toastInfoMock,
@@ -28,9 +29,14 @@ const {
   triggerRunNowMock: vi.fn(),
   skipJudgeMock: vi.fn(),
   deleteAutomationMock: vi.fn(),
+  useArtifactMock: vi.fn(),
   toastSuccessMock: vi.fn(),
   toastErrorMock: vi.fn(),
   toastInfoMock: vi.fn(),
+}));
+
+vi.mock("@/hooks/useArtifacts", () => ({
+  useArtifact: (...args: unknown[]) => useArtifactMock(...args),
 }));
 
 vi.mock("sonner", () => ({
@@ -65,6 +71,7 @@ function automation(overrides: Partial<Automation> = {}): Automation {
     pausedReasonDetail: null,
     goalPrompt: Array.from({ length: 12 }, (_, index) => `Goal line ${index + 1}`).join("\n"),
     setupConversationId: "setup-conversation-1",
+    specArtifactId: null,
     providerHarness: "codex",
     modelId: "gpt-5.4",
     logicalEffort: "high",
@@ -207,6 +214,11 @@ describe("AutomationDetailView", () => {
     triggerRunNowMock.mockReset().mockResolvedValue({ scheduled: true, reason: null });
     skipJudgeMock.mockReset().mockResolvedValue({ scheduled: true, reason: null });
     deleteAutomationMock.mockReset().mockResolvedValue(undefined);
+    useArtifactMock.mockReset().mockReturnValue({
+      data: null,
+      isLoading: false,
+      isError: false,
+    });
     toastSuccessMock.mockReset();
     toastErrorMock.mockReset();
     toastInfoMock.mockReset();
@@ -266,6 +278,58 @@ describe("AutomationDetailView", () => {
 
     await userEvent.click(within(runTwo).getByRole("button", { name: "Show next prompt" }));
     expect(within(runTwo).getByText("Continue with the next scoped automation task.")).toBeInTheDocument();
+  });
+
+  it("renders the linked spec and a Phases heading in the goal card", async () => {
+    useArtifactMock.mockReturnValue({
+      data: {
+        id: "artifact-spec-1",
+        name: "Migration loop spec",
+        artifact_type: "specification",
+        content_type: "inline",
+        content: "## Phase 1\nBuild the shared context model.",
+        created_at: "2026-07-05T00:00:00Z",
+        created_by: "setup-agent",
+        version: 1,
+        bucket_id: null,
+        task_id: null,
+        process_id: null,
+        derived_from: [],
+      },
+      isLoading: false,
+      isError: false,
+    });
+
+    renderDetail({
+      automation: automation({ specArtifactId: "artifact-spec-1" }),
+      runs: [run()],
+      usage,
+    });
+
+    await screen.findByTestId("automation-detail-view");
+
+    const specCard = screen.getByTestId("automation-spec-card");
+    expect(specCard).toHaveTextContent("Migration loop spec");
+    expect(specCard).toHaveTextContent("Build the shared context model.");
+    expect(useArtifactMock).toHaveBeenCalledWith("artifact-spec-1");
+
+    const goalCard = screen.getByTestId("automation-goal-card");
+    expect(goalCard).toHaveTextContent("Phases");
+    expect(goalCard).toHaveTextContent("Land P6");
+  });
+
+  it("shows the spec fallback when no spec is linked", async () => {
+    renderDetail({
+      automation: automation({ specArtifactId: null }),
+      runs: [run()],
+      usage,
+    });
+
+    await screen.findByTestId("automation-detail-view");
+
+    expect(screen.getByTestId("automation-spec-card")).toHaveTextContent(
+      "No spec linked yet.",
+    );
   });
 
   it("calls pause and skip-judge controls through the automation API", async () => {
@@ -580,7 +644,7 @@ describe("AutomationDetailView", () => {
     expect(screen.getByText("Stopped")).toBeInTheDocument();
     expect(screen.getByText("current_branch")).toBeInTheDocument();
     expect(screen.getAllByText("PR #41").length).toBeGreaterThanOrEqual(2);
-    expect(screen.getByText("item-fallback")).toBeInTheDocument();
+    expect(screen.getByText("Phase 1")).toBeInTheDocument();
     expect(screen.getByText("2 files, +0 / -0")).toBeInTheDocument();
     expect(screen.getByText("invalid-date")).toBeInTheDocument();
     expect(screen.getByText("Skip-judge template")).toBeInTheDocument();

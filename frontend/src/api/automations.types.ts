@@ -49,6 +49,7 @@ export interface Automation {
   pausedReasonDetail: string | null;
   goalPrompt: string;
   setupConversationId: string | null;
+  specArtifactId: string | null;
   providerHarness: string;
   modelId: string;
   logicalEffort: string | null;
@@ -170,4 +171,7 @@ export interface UpdateAutomationSetupInput {
   chainMode?: AutomationChainMode | undefined;
   completionSignal?: AutomationCompletionSignal | undefined;
   setupAnalysisSummary?: string | undefined;
+  // No `| null`: the backend `update_config` uses COALESCE and cannot clear a
+  // linked spec. v1 re-authoring replaces (new version), it does not unlink.
+  specArtifactId?: string | undefined;
 }

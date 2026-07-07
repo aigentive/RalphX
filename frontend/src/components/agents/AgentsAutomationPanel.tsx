@@ -30,6 +30,12 @@ import {
   latestRun,
 } from "@/components/automations/automationStage";
 import {
+  AUTOMATION_PHASES_LABEL,
+  AUTOMATION_STATUS_LABELS,
+  parseAutomationGoalItems,
+} from "@/components/automations/automationGoalItems";
+import { useArtifact } from "@/hooks/useArtifacts";
+import {
   invalidateAutomationQueries,
   useAutomationDetail,
   useAutomationEvents,
@@ -68,13 +74,6 @@ interface AgentsAutomationPanelProps {
   onOpenAutomation?: (automationId: string) => void;
 }
 
-const STATUS_LABELS: Record<Automation["status"], string> = {
-  draft: "Draft",
-  active: "Approved",
-  paused: "Paused",
-  completed: "Completed",
-  stopped: "Stopped",
-};
 const AUTOMATION_SETUP_PROPOSAL_KIND = "automation_setup_proposal";
 const AUTOMATION_SETUP_PROPOSAL_APPLY_VALUE = "apply_automation_proposal";
 const UPDATE_AUTOMATION_FROM_LATEST_PROPOSAL_PROMPT =
@@ -110,47 +109,6 @@ const AUTOMATION_RUN_MODE_OPTIONS: Array<{
     icon: Lightbulb,
   },
 ];
-
-type AutomationGoalItem = {
-  id: string;
-  title: string;
-  status: string;
-};
-
-function parseAutomationGoalItems(value: string | null): AutomationGoalItem[] {
-  if (!value?.trim()) {
-    return [];
-  }
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    if (!Array.isArray(parsed)) {
-      return [];
-    }
-    return parsed.flatMap((item, index) => {
-      if (!item || typeof item !== "object") {
-        return [];
-      }
-      const record = item as Record<string, unknown>;
-      const title =
-        typeof record.title === "string" && record.title.trim()
-          ? record.title.trim()
-          : typeof record.text === "string" && record.text.trim()
-            ? record.text.trim()
-            : `Phase ${index + 1}`;
-      const id =
-        typeof record.id === "string" && record.id.trim()
-          ? record.id.trim()
-          : `phase-${index + 1}`;
-      const status =
-        typeof record.status === "string" && record.status.trim()
-          ? record.status.trim()
-          : "pending";
-      return [{ id, title, status }];
-    });
-  } catch {
-    return [];
-  }
-}
 
 function formatBase(automation: Automation): string {
   return (automation.baseDisplayName ?? automation.baseRef) || automation.baseRefKind;
@@ -663,7 +621,7 @@ export function AgentsAutomationPanel({
           borderWidth: "1px",
         }}
       >
-        <SummaryRow label="Status" value={STATUS_LABELS[automation.status]} />
+        <SummaryRow label="Status" value={AUTOMATION_STATUS_LABELS[automation.status]} />
         <SummaryRow label="Stage" value={stage} testId="agents-automation-stage" />
         <SummaryRow label="Run type" value={automation.runMode} />
         <SummaryRow label="Model" value={formatModel(automation)} />
@@ -730,7 +688,7 @@ export function AgentsAutomationPanel({
         </p>
       </DetailSection>
 
-      <DetailSection title="Phases" testId="agents-automation-phases">
+      <DetailSection title={AUTOMATION_PHASES_LABEL} testId="agents-automation-phases">
         {goalItems.length > 0 ? (
           <div className="space-y-2">
             {goalItems.map((item, index) => (
@@ -754,6 +712,8 @@ export function AgentsAutomationPanel({
           </p>
         )}
       </DetailSection>
+
+      <AutomationSpecSection specArtifactId={automation.specArtifactId} />
 
       {automation.setupAnalysisSummary ? (
         <DetailSection title="Setup summary" testId="agents-automation-setup-summary">
@@ -934,6 +894,47 @@ function SummaryRow({
         {value}
       </span>
     </div>
+  );
+}
+
+function specPreview(content: string): string {
+  const trimmed = content.trim();
+  const preview = trimmed.split(/\r?\n/).slice(0, 8).join("\n");
+  return preview.length > 600 ? `${preview.slice(0, 600)}...` : preview;
+}
+
+function AutomationSpecSection({
+  specArtifactId,
+}: {
+  specArtifactId: string | null;
+}) {
+  // `useArtifact` no-ops on an empty id (`enabled: !!id`).
+  const artifact = useArtifact(specArtifactId ?? "");
+  const data = specArtifactId ? artifact.data : null;
+
+  return (
+    <DetailSection title="Spec" testId="agents-automation-spec">
+      {data ? (
+        <div className="space-y-1.5">
+          <p
+            className="truncate text-xs font-semibold"
+            style={{ color: "var(--text-primary)" }}
+          >
+            {data.name}
+          </p>
+          <p
+            className="whitespace-pre-wrap break-words text-xs leading-5"
+            style={{ color: "var(--text-muted)" }}
+          >
+            {specPreview(data.content) || "Spec has no content yet."}
+          </p>
+        </div>
+      ) : (
+        <p className="text-xs" style={{ color: "var(--text-muted)" }}>
+          No spec linked yet.
+        </p>
+      )}
+    </DetailSection>
   );
 }
 
