@@ -8861,6 +8861,7 @@ pub enum AgentConversationRuntimeIndexMode {
     Plan,
     PrReview,
     Ideation,
+    Automation,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -8923,6 +8924,7 @@ fn runtime_index_mode(mode: AgentConversationWorkspaceMode) -> AgentConversation
         AgentConversationWorkspaceMode::Plan => AgentConversationRuntimeIndexMode::Plan,
         AgentConversationWorkspaceMode::Ideation => AgentConversationRuntimeIndexMode::Ideation,
         AgentConversationWorkspaceMode::ReviewPr => AgentConversationRuntimeIndexMode::PrReview,
+        AgentConversationWorkspaceMode::Automation => AgentConversationRuntimeIndexMode::Automation,
     }
 }
 
@@ -15743,9 +15745,24 @@ mod tests {
         let page_ids = page
             .conversations
             .iter()
-            .map(|conversation| conversation.id.as_str())
+            .map(|conversation| conversation.id.clone())
             .collect::<Vec<_>>();
-        assert_eq!(page_ids, vec![visible.id.as_str(), setup.id.as_str()]);
+        let visible_id = visible.id.as_str();
+        let setup_id = setup.id.as_str();
+        let run_id = run.id.as_str();
+        assert_eq!(page_ids.len(), 2);
+        assert!(
+            page_ids.contains(&visible_id),
+            "manual conversations should be listed"
+        );
+        assert!(
+            page_ids.contains(&setup_id),
+            "automation setup conversations should be listed"
+        );
+        assert!(
+            !page_ids.contains(&run_id),
+            "automation run conversations should stay hidden from list endpoints"
+        );
     }
 
     fn mode_lock_test_workspace(

@@ -972,6 +972,24 @@ export function AutomationDetailView({
               <KeyValueList
                 items={[
                   ["Mode / model", formatMode(automation)],
+                  [
+                    "Setup conversation",
+                    automation.setupConversationId ? (
+                      <Button
+                        type="button"
+                        variant="link"
+                        className="h-auto gap-1 p-0 text-sm"
+                        disabled={!projectId || !onOpenRunConversation}
+                        onClick={handleEdit}
+                        data-testid="automation-setup-conversation-link"
+                      >
+                        Open setup conversation
+                        <ExternalLink className="h-3 w-3" aria-hidden="true" />
+                      </Button>
+                    ) : (
+                      "Not recorded"
+                    ),
+                  ],
                   ["Base", formatBase(automation)],
                   ["Chain mode", automation.chainMode],
                   ["Completion signal", automation.completionSignal],

@@ -171,8 +171,13 @@ describe("AutomationsView", () => {
   });
 
   it("renders project-scoped automation rows from the list API", async () => {
-    listAutomationsMock.mockResolvedValue([automation()]);
-    getAutomationMock.mockResolvedValue({ automation: automation(), runs: [], usage: emptyUsage });
+    const item = automation({
+      firstRunPrompt: "Start with dependency updates.",
+      goalItemsJson:
+        '[{"id":"phase-1","title":"Update dependencies","status":"pending"},{"id":"phase-2","title":"Verify CI","status":"pending"}]',
+    });
+    listAutomationsMock.mockResolvedValue([item]);
+    getAutomationMock.mockResolvedValue({ automation: item, runs: [], usage: emptyUsage });
 
     renderView();
 
@@ -180,7 +185,30 @@ describe("AutomationsView", () => {
     expect(row).toBeInTheDocument();
     expect(within(row).getByText("Ship migration loop")).toBeInTheDocument();
     expect(within(row).getByText("Demo Project")).toBeInTheDocument();
-    expect(within(row).getByText("edit · codex/gpt-5.4/high")).toBeInTheDocument();
+    expect(row).toHaveTextContent("edit · codex/gpt-5.4/high");
+    expect(screen.getByTestId("automation-row-automation-1-metadata")).toHaveTextContent(
+      "Goal set · 2 phases · First run ready",
+    );
+  });
+
+  it("renders a project selector in the header and reports project changes", async () => {
+    const onProjectChange = vi.fn();
+    listAutomationsMock.mockResolvedValue([]);
+
+    renderView({
+      projectOptions: [
+        { id: "project-1", name: "Demo Project" },
+        { id: "project-2", name: "Ops Project" },
+      ],
+      onProjectChange,
+    });
+
+    const selector = screen.getByTestId("automations-project-select");
+    expect(selector).toHaveValue("project-1");
+
+    await userEvent.selectOptions(selector, "project-2");
+
+    expect(onProjectChange).toHaveBeenCalledWith("project-2");
   });
 
   it("paints the detail shell synchronously on row click before the detail bundle resolves", async () => {

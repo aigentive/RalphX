@@ -1138,7 +1138,9 @@ export function IntegratedChatPanel({
   const questionBannerAction =
     automationProposalApplyIndex >= 0 && activeQuestion
       ? {
-          label: activeQuestion.options[automationProposalApplyIndex]?.label ?? "Apply proposal",
+          label:
+            activeQuestion.options[automationProposalApplyIndex]?.label ??
+            "Update automation",
           pendingLabel: "Applying...",
           onClick: () => {
             void handleQuestionOptionSubmit(automationProposalApplyIndex);

@@ -3237,6 +3237,7 @@ impl<R: Runtime> AppChatService<R> {
             agent_profile,
             context_type,
             context_id,
+            Some(conversation.id.as_str()),
             working_directory,
             entity_status,
             project_id,

@@ -1,9 +1,26 @@
-import { useCallback, type ReactNode } from "react";
-import { ExternalLink, Pause, Play, Square, Workflow } from "lucide-react";
+import { useCallback, useMemo, type ReactNode } from "react";
+import {
+  CheckCircle2,
+  ExternalLink,
+  Lightbulb,
+  Loader2,
+  MessageSquare,
+  Pause,
+  Play,
+  Square,
+  Workflow,
+  type LucideIcon,
+} from "lucide-react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
-import { automationsApi, type Automation, type AutomationRun } from "@/api/automations";
+import {
+  automationsApi,
+  type Automation,
+  type AutomationRun,
+  type AutomationRunMode,
+} from "@/api/automations";
+import * as chatApi from "@/api/chat";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useAfterPaintMounted } from "@/components/agents/agentDeferredFrame";
@@ -17,8 +34,33 @@ import {
   useAutomationDetail,
   useAutomationEvents,
 } from "@/hooks/useAutomations";
+import { useAskUserQuestion } from "@/hooks/useAskUserQuestion";
+import { useAgentModels } from "@/hooks/useAgentModels";
 import { useConfirmation } from "@/hooks/useConfirmation";
+import { useHarnessProviders } from "@/hooks/useHarnessProviders";
 import { withAlpha } from "@/lib/theme-colors";
+import type {
+  AgentEffort,
+  AgentProvider,
+  AgentRuntimeSelection,
+} from "@/stores/agentSessionStore";
+import type { AskUserQuestionPayload } from "@/types/ask-user-question";
+
+import {
+  AGENT_PROVIDER_OPTIONS,
+  agentEffortOptions,
+  type AgentEffortOption,
+  type AgentModelOption,
+  agentModelOptions,
+  defaultEffortForModel,
+  defaultModelForProvider,
+  normalizeRuntimeSelection,
+} from "./agentOptions";
+import {
+  buildAgentProviderAvailabilityOptions,
+  supportedEffortsForProvider,
+  supportedModelAliasesForProvider,
+} from "./agentProviderAvailability";
 
 interface AgentsAutomationPanelProps {
   automationId: string;
@@ -33,12 +75,41 @@ const STATUS_LABELS: Record<Automation["status"], string> = {
   completed: "Completed",
   stopped: "Stopped",
 };
+const AUTOMATION_SETUP_PROPOSAL_KIND = "automation_setup_proposal";
+const AUTOMATION_SETUP_PROPOSAL_APPLY_VALUE = "apply_automation_proposal";
+const UPDATE_AUTOMATION_FROM_LATEST_PROPOSAL_PROMPT =
+  "The user clicked Update automation in the Automation artifact. Update the bound draft automation now with the goal, phases, setup summary, first-run prompt, run mode, provider/model, and base from your latest Automation proposal. Call get_automation if needed, then call update_automation with the accepted proposal. Do not finalize, run, or activate the automation.";
 const OPEN_RUN_STATUSES = new Set<AutomationRun["status"]>([
   "pending",
   "provisioning",
   "running",
   "published",
 ]);
+const AUTOMATION_RUN_MODE_OPTIONS: Array<{
+  id: AutomationRunMode;
+  label: string;
+  description: string;
+  icon: LucideIcon;
+}> = [
+  {
+    id: "edit",
+    label: "Build",
+    description: "Builds scoped PRs and publishes them.",
+    icon: Workflow,
+  },
+  {
+    id: "plan",
+    label: "Plan",
+    description: "Creates or refines implementation plans.",
+    icon: MessageSquare,
+  },
+  {
+    id: "ideation",
+    label: "Ideation",
+    description: "Runs exploration and proposal workflows.",
+    icon: Lightbulb,
+  },
+];
 
 type AutomationGoalItem = {
   id: string;
@@ -88,6 +159,57 @@ function formatBase(automation: Automation): string {
 function formatModel(automation: Automation): string {
   const effort = automation.logicalEffort ? `/${automation.logicalEffort}` : "";
   return `${automation.providerHarness}/${automation.modelId}${effort}`;
+}
+
+function formatAutomationRunModeLabel(runMode: AutomationRunMode): string {
+  return (
+    AUTOMATION_RUN_MODE_OPTIONS.find((option) => option.id === runMode)?.label ??
+    runMode
+  );
+}
+
+function automationProposalApplyOptionIndex(
+  question: AskUserQuestionPayload | null | undefined,
+): number {
+  if (!question) {
+    return -1;
+  }
+
+  const optionIndex = question.options.findIndex(
+    (option) => option.value === AUTOMATION_SETUP_PROPOSAL_APPLY_VALUE,
+  );
+  if (optionIndex < 0) {
+    return -1;
+  }
+
+  if (question.metadata?.kind === AUTOMATION_SETUP_PROPOSAL_KIND) {
+    return optionIndex;
+  }
+
+  const header = question.header?.toLowerCase() ?? "";
+  return header.includes("automation") ? optionIndex : -1;
+}
+
+function automationProviderFromValue(value: string): AgentProvider {
+  return value === "codex" ? "codex" : "claude";
+}
+
+function automationEffortFromValue(value: string | null): AgentEffort | undefined {
+  return value === "low" ||
+    value === "medium" ||
+    value === "high" ||
+    value === "xhigh" ||
+    value === "max"
+    ? value
+    : undefined;
+}
+
+function automationRuntimeFromConfig(automation: Automation): AgentRuntimeSelection {
+  return {
+    provider: automationProviderFromValue(automation.providerHarness),
+    modelId: automation.modelId,
+    effort: automationEffortFromValue(automation.logicalEffort) ?? "medium",
+  };
 }
 
 function automationDisplayName(
@@ -154,11 +276,113 @@ export function AgentsAutomationPanel({
   const detail = useAutomationDetail(automationId, { enabled: afterPaint });
   const queryClient = useQueryClient();
   const { confirm, confirmationDialogProps, ConfirmationDialog } = useConfirmation();
+  const { registry: modelRegistry } = useAgentModels();
+  const {
+    providers: configuredProviders,
+    isLoading: isLoadingProviderSettings,
+    isPlaceholderData: isPlaceholderProviderSettings,
+  } = useHarnessProviders({ refreshRuntime: true });
   useAutomationEvents(automationId);
+  const providerSettingsReady =
+    !isLoadingProviderSettings && !isPlaceholderProviderSettings;
+  const providerOptions = useMemo(
+    () =>
+      buildAgentProviderAvailabilityOptions({
+        providers: configuredProviders,
+        isReady: providerSettingsReady,
+      }),
+    [configuredProviders, providerSettingsReady],
+  );
+  const automationForRuntime = detail.data?.automation ?? null;
+  const automationSetupQuestionSessionId =
+    automationForRuntime?.setupConversationId ?? undefined;
+  const {
+    activeQuestion: activeAutomationSetupQuestion,
+    submitAnswer: submitAutomationSetupAnswer,
+    isLoading: isSubmittingAutomationSetupAnswer,
+  } = useAskUserQuestion(automationSetupQuestionSessionId);
+  const automationProposalOptionIndex = automationProposalApplyOptionIndex(
+    activeAutomationSetupQuestion,
+  );
+  const selectableAutomationRuntime = useMemo<AgentRuntimeSelection | null>(() => {
+    if (!automationForRuntime) {
+      return null;
+    }
+    const provider = automationProviderFromValue(
+      automationForRuntime.providerHarness,
+    );
+    return normalizeRuntimeSelection(
+      automationRuntimeFromConfig(automationForRuntime),
+      modelRegistry,
+      supportedEffortsForProvider(providerOptions, provider),
+      supportedModelAliasesForProvider(providerOptions, provider),
+    );
+  }, [automationForRuntime, modelRegistry, providerOptions]);
+  const automationModelOptions = useMemo(
+    () =>
+      selectableAutomationRuntime
+        ? agentModelOptions(
+            selectableAutomationRuntime.provider,
+            modelRegistry,
+            supportedModelAliasesForProvider(
+              providerOptions,
+              selectableAutomationRuntime.provider,
+            ),
+          )
+        : [],
+    [modelRegistry, providerOptions, selectableAutomationRuntime],
+  );
+  const automationEffortOptions = useMemo(
+    () =>
+      selectableAutomationRuntime
+        ? agentEffortOptions(
+            selectableAutomationRuntime.provider,
+            selectableAutomationRuntime.modelId,
+            modelRegistry,
+            supportedEffortsForProvider(
+              providerOptions,
+              selectableAutomationRuntime.provider,
+            ),
+          )
+        : [],
+    [modelRegistry, providerOptions, selectableAutomationRuntime],
+  );
 
   const invalidate = useCallback(() => {
     invalidateAutomationQueries(queryClient, automationId);
   }, [automationId, queryClient]);
+  const updateSetupMutation = useMutation({
+    mutationFn: ({
+      conversationId,
+      input,
+    }: {
+      conversationId: string;
+      input: Parameters<typeof automationsApi.setupAgent.updateAutomation>[1];
+    }) => automationsApi.setupAgent.updateAutomation(conversationId, input),
+    onSuccess: invalidate,
+    onError: () => toast.error("Failed to update automation setup"),
+  });
+  const requestSpecUpdateMutation = useMutation({
+    mutationFn: (automation: Automation) =>
+      chatApi.sendAgentMessage(
+        "project",
+        automation.projectId,
+        UPDATE_AUTOMATION_FROM_LATEST_PROPOSAL_PROMPT,
+        undefined,
+        undefined,
+        {
+          conversationId: automation.setupConversationId,
+          providerHarness: automation.providerHarness,
+          modelId: automation.modelId,
+          logicalEffort: automation.logicalEffort,
+        },
+      ),
+    onSuccess: () => {
+      invalidate();
+      toast.success("Automation update requested");
+    },
+    onError: () => toast.error("Failed to request automation update"),
+  });
 
   const pauseMutation = useMutation({
     mutationFn: () =>
@@ -189,6 +413,163 @@ export function AgentsAutomationPanel({
     },
     onError: () => toast.error("Failed to stop automation"),
   });
+  const handleAutomationRunModeChange = useCallback(
+    (runMode: AutomationRunMode) => {
+      const setupConversationId = automationForRuntime?.setupConversationId;
+      if (
+        !setupConversationId ||
+        !automationForRuntime ||
+        automationForRuntime.status !== "draft" ||
+        automationForRuntime.runMode === runMode ||
+        updateSetupMutation.isPending
+      ) {
+        return;
+      }
+      updateSetupMutation.mutate(
+        {
+          conversationId: setupConversationId,
+          input: { runMode },
+        },
+        {
+          onSuccess: () =>
+            toast.success(
+              `Automation will run as ${formatAutomationRunModeLabel(runMode)}`,
+            ),
+        },
+      );
+    },
+    [automationForRuntime, updateSetupMutation],
+  );
+  const updateAutomationRuntime = useCallback(
+    (runtime: AgentRuntimeSelection) => {
+      const setupConversationId = automationForRuntime?.setupConversationId;
+      if (
+        !setupConversationId ||
+        !automationForRuntime ||
+        automationForRuntime.status !== "draft" ||
+        updateSetupMutation.isPending
+      ) {
+        return;
+      }
+      updateSetupMutation.mutate(
+        {
+          conversationId: setupConversationId,
+          input: {
+            providerHarness: runtime.provider,
+            modelId: runtime.modelId,
+            logicalEffort: runtime.effort,
+          },
+        },
+        {
+          onSuccess: () => toast.success("Automation run agent updated"),
+        },
+      );
+    },
+    [automationForRuntime, updateSetupMutation],
+  );
+  const handleApplyAutomationProposal = useCallback(async () => {
+    if (
+      !activeAutomationSetupQuestion ||
+      automationProposalOptionIndex < 0 ||
+      isSubmittingAutomationSetupAnswer
+    ) {
+      return;
+    }
+    const option = activeAutomationSetupQuestion.options[automationProposalOptionIndex];
+    if (!option) {
+      return;
+    }
+    const result = await submitAutomationSetupAnswer({
+      requestId: activeAutomationSetupQuestion.requestId,
+      ...(activeAutomationSetupQuestion.taskId
+        ? { taskId: activeAutomationSetupQuestion.taskId }
+        : {}),
+      selectedOptions: [
+        option.value ?? option.label ?? AUTOMATION_SETUP_PROPOSAL_APPLY_VALUE,
+      ],
+    });
+    if (result.success) {
+      invalidate();
+      toast.success("Automation update accepted");
+    }
+  }, [
+    activeAutomationSetupQuestion,
+    automationProposalOptionIndex,
+    invalidate,
+    isSubmittingAutomationSetupAnswer,
+    submitAutomationSetupAnswer,
+  ]);
+  const handleRequestAutomationSpecUpdate = useCallback(() => {
+    if (
+      !automationForRuntime?.setupConversationId ||
+      automationForRuntime.status !== "draft" ||
+      requestSpecUpdateMutation.isPending
+    ) {
+      return;
+    }
+    requestSpecUpdateMutation.mutate(automationForRuntime);
+  }, [automationForRuntime, requestSpecUpdateMutation]);
+  const handleAutomationProviderChange = useCallback(
+    (provider: AgentProvider) => {
+      if (!selectableAutomationRuntime) {
+        return;
+      }
+      const modelId = defaultModelForProvider(provider, modelRegistry);
+      const nextRuntime = normalizeRuntimeSelection(
+        {
+          provider,
+          modelId,
+          effort: defaultEffortForModel(provider, modelId, modelRegistry),
+        },
+        modelRegistry,
+        supportedEffortsForProvider(providerOptions, provider),
+        supportedModelAliasesForProvider(providerOptions, provider),
+      );
+      updateAutomationRuntime(nextRuntime);
+    },
+    [
+      modelRegistry,
+      providerOptions,
+      selectableAutomationRuntime,
+      updateAutomationRuntime,
+    ],
+  );
+  const handleAutomationModelChange = useCallback(
+    (modelId: string) => {
+      if (!selectableAutomationRuntime) {
+        return;
+      }
+      const provider = selectableAutomationRuntime.provider;
+      const nextRuntime = normalizeRuntimeSelection(
+        {
+          ...selectableAutomationRuntime,
+          modelId,
+        },
+        modelRegistry,
+        supportedEffortsForProvider(providerOptions, provider),
+        supportedModelAliasesForProvider(providerOptions, provider),
+      );
+      updateAutomationRuntime(nextRuntime);
+    },
+    [
+      modelRegistry,
+      providerOptions,
+      selectableAutomationRuntime,
+      updateAutomationRuntime,
+    ],
+  );
+  const handleAutomationEffortChange = useCallback(
+    (effort: AgentEffort) => {
+      if (!selectableAutomationRuntime) {
+        return;
+      }
+      updateAutomationRuntime({
+        ...selectableAutomationRuntime,
+        effort,
+      });
+    },
+    [selectableAutomationRuntime, updateAutomationRuntime],
+  );
 
   const handleStop = async () => {
     const confirmed = await confirm({
@@ -228,6 +609,23 @@ export function AgentsAutomationPanel({
   const canPause = automation.status === "active";
   const canResume = automation.status === "paused";
   const canStop = automation.status !== "completed" && automation.status !== "stopped";
+  const setupConversationId = automation.setupConversationId;
+  const setupControlsDisabled =
+    automation.status !== "draft" || !setupConversationId;
+  const setupDisabledReason = !setupConversationId
+    ? "Setup conversation link is missing, so settings cannot be updated here."
+    : automation.status !== "draft"
+      ? "Approved automation settings are read-only."
+      : null;
+  const showAutomationProposalCta =
+    automation.status === "draft" &&
+    Boolean(activeAutomationSetupQuestion) &&
+    automationProposalOptionIndex >= 0;
+  const showMissingSpecCta =
+    automation.status === "draft" &&
+    !showAutomationProposalCta &&
+    Boolean(setupConversationId) &&
+    (!automation.goalPrompt.trim() || goalItems.length === 0);
 
   return (
     <div className="space-y-4 p-5" data-testid="agents-automation-panel">
@@ -266,6 +664,58 @@ export function AgentsAutomationPanel({
         <SummaryRow label="Run" value={formatRunSummary(run, automation.maxRuns)} />
         <SummaryRow label="Current PR" value={formatPrState(run)} />
       </div>
+
+      {showAutomationProposalCta && activeAutomationSetupQuestion ? (
+        <AutomationProposalCallout
+          header={activeAutomationSetupQuestion.header ?? "Automation update"}
+          description={activeAutomationSetupQuestion.question}
+          isPending={isSubmittingAutomationSetupAnswer}
+          onApply={handleApplyAutomationProposal}
+        />
+      ) : showMissingSpecCta ? (
+        <AutomationProposalCallout
+          header="Automation spec not saved"
+          description="Save the latest proposed goal and phases into this automation artifact."
+          isPending={requestSpecUpdateMutation.isPending}
+          pendingLabel="Requesting..."
+          onApply={handleRequestAutomationSpecUpdate}
+        />
+      ) : null}
+
+      <DetailSection title="Setup" testId="agents-automation-setup">
+        <div className="space-y-4">
+          <p className="text-xs leading-5" style={{ color: "var(--text-muted)" }}>
+            Automation setup - draft and approve this automation spec by chatting
+            with the setup agent.
+          </p>
+          {selectableAutomationRuntime ? (
+            <AutomationRuntimeSelector
+              runtime={selectableAutomationRuntime}
+              providerOptions={
+                providerOptions.length > 0 ? providerOptions : AGENT_PROVIDER_OPTIONS
+              }
+              modelOptions={automationModelOptions}
+              effortOptions={automationEffortOptions}
+              disabled={setupControlsDisabled}
+              isUpdating={updateSetupMutation.isPending}
+              onProviderChange={handleAutomationProviderChange}
+              onModelChange={handleAutomationModelChange}
+              onEffortChange={handleAutomationEffortChange}
+            />
+          ) : null}
+          <AutomationRunModeSelector
+            runMode={automation.runMode}
+            disabled={setupControlsDisabled}
+            isUpdating={updateSetupMutation.isPending}
+            onChange={handleAutomationRunModeChange}
+          />
+          {setupDisabledReason ? (
+            <p className="text-xs leading-5" style={{ color: "var(--text-muted)" }}>
+              {setupDisabledReason}
+            </p>
+          ) : null}
+        </div>
+      </DetailSection>
 
       <DetailSection title="Goal" testId="agents-automation-goal">
         <p className="text-xs leading-5" style={{ color: "var(--text-primary)" }}>
@@ -400,6 +850,62 @@ export function AgentsAutomationPanel({
   );
 }
 
+function AutomationProposalCallout({
+  header,
+  description,
+  isPending,
+  pendingLabel = "Applying...",
+  onApply,
+}: {
+  header: string;
+  description: string;
+  isPending: boolean;
+  pendingLabel?: string;
+  onApply: () => void;
+}) {
+  return (
+    <section
+      className="rounded-md p-4"
+      style={{
+        backgroundColor: "var(--accent-muted)",
+        borderColor: "var(--accent-border)",
+        borderStyle: "solid",
+        borderWidth: "1px",
+      }}
+      data-testid="agents-automation-proposal-cta"
+    >
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <h3
+            className="text-xs font-semibold uppercase tracking-[0.08em]"
+            style={{ color: "var(--accent-primary)" }}
+          >
+            {header}
+          </h3>
+          <p className="mt-2 text-xs leading-5" style={{ color: "var(--text-primary)" }}>
+            {description}
+          </p>
+        </div>
+        <Button
+          type="button"
+          size="sm"
+          className="gap-2"
+          disabled={isPending}
+          onClick={onApply}
+          data-testid="agents-automation-proposal-update"
+        >
+          {isPending ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <CheckCircle2 className="h-4 w-4" />
+          )}
+          {isPending ? pendingLabel : "Update automation"}
+        </Button>
+      </div>
+    </section>
+  );
+}
+
 function SummaryRow({
   label,
   value,
@@ -452,5 +958,257 @@ function DetailSection({
       </h3>
       {children}
     </section>
+  );
+}
+
+function AutomationRunModeSelector({
+  runMode,
+  disabled,
+  isUpdating,
+  onChange,
+}: {
+  runMode: AutomationRunMode;
+  disabled: boolean;
+  isUpdating: boolean;
+  onChange: (runMode: AutomationRunMode) => void;
+}) {
+  return (
+    <div
+      className="flex flex-col gap-2"
+      data-testid="agents-automation-run-mode-selector"
+    >
+      <div className="flex flex-wrap items-end justify-between gap-2">
+        <div>
+          <span
+            className="block text-[0.6875rem] font-semibold uppercase tracking-[0.08em]"
+            style={{ color: "var(--text-muted)" }}
+          >
+            Run type
+          </span>
+          <span className="text-xs" style={{ color: "var(--text-muted)" }}>
+            Choose which agent mode future runs use.
+          </span>
+        </div>
+        {isUpdating ? (
+          <span
+            className="inline-flex items-center gap-1.5 text-xs"
+            style={{ color: "var(--text-muted)" }}
+          >
+            <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+            Saving
+          </span>
+        ) : null}
+      </div>
+      <div
+        className="inline-flex w-fit flex-wrap rounded-md border p-1"
+        style={{
+          backgroundColor: "var(--bg-base)",
+          borderColor: "var(--border-subtle)",
+          borderStyle: "solid",
+          borderWidth: "1px",
+        }}
+        role="group"
+        aria-label="Automation run type"
+      >
+        {AUTOMATION_RUN_MODE_OPTIONS.map((option) => {
+          const selected = option.id === runMode;
+          const Icon = option.icon;
+          return (
+            <button
+              key={option.id}
+              type="button"
+              disabled={disabled || isUpdating || selected}
+              onClick={() => onChange(option.id)}
+              className="inline-flex h-8 items-center gap-2 rounded px-2.5 text-xs font-medium outline-none transition-colors disabled:cursor-not-allowed disabled:opacity-60 focus-visible:ring-2 focus-visible:ring-[var(--accent-primary)]"
+              style={{
+                backgroundColor: selected
+                  ? "var(--bg-surface-hover)"
+                  : "transparent",
+                color: selected ? "var(--text-primary)" : "var(--text-muted)",
+              }}
+              aria-pressed={selected}
+              data-testid={`agents-automation-run-mode-${option.id}`}
+            >
+              <Icon
+                className="h-3.5 w-3.5 shrink-0"
+                style={{
+                  color: selected
+                    ? "var(--accent-primary)"
+                    : "var(--text-muted)",
+                }}
+                aria-hidden="true"
+              />
+              <span>{option.label}</span>
+            </button>
+          );
+        })}
+      </div>
+      <p className="text-xs leading-5" style={{ color: "var(--text-muted)" }}>
+        {
+          AUTOMATION_RUN_MODE_OPTIONS.find((option) => option.id === runMode)
+            ?.description
+        }
+      </p>
+    </div>
+  );
+}
+
+function AutomationRuntimeSelector({
+  runtime,
+  providerOptions,
+  modelOptions,
+  effortOptions,
+  disabled,
+  isUpdating,
+  onProviderChange,
+  onModelChange,
+  onEffortChange,
+}: {
+  runtime: AgentRuntimeSelection;
+  providerOptions: readonly {
+    id: AgentProvider;
+    label: string;
+    disabled?: boolean;
+    disabledReason?: string;
+  }[];
+  modelOptions: readonly AgentModelOption[];
+  effortOptions: readonly AgentEffortOption[];
+  disabled: boolean;
+  isUpdating: boolean;
+  onProviderChange: (provider: AgentProvider) => void;
+  onModelChange: (modelId: string) => void;
+  onEffortChange: (effort: AgentEffort) => void;
+}) {
+  const controlDisabled = disabled || isUpdating;
+  const selectedProvider = providerOptions.find(
+    (option) => option.id === runtime.provider,
+  );
+  const selectedProviderDisabledReason =
+    selectedProvider?.disabledReason && !disabled
+      ? selectedProvider.disabledReason
+      : null;
+
+  return (
+    <div
+      className="flex flex-col gap-2"
+      data-testid="agents-automation-runtime-selector"
+    >
+      <div className="flex flex-wrap items-end justify-between gap-2">
+        <div>
+          <span
+            className="block text-[0.6875rem] font-semibold uppercase tracking-[0.08em]"
+            style={{ color: "var(--text-muted)" }}
+          >
+            Run agent
+          </span>
+          <span className="text-xs" style={{ color: "var(--text-muted)" }}>
+            Provider, model, and effort future automation runs use.
+          </span>
+        </div>
+        {isUpdating ? (
+          <span
+            className="inline-flex items-center gap-1.5 text-xs"
+            style={{ color: "var(--text-muted)" }}
+          >
+            <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+            Saving
+          </span>
+        ) : null}
+      </div>
+      <div className="grid gap-2 sm:grid-cols-[minmax(7rem,0.8fr)_minmax(9rem,1fr)_minmax(7rem,0.75fr)]">
+        <AutomationSelect
+          label="Provider"
+          value={runtime.provider}
+          disabled={controlDisabled}
+          testId="agents-automation-provider"
+          onChange={(value) => onProviderChange(value as AgentProvider)}
+          options={providerOptions.map((option) => ({
+            value: option.id,
+            label: option.label,
+            ...(option.disabled !== undefined
+              ? { disabled: option.disabled }
+              : {}),
+          }))}
+        />
+        <AutomationSelect
+          label="Model"
+          value={runtime.modelId}
+          disabled={controlDisabled}
+          testId="agents-automation-model"
+          onChange={onModelChange}
+          options={modelOptions.map((option) => ({
+            value: option.id,
+            label: option.label,
+          }))}
+        />
+        <AutomationSelect
+          label="Effort"
+          value={runtime.effort}
+          disabled={controlDisabled}
+          testId="agents-automation-effort"
+          onChange={(value) => onEffortChange(value as AgentEffort)}
+          options={effortOptions.map((option) => ({
+            value: option.id,
+            label: option.label,
+          }))}
+        />
+      </div>
+      {selectedProviderDisabledReason ? (
+        <p className="text-xs leading-5" style={{ color: "var(--text-muted)" }}>
+          {selectedProviderDisabledReason}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function AutomationSelect({
+  label,
+  value,
+  options,
+  disabled,
+  testId,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  options: readonly { value: string; label: string; disabled?: boolean }[];
+  disabled: boolean;
+  testId: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label className="flex min-w-0 flex-col gap-1">
+      <span
+        className="text-[0.6875rem] font-medium uppercase tracking-[0.06em]"
+        style={{ color: "var(--text-muted)" }}
+      >
+        {label}
+      </span>
+      <select
+        value={value}
+        disabled={disabled}
+        onChange={(event) => onChange(event.currentTarget.value)}
+        className="h-8 min-w-0 rounded-md border px-2 text-xs outline-none transition-colors focus-visible:ring-2 focus-visible:ring-[var(--accent-primary)] disabled:cursor-not-allowed disabled:opacity-60"
+        style={{
+          backgroundColor: "var(--bg-base)",
+          borderColor: "var(--border-subtle)",
+          borderStyle: "solid",
+          borderWidth: "1px",
+          color: "var(--text-primary)",
+        }}
+        data-testid={testId}
+      >
+        {options.map((option) => (
+          <option
+            key={option.value}
+            value={option.value}
+            disabled={option.disabled}
+          >
+            {option.label}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }

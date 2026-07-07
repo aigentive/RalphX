@@ -17,6 +17,8 @@ import { cn } from "@/lib/utils";
 interface AutomationsViewProps {
   projectId: string | null;
   projectName?: string | null;
+  projectOptions?: Array<{ id: string; name: string }>;
+  onProjectChange?: (projectId: string) => void;
   onNewAutomation?: () => void;
   selectedAutomationId?: string | null;
   onSelectedAutomationChange?: (automationId: string | null) => void;
@@ -38,9 +40,25 @@ function formatBase(automation: Automation): string {
   return (automation.baseDisplayName ?? automation.baseRef) || automation.baseRefKind;
 }
 
-function formatMode(automation: Automation): string {
-  const effort = automation.logicalEffort ? `/${automation.logicalEffort}` : "";
-  return `${automation.runMode} · ${automation.providerHarness}/${automation.modelId}${effort}`;
+function parsePhaseCount(value: string | null): number {
+  if (!value?.trim()) {
+    return 0;
+  }
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed) ? parsed.length : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function formatGoalMetadata(automation: Automation): string {
+  const phaseCount = parsePhaseCount(automation.goalItemsJson);
+  const goalState = automation.goalPrompt.trim() ? "Goal set" : "No goal";
+  const phaseState =
+    phaseCount === 0 ? "No phases" : `${phaseCount} ${phaseCount === 1 ? "phase" : "phases"}`;
+  const firstRunState = automation.firstRunPrompt?.trim() ? "First run ready" : "No first run";
+  return `${goalState} · ${phaseState} · ${firstRunState}`;
 }
 
 function formatLastRun(run: AutomationRun | null): string {
@@ -58,11 +76,11 @@ function formatLastRun(run: AutomationRun | null): string {
 
 function AutomationsListSkeleton() {
   return (
-    <div className="space-y-3" data-testid="automations-list-skeleton">
+    <div className="space-y-2" data-testid="automations-list-skeleton">
       {[0, 1, 2].map((index) => (
         <div
           key={index}
-          className="grid min-h-[72px] grid-cols-1 items-center gap-3 rounded-md px-4 py-4 md:grid-cols-[1.2fr_0.65fr_0.9fr_0.8fr_1.1fr_0.6fr_1fr_1.2fr_32px] md:gap-4 md:py-0"
+          className="grid min-h-[58px] grid-cols-1 items-center gap-2 rounded-md px-4 py-3 md:grid-cols-[1.35fr_0.55fr_0.75fr_0.75fr_1fr_0.5fr_0.9fr_1fr_24px] md:gap-3 md:py-0"
           style={{
             backgroundColor: "var(--bg-surface)",
             borderColor: "var(--border-default)",
@@ -123,7 +141,7 @@ function AutomationRow({
   return (
     <button
       type="button"
-      className="grid min-h-[76px] w-full grid-cols-1 items-center gap-2 rounded-md px-4 py-4 text-left transition-colors hover:bg-[var(--bg-hover)] disabled:cursor-default disabled:hover:bg-transparent md:grid-cols-[1.2fr_0.65fr_0.9fr_0.8fr_1.1fr_0.6fr_1fr_1.2fr_32px] md:gap-4 md:py-0"
+      className="grid min-h-[58px] w-full grid-cols-1 items-center gap-2 rounded-md px-4 py-3 text-left transition-colors hover:bg-[var(--bg-hover)] disabled:cursor-default disabled:hover:bg-transparent md:grid-cols-[1.35fr_0.55fr_0.75fr_0.75fr_1fr_0.5fr_0.9fr_1fr_24px] md:gap-3 md:py-0"
       style={{
         backgroundColor: "var(--bg-surface)",
         borderColor: "var(--border-default)",
@@ -138,6 +156,13 @@ function AutomationRow({
         <div className="truncate text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
           {automation.name}
         </div>
+        <div
+          className="mt-1 truncate text-[0.6875rem]"
+          style={{ color: "var(--text-muted)" }}
+          data-testid={`automation-row-${automation.id}-metadata`}
+        >
+          {formatGoalMetadata(automation)}
+        </div>
       </div>
       <StatusPill status={automation.status} />
       <div className="truncate text-sm" style={{ color: "var(--text-secondary)" }}>
@@ -147,7 +172,11 @@ function AutomationRow({
         {formatBase(automation)}
       </div>
       <div className="truncate text-xs" style={{ color: "var(--text-muted)" }}>
-        {formatMode(automation)}
+        <span className="font-medium" style={{ color: "var(--text-secondary)" }}>
+          {automation.runMode}
+        </span>
+        <span> · {automation.providerHarness}/{automation.modelId}</span>
+        {automation.logicalEffort ? <span>/{automation.logicalEffort}</span> : null}
       </div>
       <div className="truncate text-sm" style={{ color: "var(--text-secondary)" }}>
         {detail.isLoading ? "..." : `${runs?.length ?? 0} / ${automation.maxRuns}`}
@@ -238,6 +267,8 @@ function AutomationDetailShell({ onBack }: { onBack: () => void }) {
 export function AutomationsView({
   projectId,
   projectName,
+  projectOptions = [],
+  onProjectChange,
   onNewAutomation,
   selectedAutomationId,
   onSelectedAutomationChange,
@@ -315,19 +346,52 @@ export function AutomationsView({
             {projectLabel}
           </div>
         </div>
-        <Button
-          type="button"
-          className="gap-2"
-          onClick={onNewAutomation}
-          disabled={!projectId || !onNewAutomation}
-          data-testid="automations-new-button"
-        >
-          <Plus className="h-4 w-4" />
-          New automation
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="sr-only" htmlFor="automations-project-select">
+            Project
+          </label>
+          <select
+            id="automations-project-select"
+            className="h-9 min-w-[180px] rounded-md px-3 text-sm font-medium outline-none"
+            style={{
+              backgroundColor: "var(--bg-surface)",
+              borderColor: "var(--border-default)",
+              borderStyle: "solid",
+              borderWidth: "1px",
+              color: "var(--text-primary)",
+            }}
+            value={projectId ?? ""}
+            onChange={(event) => onProjectChange?.(event.target.value)}
+            disabled={!onProjectChange || projectOptions.length === 0}
+            data-testid="automations-project-select"
+          >
+            {projectOptions.length === 0 ? (
+              <option value={projectId ?? ""}>{projectLabel}</option>
+            ) : (
+              <>
+                {!projectId ? <option value="">Select project</option> : null}
+                {projectOptions.map((project) => (
+                  <option key={project.id} value={project.id}>
+                    {project.name}
+                  </option>
+                ))}
+              </>
+            )}
+          </select>
+          <Button
+            type="button"
+            className="gap-2"
+            onClick={onNewAutomation}
+            disabled={!projectId || !onNewAutomation}
+            data-testid="automations-new-button"
+          >
+            <Plus className="h-4 w-4" />
+            New automation
+          </Button>
+        </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-auto p-6">
+      <div className="min-h-0 flex-1 overflow-auto p-5">
         {!projectId ? (
           <EmptyAutomations />
         ) : showSkeleton ? (
@@ -339,9 +403,9 @@ export function AutomationsView({
         ) : rows.length === 0 ? (
           <EmptyAutomations {...(onNewAutomation ? { onNewAutomation } : {})} />
         ) : (
-          <div className="space-y-3" data-testid="automations-list">
+          <div className="space-y-2" data-testid="automations-list">
             <div
-              className="hidden grid-cols-[1.2fr_0.65fr_0.9fr_0.8fr_1.1fr_0.6fr_1fr_1.2fr_32px] gap-4 px-4 text-xs font-semibold uppercase tracking-normal md:grid"
+              className="hidden grid-cols-[1.35fr_0.55fr_0.75fr_0.75fr_1fr_0.5fr_0.9fr_1fr_24px] gap-3 px-4 text-xs font-semibold uppercase tracking-normal md:grid"
               style={{ color: "var(--text-muted)" }}
               aria-hidden="true"
             >

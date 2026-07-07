@@ -10,8 +10,7 @@ use crate::commands::unified_chat_commands::{
     AgentConversationResponse, AgentConversationWorkspaceResponse,
 };
 use crate::domain::entities::{
-    AgentRunStatus, AutomationId, AutomationRunId, ChatContextType, ChatConversation,
-    ChatConversationId, Project, ProjectId,
+    AgentRunStatus, ChatContextType, ChatConversation, ChatConversationId, Project, ProjectId,
 };
 
 const DEFAULT_LIMIT_PER_GROUP: u32 = 6;
@@ -718,8 +717,8 @@ fn supervision_publication_label(
 mod tests {
     use super::*;
     use crate::domain::entities::{
-        AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, ChatConversation,
-        IdeationAnalysisBaseRefKind, Project,
+        AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AutomationId,
+        AutomationRunId, ChatConversation, IdeationAnalysisBaseRefKind, Project,
     };
 
     fn sidebar_input(project_id: &ProjectId) -> AgentSidebarConversationsInput {

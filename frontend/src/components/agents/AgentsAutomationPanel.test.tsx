@@ -11,6 +11,10 @@ const {
   pauseAutomationMock,
   resumeAutomationMock,
   stopAutomationMock,
+  updateAutomationSetupMock,
+  sendAgentMessageMock,
+  useAskUserQuestionMock,
+  submitAutomationSetupAnswerMock,
   toastSuccessMock,
   toastErrorMock,
 } = vi.hoisted(() => ({
@@ -19,6 +23,10 @@ const {
   pauseAutomationMock: vi.fn(),
   resumeAutomationMock: vi.fn(),
   stopAutomationMock: vi.fn(),
+  updateAutomationSetupMock: vi.fn(),
+  sendAgentMessageMock: vi.fn(),
+  useAskUserQuestionMock: vi.fn(),
+  submitAutomationSetupAnswerMock: vi.fn(),
   toastSuccessMock: vi.fn(),
   toastErrorMock: vi.fn(),
 }));
@@ -34,10 +42,81 @@ vi.mock("@/components/agents/agentDeferredFrame", () => ({
   useAfterPaintMounted: () => true,
 }));
 
+vi.mock("@/hooks/useAgentModels", () => ({
+  useAgentModels: () => ({
+    registry: {
+      claude: [
+        {
+          id: "sonnet",
+          label: "sonnet",
+          menuLabel: "sonnet",
+          defaultEffort: "medium",
+          supportedEfforts: ["low", "medium", "high", "max"],
+        },
+      ],
+      codex: [
+        {
+          id: "gpt-5.5",
+          label: "gpt-5.5",
+          menuLabel: "gpt-5.5",
+          defaultEffort: "xhigh",
+          supportedEfforts: ["low", "medium", "high", "xhigh"],
+        },
+        {
+          id: "gpt-5.4",
+          label: "gpt-5.4",
+          menuLabel: "gpt-5.4",
+          defaultEffort: "xhigh",
+          supportedEfforts: ["low", "medium", "high", "xhigh"],
+        },
+      ],
+    },
+  }),
+}));
+
+vi.mock("@/hooks/useHarnessProviders", () => ({
+  useHarnessProviders: () => ({
+    providers: [
+      {
+        provider: "claude",
+        enabled: true,
+        available: true,
+        cliVersion: "2.1.197",
+        status: "ready",
+        error: null,
+        missingCoreExecFeatures: [],
+        supportedModelAliases: ["sonnet"],
+        supportedEfforts: ["low", "medium", "high", "max"],
+      },
+      {
+        provider: "codex",
+        enabled: true,
+        available: true,
+        cliVersion: "1.2.3",
+        status: "ready",
+        error: null,
+        missingCoreExecFeatures: [],
+        supportedModelAliases: ["gpt-5.5", "gpt-5.4"],
+        supportedEfforts: ["low", "medium", "high", "xhigh"],
+      },
+    ],
+    isLoading: false,
+    isPlaceholderData: false,
+  }),
+}));
+
 vi.mock("@/hooks/useAutomations", () => ({
   invalidateAutomationQueries: vi.fn(),
   useAutomationDetail: (...args: unknown[]) => useAutomationDetailMock(...args),
   useAutomationEvents: (...args: unknown[]) => useAutomationEventsMock(...args),
+}));
+
+vi.mock("@/hooks/useAskUserQuestion", () => ({
+  useAskUserQuestion: (...args: unknown[]) => useAskUserQuestionMock(...args),
+}));
+
+vi.mock("@/api/chat", () => ({
+  sendAgentMessage: (...args: unknown[]) => sendAgentMessageMock(...args),
 }));
 
 vi.mock("@/api/automations", async (importOriginal) => {
@@ -49,6 +128,11 @@ vi.mock("@/api/automations", async (importOriginal) => {
       pause: (...args: unknown[]) => pauseAutomationMock(...args),
       resume: (...args: unknown[]) => resumeAutomationMock(...args),
       stop: (...args: unknown[]) => stopAutomationMock(...args),
+      setupAgent: {
+        ...actual.automationsApi.setupAgent,
+        updateAutomation: (...args: unknown[]) =>
+          updateAutomationSetupMock(...args),
+      },
     },
   };
 });
@@ -160,6 +244,24 @@ describe("AgentsAutomationPanel", () => {
     pauseAutomationMock.mockResolvedValue(automationFixture({ status: "paused" }));
     resumeAutomationMock.mockResolvedValue(automationFixture({ status: "active" }));
     stopAutomationMock.mockResolvedValue(automationFixture({ status: "stopped" }));
+    updateAutomationSetupMock.mockResolvedValue(automationFixture({ status: "draft" }));
+    sendAgentMessageMock.mockResolvedValue({
+      conversationId: "conversation-setup",
+      agentRunId: "run-setup",
+      queued: false,
+    });
+    submitAutomationSetupAnswerMock.mockResolvedValue({
+      success: true,
+      deliveredToWaitingAgent: true,
+    });
+    useAskUserQuestionMock.mockReturnValue({
+      activeQuestion: null,
+      answeredQuestion: undefined,
+      submitAnswer: submitAutomationSetupAnswerMock,
+      dismissQuestion: vi.fn(),
+      clearAnswered: vi.fn(),
+      isLoading: false,
+    });
     useAutomationDetailMock.mockReturnValue({
       data: automationDetailFixture(),
       isLoading: false,
@@ -198,6 +300,181 @@ describe("AgentsAutomationPanel", () => {
 
     expect(onOpenAutomation).toHaveBeenCalledWith("automation-1");
     expect(useAutomationEventsMock).toHaveBeenCalledWith("automation-1");
+  });
+
+  it("updates draft setup settings from the automation artifact panel", async () => {
+    useAutomationDetailMock.mockReturnValue({
+      data: automationDetailFixture({
+        automation: automationFixture({
+          status: "draft",
+          providerHarness: "codex",
+          modelId: "gpt-5.5",
+          logicalEffort: "xhigh",
+          runMode: "edit",
+        }),
+        runs: [],
+      }),
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel();
+
+    expect(screen.getByTestId("agents-automation-setup")).toHaveTextContent(
+      "Automation setup",
+    );
+    expect(screen.getByTestId("agents-automation-runtime-selector")).toBeInTheDocument();
+    expect(
+      (screen.getByTestId("agents-automation-provider") as HTMLSelectElement).value,
+    ).toBe("codex");
+    expect(
+      (screen.getByTestId("agents-automation-model") as HTMLSelectElement).value,
+    ).toBe("gpt-5.5");
+    expect(
+      (screen.getByTestId("agents-automation-effort") as HTMLSelectElement).value,
+    ).toBe("xhigh");
+
+    fireEvent.click(screen.getByTestId("agents-automation-run-mode-plan"));
+
+    await waitFor(() =>
+      expect(updateAutomationSetupMock).toHaveBeenCalledWith("conversation-setup", {
+        runMode: "plan",
+      }),
+    );
+    await waitFor(() =>
+      expect(toastSuccessMock).toHaveBeenCalledWith("Automation will run as Plan"),
+    );
+
+    updateAutomationSetupMock.mockClear();
+    toastSuccessMock.mockClear();
+    fireEvent.change(screen.getByTestId("agents-automation-provider"), {
+      target: { value: "claude" },
+    });
+
+    await waitFor(() =>
+      expect(updateAutomationSetupMock).toHaveBeenCalledWith("conversation-setup", {
+        providerHarness: "claude",
+        modelId: "sonnet",
+        logicalEffort: "medium",
+      }),
+    );
+    await waitFor(() =>
+      expect(toastSuccessMock).toHaveBeenCalledWith("Automation run agent updated"),
+    );
+
+    updateAutomationSetupMock.mockClear();
+    toastSuccessMock.mockClear();
+    fireEvent.change(screen.getByTestId("agents-automation-effort"), {
+      target: { value: "high" },
+    });
+
+    await waitFor(() =>
+      expect(updateAutomationSetupMock).toHaveBeenCalledWith("conversation-setup", {
+        providerHarness: "codex",
+        modelId: "gpt-5.5",
+        logicalEffort: "high",
+      }),
+    );
+    await waitFor(() =>
+      expect(toastSuccessMock).toHaveBeenCalledWith("Automation run agent updated"),
+    );
+  });
+
+  it("shows an artifact-side update action for pending automation spec proposals", async () => {
+    useAutomationDetailMock.mockReturnValue({
+      data: automationDetailFixture({
+        automation: automationFixture({
+          status: "draft",
+          goalPrompt: "",
+          goalItemsJson: null,
+        }),
+        runs: [],
+      }),
+      isLoading: false,
+      isError: false,
+    });
+    useAskUserQuestionMock.mockReturnValue({
+      activeQuestion: {
+        requestId: "question-1",
+        sessionId: "conversation-setup",
+        header: "Update automation?",
+        question: "Apply the proposed goal and phases to this automation?",
+        options: [
+          {
+            label: "Update automation",
+            value: "apply_automation_proposal",
+          },
+        ],
+        multiSelect: false,
+        allowSkip: true,
+        metadata: { kind: "automation_setup_proposal" },
+      },
+      answeredQuestion: undefined,
+      submitAnswer: submitAutomationSetupAnswerMock,
+      dismissQuestion: vi.fn(),
+      clearAnswered: vi.fn(),
+      isLoading: false,
+    });
+
+    renderPanel();
+
+    expect(useAskUserQuestionMock).toHaveBeenCalledWith("conversation-setup");
+    expect(screen.getByTestId("agents-automation-proposal-cta")).toHaveTextContent(
+      "Apply the proposed goal and phases",
+    );
+
+    fireEvent.click(screen.getByTestId("agents-automation-proposal-update"));
+
+    await waitFor(() =>
+      expect(submitAutomationSetupAnswerMock).toHaveBeenCalledWith({
+        requestId: "question-1",
+        selectedOptions: ["apply_automation_proposal"],
+      }),
+    );
+    expect(toastSuccessMock).toHaveBeenCalledWith("Automation update accepted");
+  });
+
+  it("can request an automation update from the latest plain proposal when goal and phases are not saved", async () => {
+    useAutomationDetailMock.mockReturnValue({
+      data: automationDetailFixture({
+        automation: automationFixture({
+          status: "draft",
+          goalPrompt: "",
+          goalItemsJson: null,
+          providerHarness: "codex",
+          modelId: "gpt-5.5",
+          logicalEffort: "xhigh",
+        }),
+        runs: [],
+      }),
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel();
+
+    expect(screen.getByTestId("agents-automation-proposal-cta")).toHaveTextContent(
+      "Save the latest proposed goal and phases",
+    );
+
+    fireEvent.click(screen.getByTestId("agents-automation-proposal-update"));
+
+    await waitFor(() =>
+      expect(sendAgentMessageMock).toHaveBeenCalledWith(
+        "project",
+        "project-1",
+        expect.stringContaining("Update the bound draft automation now"),
+        undefined,
+        undefined,
+        {
+          conversationId: "conversation-setup",
+          providerHarness: "codex",
+          modelId: "gpt-5.5",
+          logicalEffort: "xhigh",
+        },
+      ),
+    );
+    expect(toastSuccessMock).toHaveBeenCalledWith("Automation update requested");
   });
 
   it("renders loading and error states without action controls", () => {

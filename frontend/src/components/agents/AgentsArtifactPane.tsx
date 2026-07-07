@@ -738,9 +738,16 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     !planArtifactId &&
     canStartPlan &&
     (workspaceReviewContext?.shouldShowTab || reviewArtifactId);
+  const shouldPreferAutomationOverPlan =
+    activeTab === "plan" &&
+    automationId &&
+    conversation?.agentMode === "automation" &&
+    visibleTabs.some((tab) => tab.id === "automation");
   const effectiveActiveTab =
     shouldPreferReviewOverEmptyPlan
       ? "review"
+      : shouldPreferAutomationOverPlan
+      ? "automation"
       : visibleTabs.some((tab) => tab.id === activeTab)
       ? activeTab
       : fallbackActiveTab;

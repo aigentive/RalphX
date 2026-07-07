@@ -103,6 +103,7 @@ impl AutomationRunStartRequest {
             composer_project_references: self.composer_project_references,
             composer_integration_references: self.composer_integration_references,
             composer_artifact_references: self.composer_artifact_references,
+            team_intent: None,
         })
     }
 }

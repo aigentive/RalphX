@@ -3995,6 +3995,7 @@ const AgentConversationRuntimeIndexModeSchema = z.enum([
   "plan",
   "pr_review",
   "ideation",
+  "automation",
 ]);
 
 export type AgentConversationRuntimeIndexMode = z.infer<

@@ -255,6 +255,12 @@ describe("AutomationDetailView", () => {
 
     expect(goalCard).toHaveTextContent("Goal line 11");
 
+    await userEvent.click(screen.getByTestId("automation-setup-conversation-link"));
+    expect(onOpenRunConversation).toHaveBeenCalledWith(
+      "project-1",
+      "setup-conversation-1",
+    );
+
     await userEvent.click(within(runTwo).getByRole("button", { name: "Open conversation" }));
     expect(onOpenRunConversation).toHaveBeenCalledWith("project-1", "conversation-2");
 

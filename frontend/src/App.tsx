@@ -1329,6 +1329,8 @@ function AppContent() {
                       <LazyAutomationsView
                         projectId={currentProjectId || null}
                         projectName={activeProject?.name ?? null}
+                        projectOptions={fetchedProjects ?? []}
+                        onProjectChange={selectProject}
                         selectedAutomationId={selectedAutomationId}
                         onSelectedAutomationChange={setSelectedAutomationId}
                         onNewAutomation={handleNewAutomation}

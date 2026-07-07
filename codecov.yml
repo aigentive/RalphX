@@ -156,6 +156,7 @@ ignore:
   - "frontend/src/**/*.testSetup.*"
   - "frontend/src/mocks/**"
   # Plugin MCP test sources and generated test artifacts.
+  - "plugins/app/**/build/**"
   - "plugins/app/**/tests/**"
   - "plugins/app/**/__tests__/**"
   - "plugins/app/**/*.test.*"

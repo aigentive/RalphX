@@ -344,6 +344,7 @@ export function useStartAgentConversation({
               automationId: automationDraft!.automation.id,
               automationRunId: null,
               parentConversationId: null,
+              coordinationMode: "solo",
               title: automationDraft!.automation.name,
               messageCount: 1,
               lastMessageAt: now,

@@ -5,7 +5,9 @@ use serde::Serialize;
 use crate::application::automation::service::{
     AutomationDetail, AutomationScheduleOutcome, AutomationService,
 };
-use crate::application::automation::transition::NoopAutomationEventEmitter;
+use crate::application::automation::transition::{
+    AutomationEventEmitter, NoopAutomationEventEmitter, TauriAutomationEventEmitter,
+};
 use crate::application::AppState;
 use crate::domain::entities::{AgentRun, Automation, AutomationRun};
 
@@ -102,10 +104,14 @@ pub struct AutomationScheduleResponse {
 }
 
 pub fn automation_service_for_state(state: &AppState) -> AutomationService {
+    let event_emitter: Arc<dyn AutomationEventEmitter> = match state.app_handle.as_ref() {
+        Some(app_handle) => Arc::new(TauriAutomationEventEmitter::new(app_handle.clone())),
+        None => Arc::new(NoopAutomationEventEmitter),
+    };
     AutomationService::new(
         state.automation_repo.clone(),
         state.automation_run_repo.clone(),
-        Arc::new(NoopAutomationEventEmitter),
+        event_emitter,
     )
 }
 
