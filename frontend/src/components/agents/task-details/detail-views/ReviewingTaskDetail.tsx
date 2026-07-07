@@ -24,6 +24,7 @@ import {
   StatusBanner,
   StatusPill,
   TwoColumnLayout,
+  TaskValidationSection,
 } from "./shared";
 import { ValidationProgress } from "./shared/ValidationProgress";
 import { DurationDisplay } from "./shared/DurationDisplay";
@@ -430,6 +431,11 @@ export function ReviewingTaskDetail({
           liveSteps={liveValidationSteps}
           title="Environment Setup"
           metadataLogKey="review_setup_log"
+        />
+
+        <TaskValidationSection
+          taskId={task.id}
+          isHistorical={isHistorical === true}
         />
 
         {/* Review Steps */}

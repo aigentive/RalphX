@@ -90,5 +90,15 @@ describe("TaskValidationSection", () => {
     expect(screen.getByText("Unit tests")).toBeInTheDocument();
     expect(screen.getByText("expected true to be false")).toBeInTheDocument();
   });
-});
 
+  it("labels historical task detail evidence as latest task validation", () => {
+    const summary = failedSummary();
+    testState.summary = { data: summary, isLoading: false, isError: false };
+    testState.display = summary;
+
+    render(<TaskValidationSection taskId="task-1" isHistorical />);
+
+    expect(screen.getByText("Latest Task Validation")).toBeInTheDocument();
+    expect(screen.getByText("Latest task validation run")).toBeInTheDocument();
+  });
+});

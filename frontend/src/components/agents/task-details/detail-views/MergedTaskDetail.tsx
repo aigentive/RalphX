@@ -20,9 +20,9 @@ import {
   TaskMetricsCard,
   ChangeReviewSection,
   PlanMergeContextSection,
+  TaskValidationSection,
 } from "./shared";
 import { useTaskDetailContextModel } from "./shared/TaskDetailContext";
-import { ValidationProgress } from "./shared/ValidationProgress";
 import { useTaskStateHistory } from "@/hooks/useReviews";
 import { useTaskStateTransitions } from "@/hooks/useTaskStateTransitions";
 import type { Task } from "@/types/task";
@@ -127,7 +127,7 @@ function MergeInfoCard({
 
 export function MergedTaskDetail({
   task,
-  isHistorical: _isHistorical = false,
+  isHistorical = false,
 }: MergedTaskDetailProps) {
   const { data: history, isLoading } = useTaskStateHistory(task.id);
   const { data: stateTransitions = [] } = useTaskStateTransitions(task.id);
@@ -185,9 +185,9 @@ export function MergedTaskDetail({
       testId="merged-task-detail"
       evidence={
         <>
-          <ValidationProgress
+          <TaskValidationSection
             taskId={task.id}
-            metadata={task.metadata}
+            isHistorical={isHistorical === true}
           />
 
           <ChangeReviewSection

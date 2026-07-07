@@ -1,10 +1,11 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { TaskValidationSummary } from "@/hooks/useTaskValidationSummary";
 import type { Task } from "@/types/task";
 import { CompletedTaskDetail } from "./CompletedTaskDetail";
 
-const { historyState, transitionsState, gitDiffState } = vi.hoisted(() => ({
+const { historyState, transitionsState, gitDiffState, validationState } = vi.hoisted(() => ({
   historyState: {
     data: [
       {
@@ -29,6 +30,9 @@ const { historyState, transitionsState, gitDiffState } = vi.hoisted(() => ({
         sha: "abc1234",
       },
     ],
+  },
+  validationState: {
+    display: undefined as TaskValidationSummary | undefined,
   },
 }));
 
@@ -65,6 +69,44 @@ vi.mock("@/lib/task-actions/resume-execution-if-stopped", () => ({
   resumeExecutionIfStopped: vi.fn(),
 }));
 
+vi.mock("@/hooks/useTaskValidationSummary", () => ({
+  useTaskValidationSummary: () => ({
+    data: validationState.display,
+    isLoading: false,
+    isError: false,
+  }),
+}));
+
+vi.mock("@/hooks/useTaskValidationEvents", () => ({
+  useTaskValidationLiveState: () => null,
+  useDisplayTaskValidationSummary: () => validationState.display,
+}));
+
+function validationSummary(): TaskValidationSummary {
+  return {
+    task_id: "task-1",
+    project_id: "project-1",
+    policy_enabled: true,
+    latest_run: {
+      id: "run-1",
+      purpose: "final",
+      context_type: "execution",
+      requested_by_agent: "ralphx-execution-worker",
+      status: "passed",
+      mode: "force",
+      policy_enabled: true,
+      head_sha: "abcdef1234567890",
+      head_short_sha: "abcdef12",
+      base_ref: "main",
+      started_at: "2026-07-07T11:55:00Z",
+      completed_at: "2026-07-07T11:56:00Z",
+    },
+    commands: [],
+    legacy_validation_cache: null,
+    disabled_reason: null,
+  };
+}
+
 function task(): Task {
   return {
     id: "task-1",
@@ -92,6 +134,7 @@ function TestWrapper({ children }: { children: React.ReactNode }) {
 describe("Agents CompletedTaskDetail", () => {
   beforeEach(() => {
     historyState.isLoading = false;
+    validationState.display = validationSummary();
   });
 
   it("renders completed stage content, review evidence, and current actions in the one-column shell", () => {
@@ -99,7 +142,17 @@ describe("Agents CompletedTaskDetail", () => {
 
     expect(screen.getByTestId("completed-task-detail")).toBeInTheDocument();
     expect(screen.getByTestId("task-detail-stage-body")).toHaveTextContent("Task Completed");
-    expect(screen.getByTestId("task-detail-evidence")).toHaveTextContent("Review History");
+    const evidence = screen.getByTestId("task-detail-evidence");
+    expect(evidence).toHaveTextContent("Task Validation");
+    expect(evidence).toHaveTextContent("Review History");
+    expect(
+      within(evidence).getByTestId("task-validation-section"),
+    ).toBeInTheDocument();
+    expect(
+      within(evidence).getByTestId("task-validation-section").compareDocumentPosition(
+        within(evidence).getByText("Review History"),
+      ) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
     expect(screen.getByTestId("task-detail-actions")).toBeInTheDocument();
     expect(screen.getByTestId("review-code-button")).toBeInTheDocument();
   });
@@ -110,7 +163,9 @@ describe("Agents CompletedTaskDetail", () => {
     });
 
     expect(screen.getByTestId("task-detail-stage-body")).toHaveTextContent("Task Completed");
-    expect(screen.getByTestId("task-detail-evidence")).toHaveTextContent("Review History");
+    const evidence = screen.getByTestId("task-detail-evidence");
+    expect(evidence).toHaveTextContent("Latest Task Validation");
+    expect(evidence).toHaveTextContent("Review History");
     expect(screen.queryByTestId("task-detail-actions")).not.toBeInTheDocument();
     expect(screen.queryByTestId("review-code-button")).not.toBeInTheDocument();
   });

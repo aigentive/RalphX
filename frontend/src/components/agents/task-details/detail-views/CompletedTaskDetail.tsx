@@ -11,6 +11,7 @@ import {
   StatusBanner,
   StatusPill,
   TwoColumnLayout,
+  TaskValidationSection,
 } from "./shared";
 import { ReviewTimeline } from "./shared/ReviewTimeline";
 import { useTaskStateHistory } from "@/hooks/useReviews";
@@ -176,10 +177,17 @@ export function CompletedTaskDetail({ task, isHistorical = false }: CompletedTas
         description={task.description}
         testId="completed-task-detail"
         evidence={
-          <section data-testid="review-history-section">
-            <SectionTitle>Review History</SectionTitle>
-            <ReviewTimeline history={history} stateTransitions={stateTransitions} />
-          </section>
+          <>
+            <TaskValidationSection
+              taskId={task.id}
+              isHistorical={isHistorical === true}
+            />
+
+            <section data-testid="review-history-section">
+              <SectionTitle>Review History</SectionTitle>
+              <ReviewTimeline history={history} stateTransitions={stateTransitions} />
+            </section>
+          </>
         }
         actions={
           !isHistorical ? (

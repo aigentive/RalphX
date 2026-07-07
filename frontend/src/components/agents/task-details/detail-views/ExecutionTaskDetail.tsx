@@ -16,6 +16,7 @@ import {
   StatusPill,
   ProgressIndicator,
   TwoColumnLayout,
+  TaskValidationSection,
 } from "./shared";
 import { ValidationProgress } from "./shared/ValidationProgress";
 import { DurationDisplay } from "./shared/DurationDisplay";
@@ -466,6 +467,11 @@ export function ExecutionTaskDetail({ task, isHistorical }: ExecutionTaskDetailP
         liveSteps={liveValidationSteps}
         title="Setup & Install"
         metadataLogKey="execution_setup_log"
+      />
+
+      <TaskValidationSection
+        taskId={task.id}
+        isHistorical={isHistorical === true}
       />
 
       {/* Revision Feedback (only for re-executing with feedback or while loading) */}
