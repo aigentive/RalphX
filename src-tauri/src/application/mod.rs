@@ -331,6 +331,8 @@ mod pull_request_detail_tests;
 #[cfg(test)]
 mod ticketing_pr_summary_tests;
 #[cfg(test)]
+mod verification_event_emitters_tests;
+#[cfg(test)]
 mod webhook_service_tests;
 
 // Unified chat service (handles all chat contexts: ideation, task, project, task_execution)
