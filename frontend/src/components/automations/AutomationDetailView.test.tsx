@@ -17,6 +17,7 @@ const {
   skipJudgeMock,
   deleteAutomationMock,
   useArtifactMock,
+  listConversationTasksMock,
   toastSuccessMock,
   toastErrorMock,
   toastInfoMock,
@@ -30,9 +31,16 @@ const {
   skipJudgeMock: vi.fn(),
   deleteAutomationMock: vi.fn(),
   useArtifactMock: vi.fn(),
+  listConversationTasksMock: vi.fn(),
   toastSuccessMock: vi.fn(),
   toastErrorMock: vi.fn(),
   toastInfoMock: vi.fn(),
+}));
+
+vi.mock("@/api/agent-tasks", () => ({
+  agentTaskApi: {
+    listConversationTasks: (...args: unknown[]) => listConversationTasksMock(...args),
+  },
 }));
 
 vi.mock("@/hooks/useArtifacts", () => ({
@@ -219,6 +227,7 @@ describe("AutomationDetailView", () => {
       isLoading: false,
       isError: false,
     });
+    listConversationTasksMock.mockReset().mockResolvedValue([]);
     toastSuccessMock.mockReset();
     toastErrorMock.mockReset();
     toastInfoMock.mockReset();
@@ -278,6 +287,113 @@ describe("AutomationDetailView", () => {
 
     await userEvent.click(within(runTwo).getByRole("button", { name: "Show next prompt" }));
     expect(within(runTwo).getByText("Continue with the next scoped automation task.")).toBeInTheDocument();
+  });
+
+  it("expands the latest and open runs by default and collapses older terminal runs", async () => {
+    const olderRun = run({
+      id: "run-1",
+      runIndex: 1,
+      status: "merged",
+      judgeState: "done",
+    });
+    const openRun = run({
+      id: "run-2",
+      runIndex: 2,
+      status: "published",
+      judgeState: "none",
+      conversationId: "conversation-2",
+    });
+    const latestTerminal = run({
+      id: "run-3",
+      runIndex: 3,
+      status: "merged",
+      judgeState: "done",
+    });
+
+    renderDetail({
+      automation: automation({ status: "active" }),
+      runs: [olderRun, openRun, latestTerminal],
+      usage,
+    });
+
+    await screen.findByTestId("automation-detail-view");
+
+    // Latest run (index 3) is expanded even though it is terminal.
+    expect(screen.getByTestId("automation-run-run-3-body")).toBeInTheDocument();
+    // Open run (published/none) is expanded regardless of being the latest.
+    expect(screen.getByTestId("automation-run-run-2-body")).toBeInTheDocument();
+    // Older terminal run collapses by default.
+    expect(screen.queryByTestId("automation-run-run-1-body")).not.toBeInTheDocument();
+  });
+
+  it("toggles a collapsed run body open and closed", async () => {
+    const olderRun = run({
+      id: "run-1",
+      runIndex: 1,
+      status: "merged",
+      judgeState: "done",
+    });
+    const latestRun = run({ id: "run-2", runIndex: 2, status: "merged", judgeState: "done" });
+
+    renderDetail({
+      automation: automation({ status: "active" }),
+      runs: [olderRun, latestRun],
+      usage,
+    });
+
+    await screen.findByTestId("automation-detail-view");
+
+    expect(screen.queryByTestId("automation-run-run-1-body")).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Expand run 1" }));
+    expect(screen.getByTestId("automation-run-run-1-body")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Collapse run 1" }));
+    expect(screen.queryByTestId("automation-run-run-1-body")).not.toBeInTheDocument();
+  });
+
+  it("renders the live task ledger inside an expanded open run", async () => {
+    listConversationTasksMock.mockResolvedValue([
+      {
+        taskId: "task-a",
+        taskNumber: 1,
+        title: "Refactor scheduler",
+        state: "active",
+        ownerAgent: "coder-1",
+        blockedBy: [],
+        blocks: [],
+        availability: "available",
+        updatedAt: "2026-07-05T00:00:00Z",
+      },
+    ]);
+
+    renderDetail({
+      automation: automation({ status: "active" }),
+      runs: [
+        run({
+          id: "run-live",
+          runIndex: 1,
+          status: "running",
+          judgeState: "none",
+          conversationId: "conversation-live",
+        }),
+      ],
+      usage,
+    });
+
+    await screen.findByTestId("automation-detail-view");
+
+    const ledger = await screen.findByTestId("automation-run-task-ledger");
+    expect(within(ledger).getByText("Refactor scheduler")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(listConversationTasksMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          conversationId: "conversation-live",
+          projectId: "project-1",
+          includeDone: true,
+        }),
+      ),
+    );
   });
 
   it("renders the linked spec and a Phases heading in the goal card", async () => {

@@ -38,6 +38,7 @@ import {
   parseAutomationGoalItems,
 } from "@/components/automations/automationGoalItems";
 import { AutomationPhaseProgress } from "@/components/automations/AutomationPhases";
+import { AutomationRunTaskLedger } from "@/components/automations/AutomationRunTaskLedger";
 import { AutomationSpecView } from "@/components/automations/AutomationSpecView";
 import { Button, type ButtonProps } from "@/components/ui/button";
 import {
@@ -236,7 +237,13 @@ function TooltipIconButton({
  * scrolling to the timeline. Styling mirrors {@link Pill} with an added pulsing
  * dot; longhand paint/border props keep it WKWebView-safe.
  */
-function RunStatusChip({ label }: { label: string }) {
+function RunStatusChip({
+  label,
+  testId = "automation-run-status-chip",
+}: {
+  label: string;
+  testId?: string;
+}) {
   return (
     <span
       className="inline-flex w-fit items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-semibold text-[var(--accent-primary)]"
@@ -246,7 +253,7 @@ function RunStatusChip({ label }: { label: string }) {
         borderStyle: "solid",
         borderWidth: "1px",
       }}
-      data-testid="automation-run-status-chip"
+      data-testid={testId}
     >
       <span
         className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full"
@@ -486,14 +493,20 @@ function JudgeVerdictCard({ run }: { run: AutomationRun }) {
 const RunTimelineItem = memo(function RunTimelineItem({
   run,
   projectId,
+  defaultExpanded,
+  liveStageLabel,
   onOpenRunConversation,
 }: {
   run: AutomationRun;
   projectId: string | null;
+  defaultExpanded: boolean;
+  liveStageLabel: string | null;
   onOpenRunConversation?: (projectId: string, conversationId: string) => void;
 }) {
+  const [expanded, setExpanded] = useState(defaultExpanded);
   const canOpenConversation = Boolean(projectId && run.conversationId && onOpenRunConversation);
   const failureReason = describeRunFailure(run);
+  const runOpen = isOpenAutomationRun(run);
   const openConversation = useCallback(() => {
     if (projectId && run.conversationId) {
       onOpenRunConversation?.(projectId, run.conversationId);
@@ -520,19 +533,40 @@ const RunTimelineItem = memo(function RunTimelineItem({
           borderWidth: "1px",
         }}
       >
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex min-w-0 flex-wrap items-center gap-2">
+        <button
+          type="button"
+          onClick={() => setExpanded((value) => !value)}
+          aria-expanded={expanded}
+          aria-label={`${expanded ? "Collapse" : "Expand"} run ${run.runIndex}`}
+          className="flex w-full flex-wrap items-center justify-between gap-3 text-left outline-none focus-visible:outline-none"
+        >
+          <span className="flex min-w-0 flex-wrap items-center gap-2">
             <span className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
               Run {run.runIndex}
             </span>
             <Pill label={RUN_STATUS_LABELS[run.status]} status={run.status} />
             <Pill label={`Judge ${run.judgeState}`} status={run.judgeState} />
-          </div>
-          <span className="text-xs" style={{ color: "var(--text-muted)" }}>
-            {formatDate(run.updatedAt)}
+            {liveStageLabel && (
+              <RunStatusChip
+                label={liveStageLabel}
+                testId={`automation-run-${run.id}-live`}
+              />
+            )}
           </span>
-        </div>
+          <span className="flex shrink-0 items-center gap-2">
+            <span className="text-xs" style={{ color: "var(--text-muted)" }}>
+              {formatDate(run.updatedAt)}
+            </span>
+            {expanded ? (
+              <ChevronUp className="h-4 w-4" aria-hidden="true" style={{ color: "var(--text-muted)" }} />
+            ) : (
+              <ChevronDown className="h-4 w-4" aria-hidden="true" style={{ color: "var(--text-muted)" }} />
+            )}
+          </span>
+        </button>
 
+        {expanded && (
+          <div data-testid={`automation-run-${run.id}-body`}>
         {failureReason && (
           <div
             className="mt-3 rounded-md px-3 py-2 text-sm font-medium"
@@ -630,6 +664,17 @@ const RunTimelineItem = memo(function RunTimelineItem({
           </div>
         </div>
         <JudgeVerdictCard run={run} />
+        {run.conversationId && (
+          <div className="mt-4">
+            <AutomationRunTaskLedger
+              conversationId={run.conversationId}
+              projectId={projectId}
+              isOpen={runOpen}
+            />
+          </div>
+        )}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1062,6 +1107,14 @@ export function AutomationDetailView({
                     key={run.id}
                     run={run}
                     projectId={projectId}
+                    defaultExpanded={
+                      run.runIndex === latest?.runIndex || isOpenAutomationRun(run)
+                    }
+                    liveStageLabel={
+                      isOpenAutomationRun(run)
+                        ? describeAutomationStage(automation, run)
+                        : null
+                    }
                     {...(onOpenRunConversation ? { onOpenRunConversation } : {})}
                   />
                 ))}
