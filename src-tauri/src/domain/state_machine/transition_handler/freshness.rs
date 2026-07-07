@@ -578,47 +578,17 @@ pub async fn ensure_branches_fresh(
                     )),
                 )
                 .await;
-                match retry_result {
-                    Ok(
-                        PlanUpdateResult::AlreadyUpToDate
-                        | PlanUpdateResult::Updated
-                        | PlanUpdateResult::NotPlanBranch,
-                    ) => {}
-                    Ok(PlanUpdateResult::Conflicts { conflict_files }) => {
-                        return Err(
-                            block_freshness_update_error(
-                                activity_event_repo,
-                                task_id_str,
-                                "plan_update",
-                                format!(
-                                    "update_plan_from_main returned conflicts after retry following error: {:?}",
-                                    conflict_files
-                                ),
-                            )
-                            .await,
-                        );
-                    }
-                    Ok(PlanUpdateResult::Error(retry_error)) => {
-                        return Err(block_freshness_update_error(
-                            activity_event_repo,
-                            task_id_str,
-                            "plan_update",
-                            format!("update_plan_from_main failed after retry: {}", retry_error),
-                        )
-                        .await);
-                    }
-                    Err(_) => {
-                        return Err(block_freshness_update_error(
-                            activity_event_repo,
-                            task_id_str,
-                            "plan_update",
-                            format!(
-                                "update_plan_from_main retry timed out after {}s",
-                                config.branch_freshness_timeout_secs
-                            ),
-                        )
-                        .await);
-                    }
+                if let FreshnessRetryDecision::Block { reason } = plan_retry_decision_after_error(
+                    retry_result.ok(),
+                    config.branch_freshness_timeout_secs,
+                ) {
+                    return Err(block_freshness_update_error(
+                        activity_event_repo,
+                        task_id_str,
+                        "plan_update",
+                        reason,
+                    )
+                    .await);
                 }
             }
             Ok(
@@ -747,46 +717,17 @@ pub async fn ensure_branches_fresh(
                     )),
                 )
                 .await;
-                match retry_result {
-                    Ok(SourceUpdateResult::AlreadyUpToDate | SourceUpdateResult::Updated) => {}
-                    Ok(SourceUpdateResult::Conflicts { conflict_files }) => {
-                        return Err(
-                            block_freshness_update_error(
-                                activity_event_repo,
-                                task_id_str,
-                                "source_update",
-                                format!(
-                                    "update_source_from_target returned conflicts after retry following error: {:?}",
-                                    conflict_files
-                                ),
-                            )
-                            .await,
-                        );
-                    }
-                    Ok(SourceUpdateResult::Error(retry_error)) => {
-                        return Err(block_freshness_update_error(
-                            activity_event_repo,
-                            task_id_str,
-                            "source_update",
-                            format!(
-                                "update_source_from_target failed after retry: {}",
-                                retry_error
-                            ),
-                        )
-                        .await);
-                    }
-                    Err(_) => {
-                        return Err(block_freshness_update_error(
-                            activity_event_repo,
-                            task_id_str,
-                            "source_update",
-                            format!(
-                                "update_source_from_target retry timed out after {}s",
-                                config.branch_freshness_timeout_secs
-                            ),
-                        )
-                        .await);
-                    }
+                if let FreshnessRetryDecision::Block { reason } = source_retry_decision_after_error(
+                    retry_result.ok(),
+                    config.branch_freshness_timeout_secs,
+                ) {
+                    return Err(block_freshness_update_error(
+                        activity_event_repo,
+                        task_id_str,
+                        "source_update",
+                        reason,
+                    )
+                    .await);
                 }
             }
             Ok(SourceUpdateResult::AlreadyUpToDate | SourceUpdateResult::Updated) => {
@@ -815,6 +756,63 @@ pub async fn ensure_branches_fresh(
     .await;
 
     Ok(freshness)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum FreshnessRetryDecision {
+    Continue,
+    Block { reason: String },
+}
+
+fn plan_retry_decision_after_error(
+    retry_result: Option<PlanUpdateResult>,
+    timeout_secs: u64,
+) -> FreshnessRetryDecision {
+    match retry_result {
+        Some(
+            PlanUpdateResult::AlreadyUpToDate
+            | PlanUpdateResult::Updated
+            | PlanUpdateResult::NotPlanBranch,
+        ) => FreshnessRetryDecision::Continue,
+        Some(PlanUpdateResult::Conflicts { conflict_files }) => FreshnessRetryDecision::Block {
+            reason: format!(
+                "update_plan_from_main returned conflicts after retry following error: {:?}",
+                conflict_files
+            ),
+        },
+        Some(PlanUpdateResult::Error(retry_error)) => FreshnessRetryDecision::Block {
+            reason: format!("update_plan_from_main failed after retry: {}", retry_error),
+        },
+        None => FreshnessRetryDecision::Block {
+            reason: format!("update_plan_from_main retry timed out after {timeout_secs}s"),
+        },
+    }
+}
+
+fn source_retry_decision_after_error(
+    retry_result: Option<SourceUpdateResult>,
+    timeout_secs: u64,
+) -> FreshnessRetryDecision {
+    match retry_result {
+        Some(SourceUpdateResult::AlreadyUpToDate | SourceUpdateResult::Updated) => {
+            FreshnessRetryDecision::Continue
+        }
+        Some(SourceUpdateResult::Conflicts { conflict_files }) => FreshnessRetryDecision::Block {
+            reason: format!(
+                "update_source_from_target returned conflicts after retry following error: {:?}",
+                conflict_files
+            ),
+        },
+        Some(SourceUpdateResult::Error(retry_error)) => FreshnessRetryDecision::Block {
+            reason: format!(
+                "update_source_from_target failed after retry: {}",
+                retry_error
+            ),
+        },
+        None => FreshnessRetryDecision::Block {
+            reason: format!("update_source_from_target retry timed out after {timeout_secs}s"),
+        },
+    }
 }
 
 async fn block_freshness_update_error(
@@ -1131,5 +1129,93 @@ mod field_sync_tests {
         assert_eq!(meta.freshness_auto_reset_count, 0);
         // Routing flags NOT cleared:
         assert!(meta.branch_freshness_conflict);
+    }
+
+    #[test]
+    fn plan_retry_decision_after_error_covers_all_outcomes() {
+        assert_eq!(
+            plan_retry_decision_after_error(Some(PlanUpdateResult::AlreadyUpToDate), 7),
+            FreshnessRetryDecision::Continue
+        );
+        assert_eq!(
+            plan_retry_decision_after_error(Some(PlanUpdateResult::Updated), 7),
+            FreshnessRetryDecision::Continue
+        );
+        assert_eq!(
+            plan_retry_decision_after_error(Some(PlanUpdateResult::NotPlanBranch), 7),
+            FreshnessRetryDecision::Continue
+        );
+
+        let conflict = plan_retry_decision_after_error(
+            Some(PlanUpdateResult::Conflicts {
+                conflict_files: vec![std::path::PathBuf::from("src/lib.rs")],
+            }),
+            7,
+        );
+        assert!(
+            matches!(conflict, FreshnessRetryDecision::Block { ref reason } if reason.contains("src/lib.rs")),
+            "conflict retry must block with conflict file context: {conflict:?}"
+        );
+
+        assert_eq!(
+            plan_retry_decision_after_error(Some(PlanUpdateResult::Error("boom".into())), 7),
+            FreshnessRetryDecision::Block {
+                reason: "update_plan_from_main failed after retry: boom".to_string()
+            }
+        );
+        assert_eq!(
+            plan_retry_decision_after_error(None, 7),
+            FreshnessRetryDecision::Block {
+                reason: "update_plan_from_main retry timed out after 7s".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn source_retry_decision_after_error_covers_all_outcomes() {
+        assert_eq!(
+            source_retry_decision_after_error(Some(SourceUpdateResult::AlreadyUpToDate), 11),
+            FreshnessRetryDecision::Continue
+        );
+        assert_eq!(
+            source_retry_decision_after_error(Some(SourceUpdateResult::Updated), 11),
+            FreshnessRetryDecision::Continue
+        );
+
+        let conflict = source_retry_decision_after_error(
+            Some(SourceUpdateResult::Conflicts {
+                conflict_files: vec![std::path::PathBuf::from("src/main.rs")],
+            }),
+            11,
+        );
+        assert!(
+            matches!(conflict, FreshnessRetryDecision::Block { ref reason } if reason.contains("src/main.rs")),
+            "source conflict retry must block with conflict file context: {conflict:?}"
+        );
+
+        assert_eq!(
+            source_retry_decision_after_error(Some(SourceUpdateResult::Error("again".into())), 11),
+            FreshnessRetryDecision::Block {
+                reason: "update_source_from_target failed after retry: again".to_string()
+            }
+        );
+        assert_eq!(
+            source_retry_decision_after_error(None, 11),
+            FreshnessRetryDecision::Block {
+                reason: "update_source_from_target retry timed out after 11s".to_string()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn block_freshness_update_error_returns_execution_blocked_action() {
+        let action =
+            block_freshness_update_error(None, "task-1", "plan_update", "retry failed".to_string())
+                .await;
+
+        assert!(
+            matches!(action, FreshnessAction::ExecutionBlocked { ref reason } if reason == "retry failed"),
+            "freshness update errors must block execution after retry: {action:?}"
+        );
     }
 }

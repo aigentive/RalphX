@@ -259,45 +259,7 @@ impl<'a> TransitionHandler<'a> {
                 ))
             })?;
 
-        let worktree_path = task.worktree_path.as_deref().ok_or_else(|| {
-            AppError::ExecutionBlocked(format!(
-                "{}: task has no persisted worktree_path before execution spawn",
-                GIT_ISOLATION_ERROR_PREFIX
-            ))
-        })?;
-        let path = std::path::PathBuf::from(worktree_path);
-        let project_path = std::path::PathBuf::from(&project.working_directory);
-
-        if path == project_path {
-            return Err(AppError::ExecutionBlocked(format!(
-                "{}: task worktree_path points at the main project checkout",
-                GIT_ISOLATION_ERROR_PREFIX
-            )));
-        }
-        if is_merge_worktree_path(worktree_path) {
-            return Err(AppError::ExecutionBlocked(format!(
-                "{}: task worktree_path points at a merge worktree: {}",
-                GIT_ISOLATION_ERROR_PREFIX, worktree_path
-            )));
-        }
-        let expected_worktree_path =
-            std::path::PathBuf::from(compute_task_worktree_path(project, task_id_str));
-        if path != expected_worktree_path {
-            return Err(AppError::ExecutionBlocked(format!(
-                "{}: task worktree_path '{}' does not match expected execution worktree '{}'",
-                GIT_ISOLATION_ERROR_PREFIX,
-                worktree_path,
-                expected_worktree_path.display()
-            )));
-        }
-        if !path.exists() {
-            return Err(AppError::ExecutionBlocked(format!(
-                "{}: persisted task worktree_path '{}' does not exist before execution spawn",
-                GIT_ISOLATION_ERROR_PREFIX, worktree_path
-            )));
-        }
-
-        Ok(())
+        validate_persisted_execution_worktree_path(&task, project, task_id_str)
     }
 
     async fn reset_stale_steps_on_entry(&self, task_id_str: &str) {
@@ -883,5 +845,189 @@ impl<'a> TransitionHandler<'a> {
                 .await;
         }
         result
+    }
+}
+
+fn validate_persisted_execution_worktree_path(
+    task: &Task,
+    project: &Project,
+    task_id_str: &str,
+) -> AppResult<()> {
+    let worktree_path = task.worktree_path.as_deref().ok_or_else(|| {
+        AppError::ExecutionBlocked(format!(
+            "{}: task has no persisted worktree_path before execution spawn",
+            GIT_ISOLATION_ERROR_PREFIX
+        ))
+    })?;
+    let path = std::path::PathBuf::from(worktree_path);
+    let project_path = std::path::PathBuf::from(&project.working_directory);
+
+    if path == project_path {
+        return Err(AppError::ExecutionBlocked(format!(
+            "{}: task worktree_path points at the main project checkout",
+            GIT_ISOLATION_ERROR_PREFIX
+        )));
+    }
+    if is_merge_worktree_path(worktree_path) {
+        return Err(AppError::ExecutionBlocked(format!(
+            "{}: task worktree_path points at a merge worktree: {}",
+            GIT_ISOLATION_ERROR_PREFIX, worktree_path
+        )));
+    }
+    let expected_worktree_path =
+        std::path::PathBuf::from(compute_task_worktree_path(project, task_id_str));
+    if path != expected_worktree_path {
+        return Err(AppError::ExecutionBlocked(format!(
+            "{}: task worktree_path '{}' does not match expected execution worktree '{}'",
+            GIT_ISOLATION_ERROR_PREFIX,
+            worktree_path,
+            expected_worktree_path.display()
+        )));
+    }
+    if !path.exists() {
+        return Err(AppError::ExecutionBlocked(format!(
+            "{}: persisted task worktree_path '{}' does not exist before execution spawn",
+            GIT_ISOLATION_ERROR_PREFIX, worktree_path
+        )));
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod execution_worktree_validation_tests {
+    use super::*;
+
+    fn project_for_validation(root: &std::path::Path) -> Project {
+        let mut project = Project::new(
+            "validation-project".to_string(),
+            root.join("main").to_string_lossy().to_string(),
+        );
+        project.git_mode = GitMode::Worktree;
+        project.worktree_parent_directory = Some(root.to_string_lossy().to_string());
+        project
+    }
+
+    fn task_for_validation(project: &Project, task_id_str: &str, path: Option<String>) -> Task {
+        let mut task = Task::new(project.id.clone(), "validation task".to_string());
+        task.id = TaskId::from_string(task_id_str.to_string());
+        task.worktree_path = path;
+        task
+    }
+
+    fn blocked_message(result: AppResult<()>) -> String {
+        match result {
+            Err(AppError::ExecutionBlocked(message)) => message,
+            other => panic!("expected ExecutionBlocked, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_execution_worktree_rejects_missing_path_metadata() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let project = project_for_validation(temp.path());
+        let task = task_for_validation(&project, "task-missing-metadata", None);
+
+        let message = blocked_message(validate_persisted_execution_worktree_path(
+            &task,
+            &project,
+            "task-missing-metadata",
+        ));
+
+        assert!(message.contains("no persisted worktree_path"));
+    }
+
+    #[test]
+    fn validate_execution_worktree_rejects_main_checkout_path() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let project = project_for_validation(temp.path());
+        let task = task_for_validation(
+            &project,
+            "task-main-checkout",
+            Some(project.working_directory.clone()),
+        );
+
+        let message = blocked_message(validate_persisted_execution_worktree_path(
+            &task,
+            &project,
+            "task-main-checkout",
+        ));
+
+        assert!(message.contains("main project checkout"));
+    }
+
+    #[test]
+    fn validate_execution_worktree_rejects_merge_worktree_path() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let project = project_for_validation(temp.path());
+        let task = task_for_validation(
+            &project,
+            "task-merge-path",
+            Some(
+                temp.path()
+                    .join("merge-task-merge-path")
+                    .to_string_lossy()
+                    .to_string(),
+            ),
+        );
+
+        let message = blocked_message(validate_persisted_execution_worktree_path(
+            &task,
+            &project,
+            "task-merge-path",
+        ));
+
+        assert!(message.contains("merge worktree"));
+    }
+
+    #[test]
+    fn validate_execution_worktree_rejects_non_authoritative_path() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let project = project_for_validation(temp.path());
+        let wrong_path = temp.path().join("wrong-task-path");
+        std::fs::create_dir_all(&wrong_path).expect("create wrong path");
+        let task = task_for_validation(
+            &project,
+            "task-wrong-path",
+            Some(wrong_path.to_string_lossy().to_string()),
+        );
+
+        let message = blocked_message(validate_persisted_execution_worktree_path(
+            &task,
+            &project,
+            "task-wrong-path",
+        ));
+
+        assert!(message.contains("does not match expected execution worktree"));
+    }
+
+    #[test]
+    fn validate_execution_worktree_rejects_missing_expected_path() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let project = project_for_validation(temp.path());
+        let task_id_str = "task-missing-expected";
+        let expected = compute_task_worktree_path(&project, task_id_str);
+        let task = task_for_validation(&project, task_id_str, Some(expected));
+
+        let message = blocked_message(validate_persisted_execution_worktree_path(
+            &task,
+            &project,
+            task_id_str,
+        ));
+
+        assert!(message.contains("does not exist before execution spawn"));
+    }
+
+    #[test]
+    fn validate_execution_worktree_accepts_existing_expected_path() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let project = project_for_validation(temp.path());
+        let task_id_str = "task-valid-path";
+        let expected = compute_task_worktree_path(&project, task_id_str);
+        std::fs::create_dir_all(&expected).expect("create expected path");
+        let task = task_for_validation(&project, task_id_str, Some(expected));
+
+        validate_persisted_execution_worktree_path(&task, &project, task_id_str)
+            .expect("existing expected execution worktree should validate");
     }
 }

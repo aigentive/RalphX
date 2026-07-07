@@ -14,13 +14,14 @@ use crate::application::{
 use crate::domain::agents::{AgentHarnessKind, AgentProviderSettings};
 use crate::domain::entities::{
     app_state::ExecutionHaltMode, AgentRun, AgentRunId, AgentRunStatus, ChatConversation,
-    ChatTimelineItemStatus, ExecutionFailureSource, ExecutionRecoveryMetadata,
+    ChatConversationId, ChatTimelineItemStatus, ExecutionFailureSource, ExecutionRecoveryMetadata,
     ExecutionRecoveryReasonCode, ExecutionRecoveryState, IdeationSessionId, InternalStatus,
     Project, ProjectId, Task, VerificationStatus,
 };
-use crate::domain::repositories::{StateHistoryMetadata, StatusTransition};
+use crate::domain::repositories::{AgentRunRepository, StateHistoryMetadata, StatusTransition};
 use crate::error::AppResult;
 use crate::infrastructure::agents::claude::{ContentBlockItem, ToolCall};
+use crate::infrastructure::memory::MemoryAgentRunRepository;
 
 /// Configurable mock: `get_by_id` returns the stored task (or None).
 struct StubTaskRepo {
@@ -68,6 +69,30 @@ async fn provider_env_for_harness_reads_app_state_provider_settings() {
         Some("from-handler")
     );
     assert!(!provider_env.contains_key("CLAUDE_MODEL"));
+}
+
+#[tokio::test]
+async fn cancelled_stream_preserves_already_terminal_agent_run() {
+    let repo = Arc::new(MemoryAgentRunRepository::new());
+    let run = repo
+        .create(AgentRun::new(ChatConversationId::new()))
+        .await
+        .expect("create run");
+    repo.complete(&run.id).await.expect("complete run");
+
+    mark_cancelled_stream_as_user_stop(
+        &(Arc::clone(&repo) as Arc<dyn AgentRunRepository>),
+        &run.id.as_str(),
+    )
+    .await;
+
+    let stored = repo
+        .get_by_id(&run.id)
+        .await
+        .expect("load run")
+        .expect("run should exist");
+    assert_eq!(stored.status, AgentRunStatus::Completed);
+    assert!(stored.error_message.is_none());
 }
 
 #[async_trait]
