@@ -531,6 +531,7 @@ impl AutomationRunRepository for SqliteAutomationRunRepository {
                 let terminal = matches!(
                     to,
                     AutomationRunStatus::Merged
+                        | AutomationRunStatus::Completed
                         | AutomationRunStatus::PrClosed
                         | AutomationRunStatus::AgentFailed
                         | AutomationRunStatus::Cancelled

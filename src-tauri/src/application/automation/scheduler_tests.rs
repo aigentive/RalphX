@@ -18,19 +18,20 @@ use super::scheduler::{
 };
 use super::transition::NoopAutomationEventEmitter;
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode, Automation, AutomationId,
-    AutomationJudgeState, AutomationPromptAuthor, AutomationRun, AutomationRunId,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, Automation,
+    AutomationId, AutomationJudgeState, AutomationPromptAuthor, AutomationRun, AutomationRunId,
     AutomationRunStatus, AutomationStatus, ChatConversationId, IdeationAnalysisBaseRefKind,
     ProjectId,
 };
 use crate::domain::repositories::{
-    AgentConversationWorkspaceRepository, AutomationRepository, AutomationRunRepository,
+    AgentConversationWorkspaceRepository, AgentRunRepository, AutomationRepository,
+    AutomationRunRepository,
 };
 use crate::domain::services::github_service::PrStatus;
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::AutomationsRuntimeConfig;
 use crate::infrastructure::memory::{
-    MemoryAgentConversationWorkspaceRepository, MemoryAutomationRepository,
+    MemoryAgentConversationWorkspaceRepository, MemoryAgentRunRepository, MemoryAutomationRepository,
     MemoryAutomationRunRepository, MemoryChatConversationRepository,
 };
 
@@ -298,9 +299,30 @@ fn scheduler_with_judge(
     judge_invoker: Arc<dyn AutomationJudgeInvoker>,
     config: AutomationSchedulerConfig,
 ) -> AutomationScheduler {
+    scheduler_with_judge_and_agent_runs(
+        automation_repo,
+        run_repo,
+        workspace_repo,
+        Arc::new(MemoryAgentRunRepository::new()),
+        signal_checker,
+        judge_invoker,
+        config,
+    )
+}
+
+fn scheduler_with_judge_and_agent_runs(
+    automation_repo: Arc<MemoryAutomationRepository>,
+    run_repo: Arc<MemoryAutomationRunRepository>,
+    workspace_repo: Arc<MemoryAgentConversationWorkspaceRepository>,
+    agent_run_repo: Arc<dyn AgentRunRepository>,
+    signal_checker: Arc<dyn AutomationSignalChecker>,
+    judge_invoker: Arc<dyn AutomationJudgeInvoker>,
+    config: AutomationSchedulerConfig,
+) -> AutomationScheduler {
     AutomationScheduler::new(
         automation_repo,
         run_repo,
+        agent_run_repo,
         Arc::new(MemoryChatConversationRepository::new()),
         workspace_repo,
         Arc::new(RecordingStarter),
@@ -480,6 +502,7 @@ async fn automation_scheduler_tick_only_leases_active_automations() {
     let scheduler = AutomationScheduler::new(
         automation_repo,
         run_repo.clone(),
+        Arc::new(MemoryAgentRunRepository::new()),
         conversation_repo,
         workspace_repo,
         Arc::new(RecordingStarter),
@@ -871,6 +894,53 @@ async fn automation_scheduler_times_out_running_run() {
         .unwrap();
     assert_eq!(latest.status, AutomationRunStatus::AgentFailed);
     assert_eq!(latest.error_code.as_deref(), Some("timeout"));
+    assert!(latest.finished_at.is_some());
+}
+
+#[tokio::test]
+async fn automation_scheduler_completes_agent_completed_run_from_agent_run_status() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
+    let automation_id = AutomationId::from_string("automation-1");
+    let mut automation = automation(automation_id.as_str(), AutomationStatus::Active);
+    automation.run_mode = "plan".to_string();
+    automation.completion_signal = "agent_completed".to_string();
+    automation_repo.create(automation).await.unwrap();
+    let conversation_id = ChatConversationId::from_string("conversation-1");
+    run_repo
+        .create_run(automation_run(
+            "run-1",
+            &automation_id,
+            AutomationRunStatus::Running,
+            Some(conversation_id.clone()),
+        ))
+        .await
+        .unwrap();
+    let mut agent_run = AgentRun::new(conversation_id);
+    agent_run.status = crate::domain::entities::AgentRunStatus::Completed;
+    agent_run.completed_at = Some(Utc::now());
+    agent_run_repo.create(agent_run).await.unwrap();
+    let scheduler = scheduler_with_judge_and_agent_runs(
+        Arc::clone(&automation_repo),
+        Arc::clone(&run_repo),
+        workspace_repo,
+        agent_run_repo,
+        Arc::new(RecordingSignalChecker::default()),
+        Arc::new(RecordingJudgeInvoker::default()),
+        AutomationSchedulerConfig::default(),
+    );
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.completed_runs, 1);
+    let latest = run_repo
+        .latest_for_automation(&automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest.status, AutomationRunStatus::Completed);
     assert!(latest.finished_at.is_some());
 }
 

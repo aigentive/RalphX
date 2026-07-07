@@ -68,6 +68,7 @@ const RUN_STATUS_LABELS: Record<AutomationRun["status"], string> = {
   provisioning: "Running",
   running: "Running",
   published: "Running",
+  completed: "Completed",
   merged: "Merged",
   pr_closed: "PR closed",
   agent_failed: "Agent failed",
@@ -149,7 +150,7 @@ function sortedNewestRuns(runs: AutomationRun[]): AutomationRun[] {
 function isSignalTerminalUnjudged(run: AutomationRun | null): run is AutomationRun {
   return Boolean(
     run
-      && ["merged", "pr_closed", "agent_failed"].includes(run.status)
+      && ["completed", "merged", "pr_closed", "agent_failed"].includes(run.status)
       && run.judgeState === "none",
   );
 }

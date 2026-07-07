@@ -1,5 +1,6 @@
 use chrono::Utc;
 use serde_json::json;
+use std::process::Command;
 
 use super::automation_commands::{
     automation_service, create_automation_draft_for_state, parse_automation_id,
@@ -14,7 +15,7 @@ use crate::application::AppState;
 use crate::domain::entities::{
     AgentConversationWorkspaceMode, AgentRun, Automation, AutomationId, AutomationJudgeState,
     AutomationPromptAuthor, AutomationRun, AutomationRunId, AutomationRunStatus, AutomationStatus,
-    ChatContextType, ChatConversationId, ProjectId,
+    ChatContextType, ChatConversationId, Project, ProjectId,
 };
 use crate::error::AppError;
 
@@ -102,6 +103,44 @@ fn continue_verdict(next_prompt: &str) -> String {
         "nextBaseBranch": "automation_base"
     })
     .to_string()
+}
+
+fn git(repo: &std::path::Path, args: &[&str]) {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(repo)
+        .output()
+        .expect("git command should spawn");
+    assert!(
+        output.status.success(),
+        "git {:?} failed: {}{}",
+        args,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn setup_git_project() -> (tempfile::TempDir, Project) {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let repo_path = temp.path().join("repo");
+    let worktree_parent = temp.path().join("worktrees");
+    std::fs::create_dir_all(&repo_path).expect("repo root should be created");
+    git(&repo_path, &["init", "-b", "main"]);
+    git(&repo_path, &["config", "user.email", "test@example.com"]);
+    git(&repo_path, &["config", "user.name", "Test User"]);
+    std::fs::write(repo_path.join("README.md"), "hello\n")
+        .expect("fixture file should be written");
+    git(&repo_path, &["add", "README.md"]);
+    git(&repo_path, &["commit", "-m", "initial"]);
+
+    let mut project = Project::new(
+        "Automation Workspace".to_string(),
+        repo_path.to_string_lossy().to_string(),
+    );
+    project.id = ProjectId::from_string("project-1".to_string());
+    project.base_branch = Some("main".to_string());
+    project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+    (temp, project)
 }
 
 #[test]
@@ -218,8 +257,10 @@ async fn automation_detail_response_aggregates_usage_from_run_conversations() {
 }
 
 #[tokio::test]
-async fn create_draft_creates_bound_setup_conversation_without_worktree() {
+async fn create_draft_creates_bound_setup_conversation_with_automation_workspace_base() {
     let state = AppState::new_test();
+    let (_temp, project) = setup_git_project();
+    state.project_repo.create(project).await.unwrap();
 
     let response = create_automation_draft_for_state(
         CreateAutomationDraftInput {
@@ -250,6 +291,17 @@ async fn create_draft_creates_bound_setup_conversation_without_worktree() {
         .expect("automation should be persisted");
     let setup_conversation_id = ChatConversationId::from_string(setup_conversation_id.to_string());
     assert_eq!(persisted.setup_conversation_id, Some(setup_conversation_id));
+    assert_eq!(persisted.base_ref_kind, "local_branch");
+    assert!(
+        persisted.base_ref.starts_with("ralphx/automation-workspace/automation-"),
+        "automation setup branch should be automation-scoped, got {}",
+        persisted.base_ref
+    );
+    let expected_display_name = format!("Automation branch ({})", persisted.base_ref);
+    assert_eq!(
+        persisted.base_display_name.as_deref(),
+        Some(expected_display_name.as_str())
+    );
 
     let setup_conversation = state
         .chat_conversation_repo
@@ -271,10 +323,14 @@ async fn create_draft_creates_bound_setup_conversation_without_worktree() {
         .agent_conversation_workspace_repo
         .get_by_conversation_id(&setup_conversation_id)
         .await
-        .unwrap();
+        .unwrap()
+        .expect("setup conversations should create a workspace");
+    assert_eq!(workspace.mode, AgentConversationWorkspaceMode::Automation);
+    assert_eq!(workspace.branch_name, persisted.base_ref);
+    assert_eq!(workspace.base_ref, "main");
     assert!(
-        workspace.is_none(),
-        "setup conversations must not create a worktree"
+        std::path::Path::new(&workspace.worktree_path).is_dir(),
+        "automation setup workspace path should exist"
     );
 }
 

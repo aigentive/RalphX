@@ -20,10 +20,16 @@ use crate::application::automation::service::{
 use crate::application::automation::transition::{
     AutomationTransitionService, NoopAutomationEventEmitter,
 };
+use crate::application::agent_conversation_workspace::{
+    prepare_agent_conversation_workspace_with_setup_mode_and_defaults,
+    AgentConversationWorkspaceBaseSelection, AgentConversationWorkspacePrAutomationDefaults,
+    AgentConversationWorkspaceSetupMode,
+};
 use crate::application::AppState;
 use crate::domain::entities::{
-    AgentConversationWorkspaceMode, AutomationId, AutomationJudgeState, AutomationRunId,
-    ChatConversation, ProjectId,
+    AgentConversationWorkspaceBranchMode, AgentConversationWorkspaceMode, AutomationId,
+    AutomationJudgeState, AutomationRunId, ChatConversation, IdeationAnalysisBaseRefKind,
+    ProjectId,
 };
 
 #[derive(Debug, Clone, Deserialize)]
@@ -124,6 +130,19 @@ pub(crate) async fn create_automation_draft_for_state(
     state: &AppState,
 ) -> Result<CreateAutomationDraftResponse, String> {
     let project_id = parse_project_id(&input.project_id)?;
+    if input
+        .name
+        .as_deref()
+        .is_some_and(|name| name.trim().is_empty())
+    {
+        return Err("automation name cannot be empty".to_string());
+    }
+    let project = state
+        .project_repo
+        .get_by_id(&project_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("Project not found: {}", project_id))?;
     let automation_id = AutomationId::new();
     let mut setup_conversation = ChatConversation::new_project(project_id.clone());
     let setup_title = input
@@ -142,12 +161,53 @@ pub(crate) async fn create_automation_draft_for_state(
         .map_err(|error| error.to_string())?;
 
     let setup_conversation_id = setup_conversation.id;
+    let setup_workspace = match prepare_agent_conversation_workspace_with_setup_mode_and_defaults(
+        &project,
+        &setup_conversation_id,
+        AgentConversationWorkspaceMode::Automation,
+        AgentConversationWorkspaceBaseSelection {
+            kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+            branch_mode: Some(AgentConversationWorkspaceBranchMode::Isolated),
+            base_ref: None,
+            display_name: None,
+            source_pull_request: None,
+        },
+        AgentConversationWorkspaceSetupMode::Deferred,
+        AgentConversationWorkspacePrAutomationDefaults::default(),
+    )
+    .await
+    {
+        Ok(workspace) => workspace,
+        Err(error) => {
+            let _ = state
+                .chat_conversation_repo
+                .delete(&setup_conversation_id)
+                .await;
+            return Err(error.to_string());
+        }
+    };
+    let setup_branch = setup_workspace.branch_name.clone();
+    if let Err(error) = state
+        .agent_conversation_workspace_repo
+        .create_or_update(setup_workspace)
+        .await
+    {
+        let _ = state
+            .chat_conversation_repo
+            .delete(&setup_conversation_id)
+            .await;
+        return Err(error.to_string());
+    }
+
     let result = automation_service(state)
         .create_draft(ServiceCreateDraftInput {
             id: Some(automation_id),
             project_id,
             name: input.name,
             setup_conversation_id: Some(setup_conversation_id),
+            base_ref_kind: Some(IdeationAnalysisBaseRefKind::LocalBranch.to_string()),
+            base_ref: Some(setup_branch.clone()),
+            base_display_name: Some(format!("Automation branch ({setup_branch})")),
         })
         .await;
 

@@ -454,6 +454,9 @@ async fn service_creates_lists_gets_and_updates_mechanical_settings() {
             project_id: project_id.clone(),
             name: Some("  Large migration  ".to_string()),
             setup_conversation_id: None,
+            base_ref_kind: None,
+            base_ref: None,
+            base_display_name: None,
         })
         .await
         .unwrap();
@@ -614,6 +617,9 @@ async fn service_create_draft_then_config_then_finalize_activates_automation() {
             project_id,
             name: Some("Payments automation".to_string()),
             setup_conversation_id: None,
+            base_ref_kind: None,
+            base_ref: None,
+            base_display_name: None,
         })
         .await
         .unwrap();

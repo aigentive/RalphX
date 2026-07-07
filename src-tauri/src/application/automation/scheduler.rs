@@ -33,12 +33,12 @@ use crate::application::harness_runtime_registry::{
 use crate::application::AppState;
 use crate::domain::agents::{AgentConfig, AgentHarnessKind, AgentRole, DEFAULT_AGENT_HARNESS};
 use crate::domain::entities::{
-    AgentConversationWorkspace, Automation, AutomationId, AutomationJudgeState, AutomationRun,
-    AutomationRunStatus, AutomationStatus,
+    AgentConversationWorkspace, AgentRunStatus, Automation, AutomationId, AutomationJudgeState,
+    AutomationRun, AutomationRunStatus, AutomationStatus,
 };
 use crate::domain::repositories::{
-    AgentConversationWorkspaceRepository, AutomationRepository, AutomationRunPublicationMetadata,
-    AutomationRunRepository, ChatConversationRepository,
+    AgentConversationWorkspaceRepository, AgentRunRepository, AutomationRepository,
+    AutomationRunPublicationMetadata, AutomationRunRepository, ChatConversationRepository,
 };
 use crate::domain::services::github_service::{GithubServiceTrait, PrStatus};
 use crate::error::{AppError, AppResult};
@@ -88,6 +88,7 @@ pub struct AutomationSchedulerTickSummary {
     pub active_with_runs: usize,
     pub provisioned_runs: usize,
     pub published_runs: usize,
+    pub completed_runs: usize,
     pub merged_runs: usize,
     pub closed_runs: usize,
     pub failed_runs: usize,
@@ -483,6 +484,7 @@ impl AutomationJudgeTask {
 pub struct AutomationScheduler {
     service: AutomationService,
     provisioner: AutomationRunProvisioner,
+    agent_run_repo: Arc<dyn AgentRunRepository>,
     run_repo: Arc<dyn AutomationRunRepository>,
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     transition_service: AutomationTransitionService,
@@ -496,6 +498,7 @@ impl AutomationScheduler {
     pub fn new(
         automation_repo: Arc<dyn AutomationRepository>,
         run_repo: Arc<dyn AutomationRunRepository>,
+        agent_run_repo: Arc<dyn AgentRunRepository>,
         conversation_repo: Arc<dyn ChatConversationRepository>,
         workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
         starter: Arc<dyn AutomationRunStarter>,
@@ -526,6 +529,7 @@ impl AutomationScheduler {
         Self {
             service,
             provisioner,
+            agent_run_repo,
             run_repo,
             workspace_repo,
             transition_service,
@@ -638,12 +642,13 @@ impl AutomationScheduler {
                 }
             }
             AutomationRunStatus::Running => {
-                self.observe_running_run(run, summary).await?;
+                self.observe_running_run(automation, run, summary).await?;
             }
             AutomationRunStatus::Published => {
                 self.observe_published_run(automation, run, summary).await?;
             }
             AutomationRunStatus::Merged
+            | AutomationRunStatus::Completed
             | AutomationRunStatus::PrClosed
             | AutomationRunStatus::AgentFailed => {
                 self.observe_signal_terminal_run(automation, runs, run, summary)
@@ -676,6 +681,7 @@ impl AutomationScheduler {
 
     async fn observe_running_run(
         &self,
+        automation: &Automation,
         run: &AutomationRun,
         summary: &mut AutomationSchedulerTickSummary,
     ) -> AppResult<()> {
@@ -699,6 +705,58 @@ impl AutomationScheduler {
         let Some(conversation_id) = run.conversation_id.as_ref() else {
             return Ok(());
         };
+        if automation.completion_signal == "agent_completed" {
+            match self
+                .agent_run_repo
+                .get_latest_for_conversation(conversation_id)
+                .await?
+                .map(|run| run.status)
+            {
+                Some(AgentRunStatus::Completed) => {
+                    if self
+                        .transition_service
+                        .transition_run_status(
+                            &run.id,
+                            AutomationRunStatus::Running,
+                            AutomationRunStatus::Completed,
+                            None,
+                            None,
+                        )
+                        .await?
+                    {
+                        summary.completed_runs += 1;
+                    }
+                    return Ok(());
+                }
+                Some(AgentRunStatus::Failed) => {
+                    self.fail_running_run(
+                        run,
+                        "agent_failed",
+                        "Automation run agent failed",
+                        summary,
+                    )
+                    .await?;
+                    return Ok(());
+                }
+                Some(AgentRunStatus::Cancelled) => {
+                    if self
+                        .transition_service
+                        .transition_run_status(
+                            &run.id,
+                            AutomationRunStatus::Running,
+                            AutomationRunStatus::Cancelled,
+                            Some("agent_cancelled".to_string()),
+                            Some("Automation run agent was cancelled".to_string()),
+                        )
+                        .await?
+                    {
+                        summary.failed_runs += 1;
+                    }
+                    return Ok(());
+                }
+                Some(AgentRunStatus::Running) | None => return Ok(()),
+            }
+        }
         let Some(workspace) = self
             .workspace_repo
             .get_by_conversation_id(conversation_id)

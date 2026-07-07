@@ -343,7 +343,7 @@ pub async fn prepare_agent_conversation_workspace_with_setup_mode_and_defaults(
     let branch_name = if branch_mode == AgentConversationWorkspaceBranchMode::Linked {
         selected_work_ref.clone()
     } else {
-        agent_conversation_branch_name(project, conversation_id)
+        agent_conversation_branch_name_for_mode(project, conversation_id, mode)
     };
     let workspace_path_started = Instant::now();
     let worktree_path = resolve_agent_conversation_workspace_path(project, conversation_id)?;
@@ -726,6 +726,26 @@ pub fn agent_conversation_branch_name(
     project: &Project,
     conversation_id: &ChatConversationId,
 ) -> String {
+    agent_conversation_branch_name_with_segment(project, conversation_id, "agent")
+}
+
+fn agent_conversation_branch_name_for_mode(
+    project: &Project,
+    conversation_id: &ChatConversationId,
+    mode: AgentConversationWorkspaceMode,
+) -> String {
+    let segment = match mode {
+        AgentConversationWorkspaceMode::Automation => "automation",
+        _ => "agent",
+    };
+    agent_conversation_branch_name_with_segment(project, conversation_id, segment)
+}
+
+fn agent_conversation_branch_name_with_segment(
+    project: &Project,
+    conversation_id: &ChatConversationId,
+    segment: &str,
+) -> String {
     let project_slug = slug_branch_component(&project.name);
     let short_id = conversation_id
         .as_str()
@@ -738,7 +758,7 @@ pub fn agent_conversation_branch_name(
     } else {
         short_id
     };
-    format!("ralphx/{project_slug}/agent-{short_id}")
+    format!("ralphx/{project_slug}/{segment}-{short_id}")
 }
 
 fn agent_conversation_continuation_branch_name(

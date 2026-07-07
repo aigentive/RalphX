@@ -10,6 +10,7 @@ export type AutomationRunStatus =
   | "provisioning"
   | "running"
   | "published"
+  | "completed"
   | "merged"
   | "pr_closed"
   | "agent_failed"
@@ -37,7 +38,7 @@ export type AutomationBaseRefKind =
 
 export type AutomationChainMode = "merged_base" | "pr_head_stacked";
 
-export type AutomationCompletionSignal = "pr_merged";
+export type AutomationCompletionSignal = "pr_merged" | "agent_completed";
 
 export interface Automation {
   id: string;

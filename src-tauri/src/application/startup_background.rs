@@ -165,6 +165,7 @@ pub fn spawn_automation_scheduler(
     let scheduler = AutomationScheduler::new(
         Arc::clone(&state.automation_repo),
         Arc::clone(&state.automation_run_repo),
+        Arc::clone(&state.agent_run_repo),
         Arc::clone(&state.chat_conversation_repo),
         Arc::clone(&state.agent_conversation_workspace_repo),
         starter,

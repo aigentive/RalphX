@@ -341,7 +341,9 @@ async fn provision_first_run_creates_owned_draft_and_marks_workspace_for_initial
     let conversation_repo = Arc::new(MemoryChatConversationRepository::new());
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let starter = RecordingStarter::new(Arc::clone(&workspace_repo));
-    let automation = automation("automation-1");
+    let mut automation = automation("automation-1");
+    automation.base_ref = "ralphx/automation-workspace/automation-setup".to_string();
+    automation.base_display_name = Some("Automation branch".to_string());
     automation_repo.create(automation.clone()).await.unwrap();
     let provisioner = AutomationRunProvisioner::new(
         automation_repo,
@@ -360,6 +362,10 @@ async fn provision_first_run_creates_owned_draft_and_marks_workspace_for_initial
 
     assert_eq!(started.status, AutomationRunStatus::Running);
     assert_eq!(started.run_index, 1);
+    assert_eq!(
+        started.base_ref_used,
+        "ralphx/automation-workspace/automation-setup"
+    );
     assert_eq!(
         started.branch_name.as_deref(),
         Some("ralphx/automation-run-1")
@@ -398,7 +404,14 @@ async fn provision_first_run_creates_owned_draft_and_marks_workspace_for_initial
     assert_eq!(requests[0].provider_harness, "codex");
     assert_eq!(requests[0].model_id, "gpt-5.4");
     assert_eq!(requests[0].base_ref_kind, "local_branch");
-    assert_eq!(requests[0].base_ref, "main");
+    assert_eq!(
+        requests[0].base_ref,
+        "ralphx/automation-workspace/automation-setup"
+    );
+    assert_eq!(
+        requests[0].base_display_name.as_deref(),
+        Some("Automation branch")
+    );
 
     let latest = run_repo
         .latest_for_automation(&automation.id)

@@ -328,6 +328,7 @@ impl AutomationRunRepository for MemoryAutomationRunRepository {
         if matches!(
             to,
             AutomationRunStatus::Merged
+                | AutomationRunStatus::Completed
                 | AutomationRunStatus::PrClosed
                 | AutomationRunStatus::AgentFailed
                 | AutomationRunStatus::Cancelled

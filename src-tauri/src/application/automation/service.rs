@@ -29,6 +29,7 @@ const DEFAULT_BASE_REF_KIND: &str = "project_default";
 const DEFAULT_CHAIN_MODE: &str = "merged_base";
 const STACKED_CHAIN_MODE: &str = "pr_head_stacked";
 const DEFAULT_COMPLETION_SIGNAL: &str = "pr_merged";
+const AGENT_COMPLETED_COMPLETION_SIGNAL: &str = "agent_completed";
 const DEFAULT_MAX_RUNS: i64 = 25;
 const DEFAULT_MAX_CONSECUTIVE_FAILURES: i64 = 3;
 
@@ -44,6 +45,9 @@ pub struct CreateAutomationDraftInput {
     pub project_id: ProjectId,
     pub name: Option<String>,
     pub setup_conversation_id: Option<ChatConversationId>,
+    pub base_ref_kind: Option<String>,
+    pub base_ref: Option<String>,
+    pub base_display_name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -190,9 +194,11 @@ impl AutomationService {
             model_id: DEFAULT_MODEL_ID.to_string(),
             logical_effort: None,
             run_mode: DEFAULT_RUN_MODE.to_string(),
-            base_ref_kind: DEFAULT_BASE_REF_KIND.to_string(),
-            base_ref: String::new(),
-            base_display_name: None,
+            base_ref_kind: input
+                .base_ref_kind
+                .unwrap_or_else(|| DEFAULT_BASE_REF_KIND.to_string()),
+            base_ref: input.base_ref.unwrap_or_default(),
+            base_display_name: input.base_display_name,
             base_source_pull_request_json: None,
             goal_items_json: None,
             chain_mode: DEFAULT_CHAIN_MODE.to_string(),
@@ -263,6 +269,15 @@ impl AutomationService {
                 automation.status.as_str()
             )));
         }
+        let completion_signal = input
+            .completion_signal
+            .or_else(|| {
+                input
+                    .run_mode
+                    .as_deref()
+                    .map(completion_signal_for_run_mode)
+                    .map(str::to_string)
+            });
         let patch = AutomationConfigPatch {
             goal_prompt: input.goal_prompt,
             first_run_prompt: input.first_run_prompt,
@@ -275,7 +290,7 @@ impl AutomationService {
             base_display_name: input.base_display_name,
             goal_items_json: input.goal_items_json,
             chain_mode: input.chain_mode,
-            completion_signal: input.completion_signal,
+            completion_signal,
             setup_analysis_summary: input.setup_analysis_summary,
         };
         let updated = self
@@ -1016,7 +1031,7 @@ fn consecutive_failure_count(runs: &[AutomationRun]) -> i64 {
     for run in runs.iter().rev() {
         match run.status {
             AutomationRunStatus::AgentFailed | AutomationRunStatus::PrClosed => count += 1,
-            AutomationRunStatus::Merged => break,
+            AutomationRunStatus::Completed | AutomationRunStatus::Merged => break,
             _ => {}
         }
     }
@@ -1153,10 +1168,18 @@ fn skip_judge_template_prompt(previous_run: &AutomationRun) -> String {
 fn run_status_is_signal_terminal(status: AutomationRunStatus) -> bool {
     matches!(
         status,
-        AutomationRunStatus::Merged
+        AutomationRunStatus::Completed
+            | AutomationRunStatus::Merged
             | AutomationRunStatus::PrClosed
             | AutomationRunStatus::AgentFailed
     )
+}
+
+fn completion_signal_for_run_mode(run_mode: &str) -> &'static str {
+    match run_mode.trim() {
+        DEFAULT_RUN_MODE => DEFAULT_COMPLETION_SIGNAL,
+        _ => AGENT_COMPLETED_COMPLETION_SIGNAL,
+    }
 }
 
 fn normalize_name(value: Option<&str>) -> AppResult<String> {
@@ -1210,12 +1233,18 @@ fn validate_finalizable(automation: &Automation) -> AppResult<()> {
         ));
     }
     validate_goal_items_json(automation.goal_items_json.as_deref())?;
-    if automation.completion_signal == DEFAULT_COMPLETION_SIGNAL
-        && automation.run_mode != DEFAULT_RUN_MODE
-    {
-        return Err(AppError::Validation(
-            "pr_merged automations require edit run_mode".to_string(),
-        ));
+    match automation.completion_signal.as_str() {
+        DEFAULT_COMPLETION_SIGNAL if automation.run_mode != DEFAULT_RUN_MODE => {
+            return Err(AppError::Validation(
+                "pr_merged automations require edit run_mode".to_string(),
+            ));
+        }
+        DEFAULT_COMPLETION_SIGNAL | AGENT_COMPLETED_COMPLETION_SIGNAL => {}
+        value => {
+            return Err(AppError::Validation(format!(
+                "automation completion_signal is not supported: {value}"
+            )));
+        }
     }
     match automation.base_ref_kind.as_str() {
         DEFAULT_BASE_REF_KIND => {}

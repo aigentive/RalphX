@@ -13,6 +13,7 @@ export const AutomationRunStatusSchema = z.enum([
   "provisioning",
   "running",
   "published",
+  "completed",
   "merged",
   "pr_closed",
   "agent_failed",
@@ -47,7 +48,10 @@ export const AutomationChainModeSchema = z.enum([
   "pr_head_stacked",
 ]);
 
-export const AutomationCompletionSignalSchema = z.enum(["pr_merged"]);
+export const AutomationCompletionSignalSchema = z.enum([
+  "pr_merged",
+  "agent_completed",
+]);
 
 export const AutomationSchema = z.object({
   id: z.string(),

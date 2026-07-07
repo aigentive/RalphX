@@ -344,7 +344,10 @@ pub fn automation_judge_loop_suspected(
     if verdict.decision != AutomationJudgeDecision::Continue {
         return false;
     }
-    if previous_run.status == AutomationRunStatus::Merged {
+    if matches!(
+        previous_run.status,
+        AutomationRunStatus::Completed | AutomationRunStatus::Merged
+    ) {
         return false;
     }
     let Some(next_prompt) = verdict.next_run_prompt.as_deref() else {
@@ -697,7 +700,7 @@ fn consecutive_failure_count(runs: &[AutomationRun]) -> i64 {
     for run in runs.iter().rev() {
         match run.status {
             AutomationRunStatus::AgentFailed | AutomationRunStatus::PrClosed => count += 1,
-            AutomationRunStatus::Merged => break,
+            AutomationRunStatus::Completed | AutomationRunStatus::Merged => break,
             _ => {}
         }
     }

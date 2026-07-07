@@ -50,6 +50,9 @@ export function describeAutomationStage(
   if (["pending", "provisioning", "running"].includes(run.status)) {
     return `Run ${run.runIndex} in progress`;
   }
+  if (run.status === "completed" && run.judgeState === "none") {
+    return "Waiting for judge";
+  }
   if (run.status === "published") {
     return run.prNumber
       ? `Waiting for PR #${run.prNumber} to merge`

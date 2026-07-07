@@ -168,6 +168,10 @@ function formatAutomationRunModeLabel(runMode: AutomationRunMode): string {
   );
 }
 
+function completionSignalForRunMode(runMode: AutomationRunMode) {
+  return runMode === "edit" ? "pr_merged" : "agent_completed";
+}
+
 function automationProposalApplyOptionIndex(
   question: AskUserQuestionPayload | null | undefined,
 ): number {
@@ -428,7 +432,10 @@ export function AgentsAutomationPanel({
       updateSetupMutation.mutate(
         {
           conversationId: setupConversationId,
-          input: { runMode },
+          input: {
+            runMode,
+            completionSignal: completionSignalForRunMode(runMode),
+          },
         },
         {
           onSuccess: () =>
