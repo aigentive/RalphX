@@ -373,6 +373,16 @@ export function ExecutionTaskDetail({ task, isHistorical }: ExecutionTaskDetailP
     <TwoColumnLayout
       description={task.description}
       testId="execution-task-detail"
+      actions={
+        !isHistorical ? (
+          <section data-testid="action-buttons-section">
+            <ActionButtonsCard
+              taskId={task.id}
+              isProcessing={false}
+            />
+          </section>
+        ) : null
+      }
     >
       {/* Status Banner */}
       <StatusBanner
@@ -496,15 +506,6 @@ export function ExecutionTaskDetail({ task, isHistorical }: ExecutionTaskDetailP
         </section>
       )}
 
-      {/* Action Buttons (hidden in historical mode) */}
-      {!isHistorical && (
-        <section data-testid="action-buttons-section">
-          <ActionButtonsCard
-            taskId={task.id}
-            isProcessing={false}
-          />
-        </section>
-      )}
     </TwoColumnLayout>
   );
 }

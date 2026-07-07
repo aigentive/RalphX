@@ -175,6 +175,23 @@ export function CompletedTaskDetail({ task, isHistorical = false }: CompletedTas
       <TwoColumnLayout
         description={task.description}
         testId="completed-task-detail"
+        evidence={
+          <section data-testid="review-history-section">
+            <SectionTitle>Review History</SectionTitle>
+            <ReviewTimeline history={history} stateTransitions={stateTransitions} />
+          </section>
+        }
+        actions={
+          !isHistorical ? (
+            <section data-testid="action-buttons">
+              <ActionButtonsCard
+                onViewDiff={handleViewDiff}
+                onReopenTask={handleReopenTask}
+                onReviewCode={() => setShowReviewModal(true)}
+              />
+            </section>
+          ) : null
+        }
       >
         {/* Status Banner */}
         <StatusBanner
@@ -201,23 +218,6 @@ export function CompletedTaskDetail({ task, isHistorical = false }: CompletedTas
               completedAt={task.completedAt}
             />
           </div>
-        )}
-
-        {/* Review History */}
-        <section data-testid="review-history-section">
-          <SectionTitle>Review History</SectionTitle>
-          <ReviewTimeline history={history} stateTransitions={stateTransitions} />
-        </section>
-
-        {/* Actions (hidden in historical mode) */}
-        {!isHistorical && (
-          <section data-testid="action-buttons">
-            <ActionButtonsCard
-              onViewDiff={handleViewDiff}
-              onReopenTask={handleReopenTask}
-              onReviewCode={() => setShowReviewModal(true)}
-            />
-          </section>
         )}
       </TwoColumnLayout>
 

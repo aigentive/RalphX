@@ -183,6 +183,21 @@ export function MergedTaskDetail({
     <TwoColumnLayout
       description={task.description}
       testId="merged-task-detail"
+      evidence={
+        <>
+          <ValidationProgress
+            taskId={task.id}
+            metadata={task.metadata}
+          />
+
+          <ChangeReviewSection
+            taskId={task.id}
+            history={history}
+            stateTransitions={stateTransitions}
+            context={isPlanMerge ? "plan_merge" : "task"}
+          />
+        </>
+      }
     >
       {/* Status Banner */}
       <StatusBanner
@@ -233,19 +248,6 @@ export function MergedTaskDetail({
           />
         </section>
       )}
-
-      {/* Merge Validation History */}
-      <ValidationProgress
-        taskId={task.id}
-        metadata={task.metadata}
-      />
-
-      <ChangeReviewSection
-        taskId={task.id}
-        history={history}
-        stateTransitions={stateTransitions}
-        context={isPlanMerge ? "plan_merge" : "task"}
-      />
     </TwoColumnLayout>
   );
 }
