@@ -2684,7 +2684,7 @@ mod ipc_contract {
         let fix = setup_plan_reference_start_fixture("mode-matrix").await;
         let state = fix.app.state::<AppState>();
 
-        for mode in ["chat", "edit", "plan", "ideation", "review_pr"] {
+        for mode in ["chat", "edit", "plan", "ideation"] {
             let response = start_agent_conversation(
                 StartAgentConversationInput {
                     project_id: fix.project_id.as_str().to_string(),
@@ -2826,6 +2826,48 @@ mod ipc_contract {
             Some(&fix.source_artifact_id)
         );
         assert_eq!(source_session.status, IdeationSessionStatus::Accepted);
+    }
+
+    #[tokio::test]
+    async fn ipc_contract_start_agent_conversation_review_pr_requires_source_pull_request() {
+        let _fake_claude = FakeCliOnPath::new("claude");
+        let fix = setup_plan_reference_start_fixture("review-pr-source-required").await;
+        let state = fix.app.state::<AppState>();
+
+        let error = start_agent_conversation(
+            StartAgentConversationInput {
+                project_id: fix.project_id.as_str().to_string(),
+                content: "Review the selected PR".to_string(),
+                conversation_id: None,
+                parent_conversation_id: None,
+                title: None,
+                provider_harness: None,
+                model_override: None,
+                codex_fast_mode: None,
+                logical_effort: Some(LogicalEffort::Medium),
+                mode: Some("review_pr".to_string()),
+                base_ref_kind: Some("project_default".to_string()),
+                base_branch_mode: None,
+                base_ref: None,
+                base_display_name: None,
+                base_source_pull_request: None,
+                composer_project_references: Vec::new(),
+                composer_integration_references: Vec::new(),
+                composer_artifact_references: vec![plan_reference(&fix)],
+                team_intent: None,
+            },
+            state.clone(),
+            fix.app.state::<Arc<ExecutionState>>(),
+            fix.app.state::<Arc<TeamService>>(),
+            fix.app.handle().clone(),
+        )
+        .await
+        .expect_err("Review PR start without PR metadata should fail early");
+
+        assert!(
+            error.contains("Review PR mode requires a selected pull request"),
+            "unexpected error: {error}"
+        );
     }
 
     #[tokio::test]

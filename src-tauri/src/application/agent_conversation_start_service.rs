@@ -6,7 +6,8 @@ use tauri::{Emitter, Runtime};
 use crate::application::agent_conversation_workspace::{
     agent_name_for_workspace_mode,
     prepare_agent_conversation_workspace_with_setup_mode_and_defaults,
-    AgentConversationWorkspaceBaseSelection, AgentConversationWorkspaceSetupMode,
+    validate_review_pr_workspace_source_pull_request, AgentConversationWorkspaceBaseSelection,
+    AgentConversationWorkspaceSetupMode,
 };
 use crate::application::chat_service::{AgentConversationCreatedPayload, SendMessageOptions};
 use crate::application::plan_reference_import::{
@@ -188,6 +189,8 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             base_ref_kind,
             base_ref.as_deref(),
         )?;
+        validate_review_pr_workspace_source_pull_request(mode, source_pull_request.as_ref())
+            .map_err(|error| error.to_string())?;
         let selected_plan_reference = selected_plan_reference(&input.composer_artifact_references)?;
         let should_create_workspace = agent_mode_should_create_workspace(
             mode,
