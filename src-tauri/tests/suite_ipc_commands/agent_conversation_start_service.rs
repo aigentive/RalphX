@@ -128,7 +128,7 @@ async fn start_with_app(
 }
 
 #[tokio::test]
-async fn start_service_pr_backed_local_branch_prepares_isolated_workspace() {
+async fn ipc_contract_start_service_pr_backed_local_branch_prepares_isolated_workspace() {
     ralphx_lib::testing::seed_available_harness_probes_for_test();
     let temp = tempfile::tempdir().expect("tempdir should be created");
     let repo_path = temp.path().join("repo");
@@ -200,7 +200,7 @@ async fn start_service_pr_backed_local_branch_prepares_isolated_workspace() {
 }
 
 #[tokio::test]
-async fn start_service_linked_workspace_conflict_returns_retryable_error() {
+async fn ipc_contract_start_service_linked_workspace_conflict_archives_supplied_draft() {
     ralphx_lib::testing::seed_available_harness_probes_for_test();
     let temp = tempfile::tempdir().expect("tempdir should be created");
     let repo_path = temp.path().join("repo");
@@ -223,6 +223,13 @@ async fn start_service_linked_workspace_conflict_returns_retryable_error() {
         .create(ChatConversation::new_project(project.id.clone()))
         .await
         .expect("existing conversation should persist");
+    let mut draft = ChatConversation::new_project(project.id.clone());
+    draft.set_agent_mode(Some(AgentConversationWorkspaceMode::Edit));
+    let draft = state
+        .chat_conversation_repo
+        .create(draft)
+        .await
+        .expect("draft conversation should persist");
     let workspace = prepare_agent_conversation_workspace(
         &project,
         &existing.id,
@@ -254,7 +261,7 @@ async fn start_service_linked_workspace_conflict_returns_retryable_error() {
             "edit",
             Some(branch),
             Some("linked"),
-            None,
+            Some(&draft.id),
             None,
         ),
     )
@@ -269,6 +276,24 @@ async fn start_service_linked_workspace_conflict_returns_retryable_error() {
         error.contains(branch) && error.contains(&existing.id.as_str()),
         "error should explain the conflict: {error}"
     );
+    let stored_draft = app
+        .state::<AppState>()
+        .chat_conversation_repo
+        .get_by_id(&draft.id)
+        .await
+        .expect("draft should load")
+        .expect("draft should still exist");
+    assert!(
+        stored_draft.archived_at.is_some(),
+        "supplied failed draft should be archived"
+    );
+    let draft_workspace = app
+        .state::<AppState>()
+        .agent_conversation_workspace_repo
+        .get_by_conversation_id(&draft.id)
+        .await
+        .expect("draft workspace lookup should succeed");
+    assert!(draft_workspace.is_none());
     let conversations = app
         .state::<AppState>()
         .chat_conversation_repo
@@ -279,7 +304,7 @@ async fn start_service_linked_workspace_conflict_returns_retryable_error() {
 }
 
 #[tokio::test]
-async fn start_service_archives_seeded_draft_on_linked_workspace_setup_failure() {
+async fn ipc_contract_start_service_archives_seeded_draft_on_linked_workspace_setup_failure() {
     ralphx_lib::testing::seed_available_harness_probes_for_test();
     let temp = tempfile::tempdir().expect("tempdir should be created");
     let repo_path = temp.path().join("repo");
