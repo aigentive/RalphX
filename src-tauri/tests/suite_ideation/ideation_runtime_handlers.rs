@@ -6,6 +6,7 @@ use axum::{
 use ralphx_lib::application::chat_service::{AppChatService, ChatService, ChatServiceError, SendMessageOptions};
 use ralphx_lib::application::{AppState, InteractiveProcessKey, TeamService, TeamStateTracker};
 use ralphx_lib::commands::ExecutionState;
+use ralphx_lib::domain::agents::{AgentHarnessKind, AgentProviderSettings};
 use ralphx_lib::domain::execution::ExecutionSettings;
 use ralphx_lib::domain::entities::ideation::{SessionPurpose, VerificationStatus};
 use ralphx_lib::domain::entities::{
@@ -18,7 +19,11 @@ use ralphx_lib::http_server::handlers::*;
 use ralphx_lib::http_server::types::{
     ChildSessionStatusParams, HttpServerState, SendSessionMessageRequest,
 };
-use std::sync::Arc;
+use std::{
+    fs,
+    path::{Path as StdPath, PathBuf},
+    sync::Arc,
+};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 async fn setup_test_state() -> HttpServerState {
@@ -103,6 +108,51 @@ fn build_ideation_chat_service(state: &HttpServerState) -> AppChatService<tauri:
         .with_interactive_process_registry(Arc::clone(
             &state.app_state.interactive_process_registry,
         ))
+}
+
+struct FakeClaudeCli {
+    _temp_dir: tempfile::TempDir,
+    path: PathBuf,
+}
+
+fn make_fake_claude_cli() -> FakeClaudeCli {
+    let temp_dir = tempfile::Builder::new()
+        .prefix("ralphx-fake-claude-")
+        .tempdir()
+        .expect("create fake Claude CLI temp dir");
+    let path = temp_dir.path().join("claude");
+    fs::write(&path, "#!/bin/sh\nexit 0\n").expect("write fake Claude CLI");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut permissions = fs::metadata(&path)
+            .expect("read fake Claude CLI metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&path, permissions).expect("mark fake Claude CLI executable");
+    }
+
+    FakeClaudeCli {
+        _temp_dir: temp_dir,
+        path,
+    }
+}
+
+async fn configure_fake_claude_cli(state: &HttpServerState, cli_path: &StdPath) {
+    ralphx_lib::testing::seed_available_harness_probes_for_test();
+
+    let mut settings = AgentProviderSettings::disabled_defaults(AgentHarnessKind::Claude);
+    settings.enabled = true;
+    settings.is_default = true;
+    settings.custom_binary_enabled = true;
+    settings.custom_binary_path = Some(cli_path.to_string_lossy().into_owned());
+    state
+        .app_state
+        .agent_provider_settings_repo
+        .upsert(&settings)
+        .await
+        .expect("seed fake Claude provider settings");
 }
 
 #[tokio::test]
@@ -836,9 +886,11 @@ async fn test_borrowing_stays_blocked_when_ready_execution_waits() {
 #[tokio::test]
 async fn test_chat_service_spawn_blocked_in_test_mode() {
     let state = setup_test_state().await;
+    let fake_cli = make_fake_claude_cli();
+    configure_fake_claude_cli(&state, &fake_cli.path).await;
     let session_id = create_active_session(&state).await;
 
-    let chat_service = build_ideation_chat_service(&state);
+    let chat_service = build_ideation_chat_service(&state).with_cli_path(fake_cli.path.clone());
     let result = chat_service
         .send_message(
             ChatContextType::Ideation,
@@ -910,6 +962,8 @@ async fn test_chat_service_persists_idle_ideation_message_when_execution_paused(
 #[tokio::test]
 async fn test_send_ideation_session_message_agent_idle_spawn_blocked_in_test_mode() {
     let state = setup_test_state().await;
+    let fake_cli = make_fake_claude_cli();
+    configure_fake_claude_cli(&state, &fake_cli.path).await;
 
     let mut session = IdeationSessionBuilder::new()
         .project_id(ProjectId::new())
