@@ -1,5 +1,8 @@
 use super::*;
-use crate::application::task_restart::prepare_terminal_task_for_ready_restart;
+use crate::application::{
+    merge_pipeline_visibility::ArchivedParentMergeVisibility,
+    task_restart::prepare_terminal_task_for_ready_restart,
+};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -454,18 +457,49 @@ pub async fn get_merge_pipeline_http(
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
+    let plan_branches = state
+        .app_state
+        .plan_branch_repo
+        .get_by_project_id(&project_id)
+        .await
+        .map_err(|e| {
+            error!(
+                "Failed to get plan branches for project {}: {}",
+                project_id.as_str(),
+                e
+            );
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    let agent_workspaces = state
+        .app_state
+        .agent_conversation_workspace_repo
+        .get_by_project_id(&project_id)
+        .await
+        .map_err(|e| {
+            error!(
+                "Failed to get agent workspaces for project {}: {}",
+                project_id.as_str(),
+                e
+            );
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    let archived_parent_visibility =
+        ArchivedParentMergeVisibility::from_workspaces(&agent_workspaces);
+
     // Filter to tasks in merge-related states
     let merge_tasks: Vec<MergePipelineTask> = all_tasks
         .into_iter()
         .filter(|t| {
-            matches!(
-                t.internal_status,
-                InternalStatus::PendingMerge
-                    | InternalStatus::Merging
-                    | InternalStatus::MergeIncomplete
-                    | InternalStatus::MergeConflict
-                    | InternalStatus::Merged
-            )
+            t.archived_at.is_none()
+                && matches!(
+                    t.internal_status,
+                    InternalStatus::PendingMerge
+                        | InternalStatus::Merging
+                        | InternalStatus::MergeIncomplete
+                        | InternalStatus::MergeConflict
+                        | InternalStatus::Merged
+                )
+                && !archived_parent_visibility.hides_task(t, &plan_branches)
         })
         .map(|t| MergePipelineTask {
             id: t.id.to_string(),
