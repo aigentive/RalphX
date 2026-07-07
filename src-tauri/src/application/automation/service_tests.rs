@@ -5,7 +5,8 @@ use chrono::Utc;
 use serde_json::json;
 
 use crate::application::automation::judge::{
-    AutomationJudgeDecision, AutomationJudgeNextBaseBranch, AutomationJudgeVerdict,
+    automation_judge_loop_suspected, AutomationJudgeDecision, AutomationJudgeNextBaseBranch,
+    AutomationJudgeVerdict,
 };
 use crate::application::automation::service::{
     ApplyAutomationJudgeVerdictInput, AutomationRunNowAction, AutomationService,
@@ -2138,6 +2139,54 @@ async fn service_judge_verdict_stop_and_loop_outcomes_update_automation_state() 
         Some(AutomationStatus::Paused)
     );
     assert_eq!(suspected.reason.as_deref(), Some("judge_loop_suspected"));
+}
+
+#[tokio::test]
+async fn service_persists_successor_run_prompt_verbatim_for_loop_guard() {
+    let (service, automation_repo, run_repo) =
+        service_with_emitter(Arc::new(NoopAutomationEventEmitter));
+    let mut active = automation("automation-1", AutomationStatus::Active);
+    // A spec-linked automation is the case where runs also gain the spawn-time
+    // `<automation_context>` prefix; the persisted prompt must still stay clean.
+    active.spec_artifact_id = Some("spec-artifact-1".to_string());
+    active.base_ref_kind = "local_branch".to_string();
+    active.base_ref = "main".to_string();
+    automation_repo.create(active.clone()).await.unwrap();
+    let previous = automation_run(
+        "run-1",
+        &active.id,
+        1,
+        AutomationRunStatus::Merged,
+        AutomationJudgeState::Done,
+    );
+    run_repo.create_run(previous.clone()).await.unwrap();
+
+    let next_prompt =
+        "Implement item 2 from the migration spec. Keep the PR scoped and publish it.";
+    let outcome = service
+        .apply_persisted_judge_verdict(ApplyAutomationJudgeVerdictInput {
+            automation: active.clone(),
+            previous_run: previous.clone(),
+            verdict: continue_verdict_struct(
+                next_prompt,
+                AutomationJudgeNextBaseBranch::AutomationBase,
+            ),
+        })
+        .await
+        .unwrap();
+
+    let successor = outcome.successor_run.expect("successor should be created");
+    // D5: the persisted run_prompt is the judge nextRunPrompt verbatim, with no
+    // spawn-time `<automation_context>` prefix, so the loop-guard fingerprint keeps
+    // matching when this prompt is repeated.
+    assert_eq!(successor.run_prompt, next_prompt);
+    assert!(!successor.run_prompt.contains("<automation_context>"));
+
+    // Prove the guard still fires if the judge repeats the same prompt next cycle.
+    assert!(automation_judge_loop_suspected(
+        &successor,
+        &continue_verdict_struct(next_prompt, AutomationJudgeNextBaseBranch::AutomationBase),
+    ));
 }
 
 fn continue_verdict(next_prompt: &str) -> String {

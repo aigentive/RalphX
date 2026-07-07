@@ -435,6 +435,7 @@ mod tests {
             composer_project_references: Vec::new(),
             composer_integration_references: Vec::new(),
             composer_artifact_references: Vec::new(),
+            automation_context: None,
         };
 
         let error = starter.start_run(request).await.unwrap_err();

@@ -3,10 +3,11 @@ use serde_json::json;
 
 use super::judge::{
     append_automation_judge_retry_instruction, apply_updated_item_statuses,
-    automation_judge_loop_suspected, build_automation_judge_prompt, parse_automation_judge_verdict,
-    AutomationGoalItemStatus, AutomationJudgeDecision, AutomationJudgeItemStatusUpdate,
-    AutomationJudgeNextBaseBranch, AutomationJudgeValidationContext, AutomationJudgeVerdict,
-    BuildAutomationJudgePromptInput, AUTOMATION_JUDGE_PROMPT_MAX_BYTES,
+    automation_judge_loop_suspected, build_automation_judge_prompt,
+    build_automation_run_context_block, parse_automation_judge_verdict, AutomationGoalItemStatus,
+    AutomationJudgeDecision, AutomationJudgeItemStatusUpdate, AutomationJudgeNextBaseBranch,
+    AutomationJudgeValidationContext, AutomationJudgeVerdict, BuildAutomationJudgePromptInput,
+    AUTOMATION_JUDGE_PROMPT_MAX_BYTES,
 };
 use crate::domain::entities::{
     Automation, AutomationId, AutomationJudgeState, AutomationPromptAuthor, AutomationRun,
@@ -84,6 +85,40 @@ fn automation_run(index: i64, status: AutomationRunStatus) -> AutomationRun {
         created_at: now,
         updated_at: now,
     }
+}
+
+#[test]
+fn build_automation_run_context_block_emits_goal_items_and_phase() {
+    let automation = automation_with_goal_items(Some(goal_items_json()));
+    let run = automation_run(3, AutomationRunStatus::Running);
+
+    let block = build_automation_run_context_block(&automation, &run);
+
+    assert!(block.starts_with("<automation_context>"));
+    assert!(block.trim_end().ends_with("</automation_context>"));
+    assert!(block.contains("<goal "));
+    assert!(block.contains("Implement the migration spec one numbered item per PR."));
+    assert!(block.contains("<goal_items "));
+    assert!(block.contains("item-1"));
+    assert!(block.contains("<phase "));
+    assert!(block.contains("\"runIndex\": 3"));
+    assert!(block.contains("\"maxRuns\": 25"));
+    assert!(block.contains("\"goalItemsTotal\": 2"));
+    assert!(block.contains("\"goalItemsDone\": 1"));
+    assert!(block.contains("\"goalItemsPending\": 1"));
+}
+
+#[test]
+fn build_automation_run_context_block_handles_missing_goal_items() {
+    let automation = automation_with_goal_items(None);
+    let run = automation_run(1, AutomationRunStatus::Running);
+
+    let block = build_automation_run_context_block(&automation, &run);
+
+    assert!(block.contains("<goal_items "));
+    assert!(block.contains("[]"));
+    assert!(block.contains("\"goalItemsTotal\": 0"));
+    assert!(block.contains("\"goalItemsPending\": 0"));
 }
 
 fn goal_items_json() -> String {

@@ -522,6 +522,37 @@ fn xml_section(tag: &str, body: &str, truncated: bool) -> String {
     format!("\n<{tag} truncated=\"{truncated}\">\n{body}\n</{tag}>\n")
 }
 
+/// Builds the spawn-time `<automation_context>` block prepended to a run prompt.
+///
+/// The block surfaces the automation goal, its phase/goal-item list, and phase
+/// progress counters so the run agent can situate the run within the overall
+/// automation. It is composed at spawn time and is **not** persisted into the
+/// run's `run_prompt`, keeping the judge loop-guard fingerprint clean (D5).
+pub(crate) fn build_automation_run_context_block(
+    automation: &Automation,
+    run: &AutomationRun,
+) -> String {
+    let goal = xml_section("goal", automation.goal_prompt.trim(), false);
+    let goal_items_body = automation
+        .goal_items_json
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("[]");
+    let goal_items = xml_section("goal_items", goal_items_body, false);
+    let stats = goal_item_stats(automation.goal_items_json.as_deref());
+    let phase_body = serde_json::to_string_pretty(&json!({
+        "runIndex": run.run_index,
+        "maxRuns": automation.max_runs,
+        "goalItemsTotal": stats.total,
+        "goalItemsDone": stats.done,
+        "goalItemsPending": stats.pending,
+    }))
+    .expect("automation phase JSON should serialize");
+    let phase = xml_section("phase", &phase_body, false);
+    format!("<automation_context>{goal}{goal_items}{phase}</automation_context>")
+}
+
 fn budgeted_xml_section(tag: &str, raw: &str, cap: usize, remaining: usize) -> String {
     if remaining == 0 {
         return String::new();
