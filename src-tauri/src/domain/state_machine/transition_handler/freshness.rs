@@ -394,7 +394,6 @@ pub async fn ensure_branches_fresh(
     }
 
     // 5. Dirty worktree guard
-    let fail_closed_on_worktree_status = matches!(origin_state, "executing" | "re_executing");
     match is_worktree_dirty(repo_path).await {
         Ok(true) => {
             warn!(
@@ -421,29 +420,50 @@ pub async fn ensure_branches_fresh(
                     );
                 }
                 Err(e) => {
-                    if !fail_closed_on_worktree_status {
+                    let error = e.to_string();
+                    if let FreshnessWorktreeGuardDecision::Block {
+                        reason_code,
+                        check,
+                        reason,
+                    } = dirty_worktree_autocommit_error_decision(origin_state, &error)
+                    {
+                        return Err(block_freshness_git_error(
+                            activity_event_repo,
+                            task_id_str,
+                            reason_code,
+                            check,
+                            reason,
+                        )
+                        .await);
+                    } else {
                         warn!(
                             task_id = task_id_str,
                             origin_state,
-                            error = %e,
+                            error = %error,
                             "Emergency auto-commit failed outside execution spawn path — skipping freshness check"
                         );
                         return Ok(freshness);
                     }
-                    return Err(block_freshness_git_error(
-                        activity_event_repo,
-                        task_id_str,
-                        "dirty_worktree_autocommit_failed",
-                        "dirty_worktree_autocommit",
-                        format!("Emergency auto-commit failed before freshness check: {}", e),
-                    )
-                    .await);
                 }
             }
         }
         Ok(false) => {}
         Err(e) => {
-            if !fail_closed_on_worktree_status {
+            if let FreshnessWorktreeGuardDecision::Block {
+                reason_code,
+                check,
+                reason,
+            } = worktree_status_error_decision(origin_state, &e)
+            {
+                return Err(block_freshness_git_error(
+                    activity_event_repo,
+                    task_id_str,
+                    reason_code,
+                    check,
+                    reason,
+                )
+                .await);
+            } else {
                 warn!(
                     task_id = task_id_str,
                     origin_state,
@@ -452,17 +472,6 @@ pub async fn ensure_branches_fresh(
                 );
                 return Ok(freshness);
             }
-            return Err(block_freshness_git_error(
-                activity_event_repo,
-                task_id_str,
-                "worktree_status_unreadable",
-                "worktree_status",
-                format!(
-                    "Failed to check worktree status before freshness check: {}",
-                    e
-                ),
-            )
-            .await);
         }
     }
 
@@ -762,6 +771,50 @@ pub async fn ensure_branches_fresh(
 enum FreshnessRetryDecision {
     Continue,
     Block { reason: String },
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum FreshnessWorktreeGuardDecision {
+    Skip,
+    Block {
+        reason_code: &'static str,
+        check: &'static str,
+        reason: String,
+    },
+}
+
+fn should_fail_closed_on_worktree_status(origin_state: &str) -> bool {
+    matches!(origin_state, "executing" | "re_executing")
+}
+
+fn dirty_worktree_autocommit_error_decision(
+    origin_state: &str,
+    error: &str,
+) -> FreshnessWorktreeGuardDecision {
+    if should_fail_closed_on_worktree_status(origin_state) {
+        FreshnessWorktreeGuardDecision::Block {
+            reason_code: "dirty_worktree_autocommit_failed",
+            check: "dirty_worktree_autocommit",
+            reason: format!("Emergency auto-commit failed before freshness check: {error}"),
+        }
+    } else {
+        FreshnessWorktreeGuardDecision::Skip
+    }
+}
+
+fn worktree_status_error_decision(
+    origin_state: &str,
+    error: &str,
+) -> FreshnessWorktreeGuardDecision {
+    if should_fail_closed_on_worktree_status(origin_state) {
+        FreshnessWorktreeGuardDecision::Block {
+            reason_code: "worktree_status_unreadable",
+            check: "worktree_status",
+            reason: format!("Failed to check worktree status before freshness check: {error}"),
+        }
+    } else {
+        FreshnessWorktreeGuardDecision::Skip
+    }
 }
 
 fn plan_retry_decision_after_error(
@@ -1203,6 +1256,58 @@ mod field_sync_tests {
             source_retry_decision_after_error(None, 11),
             FreshnessRetryDecision::Block {
                 reason: "update_source_from_target retry timed out after 11s".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn worktree_status_errors_fail_closed_only_for_execution_origins() {
+        assert_eq!(
+            worktree_status_error_decision("reviewing", "permission denied"),
+            FreshnessWorktreeGuardDecision::Skip
+        );
+        assert_eq!(
+            worktree_status_error_decision("executing", "permission denied"),
+            FreshnessWorktreeGuardDecision::Block {
+                reason_code: "worktree_status_unreadable",
+                check: "worktree_status",
+                reason: "Failed to check worktree status before freshness check: permission denied"
+                    .to_string()
+            }
+        );
+        assert_eq!(
+            worktree_status_error_decision("re_executing", "stale handle"),
+            FreshnessWorktreeGuardDecision::Block {
+                reason_code: "worktree_status_unreadable",
+                check: "worktree_status",
+                reason: "Failed to check worktree status before freshness check: stale handle"
+                    .to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn dirty_worktree_autocommit_errors_fail_closed_only_for_execution_origins() {
+        assert_eq!(
+            dirty_worktree_autocommit_error_decision("reviewing", "commit failed"),
+            FreshnessWorktreeGuardDecision::Skip
+        );
+        assert_eq!(
+            dirty_worktree_autocommit_error_decision("executing", "commit failed"),
+            FreshnessWorktreeGuardDecision::Block {
+                reason_code: "dirty_worktree_autocommit_failed",
+                check: "dirty_worktree_autocommit",
+                reason: "Emergency auto-commit failed before freshness check: commit failed"
+                    .to_string()
+            }
+        );
+        assert_eq!(
+            dirty_worktree_autocommit_error_decision("re_executing", "index locked"),
+            FreshnessWorktreeGuardDecision::Block {
+                reason_code: "dirty_worktree_autocommit_failed",
+                check: "dirty_worktree_autocommit",
+                reason: "Emergency auto-commit failed before freshness check: index locked"
+                    .to_string()
             }
         );
     }
