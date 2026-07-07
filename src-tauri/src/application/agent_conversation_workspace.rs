@@ -1291,6 +1291,8 @@ mod tests {
         let local_base_sha = git(&repo, &["rev-parse", base]);
 
         git(temp.path(), &["clone", origin.to_str().unwrap(), helper.to_str().unwrap()]);
+        git(&helper, &["config", "user.email", "test@example.com"]);
+        git(&helper, &["config", "user.name", "Test User"]);
         git(&helper, &["checkout", base]);
         std::fs::write(helper.join("merged.txt"), "merged\n").unwrap();
         git(&helper, &["add", "."]);
@@ -1409,6 +1411,8 @@ mod tests {
         let local_base_sha = git(&repo, &["rev-parse", base]);
 
         git(temp.path(), &["clone", origin.to_str().unwrap(), helper.to_str().unwrap()]);
+        git(&helper, &["config", "user.email", "test@example.com"]);
+        git(&helper, &["config", "user.name", "Test User"]);
         git(&helper, &["checkout", base]);
         std::fs::write(helper.join("merged.txt"), "merged\n").unwrap();
         git(&helper, &["add", "."]);
