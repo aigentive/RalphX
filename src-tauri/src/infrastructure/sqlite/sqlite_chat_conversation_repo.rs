@@ -258,6 +258,28 @@ impl ChatConversationRepository for SqliteChatConversationRepository {
         }).await
     }
 
+    async fn list_by_automation_id(
+        &self,
+        automation_id: &AutomationId,
+    ) -> AppResult<Vec<ChatConversation>> {
+        let automation_id_str = automation_id.as_str().to_string();
+        self.db.run(move |conn| {
+            let mut stmt = conn.prepare(
+                "SELECT id, context_type, context_id, claude_session_id, provider_session_id,
+                        provider_harness, upstream_provider, provider_profile, agent_mode, automation_id, automation_run_id, title, message_count, last_message_at, created_at,
+                        updated_at, archived_at, parent_conversation_id, attribution_backfill_status,
+                        attribution_backfill_source, attribution_backfill_source_path,
+                        attribution_backfill_last_attempted_at, attribution_backfill_completed_at,
+                        attribution_backfill_error_summary
+                 FROM chat_conversations WHERE automation_id = ?1 ORDER BY created_at DESC",
+            )?;
+            let conversations = stmt
+                .query_map([automation_id_str], row_to_conversation)?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(conversations)
+        }).await
+    }
+
     async fn get_by_context_filtered(
         &self,
         context_type: ChatContextType,

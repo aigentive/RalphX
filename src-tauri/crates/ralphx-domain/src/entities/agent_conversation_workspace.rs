@@ -1282,7 +1282,7 @@ mod workspace_review_monitor_tests {
     fn workspace_review_monitor_defaults_and_currentness_are_explicit() {
         let conversation_id = ChatConversationId::from_string("review-monitor-conversation");
         let project_id = ProjectId::from_string("project-1".to_string());
-        let mut monitor = AgentWorkspaceReviewMonitor::new(conversation_id.clone(), project_id);
+        let mut monitor = AgentWorkspaceReviewMonitor::new(conversation_id, project_id);
 
         assert_eq!(monitor.conversation_id, conversation_id);
         assert_eq!(monitor.status, AgentWorkspaceReviewMonitorStatus::Idle);

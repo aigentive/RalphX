@@ -36,6 +36,7 @@ pub struct AutomationResponse {
     pub max_consecutive_failures: i64,
     pub first_run_prompt: Option<String>,
     pub setup_analysis_summary: Option<String>,
+    pub spec_artifact_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -112,6 +113,7 @@ pub fn automation_service_for_state(state: &AppState) -> AutomationService {
         state.automation_repo.clone(),
         state.automation_run_repo.clone(),
         event_emitter,
+        state.artifact_repo.clone(),
     )
 }
 
@@ -169,6 +171,7 @@ impl From<Automation> for AutomationResponse {
             max_consecutive_failures: automation.max_consecutive_failures,
             first_run_prompt: automation.first_run_prompt,
             setup_analysis_summary: automation.setup_analysis_summary,
+            spec_artifact_id: automation.spec_artifact_id,
             created_at: automation.created_at.to_rfc3339(),
             updated_at: automation.updated_at.to_rfc3339(),
         }

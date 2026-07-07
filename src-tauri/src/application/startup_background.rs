@@ -165,12 +165,14 @@ pub fn spawn_automation_scheduler(
     let scheduler = AutomationScheduler::new(
         Arc::clone(&state.automation_repo),
         Arc::clone(&state.automation_run_repo),
+        Arc::clone(&state.agent_run_repo),
         Arc::clone(&state.chat_conversation_repo),
         Arc::clone(&state.agent_conversation_workspace_repo),
         starter,
         signal_checker,
         judge_invoker,
         event_emitter,
+        Arc::clone(&state.artifact_repo),
         registry,
         AutomationSchedulerConfig::default(),
     );
@@ -433,6 +435,7 @@ mod tests {
             composer_project_references: Vec::new(),
             composer_integration_references: Vec::new(),
             composer_artifact_references: Vec::new(),
+            automation_context: None,
         };
 
         let error = starter.start_run(request).await.unwrap_err();

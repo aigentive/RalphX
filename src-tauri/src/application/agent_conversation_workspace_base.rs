@@ -275,12 +275,18 @@ async fn existing_checkout_ref_for_base(
     base_ref: &str,
     has_origin: bool,
 ) -> AppResult<Option<String>> {
+    // Prefer the remote-tracking ref when an origin exists so published bases stay
+    // authoritative. Fall back to a local branch of the same name before giving up:
+    // automation base branches (and other isolated local-only bases) live only as
+    // local worktree branches and are never pushed. Without this fallback the base
+    // resolver treats a present local base as "missing" and silently retargets an
+    // automation run's publish base to the project default, breaking chain_mode
+    // (merged_base / pr_head_stacked). Mirrors `existing_default_checkout_ref`.
     if has_origin {
         let remote_ref = remote_tracking_ref(base_ref);
         if GitService::ref_exists(repo_path, &remote_ref).await? {
             return Ok(Some(remote_ref));
         }
-        return Ok(None);
     }
 
     if GitService::ref_exists(repo_path, base_ref).await? {

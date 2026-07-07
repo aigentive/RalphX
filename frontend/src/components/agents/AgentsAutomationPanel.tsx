@@ -8,6 +8,7 @@ import {
   Pause,
   Play,
   Square,
+  Trash2,
   Workflow,
   type LucideIcon,
 } from "lucide-react";
@@ -25,11 +26,20 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useAfterPaintMounted } from "@/components/agents/agentDeferredFrame";
 import {
+  describeAutomationDeleteConsequences,
   describeAutomationStage,
   describeRunFailure,
   latestRun,
 } from "@/components/automations/automationStage";
 import {
+  AUTOMATION_PHASES_LABEL,
+  AUTOMATION_STATUS_LABELS,
+  parseAutomationGoalItems,
+} from "@/components/automations/automationGoalItems";
+import { AutomationPhaseProgress } from "@/components/automations/AutomationPhases";
+import { AutomationSpecView } from "@/components/automations/AutomationSpecView";
+import {
+  evictDeletedAutomation,
   invalidateAutomationQueries,
   useAutomationDetail,
   useAutomationEvents,
@@ -68,13 +78,6 @@ interface AgentsAutomationPanelProps {
   onOpenAutomation?: (automationId: string) => void;
 }
 
-const STATUS_LABELS: Record<Automation["status"], string> = {
-  draft: "Draft",
-  active: "Approved",
-  paused: "Paused",
-  completed: "Completed",
-  stopped: "Stopped",
-};
 const AUTOMATION_SETUP_PROPOSAL_KIND = "automation_setup_proposal";
 const AUTOMATION_SETUP_PROPOSAL_APPLY_VALUE = "apply_automation_proposal";
 const UPDATE_AUTOMATION_FROM_LATEST_PROPOSAL_PROMPT =
@@ -111,47 +114,6 @@ const AUTOMATION_RUN_MODE_OPTIONS: Array<{
   },
 ];
 
-type AutomationGoalItem = {
-  id: string;
-  title: string;
-  status: string;
-};
-
-function parseAutomationGoalItems(value: string | null): AutomationGoalItem[] {
-  if (!value?.trim()) {
-    return [];
-  }
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    if (!Array.isArray(parsed)) {
-      return [];
-    }
-    return parsed.flatMap((item, index) => {
-      if (!item || typeof item !== "object") {
-        return [];
-      }
-      const record = item as Record<string, unknown>;
-      const title =
-        typeof record.title === "string" && record.title.trim()
-          ? record.title.trim()
-          : typeof record.text === "string" && record.text.trim()
-            ? record.text.trim()
-            : `Phase ${index + 1}`;
-      const id =
-        typeof record.id === "string" && record.id.trim()
-          ? record.id.trim()
-          : `phase-${index + 1}`;
-      const status =
-        typeof record.status === "string" && record.status.trim()
-          ? record.status.trim()
-          : "pending";
-      return [{ id, title, status }];
-    });
-  } catch {
-    return [];
-  }
-}
-
 function formatBase(automation: Automation): string {
   return (automation.baseDisplayName ?? automation.baseRef) || automation.baseRefKind;
 }
@@ -166,6 +128,10 @@ function formatAutomationRunModeLabel(runMode: AutomationRunMode): string {
     AUTOMATION_RUN_MODE_OPTIONS.find((option) => option.id === runMode)?.label ??
     runMode
   );
+}
+
+function completionSignalForRunMode(runMode: AutomationRunMode) {
+  return runMode === "edit" ? "pr_merged" : "agent_completed";
 }
 
 function automationProposalApplyOptionIndex(
@@ -413,6 +379,14 @@ export function AgentsAutomationPanel({
     },
     onError: () => toast.error("Failed to stop automation"),
   });
+  const deleteMutation = useMutation({
+    mutationFn: () => automationsApi.delete(automationId),
+    onSuccess: () => {
+      evictDeletedAutomation(queryClient, automationId);
+      toast.success("Automation deleted");
+    },
+    onError: () => toast.error("Failed to delete automation"),
+  });
   const handleAutomationRunModeChange = useCallback(
     (runMode: AutomationRunMode) => {
       const setupConversationId = automationForRuntime?.setupConversationId;
@@ -428,7 +402,10 @@ export function AgentsAutomationPanel({
       updateSetupMutation.mutate(
         {
           conversationId: setupConversationId,
-          input: { runMode },
+          input: {
+            runMode,
+            completionSignal: completionSignalForRunMode(runMode),
+          },
         },
         {
           onSuccess: () =>
@@ -584,6 +561,26 @@ export function AgentsAutomationPanel({
     }
   };
 
+  const handleDelete = async () => {
+    const automationDetail = detail.data;
+    if (!automationDetail) {
+      return;
+    }
+    const confirmed = await confirm({
+      title: "Delete draft automation?",
+      description: describeAutomationDeleteConsequences(
+        automationDetail.automation,
+        automationDetail.runs,
+      ),
+      confirmText: "Delete draft",
+      pendingText: "Deleting...",
+      variant: "destructive",
+    });
+    if (confirmed) {
+      deleteMutation.mutate();
+    }
+  };
+
   if (!afterPaint || detail.isLoading) {
     return <PanelShell />;
   }
@@ -605,10 +602,14 @@ export function AgentsAutomationPanel({
   const showPausedReason =
     !failureReason && automation.status === "paused" && Boolean(automation.pausedReasonCode);
   const actionPending =
-    pauseMutation.isPending || resumeMutation.isPending || stopMutation.isPending;
+    pauseMutation.isPending ||
+    resumeMutation.isPending ||
+    stopMutation.isPending ||
+    deleteMutation.isPending;
   const canPause = automation.status === "active";
   const canResume = automation.status === "paused";
   const canStop = automation.status !== "completed" && automation.status !== "stopped";
+  const canDelete = automation.status === "draft";
   const setupConversationId = automation.setupConversationId;
   const setupControlsDisabled =
     automation.status !== "draft" || !setupConversationId;
@@ -656,7 +657,7 @@ export function AgentsAutomationPanel({
           borderWidth: "1px",
         }}
       >
-        <SummaryRow label="Status" value={STATUS_LABELS[automation.status]} />
+        <SummaryRow label="Status" value={AUTOMATION_STATUS_LABELS[automation.status]} />
         <SummaryRow label="Stage" value={stage} testId="agents-automation-stage" />
         <SummaryRow label="Run type" value={automation.runMode} />
         <SummaryRow label="Model" value={formatModel(automation)} />
@@ -723,29 +724,18 @@ export function AgentsAutomationPanel({
         </p>
       </DetailSection>
 
-      <DetailSection title="Phases" testId="agents-automation-phases">
+      <DetailSection title={AUTOMATION_PHASES_LABEL} testId="agents-automation-phases">
         {goalItems.length > 0 ? (
-          <div className="space-y-2">
-            {goalItems.map((item, index) => (
-              <div
-                key={`${item.id}:${index}`}
-                className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 text-xs"
-              >
-                <span
-                  className="min-w-0 truncate font-medium"
-                  style={{ color: "var(--text-primary)" }}
-                >
-                  {item.title}
-                </span>
-                <span style={{ color: "var(--text-muted)" }}>{item.status}</span>
-              </div>
-            ))}
-          </div>
+          <AutomationPhaseProgress value={automation.goalItemsJson} />
         ) : (
           <p className="text-xs" style={{ color: "var(--text-muted)" }}>
             No phases configured yet.
           </p>
         )}
+      </DetailSection>
+
+      <DetailSection title="Spec" testId="agents-automation-spec">
+        <AutomationSpecView specArtifactId={automation.specArtifactId} />
       </DetailSection>
 
       {automation.setupAnalysisSummary ? (
@@ -831,6 +821,20 @@ export function AgentsAutomationPanel({
           >
             <Square className="h-4 w-4" />
             Stop
+          </Button>
+        ) : null}
+        {canDelete ? (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="gap-2 text-[var(--status-error)]"
+            disabled={actionPending}
+            onClick={handleDelete}
+            data-testid="agents-automation-delete"
+          >
+            <Trash2 className="h-4 w-4" />
+            Delete draft
           </Button>
         ) : null}
         <Button

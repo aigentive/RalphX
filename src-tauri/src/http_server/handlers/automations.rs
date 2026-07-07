@@ -51,6 +51,10 @@ pub struct UpdateAutomationRequest {
     pub completion_signal: Option<String>,
     #[serde(default)]
     pub setup_analysis_summary: Option<String>,
+    #[serde(default)]
+    pub spec_artifact_id: Option<String>,
+    #[serde(default)]
+    pub spec_content: Option<String>,
 }
 
 impl UpdateAutomationRequest {
@@ -68,6 +72,8 @@ impl UpdateAutomationRequest {
             || self.chain_mode.is_some()
             || self.completion_signal.is_some()
             || self.setup_analysis_summary.is_some()
+            || self.spec_artifact_id.is_some()
+            || self.spec_content.is_some()
     }
 }
 
@@ -135,6 +141,8 @@ pub async fn update_automation(
                     chain_mode: request.chain_mode,
                     completion_signal: request.completion_signal,
                     setup_analysis_summary: request.setup_analysis_summary,
+                    spec_artifact_id: request.spec_artifact_id,
+                    spec_content: request.spec_content,
                 },
             )
             .await

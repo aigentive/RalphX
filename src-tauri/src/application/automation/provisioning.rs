@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use crate::application::agent_conversation_start_service::{
     AgentWorkspaceSourcePullRequestInput, StartAgentConversationInput,
 };
+use crate::application::automation::judge::build_automation_run_context_block;
 use crate::application::automation::service::{AutomationService, CreateAutomationRunInput};
 use crate::application::automation::transition::{
     AutomationEventEmitter, AutomationTransitionService,
@@ -16,8 +17,8 @@ use crate::domain::entities::{
     AutomationRunId, AutomationRunStatus, ChatConversation, ChatConversationId,
 };
 use crate::domain::repositories::{
-    AgentConversationWorkspaceRepository, AutomationRepository, AutomationRunRepository,
-    ChatConversationRepository,
+    AgentConversationWorkspaceRepository, ArtifactRepository, AutomationRepository,
+    AutomationRunRepository, ChatConversationRepository,
 };
 use crate::domain::services::{
     ComposerArtifactReference, ComposerIntegrationReference, ComposerProjectReference,
@@ -43,6 +44,7 @@ pub struct AutomationRunStartRequest {
     pub composer_project_references: Vec<ComposerProjectReference>,
     pub composer_integration_references: Vec<ComposerIntegrationReference>,
     pub composer_artifact_references: Vec<ComposerArtifactReference>,
+    pub automation_context: Option<String>,
 }
 
 impl AutomationRunStartRequest {
@@ -59,6 +61,29 @@ impl AutomationRunStartRequest {
         } else {
             trim_optional_string(run.base_ref_used.clone())
         };
+        // Spec linkage: when the automation is linked to a Specification artifact,
+        // forward it as a lightweight `kind: "spec"` composer reference (fetch-on-demand,
+        // never `"plan"` which requires an ideation session) and prepend the spawn-time
+        // `<automation_context>` goal/phase block. This single seam covers the first run
+        // and every judge-created successor run. Runs without a spec stay unchanged.
+        let composer_artifact_references = automation
+            .spec_artifact_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|artifact_id| {
+                vec![ComposerArtifactReference {
+                    artifact_id: artifact_id.to_string(),
+                    kind: "spec".to_string(),
+                    title: Some("Automation spec".to_string()),
+                    session_id: None,
+                    version: None,
+                    status: None,
+                }]
+            })
+            .unwrap_or_default();
+        let automation_context = (!composer_artifact_references.is_empty())
+            .then(|| build_automation_run_context_block(automation, run));
         Self {
             project_id: automation.project_id.as_str().to_string(),
             conversation_id,
@@ -75,14 +100,24 @@ impl AutomationRunStartRequest {
                 .flatten(),
             composer_project_references: Vec::new(),
             composer_integration_references: Vec::new(),
-            composer_artifact_references: Vec::new(),
+            composer_artifact_references,
+            automation_context,
         }
     }
 
     pub fn into_start_input(self) -> AppResult<StartAgentConversationInput> {
+        // D5: the `<automation_context>` block is composed at spawn time only. The
+        // persisted `run_prompt` on the run stays clean so the judge loop-guard
+        // fingerprint (stored prompt vs judge nextRunPrompt) keeps working.
+        let content = match &self.automation_context {
+            Some(context) if !context.trim().is_empty() => {
+                format!("{context}\n{}", self.run_prompt)
+            }
+            _ => self.run_prompt.clone(),
+        };
         Ok(StartAgentConversationInput {
             project_id: self.project_id,
-            content: self.run_prompt,
+            content,
             conversation_id: Some(self.conversation_id.as_str().to_string()),
             parent_conversation_id: None,
             title: None,
@@ -139,11 +174,13 @@ impl AutomationRunProvisioner {
         workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
         starter: Arc<dyn AutomationRunStarter>,
         event_emitter: Arc<dyn AutomationEventEmitter>,
+        artifact_repo: Arc<dyn ArtifactRepository>,
     ) -> Self {
         let service = AutomationService::new(
             Arc::clone(&automation_repo),
             Arc::clone(&run_repo),
             Arc::clone(&event_emitter),
+            artifact_repo,
         );
         let transition_service = AutomationTransitionService::new(
             Arc::clone(&automation_repo),

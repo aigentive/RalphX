@@ -85,7 +85,7 @@ use crate::application::ideation_workspace::prepare_ideation_analysis_state_from
 use crate::application::publish_resilience::{
     classify_publish_failure, count_publish_reviewable_commits,
     count_publishable_commits_with_base_fallback, count_unpublished_publish_commits,
-    ensure_plan_publish_branch_fresh, ensure_publish_branch_fresh,
+    ensure_plan_publish_branch_fresh, ensure_publish_base_pushed, ensure_publish_branch_fresh,
     inspect_publish_branch_freshness_for_source,
     inspect_publish_branch_freshness_for_source_after_fetch, push_publish_branch,
     remote_tracking_ref_for_publish, review_base_for_publish, PublishBranchFreshnessOutcome,
@@ -3249,6 +3249,7 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
                     },
                     AgentConversationWorkspaceSetupMode::Blocking,
                     pr_automation_defaults,
+                    false,
                 )
                 .await
                 .map_err(|error| error.to_string())?;
@@ -6726,6 +6727,36 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
             return Err(error);
         }
     };
+
+    // B1/B2/B5: for automation runs whose base is a local-only automation branch,
+    // publish that base to origin BEFORE the PR references it as `--base`. Both
+    // belts (automation scope + origin-absent safety) live in the helper. A push
+    // failure fails the publish closed — never retarget to main, never proceed to
+    // PR create.
+    if let Err(error) =
+        ensure_publish_base_pushed(github, &worktree_path, &conversation, &workspace).await
+    {
+        let error = error.to_string();
+        tracing::warn!(
+            target: "ralphx_lib::commands::agent_workspace_publish",
+            conversation_id = %workspace.conversation_id,
+            project_id = %workspace.project_id,
+            base_ref = %workspace.base_ref,
+            error = %error,
+            "Failed to push automation base branch before publishing"
+        );
+        mark_agent_workspace_publish_failure_with_routing(
+            state,
+            &workspace,
+            &error,
+            None,
+            &repair_service,
+            route_fixable_failures_to_agent,
+            &repair_target,
+        )
+        .await;
+        return Err(error);
+    }
 
     mark_agent_workspace_publish_status(state, &workspace, "pushing")
         .await

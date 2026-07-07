@@ -364,6 +364,11 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
                 },
                 AgentConversationWorkspaceSetupMode::Deferred,
                 pr_automation_defaults,
+                // Automation runs (setup + successors) prefer the advanced
+                // remote-tracking base so successor worktrees build on merged work
+                // (integration-branch model). Non-automation chats keep the local
+                // start-point.
+                conversation.automation_id.is_some(),
             )
             .await
             .map_err(|error| error.to_string())?;

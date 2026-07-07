@@ -153,6 +153,9 @@ impl AutomationRepository for MemoryAutomationRepository {
         if let Some(setup_analysis_summary) = patch.setup_analysis_summary {
             automation.setup_analysis_summary = Some(setup_analysis_summary);
         }
+        if let Some(spec_artifact_id) = patch.spec_artifact_id {
+            automation.spec_artifact_id = Some(spec_artifact_id);
+        }
         automation.updated_at = Utc::now();
         Ok(Some(automation.clone()))
     }
@@ -215,6 +218,24 @@ impl AutomationRepository for MemoryAutomationRepository {
         }
         automations.remove(position);
         Ok(true)
+    }
+
+    async fn delete_attachments_for_automation(
+        &self,
+        _automation_id: &AutomationId,
+    ) -> AppResult<usize> {
+        // The in-memory automation repo does not model attachment rows; deletion
+        // is a no-op that mirrors the SQLite contract (returns rows affected).
+        Ok(0)
+    }
+
+    async fn delete_context_refs_for_automation(
+        &self,
+        _automation_id: &AutomationId,
+    ) -> AppResult<usize> {
+        // The in-memory automation repo does not model context-ref rows; deletion
+        // is a no-op that mirrors the SQLite contract (returns rows affected).
+        Ok(0)
     }
 }
 
@@ -305,6 +326,20 @@ impl AutomationRunRepository for MemoryAutomationRunRepository {
             .cloned())
     }
 
+    async fn find_run_by_conversation_id(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<AutomationRun>> {
+        Ok(self
+            .runs
+            .read()
+            .unwrap()
+            .iter()
+            .filter(|run| run.conversation_id.as_ref() == Some(conversation_id))
+            .max_by_key(|run| run.run_index)
+            .cloned())
+    }
+
     async fn compare_and_swap_status(
         &self,
         id: &AutomationRunId,
@@ -328,6 +363,7 @@ impl AutomationRunRepository for MemoryAutomationRunRepository {
         if matches!(
             to,
             AutomationRunStatus::Merged
+                | AutomationRunStatus::Completed
                 | AutomationRunStatus::PrClosed
                 | AutomationRunStatus::AgentFailed
                 | AutomationRunStatus::Cancelled

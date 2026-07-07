@@ -3,8 +3,9 @@ use serde_json::json;
 
 use super::judge::{
     append_automation_judge_retry_instruction, apply_updated_item_statuses,
-    automation_judge_loop_suspected, build_automation_judge_prompt, parse_automation_judge_verdict,
-    AutomationGoalItemStatus, AutomationJudgeDecision, AutomationJudgeItemStatusUpdate,
+    automation_judge_loop_suspected, build_automation_judge_prompt,
+    build_automation_run_context_block, parse_automation_judge_verdict, AutomationGoalItemStatus,
+    AutomationJudgeAttachmentContext, AutomationJudgeDecision, AutomationJudgeItemStatusUpdate,
     AutomationJudgeNextBaseBranch, AutomationJudgeValidationContext, AutomationJudgeVerdict,
     BuildAutomationJudgePromptInput, AUTOMATION_JUDGE_PROMPT_MAX_BYTES,
 };
@@ -40,6 +41,7 @@ fn automation_with_goal_items(goal_items_json: Option<String>) -> Automation {
         max_consecutive_failures: 3,
         first_run_prompt: Some("Run 1 prompt".to_string()),
         setup_analysis_summary: Some("Setup summary".to_string()),
+        spec_artifact_id: None,
         created_at: now,
         updated_at: now,
     }
@@ -83,6 +85,40 @@ fn automation_run(index: i64, status: AutomationRunStatus) -> AutomationRun {
         created_at: now,
         updated_at: now,
     }
+}
+
+#[test]
+fn build_automation_run_context_block_emits_goal_items_and_phase() {
+    let automation = automation_with_goal_items(Some(goal_items_json()));
+    let run = automation_run(3, AutomationRunStatus::Running);
+
+    let block = build_automation_run_context_block(&automation, &run);
+
+    assert!(block.starts_with("<automation_context>"));
+    assert!(block.trim_end().ends_with("</automation_context>"));
+    assert!(block.contains("<goal "));
+    assert!(block.contains("Implement the migration spec one numbered item per PR."));
+    assert!(block.contains("<goal_items "));
+    assert!(block.contains("item-1"));
+    assert!(block.contains("<phase "));
+    assert!(block.contains("\"runIndex\": 3"));
+    assert!(block.contains("\"maxRuns\": 25"));
+    assert!(block.contains("\"goalItemsTotal\": 2"));
+    assert!(block.contains("\"goalItemsDone\": 1"));
+    assert!(block.contains("\"goalItemsPending\": 1"));
+}
+
+#[test]
+fn build_automation_run_context_block_handles_missing_goal_items() {
+    let automation = automation_with_goal_items(None);
+    let run = automation_run(1, AutomationRunStatus::Running);
+
+    let block = build_automation_run_context_block(&automation, &run);
+
+    assert!(block.contains("<goal_items "));
+    assert!(block.contains("[]"));
+    assert!(block.contains("\"goalItemsTotal\": 0"));
+    assert!(block.contains("\"goalItemsPending\": 0"));
 }
 
 fn goal_items_json() -> String {
@@ -627,6 +663,56 @@ fn prompt_builder_mid_loop_payload_keeps_goal_items_and_run_counts() {
     assert!(prompt.contains("\"id\":\"item-12\""));
     assert!(prompt.contains("\"runsUsed\": 12"));
     assert!(prompt.contains("\"goalItemsPending\": 9"));
+}
+
+#[test]
+fn prompt_builder_inlines_spec_attachment_into_original_inputs() {
+    let automation = automation_with_goal_items(None);
+    let previous = automation_run(1, AutomationRunStatus::Merged);
+    let attachment = AutomationJudgeAttachmentContext {
+        file_name: "Automation spec".to_string(),
+        mime_type: Some("text/markdown".to_string()),
+        file_size: Some(64),
+        text_content: Some("SPEC_MARKER: implement phase one before phase two.".to_string()),
+    };
+
+    let prompt = build_automation_judge_prompt(BuildAutomationJudgePromptInput {
+        automation: &automation,
+        runs: std::slice::from_ref(&previous),
+        previous_run: &previous,
+        attachments: std::slice::from_ref(&attachment),
+        context_refs: &[],
+    })
+    .unwrap();
+
+    let body = xml_section_body(&prompt, "original_inputs");
+    assert!(body.contains("SPEC_MARKER: implement phase one before phase two."));
+    assert!(body.contains("Automation spec"));
+}
+
+#[test]
+fn prompt_builder_truncates_oversized_spec_attachment() {
+    let automation = automation_with_goal_items(None);
+    let previous = automation_run(1, AutomationRunStatus::Merged);
+    // ~30KB of text — larger than ORIGINAL_INPUTS_MAX_BYTES (12KB) so the whole
+    // original_inputs section is byte-truncated by the prompt builder.
+    let attachment = AutomationJudgeAttachmentContext {
+        file_name: "Automation spec".to_string(),
+        mime_type: Some("text/markdown".to_string()),
+        file_size: Some(30 * 1024),
+        text_content: Some("spec ".repeat(6_000)),
+    };
+
+    let prompt = build_automation_judge_prompt(BuildAutomationJudgePromptInput {
+        automation: &automation,
+        runs: std::slice::from_ref(&previous),
+        previous_run: &previous,
+        attachments: std::slice::from_ref(&attachment),
+        context_refs: &[],
+    })
+    .unwrap();
+
+    assert!(prompt.contains("<original_inputs truncated=\"true\">"));
 }
 
 #[test]
