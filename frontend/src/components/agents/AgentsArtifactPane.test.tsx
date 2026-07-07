@@ -1438,6 +1438,15 @@ describe("AgentsArtifactPane", () => {
   });
 
   it("anchors the active tab border to the bottom edge of the tab bar", async () => {
+    usePlanStore.setState({
+      activePlanByProject: { "project-1": "session-1" },
+      activeExecutionPlanIdByProject: { "project-1": "exec-current" },
+    });
+    useTasksMock.mockReturnValue({
+      data: [task({ id: "task-current", executionPlanId: "exec-current" })],
+      isLoading: false,
+      isFetching: false,
+    });
     getIdeationSessionMock.mockResolvedValue({
       session: {
         id: "session-1",
@@ -1491,6 +1500,15 @@ describe("AgentsArtifactPane", () => {
 
   it("opens task details inside the Agents tasks artifact surface", async () => {
     const onTaskArtifactSelectionChange = vi.fn();
+    usePlanStore.setState({
+      activePlanByProject: { "project-1": "session-1" },
+      activeExecutionPlanIdByProject: { "project-1": "exec-current" },
+    });
+    useTasksMock.mockReturnValue({
+      data: [task({ id: "task-1", executionPlanId: "exec-current" })],
+      isLoading: false,
+      isFetching: false,
+    });
     getIdeationSessionMock.mockResolvedValue({
       session: {
         id: "session-1",
@@ -1585,6 +1603,15 @@ describe("AgentsArtifactPane", () => {
 
   it("selects task details from an external task focus request", async () => {
     const onTaskArtifactSelectionChange = vi.fn();
+    usePlanStore.setState({
+      activePlanByProject: { "project-1": "session-1" },
+      activeExecutionPlanIdByProject: { "project-1": "exec-current" },
+    });
+    useTasksMock.mockReturnValue({
+      data: [task({ id: "task-42", executionPlanId: "exec-current" })],
+      isLoading: false,
+      isFetching: false,
+    });
     getIdeationSessionMock.mockResolvedValue({
       session: {
         id: "session-1",
@@ -3800,6 +3827,7 @@ describe("AgentsArtifactPane", () => {
 
   it("shows active execution-plan progress in the Plan banner and Tasks tab badge", async () => {
     usePlanStore.setState({
+      activePlanByProject: { "project-1": "session-1" },
       activeExecutionPlanIdByProject: { "project-1": "exec-current" },
     });
     useTasksMock.mockReturnValue({
@@ -3860,6 +3888,7 @@ describe("AgentsArtifactPane", () => {
 
   it("falls back to proposal-created tasks when active execution plan is unavailable", async () => {
     usePlanStore.setState({
+      activePlanByProject: { "project-1": "session-1" },
       activeExecutionPlanIdByProject: {},
     });
     useTasksMock.mockReturnValue({
@@ -3911,10 +3940,81 @@ describe("AgentsArtifactPane", () => {
     );
   });
 
+  it("hides work UI for stale accepted fields without attached implementation tasks", async () => {
+    getIdeationSessionMock.mockResolvedValue(
+      ideationSessionResponse({
+        status: "active",
+        acceptanceStatus: "accepted",
+        convertedAt: "2026-04-23T10:00:00Z",
+      }),
+    );
+    getSessionPlanMock.mockResolvedValue(approvedPlanArtifact());
+
+    renderPane(
+      "plan",
+      workspace({
+        mode: "ideation",
+        linkedIdeationSessionId: "session-1",
+      }),
+      vi.fn(),
+      false,
+      conversation(),
+    );
+
+    expect(await screen.findByText("Implementation Plan")).toBeInTheDocument();
+    expect(screen.queryByTestId("accepted-session-banner")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("view-work-button")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("agents-artifact-tab-tasks")).not.toBeInTheDocument();
+  });
+
+  it("ignores a project active execution plan that belongs to another planning session", async () => {
+    usePlanStore.setState({
+      activePlanByProject: { "project-1": "session-other" },
+      activeExecutionPlanIdByProject: { "project-1": "exec-foreign" },
+    });
+    useTasksMock.mockReturnValue({
+      data: [
+        task({
+          id: "task-foreign",
+          title: "Foreign active task",
+          executionPlanId: "exec-foreign",
+        }),
+      ],
+      isLoading: false,
+      isFetching: false,
+    });
+    getIdeationSessionMock.mockResolvedValue(
+      ideationSessionResponse({
+        status: "accepted",
+        acceptanceStatus: "accepted",
+        convertedAt: "2026-04-23T10:00:00Z",
+      }),
+    );
+    getSessionPlanMock.mockResolvedValue(approvedPlanArtifact());
+
+    renderPane(
+      "plan",
+      workspace({
+        mode: "ideation",
+        linkedIdeationSessionId: "session-1",
+        linkedPlanBranchId: "plan-branch-1",
+      }),
+      vi.fn(),
+      false,
+      conversation(),
+    );
+
+    expect(await screen.findByText("Implementation Plan")).toBeInTheDocument();
+    expect(screen.queryByTestId("accepted-session-banner")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("view-work-button")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("agents-artifact-tab-tasks")).not.toBeInTheDocument();
+  });
+
   it("opens the Tasks tab from the accepted Plan progress banner", async () => {
     const user = userEvent.setup();
     const onTabChange = vi.fn();
     usePlanStore.setState({
+      activePlanByProject: { "project-1": "session-1" },
       activeExecutionPlanIdByProject: { "project-1": "exec-current" },
     });
     useTasksMock.mockReturnValue({
@@ -3958,6 +4058,7 @@ describe("AgentsArtifactPane", () => {
     const user = userEvent.setup();
     const loadActivePlan = vi.fn().mockResolvedValue(undefined);
     usePlanStore.setState({
+      activePlanByProject: { "project-1": "session-1" },
       activeExecutionPlanIdByProject: { "project-1": "exec-current" },
       loadActivePlan,
     });
@@ -4022,6 +4123,7 @@ describe("AgentsArtifactPane", () => {
     const user = userEvent.setup();
     restartImplementationMock.mockRejectedValueOnce(new Error("Restart failed"));
     usePlanStore.setState({
+      activePlanByProject: { "project-1": "session-1" },
       activeExecutionPlanIdByProject: { "project-1": "exec-current" },
     });
     useTasksMock.mockReturnValue({

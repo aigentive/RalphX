@@ -47,6 +47,7 @@ import type {
 import { AcceptedPlanProgressBanner } from "@/components/Ideation/AcceptedSessionBanner";
 import { useChatStore } from "@/stores/chatStore";
 import {
+  selectActivePlanId,
   selectActiveExecutionPlanId,
   usePlanStore,
 } from "@/stores/planStore";
@@ -579,9 +580,12 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   );
   const taskProjectId =
     session?.projectId ?? conversation?.projectId ?? workspace?.projectId ?? null;
-  const activeExecutionPlanId = usePlanStore(
+  const activePlanSessionId = usePlanStore(selectActivePlanId(taskProjectId ?? ""));
+  const projectActiveExecutionPlanId = usePlanStore(
     selectActiveExecutionPlanId(taskProjectId ?? ""),
   );
+  const activeExecutionPlanId =
+    activePlanSessionId === attachedSessionId ? projectActiveExecutionPlanId : null;
   const hasProposalCreatedTasks = useMemo(
     () => proposals.some((proposal) => proposal.createdTaskId != null),
     [proposals],
@@ -589,11 +593,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   const shouldLoadImplementationTasks = Boolean(
     taskProjectId &&
       attachedSessionId &&
-      (activeExecutionPlanId ||
-        hasProposalCreatedTasks ||
-        session?.status === "accepted" ||
-        session?.acceptanceStatus === "accepted" ||
-        session?.convertedAt),
+      (activeExecutionPlanId || hasProposalCreatedTasks),
   );
   const implementationTasksQuery = useTasks(taskProjectId ?? "", {
     enabled: shouldLoadImplementationTasks,
@@ -612,11 +612,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
     [visibleImplementationTasks],
   );
   const visibleImplementationTaskCount = implementationTaskCounts.total;
-  const hasImplementationAttempt = Boolean(
-    activeExecutionPlanId ||
-      visibleImplementationTaskCount > 0 ||
-      hasProposalCreatedTasks,
-  );
+  const hasImplementationWork = visibleImplementationTaskCount > 0;
   const planArtifactId = shouldLoadIdeationData
     ? sessionData?.session.planArtifactId ?? sessionData?.session.inheritedPlanArtifactId ?? null
     : null;
@@ -655,23 +651,17 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
         canStartPlan,
         hasProposals: proposalCount > 0,
         hasVerificationEvidence,
-        hasExecutionTasks: Boolean(
-          hasImplementationAttempt ||
-            workspace?.linkedPlanBranchId ||
-            sessionData?.session.acceptanceStatus === "accepted" ||
-            sessionData?.session.convertedAt,
-        ),
+        hasExecutionTasks: hasImplementationWork,
         artifactMode,
       }),
     [
       artifactMode,
       canStartPlan,
-      hasImplementationAttempt,
+      hasImplementationWork,
       hasVerificationEvidence,
       planArtifactId,
       proposalCount,
       sessionData,
-      workspace?.linkedPlanBranchId,
     ],
   );
   const availableArtifactTabIds = useMemo<IdeationArtifactTab[]>(() => {
@@ -1160,7 +1150,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
           dependencyGraph={dependencyGraph}
           proposals={proposals}
           implementationTaskCounts={implementationTaskCounts}
-          hasImplementationAttempt={hasImplementationAttempt}
+          hasImplementationWork={hasImplementationWork}
           onPublishWorkspace={onPublishWorkspace}
           isPublishingWorkspace={isPublishingWorkspace}
           publishFocusRequest={publishFocusRequest}
@@ -1211,7 +1201,7 @@ type ArtifactContentProps = {
   dependencyGraph: DependencyGraphResponse | null;
   proposals: TaskProposal[];
   implementationTaskCounts: StatusCounts;
-  hasImplementationAttempt: boolean;
+  hasImplementationWork: boolean;
   onPublishWorkspace: ((conversationId: string) => Promise<void>) | undefined;
   isPublishingWorkspace: boolean;
   publishFocusRequest: AgentPublishFocusRequest | null;
@@ -1261,7 +1251,7 @@ function ArtifactContent({
   dependencyGraph,
   proposals,
   implementationTaskCounts,
-  hasImplementationAttempt,
+  hasImplementationWork,
   onPublishWorkspace,
   isPublishingWorkspace,
   publishFocusRequest,
@@ -1420,7 +1410,7 @@ function ArtifactContent({
         proposals={proposals}
         dependencyGraph={dependencyGraph}
         implementationTaskCounts={implementationTaskCounts}
-        hasImplementationAttempt={hasImplementationAttempt}
+        hasImplementationWork={hasImplementationWork}
         onPlanUpdated={onPlanUpdated}
         verificationState={verificationState}
         verificationInProgress={verificationInProgress}
@@ -1481,7 +1471,7 @@ function AgentPlanPanel({
   proposals,
   dependencyGraph,
   implementationTaskCounts,
-  hasImplementationAttempt,
+  hasImplementationWork,
   onPlanUpdated,
   verificationState,
   verificationInProgress,
@@ -1497,7 +1487,7 @@ function AgentPlanPanel({
   proposals: TaskProposal[];
   dependencyGraph: DependencyGraphResponse | null;
   implementationTaskCounts: StatusCounts;
-  hasImplementationAttempt: boolean;
+  hasImplementationWork: boolean;
   onPlanUpdated: (updatedPlan: Artifact) => void;
   verificationState: VerificationStatus | null;
   verificationInProgress: boolean;
@@ -1680,7 +1670,7 @@ function AgentPlanPanel({
   const isAcceptedPlan =
     session?.status === "accepted" || session?.acceptanceStatus === "accepted";
   const canRestartImplementation = Boolean(
-    isAcceptedPlan && hasImplementationAttempt && session?.id,
+    isAcceptedPlan && hasImplementationWork && session?.id,
   );
   const workspaceConversationId = workspace?.conversationId ?? null;
 
@@ -1901,7 +1891,7 @@ function AgentPlanPanel({
           </Suspense>
         ) : (
           <>
-            {(isAcceptedPlan || hasImplementationAttempt) && (
+            {hasImplementationWork && (
               <AcceptedPlanProgressBanner
                 counts={implementationTaskCounts}
                 acceptedAt={session?.convertedAt ?? null}
