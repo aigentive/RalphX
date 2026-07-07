@@ -487,9 +487,9 @@ export function useAgentsViewController({
     ],
   );
   const {
-    attachedIdeationSessionData,
     attachedIdeationSessionId,
     availableArtifactTabs,
+    hasAttachedPlanArtifact,
     hasAutoOpenArtifacts,
   } = useAgentsAttachedIdeation({
     activeConversation,
@@ -681,10 +681,6 @@ export function useAgentsViewController({
     workspaceReviewContext?.monitor.reviewFixerRunId,
     workspaceReviewContext?.monitor.reviewFixerStatus,
   ]);
-  const hasAttachedPlanArtifact = Boolean(
-    attachedIdeationSessionData?.planArtifactId ||
-      attachedIdeationSessionData?.inheritedPlanArtifactId,
-  );
   const chatFocusOptions = useMemo(() => {
     return getAgentChatFocusSwitchOptions({
       mode: activeConversationMode,
@@ -1264,6 +1260,7 @@ export function useAgentsViewController({
       chatFocusOptions,
       defaultProjectId,
       defaultRuntime,
+      hasAttachedPlanArtifact,
       hasAutoOpenArtifacts: hasAutoOpenArtifactsWithReview,
       isLoadingProjects,
       modelRegistry,

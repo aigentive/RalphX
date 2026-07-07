@@ -752,6 +752,7 @@ interface AgentsActiveConversationPanelProps {
   availableArtifactTabs: readonly IdeationArtifactTab[];
   chatFocus: AgentsChatFocus;
   chatFocusOptions: readonly AgentsChatFocusSwitchOption[];
+  hasAttachedPlanArtifact: boolean;
   hasAutoOpenArtifacts: boolean;
   normalizedActiveRuntime: AgentRuntimeSelection;
   onActiveConversationModeChange: (mode: AgentConversationWorkspaceMode) => void;
@@ -832,6 +833,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   availableArtifactTabs,
   chatFocus,
   chatFocusOptions,
+  hasAttachedPlanArtifact,
   hasAutoOpenArtifacts,
   normalizedActiveRuntime,
   onActiveConversationModeChange,
@@ -1571,7 +1573,9 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
     activeConversationMode === "plan" &&
     activeWorkspace?.mode === "plan";
   const canShowPlanComposerViewPrompt =
-    isPlanWorkspaceComposer && availableArtifactTabs.includes("plan");
+    isPlanWorkspaceComposer &&
+    hasAttachedPlanArtifact &&
+    availableArtifactTabs.includes("plan");
   const { artifactState: resolvedArtifactState, artifactPaneOpen } =
     useResolvedAgentArtifactState(
       isPlanWorkspaceComposer ? selectedConversationId : null,
