@@ -1073,6 +1073,40 @@ async fn emit_freshness_activity(
 mod field_sync_tests {
     use super::*;
 
+    fn init_empty_git_repo(path: &std::path::Path) {
+        let output = std::process::Command::new("git")
+            .arg("init")
+            .arg(path)
+            .output()
+            .expect("git init should run");
+        assert!(
+            output.status.success(),
+            "git init failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn freshness_test_config() -> ReconciliationConfig {
+        ReconciliationConfig {
+            branch_freshness_timeout_secs: 5,
+            freshness_skip_window_secs: 0,
+            ..Default::default()
+        }
+    }
+
+    fn freshness_test_project(path: &std::path::Path, base_branch: &str) -> Project {
+        let mut project = Project::new(
+            "freshness coverage project".to_string(),
+            path.to_string_lossy().to_string(),
+        );
+        project.base_branch = Some(base_branch.to_string());
+        project
+    }
+
+    fn freshness_test_task(project: &Project) -> Task {
+        Task::new(project.id.clone(), "freshness coverage task".to_string())
+    }
+
     /// Verify that KEYS contains exactly the fields in FreshnessMetadata.
     /// If this test fails, KEYS is out of sync with the struct fields.
     #[test]
@@ -1182,6 +1216,105 @@ mod field_sync_tests {
         assert_eq!(meta.freshness_auto_reset_count, 0);
         // Routing flags NOT cleared:
         assert!(meta.branch_freshness_conflict);
+    }
+
+    #[tokio::test]
+    async fn ensure_branches_fresh_blocks_execution_when_worktree_status_unreadable() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let missing_repo = temp.path().join("missing-repo");
+        let project = freshness_test_project(&missing_repo, "main");
+        let task = freshness_test_task(&project);
+        let config = freshness_test_config();
+
+        let result = ensure_branches_fresh(
+            &missing_repo,
+            &task,
+            &project,
+            task.id.as_str(),
+            None,
+            None,
+            None,
+            None,
+            "executing",
+            &config,
+        )
+        .await;
+
+        assert!(
+            matches!(
+                result,
+                Err(FreshnessAction::ExecutionBlocked { ref reason })
+                    if reason.contains("Failed to check worktree status before freshness check")
+            ),
+            "execution-origin unreadable worktree status must block: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn ensure_branches_fresh_retries_and_blocks_plan_update_errors() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        init_empty_git_repo(temp.path());
+        let project = freshness_test_project(temp.path(), "main");
+        let task = freshness_test_task(&project);
+        let config = freshness_test_config();
+
+        let result = ensure_branches_fresh(
+            temp.path(),
+            &task,
+            &project,
+            task.id.as_str(),
+            Some("plan/missing"),
+            Some("missing-base"),
+            None,
+            None,
+            "executing",
+            &config,
+        )
+        .await;
+
+        assert!(
+            matches!(
+                result,
+                Err(FreshnessAction::ExecutionBlocked { ref reason })
+                    if reason.contains("update_plan_from_main failed after retry")
+                        && reason.contains("missing-base")
+            ),
+            "plan update errors must retry once then block: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn ensure_branches_fresh_retries_and_blocks_source_update_errors() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        init_empty_git_repo(temp.path());
+        let project = freshness_test_project(temp.path(), "missing-target");
+        let mut task = freshness_test_task(&project);
+        task.task_branch = Some("task/missing".to_string());
+        let config = freshness_test_config();
+
+        let result = ensure_branches_fresh(
+            temp.path(),
+            &task,
+            &project,
+            task.id.as_str(),
+            None,
+            None,
+            None,
+            None,
+            "executing",
+            &config,
+        )
+        .await;
+
+        assert!(
+            matches!(
+                result,
+                Err(FreshnessAction::ExecutionBlocked { ref reason })
+                    if reason.contains("update_source_from_target failed after retry")
+                        && reason.contains("missing-target")
+            ),
+            "source update errors must retry once then block: {result:?}"
+        );
     }
 
     #[test]
