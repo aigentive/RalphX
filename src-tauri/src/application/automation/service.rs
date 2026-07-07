@@ -1148,6 +1148,11 @@ fn run_status_is_cancellable(status: AutomationRunStatus) -> bool {
 fn consecutive_failure_count(runs: &[AutomationRun]) -> i64 {
     let mut count = 0;
     for run in runs.iter().rev() {
+        // Workspace-review-gate blocks terminalize the run as AgentFailed but are user-actionable,
+        // not agent failures, so they must not count toward max_consecutive_failures.
+        if crate::application::automation::review_gate::run_is_workspace_review_blocked(run) {
+            continue;
+        }
         match run.status {
             AutomationRunStatus::AgentFailed | AutomationRunStatus::PrClosed => count += 1,
             AutomationRunStatus::Completed | AutomationRunStatus::Merged => break,

@@ -326,6 +326,20 @@ impl AutomationRunRepository for MemoryAutomationRunRepository {
             .cloned())
     }
 
+    async fn find_run_by_conversation_id(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<AutomationRun>> {
+        Ok(self
+            .runs
+            .read()
+            .unwrap()
+            .iter()
+            .filter(|run| run.conversation_id.as_ref() == Some(conversation_id))
+            .max_by_key(|run| run.run_index)
+            .cloned())
+    }
+
     async fn compare_and_swap_status(
         &self,
         id: &AutomationRunId,

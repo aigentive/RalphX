@@ -4,7 +4,7 @@ use chrono::Utc;
 
 use crate::domain::entities::{
     Automation, AutomationId, AutomationJudgeState, AutomationPromptAuthor, AutomationRun,
-    AutomationRunId, AutomationRunStatus, AutomationStatus, ProjectId,
+    AutomationRunId, AutomationRunStatus, AutomationStatus, ChatConversationId, ProjectId,
 };
 use crate::domain::repositories::{
     AutomationConfigPatch, AutomationRepository, AutomationRunRepository,
@@ -408,4 +408,57 @@ async fn memory_automation_repo_child_row_deletes_are_noop_ok() {
             .unwrap(),
         0
     );
+}
+
+#[tokio::test]
+async fn memory_find_run_by_conversation_id_returns_latest_linked_run() {
+    let repo = MemoryAutomationRunRepository::new();
+    // Valid distinct UUIDs — from_string collapses non-UUID text to Uuid::nil().
+    let conversation = ChatConversationId::from_string("11111111-1111-1111-1111-111111111111");
+
+    let mut first = run(
+        "run-1",
+        "automation-1",
+        1,
+        AutomationRunStatus::AgentFailed,
+        AutomationJudgeState::Done,
+    );
+    first.conversation_id = Some(conversation.clone());
+    let mut second = run(
+        "run-2",
+        "automation-1",
+        2,
+        AutomationRunStatus::Running,
+        AutomationJudgeState::None,
+    );
+    second.conversation_id = Some(conversation.clone());
+    // Different automation so the single-open-run constraint is not tripped.
+    let mut unrelated = run(
+        "run-3",
+        "automation-2",
+        3,
+        AutomationRunStatus::Running,
+        AutomationJudgeState::None,
+    );
+    unrelated.conversation_id =
+        Some(ChatConversationId::from_string("22222222-2222-2222-2222-222222222222"));
+
+    repo.create_run(first).await.unwrap();
+    repo.create_run(second.clone()).await.unwrap();
+    repo.create_run(unrelated).await.unwrap();
+
+    let found = repo
+        .find_run_by_conversation_id(&conversation)
+        .await
+        .unwrap()
+        .expect("linked run should be found");
+    assert_eq!(found.id, second.id, "highest run_index wins");
+
+    assert!(repo
+        .find_run_by_conversation_id(&ChatConversationId::from_string(
+            "99999999-9999-9999-9999-999999999999"
+        ))
+        .await
+        .unwrap()
+        .is_none());
 }

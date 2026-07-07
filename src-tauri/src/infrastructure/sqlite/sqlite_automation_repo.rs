@@ -552,6 +552,23 @@ impl AutomationRunRepository for SqliteAutomationRunRepository {
             .await
     }
 
+    async fn find_run_by_conversation_id(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<AutomationRun>> {
+        let conversation_id = conversation_id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                let sql = format!(
+                    "{SELECT_RUN} WHERE conversation_id = ?1 ORDER BY run_index DESC LIMIT 1"
+                );
+                conn.query_row(&sql, [conversation_id], Self::row_to_run)
+                    .optional()
+                    .map_err(AppError::from)
+            })
+            .await
+    }
+
     async fn compare_and_swap_status(
         &self,
         id: &AutomationRunId,

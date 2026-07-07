@@ -798,3 +798,53 @@ async fn sqlite_automation_repo_deletes_attachments_and_context_refs() {
         assert_eq!(refs, 1);
     });
 }
+
+#[tokio::test]
+async fn sqlite_find_run_by_conversation_id_returns_latest_linked_run() {
+    let (db, project_id, automation_repo, run_repo) = setup_repos();
+    automation_repo
+        .create(automation(
+            "automation-1",
+            project_id.clone(),
+            AutomationStatus::Active,
+        ))
+        .await
+        .unwrap();
+
+    let first = run(
+        "run-1",
+        1,
+        AutomationRunStatus::Provisioning,
+        AutomationJudgeState::None,
+    );
+    run_repo.create_run(first.clone()).await.unwrap();
+
+    let conversation_id = ChatConversationId::from_string("33333333-3333-3333-3333-333333333333");
+    let mut conversation = ChatConversation::new_project(project_id.clone());
+    conversation.id = conversation_id;
+    conversation.automation_id = Some(AutomationId::from_string("automation-1"));
+    conversation.automation_run_id = Some(first.id.clone());
+    db.insert_conversation(conversation);
+
+    run_repo
+        .update_start_metadata(&first.id, &conversation_id, None)
+        .await
+        .unwrap()
+        .expect("run should link conversation");
+
+    let found = run_repo
+        .find_run_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .expect("linked run should be found");
+    assert_eq!(found.id, first.id);
+    assert_eq!(found.conversation_id, Some(conversation_id));
+
+    assert!(run_repo
+        .find_run_by_conversation_id(&ChatConversationId::from_string(
+            "44444444-4444-4444-4444-444444444444"
+        ))
+        .await
+        .unwrap()
+        .is_none());
+}

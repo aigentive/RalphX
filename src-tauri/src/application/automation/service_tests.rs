@@ -534,6 +534,20 @@ impl AutomationRunRepository for SkipJudgeLosesRunRepository {
             .cloned())
     }
 
+    async fn find_run_by_conversation_id(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> crate::error::AppResult<Option<AutomationRun>> {
+        Ok(self
+            .runs
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|run| run.conversation_id.as_ref() == Some(conversation_id))
+            .max_by_key(|run| run.run_index)
+            .cloned())
+    }
+
     async fn compare_and_swap_status(
         &self,
         _id: &AutomationRunId,
@@ -1509,6 +1523,86 @@ async fn service_pauses_before_successor_when_failure_guardrail_exhausted() {
             .unwrap()
             .len(),
         2
+    );
+}
+
+#[tokio::test]
+async fn service_excludes_workspace_review_blocked_run_from_failure_guardrail() {
+    // A workspace-review-gate block terminalizes the run as AgentFailed with the blocked error
+    // code, but it is user-actionable — it must NOT count toward max_consecutive_failures.
+    let (service, automation_repo, run_repo) =
+        service_with_emitter(Arc::new(NoopAutomationEventEmitter));
+    let mut active = automation("automation-1", AutomationStatus::Active);
+    active.max_consecutive_failures = 1;
+    active.base_ref_kind = "local_branch".to_string();
+    active.base_ref = "main".to_string();
+    automation_repo.create(active.clone()).await.unwrap();
+
+    let mut blocked = automation_run(
+        "run-1",
+        &active.id,
+        1,
+        AutomationRunStatus::AgentFailed,
+        AutomationJudgeState::Done,
+    );
+    blocked.error_code = Some("workspace_review_blocked".to_string());
+    run_repo.create_run(blocked.clone()).await.unwrap();
+
+    let outcome = service
+        .create_merged_base_successor_run(CreateMergedBaseSuccessorRunInput {
+            automation_id: active.id.clone(),
+            previous_run_id: blocked.id.clone(),
+            run_prompt: "Continue after the review gate is resolved.".to_string(),
+            prompt_author: AutomationPromptAuthor::Judge,
+        })
+        .await
+        .unwrap();
+
+    assert!(
+        outcome.scheduled,
+        "review-gate block must not trip the failure guardrail"
+    );
+    assert_ne!(outcome.reason.as_deref(), Some("max_consecutive_failures"));
+    assert_ne!(
+        automation_repo
+            .get_by_id(&active.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .paused_reason_code
+            .as_deref(),
+        Some("max_consecutive_failures")
+    );
+
+    // Control: a genuine AgentFailed run at the same threshold DOES trip the guardrail.
+    let (control_service, control_repo, control_runs) =
+        service_with_emitter(Arc::new(NoopAutomationEventEmitter));
+    let mut control = automation("automation-control", AutomationStatus::Active);
+    control.max_consecutive_failures = 1;
+    control.base_ref_kind = "local_branch".to_string();
+    control.base_ref = "main".to_string();
+    control_repo.create(control.clone()).await.unwrap();
+    let genuine = automation_run(
+        "run-1",
+        &control.id,
+        1,
+        AutomationRunStatus::AgentFailed,
+        AutomationJudgeState::Done,
+    );
+    control_runs.create_run(genuine.clone()).await.unwrap();
+    let control_outcome = control_service
+        .create_merged_base_successor_run(CreateMergedBaseSuccessorRunInput {
+            automation_id: control.id.clone(),
+            previous_run_id: genuine.id.clone(),
+            run_prompt: "Continue after a genuine failure.".to_string(),
+            prompt_author: AutomationPromptAuthor::Judge,
+        })
+        .await
+        .unwrap();
+    assert!(!control_outcome.scheduled);
+    assert_eq!(
+        control_outcome.reason.as_deref(),
+        Some("max_consecutive_failures")
     );
 }
 
