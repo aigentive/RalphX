@@ -478,7 +478,7 @@ describe("AgentsView start conversation", () => {
     invalidateSpy.mockRestore();
   });
 
-  it("starts a new conversation from a selected pull request head branch", async () => {
+  it("starts a selected pull request in isolated branch mode by default", async () => {
     const user = userEvent.setup();
     mockAgentViewData();
     loadPullRequestBaseOptionsMock.mockResolvedValue([prPickerBranchOption()]);
@@ -502,7 +502,7 @@ describe("AgentsView start conversation", () => {
     );
     expect(
       screen.getByRole("switch", { name: /Use isolated branch/i })
-    ).toHaveAttribute("aria-checked", "false");
+    ).toHaveAttribute("aria-checked", "true");
     fireEvent.change(screen.getByTestId("agents-start-textarea"), {
       target: { value: "review this PR" },
     });
@@ -515,7 +515,7 @@ describe("AgentsView start conversation", () => {
           content: "review this PR",
           base: expect.objectContaining({
             kind: "local_branch",
-            branchMode: "linked",
+            branchMode: "isolated",
             ref: "feature/pr-picker",
             displayName: "PR #42: Add PR picker",
             sourcePullRequest: expect.objectContaining({
@@ -530,7 +530,7 @@ describe("AgentsView start conversation", () => {
     );
   });
 
-  it("starts a selected pull request in isolated branch mode when enabled", async () => {
+  it("starts a selected pull request in linked branch mode after explicit opt-out", async () => {
     const user = userEvent.setup();
     mockAgentViewData();
     loadPullRequestBaseOptionsMock.mockResolvedValue([prPickerBranchOption()]);
@@ -548,21 +548,22 @@ describe("AgentsView start conversation", () => {
     const isolatedSwitch = screen.getByRole("switch", {
       name: /Use isolated branch/i,
     });
-    expect(isolatedSwitch).toHaveAttribute("aria-checked", "false");
+    expect(isolatedSwitch).toHaveAttribute("aria-checked", "true");
     await user.click(isolatedSwitch);
+    expect(isolatedSwitch).toHaveAttribute("aria-checked", "false");
 
     fireEvent.change(screen.getByTestId("agents-start-textarea"), {
-      target: { value: "review this PR separately" },
+      target: { value: "review this PR directly" },
     });
     fireEvent.click(screen.getByTestId("agents-start-submit"));
 
     await waitFor(() =>
       expect(startAgentConversationMock).toHaveBeenCalledWith(
         expect.objectContaining({
-          content: "review this PR separately",
+          content: "review this PR directly",
           base: expect.objectContaining({
             kind: "local_branch",
-            branchMode: "isolated",
+            branchMode: "linked",
             ref: "feature/pr-picker",
             sourcePullRequest: expect.objectContaining({
               number: 42,
@@ -716,7 +717,7 @@ describe("AgentsView start conversation", () => {
           content: "continue the ticket work",
           base: expect.objectContaining({
             kind: "local_branch",
-            branchMode: "linked",
+            branchMode: "isolated",
             ref: "feature/ticket-pr",
             displayName: "PR #88",
             sourcePullRequest: expect.objectContaining({
@@ -780,13 +781,76 @@ describe("AgentsView start conversation", () => {
           mode: "plan",
           base: expect.objectContaining({
             kind: "local_branch",
-            branchMode: "linked",
+            branchMode: "isolated",
             ref: "ralphx/ticket/linear-eng-99",
             displayName: "Ticket ENG-99 (ralphx/ticket/linear-eng-99)",
           }),
         })
       )
     );
+  });
+
+  it("forces isolated branch mode for Review PR starts with PR metadata", async () => {
+    const user = userEvent.setup();
+    mockAgentViewData();
+    loadPullRequestBaseOptionsMock.mockResolvedValue([prPickerBranchOption()]);
+
+    renderAgentsView();
+
+    await user.click(screen.getByTestId("agents-start-mode-chip"));
+    await user.click(screen.getByTestId("agents-start-mode-review_pr"));
+    await user.click(await screen.findByTestId("agents-start-base"));
+    await user.click(screen.getByRole("tab", { name: /PRs/i }));
+    await user.click(await screen.findByText("#42 Add PR picker"));
+    await waitFor(() =>
+      expect(screen.getByTestId("agents-start-base")).toHaveTextContent("#42 Add PR picker")
+    );
+
+    const isolatedSwitch = screen.getByRole("switch", {
+      name: /Use isolated branch/i,
+    });
+    expect(isolatedSwitch).toBeDisabled();
+    expect(isolatedSwitch).toHaveAttribute("aria-checked", "true");
+
+    fireEvent.change(screen.getByTestId("agents-start-textarea"), {
+      target: { value: "review selected PR" },
+    });
+    fireEvent.click(screen.getByTestId("agents-start-submit"));
+
+    await waitFor(() =>
+      expect(startAgentConversationMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          mode: "review_pr",
+          content: "review selected PR",
+          base: expect.objectContaining({
+            kind: "local_branch",
+            branchMode: "isolated",
+            ref: "feature/pr-picker",
+            sourcePullRequest: expect.objectContaining({
+              number: 42,
+              headRefName: "feature/pr-picker",
+            }),
+          }),
+        })
+      )
+    );
+  });
+
+  it("blocks Review PR starts without PR metadata", async () => {
+    const user = userEvent.setup();
+    mockAgentViewData();
+
+    renderAgentsView();
+
+    await user.click(screen.getByTestId("agents-start-mode-chip"));
+    await user.click(screen.getByTestId("agents-start-mode-review_pr"));
+    fireEvent.change(screen.getByTestId("agents-start-textarea"), {
+      target: { value: "review without a PR" },
+    });
+    fireEvent.click(screen.getByTestId("agents-start-submit"));
+
+    expect(await screen.findByText("Select a pull request to review.")).toBeInTheDocument();
+    expect(startAgentConversationMock).not.toHaveBeenCalled();
   });
 
   it("keeps a selected pull request visible across later start-from searches", async () => {

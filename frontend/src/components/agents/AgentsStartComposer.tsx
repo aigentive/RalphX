@@ -413,10 +413,12 @@ export function AgentsStartComposer({
   }, [activeProject]);
   const selectedStartFromSelection =
     selectedStartFrom?.selection ?? fallbackStartFrom;
-  const startFromForcesIsolatedBranch =
+  const selectionForcesIsolatedBranch =
     selectedStartFromSelection
       ? startSelectionForcesIsolatedBranch(selectedStartFromSelection)
       : false;
+  const startFromForcesIsolatedBranch =
+    mode === "review_pr" || selectionForcesIsolatedBranch;
   const effectiveStartFromIsolatedBranch =
     startFromForcesIsolatedBranch || isStartFromIsolatedBranch;
 
@@ -561,7 +563,7 @@ export function AgentsStartComposer({
         allStartFromOptions.find((option) => option.key === nextKey)?.selection ??
         null;
       setIsStartFromIsolatedBranch(
-        nextSelection ? startSelectionForcesIsolatedBranch(nextSelection) : false
+        startSelectionDefaultsToIsolatedBranch(nextSelection)
       );
       if (activeProjectId && !isTransientStartFromKey(nextKey)) {
         setLastBranchBaseSelectionForProject(activeProjectId, nextKey);
@@ -629,11 +631,17 @@ export function AgentsStartComposer({
       rememberedBranchBaseByProjectId[activeProjectId] ??
       cached?.selectedKey ??
       fallback.selectedKey;
-    setStartFromOptions(options);
-    setSelectedStartFromKey(
+    const nextSelectedStartFromKey =
       resolveBranchSelectionKey(options, preferredKey) ??
-        resolveBranchSelectionKey(options, fallback.selectedKey) ??
-        fallback.selectedKey
+      resolveBranchSelectionKey(options, fallback.selectedKey) ??
+      fallback.selectedKey;
+    const nextStartFromSelection =
+      options.find((option) => option.key === nextSelectedStartFromKey)?.selection ??
+      null;
+    setStartFromOptions(options);
+    setSelectedStartFromKey(nextSelectedStartFromKey);
+    setIsStartFromIsolatedBranch(
+      startSelectionDefaultsToIsolatedBranch(nextStartFromSelection)
     );
     setIsLoadingStartFrom(false);
   }, [
@@ -702,6 +710,19 @@ export function AgentsStartComposer({
     activeProjectId,
     composerIntegrationReferences,
   ]);
+
+  useEffect(() => {
+    if (
+      userSelectedStartFromRef.current ||
+      !ticketStartFromOption ||
+      selectedStartFromKey !== ticketStartFromOption.key
+    ) {
+      return;
+    }
+    setIsStartFromIsolatedBranch(
+      startSelectionDefaultsToIsolatedBranch(ticketStartFromOption.selection)
+    );
+  }, [selectedStartFromKey, ticketStartFromOption]);
 
   const searchPullRequestStartFromOptions = useCallback(
     (query: string) => {
@@ -837,6 +858,13 @@ export function AgentsStartComposer({
     /* c8 ignore next 3 -- submit is disabled for this state; keep this guard for direct calls. */
     if (!hasSelectableProvider || providerStatusMessage) {
       setError(providerStatusMessage ?? "Enable a provider with a validated CLI in Settings.");
+      return;
+    }
+    if (
+      mode === "review_pr" &&
+      !selectedStartFromSelection?.sourcePullRequest
+    ) {
+      setError("Select a pull request to review.");
       return;
     }
 
@@ -1209,6 +1237,12 @@ function startSelectionForcesIsolatedBranch(
   selection: AgentConversationBaseSelection
 ): boolean {
   return selection.kind === "project_default" || selection.kind === "current_branch";
+}
+
+function startSelectionDefaultsToIsolatedBranch(
+  selection: AgentConversationBaseSelection | null
+): boolean {
+  return selection !== null;
 }
 
 type TicketProvider = "jira" | "linear" | "clickup";
