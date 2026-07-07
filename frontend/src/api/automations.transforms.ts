@@ -41,6 +41,7 @@ export function transformAutomation(raw: RawAutomation): Automation {
     pausedReasonDetail: raw.paused_reason_detail,
     goalPrompt: raw.goal_prompt,
     setupConversationId: raw.setup_conversation_id,
+    specArtifactId: raw.spec_artifact_id,
     providerHarness: raw.provider_harness,
     modelId: raw.model_id,
     logicalEffort: raw.logical_effort,
@@ -202,6 +203,9 @@ export function transformUpdateAutomationSetupInput(
     }),
     ...(input.setupAnalysisSummary !== undefined && {
       setup_analysis_summary: input.setupAnalysisSummary,
+    }),
+    ...(input.specArtifactId !== undefined && {
+      spec_artifact_id: input.specArtifactId,
     }),
   };
 }

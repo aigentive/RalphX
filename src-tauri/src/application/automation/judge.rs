@@ -11,6 +11,11 @@ const AUTOMATION_JUDGE_RETRY_INSTRUCTION: &str = "\n<retry_instruction truncated
 
 const SETUP_ANALYSIS_MAX_BYTES: usize = 8 * 1024;
 const ORIGINAL_INPUTS_MAX_BYTES: usize = 12 * 1024;
+/// Max byte budget for a linked spec artifact inlined into the judge prompt as
+/// an [`AutomationJudgeAttachmentContext`]. Pre-truncating here (below
+/// [`ORIGINAL_INPUTS_MAX_BYTES`]) keeps the surrounding JSON wrapper intact when
+/// `format_original_inputs` byte-truncates the whole `original_inputs` section.
+pub(crate) const SPEC_ATTACHMENT_MAX_BYTES: usize = 10 * 1024;
 const RUN_HISTORY_MAX_BYTES: usize = 18 * 1024;
 const PREVIOUS_RUN_MAX_BYTES: usize = 16 * 1024;
 const PREVIOUS_RUN_SUMMARY_MAX_BYTES: usize = 8 * 1024;
@@ -344,7 +349,10 @@ pub fn automation_judge_loop_suspected(
     if verdict.decision != AutomationJudgeDecision::Continue {
         return false;
     }
-    if previous_run.status == AutomationRunStatus::Merged {
+    if matches!(
+        previous_run.status,
+        AutomationRunStatus::Completed | AutomationRunStatus::Merged
+    ) {
         return false;
     }
     let Some(next_prompt) = verdict.next_run_prompt.as_deref() else {
@@ -519,6 +527,37 @@ fn xml_section(tag: &str, body: &str, truncated: bool) -> String {
     format!("\n<{tag} truncated=\"{truncated}\">\n{body}\n</{tag}>\n")
 }
 
+/// Builds the spawn-time `<automation_context>` block prepended to a run prompt.
+///
+/// The block surfaces the automation goal, its phase/goal-item list, and phase
+/// progress counters so the run agent can situate the run within the overall
+/// automation. It is composed at spawn time and is **not** persisted into the
+/// run's `run_prompt`, keeping the judge loop-guard fingerprint clean (D5).
+pub(crate) fn build_automation_run_context_block(
+    automation: &Automation,
+    run: &AutomationRun,
+) -> String {
+    let goal = xml_section("goal", automation.goal_prompt.trim(), false);
+    let goal_items_body = automation
+        .goal_items_json
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("[]");
+    let goal_items = xml_section("goal_items", goal_items_body, false);
+    let stats = goal_item_stats(automation.goal_items_json.as_deref());
+    let phase_body = serde_json::to_string_pretty(&json!({
+        "runIndex": run.run_index,
+        "maxRuns": automation.max_runs,
+        "goalItemsTotal": stats.total,
+        "goalItemsDone": stats.done,
+        "goalItemsPending": stats.pending,
+    }))
+    .expect("automation phase JSON should serialize");
+    let phase = xml_section("phase", &phase_body, false);
+    format!("<automation_context>{goal}{goal_items}{phase}</automation_context>")
+}
+
 fn budgeted_xml_section(tag: &str, raw: &str, cap: usize, remaining: usize) -> String {
     if remaining == 0 {
         return String::new();
@@ -539,7 +578,7 @@ fn budgeted_xml_section(tag: &str, raw: &str, cap: usize, remaining: usize) -> S
     }
 }
 
-fn truncate_utf8_to_bytes(value: &str, max_bytes: usize) -> (String, bool) {
+pub(crate) fn truncate_utf8_to_bytes(value: &str, max_bytes: usize) -> (String, bool) {
     if value.len() <= max_bytes {
         return (value.to_string(), false);
     }
@@ -695,9 +734,14 @@ fn collect_status_stats(value: &Value, stats: &mut GoalItemStats) {
 fn consecutive_failure_count(runs: &[AutomationRun]) -> i64 {
     let mut count = 0;
     for run in runs.iter().rev() {
+        // Workspace-review-gate blocks terminalize the run as AgentFailed but are user-actionable,
+        // not agent failures, so they must not count toward consecutive failures.
+        if crate::application::automation::review_gate::run_is_workspace_review_blocked(run) {
+            continue;
+        }
         match run.status {
             AutomationRunStatus::AgentFailed | AutomationRunStatus::PrClosed => count += 1,
-            AutomationRunStatus::Merged => break,
+            AutomationRunStatus::Completed | AutomationRunStatus::Merged => break,
             _ => {}
         }
     }

@@ -28,7 +28,6 @@ use crate::domain::entities::{
 };
 use crate::domain::services::RunningAgentKey;
 use crate::domain::state_machine::transition_handler::metadata_builder::MetadataUpdate;
-use crate::domain::state_machine::transition_handler::set_trigger_origin;
 
 use super::super::policy::{
     RecoveryActionKind, RecoveryContext, RecoveryDecision, RecoveryEvidence, UserRecoveryAction,
@@ -1963,7 +1962,29 @@ impl<R: Runtime> ReconciliationRunner<R> {
 
         let registry_running = self.running_agent_registry.is_running(&key).await;
         if registry_running {
-            let _ = self.running_agent_registry.stop(&key).await;
+            match self.running_agent_registry.cleanup_stale_entry(&key).await {
+                Ok(Some(_info)) => {
+                    info!(
+                        task_id = task_id.as_str(),
+                        "Cleared stale registry entry before stop recovery"
+                    );
+                }
+                Ok(None) => {
+                    tracing::debug!(
+                        task_id = task_id.as_str(),
+                        "Skipping recovery stop — registry process is still alive"
+                    );
+                    return false;
+                }
+                Err(error) => {
+                    warn!(
+                        task_id = task_id.as_str(),
+                        error = %error,
+                        "Failed to inspect registry entry for stop recovery"
+                    );
+                    return false;
+                }
+            }
         }
 
         let run = self.load_execution_run(&task, task.internal_status).await;
@@ -2289,18 +2310,47 @@ impl<R: Runtime> ReconciliationRunner<R> {
                 }
 
                 if self.running_agent_registry.is_running(&registry_key).await {
-                    tracing::info!(
-                        task_id = task.id.as_str(),
-                        context_type = %chat_context,
-                        "Clearing stale registry entry before recovery re-spawn"
-                    );
-                    let _ = self.running_agent_registry.stop(&registry_key).await;
+                    match self
+                        .running_agent_registry
+                        .cleanup_stale_entry(&registry_key)
+                        .await
+                    {
+                        Ok(Some(_)) => {
+                            tracing::info!(
+                                task_id = task.id.as_str(),
+                                context_type = %chat_context,
+                                "Cleared stale registry entry before recovery re-spawn"
+                            );
+                        }
+                        Ok(None) => {
+                            tracing::info!(
+                                task_id = task.id.as_str(),
+                                context_type = %chat_context,
+                                "Skipping recovery re-spawn — registry process is still alive"
+                            );
+                            return false;
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                task_id = task.id.as_str(),
+                                context_type = %chat_context,
+                                error = %e,
+                                "Skipping recovery re-spawn — failed to verify registry staleness"
+                            );
+                            return false;
+                        }
+                    }
                 }
 
                 // Set trigger_origin="recovery" before resuming agent
-                let mut task_mut = task.clone();
-                set_trigger_origin(&mut task_mut, "recovery");
-                if let Err(e) = self.task_repo.update(&task_mut).await {
+                let updated_metadata = MetadataUpdate::new()
+                    .with_string("trigger_origin", "recovery")
+                    .merge_into(task.metadata.as_deref());
+                if let Err(e) = self
+                    .task_repo
+                    .update_metadata(&task.id, Some(updated_metadata))
+                    .await
+                {
                     tracing::error!(
                         task_id = task.id.as_str(),
                         error = %e,

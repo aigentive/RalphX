@@ -11,9 +11,9 @@ use dashmap::DashMap;
 
 use crate::application::automation::judge::{
     append_automation_judge_retry_instruction, build_automation_judge_prompt,
-    parse_automation_judge_verdict, AutomationJudgeAttachmentContext,
+    parse_automation_judge_verdict, truncate_utf8_to_bytes, AutomationJudgeAttachmentContext,
     AutomationJudgeContextRefSummary, AutomationJudgeValidationContext,
-    BuildAutomationJudgePromptInput,
+    BuildAutomationJudgePromptInput, SPEC_ATTACHMENT_MAX_BYTES,
 };
 use crate::application::automation::provisioning::{
     AutomationRunProvisioner, AutomationRunStarter,
@@ -33,12 +33,13 @@ use crate::application::harness_runtime_registry::{
 use crate::application::AppState;
 use crate::domain::agents::{AgentConfig, AgentHarnessKind, AgentRole, DEFAULT_AGENT_HARNESS};
 use crate::domain::entities::{
-    AgentConversationWorkspace, Automation, AutomationId, AutomationJudgeState, AutomationRun,
-    AutomationRunStatus, AutomationStatus,
+    AgentConversationWorkspace, AgentRunStatus, ArtifactContent, ArtifactId, Automation,
+    AutomationId, AutomationJudgeState, AutomationRun, AutomationRunStatus, AutomationStatus,
 };
 use crate::domain::repositories::{
-    AgentConversationWorkspaceRepository, AutomationRepository, AutomationRunPublicationMetadata,
-    AutomationRunRepository, ChatConversationRepository,
+    AgentConversationWorkspaceRepository, AgentRunRepository, ArtifactRepository,
+    AutomationRepository, AutomationRunPublicationMetadata, AutomationRunRepository,
+    ChatConversationRepository,
 };
 use crate::domain::services::github_service::{GithubServiceTrait, PrStatus};
 use crate::error::{AppError, AppResult};
@@ -88,6 +89,7 @@ pub struct AutomationSchedulerTickSummary {
     pub active_with_runs: usize,
     pub provisioned_runs: usize,
     pub published_runs: usize,
+    pub completed_runs: usize,
     pub merged_runs: usize,
     pub closed_runs: usize,
     pub failed_runs: usize,
@@ -237,17 +239,84 @@ impl HarnessAutomationJudgeInvoker {
     }
 }
 
+/// Loads the automation's linked spec artifact as inline judge context.
+///
+/// The judge is a one-shot agent with no MCP artifact tools, so the spec is
+/// inlined as an [`AutomationJudgeAttachmentContext`], pre-truncated to
+/// [`SPEC_ATTACHMENT_MAX_BYTES`] to keep the surrounding `original_inputs` JSON
+/// wrapper intact. The spec is advisory context only — no state transition
+/// depends on it — so every failure mode fails open to an empty attachment list
+/// (D6): no `spec_artifact_id`, a missing artifact, a file-backed artifact, or a
+/// repository error all yield `vec![]` after a warning.
+pub(crate) async fn load_spec_attachment(
+    artifact_repo: &Arc<dyn ArtifactRepository>,
+    automation: &Automation,
+) -> Vec<AutomationJudgeAttachmentContext> {
+    let Some(spec_id) = automation
+        .spec_artifact_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    else {
+        return Vec::new();
+    };
+
+    let artifact_id = ArtifactId::from_string(spec_id.to_string());
+    let artifact = match artifact_repo.get_by_id(&artifact_id).await {
+        Ok(Some(artifact)) => artifact,
+        Ok(None) => {
+            tracing::warn!(
+                automation_id = %automation.id,
+                spec_artifact_id = spec_id,
+                "Automation judge spec artifact not found; continuing without spec context"
+            );
+            return Vec::new();
+        }
+        Err(error) => {
+            tracing::warn!(
+                automation_id = %automation.id,
+                spec_artifact_id = spec_id,
+                %error,
+                "Failed to load automation judge spec artifact; continuing without spec context"
+            );
+            return Vec::new();
+        }
+    };
+
+    let text = match &artifact.content {
+        ArtifactContent::Inline { text } => text,
+        ArtifactContent::File { .. } => {
+            tracing::warn!(
+                automation_id = %automation.id,
+                spec_artifact_id = spec_id,
+                "Automation judge spec artifact is file-backed; continuing without spec context"
+            );
+            return Vec::new();
+        }
+    };
+
+    let (spec_text, _) = truncate_utf8_to_bytes(text, SPEC_ATTACHMENT_MAX_BYTES);
+    let file_size = spec_text.len() as i64;
+    vec![AutomationJudgeAttachmentContext {
+        file_name: artifact.name.clone(),
+        mime_type: Some("text/markdown".to_string()),
+        file_size: Some(file_size),
+        text_content: Some(spec_text),
+    }]
+}
+
 #[async_trait]
 impl AutomationJudgeInvoker for HarnessAutomationJudgeInvoker {
     async fn invoke(
         &self,
         input: AutomationJudgeInvocation,
     ) -> AppResult<AutomationJudgeInvocationOutput> {
+        let attachments = load_spec_attachment(&self.state.artifact_repo, &input.automation).await;
         let mut prompt = build_automation_judge_prompt(BuildAutomationJudgePromptInput {
             automation: &input.automation,
             runs: &input.runs,
             previous_run: &input.previous_run,
-            attachments: &[] as &[AutomationJudgeAttachmentContext],
+            attachments: &attachments,
             context_refs: &[] as &[AutomationJudgeContextRefSummary],
         })?;
         if input.retry_reminder && !append_automation_judge_retry_instruction(&mut prompt) {
@@ -483,6 +552,7 @@ impl AutomationJudgeTask {
 pub struct AutomationScheduler {
     service: AutomationService,
     provisioner: AutomationRunProvisioner,
+    agent_run_repo: Arc<dyn AgentRunRepository>,
     run_repo: Arc<dyn AutomationRunRepository>,
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     transition_service: AutomationTransitionService,
@@ -496,12 +566,14 @@ impl AutomationScheduler {
     pub fn new(
         automation_repo: Arc<dyn AutomationRepository>,
         run_repo: Arc<dyn AutomationRunRepository>,
+        agent_run_repo: Arc<dyn AgentRunRepository>,
         conversation_repo: Arc<dyn ChatConversationRepository>,
         workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
         starter: Arc<dyn AutomationRunStarter>,
         signal_checker: Arc<dyn AutomationSignalChecker>,
         judge_invoker: Arc<dyn AutomationJudgeInvoker>,
         event_emitter: Arc<dyn AutomationEventEmitter>,
+        artifact_repo: Arc<dyn ArtifactRepository>,
         registry: Arc<AutomationSchedulerRegistry>,
         config: AutomationSchedulerConfig,
     ) -> Self {
@@ -509,6 +581,7 @@ impl AutomationScheduler {
             Arc::clone(&automation_repo),
             Arc::clone(&run_repo),
             event_emitter.clone(),
+            Arc::clone(&artifact_repo),
         );
         let transition_service = AutomationTransitionService::new(
             Arc::clone(&automation_repo),
@@ -522,10 +595,12 @@ impl AutomationScheduler {
             Arc::clone(&workspace_repo),
             starter,
             event_emitter,
+            artifact_repo,
         );
         Self {
             service,
             provisioner,
+            agent_run_repo,
             run_repo,
             workspace_repo,
             transition_service,
@@ -638,12 +713,13 @@ impl AutomationScheduler {
                 }
             }
             AutomationRunStatus::Running => {
-                self.observe_running_run(run, summary).await?;
+                self.observe_running_run(automation, run, summary).await?;
             }
             AutomationRunStatus::Published => {
                 self.observe_published_run(automation, run, summary).await?;
             }
             AutomationRunStatus::Merged
+            | AutomationRunStatus::Completed
             | AutomationRunStatus::PrClosed
             | AutomationRunStatus::AgentFailed => {
                 self.observe_signal_terminal_run(automation, runs, run, summary)
@@ -676,6 +752,7 @@ impl AutomationScheduler {
 
     async fn observe_running_run(
         &self,
+        automation: &Automation,
         run: &AutomationRun,
         summary: &mut AutomationSchedulerTickSummary,
     ) -> AppResult<()> {
@@ -699,6 +776,58 @@ impl AutomationScheduler {
         let Some(conversation_id) = run.conversation_id.as_ref() else {
             return Ok(());
         };
+        if automation.completion_signal == "agent_completed" {
+            match self
+                .agent_run_repo
+                .get_latest_for_conversation(conversation_id)
+                .await?
+                .map(|run| run.status)
+            {
+                Some(AgentRunStatus::Completed) => {
+                    if self
+                        .transition_service
+                        .transition_run_status(
+                            &run.id,
+                            AutomationRunStatus::Running,
+                            AutomationRunStatus::Completed,
+                            None,
+                            None,
+                        )
+                        .await?
+                    {
+                        summary.completed_runs += 1;
+                    }
+                    return Ok(());
+                }
+                Some(AgentRunStatus::Failed) => {
+                    self.fail_running_run(
+                        run,
+                        "agent_failed",
+                        "Automation run agent failed",
+                        summary,
+                    )
+                    .await?;
+                    return Ok(());
+                }
+                Some(AgentRunStatus::Cancelled) => {
+                    if self
+                        .transition_service
+                        .transition_run_status(
+                            &run.id,
+                            AutomationRunStatus::Running,
+                            AutomationRunStatus::Cancelled,
+                            Some("agent_cancelled".to_string()),
+                            Some("Automation run agent was cancelled".to_string()),
+                        )
+                        .await?
+                    {
+                        summary.failed_runs += 1;
+                    }
+                    return Ok(());
+                }
+                Some(AgentRunStatus::Running) | None => return Ok(()),
+            }
+        }
         let Some(workspace) = self
             .workspace_repo
             .get_by_conversation_id(conversation_id)

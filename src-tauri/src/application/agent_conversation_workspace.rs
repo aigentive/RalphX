@@ -113,10 +113,20 @@ pub async fn prepare_agent_conversation_workspace_with_setup_mode(
         selection,
         setup_mode,
         AgentConversationWorkspacePrAutomationDefaults::default(),
+        false,
     )
     .await
 }
 
+/// Prepare an agent conversation workspace.
+///
+/// `prefer_advanced_origin_base` scopes the automation integration-branch model
+/// (see `base-integration-branch-spec.md`): when `true` and the resolved base is
+/// an isolated `LocalBranch`, the successor worktree is cut from the (advanced)
+/// remote-tracking ref `origin/<base>` instead of the stale, permanently
+/// checked-out local automation branch. Non-automation callers pass `false` and
+/// keep the existing local start-point behavior.
+#[allow(clippy::too_many_arguments)]
 pub async fn prepare_agent_conversation_workspace_with_setup_mode_and_defaults(
     project: &Project,
     conversation_id: &ChatConversationId,
@@ -124,6 +134,7 @@ pub async fn prepare_agent_conversation_workspace_with_setup_mode_and_defaults(
     selection: AgentConversationWorkspaceBaseSelection,
     setup_mode: AgentConversationWorkspaceSetupMode,
     pr_automation_defaults: AgentConversationWorkspacePrAutomationDefaults,
+    prefer_advanced_origin_base: bool,
 ) -> AppResult<AgentConversationWorkspace> {
     let total_started = Instant::now();
     let repo_path = PathBuf::from(&project.working_directory);
@@ -305,6 +316,45 @@ pub async fn prepare_agent_conversation_workspace_with_setup_mode_and_defaults(
         GitService::ensure_local_branch_from_origin_if_missing(&repo_path, &target_base_ref)
             .await?;
 
+    // Automation integration-branch model (B3/B7): a successor run's worktree must
+    // build on merged work. The automation base branch is permanently checked out
+    // in the setup worktree, so the local ref can never be fast-forwarded. Instead
+    // advance the remote-tracking ref `origin/<base>` (best-effort maintenance
+    // fetch, never forced) and cut the worktree from it when present. The stored
+    // `base_ref` stays the plain branch name so the run still publishes its PR with
+    // `--base <automation-branch>`. Non-automation workspaces keep the local
+    // start-point unchanged.
+    let checkout_ref = if prefer_advanced_origin_base
+        && kind == IdeationAnalysisBaseRefKind::LocalBranch
+        && branch_mode == AgentConversationWorkspaceBranchMode::Isolated
+    {
+        match GitService::try_fetch_origin_ref_for_maintenance(&repo_path, &target_base_ref).await {
+            Ok(outcome) => tracing::info!(
+                conversation_id = %conversation_id,
+                base_ref = %target_base_ref,
+                fetch_outcome = ?outcome,
+                "Advanced origin base ref for automation successor worktree"
+            ),
+            Err(error) => tracing::warn!(
+                conversation_id = %conversation_id,
+                base_ref = %target_base_ref,
+                error = %error,
+                "Failed to advance origin base ref for automation successor; using current tip"
+            ),
+        }
+        let remote_ref = format!("origin/{target_base_ref}");
+        if GitService::ref_exists(&repo_path, &remote_ref)
+            .await
+            .unwrap_or(false)
+        {
+            remote_ref
+        } else {
+            target_base_ref.clone()
+        }
+    } else {
+        target_base_ref.clone()
+    };
+
     let project_default_ref = project_default
         .as_deref()
         .or(project.base_branch.as_deref())
@@ -320,12 +370,12 @@ pub async fn prepare_agent_conversation_workspace_with_setup_mode_and_defaults(
     };
 
     let ref_check_started = Instant::now();
-    let base_commit = GitService::get_branch_sha(&repo_path, &target_base_ref)
+    let base_commit = GitService::get_branch_sha(&repo_path, &checkout_ref)
         .await
         .map_err(|error| {
             AppError::Validation(format!(
                 "Agent conversation base ref '{}' does not exist in the project repository: {}",
-                target_base_ref, error
+                checkout_ref, error
             ))
         })?;
     log_agent_workspace_phase(conversation_id, "validate_base_ref", ref_check_started);
@@ -343,7 +393,7 @@ pub async fn prepare_agent_conversation_workspace_with_setup_mode_and_defaults(
     let branch_name = if branch_mode == AgentConversationWorkspaceBranchMode::Linked {
         selected_work_ref.clone()
     } else {
-        agent_conversation_branch_name(project, conversation_id)
+        agent_conversation_branch_name_for_mode(project, conversation_id, mode)
     };
     let workspace_path_started = Instant::now();
     let worktree_path = resolve_agent_conversation_workspace_path(project, conversation_id)?;
@@ -365,7 +415,7 @@ pub async fn prepare_agent_conversation_workspace_with_setup_mode_and_defaults(
             &repo_path,
             &worktree_path,
             &branch_name,
-            &target_base_ref,
+            &checkout_ref,
         )
         .await?;
     }
@@ -726,6 +776,26 @@ pub fn agent_conversation_branch_name(
     project: &Project,
     conversation_id: &ChatConversationId,
 ) -> String {
+    agent_conversation_branch_name_with_segment(project, conversation_id, "agent")
+}
+
+fn agent_conversation_branch_name_for_mode(
+    project: &Project,
+    conversation_id: &ChatConversationId,
+    mode: AgentConversationWorkspaceMode,
+) -> String {
+    let segment = match mode {
+        AgentConversationWorkspaceMode::Automation => "automation",
+        _ => "agent",
+    };
+    agent_conversation_branch_name_with_segment(project, conversation_id, segment)
+}
+
+fn agent_conversation_branch_name_with_segment(
+    project: &Project,
+    conversation_id: &ChatConversationId,
+    segment: &str,
+) -> String {
     let project_slug = slug_branch_component(&project.name);
     let short_id = conversation_id
         .as_str()
@@ -738,7 +808,7 @@ pub fn agent_conversation_branch_name(
     } else {
         short_id
     };
-    format!("ralphx/{project_slug}/agent-{short_id}")
+    format!("ralphx/{project_slug}/{segment}-{short_id}")
 }
 
 fn agent_conversation_continuation_branch_name(
@@ -1169,6 +1239,197 @@ mod tests {
         git(root, &["commit", "-m", "initial"]);
     }
 
+    async fn prepare_isolated_local_branch(
+        repo_path: &Path,
+        worktree_parent: &Path,
+        base: &str,
+        conversation_id: &str,
+        prefer_advanced_origin_base: bool,
+    ) -> AppResult<AgentConversationWorkspace> {
+        let mut project =
+            Project::new("B3".to_string(), repo_path.to_string_lossy().to_string());
+        project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+        let conversation_id = ChatConversationId::from_string(conversation_id.to_string());
+        prepare_agent_conversation_workspace_with_setup_mode_and_defaults(
+            &project,
+            &conversation_id,
+            AgentConversationWorkspaceMode::Automation,
+            AgentConversationWorkspaceBaseSelection {
+                kind: Some(IdeationAnalysisBaseRefKind::LocalBranch),
+                branch_mode: Some(AgentConversationWorkspaceBranchMode::Isolated),
+                base_ref: Some(base.to_string()),
+                display_name: None,
+                source_pull_request: None,
+            },
+            AgentConversationWorkspaceSetupMode::Blocking,
+            AgentConversationWorkspacePrAutomationDefaults::default(),
+            prefer_advanced_origin_base,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn automation_successor_worktree_cut_from_advanced_origin_base() {
+        // B3: after run 1's PR merges, origin/<base> is ahead of the stale local
+        // automation branch. The successor worktree must be cut from the advanced
+        // remote-tracking ref, and the local branch must NOT be force-updated.
+        let temp = tempfile::tempdir().unwrap();
+        let origin = temp.path().join("origin.git");
+        let repo = temp.path().join("repo");
+        let helper = temp.path().join("helper");
+        let worktrees = temp.path().join("worktrees");
+
+        std::fs::create_dir_all(&origin).unwrap();
+        git(&origin, &["init", "--bare", "-b", "main"]);
+
+        setup_repo(&repo);
+        git(&repo, &["remote", "add", "origin", origin.to_str().unwrap()]);
+        git(&repo, &["push", "origin", "main"]);
+        let base = "ralphx/ralphx/automation-adv";
+        git(&repo, &["branch", base]);
+        git(&repo, &["push", "origin", base]);
+        let local_base_sha = git(&repo, &["rev-parse", base]);
+
+        git(temp.path(), &["clone", origin.to_str().unwrap(), helper.to_str().unwrap()]);
+        git(&helper, &["config", "user.email", "test@example.com"]);
+        git(&helper, &["config", "user.name", "Test User"]);
+        git(&helper, &["checkout", base]);
+        std::fs::write(helper.join("merged.txt"), "merged\n").unwrap();
+        git(&helper, &["add", "."]);
+        git(&helper, &["commit", "-m", "merged run 1"]);
+        git(&helper, &["push", "origin", base]);
+        let merged_sha = git(&helper, &["rev-parse", base]);
+        assert_ne!(local_base_sha, merged_sha);
+
+        let workspace = prepare_isolated_local_branch(&repo, &worktrees, base, "conv-adv", true)
+            .await
+            .expect("workspace prepared");
+
+        assert_eq!(
+            workspace.base_ref, base,
+            "stored base_ref stays the plain branch name for the run's own PR base"
+        );
+        assert_eq!(
+            workspace.base_commit.as_deref(),
+            Some(merged_sha.as_str()),
+            "successor worktree should base on the advanced origin tip"
+        );
+        assert_eq!(
+            git(&repo, &["rev-parse", base]),
+            local_base_sha,
+            "local automation branch must never be force-updated"
+        );
+    }
+
+    #[tokio::test]
+    async fn automation_successor_bases_on_current_tip_when_origin_unadvanced() {
+        // B7: the common in-flight case — origin/<base> present but not yet
+        // advanced. The fetch is a no-op and the run bases on the current tip.
+        let temp = tempfile::tempdir().unwrap();
+        let origin = temp.path().join("origin.git");
+        let repo = temp.path().join("repo");
+        let worktrees = temp.path().join("worktrees");
+
+        std::fs::create_dir_all(&origin).unwrap();
+        git(&origin, &["init", "--bare", "-b", "main"]);
+        setup_repo(&repo);
+        git(&repo, &["remote", "add", "origin", origin.to_str().unwrap()]);
+        git(&repo, &["push", "origin", "main"]);
+        let base = "ralphx/ralphx/automation-inflight";
+        git(&repo, &["branch", base]);
+        git(&repo, &["push", "origin", base]);
+        let base_sha = git(&repo, &["rev-parse", base]);
+
+        let workspace =
+            prepare_isolated_local_branch(&repo, &worktrees, base, "conv-inflight", true)
+                .await
+                .expect("workspace prepared");
+
+        assert_eq!(workspace.base_ref, base);
+        assert_eq!(workspace.base_commit.as_deref(), Some(base_sha.as_str()));
+    }
+
+    #[tokio::test]
+    async fn automation_run_falls_back_to_local_base_when_origin_absent() {
+        // B3: run 1 (base never published) — origin/<base> is absent, so the run
+        // falls back to the local base without crashing.
+        let temp = tempfile::tempdir().unwrap();
+        let repo = temp.path().join("repo");
+        let worktrees = temp.path().join("worktrees");
+        setup_repo(&repo);
+        let base = "ralphx/ralphx/automation-run1";
+        git(&repo, &["branch", base]);
+        let local_base_sha = git(&repo, &["rev-parse", base]);
+
+        let workspace = prepare_isolated_local_branch(&repo, &worktrees, base, "conv-run1", true)
+            .await
+            .expect("workspace prepared without origin");
+
+        assert_eq!(workspace.base_ref, base);
+        assert_eq!(workspace.base_commit.as_deref(), Some(local_base_sha.as_str()));
+    }
+
+    #[tokio::test]
+    async fn automation_run_proceeds_on_local_base_when_fetch_fails() {
+        // B3: a fetch failure (unreachable origin) must not block the run.
+        let temp = tempfile::tempdir().unwrap();
+        let repo = temp.path().join("repo");
+        let worktrees = temp.path().join("worktrees");
+        setup_repo(&repo);
+        git(&repo, &["remote", "add", "origin", "/nonexistent/origin.git"]);
+        let base = "ralphx/ralphx/automation-fetchfail";
+        git(&repo, &["branch", base]);
+        let local_base_sha = git(&repo, &["rev-parse", base]);
+
+        let workspace =
+            prepare_isolated_local_branch(&repo, &worktrees, base, "conv-fetchfail", true)
+                .await
+                .expect("workspace prepared despite fetch failure");
+
+        assert_eq!(workspace.base_ref, base);
+        assert_eq!(workspace.base_commit.as_deref(), Some(local_base_sha.as_str()));
+    }
+
+    #[tokio::test]
+    async fn non_automation_local_branch_ignores_advanced_origin_base() {
+        // Scope: with prefer_advanced_origin_base = false, an advanced origin/<base>
+        // is ignored and the worktree is cut from the local branch as before.
+        let temp = tempfile::tempdir().unwrap();
+        let origin = temp.path().join("origin.git");
+        let repo = temp.path().join("repo");
+        let helper = temp.path().join("helper");
+        let worktrees = temp.path().join("worktrees");
+
+        std::fs::create_dir_all(&origin).unwrap();
+        git(&origin, &["init", "--bare", "-b", "main"]);
+        setup_repo(&repo);
+        git(&repo, &["remote", "add", "origin", origin.to_str().unwrap()]);
+        git(&repo, &["push", "origin", "main"]);
+        let base = "feature/local-scope";
+        git(&repo, &["branch", base]);
+        git(&repo, &["push", "origin", base]);
+        let local_base_sha = git(&repo, &["rev-parse", base]);
+
+        git(temp.path(), &["clone", origin.to_str().unwrap(), helper.to_str().unwrap()]);
+        git(&helper, &["config", "user.email", "test@example.com"]);
+        git(&helper, &["config", "user.name", "Test User"]);
+        git(&helper, &["checkout", base]);
+        std::fs::write(helper.join("merged.txt"), "merged\n").unwrap();
+        git(&helper, &["add", "."]);
+        git(&helper, &["commit", "-m", "advanced"]);
+        git(&helper, &["push", "origin", base]);
+
+        let workspace = prepare_isolated_local_branch(&repo, &worktrees, base, "conv-scope", false)
+            .await
+            .expect("workspace prepared");
+
+        assert_eq!(
+            workspace.base_commit.as_deref(),
+            Some(local_base_sha.as_str()),
+            "non-automation workspace should ignore the advanced origin ref"
+        );
+    }
+
     #[tokio::test]
     async fn linked_plan_branch_worktree_refuses_primary_checkout() {
         let temp = tempfile::tempdir().expect("tempdir should be created");
@@ -1586,6 +1847,7 @@ mod tests {
                 autofix_enabled: true,
                 auto_merge_desired: true,
             },
+            false,
         )
         .await
         .expect("workspace should be prepared");

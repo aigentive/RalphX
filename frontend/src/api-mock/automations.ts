@@ -23,6 +23,7 @@ function mockAutomation(overrides: Partial<Automation> = {}): Automation {
     pausedReasonDetail: null,
     goalPrompt: "",
     setupConversationId: null,
+    specArtifactId: null,
     providerHarness: "claude",
     modelId: "sonnet",
     logicalEffort: null,

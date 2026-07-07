@@ -32,6 +32,16 @@ pub trait AutomationRunRepository: Send + Sync {
         automation_id: &AutomationId,
     ) -> AppResult<Option<AutomationRun>>;
 
+    /// Find the latest automation run that owns the given conversation/workspace.
+    ///
+    /// Returns `None` when no automation run is linked to the conversation (for example an
+    /// interactive, non-automation workspace). When multiple runs share a conversation id the
+    /// implementation returns the one with the highest `run_index`.
+    async fn find_run_by_conversation_id(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> AppResult<Option<AutomationRun>>;
+
     async fn compare_and_swap_status(
         &self,
         id: &AutomationRunId,

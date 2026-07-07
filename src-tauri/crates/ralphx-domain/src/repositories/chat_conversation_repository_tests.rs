@@ -61,6 +61,18 @@ impl ChatConversationRepository for MockChatConversationRepository {
             .collect())
     }
 
+    async fn list_by_automation_id(
+        &self,
+        automation_id: &crate::entities::AutomationId,
+    ) -> AppResult<Vec<ChatConversation>> {
+        Ok(self
+            .conversations
+            .iter()
+            .filter(|c| c.automation_id.as_ref() == Some(automation_id))
+            .cloned()
+            .collect())
+    }
+
     async fn get_by_context_page_filtered(
         &self,
         context_type: ChatContextType,

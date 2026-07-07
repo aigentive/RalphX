@@ -12,12 +12,14 @@ use crate::application::automation::transition::{
     AutomationEvent, AutomationEventEmitter, AutomationTransitionService,
 };
 use crate::domain::entities::{
-    is_open_automation_run, Automation, AutomationId, AutomationJudgeState, AutomationPromptAuthor,
-    AutomationRun, AutomationRunId, AutomationRunStatus, AutomationStatus, ChatConversationId,
-    ProjectId,
+    is_open_automation_run, Artifact, ArtifactBucketId, ArtifactContent, ArtifactId,
+    ArtifactMetadata, ArtifactType, Automation, AutomationId, AutomationJudgeState,
+    AutomationPromptAuthor, AutomationRun, AutomationRunId, AutomationRunStatus, AutomationStatus,
+    ChatConversationId, ProjectId,
 };
 use crate::domain::repositories::{
-    AutomationConfigPatch, AutomationRepository, AutomationRunRepository, AutomationSettingsPatch,
+    ArtifactRepository, AutomationConfigPatch, AutomationRepository, AutomationRunRepository,
+    AutomationSettingsPatch,
 };
 use crate::error::{AppError, AppResult};
 
@@ -29,8 +31,11 @@ const DEFAULT_BASE_REF_KIND: &str = "project_default";
 const DEFAULT_CHAIN_MODE: &str = "merged_base";
 const STACKED_CHAIN_MODE: &str = "pr_head_stacked";
 const DEFAULT_COMPLETION_SIGNAL: &str = "pr_merged";
+const AGENT_COMPLETED_COMPLETION_SIGNAL: &str = "agent_completed";
 const DEFAULT_MAX_RUNS: i64 = 25;
 const DEFAULT_MAX_CONSECUTIVE_FAILURES: i64 = 3;
+const SPEC_ARTIFACT_BUCKET: &str = "prd-library";
+const SPEC_ARTIFACT_CREATED_BY: &str = "automation-setup";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AutomationDetail {
@@ -44,6 +49,9 @@ pub struct CreateAutomationDraftInput {
     pub project_id: ProjectId,
     pub name: Option<String>,
     pub setup_conversation_id: Option<ChatConversationId>,
+    pub base_ref_kind: Option<String>,
+    pub base_ref: Option<String>,
+    pub base_display_name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,6 +78,8 @@ pub struct UpdateAutomationConfigInput {
     pub chain_mode: Option<String>,
     pub completion_signal: Option<String>,
     pub setup_analysis_summary: Option<String>,
+    pub spec_artifact_id: Option<String>,
+    pub spec_content: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -154,6 +164,7 @@ pub struct AutomationService {
     run_repo: Arc<dyn AutomationRunRepository>,
     transition_service: AutomationTransitionService,
     event_emitter: Arc<dyn AutomationEventEmitter>,
+    artifact_repo: Arc<dyn ArtifactRepository>,
 }
 
 impl AutomationService {
@@ -161,6 +172,7 @@ impl AutomationService {
         automation_repo: Arc<dyn AutomationRepository>,
         run_repo: Arc<dyn AutomationRunRepository>,
         event_emitter: Arc<dyn AutomationEventEmitter>,
+        artifact_repo: Arc<dyn ArtifactRepository>,
     ) -> Self {
         let transition_service = AutomationTransitionService::new(
             Arc::clone(&automation_repo),
@@ -172,6 +184,7 @@ impl AutomationService {
             run_repo,
             transition_service,
             event_emitter,
+            artifact_repo,
         }
     }
 
@@ -190,9 +203,11 @@ impl AutomationService {
             model_id: DEFAULT_MODEL_ID.to_string(),
             logical_effort: None,
             run_mode: DEFAULT_RUN_MODE.to_string(),
-            base_ref_kind: DEFAULT_BASE_REF_KIND.to_string(),
-            base_ref: String::new(),
-            base_display_name: None,
+            base_ref_kind: input
+                .base_ref_kind
+                .unwrap_or_else(|| DEFAULT_BASE_REF_KIND.to_string()),
+            base_ref: input.base_ref.unwrap_or_default(),
+            base_display_name: input.base_display_name,
             base_source_pull_request_json: None,
             goal_items_json: None,
             chain_mode: DEFAULT_CHAIN_MODE.to_string(),
@@ -201,6 +216,7 @@ impl AutomationService {
             max_consecutive_failures: DEFAULT_MAX_CONSECUTIVE_FAILURES,
             first_run_prompt: None,
             setup_analysis_summary: None,
+            spec_artifact_id: None,
             created_at: now,
             updated_at: now,
         };
@@ -263,6 +279,18 @@ impl AutomationService {
                 automation.status.as_str()
             )));
         }
+        let completion_signal = input
+            .completion_signal
+            .or_else(|| {
+                input
+                    .run_mode
+                    .as_deref()
+                    .map(completion_signal_for_run_mode)
+                    .map(str::to_string)
+            });
+        let spec_artifact_id = self
+            .resolve_spec_artifact_id(&automation, input.spec_content, input.spec_artifact_id)
+            .await?;
         let patch = AutomationConfigPatch {
             goal_prompt: input.goal_prompt,
             first_run_prompt: input.first_run_prompt,
@@ -275,8 +303,9 @@ impl AutomationService {
             base_display_name: input.base_display_name,
             goal_items_json: input.goal_items_json,
             chain_mode: input.chain_mode,
-            completion_signal: input.completion_signal,
+            completion_signal,
             setup_analysis_summary: input.setup_analysis_summary,
+            spec_artifact_id,
         };
         let updated = self
             .automation_repo
@@ -287,6 +316,92 @@ impl AutomationService {
             automation_id: updated.id.clone(),
         });
         Ok(updated)
+    }
+
+    /// Resolve the `spec_artifact_id` patch value for a config write.
+    ///
+    /// - `spec_content` present and non-empty: materialize a new `Specification`
+    ///   artifact (versioned off the current spec if one exists) and link its id.
+    /// - Otherwise, if `spec_artifact_id` is present and non-empty: validate the
+    ///   artifact exists (fail closed) and pass it through.
+    /// - Otherwise: `None`, leaving the existing linkage untouched (COALESCE).
+    async fn resolve_spec_artifact_id(
+        &self,
+        automation: &Automation,
+        spec_content: Option<String>,
+        spec_artifact_id: Option<String>,
+    ) -> AppResult<Option<String>> {
+        if let Some(content) = spec_content
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            let new_id = self.materialize_spec_artifact(automation, content).await?;
+            return Ok(Some(new_id));
+        }
+
+        if let Some(existing_id) = spec_artifact_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            let artifact_id = ArtifactId::from_string(existing_id.to_string());
+            if self.artifact_repo.get_by_id(&artifact_id).await?.is_none() {
+                return Err(AppError::Validation(format!(
+                    "spec_artifact_id {existing_id} does not reference an existing artifact"
+                )));
+            }
+            return Ok(Some(existing_id.to_string()));
+        }
+
+        Ok(None)
+    }
+
+    /// Persist automation spec markdown as a `Specification` artifact, chaining a
+    /// new version off the current spec artifact if one is already linked.
+    async fn materialize_spec_artifact(
+        &self,
+        automation: &Automation,
+        content: &str,
+    ) -> AppResult<String> {
+        let previous_version_id = automation
+            .spec_artifact_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| ArtifactId::from_string(value.to_string()));
+
+        let next_version = match previous_version_id.as_ref() {
+            Some(previous) => self
+                .artifact_repo
+                .get_by_id(previous)
+                .await?
+                .map_or(1, |artifact| artifact.metadata.version.saturating_add(1)),
+            None => 1,
+        };
+
+        let artifact = Artifact {
+            id: ArtifactId::new(),
+            artifact_type: ArtifactType::Specification,
+            name: format!("{} spec", automation.name),
+            content: ArtifactContent::inline(content),
+            metadata: ArtifactMetadata::new(SPEC_ARTIFACT_CREATED_BY).with_version(next_version),
+            derived_from: vec![],
+            bucket_id: Some(ArtifactBucketId::from_string(
+                SPEC_ARTIFACT_BUCKET.to_string(),
+            )),
+            archived_at: None,
+        };
+
+        let created = match previous_version_id {
+            Some(previous) => {
+                self.artifact_repo
+                    .create_with_previous_version(artifact, previous)
+                    .await?
+            }
+            None => self.artifact_repo.create(artifact).await?,
+        };
+        Ok(created.id.as_str().to_string())
     }
 
     pub async fn pause(
@@ -535,6 +650,15 @@ impl AutomationService {
         .await
     }
 
+    /// Row-deletion core for automation deletion.
+    ///
+    /// This is the terminal step of the `delete_automation_with_archive`
+    /// composition (durable history is archived first). It hard-deletes the
+    /// automation bookkeeping rows — the automation itself (via the
+    /// `status IN ('completed','stopped')` SQL predicate), its runs, attachments,
+    /// and context refs (FK cascades are OFF in production) — then emits
+    /// `AutomationDeleted`. Drafts are CAS'd to `Stopped` by the composition
+    /// before this runs, so the terminal-only predicate still applies here.
     pub async fn delete(&self, id: &AutomationId) -> AppResult<()> {
         let automation = self.require_automation(id).await?;
         if !matches!(
@@ -542,9 +666,12 @@ impl AutomationService {
             AutomationStatus::Completed | AutomationStatus::Stopped
         ) {
             return Err(AppError::Validation(
-                "only completed or stopped automations can be deleted".to_string(),
+                "only draft, completed, or stopped automations can be deleted".to_string(),
             ));
         }
+        // Capture the project id before the row is gone; the deleted event needs
+        // it so the frontend can evict caches and navigate away (critic G3/E7).
+        let project_id = automation.project_id.clone();
         let deleted = self.automation_repo.delete_terminal(id).await?;
         if !deleted {
             return Err(automation_status_conflict(
@@ -554,8 +681,15 @@ impl AutomationService {
             ));
         }
         self.run_repo.delete_for_automation(id).await?;
-        self.event_emitter.emit(AutomationEvent::AutomationUpdated {
+        self.automation_repo
+            .delete_attachments_for_automation(id)
+            .await?;
+        self.automation_repo
+            .delete_context_refs_for_automation(id)
+            .await?;
+        self.event_emitter.emit(AutomationEvent::AutomationDeleted {
             automation_id: id.clone(),
+            project_id,
         });
         Ok(())
     }
@@ -1014,9 +1148,14 @@ fn run_status_is_cancellable(status: AutomationRunStatus) -> bool {
 fn consecutive_failure_count(runs: &[AutomationRun]) -> i64 {
     let mut count = 0;
     for run in runs.iter().rev() {
+        // Workspace-review-gate blocks terminalize the run as AgentFailed but are user-actionable,
+        // not agent failures, so they must not count toward max_consecutive_failures.
+        if crate::application::automation::review_gate::run_is_workspace_review_blocked(run) {
+            continue;
+        }
         match run.status {
             AutomationRunStatus::AgentFailed | AutomationRunStatus::PrClosed => count += 1,
-            AutomationRunStatus::Merged => break,
+            AutomationRunStatus::Completed | AutomationRunStatus::Merged => break,
             _ => {}
         }
     }
@@ -1153,10 +1292,18 @@ fn skip_judge_template_prompt(previous_run: &AutomationRun) -> String {
 fn run_status_is_signal_terminal(status: AutomationRunStatus) -> bool {
     matches!(
         status,
-        AutomationRunStatus::Merged
+        AutomationRunStatus::Completed
+            | AutomationRunStatus::Merged
             | AutomationRunStatus::PrClosed
             | AutomationRunStatus::AgentFailed
     )
+}
+
+fn completion_signal_for_run_mode(run_mode: &str) -> &'static str {
+    match run_mode.trim() {
+        DEFAULT_RUN_MODE => DEFAULT_COMPLETION_SIGNAL,
+        _ => AGENT_COMPLETED_COMPLETION_SIGNAL,
+    }
 }
 
 fn normalize_name(value: Option<&str>) -> AppResult<String> {
@@ -1210,12 +1357,18 @@ fn validate_finalizable(automation: &Automation) -> AppResult<()> {
         ));
     }
     validate_goal_items_json(automation.goal_items_json.as_deref())?;
-    if automation.completion_signal == DEFAULT_COMPLETION_SIGNAL
-        && automation.run_mode != DEFAULT_RUN_MODE
-    {
-        return Err(AppError::Validation(
-            "pr_merged automations require edit run_mode".to_string(),
-        ));
+    match automation.completion_signal.as_str() {
+        DEFAULT_COMPLETION_SIGNAL if automation.run_mode != DEFAULT_RUN_MODE => {
+            return Err(AppError::Validation(
+                "pr_merged automations require edit run_mode".to_string(),
+            ));
+        }
+        DEFAULT_COMPLETION_SIGNAL | AGENT_COMPLETED_COMPLETION_SIGNAL => {}
+        value => {
+            return Err(AppError::Validation(format!(
+                "automation completion_signal is not supported: {value}"
+            )));
+        }
     }
     match automation.base_ref_kind.as_str() {
         DEFAULT_BASE_REF_KIND => {}

@@ -11,27 +11,29 @@ use tokio::time::{sleep, timeout};
 use super::provisioning::{
     AutomationRunStartOutcome, AutomationRunStartRequest, AutomationRunStarter,
 };
+use super::judge::SPEC_ATTACHMENT_MAX_BYTES;
 use super::scheduler::{
-    AutomationJudgeInvocation, AutomationJudgeInvocationOutput, AutomationJudgeInvoker,
-    AutomationScheduler, AutomationSchedulerConfig, AutomationSchedulerRegistry,
-    AutomationSignalChecker,
+    load_spec_attachment, AutomationJudgeInvocation, AutomationJudgeInvocationOutput,
+    AutomationJudgeInvoker, AutomationScheduler, AutomationSchedulerConfig,
+    AutomationSchedulerRegistry, AutomationSignalChecker,
 };
 use super::transition::NoopAutomationEventEmitter;
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode, Automation, AutomationId,
-    AutomationJudgeState, AutomationPromptAuthor, AutomationRun, AutomationRunId,
-    AutomationRunStatus, AutomationStatus, ChatConversationId, IdeationAnalysisBaseRefKind,
-    ProjectId,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, Artifact, ArtifactId,
+    ArtifactType, Automation, AutomationId, AutomationJudgeState, AutomationPromptAuthor,
+    AutomationRun, AutomationRunId, AutomationRunStatus, AutomationStatus, ChatConversationId,
+    IdeationAnalysisBaseRefKind, ProjectId,
 };
 use crate::domain::repositories::{
-    AgentConversationWorkspaceRepository, AutomationRepository, AutomationRunRepository,
+    AgentConversationWorkspaceRepository, AgentRunRepository, ArtifactRepository,
+    AutomationRepository, AutomationRunRepository,
 };
 use crate::domain::services::github_service::PrStatus;
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::AutomationsRuntimeConfig;
 use crate::infrastructure::memory::{
-    MemoryAgentConversationWorkspaceRepository, MemoryAutomationRepository,
-    MemoryAutomationRunRepository, MemoryChatConversationRepository,
+    MemoryAgentConversationWorkspaceRepository, MemoryAgentRunRepository, MemoryArtifactRepository,
+    MemoryAutomationRepository, MemoryAutomationRunRepository, MemoryChatConversationRepository,
 };
 
 #[derive(Default)]
@@ -200,6 +202,7 @@ fn automation(id: &str, status: AutomationStatus) -> Automation {
         max_consecutive_failures: 3,
         first_run_prompt: Some("Run 1".to_string()),
         setup_analysis_summary: None,
+        spec_artifact_id: None,
         created_at: now,
         updated_at: now,
     }
@@ -298,15 +301,37 @@ fn scheduler_with_judge(
     judge_invoker: Arc<dyn AutomationJudgeInvoker>,
     config: AutomationSchedulerConfig,
 ) -> AutomationScheduler {
+    scheduler_with_judge_and_agent_runs(
+        automation_repo,
+        run_repo,
+        workspace_repo,
+        Arc::new(MemoryAgentRunRepository::new()),
+        signal_checker,
+        judge_invoker,
+        config,
+    )
+}
+
+fn scheduler_with_judge_and_agent_runs(
+    automation_repo: Arc<MemoryAutomationRepository>,
+    run_repo: Arc<MemoryAutomationRunRepository>,
+    workspace_repo: Arc<MemoryAgentConversationWorkspaceRepository>,
+    agent_run_repo: Arc<dyn AgentRunRepository>,
+    signal_checker: Arc<dyn AutomationSignalChecker>,
+    judge_invoker: Arc<dyn AutomationJudgeInvoker>,
+    config: AutomationSchedulerConfig,
+) -> AutomationScheduler {
     AutomationScheduler::new(
         automation_repo,
         run_repo,
+        agent_run_repo,
         Arc::new(MemoryChatConversationRepository::new()),
         workspace_repo,
         Arc::new(RecordingStarter),
         signal_checker,
         judge_invoker,
         Arc::new(NoopAutomationEventEmitter),
+        Arc::new(MemoryArtifactRepository::new()),
         Arc::new(AutomationSchedulerRegistry::default()),
         config,
     )
@@ -480,12 +505,14 @@ async fn automation_scheduler_tick_only_leases_active_automations() {
     let scheduler = AutomationScheduler::new(
         automation_repo,
         run_repo.clone(),
+        Arc::new(MemoryAgentRunRepository::new()),
         conversation_repo,
         workspace_repo,
         Arc::new(RecordingStarter),
         Arc::new(RecordingSignalChecker::default()),
         Arc::new(RecordingJudgeInvoker::default()),
         Arc::new(NoopAutomationEventEmitter),
+        Arc::new(MemoryArtifactRepository::new()),
         registry,
         AutomationSchedulerConfig::from_runtime(&AutomationsRuntimeConfig::default()),
     );
@@ -871,6 +898,53 @@ async fn automation_scheduler_times_out_running_run() {
         .unwrap();
     assert_eq!(latest.status, AutomationRunStatus::AgentFailed);
     assert_eq!(latest.error_code.as_deref(), Some("timeout"));
+    assert!(latest.finished_at.is_some());
+}
+
+#[tokio::test]
+async fn automation_scheduler_completes_agent_completed_run_from_agent_run_status() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
+    let automation_id = AutomationId::from_string("automation-1");
+    let mut automation = automation(automation_id.as_str(), AutomationStatus::Active);
+    automation.run_mode = "plan".to_string();
+    automation.completion_signal = "agent_completed".to_string();
+    automation_repo.create(automation).await.unwrap();
+    let conversation_id = ChatConversationId::from_string("conversation-1");
+    run_repo
+        .create_run(automation_run(
+            "run-1",
+            &automation_id,
+            AutomationRunStatus::Running,
+            Some(conversation_id.clone()),
+        ))
+        .await
+        .unwrap();
+    let mut agent_run = AgentRun::new(conversation_id);
+    agent_run.status = crate::domain::entities::AgentRunStatus::Completed;
+    agent_run.completed_at = Some(Utc::now());
+    agent_run_repo.create(agent_run).await.unwrap();
+    let scheduler = scheduler_with_judge_and_agent_runs(
+        Arc::clone(&automation_repo),
+        Arc::clone(&run_repo),
+        workspace_repo,
+        agent_run_repo,
+        Arc::new(RecordingSignalChecker::default()),
+        Arc::new(RecordingJudgeInvoker::default()),
+        AutomationSchedulerConfig::default(),
+    );
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.completed_runs, 1);
+    let latest = run_repo
+        .latest_for_automation(&automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest.status, AutomationRunStatus::Completed);
     assert!(latest.finished_at.is_some());
 }
 
@@ -1281,4 +1355,195 @@ async fn automation_scheduler_consumes_stored_continue_verdict_without_duplicate
     let runs = run_repo.list_for_automation(&automation_id).await.unwrap();
     assert_eq!(runs.len(), 2);
     assert_eq!(runs[1].prompt_author, AutomationPromptAuthor::Judge);
+}
+
+/// Artifact repository that fails every `get_by_id`, delegating all other
+/// methods to an inner in-memory repo. Only `get_by_id` is exercised by the
+/// `load_spec_attachment` fail-open tests.
+struct FailingArtifactRepository {
+    inner: MemoryArtifactRepository,
+}
+
+impl FailingArtifactRepository {
+    fn new() -> Self {
+        Self {
+            inner: MemoryArtifactRepository::new(),
+        }
+    }
+}
+
+#[async_trait]
+impl ArtifactRepository for FailingArtifactRepository {
+    async fn create(&self, artifact: Artifact) -> AppResult<Artifact> {
+        self.inner.create(artifact).await
+    }
+
+    async fn get_by_id(&self, _id: &ArtifactId) -> AppResult<Option<Artifact>> {
+        Err(AppError::Infrastructure("artifact lookup failed".to_string()))
+    }
+
+    async fn get_by_id_at_version(
+        &self,
+        id: &ArtifactId,
+        version: u32,
+    ) -> AppResult<Option<Artifact>> {
+        self.inner.get_by_id_at_version(id, version).await
+    }
+
+    async fn get_by_bucket(
+        &self,
+        bucket_id: &crate::domain::entities::ArtifactBucketId,
+    ) -> AppResult<Vec<Artifact>> {
+        self.inner.get_by_bucket(bucket_id).await
+    }
+
+    async fn get_by_type(
+        &self,
+        artifact_type: ArtifactType,
+    ) -> AppResult<Vec<Artifact>> {
+        self.inner.get_by_type(artifact_type).await
+    }
+
+    async fn get_by_task(
+        &self,
+        task_id: &crate::domain::entities::TaskId,
+    ) -> AppResult<Vec<Artifact>> {
+        self.inner.get_by_task(task_id).await
+    }
+
+    async fn get_by_process(
+        &self,
+        process_id: &crate::domain::entities::ProcessId,
+    ) -> AppResult<Vec<Artifact>> {
+        self.inner.get_by_process(process_id).await
+    }
+
+    async fn update(&self, artifact: &Artifact) -> AppResult<()> {
+        self.inner.update(artifact).await
+    }
+
+    async fn delete(&self, id: &ArtifactId) -> AppResult<()> {
+        self.inner.delete(id).await
+    }
+
+    async fn get_derived_from(&self, artifact_id: &ArtifactId) -> AppResult<Vec<Artifact>> {
+        self.inner.get_derived_from(artifact_id).await
+    }
+
+    async fn get_related(&self, artifact_id: &ArtifactId) -> AppResult<Vec<Artifact>> {
+        self.inner.get_related(artifact_id).await
+    }
+
+    async fn add_relation(
+        &self,
+        relation: crate::domain::entities::ArtifactRelation,
+    ) -> AppResult<crate::domain::entities::ArtifactRelation> {
+        self.inner.add_relation(relation).await
+    }
+
+    async fn get_relations(
+        &self,
+        artifact_id: &ArtifactId,
+    ) -> AppResult<Vec<crate::domain::entities::ArtifactRelation>> {
+        self.inner.get_relations(artifact_id).await
+    }
+
+    async fn get_relations_by_type(
+        &self,
+        artifact_id: &ArtifactId,
+        relation_type: crate::domain::entities::ArtifactRelationType,
+    ) -> AppResult<Vec<crate::domain::entities::ArtifactRelation>> {
+        self.inner
+            .get_relations_by_type(artifact_id, relation_type)
+            .await
+    }
+
+    async fn delete_relation(&self, from_id: &ArtifactId, to_id: &ArtifactId) -> AppResult<()> {
+        self.inner.delete_relation(from_id, to_id).await
+    }
+
+    async fn create_with_previous_version(
+        &self,
+        artifact: Artifact,
+        previous_version_id: ArtifactId,
+    ) -> AppResult<Artifact> {
+        self.inner
+            .create_with_previous_version(artifact, previous_version_id)
+            .await
+    }
+
+    async fn get_version_history(
+        &self,
+        id: &ArtifactId,
+    ) -> AppResult<Vec<crate::domain::repositories::ArtifactVersionSummary>> {
+        self.inner.get_version_history(id).await
+    }
+
+    async fn resolve_latest_artifact_id(&self, id: &ArtifactId) -> AppResult<ArtifactId> {
+        self.inner.resolve_latest_artifact_id(id).await
+    }
+
+    async fn archive(&self, id: &ArtifactId) -> AppResult<Artifact> {
+        self.inner.archive(id).await
+    }
+}
+
+#[tokio::test]
+async fn load_spec_attachment_returns_truncated_content_when_spec_present() {
+    let mem = MemoryArtifactRepository::new();
+    // ~30KB of text — larger than SPEC_ATTACHMENT_MAX_BYTES (10KB).
+    let spec_text = "spec ".repeat(6_000);
+    let artifact = Artifact::new_inline(
+        "Automation spec",
+        ArtifactType::Specification,
+        spec_text.clone(),
+        "user",
+    );
+    let created = mem.create(artifact).await.unwrap();
+    let repo: Arc<dyn ArtifactRepository> = Arc::new(mem);
+
+    let mut automation = automation("auto-spec", AutomationStatus::Active);
+    automation.spec_artifact_id = Some(created.id.as_str().to_string());
+
+    let attachments = load_spec_attachment(&repo, &automation).await;
+
+    assert_eq!(attachments.len(), 1);
+    let attachment = &attachments[0];
+    assert_eq!(attachment.file_name, "Automation spec");
+    let content = attachment.text_content.as_deref().unwrap();
+    assert!(content.len() <= SPEC_ATTACHMENT_MAX_BYTES);
+    assert!(content.len() < spec_text.len());
+    assert_eq!(attachment.file_size, Some(content.len() as i64));
+}
+
+#[tokio::test]
+async fn load_spec_attachment_empty_when_no_spec_linked() {
+    let repo: Arc<dyn ArtifactRepository> = Arc::new(MemoryArtifactRepository::new());
+
+    let mut automation = automation("auto", AutomationStatus::Active);
+    automation.spec_artifact_id = None;
+    assert!(load_spec_attachment(&repo, &automation).await.is_empty());
+
+    automation.spec_artifact_id = Some("   ".to_string());
+    assert!(load_spec_attachment(&repo, &automation).await.is_empty());
+}
+
+#[tokio::test]
+async fn load_spec_attachment_empty_when_artifact_missing() {
+    let repo: Arc<dyn ArtifactRepository> = Arc::new(MemoryArtifactRepository::new());
+
+    let mut automation = automation("auto", AutomationStatus::Active);
+    automation.spec_artifact_id = Some("does-not-exist".to_string());
+
+    assert!(load_spec_attachment(&repo, &automation).await.is_empty());
+}
+
+#[tokio::test]
+async fn load_spec_attachment_empty_when_repo_errors() {
+    let repo: Arc<dyn ArtifactRepository> = Arc::new(FailingArtifactRepository::new());
+
+    let mut automation = automation("auto", AutomationStatus::Active);
+    automation.spec_artifact_id = Some("spec-1".to_string());
+
+    assert!(load_spec_attachment(&repo, &automation).await.is_empty());
 }

@@ -25,9 +25,21 @@ import {
 } from "@/api/automations";
 import { useAfterPaintMounted } from "@/components/agents/agentDeferredFrame";
 import {
+  describeAutomationDeleteConsequences,
+  describeAutomationStage,
   describeRunFailure,
+  isAutomationDeletable,
+  isOpenAutomationRun,
   latestRun,
 } from "@/components/automations/automationStage";
+import {
+  AUTOMATION_PHASES_LABEL,
+  AUTOMATION_STATUS_LABELS,
+  parseAutomationGoalItems,
+} from "@/components/automations/automationGoalItems";
+import { AutomationPhaseProgress } from "@/components/automations/AutomationPhases";
+import { AutomationRunTaskLedger } from "@/components/automations/AutomationRunTaskLedger";
+import { AutomationSpecView } from "@/components/automations/AutomationSpecView";
 import { Button, type ButtonProps } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -40,6 +52,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useConfirmation } from "@/hooks/useConfirmation";
 import {
+  evictDeletedAutomation,
   invalidateAutomationQueries,
   useAutomationDetail,
 } from "@/hooks/useAutomations";
@@ -55,19 +68,12 @@ interface AutomationDetailViewProps {
 
 type JsonRecord = Record<string, unknown>;
 
-const AUTOMATION_STATUS_LABELS: Record<Automation["status"], string> = {
-  draft: "Draft",
-  active: "Approved",
-  paused: "Paused",
-  completed: "Completed",
-  stopped: "Stopped",
-};
-
 const RUN_STATUS_LABELS: Record<AutomationRun["status"], string> = {
   pending: "Running",
   provisioning: "Running",
   running: "Running",
   published: "Running",
+  completed: "Completed",
   merged: "Merged",
   pr_closed: "PR closed",
   agent_failed: "Agent failed",
@@ -149,7 +155,7 @@ function sortedNewestRuns(runs: AutomationRun[]): AutomationRun[] {
 function isSignalTerminalUnjudged(run: AutomationRun | null): run is AutomationRun {
   return Boolean(
     run
-      && ["merged", "pr_closed", "agent_failed"].includes(run.status)
+      && ["completed", "merged", "pr_closed", "agent_failed"].includes(run.status)
       && run.judgeState === "none",
   );
 }
@@ -202,9 +208,11 @@ function Pill({ label, status }: { label: string; status: string }) {
 
 function TooltipIconButton({
   label,
+  tooltip,
   children,
   ...props
-}: ButtonProps & { label: string }) {
+}: ButtonProps & { label: string; tooltip?: ReactNode }) {
+  const tooltipContent = tooltip ?? label;
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -212,13 +220,48 @@ function TooltipIconButton({
           type="button"
           size="icon-sm"
           aria-label={label}
+          {...(typeof tooltipContent === "string" ? { title: tooltipContent } : {})}
           {...props}
         >
           {children}
         </Button>
       </TooltipTrigger>
-      <TooltipContent>{label}</TooltipContent>
+      <TooltipContent>{tooltipContent}</TooltipContent>
     </Tooltip>
+  );
+}
+
+/**
+ * Live "what's happening now" chip shown in the header while a run is open, so
+ * the user sees run progress (e.g. "Run 1 in progress", "Judging") without
+ * scrolling to the timeline. Styling mirrors {@link Pill} with an added pulsing
+ * dot; longhand paint/border props keep it WKWebView-safe.
+ */
+function RunStatusChip({
+  label,
+  testId = "automation-run-status-chip",
+}: {
+  label: string;
+  testId?: string;
+}) {
+  return (
+    <span
+      className="inline-flex w-fit items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-semibold text-[var(--accent-primary)]"
+      style={{
+        backgroundColor: "var(--bg-hover)",
+        borderColor: "var(--accent-primary)",
+        borderStyle: "solid",
+        borderWidth: "1px",
+      }}
+      data-testid={testId}
+    >
+      <span
+        className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full"
+        style={{ backgroundColor: "var(--accent-primary)" }}
+        aria-hidden="true"
+      />
+      {label}
+    </span>
   );
 }
 
@@ -352,17 +395,10 @@ function SourcePrInput({ automation }: { automation: Automation }) {
 }
 
 function GoalItems({ value }: { value: string | null }) {
-  const parsed = useMemo(() => {
-    if (!value) {
-      return [];
-    }
-    try {
-      const items = JSON.parse(value) as unknown;
-      return Array.isArray(items) ? items.slice(0, 6) : [];
-    } catch {
-      return [];
-    }
-  }, [value]);
+  const parsed = useMemo(
+    () => parseAutomationGoalItems(value, { limit: 6 }),
+    [value],
+  );
 
   if (parsed.length === 0) {
     return null;
@@ -371,21 +407,9 @@ function GoalItems({ value }: { value: string | null }) {
   return (
     <div className="mt-4 space-y-2">
       <div className="text-xs font-medium uppercase tracking-normal" style={{ color: "var(--text-muted)" }}>
-        Goal items
+        {AUTOMATION_PHASES_LABEL}
       </div>
-      <div className="space-y-1">
-        {parsed.map((item, index) => {
-          const record = item && typeof item === "object" ? item as JsonRecord : null;
-          const title = stringField(record, "title") ?? stringField(record, "id") ?? `Item ${index + 1}`;
-          const status = stringField(record, "status") ?? "pending";
-          return (
-            <div key={`${title}-${index}`} className="flex items-center justify-between gap-3 text-sm">
-              <span className="truncate" style={{ color: "var(--text-secondary)" }}>{title}</span>
-              <Pill label={status} status={status} />
-            </div>
-          );
-        })}
-      </div>
+      <AutomationPhaseProgress value={value} limit={6} />
     </div>
   );
 }
@@ -469,14 +493,20 @@ function JudgeVerdictCard({ run }: { run: AutomationRun }) {
 const RunTimelineItem = memo(function RunTimelineItem({
   run,
   projectId,
+  defaultExpanded,
+  liveStageLabel,
   onOpenRunConversation,
 }: {
   run: AutomationRun;
   projectId: string | null;
+  defaultExpanded: boolean;
+  liveStageLabel: string | null;
   onOpenRunConversation?: (projectId: string, conversationId: string) => void;
 }) {
+  const [expanded, setExpanded] = useState(defaultExpanded);
   const canOpenConversation = Boolean(projectId && run.conversationId && onOpenRunConversation);
   const failureReason = describeRunFailure(run);
+  const runOpen = isOpenAutomationRun(run);
   const openConversation = useCallback(() => {
     if (projectId && run.conversationId) {
       onOpenRunConversation?.(projectId, run.conversationId);
@@ -503,19 +533,40 @@ const RunTimelineItem = memo(function RunTimelineItem({
           borderWidth: "1px",
         }}
       >
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex min-w-0 flex-wrap items-center gap-2">
+        <button
+          type="button"
+          onClick={() => setExpanded((value) => !value)}
+          aria-expanded={expanded}
+          aria-label={`${expanded ? "Collapse" : "Expand"} run ${run.runIndex}`}
+          className="flex w-full flex-wrap items-center justify-between gap-3 text-left outline-none focus-visible:outline-none"
+        >
+          <span className="flex min-w-0 flex-wrap items-center gap-2">
             <span className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
               Run {run.runIndex}
             </span>
             <Pill label={RUN_STATUS_LABELS[run.status]} status={run.status} />
             <Pill label={`Judge ${run.judgeState}`} status={run.judgeState} />
-          </div>
-          <span className="text-xs" style={{ color: "var(--text-muted)" }}>
-            {formatDate(run.updatedAt)}
+            {liveStageLabel && (
+              <RunStatusChip
+                label={liveStageLabel}
+                testId={`automation-run-${run.id}-live`}
+              />
+            )}
           </span>
-        </div>
+          <span className="flex shrink-0 items-center gap-2">
+            <span className="text-xs" style={{ color: "var(--text-muted)" }}>
+              {formatDate(run.updatedAt)}
+            </span>
+            {expanded ? (
+              <ChevronUp className="h-4 w-4" aria-hidden="true" style={{ color: "var(--text-muted)" }} />
+            ) : (
+              <ChevronDown className="h-4 w-4" aria-hidden="true" style={{ color: "var(--text-muted)" }} />
+            )}
+          </span>
+        </button>
 
+        {expanded && (
+          <div data-testid={`automation-run-${run.id}-body`}>
         {failureReason && (
           <div
             className="mt-3 rounded-md px-3 py-2 text-sm font-medium"
@@ -613,6 +664,17 @@ const RunTimelineItem = memo(function RunTimelineItem({
           </div>
         </div>
         <JudgeVerdictCard run={run} />
+        {run.conversationId && (
+          <div className="mt-4">
+            <AutomationRunTaskLedger
+              conversationId={run.conversationId}
+              projectId={projectId}
+              isOpen={runOpen}
+            />
+          </div>
+        )}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -726,7 +788,7 @@ export function AutomationDetailView({
   const deleteMutation = useMutation({
     mutationFn: () => automationsApi.delete(automationId),
     onSuccess: () => {
-      invalidate();
+      evictDeletedAutomation(queryClient, automationId);
       toast.success("Automation deleted");
       onBack();
     },
@@ -767,6 +829,19 @@ export function AutomationDetailView({
   const newestRuns = sortedNewestRuns(runs);
   const latest = latestRun(runs);
   const skipJudgeRun = isSignalTerminalUnjudged(latest) ? latest : null;
+  // A run is only "in the way" of scheduling when the automation is actively
+  // driving it. While paused, "Run now" is an explicit resume-and-override the
+  // user is allowed to trigger even with a run still open, so don't block it.
+  const openRun = isOpenAutomationRun(latest) ? latest : null;
+  const activeRun = automation.status === "active" ? openRun : null;
+  const liveStageLabel = activeRun ? describeAutomationStage(automation, activeRun) : null;
+  const runNowBlockedReason = activeRun
+    ? `${describeAutomationStage(automation, activeRun)} — wait for it to finish before running again`
+    : automation.status === "draft"
+      ? "Approve the automation before running it"
+      : isAutomationTerminal(automation.status)
+        ? "This automation is no longer running"
+        : null;
   const actionPending = pauseMutation.isPending
     || resumeMutation.isPending
     || finalizeMutation.isPending
@@ -805,7 +880,7 @@ export function AutomationDetailView({
   const handleDelete = async () => {
     const confirmed = await confirm({
       title: "Delete automation?",
-      description: "Delete removes the terminal automation and its run history.",
+      description: describeAutomationDeleteConsequences(automation, runs),
       confirmText: "Delete",
       pendingText: "Deleting...",
       variant: "destructive",
@@ -847,6 +922,7 @@ export function AutomationDetailView({
                 {automation.name}
               </h1>
               <Pill label={AUTOMATION_STATUS_LABELS[automation.status]} status={automation.status} />
+              {liveStageLabel && <RunStatusChip label={liveStageLabel} />}
             </div>
             <div className="mt-1 text-xs" style={{ color: "var(--text-muted)" }}>
               {projectName ?? projectId ?? automation.projectId}
@@ -887,8 +963,9 @@ export function AutomationDetailView({
           )}
           <TooltipIconButton
             label="Run now"
+            {...(runNowBlockedReason ? { tooltip: runNowBlockedReason } : {})}
             variant="outline"
-            disabled={actionPending || isAutomationTerminal(automation.status) || automation.status === "draft"}
+            disabled={actionPending || runNowBlockedReason !== null}
             onClick={() => void handleRunNow()}
           >
             <PlayCircle className="h-4 w-4" />
@@ -943,7 +1020,7 @@ export function AutomationDetailView({
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem
-                disabled={!isAutomationTerminal(automation.status)}
+                disabled={!isAutomationDeletable(automation.status)}
                 className="text-[var(--status-error)]"
                 onSelect={(event) => {
                   event.preventDefault();
@@ -964,6 +1041,9 @@ export function AutomationDetailView({
             <Section title="Goal" testId="automation-goal-card">
               <ExpandableText text={automation.goalPrompt} />
               <GoalItems value={automation.goalItemsJson} />
+            </Section>
+            <Section title="Spec" testId="automation-spec-card">
+              <AutomationSpecView specArtifactId={automation.specArtifactId} />
             </Section>
             <Section title="Inputs">
               <SourcePrInput automation={automation} />
@@ -1027,6 +1107,14 @@ export function AutomationDetailView({
                     key={run.id}
                     run={run}
                     projectId={projectId}
+                    defaultExpanded={
+                      run.runIndex === latest?.runIndex || isOpenAutomationRun(run)
+                    }
+                    liveStageLabel={
+                      isOpenAutomationRun(run)
+                        ? describeAutomationStage(automation, run)
+                        : null
+                    }
                     {...(onOpenRunConversation ? { onOpenRunConversation } : {})}
                   />
                 ))}

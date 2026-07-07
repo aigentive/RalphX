@@ -16,6 +16,7 @@ function automationResponse(overrides: Record<string, unknown> = {}) {
     paused_reason_detail: null,
     goal_prompt: "Keep docs current",
     setup_conversation_id: "conversation-setup-1",
+    spec_artifact_id: null,
     provider_harness: "codex",
     model_id: "gpt-5.5",
     logical_effort: "high",

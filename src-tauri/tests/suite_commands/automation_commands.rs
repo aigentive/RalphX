@@ -9,9 +9,10 @@ use ralphx_lib::commands::automation_commands::{
 };
 use ralphx_lib::domain::entities::{
     Automation, AutomationId, AutomationJudgeState, AutomationPromptAuthor, AutomationRun,
-    AutomationRunId, AutomationRunStatus, AutomationStatus, ProjectId,
+    AutomationRunId, AutomationRunStatus, AutomationStatus, Project, ProjectId,
 };
 use serde_json::json;
+use std::process::Command;
 use tauri::Manager;
 
 fn automation_command_app() -> tauri::App<tauri::test::MockRuntime> {
@@ -19,6 +20,43 @@ fn automation_command_app() -> tauri::App<tauri::test::MockRuntime> {
         .manage(AppState::new_test())
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("mock app should build")
+}
+
+fn git(repo: &std::path::Path, args: &[&str]) {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(repo)
+        .output()
+        .expect("git command should spawn");
+    assert!(
+        output.status.success(),
+        "git {:?} failed: {}{}",
+        args,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn setup_git_project() -> (tempfile::TempDir, Project) {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let repo_path = temp.path().join("repo");
+    let worktree_parent = temp.path().join("worktrees");
+    std::fs::create_dir_all(&repo_path).expect("repo root should be created");
+    git(&repo_path, &["init", "-b", "main"]);
+    git(&repo_path, &["config", "user.email", "test@example.com"]);
+    git(&repo_path, &["config", "user.name", "Test User"]);
+    std::fs::write(repo_path.join("README.md"), "hello\n").expect("fixture file should be written");
+    git(&repo_path, &["add", "README.md"]);
+    git(&repo_path, &["commit", "-m", "initial"]);
+
+    let mut project = Project::new(
+        "Automation Command Project".to_string(),
+        repo_path.to_string_lossy().to_string(),
+    );
+    project.id = ProjectId::from_string("project-1".to_string());
+    project.base_branch = Some("main".to_string());
+    project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+    (temp, project)
 }
 
 fn active_automation(id: &str) -> Automation {
@@ -47,6 +85,7 @@ fn active_automation(id: &str) -> Automation {
         max_consecutive_failures: 3,
         first_run_prompt: Some("Run 1 prompt".to_string()),
         setup_analysis_summary: None,
+        spec_artifact_id: None,
         created_at: now,
         updated_at: now,
     }
@@ -112,6 +151,12 @@ fn continue_verdict(next_prompt: &str) -> String {
 #[tokio::test]
 async fn ipc_contract_automation_command_wrappers_drive_draft_listing_and_controls() {
     let app = automation_command_app();
+    let (_temp, project) = setup_git_project();
+    app.state::<AppState>()
+        .project_repo
+        .create(project)
+        .await
+        .expect("project should persist");
 
     let draft = create_automation_draft(
         CreateAutomationDraftInput {

@@ -25,7 +25,7 @@ use crate::application::InteractiveProcessRegistry;
 use crate::commands::{execution_commands::AGENT_ACTIVE_STATUSES, ExecutionState};
 use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::{
-    app_state::ExecutionHaltMode, AgentRunId, ChatContextType, ChatConversation,
+    app_state::ExecutionHaltMode, AgentRunId, AgentRunStatus, ChatContextType, ChatConversation,
     ChatConversationId, ChatMessageId, IdeationSessionId, InternalStatus, MergeFailureSource,
     MergeRecoveryEvent, MergeRecoveryEventKind, MergeRecoveryMetadata, MergeRecoveryReasonCode,
     MergeRecoverySource, MergeRecoveryState, ReviewNote, ReviewOutcome, ReviewerType,
@@ -71,6 +71,38 @@ fn provider_pause_targets_execution(context_type: ChatContextType) -> bool {
 }
 
 const VERIFICATION_AUTO_CONTINUE_METADATA: &str = r#"{"resume_in_place":true}"#;
+
+async fn mark_cancelled_stream_as_user_stop(
+    agent_run_repo: &Arc<dyn AgentRunRepository>,
+    agent_run_id: &str,
+) {
+    let run_id = AgentRunId::from_string(agent_run_id);
+    match agent_run_repo.get_by_id(&run_id).await {
+        Ok(Some(run)) if run.status != AgentRunStatus::Running => {
+            tracing::info!(
+                agent_run_id,
+                status = %run.status,
+                "Stream cancellation found an already-terminal agent run; preserving existing status"
+            );
+        }
+        Ok(_) => {
+            if let Err(error) = agent_run_repo.fail(&run_id, "Agent stopped by user").await {
+                tracing::warn!(
+                    agent_run_id,
+                    error = %error,
+                    "Failed to mark cancelled stream as user stop"
+                );
+            }
+        }
+        Err(error) => {
+            tracing::warn!(
+                agent_run_id,
+                error = %error,
+                "Failed to load agent run before cancelled stream labeling; preserving existing run state"
+            );
+        }
+    }
+}
 
 async fn provider_env_for_harness<R: Runtime>(
     app_handle: &Option<AppHandle<R>>,
@@ -1909,12 +1941,7 @@ pub(super) async fn handle_stream_error<R: Runtime + 'static>(
             context_id,
             "Stream cancelled — skipping error recovery and fallback transitions"
         );
-        let _ = agent_run_repo
-            .fail(
-                &AgentRunId::from_string(agent_run_id),
-                "Agent stopped by user",
-            )
-            .await;
+        mark_cancelled_stream_as_user_stop(agent_run_repo, agent_run_id).await;
 
         // Update pre-created message — append stop note to any content already flushed
         let (existing_content, existing_tool_calls, existing_content_blocks) =

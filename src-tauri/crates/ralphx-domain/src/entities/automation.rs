@@ -101,6 +101,7 @@ pub enum AutomationRunStatus {
     Provisioning,
     Running,
     Published,
+    Completed,
     Merged,
     PrClosed,
     AgentFailed,
@@ -114,6 +115,7 @@ impl AutomationRunStatus {
             Self::Provisioning => "provisioning",
             Self::Running => "running",
             Self::Published => "published",
+            Self::Completed => "completed",
             Self::Merged => "merged",
             Self::PrClosed => "pr_closed",
             Self::AgentFailed => "agent_failed",
@@ -127,6 +129,7 @@ impl AutomationRunStatus {
             "provisioning" => Some(Self::Provisioning),
             "running" => Some(Self::Running),
             "published" => Some(Self::Published),
+            "completed" => Some(Self::Completed),
             "merged" => Some(Self::Merged),
             "pr_closed" => Some(Self::PrClosed),
             "agent_failed" => Some(Self::AgentFailed),
@@ -248,6 +251,7 @@ pub struct Automation {
     pub max_consecutive_failures: i64,
     pub first_run_prompt: Option<String>,
     pub setup_analysis_summary: Option<String>,
+    pub spec_artifact_id: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -343,6 +347,10 @@ pub fn automation_run_is_transition_allowed(
                 AutomationRunStatus::Cancelled
             )
             | (AutomationRunStatus::Running, AutomationRunStatus::Published)
+            | (
+                AutomationRunStatus::Running,
+                AutomationRunStatus::Completed
+            )
             | (
                 AutomationRunStatus::Running,
                 AutomationRunStatus::AgentFailed

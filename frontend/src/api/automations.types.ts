@@ -10,6 +10,7 @@ export type AutomationRunStatus =
   | "provisioning"
   | "running"
   | "published"
+  | "completed"
   | "merged"
   | "pr_closed"
   | "agent_failed"
@@ -37,7 +38,7 @@ export type AutomationBaseRefKind =
 
 export type AutomationChainMode = "merged_base" | "pr_head_stacked";
 
-export type AutomationCompletionSignal = "pr_merged";
+export type AutomationCompletionSignal = "pr_merged" | "agent_completed";
 
 export interface Automation {
   id: string;
@@ -48,6 +49,7 @@ export interface Automation {
   pausedReasonDetail: string | null;
   goalPrompt: string;
   setupConversationId: string | null;
+  specArtifactId: string | null;
   providerHarness: string;
   modelId: string;
   logicalEffort: string | null;
@@ -169,4 +171,7 @@ export interface UpdateAutomationSetupInput {
   chainMode?: AutomationChainMode | undefined;
   completionSignal?: AutomationCompletionSignal | undefined;
   setupAnalysisSummary?: string | undefined;
+  // No `| null`: the backend `update_config` uses COALESCE and cannot clear a
+  // linked spec. v1 re-authoring replaces (new version), it does not unlink.
+  specArtifactId?: string | undefined;
 }
