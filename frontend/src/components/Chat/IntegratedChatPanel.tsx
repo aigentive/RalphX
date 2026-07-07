@@ -16,6 +16,7 @@ import {
   useConversationHistoryWindow,
   useConversationTimelineWindow,
   getCachedConversationMessages,
+  isOptimisticConversationId,
   chatKeys,
 } from "@/hooks/useChat";
 import {
@@ -109,6 +110,15 @@ import { cn } from "@/lib/utils";
 const EMPTY_TASKS: never[] = [];
 const AUTOMATION_SETUP_PROPOSAL_KIND = "automation_setup_proposal";
 const AUTOMATION_SETUP_PROPOSAL_APPLY_VALUE = "apply_automation_proposal";
+
+type TranscriptWindowData = {
+  messages: readonly unknown[];
+  totalMessageCount?: number;
+} | undefined;
+
+function transcriptWindowHasMessages(data: TranscriptWindowData): boolean {
+  return (data?.totalMessageCount ?? data?.messages.length ?? 0) > 0;
+}
 
 function automationProposalApplyOptionIndex(
   question: AskUserQuestionPayload | null | undefined
@@ -697,10 +707,15 @@ export function IntegratedChatPanel({
       pageSize: 40,
     }
   );
+  const teammateTimelineHasMessages = transcriptWindowHasMessages(teammateConversationHistory.data);
   const teammateLogicalConversationHistory = useConversationHistoryWindow(
     isTeammateTab ? teammateConversationId : null,
     {
-      enabled: !!teammateConversationId && isTeammateTab,
+      enabled:
+        !!teammateConversationId &&
+        isTeammateTab &&
+        !teammateConversationHistory.isLoading &&
+        !teammateTimelineHasMessages,
       pageSize: 40,
     }
   );
@@ -711,25 +726,43 @@ export function IntegratedChatPanel({
       pageSize: 40,
     }
   );
+  const primaryTimelineHasMessages = transcriptWindowHasMessages(primaryConversationHistory.data);
   const primaryLogicalConversationHistory = useConversationHistoryWindow(
     !isTeammateTab ? activeConversationId : null,
     {
-      enabled: !!activeConversationId && !isTeammateTab,
+      enabled:
+        !!activeConversationId &&
+        !isTeammateTab &&
+        !primaryConversationHistory.isLoading &&
+        !primaryTimelineHasMessages,
       pageSize: 40,
     }
   );
-  const shouldUsePrimaryLogicalHistory = primaryConversationHistory.hasOlderMessages;
-  const shouldUseTeammateLogicalHistory = teammateConversationHistory.hasOlderMessages;
+  const primaryLegacyHasMessages = transcriptWindowHasMessages(primaryLogicalConversationHistory.data);
+  const teammateLegacyHasMessages = transcriptWindowHasMessages(teammateLogicalConversationHistory.data);
+  const shouldUsePrimaryLogicalHistory =
+    !primaryTimelineHasMessages &&
+    !primaryConversationHistory.isLoading &&
+    primaryLegacyHasMessages;
+  const shouldUseTeammateLogicalHistory =
+    !teammateTimelineHasMessages &&
+    !teammateConversationHistory.isLoading &&
+    teammateLegacyHasMessages;
+  const shouldUsePrimaryOptimisticFallback =
+    !!activeConversationId && isOptimisticConversationId(activeConversationId);
+  const shouldUsePrimaryRegularFallback =
+    !primaryTimelineHasMessages &&
+    !primaryConversationHistory.isLoading &&
+    !primaryLegacyHasMessages;
 
   const primaryConversationData =
     !isTeammateTab
       ? shouldUsePrimaryLogicalHistory
         ? primaryLogicalConversationHistory.data
-        : (
-            primaryConversationHistory.data ??
-            primaryLogicalConversationHistory.data ??
-            regularChatData.messages.data
-          )
+        : (primaryConversationHistory.data ??
+            (shouldUsePrimaryOptimisticFallback || shouldUsePrimaryRegularFallback
+              ? regularChatData.messages.data
+              : undefined))
       : regularChatData.messages.data;
   const primaryTranscriptWindow = shouldUsePrimaryLogicalHistory
     ? primaryLogicalConversationHistory
@@ -737,7 +770,7 @@ export function IntegratedChatPanel({
   const teammateConversationData =
     shouldUseTeammateLogicalHistory
       ? teammateLogicalConversationHistory.data
-      : (teammateConversationHistory.data ?? teammateLogicalConversationHistory.data);
+      : teammateConversationHistory.data;
   const teammateTranscriptWindow = shouldUseTeammateLogicalHistory
     ? teammateLogicalConversationHistory
     : teammateConversationHistory;
@@ -972,12 +1005,12 @@ export function IntegratedChatPanel({
     ? isTeammateTab
       ? (
           teammateConversationHistory.isLoading ||
-          teammateLogicalConversationHistory.isLoading ||
+          (shouldUseTeammateLogicalHistory && teammateLogicalConversationHistory.isLoading) ||
           (shouldUseTeammateLogicalHistory && !teammateConversationData)
         ) && !currentTeammateConversationData
       : (
           primaryConversationHistory.isLoading ||
-          primaryLogicalConversationHistory.isLoading ||
+          (shouldUsePrimaryLogicalHistory && primaryLogicalConversationHistory.isLoading) ||
           (shouldUsePrimaryLogicalHistory && !primaryConversationData)
         ) && !primaryConversationData
     : false;

@@ -152,6 +152,8 @@ vi.mock("@/hooks/useChat", () => ({
     fetchOlderMessages: vi.fn(),
     };
   },
+  isOptimisticConversationId: (conversationId: string | null | undefined) =>
+    Boolean(conversationId?.startsWith("optimistic-conversation:")),
   getCachedConversationMessages: () =>
     useChatMockState.historyData?.messages ?? useChatMockState.messages,
   chatKeys: {
@@ -587,7 +589,7 @@ describe("IntegratedChatPanel", () => {
       expect(await screen.findByText("Live chunk from client events")).toBeInTheDocument();
     });
 
-    it("keeps logical transcript visible when the timeline query only has a tail window", async () => {
+    it("uses the timeline tail window even when older timeline blocks exist", async () => {
       mockChatPanelContext.storeContextKey = "project:project-1";
       mockChatPanelContext.currentContextType = "project";
       mockChatPanelContext.currentContextId = "project-1";
@@ -665,12 +667,11 @@ describe("IntegratedChatPanel", () => {
         </TestWrapper>
       );
 
-      expect(await screen.findByText("Initial user message")).toBeInTheDocument();
-      expect(screen.getByText("Full persisted assistant transcript")).toBeInTheDocument();
-      expect(screen.queryByText("Tail-only timeline block")).not.toBeInTheDocument();
+      expect(await screen.findByText("Tail-only timeline block")).toBeInTheDocument();
+      expect(screen.queryByText("Full persisted assistant transcript")).not.toBeInTheDocument();
     });
 
-    it("does not paint a tail-only timeline window before logical history arrives", async () => {
+    it("paints the timeline tail window before legacy history arrives", async () => {
       mockChatPanelContext.storeContextKey = "project:project-1";
       mockChatPanelContext.currentContextType = "project";
       mockChatPanelContext.currentContextId = "project-1";
@@ -719,8 +720,8 @@ describe("IntegratedChatPanel", () => {
         </TestWrapper>
       );
 
-      expect(await screen.findByTestId("chat-panel-loading")).toBeInTheDocument();
-      expect(screen.queryByText("Tail-only timeline block")).not.toBeInTheDocument();
+      expect(await screen.findByText("Tail-only timeline block")).toBeInTheDocument();
+      expect(screen.queryByTestId("chat-panel-loading")).not.toBeInTheDocument();
     });
   });
 
