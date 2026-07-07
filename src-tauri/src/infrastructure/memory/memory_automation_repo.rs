@@ -219,6 +219,24 @@ impl AutomationRepository for MemoryAutomationRepository {
         automations.remove(position);
         Ok(true)
     }
+
+    async fn delete_attachments_for_automation(
+        &self,
+        _automation_id: &AutomationId,
+    ) -> AppResult<usize> {
+        // The in-memory automation repo does not model attachment rows; deletion
+        // is a no-op that mirrors the SQLite contract (returns rows affected).
+        Ok(0)
+    }
+
+    async fn delete_context_refs_for_automation(
+        &self,
+        _automation_id: &AutomationId,
+    ) -> AppResult<usize> {
+        // The in-memory automation repo does not model context-ref rows; deletion
+        // is a no-op that mirrors the SQLite contract (returns rows affected).
+        Ok(0)
+    }
 }
 
 pub struct MemoryAutomationRunRepository {

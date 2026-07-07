@@ -650,6 +650,15 @@ impl AutomationService {
         .await
     }
 
+    /// Row-deletion core for automation deletion.
+    ///
+    /// This is the terminal step of the `delete_automation_with_archive`
+    /// composition (durable history is archived first). It hard-deletes the
+    /// automation bookkeeping rows — the automation itself (via the
+    /// `status IN ('completed','stopped')` SQL predicate), its runs, attachments,
+    /// and context refs (FK cascades are OFF in production) — then emits
+    /// `AutomationDeleted`. Drafts are CAS'd to `Stopped` by the composition
+    /// before this runs, so the terminal-only predicate still applies here.
     pub async fn delete(&self, id: &AutomationId) -> AppResult<()> {
         let automation = self.require_automation(id).await?;
         if !matches!(
@@ -657,9 +666,12 @@ impl AutomationService {
             AutomationStatus::Completed | AutomationStatus::Stopped
         ) {
             return Err(AppError::Validation(
-                "only completed or stopped automations can be deleted".to_string(),
+                "only draft, completed, or stopped automations can be deleted".to_string(),
             ));
         }
+        // Capture the project id before the row is gone; the deleted event needs
+        // it so the frontend can evict caches and navigate away (critic G3/E7).
+        let project_id = automation.project_id.clone();
         let deleted = self.automation_repo.delete_terminal(id).await?;
         if !deleted {
             return Err(automation_status_conflict(
@@ -669,8 +681,15 @@ impl AutomationService {
             ));
         }
         self.run_repo.delete_for_automation(id).await?;
-        self.event_emitter.emit(AutomationEvent::AutomationUpdated {
+        self.automation_repo
+            .delete_attachments_for_automation(id)
+            .await?;
+        self.automation_repo
+            .delete_context_refs_for_automation(id)
+            .await?;
+        self.event_emitter.emit(AutomationEvent::AutomationDeleted {
             automation_id: id.clone(),
+            project_id,
         });
         Ok(())
     }

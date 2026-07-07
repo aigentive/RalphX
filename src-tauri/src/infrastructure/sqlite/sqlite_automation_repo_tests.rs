@@ -725,3 +725,76 @@ async fn sqlite_run_repo_clears_stale_judge_verdict_when_retry_starts() {
     assert_eq!(completed.judge_model_id.as_deref(), Some("haiku"));
     assert_eq!(completed.judge_lease_expires_at, None);
 }
+
+#[tokio::test]
+async fn sqlite_automation_repo_deletes_attachments_and_context_refs() {
+    let (db, project_id, automation_repo, _run_repo) = setup_repos();
+    automation_repo
+        .create(automation(
+            "automation-cleanup",
+            project_id.clone(),
+            AutomationStatus::Stopped,
+        ))
+        .await
+        .unwrap();
+    // Second automation so the "other" child rows satisfy the FK constraint and
+    // prove the deletes are scoped by automation_id.
+    automation_repo
+        .create(automation(
+            "automation-other",
+            project_id,
+            AutomationStatus::Stopped,
+        ))
+        .await
+        .unwrap();
+
+    db.with_connection(|conn| {
+        conn.execute(
+            "INSERT INTO automation_attachments (id, automation_id, file_name, file_path, created_at)
+             VALUES ('att-1', 'automation-cleanup', 'a.md', '/tmp/a.md', '2026-07-07T00:00:00+00:00'),
+                    ('att-2', 'automation-cleanup', 'b.md', '/tmp/b.md', '2026-07-07T00:00:00+00:00'),
+                    ('att-other', 'automation-other', 'c.md', '/tmp/c.md', '2026-07-07T00:00:00+00:00')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO automation_context_refs (id, automation_id, ref_kind, payload_json, position)
+             VALUES ('ref-1', 'automation-cleanup', 'project', '{}', 0),
+                    ('ref-other', 'automation-other', 'project', '{}', 0)",
+            [],
+        )
+        .unwrap();
+    });
+
+    let automation_id = AutomationId::from_string("automation-cleanup");
+    assert_eq!(
+        automation_repo
+            .delete_attachments_for_automation(&automation_id)
+            .await
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        automation_repo
+            .delete_context_refs_for_automation(&automation_id)
+            .await
+            .unwrap(),
+        1
+    );
+
+    // Rows for other automations are untouched.
+    db.with_connection(|conn| {
+        let attachments: i64 = conn
+            .query_row("SELECT COUNT(*) FROM automation_attachments", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let refs: i64 = conn
+            .query_row("SELECT COUNT(*) FROM automation_context_refs", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(attachments, 1);
+        assert_eq!(refs, 1);
+    });
+}

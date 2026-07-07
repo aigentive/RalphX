@@ -8,6 +8,7 @@ use crate::application::automation::api::{
     AutomationResponse, AutomationRunResponse, AutomationScheduleResponse,
     CreateAutomationDraftResponse,
 };
+use crate::application::automation::delete::delete_automation_with_archive;
 use crate::application::automation::scheduler::{
     automation_judge_lease_expires_at, spawn_automation_judge_task, AutomationSchedulerConfig,
     HarnessAutomationJudgeInvoker,
@@ -390,8 +391,7 @@ pub async fn delete_automation(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let id = parse_automation_id(&input.id)?;
-    automation_service(&state)
-        .delete(&id)
+    delete_automation_with_archive(&state, &id)
         .await
         .map_err(|error| error.to_string())
 }

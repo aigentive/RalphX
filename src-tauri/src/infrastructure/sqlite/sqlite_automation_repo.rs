@@ -331,6 +331,38 @@ impl AutomationRepository for SqliteAutomationRepository {
             })
             .await
     }
+
+    async fn delete_attachments_for_automation(
+        &self,
+        automation_id: &AutomationId,
+    ) -> AppResult<usize> {
+        let automation_id = automation_id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                conn.execute(
+                    "DELETE FROM automation_attachments WHERE automation_id = ?1",
+                    [automation_id],
+                )
+                .map_err(AppError::from)
+            })
+            .await
+    }
+
+    async fn delete_context_refs_for_automation(
+        &self,
+        automation_id: &AutomationId,
+    ) -> AppResult<usize> {
+        let automation_id = automation_id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                conn.execute(
+                    "DELETE FROM automation_context_refs WHERE automation_id = ?1",
+                    [automation_id],
+                )
+                .map_err(AppError::from)
+            })
+            .await
+    }
 }
 
 pub struct SqliteAutomationRunRepository {

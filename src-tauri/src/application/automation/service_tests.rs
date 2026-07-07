@@ -456,6 +456,20 @@ impl AutomationRepository for LostStatusAutomationRepository {
     async fn delete_terminal(&self, _id: &AutomationId) -> crate::error::AppResult<bool> {
         Ok(false)
     }
+
+    async fn delete_attachments_for_automation(
+        &self,
+        _automation_id: &AutomationId,
+    ) -> crate::error::AppResult<usize> {
+        Ok(0)
+    }
+
+    async fn delete_context_refs_for_automation(
+        &self,
+        _automation_id: &AutomationId,
+    ) -> crate::error::AppResult<usize> {
+        Ok(0)
+    }
 }
 
 struct SkipJudgeLosesRunRepository {
@@ -1600,10 +1614,13 @@ async fn service_delete_is_terminal_only_and_removes_runs() {
         .await
         .unwrap()
         .is_empty());
+    // The row-delete core emits AutomationDeleted (not AutomationUpdated) with the
+    // project id captured before the row was removed.
     assert!(emitter
         .events()
-        .contains(&AutomationEvent::AutomationUpdated {
-            automation_id: active.id
+        .contains(&AutomationEvent::AutomationDeleted {
+            automation_id: active.id,
+            project_id: ProjectId::from_string("project-1".to_string()),
         }));
 }
 

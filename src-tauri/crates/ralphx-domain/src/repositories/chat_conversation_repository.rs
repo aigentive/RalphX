@@ -7,8 +7,8 @@ use async_trait::async_trait;
 
 use crate::agents::{AgentHarnessKind, ProviderSessionRef};
 use crate::entities::{
-    AgentConversationWorkspaceMode, ChatContextType, ChatConversation, ChatConversationId,
-    ConversationAttributionBackfillState, ConversationAttributionBackfillSummary,
+    AgentConversationWorkspaceMode, AutomationId, ChatContextType, ChatConversation,
+    ChatConversationId, ConversationAttributionBackfillState, ConversationAttributionBackfillSummary,
 };
 use crate::error::AppResult;
 
@@ -41,6 +41,18 @@ pub trait ChatConversationRepository: Send + Sync {
         &self,
         context_type: ChatContextType,
         context_id: &str,
+    ) -> AppResult<Vec<ChatConversation>>;
+
+    /// List all conversations owned by an automation (setup + run conversations),
+    /// including archived rows, matched by the `automation_id` column.
+    ///
+    /// Run conversations set both `automation_id` and `automation_run_id`; setup
+    /// conversations set only `automation_id`. Archived rows are intentionally
+    /// included so the automation-delete flow can decide which conversations
+    /// still need archiving.
+    async fn list_by_automation_id(
+        &self,
+        automation_id: &AutomationId,
     ) -> AppResult<Vec<ChatConversation>>;
 
     /// Get all conversations for a specific context, optionally including archived rows.

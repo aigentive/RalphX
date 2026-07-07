@@ -71,4 +71,18 @@ pub trait AutomationRepository: Send + Sync {
     ) -> AppResult<bool>;
 
     async fn delete_terminal(&self, id: &AutomationId) -> AppResult<bool>;
+
+    /// Delete all attachment rows owned by an automation. FK cascades are OFF in
+    /// production, so this must be called explicitly during automation deletion.
+    async fn delete_attachments_for_automation(
+        &self,
+        automation_id: &AutomationId,
+    ) -> AppResult<usize>;
+
+    /// Delete all context-ref rows owned by an automation. FK cascades are OFF in
+    /// production, so this must be called explicitly during automation deletion.
+    async fn delete_context_refs_for_automation(
+        &self,
+        automation_id: &AutomationId,
+    ) -> AppResult<usize>;
 }

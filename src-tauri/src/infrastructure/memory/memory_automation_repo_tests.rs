@@ -389,3 +389,23 @@ async fn memory_run_repo_clears_stale_judge_verdict_when_retry_starts() {
     assert_eq!(updated.error_detail, None);
     assert_eq!(updated.judge_lease_expires_at, Some(lease_expires_at));
 }
+
+#[tokio::test]
+async fn memory_automation_repo_child_row_deletes_are_noop_ok() {
+    // The in-memory repo does not model attachment / context-ref rows, so the
+    // deletes mirror the SQLite contract by returning Ok(0) instead of erroring.
+    let repo = MemoryAutomationRepository::new();
+    let automation_id = AutomationId::from_string("automation-1");
+    assert_eq!(
+        repo.delete_attachments_for_automation(&automation_id)
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        repo.delete_context_refs_for_automation(&automation_id)
+            .await
+            .unwrap(),
+        0
+    );
+}
