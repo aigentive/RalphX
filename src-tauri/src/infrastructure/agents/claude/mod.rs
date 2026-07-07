@@ -545,6 +545,27 @@ pub fn build_base_cli_command(
     )
 }
 
+#[cfg(any(test, feature = "test-utils"))]
+#[doc(hidden)]
+pub fn build_base_cli_command_for_test(
+    cli_path: &Path,
+    plugin_dir: &Path,
+    agent_type: Option<&str>,
+    is_external_mcp: bool,
+    effort_override: Option<&str>,
+    model_override: Option<&str>,
+) -> Result<Command, String> {
+    build_base_cli_command_inner(
+        cli_path,
+        plugin_dir,
+        agent_type,
+        is_external_mcp,
+        effort_override,
+        model_override,
+        false,
+    )
+}
+
 fn build_base_cli_command_inner(
     cli_path: &Path,
     plugin_dir: &Path,
@@ -1758,7 +1779,7 @@ pub fn build_spawnable_command_with_mcp_runtime_context_and_profile(
     Ok(SpawnableCommand::new(cmd, stdin_prompt))
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-utils"))]
 pub fn build_spawnable_command_for_test(
     cli_path: &Path,
     plugin_dir: &Path,
@@ -1782,7 +1803,7 @@ pub fn build_spawnable_command_for_test(
     )
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-utils"))]
 #[allow(clippy::too_many_arguments)]
 pub fn build_spawnable_command_with_mcp_runtime_context_for_test(
     cli_path: &Path,
@@ -1811,7 +1832,7 @@ pub fn build_spawnable_command_with_mcp_runtime_context_for_test(
     Ok(SpawnableCommand::new(cmd, stdin_prompt))
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-utils"))]
 #[allow(clippy::too_many_arguments)]
 pub fn build_spawnable_command_with_mcp_runtime_context_and_profile_for_test(
     cli_path: &Path,
@@ -1943,7 +1964,7 @@ pub fn build_spawnable_interactive_command_with_mcp_runtime_context_and_profile(
     Ok(SpawnableCommand::new(cmd, stdin_prompt))
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-utils"))]
 pub fn build_spawnable_interactive_command_for_test(
     cli_path: &Path,
     plugin_dir: &Path,
@@ -1969,7 +1990,7 @@ pub fn build_spawnable_interactive_command_for_test(
     )
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-utils"))]
 #[allow(clippy::too_many_arguments)]
 pub fn build_spawnable_interactive_command_with_mcp_runtime_context_for_test(
     cli_path: &Path,
@@ -1998,7 +2019,7 @@ pub fn build_spawnable_interactive_command_with_mcp_runtime_context_for_test(
     )
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-utils"))]
 #[allow(clippy::too_many_arguments)]
 pub fn build_spawnable_interactive_command_with_mcp_runtime_context_and_profile_for_test(
     cli_path: &Path,
