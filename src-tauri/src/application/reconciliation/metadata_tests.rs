@@ -6,15 +6,15 @@ use crate::domain::entities::{
 };
 
 fn task_with_metadata(metadata: String) -> Task {
-    let mut task = Task::new(ProjectId("project".to_string()), "metadata test".to_string());
+    let mut task = Task::new(
+        ProjectId("project".to_string()),
+        "metadata test".to_string(),
+    );
     task.metadata = Some(metadata);
     task
 }
 
-fn merge_event(
-    kind: MergeRecoveryEventKind,
-    source: MergeFailureSource,
-) -> MergeRecoveryEvent {
+fn merge_event(kind: MergeRecoveryEventKind, source: MergeFailureSource) -> MergeRecoveryEvent {
     MergeRecoveryEvent::new(
         kind,
         MergeRecoverySource::Auto,
@@ -126,9 +126,7 @@ fn failure_source_helpers_read_flat_metadata_sources() {
     let agent_reported = task_with_metadata(
         serde_json::json!({ "merge_failure_source": "agent_reported" }).to_string(),
     );
-    assert!(ReconciliationRunner::<tauri::Wry>::is_agent_reported_failure(
-        &agent_reported
-    ));
+    assert!(ReconciliationRunner::<tauri::Wry>::is_agent_reported_failure(&agent_reported));
 
     let validation_failed = task_with_metadata(
         serde_json::json!({
@@ -227,23 +225,18 @@ fn execution_retry_helpers_read_structured_recovery_metadata() {
 
     let task = task_with_execution_recovery(recovery);
 
-    let default_delay =
-        ReconciliationRunner::<tauri::Wry>::execution_failed_retry_delay(1, None);
+    let default_delay = ReconciliationRunner::<tauri::Wry>::execution_failed_retry_delay(1, None);
     let git_delay = ReconciliationRunner::<tauri::Wry>::execution_failed_retry_delay(
         1,
         Some(ExecutionFailureSource::GitIsolation),
     );
     assert!(git_delay < default_delay);
-    assert!(
-        ReconciliationRunner::<tauri::Wry>::execution_next_retry_at(
-            &task,
-            Some(ExecutionFailureSource::GitIsolation),
-        )
-        .is_some()
-    );
-    assert!(!ReconciliationRunner::<tauri::Wry>::has_recent_startup_recovery(
-        &task
-    ));
+    assert!(ReconciliationRunner::<tauri::Wry>::execution_next_retry_at(
+        &task,
+        Some(ExecutionFailureSource::GitIsolation),
+    )
+    .is_some());
+    assert!(!ReconciliationRunner::<tauri::Wry>::has_recent_startup_recovery(&task));
 }
 
 #[test]
@@ -260,7 +253,5 @@ fn has_recent_startup_recovery_detects_recent_startup_source() {
     );
     let task = task_with_execution_recovery(recovery);
 
-    assert!(ReconciliationRunner::<tauri::Wry>::has_recent_startup_recovery(
-        &task
-    ));
+    assert!(ReconciliationRunner::<tauri::Wry>::has_recent_startup_recovery(&task));
 }

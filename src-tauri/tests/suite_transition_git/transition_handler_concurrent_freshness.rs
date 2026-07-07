@@ -11,13 +11,13 @@
 // These tests complement freshness_tests.rs (unit) and freshness_integration_tests.rs
 // (basic integration) by focusing on multi-task concurrency and edge-case resilience.
 
+use crate::support::real_git_repo::setup_real_git_repo;
 use ralphx_lib::domain::entities::{Project, ProjectId, Task};
 use ralphx_lib::domain::state_machine::transition_handler::freshness::{
     ensure_branches_fresh, FreshnessAction,
 };
 use ralphx_lib::infrastructure::agents::claude::ReconciliationConfig;
 use std::sync::Arc;
-use crate::support::real_git_repo::setup_real_git_repo;
 
 // ==================
 // Shared test helpers
@@ -466,13 +466,14 @@ async fn dirty_worktree_emergency_commit_enables_freshness() {
 }
 
 /// When the emergency auto-commit fails (simulated by making the git repo
-/// directory read-only), `ensure_branches_fresh()` must warn and return Ok
-/// (skip freshness rather than block execution).
+/// directory read-only), `ensure_branches_fresh()` must block execution rather
+/// than pretending the freshness check passed.
 ///
-/// This verifies the "fail open" behavior: executing on a slightly stale branch
-/// is preferable to blocking the task entirely.
+/// This verifies fail-closed behavior: if the dirty worktree cannot be made
+/// durable before branch freshness checks, execution must not spawn on uncertain
+/// Git state.
 #[tokio::test]
-async fn dirty_worktree_failed_autocommit_skips_gracefully() {
+async fn dirty_worktree_failed_autocommit_blocks_execution() {
     let repo = setup_real_git_repo();
     let path = repo.path();
 
@@ -525,10 +526,14 @@ async fn dirty_worktree_failed_autocommit_skips_gracefully() {
     rw_perms.set_mode(0o755);
     let _ = std::fs::set_permissions(&objects_dir, rw_perms);
 
-    // Must return Ok — fail open (skip freshness) rather than block execution.
+    // Must block — fail closed rather than skip freshness and spawn on uncertain state.
     assert!(
-        result.is_ok(),
-        "Failed auto-commit must skip freshness and return Ok (fail open). Got: {:?}",
+        matches!(
+            result,
+            Err(FreshnessAction::ExecutionBlocked { ref reason })
+                if reason.contains("Emergency auto-commit failed")
+        ),
+        "Failed auto-commit must block execution. Got: {:?}",
         result
     );
 }
