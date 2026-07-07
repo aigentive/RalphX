@@ -25,7 +25,9 @@ import {
 } from "@/api/automations";
 import { useAfterPaintMounted } from "@/components/agents/agentDeferredFrame";
 import {
+  describeAutomationDeleteConsequences,
   describeRunFailure,
+  isAutomationDeletable,
   latestRun,
 } from "@/components/automations/automationStage";
 import {
@@ -47,6 +49,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useConfirmation } from "@/hooks/useConfirmation";
 import {
+  evictDeletedAutomation,
   invalidateAutomationQueries,
   useAutomationDetail,
 } from "@/hooks/useAutomations";
@@ -707,7 +710,7 @@ export function AutomationDetailView({
   const deleteMutation = useMutation({
     mutationFn: () => automationsApi.delete(automationId),
     onSuccess: () => {
-      invalidate();
+      evictDeletedAutomation(queryClient, automationId);
       toast.success("Automation deleted");
       onBack();
     },
@@ -786,7 +789,7 @@ export function AutomationDetailView({
   const handleDelete = async () => {
     const confirmed = await confirm({
       title: "Delete automation?",
-      description: "Delete removes the terminal automation and its run history.",
+      description: describeAutomationDeleteConsequences(automation, runs),
       confirmText: "Delete",
       pendingText: "Deleting...",
       variant: "destructive",
@@ -924,7 +927,7 @@ export function AutomationDetailView({
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem
-                disabled={!isAutomationTerminal(automation.status)}
+                disabled={!isAutomationDeletable(automation.status)}
                 className="text-[var(--status-error)]"
                 onSelect={(event) => {
                   event.preventDefault();

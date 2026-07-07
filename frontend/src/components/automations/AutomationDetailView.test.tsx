@@ -717,4 +717,66 @@ describe("AutomationDetailView", () => {
     expect(toastSuccessMock).toHaveBeenCalledWith("Automation deleted");
     expect(onBack).toHaveBeenCalled();
   });
+
+  it("allows deleting draft automations and lists the archive inventory in the confirm dialog", async () => {
+    renderDetail({
+      automation: automation({
+        status: "draft",
+        setupConversationId: "setup-conversation-1",
+        specArtifactId: "spec-1",
+      }),
+      runs: [
+        run({
+          id: "run-open",
+          status: "published",
+          judgeState: "none",
+          conversationId: "conversation-open",
+          prNumber: 777,
+          prMergedAt: null,
+        }),
+      ],
+      usage,
+    });
+
+    await screen.findByTestId("automation-detail-view");
+
+    await userEvent.click(screen.getByLabelText("More automation actions"));
+    const deleteItem = screen.getByText("Delete");
+    expect(deleteItem.closest("[role='menuitem']")).not.toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+    await userEvent.click(deleteItem);
+
+    expect(await screen.findByText("Delete automation?")).toBeInTheDocument();
+    expect(
+      screen.getByText(/Archives the setup conversation and 1 run conversation\./),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Closes 1 open PR\./)).toBeInTheDocument();
+    expect(screen.getByText(/Archives the linked spec\./)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Permanently removes the automation and its run history\./),
+    ).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Delete" }));
+    await waitFor(() =>
+      expect(deleteAutomationMock).toHaveBeenCalledWith("automation-1"),
+    );
+  });
+
+  it("disables delete for active automations", async () => {
+    renderDetail({
+      automation: automation({ status: "active" }),
+      runs: [run()],
+      usage,
+    });
+
+    await screen.findByTestId("automation-detail-view");
+
+    await userEvent.click(screen.getByLabelText("More automation actions"));
+    expect(screen.getByText("Delete").closest("[role='menuitem']")).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+  });
 });

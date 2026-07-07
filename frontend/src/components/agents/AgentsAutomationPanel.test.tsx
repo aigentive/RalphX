@@ -11,6 +11,7 @@ const {
   pauseAutomationMock,
   resumeAutomationMock,
   stopAutomationMock,
+  deleteAutomationMock,
   updateAutomationSetupMock,
   sendAgentMessageMock,
   useAskUserQuestionMock,
@@ -24,6 +25,7 @@ const {
   pauseAutomationMock: vi.fn(),
   resumeAutomationMock: vi.fn(),
   stopAutomationMock: vi.fn(),
+  deleteAutomationMock: vi.fn(),
   updateAutomationSetupMock: vi.fn(),
   sendAgentMessageMock: vi.fn(),
   useAskUserQuestionMock: vi.fn(),
@@ -113,6 +115,7 @@ vi.mock("@/hooks/useHarnessProviders", () => ({
 
 vi.mock("@/hooks/useAutomations", () => ({
   invalidateAutomationQueries: vi.fn(),
+  evictDeletedAutomation: vi.fn(),
   useAutomationDetail: (...args: unknown[]) => useAutomationDetailMock(...args),
   useAutomationEvents: (...args: unknown[]) => useAutomationEventsMock(...args),
 }));
@@ -134,6 +137,7 @@ vi.mock("@/api/automations", async (importOriginal) => {
       pause: (...args: unknown[]) => pauseAutomationMock(...args),
       resume: (...args: unknown[]) => resumeAutomationMock(...args),
       stop: (...args: unknown[]) => stopAutomationMock(...args),
+      delete: (...args: unknown[]) => deleteAutomationMock(...args),
       setupAgent: {
         ...actual.automationsApi.setupAgent,
         updateAutomation: (...args: unknown[]) =>
@@ -256,6 +260,7 @@ describe("AgentsAutomationPanel", () => {
     pauseAutomationMock.mockResolvedValue(automationFixture({ status: "paused" }));
     resumeAutomationMock.mockResolvedValue(automationFixture({ status: "active" }));
     stopAutomationMock.mockResolvedValue(automationFixture({ status: "stopped" }));
+    deleteAutomationMock.mockResolvedValue(undefined);
     updateAutomationSetupMock.mockResolvedValue(automationFixture({ status: "draft" }));
     sendAgentMessageMock.mockResolvedValue({
       conversationId: "conversation-setup",
@@ -734,6 +739,54 @@ describe("AgentsAutomationPanel", () => {
     expect(screen.queryByTestId("agents-automation-pause")).not.toBeInTheDocument();
     expect(screen.queryByTestId("agents-automation-resume")).not.toBeInTheDocument();
     expect(screen.queryByTestId("agents-automation-stop")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("agents-automation-delete")).not.toBeInTheDocument();
     expect(screen.getByTestId("agents-automation-open")).toBeDisabled();
+  });
+
+  it("deletes draft automations after confirming the archive inventory", async () => {
+    useAutomationDetailMock.mockReturnValue({
+      data: automationDetailFixture({
+        automation: automationFixture({
+          status: "draft",
+          setupConversationId: "conversation-setup",
+          specArtifactId: "spec-1",
+        }),
+        runs: [],
+      }),
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel();
+
+    const deleteButton = screen.getByTestId("agents-automation-delete");
+    expect(deleteButton).toHaveTextContent("Delete draft");
+
+    fireEvent.click(deleteButton);
+
+    expect(await screen.findByText("Delete draft automation?")).toBeInTheDocument();
+    expect(
+      screen.getByText(/Archives the setup conversation and 0 run conversations\./),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Archives the linked spec\./)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Permanently removes the automation and its run history\./),
+    ).toBeInTheDocument();
+
+    const dialog = screen.getByRole("alertdialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete draft" }));
+
+    await waitFor(() =>
+      expect(deleteAutomationMock).toHaveBeenCalledWith("automation-1"),
+    );
+    await waitFor(() =>
+      expect(toastSuccessMock).toHaveBeenCalledWith("Automation deleted"),
+    );
+  });
+
+  it("does not show a delete action for non-draft automations", () => {
+    renderPanel();
+
+    expect(screen.queryByTestId("agents-automation-delete")).not.toBeInTheDocument();
   });
 });

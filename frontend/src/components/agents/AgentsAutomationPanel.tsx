@@ -8,6 +8,7 @@ import {
   Pause,
   Play,
   Square,
+  Trash2,
   Workflow,
   type LucideIcon,
 } from "lucide-react";
@@ -25,6 +26,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useAfterPaintMounted } from "@/components/agents/agentDeferredFrame";
 import {
+  describeAutomationDeleteConsequences,
   describeAutomationStage,
   describeRunFailure,
   latestRun,
@@ -37,6 +39,7 @@ import {
 import { AutomationPhaseProgress } from "@/components/automations/AutomationPhases";
 import { AutomationSpecView } from "@/components/automations/AutomationSpecView";
 import {
+  evictDeletedAutomation,
   invalidateAutomationQueries,
   useAutomationDetail,
   useAutomationEvents,
@@ -376,6 +379,14 @@ export function AgentsAutomationPanel({
     },
     onError: () => toast.error("Failed to stop automation"),
   });
+  const deleteMutation = useMutation({
+    mutationFn: () => automationsApi.delete(automationId),
+    onSuccess: () => {
+      evictDeletedAutomation(queryClient, automationId);
+      toast.success("Automation deleted");
+    },
+    onError: () => toast.error("Failed to delete automation"),
+  });
   const handleAutomationRunModeChange = useCallback(
     (runMode: AutomationRunMode) => {
       const setupConversationId = automationForRuntime?.setupConversationId;
@@ -550,6 +561,26 @@ export function AgentsAutomationPanel({
     }
   };
 
+  const handleDelete = async () => {
+    const automationDetail = detail.data;
+    if (!automationDetail) {
+      return;
+    }
+    const confirmed = await confirm({
+      title: "Delete draft automation?",
+      description: describeAutomationDeleteConsequences(
+        automationDetail.automation,
+        automationDetail.runs,
+      ),
+      confirmText: "Delete draft",
+      pendingText: "Deleting...",
+      variant: "destructive",
+    });
+    if (confirmed) {
+      deleteMutation.mutate();
+    }
+  };
+
   if (!afterPaint || detail.isLoading) {
     return <PanelShell />;
   }
@@ -571,10 +602,14 @@ export function AgentsAutomationPanel({
   const showPausedReason =
     !failureReason && automation.status === "paused" && Boolean(automation.pausedReasonCode);
   const actionPending =
-    pauseMutation.isPending || resumeMutation.isPending || stopMutation.isPending;
+    pauseMutation.isPending ||
+    resumeMutation.isPending ||
+    stopMutation.isPending ||
+    deleteMutation.isPending;
   const canPause = automation.status === "active";
   const canResume = automation.status === "paused";
   const canStop = automation.status !== "completed" && automation.status !== "stopped";
+  const canDelete = automation.status === "draft";
   const setupConversationId = automation.setupConversationId;
   const setupControlsDisabled =
     automation.status !== "draft" || !setupConversationId;
@@ -786,6 +821,20 @@ export function AgentsAutomationPanel({
           >
             <Square className="h-4 w-4" />
             Stop
+          </Button>
+        ) : null}
+        {canDelete ? (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="gap-2 text-[var(--status-error)]"
+            disabled={actionPending}
+            onClick={handleDelete}
+            data-testid="agents-automation-delete"
+          >
+            <Trash2 className="h-4 w-4" />
+            Delete draft
           </Button>
         ) : null}
         <Button
