@@ -17,7 +17,7 @@ import type { AskUserQuestionPayload } from "@/types/ask-user-question";
 import type { ExecutionStatusResponse } from "@/lib/tauri";
 import type { RecoveryPromptEvent } from "@/types/events";
 import { DEFAULT_PROJECT_VIEW, type ViewType } from "@/types/chat";
-import type { InternalStatus } from "@/types/status";
+import type { TaskHistoryState } from "@/types/task-history";
 import {
   loadCollapsedColumns,
   saveCollapsedColumns,
@@ -281,14 +281,7 @@ interface UiState {
   /** Snapshot of graph panel visibility before entering battle mode */
   battleModePanelRestoreState: { userOpen: boolean; compactOpen: boolean } | null;
   /** History state for time-travel feature - shared between TaskDetailOverlay and IntegratedChatPanel */
-  taskHistoryState: {
-    status: InternalStatus;
-    timestamp: string;
-    /** Conversation ID from the state transition metadata (for states that spawn conversations) */
-    conversationId?: string | undefined;
-    /** Agent run ID from the state transition metadata */
-    agentRunId?: string | undefined;
-  } | null;
+  taskHistoryState: TaskHistoryState | null;
   /** Task creation overlay context, or null if closed */
   taskCreationContext: TaskCreationContext | null;
   /** Whether the welcome screen is manually shown (vs. empty state) */
@@ -411,12 +404,7 @@ interface UiActions {
   /** Exit battle mode and restore graph panel visibility state */
   exitBattleMode: () => void;
   /** Set task history state for time-travel feature */
-  setTaskHistoryState: (state: {
-    status: InternalStatus;
-    timestamp: string;
-    conversationId?: string | undefined;
-    agentRunId?: string | undefined;
-  } | null) => void;
+  setTaskHistoryState: (state: TaskHistoryState | null) => void;
   /** Open task creation overlay */
   openTaskCreation: (
     projectId: string,

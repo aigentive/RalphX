@@ -362,6 +362,22 @@ export function AgentsTaskDetailOverlay({
   // Derived values for history mode (historyState from store)
   const isHistoryMode = historyState !== null;
   const viewStatus = (historyState?.status as InternalStatus | undefined) ?? task?.internalStatus;
+  const historyContextLabel =
+    historyState?.contextType === "task_execution"
+      ? "Execution"
+      : historyState?.contextType === "review"
+        ? "Review"
+        : historyState?.contextType === "merge"
+          ? "Merge"
+          : null;
+  const historyStageLabel =
+    historyContextLabel && historyState?.attemptIndex
+      ? `${historyContextLabel} attempt ${historyState.attemptIndex}`
+      : historyState
+        ? STATUS_CONFIG[historyState.status]?.label ?? historyState.status
+        : "";
+  const historyHasConversation =
+    historyState?.hasConversation ?? Boolean(historyState?.conversationId);
 
   // Get mutations
   const {
@@ -703,10 +719,15 @@ export function AgentsTaskDetailOverlay({
             >
               <History className="w-3 h-3" style={{ color: "var(--text-muted)" }} />
               <span className="text-[0.6875rem]" style={{ color: "var(--text-muted)" }}>
-                Viewing: {STATUS_CONFIG[historyState.status]?.label ?? historyState.status}
+                Viewing: {historyStageLabel}
               </span>
               <span className="text-[0.625rem]" style={{ color: "var(--text-muted)" }}>
                 {new Date(historyState.timestamp).toLocaleString()}
+              </span>
+              <span className="text-[0.625rem]" style={{ color: "var(--text-muted)" }}>
+                {historyHasConversation
+                  ? "Runtime transcript available"
+                  : "No runtime transcript recorded"}
               </span>
             </div>
           )}
