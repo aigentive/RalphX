@@ -100,7 +100,17 @@ export const AUTOMATION_SETUP_TOOLS: Tool[] = [
         },
         setup_analysis_summary: {
           type: "string",
-          description: "Optional concise summary of the setup analysis.",
+          description: "Optional concise summary of the setup analysis (assumptions/constraints only).",
+        },
+        spec_content: {
+          type: "string",
+          description:
+            "Full automation spec markdown. When provided, the backend persists it as a Specification artifact and links it (re-authoring creates a new version). Author or load the spec first, then derive goal_prompt, goal_items_json phases, and first_run_prompt from it.",
+        },
+        spec_artifact_id: {
+          type: "string",
+          description:
+            "Link an existing Specification artifact (e.g. an ideation/handoff spec) as this automation's spec. The artifact must already exist. Prefer spec_content when authoring new spec markdown.",
         },
       },
       required: [],
@@ -141,6 +151,8 @@ const UPDATE_AUTOMATION_FIELDS = [
   "chain_mode",
   "completion_signal",
   "setup_analysis_summary",
+  "spec_content",
+  "spec_artifact_id",
 ] as const;
 
 export function isAutomationSetupToolName(name: string): boolean {

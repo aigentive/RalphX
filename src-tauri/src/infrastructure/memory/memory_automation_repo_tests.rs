@@ -4,7 +4,7 @@ use chrono::Utc;
 
 use crate::domain::entities::{
     Automation, AutomationId, AutomationJudgeState, AutomationPromptAuthor, AutomationRun,
-    AutomationRunId, AutomationRunStatus, AutomationStatus, ProjectId,
+    AutomationRunId, AutomationRunStatus, AutomationStatus, ChatConversationId, ProjectId,
 };
 use crate::domain::repositories::{
     AutomationConfigPatch, AutomationRepository, AutomationRunRepository,
@@ -38,6 +38,7 @@ fn automation(id: &str, project_id: &str, status: AutomationStatus) -> Automatio
         max_consecutive_failures: 3,
         first_run_prompt: Some("Run 1".to_string()),
         setup_analysis_summary: None,
+        spec_artifact_id: None,
         created_at: now,
         updated_at: now,
     }
@@ -199,6 +200,7 @@ async fn memory_automation_repo_update_config_writes_only_provided_fields() {
                     r#"[{"id":"phase-1","title":"Create context model","status":"pending"}]"#
                         .to_string(),
                 ),
+                spec_artifact_id: Some("artifact-spec-1".to_string()),
                 ..Default::default()
             },
         )
@@ -207,6 +209,7 @@ async fn memory_automation_repo_update_config_writes_only_provided_fields() {
         .expect("config should update");
 
     assert_eq!(updated.goal_prompt, "Ship the migration");
+    assert_eq!(updated.spec_artifact_id.as_deref(), Some("artifact-spec-1"));
     assert_eq!(
         updated.first_run_prompt.as_deref(),
         Some("Implement item 1 in a scoped PR.")
@@ -385,4 +388,77 @@ async fn memory_run_repo_clears_stale_judge_verdict_when_retry_starts() {
     assert_eq!(updated.judge_verdict_json, None);
     assert_eq!(updated.error_detail, None);
     assert_eq!(updated.judge_lease_expires_at, Some(lease_expires_at));
+}
+
+#[tokio::test]
+async fn memory_automation_repo_child_row_deletes_are_noop_ok() {
+    // The in-memory repo does not model attachment / context-ref rows, so the
+    // deletes mirror the SQLite contract by returning Ok(0) instead of erroring.
+    let repo = MemoryAutomationRepository::new();
+    let automation_id = AutomationId::from_string("automation-1");
+    assert_eq!(
+        repo.delete_attachments_for_automation(&automation_id)
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        repo.delete_context_refs_for_automation(&automation_id)
+            .await
+            .unwrap(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn memory_find_run_by_conversation_id_returns_latest_linked_run() {
+    let repo = MemoryAutomationRunRepository::new();
+    // Valid distinct UUIDs — from_string collapses non-UUID text to Uuid::nil().
+    let conversation = ChatConversationId::from_string("11111111-1111-1111-1111-111111111111");
+
+    let mut first = run(
+        "run-1",
+        "automation-1",
+        1,
+        AutomationRunStatus::AgentFailed,
+        AutomationJudgeState::Done,
+    );
+    first.conversation_id = Some(conversation.clone());
+    let mut second = run(
+        "run-2",
+        "automation-1",
+        2,
+        AutomationRunStatus::Running,
+        AutomationJudgeState::None,
+    );
+    second.conversation_id = Some(conversation.clone());
+    // Different automation so the single-open-run constraint is not tripped.
+    let mut unrelated = run(
+        "run-3",
+        "automation-2",
+        3,
+        AutomationRunStatus::Running,
+        AutomationJudgeState::None,
+    );
+    unrelated.conversation_id =
+        Some(ChatConversationId::from_string("22222222-2222-2222-2222-222222222222"));
+
+    repo.create_run(first).await.unwrap();
+    repo.create_run(second.clone()).await.unwrap();
+    repo.create_run(unrelated).await.unwrap();
+
+    let found = repo
+        .find_run_by_conversation_id(&conversation)
+        .await
+        .unwrap()
+        .expect("linked run should be found");
+    assert_eq!(found.id, second.id, "highest run_index wins");
+
+    assert!(repo
+        .find_run_by_conversation_id(&ChatConversationId::from_string(
+            "99999999-9999-9999-9999-999999999999"
+        ))
+        .await
+        .unwrap()
+        .is_none());
 }

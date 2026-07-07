@@ -1383,7 +1383,8 @@ export async function getConversation(conversationId: string): Promise<{
 }
 
 /**
- * Get a tail-first page of conversation messages.
+ * Legacy compatibility: get a tail-first page of conversation messages.
+ * Visible Agent transcripts should prefer getConversationTimelinePage().
  * `offset` counts how many newest messages to skip before loading older history.
  */
 export async function getConversationMessagesPage(

@@ -24,8 +24,8 @@ use crate::domain::services::{
 };
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::memory::{
-    MemoryAgentConversationWorkspaceRepository, MemoryAutomationRepository,
-    MemoryAutomationRunRepository, MemoryChatConversationRepository,
+    MemoryAgentConversationWorkspaceRepository, MemoryArtifactRepository,
+    MemoryAutomationRepository, MemoryAutomationRunRepository, MemoryChatConversationRepository,
 };
 
 fn automation(id: &str) -> Automation {
@@ -54,6 +54,7 @@ fn automation(id: &str) -> Automation {
         max_consecutive_failures: 3,
         first_run_prompt: Some("Build the first PR".to_string()),
         setup_analysis_summary: None,
+        spec_artifact_id: None,
         created_at: now,
         updated_at: now,
     }
@@ -215,6 +216,65 @@ fn automation_run_start_request_maps_to_manual_start_input() {
 }
 
 #[test]
+fn automation_run_start_request_injects_spec_reference_and_context_when_spec_linked() {
+    let mut automation = automation("automation-1");
+    automation.spec_artifact_id = Some("spec-artifact-9".to_string());
+    automation.goal_prompt = "Migrate every module".to_string();
+    automation.goal_items_json = Some(
+        r#"[{"id":"item-1","title":"First","status":"done"},{"id":"item-2","title":"Second","status":"pending"}]"#
+            .to_string(),
+    );
+    let run = run(automation.id.clone());
+    let request = AutomationRunStartRequest::from_automation_run(
+        &automation,
+        &run,
+        crate::domain::entities::ChatConversationId::from_string(
+            "44444444-4444-4444-8444-444444444444",
+        ),
+    );
+
+    assert_eq!(request.composer_artifact_references.len(), 1);
+    let spec_ref = &request.composer_artifact_references[0];
+    assert_eq!(spec_ref.artifact_id, "spec-artifact-9");
+    assert_eq!(spec_ref.kind, "spec");
+    assert_eq!(spec_ref.session_id, None);
+    assert_eq!(spec_ref.version, None);
+    // The request forwards the raw run prompt; the context prefix is applied only at
+    // spawn time, so both the request and the source run stay clean (D5).
+    assert_eq!(request.run_prompt, "Build the first PR");
+    assert_eq!(run.run_prompt, "Build the first PR");
+
+    let input = request.into_start_input().unwrap();
+    assert_eq!(input.composer_artifact_references.len(), 1);
+    assert_eq!(input.composer_artifact_references[0].kind, "spec");
+    assert!(input.content.starts_with("<automation_context>"));
+    assert!(input.content.contains("Migrate every module"));
+    assert!(input.content.contains("Build the first PR"));
+}
+
+#[test]
+fn automation_run_start_request_has_no_spec_reference_or_context_when_unlinked() {
+    let automation = automation("automation-1");
+    assert_eq!(automation.spec_artifact_id, None);
+    let run = run(automation.id.clone());
+    let request = AutomationRunStartRequest::from_automation_run(
+        &automation,
+        &run,
+        crate::domain::entities::ChatConversationId::from_string(
+            "55555555-5555-4555-8555-555555555555",
+        ),
+    );
+
+    assert!(request.composer_artifact_references.is_empty());
+    assert_eq!(request.automation_context, None);
+    assert_eq!(request.run_prompt, "Build the first PR");
+
+    let input = request.into_start_input().unwrap();
+    assert!(input.composer_artifact_references.is_empty());
+    assert_eq!(input.content, "Build the first PR");
+}
+
+#[test]
 fn automation_run_start_request_trims_optional_fields_and_rejects_invalid_values() {
     let automation = automation("automation-1");
     let run = run(automation.id.clone());
@@ -312,6 +372,7 @@ async fn provision_first_run_noops_or_rejects_when_not_ready() {
         workspace_repo.clone(),
         Arc::new(starter.clone()),
         Arc::new(NoopAutomationEventEmitter),
+        Arc::new(MemoryArtifactRepository::new()),
     );
 
     assert!(provisioner
@@ -341,7 +402,9 @@ async fn provision_first_run_creates_owned_draft_and_marks_workspace_for_initial
     let conversation_repo = Arc::new(MemoryChatConversationRepository::new());
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let starter = RecordingStarter::new(Arc::clone(&workspace_repo));
-    let automation = automation("automation-1");
+    let mut automation = automation("automation-1");
+    automation.base_ref = "ralphx/automation-workspace/automation-setup".to_string();
+    automation.base_display_name = Some("Automation branch".to_string());
     automation_repo.create(automation.clone()).await.unwrap();
     let provisioner = AutomationRunProvisioner::new(
         automation_repo,
@@ -350,6 +413,7 @@ async fn provision_first_run_creates_owned_draft_and_marks_workspace_for_initial
         workspace_repo.clone(),
         Arc::new(starter.clone()),
         Arc::new(NoopAutomationEventEmitter),
+        Arc::new(MemoryArtifactRepository::new()),
     );
 
     let started = provisioner
@@ -360,6 +424,10 @@ async fn provision_first_run_creates_owned_draft_and_marks_workspace_for_initial
 
     assert_eq!(started.status, AutomationRunStatus::Running);
     assert_eq!(started.run_index, 1);
+    assert_eq!(
+        started.base_ref_used,
+        "ralphx/automation-workspace/automation-setup"
+    );
     assert_eq!(
         started.branch_name.as_deref(),
         Some("ralphx/automation-run-1")
@@ -398,7 +466,14 @@ async fn provision_first_run_creates_owned_draft_and_marks_workspace_for_initial
     assert_eq!(requests[0].provider_harness, "codex");
     assert_eq!(requests[0].model_id, "gpt-5.4");
     assert_eq!(requests[0].base_ref_kind, "local_branch");
-    assert_eq!(requests[0].base_ref, "main");
+    assert_eq!(
+        requests[0].base_ref,
+        "ralphx/automation-workspace/automation-setup"
+    );
+    assert_eq!(
+        requests[0].base_display_name.as_deref(),
+        Some("Automation branch")
+    );
 
     let latest = run_repo
         .latest_for_automation(&automation.id)
@@ -425,6 +500,7 @@ async fn provision_pending_run_noops_for_non_pending_and_conflicts_on_stale_stat
         workspace_repo,
         Arc::new(starter),
         Arc::new(NoopAutomationEventEmitter),
+        Arc::new(MemoryArtifactRepository::new()),
     );
 
     let mut running = run(automation.id.clone());
@@ -464,6 +540,7 @@ async fn provision_pending_run_marks_agent_failed_when_starter_errors() {
         workspace_repo,
         Arc::new(FailingStarter),
         Arc::new(NoopAutomationEventEmitter),
+        Arc::new(MemoryArtifactRepository::new()),
     );
 
     let error = provisioner

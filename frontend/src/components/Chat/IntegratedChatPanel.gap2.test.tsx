@@ -72,6 +72,8 @@ vi.mock("@/hooks/useChat", () => ({
     fetchOlderMessages: vi.fn(),
   }),
   getCachedConversationMessages: () => useChatMockState.messages,
+  isOptimisticConversationId: (conversationId: string | null | undefined) =>
+    typeof conversationId === "string" && conversationId.startsWith("optimistic-"),
   chatKeys: {
     all: ["chat"],
     conversationList: (type: string, id: string) => ["chat", "conversations", type, id],

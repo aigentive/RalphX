@@ -7,18 +7,27 @@ use tauri::{AppHandle, Emitter};
 use crate::domain::entities::{
     automation_is_transition_allowed, automation_run_is_transition_allowed,
     judge_is_transition_allowed, AutomationId, AutomationJudgeState, AutomationRunId,
-    AutomationRunStatus, AutomationStatus,
+    AutomationRunStatus, AutomationStatus, ProjectId,
 };
 use crate::domain::repositories::{AutomationRepository, AutomationRunRepository};
 use crate::error::{AppError, AppResult};
 
 pub const AUTOMATION_UPDATED_EVENT: &str = "automation:updated";
 pub const AUTOMATION_RUN_UPDATED_EVENT: &str = "automation:run:updated";
+pub const AUTOMATION_DELETED_EVENT: &str = "automation:deleted";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AutomationEvent {
-    AutomationUpdated { automation_id: AutomationId },
-    AutomationRunUpdated { run_id: AutomationRunId },
+    AutomationUpdated {
+        automation_id: AutomationId,
+    },
+    AutomationRunUpdated {
+        run_id: AutomationRunId,
+    },
+    AutomationDeleted {
+        automation_id: AutomationId,
+        project_id: ProjectId,
+    },
 }
 
 impl AutomationEvent {
@@ -26,6 +35,7 @@ impl AutomationEvent {
         match self {
             Self::AutomationUpdated { .. } => AUTOMATION_UPDATED_EVENT,
             Self::AutomationRunUpdated { .. } => AUTOMATION_RUN_UPDATED_EVENT,
+            Self::AutomationDeleted { .. } => AUTOMATION_DELETED_EVENT,
         }
     }
 }
@@ -66,6 +76,16 @@ struct AutomationRunUpdatedPayload {
     run_id_camel: String,
 }
 
+#[derive(Clone, Debug, Serialize)]
+struct AutomationDeletedPayload {
+    automation_id: String,
+    #[serde(rename = "automationId")]
+    automation_id_camel: String,
+    project_id: String,
+    #[serde(rename = "projectId")]
+    project_id_camel: String,
+}
+
 impl AutomationEventEmitter for TauriAutomationEventEmitter {
     fn emit(&self, event: AutomationEvent) {
         match event {
@@ -84,6 +104,20 @@ impl AutomationEventEmitter for TauriAutomationEventEmitter {
                     run_id_camel: id,
                 };
                 let _ = self.app_handle.emit(AUTOMATION_RUN_UPDATED_EVENT, payload);
+            }
+            AutomationEvent::AutomationDeleted {
+                automation_id,
+                project_id,
+            } => {
+                let automation_id = automation_id.as_str().to_string();
+                let project_id = project_id.as_str().to_string();
+                let payload = AutomationDeletedPayload {
+                    automation_id: automation_id.clone(),
+                    automation_id_camel: automation_id,
+                    project_id: project_id.clone(),
+                    project_id_camel: project_id,
+                };
+                let _ = self.app_handle.emit(AUTOMATION_DELETED_EVENT, payload);
             }
         }
     }

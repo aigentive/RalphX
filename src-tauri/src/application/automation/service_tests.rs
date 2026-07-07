@@ -5,7 +5,8 @@ use chrono::Utc;
 use serde_json::json;
 
 use crate::application::automation::judge::{
-    AutomationJudgeDecision, AutomationJudgeNextBaseBranch, AutomationJudgeVerdict,
+    automation_judge_loop_suspected, AutomationJudgeDecision, AutomationJudgeNextBaseBranch,
+    AutomationJudgeVerdict,
 };
 use crate::application::automation::service::{
     ApplyAutomationJudgeVerdictInput, AutomationRunNowAction, AutomationService,
@@ -16,14 +17,165 @@ use crate::application::automation::transition::{
     AutomationEvent, AutomationEventEmitter, NoopAutomationEventEmitter,
 };
 use crate::domain::entities::{
-    Automation, AutomationId, AutomationJudgeState, AutomationPromptAuthor, AutomationRun,
-    AutomationRunId, AutomationRunStatus, AutomationStatus, ChatConversationId, ProjectId,
+    Artifact, ArtifactId, Automation, AutomationId, AutomationJudgeState, AutomationPromptAuthor,
+    AutomationRun, AutomationRunId, AutomationRunStatus, AutomationStatus, ChatConversationId,
+    ProjectId,
 };
 use crate::domain::repositories::{
-    AutomationConfigPatch, AutomationRepository, AutomationRunRepository, AutomationSettingsPatch,
+    ArtifactRepository, ArtifactVersionSummary, AutomationConfigPatch, AutomationRepository,
+    AutomationRunRepository, AutomationSettingsPatch,
 };
 use crate::error::AppError;
-use crate::infrastructure::memory::{MemoryAutomationRepository, MemoryAutomationRunRepository};
+use crate::infrastructure::memory::{
+    MemoryArtifactRepository, MemoryAutomationRepository, MemoryAutomationRunRepository,
+};
+
+/// Artifact repository fake that delegates storage to an in-memory repo while
+/// recording `create_with_previous_version` links so spec-versioning tests can
+/// assert the `previous_version_id` chain (memory repo drops that link).
+#[derive(Default)]
+struct RecordingArtifactRepository {
+    inner: MemoryArtifactRepository,
+    versioned_from: Mutex<Vec<(String, String)>>,
+}
+
+impl RecordingArtifactRepository {
+    /// Recorded `(previous_version_id, new_artifact_id)` pairs, in call order.
+    fn versioned_from(&self) -> Vec<(String, String)> {
+        self.versioned_from.lock().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl ArtifactRepository for RecordingArtifactRepository {
+    async fn create(&self, artifact: Artifact) -> crate::error::AppResult<Artifact> {
+        self.inner.create(artifact).await
+    }
+
+    async fn get_by_id(&self, id: &ArtifactId) -> crate::error::AppResult<Option<Artifact>> {
+        self.inner.get_by_id(id).await
+    }
+
+    async fn get_by_id_at_version(
+        &self,
+        id: &ArtifactId,
+        version: u32,
+    ) -> crate::error::AppResult<Option<Artifact>> {
+        self.inner.get_by_id_at_version(id, version).await
+    }
+
+    async fn get_by_bucket(
+        &self,
+        bucket_id: &crate::domain::entities::ArtifactBucketId,
+    ) -> crate::error::AppResult<Vec<Artifact>> {
+        self.inner.get_by_bucket(bucket_id).await
+    }
+
+    async fn get_by_type(
+        &self,
+        artifact_type: crate::domain::entities::ArtifactType,
+    ) -> crate::error::AppResult<Vec<Artifact>> {
+        self.inner.get_by_type(artifact_type).await
+    }
+
+    async fn get_by_task(
+        &self,
+        task_id: &crate::domain::entities::TaskId,
+    ) -> crate::error::AppResult<Vec<Artifact>> {
+        self.inner.get_by_task(task_id).await
+    }
+
+    async fn get_by_process(
+        &self,
+        process_id: &crate::domain::entities::ProcessId,
+    ) -> crate::error::AppResult<Vec<Artifact>> {
+        self.inner.get_by_process(process_id).await
+    }
+
+    async fn update(&self, artifact: &Artifact) -> crate::error::AppResult<()> {
+        self.inner.update(artifact).await
+    }
+
+    async fn delete(&self, id: &ArtifactId) -> crate::error::AppResult<()> {
+        self.inner.delete(id).await
+    }
+
+    async fn get_derived_from(
+        &self,
+        artifact_id: &ArtifactId,
+    ) -> crate::error::AppResult<Vec<Artifact>> {
+        self.inner.get_derived_from(artifact_id).await
+    }
+
+    async fn get_related(
+        &self,
+        artifact_id: &ArtifactId,
+    ) -> crate::error::AppResult<Vec<Artifact>> {
+        self.inner.get_related(artifact_id).await
+    }
+
+    async fn add_relation(
+        &self,
+        relation: crate::domain::entities::ArtifactRelation,
+    ) -> crate::error::AppResult<crate::domain::entities::ArtifactRelation> {
+        self.inner.add_relation(relation).await
+    }
+
+    async fn get_relations(
+        &self,
+        artifact_id: &ArtifactId,
+    ) -> crate::error::AppResult<Vec<crate::domain::entities::ArtifactRelation>> {
+        self.inner.get_relations(artifact_id).await
+    }
+
+    async fn get_relations_by_type(
+        &self,
+        artifact_id: &ArtifactId,
+        relation_type: crate::domain::entities::ArtifactRelationType,
+    ) -> crate::error::AppResult<Vec<crate::domain::entities::ArtifactRelation>> {
+        self.inner
+            .get_relations_by_type(artifact_id, relation_type)
+            .await
+    }
+
+    async fn delete_relation(
+        &self,
+        from_id: &ArtifactId,
+        to_id: &ArtifactId,
+    ) -> crate::error::AppResult<()> {
+        self.inner.delete_relation(from_id, to_id).await
+    }
+
+    async fn create_with_previous_version(
+        &self,
+        artifact: Artifact,
+        previous_version_id: ArtifactId,
+    ) -> crate::error::AppResult<Artifact> {
+        self.versioned_from.lock().unwrap().push((
+            previous_version_id.as_str().to_string(),
+            artifact.id.as_str().to_string(),
+        ));
+        self.inner.create(artifact).await
+    }
+
+    async fn get_version_history(
+        &self,
+        id: &ArtifactId,
+    ) -> crate::error::AppResult<Vec<ArtifactVersionSummary>> {
+        self.inner.get_version_history(id).await
+    }
+
+    async fn resolve_latest_artifact_id(
+        &self,
+        id: &ArtifactId,
+    ) -> crate::error::AppResult<ArtifactId> {
+        self.inner.resolve_latest_artifact_id(id).await
+    }
+
+    async fn archive(&self, id: &ArtifactId) -> crate::error::AppResult<Artifact> {
+        self.inner.archive(id).await
+    }
+}
 
 #[derive(Default)]
 struct RecordingEmitter {
@@ -49,10 +201,29 @@ fn service_with_emitter(
     Arc<MemoryAutomationRepository>,
     Arc<MemoryAutomationRunRepository>,
 ) {
+    let (service, automation_repo, run_repo, _artifact_repo) =
+        service_with_emitter_and_artifacts(event_emitter);
+    (service, automation_repo, run_repo)
+}
+
+fn service_with_emitter_and_artifacts(
+    event_emitter: Arc<dyn AutomationEventEmitter>,
+) -> (
+    AutomationService,
+    Arc<MemoryAutomationRepository>,
+    Arc<MemoryAutomationRunRepository>,
+    Arc<RecordingArtifactRepository>,
+) {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
     let run_repo = Arc::new(MemoryAutomationRunRepository::new());
-    let service = AutomationService::new(automation_repo.clone(), run_repo.clone(), event_emitter);
-    (service, automation_repo, run_repo)
+    let artifact_repo = Arc::new(RecordingArtifactRepository::default());
+    let service = AutomationService::new(
+        automation_repo.clone(),
+        run_repo.clone(),
+        event_emitter,
+        artifact_repo.clone(),
+    );
+    (service, automation_repo, run_repo, artifact_repo)
 }
 
 fn automation(id: &str, status: AutomationStatus) -> Automation {
@@ -83,6 +254,7 @@ fn automation(id: &str, status: AutomationStatus) -> Automation {
         max_consecutive_failures: 3,
         first_run_prompt: Some("Run 1".to_string()),
         setup_analysis_summary: None,
+        spec_artifact_id: None,
         created_at: now,
         updated_at: now,
     }
@@ -244,6 +416,9 @@ impl AutomationRepository for LostStatusAutomationRepository {
         if let Some(base_ref) = patch.base_ref {
             automation.base_ref = base_ref;
         }
+        if let Some(spec_artifact_id) = patch.spec_artifact_id {
+            automation.spec_artifact_id = Some(spec_artifact_id);
+        }
         automation.updated_at = Utc::now();
         Ok(Some(automation.clone()))
     }
@@ -280,6 +455,20 @@ impl AutomationRepository for LostStatusAutomationRepository {
 
     async fn delete_terminal(&self, _id: &AutomationId) -> crate::error::AppResult<bool> {
         Ok(false)
+    }
+
+    async fn delete_attachments_for_automation(
+        &self,
+        _automation_id: &AutomationId,
+    ) -> crate::error::AppResult<usize> {
+        Ok(0)
+    }
+
+    async fn delete_context_refs_for_automation(
+        &self,
+        _automation_id: &AutomationId,
+    ) -> crate::error::AppResult<usize> {
+        Ok(0)
     }
 }
 
@@ -341,6 +530,20 @@ impl AutomationRunRepository for SkipJudgeLosesRunRepository {
             .unwrap()
             .iter()
             .filter(|run| run.automation_id == *automation_id)
+            .max_by_key(|run| run.run_index)
+            .cloned())
+    }
+
+    async fn find_run_by_conversation_id(
+        &self,
+        conversation_id: &ChatConversationId,
+    ) -> crate::error::AppResult<Option<AutomationRun>> {
+        Ok(self
+            .runs
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|run| run.conversation_id.as_ref() == Some(conversation_id))
             .max_by_key(|run| run.run_index)
             .cloned())
     }
@@ -454,6 +657,9 @@ async fn service_creates_lists_gets_and_updates_mechanical_settings() {
             project_id: project_id.clone(),
             name: Some("  Large migration  ".to_string()),
             setup_conversation_id: None,
+            base_ref_kind: None,
+            base_ref: None,
+            base_display_name: None,
         })
         .await
         .unwrap();
@@ -531,6 +737,8 @@ async fn service_update_config_writes_provided_fields_on_draft_and_emits_event()
             chain_mode: None,
             completion_signal: None,
             setup_analysis_summary: Some("Setup summary".to_string()),
+            spec_artifact_id: None,
+            spec_content: None,
         })
         .await
         .unwrap();
@@ -561,6 +769,152 @@ async fn service_update_config_writes_provided_fields_on_draft_and_emits_event()
     );
 }
 
+fn empty_config_input(id: AutomationId) -> UpdateAutomationConfigInput {
+    UpdateAutomationConfigInput {
+        id,
+        goal_prompt: None,
+        first_run_prompt: None,
+        provider_harness: None,
+        model_id: None,
+        logical_effort: None,
+        run_mode: None,
+        base_ref_kind: None,
+        base_ref: None,
+        base_display_name: None,
+        goal_items_json: None,
+        chain_mode: None,
+        completion_signal: None,
+        setup_analysis_summary: None,
+        spec_artifact_id: None,
+        spec_content: None,
+    }
+}
+
+#[tokio::test]
+async fn service_update_config_links_existing_spec_artifact_id() {
+    let emitter = Arc::new(RecordingEmitter::default());
+    let (service, automation_repo, _run_repo, artifact_repo) =
+        service_with_emitter_and_artifacts(emitter.clone());
+    let draft = automation("automation-1", AutomationStatus::Draft);
+    automation_repo.create(draft.clone()).await.unwrap();
+
+    let seeded = artifact_repo
+        .create(Artifact::new_inline(
+            "Existing spec",
+            crate::domain::entities::ArtifactType::Specification,
+            "# Existing spec",
+            "user",
+        ))
+        .await
+        .unwrap();
+
+    let updated = service
+        .update_config(UpdateAutomationConfigInput {
+            spec_artifact_id: Some(seeded.id.as_str().to_string()),
+            ..empty_config_input(draft.id.clone())
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        updated.spec_artifact_id.as_deref(),
+        Some(seeded.id.as_str())
+    );
+    // No artifact was materialized; the existing id was linked directly.
+    assert!(artifact_repo.versioned_from().is_empty());
+}
+
+#[tokio::test]
+async fn service_update_config_rejects_missing_spec_artifact_id() {
+    let emitter = Arc::new(RecordingEmitter::default());
+    let (service, automation_repo, _run_repo, _artifact_repo) =
+        service_with_emitter_and_artifacts(emitter.clone());
+    let draft = automation("automation-1", AutomationStatus::Draft);
+    automation_repo.create(draft.clone()).await.unwrap();
+
+    let error = service
+        .update_config(UpdateAutomationConfigInput {
+            spec_artifact_id: Some("missing-artifact".to_string()),
+            ..empty_config_input(draft.id.clone())
+        })
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, AppError::Validation(message) if message.contains("does not reference an existing artifact")));
+    // Fail closed: nothing persisted, no id linked, no event emitted.
+    let stored = automation_repo
+        .get_by_id(&draft.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.spec_artifact_id, None);
+    assert!(emitter.events().is_empty());
+}
+
+#[tokio::test]
+async fn service_update_config_materializes_spec_content_and_versions_on_reauthor() {
+    let emitter = Arc::new(RecordingEmitter::default());
+    let (service, automation_repo, _run_repo, artifact_repo) =
+        service_with_emitter_and_artifacts(emitter.clone());
+    let draft = automation("automation-1", AutomationStatus::Draft);
+    automation_repo.create(draft.clone()).await.unwrap();
+
+    let first = service
+        .update_config(UpdateAutomationConfigInput {
+            spec_content: Some("# Automation spec\n\nPhase 1: build it.".to_string()),
+            ..empty_config_input(draft.id.clone())
+        })
+        .await
+        .unwrap();
+
+    let first_spec_id = first.spec_artifact_id.clone().expect("spec artifact linked");
+    let first_artifact = artifact_repo
+        .get_by_id(&ArtifactId::from_string(first_spec_id.clone()))
+        .await
+        .unwrap()
+        .expect("spec artifact exists");
+    assert_eq!(first_artifact.artifact_type, crate::domain::entities::ArtifactType::Specification);
+    assert_eq!(first_artifact.metadata.version, 1);
+    match &first_artifact.content {
+        crate::domain::entities::ArtifactContent::Inline { text } => {
+            assert!(text.contains("Phase 1: build it."))
+        }
+        other => panic!("expected inline spec content, got {other:?}"),
+    }
+    // First authoring is a fresh create, not a version chain.
+    assert!(artifact_repo.versioned_from().is_empty());
+
+    // Re-authoring replaces via a NEW artifact id chained off the previous one.
+    let second = service
+        .update_config(UpdateAutomationConfigInput {
+            spec_content: Some("# Automation spec v2\n\nPhase 1: build it better.".to_string()),
+            ..empty_config_input(draft.id.clone())
+        })
+        .await
+        .unwrap();
+
+    let second_spec_id = second
+        .spec_artifact_id
+        .clone()
+        .expect("versioned spec artifact linked");
+    assert_ne!(second_spec_id, first_spec_id, "re-author mints a new artifact id");
+
+    let versioned = artifact_repo.versioned_from();
+    assert_eq!(
+        versioned,
+        vec![(first_spec_id.clone(), second_spec_id.clone())],
+        "second write chains previous_version_id -> new id"
+    );
+    let second_artifact = artifact_repo
+        .get_by_id(&ArtifactId::from_string(second_spec_id))
+        .await
+        .unwrap()
+        .expect("versioned spec artifact exists");
+    assert_eq!(second_artifact.metadata.version, 2);
+    // Versioning is NOT expressed through derived_from (relations concept).
+    assert!(second_artifact.derived_from.is_empty());
+}
+
 #[tokio::test]
 async fn service_update_config_rejects_active_automation_and_leaves_row_intact() {
     let emitter = Arc::new(RecordingEmitter::default());
@@ -584,6 +938,8 @@ async fn service_update_config_rejects_active_automation_and_leaves_row_intact()
             chain_mode: None,
             completion_signal: None,
             setup_analysis_summary: None,
+            spec_artifact_id: None,
+            spec_content: None,
         })
         .await
         .unwrap_err();
@@ -614,6 +970,9 @@ async fn service_create_draft_then_config_then_finalize_activates_automation() {
             project_id,
             name: Some("Payments automation".to_string()),
             setup_conversation_id: None,
+            base_ref_kind: None,
+            base_ref: None,
+            base_display_name: None,
         })
         .await
         .unwrap();
@@ -645,6 +1004,8 @@ async fn service_create_draft_then_config_then_finalize_activates_automation() {
             chain_mode: None,
             completion_signal: None,
             setup_analysis_summary: None,
+            spec_artifact_id: None,
+            spec_content: None,
         })
         .await
         .unwrap();
@@ -674,6 +1035,7 @@ async fn service_status_controls_fail_when_compare_and_swap_loses() {
         pause_repo.clone(),
         Arc::new(MemoryAutomationRunRepository::new()),
         emitter.clone(),
+        Arc::new(RecordingArtifactRepository::default()),
     );
     let pause_id = AutomationId::from_string("automation-1");
     let pause_error = pause_service
@@ -691,6 +1053,7 @@ async fn service_status_controls_fail_when_compare_and_swap_loses() {
         resume_repo.clone(),
         Arc::new(MemoryAutomationRunRepository::new()),
         emitter.clone(),
+        Arc::new(RecordingArtifactRepository::default()),
     );
     let resume_error = resume_service.resume(&pause_id).await.unwrap_err();
     assert!(matches!(resume_error, AppError::Conflict(_)));
@@ -704,6 +1067,7 @@ async fn service_status_controls_fail_when_compare_and_swap_loses() {
         stop_repo.clone(),
         Arc::new(MemoryAutomationRunRepository::new()),
         emitter.clone(),
+        Arc::new(RecordingArtifactRepository::default()),
     );
     let stop_error = stop_service.stop(&pause_id).await.unwrap_err();
     assert!(matches!(stop_error, AppError::Conflict(_)));
@@ -1163,6 +1527,86 @@ async fn service_pauses_before_successor_when_failure_guardrail_exhausted() {
 }
 
 #[tokio::test]
+async fn service_excludes_workspace_review_blocked_run_from_failure_guardrail() {
+    // A workspace-review-gate block terminalizes the run as AgentFailed with the blocked error
+    // code, but it is user-actionable — it must NOT count toward max_consecutive_failures.
+    let (service, automation_repo, run_repo) =
+        service_with_emitter(Arc::new(NoopAutomationEventEmitter));
+    let mut active = automation("automation-1", AutomationStatus::Active);
+    active.max_consecutive_failures = 1;
+    active.base_ref_kind = "local_branch".to_string();
+    active.base_ref = "main".to_string();
+    automation_repo.create(active.clone()).await.unwrap();
+
+    let mut blocked = automation_run(
+        "run-1",
+        &active.id,
+        1,
+        AutomationRunStatus::AgentFailed,
+        AutomationJudgeState::Done,
+    );
+    blocked.error_code = Some("workspace_review_blocked".to_string());
+    run_repo.create_run(blocked.clone()).await.unwrap();
+
+    let outcome = service
+        .create_merged_base_successor_run(CreateMergedBaseSuccessorRunInput {
+            automation_id: active.id.clone(),
+            previous_run_id: blocked.id.clone(),
+            run_prompt: "Continue after the review gate is resolved.".to_string(),
+            prompt_author: AutomationPromptAuthor::Judge,
+        })
+        .await
+        .unwrap();
+
+    assert!(
+        outcome.scheduled,
+        "review-gate block must not trip the failure guardrail"
+    );
+    assert_ne!(outcome.reason.as_deref(), Some("max_consecutive_failures"));
+    assert_ne!(
+        automation_repo
+            .get_by_id(&active.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .paused_reason_code
+            .as_deref(),
+        Some("max_consecutive_failures")
+    );
+
+    // Control: a genuine AgentFailed run at the same threshold DOES trip the guardrail.
+    let (control_service, control_repo, control_runs) =
+        service_with_emitter(Arc::new(NoopAutomationEventEmitter));
+    let mut control = automation("automation-control", AutomationStatus::Active);
+    control.max_consecutive_failures = 1;
+    control.base_ref_kind = "local_branch".to_string();
+    control.base_ref = "main".to_string();
+    control_repo.create(control.clone()).await.unwrap();
+    let genuine = automation_run(
+        "run-1",
+        &control.id,
+        1,
+        AutomationRunStatus::AgentFailed,
+        AutomationJudgeState::Done,
+    );
+    control_runs.create_run(genuine.clone()).await.unwrap();
+    let control_outcome = control_service
+        .create_merged_base_successor_run(CreateMergedBaseSuccessorRunInput {
+            automation_id: control.id.clone(),
+            previous_run_id: genuine.id.clone(),
+            run_prompt: "Continue after a genuine failure.".to_string(),
+            prompt_author: AutomationPromptAuthor::Judge,
+        })
+        .await
+        .unwrap();
+    assert!(!control_outcome.scheduled);
+    assert_eq!(
+        control_outcome.reason.as_deref(),
+        Some("max_consecutive_failures")
+    );
+}
+
+#[tokio::test]
 async fn service_cancel_run_and_stop_use_run_transition_service() {
     let emitter = Arc::new(RecordingEmitter::default());
     let (service, automation_repo, run_repo) = service_with_emitter(emitter.clone());
@@ -1264,10 +1708,13 @@ async fn service_delete_is_terminal_only_and_removes_runs() {
         .await
         .unwrap()
         .is_empty());
+    // The row-delete core emits AutomationDeleted (not AutomationUpdated) with the
+    // project id captured before the row was removed.
     assert!(emitter
         .events()
-        .contains(&AutomationEvent::AutomationUpdated {
-            automation_id: active.id
+        .contains(&AutomationEvent::AutomationDeleted {
+            automation_id: active.id,
+            project_id: ProjectId::from_string("project-1".to_string()),
         }));
 }
 
@@ -1442,6 +1889,7 @@ async fn service_skip_judge_loses_cleanly_when_scheduler_started_judge() {
         automation_repo,
         run_repo,
         Arc::new(NoopAutomationEventEmitter),
+        Arc::new(RecordingArtifactRepository::default()),
     );
 
     let outcome = service.skip_judge(&active.id, &run.id).await.unwrap();
@@ -1802,6 +2250,54 @@ async fn service_judge_verdict_stop_and_loop_outcomes_update_automation_state() 
         Some(AutomationStatus::Paused)
     );
     assert_eq!(suspected.reason.as_deref(), Some("judge_loop_suspected"));
+}
+
+#[tokio::test]
+async fn service_persists_successor_run_prompt_verbatim_for_loop_guard() {
+    let (service, automation_repo, run_repo) =
+        service_with_emitter(Arc::new(NoopAutomationEventEmitter));
+    let mut active = automation("automation-1", AutomationStatus::Active);
+    // A spec-linked automation is the case where runs also gain the spawn-time
+    // `<automation_context>` prefix; the persisted prompt must still stay clean.
+    active.spec_artifact_id = Some("spec-artifact-1".to_string());
+    active.base_ref_kind = "local_branch".to_string();
+    active.base_ref = "main".to_string();
+    automation_repo.create(active.clone()).await.unwrap();
+    let previous = automation_run(
+        "run-1",
+        &active.id,
+        1,
+        AutomationRunStatus::Merged,
+        AutomationJudgeState::Done,
+    );
+    run_repo.create_run(previous.clone()).await.unwrap();
+
+    let next_prompt =
+        "Implement item 2 from the migration spec. Keep the PR scoped and publish it.";
+    let outcome = service
+        .apply_persisted_judge_verdict(ApplyAutomationJudgeVerdictInput {
+            automation: active.clone(),
+            previous_run: previous.clone(),
+            verdict: continue_verdict_struct(
+                next_prompt,
+                AutomationJudgeNextBaseBranch::AutomationBase,
+            ),
+        })
+        .await
+        .unwrap();
+
+    let successor = outcome.successor_run.expect("successor should be created");
+    // D5: the persisted run_prompt is the judge nextRunPrompt verbatim, with no
+    // spawn-time `<automation_context>` prefix, so the loop-guard fingerprint keeps
+    // matching when this prompt is repeated.
+    assert_eq!(successor.run_prompt, next_prompt);
+    assert!(!successor.run_prompt.contains("<automation_context>"));
+
+    // Prove the guard still fires if the judge repeats the same prompt next cycle.
+    assert!(automation_judge_loop_suspected(
+        &successor,
+        &continue_verdict_struct(next_prompt, AutomationJudgeNextBaseBranch::AutomationBase),
+    ));
 }
 
 fn continue_verdict(next_prompt: &str) -> String {

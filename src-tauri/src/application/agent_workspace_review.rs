@@ -708,6 +708,25 @@ async fn start_agent_workspace_review_with_chat_service<S: ChatService + ?Sized>
                 .agent_conversation_workspace_repo
                 .upsert_workspace_review_monitor(monitor)
                 .await?;
+            // R3 site (c): the reviewer never started, so no waiter will ever fire. Pause the
+            // owning automation and terminalize its run now, else the run false-times-out at the 4h
+            // wall-clock. No-op for non-automation conversations.
+            if let Err(pause_error) =
+                crate::application::automation::review_gate::pause_automation_for_blocked_workspace_review(
+                    state.as_ref(),
+                    &workspace.conversation_id,
+                    Some(error.as_str()),
+                )
+                .await
+            {
+                warn!(
+                    target: WORKSPACE_REVIEW_LOG_TARGET,
+                    operation = "pause_automation_on_reviewer_start_failure_failed",
+                    conversation_id = %workspace.conversation_id,
+                    error = %pause_error,
+                    "Failed to pause automation after workspace reviewer start failure"
+                );
+            }
             return Err(AppError::Infrastructure(error));
         }
     };
@@ -1617,6 +1636,7 @@ async fn mark_workspace_review_blocked(
             monitor.review_gate_status = AgentWorkspaceReviewGateStatus::Failed;
             clear_review_blocking_state(&mut monitor);
             monitor.last_run_id = Some(helper_id.to_string());
+            let block_detail = error.clone();
             monitor.last_error = Some(error);
             if let Err(error) = state
                 .agent_conversation_workspace_repo
@@ -1630,6 +1650,24 @@ async fn mark_workspace_review_blocked(
                     helper_id,
                     error = %error,
                     "Failed to persist blocked workspace Review monitor"
+                );
+            }
+            // R3 site (b): the waiter observed a blocked child chat (gate Failed). Pause the owning
+            // automation and terminalize its run. No-op for non-automation conversations.
+            if let Err(pause_error) =
+                crate::application::automation::review_gate::pause_automation_for_blocked_workspace_review(
+                    state,
+                    &workspace.conversation_id,
+                    Some(block_detail.as_str()),
+                )
+                .await
+            {
+                warn!(
+                    target: WORKSPACE_REVIEW_LOG_TARGET,
+                    operation = "pause_automation_on_review_block_failed",
+                    conversation_id = %workspace.conversation_id,
+                    error = %pause_error,
+                    "Failed to pause automation after blocked workspace Review"
                 );
             }
         }
@@ -6196,6 +6234,138 @@ x
         assert_eq!(
             monitor.current_target_scope,
             Some(AgentWorkspaceReviewTargetScope::WorkspaceDelta)
+        );
+    }
+
+    #[tokio::test]
+    async fn mark_workspace_review_blocked_pauses_owning_automation() {
+        use crate::domain::entities::{
+            Automation, AutomationId, AutomationJudgeState, AutomationPromptAuthor, AutomationRun,
+            AutomationRunId, AutomationRunStatus, AutomationStatus,
+        };
+
+        let (_temp, repo, base_sha) = init_repo();
+        committed_workspace_delta(&repo);
+
+        let state = AppState::new_test();
+        let project = seed_project(&state, &repo).await;
+        let workspace = workspace(
+            &project,
+            &repo,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main",
+            Some(base_sha),
+        );
+
+        // Seed an automation + run linked to this workspace's conversation.
+        let now = chrono::Utc::now();
+        let automation_id = AutomationId::from_string("automation-1");
+        state
+            .automation_repo
+            .create(Automation {
+                id: automation_id.clone(),
+                project_id: project.id.clone(),
+                name: "Automation".to_string(),
+                status: AutomationStatus::Active,
+                paused_reason_code: None,
+                paused_reason_detail: None,
+                goal_prompt: "Goal".to_string(),
+                setup_conversation_id: None,
+                provider_harness: "claude".to_string(),
+                model_id: "sonnet".to_string(),
+                logical_effort: None,
+                run_mode: "edit".to_string(),
+                base_ref_kind: "project_default".to_string(),
+                base_ref: String::new(),
+                base_display_name: None,
+                base_source_pull_request_json: None,
+                goal_items_json: None,
+                chain_mode: "merged_base".to_string(),
+                completion_signal: "pr_merged".to_string(),
+                max_runs: 25,
+                max_consecutive_failures: 3,
+                first_run_prompt: None,
+                setup_analysis_summary: None,
+                spec_artifact_id: None,
+                created_at: now,
+                updated_at: now,
+            })
+            .await
+            .unwrap();
+        let run_id = AutomationRunId::from_string("run-1");
+        state
+            .automation_run_repo
+            .create_run(AutomationRun {
+                id: run_id.clone(),
+                automation_id: automation_id.clone(),
+                run_index: 1,
+                status: AutomationRunStatus::Running,
+                judge_state: AutomationJudgeState::None,
+                judge_lease_expires_at: None,
+                conversation_id: Some(workspace.conversation_id.clone()),
+                run_prompt: "Run".to_string(),
+                prompt_author: AutomationPromptAuthor::SetupAgent,
+                base_ref_kind: "project_default".to_string(),
+                base_ref_used: "main".to_string(),
+                base_from_run_id: None,
+                branch_name: None,
+                pr_number: None,
+                pr_url: None,
+                pr_title: None,
+                pr_head_ref_name: None,
+                pr_base_ref_name: None,
+                pr_merged_at: None,
+                merge_commit_sha: None,
+                diff_stats_json: None,
+                agent_summary: None,
+                judge_verdict_json: None,
+                judge_model_id: None,
+                error_code: None,
+                error_detail: None,
+                signal_check_failures: 0,
+                started_at: Some(now),
+                finished_at: None,
+                created_at: now,
+                updated_at: now,
+            })
+            .await
+            .unwrap();
+
+        let context = load_agent_workspace_review_context(&state, &workspace)
+            .await
+            .expect("context should load");
+        let target = context.target.expect("target should exist");
+
+        mark_workspace_review_blocked(
+            &state,
+            &workspace,
+            &target,
+            "helper-1",
+            "review failed".to_string(),
+        )
+        .await;
+
+        let paused = state
+            .automation_repo
+            .get_by_id(&automation_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(paused.status, AutomationStatus::Paused);
+        assert_eq!(
+            paused.paused_reason_code.as_deref(),
+            Some("workspace_review_blocked")
+        );
+        let terminal_run = state
+            .automation_run_repo
+            .get_by_id(&run_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(terminal_run.status, AutomationRunStatus::AgentFailed);
+        assert_eq!(
+            terminal_run.error_code.as_deref(),
+            Some("workspace_review_blocked")
         );
     }
 

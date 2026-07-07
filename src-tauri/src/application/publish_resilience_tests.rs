@@ -1,4 +1,4 @@
-use super::publish_resilience::review_base_for_publish;
+use super::publish_resilience::{ensure_plan_publish_branch_fresh, review_base_for_publish};
 use super::publish_resilience::{
     classify_publish_failure, count_publishable_commits_with_base_fallback,
     count_unpublished_publish_commits, publish_branch_freshness_outcome_from_source_update,
@@ -8,6 +8,7 @@ use super::publish_resilience::{
     AgentWorkspaceRepairCompletionCheck, PublishBranchFreshnessOutcome, PublishFailureClass,
 };
 use crate::domain::state_machine::transition_handler::SourceUpdateResult;
+use crate::domain::entities::Project;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -25,6 +26,17 @@ fn git(repo: &Path, args: &[&str]) -> String {
         String::from_utf8_lossy(&output.stderr)
     );
     String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+fn setup_publish_freshness_repo(repo: &Path) -> String {
+    std::fs::create_dir_all(repo).expect("repo root should be created");
+    git(repo, &["init", "-b", "main"]);
+    git(repo, &["config", "user.email", "test@example.com"]);
+    git(repo, &["config", "user.name", "RalphX Test"]);
+    std::fs::write(repo.join("README.md"), "base\n").expect("base fixture should be written");
+    git(repo, &["add", "README.md"]);
+    git(repo, &["commit", "-m", "base"]);
+    git(repo, &["rev-parse", "HEAD"])
 }
 
 #[test]
@@ -199,6 +211,62 @@ fn derives_remote_tracking_ref_for_publish_base() {
         remote_tracking_ref_for_publish("origin/main"),
         "origin/main"
     );
+}
+
+#[tokio::test]
+async fn ensure_plan_publish_branch_fresh_updates_isolated_linked_worktree() {
+    let temp = tempfile::TempDir::new().expect("tempdir should be created");
+    let repo = temp.path().join("repo");
+    let worktrees = temp.path().join("worktrees");
+    setup_publish_freshness_repo(&repo);
+    let plan_branch = "feature/plan-linked-worktree";
+    git(&repo, &["branch", plan_branch]);
+    std::fs::create_dir_all(&worktrees).expect("worktree parent should be created");
+    let plan_worktree = worktrees.join("linked-plan");
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            plan_worktree.to_str().expect("worktree path"),
+            plan_branch,
+        ],
+    );
+
+    std::fs::write(repo.join("base-fix.txt"), "base fix\n")
+        .expect("base fix should be written");
+    git(&repo, &["add", "base-fix.txt"]);
+    git(&repo, &["commit", "-m", "base fix"]);
+    let main_sha = git(&repo, &["rev-parse", "HEAD"]);
+
+    let mut project = Project::new(
+        "Plan linked worktree freshness".to_string(),
+        repo.to_string_lossy().to_string(),
+    );
+    project.base_branch = Some("main".to_string());
+    project.worktree_parent_directory = Some(worktrees.to_string_lossy().to_string());
+
+    let outcome = ensure_plan_publish_branch_fresh(
+        &plan_worktree,
+        &project,
+        plan_branch,
+        "main",
+        "conversation-plan-linked-worktree",
+        None,
+    )
+    .await;
+
+    assert_eq!(
+        outcome,
+        PublishBranchFreshnessOutcome::Updated {
+            base_commit: main_sha.clone(),
+            target_ref: "main".to_string(),
+        }
+    );
+    assert_eq!(git(&repo, &["branch", "--show-current"]), "main");
+    assert_eq!(git(&repo, &["status", "--short"]), "");
+    assert_eq!(git(&plan_worktree, &["branch", "--show-current"]), plan_branch);
+    assert_eq!(git(&plan_worktree, &["rev-parse", "HEAD"]), main_sha);
 }
 
 #[tokio::test]

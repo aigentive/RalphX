@@ -1,0 +1,111 @@
+import { render, screen } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import { AutomationRunTaskLedger } from "./AutomationRunTaskLedger";
+import type { AgentTaskSummary } from "@/api/agent-tasks";
+
+const { listConversationTasksMock } = vi.hoisted(() => ({
+  listConversationTasksMock: vi.fn(),
+}));
+
+vi.mock("@/api/agent-tasks", () => ({
+  agentTaskApi: {
+    listConversationTasks: (...args: unknown[]) => listConversationTasksMock(...args),
+  },
+}));
+
+function task(overrides: Partial<AgentTaskSummary> = {}): AgentTaskSummary {
+  return {
+    taskId: "task-1",
+    taskNumber: 1,
+    title: "Task one",
+    state: "active",
+    ownerAgent: null,
+    blockedBy: [],
+    blocks: [],
+    availability: "available",
+    updatedAt: "2026-07-05T00:00:00Z",
+    ...overrides,
+  };
+}
+
+function renderLedger(isOpen: boolean) {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, gcTime: 0 } },
+  });
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <AutomationRunTaskLedger
+        conversationId="conversation-1"
+        projectId="project-1"
+        isOpen={isOpen}
+      />
+    </QueryClientProvider>,
+  );
+}
+
+describe("AutomationRunTaskLedger", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    listConversationTasksMock.mockReset();
+  });
+
+  it("renders active/open tasks prominently with a done/dropped summary", async () => {
+    listConversationTasksMock.mockResolvedValue([
+      task({ taskId: "a", taskNumber: 1, title: "Active work", state: "active", ownerAgent: "coder-1" }),
+      task({ taskId: "b", taskNumber: 2, title: "Open work", state: "open" }),
+      task({ taskId: "c", taskNumber: 3, title: "Done work", state: "done" }),
+      task({ taskId: "d", taskNumber: 4, title: "Dropped work", state: "dropped" }),
+    ]);
+
+    renderLedger(true);
+
+    expect(await screen.findByText("Active work")).toBeInTheDocument();
+    expect(screen.getByText("Open work")).toBeInTheDocument();
+    expect(screen.getByText("coder-1")).toBeInTheDocument();
+
+    // Only actionable (active/open) tasks get their own rows.
+    expect(screen.getAllByTestId("automation-run-task-ledger-row")).toHaveLength(2);
+    expect(screen.queryByText("Done work")).not.toBeInTheDocument();
+    expect(screen.queryByText("Dropped work")).not.toBeInTheDocument();
+
+    expect(
+      screen.getByTestId("automation-run-task-ledger-summary"),
+    ).toHaveTextContent("1 done · 1 dropped");
+  });
+
+  it("shows the empty state when there are no agent tasks", async () => {
+    listConversationTasksMock.mockResolvedValue([]);
+
+    renderLedger(false);
+
+    expect(await screen.findByText("No agent tasks yet.")).toBeInTheDocument();
+  });
+
+  it("polls on an interval while the run is open", async () => {
+    vi.useFakeTimers();
+    listConversationTasksMock.mockResolvedValue([task()]);
+
+    renderLedger(true);
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(listConversationTasksMock).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(2_500);
+    expect(listConversationTasksMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not poll once the run is terminal", async () => {
+    vi.useFakeTimers();
+    listConversationTasksMock.mockResolvedValue([task({ state: "done" })]);
+
+    renderLedger(false);
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(listConversationTasksMock).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(listConversationTasksMock).toHaveBeenCalledTimes(1);
+  });
+});

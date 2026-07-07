@@ -2,13 +2,16 @@ use chrono::{Duration, Utc};
 use serde_json::{json, Map, Value};
 use std::sync::Arc;
 
+use crate::application::reconciliation::{RecoveryActionKind, RecoveryContext, RecoveryDecision};
 use crate::application::{AppState, ReconciliationRunner, TaskTransitionService};
 use crate::commands::ExecutionState;
 use crate::domain::entities::{
-    task_metadata::StopRetryingReason, ExecutionFailureSource, ExecutionRecoveryEvent,
-    ExecutionRecoveryEventKind, ExecutionRecoveryMetadata, ExecutionRecoveryReasonCode,
-    ExecutionRecoverySource, ExecutionRecoveryState, InternalStatus, Project, Task,
+    task_metadata::StopRetryingReason, ChatContextType, ExecutionFailureSource,
+    ExecutionRecoveryEvent, ExecutionRecoveryEventKind, ExecutionRecoveryMetadata,
+    ExecutionRecoveryReasonCode, ExecutionRecoverySource, ExecutionRecoveryState, InternalStatus,
+    Project, Task,
 };
+use crate::domain::services::RunningAgentKey;
 
 use super::execution::is_deterministic_agent_command_error;
 
@@ -50,6 +53,138 @@ fn build_reconciler_for_execution_tests(
         Arc::clone(execution_state),
         None,
     )
+}
+
+async fn seed_execution_task(app_state: &AppState, status: InternalStatus) -> Task {
+    let project = Project::new(
+        "Recovery cleanup project".to_string(),
+        "/tmp/recovery-cleanup-project".to_string(),
+    );
+    app_state
+        .project_repo
+        .create(project.clone())
+        .await
+        .unwrap();
+    let mut task = Task::new(project.id.clone(), "recovery cleanup task".to_string());
+    task.internal_status = status;
+    app_state.task_repo.create(task.clone()).await.unwrap();
+    task
+}
+
+#[tokio::test]
+async fn recover_execution_stop_clears_stale_registry_entry_before_recovery() {
+    let app_state = AppState::new_test();
+    let execution_state = Arc::new(ExecutionState::new());
+    let reconciler = build_reconciler_for_execution_tests(&app_state, &execution_state);
+    let task = seed_execution_task(&app_state, InternalStatus::Executing).await;
+    let key = RunningAgentKey::new(ChatContextType::TaskExecution.to_string(), task.id.as_str());
+    app_state
+        .running_agent_registry
+        .register(
+            key.clone(),
+            0,
+            "conversation".to_string(),
+            "agent-run".to_string(),
+            None,
+            None,
+        )
+        .await;
+
+    let _ = reconciler.recover_execution_stop(&task.id).await;
+
+    assert!(
+        !app_state.running_agent_registry.is_running(&key).await,
+        "dead registry entries must be removed before stop recovery continues"
+    );
+}
+
+#[tokio::test]
+async fn recover_execution_stop_preserves_live_registry_entry() {
+    let app_state = AppState::new_test();
+    let execution_state = Arc::new(ExecutionState::new());
+    let reconciler = build_reconciler_for_execution_tests(&app_state, &execution_state);
+    let task = seed_execution_task(&app_state, InternalStatus::Executing).await;
+    let key = RunningAgentKey::new(ChatContextType::TaskExecution.to_string(), task.id.as_str());
+    app_state
+        .running_agent_registry
+        .register(
+            key.clone(),
+            std::process::id(),
+            "conversation".to_string(),
+            "agent-run".to_string(),
+            None,
+            None,
+        )
+        .await;
+
+    assert!(
+        !reconciler.recover_execution_stop(&task.id).await,
+        "live registry entries should block recovery stop"
+    );
+    assert!(
+        app_state.running_agent_registry.is_running(&key).await,
+        "live registry entries must not be removed as stale"
+    );
+}
+
+#[tokio::test]
+async fn execute_entry_recovery_sets_trigger_origin_with_metadata_update() {
+    let app_state = AppState::new_test();
+    let execution_state = Arc::new(ExecutionState::new());
+    let reconciler = build_reconciler_for_execution_tests(&app_state, &execution_state);
+    let mut task = seed_execution_task(&app_state, InternalStatus::Executing).await;
+    task.metadata = Some(serde_json::json!({ "existing": true }).to_string());
+    app_state.task_repo.update(&task).await.unwrap();
+
+    let _ = reconciler
+        .apply_recovery_decision(
+            &task,
+            InternalStatus::Executing,
+            RecoveryContext::Execution,
+            RecoveryDecision {
+                action: RecoveryActionKind::ExecuteEntryActions,
+                reason: None,
+            },
+        )
+        .await;
+
+    let updated = app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .expect("task should exist");
+    let metadata: Value = serde_json::from_str(updated.metadata.as_deref().unwrap()).unwrap();
+    assert_eq!(metadata["existing"], Value::Bool(true));
+    assert_eq!(
+        metadata["trigger_origin"],
+        Value::String("recovery".to_string())
+    );
+}
+
+#[tokio::test]
+async fn record_auto_retry_metadata_updates_metadata_without_rewriting_task() {
+    let app_state = AppState::new_test();
+    let execution_state = Arc::new(ExecutionState::new());
+    let reconciler = build_reconciler_for_execution_tests(&app_state, &execution_state);
+    let mut task = seed_execution_task(&app_state, InternalStatus::Executing).await;
+    task.metadata = Some(json!({ "existing": true }).to_string());
+    app_state.task_repo.update(&task).await.unwrap();
+
+    reconciler
+        .record_auto_retry_metadata(&task, InternalStatus::Executing, 4)
+        .await
+        .expect("record retry metadata");
+
+    let stored = app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .expect("task should be stored");
+    let metadata: Value = serde_json::from_str(stored.metadata.as_deref().unwrap()).unwrap();
+    assert_eq!(metadata["existing"], Value::Bool(true));
+    assert_eq!(metadata["auto_retry_count_executing"], json!(4));
 }
 
 /// Replicates the staleness check logic from `recover_timeout_failures`.
