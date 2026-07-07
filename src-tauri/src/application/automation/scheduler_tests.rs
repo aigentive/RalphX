@@ -11,21 +11,22 @@ use tokio::time::{sleep, timeout};
 use super::provisioning::{
     AutomationRunStartOutcome, AutomationRunStartRequest, AutomationRunStarter,
 };
+use super::judge::SPEC_ATTACHMENT_MAX_BYTES;
 use super::scheduler::{
-    AutomationJudgeInvocation, AutomationJudgeInvocationOutput, AutomationJudgeInvoker,
-    AutomationScheduler, AutomationSchedulerConfig, AutomationSchedulerRegistry,
-    AutomationSignalChecker,
+    load_spec_attachment, AutomationJudgeInvocation, AutomationJudgeInvocationOutput,
+    AutomationJudgeInvoker, AutomationScheduler, AutomationSchedulerConfig,
+    AutomationSchedulerRegistry, AutomationSignalChecker,
 };
 use super::transition::NoopAutomationEventEmitter;
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, Automation,
-    AutomationId, AutomationJudgeState, AutomationPromptAuthor, AutomationRun, AutomationRunId,
-    AutomationRunStatus, AutomationStatus, ChatConversationId, IdeationAnalysisBaseRefKind,
-    ProjectId,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, Artifact, ArtifactId,
+    ArtifactType, Automation, AutomationId, AutomationJudgeState, AutomationPromptAuthor,
+    AutomationRun, AutomationRunId, AutomationRunStatus, AutomationStatus, ChatConversationId,
+    IdeationAnalysisBaseRefKind, ProjectId,
 };
 use crate::domain::repositories::{
-    AgentConversationWorkspaceRepository, AgentRunRepository, AutomationRepository,
-    AutomationRunRepository,
+    AgentConversationWorkspaceRepository, AgentRunRepository, ArtifactRepository,
+    AutomationRepository, AutomationRunRepository,
 };
 use crate::domain::services::github_service::PrStatus;
 use crate::error::{AppError, AppResult};
@@ -1354,4 +1355,195 @@ async fn automation_scheduler_consumes_stored_continue_verdict_without_duplicate
     let runs = run_repo.list_for_automation(&automation_id).await.unwrap();
     assert_eq!(runs.len(), 2);
     assert_eq!(runs[1].prompt_author, AutomationPromptAuthor::Judge);
+}
+
+/// Artifact repository that fails every `get_by_id`, delegating all other
+/// methods to an inner in-memory repo. Only `get_by_id` is exercised by the
+/// `load_spec_attachment` fail-open tests.
+struct FailingArtifactRepository {
+    inner: MemoryArtifactRepository,
+}
+
+impl FailingArtifactRepository {
+    fn new() -> Self {
+        Self {
+            inner: MemoryArtifactRepository::new(),
+        }
+    }
+}
+
+#[async_trait]
+impl ArtifactRepository for FailingArtifactRepository {
+    async fn create(&self, artifact: Artifact) -> AppResult<Artifact> {
+        self.inner.create(artifact).await
+    }
+
+    async fn get_by_id(&self, _id: &ArtifactId) -> AppResult<Option<Artifact>> {
+        Err(AppError::Infrastructure("artifact lookup failed".to_string()))
+    }
+
+    async fn get_by_id_at_version(
+        &self,
+        id: &ArtifactId,
+        version: u32,
+    ) -> AppResult<Option<Artifact>> {
+        self.inner.get_by_id_at_version(id, version).await
+    }
+
+    async fn get_by_bucket(
+        &self,
+        bucket_id: &crate::domain::entities::ArtifactBucketId,
+    ) -> AppResult<Vec<Artifact>> {
+        self.inner.get_by_bucket(bucket_id).await
+    }
+
+    async fn get_by_type(
+        &self,
+        artifact_type: ArtifactType,
+    ) -> AppResult<Vec<Artifact>> {
+        self.inner.get_by_type(artifact_type).await
+    }
+
+    async fn get_by_task(
+        &self,
+        task_id: &crate::domain::entities::TaskId,
+    ) -> AppResult<Vec<Artifact>> {
+        self.inner.get_by_task(task_id).await
+    }
+
+    async fn get_by_process(
+        &self,
+        process_id: &crate::domain::entities::ProcessId,
+    ) -> AppResult<Vec<Artifact>> {
+        self.inner.get_by_process(process_id).await
+    }
+
+    async fn update(&self, artifact: &Artifact) -> AppResult<()> {
+        self.inner.update(artifact).await
+    }
+
+    async fn delete(&self, id: &ArtifactId) -> AppResult<()> {
+        self.inner.delete(id).await
+    }
+
+    async fn get_derived_from(&self, artifact_id: &ArtifactId) -> AppResult<Vec<Artifact>> {
+        self.inner.get_derived_from(artifact_id).await
+    }
+
+    async fn get_related(&self, artifact_id: &ArtifactId) -> AppResult<Vec<Artifact>> {
+        self.inner.get_related(artifact_id).await
+    }
+
+    async fn add_relation(
+        &self,
+        relation: crate::domain::entities::ArtifactRelation,
+    ) -> AppResult<crate::domain::entities::ArtifactRelation> {
+        self.inner.add_relation(relation).await
+    }
+
+    async fn get_relations(
+        &self,
+        artifact_id: &ArtifactId,
+    ) -> AppResult<Vec<crate::domain::entities::ArtifactRelation>> {
+        self.inner.get_relations(artifact_id).await
+    }
+
+    async fn get_relations_by_type(
+        &self,
+        artifact_id: &ArtifactId,
+        relation_type: crate::domain::entities::ArtifactRelationType,
+    ) -> AppResult<Vec<crate::domain::entities::ArtifactRelation>> {
+        self.inner
+            .get_relations_by_type(artifact_id, relation_type)
+            .await
+    }
+
+    async fn delete_relation(&self, from_id: &ArtifactId, to_id: &ArtifactId) -> AppResult<()> {
+        self.inner.delete_relation(from_id, to_id).await
+    }
+
+    async fn create_with_previous_version(
+        &self,
+        artifact: Artifact,
+        previous_version_id: ArtifactId,
+    ) -> AppResult<Artifact> {
+        self.inner
+            .create_with_previous_version(artifact, previous_version_id)
+            .await
+    }
+
+    async fn get_version_history(
+        &self,
+        id: &ArtifactId,
+    ) -> AppResult<Vec<crate::domain::repositories::ArtifactVersionSummary>> {
+        self.inner.get_version_history(id).await
+    }
+
+    async fn resolve_latest_artifact_id(&self, id: &ArtifactId) -> AppResult<ArtifactId> {
+        self.inner.resolve_latest_artifact_id(id).await
+    }
+
+    async fn archive(&self, id: &ArtifactId) -> AppResult<Artifact> {
+        self.inner.archive(id).await
+    }
+}
+
+#[tokio::test]
+async fn load_spec_attachment_returns_truncated_content_when_spec_present() {
+    let mem = MemoryArtifactRepository::new();
+    // ~30KB of text — larger than SPEC_ATTACHMENT_MAX_BYTES (10KB).
+    let spec_text = "spec ".repeat(6_000);
+    let artifact = Artifact::new_inline(
+        "Automation spec",
+        ArtifactType::Specification,
+        spec_text.clone(),
+        "user",
+    );
+    let created = mem.create(artifact).await.unwrap();
+    let repo: Arc<dyn ArtifactRepository> = Arc::new(mem);
+
+    let mut automation = automation("auto-spec", AutomationStatus::Active);
+    automation.spec_artifact_id = Some(created.id.as_str().to_string());
+
+    let attachments = load_spec_attachment(&repo, &automation).await;
+
+    assert_eq!(attachments.len(), 1);
+    let attachment = &attachments[0];
+    assert_eq!(attachment.file_name, "Automation spec");
+    let content = attachment.text_content.as_deref().unwrap();
+    assert!(content.len() <= SPEC_ATTACHMENT_MAX_BYTES);
+    assert!(content.len() < spec_text.len());
+    assert_eq!(attachment.file_size, Some(content.len() as i64));
+}
+
+#[tokio::test]
+async fn load_spec_attachment_empty_when_no_spec_linked() {
+    let repo: Arc<dyn ArtifactRepository> = Arc::new(MemoryArtifactRepository::new());
+
+    let mut automation = automation("auto", AutomationStatus::Active);
+    automation.spec_artifact_id = None;
+    assert!(load_spec_attachment(&repo, &automation).await.is_empty());
+
+    automation.spec_artifact_id = Some("   ".to_string());
+    assert!(load_spec_attachment(&repo, &automation).await.is_empty());
+}
+
+#[tokio::test]
+async fn load_spec_attachment_empty_when_artifact_missing() {
+    let repo: Arc<dyn ArtifactRepository> = Arc::new(MemoryArtifactRepository::new());
+
+    let mut automation = automation("auto", AutomationStatus::Active);
+    automation.spec_artifact_id = Some("does-not-exist".to_string());
+
+    assert!(load_spec_attachment(&repo, &automation).await.is_empty());
+}
+
+#[tokio::test]
+async fn load_spec_attachment_empty_when_repo_errors() {
+    let repo: Arc<dyn ArtifactRepository> = Arc::new(FailingArtifactRepository::new());
+
+    let mut automation = automation("auto", AutomationStatus::Active);
+    automation.spec_artifact_id = Some("spec-1".to_string());
+
+    assert!(load_spec_attachment(&repo, &automation).await.is_empty());
 }

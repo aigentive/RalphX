@@ -11,9 +11,9 @@ use dashmap::DashMap;
 
 use crate::application::automation::judge::{
     append_automation_judge_retry_instruction, build_automation_judge_prompt,
-    parse_automation_judge_verdict, AutomationJudgeAttachmentContext,
+    parse_automation_judge_verdict, truncate_utf8_to_bytes, AutomationJudgeAttachmentContext,
     AutomationJudgeContextRefSummary, AutomationJudgeValidationContext,
-    BuildAutomationJudgePromptInput,
+    BuildAutomationJudgePromptInput, SPEC_ATTACHMENT_MAX_BYTES,
 };
 use crate::application::automation::provisioning::{
     AutomationRunProvisioner, AutomationRunStarter,
@@ -33,8 +33,8 @@ use crate::application::harness_runtime_registry::{
 use crate::application::AppState;
 use crate::domain::agents::{AgentConfig, AgentHarnessKind, AgentRole, DEFAULT_AGENT_HARNESS};
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentRunStatus, Automation, AutomationId, AutomationJudgeState,
-    AutomationRun, AutomationRunStatus, AutomationStatus,
+    AgentConversationWorkspace, AgentRunStatus, ArtifactContent, ArtifactId, Automation,
+    AutomationId, AutomationJudgeState, AutomationRun, AutomationRunStatus, AutomationStatus,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, ArtifactRepository,
@@ -239,17 +239,84 @@ impl HarnessAutomationJudgeInvoker {
     }
 }
 
+/// Loads the automation's linked spec artifact as inline judge context.
+///
+/// The judge is a one-shot agent with no MCP artifact tools, so the spec is
+/// inlined as an [`AutomationJudgeAttachmentContext`], pre-truncated to
+/// [`SPEC_ATTACHMENT_MAX_BYTES`] to keep the surrounding `original_inputs` JSON
+/// wrapper intact. The spec is advisory context only — no state transition
+/// depends on it — so every failure mode fails open to an empty attachment list
+/// (D6): no `spec_artifact_id`, a missing artifact, a file-backed artifact, or a
+/// repository error all yield `vec![]` after a warning.
+pub(crate) async fn load_spec_attachment(
+    artifact_repo: &Arc<dyn ArtifactRepository>,
+    automation: &Automation,
+) -> Vec<AutomationJudgeAttachmentContext> {
+    let Some(spec_id) = automation
+        .spec_artifact_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    else {
+        return Vec::new();
+    };
+
+    let artifact_id = ArtifactId::from_string(spec_id.to_string());
+    let artifact = match artifact_repo.get_by_id(&artifact_id).await {
+        Ok(Some(artifact)) => artifact,
+        Ok(None) => {
+            tracing::warn!(
+                automation_id = %automation.id,
+                spec_artifact_id = spec_id,
+                "Automation judge spec artifact not found; continuing without spec context"
+            );
+            return Vec::new();
+        }
+        Err(error) => {
+            tracing::warn!(
+                automation_id = %automation.id,
+                spec_artifact_id = spec_id,
+                %error,
+                "Failed to load automation judge spec artifact; continuing without spec context"
+            );
+            return Vec::new();
+        }
+    };
+
+    let text = match &artifact.content {
+        ArtifactContent::Inline { text } => text,
+        ArtifactContent::File { .. } => {
+            tracing::warn!(
+                automation_id = %automation.id,
+                spec_artifact_id = spec_id,
+                "Automation judge spec artifact is file-backed; continuing without spec context"
+            );
+            return Vec::new();
+        }
+    };
+
+    let (spec_text, _) = truncate_utf8_to_bytes(text, SPEC_ATTACHMENT_MAX_BYTES);
+    let file_size = spec_text.len() as i64;
+    vec![AutomationJudgeAttachmentContext {
+        file_name: artifact.name.clone(),
+        mime_type: Some("text/markdown".to_string()),
+        file_size: Some(file_size),
+        text_content: Some(spec_text),
+    }]
+}
+
 #[async_trait]
 impl AutomationJudgeInvoker for HarnessAutomationJudgeInvoker {
     async fn invoke(
         &self,
         input: AutomationJudgeInvocation,
     ) -> AppResult<AutomationJudgeInvocationOutput> {
+        let attachments = load_spec_attachment(&self.state.artifact_repo, &input.automation).await;
         let mut prompt = build_automation_judge_prompt(BuildAutomationJudgePromptInput {
             automation: &input.automation,
             runs: &input.runs,
             previous_run: &input.previous_run,
-            attachments: &[] as &[AutomationJudgeAttachmentContext],
+            attachments: &attachments,
             context_refs: &[] as &[AutomationJudgeContextRefSummary],
         })?;
         if input.retry_reminder && !append_automation_judge_retry_instruction(&mut prompt) {

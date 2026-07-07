@@ -11,6 +11,11 @@ const AUTOMATION_JUDGE_RETRY_INSTRUCTION: &str = "\n<retry_instruction truncated
 
 const SETUP_ANALYSIS_MAX_BYTES: usize = 8 * 1024;
 const ORIGINAL_INPUTS_MAX_BYTES: usize = 12 * 1024;
+/// Max byte budget for a linked spec artifact inlined into the judge prompt as
+/// an [`AutomationJudgeAttachmentContext`]. Pre-truncating here (below
+/// [`ORIGINAL_INPUTS_MAX_BYTES`]) keeps the surrounding JSON wrapper intact when
+/// `format_original_inputs` byte-truncates the whole `original_inputs` section.
+pub(crate) const SPEC_ATTACHMENT_MAX_BYTES: usize = 10 * 1024;
 const RUN_HISTORY_MAX_BYTES: usize = 18 * 1024;
 const PREVIOUS_RUN_MAX_BYTES: usize = 16 * 1024;
 const PREVIOUS_RUN_SUMMARY_MAX_BYTES: usize = 8 * 1024;
@@ -573,7 +578,7 @@ fn budgeted_xml_section(tag: &str, raw: &str, cap: usize, remaining: usize) -> S
     }
 }
 
-fn truncate_utf8_to_bytes(value: &str, max_bytes: usize) -> (String, bool) {
+pub(crate) fn truncate_utf8_to_bytes(value: &str, max_bytes: usize) -> (String, bool) {
     if value.len() <= max_bytes {
         return (value.to_string(), false);
     }
