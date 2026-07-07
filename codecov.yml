@@ -21,6 +21,7 @@ coverage:
           # background loops. Keep behavior covered through extracted helpers/services.
           - "!src-tauri/src/application/app_setup.rs"
           - "!src-tauri/src/application/runtime_wiring.rs"
+          - "!src-tauri/src/application/startup_background.rs"
           - "!src-tauri/src/application/startup_pipeline.rs"
           - "!src-tauri/src/application/startup_pipeline_launch.rs"
           - "!src-tauri/src/application/startup_transition_factory.rs"
@@ -116,6 +117,10 @@ coverage:
           # Release notes Tauri command wrappers need AppHandle<R> / State<'_, AppState>
           # and cannot be unit tested without the Tauri runtime. All testable pure
           # functions (parse, sort, collect, sanitize, read-with-reader) have full coverage.
+          # Automation command wrappers follow the same Tauri State/AppState adapter
+          # pattern; parser/DTO helpers are sidecar-unit tested and IPC contracts cover
+          # the command surface under the Rust IPC coverage shard.
+          - "!src-tauri/src/commands/automation_commands.rs"
           - "!src-tauri/src/commands/release_notes_commands.rs"
           - "!src-tauri/src/infrastructure/sqlite/sqlite_atlassian_integration_settings_repo.rs"
 
@@ -151,6 +156,7 @@ ignore:
   - "frontend/src/**/*.testSetup.*"
   - "frontend/src/mocks/**"
   # Plugin MCP test sources and generated test artifacts.
+  - "plugins/app/**/build/**"
   - "plugins/app/**/tests/**"
   - "plugins/app/**/__tests__/**"
   - "plugins/app/**/*.test.*"

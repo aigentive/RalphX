@@ -478,6 +478,8 @@ describe("chat api", () => {
         effective_model_id: "gpt-5.4-2026-04-01",
         logical_effort: "high",
         effective_effort: "high",
+        automation_id: "automation-1",
+        automation_run_id: "run-1",
         title: "Title",
         message_count: 2,
         last_message_at: null,
@@ -504,6 +506,8 @@ describe("chat api", () => {
       effectiveModelId: "gpt-5.4-2026-04-01",
       logicalEffort: "high",
       effectiveEffort: "high",
+      automationId: "automation-1",
+      automationRunId: "run-1",
       claudeSessionId: null,
     });
   });

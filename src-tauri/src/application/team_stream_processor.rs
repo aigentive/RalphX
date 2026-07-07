@@ -104,6 +104,8 @@ pub fn start_teammate_stream<R: Runtime>(
                     upstream_provider: None,
                     provider_profile: None,
                     agent_mode: None,
+                    automation_id: None,
+                    automation_run_id: None,
                     title: Some(format!("Teammate: {}", teammate_name)),
                     message_count: 0,
                     last_message_at: None,

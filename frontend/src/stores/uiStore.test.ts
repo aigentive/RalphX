@@ -7,6 +7,7 @@ const ALL_ENABLED: FeatureFlags = {
   activityPage: true,
   extensibilityPage: true,
   ideationPage: true,
+  automationsPage: true,
   battleMode: true,
   teamMode: false,
   atlassianOauth: false,
@@ -1136,6 +1137,16 @@ describe("uiStore", () => {
         expect(useUiStore.getState().currentView).toBe("agents");
       });
 
+      it("redirects to agents when automations page is disabled", () => {
+        useUiStore.setState({
+          featureFlags: { ...ALL_ENABLED, automationsPage: false },
+        });
+
+        useUiStore.getState().setCurrentView("automations");
+
+        expect(useUiStore.getState().currentView).toBe("agents");
+      });
+
       it("allows activity when activity page is enabled", () => {
         useUiStore.setState({ featureFlags: ALL_ENABLED });
 
@@ -1158,6 +1169,7 @@ describe("uiStore", () => {
             activityPage: true,
             extensibilityPage: true,
             ideationPage: false,
+            automationsPage: false,
             battleMode: true,
             teamMode: false,
             atlassianOauth: false,
@@ -1176,6 +1188,7 @@ describe("uiStore", () => {
             activityPage: true,
             extensibilityPage: true,
             ideationPage: false,
+            automationsPage: false,
             battleMode: true,
             teamMode: false,
             atlassianOauth: false,
@@ -1194,6 +1207,14 @@ describe("uiStore", () => {
         useUiStore.getState().setCurrentView("ideation");
 
         expect(useUiStore.getState().currentView).toBe("ideation");
+      });
+
+      it("allows automations when automations page is enabled", () => {
+        useUiStore.setState({ featureFlags: ALL_ENABLED });
+
+        useUiStore.getState().setCurrentView("automations");
+
+        expect(useUiStore.getState().currentView).toBe("automations");
       });
 
       it("always allows kanban (not a feature-flagged view)", () => {
@@ -1279,6 +1300,17 @@ describe("uiStore", () => {
         useUiStore.setState({
           featureFlags: { ...ALL_ENABLED, ideationPage: false },
           viewByProject: { [PROJECT_B]: "ideation" },
+        });
+
+        useUiStore.getState().switchToProject(PROJECT_A, PROJECT_B);
+
+        expect(useUiStore.getState().currentView).toBe("agents");
+      });
+
+      it("redirects to agents when restoring a disabled automations view", () => {
+        useUiStore.setState({
+          featureFlags: { ...ALL_ENABLED, automationsPage: false },
+          viewByProject: { [PROJECT_B]: "automations" },
         });
 
         useUiStore.getState().switchToProject(PROJECT_A, PROJECT_B);

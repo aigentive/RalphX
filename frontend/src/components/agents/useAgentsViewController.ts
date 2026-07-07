@@ -81,6 +81,7 @@ import {
 interface UseAgentsViewControllerParams {
   projectId: string;
   onCreateProject: () => void;
+  onOpenAutomation?: (automationId: string) => void;
 }
 
 type AgentConversationListPage = Omit<
@@ -164,6 +165,7 @@ function lifecyclePayloadOwnsWorkspaceReviewQuery(
 export function useAgentsViewController({
   projectId,
   onCreateProject,
+  onOpenAutomation,
 }: UseAgentsViewControllerParams) {
   const queryClient = useQueryClient();
   const eventBus = useEventBus();
@@ -299,6 +301,25 @@ export function useAgentsViewController({
         current.type === "task_runtime" &&
         current.taskId === taskId &&
         current.contextType === contextType
+          ? current
+          : nextFocus,
+      );
+    },
+    [],
+  );
+  const handleFocusAutomationRun = useCallback(
+    (automationId: string, runId: string, conversationId: string) => {
+      const nextFocus: Extract<AgentsChatFocus, { type: "automation_run" }> = {
+        type: "automation_run",
+        automationId,
+        runId,
+        conversationId,
+      };
+      setChatFocus((current) =>
+        current.type === "automation_run" &&
+        current.automationId === automationId &&
+        current.runId === runId &&
+        current.conversationId === conversationId
           ? current
           : nextFocus,
       );
@@ -555,8 +576,14 @@ export function useAgentsViewController({
     reviewArtifactId,
     shouldShowWorkspaceReviewTab,
   ]);
+  const hasAutomationArtifact =
+    activeConversation?.agentMode === "automation" &&
+    Boolean(activeConversation.automationId);
   const hasAutoOpenArtifactsWithReview =
-    hasAutoOpenArtifacts || Boolean(reviewArtifactId) || shouldShowWorkspaceReviewTab;
+    hasAutoOpenArtifacts ||
+    hasAutomationArtifact ||
+    Boolean(reviewArtifactId) ||
+    shouldShowWorkspaceReviewTab;
   const knownFocusIdeationSessionId =
     focusedArtifactIdeationSessionId ?? attachedIdeationSessionId ?? null;
   const latestVerificationChildQuery = useQuery({
@@ -611,6 +638,8 @@ export function useAgentsViewController({
       : null;
   const taskRuntimeFocusTarget =
     chatFocus.type === "task_runtime" ? chatFocus : null;
+  const automationRunFocusTarget =
+    chatFocus.type === "automation_run" ? chatFocus : null;
   const workspaceReviewChildConversationId =
     workspaceReviewContext?.monitor.reviewConversationId ?? null;
   const workspaceReviewFocusTarget = useMemo(
@@ -663,10 +692,12 @@ export function useAgentsViewController({
       verificationFocusTarget,
       taskRuntimeFocusTarget,
       workspaceReviewFocusTarget,
+      automationRunFocusTarget,
       hasPlanArtifact: hasAttachedPlanArtifact,
     });
   }, [
     activeConversationMode,
+    automationRunFocusTarget,
     focusSwitcherIdeationSessionId,
     hasAttachedPlanArtifact,
     taskRuntimeFocusTarget,
@@ -709,6 +740,11 @@ export function useAgentsViewController({
 
       if (type === "workspace_review" && workspaceReviewFocusTarget) {
         setChatFocus(workspaceReviewFocusTarget);
+        return;
+      }
+
+      if (type === "automation_run" && automationRunFocusTarget) {
+        setChatFocus(automationRunFocusTarget);
       }
     },
     [
@@ -718,6 +754,7 @@ export function useAgentsViewController({
       handleReturnToWorkspaceChat,
       taskRuntimeFocusTarget,
       verificationFocusTarget,
+      automationRunFocusTarget,
       workspaceReviewFocusTarget,
     ],
   );
@@ -731,6 +768,21 @@ export function useAgentsViewController({
     hasAutoOpenArtifacts: hasAutoOpenArtifactsWithReview,
     selectedConversationId,
   });
+  useEffect(() => {
+    if (
+      !selectedConversationId ||
+      activeConversation?.agentMode !== "automation" ||
+      !activeConversation.automationId
+    ) {
+      return;
+    }
+    openArtifactTab(selectedConversationId, "automation");
+  }, [
+    activeConversation?.agentMode,
+    activeConversation?.automationId,
+    openArtifactTab,
+    selectedConversationId,
+  ]);
   const handleOpenPlanArtifact = useCallback(() => {
     if (!selectedConversationId) {
       return;
@@ -1228,7 +1280,9 @@ export function useAgentsViewController({
       onFocusWorkspaceReview: handleFocusWorkspaceReview,
       onFocusVerificationSession: handleFocusVerificationSession,
       onFocusTaskRuntime: handleFocusTaskRuntime,
+      onFocusAutomationRun: handleFocusAutomationRun,
       onOpenTaskArtifact: handleOpenTaskArtifact,
+      ...(onOpenAutomation ? { onOpenAutomation } : {}),
       onForkConversation: handleForkConversation,
       onOpenPlanArtifact: handleOpenPlanArtifact,
       onOpenPublishPane: handleOpenPublishPaneWithChatFocus,
@@ -1285,6 +1339,7 @@ export function useAgentsViewController({
       terminalUnavailableReason,
       onFocusVerificationSession: handleFocusVerificationSession,
       onFocusWorkspaceReview: handleFocusWorkspaceReview,
+      ...(onOpenAutomation ? { onOpenAutomation } : {}),
       onOpenPublish: handleOpenPublishPaneWithChatFocus,
       onTaskArtifactSelectionChange: handleTaskArtifactSelectionChange,
       onPublishWorkspace: handlePublishWorkspace,

@@ -28,6 +28,9 @@ import type { Project } from "@/types/project";
 const { sonnerToasterMock } = vi.hoisted(() => ({
   sonnerToasterMock: vi.fn(() => null),
 }));
+const { preloadAutomationsViewMock } = vi.hoisted(() => ({
+  preloadAutomationsViewMock: vi.fn(() => new Promise(() => {})),
+}));
 
 vi.mock("sonner", () => ({
   Toaster: sonnerToasterMock,
@@ -35,6 +38,10 @@ vi.mock("sonner", () => ({
     error: vi.fn(),
     info: vi.fn(),
   },
+}));
+
+vi.mock("@/components/automations/preloadAutomationsView", () => ({
+  preloadAutomationsView: preloadAutomationsViewMock,
 }));
 
 Object.defineProperty(window, "matchMedia", {
@@ -485,9 +492,26 @@ function enableStandaloneIdeationPage() {
     activityPage: true,
     extensibilityPage: true,
     ideationPage: true,
+    automationsPage: false,
     battleMode: true,
     teamMode: false,
     atlassianOauth: false,
+    ticketingDashboard: false,
+  };
+  getQueryClient().setQueryData(FEATURE_FLAGS_QUERY_KEY, flags);
+  useUiStore.getState().setFeatureFlags(flags);
+}
+
+function enableAutomationsPage() {
+  const flags = {
+    activityPage: true,
+    extensibilityPage: true,
+    ideationPage: false,
+    automationsPage: true,
+    battleMode: true,
+    teamMode: false,
+    atlassianOauth: false,
+    ticketingDashboard: false,
   };
   getQueryClient().setQueryData(FEATURE_FLAGS_QUERY_KEY, flags);
   useUiStore.getState().setFeatureFlags(flags);
@@ -1193,6 +1217,7 @@ describe("App", () => {
       expect(screen.getByTestId("nav-kanban")).toBeInTheDocument();
       expect(screen.getByTestId("nav-graph")).toBeInTheDocument();
       expect(screen.queryByTestId("nav-ideation")).toBeNull();
+      expect(screen.getByTestId("nav-automations")).toBeInTheDocument();
       expect(screen.getByTestId("nav-extensibility")).toBeInTheDocument();
       expect(screen.getByTestId("nav-activity")).toBeInTheDocument();
       expect(screen.getByTestId("nav-settings")).toBeInTheDocument();
@@ -1206,6 +1231,7 @@ describe("App", () => {
         { testId: "nav-agents", label: /Agents/i },
         { testId: "nav-kanban", label: /Kanban/i },
         { testId: "nav-graph", label: /Graph/i },
+        { testId: "nav-automations", label: /Automations/i },
         { testId: "nav-extensibility", label: /Extensibility/i },
         { testId: "nav-activity", label: /Activity/i },
         { testId: "nav-settings", label: /Settings/i },
@@ -1287,6 +1313,17 @@ describe("App", () => {
       expect(screen.getByTestId("nav-activity")).toHaveAttribute("aria-current", "page");
       expect(screen.getByTestId("activity-view-mock")).toBeInTheDocument();
       expect(screen.queryByTestId("task-board-mock")).not.toBeInTheDocument();
+    });
+
+    it("paints Automations route shell synchronously on first nav click", () => {
+      enableAutomationsPage();
+      render(<App />);
+
+      fireEvent.click(screen.getByTestId("nav-automations"));
+
+      expect(useUiStore.getState().currentView).toBe("automations");
+      expect(screen.getByTestId("automations-view-shell")).toBeInTheDocument();
+      expect(preloadAutomationsViewMock).toHaveBeenCalled();
     });
 
     it("should open Settings modal when clicked", async () => {
@@ -1423,6 +1460,7 @@ describe("App", () => {
     });
 
     it("routes other deep-link views by switching the current view directly", async () => {
+      enableStandaloneIdeationPage();
       render(<App />);
 
       useUiStore.getState().setCurrentView("ticketing");

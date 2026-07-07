@@ -12,6 +12,7 @@ import {
   Puzzle,
   Ticket,
   TrendingUp,
+  Workflow,
 } from "lucide-react";
 import { GitHubMarkIcon } from "@/components/github/GitHubMarkIcon";
 import { GranolaIcon } from "@/components/granola/GranolaIcon";
@@ -54,6 +55,12 @@ export const ALL_NAV_ITEMS: NavItemConfig[] = [
     icon: LayoutGrid,
     shortcut: "⌘4",
     visible: () => true,
+  },
+  {
+    view: "automations",
+    label: "Automations",
+    icon: Workflow,
+    visible: (flags) => flags.automationsPage,
   },
   {
     view: "ticketing",

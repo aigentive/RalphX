@@ -1,14 +1,14 @@
 use super::*;
 use crate::domain::agents::{AgentHarnessKind, AgentLane, LogicalEffort};
 use crate::infrastructure::agents::claude::agent_names::{
-    SHORT_AGENT_WORKSPACE_PR_FIXER, SHORT_AGENT_WORKSPACE_REPAIR, SHORT_CHAT_PROJECT,
-    SHORT_CHAT_TASK, SHORT_CODER, SHORT_DEEP_RESEARCHER, SHORT_GENERAL_EXPLORER,
-    SHORT_GENERAL_WORKER, SHORT_IDEATION_ADVOCATE, SHORT_IDEATION_CRITIC,
-    SHORT_IDEATION_SPECIALIST_BACKEND, SHORT_IDEATION_SPECIALIST_CODE_QUALITY,
-    SHORT_IDEATION_SPECIALIST_FRONTEND, SHORT_IDEATION_SPECIALIST_INFRA,
-    SHORT_IDEATION_SPECIALIST_UX, SHORT_IDEATION_TEAM_LEAD, SHORT_IDEATION_TEAM_MEMBER,
-    SHORT_MEMORY_CAPTURE, SHORT_MEMORY_MAINTAINER, SHORT_MERGER, SHORT_ORCHESTRATOR,
-    SHORT_ORCHESTRATOR_IDEATION, SHORT_ORCHESTRATOR_IDEATION_READONLY,
+    SHORT_AGENT_WORKSPACE_PR_FIXER, SHORT_AGENT_WORKSPACE_REPAIR, SHORT_AUTOMATION_JUDGE,
+    SHORT_AUTOMATION_SETUP, SHORT_CHAT_PROJECT, SHORT_CHAT_TASK, SHORT_CODER,
+    SHORT_DEEP_RESEARCHER, SHORT_GENERAL_EXPLORER, SHORT_GENERAL_WORKER,
+    SHORT_IDEATION_ADVOCATE, SHORT_IDEATION_CRITIC, SHORT_IDEATION_SPECIALIST_BACKEND,
+    SHORT_IDEATION_SPECIALIST_CODE_QUALITY, SHORT_IDEATION_SPECIALIST_FRONTEND,
+    SHORT_IDEATION_SPECIALIST_INFRA, SHORT_IDEATION_SPECIALIST_UX, SHORT_IDEATION_TEAM_LEAD,
+    SHORT_IDEATION_TEAM_MEMBER, SHORT_MEMORY_CAPTURE, SHORT_MEMORY_MAINTAINER, SHORT_MERGER,
+    SHORT_ORCHESTRATOR, SHORT_ORCHESTRATOR_IDEATION, SHORT_ORCHESTRATOR_IDEATION_READONLY,
     SHORT_PLAN_CRITIC_COMPLETENESS, SHORT_PLAN_CRITIC_IMPLEMENTATION_FEASIBILITY,
     SHORT_PLAN_VERIFIER, SHORT_PROJECT_ANALYZER, SHORT_PR_DESCRIBER, SHORT_PR_REVIEWER,
     SHORT_QA_EXECUTOR, SHORT_QA_PREP, SHORT_REVIEWER, SHORT_REVIEW_CHAT, SHORT_REVIEW_HISTORY,
@@ -316,6 +316,8 @@ fn test_all_agent_names_are_known() {
         "ralphx-ideation-specialist-state-machine",
         // Utility agent used for plan complexity checks.
         "ralphx-utility-plan-complexity",
+        SHORT_AUTOMATION_SETUP,
+        SHORT_AUTOMATION_JUDGE,
     ]);
 
     for agent in agent_configs() {
@@ -632,6 +634,44 @@ agents:
             "sandbox": { "enabled": false }
         }))
     );
+}
+
+#[test]
+fn test_automations_config_parses_top_level_block() {
+    let yaml = r#"
+automations:
+  scheduler_poll_secs: 45
+  signal_failure_pause_threshold: 7
+  judge_timeout_secs: 240
+  publish_grace_secs: 90
+  max_run_duration_secs: 7200
+"#;
+    let parsed = parse_config_no_env_overrides(yaml).expect("config should parse");
+
+    assert_eq!(parsed.automations.scheduler_poll_secs, 45);
+    assert_eq!(parsed.automations.signal_failure_pause_threshold, 7);
+    assert_eq!(parsed.automations.judge_timeout_secs, 240);
+    assert_eq!(parsed.automations.publish_grace_secs, 90);
+    assert_eq!(parsed.automations.max_run_duration_secs, 7200);
+}
+
+#[test]
+fn test_automations_config_env_overrides() {
+    let parsed = parse_config_with_lookup("", &|name| match name {
+        "RALPHX_AUTOMATIONS_SCHEDULER_POLL_SECS" => Some("45".to_string()),
+        "RALPHX_AUTOMATIONS_SIGNAL_FAILURE_PAUSE_THRESHOLD" => Some("7".to_string()),
+        "RALPHX_AUTOMATIONS_JUDGE_TIMEOUT_SECS" => Some("240".to_string()),
+        "RALPHX_AUTOMATIONS_PUBLISH_GRACE_SECS" => Some("90".to_string()),
+        "RALPHX_AUTOMATIONS_MAX_RUN_DURATION_SECS" => Some("7200".to_string()),
+        _ => None,
+    })
+    .expect("config should parse");
+
+    assert_eq!(parsed.automations.scheduler_poll_secs, 45);
+    assert_eq!(parsed.automations.signal_failure_pause_threshold, 7);
+    assert_eq!(parsed.automations.judge_timeout_secs, 240);
+    assert_eq!(parsed.automations.publish_grace_secs, 90);
+    assert_eq!(parsed.automations.max_run_duration_secs, 7200);
 }
 
 #[test]
@@ -3277,6 +3317,10 @@ fn test_ui_feature_flags_default_standalone_ideation_hidden() {
         !flags.ideation_page,
         "ideation_page should default to false"
     );
+    assert!(
+        flags.automations_page,
+        "automations_page should default to true"
+    );
     assert!(flags.battle_mode, "battle_mode should default to true");
     assert!(!flags.team_mode, "team_mode should default to false");
     assert!(
@@ -3306,6 +3350,7 @@ ui:
     activity_page: false
     extensibility_page: true
     ticketing_dashboard: true
+    automations_page: true
     ideation_page: true
 "#;
     let cfg = parse_config_no_env_overrides(yaml).expect("should parse yaml with ui section");
@@ -3325,11 +3370,15 @@ ui:
         cfg.runtime.ui_feature_flags.ticketing_dashboard,
         "ticketing_dashboard should be true from yaml"
     );
+    assert!(
+        cfg.runtime.ui_feature_flags.automations_page,
+        "automations_page should be true from yaml"
+    );
 }
 
 #[test]
 fn test_yaml_parsing_without_ui_section_backward_compat() {
-    // YAML without ui section: legacy pages default visible, standalone Ideation stays hidden.
+    // YAML without ui section: core pages default visible, standalone Ideation stays hidden.
     let yaml = r#"
 claude:
   mcp_server_name: ralphx
@@ -3353,6 +3402,10 @@ agents: []
     assert!(
         !cfg.runtime.ui_feature_flags.ideation_page,
         "ideation_page should default to false when ui section absent"
+    );
+    assert!(
+        cfg.runtime.ui_feature_flags.automations_page,
+        "automations_page should default to true when ui section absent"
     );
     assert!(
         !cfg.runtime.ui_feature_flags.team_mode,
@@ -3417,6 +3470,7 @@ fn test_env_override_true_value_enables_flag() {
             activity_page: false,
             extensibility_page: false,
             ideation_page: false,
+            automations_page: false,
             battle_mode: false,
             team_mode: false,
             atlassian_oauth: false,
@@ -3440,14 +3494,23 @@ fn test_env_override_true_value_enables_flag() {
         !cfg.ui_feature_flags.ideation_page,
         "ideation_page untouched"
     );
+    assert!(
+        !cfg.ui_feature_flags.automations_page,
+        "automations_page untouched"
+    );
 
     runtime_config::apply_env_overrides_with_lookup(&mut cfg, &|name| match name {
         "RALPHX_UI_IDEATION_PAGE" => Some("true".to_string()),
+        "RALPHX_UI_AUTOMATIONS_PAGE" => Some("1".to_string()),
         _ => None,
     });
     assert!(
         cfg.ui_feature_flags.ideation_page,
         "env 'true' should enable ideation_page"
+    );
+    assert!(
+        cfg.ui_feature_flags.automations_page,
+        "env '1' should enable automations_page"
     );
     assert!(!cfg.ui_feature_flags.team_mode, "team_mode untouched");
     assert!(
@@ -3494,6 +3557,10 @@ fn test_env_override_battle_mode() {
     assert!(
         !cfg.ui_feature_flags.ideation_page,
         "ideation_page untouched"
+    );
+    assert!(
+        cfg.ui_feature_flags.automations_page,
+        "automations_page untouched"
     );
     assert!(!cfg.ui_feature_flags.team_mode, "team_mode untouched");
     assert!(
@@ -3627,6 +3694,7 @@ fn test_ui_feature_flags_config_accessor_returns_defaults() {
     let _ = flags.activity_page;
     let _ = flags.extensibility_page;
     let _ = flags.ideation_page;
+    let _ = flags.automations_page;
     let _ = flags.battle_mode;
     let _ = flags.team_mode;
     let _ = flags.atlassian_oauth;

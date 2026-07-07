@@ -28,6 +28,7 @@ pub mod app_paths;
 pub mod app_state;
 pub mod apply_service;
 pub mod atlassian_integration_service;
+pub mod automation;
 pub mod chat_attachment_service;
 pub mod chat_attachment_storage;
 pub mod chat_resumption;

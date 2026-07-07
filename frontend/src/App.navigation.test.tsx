@@ -18,6 +18,7 @@ const ALL_ENABLED: FeatureFlags = {
   activityPage: true,
   extensibilityPage: true,
   ideationPage: true,
+  automationsPage: true,
   battleMode: true,
   teamMode: false,
   atlassianOauth: false,

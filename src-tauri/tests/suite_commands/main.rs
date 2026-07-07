@@ -13,6 +13,7 @@ fn tauri_context() -> tauri::Context<tauri::test::MockRuntime> {
 
 mod activity_commands;
 mod agent_profile_commands;
+mod automation_commands;
 mod methodology_commands;
 mod metrics_commands;
 mod qa_commands;

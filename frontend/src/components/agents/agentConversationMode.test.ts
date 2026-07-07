@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import type { AgentConversationWorkspace } from "@/api/chat";
 
-import { isWorkspaceModeLocked } from "./agentConversationMode";
+import {
+  AGENT_CONVERSATION_MODE_OPTIONS,
+  isWorkspaceModeLocked,
+} from "./agentConversationMode";
 
 function workspace(
   overrides: Partial<AgentConversationWorkspace> = {},
@@ -55,5 +58,17 @@ describe("isWorkspaceModeLocked", () => {
   it("falls back to legacy link presence for older responses", () => {
     expect(isWorkspaceModeLocked(workspace({ linkedIdeationSessionId: "session-1" }))).toBe(true);
     expect(isWorkspaceModeLocked(workspace())).toBe(false);
+  });
+
+  it("locks automation workspaces without relying on legacy links", () => {
+    expect(isWorkspaceModeLocked(workspace({ mode: "automation" }))).toBe(true);
+  });
+});
+
+describe("AGENT_CONVERSATION_MODE_OPTIONS", () => {
+  it("offers automation as a first-class starter mode", () => {
+    expect(AGENT_CONVERSATION_MODE_OPTIONS.map((option) => option.id)).toContain(
+      "automation",
+    );
   });
 });

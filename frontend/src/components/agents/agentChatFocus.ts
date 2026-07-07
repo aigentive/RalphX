@@ -6,7 +6,13 @@ export type AgentsChatFocus =
   | { type: "workspace_review"; conversationId: string }
   | { type: "ideation"; sessionId: string }
   | { type: "verification"; parentSessionId: string; childSessionId: string }
-  | { type: "task_runtime"; taskId: string; contextType: AgentTaskRuntimeContextType };
+  | { type: "task_runtime"; taskId: string; contextType: AgentTaskRuntimeContextType }
+  | {
+      type: "automation_run";
+      automationId: string;
+      runId: string;
+      conversationId: string;
+    };
 
 export type AgentsChatFocusType = AgentsChatFocus["type"];
 export type AgentsChatFocusTone = "accent" | "warning";
@@ -31,6 +37,7 @@ export function getAgentChatFocusSwitchOptions({
   verificationFocusTarget,
   taskRuntimeFocusTarget,
   workspaceReviewFocusTarget,
+  automationRunFocusTarget,
   hasPlanArtifact,
 }: {
   mode: AgentConversationWorkspaceMode | null;
@@ -38,6 +45,7 @@ export function getAgentChatFocusSwitchOptions({
   verificationFocusTarget: Extract<AgentsChatFocus, { type: "verification" }> | null;
   taskRuntimeFocusTarget: Extract<AgentsChatFocus, { type: "task_runtime" }> | null;
   workspaceReviewFocusTarget: Extract<AgentsChatFocus, { type: "workspace_review" }> | null;
+  automationRunFocusTarget: Extract<AgentsChatFocus, { type: "automation_run" }> | null;
   hasPlanArtifact: boolean;
 }): AgentsChatFocusSwitchOption[] {
   const options: AgentsChatFocusSwitchOption[] = [
@@ -84,6 +92,15 @@ export function getAgentChatFocusSwitchOptions({
       type: "task_runtime",
       label: "Task",
       description: "Show the task agent chat",
+      tone: "accent",
+    });
+  }
+
+  if (mode === "automation" && automationRunFocusTarget) {
+    options.push({
+      type: "automation_run",
+      label: "Run",
+      description: "Show the automation run chat",
       tone: "accent",
     });
   }
@@ -165,6 +182,15 @@ export function getAgentsChatFocusDisplay(
     };
   }
 
+  if (chatFocus.type === "automation_run") {
+    return {
+      type: "automation_run",
+      label: "Run",
+      description: "Focused on an automation run",
+      tone: "accent",
+    };
+  }
+
   return null;
 }
 
@@ -182,6 +208,15 @@ export function getFocusedWorkspaceReviewConversationId(
   chatFocus: AgentsChatFocus,
 ): string | null {
   if (chatFocus.type === "workspace_review") {
+    return chatFocus.conversationId;
+  }
+  return null;
+}
+
+export function getFocusedAutomationRunConversationId(
+  chatFocus: AgentsChatFocus,
+): string | null {
+  if (chatFocus.type === "automation_run") {
     return chatFocus.conversationId;
   }
   return null;

@@ -30,6 +30,8 @@ pub const SHORT_AGENT_WORKSPACE_REPAIR: &str = "ralphx-agent-workspace-repair";
 pub const SHORT_AGENT_WORKSPACE_PR_FIXER: &str = "ralphx-agent-workspace-pr-fixer";
 pub const SHORT_PR_REVIEWER: &str = "ralphx-pr-reviewer";
 pub const SHORT_WORKSPACE_REVIEWER: &str = "ralphx-workspace-reviewer";
+pub const SHORT_AUTOMATION_SETUP: &str = "ralphx-automation-setup";
+pub const SHORT_AUTOMATION_JUDGE: &str = "ralphx-automation-judge";
 pub const SHORT_REVIEWER: &str = "ralphx-execution-reviewer";
 pub const SHORT_QA_PREP: &str = "ralphx-qa-prep";
 pub const SHORT_QA_EXECUTOR: &str = "ralphx-qa-executor";
@@ -103,6 +105,12 @@ pub const AGENT_WORKSPACE_PR_FIXER: &str = "ralphx:ralphx-agent-workspace-pr-fix
 
 /// Agent-workspace local pull request reviewer
 pub const AGENT_PR_REVIEWER: &str = "ralphx:ralphx-pr-reviewer";
+
+/// Automation setup agent for draft automation conversations
+pub const AGENT_AUTOMATION_SETUP: &str = "ralphx:ralphx-automation-setup";
+
+/// Automation judge utility agent for scheduler-owned verdicts
+pub const AGENT_AUTOMATION_JUDGE: &str = "ralphx:ralphx-automation-judge";
 
 /// Agent-workspace Review artifact writer
 pub const AGENT_WORKSPACE_REVIEWER: &str = "ralphx:ralphx-workspace-reviewer";

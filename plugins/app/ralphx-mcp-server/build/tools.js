@@ -13,6 +13,7 @@ import { AGENT_WORKSPACE_TOOLS } from "./agent-workspace-tools.js";
 import { AGENT_TASK_TOOLS } from "./agent-task-tools.js";
 import { SUPPORT_TOOLS } from "./support-tools.js";
 import { VALIDATION_TOOLS } from "./validation-tools.js";
+import { AUTOMATION_SETUP_TOOLS } from "./automation-tools.js";
 import { formatToolErrorMessageFromRegistry, getToolRecoveryHintFromRegistry, } from "./tool-recovery.js";
 import { logToolsByAgent } from "./tool-debug.js";
 import { getAllowedToolNames as resolveAllowedToolNames, getToolsByAgent as resolveToolsByAgent, parseAllowedToolsFromArgs as parseAllowedToolsFromKnownRegistry, } from "./tool-authorization.js";
@@ -45,6 +46,10 @@ export const ALL_TOOLS = [
     // TASK VALIDATION / REVIEW EVIDENCE TOOLS
     // ========================================================================
     ...VALIDATION_TOOLS,
+    // ========================================================================
+    // AUTOMATION SETUP TOOLS
+    // ========================================================================
+    ...AUTOMATION_SETUP_TOOLS,
     // ========================================================================
     // STEP TOOLS (worker agent)
     // ========================================================================

@@ -995,6 +995,7 @@ async fn ipc_contract_agent_workspace_poller_cleans_merged_pr_artifacts() {
     let github = Arc::new(crate::common::MockGithubService::new());
     github.will_return_status(GithubPrStatus::Merged {
         merge_commit_sha: None,
+        merged_at: None,
     });
     let registry = PrPollerRegistry::new(
         Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>),

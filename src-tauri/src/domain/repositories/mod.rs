@@ -10,8 +10,9 @@ pub use ralphx_domain::repositories::*;
 pub use ralphx_domain::repositories::{
     active_plan_repository, activity_event_repository, agent_profile_repository,
     agent_run_repository, api_key_repository, app_state_repository, artifact_bucket_repository,
-    artifact_flow_repository, artifact_repository, chat_attachment_repository,
-    chat_conversation_repository, chat_message_repository, execution_plan_repository,
+    artifact_flow_repository, artifact_repository, automation_repository,
+    automation_run_repository, chat_attachment_repository, chat_conversation_repository,
+    chat_message_repository, execution_plan_repository,
     execution_settings_repository, external_events_repository, ideation_session_repository,
     ideation_settings_repository, memory_archive_job_repository, memory_archive_repository,
     memory_entry_repository, memory_event_repository, methodology_repo, plan_branch_repository,

@@ -28,6 +28,9 @@ mod sqlite_granola_integration_settings_repo_tests;
 mod sqlite_agent_task_repo_tests;
 pub mod sqlite_agent_run_repo;
 pub mod sqlite_app_state_repo;
+pub mod sqlite_automation_repo;
+#[cfg(test)]
+mod sqlite_automation_repo_tests;
 pub mod sqlite_artifact_bucket_repo;
 pub mod sqlite_artifact_flow_repo;
 pub mod sqlite_artifact_repo;
@@ -128,6 +131,7 @@ pub use sqlite_clickup_integration_settings_repo::SqliteClickUpIntegrationSettin
 pub use sqlite_granola_integration_settings_repo::SqliteGranolaIntegrationSettingsRepository;
 pub use sqlite_agent_run_repo::SqliteAgentRunRepository;
 pub use sqlite_app_state_repo::SqliteAppStateRepository;
+pub use sqlite_automation_repo::{SqliteAutomationRepository, SqliteAutomationRunRepository};
 pub use sqlite_artifact_bucket_repo::SqliteArtifactBucketRepository;
 pub use sqlite_artifact_flow_repo::SqliteArtifactFlowRepository;
 pub use sqlite_artifact_repo::SqliteArtifactRepository;

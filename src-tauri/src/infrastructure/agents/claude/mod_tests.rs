@@ -537,6 +537,21 @@ fn test_create_mcp_config_allowed_tools_value_matches_agent_mcp_tools() {
     );
 }
 
+#[test]
+fn test_create_mcp_config_injects_no_tools_sentinel_for_automation_judge() {
+    let (_dir, plugin_dir) = make_temp_plugin_dir();
+    let config =
+        build_mcp_config_with_runtime_context(&plugin_dir, "ralphx-automation-judge", false, None)
+            .expect("should create config");
+    let args = get_json_args(&config);
+
+    let allowed_arg = args
+        .iter()
+        .find(|a| a.starts_with("--allowed-tools="))
+        .expect("--allowed-tools should be present for zero-tool automation judge");
+    assert_eq!(allowed_arg, "--allowed-tools=__NONE__");
+}
+
 // ─── validate_mcp_config_json ────────────────────────────────────────────────
 
 #[test]

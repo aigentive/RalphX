@@ -519,7 +519,9 @@ async fn poll_loop(
         }
 
         match github.check_pr_status(&working_dir, pr_number).await {
-            Ok(PrStatus::Merged { merge_commit_sha }) => {
+            Ok(PrStatus::Merged {
+                merge_commit_sha, ..
+            }) => {
                 // Release semaphore before potentially-long fetch operation
                 drop(_permit);
 

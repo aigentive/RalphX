@@ -1,0 +1,14 @@
+name: ralphx-automation-judge
+role: automation-judge
+description: "Evaluates completed automation runs and returns strict JSON continuation verdicts"
+capabilities:
+  mcp_tools: []
+harnesses:
+  claude:
+    model: haiku
+    tools:
+      mcp_only: true
+    preapproved_cli_tools: []
+  codex:
+    runtime_features:
+      shell_tool: false

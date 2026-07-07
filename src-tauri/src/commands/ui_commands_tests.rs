@@ -18,6 +18,10 @@ fn test_ui_feature_flags_response_serializes_to_camel_case() {
         "Expected camelCase 'ideationPage' in JSON: {json}"
     );
     assert!(
+        json.contains("\"automationsPage\":"),
+        "Expected camelCase 'automationsPage' in JSON: {json}"
+    );
+    assert!(
         json.contains("\"battleMode\":"),
         "Expected camelCase 'battleMode' in JSON: {json}"
     );
@@ -45,6 +49,10 @@ fn test_ui_feature_flags_response_serializes_to_camel_case() {
     assert!(
         !json.contains("\"ideation_page\":"),
         "Unexpected snake_case 'ideation_page' in JSON: {json}"
+    );
+    assert!(
+        !json.contains("\"automations_page\":"),
+        "Unexpected snake_case 'automations_page' in JSON: {json}"
     );
     assert!(
         !json.contains("\"battle_mode\":"),

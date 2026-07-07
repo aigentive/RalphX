@@ -15,6 +15,7 @@ export const VIEW_TYPE_VALUES = [
   "graph",
   "ideation",
   "agents",
+  "automations",
   "ticketing",
   "github",
   "granola",

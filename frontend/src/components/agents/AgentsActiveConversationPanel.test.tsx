@@ -37,6 +37,10 @@ const {
   listAgentTaskListTasksMock,
   listAgentTaskListsMock,
   listAgentTasksMock,
+  useAutomationDetailMock,
+  invalidateAutomationQueriesMock,
+  finalizeAutomationMock,
+  triggerAutomationRunNowMock,
   openUrlMock,
 } = vi.hoisted(() => ({
   getSessionPlanMock: vi.fn(),
@@ -56,6 +60,10 @@ const {
   listAgentTaskListTasksMock: vi.fn(),
   listAgentTaskListsMock: vi.fn(),
   listAgentTasksMock: vi.fn(),
+  useAutomationDetailMock: vi.fn(),
+  invalidateAutomationQueriesMock: vi.fn(),
+  finalizeAutomationMock: vi.fn(),
+  triggerAutomationRunNowMock: vi.fn(),
   openUrlMock: vi.fn(),
 }));
 
@@ -220,6 +228,33 @@ vi.mock("@/components/Chat/IntegratedChatPanel", () => ({
             }}
           >
             Accept backend-handled plan proposal
+          </button>
+          <button
+            type="button"
+            data-testid="accept-automation-setup-proposal"
+            onClick={() => {
+              void onQuestionAnswered(
+                {
+                  requestId: "req-automation-setup",
+                  sessionId: "conversation-1",
+                  header: "Update automation?",
+                  question: "Apply the proposed goal and phases to this automation?",
+                  options: [],
+                  multiSelect: false,
+                  allowSkip: true,
+                  metadata: {
+                    kind: "automation_setup_proposal",
+                  },
+                },
+                {
+                  requestId: "req-automation-setup",
+                  selectedOptions: ["apply_automation_proposal"],
+                },
+                { success: true, deliveredToWaitingAgent: true },
+              );
+            }}
+          >
+            Accept automation proposal
           </button>
         </>
       )}
@@ -405,6 +440,26 @@ vi.mock("@/hooks/useHarnessProviders", () => ({
   }),
 }));
 
+vi.mock("@/hooks/useAutomations", () => ({
+  invalidateAutomationQueries: (...args: unknown[]) =>
+    invalidateAutomationQueriesMock(...args),
+  useAutomationDetail: (...args: unknown[]) => useAutomationDetailMock(...args),
+}));
+
+vi.mock("@/api/automations", async () => {
+  const actual = await vi.importActual<typeof import("@/api/automations")>(
+    "@/api/automations",
+  );
+  return {
+    ...actual,
+    automationsApi: {
+      ...actual.automationsApi,
+      finalize: (...args: unknown[]) => finalizeAutomationMock(...args),
+      triggerRunNow: (...args: unknown[]) => triggerAutomationRunNowMock(...args),
+    },
+  };
+});
+
 vi.mock("@/stores/chatStore", () => {
   type ChatStoreMockState = {
     activeConversationIds: Record<string, string | null>;
@@ -482,6 +537,8 @@ vi.mock("./AgentComposerSurface", () => ({
     effort,
     mode,
     showHelperText,
+    isReadOnly,
+    sendDisabledReason,
     onSend,
     onForkSession,
     onLayoutChange,
@@ -506,6 +563,8 @@ vi.mock("./AgentComposerSurface", () => ({
       }>;
     };
     showHelperText?: boolean;
+    isReadOnly?: boolean;
+    sendDisabledReason?: string | null;
     onSend: (message: string) => Promise<void> | void;
     onForkSession?: () => Promise<unknown> | void;
     onLayoutChange?: () => void;
@@ -515,6 +574,10 @@ vi.mock("./AgentComposerSurface", () => ({
       <div data-testid="workspace-model-value">{model.value}</div>
       <div data-testid="workspace-effort-value">{effort.value}</div>
       <div data-testid="workspace-helper-enabled">{String(showHelperText !== false)}</div>
+      <div data-testid="workspace-composer-readonly">{String(Boolean(isReadOnly))}</div>
+      <div data-testid="workspace-composer-disabled-reason">
+        {sendDisabledReason ?? ""}
+      </div>
       {mode && (
         <div>
           <button
@@ -848,6 +911,7 @@ function renderPanel(
     onFocusWorkspaceReview: vi.fn(),
     onFocusVerificationSession: vi.fn(),
     onFocusTaskRuntime: vi.fn(),
+    onFocusAutomationRun: vi.fn(),
     onOpenTaskArtifact: vi.fn(),
     onForkConversation: vi.fn().mockResolvedValue(forkResult()),
     onOpenPublishPane: vi.fn(),
@@ -932,6 +996,13 @@ describe("AgentsActiveConversationPanel", () => {
     listAgentTasksMock.mockResolvedValue([]);
     listAgentTaskListsMock.mockResolvedValue([]);
     listAgentTaskListTasksMock.mockResolvedValue([]);
+    useAutomationDetailMock.mockReturnValue({
+      data: null,
+      isLoading: false,
+      isError: false,
+    });
+    finalizeAutomationMock.mockResolvedValue({ id: "automation-1", status: "active" });
+    triggerAutomationRunNowMock.mockResolvedValue({ scheduled: true, reason: null });
   });
 
   it("normalizes workspace runtime and forwards provider-supported capabilities", () => {
@@ -958,6 +1029,295 @@ describe("AgentsActiveConversationPanel", () => {
       "high",
       "max",
     ], null);
+  });
+
+  it("locks automation-owned run conversations while the run is non-terminal", () => {
+    useAutomationDetailMock.mockReturnValue({
+      data: {
+        runs: [{ id: "run-1", status: "published" }],
+      },
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel({
+      activeConversation: {
+        ...projectConversation(),
+        agentMode: "automation",
+        automationId: "automation-1",
+        automationRunId: "run-1",
+      },
+    });
+
+    expect(screen.getByTestId("agents-automation-run-readonly-banner")).toHaveTextContent(
+      "Automation run conversations are read-only until the run reaches a terminal state.",
+    );
+    expect(screen.getByTestId("workspace-composer-readonly")).toHaveTextContent("true");
+    expect(screen.getByTestId("workspace-composer-disabled-reason")).toHaveTextContent(
+      "Automation run conversations are read-only until the run reaches a terminal state.",
+    );
+  });
+
+  it("keeps automation-owned run conversations editable after terminal run status", () => {
+    useAutomationDetailMock.mockReturnValue({
+      data: {
+        runs: [{ id: "run-1", status: "merged" }],
+      },
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel({
+      activeConversation: {
+        ...projectConversation(),
+        agentMode: "automation",
+        automationId: "automation-1",
+        automationRunId: "run-1",
+      },
+    });
+
+    expect(screen.queryByTestId("agents-automation-run-readonly-banner")).not.toBeInTheDocument();
+    expect(screen.getByTestId("workspace-composer-readonly")).toHaveTextContent("false");
+  });
+
+  it("keeps setup conversations editable without showing setup controls above the composer", () => {
+    const onOpenAutomation = vi.fn();
+    renderPanel({
+      onOpenAutomation,
+      activeConversation: {
+        ...projectConversation(),
+        agentMode: "automation",
+        automationId: "automation-7",
+        automationRunId: null,
+      },
+    });
+
+    expect(
+      screen.queryByTestId("agents-automation-setup-banner"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agents-automation-runtime-selector"),
+    ).not.toBeInTheDocument();
+    // Setup conversations stay editable — the user configures by chatting.
+    expect(screen.getByTestId("workspace-composer-readonly")).toHaveTextContent(
+      "false",
+    );
+    // Setup and run banners are mutually exclusive.
+    expect(
+      screen.queryByTestId("agents-automation-run-readonly-banner"),
+    ).not.toBeInTheDocument();
+    expect(onOpenAutomation).not.toHaveBeenCalled();
+  });
+
+  it("hides automation approval CTA until the draft has a complete spec", () => {
+    useAutomationDetailMock.mockReturnValue({
+      data: {
+        automation: {
+          id: "automation-7",
+          status: "draft",
+          firstRunPrompt: null,
+          goalPrompt: "",
+          providerHarness: "codex",
+          modelId: "gpt-5.5",
+          runMode: "edit",
+          baseRefKind: "project_default",
+          baseRef: "",
+          completionSignal: "pr_merged",
+          goalItemsJson: null,
+        },
+        runs: [],
+      },
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel({
+      activeConversation: {
+        ...projectConversation(),
+        agentMode: "automation",
+        automationId: "automation-7",
+        automationRunId: null,
+      },
+    });
+
+    expect(
+      screen.queryByTestId("agents-automation-composer-cta-row"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows an automation Approve CTA for complete draft setup conversations", async () => {
+    useAutomationDetailMock.mockReturnValue({
+      data: {
+        automation: {
+          id: "automation-7",
+          status: "draft",
+          firstRunPrompt: "Update dependencies",
+          goalPrompt: "Keep dependencies current",
+          providerHarness: "codex",
+          modelId: "gpt-5.5",
+          runMode: "edit",
+          baseRefKind: "project_default",
+          baseRef: "",
+          completionSignal: "pr_merged",
+          goalItemsJson:
+            '[{"id":"phase-1","title":"Update dependencies","status":"pending"}]',
+        },
+        runs: [],
+      },
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel({
+      activeConversation: {
+        ...projectConversation(),
+        agentMode: "automation",
+        automationId: "automation-7",
+        automationRunId: null,
+      },
+    });
+
+    expect(screen.getByTestId("agents-automation-composer-cta-row")).toBeInTheDocument();
+    expect(screen.getByTestId("agents-automation-composer-cta-hint")).toHaveTextContent(
+      "Ready for approval",
+    );
+    expect(screen.getByTestId("agents-automation-composer-cta-copy")).not.toHaveTextContent(
+      "Recommended",
+    );
+    expect(screen.getByTestId("agents-automation-composer-cta-approve")).toHaveTextContent(
+      "Approve",
+    );
+
+    fireEvent.click(screen.getByTestId("agents-automation-composer-cta-approve"));
+
+    await waitFor(() => expect(finalizeAutomationMock).toHaveBeenCalledWith("automation-7"));
+    expect(triggerAutomationRunNowMock).not.toHaveBeenCalled();
+  });
+
+  it("shows a separate automation Run CTA for approved setup conversations", async () => {
+    useAutomationDetailMock.mockReturnValue({
+      data: {
+        automation: {
+          id: "automation-7",
+          status: "active",
+          firstRunPrompt: "Update dependencies",
+          goalPrompt: "Keep dependencies current",
+          providerHarness: "codex",
+          modelId: "gpt-5.5",
+          runMode: "edit",
+          baseRefKind: "project_default",
+          baseRef: "",
+          completionSignal: "pr_merged",
+          goalItemsJson:
+            '[{"id":"phase-1","title":"Update dependencies","status":"pending"}]',
+        },
+        runs: [],
+      },
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel({
+      activeConversation: {
+        ...projectConversation(),
+        agentMode: "automation",
+        automationId: "automation-7",
+        automationRunId: null,
+      },
+    });
+
+    expect(screen.getByTestId("agents-automation-composer-cta-hint")).toHaveTextContent(
+      "Ready to run",
+    );
+    fireEvent.click(screen.getByTestId("agents-automation-composer-cta-run"));
+
+    await waitFor(() =>
+      expect(triggerAutomationRunNowMock).toHaveBeenCalledWith("automation-7"),
+    );
+    expect(finalizeAutomationMock).not.toHaveBeenCalled();
+  });
+
+  it("refreshes the automation artifact after accepting a chat automation proposal", async () => {
+    useAutomationDetailMock.mockReturnValue({
+      data: {
+        automation: {
+          id: "automation-7",
+          status: "draft",
+          firstRunPrompt: null,
+          goalPrompt: "",
+          providerHarness: "codex",
+          modelId: "gpt-5.5",
+          runMode: "edit",
+          baseRefKind: "project_default",
+          baseRef: "",
+          completionSignal: "pr_merged",
+          goalItemsJson: null,
+        },
+        runs: [],
+      },
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel({
+      activeConversation: {
+        ...projectConversation(),
+        agentMode: "automation",
+        automationId: "automation-7",
+        automationRunId: null,
+      },
+    });
+
+    fireEvent.click(screen.getByTestId("accept-automation-setup-proposal"));
+
+    await waitFor(() =>
+      expect(invalidateAutomationQueriesMock).toHaveBeenCalledWith(
+        expect.anything(),
+        "automation-7",
+      ),
+    );
+    expect(switchAgentConversationModeMock).not.toHaveBeenCalled();
+  });
+
+  it("does not show the setup banner for automation run conversations", () => {
+    useAutomationDetailMock.mockReturnValue({
+      data: {
+        runs: [{ id: "run-1", status: "published" }],
+      },
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel({
+      onOpenAutomation: vi.fn(),
+      activeConversation: {
+        ...projectConversation(),
+        agentMode: "automation",
+        automationId: "automation-1",
+        automationRunId: "run-1",
+      },
+    });
+
+    expect(
+      screen.getByTestId("agents-automation-run-readonly-banner"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agents-automation-setup-banner"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows no automation banners for a plain conversation", () => {
+    renderPanel({
+      onOpenAutomation: vi.fn(),
+      activeConversation: { ...projectConversation(), agentMode: "chat" },
+    });
+
+    expect(
+      screen.queryByTestId("agents-automation-setup-banner"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agents-automation-run-readonly-banner"),
+    ).not.toBeInTheDocument();
   });
 
   it("uses workspace runtime controls while focused on the workspace Review chat", () => {
