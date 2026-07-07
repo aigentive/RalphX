@@ -13,8 +13,8 @@ use crate::domain::entities::{
     IdeationSessionId, ProjectId, TaskId,
 };
 use crate::infrastructure::agents::claude::agent_names::{
-    AGENT_CHAT_PROJECT, AGENT_GENERAL_EXPLORER, AGENT_GENERAL_WORKER, AGENT_ORCHESTRATOR_IDEATION,
-    AGENT_PR_REVIEWER,
+    AGENT_AUTOMATION_SETUP, AGENT_CHAT_PROJECT, AGENT_GENERAL_EXPLORER, AGENT_GENERAL_WORKER,
+    AGENT_ORCHESTRATOR_IDEATION, AGENT_PR_REVIEWER,
 };
 
 #[test]
@@ -155,6 +155,13 @@ fn project_agent_send_uses_workspace_mode_agent_before_project_default() {
         None,
         Some(AgentConversationWorkspaceMode::ReviewPr),
     );
+    let automation_agent = resolve_agent_name_for_send(
+        &ChatContextType::Project,
+        None,
+        false,
+        None,
+        Some(AgentConversationWorkspaceMode::Automation),
+    );
     let default_project_agent =
         resolve_agent_name_for_send(&ChatContextType::Project, None, false, None, None);
 
@@ -163,6 +170,7 @@ fn project_agent_send_uses_workspace_mode_agent_before_project_default() {
     assert_eq!(plan_agent, AGENT_ORCHESTRATOR_IDEATION);
     assert_eq!(ideation_agent, AGENT_CHAT_PROJECT);
     assert_eq!(review_pr_agent, AGENT_PR_REVIEWER);
+    assert_eq!(automation_agent, AGENT_AUTOMATION_SETUP);
     assert_eq!(default_project_agent, AGENT_CHAT_PROJECT);
 }
 

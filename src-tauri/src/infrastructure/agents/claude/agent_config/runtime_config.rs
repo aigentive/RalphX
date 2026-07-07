@@ -540,6 +540,29 @@ impl Default for SchedulerConfig {
     }
 }
 
+/// Runtime knobs for automation scheduling and completion-signal checks.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct AutomationsRuntimeConfig {
+    pub scheduler_poll_secs: u64,
+    pub signal_failure_pause_threshold: u64,
+    pub judge_timeout_secs: u64,
+    pub publish_grace_secs: u64,
+    pub max_run_duration_secs: u64,
+}
+
+impl Default for AutomationsRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            scheduler_poll_secs: 30,
+            signal_failure_pause_threshold: 5,
+            judge_timeout_secs: 180,
+            publish_grace_secs: 120,
+            max_run_duration_secs: 14_400,
+        }
+    }
+}
+
 /// All fields required in config/ralphx.yaml — no serde defaults.
 /// `Default` impl retained only for fallback/test use.
 #[derive(Debug, Clone, Deserialize)]
@@ -584,6 +607,42 @@ impl Default for LimitsConfig {
 
 pub fn apply_env_overrides(cfg: &mut AllRuntimeConfig) {
     apply_env_overrides_with(cfg, &|name| std::env::var(name).ok());
+}
+
+pub(crate) fn apply_automations_env_overrides_with_lookup(
+    cfg: &mut AutomationsRuntimeConfig,
+    lookup: &dyn Fn(&str) -> Option<String>,
+) {
+    macro_rules! env_u64 {
+        ($field:expr, $key:expr) => {
+            if let Some(v) = lookup($key) {
+                if let Ok(n) = v.parse::<u64>() {
+                    $field = n;
+                }
+            }
+        };
+    }
+
+    env_u64!(
+        cfg.scheduler_poll_secs,
+        "RALPHX_AUTOMATIONS_SCHEDULER_POLL_SECS"
+    );
+    env_u64!(
+        cfg.signal_failure_pause_threshold,
+        "RALPHX_AUTOMATIONS_SIGNAL_FAILURE_PAUSE_THRESHOLD"
+    );
+    env_u64!(
+        cfg.judge_timeout_secs,
+        "RALPHX_AUTOMATIONS_JUDGE_TIMEOUT_SECS"
+    );
+    env_u64!(
+        cfg.publish_grace_secs,
+        "RALPHX_AUTOMATIONS_PUBLISH_GRACE_SECS"
+    );
+    env_u64!(
+        cfg.max_run_duration_secs,
+        "RALPHX_AUTOMATIONS_MAX_RUN_DURATION_SECS"
+    );
 }
 
 pub(crate) fn apply_env_overrides_with_lookup(
@@ -1023,6 +1082,10 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
     }
     if let Some(v) = lookup("RALPHX_UI_IDEATION_PAGE") {
         cfg.ui_feature_flags.ideation_page = matches!(v.to_lowercase().as_str(), "true" | "1");
+    }
+    if let Some(v) = lookup("RALPHX_UI_AUTOMATIONS_PAGE") {
+        cfg.ui_feature_flags.automations_page =
+            matches!(v.to_lowercase().as_str(), "true" | "1");
     }
     if let Some(v) = lookup("RALPHX_UI_BATTLE_MODE") {
         cfg.ui_feature_flags.battle_mode = matches!(v.to_lowercase().as_str(), "true" | "1");

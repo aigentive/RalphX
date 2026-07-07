@@ -538,6 +538,8 @@ impl AgentRunRepository for SqliteAgentRunRepository {
                             upstream_provider,
                             provider_profile,
                             agent_mode: None,
+                            automation_id: None,
+                            automation_run_id: None,
                             title: row.get("title")?,
                             message_count: row.get("message_count")?,
                             last_message_at: last_message_at_str.map(|s| parse_datetime(&s)),

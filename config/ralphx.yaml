@@ -31,12 +31,13 @@ file_logging: true
 
 # ── UI feature flags ───────────────────────────────────────────────────────
 # Controls which UI pages are visible in the app.
-# Env overrides: RALPHX_UI_ACTIVITY_PAGE=true|false, RALPHX_UI_EXTENSIBILITY_PAGE=true|false, RALPHX_UI_IDEATION_PAGE=true|false, RALPHX_UI_BATTLE_MODE=true|false, RALPHX_UI_ATLASSIAN_OAUTH=true|false, RALPHX_UI_TICKETING_DASHBOARD=true|false
+# Env overrides: RALPHX_UI_ACTIVITY_PAGE=true|false, RALPHX_UI_EXTENSIBILITY_PAGE=true|false, RALPHX_UI_IDEATION_PAGE=true|false, RALPHX_UI_AUTOMATIONS_PAGE=true|false, RALPHX_UI_BATTLE_MODE=true|false, RALPHX_UI_ATLASSIAN_OAUTH=true|false, RALPHX_UI_TICKETING_DASHBOARD=true|false
 ui:
   feature_flags:
     activity_page: false
     extensibility_page: false
     ideation_page: false
+    automations_page: true
     battle_mode: false
     team_mode: false
     atlassian_oauth: false
@@ -207,6 +208,18 @@ scheduler:
   ready_settle_ms: 300 # Env: RALPHX_SCHEDULER_READY_SETTLE_MS
   # on_enter_states.rs — settle delay before scheduling unblocked tasks after a merge completes (milliseconds)
   merge_settle_ms: 100 # Env: RALPHX_SCHEDULER_MERGE_SETTLE_MS
+
+automations:
+  # automation scheduler — authoritative poll cadence for automation runs and PR completion signals
+  scheduler_poll_secs: 30 # Env: RALPHX_AUTOMATIONS_SCHEDULER_POLL_SECS
+  # automation scheduler — consecutive GitHub signal-check failures before pausing an automation
+  signal_failure_pause_threshold: 5 # Env: RALPHX_AUTOMATIONS_SIGNAL_FAILURE_PAUSE_THRESHOLD
+  # automation judge — maximum wall-clock seconds for a judge pass
+  judge_timeout_secs: 180 # Env: RALPHX_AUTOMATIONS_JUDGE_TIMEOUT_SECS
+  # automation scheduler — grace period after agent completion before scheduler-driven publish
+  publish_grace_secs: 120 # Env: RALPHX_AUTOMATIONS_PUBLISH_GRACE_SECS
+  # automation scheduler — maximum wall-clock seconds for a running automation run
+  max_run_duration_secs: 14400 # Env: RALPHX_AUTOMATIONS_MAX_RUN_DURATION_SECS
 
 supervisor:
   # supervisor_service.rs — wall-clock seconds before supervisor warns agent about time usage

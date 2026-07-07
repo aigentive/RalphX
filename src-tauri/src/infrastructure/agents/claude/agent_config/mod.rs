@@ -33,9 +33,9 @@ pub use team_config::{
 };
 
 pub use runtime_config::{
-    validate_external_mcp_config, AllRuntimeConfig, ExternalMcpConfig, GitRuntimeConfig,
-    LimitsConfig, ReconciliationConfig, SchedulerConfig, SpecialistEntry, StreamTimeoutsConfig,
-    SupervisorRuntimeConfig, VerificationConfig,
+    validate_external_mcp_config, AllRuntimeConfig, AutomationsRuntimeConfig, ExternalMcpConfig,
+    GitRuntimeConfig, LimitsConfig, ReconciliationConfig, SchedulerConfig, SpecialistEntry,
+    StreamTimeoutsConfig, SupervisorRuntimeConfig, VerificationConfig,
 };
 
 const VALID_EFFORT_LEVELS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
@@ -258,6 +258,8 @@ struct RalphxConfig {
     #[serde(default)]
     scheduler: SchedulerConfig,
     #[serde(default)]
+    automations: AutomationsRuntimeConfig,
+    #[serde(default)]
     supervisor: SupervisorRuntimeConfig,
     #[serde(default)]
     limits: LimitsConfig,
@@ -358,6 +360,7 @@ struct LoadedConfig {
     defer_merge_enabled: bool,
     file_logging: bool,
     runtime: AllRuntimeConfig,
+    automations: AutomationsRuntimeConfig,
     execution_defaults: ExecutionDefaultsConfig,
     agent_harness_defaults: AgentHarnessDefaultsConfig,
 }
@@ -1158,6 +1161,7 @@ fn resolve_loaded_config_with_lookup(
             .child_session_activity_threshold_secs,
         ui_feature_flags,
     };
+    let mut automations = parsed.automations;
     if runtime.external_mcp.max_external_ideation_sessions != 1 {
         tracing::warn!(
             value = runtime.external_mcp.max_external_ideation_sessions,
@@ -1167,6 +1171,7 @@ fn resolve_loaded_config_with_lookup(
         );
     }
     runtime_config::apply_env_overrides_with_lookup(&mut runtime, lookup);
+    runtime_config::apply_automations_env_overrides_with_lookup(&mut automations, lookup);
     let mut agent_harness_defaults = parsed
         .agent_harness_defaults
         .into_iter()
@@ -1186,6 +1191,7 @@ fn resolve_loaded_config_with_lookup(
         defer_merge_enabled: parsed.defer_merge_enabled,
         file_logging: parsed.file_logging,
         runtime,
+        automations,
         execution_defaults: parsed.execution_defaults,
         agent_harness_defaults,
     })
@@ -1612,6 +1618,11 @@ fn load_config() -> LoadedConfig {
                 ui_feature_flags: UiFeatureFlagsConfig::default(),
             };
             runtime_config::apply_env_overrides(&mut runtime);
+            let mut automations = AutomationsRuntimeConfig::default();
+            runtime_config::apply_automations_env_overrides_with_lookup(
+                &mut automations,
+                &|name| std::env::var(name).ok(),
+            );
             LoadedConfig {
                 agents: Vec::new(),
                 claude: ClaudeRuntimeConfig {
@@ -1632,6 +1643,7 @@ fn load_config() -> LoadedConfig {
                 defer_merge_enabled: true,
                 file_logging: true,
                 runtime,
+                automations,
                 execution_defaults: ExecutionDefaultsConfig::default(),
                 agent_harness_defaults: default_agent_harness_defaults(),
             }
@@ -1796,6 +1808,10 @@ pub fn scheduler_config() -> &'static SchedulerConfig {
         .get_or_init(load_config)
         .runtime
         .scheduler
+}
+
+pub fn automations_config() -> &'static AutomationsRuntimeConfig {
+    &LOADED_CONFIG_CELL.get_or_init(load_config).automations
 }
 
 pub fn supervisor_runtime_config() -> &'static SupervisorRuntimeConfig {

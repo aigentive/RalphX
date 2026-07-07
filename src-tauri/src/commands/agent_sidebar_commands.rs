@@ -247,6 +247,9 @@ pub async fn list_agent_sidebar_conversations_for_app_state(
 
         for conversation in conversations {
             let workspace = workspace_by_conversation_id.remove(&conversation.id);
+            if conversation.automation_run_id.is_some() {
+                continue;
+            }
             if conversation.parent_conversation_id.is_some() && workspace.is_none() {
                 continue;
             }
@@ -714,8 +717,8 @@ fn supervision_publication_label(
 mod tests {
     use super::*;
     use crate::domain::entities::{
-        AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, ChatConversation,
-        IdeationAnalysisBaseRefKind, Project,
+        AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AutomationId,
+        AutomationRunId, ChatConversation, IdeationAnalysisBaseRefKind, Project,
     };
 
     fn sidebar_input(project_id: &ProjectId) -> AgentSidebarConversationsInput {
@@ -972,6 +975,46 @@ mod tests {
             conversation_ids.contains(&child.id.as_str()),
             "child conversations with their own workspace should be listed"
         );
+    }
+
+    #[tokio::test]
+    async fn sidebar_shows_automation_setup_and_hides_run_conversations() {
+        let state = AppState::new_test();
+        let project = create_project(&state, "alpha").await;
+        let automation_id = AutomationId::from_string("automation-1");
+
+        let mut setup = ChatConversation::new_project(project.id.clone());
+        setup.title = Some("Automation setup".to_string());
+        setup.automation_id = Some(automation_id.clone());
+        let setup = state
+            .chat_conversation_repo
+            .create(setup)
+            .await
+            .expect("setup conversation should be created");
+
+        let mut run = ChatConversation::new_project(project.id.clone());
+        run.title = Some("Automation run 1".to_string());
+        run.automation_id = Some(automation_id);
+        run.automation_run_id = Some(AutomationRunId::from_string("run-1"));
+        let run = state
+            .chat_conversation_repo
+            .create(run)
+            .await
+            .expect("run conversation should be created");
+
+        let response =
+            list_agent_sidebar_conversations_for_app_state(sidebar_input(&project.id), &state)
+                .await
+                .expect("sidebar conversations should load");
+
+        let conversation_ids = response
+            .groups
+            .iter()
+            .flat_map(|group| group.rows.iter())
+            .map(|row| row.conversation.id.clone())
+            .collect::<Vec<_>>();
+        assert!(conversation_ids.contains(&setup.id.as_str().to_string()));
+        assert!(!conversation_ids.contains(&run.id.as_str().to_string()));
     }
 
     #[tokio::test]

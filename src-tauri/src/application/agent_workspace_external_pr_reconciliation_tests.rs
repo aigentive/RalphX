@@ -166,6 +166,7 @@ async fn reconciliation_marks_external_merged_pr_terminal() {
         url: "https://github.com/owner/repo/pull/43".to_string(),
         status: PrStatus::Merged {
             merge_commit_sha: Some("merge-sha".to_string()),
+            merged_at: None,
         },
         is_draft: false,
         head_ref_name: workspace.branch_name.clone(),
@@ -377,6 +378,7 @@ async fn reconciliation_marks_linked_merged_pr_terminal_even_when_workspace_miss
     let github = Arc::new(MockGithubService::new());
     github.will_return_status(PrStatus::Merged {
         merge_commit_sha: Some("merge-sha".to_string()),
+        merged_at: None,
     });
     let (deps, workspace_repo) = deps_with_workspace(project, workspace, github.clone()).await;
 
@@ -621,6 +623,7 @@ async fn startup_reconciliation_marks_linked_failed_pr_terminal() {
     let github = Arc::new(MockGithubService::new());
     github.will_return_status(PrStatus::Merged {
         merge_commit_sha: Some("merge-sha".to_string()),
+        merged_at: None,
     });
     let project_repo = Arc::new(MemoryProjectRepository::with_projects(vec![project]));
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());

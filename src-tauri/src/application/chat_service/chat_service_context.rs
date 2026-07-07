@@ -97,7 +97,7 @@ fn build_claude_spawnable_command(
     model_override: Option<&str>,
     mcp_runtime_context: Option<&McpRuntimeContext>,
 ) -> Result<SpawnableCommand, String> {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-utils"))]
     {
         crate::infrastructure::agents::claude::build_spawnable_command_with_mcp_runtime_context_and_profile_for_test(
             cli_path,
@@ -113,7 +113,7 @@ fn build_claude_spawnable_command(
             mcp_runtime_context,
         )
     }
-    #[cfg(not(test))]
+    #[cfg(not(any(test, feature = "test-utils")))]
     {
         crate::infrastructure::agents::claude::build_spawnable_command_with_mcp_runtime_context_and_profile(
             cli_path,
@@ -143,8 +143,25 @@ fn build_claude_spawnable_interactive_command(
     effort_override: Option<&str>,
     model_override: Option<&str>,
     mcp_runtime_context: Option<&McpRuntimeContext>,
+    enforce_spawn_guard: bool,
 ) -> Result<SpawnableCommand, String> {
-    #[cfg(test)]
+    if enforce_spawn_guard {
+        return crate::infrastructure::agents::claude::build_spawnable_interactive_command_with_mcp_runtime_context_and_profile(
+            cli_path,
+            plugin_dir,
+            prompt,
+            agent,
+            agent_profile,
+            resume_session,
+            working_directory,
+            is_external_mcp,
+            effort_override,
+            model_override,
+            mcp_runtime_context,
+        );
+    }
+
+    #[cfg(any(test, feature = "test-utils"))]
     {
         crate::infrastructure::agents::claude::build_spawnable_interactive_command_with_mcp_runtime_context_and_profile_for_test(
             cli_path,
@@ -160,7 +177,7 @@ fn build_claude_spawnable_interactive_command(
             mcp_runtime_context,
         )
     }
-    #[cfg(not(test))]
+    #[cfg(not(any(test, feature = "test-utils")))]
     {
         crate::infrastructure::agents::claude::build_spawnable_interactive_command_with_mcp_runtime_context_and_profile(
             cli_path,
@@ -237,6 +254,7 @@ struct BuildHarnessLaunchRequest<'a> {
     agent_profile: Option<&'a str>,
     context_type: ChatContextType,
     context_id: &'a str,
+    conversation_id: Option<String>,
     working_directory: &'a Path,
     entity_status: Option<&'a str>,
     project_id: Option<&'a str>,
@@ -252,6 +270,7 @@ struct BuildHarnessLaunchRequest<'a> {
     is_external_mcp: bool,
     stored_session_id: Option<&'a str>,
     resolved_spawn_settings: &'a ResolvedAgentSpawnSettings,
+    enforce_spawn_guard: bool,
     agent_workspace_prompt_context: Option<&'a str>,
     attachment_context_override: Option<&'a str>,
 }
@@ -454,6 +473,8 @@ impl ResolvedChatHarnessCli {
                     request.agent_lane_settings_repo.as_ref(),
                 )
                 .await;
+                let current_conversation_id = (request.context_type == ChatContextType::Project)
+                    .then_some(request.context_id);
 
                 Ok(ProviderSpawnableCommand {
                     spawnable: build_codex_resume_command(
@@ -462,6 +483,7 @@ impl ResolvedChatHarnessCli {
                         &capabilities,
                         request.context_type,
                         request.context_id,
+                        current_conversation_id,
                         request.message,
                         request.agent_name_override,
                         request.agent_profile,
@@ -513,6 +535,7 @@ impl ResolvedChatHarnessCli {
                     request.is_external_mcp,
                     request.stored_session_id,
                     request.resolved_spawn_settings,
+                    request.enforce_spawn_guard,
                     request.agent_workspace_prompt_context,
                     request.attachment_context_override,
                 )
@@ -535,6 +558,7 @@ impl ResolvedChatHarnessCli {
                             &capabilities,
                             request.context_type,
                             request.context_id,
+                            request.conversation_id.as_deref(),
                             request.user_message,
                             request.agent_name_override,
                             request.agent_profile,
@@ -2550,6 +2574,7 @@ pub(crate) async fn build_launch_plan_for_harness(
     agent_profile: Option<&str>,
     context_type: ChatContextType,
     context_id: &str,
+    conversation_id: Option<String>,
     working_directory: &Path,
     entity_status: Option<&str>,
     project_id: Option<&str>,
@@ -2568,6 +2593,135 @@ pub(crate) async fn build_launch_plan_for_harness(
     agent_workspace_prompt_context: Option<&str>,
     attachment_context_override: Option<&str>,
 ) -> Result<ResolvedChatHarnessLaunch, String> {
+    build_launch_plan_for_harness_with_spawn_guard(
+        harness,
+        cli_path,
+        plugin_dir,
+        conversation,
+        user_message,
+        agent_name_override,
+        agent_profile,
+        context_type,
+        context_id,
+        conversation_id,
+        working_directory,
+        entity_status,
+        project_id,
+        filesystem_read_roots,
+        runtime_team_mode,
+        chat_attachment_repo,
+        artifact_repo,
+        ideation_session_repo,
+        delegated_session_repo,
+        task_repo,
+        session_messages,
+        total_available,
+        is_external_mcp,
+        stored_session_id,
+        resolved_spawn_settings,
+        true,
+        agent_workspace_prompt_context,
+        attachment_context_override,
+    )
+    .await
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+#[allow(dead_code)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn build_launch_plan_for_harness_for_test(
+    harness: AgentHarnessKind,
+    cli_path: &Path,
+    plugin_dir: &Path,
+    conversation: &ChatConversation,
+    user_message: &str,
+    agent_name_override: Option<&str>,
+    agent_profile: Option<&str>,
+    context_type: ChatContextType,
+    context_id: &str,
+    conversation_id: Option<String>,
+    working_directory: &Path,
+    entity_status: Option<&str>,
+    project_id: Option<&str>,
+    filesystem_read_roots: &[PathBuf],
+    runtime_team_mode: bool,
+    chat_attachment_repo: Arc<dyn ChatAttachmentRepository>,
+    artifact_repo: Arc<dyn ArtifactRepository>,
+    ideation_session_repo: Arc<dyn IdeationSessionRepository>,
+    delegated_session_repo: Arc<dyn DelegatedSessionRepository>,
+    task_repo: Arc<dyn TaskRepository>,
+    session_messages: &[ChatMessage],
+    total_available: usize,
+    is_external_mcp: bool,
+    stored_session_id: Option<&str>,
+    resolved_spawn_settings: &ResolvedAgentSpawnSettings,
+    agent_workspace_prompt_context: Option<&str>,
+    attachment_context_override: Option<&str>,
+) -> Result<ResolvedChatHarnessLaunch, String> {
+    build_launch_plan_for_harness_with_spawn_guard(
+        harness,
+        cli_path,
+        plugin_dir,
+        conversation,
+        user_message,
+        agent_name_override,
+        agent_profile,
+        context_type,
+        context_id,
+        conversation_id,
+        working_directory,
+        entity_status,
+        project_id,
+        filesystem_read_roots,
+        runtime_team_mode,
+        chat_attachment_repo,
+        artifact_repo,
+        ideation_session_repo,
+        delegated_session_repo,
+        task_repo,
+        session_messages,
+        total_available,
+        is_external_mcp,
+        stored_session_id,
+        resolved_spawn_settings,
+        false,
+        agent_workspace_prompt_context,
+        attachment_context_override,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn build_launch_plan_for_harness_with_spawn_guard(
+    harness: AgentHarnessKind,
+    cli_path: &Path,
+    plugin_dir: &Path,
+    conversation: &ChatConversation,
+    user_message: &str,
+    agent_name_override: Option<&str>,
+    agent_profile: Option<&str>,
+    context_type: ChatContextType,
+    context_id: &str,
+    conversation_id: Option<String>,
+    working_directory: &Path,
+    entity_status: Option<&str>,
+    project_id: Option<&str>,
+    filesystem_read_roots: &[PathBuf],
+    runtime_team_mode: bool,
+    chat_attachment_repo: Arc<dyn ChatAttachmentRepository>,
+    artifact_repo: Arc<dyn ArtifactRepository>,
+    ideation_session_repo: Arc<dyn IdeationSessionRepository>,
+    delegated_session_repo: Arc<dyn DelegatedSessionRepository>,
+    task_repo: Arc<dyn TaskRepository>,
+    session_messages: &[ChatMessage],
+    total_available: usize,
+    is_external_mcp: bool,
+    stored_session_id: Option<&str>,
+    resolved_spawn_settings: &ResolvedAgentSpawnSettings,
+    enforce_spawn_guard: bool,
+    agent_workspace_prompt_context: Option<&str>,
+    attachment_context_override: Option<&str>,
+) -> Result<ResolvedChatHarnessLaunch, String> {
     let resolved_cli = resolve_chat_harness_cli(harness, cli_path)?;
     build_launch_plan_from_resolved_cli(
         resolved_cli,
@@ -2579,6 +2733,7 @@ pub(crate) async fn build_launch_plan_for_harness(
             agent_profile,
             context_type,
             context_id,
+            conversation_id,
             working_directory,
             entity_status,
             project_id,
@@ -2594,6 +2749,7 @@ pub(crate) async fn build_launch_plan_for_harness(
             is_external_mcp,
             stored_session_id,
             resolved_spawn_settings,
+            enforce_spawn_guard,
             agent_workspace_prompt_context,
             attachment_context_override,
         },
@@ -2681,6 +2837,7 @@ pub async fn build_interactive_command(
     is_external_mcp: bool,
     stored_session_id: Option<&str>,
     resolved_spawn_settings: &ResolvedAgentSpawnSettings,
+    enforce_spawn_guard: bool,
     agent_workspace_prompt_context: Option<&str>,
     attachment_context_override: Option<&str>,
 ) -> Result<SpawnableCommand, String> {
@@ -2796,6 +2953,7 @@ pub async fn build_interactive_command(
         resolved_spawn_settings.claude_effort.as_deref(),
         Some(resolved_spawn_settings.model.as_str()),
         Some(&mcp_runtime_context),
+        enforce_spawn_guard,
     )?;
     log_claude_launch_plan_phase(conversation, "build_spawnable_command", spawnable_started);
 
@@ -3077,6 +3235,7 @@ pub async fn build_codex_resume_command(
     capabilities: &CodexCliCapabilities,
     context_type: ChatContextType,
     context_id: &str,
+    conversation_id: Option<&str>,
     message: &str,
     agent_name_override: Option<&str>,
     agent_profile: Option<&str>,
@@ -3114,7 +3273,7 @@ pub async fn build_codex_resume_command(
     let runtime_context = build_mcp_runtime_context(
         context_type,
         context_id,
-        None,
+        conversation_id.map(str::to_string),
         working_directory,
         project_id,
         filesystem_read_roots,
@@ -3170,6 +3329,9 @@ pub async fn build_codex_resume_command(
                 Some(session_id),
                 ideation_subagent_model_cap,
             );
+            if let Some(conversation_id) = conversation_id {
+                spawnable.env("RALPHX_CONVERSATION_ID", conversation_id);
+            }
 
             Ok(spawnable)
         }
@@ -3214,6 +3376,9 @@ pub async fn build_codex_resume_command(
                 None,
                 ideation_subagent_model_cap,
             );
+            if let Some(conversation_id) = conversation_id {
+                spawnable.env("RALPHX_CONVERSATION_ID", conversation_id);
+            }
 
             Ok(spawnable)
         }
@@ -3698,7 +3863,7 @@ exit 0
             )
             .await;
 
-        build_launch_plan_for_harness(
+        build_launch_plan_for_harness_for_test(
             harness,
             cli_path,
             plugin_dir,
@@ -3708,6 +3873,7 @@ exit 0
             agent_profile,
             ChatContextType::Project,
             project_id.as_str(),
+            Some(conversation.id.as_str()),
             working_directory,
             None,
             Some(project_id.as_str()),
@@ -3772,7 +3938,7 @@ exit 0
             )
             .await;
 
-        let launch_plan = build_launch_plan_for_harness(
+        let launch_plan = build_launch_plan_for_harness_for_test(
             harness,
             cli_path,
             plugin_dir,
@@ -3782,6 +3948,7 @@ exit 0
             None,
             ChatContextType::Ideation,
             session_id.as_str(),
+            Some(conversation.id.as_str()),
             working_directory,
             None,
             None,
@@ -4302,7 +4469,7 @@ exit 0
                 )
                 .await;
 
-            let launch_plan = build_launch_plan_for_harness(
+            let launch_plan = build_launch_plan_for_harness_for_test(
                 harness,
                 &cli_path,
                 &plugin_dir,
@@ -4312,6 +4479,7 @@ exit 0
                 None,
                 ChatContextType::Project,
                 project_id.as_str(),
+                Some(conversation.id.as_str()),
                 temp.path(),
                 None,
                 Some(project_id.as_str()),
@@ -4379,7 +4547,7 @@ exit 0
                 )
                 .await;
 
-            let launch_plan = build_launch_plan_for_harness(
+            let launch_plan = build_launch_plan_for_harness_for_test(
                 harness,
                 &cli_path,
                 &plugin_dir,
@@ -4389,6 +4557,7 @@ exit 0
                 None,
                 ChatContextType::Project,
                 project_id.as_str(),
+                Some(conversation.id.as_str()),
                 temp.path(),
                 None,
                 Some(project_id.as_str()),
@@ -4527,7 +4696,7 @@ exit 0
                 )
                 .await;
 
-            let launch_plan = build_launch_plan_for_harness(
+            let launch_plan = build_launch_plan_for_harness_for_test(
                 harness,
                 &cli_path,
                 &plugin_dir,
@@ -4537,6 +4706,7 @@ exit 0
                 None,
                 ChatContextType::Project,
                 project_id.as_str(),
+                Some(conversation.id.as_str()),
                 temp.path(),
                 None,
                 Some(project_id.as_str()),
@@ -4609,7 +4779,7 @@ exit 0
                 )
                 .await;
 
-            let launch_plan = build_launch_plan_for_harness(
+            let launch_plan = build_launch_plan_for_harness_for_test(
                 harness,
                 &cli_path,
                 &plugin_dir,
@@ -4619,6 +4789,7 @@ exit 0
                 None,
                 ChatContextType::Project,
                 project_id.as_str(),
+                Some(conversation.id.as_str()),
                 temp.path(),
                 None,
                 Some(project_id.as_str()),
@@ -4909,7 +5080,7 @@ exit 0
             )
             .await;
 
-        let launch_plan = build_launch_plan_for_harness(
+        let launch_plan = build_launch_plan_for_harness_for_test(
             AgentHarnessKind::Claude,
             &cli_path,
             &plugin_dir,
@@ -4919,6 +5090,7 @@ exit 0
             None,
             ChatContextType::Project,
             project_id.as_str(),
+            Some(conversation.id.as_str()),
             temp.path(),
             None,
             Some(project_id.as_str()),
@@ -4962,6 +5134,162 @@ exit 0
             !prompt.contains("prior message should stay in the provider transcript")
                 && !prompt.contains("<session_history"),
             "provider resume prompts should not replay RalphX DB history into stdin: {prompt}"
+        );
+    }
+
+    #[tokio::test]
+    async fn codex_project_launch_plan_resume_keeps_current_conversation_id_for_mcp() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let provider_home = temp.path().join("provider-home");
+        let provider_session_id = "codex-session-to-resume";
+        write_test_file(
+            &provider_home.join(".codex").join("session_index.jsonl"),
+            &format!(r#"{{"id":"{provider_session_id}"}}"#),
+        );
+        let _provider_home = EnvGuard::set_os(
+            "RALPHX_PROVIDER_STATE_HOME_OVERRIDE",
+            provider_home.as_os_str(),
+        );
+
+        let cli_path = make_fake_codex_cli(&temp);
+        let plugin_dir = repo_plugin_dir();
+        let project_id = ProjectId::from_string("codex-project-resume".to_string());
+        let agent_name = agent_names::AGENT_GENERAL_WORKER;
+        let mut conversation = ChatConversation::new_project(project_id.clone());
+        let conversation_id = conversation.id.as_str();
+        conversation.set_provider_session_ref(ProviderSessionRef {
+            harness: AgentHarnessKind::Codex,
+            provider_session_id: provider_session_id.to_string(),
+        });
+        let resolved_spawn_settings =
+            crate::application::agent_lane_resolution::resolve_agent_spawn_settings(
+                agent_name,
+                Some(project_id.as_str()),
+                ChatContextType::Project,
+                None,
+                Some(AgentHarnessKind::Codex),
+                None,
+                None,
+            )
+            .await;
+
+        let launch_plan = build_launch_plan_for_harness(
+            AgentHarnessKind::Codex,
+            &cli_path,
+            &plugin_dir,
+            &conversation,
+            "continue from the same Codex session",
+            Some(agent_name),
+            None,
+            ChatContextType::Project,
+            project_id.as_str(),
+            Some(conversation_id.clone()),
+            temp.path(),
+            None,
+            Some(project_id.as_str()),
+            &[],
+            false,
+            Arc::new(MemoryChatAttachmentRepository::new()),
+            Arc::new(MemoryArtifactRepository::new()),
+            Arc::new(MemoryIdeationSessionRepository::new()),
+            Arc::new(MemoryDelegatedSessionRepository::new()),
+            Arc::new(MemoryTaskRepository::new()),
+            &[],
+            0,
+            false,
+            Some(provider_session_id),
+            &resolved_spawn_settings,
+            None,
+            None,
+        )
+        .await
+        .expect("Codex project launch plan should build");
+
+        let spawnable = launch_spawnable(&launch_plan);
+        let args = spawnable.get_args_for_test();
+        let mcp_args = args
+            .iter()
+            .filter(|arg| arg.starts_with("mcp_servers."))
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            mcp_args.contains("--conversation-id") && mcp_args.contains(&conversation_id),
+            "Codex resume MCP args should keep the setup/current conversation id: {mcp_args}"
+        );
+        assert_eq!(
+            spawnable_env_value(spawnable, "RALPHX_CONVERSATION_ID").as_deref(),
+            Some(conversation_id.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn codex_project_noninteractive_resume_keeps_current_conversation_id_for_mcp() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let provider_home = temp.path().join("provider-home");
+        let provider_session_id = "codex-queued-session-to-resume";
+        write_test_file(
+            &provider_home.join(".codex").join("session_index.jsonl"),
+            &format!(r#"{{"id":"{provider_session_id}"}}"#),
+        );
+        let _provider_home = EnvGuard::set_os(
+            "RALPHX_PROVIDER_STATE_HOME_OVERRIDE",
+            provider_home.as_os_str(),
+        );
+
+        let cli_path = make_fake_codex_cli(&temp);
+        let plugin_dir = repo_plugin_dir();
+        let project_id = ProjectId::from_string("codex-project-queued-resume".to_string());
+        let conversation_id = "project-conversation-queued-resume";
+
+        let command = build_resume_command_for_harness(
+            AgentHarnessKind::Codex,
+            &cli_path,
+            &plugin_dir,
+            ChatContextType::Project,
+            conversation_id,
+            "continue from a queued Codex project message",
+            Some(agent_names::AGENT_GENERAL_WORKER),
+            None,
+            temp.path(),
+            provider_session_id,
+            Some(project_id.as_str()),
+            &[],
+            None,
+            false,
+            Arc::new(MemoryChatAttachmentRepository::new()),
+            Arc::new(MemoryArtifactRepository::new()),
+            None,
+            None,
+            None,
+            Arc::new(MemoryIdeationSessionRepository::new()),
+            Arc::new(MemoryDelegatedSessionRepository::new()),
+            Arc::new(MemoryTaskRepository::new()),
+            &[],
+            0,
+            None,
+            None,
+            false,
+            None,
+        )
+        .await
+        .expect("Codex project noninteractive resume command should build");
+
+        let spawnable = &command.spawnable;
+        let args = spawnable.get_args_for_test();
+        let mcp_args = args
+            .iter()
+            .filter(|arg| arg.starts_with("mcp_servers."))
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            mcp_args.contains("--conversation-id") && mcp_args.contains(conversation_id),
+            "Codex queued resume MCP args should keep the current project conversation id: {mcp_args}"
+        );
+        assert_eq!(
+            spawnable_env_value(spawnable, "RALPHX_CONVERSATION_ID").as_deref(),
+            Some(conversation_id)
         );
     }
 

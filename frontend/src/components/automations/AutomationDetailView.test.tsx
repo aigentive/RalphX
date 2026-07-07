@@ -1,0 +1,602 @@
+import { render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import { TooltipProvider } from "@/components/ui/tooltip";
+import { AutomationDetailView } from "./AutomationDetailView";
+import type { Automation, AutomationDetail, AutomationRun } from "@/api/automations.types";
+
+const {
+  getAutomationMock,
+  pauseAutomationMock,
+  resumeAutomationMock,
+  finalizeAutomationMock,
+  stopAutomationMock,
+  triggerRunNowMock,
+  skipJudgeMock,
+  deleteAutomationMock,
+  toastSuccessMock,
+  toastErrorMock,
+  toastInfoMock,
+} = vi.hoisted(() => ({
+  getAutomationMock: vi.fn(),
+  pauseAutomationMock: vi.fn(),
+  resumeAutomationMock: vi.fn(),
+  finalizeAutomationMock: vi.fn(),
+  stopAutomationMock: vi.fn(),
+  triggerRunNowMock: vi.fn(),
+  skipJudgeMock: vi.fn(),
+  deleteAutomationMock: vi.fn(),
+  toastSuccessMock: vi.fn(),
+  toastErrorMock: vi.fn(),
+  toastInfoMock: vi.fn(),
+}));
+
+vi.mock("sonner", () => ({
+  toast: {
+    success: toastSuccessMock,
+    error: toastErrorMock,
+    info: toastInfoMock,
+  },
+}));
+
+vi.mock("@/api/automations", () => ({
+  automationsApi: {
+    get: getAutomationMock,
+    pause: pauseAutomationMock,
+    resume: resumeAutomationMock,
+    finalize: finalizeAutomationMock,
+    stop: stopAutomationMock,
+    triggerRunNow: triggerRunNowMock,
+    skipJudge: skipJudgeMock,
+    delete: deleteAutomationMock,
+  },
+}));
+
+function automation(overrides: Partial<Automation> = {}): Automation {
+  const now = "2026-07-05T00:00:00Z";
+  return {
+    id: "automation-1",
+    projectId: "project-1",
+    name: "Ship migration loop",
+    status: "active",
+    pausedReasonCode: null,
+    pausedReasonDetail: null,
+    goalPrompt: Array.from({ length: 12 }, (_, index) => `Goal line ${index + 1}`).join("\n"),
+    setupConversationId: "setup-conversation-1",
+    providerHarness: "codex",
+    modelId: "gpt-5.4",
+    logicalEffort: "high",
+    runMode: "edit",
+    baseRefKind: "project_default",
+    baseRef: "main",
+    baseDisplayName: "main",
+    baseSourcePullRequestJson: JSON.stringify({
+      number: 593,
+      title: "Automation backend",
+      url: "https://github.com/aigentive/ralphx.app/pull/593",
+    }),
+    goalItemsJson: JSON.stringify([{ id: "item-1", title: "Land P6", status: "in_progress" }]),
+    chainMode: "merged_base",
+    completionSignal: "pr_merged",
+    maxRuns: 25,
+    maxConsecutiveFailures: 3,
+    firstRunPrompt: null,
+    setupAnalysisSummary: null,
+    createdAt: now,
+    updatedAt: now,
+    ...overrides,
+  };
+}
+
+function run(overrides: Partial<AutomationRun> = {}): AutomationRun {
+  const now = "2026-07-05T00:00:00Z";
+  return {
+    id: "run-1",
+    automationId: "automation-1",
+    runIndex: 1,
+    status: "merged",
+    judgeState: "done",
+    judgeLeaseExpiresAt: null,
+    conversationId: "conversation-1",
+    runPrompt: Array.from({ length: 12 }, (_, index) => `Prompt line ${index + 1}`).join("\n"),
+    promptAuthor: "setup_agent",
+    baseRefKind: "project_default",
+    baseRefUsed: "main",
+    baseFromRunId: null,
+    branchName: "ralphx/test",
+    prNumber: 593,
+    prUrl: "https://github.com/aigentive/ralphx.app/pull/593",
+    prTitle: "P6",
+    prHeadRefName: "ralphx/test",
+    prBaseRefName: "main",
+    prMergedAt: now,
+    mergeCommitSha: "abc123",
+    diffStatsJson: JSON.stringify({ filesChanged: 3, additions: 12, deletions: 4 }),
+    agentSummary: "Implemented the run.",
+    judgeVerdictJson: JSON.stringify({
+      decision: "continue",
+      reason: "More work remains.",
+      confidence: 0.87,
+      nextRunPrompt: "Continue with the next scoped automation task.",
+    }),
+    judgeModelId: "gpt-5.4-mini",
+    errorCode: null,
+    errorDetail: null,
+    signalCheckFailures: 0,
+    startedAt: now,
+    finishedAt: now,
+    createdAt: now,
+    updatedAt: now,
+    ...overrides,
+  };
+}
+
+const usage = {
+  inputTokens: 200,
+  outputTokens: 50,
+  cacheCreationTokens: 7,
+  cacheReadTokens: 9,
+  estimatedUsd: 0.06,
+};
+
+function renderDetail(detail: AutomationDetail, onOpenRunConversation = vi.fn()) {
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      queries: { retry: false, gcTime: 0 },
+      mutations: { retry: false },
+    },
+  });
+  getAutomationMock.mockResolvedValue(detail);
+  return {
+    onOpenRunConversation,
+    ...render(
+      <QueryClientProvider client={queryClient}>
+        <TooltipProvider>
+          <AutomationDetailView
+            automationId="automation-1"
+            projectId="project-1"
+            projectName="Demo Project"
+            onBack={vi.fn()}
+            onOpenRunConversation={onOpenRunConversation}
+          />
+        </TooltipProvider>
+      </QueryClientProvider>,
+    ),
+  };
+}
+
+function renderDetailWithQuery(onBack = vi.fn()) {
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      queries: { retry: false, gcTime: 0 },
+      mutations: { retry: false },
+    },
+  });
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <TooltipProvider>
+        <AutomationDetailView
+          automationId="automation-1"
+          projectId="project-1"
+          projectName="Demo Project"
+          onBack={onBack}
+          onOpenRunConversation={vi.fn()}
+        />
+      </TooltipProvider>
+    </QueryClientProvider>,
+  );
+}
+
+describe("AutomationDetailView", () => {
+  beforeEach(() => {
+    vi.stubGlobal(
+      "requestAnimationFrame",
+      (cb: FrameRequestCallback): number =>
+        window.setTimeout(() => cb(performance.now()), 0),
+    );
+    vi.stubGlobal("cancelAnimationFrame", (handle: number): void => {
+      window.clearTimeout(handle);
+    });
+    getAutomationMock.mockReset();
+    pauseAutomationMock.mockReset().mockResolvedValue(automation({ status: "paused" }));
+    resumeAutomationMock.mockReset().mockResolvedValue(automation());
+    finalizeAutomationMock.mockReset().mockResolvedValue(automation({ status: "active" }));
+    stopAutomationMock.mockReset().mockResolvedValue(automation({ status: "stopped" }));
+    triggerRunNowMock.mockReset().mockResolvedValue({ scheduled: true, reason: null });
+    skipJudgeMock.mockReset().mockResolvedValue({ scheduled: true, reason: null });
+    deleteAutomationMock.mockReset().mockResolvedValue(undefined);
+    toastSuccessMock.mockReset();
+    toastErrorMock.mockReset();
+    toastInfoMock.mockReset();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("renders the detail controls and newest-first timeline with collapsed prompt bodies", async () => {
+    const olderRun = run({ id: "run-1", runIndex: 1 });
+    const latestRun = run({
+      id: "run-2",
+      runIndex: 2,
+      status: "merged",
+      judgeState: "none",
+      conversationId: "conversation-2",
+      promptAuthor: "judge",
+    });
+
+    const { onOpenRunConversation } = renderDetail({
+      automation: automation(),
+      runs: [olderRun, latestRun],
+      usage,
+    });
+
+    expect(await screen.findByTestId("automation-detail-view")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Ship migration loop" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Pause automation")).toBeInTheDocument();
+    expect(screen.getByLabelText("Run now")).toBeInTheDocument();
+    expect(screen.getByLabelText("Stop automation")).toBeInTheDocument();
+    expect(screen.getByText("Input tokens")).toBeInTheDocument();
+    expect(screen.getByText("200")).toBeInTheDocument();
+    expect(screen.getByText("Estimated cost")).toBeInTheDocument();
+    expect(screen.getByText("$0.06")).toBeInTheDocument();
+
+    const runTwo = screen.getByTestId("automation-run-run-2");
+    const runOne = screen.getByTestId("automation-run-run-1");
+    expect(runTwo.compareDocumentPosition(runOne)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(within(runTwo).getByText("Run 2")).toBeInTheDocument();
+    const goalCard = screen.getByTestId("automation-goal-card");
+    expect(goalCard).toHaveTextContent("Goal line 10");
+    expect(goalCard).not.toHaveTextContent("Goal line 11");
+
+    await userEvent.click(screen.getAllByRole("button", { name: "Expand" })[0]);
+
+    expect(goalCard).toHaveTextContent("Goal line 11");
+
+    await userEvent.click(screen.getByTestId("automation-setup-conversation-link"));
+    expect(onOpenRunConversation).toHaveBeenCalledWith(
+      "project-1",
+      "setup-conversation-1",
+    );
+
+    await userEvent.click(within(runTwo).getByRole("button", { name: "Open conversation" }));
+    expect(onOpenRunConversation).toHaveBeenCalledWith("project-1", "conversation-2");
+
+    await userEvent.click(within(runTwo).getByRole("button", { name: "Show next prompt" }));
+    expect(within(runTwo).getByText("Continue with the next scoped automation task.")).toBeInTheDocument();
+  });
+
+  it("calls pause and skip-judge controls through the automation API", async () => {
+    const latestRun = run({
+      id: "run-2",
+      runIndex: 2,
+      status: "merged",
+      judgeState: "none",
+    });
+    renderDetail({ automation: automation(), runs: [latestRun], usage });
+
+    await screen.findByTestId("automation-detail-view");
+
+    await userEvent.click(screen.getByLabelText("Pause automation"));
+    await waitFor(() =>
+      expect(pauseAutomationMock).toHaveBeenCalledWith({
+        id: "automation-1",
+        reasonCode: "user",
+        reasonDetail: "Paused from Automations detail",
+      }),
+    );
+
+    await userEvent.click(screen.getByLabelText("More automation actions"));
+    await userEvent.click(screen.getByText("Skip judge"));
+
+    await waitFor(() =>
+      expect(skipJudgeMock).toHaveBeenCalledWith({
+        id: "automation-1",
+        runId: "run-2",
+      }),
+    );
+  });
+
+  it("renders loading and error states", async () => {
+    getAutomationMock.mockReturnValue(new Promise(() => {}));
+
+    renderDetailWithQuery();
+
+    expect(screen.getByTestId("automation-detail-loading")).toBeInTheDocument();
+
+    getAutomationMock.mockReset().mockRejectedValue(new Error("boom"));
+    renderDetailWithQuery();
+
+    expect(await screen.findByText("Could not load automation.")).toBeInTheDocument();
+  });
+
+  it("resumes paused automation and opens the setup conversation from the action menu", async () => {
+    const onOpenRunConversation = vi.fn();
+    renderDetail(
+      {
+        automation: automation({
+          status: "paused",
+          pausedReasonCode: "release_freeze",
+          pausedReasonDetail: "Waiting on base branch",
+          baseSourcePullRequestJson: null,
+          goalItemsJson: "not-json",
+        }),
+        runs: [],
+        usage: { ...usage, estimatedUsd: null },
+      },
+      onOpenRunConversation,
+    );
+
+    expect(await screen.findByText("No setup input references are attached to this automation record.")).toBeInTheDocument();
+    expect(screen.getByText("No runs have been created yet.")).toBeInTheDocument();
+    expect(screen.getByText("Paused: release_freeze - Waiting on base branch")).toBeInTheDocument();
+    expect(screen.getAllByText("Not recorded").length).toBeGreaterThan(0);
+
+    await userEvent.click(screen.getByLabelText("Resume automation"));
+
+    await waitFor(() => expect(resumeAutomationMock).toHaveBeenCalledWith("automation-1"));
+    expect(toastSuccessMock).toHaveBeenCalledWith("Automation resumed");
+
+    await userEvent.click(screen.getByLabelText("More automation actions"));
+    await userEvent.click(screen.getByText("Edit"));
+
+    expect(onOpenRunConversation).toHaveBeenCalledWith("project-1", "setup-conversation-1");
+  });
+
+  it("reports run-now deferred outcomes without scheduling a run", async () => {
+    triggerRunNowMock.mockResolvedValueOnce({
+      scheduled: false,
+      reason: "run in flight",
+    });
+    renderDetail({
+      automation: automation({
+        baseSourcePullRequestJson: "not-json",
+        goalItemsJson: null,
+      }),
+      runs: [run({
+        diffStatsJson: null,
+        judgeVerdictJson: "not-json",
+      })],
+      usage,
+    });
+
+    await screen.findByTestId("automation-detail-view");
+    expect(screen.getByText("No setup input references are attached to this automation record.")).toBeInTheDocument();
+    expect(screen.getByText("Diff not recorded")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByLabelText("Run now"));
+
+    await waitFor(() => expect(triggerRunNowMock).toHaveBeenCalledWith("automation-1"));
+    expect(toastInfoMock).toHaveBeenCalledWith("run in flight");
+  });
+
+  it("confirms stop requests before terminal mutation", async () => {
+    renderDetail({ automation: automation(), runs: [run()], usage });
+
+    await screen.findByTestId("automation-detail-view");
+    await userEvent.click(screen.getByLabelText("Stop automation"));
+
+    expect(await screen.findByText("Stop automation?")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Stop" }));
+
+    await waitFor(() => expect(stopAutomationMock).toHaveBeenCalledWith("automation-1"));
+    expect(toastSuccessMock).toHaveBeenCalledWith("Automation stopped");
+  });
+
+  it("does not run paused automations when the resume confirmation is canceled", async () => {
+    renderDetail({
+      automation: automation({ status: "paused" }),
+      runs: [run({ status: "published", judgeState: "none" })],
+      usage,
+    });
+
+    await screen.findByTestId("automation-detail-view");
+    await userEvent.click(screen.getByLabelText("Run now"));
+    await userEvent.click(await screen.findByRole("button", { name: "Cancel" }));
+
+    expect(triggerRunNowMock).not.toHaveBeenCalled();
+  });
+
+  it("confirms paused run-now before scheduling the override", async () => {
+    renderDetail({
+      automation: automation({ status: "paused" }),
+      runs: [run({ status: "published", judgeState: "none" })],
+      usage,
+    });
+
+    await screen.findByTestId("automation-detail-view");
+    await userEvent.click(screen.getByLabelText("Run now"));
+
+    expect(await screen.findByText("Resume and run now?")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Resume and run" }));
+
+    await waitFor(() => expect(triggerRunNowMock).toHaveBeenCalledWith("automation-1"));
+    expect(toastSuccessMock).toHaveBeenCalledWith("Automation run scheduled");
+  });
+
+  it("shows the Approve button only for draft automations", async () => {
+    const draftView = renderDetail({
+      automation: automation({ status: "draft" }),
+      runs: [],
+      usage,
+    });
+
+    await screen.findByTestId("automation-detail-view");
+    expect(screen.getByRole("button", { name: "Approve" })).toBeInTheDocument();
+    draftView.unmount();
+
+    renderDetail({ automation: automation({ status: "active" }), runs: [], usage });
+
+    await screen.findByTestId("automation-detail-view");
+    expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
+  });
+
+  it("approves a draft automation and invalidates the detail query", async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false, gcTime: 0 },
+        mutations: { retry: false },
+      },
+    });
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+    getAutomationMock.mockResolvedValue({
+      automation: automation({ status: "draft" }),
+      runs: [],
+      usage,
+    });
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <TooltipProvider>
+          <AutomationDetailView
+            automationId="automation-1"
+            projectId="project-1"
+            projectName="Demo Project"
+            onBack={vi.fn()}
+            onOpenRunConversation={vi.fn()}
+          />
+        </TooltipProvider>
+      </QueryClientProvider>,
+    );
+
+    await screen.findByTestId("automation-detail-view");
+    await userEvent.click(screen.getByRole("button", { name: "Approve" }));
+
+    await waitFor(() => expect(finalizeAutomationMock).toHaveBeenCalledWith("automation-1"));
+    expect(toastSuccessMock).toHaveBeenCalledWith("Automation spec approved");
+    await waitFor(() =>
+      expect(invalidateSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          queryKey: ["automations", "detail", "automation-1"],
+        }),
+      ),
+    );
+  });
+
+  it("surfaces the backend validation message when approval fails", async () => {
+    finalizeAutomationMock.mockReset().mockRejectedValue(
+      "automation goal_prompt is required before approval",
+    );
+    renderDetail({
+      automation: automation({ status: "draft" }),
+      runs: [],
+      usage,
+    });
+
+    await screen.findByTestId("automation-detail-view");
+    await userEvent.click(screen.getByRole("button", { name: "Approve" }));
+
+    await waitFor(() => expect(finalizeAutomationMock).toHaveBeenCalledWith("automation-1"));
+    expect(toastErrorMock).toHaveBeenCalledWith(
+      "automation goal_prompt is required before approval",
+    );
+  });
+
+  it("renders the failure reason for a failed run in the timeline", async () => {
+    renderDetail({
+      automation: automation(),
+      runs: [
+        run({
+          id: "run-failed",
+          status: "agent_failed",
+          judgeState: "none",
+          errorCode: "publish_failed",
+          errorDetail: "Publish step exited with code 1",
+        }),
+      ],
+      usage,
+    });
+
+    await screen.findByTestId("automation-detail-view");
+
+    const failure = screen.getByTestId("automation-run-run-failed-failure");
+    expect(failure).toHaveTextContent("Publish step exited with code 1");
+  });
+
+  it("renders fallback run metadata and deletes terminal automations after confirmation", async () => {
+    const onBack = vi.fn();
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false, gcTime: 0 },
+        mutations: { retry: false },
+      },
+    });
+    getAutomationMock.mockResolvedValue({
+      automation: automation({
+        status: "stopped",
+        setupConversationId: null,
+        baseDisplayName: null,
+        baseRef: "",
+        baseRefKind: "current_branch",
+        baseSourcePullRequestJson: JSON.stringify({ number: 41 }),
+        goalItemsJson: JSON.stringify([{ id: "item-fallback" }, "ignored"]),
+        createdAt: "not-a-date",
+        updatedAt: "not-a-date",
+      }),
+      runs: [
+        run({
+          id: "run-fallback",
+          status: "cancelled",
+          judgeState: "failed",
+          conversationId: null,
+          promptAuthor: "skip_judge_template",
+          baseRefUsed: "",
+          baseRefKind: "local_branch",
+          prNumber: 41,
+          prUrl: null,
+          diffStatsJson: JSON.stringify({ files_changed: 2 }),
+          agentSummary: null,
+          judgeVerdictJson: null,
+          finishedAt: null,
+          updatedAt: "invalid-date",
+        }),
+      ],
+      usage: {
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 0,
+        estimatedUsd: null,
+      },
+    });
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <TooltipProvider>
+          <AutomationDetailView
+            automationId="automation-1"
+            projectId="project-1"
+            projectName={null}
+            onBack={onBack}
+            onOpenRunConversation={vi.fn()}
+          />
+        </TooltipProvider>
+      </QueryClientProvider>,
+    );
+
+    await screen.findByTestId("automation-detail-view");
+    expect(screen.getByText("Stopped")).toBeInTheDocument();
+    expect(screen.getByText("current_branch")).toBeInTheDocument();
+    expect(screen.getAllByText("PR #41").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText("item-fallback")).toBeInTheDocument();
+    expect(screen.getByText("2 files, +0 / -0")).toBeInTheDocument();
+    expect(screen.getByText("invalid-date")).toBeInTheDocument();
+    expect(screen.getByText("Skip-judge template")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Not started" })).toBeDisabled();
+    expect(screen.getAllByText("Not recorded").length).toBeGreaterThan(0);
+    expect(screen.getByLabelText("Run now")).toBeDisabled();
+    expect(screen.getByLabelText("Stop automation")).toBeDisabled();
+
+    await userEvent.click(screen.getByLabelText("More automation actions"));
+    await userEvent.click(screen.getByText("Delete"));
+
+    expect(await screen.findByText("Delete automation?")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Delete" }));
+
+    await waitFor(() => expect(deleteAutomationMock).toHaveBeenCalledWith("automation-1"));
+    expect(toastSuccessMock).toHaveBeenCalledWith("Automation deleted");
+    expect(onBack).toHaveBeenCalled();
+  });
+});

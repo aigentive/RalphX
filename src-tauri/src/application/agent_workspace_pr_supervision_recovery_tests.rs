@@ -541,6 +541,7 @@ async fn marks_terminal_linked_plan_pr_status_without_workspace_publication_pr()
             "plan-pr-supervision-terminal-merged",
             PrStatus::Merged {
                 merge_commit_sha: Some("merge-sha".to_string()),
+                merged_at: None,
             },
             PlanPrStatus::Merged,
             "merged",
@@ -814,6 +815,7 @@ async fn marks_terminal_pr_status_during_blocked_pr_supervision_recovery() {
             "pr-supervision-terminal-merged",
             PrStatus::Merged {
                 merge_commit_sha: Some("merge-sha".to_string()),
+                merged_at: None,
             },
             "merged",
             "pr_merged",

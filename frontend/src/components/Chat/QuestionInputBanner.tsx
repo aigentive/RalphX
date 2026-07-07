@@ -37,9 +37,10 @@ export interface QuestionInputBannerProps {
   answeredValue?: string | undefined;
   /** Called when user clicks dismiss on the answered banner */
   onDismissAnswered?: (() => void) | undefined;
-  /** Optional Plan-mode artifact approval action shown alongside the question. */
+  /** Optional inline action shown alongside the question. */
   planApprovalAction?: {
     label: string;
+    pendingLabel?: string;
     onClick: () => void;
     disabled?: boolean;
     isPending?: boolean;
@@ -147,7 +148,7 @@ function PlanApprovalActionButton({
       ) : (
         <CheckCircle2 className="h-3 w-3" />
       )}
-      {action.isPending ? "Approving..." : action.label}
+      {action.isPending ? (action.pendingLabel ?? "Approving...") : action.label}
     </button>
   );
 }

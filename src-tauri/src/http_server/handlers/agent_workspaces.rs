@@ -3556,10 +3556,14 @@ fn pr_supervision_block_is_workspace_review_gate(workspace: &AgentConversationWo
         return false;
     };
     let summary = summary.trim();
+    let summary = summary
+        .strip_prefix("PR fix publish failed: ")
+        .unwrap_or(summary);
     summary == "Workspace Review is required before publishing"
         || summary == "Workspace Review is still running"
-        || summary == "PR fix publish failed: Workspace Review is required before publishing"
-        || summary == "PR fix publish failed: Workspace Review is still running"
+        || summary == "Workspace Review failed"
+        || summary == "Workspace Review failed; retry before publishing"
+        || summary == "Workspace reviewer completed without writing a current Review"
 }
 
 async fn complete_pr_fix_for_terminal_pr(
@@ -6303,6 +6307,22 @@ mod tests {
             &workspace, &monitor
         ));
 
+        workspace.pr_supervision_summary =
+            Some("Workspace reviewer completed without writing a current Review".to_string());
+
+        assert!(pr_fix_publish_can_resume_after_workspace_review(
+            &workspace, &monitor
+        ));
+
+        workspace.pr_supervision_summary = Some(
+            "PR fix publish failed: Workspace reviewer completed without writing a current Review"
+                .to_string(),
+        );
+
+        assert!(pr_fix_publish_can_resume_after_workspace_review(
+            &workspace, &monitor
+        ));
+
         workspace.pr_supervision_summary = Some("Required checks are still pending.".to_string());
 
         assert!(!pr_fix_publish_can_resume_after_workspace_review(
@@ -7057,6 +7077,7 @@ mod tests {
         let github = Arc::new(MockGithubService::new());
         github.will_return_status(PrStatus::Merged {
             merge_commit_sha: Some("a".repeat(40)),
+            merged_at: None,
         });
         app_state.github_service = Some(Arc::clone(&github) as Arc<dyn GithubServiceTrait>);
         let app_state = Arc::new(app_state);
@@ -7630,7 +7651,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn passed_workspace_review_resumes_blocked_pr_fix_publish() {
+    async fn passed_workspace_review_resumes_pr_fix_publish_after_missing_review_failure() {
         let repo = tempfile::TempDir::new().expect("repo tempdir");
         let worktrees = tempfile::TempDir::new().expect("worktree tempdir");
         git(repo.path(), &["init", "-b", "main"]);
@@ -7707,7 +7728,7 @@ mod tests {
         workspace.auto_publish_enabled = true;
         workspace.pr_supervision_status = Some("blocked".to_string());
         workspace.pr_supervision_summary =
-            Some("Workspace Review is required before publishing".to_string());
+            Some("Workspace reviewer completed without writing a current Review".to_string());
         workspace.pr_autofix_enabled = true;
         workspace.pr_auto_merge_desired = true;
         app_state

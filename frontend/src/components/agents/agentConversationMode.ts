@@ -14,6 +14,7 @@ export const AGENT_CONVERSATION_MODE_OPTIONS: Array<{
   { id: "edit", label: "Agent", description: "Build, change, and review code in a branch." },
   { id: "plan", label: "Plan", description: "Draft and refine a plan before execution." },
   { id: "ideation", label: "Ideation", description: "Plan work before creating tasks." },
+  { id: "automation", label: "Automation", description: "Create and run a recurring agent workflow." },
   { id: "review_pr", label: "Review PR", description: "Review a linked pull request." },
 ];
 
@@ -30,6 +31,9 @@ export function isWorkspaceModeLocked(workspace: AgentConversationWorkspace | nu
   }
   if (workspace.modeSwitchLocked !== undefined) {
     return workspace.modeSwitchLocked;
+  }
+  if (workspace.mode === "automation") {
+    return true;
   }
   return Boolean(workspace.linkedIdeationSessionId || workspace.linkedPlanBranchId);
 }

@@ -325,7 +325,8 @@ export const IDEATION_TOOLS: Tool[] = [
       properties: {
         session_id: {
           type: "string",
-          description: "The ideation session ID (provided in context)",
+          description:
+            "The ideation session ID when explicitly provided. If omitted, RalphX uses the current runtime conversation/session context.",
         },
         question: {
           type: "string",
@@ -364,6 +365,12 @@ export const IDEATION_TOOLS: Tool[] = [
         allow_skip: {
           type: "boolean",
           description: "If true, the user can skip the question. Default: true.",
+        },
+        metadata: {
+          type: "object",
+          description:
+            "Optional UI metadata for RalphX-owned question affordances. Use sparingly for structured proposal flows.",
+          additionalProperties: true,
         },
         questions: {
           type: "array",
@@ -418,7 +425,7 @@ export const IDEATION_TOOLS: Tool[] = [
           },
         },
       },
-      required: ["session_id"],
+      required: [],
     },
   },
 

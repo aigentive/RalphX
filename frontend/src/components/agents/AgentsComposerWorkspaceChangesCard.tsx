@@ -245,6 +245,9 @@ function isCurrentRuntimeIndexRow(
       (row.childSessionId ?? row.contextId) === currentFocus.childSessionId
     );
   }
+  if (currentFocus.type !== "task_runtime") {
+    return false;
+  }
   return (
     row.kind === "task" &&
     row.taskId === currentFocus.taskId &&

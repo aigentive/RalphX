@@ -11,8 +11,9 @@ use rusqlite::Connection;
 use crate::domain::agents::{AgentHarnessKind, ProviderSessionRef};
 use crate::domain::entities::chat_conversation::compatible_provider_session_fields_from_provider_ref;
 use crate::domain::entities::{
-    AgentConversationWorkspaceMode, AttributionBackfillStatus, ChatContextType, ChatConversation,
-    ChatConversationId, ConversationAttributionBackfillState, ConversationAttributionBackfillSummary,
+    AgentConversationWorkspaceMode, AttributionBackfillStatus, AutomationId, AutomationRunId,
+    ChatContextType, ChatConversation, ChatConversationId, ConversationAttributionBackfillState,
+    ConversationAttributionBackfillSummary,
 };
 use crate::domain::repositories::{ChatConversationPage, ChatConversationRepository};
 use crate::error::AppResult;
@@ -48,6 +49,16 @@ fn row_to_conversation(row: &rusqlite::Row) -> rusqlite::Result<ChatConversation
         .ok()
         .flatten()
         .and_then(|value| value.parse::<AgentConversationWorkspaceMode>().ok());
+    let automation_id = row
+        .get::<_, Option<String>>("automation_id")
+        .ok()
+        .flatten()
+        .map(AutomationId::from_string);
+    let automation_run_id = row
+        .get::<_, Option<String>>("automation_run_id")
+        .ok()
+        .flatten()
+        .map(AutomationRunId::from_string);
     let last_message_at_str: Option<String> = row.get("last_message_at")?;
     let created_at_str: String = row.get("created_at")?;
     let updated_at_str: String = row.get("updated_at")?;
@@ -72,7 +83,9 @@ fn row_to_conversation(row: &rusqlite::Row) -> rusqlite::Result<ChatConversation
 
     let mut conversation = ChatConversation {
         id: ChatConversationId::from_string(row.get::<_, String>("id")?),
-        context_type: context_type_str.parse().unwrap_or(ChatContextType::Ideation),
+        context_type: context_type_str
+            .parse()
+            .unwrap_or(ChatContextType::Ideation),
         context_id: row.get("context_id")?,
         claude_session_id,
         provider_session_id,
@@ -80,6 +93,8 @@ fn row_to_conversation(row: &rusqlite::Row) -> rusqlite::Result<ChatConversation
         upstream_provider,
         provider_profile,
         agent_mode,
+        automation_id,
+        automation_run_id,
         title: row.get("title")?,
         message_count: row.get("message_count")?,
         last_message_at: last_message_at_str.and_then(|s| {
@@ -145,6 +160,14 @@ impl ChatConversationRepository for SqliteChatConversationRepository {
         let upstream_provider = conversation.upstream_provider.clone();
         let provider_profile = conversation.provider_profile.clone();
         let agent_mode = conversation.agent_mode.map(|value| value.to_string());
+        let automation_id = conversation
+            .automation_id
+            .as_ref()
+            .map(|value| value.as_str().to_string());
+        let automation_run_id = conversation
+            .automation_run_id
+            .as_ref()
+            .map(|value| value.as_str().to_string());
         let title = conversation.title.clone();
         let message_count = conversation.message_count;
         let last_message_at = conversation.last_message_at.map(|dt| dt.to_rfc3339());
@@ -156,7 +179,8 @@ impl ChatConversationRepository for SqliteChatConversationRepository {
             .attribution_backfill_status
             .map(|value| value.to_string());
         let attribution_backfill_source = conversation.attribution_backfill_source.clone();
-        let attribution_backfill_source_path = conversation.attribution_backfill_source_path.clone();
+        let attribution_backfill_source_path =
+            conversation.attribution_backfill_source_path.clone();
         let attribution_backfill_last_attempted_at = conversation
             .attribution_backfill_last_attempted_at
             .map(|value| value.to_rfc3339());
@@ -171,16 +195,16 @@ impl ChatConversationRepository for SqliteChatConversationRepository {
                 "INSERT INTO chat_conversations (
                     id, context_type, context_id, claude_session_id, provider_session_id,
                     provider_harness, upstream_provider, provider_profile, agent_mode,
-                    title, message_count, last_message_at, created_at,
+                    automation_id, automation_run_id, title, message_count, last_message_at, created_at,
                     updated_at, archived_at, parent_conversation_id, attribution_backfill_status,
                     attribution_backfill_source, attribution_backfill_source_path,
                     attribution_backfill_last_attempted_at, attribution_backfill_completed_at,
                     attribution_backfill_error_summary
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
                 rusqlite::params![
                     id, context_type, context_id, claude_session_id, provider_session_id,
                     provider_harness, upstream_provider, provider_profile, agent_mode,
-                    title, message_count, last_message_at, created_at,
+                    automation_id, automation_run_id, title, message_count, last_message_at, created_at,
                     updated_at, archived_at, parent_conversation_id, attribution_backfill_status,
                     attribution_backfill_source, attribution_backfill_source_path,
                     attribution_backfill_last_attempted_at, attribution_backfill_completed_at,
@@ -198,7 +222,7 @@ impl ChatConversationRepository for SqliteChatConversationRepository {
         self.db.query_optional(move |conn| {
             conn.query_row(
                 "SELECT id, context_type, context_id, claude_session_id, provider_session_id,
-                        provider_harness, upstream_provider, provider_profile, agent_mode, title, message_count, last_message_at, created_at,
+                        provider_harness, upstream_provider, provider_profile, agent_mode, automation_id, automation_run_id, title, message_count, last_message_at, created_at,
                         updated_at, archived_at, parent_conversation_id, attribution_backfill_status,
                         attribution_backfill_source, attribution_backfill_source_path,
                         attribution_backfill_last_attempted_at, attribution_backfill_completed_at,
@@ -220,7 +244,7 @@ impl ChatConversationRepository for SqliteChatConversationRepository {
         self.db.run(move |conn| {
             let mut stmt = conn.prepare(
                 "SELECT id, context_type, context_id, claude_session_id, provider_session_id,
-                        provider_harness, upstream_provider, provider_profile, agent_mode, title, message_count, last_message_at, created_at,
+                        provider_harness, upstream_provider, provider_profile, agent_mode, automation_id, automation_run_id, title, message_count, last_message_at, created_at,
                         updated_at, archived_at, parent_conversation_id, attribution_backfill_status,
                         attribution_backfill_source, attribution_backfill_source_path,
                         attribution_backfill_last_attempted_at, attribution_backfill_completed_at,
@@ -250,7 +274,7 @@ impl ChatConversationRepository for SqliteChatConversationRepository {
             };
             let sql = format!(
                 "SELECT id, context_type, context_id, claude_session_id, provider_session_id,
-                        provider_harness, upstream_provider, provider_profile, agent_mode, title, message_count, last_message_at, created_at,
+                        provider_harness, upstream_provider, provider_profile, agent_mode, automation_id, automation_run_id, title, message_count, last_message_at, created_at,
                         updated_at, archived_at, parent_conversation_id, attribution_backfill_status,
                         attribution_backfill_source, attribution_backfill_source_path,
                         attribution_backfill_last_attempted_at, attribution_backfill_completed_at,
@@ -306,7 +330,7 @@ impl ChatConversationRepository for SqliteChatConversationRepository {
                 );
                 let list_sql = format!(
                     "SELECT id, context_type, context_id, claude_session_id, provider_session_id,
-                            provider_harness, upstream_provider, provider_profile, agent_mode, title, message_count, last_message_at, created_at,
+                            provider_harness, upstream_provider, provider_profile, agent_mode, automation_id, automation_run_id, title, message_count, last_message_at, created_at,
                             updated_at, archived_at, parent_conversation_id, attribution_backfill_status,
                             attribution_backfill_source, attribution_backfill_source_path,
                             attribution_backfill_last_attempted_at, attribution_backfill_completed_at,
@@ -383,7 +407,7 @@ impl ChatConversationRepository for SqliteChatConversationRepository {
         self.db.query_optional(move |conn| {
             conn.query_row(
                 "SELECT id, context_type, context_id, claude_session_id, provider_session_id,
-                        provider_harness, upstream_provider, provider_profile, agent_mode, title, message_count, last_message_at, created_at,
+                        provider_harness, upstream_provider, provider_profile, agent_mode, automation_id, automation_run_id, title, message_count, last_message_at, created_at,
                         updated_at, archived_at, parent_conversation_id, attribution_backfill_status,
                         attribution_backfill_source, attribution_backfill_source_path,
                         attribution_backfill_last_attempted_at, attribution_backfill_completed_at,
@@ -404,7 +428,7 @@ impl ChatConversationRepository for SqliteChatConversationRepository {
         self.db.run(move |conn| {
             let mut stmt = conn.prepare(
                 "SELECT id, context_type, context_id, claude_session_id, provider_session_id,
-                        provider_harness, upstream_provider, provider_profile, agent_mode, title, message_count, last_message_at, created_at,
+                        provider_harness, upstream_provider, provider_profile, agent_mode, automation_id, automation_run_id, title, message_count, last_message_at, created_at,
                         updated_at, archived_at, parent_conversation_id, attribution_backfill_status,
                         attribution_backfill_source, attribution_backfill_source_path,
                         attribution_backfill_last_attempted_at, attribution_backfill_completed_at,
@@ -437,40 +461,44 @@ impl ChatConversationRepository for SqliteChatConversationRepository {
                 Some(session_ref.harness),
                 Some(session_ref.provider_session_id.clone()),
             );
-        self.db.run(move |conn| {
-            conn.execute(
-                "UPDATE chat_conversations
+        self.db
+            .run(move |conn| {
+                conn.execute(
+                    "UPDATE chat_conversations
                  SET claude_session_id = ?1,
                      provider_session_id = ?2,
                      provider_harness = ?3,
                      updated_at = ?4
                  WHERE id = ?5",
-                rusqlite::params![
-                    claude_session_id,
-                    provider_session_id,
-                    provider_harness.map(|value| value.to_string()),
-                    Utc::now().to_rfc3339(),
-                    id_str
-                ],
-            )?;
-            Ok(())
-        }).await
+                    rusqlite::params![
+                        claude_session_id,
+                        provider_session_id,
+                        provider_harness.map(|value| value.to_string()),
+                        Utc::now().to_rfc3339(),
+                        id_str
+                    ],
+                )?;
+                Ok(())
+            })
+            .await
     }
 
     async fn clear_provider_session_ref(&self, id: &ChatConversationId) -> AppResult<()> {
         let id_str = id.as_str().to_string();
-        self.db.run(move |conn| {
-            conn.execute(
-                "UPDATE chat_conversations
+        self.db
+            .run(move |conn| {
+                conn.execute(
+                    "UPDATE chat_conversations
                  SET claude_session_id = NULL,
                      provider_session_id = NULL,
                      provider_harness = NULL,
                      updated_at = ?1
                  WHERE id = ?2",
-                rusqlite::params![Utc::now().to_rfc3339(), id_str],
-            )?;
-            Ok(())
-        }).await
+                    rusqlite::params![Utc::now().to_rfc3339(), id_str],
+                )?;
+                Ok(())
+            })
+            .await
     }
 
     async fn update_provider_origin(
@@ -482,22 +510,24 @@ impl ChatConversationRepository for SqliteChatConversationRepository {
         let id_str = id.as_str().to_string();
         let upstream_provider = upstream_provider.map(str::to_string);
         let provider_profile = provider_profile.map(str::to_string);
-        self.db.run(move |conn| {
-            conn.execute(
-                "UPDATE chat_conversations
+        self.db
+            .run(move |conn| {
+                conn.execute(
+                    "UPDATE chat_conversations
                  SET upstream_provider = ?1,
                      provider_profile = ?2,
                      updated_at = ?3
                  WHERE id = ?4",
-                rusqlite::params![
-                    upstream_provider,
-                    provider_profile,
-                    Utc::now().to_rfc3339(),
-                    id_str
-                ],
-            )?;
-            Ok(())
-        }).await
+                    rusqlite::params![
+                        upstream_provider,
+                        provider_profile,
+                        Utc::now().to_rfc3339(),
+                        id_str
+                    ],
+                )?;
+                Ok(())
+            })
+            .await
     }
 
     async fn update_agent_mode(
@@ -507,55 +537,63 @@ impl ChatConversationRepository for SqliteChatConversationRepository {
     ) -> AppResult<()> {
         let id_str = id.as_str().to_string();
         let mode = mode.map(|value| value.to_string());
-        self.db.run(move |conn| {
-            conn.execute(
-                "UPDATE chat_conversations
+        self.db
+            .run(move |conn| {
+                conn.execute(
+                    "UPDATE chat_conversations
                  SET agent_mode = ?1,
                      updated_at = ?2
                  WHERE id = ?3",
-                rusqlite::params![mode, Utc::now().to_rfc3339(), id_str],
-            )?;
-            Ok(())
-        }).await
+                    rusqlite::params![mode, Utc::now().to_rfc3339(), id_str],
+                )?;
+                Ok(())
+            })
+            .await
     }
 
     async fn update_title(&self, id: &ChatConversationId, title: &str) -> AppResult<()> {
         let id_str = id.as_str().to_string();
         let title = title.to_string();
-        self.db.run(move |conn| {
-            conn.execute(
-                "UPDATE chat_conversations SET title = ?1, updated_at = ?2 WHERE id = ?3",
-                rusqlite::params![title, Utc::now().to_rfc3339(), id_str],
-            )?;
-            Ok(())
-        }).await
+        self.db
+            .run(move |conn| {
+                conn.execute(
+                    "UPDATE chat_conversations SET title = ?1, updated_at = ?2 WHERE id = ?3",
+                    rusqlite::params![title, Utc::now().to_rfc3339(), id_str],
+                )?;
+                Ok(())
+            })
+            .await
     }
 
     async fn archive(&self, id: &ChatConversationId) -> AppResult<()> {
         let id_str = id.as_str().to_string();
-        self.db.run(move |conn| {
-            let now = Utc::now().to_rfc3339();
-            conn.execute(
-                "UPDATE chat_conversations
+        self.db
+            .run(move |conn| {
+                let now = Utc::now().to_rfc3339();
+                conn.execute(
+                    "UPDATE chat_conversations
                  SET archived_at = ?1, updated_at = ?1
                  WHERE id = ?2 AND archived_at IS NULL",
-                rusqlite::params![now, id_str],
-            )?;
-            Ok(())
-        }).await
+                    rusqlite::params![now, id_str],
+                )?;
+                Ok(())
+            })
+            .await
     }
 
     async fn restore(&self, id: &ChatConversationId) -> AppResult<()> {
         let id_str = id.as_str().to_string();
-        self.db.run(move |conn| {
-            conn.execute(
-                "UPDATE chat_conversations
+        self.db
+            .run(move |conn| {
+                conn.execute(
+                    "UPDATE chat_conversations
                  SET archived_at = NULL, updated_at = ?1
                  WHERE id = ?2",
-                rusqlite::params![Utc::now().to_rfc3339(), id_str],
-            )?;
-            Ok(())
-        }).await
+                    rusqlite::params![Utc::now().to_rfc3339(), id_str],
+                )?;
+                Ok(())
+            })
+            .await
     }
 
     async fn update_message_stats(
@@ -583,7 +621,7 @@ impl ChatConversationRepository for SqliteChatConversationRepository {
             .run(move |conn| {
                 let mut stmt = conn.prepare(
                     "SELECT id, context_type, context_id, claude_session_id, provider_session_id,
-                            provider_harness, upstream_provider, provider_profile, agent_mode, title, message_count, last_message_at, created_at,
+                            provider_harness, upstream_provider, provider_profile, agent_mode, automation_id, automation_run_id, title, message_count, last_message_at, created_at,
                             updated_at, archived_at, parent_conversation_id, attribution_backfill_status,
                             attribution_backfill_source, attribution_backfill_source_path,
                             attribution_backfill_last_attempted_at, attribution_backfill_completed_at,
@@ -694,10 +732,12 @@ impl ChatConversationRepository for SqliteChatConversationRepository {
 
     async fn delete(&self, id: &ChatConversationId) -> AppResult<()> {
         let id_str = id.as_str().to_string();
-        self.db.run(move |conn| {
-            conn.execute("DELETE FROM chat_conversations WHERE id = ?1", [id_str])?;
-            Ok(())
-        }).await
+        self.db
+            .run(move |conn| {
+                conn.execute("DELETE FROM chat_conversations WHERE id = ?1", [id_str])?;
+                Ok(())
+            })
+            .await
     }
 
     async fn delete_by_context(
@@ -707,12 +747,14 @@ impl ChatConversationRepository for SqliteChatConversationRepository {
     ) -> AppResult<()> {
         let context_type_str = context_type.to_string();
         let context_id_str = context_id.to_string();
-        self.db.run(move |conn| {
-            conn.execute(
-                "DELETE FROM chat_conversations WHERE context_type = ?1 AND context_id = ?2",
-                [context_type_str, context_id_str],
-            )?;
-            Ok(())
-        }).await
+        self.db
+            .run(move |conn| {
+                conn.execute(
+                    "DELETE FROM chat_conversations WHERE context_type = ?1 AND context_id = ?2",
+                    [context_type_str, context_id_str],
+                )?;
+                Ok(())
+            })
+            .await
     }
 }

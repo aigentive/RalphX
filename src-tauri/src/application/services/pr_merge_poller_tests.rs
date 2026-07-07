@@ -2259,6 +2259,7 @@ async fn supervised_agent_workspace_pr_autofix_records_terminal_health_without_r
         (
             PrStatus::Merged {
                 merge_commit_sha: Some("a".repeat(40)),
+                merged_at: None,
             },
             "merged",
             "Pull request merged",

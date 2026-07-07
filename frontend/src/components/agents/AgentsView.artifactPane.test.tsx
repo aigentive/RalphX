@@ -235,6 +235,64 @@ describe("AgentsView artifact pane", () => {
     expect(screen.getByTestId("agents-artifact-resizable-pane")).toBeInTheDocument();
   });
 
+  it("opens the Automation artifact tab by default for automation setup chats", async () => {
+    mockAgentViewData(
+      conversation({
+        agentMode: "automation",
+        automationId: "automation-1",
+        automationRunId: null,
+      }),
+    );
+    getAgentConversationWorkspaceMock.mockResolvedValue(
+      conversationWorkspace({ mode: "edit" }),
+    );
+    resetAgentSessionState({
+      selectedProjectId: "project-1",
+      selectedConversationId: "conversation-1",
+    });
+
+    renderAgentsView();
+
+    const pane = await screen.findByTestId("agents-artifact-pane");
+    await waitFor(() =>
+      expect(pane).toHaveAttribute("data-active-tab", "automation"),
+    );
+    expect(pane).toHaveAttribute("data-automation-id", "automation-1");
+  });
+
+  it("forwards automation-owned conversations to the automation artifact pane action", async () => {
+    const onOpenAutomation = vi.fn();
+    mockAgentViewData(
+      conversation({
+        agentMode: "automation",
+        automationId: "automation-1",
+        automationRunId: "run-1",
+      })
+    );
+    getAgentConversationWorkspaceMock.mockResolvedValue(conversationWorkspace({ mode: "edit" }));
+    resetAgentSessionState({
+      selectedProjectId: "project-1",
+      selectedConversationId: "conversation-1",
+      artifactByConversationId: {
+        "conversation-1": {
+          isOpen: true,
+          activeTab: "automation",
+          taskMode: "graph",
+        },
+      },
+    });
+
+    renderAgentsView({ onOpenAutomation });
+
+    const pane = await screen.findByTestId("agents-artifact-pane");
+    expect(pane).toHaveAttribute("data-active-tab", "automation");
+    expect(pane).toHaveAttribute("data-automation-id", "automation-1");
+
+    fireEvent.click(screen.getByTestId("mock-open-automation"));
+
+    expect(onOpenAutomation).toHaveBeenCalledWith("automation-1");
+  });
+
   it("opens the Review tab when a workspace Review artifact is created", async () => {
     mockAgentViewData(conversation({ agentMode: "edit" }));
     getAgentConversationWorkspaceMock.mockResolvedValue(conversationWorkspace({ mode: "edit" }));

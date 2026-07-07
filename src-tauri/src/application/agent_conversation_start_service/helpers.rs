@@ -170,6 +170,9 @@ pub(crate) fn agent_mode_should_create_workspace(
     source_pull_request: Option<&AgentWorkspaceSourcePullRequest>,
     has_plan_reference: bool,
 ) -> bool {
+    if mode == AgentConversationWorkspaceMode::Automation {
+        return false;
+    }
     agent_mode_requires_workspace(mode)
         || (mode == AgentConversationWorkspaceMode::Chat
             && (source_pull_request.is_some() || has_plan_reference))

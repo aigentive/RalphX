@@ -18,6 +18,7 @@ pub enum AgentConversationWorkspaceMode {
     Plan,
     Ideation,
     ReviewPr,
+    Automation,
 }
 
 impl std::fmt::Display for AgentConversationWorkspaceMode {
@@ -28,6 +29,7 @@ impl std::fmt::Display for AgentConversationWorkspaceMode {
             AgentConversationWorkspaceMode::Plan => write!(f, "plan"),
             AgentConversationWorkspaceMode::Ideation => write!(f, "ideation"),
             AgentConversationWorkspaceMode::ReviewPr => write!(f, "review_pr"),
+            AgentConversationWorkspaceMode::Automation => write!(f, "automation"),
         }
     }
 }
@@ -42,6 +44,7 @@ impl FromStr for AgentConversationWorkspaceMode {
             "plan" => Ok(Self::Plan),
             "ideation" => Ok(Self::Ideation),
             "review_pr" => Ok(Self::ReviewPr),
+            "automation" => Ok(Self::Automation),
             _ => Err(format!(
                 "unknown agent conversation workspace mode: '{value}'"
             )),
@@ -1073,6 +1076,7 @@ mod enum_roundtrip_tests {
             (AgentConversationWorkspaceMode::Plan, "plan"),
             (AgentConversationWorkspaceMode::Ideation, "ideation"),
             (AgentConversationWorkspaceMode::ReviewPr, "review_pr"),
+            (AgentConversationWorkspaceMode::Automation, "automation"),
         ] {
             assert_eq!(variant.to_string(), text);
             assert_eq!(

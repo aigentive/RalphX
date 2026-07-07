@@ -69,6 +69,7 @@ import {
   AGENT_WORKSPACE_PR_FIXER,
   PLAN_COMPLEXITY_ASSESSOR,
   WORKSPACE_REVIEWER,
+  AUTOMATION_SETUP,
   WORKER,
   MERGER,
   CHAT_PROJECT,
@@ -1224,6 +1225,28 @@ describe('getAllowedToolNames - CLI arg priority chain', () => {
     expect(tools).not.toContain('get_agent_task');
     expect(tools).not.toContain('list_agent_tasks');
     expect(tools).not.toContain('search_memories');
+  });
+
+  it('automation setup allowlist mirrors canonical session-bound automation tools', () => {
+    const tools = toolsByAgent()[AUTOMATION_SETUP];
+
+    expect(tools).toEqual(loadCanonicalMcpTools(AUTOMATION_SETUP));
+    expect(tools).toEqual([
+      'fs_read_file',
+      'fs_list_dir',
+      'fs_grep',
+      'fs_glob',
+      'list_projects',
+      'ask_user_question',
+      'get_automation',
+      'update_automation',
+      'finalize_automation',
+    ]);
+
+    setAgentType(AUTOMATION_SETUP);
+    const filteredToolNames = getFilteredTools().map((tool) => tool.name);
+    expect(filteredToolNames).toHaveLength(tools.length);
+    expect(filteredToolNames).toEqual(expect.arrayContaining(tools));
   });
 });
 

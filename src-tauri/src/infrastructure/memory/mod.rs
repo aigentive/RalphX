@@ -16,6 +16,9 @@ pub mod memory_agent_run_repo;
 pub mod memory_agent_task_repo;
 pub mod memory_api_key_repo;
 pub mod memory_app_state_repo;
+pub mod memory_automation_repo;
+#[cfg(test)]
+mod memory_automation_repo_tests;
 pub mod memory_artifact_bucket_repo;
 pub mod memory_artifact_flow_repo;
 pub mod memory_artifact_repo;
@@ -84,6 +87,7 @@ pub use memory_agent_run_repo::MemoryAgentRunRepository;
 pub use memory_agent_task_repo::MemoryAgentTaskRepository;
 pub use memory_api_key_repo::MemoryApiKeyRepository;
 pub use memory_app_state_repo::MemoryAppStateRepository;
+pub use memory_automation_repo::{MemoryAutomationRepository, MemoryAutomationRunRepository};
 pub use memory_artifact_bucket_repo::MemoryArtifactBucketRepository;
 pub use memory_artifact_flow_repo::MemoryArtifactFlowRepository;
 pub use memory_artifact_repo::MemoryArtifactRepository;

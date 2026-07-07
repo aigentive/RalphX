@@ -1,0 +1,156 @@
+export const AUTOMATION_SETUP_TOOLS = [
+    {
+        name: "get_automation",
+        description: "Read the automation record and run list bound to the current automation setup conversation. " +
+            "The backend resolves ownership from the caller conversation; do not pass an automation id.",
+        inputSchema: {
+            type: "object",
+            properties: {},
+            required: [],
+        },
+    },
+    {
+        name: "update_automation",
+        description: "Update the settings and configuration of the draft (or paused) automation bound to the " +
+            "current setup conversation. Every field is optional; only provided fields are written. " +
+            "The backend resolves ownership from the caller conversation; do not pass an automation id.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                name: {
+                    type: "string",
+                    description: "Optional automation display name.",
+                },
+                max_runs: {
+                    type: "integer",
+                    description: "Optional positive maximum number of automation runs.",
+                },
+                max_consecutive_failures: {
+                    type: "integer",
+                    description: "Optional positive maximum number of consecutive failures before pausing.",
+                },
+                goal_prompt: {
+                    type: "string",
+                    description: "Durable goal for the automation. Required (non-empty) before finalize.",
+                },
+                first_run_prompt: {
+                    type: "string",
+                    description: "Self-contained prompt for run 1 instructing the run agent to make a scoped PR and publish it. Required before finalize.",
+                },
+                provider_harness: {
+                    type: "string",
+                    description: "Provider harness for the run agent (e.g. 'claude' or 'codex').",
+                },
+                model_id: {
+                    type: "string",
+                    description: "Model id for the run agent (e.g. 'sonnet').",
+                },
+                logical_effort: {
+                    type: "string",
+                    description: "Optional logical effort hint for the run agent.",
+                },
+                run_mode: {
+                    type: "string",
+                    description: "Run mode for the automation. Use 'edit' for pr_merged automations.",
+                },
+                base_ref_kind: {
+                    type: "string",
+                    description: "Base ref kind: 'project_default' or 'local_branch' (a resolved branch or PR base).",
+                },
+                base_ref: {
+                    type: "string",
+                    description: "Base ref value. Required and non-empty when base_ref_kind is 'local_branch'.",
+                },
+                base_display_name: {
+                    type: "string",
+                    description: "Optional human-readable base label shown in the UI.",
+                },
+                goal_items_json: {
+                    type: "string",
+                    description: "Optional JSON array of automation phases or goal items. Use stable item ids and status values such as pending, in_progress, done, or skipped.",
+                },
+                chain_mode: {
+                    type: "string",
+                    description: "Successor chaining mode (e.g. 'merged_base').",
+                },
+                completion_signal: {
+                    type: "string",
+                    description: "Completion signal for the automation (e.g. 'pr_merged').",
+                },
+                setup_analysis_summary: {
+                    type: "string",
+                    description: "Optional concise summary of the setup analysis.",
+                },
+            },
+            required: [],
+        },
+    },
+    {
+        name: "finalize_automation",
+        description: "Mark the draft automation spec approved after backend validation passes. " +
+            "The backend resolves ownership from the caller conversation; do not pass an automation id.",
+        inputSchema: {
+            type: "object",
+            properties: {},
+            required: [],
+        },
+    },
+];
+const AUTOMATION_SETUP_TOOL_NAMES = new Set(AUTOMATION_SETUP_TOOLS.map((tool) => tool.name));
+const CALLER_SESSION_ID_HEADER = "X-RalphX-Caller-Session-Id";
+const UPDATE_AUTOMATION_FIELDS = [
+    "name",
+    "max_runs",
+    "max_consecutive_failures",
+    "goal_prompt",
+    "first_run_prompt",
+    "provider_harness",
+    "model_id",
+    "logical_effort",
+    "run_mode",
+    "base_ref_kind",
+    "base_ref",
+    "base_display_name",
+    "goal_items_json",
+    "chain_mode",
+    "completion_signal",
+    "setup_analysis_summary",
+];
+export function isAutomationSetupToolName(name) {
+    return AUTOMATION_SETUP_TOOL_NAMES.has(name);
+}
+export async function callAutomationSetupTool(name, callTauri, args, runtimeContext) {
+    const headers = automationSetupHeaders(name, runtimeContext);
+    switch (name) {
+        case "get_automation":
+            return callTauri("get_automation", {}, { headers });
+        case "update_automation":
+            return callTauri("update_automation", updateAutomationPayload(args), { headers });
+        case "finalize_automation":
+            return callTauri("finalize_automation", {}, { headers });
+        default:
+            throw new Error(`Unsupported automation setup tool: ${name}`);
+    }
+}
+function automationSetupHeaders(toolName, runtimeContext) {
+    const conversationId = runtimeContext?.conversationId?.trim() ?? "";
+    if (conversationId.length === 0) {
+        throw new Error(`${toolName} requires the current setup conversation id from the RalphX MCP runtime context.`);
+    }
+    return {
+        [CALLER_SESSION_ID_HEADER]: conversationId,
+    };
+}
+function updateAutomationPayload(args) {
+    const input = args && typeof args === "object"
+        ? args
+        : {};
+    const payload = {};
+    for (const field of UPDATE_AUTOMATION_FIELDS) {
+        if (Object.prototype.hasOwnProperty.call(input, field)) {
+            payload[field] = input[field];
+        }
+    }
+    return payload;
+}
+//# sourceMappingURL=automation-tools.js.map

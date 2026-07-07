@@ -3,11 +3,25 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use async_trait::async_trait;
+
+use crate::application::agent_conversation_start_service::{
+    AgentConversationStartDeps, AgentConversationStartService,
+};
 use crate::application::agent_workspace_bridge::{
     dispatch_agent_workspace_bridge_events_once_with_deps, AgentWorkspaceBridgeDeps,
 };
+use crate::application::automation::provisioning::{
+    AutomationRunStartOutcome, AutomationRunStartRequest, AutomationRunStarter,
+};
+use crate::application::automation::scheduler::{
+    global_automation_scheduler_registry, AutomationScheduler, AutomationSchedulerConfig,
+    GithubAutomationSignalChecker, HarnessAutomationJudgeInvoker,
+};
+use crate::application::automation::transition::TauriAutomationEventEmitter;
 use crate::application::harness_runtime_registry::resolve_default_external_mcp_bootstrap;
 use crate::application::runtime_factory::{build_chat_service_from_deps, ChatRuntimeFactoryDeps};
+use crate::application::{AppState, TeamService};
 use crate::commands::ExecutionState;
 use crate::domain::repositories::{
     ExternalEventsRepository, MemoryArchiveRepository, MemoryEntryRepository, ProjectRepository,
@@ -20,6 +34,54 @@ use tokio::time::MissedTickBehavior;
 use tracing::{info, warn};
 
 const AGENT_WORKSPACE_BRIDGE_DISPATCH_INTERVAL: Duration = Duration::from_secs(5);
+
+pub struct AgentConversationAutomationRunStarter<R: tauri::Runtime + 'static> {
+    state: AppState,
+    execution_state: Arc<ExecutionState>,
+    team_service: Option<Arc<TeamService>>,
+    app_handle: tauri::AppHandle<R>,
+}
+
+impl<R: tauri::Runtime + 'static> AgentConversationAutomationRunStarter<R> {
+    pub fn new(
+        state: AppState,
+        execution_state: Arc<ExecutionState>,
+        team_service: Option<Arc<TeamService>>,
+        app_handle: tauri::AppHandle<R>,
+    ) -> Self {
+        Self {
+            state,
+            execution_state,
+            team_service,
+            app_handle,
+        }
+    }
+}
+
+#[async_trait]
+impl<R: tauri::Runtime + 'static> AutomationRunStarter
+    for AgentConversationAutomationRunStarter<R>
+{
+    async fn start_run(
+        &self,
+        request: AutomationRunStartRequest,
+    ) -> crate::error::AppResult<AutomationRunStartOutcome> {
+        let start_input = request.into_start_input()?;
+        let result = AgentConversationStartService::new(AgentConversationStartDeps {
+            state: &self.state,
+            execution_state: &self.execution_state,
+            team_service: self.team_service.clone(),
+            app_handle: self.app_handle.clone(),
+        })
+        .start(start_input)
+        .await
+        .map_err(crate::error::AppError::Agent)?;
+
+        Ok(AutomationRunStartOutcome {
+            branch_name: result.workspace.map(|workspace| workspace.branch_name),
+        })
+    }
+}
 
 pub async fn recover_memory_archive_jobs_on_startup(
     memory_archive_repo: Arc<dyn MemoryArchiveRepository>,
@@ -72,6 +134,83 @@ pub fn spawn_watchdog(
         crate::application::ReadyWatchdog::new(task_scheduler, task_repo, project_repo)
             .run_loop()
             .await;
+    });
+}
+
+pub fn spawn_automation_scheduler(
+    state: AppState,
+    execution_state: Arc<ExecutionState>,
+    app_handle: tauri::AppHandle,
+) {
+    let registry = global_automation_scheduler_registry();
+    if !registry.try_start_loop() {
+        tracing::debug!("Automation scheduler already started; skipping duplicate spawn");
+        return;
+    }
+    let team_service = app_handle
+        .try_state::<Arc<crate::application::TeamService>>()
+        .map(|state| state.inner().clone());
+    let starter = Arc::new(AgentConversationAutomationRunStarter::new(
+        state.clone(),
+        execution_state,
+        team_service,
+        app_handle.clone(),
+    ));
+    let signal_checker = Arc::new(GithubAutomationSignalChecker::new(
+        state.github_service.clone(),
+    ));
+    let judge_invoker = Arc::new(HarnessAutomationJudgeInvoker::new(state.clone()));
+    let event_emitter = Arc::new(TauriAutomationEventEmitter::new(app_handle.clone()));
+
+    let scheduler = AutomationScheduler::new(
+        Arc::clone(&state.automation_repo),
+        Arc::clone(&state.automation_run_repo),
+        Arc::clone(&state.chat_conversation_repo),
+        Arc::clone(&state.agent_conversation_workspace_repo),
+        starter,
+        signal_checker,
+        judge_invoker,
+        event_emitter,
+        registry,
+        AutomationSchedulerConfig::default(),
+    );
+    let poll_interval = scheduler.config().poll_interval;
+
+    tauri::async_runtime::spawn(async move {
+        let mut interval = tokio::time::interval(poll_interval);
+        interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        loop {
+            interval.tick().await;
+            match scheduler.tick_once().await {
+                Ok(summary) => {
+                    tracing::debug!(
+                        total_automations = summary.total_automations,
+                        active_automations = summary.active_automations,
+                        leased_automations = summary.leased_automations,
+                        active_without_runs = summary.active_without_runs,
+                        active_with_runs = summary.active_with_runs,
+                        provisioned_runs = summary.provisioned_runs,
+                        published_runs = summary.published_runs,
+                        merged_runs = summary.merged_runs,
+                        closed_runs = summary.closed_runs,
+                        failed_runs = summary.failed_runs,
+                        judges_started = summary.judges_started,
+                        judges_succeeded = summary.judges_succeeded,
+                        judge_failures = summary.judge_failures,
+                        successor_runs = summary.successor_runs,
+                        signal_check_errors = summary.signal_check_errors,
+                        paused_automations = summary.paused_automations,
+                        completed_automations = summary.completed_automations,
+                        provisioning_errors = summary.provisioning_errors,
+                        automation_errors = summary.automation_errors,
+                        "Automation scheduler tick completed"
+                    );
+                }
+                Err(error) => {
+                    tracing::warn!(error = %error, "Automation scheduler tick failed");
+                }
+            }
+        }
     });
 }
 
@@ -259,4 +398,45 @@ pub fn spawn_recovery_queue_processor(
     tauri::async_runtime::spawn(async move {
         recovery_processor.run().await;
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::domain::entities::ChatConversationId;
+    use crate::error::AppError;
+
+    #[tokio::test]
+    async fn automation_run_starter_validates_request_before_runtime_start() {
+        let starter = AgentConversationAutomationRunStarter::new(
+            AppState::new_test(),
+            Arc::new(ExecutionState::new()),
+            None,
+            crate::testing::create_mock_app_handle(),
+        );
+        let request = AutomationRunStartRequest {
+            project_id: "project-1".to_string(),
+            conversation_id: ChatConversationId::from_string(
+                "11111111-1111-4111-8111-111111111111",
+            ),
+            run_prompt: "Run the automation".to_string(),
+            provider_harness: "codex".to_string(),
+            model_id: "gpt-5.4".to_string(),
+            logical_effort: Some("impossible".to_string()),
+            run_mode: "edit".to_string(),
+            base_ref_kind: "local_branch".to_string(),
+            base_ref: "main".to_string(),
+            base_display_name: Some("main".to_string()),
+            base_source_pull_request_json: None,
+            composer_project_references: Vec::new(),
+            composer_integration_references: Vec::new(),
+            composer_artifact_references: Vec::new(),
+        };
+
+        let error = starter.start_run(request).await.unwrap_err();
+
+        assert!(matches!(error, AppError::Validation(message) if message.contains("impossible")));
+    }
 }

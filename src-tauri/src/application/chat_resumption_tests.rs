@@ -309,6 +309,7 @@ fn startup_resumption_send_options_preserves_interrupted_agent_conversation_for_
         AgentConversationWorkspaceMode::Plan,
         AgentConversationWorkspaceMode::Ideation,
         AgentConversationWorkspaceMode::ReviewPr,
+        AgentConversationWorkspaceMode::Automation,
     ] {
         let mut conversation = ChatConversation::new_project(project_id.clone());
         conversation.set_agent_mode(Some(mode));

@@ -32,6 +32,10 @@ const agentsViewTestMocks = vi.hoisted(() => ({
   useAgentSidebarPublicationGroupMock: vi.fn(),
   useConversationMock: vi.fn(),
   startAgentConversationMock: vi.fn(),
+  createAutomationDraftMock: vi.fn(),
+  finalizeAutomationMock: vi.fn(),
+  triggerAutomationRunNowMock: vi.fn(),
+  updateAutomationSetupMock: vi.fn(),
   getAgentConversationWorkspaceMock: vi.fn(),
   getAgentConversationWorkspaceFreshnessMock: vi.fn(),
   listAgentConversationWorkspacesByProjectMock: vi.fn(),
@@ -160,6 +164,10 @@ const {
   useAgentSidebarPublicationGroupMock,
   useConversationMock,
   startAgentConversationMock,
+  createAutomationDraftMock,
+  finalizeAutomationMock,
+  triggerAutomationRunNowMock,
+  updateAutomationSetupMock,
   getAgentConversationWorkspaceMock,
   getAgentConversationWorkspaceFreshnessMock,
   listAgentConversationWorkspacesByProjectMock,
@@ -723,6 +731,26 @@ vi.mock("@/api/chat", () => ({
   },
 }));
 
+vi.mock("@/api/automations", async () => {
+  const actual = await vi.importActual<typeof import("@/api/automations")>(
+    "@/api/automations",
+  );
+  return {
+    ...actual,
+    automationsApi: {
+      ...actual.automationsApi,
+      createDraft: (...args: unknown[]) => createAutomationDraftMock(...args),
+      finalize: (...args: unknown[]) => finalizeAutomationMock(...args),
+      triggerRunNow: (...args: unknown[]) => triggerAutomationRunNowMock(...args),
+      setupAgent: {
+        ...actual.automationsApi.setupAgent,
+        updateAutomation: (...args: unknown[]) =>
+          updateAutomationSetupMock(...args),
+      },
+    },
+  };
+});
+
 vi.mock("@/api/ideation", () => ({
   ideationApi: {
     sessions: {
@@ -936,6 +964,7 @@ vi.mock("./AgentsArtifactPane", () => {
     publishFocusRequest,
     onClose,
     onFocusVerificationSession,
+    onOpenAutomation,
     onPublishWorkspace,
   }: {
     conversation: AgentConversation | null;
@@ -944,6 +973,7 @@ vi.mock("./AgentsArtifactPane", () => {
     publishFocusRequest?: { filePath: string; mode: string } | null;
     onClose?: () => void;
     onFocusVerificationSession?: (parentSessionId: string, childSessionId: string) => void;
+    onOpenAutomation?: (automationId: string) => void;
     onPublishWorkspace?: (conversationId: string) => Promise<void>;
   }) => (
     <div
@@ -952,6 +982,7 @@ vi.mock("./AgentsArtifactPane", () => {
       data-focused-ideation-session-id={focusedIdeationSessionId ?? ""}
       data-publish-focus-path={publishFocusRequest?.filePath ?? ""}
       data-publish-focus-mode={publishFocusRequest?.mode ?? ""}
+      data-automation-id={conversation?.automationId ?? ""}
     >
       {onClose ? (
         <button type="button" data-testid="agents-artifact-pane-close" onClick={onClose}>
@@ -976,6 +1007,15 @@ vi.mock("./AgentsArtifactPane", () => {
           onClick={() => void onPublishWorkspace(conversation.id)}
         >
           Publish
+        </button>
+      ) : null}
+      {conversation?.automationId && onOpenAutomation ? (
+        <button
+          type="button"
+          data-testid="mock-open-automation"
+          onClick={() => onOpenAutomation(conversation.automationId ?? "")}
+        >
+          Open automation
         </button>
       ) : null}
     </div>
@@ -1250,12 +1290,20 @@ export function resetAgentSessionState(
   });
 }
 
-export function renderAgentsView(options: { footer?: ReactNode } = {}) {
+export function renderAgentsView(
+  options: {
+    footer?: ReactNode;
+    onOpenAutomation?: (automationId: string) => void;
+  } = {},
+) {
   return renderWithProviders(
     <AgentsView
       projectId="project-1"
       onCreateProject={vi.fn()}
       {...(options.footer !== undefined ? { footer: options.footer } : {})}
+      {...(options.onOpenAutomation
+        ? { onOpenAutomation: options.onOpenAutomation }
+        : {})}
     />
   );
 }
@@ -1277,6 +1325,10 @@ export function setupAgentsViewTest() {
   useHarnessProvidersMock.mockReset();
   useConversationMock.mockReset();
   startAgentConversationMock.mockReset();
+  createAutomationDraftMock.mockReset();
+  finalizeAutomationMock.mockReset();
+  triggerAutomationRunNowMock.mockReset();
+  updateAutomationSetupMock.mockReset();
   getAgentConversationWorkspaceMock.mockReset();
   getAgentConversationWorkspaceFreshnessMock.mockReset();
   listAgentConversationWorkspacesByProjectMock.mockReset();
@@ -1700,6 +1752,91 @@ export function setupAgentsViewTest() {
   createConversationMock.mockResolvedValue(
     conversation({ id: "conversation-2", contextId: "project-1" })
   );
+  createAutomationDraftMock.mockResolvedValue({
+    automation: {
+      id: "automation-1",
+      projectId: "project-1",
+      name: "Automation",
+      status: "draft",
+      pausedReasonCode: null,
+      pausedReasonDetail: null,
+      goalPrompt: "",
+      setupConversationId: "automation-setup-1",
+      providerHarness: "codex",
+      modelId: "gpt-5.5",
+      logicalEffort: "xhigh",
+      runMode: "edit",
+      baseRefKind: "project_default",
+      baseRef: "main",
+      baseDisplayName: "Project default (main)",
+      baseSourcePullRequestJson: null,
+      goalItemsJson: null,
+      chainMode: "merged_base",
+      completionSignal: "pr_merged",
+      maxRuns: 25,
+      maxConsecutiveFailures: 3,
+      firstRunPrompt: null,
+      setupAnalysisSummary: null,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    },
+    setupConversationId: "automation-setup-1",
+  });
+  finalizeAutomationMock.mockResolvedValue({
+    id: "automation-1",
+    projectId: "project-1",
+    name: "Automation",
+    status: "active",
+    pausedReasonCode: null,
+    pausedReasonDetail: null,
+    goalPrompt: "Keep dependencies updated",
+    setupConversationId: "automation-setup-1",
+    providerHarness: "codex",
+    modelId: "gpt-5.5",
+    logicalEffort: "xhigh",
+    runMode: "edit",
+    baseRefKind: "project_default",
+    baseRef: "main",
+    baseDisplayName: "Project default (main)",
+    baseSourcePullRequestJson: null,
+    goalItemsJson: null,
+    chainMode: "merged_base",
+    completionSignal: "pr_merged",
+    maxRuns: 25,
+    maxConsecutiveFailures: 3,
+    firstRunPrompt: "Update dependencies",
+    setupAnalysisSummary: "Ready",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  });
+  triggerAutomationRunNowMock.mockResolvedValue({ scheduled: true, reason: null });
+  updateAutomationSetupMock.mockResolvedValue({
+    id: "automation-1",
+    projectId: "project-1",
+    name: "Automation",
+    status: "draft",
+    pausedReasonCode: null,
+    pausedReasonDetail: null,
+    goalPrompt: "",
+    setupConversationId: "automation-setup-1",
+    providerHarness: "codex",
+    modelId: "gpt-5.5",
+    logicalEffort: "xhigh",
+    runMode: "edit",
+    baseRefKind: "project_default",
+    baseRef: "main",
+    baseDisplayName: "Project default (main)",
+    baseSourcePullRequestJson: null,
+    goalItemsJson: null,
+    chainMode: "merged_base",
+    completionSignal: "pr_merged",
+    maxRuns: 25,
+    maxConsecutiveFailures: 3,
+    firstRunPrompt: null,
+    setupAnalysisSummary: null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  });
   spawnConversationSessionNamerMock.mockResolvedValue(undefined);
   updateConversationTitleMock.mockResolvedValue({
     ...conversation(),

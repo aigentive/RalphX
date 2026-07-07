@@ -1,11 +1,11 @@
 // Tests for SqliteChatConversationRepository (sqlite_chat_conversation_repo.rs)
 // Included via #[cfg(test)] mod in mod.rs
 
+use crate::domain::agents::{AgentHarnessKind, ProviderSessionRef};
 use crate::domain::entities::{
     AgentConversationWorkspaceMode, AttributionBackfillStatus, ChatContextType, ChatConversation,
     ChatConversationId,
 };
-use crate::domain::agents::{AgentHarnessKind, ProviderSessionRef};
 use crate::domain::repositories::ChatConversationRepository;
 use crate::infrastructure::sqlite::SqliteChatConversationRepository;
 use crate::testing::SqliteTestDb;
@@ -29,6 +29,8 @@ fn make_conversation(context_type: ChatContextType, context_id: &str) -> ChatCon
         upstream_provider: None,
         provider_profile: None,
         agent_mode: None,
+        automation_id: None,
+        automation_run_id: None,
         title: None,
         message_count: 0,
         last_message_at: None,
@@ -83,6 +85,8 @@ async fn test_create_preserves_optional_fields() {
         upstream_provider: Some("anthropic".to_string()),
         provider_profile: Some("default".to_string()),
         agent_mode: Some(AgentConversationWorkspaceMode::Chat),
+        automation_id: None,
+        automation_run_id: None,
         title: Some("My Conversation".to_string()),
         message_count: 5,
         last_message_at: Some(now),
@@ -106,7 +110,10 @@ async fn test_create_preserves_optional_fields() {
     assert_eq!(loaded.provider_harness, Some(AgentHarnessKind::Claude));
     assert_eq!(loaded.upstream_provider.as_deref(), Some("anthropic"));
     assert_eq!(loaded.provider_profile.as_deref(), Some("default"));
-    assert_eq!(loaded.agent_mode, Some(AgentConversationWorkspaceMode::Chat));
+    assert_eq!(
+        loaded.agent_mode,
+        Some(AgentConversationWorkspaceMode::Chat)
+    );
     assert_eq!(loaded.title, Some("My Conversation".to_string()));
     assert_eq!(loaded.message_count, 5);
     assert!(loaded.last_message_at.is_some());
@@ -151,10 +158,18 @@ async fn test_get_by_context_returns_matching() {
     let db = setup_test_db();
     let repo = SqliteChatConversationRepository::from_shared(db.shared_conn());
 
-    repo.create(make_conversation(ChatContextType::Task, "task-1")).await.unwrap();
-    repo.create(make_conversation(ChatContextType::Task, "task-1")).await.unwrap();
-    repo.create(make_conversation(ChatContextType::Task, "task-2")).await.unwrap();
-    repo.create(make_conversation(ChatContextType::Ideation, "task-1")).await.unwrap();
+    repo.create(make_conversation(ChatContextType::Task, "task-1"))
+        .await
+        .unwrap();
+    repo.create(make_conversation(ChatContextType::Task, "task-1"))
+        .await
+        .unwrap();
+    repo.create(make_conversation(ChatContextType::Task, "task-2"))
+        .await
+        .unwrap();
+    repo.create(make_conversation(ChatContextType::Ideation, "task-1"))
+        .await
+        .unwrap();
 
     let result = repo
         .get_by_context(ChatContextType::Task, "task-1")
@@ -162,7 +177,9 @@ async fn test_get_by_context_returns_matching() {
         .unwrap();
 
     assert_eq!(result.len(), 2);
-    assert!(result.iter().all(|c| matches!(c.context_type, ChatContextType::Task)));
+    assert!(result
+        .iter()
+        .all(|c| matches!(c.context_type, ChatContextType::Task)));
     assert!(result.iter().all(|c| c.context_id == "task-1"));
 }
 
@@ -277,10 +294,7 @@ async fn test_get_by_context_page_filtered_paginates_and_searches() {
         .unwrap();
 
     assert_eq!(search_page.total_count, 1);
-    assert_eq!(
-        search_page.conversations[0].id.as_str(),
-        middle.id.as_str()
-    );
+    assert_eq!(search_page.conversations[0].id.as_str(), middle.id.as_str());
 
     let archived_search_page = repo
         .get_by_context_page_filtered(
@@ -451,9 +465,12 @@ async fn test_get_attribution_backfill_summary_counts_legacy_rows() {
     repo.create(pending).await.unwrap();
     repo.create(completed).await.unwrap();
     repo.create(parse_failed).await.unwrap();
-    repo.create(make_conversation(ChatContextType::Project, "ctx-non-legacy"))
-        .await
-        .unwrap();
+    repo.create(make_conversation(
+        ChatContextType::Project,
+        "ctx-non-legacy",
+    ))
+    .await
+    .unwrap();
 
     let summary = repo.get_attribution_backfill_summary().await.unwrap();
 
@@ -476,11 +493,16 @@ async fn test_update_claude_session_id() {
     let conv_id = conv.id.clone();
     repo.create(conv).await.unwrap();
 
-    repo.update_claude_session_id(&conv_id, "new-session-id").await.unwrap();
+    repo.update_claude_session_id(&conv_id, "new-session-id")
+        .await
+        .unwrap();
 
     let loaded = repo.get_by_id(&conv_id).await.unwrap().unwrap();
     assert_eq!(loaded.claude_session_id, Some("new-session-id".to_string()));
-    assert_eq!(loaded.provider_session_id, Some("new-session-id".to_string()));
+    assert_eq!(
+        loaded.provider_session_id,
+        Some("new-session-id".to_string())
+    );
     assert_eq!(loaded.provider_harness, Some(AgentHarnessKind::Claude));
 }
 
@@ -530,6 +552,8 @@ async fn test_clear_claude_session_id() {
         upstream_provider: None,
         provider_profile: None,
         agent_mode: None,
+        automation_id: None,
+        automation_run_id: None,
         title: None,
         message_count: 0,
         last_message_at: None,
@@ -653,7 +677,9 @@ async fn test_update_message_stats() {
     repo.create(conv).await.unwrap();
 
     let last_msg_at = Utc::now();
-    repo.update_message_stats(&conv_id, 42, last_msg_at).await.unwrap();
+    repo.update_message_stats(&conv_id, 42, last_msg_at)
+        .await
+        .unwrap();
 
     let loaded = repo.get_by_id(&conv_id).await.unwrap().unwrap();
     assert_eq!(loaded.message_count, 42);
@@ -752,11 +778,19 @@ async fn test_delete_by_context_removes_all_matching() {
     let db = setup_test_db();
     let repo = SqliteChatConversationRepository::from_shared(db.shared_conn());
 
-    repo.create(make_conversation(ChatContextType::Review, "review-1")).await.unwrap();
-    repo.create(make_conversation(ChatContextType::Review, "review-1")).await.unwrap();
-    repo.create(make_conversation(ChatContextType::Review, "review-2")).await.unwrap();
+    repo.create(make_conversation(ChatContextType::Review, "review-1"))
+        .await
+        .unwrap();
+    repo.create(make_conversation(ChatContextType::Review, "review-1"))
+        .await
+        .unwrap();
+    repo.create(make_conversation(ChatContextType::Review, "review-2"))
+        .await
+        .unwrap();
 
-    repo.delete_by_context(ChatContextType::Review, "review-1").await.unwrap();
+    repo.delete_by_context(ChatContextType::Review, "review-1")
+        .await
+        .unwrap();
 
     let remaining = repo
         .get_by_context(ChatContextType::Review, "review-1")
@@ -833,11 +867,26 @@ async fn test_all_context_types_round_trip() {
     let repo = SqliteChatConversationRepository::from_shared(db.shared_conn());
 
     let types_and_ids: Vec<(ChatConversation, ChatContextType)> = vec![
-        (make_conversation(ChatContextType::Ideation, "ctx"), ChatContextType::Ideation),
-        (make_conversation(ChatContextType::Task, "ctx"), ChatContextType::Task),
-        (make_conversation(ChatContextType::Project, "ctx"), ChatContextType::Project),
-        (make_conversation(ChatContextType::Review, "ctx"), ChatContextType::Review),
-        (make_conversation(ChatContextType::Merge, "ctx"), ChatContextType::Merge),
+        (
+            make_conversation(ChatContextType::Ideation, "ctx"),
+            ChatContextType::Ideation,
+        ),
+        (
+            make_conversation(ChatContextType::Task, "ctx"),
+            ChatContextType::Task,
+        ),
+        (
+            make_conversation(ChatContextType::Project, "ctx"),
+            ChatContextType::Project,
+        ),
+        (
+            make_conversation(ChatContextType::Review, "ctx"),
+            ChatContextType::Review,
+        ),
+        (
+            make_conversation(ChatContextType::Merge, "ctx"),
+            ChatContextType::Merge,
+        ),
     ];
 
     for (conv, _) in &types_and_ids {

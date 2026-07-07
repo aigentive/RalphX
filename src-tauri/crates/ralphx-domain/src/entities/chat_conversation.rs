@@ -6,7 +6,8 @@ use uuid::Uuid;
 use crate::agents::{AgentHarnessKind, ProviderSessionRef};
 
 use super::{
-    AgentConversationWorkspaceMode, DelegatedSessionId, IdeationSessionId, ProjectId, TaskId,
+    AgentConversationWorkspaceMode, AutomationId, AutomationRunId, DelegatedSessionId,
+    IdeationSessionId, ProjectId, TaskId,
 };
 
 /// Unique identifier for a chat conversation
@@ -227,6 +228,10 @@ pub struct ChatConversation {
     pub provider_profile: Option<String>,
     /// Current project-agent mode for Agents conversations.
     pub agent_mode: Option<AgentConversationWorkspaceMode>,
+    /// Automation that owns this setup or run conversation.
+    pub automation_id: Option<AutomationId>,
+    /// Automation run that owns this run conversation.
+    pub automation_run_id: Option<AutomationRunId>,
     /// Auto-generated or user-set title for this conversation
     pub title: Option<String>,
     /// Number of messages in this conversation
@@ -265,6 +270,8 @@ impl ChatConversation {
             upstream_provider: None,
             provider_profile: None,
             agent_mode: None,
+            automation_id: None,
+            automation_run_id: None,
             title: None,
             message_count: 0,
             last_message_at: None,
@@ -294,6 +301,8 @@ impl ChatConversation {
             upstream_provider: None,
             provider_profile: None,
             agent_mode: None,
+            automation_id: None,
+            automation_run_id: None,
             title: None,
             message_count: 0,
             last_message_at: None,
@@ -323,6 +332,8 @@ impl ChatConversation {
             upstream_provider: None,
             provider_profile: None,
             agent_mode: None,
+            automation_id: None,
+            automation_run_id: None,
             title: None,
             message_count: 0,
             last_message_at: None,
@@ -352,6 +363,8 @@ impl ChatConversation {
             upstream_provider: None,
             provider_profile: None,
             agent_mode: None,
+            automation_id: None,
+            automation_run_id: None,
             title: None,
             message_count: 0,
             last_message_at: None,
@@ -382,6 +395,8 @@ impl ChatConversation {
             upstream_provider: None,
             provider_profile: None,
             agent_mode: None,
+            automation_id: None,
+            automation_run_id: None,
             title: None,
             message_count: 0,
             last_message_at: None,
@@ -411,6 +426,8 @@ impl ChatConversation {
             upstream_provider: None,
             provider_profile: None,
             agent_mode: None,
+            automation_id: None,
+            automation_run_id: None,
             title: None,
             message_count: 0,
             last_message_at: None,
@@ -440,6 +457,8 @@ impl ChatConversation {
             upstream_provider: None,
             provider_profile: None,
             agent_mode: None,
+            automation_id: None,
+            automation_run_id: None,
             title: None,
             message_count: 0,
             last_message_at: None,

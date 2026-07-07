@@ -1,4 +1,7 @@
 pub mod activity_event;
+pub mod automation;
+#[cfg(test)]
+mod automation_tests;
 pub mod agent_conversation_granola_note;
 pub mod agent_conversation_issue;
 pub mod agent_conversation_jira_issue;
@@ -44,6 +47,13 @@ pub mod workflow;
 pub use activity_event::{
     ActivityEvent, ActivityEventId, ActivityEventRole, ActivityEventType,
     ParseActivityEventRoleError, ParseActivityEventTypeError,
+};
+pub use automation::{
+    automation_is_transition_allowed, automation_run_is_transition_allowed,
+    is_open_automation_run, judge_is_transition_allowed, judge_transition_clears_verdict,
+    Automation, AutomationAttachment, AutomationContextRef, AutomationContextRefKind,
+    AutomationId, AutomationJudgeState, AutomationPromptAuthor, AutomationRun, AutomationRunId,
+    AutomationRunStatus, AutomationStatus,
 };
 pub use agent_conversation_granola_note::{
     AgentConversationGranolaNoteLink, AgentConversationGranolaRefreshStatus,

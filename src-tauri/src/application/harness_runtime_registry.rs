@@ -5,10 +5,10 @@ use std::{collections::HashMap, time::Instant};
 use crate::application::reconciliation::verification_reconciliation::VerificationReconciliationConfig;
 use crate::domain::agents::{standard_harness_registry, AgentHarnessKind, DEFAULT_AGENT_HARNESS};
 use crate::infrastructure::agents::claude::{
-    agent_harness_defaults_config, clear_claude_cli_capability_cache, execution_defaults_config,
-    external_mcp_config, find_claude_cli, node_utils, probe_claude_cli_cached,
-    reconciliation_config, register_mcp_server, resolve_plugin_dir, scheduler_config,
-    ui_feature_flags_config, validate_external_mcp_config, verification_config,
+    agent_harness_defaults_config, automations_config, clear_claude_cli_capability_cache,
+    execution_defaults_config, external_mcp_config, find_claude_cli, node_utils,
+    probe_claude_cli_cached, reconciliation_config, register_mcp_server, resolve_plugin_dir,
+    scheduler_config, ui_feature_flags_config, validate_external_mcp_config, verification_config,
     AgentHarnessDefaultsConfig, ExecutionDefaultsConfig, ExternalMcpConfig, SchedulerConfig,
     SpecialistEntry, UiFeatureFlagsConfig, VerificationConfig,
 };
@@ -415,10 +415,10 @@ pub(crate) fn standard_chat_harness_cli_resolvers(
 }
 
 /// Test-only seam: seed the harness probe cache so harness-availability checks
-/// (e.g. `validate_chat_runtime_for_context`) resolve as available without a real
-/// agent CLI on PATH. Lib tests that exercise real start/send flows must call this
-/// so they pass on sandboxed CI runners that have no `claude`/`codex` binary.
-#[cfg(test)]
+/// resolve as available without a real agent CLI on PATH. Tests that exercise
+/// real start/send flows must call this so sandboxed CI does not depend on
+/// installed `claude`/`codex` binaries.
+#[cfg(any(test, feature = "test-utils"))]
 pub(crate) fn seed_available_harness_probes_for_test() {
     let cache = HARNESS_RUNTIME_PROBE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     let mut cache = cache.lock().expect("lock harness probe cache");
@@ -811,6 +811,26 @@ pub(crate) fn default_scheduler_ready_settle_ms() -> u64 {
 
 pub(crate) fn default_scheduler_merge_settle_ms() -> u64 {
     scheduler_config().merge_settle_ms
+}
+
+pub(crate) fn default_automation_scheduler_poll_secs() -> u64 {
+    automations_config().scheduler_poll_secs
+}
+
+pub(crate) fn default_automation_signal_failure_pause_threshold() -> u64 {
+    automations_config().signal_failure_pause_threshold
+}
+
+pub(crate) fn default_automation_judge_timeout_secs() -> u64 {
+    automations_config().judge_timeout_secs
+}
+
+pub(crate) fn default_automation_publish_grace_secs() -> u64 {
+    automations_config().publish_grace_secs
+}
+
+pub(crate) fn default_automation_max_run_duration_secs() -> u64 {
+    automations_config().max_run_duration_secs
 }
 
 pub(crate) fn default_reconciliation_merger_timeout_secs() -> u64 {

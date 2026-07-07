@@ -162,7 +162,8 @@ fn parse_pr_status_merged_with_sha() {
     assert_eq!(
         status,
         PrStatus::Merged {
-            merge_commit_sha: Some("abc123def456".to_string())
+            merge_commit_sha: Some("abc123def456".to_string()),
+            merged_at: Some("2024-01-15T12:00:00Z".to_string()),
         }
     );
 }
@@ -174,7 +175,8 @@ fn parse_pr_status_merged_without_sha() {
     assert_eq!(
         status,
         PrStatus::Merged {
-            merge_commit_sha: None
+            merge_commit_sha: None,
+            merged_at: Some("2024-01-15T12:00:00Z".to_string()),
         }
     );
 }
@@ -240,6 +242,7 @@ fn parse_pr_detail_maps_merged_state_with_commit() {
         "isDraft": false,
         "headRefName": "feature",
         "baseRefName": "main",
+        "mergedAt": "2024-02-01T08:30:00Z",
         "mergeCommit": {"oid": "abc123"}
     }"#;
 
@@ -248,7 +251,8 @@ fn parse_pr_detail_maps_merged_state_with_commit() {
     assert_eq!(
         detail.state,
         PrStatus::Merged {
-            merge_commit_sha: Some("abc123".to_string())
+            merge_commit_sha: Some("abc123".to_string()),
+            merged_at: Some("2024-02-01T08:30:00Z".to_string()),
         }
     );
     // Empty body collapses to None; absent author stays None (never panics).
@@ -1201,6 +1205,7 @@ mod mock_roundtrip {
         let mock = MockGithubService::new();
         mock.will_return_status(PrStatus::Merged {
             merge_commit_sha: Some("deadbeef".to_string()),
+            merged_at: None,
         });
 
         let status = mock.check_pr_status(Path::new("/tmp"), 42).await.unwrap();
@@ -1208,7 +1213,8 @@ mod mock_roundtrip {
         assert_eq!(
             status,
             PrStatus::Merged {
-                merge_commit_sha: Some("deadbeef".to_string())
+                merge_commit_sha: Some("deadbeef".to_string()),
+                merged_at: None,
             }
         );
         assert_eq!(mock.state().check_pr_status_calls, 1);

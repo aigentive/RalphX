@@ -107,6 +107,26 @@ import { cn } from "@/lib/utils";
 
 // Stable empty array to avoid new reference on every render when tasks query returns undefined
 const EMPTY_TASKS: never[] = [];
+const AUTOMATION_SETUP_PROPOSAL_KIND = "automation_setup_proposal";
+const AUTOMATION_SETUP_PROPOSAL_APPLY_VALUE = "apply_automation_proposal";
+
+function automationProposalApplyOptionIndex(
+  question: AskUserQuestionPayload | null | undefined
+): number {
+  if (!question) return -1;
+
+  const optionIndex = question.options.findIndex(
+    (option) => option.value === AUTOMATION_SETUP_PROPOSAL_APPLY_VALUE
+  );
+  if (optionIndex < 0) return -1;
+
+  if (question.metadata?.kind === AUTOMATION_SETUP_PROPOSAL_KIND) {
+    return optionIndex;
+  }
+
+  const header = question.header?.toLowerCase() ?? "";
+  return header.includes("automation") ? optionIndex : -1;
+}
 
 // ============================================================================
 // Main Component
@@ -141,9 +161,10 @@ interface IntegratedChatPanelProps {
   contentWidthClassName?: string;
   /** Extra session ids whose ask-user prompts should surface in this chat. */
   additionalQuestionSessionIds?: string[];
-  /** Optional Plan-mode approval action rendered in the active question banner. */
+  /** Optional inline action rendered in the active question banner. */
   planApprovalAction?: {
     label: string;
+    pendingLabel?: string;
     onClick: () => void;
     disabled?: boolean;
     isPending?: boolean;
@@ -1107,11 +1128,27 @@ export function IntegratedChatPanel({
     handleMatchedOptions,
     handleQuestionSend,
     handleQuestionSkip,
+    handleQuestionOptionSubmit,
   } = useQuestionInput({
     activeQuestion: activeQuestion ?? null,
     submitAnswer: handleSubmitQuestionAnswer,
     handleSend,
   });
+  const automationProposalApplyIndex = automationProposalApplyOptionIndex(activeQuestion);
+  const questionBannerAction =
+    automationProposalApplyIndex >= 0 && activeQuestion
+      ? {
+          label:
+            activeQuestion.options[automationProposalApplyIndex]?.label ??
+            "Update automation",
+          pendingLabel: "Applying...",
+          onClick: () => {
+            void handleQuestionOptionSubmit(automationProposalApplyIndex);
+          },
+          disabled: isSubmittingAnswer,
+          isPending: isSubmittingAnswer,
+        }
+      : planApprovalAction;
 
   // Handler for opening a child ideation run without leaving the parent chat.
   const handleNavigateToChildSession = useCallback(async (childSessionId: string) => {
@@ -1599,7 +1636,9 @@ export function IntegratedChatPanel({
                   onDismiss={dismissQuestion}
                   answeredValue={answeredQuestion}
                   onDismissAnswered={clearAnswered}
-                  {...(planApprovalAction !== undefined && { planApprovalAction })}
+                  {...(questionBannerAction !== undefined && {
+                    planApprovalAction: questionBannerAction,
+                  })}
                 />
               )}
 

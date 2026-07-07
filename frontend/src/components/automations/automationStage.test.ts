@@ -1,0 +1,196 @@
+import { describe, expect, it } from "vitest";
+
+import type { Automation, AutomationRun } from "@/api/automations";
+import {
+  describeAutomationStage,
+  describeRunFailure,
+  latestRun,
+} from "./automationStage";
+
+function automation(overrides: Partial<Automation> = {}): Automation {
+  const now = "2026-07-05T00:00:00Z";
+  return {
+    id: "automation-1",
+    projectId: "project-1",
+    name: "Ship migration loop",
+    status: "active",
+    pausedReasonCode: null,
+    pausedReasonDetail: null,
+    goalPrompt: "Keep landing migration tasks.",
+    setupConversationId: "conversation-1",
+    providerHarness: "codex",
+    modelId: "gpt-5.4",
+    logicalEffort: "high",
+    runMode: "edit",
+    baseRefKind: "project_default",
+    baseRef: "main",
+    baseDisplayName: "main",
+    baseSourcePullRequestJson: null,
+    goalItemsJson: null,
+    chainMode: "merged_base",
+    completionSignal: "pr_merged",
+    maxRuns: 25,
+    maxConsecutiveFailures: 3,
+    firstRunPrompt: null,
+    setupAnalysisSummary: null,
+    createdAt: now,
+    updatedAt: now,
+    ...overrides,
+  };
+}
+
+function run(overrides: Partial<AutomationRun> = {}): AutomationRun {
+  const now = "2026-07-05T00:00:00Z";
+  return {
+    id: "run-1",
+    automationId: "automation-1",
+    runIndex: 1,
+    status: "running",
+    judgeState: "none",
+    judgeLeaseExpiresAt: null,
+    conversationId: "conversation-1",
+    runPrompt: "Continue the automation.",
+    promptAuthor: "judge",
+    baseRefKind: "project_default",
+    baseRefUsed: "main",
+    baseFromRunId: null,
+    branchName: "ralphx/test",
+    prNumber: null,
+    prUrl: null,
+    prTitle: null,
+    prHeadRefName: null,
+    prBaseRefName: "main",
+    prMergedAt: null,
+    mergeCommitSha: null,
+    diffStatsJson: null,
+    agentSummary: null,
+    judgeVerdictJson: null,
+    judgeModelId: null,
+    errorCode: null,
+    errorDetail: null,
+    signalCheckFailures: 0,
+    startedAt: now,
+    finishedAt: null,
+    createdAt: now,
+    updatedAt: now,
+    ...overrides,
+  };
+}
+
+describe("describeAutomationStage", () => {
+  it("describes draft automations", () => {
+    expect(describeAutomationStage(automation({ status: "draft" }), null)).toBe("Draft setup");
+  });
+
+  it("describes paused automations with and without a reason code", () => {
+    expect(
+      describeAutomationStage(
+        automation({ status: "paused", pausedReasonCode: "release_gate" }),
+        null,
+      ),
+    ).toBe("Paused: release_gate");
+    expect(
+      describeAutomationStage(automation({ status: "paused", pausedReasonCode: null }), null),
+    ).toBe("Paused");
+  });
+
+  it("describes completed and stopped automations", () => {
+    expect(describeAutomationStage(automation({ status: "completed" }), null)).toBe("Goal completed");
+    expect(describeAutomationStage(automation({ status: "stopped" }), null)).toBe("Stopped");
+  });
+
+  it("describes an active automation without a run", () => {
+    expect(describeAutomationStage(automation(), null)).toBe("Waiting for first run");
+  });
+
+  it("describes judging and judge-failed runs", () => {
+    expect(
+      describeAutomationStage(automation(), run({ judgeState: "in_progress" })),
+    ).toBe("Judging");
+    expect(
+      describeAutomationStage(automation(), run({ judgeState: "failed" })),
+    ).toBe("Paused: judge failed");
+  });
+
+  it("describes an in-progress run", () => {
+    expect(
+      describeAutomationStage(automation(), run({ runIndex: 4, status: "running" })),
+    ).toBe("Run 4 in progress");
+  });
+
+  it("describes published runs waiting for a PR merge", () => {
+    expect(
+      describeAutomationStage(automation(), run({ status: "published", prNumber: 593 })),
+    ).toBe("Waiting for PR #593 to merge");
+    expect(
+      describeAutomationStage(automation(), run({ status: "published", prNumber: null })),
+    ).toBe("Waiting for PR merge");
+  });
+
+  it("describes merged runs awaiting or past the judge", () => {
+    expect(
+      describeAutomationStage(automation(), run({ status: "merged", judgeState: "none" })),
+    ).toBe("Waiting for judge");
+    expect(
+      describeAutomationStage(automation(), run({ status: "merged", judgeState: "done" })),
+    ).toBe("Scheduling next run");
+  });
+});
+
+describe("describeRunFailure", () => {
+  it("returns null for a healthy run and a missing run", () => {
+    expect(describeRunFailure(run({ status: "running" }))).toBeNull();
+    expect(describeRunFailure(run({ status: "published", judgeState: "none" }))).toBeNull();
+    expect(describeRunFailure(null)).toBeNull();
+  });
+
+  it("prefers the error detail when present", () => {
+    expect(
+      describeRunFailure(
+        run({ status: "agent_failed", errorDetail: "Sandbox exited with code 137" }),
+      ),
+    ).toBe("Sandbox exited with code 137");
+  });
+
+  it("maps known error codes to human labels", () => {
+    expect(describeRunFailure(run({ status: "agent_failed", errorCode: "no_changes" }))).toBe(
+      "No changes to publish",
+    );
+    expect(describeRunFailure(run({ status: "agent_failed", errorCode: "publish_failed" }))).toBe(
+      "Publish failed",
+    );
+    expect(describeRunFailure(run({ status: "agent_failed", errorCode: "timeout" }))).toBe(
+      "Run timed out",
+    );
+    expect(describeRunFailure(run({ status: "agent_failed", errorCode: "agent_failed" }))).toBe(
+      "Agent run failed",
+    );
+  });
+
+  it("falls back to the raw error code when unknown", () => {
+    expect(describeRunFailure(run({ status: "agent_failed", errorCode: "weird_code" }))).toBe(
+      "weird_code",
+    );
+  });
+
+  it("describes agent_failed, pr_closed and judge failures without error metadata", () => {
+    expect(describeRunFailure(run({ status: "agent_failed" }))).toBe("Agent run failed");
+    expect(describeRunFailure(run({ status: "pr_closed" }))).toBe("PR closed without merging");
+    expect(describeRunFailure(run({ status: "merged", judgeState: "failed" }))).toBe("Judge failed");
+  });
+});
+
+describe("latestRun", () => {
+  it("returns null when there are no runs", () => {
+    expect(latestRun([])).toBeNull();
+  });
+
+  it("picks the run with the highest run index", () => {
+    const picked = latestRun([
+      run({ id: "a", runIndex: 1 }),
+      run({ id: "c", runIndex: 3 }),
+      run({ id: "b", runIndex: 2 }),
+    ]);
+    expect(picked?.id).toBe("c");
+  });
+});

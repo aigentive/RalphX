@@ -167,6 +167,7 @@ const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
   activityPage: true,
   extensibilityPage: true,
   ideationPage: false,
+  automationsPage: true,
   battleMode: true,
   teamMode: false,
   atlassianOauth: false,
