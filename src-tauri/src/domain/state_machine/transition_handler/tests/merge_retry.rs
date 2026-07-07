@@ -7,7 +7,7 @@ use crate::domain::state_machine::{State, TaskEvent, TransitionHandler};
 // Reload continuation tests
 // ==================
 
-/// Callback drop during merge workflow handled gracefully (no panic without app_handle).
+/// Callback drop during merge workflow handled gracefully (no panic without event_sink).
 #[tokio::test]
 async fn test_reload_continuation_callback_drop() {
     use crate::commands::ExecutionState;
@@ -17,15 +17,15 @@ async fn test_reload_continuation_callback_drop() {
 
     let services = TaskServices::new_mock().with_execution_state(Arc::clone(&execution_state));
     assert!(
-        services.app_handle.is_none(),
-        "Mock services should not have app_handle"
+        services.event_sink.is_none(),
+        "Mock services should not have event_sink"
     );
 
     let context = create_context_with_services("task-1", "proj-1", services);
     let mut machine = TaskStateMachine::new(context);
     let handler = TransitionHandler::new(&mut machine);
 
-    // None should panic (graceful handling even without app_handle)
+    // None should panic (graceful handling even without event_sink)
     handler.on_exit(&State::PendingMerge, &State::Merged).await;
     handler
         .on_exit(&State::PendingMerge, &State::MergeIncomplete)
@@ -39,11 +39,11 @@ async fn test_reload_continuation_callback_drop() {
 }
 
 // Tests early-return guard — does not reach merge strategy dispatch
-/// Without repos or app_handle, on_enter for PendingMerge/Merged/Merging does not panic.
+/// Without repos or event_sink, on_enter for PendingMerge/Merged/Merging does not panic.
 #[tokio::test]
 async fn test_guard_no_repos_enter_merge_states_no_panic() {
     let services = TaskServices::new_mock();
-    assert!(services.app_handle.is_none());
+    assert!(services.event_sink.is_none());
 
     let context = create_context_with_services("task-1", "proj-1", services);
     let mut machine = TaskStateMachine::new(context);
@@ -52,19 +52,19 @@ async fn test_guard_no_repos_enter_merge_states_no_panic() {
     let result = handler.on_enter(&State::PendingMerge).await;
     assert!(
         result.is_ok(),
-        "on_enter(PendingMerge) should succeed without app_handle"
+        "on_enter(PendingMerge) should succeed without event_sink"
     );
 
     let result = handler.on_enter(&State::Merged).await;
     assert!(
         result.is_ok(),
-        "on_enter(Merged) should succeed without app_handle"
+        "on_enter(Merged) should succeed without event_sink"
     );
 
     let result = handler.on_enter(&State::Merging).await;
     assert!(
         result.is_ok(),
-        "on_enter(Merging) should succeed without app_handle"
+        "on_enter(Merging) should succeed without event_sink"
     );
 }
 

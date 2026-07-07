@@ -76,14 +76,12 @@ async fn initialize_verification_state(
 
     match verify_result {
         Some(new_generation) => {
-            if let Some(app_handle) = &state.app_state.app_handle {
-                emit_verification_started(
-                    app_handle,
-                    parent_id.as_str(),
-                    new_generation,
-                    verification_max_rounds,
-                );
-            }
+            emit_verification_started(
+                state.app_state.events.as_ref(),
+                parent_id.as_str(),
+                new_generation,
+                verification_max_rounds,
+            );
             Ok(Some(new_generation))
         }
         None => {

@@ -218,17 +218,15 @@ pub async fn post_verification_status(
             "Re-verify: stale metadata cleared, generation incremented"
         );
 
-        if let Some(app_handle) = &state.app_state.app_handle {
-            emit_verification_status_changed(
-                app_handle,
-                &session_id,
-                VerificationStatus::Reviewing,
-                true,
-                Some(&cleared_snapshot),
-                None,
-                Some(new_gen),
-            );
-        }
+        emit_verification_status_changed(
+            state.app_state.events.as_ref(),
+            &session_id,
+            VerificationStatus::Reviewing,
+            true,
+            Some(&cleared_snapshot),
+            None,
+            Some(new_gen),
+        );
 
         state
             .app_state
@@ -578,17 +576,15 @@ pub async fn post_verification_status(
         })?;
 
     // Emit plan_verification:status_changed event (B1: includes current_gaps + last 5 rounds)
-    if let Some(app_handle) = &state.app_state.app_handle {
-        emit_verification_status_changed(
-            app_handle,
-            &session_id,
-            new_status,
-            effective_in_progress,
-            Some(&run_snapshot),
-            None,
-            Some(response_generation),
-        );
-    }
+    emit_verification_status_changed(
+        state.app_state.events.as_ref(),
+        &session_id,
+        new_status,
+        effective_in_progress,
+        Some(&run_snapshot),
+        None,
+        Some(response_generation),
+    );
 
     // Layer 2+3 for IdeationVerified — only when new_status == Verified (non-fatal)
     if new_status == VerificationStatus::Verified {

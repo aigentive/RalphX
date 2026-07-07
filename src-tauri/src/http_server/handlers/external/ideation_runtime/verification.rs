@@ -150,9 +150,12 @@ pub async fn trigger_verification_http(
     };
 
     let max_rounds = default_verification_max_rounds();
-    if let Some(app_handle) = &state.app_state.app_handle {
-        emit_verification_started(app_handle, &session_id, generation, max_rounds);
-    }
+    emit_verification_started(
+        state.app_state.events.as_ref(),
+        &session_id,
+        generation,
+        max_rounds,
+    );
     let title = format!("Auto-verification (gen {generation})");
     let description = format!(
         "Run verification round loop. parent_session_id: {session_id}, generation: {generation}, max_rounds: {}",
@@ -184,9 +187,9 @@ pub async fn trigger_verification_http(
                     "Failed to reset auto-verify state for session {} after spawn failure: {}",
                     session_id, reset_err
                 );
-            } else if let Some(app_handle) = &state.app_state.app_handle {
+            } else {
                 emit_verification_status_changed(
-                    app_handle,
+                    state.app_state.events.as_ref(),
                     &session_id,
                     crate::domain::entities::VerificationStatus::Unverified,
                     false,

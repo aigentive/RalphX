@@ -13,17 +13,21 @@
 //   2. Spawn RecoveryQueueProcessor::run() as tokio task
 //   3. Call startup_scan() (which submits items)
 
+use ralphx_events::EventSink;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
 use crate::application::chat_service::{ChatService, SendMessageOptions};
 use crate::application::interactive_process_registry::{InteractiveProcessKey, InteractiveProcessRegistry};
+use crate::application::verification_event_emitters::{
+    emit_verification_status_changed, event_sink_from_app_handle,
+};
 use crate::domain::entities::{ChatContextType, IdeationSessionId, IdeationSessionStatus, VerificationStatus};
 use crate::domain::repositories::IdeationSessionRepository;
 use crate::domain::services::{
-    clear_verification_snapshot, emit_verification_status_changed,
-    load_current_verification_snapshot_or_default, RunningAgentRegistry,
+    clear_verification_snapshot, load_current_verification_snapshot_or_default,
+    RunningAgentRegistry,
 };
 
 /// Configuration for the recovery queue processor.
@@ -417,18 +421,31 @@ impl RecoveryQueueProcessor {
                         .ok();
 
                     // Emit verification status change so VerificationBadge shows Unverified
-                    emit_verification_status_changed(
-                        handle,
+                    let event_sink = event_sink_from_app_handle(handle);
+                    emit_recovery_failed_verification_status(
+                        event_sink.as_deref(),
                         parent_session_id,
-                        VerificationStatus::Unverified,
-                        false,
-                        None,
-                        Some("recovery_failed"),
-                        None, // generation not available without re-reading from DB
                     );
                 }
             }
         }
+    }
+}
+
+fn emit_recovery_failed_verification_status(
+    event_sink: Option<&dyn EventSink>,
+    parent_session_id: &str,
+) {
+    if let Some(event_sink) = event_sink {
+        emit_verification_status_changed(
+            event_sink,
+            parent_session_id,
+            VerificationStatus::Unverified,
+            false,
+            None,
+            Some("recovery_failed"),
+            None, // generation not available without re-reading from DB
+        );
     }
 }
 
@@ -505,6 +522,7 @@ pub fn create_recovery_queue(
 mod tests {
     use super::*;
     use crate::domain::entities::ChatContextType;
+    use ralphx_events::RecordingEventSink;
 
     fn make_item(priority: u8, kind: RecoveryKind) -> RecoveryItem {
         RecoveryItem {
@@ -643,5 +661,26 @@ mod tests {
             parsed["plan_artifact_id"].is_null(),
             "plan_artifact_id should be null when not provided"
         );
+    }
+
+    #[test]
+    fn test_emit_recovery_failed_verification_status_emits_unverified_payload() {
+        let sink = RecordingEventSink::new();
+
+        emit_recovery_failed_verification_status(Some(&sink), "parent-session");
+
+        let events = sink.events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event, "plan_verification:status_changed");
+        assert_eq!(events[0].payload["session_id"], "parent-session");
+        assert_eq!(events[0].payload["status"], "unverified");
+        assert_eq!(events[0].payload["in_progress"], false);
+        assert_eq!(events[0].payload["convergence_reason"], "recovery_failed");
+        assert!(events[0].payload["generation"].is_null());
+    }
+
+    #[test]
+    fn test_emit_recovery_failed_verification_status_skips_without_sink() {
+        emit_recovery_failed_verification_status(None, "parent-session");
     }
 }

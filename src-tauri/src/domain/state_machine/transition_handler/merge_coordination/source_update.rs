@@ -32,7 +32,7 @@ pub(crate) async fn update_source_from_target(
     target_branch: &str,
     project: &crate::domain::entities::Project,
     task_id_str: &str,
-    app_handle: Option<&tauri::AppHandle>,
+    event_sink: Option<&dyn ralphx_events::EventSink>,
 ) -> SourceUpdateResult {
     // Check if target's HEAD is already an ancestor of source
     // (i.e., source already has all of target's changes)
@@ -82,7 +82,7 @@ pub(crate) async fn update_source_from_target(
     }
 
     super::emit_merge_progress(
-        app_handle,
+        event_sink,
         task_id_str,
         MergePhase::programmatic_merge(),
         MergePhaseStatus::Started,

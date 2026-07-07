@@ -13,9 +13,12 @@ pub async fn spawn_verification_agent(
     disabled_specialists: &[String],
 ) -> bool {
     let max_rounds = default_verification_max_rounds();
-    if let Some(app_handle) = &state.app_state.app_handle {
-        emit_verification_started(app_handle, session_id.as_str(), generation, max_rounds);
-    }
+    emit_verification_started(
+        state.app_state.events.as_ref(),
+        session_id.as_str(),
+        generation,
+        max_rounds,
+    );
     let title = format!("Auto-verification (gen {generation})");
     let description = format!(
         "Run verification round loop. parent_session_id: {}, generation: {generation}, max_rounds: {}",
@@ -77,9 +80,9 @@ pub async fn handle_verification_spawn_failure(
             session_id.as_str(),
             reset_err
         );
-    } else if let Some(app_handle) = &state.app_state.app_handle {
+    } else {
         emit_verification_status_changed(
-            app_handle,
+            state.app_state.events.as_ref(),
             session_id.as_str(),
             VerificationStatus::Unverified,
             false,

@@ -359,17 +359,15 @@ pub async fn stop_verification(
         .ok();
 
     // Emit plan_verification:status_changed event so frontend VerificationBadge updates
-    if let Some(app_handle) = &state.app_state.app_handle {
-        emit_verification_status_changed(
-            app_handle,
-            &session_id,
-            VerificationStatus::Skipped,
-            false,
-            Some(&snapshot),
-            Some("user_stopped"),
-            Some(session.verification_generation),
-        );
-    }
+    emit_verification_status_changed(
+        state.app_state.events.as_ref(),
+        &session_id,
+        VerificationStatus::Skipped,
+        false,
+        Some(&snapshot),
+        Some("user_stopped"),
+        Some(session.verification_generation),
+    );
 
     Ok(Json(SuccessResponse {
         success: true,
@@ -505,17 +503,15 @@ pub async fn mark_verification_infra_failure(
         })?;
     let next_generation = session.verification_generation + 1;
 
-    if let Some(app_handle) = &state.app_state.app_handle {
-        emit_verification_status_changed(
-            app_handle,
-            &session_id,
-            VerificationStatus::Unverified,
-            false,
-            Some(&snapshot),
-            convergence_reason.as_deref(),
-            Some(next_generation),
-        );
-    }
+    emit_verification_status_changed(
+        state.app_state.events.as_ref(),
+        &session_id,
+        VerificationStatus::Unverified,
+        false,
+        Some(&snapshot),
+        convergence_reason.as_deref(),
+        Some(next_generation),
+    );
 
     let app_state = state.app_state.clone();
     let session_id_for_stop = session_id.clone();
@@ -641,17 +637,15 @@ pub async fn revert_and_skip(
         .ok();
 
     // Emit event with canonical payload (B3: was missing round/gaps/rounds fields)
-    if let Some(app_handle) = &state.app_state.app_handle {
-        emit_verification_status_changed(
-            app_handle,
-            &session_id,
-            VerificationStatus::Skipped,
-            false,
-            None,
-            Some("user_reverted"),
-            Some(session.verification_generation),
-        );
-    }
+    emit_verification_status_changed(
+        state.app_state.events.as_ref(),
+        &session_id,
+        VerificationStatus::Skipped,
+        false,
+        None,
+        Some("user_reverted"),
+        Some(session.verification_generation),
+    );
 
     Ok(Json(SuccessResponse {
         success: true,

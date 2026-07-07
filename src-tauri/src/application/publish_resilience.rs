@@ -7,7 +7,8 @@ use crate::domain::state_machine::transition_handler::{
     CommitHookFailureKind, PlanUpdateResult, SourceUpdateResult,
 };
 use crate::error::AppResult;
-use crate::{application::GitService, domain::entities::Project};
+use crate::{application::AppState, application::GitService, domain::entities::Project};
+use tauri::Manager;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PublishFailureClass {
@@ -175,13 +176,17 @@ pub async fn ensure_publish_branch_fresh(
         }
     };
 
+    let event_sink = app_handle
+        .and_then(|handle| handle.try_state::<AppState>())
+        .map(|state| Arc::clone(&state.events));
+
     let result = update_source_from_target(
         repo_path,
         source_branch,
         &target_ref,
         project,
         conversation_id,
-        app_handle,
+        event_sink.as_deref(),
     )
     .await;
 
@@ -215,13 +220,17 @@ pub async fn ensure_plan_publish_branch_fresh(
         }
     };
 
+    let event_sink = app_handle
+        .and_then(|handle| handle.try_state::<AppState>())
+        .map(|state| Arc::clone(&state.events));
+
     let result = update_plan_from_main_isolated(
         repo_path,
         plan_branch,
         &target_ref,
         project,
         conversation_id,
-        app_handle,
+        event_sink.as_deref(),
     )
     .await;
 

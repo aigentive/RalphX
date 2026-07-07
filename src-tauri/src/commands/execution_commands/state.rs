@@ -1,4 +1,5 @@
 use super::*;
+use ralphx_events::EventSink;
 
 /// Statuses where an agent is actively running.
 /// Tasks in these states need to be cancelled when stop is called,
@@ -545,22 +546,31 @@ impl ExecutionState {
             .len()
     }
 
+    fn status_changed_payload(&self, reason: &str) -> serde_json::Value {
+        let blocked_until = self.provider_blocked_until_epoch();
+        serde_json::json!({
+            "isPaused": self.is_paused(),
+            "runningCount": self.running_count(),
+            "maxConcurrent": self.max_concurrent(),
+            "globalMaxConcurrent": self.global_max_concurrent(),
+            "workspaceMaxConcurrent": self.workspace_max_concurrent(),
+            "providerBlocked": self.is_provider_blocked(),
+            "providerBlockedUntil": if blocked_until > 0 { Some(blocked_until) } else { None::<u64> },
+            "reason": reason,
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+        })
+    }
+
+    /// Emit execution:status_changed event with current state through EventSink.
+    pub fn emit_status_changed_to_sink(&self, sink: &dyn EventSink, reason: &str) {
+        sink.emit("execution:status_changed", self.status_changed_payload(reason));
+    }
+
     /// Emit execution:status_changed event with current state
     pub fn emit_status_changed<R: Runtime>(&self, handle: &AppHandle<R>, reason: &str) {
-        let blocked_until = self.provider_blocked_until_epoch();
         let _ = handle.emit(
             "execution:status_changed",
-            serde_json::json!({
-                "isPaused": self.is_paused(),
-                "runningCount": self.running_count(),
-                "maxConcurrent": self.max_concurrent(),
-                "globalMaxConcurrent": self.global_max_concurrent(),
-                "workspaceMaxConcurrent": self.workspace_max_concurrent(),
-                "providerBlocked": self.is_provider_blocked(),
-                "providerBlockedUntil": if blocked_until > 0 { Some(blocked_until) } else { None::<u64> },
-                "reason": reason,
-                "timestamp": chrono::Utc::now().to_rfc3339(),
-            }),
+            self.status_changed_payload(reason),
         );
     }
 }

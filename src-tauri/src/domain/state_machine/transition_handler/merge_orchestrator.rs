@@ -238,7 +238,7 @@ impl<'a> super::TransitionHandler<'a> {
                                         task_repo,
                                         self.machine.context.services.external_events_repo.as_ref(),
                                         self.machine.context.services.webhook_publisher.as_ref(),
-                                        self.machine.context.services.app_handle.as_ref(),
+                                        self.machine.context.services.event_sink.as_deref(),
                                         session_title.clone(),
                                         Some(super::merge_helpers::PlanBranchPrSyncServices::from_task_services(
                                             &self.machine.context.services,
@@ -404,7 +404,7 @@ impl<'a> super::TransitionHandler<'a> {
             task_repo,
             self.machine.context.services.external_events_repo.as_ref(),
             self.machine.context.services.webhook_publisher.as_ref(),
-            self.machine.context.services.app_handle.as_ref(),
+            self.machine.context.services.event_sink.as_deref(),
             session_title.clone(),
             Some(
                 super::merge_helpers::PlanBranchPrSyncServices::from_task_services(
@@ -561,7 +561,7 @@ impl<'a> super::TransitionHandler<'a> {
                                     task_repo,
                                     self.machine.context.services.external_events_repo.as_ref(),
                                     self.machine.context.services.webhook_publisher.as_ref(),
-                                    self.machine.context.services.app_handle.as_ref(),
+                                    self.machine.context.services.event_sink.as_deref(),
                                     session_title.clone(),
                                     Some(super::merge_helpers::PlanBranchPrSyncServices::from_task_services(
                                         &self.machine.context.services,
@@ -679,7 +679,7 @@ impl<'a> super::TransitionHandler<'a> {
                     task_repo,
                     self.machine.context.services.external_events_repo.as_ref(),
                     self.machine.context.services.webhook_publisher.as_ref(),
-                    self.machine.context.services.app_handle.as_ref(),
+                    self.machine.context.services.event_sink.as_deref(),
                     session_title,
                     Some(
                         super::merge_helpers::PlanBranchPrSyncServices::from_task_services(

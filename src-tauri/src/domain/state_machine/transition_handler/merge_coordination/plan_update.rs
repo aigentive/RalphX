@@ -35,7 +35,7 @@ pub(crate) async fn update_plan_from_main(
     base_branch: &str,
     project: &crate::domain::entities::Project,
     task_id_str: &str,
-    app_handle: Option<&tauri::AppHandle>,
+    event_sink: Option<&dyn ralphx_events::EventSink>,
 ) -> PlanUpdateResult {
     update_plan_from_main_with_options(
         repo_path,
@@ -43,7 +43,7 @@ pub(crate) async fn update_plan_from_main(
         base_branch,
         project,
         task_id_str,
-        app_handle,
+        event_sink,
         true,
     )
     .await
@@ -59,7 +59,7 @@ pub(crate) async fn update_plan_from_main_isolated(
     base_branch: &str,
     project: &crate::domain::entities::Project,
     task_id_str: &str,
-    app_handle: Option<&tauri::AppHandle>,
+    event_sink: Option<&dyn ralphx_events::EventSink>,
 ) -> PlanUpdateResult {
     update_plan_from_main_with_options(
         repo_path,
@@ -67,7 +67,7 @@ pub(crate) async fn update_plan_from_main_isolated(
         base_branch,
         project,
         task_id_str,
-        app_handle,
+        event_sink,
         false,
     )
     .await
@@ -79,7 +79,7 @@ async fn update_plan_from_main_with_options(
     base_branch: &str,
     project: &crate::domain::entities::Project,
     task_id_str: &str,
-    app_handle: Option<&tauri::AppHandle>,
+    event_sink: Option<&dyn ralphx_events::EventSink>,
     allow_primary_checkout_merge: bool,
 ) -> PlanUpdateResult {
     // Only update when merging to a plan branch (not the source/base branch itself)
@@ -135,7 +135,7 @@ async fn update_plan_from_main_with_options(
     }
 
     super::emit_merge_progress(
-        app_handle,
+        event_sink,
         task_id_str,
         MergePhase::programmatic_merge(),
         MergePhaseStatus::Started,

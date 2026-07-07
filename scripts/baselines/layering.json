@@ -370,129 +370,9 @@
     ],
     "root_domain_no_tauri_usage": [
       {
-        "path": "src-tauri/src/domain/services/verification_events.rs",
-        "target": "tauri::",
-        "text": "use tauri::{AppHandle, Emitter, Runtime};"
-      },
-      {
         "path": "src-tauri/src/domain/state_machine/context.rs",
         "target": "tauri::",
-        "text": "use tauri::{AppHandle, Runtime, Wry};"
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/freshness.rs",
-        "target": "tauri::",
-        "text": "app_handle: Option<&tauri::AppHandle>,"
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/merge_completion.rs",
-        "target": "tauri::",
-        "text": "async fn complete_merge_internal_impl<R: tauri::Runtime>("
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/merge_completion.rs",
-        "target": "tauri::",
-        "text": "complete_merge_internal::<tauri::Wry>("
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/merge_completion.rs",
-        "target": "tauri::",
-        "text": "let result = complete_merge_internal::<tauri::Wry>("
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/merge_completion.rs",
-        "target": "tauri::",
-        "text": "pub async fn complete_merge_internal<R: tauri::Runtime>("
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/merge_completion.rs",
-        "target": "tauri::",
-        "text": "pub(crate) async fn complete_merge_internal_with_pr_sync<R: tauri::Runtime>("
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/merge_completion.rs",
-        "target": "tauri::",
-        "text": "use tauri::{AppHandle, Emitter};"
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/merge_coordination/cleanup/agents.rs",
-        "target": "tauri::",
-        "text": "app_handle: Option<&tauri::AppHandle>,"
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/merge_coordination/cleanup/worktrees.rs",
-        "target": "tauri::",
-        "text": "app_handle: Option<&tauri::AppHandle>,"
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/merge_coordination/deferral.rs",
-        "target": "tauri::",
-        "text": "app_handle: Option<&tauri::AppHandle>,"
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/merge_coordination/plan_update.rs",
-        "target": "tauri::",
-        "text": "app_handle: Option<&tauri::AppHandle>,"
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/merge_coordination/source_update.rs",
-        "target": "tauri::",
-        "text": "app_handle: Option<&tauri::AppHandle>,"
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/merge_validation/install.rs",
-        "target": "tauri::",
-        "text": "app_handle: Option<&tauri::AppHandle>,"
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/merge_validation/install.rs",
-        "target": "tauri::",
-        "text": "use tauri::Emitter;"
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/merge_validation/logging.rs",
-        "target": "tauri::",
-        "text": "pub(crate) fn emit_merge_progress<R: tauri::Runtime>("
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/merge_validation/logging.rs",
-        "target": "tauri::",
-        "text": "use tauri::{AppHandle, Emitter};"
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/merge_validation/mod.rs",
-        "target": "tauri::",
-        "text": "app_handle: Option<&tauri::AppHandle>,"
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/merge_validation/mod.rs",
-        "target": "tauri::",
-        "text": "use tauri::Emitter;"
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/merge_validation/setup.rs",
-        "target": "tauri::",
-        "text": "app_handle: Option<&tauri::AppHandle>,"
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/merge_validation/setup.rs",
-        "target": "tauri::",
-        "text": "use tauri::Emitter;"
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/merge_validation/validate.rs",
-        "target": "tauri::",
-        "text": "app_handle: Option<&tauri::AppHandle>,"
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/merge_validation/validate.rs",
-        "target": "tauri::",
-        "text": "use tauri::Emitter;"
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/side_effects/mod.rs",
-        "target": "tauri::",
-        "text": "use tauri::Emitter;"
+        "text": "use tauri::Wry;"
       },
       {
         "path": "src-tauri/src/domain/state_machine/transition_handler/tests/freshness_return_path_integration_tests.rs",
@@ -503,26 +383,6 @@
         "path": "src-tauri/src/domain/state_machine/transition_handler/tests/merge_outcome_transient_retry_tests.rs",
         "target": "tauri::",
         "text": "fn build_transition_service(app_state: &AppState) -> Arc<TaskTransitionService<tauri::Wry>> {"
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/tests/merge_pipeline_round2_tests.rs",
-        "target": "tauri::",
-        "text": "let result = complete_merge_internal::<tauri::Wry>("
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/tests/phase2_phase3_merge_tests.rs",
-        "target": "tauri::",
-        "text": "let result = complete_merge_internal::<tauri::Wry>("
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/tests/pr_mode_state_machine_tests.rs",
-        "target": "tauri::",
-        "text": "let result = complete_merge_internal_with_pr_sync::<tauri::Wry>("
-      },
-      {
-        "path": "src-tauri/src/domain/state_machine/transition_handler/tests/progress_events.rs",
-        "target": "tauri::",
-        "text": "emit_merge_progress::<tauri::Wry>("
       },
       {
         "path": "src-tauri/src/domain/state_machine/transition_handler/tests/worktree_restore_tests.rs",

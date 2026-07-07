@@ -779,8 +779,20 @@ async fn handle_validation_recovery<R: Runtime + 'static>(
         let _ = ctx.task_repo.update(task).await;
     }
 
+    let event_sink = ctx
+        .app_handle
+        .and_then(|handle| handle.try_state::<AppState>())
+        .map(|state| Arc::clone(&state.events));
+
     // Emit validation_start event so the frontend clears stale live steps
-    if let Some(handle) = ctx.app_handle {
+    if let Some(sink) = event_sink.as_deref() {
+        sink.emit(
+            "merge:validation_start",
+            serde_json::json!({
+                "task_id": ctx.task_id_str,
+            }),
+        );
+    } else if let Some(handle) = ctx.app_handle {
         let _ = handle.emit(
             "merge:validation_start",
             serde_json::json!({
@@ -789,14 +801,6 @@ async fn handle_validation_recovery<R: Runtime + 'static>(
         );
     }
 
-    // Downcast generic app_handle to Wry for run_validation_commands
-    let wry_handle: Option<tauri::AppHandle<tauri::Wry>> = ctx.app_handle.and_then(|h| {
-        let any: Box<dyn std::any::Any> = Box::new(h.clone());
-        any.downcast::<tauri::AppHandle<tauri::Wry>>()
-            .ok()
-            .map(|b| *b)
-    });
-
     // Re-run validation commands on the merge path
     let validation_cancel = tokio_util::sync::CancellationToken::new();
     match run_validation_commands(
@@ -804,7 +808,7 @@ async fn handle_validation_recovery<R: Runtime + 'static>(
         task,
         worktree,
         ctx.task_id_str,
-        wry_handle.as_ref(),
+        event_sink.as_deref(),
         None,
         &project.merge_validation_mode,
         &validation_cancel,
@@ -1093,6 +1097,9 @@ async fn complete_merge_and_schedule<R: Runtime + 'static>(
     let app_state = ctx
         .app_handle
         .and_then(|handle| handle.try_state::<AppState>());
+    let event_sink = app_state
+        .as_deref()
+        .map(|state| Arc::clone(&state.events));
     let pr_sync_services = build_pr_sync_services_for_auto_complete(
         ctx.task_repo,
         ctx.plan_branch_repo,
@@ -1110,7 +1117,7 @@ async fn complete_merge_and_schedule<R: Runtime + 'static>(
         ctx.task_repo,
         None,
         None,
-        ctx.app_handle,
+        event_sink.as_deref(),
         None,
         Some(pr_sync_services),
     )

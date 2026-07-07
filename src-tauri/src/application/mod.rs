@@ -125,6 +125,7 @@ pub mod ticketing_service;
 pub mod ticketing_status_catalog_service;
 pub(crate) mod validation_events;
 pub mod validation_service;
+pub mod verification_event_emitters;
 pub mod webhook_service;
 pub(crate) mod workspace_capacity;
 
@@ -330,6 +331,8 @@ mod ticketing_cache_invalidator_tests;
 mod pull_request_detail_tests;
 #[cfg(test)]
 mod ticketing_pr_summary_tests;
+#[cfg(test)]
+mod verification_event_emitters_tests;
 #[cfg(test)]
 mod webhook_service_tests;
 

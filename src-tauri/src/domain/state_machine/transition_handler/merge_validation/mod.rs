@@ -26,7 +26,6 @@ const SLOW_SHELL_COMMAND_MS: u64 = 500;
 
 use std::{path::Path, time::Instant};
 
-use tauri::Emitter;
 use tokio::io::AsyncReadExt;
 use tokio_util::sync::CancellationToken;
 
@@ -355,7 +354,7 @@ fn truncate_output(s: &str, max_len: usize) -> String {
 /// Returns `None` if no analysis entries exist (backward compatible — skip validation).
 /// Returns `Some(ValidationResult)` with pass/fail details otherwise.
 ///
-/// When `app_handle` is `Some`, emits `merge:validation_step` events for real-time UI streaming.
+/// When `event_sink` is `Some`, emits `merge:validation_step` events for real-time UI streaming.
 /// All executed commands are recorded in `ValidationResult::log` for metadata storage.
 ///
 /// When `cached_log` is provided, validate-phase commands that previously passed (status
@@ -366,7 +365,7 @@ pub(crate) async fn run_validation_commands(
     task: &Task,
     merge_cwd: &Path,
     task_id_str: &str,
-    app_handle: Option<&tauri::AppHandle>,
+    event_sink: Option<&dyn ralphx_events::EventSink>,
     cached_log: Option<&[ValidationLogEntry]>,
     validation_mode: &crate::domain::entities::MergeValidationMode,
     cancel: &CancellationToken,
@@ -408,14 +407,14 @@ pub(crate) async fn run_validation_commands(
             .collect();
         let phases = derive_phases_from_analysis(&phase_entries);
 
-        // Always store in hydration map (even without app_handle)
+        // Always store in hydration map (even without event_sink)
         crate::domain::entities::merge_progress_event::store_merge_phase_list(
             task_id_str,
             phases.clone(),
         );
 
-        if let Some(handle) = app_handle {
-            let _ = handle.emit(
+        if let Some(sink) = event_sink {
+            sink.emit(
                 "task:merge_phases",
                 serde_json::json!({
                     "task_id": task_id_str,
@@ -462,7 +461,7 @@ pub(crate) async fn run_validation_commands(
         );
         // Emit Passed event so the frontend shows a checkmark for WorktreeSetup
         emit_merge_progress(
-            app_handle,
+            event_sink,
             task_id_str,
             MergePhase::worktree_setup(),
             MergePhaseStatus::Passed,
@@ -474,7 +473,7 @@ pub(crate) async fn run_validation_commands(
             &entries,
             merge_cwd,
             task_id_str,
-            app_handle,
+            event_sink,
             &resolve,
             None,
             cancel,
@@ -487,7 +486,7 @@ pub(crate) async fn run_validation_commands(
         &entries,
         merge_cwd,
         task_id_str,
-        app_handle,
+        event_sink,
         cached_log,
         &resolve,
         validation_mode,

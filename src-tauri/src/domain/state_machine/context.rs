@@ -21,12 +21,12 @@ use crate::domain::repositories::{
     ActivityEventRepository, ArtifactRepository, IdeationSessionRepository, PlanBranchRepository,
     ProjectRepository, TaskRepository, TaskStepRepository,
 };
-use ralphx_domain::repositories::ExternalEventsRepository;
 use dashmap::DashMap;
-use std::any::Any;
+use ralphx_domain::repositories::ExternalEventsRepository;
+use ralphx_events::EventSink;
 use std::collections::HashSet;
 use std::sync::Arc;
-use tauri::{AppHandle, Runtime, Wry};
+use tauri::Wry;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
@@ -58,9 +58,9 @@ pub struct TaskServices {
     /// Used by TransitionHandler to decrement running count when exiting agent-active states.
     pub execution_state: Option<Arc<ExecutionState>>,
 
-    /// Tauri app handle for emitting events to frontend (optional).
-    /// Used by TransitionHandler to emit execution:status_changed events.
-    pub app_handle: Option<AppHandle<Wry>>,
+    /// Event sink for frontend/runtime events (optional).
+    /// Used by TransitionHandler to emit execution and merge progress events.
+    pub event_sink: Option<Arc<dyn EventSink>>,
 
     /// Task scheduler for auto-scheduling Ready tasks when slots are available.
     /// Used by TransitionHandler to trigger scheduling on slot free and on enter Ready.
@@ -166,7 +166,7 @@ impl TaskServices {
             review_starter,
             chat_service,
             execution_state: None,
-            app_handle: None,
+            event_sink: None,
             task_scheduler: None,
             task_repo: None,
             project_repo: None,
@@ -195,21 +195,9 @@ impl TaskServices {
         self
     }
 
-    /// Set the Tauri app handle for event emission (builder pattern)
-    pub fn with_app_handle(mut self, handle: AppHandle<Wry>) -> Self {
-        self.app_handle = Some(handle);
-        self
-    }
-
-    /// Try to set the app handle from a generic Runtime type.
-    /// Only sets the handle if R is Wry (the default Tauri runtime).
-    /// Returns self for builder chaining.
-    pub fn try_with_app_handle<R: Runtime + 'static>(mut self, handle: AppHandle<R>) -> Self {
-        // Use type checking to only accept Wry handles
-        let handle_any: Box<dyn Any> = Box::new(handle);
-        if let Ok(wry_handle) = handle_any.downcast::<AppHandle<Wry>>() {
-            self.app_handle = Some(*wry_handle);
-        }
+    /// Set the event sink for frontend/runtime event emission (builder pattern)
+    pub fn with_event_sink(mut self, sink: Arc<dyn EventSink>) -> Self {
+        self.event_sink = Some(sink);
         self
     }
 
@@ -361,7 +349,7 @@ impl TaskServices {
             review_starter: Arc::new(MockReviewStarter::new()),
             chat_service: Arc::new(MockChatService::new()),
             execution_state: None,
-            app_handle: None,
+            event_sink: None,
             task_scheduler: Some(Arc::new(MockTaskScheduler::new())),
             task_repo: None,
             project_repo: None,
@@ -399,8 +387,8 @@ impl std::fmt::Debug for TaskServices {
                 &self.execution_state.as_ref().map(|_| "<ExecutionState>"),
             )
             .field(
-                "app_handle",
-                &self.app_handle.as_ref().map(|_| "<AppHandle>"),
+                "event_sink",
+                &self.event_sink.as_ref().map(|_| "<EventSink>"),
             )
             .field(
                 "task_scheduler",

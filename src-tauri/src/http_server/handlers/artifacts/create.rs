@@ -250,14 +250,12 @@ pub async fn create_plan_artifact(
                 session_id.as_str()
             );
         }
-        if let Some(app_handle) = &state.app_state.app_handle {
-            crate::domain::services::emit_verification_pending_confirmation(
-                app_handle,
-                session_id.as_str(),
-                &session_title.unwrap_or_default(),
-                created.id.as_str(),
-            );
-        }
+        crate::application::verification_event_emitters::emit_verification_pending_confirmation(
+            state.app_state.events.as_ref(),
+            session_id.as_str(),
+            &session_title.unwrap_or_default(),
+            created.id.as_str(),
+        );
     }
 
     let mut response = ArtifactResponse::from(created);

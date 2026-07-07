@@ -14,11 +14,9 @@ pub(super) fn emit_plan_update_events(
     };
 
     if verification_reset {
-        if let (Some(session), Some(app_handle)) =
-            (sessions.first(), state.app_state.app_handle.as_ref())
-        {
+        if let Some(session) = sessions.first() {
             emit_verification_status_changed(
-                app_handle,
+                state.app_state.events.as_ref(),
                 session.id.as_str(),
                 VerificationStatus::Unverified,
                 false,

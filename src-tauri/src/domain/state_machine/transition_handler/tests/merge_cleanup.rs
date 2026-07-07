@@ -121,7 +121,7 @@ async fn test_guard_no_repos_skips_step0_settle_sleep() {
 /// pre_merge_cleanup step 0b emits two-phase progress: agent cancellation then lsof scan.
 ///
 /// Validates that the code path after the agent-stop loop (the orphaned-process scan)
-/// runs without error. Progress events are no-ops without a real AppHandle, but the
+/// runs without error. Progress events are no-ops without an EventSink, but the
 /// flow compiles and executes correctly. This is the RC-B regression guard.
 #[tokio::test]
 async fn test_step0b_two_phase_progress_no_regression() {

@@ -21,7 +21,7 @@ pub(super) async fn cleanup_stale_worktrees(
     project: &crate::domain::entities::Project,
     repo_path: &Path,
     task_repo: &Arc<dyn TaskRepository>,
-    app_handle: Option<&tauri::AppHandle>,
+    event_sink: Option<&dyn ralphx_events::EventSink>,
     outer_deadline: std::time::Instant,
 ) {
     // --- Step 1: Remove stale index.lock ---
@@ -46,7 +46,7 @@ pub(super) async fn cleanup_stale_worktrees(
     // --- Step 2: Delete task worktree ---
     {
         emit_merge_progress(
-            app_handle,
+            event_sink,
             task_id_str,
             MergePhase::new(MergePhase::MERGE_CLEANUP),
             MergePhaseStatus::Started,

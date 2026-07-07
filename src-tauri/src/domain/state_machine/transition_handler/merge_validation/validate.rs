@@ -1,6 +1,5 @@
 use std::path::Path;
 
-use tauri::Emitter;
 use tokio_util::sync::CancellationToken;
 
 use crate::domain::entities::merge_progress_event::{map_command_to_phase, MergePhaseStatus};
@@ -20,7 +19,7 @@ fn emit_skipped_for_remaining(
     entries: &[MergeAnalysisEntry],
     _merge_cwd: &Path,
     task_id_str: &str,
-    app_handle: Option<&tauri::AppHandle>,
+    event_sink: Option<&dyn ralphx_events::EventSink>,
     resolve: &(dyn Fn(&str) -> String + Send + Sync),
     log: &mut Vec<ValidationLogEntry>,
     failed_path: &str,
@@ -43,7 +42,7 @@ fn emit_skipped_for_remaining(
             // Emit high-level skipped event
             let phase = map_command_to_phase(&resolved_cmd);
             emit_merge_progress(
-                app_handle,
+                event_sink,
                 task_id_str,
                 phase,
                 MergePhaseStatus::Skipped,
@@ -51,8 +50,8 @@ fn emit_skipped_for_remaining(
             );
 
             // Emit step-level skipped event
-            if let Some(handle) = app_handle {
-                let _ = handle.emit(
+            if let Some(sink) = event_sink {
+                sink.emit(
                     "merge:validation_step",
                     serde_json::json!({
                         "task_id": task_id_str,
@@ -95,7 +94,7 @@ pub(super) async fn run_validate_phase(
     entries: &[MergeAnalysisEntry],
     merge_cwd: &Path,
     task_id_str: &str,
-    app_handle: Option<&tauri::AppHandle>,
+    event_sink: Option<&dyn ralphx_events::EventSink>,
     cached_log: Option<&[ValidationLogEntry]>,
     resolve: &(dyn Fn(&str) -> String + Send + Sync),
     validation_mode: &crate::domain::entities::MergeValidationMode,
@@ -147,7 +146,7 @@ pub(super) async fn run_validate_phase(
 
                     let phase = map_command_to_phase(&resolved_cmd);
                     emit_merge_progress(
-                        app_handle,
+                        event_sink,
                         task_id_str,
                         phase,
                         MergePhaseStatus::Passed,
@@ -166,8 +165,8 @@ pub(super) async fn run_validate_phase(
                         duration_ms: 0,
                         ..Default::default()
                     };
-                    if let Some(handle) = app_handle {
-                        let _ = handle.emit(
+                    if let Some(sink) = event_sink {
+                        sink.emit(
                             "merge:validation_step",
                             serde_json::json!({
                                 "task_id": task_id_str,
@@ -189,7 +188,7 @@ pub(super) async fn run_validate_phase(
             // Emit high-level merge progress event
             let phase = map_command_to_phase(&resolved_cmd);
             emit_merge_progress(
-                app_handle,
+                event_sink,
                 task_id_str,
                 phase.clone(),
                 MergePhaseStatus::Started,
@@ -197,8 +196,8 @@ pub(super) async fn run_validate_phase(
             );
 
             // Emit "running" event before execution
-            if let Some(handle) = app_handle {
-                let _ = handle.emit(
+            if let Some(sink) = event_sink {
+                sink.emit(
                     "merge:validation_step",
                     serde_json::json!({
                         "task_id": task_id_str,
@@ -260,7 +259,7 @@ pub(super) async fn run_validate_phase(
                     // Emit high-level merge progress completion event
                     if output.status.success() {
                         emit_merge_progress(
-                            app_handle,
+                            event_sink,
                             task_id_str,
                             phase,
                             MergePhaseStatus::Passed,
@@ -268,7 +267,7 @@ pub(super) async fn run_validate_phase(
                         );
                     } else {
                         emit_merge_progress(
-                            app_handle,
+                            event_sink,
                             task_id_str,
                             phase,
                             MergePhaseStatus::Failed,
@@ -301,7 +300,7 @@ pub(super) async fn run_validate_phase(
                     tracing::error!(command = %resolved_cmd, error = %e, "Failed to execute validation command");
 
                     emit_merge_progress(
-                        app_handle,
+                        event_sink,
                         task_id_str,
                         phase,
                         MergePhaseStatus::Failed,
@@ -338,7 +337,7 @@ pub(super) async fn run_validate_phase(
                     );
 
                     emit_merge_progress(
-                        app_handle,
+                        event_sink,
                         task_id_str,
                         phase,
                         MergePhaseStatus::Failed,
@@ -384,7 +383,7 @@ pub(super) async fn run_validate_phase(
 
                 let retry_phase = map_command_to_phase(&resolved_cmd);
                 emit_merge_progress(
-                    app_handle,
+                    event_sink,
                     task_id_str,
                     retry_phase,
                     MergePhaseStatus::Started,
@@ -412,7 +411,7 @@ pub(super) async fn run_validate_phase(
 
                             let retry_phase = map_command_to_phase(&resolved_cmd);
                             emit_merge_progress(
-                                app_handle,
+                                event_sink,
                                 task_id_str,
                                 retry_phase,
                                 MergePhaseStatus::Passed,
@@ -442,7 +441,7 @@ pub(super) async fn run_validate_phase(
 
                             let retry_phase = map_command_to_phase(&resolved_cmd);
                             emit_merge_progress(
-                                app_handle,
+                                event_sink,
                                 task_id_str,
                                 retry_phase,
                                 MergePhaseStatus::Failed,
@@ -486,8 +485,8 @@ pub(super) async fn run_validate_phase(
                 }
             }
 
-            if let Some(handle) = app_handle {
-                let _ = handle.emit(
+            if let Some(sink) = event_sink {
+                sink.emit(
                     "merge:validation_step",
                     serde_json::json!({
                         "task_id": task_id_str,
@@ -524,7 +523,7 @@ pub(super) async fn run_validate_phase(
                         entries,
                         merge_cwd,
                         task_id_str,
-                        app_handle,
+                        event_sink,
                         resolve,
                         &mut log,
                         &resolved_path,

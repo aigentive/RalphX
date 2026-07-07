@@ -168,7 +168,7 @@ async fn complete_merge_sets_pending_cleanup_metadata() {
     project.base_branch = Some("main".to_string());
     project.merge_strategy = MergeStrategy::Merge;
 
-    let result = complete_merge_internal::<tauri::Wry>(
+    let result = complete_merge_internal(
         &mut task,
         &project,
         &commit_sha,
@@ -228,7 +228,7 @@ async fn complete_merge_returns_quickly_without_cleanup_blocking() {
     project.merge_strategy = MergeStrategy::Merge;
 
     let start = std::time::Instant::now();
-    let result = complete_merge_internal::<tauri::Wry>(
+    let result = complete_merge_internal(
         &mut task,
         &project,
         &commit_sha,
