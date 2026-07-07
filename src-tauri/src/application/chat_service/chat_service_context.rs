@@ -143,7 +143,24 @@ fn build_claude_spawnable_interactive_command(
     effort_override: Option<&str>,
     model_override: Option<&str>,
     mcp_runtime_context: Option<&McpRuntimeContext>,
+    enforce_spawn_guard: bool,
 ) -> Result<SpawnableCommand, String> {
+    if enforce_spawn_guard {
+        return crate::infrastructure::agents::claude::build_spawnable_interactive_command_with_mcp_runtime_context_and_profile(
+            cli_path,
+            plugin_dir,
+            prompt,
+            agent,
+            agent_profile,
+            resume_session,
+            working_directory,
+            is_external_mcp,
+            effort_override,
+            model_override,
+            mcp_runtime_context,
+        );
+    }
+
     #[cfg(any(test, feature = "test-utils"))]
     {
         crate::infrastructure::agents::claude::build_spawnable_interactive_command_with_mcp_runtime_context_and_profile_for_test(
@@ -253,6 +270,7 @@ struct BuildHarnessLaunchRequest<'a> {
     is_external_mcp: bool,
     stored_session_id: Option<&'a str>,
     resolved_spawn_settings: &'a ResolvedAgentSpawnSettings,
+    enforce_spawn_guard: bool,
     agent_workspace_prompt_context: Option<&'a str>,
     attachment_context_override: Option<&'a str>,
 }
@@ -517,6 +535,7 @@ impl ResolvedChatHarnessCli {
                     request.is_external_mcp,
                     request.stored_session_id,
                     request.resolved_spawn_settings,
+                    request.enforce_spawn_guard,
                     request.agent_workspace_prompt_context,
                     request.attachment_context_override,
                 )
@@ -2574,6 +2593,131 @@ pub(crate) async fn build_launch_plan_for_harness(
     agent_workspace_prompt_context: Option<&str>,
     attachment_context_override: Option<&str>,
 ) -> Result<ResolvedChatHarnessLaunch, String> {
+    build_launch_plan_for_harness_with_spawn_guard(
+        harness,
+        cli_path,
+        plugin_dir,
+        conversation,
+        user_message,
+        agent_name_override,
+        agent_profile,
+        context_type,
+        context_id,
+        working_directory,
+        entity_status,
+        project_id,
+        filesystem_read_roots,
+        runtime_team_mode,
+        chat_attachment_repo,
+        artifact_repo,
+        ideation_session_repo,
+        delegated_session_repo,
+        task_repo,
+        session_messages,
+        total_available,
+        is_external_mcp,
+        stored_session_id,
+        resolved_spawn_settings,
+        true,
+        agent_workspace_prompt_context,
+        attachment_context_override,
+    )
+    .await
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+#[allow(dead_code)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn build_launch_plan_for_harness_for_test(
+    harness: AgentHarnessKind,
+    cli_path: &Path,
+    plugin_dir: &Path,
+    conversation: &ChatConversation,
+    user_message: &str,
+    agent_name_override: Option<&str>,
+    agent_profile: Option<&str>,
+    context_type: ChatContextType,
+    context_id: &str,
+    working_directory: &Path,
+    entity_status: Option<&str>,
+    project_id: Option<&str>,
+    filesystem_read_roots: &[PathBuf],
+    runtime_team_mode: bool,
+    chat_attachment_repo: Arc<dyn ChatAttachmentRepository>,
+    artifact_repo: Arc<dyn ArtifactRepository>,
+    ideation_session_repo: Arc<dyn IdeationSessionRepository>,
+    delegated_session_repo: Arc<dyn DelegatedSessionRepository>,
+    task_repo: Arc<dyn TaskRepository>,
+    session_messages: &[ChatMessage],
+    total_available: usize,
+    is_external_mcp: bool,
+    stored_session_id: Option<&str>,
+    resolved_spawn_settings: &ResolvedAgentSpawnSettings,
+    agent_workspace_prompt_context: Option<&str>,
+    attachment_context_override: Option<&str>,
+) -> Result<ResolvedChatHarnessLaunch, String> {
+    build_launch_plan_for_harness_with_spawn_guard(
+        harness,
+        cli_path,
+        plugin_dir,
+        conversation,
+        user_message,
+        agent_name_override,
+        agent_profile,
+        context_type,
+        context_id,
+        working_directory,
+        entity_status,
+        project_id,
+        filesystem_read_roots,
+        runtime_team_mode,
+        chat_attachment_repo,
+        artifact_repo,
+        ideation_session_repo,
+        delegated_session_repo,
+        task_repo,
+        session_messages,
+        total_available,
+        is_external_mcp,
+        stored_session_id,
+        resolved_spawn_settings,
+        false,
+        agent_workspace_prompt_context,
+        attachment_context_override,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn build_launch_plan_for_harness_with_spawn_guard(
+    harness: AgentHarnessKind,
+    cli_path: &Path,
+    plugin_dir: &Path,
+    conversation: &ChatConversation,
+    user_message: &str,
+    agent_name_override: Option<&str>,
+    agent_profile: Option<&str>,
+    context_type: ChatContextType,
+    context_id: &str,
+    working_directory: &Path,
+    entity_status: Option<&str>,
+    project_id: Option<&str>,
+    filesystem_read_roots: &[PathBuf],
+    runtime_team_mode: bool,
+    chat_attachment_repo: Arc<dyn ChatAttachmentRepository>,
+    artifact_repo: Arc<dyn ArtifactRepository>,
+    ideation_session_repo: Arc<dyn IdeationSessionRepository>,
+    delegated_session_repo: Arc<dyn DelegatedSessionRepository>,
+    task_repo: Arc<dyn TaskRepository>,
+    session_messages: &[ChatMessage],
+    total_available: usize,
+    is_external_mcp: bool,
+    stored_session_id: Option<&str>,
+    resolved_spawn_settings: &ResolvedAgentSpawnSettings,
+    enforce_spawn_guard: bool,
+    agent_workspace_prompt_context: Option<&str>,
+    attachment_context_override: Option<&str>,
+) -> Result<ResolvedChatHarnessLaunch, String> {
     let resolved_cli = resolve_chat_harness_cli(harness, cli_path)?;
     build_launch_plan_from_resolved_cli(
         resolved_cli,
@@ -2601,6 +2745,7 @@ pub(crate) async fn build_launch_plan_for_harness(
             is_external_mcp,
             stored_session_id,
             resolved_spawn_settings,
+            enforce_spawn_guard,
             agent_workspace_prompt_context,
             attachment_context_override,
         },
@@ -2688,6 +2833,7 @@ pub async fn build_interactive_command(
     is_external_mcp: bool,
     stored_session_id: Option<&str>,
     resolved_spawn_settings: &ResolvedAgentSpawnSettings,
+    enforce_spawn_guard: bool,
     agent_workspace_prompt_context: Option<&str>,
     attachment_context_override: Option<&str>,
 ) -> Result<SpawnableCommand, String> {
@@ -2803,6 +2949,7 @@ pub async fn build_interactive_command(
         resolved_spawn_settings.claude_effort.as_deref(),
         Some(resolved_spawn_settings.model.as_str()),
         Some(&mcp_runtime_context),
+        enforce_spawn_guard,
     )?;
     log_claude_launch_plan_phase(conversation, "build_spawnable_command", spawnable_started);
 
@@ -3712,7 +3859,7 @@ exit 0
             )
             .await;
 
-        build_launch_plan_for_harness(
+        build_launch_plan_for_harness_for_test(
             harness,
             cli_path,
             plugin_dir,
@@ -3787,7 +3934,7 @@ exit 0
             )
             .await;
 
-        let launch_plan = build_launch_plan_for_harness(
+        let launch_plan = build_launch_plan_for_harness_for_test(
             harness,
             cli_path,
             plugin_dir,
@@ -4318,7 +4465,7 @@ exit 0
                 )
                 .await;
 
-            let launch_plan = build_launch_plan_for_harness(
+            let launch_plan = build_launch_plan_for_harness_for_test(
                 harness,
                 &cli_path,
                 &plugin_dir,
@@ -4396,7 +4543,7 @@ exit 0
                 )
                 .await;
 
-            let launch_plan = build_launch_plan_for_harness(
+            let launch_plan = build_launch_plan_for_harness_for_test(
                 harness,
                 &cli_path,
                 &plugin_dir,
@@ -4545,7 +4692,7 @@ exit 0
                 )
                 .await;
 
-            let launch_plan = build_launch_plan_for_harness(
+            let launch_plan = build_launch_plan_for_harness_for_test(
                 harness,
                 &cli_path,
                 &plugin_dir,
@@ -4628,7 +4775,7 @@ exit 0
                 )
                 .await;
 
-            let launch_plan = build_launch_plan_for_harness(
+            let launch_plan = build_launch_plan_for_harness_for_test(
                 harness,
                 &cli_path,
                 &plugin_dir,
@@ -4929,7 +5076,7 @@ exit 0
             )
             .await;
 
-        let launch_plan = build_launch_plan_for_harness(
+        let launch_plan = build_launch_plan_for_harness_for_test(
             AgentHarnessKind::Claude,
             &cli_path,
             &plugin_dir,
