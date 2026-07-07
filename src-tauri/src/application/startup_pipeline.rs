@@ -437,6 +437,25 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         });
     }
 
+    tracing::info!("Scheduling periodic terminal PR local cleanup...");
+    {
+        let plan_branch_repo = Arc::clone(&plan_branch_repo);
+        let agent_conversation_workspace_repo = Arc::clone(&agent_conversation_workspace_repo);
+        let project_repo = Arc::clone(&project_repo);
+        let github_service = github_service.as_ref().map(Arc::clone);
+        let running_agent_registry = Arc::clone(&running_agent_registry);
+        tauri::async_runtime::spawn(async move {
+            crate::application::pr_startup_recovery::run_periodic_terminal_pr_local_cleanup(
+                plan_branch_repo,
+                agent_conversation_workspace_repo,
+                project_repo,
+                github_service,
+                running_agent_registry,
+            )
+            .await;
+        });
+    }
+
     tracing::info!("Scheduling orphan agent worktree cleanup...");
     {
         let project_repo = Arc::clone(&project_repo);

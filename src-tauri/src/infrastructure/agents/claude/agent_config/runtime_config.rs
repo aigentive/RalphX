@@ -452,6 +452,12 @@ pub struct GitRuntimeConfig {
     /// TTL for external PR reconciliation attempts on an unlinked agent workspace.
     #[serde(default = "default_agent_workspace_pr_reconciliation_cache_ttl_ms")]
     pub agent_workspace_pr_reconciliation_cache_ttl_ms: u64,
+    /// Seconds between background terminal PR local artifact cleanup passes.
+    #[serde(default = "default_terminal_pr_local_cleanup_interval_secs")]
+    pub terminal_pr_local_cleanup_interval_secs: u64,
+    /// Seconds before retryable terminal PR cleanup markers are retried.
+    #[serde(default = "default_terminal_pr_local_cleanup_retry_secs")]
+    pub terminal_pr_local_cleanup_retry_secs: u64,
     /// Seconds before unchanged orphan agent-worktree cleanup markers are retried.
     pub orphan_worktree_cleanup_marker_retry_secs: u64,
     /// Seconds to wait after SIGTERM for process tree cleanup before worktree deletion.
@@ -484,6 +490,8 @@ impl Default for GitRuntimeConfig {
             workspace_pr_annotations_cache_ttl_ms: 30_000,
             workspace_pr_annotations_check_run_fetch_limit: 10,
             agent_workspace_pr_reconciliation_cache_ttl_ms: 30_000,
+            terminal_pr_local_cleanup_interval_secs: 900,
+            terminal_pr_local_cleanup_retry_secs: 3_600,
             orphan_worktree_cleanup_marker_retry_secs: 86_400,
             agent_kill_settle_secs: 0,
             agent_stop_timeout_secs: 3,
@@ -497,6 +505,14 @@ impl Default for GitRuntimeConfig {
 
 fn default_agent_workspace_pr_reconciliation_cache_ttl_ms() -> u64 {
     30_000
+}
+
+fn default_terminal_pr_local_cleanup_interval_secs() -> u64 {
+    900
+}
+
+fn default_terminal_pr_local_cleanup_retry_secs() -> u64 {
+    3_600
 }
 
 /// All fields required in config/ralphx.yaml — no serde defaults.
@@ -832,6 +848,14 @@ fn apply_env_overrides_with(cfg: &mut AllRuntimeConfig, lookup: &dyn Fn(&str) ->
     env_u64!(
         cfg.git.agent_workspace_pr_reconciliation_cache_ttl_ms,
         "RALPHX_GIT_AGENT_WORKSPACE_PR_RECONCILIATION_CACHE_TTL_MS"
+    );
+    env_u64!(
+        cfg.git.terminal_pr_local_cleanup_interval_secs,
+        "RALPHX_GIT_TERMINAL_PR_LOCAL_CLEANUP_INTERVAL_SECS"
+    );
+    env_u64!(
+        cfg.git.terminal_pr_local_cleanup_retry_secs,
+        "RALPHX_GIT_TERMINAL_PR_LOCAL_CLEANUP_RETRY_SECS"
     );
     env_u64!(
         cfg.git.orphan_worktree_cleanup_marker_retry_secs,

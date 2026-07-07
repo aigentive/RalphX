@@ -245,7 +245,7 @@ async fn test_terminal_cleanup_candidates_retry_unsafe_after_ttl() {
 
     repo.create(branch).await.unwrap();
 
-    let old_time = chrono::Utc::now() - chrono::Duration::hours(25);
+    let old_time = chrono::Utc::now() - chrono::Duration::hours(2);
     repo.mark_local_cleanup_status(&branch_id, "unsafe", old_time)
         .await
         .unwrap();
@@ -257,7 +257,7 @@ async fn test_terminal_cleanup_candidates_retry_unsafe_after_ttl() {
     assert_eq!(
         candidates.len(),
         1,
-        "unsafe marker older than 24h should be retryable"
+        "unsafe marker after retry window should be retryable"
     );
 }
 
@@ -306,7 +306,7 @@ async fn test_terminal_cleanup_candidates_retry_target_ref_missing_after_ttl() {
 
     repo.create(branch).await.unwrap();
 
-    let old_time = chrono::Utc::now() - chrono::Duration::hours(25);
+    let old_time = chrono::Utc::now() - chrono::Duration::hours(2);
     repo.mark_local_cleanup_status(&branch_id, "target_ref_missing", old_time)
         .await
         .unwrap();
@@ -318,7 +318,52 @@ async fn test_terminal_cleanup_candidates_retry_target_ref_missing_after_ttl() {
     assert_eq!(
         candidates.len(),
         1,
-        "target_ref_missing marker older than 24h should be retryable"
+        "target_ref_missing marker after retry window should be retryable"
+    );
+}
+
+#[tokio::test]
+async fn test_terminal_cleanup_candidates_retry_workspace_dirty_after_retry_window() {
+    let (_db, repo) = setup_repo();
+    let project_id = ProjectId::from_string("proj-retry-dirty".to_string());
+    let mut branch = PlanBranch::new(
+        ArtifactId::from_string("art-retry-dirty"),
+        IdeationSessionId::from_string("sess-retry-dirty"),
+        project_id.clone(),
+        "ralphx/proj/plan-dirty".to_string(),
+        "main".to_string(),
+    );
+    branch.status = PlanBranchStatus::Merged;
+    let branch_id = branch.id.clone();
+
+    repo.create(branch).await.unwrap();
+
+    let old_time = chrono::Utc::now() - chrono::Duration::hours(2);
+    repo.mark_local_cleanup_status(&branch_id, "workspace_dirty", old_time)
+        .await
+        .unwrap();
+
+    let candidates = repo
+        .get_terminal_local_cleanup_candidates_by_project_id(&project_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        candidates.len(),
+        1,
+        "workspace_dirty marker after retry window should be retryable"
+    );
+
+    repo.mark_local_cleanup_status(&branch_id, "workspace_dirty", chrono::Utc::now())
+        .await
+        .unwrap();
+
+    let candidates = repo
+        .get_terminal_local_cleanup_candidates_by_project_id(&project_id)
+        .await
+        .unwrap();
+    assert!(
+        candidates.is_empty(),
+        "workspace_dirty marker before retry window should not be retried"
     );
 }
 

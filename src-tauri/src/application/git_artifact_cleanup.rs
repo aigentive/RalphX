@@ -18,6 +18,53 @@ pub(crate) struct LocalGitArtifactCleanupReport {
     pub skipped_reason: Option<String>,
 }
 
+pub(crate) const LOCAL_CLEANUP_STATUS_CLEANED: &str = "cleaned";
+pub(crate) const LOCAL_CLEANUP_STATUS_BRANCH_MISSING: &str = "branch_missing";
+pub(crate) const LOCAL_CLEANUP_STATUS_BRANCH_PRESERVED_NON_OWNED: &str =
+    "branch_preserved_non_owned";
+pub(crate) const LOCAL_CLEANUP_STATUS_WORKSPACE_DIRTY: &str = "workspace_dirty";
+pub(crate) const LOCAL_CLEANUP_STATUS_UNSAFE: &str = "unsafe";
+pub(crate) const LOCAL_CLEANUP_STATUS_TARGET_REF_MISSING: &str = "target_ref_missing";
+
+pub(crate) fn terminal_plan_branch_cleanup_marker_for_report(
+    report: &LocalGitArtifactCleanupReport,
+) -> Option<&'static str> {
+    terminal_cleanup_marker_for_report(report, false)
+}
+
+pub(crate) fn terminal_agent_workspace_cleanup_marker_for_report(
+    report: &LocalGitArtifactCleanupReport,
+    delete_branch_if_merged: bool,
+) -> Option<&'static str> {
+    terminal_cleanup_marker_for_report(report, !delete_branch_if_merged)
+}
+
+fn terminal_cleanup_marker_for_report(
+    report: &LocalGitArtifactCleanupReport,
+    branch_cleanup_not_required: bool,
+) -> Option<&'static str> {
+    match report.skipped_reason.as_deref() {
+        Some("branch_missing") => Some(LOCAL_CLEANUP_STATUS_BRANCH_MISSING),
+        Some("branch_not_ralphx_owned") => Some(LOCAL_CLEANUP_STATUS_BRANCH_PRESERVED_NON_OWNED),
+        Some("workspace_has_uncommitted_changes") => Some(LOCAL_CLEANUP_STATUS_WORKSPACE_DIRTY),
+        Some(reason) if reason.starts_with("branch_not_merged:") => {
+            Some(LOCAL_CLEANUP_STATUS_UNSAFE)
+        }
+        Some(reason) if reason.starts_with("target_ref_missing:") => {
+            Some(LOCAL_CLEANUP_STATUS_TARGET_REF_MISSING)
+        }
+        Some("plan_branch_not_merged")
+        | Some("workspace_path_mismatch")
+        | Some("workspace_path_not_directory")
+        | Some("workspace_points_to_project_root") => Some(LOCAL_CLEANUP_STATUS_UNSAFE),
+        Some(_) => None,
+        None if report.branch_deleted || report.worktree_removed || branch_cleanup_not_required => {
+            Some(LOCAL_CLEANUP_STATUS_CLEANED)
+        }
+        None => None,
+    }
+}
+
 pub(crate) async fn cleanup_merged_plan_branch_local_artifacts(
     project: &Project,
     plan_branch: &PlanBranch,
