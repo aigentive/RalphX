@@ -20,6 +20,7 @@ interface AgentsConversationMainRegionProps {
   chatFocusOptions: ActiveConversationPanelProps["chatFocusOptions"];
   defaultProjectId: StartConversationPanelProps["defaultProjectId"];
   defaultRuntime: StartConversationPanelProps["defaultRuntime"];
+  hasAttachedPlanArtifact: ActiveConversationPanelProps["hasAttachedPlanArtifact"];
   hasAutoOpenArtifacts: ActiveConversationPanelProps["hasAutoOpenArtifacts"];
   isLoadingProjects: StartConversationPanelProps["isLoadingProjects"];
   modelRegistry: StartConversationPanelProps["modelRegistry"];
@@ -75,6 +76,7 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
   chatFocusOptions,
   defaultProjectId,
   defaultRuntime,
+  hasAttachedPlanArtifact,
   hasAutoOpenArtifacts,
   isLoadingProjects,
   modelRegistry,
@@ -129,6 +131,7 @@ export const AgentsConversationMainRegion = memo(function AgentsConversationMain
         availableArtifactTabs={availableArtifactTabs}
         chatFocus={chatFocus}
         chatFocusOptions={chatFocusOptions}
+        hasAttachedPlanArtifact={hasAttachedPlanArtifact}
         hasAutoOpenArtifacts={hasAutoOpenArtifacts}
         normalizedActiveRuntime={normalizedActiveRuntime}
         onActiveConversationModeChange={onActiveConversationModeChange}

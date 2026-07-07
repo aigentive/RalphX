@@ -42,6 +42,7 @@ function mainRegionProps(
     chatFocusOptions: [],
     defaultProjectId: "project-1",
     defaultRuntime: agentRuntimeFixture,
+    hasAttachedPlanArtifact: false,
     hasAutoOpenArtifacts: false,
     isLoadingProjects: false,
     modelRegistry: null,

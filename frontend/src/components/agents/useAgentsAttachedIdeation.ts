@@ -83,11 +83,11 @@ export function useAgentsAttachedIdeation({
         attachedIdeationSession.verificationStatus !== "unverified"
     );
   }, [attachedIdeationSession]);
+  const hasAttachedPlanArtifact = Boolean(
+    attachedIdeationSession?.planArtifactId ||
+      attachedIdeationSession?.inheritedPlanArtifactId,
+  );
   const availableArtifactTabs = useMemo(() => {
-    const hasPlanArtifact = Boolean(
-      attachedIdeationSession?.planArtifactId ||
-        attachedIdeationSession?.inheritedPlanArtifactId,
-    );
     const hasExecutionTasks = Boolean(
       activeWorkspace?.linkedPlanBranchId ||
         attachedIdeationSession?.acceptanceStatus === "accepted" ||
@@ -110,7 +110,7 @@ export function useAgentsAttachedIdeation({
 
     return getVisibleIdeationArtifactTabs({
       hasAttachedIdeationSession: Boolean(attachedIdeationSession),
-      hasPlanArtifact,
+      hasPlanArtifact: hasAttachedPlanArtifact,
       canStartPlan,
       hasProposals: Boolean(attachedIdeationSessionData?.proposals.length),
       hasVerificationEvidence,
@@ -124,6 +124,7 @@ export function useAgentsAttachedIdeation({
     attachedIdeationSession,
     attachedIdeationSessionData?.proposals.length,
     attachedArtifactMode,
+    hasAttachedPlanArtifact,
   ]);
   useEffect(() => {
     if (
@@ -156,6 +157,7 @@ export function useAgentsAttachedIdeation({
     attachedIdeationSessionData: attachedIdeationSession,
     attachedIdeationSessionId,
     availableArtifactTabs,
+    hasAttachedPlanArtifact,
     hasAutoOpenArtifacts,
   };
 }

@@ -831,6 +831,7 @@ function renderPanel(
     availableArtifactTabs: [],
     chatFocus: { type: "workspace" },
     chatFocusOptions: [],
+    hasAttachedPlanArtifact: false,
     hasAutoOpenArtifacts: false,
     normalizedActiveRuntime: {
       provider: "claude",
@@ -1997,6 +1998,29 @@ describe("AgentsActiveConversationPanel", () => {
     expect(approvePlanArtifactMock).not.toHaveBeenCalled();
   });
 
+  it("hides View Plan when no plan artifact is attached yet", () => {
+    renderPanel({
+      activeConversation: { ...projectConversation(), agentMode: "plan" },
+      activeConversationMode: "plan",
+      activeWorkspace: {
+        ...workspace(),
+        mode: "plan",
+        linkedIdeationSessionId: "planning-session-1",
+      },
+      attachedIdeationSessionId: "planning-session-1",
+      availableArtifactTabs: ["plan"],
+      hasAttachedPlanArtifact: false,
+    });
+
+    expect(
+      screen.queryByTestId("agents-plan-composer-cta-row"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /View Plan/i }),
+    ).not.toBeInTheDocument();
+    expect(getSessionPlanMock).not.toHaveBeenCalled();
+  });
+
   it("shows only View Plan when the plan tab is not visible", async () => {
     const user = userEvent.setup();
     const onOpenPlanArtifact = vi.fn();
@@ -2018,6 +2042,7 @@ describe("AgentsActiveConversationPanel", () => {
       },
       attachedIdeationSessionId: "planning-session-1",
       availableArtifactTabs: ["plan"],
+      hasAttachedPlanArtifact: true,
       onOpenPlanArtifact,
     });
 
@@ -2061,6 +2086,7 @@ describe("AgentsActiveConversationPanel", () => {
       },
       attachedIdeationSessionId: "planning-session-1",
       availableArtifactTabs: ["plan"],
+      hasAttachedPlanArtifact: true,
     });
 
     const row = await screen.findByTestId("agents-plan-composer-cta-row");
@@ -2091,6 +2117,7 @@ describe("AgentsActiveConversationPanel", () => {
       },
       attachedIdeationSessionId: "planning-session-1",
       availableArtifactTabs: ["plan", "tasks"],
+      hasAttachedPlanArtifact: true,
       onOpenPlanArtifact,
     });
 
