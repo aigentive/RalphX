@@ -18,6 +18,7 @@ use crate::application::clickup_integration_service::{
 use crate::application::{
     ClickUpApiClient, ClickUpAuthContext, ClickUpComment, ClickUpSpace, ClickUpStatus,
     ClickUpTaskContent, ClickUpTaskSummary, ClickUpUser, ClickUpWorkspace,
+    TicketAttachmentProviderBytes,
 };
 
 const CLICKUP_API_BASE: &str = "https://api.clickup.com/api/v2";
@@ -91,6 +92,54 @@ impl HyperClickUpApiClient {
         serde_json::from_slice(&bytes)
             .map_err(|error| format!("Failed to parse ClickUp response: {error}"))
     }
+
+    async fn send_bytes_request(
+        &self,
+        method: Method,
+        url: String,
+        token: &str,
+        max_bytes: usize,
+    ) -> Result<TicketAttachmentProviderBytes, String> {
+        let uri = url
+            .parse::<hyper::Uri>()
+            .map_err(|error| format!("Invalid ClickUp attachment URL: {error}"))?;
+        let request = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("Accept", "*/*")
+            .header("Authorization", clickup_authorization_header(token))
+            .body(Full::new(Bytes::new()))
+            .map_err(|error| format!("Failed to build ClickUp attachment request: {error}"))?;
+        let response = tokio::time::timeout(self.timeout, self.client.request(request))
+            .await
+            .map_err(|_| "ClickUp attachment request timed out".to_string())?
+            .map_err(|error| format!("ClickUp attachment request failed: {error}"))?;
+        let status = response.status();
+        let mime_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        if !status.is_success() {
+            return Err(format!(
+                "ClickUp attachment returned HTTP {}",
+                status.as_u16()
+            ));
+        }
+        let mut body = response.into_body();
+        let mut bytes = Vec::new();
+        while let Some(frame) = body.frame().await {
+            let frame =
+                frame.map_err(|error| format!("Failed to read ClickUp attachment: {error}"))?;
+            if let Ok(data) = frame.into_data() {
+                bytes.extend_from_slice(&data);
+                if bytes.len() > max_bytes {
+                    return Err("ClickUp attachment exceeded maximum fetch size".to_string());
+                }
+            }
+        }
+        Ok(TicketAttachmentProviderBytes { bytes, mime_type })
+    }
 }
 
 fn install_rustls_crypto_provider() {
@@ -115,6 +164,16 @@ pub(crate) trait ClickUpJsonRequester: Send + Sync {
         token: &str,
         body: Option<Value>,
     ) -> Result<Value, String>;
+
+    async fn request_bytes(
+        &self,
+        _method: Method,
+        _url: String,
+        _token: &str,
+        _max_bytes: usize,
+    ) -> Result<TicketAttachmentProviderBytes, String> {
+        Err("ClickUp attachment downloads are not available for this requester".to_string())
+    }
 }
 
 #[async_trait]
@@ -127,6 +186,16 @@ impl ClickUpJsonRequester for HyperClickUpApiClient {
         body: Option<Value>,
     ) -> Result<Value, String> {
         self.send_json_request(method, url, token, body).await
+    }
+
+    async fn request_bytes(
+        &self,
+        method: Method,
+        url: String,
+        token: &str,
+        max_bytes: usize,
+    ) -> Result<TicketAttachmentProviderBytes, String> {
+        self.send_bytes_request(method, url, token, max_bytes).await
     }
 }
 
@@ -212,6 +281,16 @@ where
         task_id: &str,
     ) -> Result<ClickUpTaskContent, String> {
         fetch_task_detail_by_custom_id(self, &auth.api_token, team_id, task_id).await
+    }
+
+    async fn fetch_attachment_bytes(
+        &self,
+        auth: &ClickUpAuthContext,
+        url: &str,
+        max_bytes: usize,
+    ) -> Result<TicketAttachmentProviderBytes, String> {
+        self.request_bytes(Method::GET, url.to_string(), &auth.api_token, max_bytes)
+            .await
     }
 
     async fn list_statuses(

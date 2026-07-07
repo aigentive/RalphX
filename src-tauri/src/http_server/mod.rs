@@ -528,6 +528,14 @@ pub async fn start_http_server(
             "/api/get_conversation_transcript",
             post(get_conversation_transcript),
         )
+        .route(
+            "/api/ticket_attachments/list",
+            post(list_ticket_attachments),
+        )
+        .route(
+            "/api/ticket_attachments/fetch",
+            post(fetch_ticket_attachment),
+        )
         // Conversation active state endpoint (streaming state hydration)
         .route(
             "/api/conversations/:id/active-state",

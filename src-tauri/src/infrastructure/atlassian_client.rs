@@ -16,6 +16,7 @@ use crate::application::{
     AtlassianOAuthResource,
     AtlassianOAuthTokenResponse, AtlassianResourceContent, AtlassianResourceKind,
     AtlassianResourceSummary, JiraIssueDetail, JiraProjectSummary, JiraStatusSummary,
+    TicketAttachmentProviderBytes,
 };
 use crate::domain::services::ComposerIntegrationReference;
 
@@ -114,6 +115,63 @@ impl HyperAtlassianApiClient {
         }
         serde_json::from_slice(&bytes)
             .map_err(|error| format!("Failed to parse Atlassian response: {error}"))
+    }
+
+    async fn send_bytes_request(
+        &self,
+        method: Method,
+        url: String,
+        auth: RequestAuth<'_>,
+        max_bytes: usize,
+    ) -> Result<TicketAttachmentProviderBytes, String> {
+        let uri = url
+            .parse::<hyper::Uri>()
+            .map_err(|error| format!("Invalid Atlassian attachment URL: {error}"))?;
+        let mut builder = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("Accept", "*/*");
+        builder = match auth {
+            RequestAuth::Basic { email, token } => {
+                let auth =
+                    base64::engine::general_purpose::STANDARD.encode(format!("{email}:{token}"));
+                builder.header("Authorization", format!("Basic {auth}"))
+            }
+            RequestAuth::Bearer(token) => builder.header("Authorization", format!("Bearer {token}")),
+            RequestAuth::None => builder,
+        };
+        let request = builder
+            .body(Full::new(Bytes::new()))
+            .map_err(|error| format!("Failed to build Atlassian attachment request: {error}"))?;
+        let response = tokio::time::timeout(self.timeout, self.client.request(request))
+            .await
+            .map_err(|_| "Atlassian attachment request timed out".to_string())?
+            .map_err(|error| format!("Atlassian attachment request failed: {error}"))?;
+        let status = response.status();
+        let mime_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        if !status.is_success() {
+            return Err(format!(
+                "Atlassian attachment returned HTTP {}",
+                status.as_u16()
+            ));
+        }
+        let mut body = response.into_body();
+        let mut bytes = Vec::new();
+        while let Some(frame) = body.frame().await {
+            let frame =
+                frame.map_err(|error| format!("Failed to read Atlassian attachment: {error}"))?;
+            if let Ok(data) = frame.into_data() {
+                bytes.extend_from_slice(&data);
+                if bytes.len() > max_bytes {
+                    return Err("Atlassian attachment exceeded maximum fetch size".to_string());
+                }
+            }
+        }
+        Ok(TicketAttachmentProviderBytes { bytes, mime_type })
     }
 }
 
@@ -220,6 +278,21 @@ impl AtlassianApiClient for HyperAtlassianApiClient {
             "confluence" => fetch_confluence(self, auth, reference).await,
             other => Err(format!("Unsupported Atlassian reference kind: {other}")),
         }
+    }
+
+    async fn fetch_jira_attachment_bytes(
+        &self,
+        auth: &AtlassianAuthContext,
+        content_url: &str,
+        max_bytes: usize,
+    ) -> Result<TicketAttachmentProviderBytes, String> {
+        self.send_bytes_request(
+            Method::GET,
+            content_url.to_string(),
+            request_auth(auth),
+            max_bytes,
+        )
+        .await
     }
 
     async fn assign_jira_issue_to_current_user(

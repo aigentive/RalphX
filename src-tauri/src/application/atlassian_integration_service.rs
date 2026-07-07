@@ -16,6 +16,8 @@ use crate::domain::integrations::{
 };
 use crate::domain::services::{ComposerIntegrationReference, SecretStore};
 
+use super::ticket_attachment_service::TicketAttachmentProviderBytes;
+
 const ATLASSIAN_TOKEN_SECRET_REF: &str = "integrations/atlassian/default/api-token";
 const ATLASSIAN_OAUTH_CLIENT_SECRET_REF: &str =
     "integrations/atlassian/default/oauth-client-secret";
@@ -247,6 +249,15 @@ pub trait AtlassianApiClient: Send + Sync {
         auth: &AtlassianAuthContext,
         reference: &ComposerIntegrationReference,
     ) -> Result<AtlassianResourceContent, String>;
+
+    async fn fetch_jira_attachment_bytes(
+        &self,
+        _auth: &AtlassianAuthContext,
+        _content_url: &str,
+        _max_bytes: usize,
+    ) -> Result<TicketAttachmentProviderBytes, String> {
+        Err("Jira attachment downloads are not available for this client".to_string())
+    }
 
     async fn assign_jira_issue_to_current_user(
         &self,
@@ -933,6 +944,17 @@ impl AtlassianIntegrationService {
     ) -> Result<AtlassianResourceContent, String> {
         let auth = self.enabled_auth_context().await?;
         self.client.fetch(&auth, reference).await
+    }
+
+    pub async fn fetch_jira_attachment_bytes(
+        &self,
+        content_url: &str,
+        max_bytes: usize,
+    ) -> Result<TicketAttachmentProviderBytes, String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client
+            .fetch_jira_attachment_bytes(&auth, content_url, max_bytes)
+            .await
     }
 
     pub async fn resolve_resource_urls(
