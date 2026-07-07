@@ -1644,6 +1644,21 @@ describe("AgentsArtifactPane", () => {
     expect(screen.queryByText("No ideation run attached")).not.toBeInTheDocument();
   });
 
+  it("keeps the empty Plan tab visible when Review is also available", async () => {
+    getWorkspaceReviewContextMock.mockResolvedValue(
+      workspaceReviewContext({
+        target: workspaceReviewTarget,
+        shouldShowTab: true,
+      }),
+    );
+
+    renderPane("plan", workspace({ mode: "edit" }), vi.fn(), false, conversation());
+
+    expect(await screen.findByTestId("agents-artifact-tab-review")).toBeInTheDocument();
+    expect(screen.getByTestId("agent-plan-start-panel")).toBeInTheDocument();
+    expect(screen.queryByText("Review not run")).not.toBeInTheDocument();
+  });
+
   it("updates workspace and plan caches when the Plan start panel seeds a plan", async () => {
     const user = userEvent.setup();
     const queryClient = createTestQueryClient();
@@ -1768,7 +1783,7 @@ describe("AgentsArtifactPane", () => {
       }),
     );
 
-    renderPane("plan", workspace({ mode: "edit" }), vi.fn(), false, conversation());
+    renderPane("verification", workspace({ mode: "edit" }), vi.fn(), false, conversation());
 
     expect(await screen.findByText("Review not run")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Run review" })).toBeInTheDocument();
