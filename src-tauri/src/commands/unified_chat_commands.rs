@@ -14108,6 +14108,81 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn update_ideation_workspace_from_base_updates_linked_plan_worktree() {
+        let (temp, state, conversation_id, plan_branch_id, github) =
+            setup_linked_plan_publish_command_state(
+                "base-update",
+                false,
+                Arc::new(MockGithubService::new()),
+            )
+            .await;
+        let repo_path = temp.path().join("repo");
+        std::fs::write(repo_path.join("base-fix.txt"), "base fix\n")
+            .expect("base fixture should be written");
+        git(&repo_path, &["add", "base-fix.txt"]);
+        git(&repo_path, &["commit", "-m", "base fix"]);
+        let main_sha = git(&repo_path, &["rev-parse", "HEAD"]);
+        assert_eq!(git(&repo_path, &["branch", "--show-current"]), "main");
+
+        let execution_state = Arc::new(ExecutionState::new());
+        let team_service = Arc::new(TeamService::new_without_events(Arc::new(
+            TeamStateTracker::new(),
+        )));
+        let response = update_agent_conversation_workspace_from_base_for_app_state(
+            &state,
+            &execution_state,
+            Some(team_service),
+            conversation_id.clone(),
+            AgentConversationWorkspaceBaseSelection {
+                kind: None,
+                branch_mode: None,
+                base_ref: None,
+                display_name: None,
+                source_pull_request: None,
+            },
+        )
+        .await
+        .expect("linked plan branch worktree should update from base");
+
+        assert!(response.updated);
+        assert_eq!(response.base_commit, main_sha);
+        assert_eq!(response.target_ref, "origin/main");
+        assert_eq!(
+            response.workspace.publication_push_status.as_deref(),
+            Some("pushed")
+        );
+        assert_eq!(github.state().push_branch_calls, 1);
+        let project = state
+            .project_repo
+            .get_all()
+            .await
+            .expect("project lookup should succeed")
+            .pop()
+            .expect("project should exist");
+        let plan_branch = state
+            .plan_branch_repo
+            .get_by_id(&plan_branch_id)
+            .await
+            .expect("plan branch lookup should succeed")
+            .expect("plan branch should exist");
+        assert_eq!(
+            github.state().last_push_branch_name.as_deref(),
+            Some(plan_branch.branch_name.as_str())
+        );
+        assert_eq!(plan_branch.pr_push_status, PrPushStatus::Pushed);
+        let plan_worktree = ensure_linked_plan_branch_agent_worktree(&project, &plan_branch)
+            .await
+            .expect("linked plan worktree should resolve");
+        git(
+            &repo_path,
+            &["merge-base", "--is-ancestor", &main_sha, &plan_branch.branch_name],
+        );
+        assert_eq!(git(&repo_path, &["branch", "--show-current"]), "main");
+        assert_eq!(git(&repo_path, &["status", "--short"]), "");
+        assert_eq!(git(&plan_worktree, &["status", "--short"]), "");
+    }
+
+    #[tokio::test]
     async fn update_workspace_from_saved_base_blocks_when_base_commit_is_missing() {
         let (_temp, state, conversation_id, github) = setup_publish_command_state(
             "update-missing-base",

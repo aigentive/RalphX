@@ -18,6 +18,7 @@ import { TextBubble } from "./TextBubble";
 import { formatTimestamp, formatTimestampTitle } from "./MessageItem.utils";
 import { isDiffToolCall, isTaskToolCall } from "./DiffToolCallView.utils";
 import { getToolCallWidget } from "./tool-widgets/registry";
+import { canonicalizeToolName } from "./tool-widgets/tool-name";
 import { MessageAttachments, type MessageAttachment } from "./MessageAttachments";
 import { MessageReferences } from "./MessageReferences";
 import type { MessageComposerReferences } from "./MessageReferences.parse";
@@ -209,11 +210,22 @@ function ContentToolCallGroupToggle({
   );
 }
 
+const GROUPABLE_WIDGET_TOOL_NAMES = new Set([
+  "bash",
+  "read",
+  "grep",
+  "glob",
+  "list_dir",
+]);
+
 function shouldGroupContentBlockToolCall(toolCall: ToolCall): boolean {
   if (isDiffToolCall(toolCall.name) || isTaskToolCall(toolCall.name)) {
     return false;
   }
-  if (getToolCallWidget(toolCall.name)) {
+  if (
+    getToolCallWidget(toolCall.name) &&
+    !GROUPABLE_WIDGET_TOOL_NAMES.has(canonicalizeToolName(toolCall.name))
+  ) {
     return false;
   }
   if (toolCall.resultPreviewTruncated) {

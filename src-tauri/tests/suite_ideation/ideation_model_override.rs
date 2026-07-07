@@ -9,6 +9,7 @@
 // `src-tauri/src/infrastructure/agents/claude/model_resolver_tests.rs`.
 // These tests focus on the CLI arg injection layer.
 
+use std::ffi::OsString;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -20,7 +21,7 @@ use ralphx_lib::domain::entities::{
 use ralphx_lib::domain::repositories::IdeationSessionRepository;
 use ralphx_lib::domain::repositories::IdeationModelSettingsRepository;
 use ralphx_lib::infrastructure::agents::claude::{
-    build_base_cli_command,
+    build_base_cli_command, build_base_cli_command_for_test,
     model_resolver::{resolve_ideation_model, resolve_verifier_subagent_model_with_source},
 };
 use ralphx_lib::infrastructure::memory::{
@@ -37,20 +38,53 @@ fn collect_args(cmd: &tokio::process::Command) -> Vec<String> {
         .collect()
 }
 
+struct EnvVarGuard {
+    key: &'static str,
+    original: Option<OsString>,
+}
+
+impl EnvVarGuard {
+    fn set(key: &'static str, value: &str) -> Self {
+        let original = std::env::var_os(key);
+        std::env::set_var(key, value);
+        Self { key, original }
+    }
+
+    fn unset(key: &'static str) -> Self {
+        let original = std::env::var_os(key);
+        std::env::remove_var(key);
+        Self { key, original }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        if let Some(value) = self.original.as_ref() {
+            std::env::set_var(self.key, value);
+        } else {
+            std::env::remove_var(self.key);
+        }
+    }
+}
+
 // --- CLI arg injection tests ---
 
 #[test]
 fn test_build_base_cli_command_with_model_override_passes_model_arg() {
     // When model_override=Some("opus"), --model opus must appear in the CLI args.
-    let result = build_base_cli_command(
+    let result = build_base_cli_command_for_test(
         Path::new("/fake/claude"),
         Path::new("/fake/plugin"),
         Some("ralphx-ideation"),
         false,
-        None,           // effort_override
-        Some("opus"),   // model_override
+        None,         // effort_override
+        Some("opus"), // model_override
     );
-    assert!(result.is_ok(), "build_base_cli_command failed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "build_base_cli_command failed: {:?}",
+        result.err()
+    );
     let cmd = result.unwrap();
     let args = collect_args(&cmd);
     let model_pos = args.iter().position(|a| a == "--model");
@@ -71,7 +105,7 @@ fn test_build_base_cli_command_with_model_override_passes_model_arg() {
 #[test]
 fn test_build_base_cli_command_with_sonnet_model_override() {
     // model_override=Some("sonnet") → --model sonnet
-    let result = build_base_cli_command(
+    let result = build_base_cli_command_for_test(
         Path::new("/fake/claude"),
         Path::new("/fake/plugin"),
         Some("ralphx-ideation"),
@@ -82,7 +116,10 @@ fn test_build_base_cli_command_with_sonnet_model_override() {
     assert!(result.is_ok());
     let cmd = result.unwrap();
     let args = collect_args(&cmd);
-    let model_pos = args.iter().position(|a| a == "--model").expect("--model not found");
+    let model_pos = args
+        .iter()
+        .position(|a| a == "--model")
+        .expect("--model not found");
     assert_eq!(args.get(model_pos + 1).map(String::as_str), Some("sonnet"));
 }
 
@@ -91,16 +128,20 @@ fn test_build_base_cli_command_no_model_override_no_yaml_uses_default() {
     // When model_override=None and the agent has no YAML-configured model,
     // build_base_cli_command should still produce a --model flag from the YAML fallback.
     // For an unknown agent name, the fallback is "sonnet" (hardcoded default).
-    let result = build_base_cli_command(
+    let result = build_base_cli_command_for_test(
         Path::new("/fake/claude"),
         Path::new("/fake/plugin"),
         Some("unknown-agent-with-no-yaml-config"),
         false,
-        None,  // effort_override
-        None,  // model_override — YAML fallback should apply
+        None, // effort_override
+        None, // model_override — YAML fallback should apply
     );
     // Command building succeeds regardless of whether --model is present
-    assert!(result.is_ok(), "build_base_cli_command failed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "build_base_cli_command failed: {:?}",
+        result.err()
+    );
     // The --model flag should appear if the YAML agent config has a model set;
     // it may be absent if the agent has no model in YAML (acceptable behavior).
     // The key assertion is that model_override=None does NOT inject a DB-resolved value.
@@ -108,10 +149,37 @@ fn test_build_base_cli_command_no_model_override_no_yaml_uses_default() {
     let args = collect_args(&cmd);
     if let Some(pos) = args.iter().position(|a| a == "--model") {
         let val = args.get(pos + 1).map(String::as_str).unwrap_or("");
-        assert_ne!(val, "opus", "DB override should not appear when model_override=None");
+        assert_ne!(
+            val, "opus",
+            "DB override should not appear when model_override=None"
+        );
         assert_ne!(val, "", "model value should not be empty");
     }
     // Note: if --model is absent entirely, that is fine — means YAML had no model for this agent
+}
+
+#[test]
+fn test_public_build_base_cli_command_stays_blocked_in_test_mode() {
+    let _test_mode = EnvVarGuard::set("RALPHX_TEST_MODE", "1");
+    let _allow_spawn = EnvVarGuard::unset("RALPHX_ALLOW_CLAUDE_SPAWN_IN_TESTS");
+
+    let result = build_base_cli_command(
+        Path::new("/fake/claude"),
+        Path::new("/fake/plugin"),
+        Some("ralphx-ideation"),
+        false,
+        None,
+        Some("opus"),
+    );
+
+    assert!(
+        result.is_err(),
+        "public spawn path should stay blocked in tests"
+    );
+    assert!(
+        result.unwrap_err().contains("disabled"),
+        "error should mention the test spawn guard"
+    );
 }
 
 // --- Verifier subagent independence test ---
@@ -175,7 +243,7 @@ async fn test_ideation_context_db_override_flows_to_cli_arg() {
     assert_eq!(resolved.source, "user");
 
     // Now build the CLI command with the resolved model
-    let result = build_base_cli_command(
+    let result = build_base_cli_command_for_test(
         Path::new("/fake/claude"),
         Path::new("/fake/plugin"),
         Some("ralphx-ideation"),
@@ -186,7 +254,10 @@ async fn test_ideation_context_db_override_flows_to_cli_arg() {
     assert!(result.is_ok());
     let cmd = result.unwrap();
     let args = collect_args(&cmd);
-    let model_pos = args.iter().position(|a| a == "--model").expect("--model not in args");
+    let model_pos = args
+        .iter()
+        .position(|a| a == "--model")
+        .expect("--model not in args");
     assert_eq!(args.get(model_pos + 1).map(String::as_str), Some("opus"));
 }
 

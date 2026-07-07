@@ -508,19 +508,18 @@ describe("MessageItem - Child tool call suppression for Task/Agent spawns", () =
     expect(taskCards).toHaveLength(1); // Only the Agent card at top level
   });
 
-  it("does NOT suppress tool_use blocks that are not nested in Task/Agent results", async () => {
+  it("collapses ordinary consecutive tool_use blocks, including Bash widgets, instead of rendering them raw", async () => {
     const user = userEvent.setup();
-    // Two independent tool calls: one Read, one Bash — neither is a Task/Agent spawn
     const contentBlocks = [
-      makeContentToolUse("read", {
-        id: "read-001",
-        arguments: { file_path: "/src/main.ts" },
-        result: "file content",
+      makeContentToolUse("bash", {
+        id: "bash-001",
+        arguments: { command: "npm test" },
+        result: "file1\nfile2",
       }),
       makeContentToolUse("custom_tool", {
-        id: "bash-001",
+        id: "custom-001",
         arguments: { command: "ls" },
-        result: "file1\nfile2",
+        result: "ok",
       }),
     ];
 
@@ -528,9 +527,11 @@ describe("MessageItem - Child tool call suppression for Task/Agent spawns", () =
       <MessageItem role="assistant" content="" createdAt={createdAt} contentBlocks={contentBlocks} />
     );
 
-    // The generic tool call is collapsed, not suppressed.
-    expect(screen.getByRole("button", { name: "Agent called 1 tool" })).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Agent called 1 tool" }));
+    expect(screen.getByRole("button", { name: "Agent called 2 tools" })).toBeInTheDocument();
+    expect(screen.queryByText("npm test")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Agent called 2 tools" }));
+    expect(await screen.findAllByText("npm test")).not.toHaveLength(0);
     const indicators = container.querySelectorAll('[data-testid="tool-call-indicator"]');
     expect(indicators.length).toBeGreaterThanOrEqual(1);
   });

@@ -21,3 +21,9 @@ pub mod mock_app;
 
 #[cfg(feature = "test-utils")]
 pub use mock_app::{create_mock_app, create_mock_app_handle};
+
+/// Seed fake harness probes so integration tests do not depend on installed provider CLIs.
+#[cfg(feature = "test-utils")]
+pub fn seed_available_harness_probes_for_test() {
+    crate::application::harness_runtime_registry::seed_available_harness_probes_for_test();
+}
