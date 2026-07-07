@@ -304,9 +304,14 @@ vi.mock("@/components/tasks/TaskBoard", () => ({
 
 vi.mock("@/components/agents/task-details/AgentsTaskDetailOverlay", () => ({
   AgentsTaskDetailOverlay: ({
+    onFocusTaskRuntime,
     selectedTaskIdOverride,
     onCloseOverride,
   }: {
+    onFocusTaskRuntime?: (
+      taskId: string,
+      contextType: "task_execution" | "review" | "merge"
+    ) => void;
     selectedTaskIdOverride?: string | null;
     onCloseOverride?: () => void;
   }) =>
@@ -315,6 +320,12 @@ vi.mock("@/components/agents/task-details/AgentsTaskDetailOverlay", () => ({
         data-testid="mock-agent-task-detail"
         data-task-id={selectedTaskIdOverride}
       >
+        <button
+          type="button"
+          onClick={() => onFocusTaskRuntime?.(selectedTaskIdOverride, "review")}
+        >
+          Focus review runtime
+        </button>
         <button type="button" onClick={onCloseOverride}>
           Close task
         </button>
@@ -1538,6 +1549,54 @@ describe("AgentsArtifactPane", () => {
       "task-1",
     );
     expect(onTaskArtifactSelectionChange).toHaveBeenCalledWith("task-1");
+  });
+
+  it("passes task runtime focus requests from task details to the host chat", async () => {
+    const onFocusTaskRuntime = vi.fn();
+    getIdeationSessionMock.mockResolvedValue({
+      session: {
+        id: "session-1",
+        projectId: "project-1",
+        title: "Agent Plan",
+        titleSource: "auto",
+        status: "active",
+        planArtifactId: "artifact-1",
+        seedTaskId: null,
+        parentSessionId: null,
+        teamMode: null,
+        teamConfig: null,
+        createdAt: "2026-04-23T09:00:00Z",
+        updatedAt: "2026-04-23T09:00:00Z",
+        archivedAt: null,
+        convertedAt: "2026-04-23T10:00:00Z",
+        verificationStatus: "unverified",
+        verificationInProgress: false,
+        gapScore: null,
+        inheritedPlanArtifactId: null,
+        sessionPurpose: "general",
+        acceptanceStatus: "accepted",
+      },
+      proposals: [],
+      messages: [],
+    });
+
+    renderPane(
+      "tasks",
+      workspace({
+        mode: "ideation",
+        linkedIdeationSessionId: "session-1",
+        linkedPlanBranchId: "plan-branch-1",
+      }),
+      vi.fn(),
+      false,
+      conversation(),
+      { taskMode: "kanban", onFocusTaskRuntime },
+    );
+
+    fireEvent.click(await screen.findByTestId("mock-agent-task-card"));
+    fireEvent.click(await screen.findByRole("button", { name: "Focus review runtime" }));
+
+    expect(onFocusTaskRuntime).toHaveBeenCalledWith("task-1", "review");
   });
 
   it("shows the automation artifact tab and opens the automation detail route", async () => {

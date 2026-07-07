@@ -289,7 +289,7 @@ export function IntegratedChatPanel({
   const isHistoryMode = !!taskHistoryState;
   const hasHistoryConversation = !!taskHistoryState?.conversationId;
   const historyConversationOverride = isHistoryMode
-    ? (conversationIdOverride ?? taskHistoryState?.conversationId ?? null)
+    ? (taskHistoryState?.conversationId ?? null)
     : conversationIdOverride;
 
   // Get task data from React Query (useTasks) which has full task data

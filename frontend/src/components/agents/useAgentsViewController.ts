@@ -1334,6 +1334,7 @@ export function useAgentsViewController({
       terminalUnavailableReason,
       onFocusVerificationSession: handleFocusVerificationSession,
       onFocusWorkspaceReview: handleFocusWorkspaceReview,
+      onFocusTaskRuntime: handleFocusTaskRuntime,
       ...(onOpenAutomation ? { onOpenAutomation } : {}),
       onOpenPublish: handleOpenPublishPaneWithChatFocus,
       onTaskArtifactSelectionChange: handleTaskArtifactSelectionChange,
