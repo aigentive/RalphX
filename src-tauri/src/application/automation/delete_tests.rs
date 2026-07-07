@@ -208,6 +208,66 @@ async fn delete_archives_setup_and_run_conversations() {
 }
 
 #[tokio::test]
+async fn delete_removes_remote_automation_base_branch_for_local_branch_base() {
+    // B4: an automation whose base is a local (integration) branch we pushed to
+    // origin has that remote branch cleaned up on delete.
+    let (temp, state, project_id, github) = setup_state().await;
+    let mut completed = automation("automation-base-cleanup", &project_id, AutomationStatus::Completed);
+    completed.base_ref_kind = "local_branch".to_string();
+    completed.base_ref = "ralphx/ralphx/automation-abc123".to_string();
+    state.automation_repo.create(completed.clone()).await.unwrap();
+
+    delete_automation_with_archive(&state, &completed.id)
+        .await
+        .expect("delete succeeds");
+
+    assert!(state.automation_repo.get_by_id(&completed.id).await.unwrap().is_none());
+    let mock = github.state();
+    assert_eq!(mock.delete_remote_branch_calls, 1, "remote base branch should be deleted once");
+    assert_eq!(
+        mock.last_delete_remote_branch_name.as_deref(),
+        Some("ralphx/ralphx/automation-abc123"),
+    );
+    drop(temp);
+}
+
+#[tokio::test]
+async fn delete_skips_remote_cleanup_for_project_default_base() {
+    // B4: never-published automations (project-default base) have no remote branch
+    // to clean up — the delete path must not attempt a remote delete.
+    let (temp, state, project_id, github) = setup_state().await;
+    let completed = automation("automation-default-base", &project_id, AutomationStatus::Completed);
+    state.automation_repo.create(completed.clone()).await.unwrap();
+
+    delete_automation_with_archive(&state, &completed.id)
+        .await
+        .expect("delete succeeds");
+
+    assert_eq!(github.state().delete_remote_branch_calls, 0);
+    drop(temp);
+}
+
+#[tokio::test]
+async fn delete_is_fail_open_when_remote_branch_delete_errors() {
+    // B4: a failed remote-branch delete must NOT block the automation delete.
+    let (temp, state, project_id, github) = setup_state().await;
+    github.state().delete_remote_branch_result =
+        Some(Err(AppError::Infrastructure("boom".to_string())));
+    let mut completed = automation("automation-base-fail-open", &project_id, AutomationStatus::Completed);
+    completed.base_ref_kind = "local_branch".to_string();
+    completed.base_ref = "ralphx/ralphx/automation-def456".to_string();
+    state.automation_repo.create(completed.clone()).await.unwrap();
+
+    delete_automation_with_archive(&state, &completed.id)
+        .await
+        .expect("delete succeeds even when remote branch delete errors");
+
+    assert!(state.automation_repo.get_by_id(&completed.id).await.unwrap().is_none());
+    assert_eq!(github.state().delete_remote_branch_calls, 1);
+    drop(temp);
+}
+
+#[tokio::test]
 async fn delete_rejects_active_and_paused() {
     let (temp, state, project_id, _github) = setup_state().await;
     let active = automation("automation-active", &project_id, AutomationStatus::Active);

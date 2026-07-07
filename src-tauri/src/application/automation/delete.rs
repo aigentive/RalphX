@@ -1,3 +1,4 @@
+use std::str::FromStr;
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -9,7 +10,9 @@ use crate::application::automation::transition::{
     TauriAutomationEventEmitter,
 };
 use crate::application::AppState;
-use crate::domain::entities::{ArtifactId, AutomationId, AutomationJudgeState, AutomationStatus};
+use crate::domain::entities::{
+    ArtifactId, AutomationId, AutomationJudgeState, AutomationStatus, IdeationAnalysisBaseRefKind,
+};
 use crate::error::{AppError, AppResult};
 
 /// Archive an automation's durable history and hard-delete its bookkeeping rows.
@@ -130,10 +133,69 @@ pub async fn delete_automation_with_archive(state: &AppState, id: &AutomationId)
         }
     }
 
+    // Remote-branch cleanup (B4): best-effort delete of the automation-owned base
+    // branch we newly pushed to origin (integration-branch model). Gated to
+    // automation-owned local-branch bases; per-run pr_head branches are NOT touched
+    // here. Fail-open — the branch may never have been pushed (automation never
+    // published), and `delete_remote_branch` already no-ops on an absent remote, so
+    // delete must still succeed for never-published automations. The base ref is
+    // read from the `automation` row loaded above, before any row is deleted.
+    cleanup_automation_remote_base_branch(state, &automation).await;
+
     // Destructive last: hard-delete the bookkeeping rows and emit
     // `AutomationDeleted` (the row-delete core owns the event so `project_id` is
     // captured before the row is gone).
     automation_service_for_state(state).delete(id).await
+}
+
+/// Best-effort deletion of an automation's origin base branch. Never fails the
+/// caller — every error path warns and returns. See B4 in the integration-branch
+/// spec.
+async fn cleanup_automation_remote_base_branch(
+    state: &AppState,
+    automation: &crate::domain::entities::Automation,
+) {
+    let is_local_branch = IdeationAnalysisBaseRefKind::from_str(automation.base_ref_kind.trim())
+        .map(|kind| kind == IdeationAnalysisBaseRefKind::LocalBranch)
+        .unwrap_or(false);
+    if !is_local_branch {
+        return;
+    }
+    let base_ref = automation.base_ref.trim();
+    if base_ref.is_empty() {
+        return;
+    }
+    let Some(github) = state.github_service.as_ref() else {
+        return;
+    };
+    let project = match state.project_repo.get_by_id(&automation.project_id).await {
+        Ok(Some(project)) => project,
+        Ok(None) => {
+            tracing::warn!(
+                automation_id = automation.id.as_str(),
+                project_id = automation.project_id.as_str(),
+                "delete_automation_with_archive: project missing; skipping remote base branch cleanup"
+            );
+            return;
+        }
+        Err(error) => {
+            tracing::warn!(
+                automation_id = automation.id.as_str(),
+                error = %error,
+                "delete_automation_with_archive: failed to load project for remote base branch cleanup; continuing"
+            );
+            return;
+        }
+    };
+    let working_dir = std::path::Path::new(&project.working_directory);
+    if let Err(error) = github.delete_remote_branch(working_dir, base_ref).await {
+        tracing::warn!(
+            automation_id = automation.id.as_str(),
+            base_ref,
+            error = %error,
+            "delete_automation_with_archive: failed to delete remote automation base branch; continuing"
+        );
+    }
 }
 
 fn automation_transition_service(state: &AppState) -> AutomationTransitionService {

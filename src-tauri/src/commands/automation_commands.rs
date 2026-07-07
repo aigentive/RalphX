@@ -175,6 +175,7 @@ pub(crate) async fn create_automation_draft_for_state(
         },
         AgentConversationWorkspaceSetupMode::Deferred,
         AgentConversationWorkspacePrAutomationDefaults::default(),
+        false,
     )
     .await
     {
