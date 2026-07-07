@@ -97,7 +97,7 @@ fn build_claude_spawnable_command(
     model_override: Option<&str>,
     mcp_runtime_context: Option<&McpRuntimeContext>,
 ) -> Result<SpawnableCommand, String> {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-utils"))]
     {
         crate::infrastructure::agents::claude::build_spawnable_command_with_mcp_runtime_context_and_profile_for_test(
             cli_path,
@@ -113,7 +113,7 @@ fn build_claude_spawnable_command(
             mcp_runtime_context,
         )
     }
-    #[cfg(not(test))]
+    #[cfg(not(any(test, feature = "test-utils")))]
     {
         crate::infrastructure::agents::claude::build_spawnable_command_with_mcp_runtime_context_and_profile(
             cli_path,
@@ -144,7 +144,7 @@ fn build_claude_spawnable_interactive_command(
     model_override: Option<&str>,
     mcp_runtime_context: Option<&McpRuntimeContext>,
 ) -> Result<SpawnableCommand, String> {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-utils"))]
     {
         crate::infrastructure::agents::claude::build_spawnable_interactive_command_with_mcp_runtime_context_and_profile_for_test(
             cli_path,
@@ -160,7 +160,7 @@ fn build_claude_spawnable_interactive_command(
             mcp_runtime_context,
         )
     }
-    #[cfg(not(test))]
+    #[cfg(not(any(test, feature = "test-utils")))]
     {
         crate::infrastructure::agents::claude::build_spawnable_interactive_command_with_mcp_runtime_context_and_profile(
             cli_path,
