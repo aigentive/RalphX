@@ -7,6 +7,8 @@ capabilities:
     - add_task_note
     - get_task_details
     - get_artifact
+    - list_ticket_attachments
+    - fetch_ticket_attachment
     - search_memories
     - get_memory
     - get_memories_for_paths

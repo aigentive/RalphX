@@ -66,6 +66,10 @@ import {
   callAutomationSetupTool,
   isAutomationSetupToolName,
 } from "./automation-tools.js";
+import {
+  callTicketAttachmentTool,
+  isTicketAttachmentToolName,
+} from "./ticket-attachment-tools.js";
 import { AGENT_TASK_TOOL_NAMES } from "./agent-task-tools.js";
 import { withAgentTaskRuntimeContext } from "./agent-task-context.js";
 
@@ -725,6 +729,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       result = await callAutomationSetupTool(name, callTauri, args, {
         conversationId: RALPHX_CONVERSATION_ID,
       });
+    } else if (isTicketAttachmentToolName(name)) {
+      result = await callTicketAttachmentTool(name, callTauri, args);
     } else if (name === "report_conflict") {
       // POST /api/git/tasks/:task_id/report-conflict
       const { task_id, conflict_files, reason } = args as {

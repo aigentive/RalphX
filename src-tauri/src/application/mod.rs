@@ -120,6 +120,9 @@ pub mod team_state_tracker;
 pub mod team_stream_processor;
 pub mod throttled_emitter;
 pub mod ticket_canonical_branch;
+pub mod ticket_attachment_service;
+#[cfg(test)]
+mod ticket_attachment_service_tests;
 pub mod ticketing_cache_invalidator;
 pub mod ticketing_pr_summary;
 pub mod ticketing_service;
@@ -159,8 +162,9 @@ pub use atlassian_integration_service::{
 pub use chat_attachment_service::ChatAttachmentService;
 pub use chat_resumption::ChatResumptionRunner;
 pub use clickup_integration_service::{
-    ClickUpApiClient, ClickUpAuthContext, ClickUpComment, ClickUpIntegrationService, ClickUpSpace,
-    ClickUpStatus, ClickUpTag, ClickUpTaskContent, ClickUpTaskSummary, ClickUpUser,
+    ClickUpApiClient, ClickUpAttachment, ClickUpAuthContext, ClickUpComment,
+    ClickUpIntegrationService, ClickUpSpace, ClickUpStatus, ClickUpTag, ClickUpTaskContent,
+    ClickUpTaskSummary, ClickUpUser,
     ClickUpWorkspace, EmptyClickUpApiClient, UnavailableClickUpApiClient,
 };
 pub use dependency_service::{DependencyAnalysis, DependencyService, ValidationResult};
@@ -196,8 +200,8 @@ pub use ideation_service::{
 };
 pub use interactive_process_registry::{InteractiveProcessKey, InteractiveProcessRegistry};
 pub use linear_integration_service::{
-    resolve_linear_label_ids, EmptyLinearApiClient, LinearApiClient, LinearAuthContext,
-    LinearComment, LinearIntegrationService, LinearIntegrationSettings,
+    resolve_linear_label_ids, EmptyLinearApiClient, LinearApiClient, LinearAttachment,
+    LinearAuthContext, LinearComment, LinearIntegrationService, LinearIntegrationSettings,
     LinearIntegrationSettingsRepository, LinearIssueContent, LinearIssueSummary, LinearLabel,
     LinearProject, LinearUser, LinearWorkflowState, UnavailableLinearApiClient,
 };
@@ -243,6 +247,13 @@ pub use task_transition_service::TaskTransitionService;
 pub use team_service::TeamService;
 pub use team_state_tracker::TeamStateTracker;
 pub use throttled_emitter::ThrottledEmitter;
+pub use ticket_attachment_service::{
+    TicketAttachmentCachedFile, TicketAttachmentExternalLink, TicketAttachmentFetchRequest,
+    TicketAttachmentFetchResponse, TicketAttachmentFetchResult, TicketAttachmentFetchStatus,
+    TicketAttachmentListRequest, TicketAttachmentListResponse, TicketAttachmentMetadata,
+    TicketAttachmentProviderBytes, TicketAttachmentRetrievalKind, TicketAttachmentService,
+    TicketAttachmentSource, TicketAttachmentSourceKind,
+};
 pub use ticketing_cache_invalidator::{
     TicketingCacheInvalidatedEvent, TicketingCacheInvalidator, TICKETING_CACHE_INVALIDATED_EVENT,
 };

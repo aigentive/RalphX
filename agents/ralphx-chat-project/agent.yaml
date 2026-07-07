@@ -10,6 +10,8 @@ capabilities:
     - get_memories_for_paths
     - get_conversation_transcript
     - get_artifact
+    - list_ticket_attachments
+    - fetch_ticket_attachment
     - propose_plan_mode
     - append_task_to_ideation_plan
     - create_followup_agent_conversation
@@ -53,6 +55,8 @@ harnesses:
       - get_memories_for_paths
       - get_conversation_transcript
       - get_artifact
+      - list_ticket_attachments
+      - fetch_ticket_attachment
       - propose_plan_mode
       - create_followup_agent_conversation
       - register_agent_issue
@@ -99,6 +103,8 @@ harnesses:
       - get_memories_for_paths
       - get_conversation_transcript
       - get_artifact
+      - list_ticket_attachments
+      - fetch_ticket_attachment
       - propose_plan_mode
       - create_followup_agent_conversation
       - register_agent_issue

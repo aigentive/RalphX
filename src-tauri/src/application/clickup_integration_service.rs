@@ -9,6 +9,8 @@ use crate::domain::integrations::{
 };
 use crate::domain::services::SecretStore;
 
+use super::ticket_attachment_service::TicketAttachmentProviderBytes;
+
 const CLICKUP_API_TOKEN_SECRET_REF_PREFIX: &str = "integrations/clickup/default/api-token";
 
 /// Auth context for ClickUp REST calls.
@@ -225,6 +227,15 @@ pub trait ClickUpApiClient: Send + Sync {
         _task_id: &str,
     ) -> Result<ClickUpTaskContent, String> {
         Err("ClickUp task lookup is not available for this client".to_string())
+    }
+
+    async fn fetch_attachment_bytes(
+        &self,
+        _auth: &ClickUpAuthContext,
+        _url: &str,
+        _max_bytes: usize,
+    ) -> Result<TicketAttachmentProviderBytes, String> {
+        Err("ClickUp attachment downloads are not available for this client".to_string())
     }
 
     async fn fetch_task_by_custom_id(
@@ -864,6 +875,17 @@ impl ClickUpIntegrationService {
                     })
             }
         }
+    }
+
+    pub async fn fetch_attachment_bytes(
+        &self,
+        url: &str,
+        max_bytes: usize,
+    ) -> Result<TicketAttachmentProviderBytes, String> {
+        let auth = self.enabled_auth_context().await?;
+        self.client
+            .fetch_attachment_bytes(&auth, url, max_bytes)
+            .await
     }
 
     pub async fn current_user(&self) -> Result<ClickUpUser, String> {

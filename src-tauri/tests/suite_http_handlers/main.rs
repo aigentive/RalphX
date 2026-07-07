@@ -21,3 +21,4 @@ mod session_linking_handlers;
 mod teams_handlers;
 mod chat_service_streaming;
 mod ideation_event_emission;
+mod ticket_attachment_handlers;

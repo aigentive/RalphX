@@ -8,6 +8,8 @@ capabilities:
     - fs_grep
     - fs_glob
     - get_artifact
+    - list_ticket_attachments
+    - fetch_ticket_attachment
     - propose_plan_mode
     - delegate_start
     - delegate_wait

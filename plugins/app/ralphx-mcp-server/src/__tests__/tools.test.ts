@@ -41,6 +41,10 @@ import {
   isAgentWorkspaceToolName,
 } from '../agent-workspace-tools.js';
 import {
+  callTicketAttachmentTool,
+  isTicketAttachmentToolName,
+} from '../ticket-attachment-tools.js';
+import {
   IDEATION_TEAM_LEAD,
   IDEATION_TEAM_MEMBER,
   WORKER_TEAM_LEAD,
@@ -71,7 +75,9 @@ import {
   WORKSPACE_REVIEWER,
   AUTOMATION_SETUP,
   WORKER,
+  CODER,
   MERGER,
+  CHAT_TASK,
   CHAT_PROJECT,
 } from '../agentNames.js';
 
@@ -82,6 +88,7 @@ function toolsByAgent(): Record<string, string[]> {
 type SchemaProperty = {
   type?: string;
   items?: { type?: string };
+  properties?: Record<string, SchemaProperty>;
 };
 
 function inputSchemaProperties(toolName: string): Record<string, SchemaProperty> {
@@ -1499,6 +1506,108 @@ describe('agent workspace publish tools', () => {
     for (const toolName of publishTools) {
       expect(toolNames).not.toContain(toolName);
     }
+  });
+});
+
+describe('ticket attachment tools', () => {
+  const allTools = getAllTools();
+  const attachmentTools = [
+    'list_ticket_attachments',
+    'fetch_ticket_attachment',
+  ];
+
+  it.each(attachmentTools)('%s should exist in ALL_TOOLS', (toolName) => {
+    expect(allTools.find((tool) => tool.name === toolName)).toBeDefined();
+  });
+
+  it('list_ticket_attachments should accept a provider-neutral ticket identity', () => {
+    const tool = allTools.find((candidate) => candidate.name === 'list_ticket_attachments');
+    const ticket = (tool?.inputSchema.properties?.ticket ?? {}) as SchemaProperty;
+
+    expect(tool?.inputSchema.required).toEqual(['ticket']);
+    expect(ticket.type).toBe('object');
+    expect(ticket.properties).toHaveProperty('provider');
+    expect(ticket.properties).toHaveProperty('id');
+    expect(ticket.properties).toHaveProperty('key');
+    expect(ticket.properties).toHaveProperty('local_project_id');
+  });
+
+  it('fetch_ticket_attachment should require ticket identity plus attachment id', () => {
+    const tool = allTools.find((candidate) => candidate.name === 'fetch_ticket_attachment');
+
+    expect(tool?.inputSchema.required).toEqual(['ticket', 'attachment_id']);
+    expect(tool?.inputSchema.properties).toHaveProperty('ticket');
+    expect(tool?.inputSchema.properties).toHaveProperty('attachment_id');
+  });
+
+  it.each([
+    GENERAL_WORKER,
+    GENERAL_EXPLORER,
+    WORKER,
+    CODER,
+    WORKER_TEAM_LEAD,
+    WORKER_TEAM_MEMBER,
+    CHAT_TASK,
+    CHAT_PROJECT,
+  ])('%s should expose ticket attachment tools through canonical metadata', (agent) => {
+    expect(toolsByAgent()[agent]).toEqual(loadCanonicalMcpTools(agent));
+    expect(toolsByAgent()[agent]).toEqual(expect.arrayContaining(attachmentTools));
+  });
+
+  it('dispatches list and fetch requests to the backend ticket attachment routes', async () => {
+    const callTauri = vi.fn()
+      .mockResolvedValueOnce({
+        ticket: { provider: 'github', id: '123' },
+        attachments: [],
+        unsupported_reason: 'Unsupported ticket attachment provider: github',
+      })
+      .mockResolvedValueOnce({
+        result: {
+          status: 'unsupported',
+          unsupported_reason: 'Unsupported ticket attachment provider: github',
+        },
+      });
+
+    const listArgs = { ticket: { provider: 'github', id: '123' } };
+    const fetchArgs = {
+      ticket: { provider: 'github', id: '123' },
+      attachment_id: 'att-1',
+    };
+
+    await expect(
+      callTicketAttachmentTool('list_ticket_attachments', callTauri, listArgs)
+    ).resolves.toMatchObject({
+      attachments: [],
+      unsupported_reason: 'Unsupported ticket attachment provider: github',
+    });
+    await expect(
+      callTicketAttachmentTool('fetch_ticket_attachment', callTauri, fetchArgs)
+    ).resolves.toMatchObject({
+      result: {
+        status: 'unsupported',
+        unsupported_reason: 'Unsupported ticket attachment provider: github',
+      },
+    });
+
+    expect(callTauri).toHaveBeenNthCalledWith(
+      1,
+      'ticket_attachments/list',
+      listArgs
+    );
+    expect(callTauri).toHaveBeenNthCalledWith(
+      2,
+      'ticket_attachments/fetch',
+      fetchArgs
+    );
+  });
+
+  it('rejects unsupported ticket attachment tool names', async () => {
+    expect(isTicketAttachmentToolName('list_ticket_attachments')).toBe(true);
+    expect(isTicketAttachmentToolName('fetch_ticket_attachment')).toBe(true);
+    expect(isTicketAttachmentToolName('download_ticket_attachment')).toBe(false);
+    await expect(
+      callTicketAttachmentTool('download_ticket_attachment', vi.fn(), {})
+    ).rejects.toThrow('Unsupported ticket attachment tool');
   });
 });
 

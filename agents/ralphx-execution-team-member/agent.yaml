@@ -15,6 +15,8 @@ capabilities:
     - get_step_context
     - get_sub_steps
     - get_task_issues
+    - list_ticket_attachments
+    - fetch_ticket_attachment
     - mark_issue_in_progress
     - mark_issue_addressed
     - get_project_analysis
