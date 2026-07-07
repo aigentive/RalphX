@@ -127,6 +127,33 @@ async fn unreadable_worktree_status_blocks_execution() {
     );
 }
 
+#[tokio::test]
+async fn unreadable_worktree_status_skips_for_reviewing_origin() {
+    let cfg = freshness_config();
+    let task = make_test_task(Some("task/branch"), None);
+    let project = make_test_project("/nonexistent/path/reviewing-should-skip");
+    let nonexistent = std::path::Path::new("/nonexistent/path/reviewing-should-skip");
+
+    let result = ensure_branches_fresh(
+        nonexistent,
+        &task,
+        &project,
+        "task-status-unreadable-reviewing",
+        None,
+        None,
+        None,
+        None,
+        "reviewing",
+        &cfg,
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "Reviewing origin must preserve review worktree error semantics; got {result:?}"
+    );
+}
+
 // ==================
 // Skip-if-recently-checked tests
 // ==================

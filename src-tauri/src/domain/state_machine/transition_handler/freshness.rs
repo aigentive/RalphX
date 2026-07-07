@@ -394,6 +394,7 @@ pub async fn ensure_branches_fresh(
     }
 
     // 5. Dirty worktree guard
+    let fail_closed_on_worktree_status = matches!(origin_state, "executing" | "re_executing");
     match is_worktree_dirty(repo_path).await {
         Ok(true) => {
             warn!(
@@ -420,6 +421,15 @@ pub async fn ensure_branches_fresh(
                     );
                 }
                 Err(e) => {
+                    if !fail_closed_on_worktree_status {
+                        warn!(
+                            task_id = task_id_str,
+                            origin_state,
+                            error = %e,
+                            "Emergency auto-commit failed outside execution spawn path — skipping freshness check"
+                        );
+                        return Ok(freshness);
+                    }
                     return Err(block_freshness_git_error(
                         activity_event_repo,
                         task_id_str,
@@ -433,6 +443,15 @@ pub async fn ensure_branches_fresh(
         }
         Ok(false) => {}
         Err(e) => {
+            if !fail_closed_on_worktree_status {
+                warn!(
+                    task_id = task_id_str,
+                    origin_state,
+                    error = %e,
+                    "Failed to check worktree status outside execution spawn path — skipping freshness check"
+                );
+                return Ok(freshness);
+            }
             return Err(block_freshness_git_error(
                 activity_event_repo,
                 task_id_str,
