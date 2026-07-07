@@ -26,8 +26,10 @@ import {
 import { useAfterPaintMounted } from "@/components/agents/agentDeferredFrame";
 import {
   describeAutomationDeleteConsequences,
+  describeAutomationStage,
   describeRunFailure,
   isAutomationDeletable,
+  isOpenAutomationRun,
   latestRun,
 } from "@/components/automations/automationStage";
 import {
@@ -205,9 +207,11 @@ function Pill({ label, status }: { label: string; status: string }) {
 
 function TooltipIconButton({
   label,
+  tooltip,
   children,
   ...props
-}: ButtonProps & { label: string }) {
+}: ButtonProps & { label: string; tooltip?: ReactNode }) {
+  const tooltipContent = tooltip ?? label;
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -215,13 +219,42 @@ function TooltipIconButton({
           type="button"
           size="icon-sm"
           aria-label={label}
+          {...(typeof tooltipContent === "string" ? { title: tooltipContent } : {})}
           {...props}
         >
           {children}
         </Button>
       </TooltipTrigger>
-      <TooltipContent>{label}</TooltipContent>
+      <TooltipContent>{tooltipContent}</TooltipContent>
     </Tooltip>
+  );
+}
+
+/**
+ * Live "what's happening now" chip shown in the header while a run is open, so
+ * the user sees run progress (e.g. "Run 1 in progress", "Judging") without
+ * scrolling to the timeline. Styling mirrors {@link Pill} with an added pulsing
+ * dot; longhand paint/border props keep it WKWebView-safe.
+ */
+function RunStatusChip({ label }: { label: string }) {
+  return (
+    <span
+      className="inline-flex w-fit items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-semibold text-[var(--accent-primary)]"
+      style={{
+        backgroundColor: "var(--bg-hover)",
+        borderColor: "var(--accent-primary)",
+        borderStyle: "solid",
+        borderWidth: "1px",
+      }}
+      data-testid="automation-run-status-chip"
+    >
+      <span
+        className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full"
+        style={{ backgroundColor: "var(--accent-primary)" }}
+        aria-hidden="true"
+      />
+      {label}
+    </span>
   );
 }
 
@@ -751,6 +784,19 @@ export function AutomationDetailView({
   const newestRuns = sortedNewestRuns(runs);
   const latest = latestRun(runs);
   const skipJudgeRun = isSignalTerminalUnjudged(latest) ? latest : null;
+  // A run is only "in the way" of scheduling when the automation is actively
+  // driving it. While paused, "Run now" is an explicit resume-and-override the
+  // user is allowed to trigger even with a run still open, so don't block it.
+  const openRun = isOpenAutomationRun(latest) ? latest : null;
+  const activeRun = automation.status === "active" ? openRun : null;
+  const liveStageLabel = activeRun ? describeAutomationStage(automation, activeRun) : null;
+  const runNowBlockedReason = activeRun
+    ? `${describeAutomationStage(automation, activeRun)} — wait for it to finish before running again`
+    : automation.status === "draft"
+      ? "Approve the automation before running it"
+      : isAutomationTerminal(automation.status)
+        ? "This automation is no longer running"
+        : null;
   const actionPending = pauseMutation.isPending
     || resumeMutation.isPending
     || finalizeMutation.isPending
@@ -831,6 +877,7 @@ export function AutomationDetailView({
                 {automation.name}
               </h1>
               <Pill label={AUTOMATION_STATUS_LABELS[automation.status]} status={automation.status} />
+              {liveStageLabel && <RunStatusChip label={liveStageLabel} />}
             </div>
             <div className="mt-1 text-xs" style={{ color: "var(--text-muted)" }}>
               {projectName ?? projectId ?? automation.projectId}
@@ -871,8 +918,9 @@ export function AutomationDetailView({
           )}
           <TooltipIconButton
             label="Run now"
+            {...(runNowBlockedReason ? { tooltip: runNowBlockedReason } : {})}
             variant="outline"
-            disabled={actionPending || isAutomationTerminal(automation.status) || automation.status === "draft"}
+            disabled={actionPending || runNowBlockedReason !== null}
             onClick={() => void handleRunNow()}
           >
             <PlayCircle className="h-4 w-4" />

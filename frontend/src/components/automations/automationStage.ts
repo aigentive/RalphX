@@ -71,6 +71,27 @@ export function latestRun(runs: AutomationRun[]): AutomationRun | null {
 }
 
 /**
+ * Whether a run is still "open" — the backend is actively driving it, judging it,
+ * or waiting on its published PR, so no fresh run can be scheduled yet. Mirrors
+ * `ralphx-domain::is_open_automation_run`: `pending`/`provisioning`/`running`/
+ * `published` are always open, and a signal-terminal run (`merged`/`pr_closed`/
+ * `agent_failed`) is still open while its judge has not settled (`none`/
+ * `in_progress`/`failed`).
+ */
+export function isOpenAutomationRun(run: AutomationRun | null): run is AutomationRun {
+  if (!run) {
+    return false;
+  }
+  if (["pending", "provisioning", "running", "published"].includes(run.status)) {
+    return true;
+  }
+  return (
+    ["merged", "pr_closed", "agent_failed"].includes(run.status)
+    && ["none", "in_progress", "failed"].includes(run.judgeState)
+  );
+}
+
+/**
  * Describe the automation's live stage — the "what's happening now" line shared
  * by the Automations list, the Agents artifact panel, and the detail view.
  */

@@ -764,6 +764,56 @@ describe("AutomationDetailView", () => {
     );
   });
 
+  it("shows a live run chip and blocks Run now while a run is in progress", async () => {
+    renderDetail({
+      automation: automation({ status: "active" }),
+      runs: [run({ id: "run-live", runIndex: 1, status: "running", judgeState: "none" })],
+      usage,
+    });
+
+    await screen.findByTestId("automation-detail-view");
+
+    const chip = screen.getByTestId("automation-run-status-chip");
+    expect(chip).toHaveTextContent("Run 1 in progress");
+
+    const runNow = screen.getByLabelText("Run now");
+    expect(runNow).toBeDisabled();
+    expect(runNow).toHaveAttribute(
+      "title",
+      expect.stringContaining("Run 1 in progress"),
+    );
+
+    // Stop stays enabled for an active automation with a live run.
+    expect(screen.getByLabelText("Stop automation")).not.toBeDisabled();
+    expect(screen.getByLabelText("Pause automation")).not.toBeDisabled();
+  });
+
+  it("shows a judging chip and blocks Run now while the judge is running", async () => {
+    renderDetail({
+      automation: automation({ status: "active" }),
+      runs: [run({ id: "run-judge", runIndex: 2, status: "merged", judgeState: "in_progress" })],
+      usage,
+    });
+
+    await screen.findByTestId("automation-detail-view");
+
+    expect(screen.getByTestId("automation-run-status-chip")).toHaveTextContent("Judging");
+    expect(screen.getByLabelText("Run now")).toBeDisabled();
+  });
+
+  it("enables Run now and hides the live chip for an active automation with no open run", async () => {
+    renderDetail({
+      automation: automation({ status: "active" }),
+      runs: [run({ id: "run-done", runIndex: 1, status: "merged", judgeState: "done" })],
+      usage,
+    });
+
+    await screen.findByTestId("automation-detail-view");
+
+    expect(screen.queryByTestId("automation-run-status-chip")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Run now")).not.toBeDisabled();
+  });
+
   it("disables delete for active automations", async () => {
     renderDetail({
       automation: automation({ status: "active" }),
