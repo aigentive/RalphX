@@ -15,6 +15,7 @@ use super::super::merge_validation::{
 };
 use super::helpers::*;
 use crate::domain::entities::MergeValidationMode;
+use ralphx_events::RecordingEventSink;
 
 struct EnvGuard {
     key: &'static str,
@@ -823,6 +824,100 @@ async fn run_validation_runs_setup_when_merge_cwd_differs_from_project_root() {
     );
 }
 
+#[tokio::test]
+async fn run_validation_emits_event_sink_events_for_setup_and_validate() {
+    let project_dir = tempfile::tempdir().unwrap();
+    let worktree_dir = tempfile::tempdir().unwrap();
+    let mut project = make_project(Some("main"));
+    project.working_directory = project_dir.path().to_str().unwrap().to_string();
+    project.detected_analysis = Some(
+        r#"[{
+            "path": ".",
+            "label": "Rust",
+            "validate": ["true"],
+            "worktree_setup": ["echo setup_from_sink_test"]
+        }]"#
+        .to_string(),
+    );
+    let task = make_task(None, None);
+    let sink = RecordingEventSink::new();
+
+    let result = run_validation_commands(
+        &project,
+        &task,
+        worktree_dir.path(),
+        "test-task",
+        Some(&sink),
+        None,
+        &MergeValidationMode::Block,
+        &tokio_util::sync::CancellationToken::new(),
+    )
+    .await;
+
+    assert!(result.is_some());
+    assert!(result.unwrap().all_passed);
+
+    let events = sink.events();
+    assert!(
+        events
+            .iter()
+            .any(|event| event.event == "task:merge_phases"
+                && event.payload["task_id"] == "test-task"),
+        "validation should emit the dynamic merge phase list"
+    );
+
+    let worktree_statuses: Vec<_> = events
+        .iter()
+        .filter(|event| {
+            event.event == "task:merge_progress"
+                && event.payload["phase"].as_str() == Some("worktree_setup")
+        })
+        .filter_map(|event| event.payload["status"].as_str())
+        .collect();
+    assert!(
+        worktree_statuses.contains(&"started"),
+        "worktree setup should emit started progress"
+    );
+    assert!(
+        worktree_statuses.contains(&"passed"),
+        "worktree setup should emit passed progress"
+    );
+
+    let setup_step_statuses: Vec<_> = events
+        .iter()
+        .filter(|event| {
+            event.event == "merge:validation_step"
+                && event.payload["phase"].as_str() == Some("setup")
+        })
+        .filter_map(|event| event.payload["status"].as_str())
+        .collect();
+    assert!(
+        setup_step_statuses.contains(&"running"),
+        "setup step should emit running status"
+    );
+    assert!(
+        setup_step_statuses.contains(&"success"),
+        "setup step should emit completion status"
+    );
+
+    let validate_step_statuses: Vec<_> = events
+        .iter()
+        .filter(|event| {
+            event.event == "merge:validation_step"
+                && event.payload["phase"].as_str() == Some("validate")
+        })
+        .filter_map(|event| event.payload["status"].as_str())
+        .collect();
+    assert!(
+        validate_step_statuses.contains(&"running"),
+        "validate step should emit running status"
+    );
+    assert!(
+        validate_step_statuses.contains(&"success"),
+        "validate step should emit completion status"
+    );
+}
+
 // ==================
 // Validation retry tests
 // ==================
@@ -1250,6 +1345,76 @@ async fn pre_exec_setup_uses_detected_when_custom_is_null() {
         "setup phase should have one entry from detected_analysis"
     );
     assert_eq!(setup_entries[0].command, "echo setup_from_detected");
+}
+
+#[tokio::test]
+async fn run_pre_execution_setup_emits_event_sink_events_for_setup_and_install() {
+    let worktree_dir = tempfile::tempdir().unwrap();
+    let project_dir = tempfile::tempdir().unwrap();
+    let mut project = make_project(Some("main"));
+    project.working_directory = project_dir.path().to_str().unwrap().to_string();
+    project.detected_analysis = Some(
+        r#"[{
+            "path": ".",
+            "label": "Node",
+            "install": "true",
+            "worktree_setup": ["echo setup_from_pre_exec_sink_test"]
+        }]"#
+        .to_string(),
+    );
+    let task = make_task(None, None);
+    let sink = RecordingEventSink::new();
+
+    let result = run_pre_execution_setup(
+        &project,
+        &task,
+        worktree_dir.path(),
+        "test-task",
+        Some(&sink),
+        "execution",
+        &tokio_util::sync::CancellationToken::new(),
+    )
+    .await;
+
+    assert!(result.is_some());
+    assert!(result.unwrap().success);
+
+    let events = sink.events();
+    let setup_step_statuses: Vec<_> = events
+        .iter()
+        .filter(|event| {
+            event.event == "merge:validation_step"
+                && event.payload["phase"].as_str() == Some("setup")
+                && event.payload["context"].as_str() == Some("execution")
+        })
+        .filter_map(|event| event.payload["status"].as_str())
+        .collect();
+    assert!(
+        setup_step_statuses.contains(&"running"),
+        "pre-exec setup should emit running status"
+    );
+    assert!(
+        setup_step_statuses.contains(&"success"),
+        "pre-exec setup should emit completion status"
+    );
+
+    let install_step_statuses: Vec<_> = events
+        .iter()
+        .filter(|event| {
+            event.event == "merge:validation_step"
+                && event.payload["phase"].as_str() == Some("install")
+                && event.payload["context"].as_str() == Some("execution")
+        })
+        .filter_map(|event| event.payload["status"].as_str())
+        .collect();
+    assert!(
+        install_step_statuses.contains(&"running"),
+        "pre-exec install should emit running status"
+    );
+    assert!(
+        install_step_statuses.contains(&"success"),
+        "pre-exec install should emit completion status"
+    );
 }
 
 #[tokio::test]
