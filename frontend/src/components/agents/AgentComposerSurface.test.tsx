@@ -1442,7 +1442,7 @@ describe("AgentComposerSurface", () => {
     expect(textarea.value).toBe("$plugin-creator ");
   });
 
-  it("accepts dropped files across the whole composer surface", async () => {
+  it("treats dropped markdown files as normal chat attachments", async () => {
     const onFilesSelected = vi.fn();
     renderComposer({
       dataTestId: "agent-composer",
@@ -1463,6 +1463,10 @@ describe("AgentComposerSurface", () => {
     await waitFor(() => {
       expect(onFilesSelected).toHaveBeenCalledWith([file]);
     });
+    expect(invoke).not.toHaveBeenCalledWith(
+      "import_agent_conversation_plan",
+      expect.anything(),
+    );
     expect(
       screen.queryByTestId("chat-composer-drop-overlay"),
     ).not.toBeInTheDocument();

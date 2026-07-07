@@ -1030,11 +1030,9 @@ export function useAgentsViewController({
     handlePreloadArtifacts,
     handleSelectArtifact,
   } = useAgentArtifactActions({
-    hasAutoOpenArtifacts: hasAutoOpenArtifactsWithReview,
     openArtifactTab,
     scheduleArtifactPanePreload,
     selectedConversationId,
-    setArtifactPaneVisibility,
   });
   useEffect(() => {
     return eventBus.subscribe<{
