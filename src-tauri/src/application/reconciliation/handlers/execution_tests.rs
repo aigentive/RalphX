@@ -162,6 +162,31 @@ async fn execute_entry_recovery_sets_trigger_origin_with_metadata_update() {
     );
 }
 
+#[tokio::test]
+async fn record_auto_retry_metadata_updates_metadata_without_rewriting_task() {
+    let app_state = AppState::new_test();
+    let execution_state = Arc::new(ExecutionState::new());
+    let reconciler = build_reconciler_for_execution_tests(&app_state, &execution_state);
+    let mut task = seed_execution_task(&app_state, InternalStatus::Executing).await;
+    task.metadata = Some(json!({ "existing": true }).to_string());
+    app_state.task_repo.update(&task).await.unwrap();
+
+    reconciler
+        .record_auto_retry_metadata(&task, InternalStatus::Executing, 4)
+        .await
+        .expect("record retry metadata");
+
+    let stored = app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .expect("task should be stored");
+    let metadata: Value = serde_json::from_str(stored.metadata.as_deref().unwrap()).unwrap();
+    assert_eq!(metadata["existing"], Value::Bool(true));
+    assert_eq!(metadata["auto_retry_count_executing"], json!(4));
+}
+
 /// Replicates the staleness check logic from `recover_timeout_failures`.
 ///
 /// Returns `true` if `failed_at` is present, parseable, and older than `threshold_secs`.
