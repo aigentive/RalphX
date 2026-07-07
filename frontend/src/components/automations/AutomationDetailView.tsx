@@ -33,6 +33,8 @@ import {
   AUTOMATION_STATUS_LABELS,
   parseAutomationGoalItems,
 } from "@/components/automations/automationGoalItems";
+import { AutomationPhaseProgress } from "@/components/automations/AutomationPhases";
+import { AutomationSpecView } from "@/components/automations/AutomationSpecView";
 import { Button, type ButtonProps } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -48,7 +50,6 @@ import {
   invalidateAutomationQueries,
   useAutomationDetail,
 } from "@/hooks/useAutomations";
-import { useArtifact } from "@/hooks/useArtifacts";
 import { cn } from "@/lib/utils";
 
 interface AutomationDetailViewProps {
@@ -365,37 +366,7 @@ function GoalItems({ value }: { value: string | null }) {
       <div className="text-xs font-medium uppercase tracking-normal" style={{ color: "var(--text-muted)" }}>
         {AUTOMATION_PHASES_LABEL}
       </div>
-      <div className="space-y-1">
-        {parsed.map((item, index) => (
-          <div key={`${item.id}-${index}`} className="flex items-center justify-between gap-3 text-sm">
-            <span className="truncate" style={{ color: "var(--text-secondary)" }}>{item.title}</span>
-            <Pill label={item.status} status={item.status} />
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function SpecSection({ specArtifactId }: { specArtifactId: string | null }) {
-  // `useArtifact` no-ops on an empty id (`enabled: !!id`).
-  const artifact = useArtifact(specArtifactId ?? "");
-  const data = specArtifactId ? artifact.data : null;
-
-  if (!data) {
-    return (
-      <p className="text-sm" style={{ color: "var(--text-muted)" }}>
-        No spec linked yet.
-      </p>
-    );
-  }
-
-  return (
-    <div className="space-y-2">
-      <div className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
-        {data.name}
-      </div>
-      <ExpandableText text={data.content} emptyLabel="Spec has no content yet." />
+      <AutomationPhaseProgress value={value} limit={6} />
     </div>
   );
 }
@@ -976,7 +947,7 @@ export function AutomationDetailView({
               <GoalItems value={automation.goalItemsJson} />
             </Section>
             <Section title="Spec" testId="automation-spec-card">
-              <SpecSection specArtifactId={automation.specArtifactId} />
+              <AutomationSpecView specArtifactId={automation.specArtifactId} />
             </Section>
             <Section title="Inputs">
               <SourcePrInput automation={automation} />

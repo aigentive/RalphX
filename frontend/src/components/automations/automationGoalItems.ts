@@ -24,6 +24,102 @@ export const AUTOMATION_STATUS_LABELS: Record<Automation["status"], string> = {
 /** Canonical UI label for `goal_items_json` across the automation surfaces. */
 export const AUTOMATION_PHASES_LABEL = "Phases";
 
+/** Known phase statuses advanced by the judge. */
+export type AutomationPhaseStatus =
+  | "pending"
+  | "in_progress"
+  | "done"
+  | "skipped";
+
+/** Human labels for each known phase status. */
+export const AUTOMATION_PHASE_STATUS_LABELS: Record<
+  AutomationPhaseStatus,
+  string
+> = {
+  pending: "Pending",
+  in_progress: "In progress",
+  done: "Done",
+  skipped: "Skipped",
+};
+
+/**
+ * Coerce a raw phase status string into a known {@link AutomationPhaseStatus}.
+ * Unknown / empty values fall back to `pending` so the UI never renders a
+ * blank badge.
+ */
+export function normalizeAutomationPhaseStatus(
+  status: string,
+): AutomationPhaseStatus {
+  switch (status) {
+    case "in_progress":
+    case "done":
+    case "skipped":
+      return status;
+    default:
+      return "pending";
+  }
+}
+
+/** At-a-glance progress derived from a phase list. */
+export interface AutomationPhaseSummary {
+  total: number;
+  done: number;
+  inProgress: number;
+  pending: number;
+  skipped: number;
+  /** Index of the first in-progress phase, or -1 when none is active. */
+  currentIndex: number;
+  /** `done / total` clamped to 0..1 (0 when there are no phases). */
+  progressRatio: number;
+}
+
+/**
+ * Summarize a parsed phase list into progress counts. Counts are keyed by the
+ * normalized status so callers can rely on the four canonical buckets even
+ * when the backend emits an unexpected value.
+ */
+export function summarizeAutomationPhases(
+  items: AutomationGoalItem[],
+): AutomationPhaseSummary {
+  let done = 0;
+  let inProgress = 0;
+  let pending = 0;
+  let skipped = 0;
+  let currentIndex = -1;
+
+  items.forEach((item, index) => {
+    const status = normalizeAutomationPhaseStatus(item.status);
+    switch (status) {
+      case "done":
+        done += 1;
+        break;
+      case "in_progress":
+        inProgress += 1;
+        if (currentIndex === -1) {
+          currentIndex = index;
+        }
+        break;
+      case "skipped":
+        skipped += 1;
+        break;
+      default:
+        pending += 1;
+        break;
+    }
+  });
+
+  const total = items.length;
+  return {
+    total,
+    done,
+    inProgress,
+    pending,
+    skipped,
+    currentIndex,
+    progressRatio: total === 0 ? 0 : done / total,
+  };
+}
+
 /**
  * Parse the raw `goal_items_json` string into normalized phase items.
  *

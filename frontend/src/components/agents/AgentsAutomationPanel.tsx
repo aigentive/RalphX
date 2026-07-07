@@ -34,7 +34,8 @@ import {
   AUTOMATION_STATUS_LABELS,
   parseAutomationGoalItems,
 } from "@/components/automations/automationGoalItems";
-import { useArtifact } from "@/hooks/useArtifacts";
+import { AutomationPhaseProgress } from "@/components/automations/AutomationPhases";
+import { AutomationSpecView } from "@/components/automations/AutomationSpecView";
 import {
   invalidateAutomationQueries,
   useAutomationDetail,
@@ -690,22 +691,7 @@ export function AgentsAutomationPanel({
 
       <DetailSection title={AUTOMATION_PHASES_LABEL} testId="agents-automation-phases">
         {goalItems.length > 0 ? (
-          <div className="space-y-2">
-            {goalItems.map((item, index) => (
-              <div
-                key={`${item.id}:${index}`}
-                className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 text-xs"
-              >
-                <span
-                  className="min-w-0 truncate font-medium"
-                  style={{ color: "var(--text-primary)" }}
-                >
-                  {item.title}
-                </span>
-                <span style={{ color: "var(--text-muted)" }}>{item.status}</span>
-              </div>
-            ))}
-          </div>
+          <AutomationPhaseProgress value={automation.goalItemsJson} />
         ) : (
           <p className="text-xs" style={{ color: "var(--text-muted)" }}>
             No phases configured yet.
@@ -713,7 +699,9 @@ export function AgentsAutomationPanel({
         )}
       </DetailSection>
 
-      <AutomationSpecSection specArtifactId={automation.specArtifactId} />
+      <DetailSection title="Spec" testId="agents-automation-spec">
+        <AutomationSpecView specArtifactId={automation.specArtifactId} />
+      </DetailSection>
 
       {automation.setupAnalysisSummary ? (
         <DetailSection title="Setup summary" testId="agents-automation-setup-summary">
@@ -894,47 +882,6 @@ function SummaryRow({
         {value}
       </span>
     </div>
-  );
-}
-
-function specPreview(content: string): string {
-  const trimmed = content.trim();
-  const preview = trimmed.split(/\r?\n/).slice(0, 8).join("\n");
-  return preview.length > 600 ? `${preview.slice(0, 600)}...` : preview;
-}
-
-function AutomationSpecSection({
-  specArtifactId,
-}: {
-  specArtifactId: string | null;
-}) {
-  // `useArtifact` no-ops on an empty id (`enabled: !!id`).
-  const artifact = useArtifact(specArtifactId ?? "");
-  const data = specArtifactId ? artifact.data : null;
-
-  return (
-    <DetailSection title="Spec" testId="agents-automation-spec">
-      {data ? (
-        <div className="space-y-1.5">
-          <p
-            className="truncate text-xs font-semibold"
-            style={{ color: "var(--text-primary)" }}
-          >
-            {data.name}
-          </p>
-          <p
-            className="whitespace-pre-wrap break-words text-xs leading-5"
-            style={{ color: "var(--text-muted)" }}
-          >
-            {specPreview(data.content) || "Spec has no content yet."}
-          </p>
-        </div>
-      ) : (
-        <p className="text-xs" style={{ color: "var(--text-muted)" }}>
-          No spec linked yet.
-        </p>
-      )}
-    </DetailSection>
   );
 }
 

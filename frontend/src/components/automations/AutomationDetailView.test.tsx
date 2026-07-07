@@ -318,6 +318,60 @@ describe("AutomationDetailView", () => {
     expect(goalCard).toHaveTextContent("Land P6");
   });
 
+  it("shows phase progress and a collapsed expandable spec", async () => {
+    useArtifactMock.mockReturnValue({
+      data: {
+        id: "artifact-spec-1",
+        name: "Migration loop spec",
+        artifact_type: "specification",
+        content_type: "inline",
+        content: "## Phase 1\nBuild the shared context model.",
+        created_at: "2026-07-05T00:00:00Z",
+        created_by: "setup-agent",
+        version: 1,
+        bucket_id: null,
+        task_id: null,
+        process_id: null,
+        derived_from: [],
+      },
+      isLoading: false,
+      isError: false,
+    });
+
+    renderDetail({
+      automation: automation({
+        specArtifactId: "artifact-spec-1",
+        goalItemsJson: JSON.stringify([
+          { id: "a", title: "Phase A", status: "done" },
+          { id: "b", title: "Phase B", status: "in_progress" },
+          { id: "c", title: "Phase C", status: "pending" },
+        ]),
+      }),
+      runs: [run()],
+      usage,
+    });
+
+    await screen.findByTestId("automation-detail-view");
+
+    const goalCard = screen.getByTestId("automation-goal-card");
+    expect(goalCard).toHaveTextContent("1/3 done");
+    expect(within(goalCard).getByRole("progressbar")).toHaveAttribute(
+      "aria-valuenow",
+      "1",
+    );
+    expect(within(goalCard).getByText("In progress")).toBeInTheDocument();
+
+    // Spec stays collapsed by default with an expand affordance; heavy markdown
+    // is not mounted until the user expands it.
+    const specCard = screen.getByTestId("automation-spec-card");
+    expect(within(specCard).getByTestId("automation-spec-toggle")).toHaveTextContent(
+      "Show full spec",
+    );
+    expect(
+      within(specCard).queryByTestId("automation-spec-markdown"),
+    ).not.toBeInTheDocument();
+  });
+
   it("shows the spec fallback when no spec is linked", async () => {
     renderDetail({
       automation: automation({ specArtifactId: null }),

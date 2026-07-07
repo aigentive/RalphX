@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { Automation, AutomationDetail, AutomationRun } from "@/api/automations";
@@ -350,6 +350,58 @@ describe("AgentsAutomationPanel", () => {
     expect(spec).toHaveTextContent("Release automation spec");
     expect(spec).toHaveTextContent("Build the shared context model in a scoped PR.");
     expect(useArtifactMock).toHaveBeenCalledWith("artifact-spec-1");
+  });
+
+  it("shows phase progress and a collapsed expandable spec", () => {
+    useArtifactMock.mockReturnValue({
+      data: {
+        id: "artifact-spec-1",
+        name: "Release automation spec",
+        artifact_type: "specification",
+        content_type: "inline",
+        content: "## Phase 1\nBuild the shared context model in a scoped PR.",
+        created_at: "2026-07-05T10:00:00Z",
+        created_by: "setup-agent",
+        version: 1,
+        bucket_id: null,
+        task_id: null,
+        process_id: null,
+        derived_from: [],
+      },
+      isLoading: false,
+      isError: false,
+    });
+    useAutomationDetailMock.mockReturnValue({
+      data: automationDetailFixture({
+        automation: automationFixture({
+          specArtifactId: "artifact-spec-1",
+          goalItemsJson: JSON.stringify([
+            { id: "p1", title: "Build shared context model", status: "done" },
+            { id: "p2", title: "Wire the scheduler", status: "in_progress" },
+          ]),
+        }),
+      }),
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel();
+
+    const phases = screen.getByTestId("agents-automation-phases");
+    expect(phases).toHaveTextContent("1/2 done");
+    expect(within(phases).getByRole("progressbar")).toHaveAttribute(
+      "aria-valuenow",
+      "1",
+    );
+    expect(within(phases).getByText("In progress")).toBeInTheDocument();
+
+    const spec = screen.getByTestId("agents-automation-spec");
+    expect(within(spec).getByTestId("automation-spec-toggle")).toHaveTextContent(
+      "Show full spec",
+    );
+    expect(
+      within(spec).queryByTestId("automation-spec-markdown"),
+    ).not.toBeInTheDocument();
   });
 
   it("updates draft setup settings from the automation artifact panel", async () => {

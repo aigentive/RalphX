@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  AUTOMATION_PHASE_STATUS_LABELS,
   AUTOMATION_PHASES_LABEL,
   AUTOMATION_STATUS_LABELS,
+  normalizeAutomationPhaseStatus,
   parseAutomationGoalItems,
+  summarizeAutomationPhases,
 } from "./automationGoalItems";
 
 describe("automationGoalItems", () => {
@@ -57,5 +60,60 @@ describe("automationGoalItems", () => {
 
     expect(parseAutomationGoalItems(value, { limit: 6 })).toHaveLength(6);
     expect(parseAutomationGoalItems(value)).toHaveLength(8);
+  });
+
+  it("exposes canonical phase status labels", () => {
+    expect(AUTOMATION_PHASE_STATUS_LABELS).toEqual({
+      pending: "Pending",
+      in_progress: "In progress",
+      done: "Done",
+      skipped: "Skipped",
+    });
+  });
+
+  it("normalizes known statuses and falls back to pending", () => {
+    expect(normalizeAutomationPhaseStatus("done")).toBe("done");
+    expect(normalizeAutomationPhaseStatus("in_progress")).toBe("in_progress");
+    expect(normalizeAutomationPhaseStatus("skipped")).toBe("skipped");
+    expect(normalizeAutomationPhaseStatus("pending")).toBe("pending");
+    expect(normalizeAutomationPhaseStatus("")).toBe("pending");
+    expect(normalizeAutomationPhaseStatus("weird")).toBe("pending");
+  });
+
+  it("summarizes phase progress with counts, current index, and ratio", () => {
+    const items = parseAutomationGoalItems(
+      JSON.stringify([
+        { title: "A", status: "done" },
+        { title: "B", status: "done" },
+        { title: "C", status: "in_progress" },
+        { title: "D", status: "skipped" },
+        { title: "E", status: "pending" },
+        { title: "F", status: "mystery" },
+      ]),
+    );
+
+    const summary = summarizeAutomationPhases(items);
+
+    expect(summary).toEqual({
+      total: 6,
+      done: 2,
+      inProgress: 1,
+      pending: 2,
+      skipped: 1,
+      currentIndex: 2,
+      progressRatio: 2 / 6,
+    });
+  });
+
+  it("returns a zeroed summary for an empty phase list", () => {
+    expect(summarizeAutomationPhases([])).toEqual({
+      total: 0,
+      done: 0,
+      inProgress: 0,
+      pending: 0,
+      skipped: 0,
+      currentIndex: -1,
+      progressRatio: 0,
+    });
   });
 });
