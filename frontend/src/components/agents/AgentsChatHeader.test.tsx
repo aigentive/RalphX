@@ -960,6 +960,41 @@ describe("AgentsChatHeader", () => {
     expect(openButton).not.toBeDisabled();
   });
 
+  it("opens the workspace using the workspace owner conversation id", async () => {
+    vi.spyOn(chatApi, "listWorkspaceOpenTargets").mockResolvedValue([
+      { id: "cursor", label: "Cursor", kind: "editor" },
+    ]);
+    const openWorkspace = vi
+      .spyOn(chatApi, "openAgentConversationWorkspace")
+      .mockResolvedValue(undefined);
+
+    renderWithProviders(
+      <AgentsChatHeaderController
+        conversation={conversation({ id: "selected-conversation" })}
+        workspace={conversationWorkspace({
+          conversationId: "workspace-conversation",
+          mode: "ideation",
+          linkedPlanBranchId: "plan-branch-1",
+        })}
+        hasAutoOpenArtifacts={false}
+        onRenameConversation={vi.fn().mockResolvedValue(undefined)}
+        onPublishWorkspace={vi.fn().mockResolvedValue(undefined)}
+        onOpenPublishPane={vi.fn()}
+        onToggleArtifacts={vi.fn()}
+        onSelectArtifact={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(await screen.findByTestId("agents-open-workspace"));
+
+    await waitFor(() =>
+      expect(openWorkspace).toHaveBeenCalledWith(
+        "workspace-conversation",
+        "cursor",
+      ),
+    );
+  });
+
   it("clears the workspace opening state immediately when launch fails", async () => {
     vi.spyOn(chatApi, "listWorkspaceOpenTargets").mockResolvedValue([
       { id: "cursor", label: "Cursor", kind: "editor" },

@@ -78,6 +78,9 @@ export function AgentsConversationSideRegions({
   onSelectArtifact,
   onTaskArtifactSelectionChange,
 }: AgentsConversationSideRegionsProps) {
+  const workspaceConversationId =
+    activeWorkspace?.conversationId ?? selectedConversationId;
+
   return (
     <>
       {selectedConversationId && activeConversation ? (
@@ -113,7 +116,7 @@ export function AgentsConversationSideRegions({
         />
       ) : null}
       <AgentsTerminalRegion
-        conversationId={selectedConversationId}
+        conversationId={workspaceConversationId}
         workspace={activeWorkspace}
         terminalArchivedReason={terminalArchivedReason}
         terminalUnavailableReason={terminalUnavailableReason}
