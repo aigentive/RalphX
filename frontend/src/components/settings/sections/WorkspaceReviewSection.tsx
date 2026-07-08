@@ -4,14 +4,14 @@ import { ChevronRight, ShieldCheck, TriangleAlert } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAgentModels } from "@/hooks/useAgentModels";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
-import { useReviewSettings, useUpdateReviewSettings } from "@/hooks/useReviewSettings";
+import {
+  useReviewSettings,
+  useUpdateReviewSettings,
+} from "@/hooks/useReviewSettings";
 import { useWorkspaceReviewRuntimeSettings } from "@/hooks/useWorkspaceReviewSettings";
 import { selectActiveProject, useProjectStore } from "@/stores/projectStore";
 import { useUiStore } from "@/stores/uiStore";
-import {
-  SectionCard,
-  ToggleSettingRow,
-} from "../SettingsView.shared";
+import { SectionCard, ToggleSettingRow } from "../SettingsView.shared";
 import { WorkspaceReviewScopeRows } from "./WorkspaceReviewRuntimeRows";
 import { isKnownHarness } from "./workspaceReviewHarness";
 
@@ -52,12 +52,15 @@ export default function WorkspaceReviewSection() {
 
   const enabledProviders = providerSettings.providers.filter(
     (provider) =>
-      isKnownHarness(provider.provider) && provider.enabled && provider.available,
+      isKnownHarness(provider.provider) &&
+      provider.enabled &&
+      provider.available,
   );
   const requiresProviderSetup =
     !isProviderPlaceholderData &&
     (providerSettings.requiresOnboarding || enabledProviders.length === 0);
-  const disabledPublishGate = isReviewLoading || isReviewUpdating || !reviewSettings;
+  const disabledPublishGate =
+    isReviewLoading || isReviewUpdating || !reviewSettings;
 
   return (
     <SectionCard
@@ -68,22 +71,39 @@ export default function WorkspaceReviewSection() {
       description="Configure Workspace Review publish gating and inherited-provider runtime defaults."
     >
       {reviewSettings && (
-        <ToggleSettingRow
-          id="workspace-review-require-before-publish"
-          label="Require Workspace Review before publishing"
-          description="Block Commit & Publish until the workspace Review passes"
-          checked={reviewSettings.require_workspace_review}
-          disabled={disabledPublishGate}
-          onChange={() =>
-            updateReviewSettings({
-              requireWorkspaceReview: !reviewSettings.require_workspace_review,
-            })
-          }
-        />
+        <>
+          <ToggleSettingRow
+            id="workspace-review-require-before-publish"
+            label="Require Workspace Review before publishing"
+            description="Block Commit & Publish until the workspace Review passes"
+            checked={reviewSettings.require_workspace_review}
+            disabled={disabledPublishGate}
+            onChange={() =>
+              updateReviewSettings({
+                requireWorkspaceReview:
+                  !reviewSettings.require_workspace_review,
+              })
+            }
+          />
+          <ToggleSettingRow
+            id="workspace-review-autofix-blocking-findings"
+            label="Autofix Blocking Review Findings"
+            description="Spawn the workspace repair agent when a Workspace Review returns blocking findings."
+            checked={reviewSettings.autofix_workspace_review_blocking_findings}
+            disabled={disabledPublishGate}
+            onChange={() =>
+              updateReviewSettings({
+                autofixWorkspaceReviewBlockingFindings:
+                  !reviewSettings.autofix_workspace_review_blocking_findings,
+              })
+            }
+          />
+        </>
       )}
       {isProviderPlaceholderData && (
         <InlineNotice title="Loading Providers">
-          Checking configured providers before showing Workspace Review defaults.
+          Checking configured providers before showing Workspace Review
+          defaults.
         </InlineNotice>
       )}
       {requiresProviderSetup && (

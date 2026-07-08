@@ -41,9 +41,16 @@ describe("ExecutionSettingsSchema", () => {
   });
 
   it("validates max_concurrent_tasks range", () => {
-    expect(() => ExecutionSettingsSchema.parse({ max_concurrent_tasks: 0 })).toThrow();
-    expect(() => ExecutionSettingsSchema.parse({ max_concurrent_tasks: 11 })).toThrow();
-    expect(ExecutionSettingsSchema.parse({ max_concurrent_tasks: 5 }).max_concurrent_tasks).toBe(5);
+    expect(() =>
+      ExecutionSettingsSchema.parse({ max_concurrent_tasks: 0 }),
+    ).toThrow();
+    expect(() =>
+      ExecutionSettingsSchema.parse({ max_concurrent_tasks: 11 }),
+    ).toThrow();
+    expect(
+      ExecutionSettingsSchema.parse({ max_concurrent_tasks: 5 })
+        .max_concurrent_tasks,
+    ).toBe(5);
   });
 
   it("allows disabling project ideation with a zero cap", () => {
@@ -60,12 +67,14 @@ describe("ProjectReviewSettingsSchema", () => {
       require_fix_approval: true,
       require_human_review: true,
       require_workspace_review: false,
+      autofix_workspace_review_blocking_findings: false,
       max_fix_attempts: 5,
     };
     const result = ProjectReviewSettingsSchema.parse(data);
     expect(result.ai_review_enabled).toBe(false);
     expect(result.require_human_review).toBe(true);
     expect(result.require_workspace_review).toBe(false);
+    expect(result.autofix_workspace_review_blocking_findings).toBe(false);
     expect(result.max_fix_attempts).toBe(5);
   });
 
@@ -75,9 +84,16 @@ describe("ProjectReviewSettingsSchema", () => {
   });
 
   it("validates max_fix_attempts range", () => {
-    expect(() => ProjectReviewSettingsSchema.parse({ max_fix_attempts: 0 })).toThrow();
-    expect(() => ProjectReviewSettingsSchema.parse({ max_fix_attempts: 11 })).toThrow();
-    expect(ProjectReviewSettingsSchema.parse({ max_fix_attempts: 7 }).max_fix_attempts).toBe(7);
+    expect(() =>
+      ProjectReviewSettingsSchema.parse({ max_fix_attempts: 0 }),
+    ).toThrow();
+    expect(() =>
+      ProjectReviewSettingsSchema.parse({ max_fix_attempts: 11 }),
+    ).toThrow();
+    expect(
+      ProjectReviewSettingsSchema.parse({ max_fix_attempts: 7 })
+        .max_fix_attempts,
+    ).toBe(7);
   });
 });
 
@@ -130,7 +146,7 @@ describe("SettingsProfileSchema", () => {
         settings: DEFAULT_PROJECT_SETTINGS,
         createdAt: "2026-01-24T10:00:00Z",
         updatedAt: "2026-01-24T10:00:00Z",
-      })
+      }),
     ).toThrow();
   });
 });
@@ -145,7 +161,7 @@ describe("parseProjectSettings", () => {
     expect(() =>
       parseProjectSettings({
         execution: { max_concurrent_tasks: "invalid" },
-      })
+      }),
     ).toThrow();
   });
 });
