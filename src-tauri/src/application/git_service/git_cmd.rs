@@ -108,7 +108,7 @@ fn build_git_command(args: &[String], cwd: &Path, env: &[(String, String)]) -> C
     for (key, val) in env {
         cmd.env(key, val);
     }
-    crate::infrastructure::tool_paths::prepend_resolved_node_bin_to_path(cmd.as_std_mut());
+    crate::infrastructure::tool_paths::ensure_resolved_node_bin_in_path(cmd.as_std_mut());
     cmd
 }
 
