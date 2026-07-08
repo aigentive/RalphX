@@ -12,6 +12,10 @@ import { EventProvider } from "@/providers/EventProvider";
 import { TaskBoard } from "@/components/tasks/TaskBoard";
 import { ReviewsPanel } from "@/components/reviews/ReviewsPanel";
 import { ExecutionControlBar } from "@/components/execution/ExecutionControlBar";
+import {
+  resolveExecutionTaskAgentWorkspace,
+  type ExecutionBarTaskNavigationTarget,
+} from "@/components/execution/executionTaskNavigation";
 import { AppTopBar, KanbanSplitLayout, LeftNavRail } from "@/components/layout";
 import { PermissionDialog } from "@/components/PermissionDialog";
 import { IdeationView, ProposalEditModal, FinalizeConfirmationDialog, VerificationConfirmDialog } from "@/components/Ideation";
@@ -904,6 +908,35 @@ function AppContent() {
     setCurrentView("agents");
   }, [setCurrentView, setFocusedAgentProject]);
 
+  const handleNavigateToExecutionTask = useCallback(
+    (target: ExecutionBarTaskNavigationTarget) => {
+      const agentWorkspace = resolveExecutionTaskAgentWorkspace(target);
+      if (!agentWorkspace) {
+        toast.info("No Agent conversation is linked to this task yet");
+        return;
+      }
+
+      const agentSessionState = useAgentSessionStore.getState();
+      setFocusedAgentProject(agentWorkspace.projectId);
+      agentSessionState.selectConversation(
+        agentWorkspace.projectId,
+        agentWorkspace.conversationId,
+      );
+      agentSessionState.focusTaskArtifact(
+        agentWorkspace.conversationId,
+        target.taskId,
+      );
+      useChatStore
+        .getState()
+        .setActiveConversation(
+          `project:${agentWorkspace.projectId}`,
+          agentWorkspace.conversationId,
+        );
+      setCurrentView("agents");
+    },
+    [setCurrentView, setFocusedAgentProject],
+  );
+
   const handleOpenAutomationDetail = useCallback((automationId: string) => {
     setSelectedAutomationId(automationId);
     setCurrentView("automations");
@@ -1200,6 +1233,7 @@ function AppContent() {
       onOpenSettings={handleOpenSettings}
       onNavigateToSession={handleNavigateToSession}
       onNavigateToWorkspace={handleNavigateToWorkspace}
+      onNavigateToTask={handleNavigateToExecutionTask}
     />
   ) : null;
 

@@ -375,6 +375,28 @@ describe("agentSessionStore", () => {
       expect(selectHasStoredArtifactState(null)(useAgentSessionStore.getState())).toBe(false);
     });
 
+    it("focusTaskArtifact opens the Tasks tab and increments focus requests", () => {
+      const { focusTaskArtifact } = useAgentSessionStore.getState();
+
+      focusTaskArtifact("c1", "task-1");
+      let state = useAgentSessionStore.getState();
+      expect(selectArtifactState("c1")(state)).toMatchObject({
+        isOpen: true,
+        activeTab: "tasks",
+      });
+      expect(state.taskArtifactFocusRequestByConversationId.c1).toEqual({
+        taskId: "task-1",
+        requestId: 1,
+      });
+
+      focusTaskArtifact("c1", "task-2");
+      state = useAgentSessionStore.getState();
+      expect(state.taskArtifactFocusRequestByConversationId.c1).toEqual({
+        taskId: "task-2",
+        requestId: 2,
+      });
+    });
+
     it("setRuntimeForConversation + setLastRuntimeForProject normalize via lib/agent-models", () => {
       const { setRuntimeForConversation, setLastRuntimeForProject } =
         useAgentSessionStore.getState();
