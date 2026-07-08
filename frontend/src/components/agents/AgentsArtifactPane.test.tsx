@@ -3985,6 +3985,105 @@ describe("AgentsArtifactPane", () => {
     );
   });
 
+  it("uses attached-session proposal tasks when the project active execution plan is stale", async () => {
+    usePlanStore.setState({
+      activeExecutionPlanIdByProject: { "project-1": "exec-other" },
+    });
+    useTasksMock.mockReturnValue({
+      data: [
+        task({
+          id: "task-current",
+          title: "Current session task",
+          internalStatus: "executing",
+          executionPlanId: "exec-current",
+          ideationSessionId: "session-1",
+        }),
+        task({
+          id: "task-other",
+          title: "Unrelated active-plan task",
+          internalStatus: "blocked",
+          executionPlanId: "exec-other",
+          ideationSessionId: "session-other",
+        }),
+      ],
+      isLoading: false,
+      isFetching: false,
+    });
+    getIdeationSessionMock.mockResolvedValue(
+      ideationSessionResponse(
+        {
+          status: "accepted",
+          acceptanceStatus: "accepted",
+          convertedAt: "2026-04-23T10:00:00Z",
+        },
+        [taskProposal({ createdTaskId: "task-current" })],
+      ),
+    );
+    getSessionPlanMock.mockResolvedValue(approvedPlanArtifact());
+
+    renderPane(
+      "plan",
+      workspace({
+        mode: "ideation",
+        linkedIdeationSessionId: "session-1",
+        linkedPlanBranchId: "plan-branch-1",
+      }),
+      vi.fn(),
+      false,
+      conversation(),
+    );
+
+    expect(await screen.findByTestId("accepted-session-banner")).toHaveTextContent(
+      "1 task",
+    );
+    expect(screen.getByText("1 in progress")).toBeInTheDocument();
+    expect(screen.queryByText("1 blocked")).not.toBeInTheDocument();
+    expect(await screen.findByTestId("agents-artifact-tab-tasks")).toHaveTextContent(
+      "1",
+    );
+  });
+
+  it("does not offer restart from a stale project active execution plan alone", async () => {
+    usePlanStore.setState({
+      activeExecutionPlanIdByProject: { "project-1": "exec-other" },
+    });
+    useTasksMock.mockReturnValue({
+      data: [
+        task({
+          id: "task-other",
+          title: "Unrelated task",
+          executionPlanId: "exec-other",
+          ideationSessionId: "session-other",
+        }),
+      ],
+      isLoading: false,
+      isFetching: false,
+    });
+    getIdeationSessionMock.mockResolvedValue(
+      ideationSessionResponse({
+        status: "accepted",
+        acceptanceStatus: "accepted",
+        convertedAt: "2026-04-23T10:00:00Z",
+      }),
+    );
+    getSessionPlanMock.mockResolvedValue(approvedPlanArtifact());
+
+    renderPane(
+      "plan",
+      workspace({
+        mode: "ideation",
+        linkedIdeationSessionId: "session-1",
+        linkedPlanBranchId: "plan-branch-1",
+      }),
+      vi.fn(),
+      false,
+      conversation(),
+    );
+
+    expect(await screen.findByTestId("accepted-session-banner")).toBeInTheDocument();
+    expect(screen.queryByTestId("restart-implementation-button")).not.toBeInTheDocument();
+  });
+
   it("opens the Tasks tab from the accepted Plan progress banner", async () => {
     const user = userEvent.setup();
     const onTabChange = vi.fn();
@@ -4138,6 +4237,59 @@ describe("AgentsArtifactPane", () => {
 
     await waitFor(() =>
       expect(toastErrorMock).toHaveBeenCalledWith("Restart failed"),
+    );
+  });
+
+  it("reports string restart implementation failures from the confirmation action", async () => {
+    const user = userEvent.setup();
+    restartImplementationMock.mockRejectedValueOnce(
+      "Linked plan branch worktree is missing",
+    );
+    usePlanStore.setState({
+      activeExecutionPlanIdByProject: { "project-1": "exec-current" },
+    });
+    useTasksMock.mockReturnValue({
+      data: [
+        task({
+          id: "task-current",
+          executionPlanId: "exec-current",
+        }),
+      ],
+      isLoading: false,
+      isFetching: false,
+    });
+    getIdeationSessionMock.mockResolvedValue(
+      ideationSessionResponse({
+        status: "accepted",
+        acceptanceStatus: "accepted",
+        convertedAt: "2026-04-23T10:00:00Z",
+      }),
+    );
+    getSessionPlanMock.mockResolvedValue(approvedPlanArtifact());
+
+    renderPane(
+      "plan",
+      workspace({
+        mode: "ideation",
+        linkedIdeationSessionId: "session-1",
+        linkedPlanBranchId: "plan-branch-1",
+      }),
+      vi.fn(),
+      false,
+      conversation(),
+    );
+
+    await user.click(await screen.findByTestId("restart-implementation-button"));
+    await user.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", {
+        name: "Restart Implementation",
+      }),
+    );
+
+    await waitFor(() =>
+      expect(toastErrorMock).toHaveBeenCalledWith(
+        "Linked plan branch worktree is missing",
+      ),
     );
   });
 
