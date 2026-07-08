@@ -218,6 +218,7 @@ describe("HarnessProvidersSection", () => {
     vi.clearAllMocks();
     confirm.mockResolvedValue(true);
     dialogMocks.open.mockResolvedValue(null);
+    updateProviderAsync.mockResolvedValue(settings);
     refetchProviders.mockResolvedValue({ data: settings });
     refetchStatus.mockResolvedValue({ data: managedCliStatuses });
     installOrUpdateProviderAsync.mockResolvedValue({
@@ -455,6 +456,66 @@ describe("HarnessProvidersSection", () => {
     });
   });
 
+  it("auto-saves a custom binary path on blur and shows the expanded saved path", async () => {
+    const user = userEvent.setup();
+    updateProviderAsync.mockResolvedValueOnce({
+      ...settings,
+      providers: settings.providers.map((provider) =>
+        provider.provider === "codex"
+          ? {
+              ...provider,
+              cliManagementMode: "user_managed",
+              autoUpdateEnabled: false,
+              customBinaryEnabled: true,
+              customBinaryPath: "/Users/example/bin/codex-wrapper",
+              binaryPath: "/Users/example/bin/codex-wrapper",
+            }
+          : provider,
+      ),
+    });
+    render(<HarnessProvidersSection />);
+
+    const codexCard = screen.getByTestId("provider-card-codex");
+    await user.click(within(codexCard).getByLabelText("Use custom binary"));
+
+    const pathInput = within(codexCard).getByLabelText("Binary path");
+    await user.type(pathInput, "~/bin/codex-wrapper");
+    await user.tab();
+
+    expect(updateProviderAsync).toHaveBeenCalledWith({
+      provider: "codex",
+      customBinaryEnabled: true,
+      customBinaryPath: "~/bin/codex-wrapper",
+      cliManagementMode: "user_managed",
+      autoUpdateEnabled: false,
+    });
+    await waitFor(() => {
+      expect(pathInput).toHaveValue("/Users/example/bin/codex-wrapper");
+    });
+  });
+
+  it("shows inline custom binary save errors and keeps the failed draft", async () => {
+    const user = userEvent.setup();
+    updateProviderAsync.mockRejectedValueOnce(
+      new Error("Custom codex binary path must be absolute."),
+    );
+    render(<HarnessProvidersSection />);
+
+    const codexCard = screen.getByTestId("provider-card-codex");
+    await user.click(within(codexCard).getByLabelText("Use custom binary"));
+
+    const pathInput = within(codexCard).getByLabelText("Binary path");
+    await user.type(pathInput, "relative/codex");
+    await user.keyboard("{Enter}");
+
+    expect(
+      await within(codexCard).findByText(
+        "Custom codex binary path must be absolute.",
+      ),
+    ).toHaveAttribute("role", "alert");
+    expect(pathInput).toHaveValue("relative/codex");
+  });
+
   it("saves a browsed custom binary path", async () => {
     const user = userEvent.setup();
     dialogMocks.open.mockResolvedValueOnce("/opt/custom/codex-wrapper");
@@ -533,6 +594,61 @@ describe("HarnessProvidersSection", () => {
       customEnvFilePath: "/Users/example/.codex.env",
     });
     expect(refetchStatus).not.toHaveBeenCalled();
+  });
+
+  it("auto-saves a custom env file path on Enter and shows the expanded saved path", async () => {
+    const user = userEvent.setup();
+    updateProviderAsync.mockResolvedValueOnce({
+      ...settings,
+      providers: settings.providers.map((provider) =>
+        provider.provider === "codex"
+          ? {
+              ...provider,
+              customEnvFileEnabled: true,
+              customEnvFilePath: "/Users/example/.codex.env",
+            }
+          : provider,
+      ),
+    });
+    render(<HarnessProvidersSection />);
+
+    const codexCard = screen.getByTestId("provider-card-codex");
+    await user.click(within(codexCard).getByLabelText("Use custom env file"));
+
+    const pathInput = within(codexCard).getByLabelText("Env file path");
+    await user.type(pathInput, "~/.codex.env");
+    await user.keyboard("{Enter}");
+
+    expect(updateProviderAsync).toHaveBeenCalledWith({
+      provider: "codex",
+      customEnvFileEnabled: true,
+      customEnvFilePath: "~/.codex.env",
+    });
+    await waitFor(() => {
+      expect(pathInput).toHaveValue("/Users/example/.codex.env");
+    });
+  });
+
+  it("shows inline custom env file save errors and keeps the failed draft", async () => {
+    const user = userEvent.setup();
+    updateProviderAsync.mockRejectedValueOnce(
+      new Error("Custom codex env file path must be absolute."),
+    );
+    render(<HarnessProvidersSection />);
+
+    const codexCard = screen.getByTestId("provider-card-codex");
+    await user.click(within(codexCard).getByLabelText("Use custom env file"));
+
+    const pathInput = within(codexCard).getByLabelText("Env file path");
+    await user.type(pathInput, "relative.env");
+    await user.keyboard("{Enter}");
+
+    expect(
+      await within(codexCard).findByText(
+        "Custom codex env file path must be absolute.",
+      ),
+    ).toHaveAttribute("role", "alert");
+    expect(pathInput).toHaveValue("relative.env");
   });
 
   it("saves a browsed custom env file path", async () => {
