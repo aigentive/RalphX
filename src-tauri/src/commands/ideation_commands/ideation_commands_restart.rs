@@ -7,7 +7,7 @@ use tauri::{Emitter, Manager, State};
 
 use crate::application::task_cleanup_service::StopMode;
 use crate::application::{
-    agent_conversation_workspace::resolve_valid_agent_conversation_workspace_path,
+    agent_conversation_workspace::ensure_linked_plan_branch_agent_worktree,
     spawn_ready_task_scheduler_if_needed, AppState, TaskCleanupService,
 };
 use crate::commands::{emit_queue_changed, ExecutionState};
@@ -170,7 +170,28 @@ pub async fn restart_ideation_implementation_core(
                 "Linked agent conversation workspace is not in ideation mode".to_string(),
             ));
         }
-        resolve_valid_agent_conversation_workspace_path(&project, workspace).await?;
+        let plan_branch_id = workspace.linked_plan_branch_id.as_ref().ok_or_else(|| {
+            AppError::Validation(
+                "Linked ideation workspace has no linked plan branch for restart".to_string(),
+            )
+        })?;
+        let plan_branch = app_state
+            .plan_branch_repo
+            .get_by_id(plan_branch_id)
+            .await
+            .map_err(|error| {
+                AppError::Database(format!(
+                    "Failed to load linked plan branch for restart: {}",
+                    error
+                ))
+            })?
+            .ok_or_else(|| {
+                AppError::Validation(format!(
+                    "Linked plan branch not found for restart: {}",
+                    plan_branch_id
+                ))
+            })?;
+        ensure_linked_plan_branch_agent_worktree(&project, &plan_branch).await?;
     }
 
     let current_task_count = app_state
