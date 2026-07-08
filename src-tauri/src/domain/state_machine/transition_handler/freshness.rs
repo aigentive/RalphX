@@ -1296,7 +1296,7 @@ mod field_sync_tests {
     }
 
     #[tokio::test]
-    async fn ensure_branches_fresh_retries_and_blocks_source_update_errors() {
+    async fn ensure_branches_fresh_blocks_source_update_branch_missing() {
         let temp = tempfile::tempdir().expect("temp dir");
         init_empty_git_repo(temp.path());
         let project = freshness_test_project(temp.path(), "missing-target");
@@ -1322,10 +1322,10 @@ mod field_sync_tests {
             matches!(
                 result,
                 Err(FreshnessAction::ExecutionBlocked { ref reason })
-                    if reason.contains("update_source_from_target failed after retry")
+                    if reason.contains("branch missing before source update")
                         && reason.contains("missing-target")
             ),
-            "source update errors must retry once then block: {result:?}"
+            "source update branch misses must block without pretending the branch is retryable: {result:?}"
         );
     }
 
