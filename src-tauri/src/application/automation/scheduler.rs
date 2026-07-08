@@ -888,6 +888,36 @@ impl AutomationScheduler {
                 )
                 .await?;
             }
+            // No publication has started yet. If the run's agent process has already
+            // terminated (exited, errored, or was killed and pruned as `pid_missing` —
+            // which marks the agent_run Cancelled) without opening a pull request, the run
+            // can never progress. Fail it now instead of leaving it Running until the
+            // `max_run_duration` backstop hours later. Any `Some(...)` push status (e.g.
+            // "pushed" mid-publish, or "needs_agent" still within grace) is left untouched
+            // so an in-flight publish is not raced.
+            None => {
+                if let Some(status) = self
+                    .agent_run_repo
+                    .get_latest_for_conversation(conversation_id)
+                    .await?
+                    .map(|agent_run| agent_run.status)
+                {
+                    if matches!(
+                        status,
+                        AgentRunStatus::Completed
+                            | AgentRunStatus::Failed
+                            | AgentRunStatus::Cancelled
+                    ) {
+                        self.fail_running_run(
+                            run,
+                            "agent_failed",
+                            "Automation run agent exited before opening a pull request",
+                            summary,
+                        )
+                        .await?;
+                    }
+                }
+            }
             _ => {}
         }
 
