@@ -404,6 +404,7 @@ mod v20260704193000_automations_p1;
 mod v20260706113000_agent_conversation_issue_identity;
 mod v20260707113000_automation_agent_completed_signal;
 mod v20260707120000_automations_spec_artifact_id;
+mod v20260708130511_workspace_review_autofix_setting;
 #[cfg(test)]
 mod v20260706113000_agent_conversation_issue_identity_tests;
 #[cfg(test)]
@@ -473,6 +474,8 @@ mod v20260707113000_automation_agent_completed_signal_tests;
 #[cfg(test)]
 mod v20260707120000_automations_spec_artifact_id_tests;
 #[cfg(test)]
+mod v20260708130511_workspace_review_autofix_setting_tests;
+#[cfg(test)]
 mod v65_unique_working_directory_tests;
 #[cfg(test)]
 mod v66_cross_project_import_tests;
@@ -502,7 +505,7 @@ mod v8_task_git_fields_tests;
 mod v9_project_git_fields_tests;
 
 /// Current schema version - bump this when adding a new migration
-pub const SCHEMA_VERSION: i64 = 20260707120000;
+pub const SCHEMA_VERSION: i64 = 20260708130511;
 
 /// Migration function signature
 type MigrationFn = fn(&Connection) -> AppResult<()>;
@@ -1396,6 +1399,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 20260707120000,
         name: "automations_spec_artifact_id",
         migrate: v20260707120000_automations_spec_artifact_id::migrate,
+    },
+    Migration {
+        version: 20260708130511,
+        name: "workspace_review_autofix_setting",
+        migrate: v20260708130511_workspace_review_autofix_setting::migrate,
     },
 ];
 

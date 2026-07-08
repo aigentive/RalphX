@@ -7,6 +7,7 @@ import type {
   AgentConversationWorkspaceMode,
   AgentWorkspacePrReviewContext,
   AgentWorkspaceReviewContext,
+  StartAgentWorkspaceReviewFixerResult,
   StartAgentWorkspaceReviewResult,
 } from "@/api/chat";
 
@@ -24,54 +25,43 @@ const agentTaskScopeKey = (
 ) => ["agents", "agent-task-scope", contextType, contextId] as const;
 
 export const agentWorkspaceKeys = {
-  workspace: (conversationId: string | null | undefined) => [
-    "agents",
-    "conversation-workspace",
-    conversationId,
-  ] as const,
-  freshness: (conversationId: string | null | undefined) => [
-    "agents",
-    "conversation-workspace-freshness",
-    conversationId,
-  ] as const,
+  workspace: (conversationId: string | null | undefined) =>
+    ["agents", "conversation-workspace", conversationId] as const,
+  freshness: (conversationId: string | null | undefined) =>
+    ["agents", "conversation-workspace-freshness", conversationId] as const,
   scopedFreshness: (
     conversationId: string | null | undefined,
     scope: AgentConversationWorkspaceFreshnessScope,
-  ) => [
-    "agents",
-    "conversation-workspace-freshness",
-    conversationId,
-    scope,
-  ] as const,
-  publicationEvents: (conversationId: string | null | undefined) => [
-    "agents",
-    "conversation-workspace-publication-events",
-    conversationId,
-  ] as const,
-  review: (conversationId: string | null | undefined) => [
-    "agents",
-    "workspace-review",
-    conversationId,
-  ] as const,
-  changeSummary: (conversationId: string | null | undefined) => [
-    "agents",
-    "workspace-change-summary",
-    conversationId,
-  ] as const,
+  ) =>
+    [
+      "agents",
+      "conversation-workspace-freshness",
+      conversationId,
+      scope,
+    ] as const,
+  publicationEvents: (conversationId: string | null | undefined) =>
+    [
+      "agents",
+      "conversation-workspace-publication-events",
+      conversationId,
+    ] as const,
+  review: (conversationId: string | null | undefined) =>
+    ["agents", "workspace-review", conversationId] as const,
+  changeSummary: (conversationId: string | null | undefined) =>
+    ["agents", "workspace-change-summary", conversationId] as const,
   agentTasks: (conversationId: string | null | undefined) =>
     agentTaskScopeKey("conversation", conversationId),
-  agentTaskLists: (conversationId: string | null | undefined) => [
-    ...agentTaskScopeKey("conversation", conversationId),
-    "lists",
-  ] as const,
+  agentTaskLists: (conversationId: string | null | undefined) =>
+    [...agentTaskScopeKey("conversation", conversationId), "lists"] as const,
   agentTaskListTasks: (
     conversationId: string | null | undefined,
     taskListId: string | null | undefined,
-  ) => [
-    ...agentTaskScopeKey("conversation", conversationId),
-    "list-tasks",
-    taskListId,
-  ] as const,
+  ) =>
+    [
+      ...agentTaskScopeKey("conversation", conversationId),
+      "list-tasks",
+      taskListId,
+    ] as const,
   agentTasksForScope: agentTaskScopeKey,
   agentTaskListsForScope: (
     contextType: string | null | undefined,
@@ -81,37 +71,24 @@ export const agentWorkspaceKeys = {
     contextType: string | null | undefined,
     contextId: string | null | undefined,
     taskListId: string | null | undefined,
-  ) => [...agentTaskScopeKey(contextType, contextId), "list-tasks", taskListId] as const,
-  prAnnotations: (conversationId: string | null | undefined) => [
-    "agents",
-    "workspace-pr-annotations",
-    conversationId,
-  ] as const,
-  workspaceReviewHunkAnnotations: (conversationId: string | null | undefined) => [
-    "agents",
-    "workspace-review-hunk-annotations",
-    conversationId,
-  ] as const,
-  prReview: (conversationId: string | null | undefined) => [
-    "agents",
-    "workspace-pr-review",
-    conversationId,
-  ] as const,
-  workspaceReview: (conversationId: string | null | undefined) => [
-    "agents",
-    "workspace-review-context",
-    conversationId,
-  ] as const,
-  diff: (conversationId: string | null | undefined) => [
-    "agents",
-    "workspace-diff",
-    conversationId,
-  ] as const,
-  commits: (conversationId: string | null | undefined) => [
-    "agents",
-    "workspace-commits",
-    conversationId,
-  ] as const,
+  ) =>
+    [
+      ...agentTaskScopeKey(contextType, contextId),
+      "list-tasks",
+      taskListId,
+    ] as const,
+  prAnnotations: (conversationId: string | null | undefined) =>
+    ["agents", "workspace-pr-annotations", conversationId] as const,
+  workspaceReviewHunkAnnotations: (conversationId: string | null | undefined) =>
+    ["agents", "workspace-review-hunk-annotations", conversationId] as const,
+  prReview: (conversationId: string | null | undefined) =>
+    ["agents", "workspace-pr-review", conversationId] as const,
+  workspaceReview: (conversationId: string | null | undefined) =>
+    ["agents", "workspace-review-context", conversationId] as const,
+  diff: (conversationId: string | null | undefined) =>
+    ["agents", "workspace-diff", conversationId] as const,
+  commits: (conversationId: string | null | undefined) =>
+    ["agents", "workspace-commits", conversationId] as const,
 };
 
 export function prReviewContextForConversation(
@@ -125,13 +102,23 @@ export function prReviewContextForConversation(
   if (context.workspace.conversationId !== conversationId) {
     return null;
   }
-  if (context.monitor?.conversationId && context.monitor.conversationId !== conversationId) {
+  if (
+    context.monitor?.conversationId &&
+    context.monitor.conversationId !== conversationId
+  ) {
     return null;
   }
-  if (context.pendingAction?.conversationId && context.pendingAction.conversationId !== conversationId) {
+  if (
+    context.pendingAction?.conversationId &&
+    context.pendingAction.conversationId !== conversationId
+  ) {
     return null;
   }
-  if (context.recentActions.some((action) => action.conversationId !== conversationId)) {
+  if (
+    context.recentActions.some(
+      (action) => action.conversationId !== conversationId,
+    )
+  ) {
     return null;
   }
 
@@ -140,6 +127,7 @@ export function prReviewContextForConversation(
 
 type WorkspaceReviewContextLike =
   | AgentWorkspaceReviewContext
+  | StartAgentWorkspaceReviewFixerResult
   | StartAgentWorkspaceReviewResult;
 
 const WORKSPACE_REVIEW_OWNER_MODES: ReadonlySet<AgentConversationWorkspaceMode> =
@@ -191,7 +179,10 @@ export function workspaceReviewContextForConversation<
     return null;
   }
 
-  if ("workspace" in context && context.workspace.conversationId !== conversationId) {
+  if (
+    "workspace" in context &&
+    context.workspace.conversationId !== conversationId
+  ) {
     return null;
   }
   if (context.monitor.conversationId !== conversationId) {
@@ -206,8 +197,9 @@ const pendingFreshnessPreflights = new Set<string>();
 export function canInspectAgentWorkspaceFreshness(
   workspace: AgentConversationWorkspace | null | undefined,
 ): workspace is AgentConversationWorkspace {
-  const terminalPublicationLabel =
-    getAgentWorkspaceTerminalPublicationLabel(workspace ?? null);
+  const terminalPublicationLabel = getAgentWorkspaceTerminalPublicationLabel(
+    workspace ?? null,
+  );
   const hasPublishedPr = hasPublishedWorkspacePr(workspace ?? null);
   return (
     Boolean(workspace) &&
@@ -282,7 +274,8 @@ export function invalidateWorkspaceQueries(
       queryKey: agentWorkspaceKeys.prAnnotations(conversationId),
     }),
     queryClient.invalidateQueries({
-      queryKey: agentWorkspaceKeys.workspaceReviewHunkAnnotations(conversationId),
+      queryKey:
+        agentWorkspaceKeys.workspaceReviewHunkAnnotations(conversationId),
     }),
     queryClient.invalidateQueries({
       queryKey: agentWorkspaceKeys.prReview(conversationId),
