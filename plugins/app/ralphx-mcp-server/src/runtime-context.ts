@@ -9,6 +9,7 @@ type RuntimeContextKey =
   | "contextId"
   | "conversationId"
   | "parentConversationId"
+  | "agentRunId"
   | "leadSessionId"
   | "tauriApiUrl"
   | "traceDir";
@@ -33,6 +34,7 @@ const RUNTIME_ARG_ENV_MAPPINGS: Array<{
     argName: "parent-conversation-id",
     envName: "RALPHX_PARENT_CONVERSATION_ID",
   },
+  { key: "agentRunId", argName: "agent-run-id", envName: "RALPHX_AGENT_RUN_ID" },
   { key: "leadSessionId", argName: "lead-session-id", envName: "RALPHX_LEAD_SESSION_ID" },
   { key: "tauriApiUrl", argName: "tauri-api-url", envName: "TAURI_API_URL" },
   { key: "traceDir", argName: "trace-dir", envName: "RALPHX_MCP_TRACE_DIR" },

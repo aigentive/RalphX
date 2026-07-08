@@ -423,6 +423,7 @@ fn test_create_mcp_config_injects_runtime_context_args() {
         filesystem_read_roots: vec![project_root.clone()],
         lead_session_id: Some("lead-456".to_string()),
         parent_conversation_id: Some("conversation-789".to_string()),
+        agent_run_id: Some("run-123".to_string()),
     };
 
     let json = build_mcp_config_with_runtime_context(
@@ -485,6 +486,11 @@ fn test_create_mcp_config_injects_runtime_context_args() {
         args.contains(&"conversation-789".to_string()),
         "args: {args:?}"
     );
+    assert!(
+        args.contains(&"--agent-run-id".to_string()),
+        "args: {args:?}"
+    );
+    assert!(args.contains(&"run-123".to_string()), "args: {args:?}");
 }
 
 #[test]
@@ -804,6 +810,7 @@ harnesses:
         conversation_id: Some("conversation current".to_string()),
         project_id: Some("project-123".to_string()),
         parent_conversation_id: Some("conversation 456".to_string()),
+        agent_run_id: Some("run 789".to_string()),
         ..Default::default()
     };
     let json = build_mcp_config_with_runtime_context(
@@ -820,7 +827,8 @@ harnesses:
         server["url"]
             .as_str()
             .is_some_and(|url| url.contains("conversation_id=conversation%20current")
-                && url.contains("parent_conversation_id=conversation%20456")),
+                && url.contains("parent_conversation_id=conversation%20456")
+                && url.contains("agent_run_id=run%20789")),
         "external MCP URL should carry encoded runtime context: {server:?}"
     );
     assert!(

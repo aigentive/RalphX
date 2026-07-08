@@ -811,6 +811,7 @@ fn build_codex_mcp_overrides_passes_runtime_context_over_cli_args() {
         filesystem_read_roots: vec![root.join("project-root")],
         lead_session_id: Some("lead-789".to_string()),
         parent_conversation_id: Some("conversation-abc".to_string()),
+        agent_run_id: Some("run-123".to_string()),
     };
 
     let overrides = build_codex_mcp_overrides(
@@ -897,6 +898,14 @@ fn build_codex_mcp_overrides_passes_runtime_context_over_cli_args() {
     assert!(
         args_override.contains("conversation-abc"),
         "expected parent conversation id value in overrides: {args_override}"
+    );
+    assert!(
+        args_override.contains("--agent-run-id"),
+        "expected agent-run-id CLI arg in overrides: {args_override}"
+    );
+    assert!(
+        args_override.contains("run-123"),
+        "expected agent run id value in overrides: {args_override}"
     );
 }
 
@@ -1154,6 +1163,7 @@ harnesses:
         filesystem_read_roots: Vec::new(),
         lead_session_id: None,
         parent_conversation_id: Some("conversation 456".to_string()),
+        agent_run_id: Some("run 789".to_string()),
     };
 
     let overrides = build_codex_mcp_overrides(
@@ -1184,5 +1194,9 @@ harnesses:
     assert!(
         url_override.contains("parent_conversation_id=conversation%20456"),
         "external MCP URL should include encoded parent conversation id: {url_override}"
+    );
+    assert!(
+        url_override.contains("agent_run_id=run%20789"),
+        "external MCP URL should include encoded agent run id: {url_override}"
     );
 }

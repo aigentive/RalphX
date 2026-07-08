@@ -3213,7 +3213,7 @@ fn build_review_request_message(
          Use the `target.review_packet` returned by `get_workspace_review_context` as the primary diff input, then inspect only targeted files with read-only filesystem tools if needed. \
          Do not run shell commands, tests, linters, or validation suites. \
          Write a concise reviewer-focused Markdown Review with the `write_workspace_review_artifact` tool, write hunk descriptions with `write_workspace_review_hunk_annotations`, then call `complete_workspace_review_run` with outcome `passed`, `blocking`, `no_changes`, or `run_failed`. \
-         Use the target scope, head SHA, diff fingerprint, and monitor last_run_id returned by `get_workspace_review_context` as tool arguments only; do not repeat that provenance as artifact body prose. Do not modify files.",
+         Use the target scope, head SHA, and diff fingerprint returned by `get_workspace_review_context` as tool arguments only; do not repeat that provenance as artifact body prose. Do not modify files.",
         scope = target.scope,
         base_ref = target.base_ref,
         base_sha = target.base_sha.as_deref().unwrap_or("unknown"),
@@ -4414,7 +4414,7 @@ x
         assert!(!review_prompt
             .contains("Fetch any `kind=&quot;plan&quot;` artifact reference with `get_artifact`"));
         assert!(review_prompt
-            .contains("Use the target scope, head SHA, diff fingerprint, and monitor last_run_id"));
+            .contains("Use the target scope, head SHA, and diff fingerprint returned"));
         assert!(review_prompt.contains(&workspace.conversation_id.as_str()));
         assert!(!review_prompt.contains("pass conversation_id"));
 

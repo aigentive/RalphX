@@ -185,6 +185,7 @@ const RALPHX_CONTEXT_TYPE = runtimeContext.contextType;
 const RALPHX_CONTEXT_ID = runtimeContext.contextId;
 const RALPHX_CONVERSATION_ID = runtimeContext.conversationId;
 const RALPHX_PARENT_CONVERSATION_ID = runtimeContext.parentConversationId;
+const RALPHX_AGENT_RUN_ID = runtimeContext.agentRunId;
 
 function buildArtifactMutationTransportHeaders(): Record<string, string> | undefined {
   if (RALPHX_CONTEXT_TYPE !== "ideation" || !RALPHX_CONTEXT_ID) {
@@ -720,6 +721,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     } else if (isAgentWorkspaceToolName(name)) {
       result = await callAgentWorkspaceTool(name, callTauri, callTauriGet, args, {
         parentConversationId: RALPHX_PARENT_CONVERSATION_ID,
+        agentRunId: RALPHX_AGENT_RUN_ID,
       });
     } else if (isAutomationSetupToolName(name)) {
       result = await callAutomationSetupTool(name, callTauri, args, {
