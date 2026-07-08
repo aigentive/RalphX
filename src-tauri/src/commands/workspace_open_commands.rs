@@ -7,7 +7,7 @@ use std::time::Instant;
 use serde::Serialize;
 use tauri::State;
 
-use crate::application::agent_conversation_workspace::resolve_agent_conversation_workspace_path_for_send;
+use crate::application::agent_conversation_workspace::resolve_effective_agent_conversation_workspace_path;
 use crate::application::AppState;
 use crate::domain::entities::ChatConversationId;
 use crate::error::{AppError, AppResult};
@@ -798,8 +798,14 @@ pub async fn open_agent_conversation_workspace(
         .await
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "Workspace project not found".to_string())?;
-    let workspace_path = resolve_agent_conversation_workspace_path_for_send(&project, &workspace)
-        .map_err(|error| error.to_string())?;
+    let workspace_path = resolve_effective_agent_conversation_workspace_path(
+        &project,
+        &workspace,
+        state.plan_branch_repo.as_ref(),
+    )
+    .await
+    .map_err(|error| error.to_string())?
+    .path;
 
     launch_workspace_open_target(&target_id, &workspace_path).map_err(|error| error.to_string())
 }
@@ -824,8 +830,14 @@ pub async fn open_agent_conversation_workspace_path(
         .await
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "Workspace project not found".to_string())?;
-    let workspace_path = resolve_agent_conversation_workspace_path_for_send(&project, &workspace)
-        .map_err(|error| error.to_string())?;
+    let workspace_path = resolve_effective_agent_conversation_workspace_path(
+        &project,
+        &workspace,
+        state.plan_branch_repo.as_ref(),
+    )
+    .await
+    .map_err(|error| error.to_string())?
+    .path;
     let item_path = resolve_workspace_open_item_path(&workspace_path, Path::new(&path))
         .map_err(|error| error.to_string())?;
 

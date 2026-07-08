@@ -178,6 +178,27 @@ describe("AgentWorkspaceFileLinkProvider", () => {
     });
   });
 
+  it("opens workspace paths using the workspace owner conversation id", async () => {
+    const user = userEvent.setup();
+    renderProvider({
+      workspace: conversationWorkspace({
+        conversationId: "workspace-conversation",
+        linkedPlanBranchId: "plan-branch-1",
+      }),
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("file-link-context")).toHaveTextContent("present");
+    });
+    await user.click(screen.getByRole("button", { name: "Open Finder" }));
+
+    expect(chatApi.openAgentConversationWorkspacePath).toHaveBeenCalledWith(
+      "workspace-conversation",
+      "finder",
+      "/tmp/ralphx/conversation-1/src/lib.rs",
+    );
+  });
+
   it("reports backend open failures with the returned message", async () => {
     const user = userEvent.setup();
     vi.mocked(chatApi.openAgentConversationWorkspacePath).mockRejectedValue(
