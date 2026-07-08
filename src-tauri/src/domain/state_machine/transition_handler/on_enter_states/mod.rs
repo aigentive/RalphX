@@ -16,7 +16,6 @@ use super::merge_helpers::{
     resolve_task_base_branch, resolve_task_plan_branch_record, restore_task_worktree, slugify,
 };
 use super::metadata_builder::{build_failed_metadata, MetadataUpdate};
-use crate::application::git_service::WorktreeInfo;
 use crate::application::git_service::git_cmd::ENOENT_MARKER;
 use crate::application::GitService;
 use crate::domain::entities::plan_branch::PlanBranchId;
@@ -134,14 +133,12 @@ fn stale_execution_worktree_cleanup_blocked_error(
 }
 
 fn registered_task_worktree_matches_branch(
-    worktrees: &[WorktreeInfo],
+    registered_path: &str,
+    registered_branch: Option<&str>,
     expected_path: &Path,
     expected_branch: &str,
 ) -> bool {
-    worktrees.iter().any(|worktree| {
-        Path::new(&worktree.path) == expected_path
-            && worktree.branch.as_deref() == Some(expected_branch)
-    })
+    Path::new(registered_path) == expected_path && registered_branch == Some(expected_branch)
 }
 
 async fn existing_task_worktree_is_reusable(
@@ -151,7 +148,14 @@ async fn existing_task_worktree_is_reusable(
     task_id_str: &str,
 ) -> bool {
     match GitService::list_worktrees(repo_path).await {
-        Ok(worktrees) => registered_task_worktree_matches_branch(&worktrees, worktree_path, branch),
+        Ok(worktrees) => worktrees.iter().any(|worktree| {
+            registered_task_worktree_matches_branch(
+                &worktree.path,
+                worktree.branch.as_deref(),
+                worktree_path,
+                branch,
+            )
+        }),
         Err(e) => {
             tracing::warn!(
                 task_id = task_id_str,

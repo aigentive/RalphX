@@ -1063,25 +1063,24 @@ mod execution_worktree_validation_tests {
     fn registered_task_worktree_reuse_requires_exact_path_and_branch() {
         let temp = tempfile::tempdir().expect("temp dir");
         let expected_path = temp.path().join("task-reusable");
+        let expected_path_str = expected_path.to_string_lossy().to_string();
         let branch = "ralphx/validation-project/task-reusable";
-        let worktrees = vec![crate::application::git_service::WorktreeInfo {
-            path: expected_path.to_string_lossy().to_string(),
-            branch: Some(branch.to_string()),
-            head: Some("abc123".to_string()),
-        }];
 
         assert!(super::super::registered_task_worktree_matches_branch(
-            &worktrees,
+            &expected_path_str,
+            Some(branch),
             &expected_path,
             branch,
         ));
         assert!(!super::super::registered_task_worktree_matches_branch(
-            &worktrees,
+            &expected_path_str,
+            Some(branch),
             &expected_path,
             "ralphx/validation-project/task-other",
         ));
         assert!(!super::super::registered_task_worktree_matches_branch(
-            &worktrees,
+            &expected_path_str,
+            Some(branch),
             &temp.path().join("task-other"),
             branch,
         ));
