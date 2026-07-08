@@ -163,6 +163,45 @@ async fn execute_entry_recovery_sets_trigger_origin_with_metadata_update() {
 }
 
 #[tokio::test]
+async fn execute_entry_recovery_preserves_retry_metadata_written_before_reentry() {
+    let app_state = AppState::new_test();
+    let execution_state = Arc::new(ExecutionState::new());
+    let reconciler = build_reconciler_for_execution_tests(&app_state, &execution_state);
+    let mut task = seed_execution_task(&app_state, InternalStatus::Executing).await;
+    task.metadata = Some(json!({ "existing": true }).to_string());
+    app_state.task_repo.update(&task).await.unwrap();
+
+    let stale_task_snapshot = task.clone();
+    reconciler
+        .record_auto_retry_metadata(&task, InternalStatus::Executing, 1)
+        .await
+        .expect("record retry metadata");
+
+    let _ = reconciler
+        .apply_recovery_decision(
+            &stale_task_snapshot,
+            InternalStatus::Executing,
+            RecoveryContext::Execution,
+            RecoveryDecision {
+                action: RecoveryActionKind::ExecuteEntryActions,
+                reason: None,
+            },
+        )
+        .await;
+
+    let updated = app_state
+        .task_repo
+        .get_by_id(&task.id)
+        .await
+        .unwrap()
+        .expect("task should exist");
+    let metadata: Value = serde_json::from_str(updated.metadata.as_deref().unwrap()).unwrap();
+    assert_eq!(metadata["existing"], Value::Bool(true));
+    assert_eq!(metadata["auto_retry_count_executing"], json!(1));
+    assert_eq!(metadata["trigger_origin"], json!("recovery"));
+}
+
+#[tokio::test]
 async fn record_auto_retry_metadata_updates_metadata_without_rewriting_task() {
     let app_state = AppState::new_test();
     let execution_state = Arc::new(ExecutionState::new());

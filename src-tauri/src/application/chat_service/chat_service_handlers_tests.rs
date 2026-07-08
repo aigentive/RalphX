@@ -21,7 +21,6 @@ use crate::domain::entities::{
 use crate::domain::repositories::{AgentRunRepository, StateHistoryMetadata, StatusTransition};
 use crate::error::AppResult;
 use crate::infrastructure::agents::claude::{ContentBlockItem, ToolCall};
-use crate::infrastructure::memory::MemoryAgentRunRepository;
 
 /// Configurable mock: `get_by_id` returns the stored task (or None).
 struct StubTaskRepo {
@@ -73,26 +72,71 @@ async fn provider_env_for_harness_reads_app_state_provider_settings() {
 
 #[tokio::test]
 async fn cancelled_stream_preserves_already_terminal_agent_run() {
-    let repo = Arc::new(MemoryAgentRunRepository::new());
-    let run = repo
+    let state = AppState::new_test();
+    let run = state
+        .agent_run_repo
         .create(AgentRun::new(ChatConversationId::new()))
         .await
         .expect("create run");
-    repo.complete(&run.id).await.expect("complete run");
+    state
+        .agent_run_repo
+        .complete(&run.id)
+        .await
+        .expect("complete run");
 
-    mark_cancelled_stream_as_user_stop(
-        &(Arc::clone(&repo) as Arc<dyn AgentRunRepository>),
+    mark_cancelled_stream_as_cancelled(
+        &state.agent_run_repo,
         &run.id.as_str(),
+        ChatContextType::Project,
+        ProjectId::new().as_str(),
+        &state.task_repo,
     )
     .await;
 
-    let stored = repo
+    let stored = state
+        .agent_run_repo
         .get_by_id(&run.id)
         .await
         .expect("load run")
         .expect("run should exist");
     assert_eq!(stored.status, AgentRunStatus::Completed);
     assert!(stored.error_message.is_none());
+}
+
+#[tokio::test]
+async fn cancelled_stream_marks_recovery_task_run_as_system_recovery() {
+    let state = AppState::new_test();
+    let project_id = ProjectId::new();
+    let mut task = Task::new(project_id, "Recovery cancellation".to_string());
+    task.metadata = Some(serde_json::json!({ "trigger_origin": "recovery" }).to_string());
+    let task_id = task.id.clone();
+    state.task_repo.create(task).await.expect("create task");
+    let run = state
+        .agent_run_repo
+        .create(AgentRun::new(ChatConversationId::new()))
+        .await
+        .expect("create run");
+
+    mark_cancelled_stream_as_cancelled(
+        &state.agent_run_repo,
+        &run.id.as_str(),
+        ChatContextType::TaskExecution,
+        task_id.as_str(),
+        &state.task_repo,
+    )
+    .await;
+
+    let stored = state
+        .agent_run_repo
+        .get_by_id(&run.id)
+        .await
+        .expect("load run")
+        .expect("run should exist");
+    assert_eq!(stored.status, AgentRunStatus::Failed);
+    assert_eq!(
+        stored.error_message.as_deref(),
+        Some("Agent stream cancelled by system recovery")
+    );
 }
 
 #[async_trait]

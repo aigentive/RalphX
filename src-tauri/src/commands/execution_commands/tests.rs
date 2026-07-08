@@ -5951,6 +5951,38 @@ fn test_categorize_direct_resume_states() {
 }
 
 #[test]
+fn test_restart_transition_routes_execution_states_through_ready() {
+    assert_eq!(
+        restart_transition_target(InternalStatus::Executing),
+        InternalStatus::Ready
+    );
+    assert_eq!(
+        restart_transition_target(InternalStatus::ReExecuting),
+        InternalStatus::Ready
+    );
+}
+
+#[test]
+fn test_restart_transition_preserves_non_execution_categorized_target() {
+    assert_eq!(
+        restart_transition_target(InternalStatus::QaPassed),
+        InternalStatus::PendingReview
+    );
+    assert_eq!(
+        restart_transition_target(InternalStatus::Merging),
+        InternalStatus::Merging
+    );
+}
+
+#[test]
+fn test_restart_transition_only_ready_route_is_legal_from_stopped() {
+    assert!(InternalStatus::Stopped
+        .can_transition_to(restart_transition_target(InternalStatus::Executing)));
+    assert!(!InternalStatus::Stopped
+        .can_transition_to(restart_transition_target(InternalStatus::Merging)));
+}
+
+#[test]
 fn test_categorize_validated_resume_states() {
     // Validated resume: check git state first
     let validated_states = [
