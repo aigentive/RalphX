@@ -3,6 +3,13 @@ use std::sync::Mutex;
 
 static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
+fn path_index(entries: &[std::path::PathBuf], path: impl AsRef<std::path::Path>) -> usize {
+    entries
+        .iter()
+        .position(|entry| entry == path.as_ref())
+        .unwrap_or_else(|| panic!("PATH entry missing: {}", path.as_ref().display()))
+}
+
 // ── Unit tests for is_transient_error ─────────────────────────────────────
 
 #[test]
@@ -67,18 +74,18 @@ fn test_empty_stderr_not_transient() {
 }
 
 #[test]
-fn test_build_git_command_prepends_resolved_node_bin_to_existing_path() {
-    assert_build_git_command_prepends_resolved_node_bin_to_existing_path(None);
+fn test_build_git_command_preserves_user_shim_before_resolved_node_bin() {
+    assert_build_git_command_preserves_user_shim_before_resolved_node_bin(None);
 }
 
 #[test]
 fn test_build_git_command_restores_existing_node_override() {
-    assert_build_git_command_prepends_resolved_node_bin_to_existing_path(Some(
+    assert_build_git_command_preserves_user_shim_before_resolved_node_bin(Some(
         "/tmp/original-git-node-bin/node",
     ));
 }
 
-fn assert_build_git_command_prepends_resolved_node_bin_to_existing_path(
+fn assert_build_git_command_preserves_user_shim_before_resolved_node_bin(
     original_override: Option<&str>,
 ) {
     let _lock = ENV_MUTEX.lock().expect("env mutex");
@@ -93,7 +100,10 @@ fn assert_build_git_command_prepends_resolved_node_bin_to_existing_path(
     let cmd = build_git_command(
         &args,
         std::path::Path::new("/tmp"),
-        &[("PATH".to_string(), "/usr/bin:/bin".to_string())],
+        &[(
+            "PATH".to_string(),
+            "/Users/example/.cargo/bin:/usr/bin:/bin".to_string(),
+        )],
     );
 
     let path_value = cmd
@@ -107,11 +117,17 @@ fn assert_build_git_command_prepends_resolved_node_bin_to_existing_path(
 
     assert_eq!(
         path_entries.first(),
-        Some(&std::path::PathBuf::from("/tmp/git-node-bin"))
+        Some(&std::path::PathBuf::from("/Users/example/.cargo/bin"))
     );
+    assert!(
+        path_index(&path_entries, "/Users/example/.cargo/bin")
+            < path_index(&path_entries, "/tmp/git-node-bin")
+    );
+    assert!(path_index(&path_entries, "/tmp/git-node-bin") < path_index(&path_entries, "/usr/bin"));
     assert_eq!(
         path_entries,
         vec![
+            std::path::PathBuf::from("/Users/example/.cargo/bin"),
             std::path::PathBuf::from("/tmp/git-node-bin"),
             std::path::PathBuf::from("/usr/bin"),
             std::path::PathBuf::from("/bin"),

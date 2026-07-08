@@ -10,6 +10,8 @@ use crate::utils::path_safety::{
 
 const PROTECTED_ENV_KEYS: &[&str] = &[
     "PATH",
+    "RUSTC",
+    "RUSTUP_TOOLCHAIN",
     "TAURI_API_URL",
     "DEBUG",
     "CLAUDECODE",
