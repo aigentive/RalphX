@@ -280,7 +280,7 @@ fn normalize_source_pr_drops_blank_optional_fields() {
     assert!(pr.head_ref_oid.is_none());
 }
 
-// ── ticket start base fallback helpers ───────────────────────────────────────
+// ── ticket branch name hint helpers ──────────────────────────────────────────
 
 fn integration_ref(
     provider: &str,
@@ -301,41 +301,47 @@ fn integration_ref(
 }
 
 #[test]
-fn first_ticket_start_base_reference_prefers_ticket_integrations() {
+fn first_ticket_branch_name_hint_prefers_ticket_integrations() {
     let references = vec![
         integration_ref("atlassian", "confluence", "space-1", None),
         integration_ref("atlassian", "jira", "10001", Some("RX-24")),
         integration_ref("linear", "linear", "lin-1", Some("ENG-5")),
     ];
 
-    let ticket = first_ticket_start_base_reference(&references).expect("jira reference");
+    let ticket = first_ticket_branch_name_hint(&references).expect("jira reference");
 
     assert_eq!(ticket.provider, "jira");
-    assert_eq!(ticket.issue_key, "RX-24");
+    assert_eq!(ticket.ticket_token, "RX-24");
 }
 
 #[test]
-fn first_ticket_start_base_reference_supports_linear_clickup_and_id_fallback() {
+fn first_ticket_branch_name_hint_supports_linear_and_clickup_tokens() {
     let linear =
-        first_ticket_start_base_reference(&[integration_ref("linear", "linear", "lin-1", None)])
+        first_ticket_branch_name_hint(&[integration_ref("linear", "linear", "lin-1", None)])
             .expect("linear reference");
     assert_eq!(linear.provider, "linear");
-    assert_eq!(linear.issue_key, "lin-1");
+    assert_eq!(linear.ticket_token, "lin-1");
 
-    let clickup = first_ticket_start_base_reference(&[integration_ref(
+    let clickup_custom = first_ticket_branch_name_hint(&[integration_ref(
         "clickup",
         "clickup",
         "task-1",
         Some("CU-1"),
     )])
     .expect("clickup reference");
-    assert_eq!(clickup.provider, "clickup");
-    assert_eq!(clickup.issue_key, "CU-1");
+    assert_eq!(clickup_custom.provider, "clickup");
+    assert_eq!(clickup_custom.ticket_token, "CU-1");
+
+    let clickup_default =
+        first_ticket_branch_name_hint(&[integration_ref("clickup", "clickup", "8689abc", None)])
+            .expect("clickup default id reference");
+    assert_eq!(clickup_default.provider, "clickup");
+    assert_eq!(clickup_default.ticket_token, "CU-8689abc");
 }
 
 #[test]
-fn first_ticket_start_base_reference_ignores_unsupported_and_blank_ticket_refs() {
-    assert!(first_ticket_start_base_reference(&[integration_ref(
+fn first_ticket_branch_name_hint_ignores_unsupported_and_blank_ticket_refs() {
+    assert!(first_ticket_branch_name_hint(&[integration_ref(
         "atlassian",
         "confluence",
         "SPACE",
@@ -343,61 +349,13 @@ fn first_ticket_start_base_reference_ignores_unsupported_and_blank_ticket_refs()
     )])
     .is_none());
 
-    assert!(first_ticket_start_base_reference(&[integration_ref(
+    assert!(first_ticket_branch_name_hint(&[integration_ref(
         "linear",
         "linear",
         "   ",
         Some("   "),
     )])
     .is_none());
-}
-
-#[test]
-fn base_selection_allows_ticket_canonical_branch_only_for_default_without_pr() {
-    assert!(base_selection_allows_ticket_canonical_branch(None, None));
-    assert!(base_selection_allows_ticket_canonical_branch(
-        Some(IdeationAnalysisBaseRefKind::ProjectDefault),
-        None,
-    ));
-
-    let source = AgentWorkspaceSourcePullRequest {
-        number: 42,
-        url: None,
-        title: None,
-        head_ref_name: "feature/pr-head".to_string(),
-        base_ref_name: Some("main".to_string()),
-        head_ref_oid: None,
-    };
-    assert!(!base_selection_allows_ticket_canonical_branch(
-        Some(IdeationAnalysisBaseRefKind::LocalBranch),
-        None,
-    ));
-    assert!(!base_selection_allows_ticket_canonical_branch(
-        Some(IdeationAnalysisBaseRefKind::ProjectDefault),
-        Some(&source),
-    ));
-}
-
-#[test]
-fn apply_ticket_canonical_branch_base_selection_sets_local_branch_base() {
-    let mut kind = Some(IdeationAnalysisBaseRefKind::ProjectDefault);
-    let mut base_ref = Some("main".to_string());
-    let mut display_name = Some("Project default (main)".to_string());
-
-    apply_ticket_canonical_branch_base_selection(
-        &mut kind,
-        &mut base_ref,
-        &mut display_name,
-        "RX-24",
-        "ralphx/ticket/jira-rx-24",
-    );
-
-    assert_eq!(kind, Some(IdeationAnalysisBaseRefKind::LocalBranch));
-    assert_eq!(base_ref.as_deref(), Some("ralphx/ticket/jira-rx-24"));
-    assert_eq!(
-        display_name.as_deref(),
-        Some("Ticket RX-24 (ralphx/ticket/jira-rx-24)")
-    );
 }
 
 // ── agent_mode_requires_workspace / agent_mode_should_create_workspace ────────

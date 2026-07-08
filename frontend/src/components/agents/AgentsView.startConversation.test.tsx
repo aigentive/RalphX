@@ -764,7 +764,7 @@ describe("AgentsView start conversation", () => {
     );
   });
 
-  it("auto-selects a ticket's linked pull request as the start base", async () => {
+  it("keeps the project default base when a ticket reference has linked PRs", async () => {
     mockAgentViewData();
     getTicketAssociationsMock.mockResolvedValue({
       tasks: [],
@@ -811,15 +811,11 @@ describe("AgentsView start conversation", () => {
     renderAgentsView();
 
     await waitFor(() =>
-      expect(getTicketAssociationsMock).toHaveBeenCalledWith({
-        provider: "jira",
-        ticketRef: { provider: "jira", id: "10088", key: "RX-88" },
-        projectId: "project-1",
-      })
+      expect(screen.getByTestId("agents-start-base")).toHaveTextContent(
+        "Project default (main)"
+      )
     );
-    await waitFor(() =>
-      expect(screen.getByTestId("agents-start-base")).toHaveTextContent("PR #88")
-    );
+    expect(getTicketAssociationsMock).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByTestId("agents-start-submit"));
 
@@ -829,16 +825,10 @@ describe("AgentsView start conversation", () => {
           projectId: "project-1",
           content: "continue the ticket work",
           base: expect.objectContaining({
-            kind: "local_branch",
+            kind: "project_default",
             branchMode: "isolated",
-            ref: "feature/ticket-pr",
-            displayName: "PR #88",
-            sourcePullRequest: expect.objectContaining({
-              number: 88,
-              url: "https://github.com/owner/repo/pull/88",
-              headRefName: "feature/ticket-pr",
-              baseRefName: "main",
-            }),
+            ref: "main",
+            displayName: "Project default (main)",
           }),
           composerIntegrationReferences: [
             expect.objectContaining({
@@ -853,9 +843,44 @@ describe("AgentsView start conversation", () => {
     );
   });
 
-  it("falls back to the ticket branch when ticket association lookup fails", async () => {
+  it("preserves a remembered branch base when a ticket reference is attached", async () => {
     mockAgentViewData();
-    getTicketAssociationsMock.mockRejectedValue(new Error("associations unavailable"));
+    const branchOptions: BranchBaseOption[] = [
+      {
+        key: "project_default:main",
+        label: "Project default (main)",
+        detail: "Configured project base branch",
+        source: "project",
+        selection: {
+          kind: "project_default",
+          ref: "main",
+          displayName: "Project default (main)",
+        },
+      },
+      {
+        key: "local_branch:develop",
+        label: "develop",
+        detail: "Local branch",
+        source: "local",
+        selection: {
+          kind: "local_branch",
+          ref: "develop",
+          displayName: "develop",
+        },
+      },
+    ];
+    resetAgentSessionState({
+      branchBaseCacheByProjectId: {
+        "project-1": {
+          options: branchOptions,
+          selectedKey: "local_branch:develop",
+          loadedAt: "2026-05-08T00:00:00.000Z",
+        },
+      },
+      lastBranchBaseSelectionByProjectId: {
+        "project-1": "local_branch:develop",
+      },
+    });
     useAgentSessionStore.getState().setStartConversationDraft({
       projectId: "project-1",
       content: "continue without a linked PR",
@@ -874,15 +899,9 @@ describe("AgentsView start conversation", () => {
     renderAgentsView();
 
     await waitFor(() =>
-      expect(getTicketAssociationsMock).toHaveBeenCalledWith({
-        provider: "linear",
-        ticketRef: { provider: "linear", id: "lin-99", key: "ENG-99" },
-        projectId: "project-1",
-      })
+      expect(screen.getByTestId("agents-start-base")).toHaveTextContent("develop")
     );
-    await waitFor(() =>
-      expect(screen.getByTestId("agents-start-base")).toHaveTextContent("Ticket ENG-99")
-    );
+    expect(getTicketAssociationsMock).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByTestId("agents-start-submit"));
 
@@ -895,9 +914,17 @@ describe("AgentsView start conversation", () => {
           base: expect.objectContaining({
             kind: "local_branch",
             branchMode: "isolated",
-            ref: "ralphx/ticket/linear-eng-99",
-            displayName: "Ticket ENG-99 (ralphx/ticket/linear-eng-99)",
+            ref: "develop",
+            displayName: "develop",
           }),
+          composerIntegrationReferences: [
+            expect.objectContaining({
+              provider: "linear",
+              kind: "linear",
+              id: "lin-99",
+              key: "ENG-99",
+            }),
+          ],
         })
       )
     );

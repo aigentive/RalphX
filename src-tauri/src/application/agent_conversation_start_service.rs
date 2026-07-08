@@ -5,7 +5,7 @@ use tauri::{Emitter, Runtime};
 
 use crate::application::agent_conversation_workspace::{
     agent_name_for_workspace_mode,
-    prepare_agent_conversation_workspace_with_setup_mode_and_defaults,
+    prepare_agent_conversation_workspace_with_setup_mode_defaults_and_branch_name_hint,
     validate_review_pr_workspace_source_pull_request, AgentConversationWorkspaceBaseSelection,
     AgentConversationWorkspaceSetupMode,
 };
@@ -14,7 +14,6 @@ use crate::application::plan_reference_import::{
     import_agent_conversation_plan_reference, rewrite_imported_plan_reference,
     selected_plan_reference,
 };
-use crate::application::ticket_canonical_branch::ensure_ticket_canonical_branch;
 use crate::application::{AppState, ChatService, SendResult, TeamService};
 use crate::commands::ExecutionState;
 use crate::domain::agents::{AgentHarnessKind, LogicalEffort, DEFAULT_AGENT_HARNESS};
@@ -30,11 +29,10 @@ mod helpers;
 
 use self::helpers::{
     agent_mode_should_create_workspace, agent_workspace_pr_automation_defaults_for_project,
-    apply_ticket_canonical_branch_base_selection, archive_empty_seeded_draft_after_setup_failure,
-    archive_supplied_seeded_draft_after_setup_failure,
-    base_selection_allows_ticket_canonical_branch, emit_start_agent_conversation_progress,
+    archive_empty_seeded_draft_after_setup_failure,
+    archive_supplied_seeded_draft_after_setup_failure, emit_start_agent_conversation_progress,
     ensure_linked_branch_workspace_available, ensure_plan_workspace_planning_session_link,
-    first_ticket_start_base_reference, hydrate_linked_branch_source_pull_request,
+    first_ticket_branch_name_hint, hydrate_linked_branch_source_pull_request,
     linked_setup_failure_error, log_start_agent_conversation_phase,
     normalize_agent_runtime_selection, normalize_agent_workspace_source_pull_request,
     parse_agent_workspace_base_kind, parse_agent_workspace_branch_mode, parse_agent_workspace_mode,
@@ -171,11 +169,11 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
 
         let parse_input_started = Instant::now();
         let mode = parse_agent_workspace_mode(input.mode.as_deref())?;
-        let mut base_ref_kind = parse_agent_workspace_base_kind(input.base_ref_kind.as_deref())?;
+        let base_ref_kind = parse_agent_workspace_base_kind(input.base_ref_kind.as_deref())?;
         let base_branch_mode =
             parse_agent_workspace_branch_mode(input.base_branch_mode.as_deref())?;
-        let mut base_ref = trim_optional_input(input.base_ref);
-        let mut base_display_name = trim_optional_input(input.base_display_name);
+        let base_ref = trim_optional_input(input.base_ref);
+        let base_display_name = trim_optional_input(input.base_display_name);
         let parent_conversation_id = trim_optional_input(input.parent_conversation_id);
         let conversation_title = trim_optional_input(input.title);
         let draft_conversation_id = input
@@ -184,8 +182,8 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             .map(str::trim)
             .filter(|conversation_id| !conversation_id.is_empty())
             .map(ChatConversationId::from_string);
-        let ticket_start_base_reference =
-            first_ticket_start_base_reference(&input.composer_integration_references);
+        let ticket_branch_name_hint =
+            first_ticket_branch_name_hint(&input.composer_integration_references);
         let mut source_pull_request = normalize_agent_workspace_source_pull_request(
             input.base_source_pull_request,
             base_ref_kind,
@@ -223,37 +221,6 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
             project_lookup_started,
         );
 
-        if should_create_workspace
-            && base_selection_allows_ticket_canonical_branch(
-                base_ref_kind,
-                source_pull_request.as_ref(),
-            )
-        {
-            if let Some(ticket_reference) = ticket_start_base_reference.as_ref() {
-                let ticket_base_started = Instant::now();
-                let canonical = ensure_ticket_canonical_branch(
-                    self.deps.state,
-                    &project_id,
-                    &ticket_reference.provider,
-                    &ticket_reference.issue_key,
-                )
-                .await
-                .map_err(|error| error.to_string())?;
-                apply_ticket_canonical_branch_base_selection(
-                    &mut base_ref_kind,
-                    &mut base_ref,
-                    &mut base_display_name,
-                    &ticket_reference.issue_key,
-                    &canonical.branch_name,
-                );
-                log_start_agent_conversation_phase(
-                    &input.project_id,
-                    None,
-                    "resolve_ticket_base",
-                    ticket_base_started,
-                );
-            }
-        }
         if should_create_workspace {
             if let Err(error) = ensure_linked_branch_workspace_available(
                 self.deps.state,
@@ -373,7 +340,7 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
                 agent_workspace_pr_automation_defaults_for_project(self.deps.state, &project.id)
                     .await?;
             let mut workspace =
-                match prepare_agent_conversation_workspace_with_setup_mode_and_defaults(
+                match prepare_agent_conversation_workspace_with_setup_mode_defaults_and_branch_name_hint(
                     &project,
                     &conversation.id,
                     mode,
@@ -391,6 +358,7 @@ impl<'a, R: Runtime + 'static> AgentConversationStartService<'a, R> {
                     // (integration-branch model). Non-automation chats keep the local
                     // start-point.
                     conversation.automation_id.is_some(),
+                    ticket_branch_name_hint.clone(),
                 )
                 .await
                 {

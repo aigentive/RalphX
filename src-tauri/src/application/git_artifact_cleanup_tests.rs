@@ -67,6 +67,10 @@ fn project_for(repo: &Path, worktree_parent: &Path) -> Project {
     project
 }
 
+fn cleanup_conversation_id() -> ChatConversationId {
+    ChatConversationId::from_string("33333333-3333-3333-3333-333333333333")
+}
+
 fn merged_pr_plan_branch(branch_name: &str, project_id: ProjectId) -> PlanBranch {
     let mut plan_branch = PlanBranch::new(
         crate::domain::entities::artifact::ArtifactId::from_string("artifact-1"),
@@ -87,7 +91,7 @@ fn workspace_for(
     branch_name: &str,
     pr_status: &str,
 ) -> AgentConversationWorkspace {
-    let conversation_id = ChatConversationId::from_string("conversation-cleanup");
+    let conversation_id = cleanup_conversation_id();
     let worktree_path =
         resolve_agent_conversation_workspace_path(project, &conversation_id).unwrap();
     let mut workspace = AgentConversationWorkspace::new(
@@ -109,7 +113,7 @@ fn workspace_for(
 }
 
 fn expected_workspace_branch(project: &Project) -> String {
-    let conversation_id = ChatConversationId::from_string("conversation-cleanup");
+    let conversation_id = cleanup_conversation_id();
     agent_conversation_branch_name(project, &conversation_id)
 }
 
@@ -456,7 +460,7 @@ async fn merged_agent_workspace_cleanup_tolerates_missing_worktree_path() {
 async fn merged_agent_workspace_cleanup_skips_project_root_path() {
     let worktrees = tempfile::tempdir().expect("worktree parent");
     let mut project = project_for(Path::new("/placeholder"), worktrees.path());
-    let conversation_id = ChatConversationId::from_string("conversation-cleanup");
+    let conversation_id = cleanup_conversation_id();
     let project_root =
         resolve_agent_conversation_workspace_path(&project, &conversation_id).unwrap();
     init_repo_at(&project_root);
@@ -549,6 +553,58 @@ async fn merged_agent_workspace_cleanup_deletes_owned_continuation_branch() {
 
     assert!(report.branch_deleted);
     assert!(!branch_exists(repo.path(), &branch));
+}
+
+#[tokio::test]
+async fn merged_agent_workspace_cleanup_deletes_provider_ticket_branch() {
+    let repo = init_repo();
+    let worktrees = tempfile::tempdir().expect("worktree parent");
+    let project = project_for(repo.path(), worktrees.path());
+    let branch = "ralphx/cleanup-project/agent-jira-PROJ-123-33333333";
+    let workspace = workspace_for(&project, branch, "merged");
+
+    run_git(repo.path(), &["checkout", "-b", branch]);
+    std::fs::write(repo.path().join("agent.txt"), "agent\n").expect("write agent");
+    run_git(repo.path(), &["add", "."]);
+    run_git(repo.path(), &["commit", "-m", "agent work"]);
+    run_git(repo.path(), &["checkout", "main"]);
+    run_git(
+        repo.path(),
+        &["merge", "--no-ff", branch, "-m", "merge agent"],
+    );
+
+    let report = cleanup_terminal_agent_workspace_local_artifacts(&project, &workspace, true)
+        .await
+        .expect("cleanup should delete provider-aware ticket branch");
+
+    assert!(report.branch_deleted);
+    assert!(!branch_exists(repo.path(), branch));
+}
+
+#[tokio::test]
+async fn merged_agent_workspace_cleanup_deletes_provider_ticket_continuation_branch() {
+    let repo = init_repo();
+    let worktrees = tempfile::tempdir().expect("worktree parent");
+    let project = project_for(repo.path(), worktrees.path());
+    let branch = "ralphx/cleanup-project/agent-linear-ENG-99-33333333-1712345678901";
+    let workspace = workspace_for(&project, branch, "merged");
+
+    run_git(repo.path(), &["checkout", "-b", branch]);
+    std::fs::write(repo.path().join("agent.txt"), "agent\n").expect("write agent");
+    run_git(repo.path(), &["add", "."]);
+    run_git(repo.path(), &["commit", "-m", "agent work"]);
+    run_git(repo.path(), &["checkout", "main"]);
+    run_git(
+        repo.path(),
+        &["merge", "--no-ff", branch, "-m", "merge agent"],
+    );
+
+    let report = cleanup_terminal_agent_workspace_local_artifacts(&project, &workspace, true)
+        .await
+        .expect("cleanup should delete provider-aware ticket continuation branch");
+
+    assert!(report.branch_deleted);
+    assert!(!branch_exists(repo.path(), branch));
 }
 
 #[tokio::test]
