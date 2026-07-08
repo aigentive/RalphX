@@ -246,7 +246,7 @@ describe("shouldShowAgentWorkspacePublishSurface", () => {
     ).toBe(true);
   });
 
-  it("keeps non-execution planning workspaces out of the publish surface", () => {
+  it("shows the publish surface for plan workspaces before publication", () => {
     expect(
       shouldShowAgentWorkspacePublishSurface(
         workspace({
@@ -254,6 +254,42 @@ describe("shouldShowAgentWorkspacePublishSurface", () => {
           linkedIdeationSessionId: "planning-session-1",
         }),
       ),
+    ).toBe(true);
+  });
+
+  it("shows the publish surface for published plan workspaces", () => {
+    expect(
+      shouldShowAgentWorkspacePublishSurface(
+        workspace({
+          mode: "plan",
+          publicationPrNumber: 648,
+          publicationPushStatus: "pushed",
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("keeps the publish surface reachable for missing plan workspaces", () => {
+    expect(
+      shouldShowAgentWorkspacePublishSurface(
+        workspace({
+          mode: "plan",
+          linkedIdeationSessionId: "planning-session-1",
+          status: "missing",
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("keeps non-publish workspace modes out of the publish surface", () => {
+    expect(shouldShowAgentWorkspacePublishSurface(workspace({ mode: "chat" }))).toBe(
+      false,
+    );
+    expect(
+      shouldShowAgentWorkspacePublishSurface(workspace({ mode: "review_pr" })),
+    ).toBe(false);
+    expect(
+      shouldShowAgentWorkspacePublishSurface(workspace({ mode: "automation" })),
     ).toBe(false);
   });
 });
@@ -274,6 +310,17 @@ describe("canInspectAgentWorkspacePublishDiffs", () => {
     ).toBe(true);
   });
 
+  it("allows active plan workspaces", () => {
+    expect(
+      canInspectAgentWorkspacePublishDiffs(
+        workspace({
+          mode: "plan",
+          linkedIdeationSessionId: "planning-session-1",
+        }),
+      ),
+    ).toBe(true);
+  });
+
   it("rejects ideation workspaces without a linked plan branch", () => {
     expect(
       canInspectAgentWorkspacePublishDiffs(workspace({ mode: "ideation" })),
@@ -283,6 +330,18 @@ describe("canInspectAgentWorkspacePublishDiffs", () => {
   it("rejects missing workspaces by default", () => {
     expect(
       canInspectAgentWorkspacePublishDiffs(workspace({ status: "missing" })),
+    ).toBe(false);
+  });
+
+  it("rejects missing plan workspaces for live diff inspection", () => {
+    expect(
+      canInspectAgentWorkspacePublishDiffs(
+        workspace({
+          mode: "plan",
+          linkedIdeationSessionId: "planning-session-1",
+          status: "missing",
+        }),
+      ),
     ).toBe(false);
   });
 
@@ -316,6 +375,17 @@ describe("canInspectAgentWorkspaceBaseFreshness", () => {
     ).toBe(true);
   });
 
+  it("allows active plan workspaces before a PR exists", () => {
+    expect(
+      canInspectAgentWorkspaceBaseFreshness(
+        workspace({
+          mode: "plan",
+          linkedIdeationSessionId: "planning-session-1",
+        }),
+      ),
+    ).toBe(true);
+  });
+
   it("preserves published PR freshness inspection", () => {
     expect(
       canInspectAgentWorkspaceBaseFreshness(
@@ -330,6 +400,18 @@ describe("canInspectAgentWorkspaceBaseFreshness", () => {
   it("rejects ideation workspaces without a linked plan branch or PR", () => {
     expect(
       canInspectAgentWorkspaceBaseFreshness(workspace({ mode: "ideation" })),
+    ).toBe(false);
+  });
+
+  it("rejects missing plan workspaces for live base freshness inspection", () => {
+    expect(
+      canInspectAgentWorkspaceBaseFreshness(
+        workspace({
+          mode: "plan",
+          linkedIdeationSessionId: "planning-session-1",
+          status: "missing",
+        }),
+      ),
     ).toBe(false);
   });
 });
