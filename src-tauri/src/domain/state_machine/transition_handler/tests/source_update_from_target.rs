@@ -205,6 +205,32 @@ async fn source_behind_target_with_conflicts_returns_conflicts() {
 // ==================
 
 #[tokio::test]
+async fn missing_repo_path_returns_error_before_branch_checks() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let missing_repo_path = temp.path().join("missing-repo");
+    let missing_repo_path_str = missing_repo_path.to_string_lossy().to_string();
+    let project = make_test_project(&missing_repo_path_str);
+
+    let result = update_source_from_target(
+        &missing_repo_path,
+        "task/source",
+        "main",
+        &project,
+        "task-missing-repo",
+        None,
+    )
+    .await;
+
+    match result {
+        SourceUpdateResult::Error(message) => {
+            assert!(message.contains("repository path does not exist"));
+            assert!(message.contains("missing-repo"));
+        }
+        other => panic!("missing repository should return Error, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn nonexistent_target_branch_returns_branch_missing() {
     let repo = setup_real_git_repo();
     let project = make_test_project(&repo.path_string());
