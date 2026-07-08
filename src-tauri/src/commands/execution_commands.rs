@@ -23,8 +23,9 @@ use crate::domain::entities::{
 };
 use crate::domain::execution::ExecutionSettings;
 use crate::domain::execution::{
-    build_execution_status_response, build_running_ideation_session, build_running_process,
-    build_running_workspace_session, elapsed_seconds_for_status, ExecutionStatusInput,
+    build_execution_status_response, build_running_ideation_session,
+    build_running_process_with_agent_workspace, build_running_workspace_session,
+    elapsed_seconds_for_status, ExecutionStatusInput,
 };
 use crate::domain::execution::{count_execution_status, ScopedExecutionSubject};
 use crate::domain::state_machine::services::TaskScheduler;

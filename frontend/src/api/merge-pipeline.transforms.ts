@@ -9,6 +9,7 @@ import type {
   MergePipelineTask,
   MergePipelineResponse,
 } from "./merge-pipeline.types";
+import { transformExecutionTaskAgentWorkspace } from "./execution-task-agent-workspace";
 
 /**
  * Transform MergePipelineTaskSchema (snake_case) → MergePipelineTask (camelCase)
@@ -19,6 +20,7 @@ export function transformMergePipelineTask(
   return {
     taskId: raw.task_id,
     title: raw.title,
+    displayTitle: raw.display_title ?? raw.title,
     internalStatus: raw.internal_status,
     sourceBranch: raw.source_branch,
     targetBranch: raw.target_branch,
@@ -27,6 +29,11 @@ export function transformMergePipelineTask(
     blockingBranch: raw.blocking_branch,
     conflictFiles: raw.conflict_files,
     errorContext: raw.error_context,
+    ...(raw.agent_workspace !== undefined && {
+      agentWorkspace: raw.agent_workspace
+        ? transformExecutionTaskAgentWorkspace(raw.agent_workspace)
+        : null,
+    }),
   };
 }
 

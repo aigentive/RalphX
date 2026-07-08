@@ -2,7 +2,7 @@
  * RunningProcessPopover component tests
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { RunningProcessPopover } from "./RunningProcessPopover";
 import type {
@@ -12,13 +12,6 @@ import type {
   RunningIdeationSession,
   RunningWorkspaceSession,
 } from "@/api/running-processes";
-import { useUiStore } from "@/stores/uiStore";
-
-vi.mock("@/stores/uiStore", () => ({
-  useUiStore: vi.fn(),
-}));
-
-const mockNavigateToTask = vi.fn();
 
 // Mock process data helper
 function createMockProcess(overrides?: Partial<RunningProcess>): RunningProcess {
@@ -124,13 +117,6 @@ const mockCapacity: ExecutionCapacitySummary = {
 };
 
 describe("RunningProcessPopover", () => {
-  beforeEach(() => {
-    vi.mocked(useUiStore).mockImplementation(
-      (selector: (state: { navigateToTask: typeof mockNavigateToTask }) => unknown) =>
-        selector({ navigateToTask: mockNavigateToTask })
-    );
-  });
-
   describe("basic rendering", () => {
     it("renders trigger element", () => {
       render(
@@ -607,9 +593,17 @@ describe("RunningProcessPopover", () => {
   });
 
   describe("navigation callbacks", () => {
-    it("clicking a process card calls onOpenChange(false) and navigateToTask", () => {
+    it("clicking a process card closes the popover and emits an Agent task target", () => {
       const onOpenChange = vi.fn();
-      const processes = [createMockProcess({ taskId: "task-nav-1" })];
+      const onNavigateToTask = vi.fn();
+      const agentWorkspace = {
+        conversationId: "conversation-1",
+        projectId: "project-1",
+        title: "Workspace Conversation",
+      };
+      const processes = [
+        createMockProcess({ taskId: "task-nav-1", agentWorkspace }),
+      ];
       render(
         <RunningProcessPopover
           processes={processes}
@@ -619,6 +613,7 @@ describe("RunningProcessPopover", () => {
           onPauseProcess={vi.fn()}
           onStopProcess={vi.fn()}
           onOpenSettings={vi.fn()}
+          onNavigateToTask={onNavigateToTask}
         >
           <button>Trigger</button>
         </RunningProcessPopover>
@@ -627,7 +622,12 @@ describe("RunningProcessPopover", () => {
       fireEvent.click(screen.getByTestId("process-card-task-nav-1"));
 
       expect(onOpenChange).toHaveBeenCalledWith(false);
-      expect(mockNavigateToTask).toHaveBeenCalledWith("task-nav-1");
+      expect(onNavigateToTask).toHaveBeenCalledWith({
+        taskId: "task-nav-1",
+        source: "running",
+        projectId: "project-1",
+        agentWorkspace,
+      });
     });
 
     it("clicking a workspace row closes the popover and navigates to the agent conversation", () => {

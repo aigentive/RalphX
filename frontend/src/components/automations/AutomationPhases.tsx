@@ -26,8 +26,7 @@ type PhaseStatusStyle = {
   Icon: typeof Circle;
 };
 
-// Literal-value fallbacks alongside the semantic tokens keep the badges painted
-// in WKWebView even if a var() chain fails to cascade.
+// Semantic tokens keep the badges aligned with the active theme.
 const PHASE_STATUS_STYLES: Record<AutomationPhaseStatus, PhaseStatusStyle> = {
   done: {
     label: AUTOMATION_PHASE_STATUS_LABELS.done,
@@ -39,8 +38,8 @@ const PHASE_STATUS_STYLES: Record<AutomationPhaseStatus, PhaseStatusStyle> = {
   in_progress: {
     label: AUTOMATION_PHASE_STATUS_LABELS.in_progress,
     color: "var(--accent-primary, #ff6a35)",
-    backgroundColor: "var(--accent-muted, rgba(255,106,53,.10))",
-    borderColor: "var(--accent-border, rgba(255,106,53,.28))",
+    backgroundColor: "var(--accent-muted)",
+    borderColor: "var(--accent-border)",
     Icon: Loader2,
   },
   pending: {
@@ -159,8 +158,8 @@ export function AutomationPhaseProgress({
               style={
                 isCurrent
                   ? {
-                      backgroundColor: "var(--accent-muted, rgba(255,106,53,.10))",
-                      borderColor: "var(--accent-border, rgba(255,106,53,.28))",
+                      backgroundColor: "var(--accent-muted)",
+                      borderColor: "var(--accent-border)",
                       borderStyle: "solid",
                       borderWidth: "1px",
                     }

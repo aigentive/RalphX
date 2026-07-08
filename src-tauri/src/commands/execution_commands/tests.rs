@@ -4,7 +4,9 @@ use crate::commands::execution_commands::lifecycle::{
     determine_paused_restore_status, prepare_resumed_task_for_entry_actions,
 };
 use crate::domain::entities::{
-    AgentRun, ChatConversation, ChatConversationId, GitMode, IdeationSession,
+    artifact::ArtifactId, AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun,
+    ChatConversation, ChatConversationId, GitMode, IdeationAnalysisBaseRefKind, IdeationSession,
+    PlanBranch, PlanBranchId, PlanBranchStatus,
 };
 use crate::domain::services::{QueueKey, QueuedMessage, RunningAgentKey};
 use std::sync::Arc;
@@ -2343,6 +2345,136 @@ async fn test_get_running_processes_reports_scoped_lanes_and_capacity() {
     assert_eq!(aggregate_ideation_lane.active, 2);
     assert_eq!(aggregate_ideation_lane.waiting, 1);
     assert_eq!(aggregate_response.capacity.total_active, 6);
+}
+
+#[tokio::test]
+async fn test_get_running_processes_includes_agent_workspace_target_for_task() {
+    let active_project_state = Arc::new(ActiveProjectState::new());
+    let execution_state = Arc::new(ExecutionState::new());
+    let app_state = AppState::new_test();
+
+    let project = app_state
+        .project_repo
+        .create(Project::new(
+            "Workspace Target Project".to_string(),
+            "/test/workspace-target-project".to_string(),
+        ))
+        .await
+        .unwrap();
+    active_project_state.set(Some(project.id.clone())).await;
+
+    let session_id = IdeationSessionId::from_string("workspace-target-session");
+    let mut running_task = Task::new(project.id.clone(), "Running linked task".to_string());
+    running_task.internal_status = InternalStatus::Executing;
+    running_task.ideation_session_id = Some(session_id.clone());
+    let running_task = app_state.task_repo.create(running_task).await.unwrap();
+
+    let branch_id = PlanBranchId::from_string("workspace-target-plan-branch");
+    app_state
+        .plan_branch_repo
+        .create(PlanBranch {
+            id: branch_id.clone(),
+            plan_artifact_id: ArtifactId::from_string("workspace-target-artifact"),
+            session_id: session_id.clone(),
+            project_id: project.id.clone(),
+            branch_name: "feature/workspace-target".to_string(),
+            source_branch: "main".to_string(),
+            status: PlanBranchStatus::Active,
+            execution_plan_id: None,
+            merge_task_id: None,
+            created_at: chrono::Utc::now(),
+            merged_at: None,
+            pr_number: None,
+            pr_url: None,
+            pr_status: None,
+            pr_polling_active: false,
+            pr_eligible: false,
+            last_polled_at: None,
+            pr_push_status: Default::default(),
+            merge_commit_sha: None,
+            pr_draft: None,
+            base_branch_override: None,
+        })
+        .await
+        .unwrap();
+
+    let mut conversation = ChatConversation::new_project(project.id.clone());
+    conversation.title = Some("Linked Agent Workspace".to_string());
+    let conversation = app_state
+        .chat_conversation_repo
+        .create(conversation)
+        .await
+        .unwrap();
+
+    let mut workspace = AgentConversationWorkspace::new(
+        conversation.id,
+        project.id.clone(),
+        AgentConversationWorkspaceMode::Ideation,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("main".to_string()),
+        Some("base-sha".to_string()),
+        "ralphx/workspace-target".to_string(),
+        "/tmp/ralphx-workspace-target".to_string(),
+    );
+    workspace.linked_plan_branch_id = Some(branch_id);
+    workspace.linked_ideation_session_id = Some(session_id);
+    app_state
+        .agent_conversation_workspace_repo
+        .create_or_update(workspace)
+        .await
+        .unwrap();
+
+    let task_run = app_state
+        .agent_run_repo
+        .create(AgentRun::new(ChatConversationId::new()))
+        .await
+        .unwrap();
+    let mut live_process = std::process::Command::new("sleep")
+        .arg("60")
+        .spawn()
+        .expect("spawn disposable process for live registry row");
+    app_state
+        .running_agent_registry
+        .register(
+            RunningAgentKey::new("task_execution", running_task.id.as_str()),
+            live_process.id(),
+            "task-conversation".to_string(),
+            task_run.id.as_str(),
+            None,
+            None,
+        )
+        .await;
+
+    let app = mock_builder()
+        .manage(Arc::clone(&active_project_state))
+        .manage(Arc::clone(&execution_state))
+        .manage(app_state)
+        .build(mock_context(noop_assets()))
+        .expect("mock app should build");
+
+    let response = get_running_processes(
+        None,
+        app.state::<Arc<ActiveProjectState>>(),
+        app.state::<Arc<ExecutionState>>(),
+        app.state::<AppState>(),
+    )
+    .await
+    .expect("running processes should load");
+
+    let _ = live_process.kill();
+    let _ = live_process.wait();
+
+    assert_eq!(response.processes.len(), 1);
+    let process = &response.processes[0];
+    assert_eq!(process.task_id, running_task.id.as_str());
+    let agent_workspace = process
+        .agent_workspace
+        .as_ref()
+        .expect("agent workspace target should be present");
+    assert_eq!(agent_workspace.conversation_id, conversation.id.as_str());
+    assert_eq!(agent_workspace.project_id, project.id.as_str());
+    assert_eq!(agent_workspace.title, "Linked Agent Workspace");
 }
 
 #[test]

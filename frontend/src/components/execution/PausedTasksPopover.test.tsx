@@ -18,7 +18,6 @@ vi.mock("@/types/status-icons", () => ({
 }));
 
 const resumeMock = vi.hoisted(() => vi.fn());
-const navigateToTaskMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/lib/tauri", () => ({
   api: {
@@ -26,11 +25,6 @@ vi.mock("@/lib/tauri", () => ({
       resume: resumeMock,
     },
   },
-}));
-
-vi.mock("@/stores/uiStore", () => ({
-  useUiStore: (selector: (state: { navigateToTask: typeof navigateToTaskMock }) => unknown) =>
-    selector({ navigateToTask: navigateToTaskMock }),
 }));
 
 // Force the popover to render its content inline so tests can assert on it
@@ -374,7 +368,6 @@ describe("PausedTaskCard", () => {
 describe("PausedTasksPopover (component)", () => {
   beforeEach(() => {
     resumeMock.mockReset();
-    navigateToTaskMock.mockReset();
   });
 
   function makeProviderErrorTask(id: string, msg = "rate limited"): Task {
@@ -512,16 +505,32 @@ describe("PausedTasksPopover (component)", () => {
     errSpy.mockRestore();
   });
 
-  it("calls navigateToTask when view-details clicked", () => {
+  it("emits an Agent task navigation target when view-details clicked", () => {
+    const onNavigateToTask = vi.fn();
     render(
-      <PausedTasksPopover pausedTasks={[makeProviderErrorTask("p1")]}>
+      <PausedTasksPopover
+        pausedTasks={[
+          {
+            ...makeProviderErrorTask("p1"),
+            ideationSessionId: "session-1",
+            executionPlanId: "plan-branch-1",
+          },
+        ]}
+        onNavigateToTask={onNavigateToTask}
+      >
         <button>Open</button>
-      </PausedTasksPopover>
+      </PausedTasksPopover>,
     );
 
     fireEvent.click(screen.getByTestId("view-details-button-p1"));
 
-    expect(navigateToTaskMock).toHaveBeenCalledWith("p1");
+    expect(onNavigateToTask).toHaveBeenCalledWith({
+      taskId: "p1",
+      source: "paused",
+      projectId: "proj-1",
+      ideationSessionId: "session-1",
+      executionPlanId: "plan-branch-1",
+    });
   });
 
   it("renders trigger children", () => {

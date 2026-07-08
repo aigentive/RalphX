@@ -47,7 +47,7 @@ export function AttentionMergeCard({ task, onViewDetails, onRetry }: AttentionMe
         style={{ color: "var(--text-primary)" }}
         onClick={handleViewDetails}
       >
-        {task.title}
+        {task.displayTitle ?? task.title}
       </button>
       <span
         className="text-[0.6875rem] shrink-0 max-w-[120px] truncate"

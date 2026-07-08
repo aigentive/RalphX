@@ -10,8 +10,10 @@ use tauri::State;
 use crate::application::merge_pipeline_visibility::ArchivedParentMergeVisibility;
 use crate::application::AppState;
 use crate::commands::execution_commands::ActiveProjectState;
+use crate::commands::execution_task_navigation::resolve_agent_workspace_target_for_task;
 use crate::domain::entities::ProjectId;
 use crate::domain::entities::{InternalStatus, PlanBranch, Project, Task, TaskCategory};
+use crate::domain::execution::ExecutionTaskAgentWorkspace;
 use crate::domain::state_machine::transition_handler::{
     has_main_merge_deferred_metadata, has_merge_deferred_metadata,
 };
@@ -38,6 +40,10 @@ pub struct MergePipelineTask {
     pub task_id: String,
     /// Task title
     pub title: String,
+    /// Display title for execution-bar rows
+    pub display_title: String,
+    /// Owning Agent conversation workspace, when this task can deep-link there
+    pub agent_workspace: Option<ExecutionTaskAgentWorkspace>,
     /// Current internal status
     pub internal_status: String,
     /// Source branch (task branch)
@@ -204,6 +210,17 @@ pub async fn get_merge_pipeline(
 
             // Extract merge metadata
             let (conflict_files, error_context) = extract_merge_metadata(&task);
+            let agent_workspace = resolve_agent_workspace_target_for_task(
+                &state,
+                &task,
+                &plan_branches,
+                &agent_workspaces,
+            )
+            .await?;
+            let display_title = agent_workspace
+                .as_ref()
+                .map(|workspace| workspace.title.clone())
+                .unwrap_or_else(|| task.title.clone());
 
             // Determine blocking branch for deferred tasks
             let blocking_branch = if is_deferred {
@@ -222,6 +239,8 @@ pub async fn get_merge_pipeline(
             let pipeline_task = MergePipelineTask {
                 task_id: task.id.as_str().to_string(),
                 title: task.title.clone(),
+                display_title,
+                agent_workspace,
                 internal_status: task.internal_status.as_str().to_string(),
                 source_branch,
                 target_branch,
@@ -290,9 +309,9 @@ mod tests {
     use super::*;
     use crate::domain::entities::{
         artifact::ArtifactId, types::IdeationSessionId, AgentConversationWorkspace,
-        AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus, ChatConversationId,
-        ExecutionPlanId, IdeationAnalysisBaseRefKind, PlanBranchId, PlanBranchStatus, ProjectId,
-        TaskId,
+        AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus, ChatConversation,
+        ChatConversationId, ExecutionPlanId, IdeationAnalysisBaseRefKind, PlanBranchId,
+        PlanBranchStatus, ProjectId, TaskId,
     };
     use chrono::Utc;
     use std::sync::Arc;
@@ -698,5 +717,95 @@ mod tests {
         assert!(response.needs_attention.is_empty());
         assert_eq!(response.waiting.len(), 1);
         assert_eq!(response.waiting[0].task_id, visible_task.id.as_str());
+    }
+
+    #[tokio::test]
+    async fn get_merge_pipeline_uses_agent_workspace_title_for_plan_merge_task() {
+        let active_project_state = Arc::new(ActiveProjectState::new());
+        let app_state = AppState::new_test();
+        let project = app_state
+            .project_repo
+            .create(Project::new(
+                "Merge Pipeline Project".into(),
+                "/tmp/merge-pipeline-project".into(),
+            ))
+            .await
+            .unwrap();
+        active_project_state.set(Some(project.id.clone())).await;
+
+        let mut merge_task = Task::new(project.id.clone(), "Merge plan into main".into());
+        merge_task.id = TaskId::from_string("workspace-title-merge".to_string());
+        merge_task.category = TaskCategory::PlanMerge;
+        merge_task.internal_status = InternalStatus::PendingMerge;
+        merge_task.task_branch = Some("ralphx/workspace-title-merge".into());
+        app_state
+            .task_repo
+            .create(merge_task.clone())
+            .await
+            .unwrap();
+
+        let mut branch = make_plan_branch(
+            "workspace-title-session",
+            "feature/workspace-title-plan",
+            PlanBranchStatus::Active,
+        );
+        branch.project_id = project.id.clone();
+        branch.id = PlanBranchId::from_string("workspace-title-branch");
+        branch.merge_task_id = Some(merge_task.id.clone());
+        app_state
+            .plan_branch_repo
+            .create(branch.clone())
+            .await
+            .unwrap();
+
+        let mut conversation = ChatConversation::new_project(project.id.clone());
+        conversation.title = Some("Agent Conversation Workspace".to_string());
+        let conversation = app_state
+            .chat_conversation_repo
+            .create(conversation)
+            .await
+            .unwrap();
+
+        let mut workspace = make_agent_workspace(
+            AgentConversationWorkspaceStatus::Active,
+            Some(branch.id.clone()),
+            Some(branch.session_id.clone()),
+        );
+        workspace.project_id = project.id.clone();
+        workspace.conversation_id = conversation.id;
+        app_state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .unwrap();
+
+        let app = mock_builder()
+            .manage(Arc::clone(&active_project_state))
+            .manage(app_state)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        let response = get_merge_pipeline(
+            None,
+            app.state::<Arc<ActiveProjectState>>(),
+            app.state::<AppState>(),
+        )
+        .await
+        .expect("merge pipeline query should succeed");
+
+        assert!(response.active.is_empty());
+        assert!(response.needs_attention.is_empty());
+        assert_eq!(response.waiting.len(), 1);
+        let row = &response.waiting[0];
+        assert_eq!(row.task_id, merge_task.id.as_str());
+        assert_eq!(row.title, "Merge plan into main");
+        assert_eq!(row.display_title, "Agent Conversation Workspace");
+        let agent_workspace = row
+            .agent_workspace
+            .as_ref()
+            .expect("agent workspace target should be present");
+        assert_eq!(agent_workspace.conversation_id, conversation.id.as_str());
+        assert_eq!(agent_workspace.project_id, project.id.as_str());
+        assert_eq!(agent_workspace.title, "Agent Conversation Workspace");
     }
 }
