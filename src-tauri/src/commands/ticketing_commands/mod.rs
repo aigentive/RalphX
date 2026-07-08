@@ -8,12 +8,11 @@ use tauri::{AppHandle, Runtime, State};
 use crate::application::clickup_integration_service::{
     ClickUpFolder, ClickUpList, ClickUpStatus, ClickUpTaskListOptions,
 };
-use crate::application::ticket_canonical_branch::ensure_ticket_canonical_branch;
 use crate::application::ticketing_pr_summary::{ticket_pr_branch_summary, TicketPrBranchSummary};
 use crate::application::{
     agent_conversation_jira_issue, agent_conversation_linear_issue,
     agent_conversation_start_service::{
-        AgentConversationStartDeps, AgentConversationStartService, StartAgentConversationInput,
+        AgentConversationStartDeps, AgentConversationStartService,
     },
     AppState, AtlassianResourceContent, AtlassianResourceKind, AtlassianResourceSummary,
     ClickUpComment, ClickUpSpace, ClickUpTaskContent, ClickUpTaskSummary, ClickUpUser,
@@ -30,8 +29,7 @@ use crate::commands::unified_chat_commands::{
 use crate::commands::ExecutionState;
 use crate::domain::entities::{
     is_open_pr, AgentConversationJiraIssueLink, AgentConversationLinearIssueLink,
-    AgentConversationWorkspaceMode, ChatContextType, ChatConversation, ChatConversationId,
-    IdeationAnalysisBaseRefKind, ProjectId,
+    ChatContextType, ChatConversation, ChatConversationId, ProjectId,
 };
 use crate::domain::integrations::{
     AtlassianIntegrationSettings, ClickUpIntegrationSettings, IntegrationValidationStatus,
@@ -875,19 +873,6 @@ pub async fn start_ralphx_work_from_ticket<R: Runtime + 'static>(
         ticket_reference,
     );
 
-    // For workspace-creating ticket starts with no explicit branch/PR base,
-    // base the new conversation off the ticket's single canonical branch so all
-    // work for the ticket converges on one branch. Explicit user-selected PRs
-    // and branches are preserved.
-    if ticket_start_should_apply_canonical_branch(&input.start) {
-        let issue_key = ticket_ref_issue_key(&input.ticket_ref);
-        let canonical =
-            ensure_ticket_canonical_branch(state.inner(), &project_id, &provider, &issue_key)
-                .await
-                .map_err(|error| error.to_string())?;
-        apply_ticket_canonical_branch_base(&mut input.start, &issue_key, &canonical.branch_name);
-    }
-
     let mut result = AgentConversationStartService::new(AgentConversationStartDeps {
         state: state.inner(),
         execution_state: execution_state.inner(),
@@ -949,75 +934,6 @@ fn ticket_ref_label(ticket_ref: &TicketRefInput) -> String {
         .filter(|value| !value.is_empty())
         .unwrap_or(ticket_ref.id.as_str())
         .to_string()
-}
-
-/// Resolve the issue key used for the ticket canonical branch: prefer the
-/// provider `.key` (matches the link tables), falling back to `.id`.
-fn ticket_ref_issue_key(ticket_ref: &TicketRefInput) -> String {
-    ticket_ref
-        .key
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or(ticket_ref.id.as_str())
-        .to_string()
-}
-
-/// Whether a ticket start in this mode will create a base-selecting workspace
-/// that should inherit the ticket's canonical branch as its base.
-///
-/// Only Edit and Plan modes create a local-branch-base workspace from a ticket
-/// start. Chat-only starts create no workspace (effectively read-only), and the
-/// other workspace modes are not reachable from a ticket start, so they skip the
-/// canonical-branch base injection.
-fn ticket_start_inherits_canonical_branch(mode: Option<&str>) -> bool {
-    let parsed = mode
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("edit")
-        .parse::<AgentConversationWorkspaceMode>();
-    matches!(
-        parsed,
-        Ok(AgentConversationWorkspaceMode::Edit | AgentConversationWorkspaceMode::Plan)
-    )
-}
-
-fn ticket_start_should_apply_canonical_branch(start: &StartAgentConversationInput) -> bool {
-    if !ticket_start_inherits_canonical_branch(start.mode.as_deref()) {
-        return false;
-    }
-    if start.base_source_pull_request.is_some() {
-        return false;
-    }
-    let base_ref_kind = match start
-        .base_ref_kind
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::parse::<IdeationAnalysisBaseRefKind>)
-        .transpose()
-    {
-        Ok(kind) => kind,
-        Err(_) => return false,
-    };
-    matches!(
-        base_ref_kind,
-        None | Some(IdeationAnalysisBaseRefKind::ProjectDefault)
-    )
-}
-
-/// Overwrite the conversation start base so it inherits the ticket's canonical
-/// branch as a local-branch base. Uses `local_branch` (NOT `pull_request`, which
-/// hard-errors in the workspace path); the existing LocalBranch path materializes
-/// the branch locally if missing and forges the per-conversation branch off it.
-fn apply_ticket_canonical_branch_base(
-    start: &mut StartAgentConversationInput,
-    issue_key: &str,
-    canonical_branch_name: &str,
-) {
-    start.base_ref_kind = Some("local_branch".to_string());
-    start.base_ref = Some(canonical_branch_name.to_string());
-    start.base_display_name = Some(format!("Ticket {issue_key} ({canonical_branch_name})"));
 }
 
 #[tauri::command]

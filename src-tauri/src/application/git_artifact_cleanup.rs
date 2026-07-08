@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use crate::application::agent_conversation_workspace::{
-    agent_conversation_branch_name, resolve_agent_conversation_workspace_path,
+    is_expected_agent_conversation_branch_name, resolve_agent_conversation_workspace_path,
 };
 use crate::application::git_service::GitService;
 use crate::domain::entities::{
@@ -300,14 +300,9 @@ fn is_expected_agent_workspace_branch(
     project: &Project,
     workspace: &AgentConversationWorkspace,
 ) -> bool {
-    let canonical_branch = agent_conversation_branch_name(project, &workspace.conversation_id);
-    if workspace.branch_name == canonical_branch {
-        return true;
-    }
-
-    let continuation_prefix = format!("{canonical_branch}-");
-    workspace
-        .branch_name
-        .strip_prefix(&continuation_prefix)
-        .is_some_and(|suffix| !suffix.is_empty() && suffix.chars().all(|ch| ch.is_ascii_digit()))
+    is_expected_agent_conversation_branch_name(
+        project,
+        &workspace.conversation_id,
+        &workspace.branch_name,
+    )
 }

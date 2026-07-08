@@ -621,6 +621,11 @@ fn merge_ticket_links_with_branch_fallback(
 }
 
 fn infer_ticket_link_from_branch_name(branch_name: &str) -> Option<GithubBranchTicketLink> {
+    infer_legacy_ticket_link_from_branch_name(branch_name)
+        .or_else(|| infer_agent_ticket_link_from_branch_name(branch_name))
+}
+
+fn infer_legacy_ticket_link_from_branch_name(branch_name: &str) -> Option<GithubBranchTicketLink> {
     let suffix = branch_name.strip_prefix("ralphx/ticket/")?;
     let (provider, label) = suffix.split_once('-')?;
     if !matches!(provider, "jira" | "linear" | "clickup") || label.trim().is_empty() {
@@ -632,4 +637,52 @@ fn infer_ticket_link_from_branch_name(branch_name: &str) -> Option<GithubBranchT
         title: None,
         url: None,
     })
+}
+
+fn infer_agent_ticket_link_from_branch_name(branch_name: &str) -> Option<GithubBranchTicketLink> {
+    let mut parts = branch_name.split('/');
+    if parts.next()? != "ralphx" {
+        return None;
+    }
+    let project_slug = parts.next()?;
+    if project_slug.is_empty() {
+        return None;
+    }
+    let branch_leaf = parts.next()?;
+    if parts.next().is_some() {
+        return None;
+    }
+
+    let branch_leaf = strip_numeric_branch_continuation(branch_leaf);
+    let suffix = branch_leaf.strip_prefix("agent-")?;
+    let (provider, ticket_and_conversation) = suffix.split_once('-')?;
+    if !matches!(provider, "jira" | "linear" | "clickup") {
+        return None;
+    }
+
+    let mut label_parts = ticket_and_conversation
+        .split('-')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    label_parts.pop()?;
+    if label_parts.is_empty() {
+        return None;
+    }
+    let label = label_parts.join("-");
+
+    Some(GithubBranchTicketLink {
+        provider: provider.to_string(),
+        label,
+        title: None,
+        url: None,
+    })
+}
+
+fn strip_numeric_branch_continuation(branch_leaf: &str) -> &str {
+    branch_leaf
+        .rsplit_once('-')
+        .and_then(|(base, suffix)| {
+            (!suffix.is_empty() && suffix.chars().all(|ch| ch.is_ascii_digit())).then_some(base)
+        })
+        .unwrap_or(branch_leaf)
 }

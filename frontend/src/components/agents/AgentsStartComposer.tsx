@@ -5,9 +5,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type Dispatch,
-  type MutableRefObject,
-  type SetStateAction,
 } from "react";
 import { PauseCircle, Sparkles } from "lucide-react";
 
@@ -19,7 +16,6 @@ import type {
   ComposerIntegrationReference,
   ComposerProjectReference,
 } from "@/api/chat";
-import { ticketingApi, type TicketRef } from "@/api/ticketing";
 import type { Project } from "@/types/project";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
 import { withAlpha } from "@/lib/theme-colors";
@@ -39,9 +35,6 @@ import {
   fallbackBranchBaseOptions,
   loadBranchBaseOptions,
   loadPullRequestBaseOptions,
-  ticketAssociationBranchBaseOption,
-  ticketCanonicalBranchBaseOption,
-  ticketProviderForComposerReference,
   type BranchBaseOption,
 } from "@/components/shared/branchBaseOptions";
 import type { AgentModelRegistry } from "@/lib/agent-models";
@@ -215,8 +208,6 @@ export function AgentsStartComposer({
   const [pullRequestStartFromOptions, setPullRequestStartFromOptions] = useState<
     BranchBaseOption[]
   >([]);
-  const [ticketStartFromOption, setTicketStartFromOption] =
-    useState<BranchBaseOption | null>(null);
   const [selectedStartFromKey, setSelectedStartFromKey] = useState("");
   const [isStartFromIsolatedBranch, setIsStartFromIsolatedBranch] =
     useState(false);
@@ -245,7 +236,6 @@ export function AgentsStartComposer({
   const [error, setError] = useState<StartComposerError | null>(null);
   const startFromRequestRef = useRef(0);
   const pullRequestStartFromRequestRef = useRef(0);
-  const ticketStartFromRequestRef = useRef(0);
   const userSelectedStartFromRef = useRef(false);
   const lastStartAttemptRef = useRef<AgentsStartComposerSubmitInput | null>(null);
   const openModal = useUiStore((s) => s.openModal);
@@ -448,20 +438,9 @@ export function AgentsStartComposer({
   const activeProjectId = activeProject?.id ?? null;
   const activeProjectBaseBranch = activeProject?.baseBranch ?? null;
   const activeProjectWorkingDirectory = activeProject?.workingDirectory ?? null;
-  const pullRequestOptionsWithTicketStartFrom = useMemo(() => {
-    if (!ticketStartFromOption) {
-      return pullRequestStartFromOptions;
-    }
-    return [
-      ticketStartFromOption,
-      ...pullRequestStartFromOptions.filter(
-        (option) => option.key !== ticketStartFromOption.key
-      ),
-    ];
-  }, [pullRequestStartFromOptions, ticketStartFromOption]);
   const allStartFromOptions = useMemo(
-    () => [...startFromOptions, ...pullRequestOptionsWithTicketStartFrom],
-    [pullRequestOptionsWithTicketStartFrom, startFromOptions]
+    () => [...startFromOptions, ...pullRequestStartFromOptions],
+    [pullRequestStartFromOptions, startFromOptions]
   );
   const selectedStartFrom =
     allStartFromOptions.find((option) => option.key === selectedStartFromKey) ?? null;
@@ -714,10 +693,8 @@ export function AgentsStartComposer({
   useEffect(() => {
     startFromRequestRef.current += 1;
     pullRequestStartFromRequestRef.current += 1;
-    ticketStartFromRequestRef.current += 1;
     setHydratedStartFromProjectId(null);
     setPullRequestStartFromOptions([]);
-    setTicketStartFromOption(null);
     setPullRequestStartFromMessage(null);
     setIsLoadingPullRequestStartFrom(false);
     setIsStartFromIsolatedBranch(false);
@@ -759,80 +736,6 @@ export function AgentsStartComposer({
     activeProjectId,
     activeProjectWorkingDirectory,
   ]);
-
-  useEffect(() => {
-    const requestId = ++ticketStartFromRequestRef.current;
-    const ticketReference = firstTicketComposerReference(composerIntegrationReferences);
-    if (!activeProjectId || !ticketReference) {
-      setTicketStartFromOption(null);
-      setSelectedStartFromKey((currentKey) =>
-        isTicketStartFromKey(currentKey)
-          ? `project_default:${activeProjectBaseBranch ?? "main"}`
-          : currentKey
-      );
-      return;
-    }
-
-    const fallbackOption = ticketCanonicalBranchBaseOption(ticketReference.reference);
-    applyTicketStartFromOption(
-      fallbackOption,
-      activeProjectBaseBranch,
-      userSelectedStartFromRef,
-      setTicketStartFromOption,
-      setSelectedStartFromKey
-    );
-
-    void ticketingApi
-      .getTicketAssociations({
-        provider: ticketReference.provider,
-        ticketRef: ticketReference.ticketRef,
-        projectId: activeProjectId,
-      })
-      .then((associations) => {
-        if (ticketStartFromRequestRef.current !== requestId) {
-          return;
-        }
-        const associationOption = preferredTicketAssociationStartFromOption(
-          associations.pullRequests
-        );
-        applyTicketStartFromOption(
-          associationOption ?? fallbackOption,
-          activeProjectBaseBranch,
-          userSelectedStartFromRef,
-          setTicketStartFromOption,
-          setSelectedStartFromKey
-        );
-      })
-      .catch(() => {
-        if (ticketStartFromRequestRef.current !== requestId) {
-          return;
-        }
-        applyTicketStartFromOption(
-          fallbackOption,
-          activeProjectBaseBranch,
-          userSelectedStartFromRef,
-          setTicketStartFromOption,
-          setSelectedStartFromKey
-        );
-      });
-  }, [
-    activeProjectBaseBranch,
-    activeProjectId,
-    composerIntegrationReferences,
-  ]);
-
-  useEffect(() => {
-    if (
-      userSelectedStartFromRef.current ||
-      !ticketStartFromOption ||
-      selectedStartFromKey !== ticketStartFromOption.key
-    ) {
-      return;
-    }
-    setIsStartFromIsolatedBranch(
-      startSelectionDefaultsToIsolatedBranch(ticketStartFromOption.selection)
-    );
-  }, [selectedStartFromKey, ticketStartFromOption]);
 
   const searchPullRequestStartFromOptions = useCallback(
     (query: string) => {
@@ -1306,7 +1209,7 @@ export function AgentsStartComposer({
               onValueChange={handleStartFromChange}
               options={startFromOptions}
               enablePullRequests={Boolean(activeProjectId)}
-              pullRequestOptions={pullRequestOptionsWithTicketStartFrom}
+              pullRequestOptions={pullRequestStartFromOptions}
               isLoadingPullRequests={isLoadingPullRequestStartFrom}
               pullRequestMessage={pullRequestStartFromMessage}
               onPullRequestSearch={searchPullRequestStartFromOptions}
@@ -1450,100 +1353,8 @@ function startSelectionDefaultsToIsolatedBranch(
   return selection !== null;
 }
 
-type TicketProvider = "jira" | "linear" | "clickup";
-
-interface TicketComposerStartReference {
-  reference: ComposerIntegrationReference;
-  provider: TicketProvider;
-  ticketRef: TicketRef;
-}
-
-function firstTicketComposerReference(
-  references: ComposerIntegrationReference[]
-): TicketComposerStartReference | null {
-  for (const reference of references) {
-    const provider = ticketProviderForComposerReference(reference);
-    if (!provider) {
-      continue;
-    }
-    const id = reference.id.trim() || reference.key?.trim() || "";
-    const key = reference.key?.trim() || undefined;
-    if (!id) {
-      continue;
-    }
-    return {
-      reference,
-      provider,
-      ticketRef: {
-        provider,
-        id,
-        ...(key ? { key } : {}),
-      },
-    };
-  }
-  return null;
-}
-
-function preferredTicketAssociationStartFromOption(
-  associations: Array<Parameters<typeof ticketAssociationBranchBaseOption>[0]>
-) {
-  const ranked = [
-    ...associations.filter(
-      (association) => association.active && association.prNumber != null
-    ),
-    ...associations.filter((association) => association.prNumber != null),
-    ...associations.filter((association) => association.active),
-    ...associations,
-  ];
-  const seen = new Set<string>();
-  for (const association of ranked) {
-    const key = `${association.id}:${association.branchName ?? association.subtitle ?? ""}`;
-    if (seen.has(key)) {
-      continue;
-    }
-    seen.add(key);
-    const option = ticketAssociationBranchBaseOption(association);
-    if (option) {
-      return option;
-    }
-  }
-  return null;
-}
-
-function applyTicketStartFromOption(
-  option: BranchBaseOption | null,
-  activeProjectBaseBranch: string | null,
-  userSelectedStartFromRef: MutableRefObject<boolean>,
-  setTicketStartFromOption: Dispatch<SetStateAction<BranchBaseOption | null>>,
-  setSelectedStartFromKey: Dispatch<SetStateAction<string>>
-) {
-  setTicketStartFromOption(option);
-  setSelectedStartFromKey((currentKey) => {
-    if (userSelectedStartFromRef.current) {
-      return currentKey;
-    }
-    if (!option) {
-      return isTicketStartFromKey(currentKey)
-        ? `project_default:${activeProjectBaseBranch ?? "main"}`
-        : currentKey;
-    }
-    if (
-      !currentKey ||
-      currentKey.startsWith("project_default:") ||
-      isTicketStartFromKey(currentKey)
-    ) {
-      return option.key;
-    }
-    return currentKey;
-  });
-}
-
 function isTransientStartFromKey(key: string) {
-  return key.startsWith("pull_request:") || isTicketStartFromKey(key);
-}
-
-function isTicketStartFromKey(key: string) {
-  return key.startsWith("ticket_branch:");
+  return key.startsWith("pull_request:");
 }
 
 function useAnimatedStarterWord(paused = false) {
