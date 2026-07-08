@@ -12,6 +12,8 @@ pub(crate) enum SourceUpdateResult {
     Updated,
     /// Merge target into source produced conflicts — needs agent resolution.
     Conflicts { conflict_files: Vec<PathBuf> },
+    /// Source or target branch was missing before the update could run.
+    BranchMissing { branch: String },
     /// Git error during the update attempt.
     Error(String),
 }
@@ -34,6 +36,27 @@ pub(crate) async fn update_source_from_target(
     task_id_str: &str,
     event_sink: Option<&dyn ralphx_events::EventSink>,
 ) -> SourceUpdateResult {
+    if !repo_path.exists() {
+        return SourceUpdateResult::Error(format!(
+            "repository path does not exist: {}",
+            repo_path.display()
+        ));
+    }
+
+    if !GitService::ref_exists(repo_path, target_branch)
+        .await
+        .unwrap_or(false)
+    {
+        tracing::warn!(
+            task_id = task_id_str,
+            target_branch = %target_branch,
+            "Target branch missing before source update"
+        );
+        return SourceUpdateResult::BranchMissing {
+            branch: target_branch.to_string(),
+        };
+    }
+
     // Check if target's HEAD is already an ancestor of source
     // (i.e., source already has all of target's changes)
     let target_sha = match GitService::get_branch_sha(repo_path, target_branch).await {
@@ -72,6 +95,19 @@ pub(crate) async fn update_source_from_target(
             );
         }
         Err(e) => {
+            if !GitService::ref_exists(repo_path, source_branch)
+                .await
+                .unwrap_or(false)
+            {
+                tracing::warn!(
+                    task_id = task_id_str,
+                    source_branch = %source_branch,
+                    "Source branch missing before source update"
+                );
+                return SourceUpdateResult::BranchMissing {
+                    branch: source_branch.to_string(),
+                };
+            }
             tracing::warn!(
                 task_id = task_id_str,
                 error = %e,
@@ -201,7 +237,7 @@ pub(crate) async fn update_source_from_target(
             SourceUpdateResult::Conflicts { conflict_files }
         }
         Ok(crate::application::MergeAttemptResult::BranchNotFound { branch }) => {
-            SourceUpdateResult::Error(format!("Branch not found during source update: {}", branch))
+            SourceUpdateResult::BranchMissing { branch }
         }
         Err(e) => SourceUpdateResult::Error(format!("Source update merge failed: {}", e)),
     };
@@ -211,4 +247,3 @@ pub(crate) async fn update_source_from_target(
 
     result
 }
-

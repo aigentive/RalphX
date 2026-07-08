@@ -131,6 +131,10 @@ pub struct ExecutionState {
     /// when `on_enter(Executing)` is async and a stale DB read races with the first caller.
     /// Uses std::sync::Mutex for synchronous check-and-insert atomicity.
     scheduling_in_flight: std::sync::Mutex<HashSet<String>>,
+    /// Set of task IDs currently running execution entry actions.
+    /// Protects direct entry-action callers (manual resume, startup recovery, reconciliation)
+    /// from mutating the same task worktree concurrently.
+    execution_entries_in_flight: std::sync::Mutex<HashSet<String>>,
     /// Set of interactive process context keys (format: "{context_type}/{context_id}")
     /// whose execution slot has been released by TurnComplete (process is idle between turns).
     /// Used to prevent double-increment when multiple messages arrive while the agent is active.
@@ -157,6 +161,7 @@ impl ExecutionState {
             rate_limited_until: AtomicU64::new(0),
             auto_completes_in_flight: std::sync::Mutex::new(HashSet::new()),
             scheduling_in_flight: std::sync::Mutex::new(HashSet::new()),
+            execution_entries_in_flight: std::sync::Mutex::new(HashSet::new()),
             interactive_idle_slots: std::sync::Mutex::new(HashSet::new()),
         }
     }
@@ -176,6 +181,7 @@ impl ExecutionState {
             rate_limited_until: AtomicU64::new(0),
             auto_completes_in_flight: std::sync::Mutex::new(HashSet::new()),
             scheduling_in_flight: std::sync::Mutex::new(HashSet::new()),
+            execution_entries_in_flight: std::sync::Mutex::new(HashSet::new()),
             interactive_idle_slots: std::sync::Mutex::new(HashSet::new()),
         }
     }
@@ -495,6 +501,34 @@ impl ExecutionState {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         set.remove(task_id);
+    }
+
+    /// Try to claim execution entry actions for a task.
+    /// Returns `true` when the caller should proceed with `on_enter(Executing/ReExecuting)`.
+    pub fn try_start_execution_entry(&self, task_id: &str) -> bool {
+        let mut set = self
+            .execution_entries_in_flight
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        set.insert(task_id.to_string())
+    }
+
+    /// Release the execution entry-action guard for a task.
+    pub fn finish_execution_entry(&self, task_id: &str) {
+        let mut set = self
+            .execution_entries_in_flight
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        set.remove(task_id);
+    }
+
+    /// Check whether execution entry actions are in flight for a task.
+    pub fn is_execution_entry_in_flight(&self, task_id: &str) -> bool {
+        let set = self
+            .execution_entries_in_flight
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        set.contains(task_id)
     }
 
     /// Mark an interactive process as idle (execution slot released by TurnComplete).

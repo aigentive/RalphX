@@ -116,6 +116,80 @@ async fn apply_freshness_result(
     }
 }
 
+fn stale_execution_worktree_cleanup_blocked_error(
+    task_id_str: &str,
+    worktree_path: &Path,
+    error: impl std::fmt::Display,
+    context: &str,
+) -> AppError {
+    AppError::ExecutionBlocked(format!(
+        "{}: structural: failed to clean stale execution worktree '{}' during {} for task {}: {}",
+        GIT_ISOLATION_ERROR_PREFIX,
+        worktree_path.display(),
+        context,
+        task_id_str,
+        error
+    ))
+}
+
+fn registered_task_worktree_matches_branch(
+    registered_path: &str,
+    registered_branch: Option<&str>,
+    expected_path: &Path,
+    expected_branch: &str,
+) -> bool {
+    Path::new(registered_path) == expected_path && registered_branch == Some(expected_branch)
+}
+
+async fn existing_task_worktree_is_reusable(
+    repo_path: &Path,
+    worktree_path: &Path,
+    branch: &str,
+    task_id_str: &str,
+) -> bool {
+    match GitService::list_worktrees(repo_path).await {
+        Ok(worktrees) => worktrees.iter().any(|worktree| {
+            registered_task_worktree_matches_branch(
+                &worktree.path,
+                worktree.branch.as_deref(),
+                worktree_path,
+                branch,
+            )
+        }),
+        Err(e) => {
+            tracing::warn!(
+                task_id = task_id_str,
+                error = %e,
+                worktree_path = %worktree_path.display(),
+                "Could not list worktrees before stale task worktree cleanup"
+            );
+            false
+        }
+    }
+}
+
+async fn delete_existing_execution_worktree_or_block(
+    repo_path: &Path,
+    worktree_path: &Path,
+    task_id_str: &str,
+    context: &str,
+) -> AppResult<()> {
+    if !worktree_path.exists() {
+        return Ok(());
+    }
+
+    GitService::delete_worktree(repo_path, worktree_path)
+        .await
+        .map_err(|e| {
+            stale_execution_worktree_cleanup_blocked_error(
+                task_id_str,
+                worktree_path,
+                e,
+                context,
+            )
+        })
+}
+
 /// Create a fresh task branch and worktree for a task entering Executing state.
 ///
 /// Resolves the base branch, computes the standard worktree path via
@@ -173,13 +247,24 @@ async fn create_fresh_branch_and_worktree(
 
     // Clean up stale task worktree from a prior execution attempt
     if worktree_path_buf.exists() {
-        if let Err(e) = GitService::delete_worktree(repo_path, &worktree_path_buf).await {
-            tracing::warn!(
+        if existing_task_worktree_is_reusable(repo_path, &worktree_path_buf, &branch, task_id_str)
+            .await
+        {
+            tracing::info!(
                 task_id = task_id_str,
-                error = %e,
-                "Failed to clean stale task worktree (non-fatal)"
+                branch = %branch,
+                worktree_path = %worktree_path_buf.display(),
+                "Reusing existing registered task worktree"
             );
+            return Ok((branch, worktree_path_buf));
         }
+        delete_existing_execution_worktree_or_block(
+            repo_path,
+            &worktree_path_buf,
+            task_id_str,
+            "fresh branch creation",
+        )
+        .await?;
     }
 
     // Check if branch already exists from a previous execution attempt

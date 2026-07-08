@@ -171,6 +171,23 @@ fn build_test_service_with_execution_state(
     )
 }
 
+#[test]
+fn execution_entry_guard_releases_in_flight_marker_on_drop() {
+    let execution_state = Arc::new(ExecutionState::new());
+    let task_id = "task-entry-guard";
+
+    assert!(execution_state.try_start_execution_entry(task_id));
+    {
+        let _guard = ExecutionEntryGuard {
+            execution_state: Arc::clone(&execution_state),
+            task_id: task_id.to_string(),
+        };
+        assert!(execution_state.is_execution_entry_in_flight(task_id));
+    }
+
+    assert!(!execution_state.is_execution_entry_in_flight(task_id));
+}
+
 struct StaticPlanPrDescriptionDrafter;
 
 #[async_trait]

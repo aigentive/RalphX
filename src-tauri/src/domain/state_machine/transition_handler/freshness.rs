@@ -708,6 +708,15 @@ pub async fn ensure_branches_fresh(
                     freshness_metadata: freshness,
                 });
             }
+            Ok(SourceUpdateResult::BranchMissing { branch }) => {
+                return Err(block_freshness_update_error(
+                    activity_event_repo,
+                    task_id_str,
+                    "source_update",
+                    format!("branch missing before source update: {}", branch),
+                )
+                .await);
+            }
             Ok(SourceUpdateResult::Error(e)) => {
                 warn!(
                     task_id = task_id_str,
@@ -855,6 +864,9 @@ fn source_retry_decision_after_error(
                 "update_source_from_target returned conflicts after retry following error: {:?}",
                 conflict_files
             ),
+        },
+        Some(SourceUpdateResult::BranchMissing { branch }) => FreshnessRetryDecision::Block {
+            reason: format!("branch missing before source update retry: {}", branch),
         },
         Some(SourceUpdateResult::Error(retry_error)) => FreshnessRetryDecision::Block {
             reason: format!(
@@ -1284,7 +1296,7 @@ mod field_sync_tests {
     }
 
     #[tokio::test]
-    async fn ensure_branches_fresh_retries_and_blocks_source_update_errors() {
+    async fn ensure_branches_fresh_blocks_source_update_branch_missing() {
         let temp = tempfile::tempdir().expect("temp dir");
         init_empty_git_repo(temp.path());
         let project = freshness_test_project(temp.path(), "missing-target");
@@ -1310,10 +1322,10 @@ mod field_sync_tests {
             matches!(
                 result,
                 Err(FreshnessAction::ExecutionBlocked { ref reason })
-                    if reason.contains("update_source_from_target failed after retry")
+                    if reason.contains("branch missing before source update")
                         && reason.contains("missing-target")
             ),
-            "source update errors must retry once then block: {result:?}"
+            "source update branch misses must block without pretending the branch is retryable: {result:?}"
         );
     }
 
@@ -1383,6 +1395,17 @@ mod field_sync_tests {
             source_retry_decision_after_error(Some(SourceUpdateResult::Error("again".into())), 11),
             FreshnessRetryDecision::Block {
                 reason: "update_source_from_target failed after retry: again".to_string()
+            }
+        );
+        assert_eq!(
+            source_retry_decision_after_error(
+                Some(SourceUpdateResult::BranchMissing {
+                    branch: "feature/missing".to_string(),
+                }),
+                11,
+            ),
+            FreshnessRetryDecision::Block {
+                reason: "branch missing before source update retry: feature/missing".to_string()
             }
         );
         assert_eq!(
