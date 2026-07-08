@@ -96,6 +96,10 @@ use crate::application::publish_resilience::{
     remote_tracking_ref_for_publish, review_base_for_publish, PublishBranchFreshnessOutcome,
     PublishBranchFreshnessStatus, PublishFailureClass,
 };
+use crate::application::services::pr_auto_merge_status::{
+    auto_merge_disable_failure_summary, auto_merge_enable_failure_summary,
+    AUTO_MERGE_SUPERVISION_STATUS_WAITING,
+};
 use crate::application::services::pr_merge_poller::sync_agent_workspace_auto_merge_preference_for_workspace;
 use crate::application::session_namer_agent::{spawn_session_namer_agent, SessionNamerTarget};
 use crate::application::{AppChatService, AppState, ChatService, ChatServiceError, SendResult};
@@ -4246,10 +4250,8 @@ async fn reconcile_agent_workspace_auto_merge_for_supervision_toggle(
                     .update_pr_auto_merge_state(
                         conversation_id,
                         Some(false),
-                        Some("waiting"),
-                        Some(&format!(
-                            "GitHub auto-merge could not be enabled yet: {error}"
-                        )),
+                        Some(AUTO_MERGE_SUPERVISION_STATUS_WAITING),
+                        Some(&auto_merge_enable_failure_summary(&error)),
                     )
                     .await
                     .map_err(|e| e.to_string())?;
@@ -4280,10 +4282,8 @@ async fn reconcile_agent_workspace_auto_merge_for_supervision_toggle(
                 .update_pr_auto_merge_state(
                     conversation_id,
                     Some(true),
-                    Some("waiting"),
-                    Some(&format!(
-                        "GitHub auto-merge could not be disabled yet: {error}"
-                    )),
+                    Some(AUTO_MERGE_SUPERVISION_STATUS_WAITING),
+                    Some(&auto_merge_disable_failure_summary(&error)),
                 )
                 .await
                 .map_err(|e| e.to_string())?;
@@ -4639,7 +4639,7 @@ pub async fn set_agent_conversation_workspace_auto_publish_for_state(
                     .update_pr_auto_merge_state(
                         &conversation_id,
                         refreshed_for_sync.pr_auto_merge_current,
-                        Some("waiting"),
+                        Some(AUTO_MERGE_SUPERVISION_STATUS_WAITING),
                         Some(&format!(
                             "GitHub auto-merge state could not be refreshed while pausing Auto Publish: {error}"
                         )),
@@ -6321,7 +6321,7 @@ async fn publish_linked_ideation_plan_branch_workspace_for_app_state(
                     .update_pr_auto_merge_state(
                         &refreshed.conversation_id,
                         Some(false),
-                        Some("waiting"),
+                        Some(AUTO_MERGE_SUPERVISION_STATUS_WAITING),
                         Some(&format!(
                             "GitHub auto-merge state could not be refreshed yet: {error}"
                         )),
@@ -6986,7 +6986,7 @@ pub async fn publish_agent_conversation_workspace_for_app_state(
                     .update_pr_auto_merge_state(
                         &refreshed.conversation_id,
                         Some(false),
-                        Some("waiting"),
+                        Some(AUTO_MERGE_SUPERVISION_STATUS_WAITING),
                         Some(&format!(
                             "GitHub auto-merge state could not be refreshed yet: {error}"
                         )),

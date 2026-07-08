@@ -402,6 +402,32 @@ describe("AgentsAutomationPanel", () => {
     expect(within(rows[2]!).getByText("PR #100")).toBeInTheDocument();
   });
 
+  it("surfaces automatic merge enable warnings on published run rows", () => {
+    useAutomationDetailMock.mockReturnValue({
+      data: automationDetailFixture({
+        runs: [
+          automationRunFixture({
+            id: "run-4",
+            runIndex: 4,
+            status: "published",
+            prNumber: 104,
+            errorCode: "auto_merge_enable_failed",
+            errorDetail:
+              "GitHub auto-merge could not be enabled yet: branch protection blocks it",
+          }),
+        ],
+      }),
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel();
+
+    expect(
+      screen.getByTestId("agents-automation-run-4-warning"),
+    ).toHaveTextContent("branch protection blocks it");
+  });
+
   it("cancels an open run from the runs list, leaving terminal runs uncancellable", async () => {
     useAutomationDetailMock.mockReturnValue({
       data: automationDetailFixture({

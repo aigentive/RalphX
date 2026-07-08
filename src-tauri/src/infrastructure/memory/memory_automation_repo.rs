@@ -1,5 +1,8 @@
 use std::sync::RwLock;
 
+#[cfg(test)]
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
@@ -250,13 +253,32 @@ impl AutomationRepository for MemoryAutomationRepository {
 
 pub struct MemoryAutomationRunRepository {
     runs: RwLock<Vec<AutomationRun>>,
+    #[cfg(test)]
+    lose_next_running_to_published_cas: AtomicBool,
+    #[cfg(test)]
+    published_run_error_updates: AtomicUsize,
 }
 
 impl MemoryAutomationRunRepository {
     pub fn new() -> Self {
         Self {
             runs: RwLock::new(Vec::new()),
+            #[cfg(test)]
+            lose_next_running_to_published_cas: AtomicBool::new(false),
+            #[cfg(test)]
+            published_run_error_updates: AtomicUsize::new(0),
         }
+    }
+
+    #[cfg(test)]
+    pub fn lose_next_running_to_published_cas(&self) {
+        self.lose_next_running_to_published_cas
+            .store(true, Ordering::SeqCst);
+    }
+
+    #[cfg(test)]
+    pub fn published_run_error_update_count(&self) -> usize {
+        self.published_run_error_updates.load(Ordering::SeqCst)
     }
 
     fn has_conflicting_open_run(runs: &[AutomationRun], candidate: &AutomationRun) -> bool {
@@ -357,6 +379,16 @@ impl AutomationRunRepository for MemoryAutomationRunRepository {
         error_code: Option<String>,
         error_detail: Option<String>,
     ) -> AppResult<bool> {
+        #[cfg(test)]
+        if from == AutomationRunStatus::Running
+            && to == AutomationRunStatus::Published
+            && self
+                .lose_next_running_to_published_cas
+                .swap(false, Ordering::SeqCst)
+        {
+            return Ok(false);
+        }
+
         let mut runs = self.runs.write().unwrap();
         let Some(position) = runs.iter().position(|run| run.id == *id) else {
             return Ok(false);
@@ -551,6 +583,29 @@ impl AutomationRunRepository for MemoryAutomationRunRepository {
             run.signal_check_failures = 0;
             run.updated_at = Utc::now();
         }
+        Ok(Some(run.clone()))
+    }
+
+    async fn update_published_run_error(
+        &self,
+        id: &AutomationRunId,
+        error_code: Option<String>,
+        error_detail: Option<String>,
+    ) -> AppResult<Option<AutomationRun>> {
+        #[cfg(test)]
+        self.published_run_error_updates
+            .fetch_add(1, Ordering::SeqCst);
+
+        let mut runs = self.runs.write().unwrap();
+        let Some(run) = runs.iter_mut().find(|run| run.id == *id) else {
+            return Ok(None);
+        };
+        if run.status != AutomationRunStatus::Published {
+            return Ok(None);
+        }
+        run.error_code = error_code;
+        run.error_detail = error_detail;
+        run.updated_at = Utc::now();
         Ok(Some(run.clone()))
     }
 

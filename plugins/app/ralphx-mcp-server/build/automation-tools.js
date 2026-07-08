@@ -29,6 +29,20 @@ export const AUTOMATION_SETUP_TOOLS = [
                     type: "integer",
                     description: "Optional positive maximum number of consecutive failures before pausing.",
                 },
+                plan_approval_mode: {
+                    type: "string",
+                    enum: ["manual", "automatic"],
+                    description: "Plan approval mode. Use 'automatic' to let the plan gate proceed after successful judge approval.",
+                },
+                pr_merge_mode: {
+                    type: "string",
+                    enum: ["manual", "automatic"],
+                    description: "PR merge mode. Use 'automatic' to request native GitHub auto-merge for published run PRs.",
+                },
+                plan_deep_verification: {
+                    type: "boolean",
+                    description: "Enable deeper plan verification before an approved plan proceeds.",
+                },
                 goal_prompt: {
                     type: "string",
                     description: "Durable goal for the automation. Required (non-empty) before finalize.",
@@ -110,6 +124,9 @@ const UPDATE_AUTOMATION_FIELDS = [
     "name",
     "max_runs",
     "max_consecutive_failures",
+    "plan_approval_mode",
+    "pr_merge_mode",
+    "plan_deep_verification",
     "goal_prompt",
     "first_run_prompt",
     "provider_harness",

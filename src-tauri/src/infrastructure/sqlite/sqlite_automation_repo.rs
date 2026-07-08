@@ -912,6 +912,35 @@ impl AutomationRunRepository for SqliteAutomationRunRepository {
             .await
     }
 
+    async fn update_published_run_error(
+        &self,
+        id: &AutomationRunId,
+        error_code: Option<String>,
+        error_detail: Option<String>,
+    ) -> AppResult<Option<AutomationRun>> {
+        let id = id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                let affected = conn.execute(
+                    "UPDATE automation_runs
+                     SET error_code = ?2,
+                         error_detail = ?3,
+                         updated_at = ?4
+                     WHERE id = ?1 AND status = 'published'",
+                    params![id, error_code, error_detail, Utc::now().to_rfc3339()],
+                )?;
+                if affected == 0 {
+                    return Ok(None);
+                }
+
+                let sql = format!("{SELECT_RUN} WHERE id = ?1");
+                conn.query_row(&sql, [id], Self::row_to_run)
+                    .optional()
+                    .map_err(AppError::from)
+            })
+            .await
+    }
+
     async fn compare_and_swap_judge_state(
         &self,
         id: &AutomationRunId,

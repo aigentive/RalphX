@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { callAutomationSetupTool, isAutomationSetupToolName, } from "../automation-tools.js";
+import { AUTOMATION_SETUP_TOOLS, callAutomationSetupTool, isAutomationSetupToolName, } from "../automation-tools.js";
 function capturePost() {
     const calls = [];
     const callTauri = async (path, body, options) => {
@@ -56,6 +56,44 @@ describe("automation setup MCP tools", () => {
                 },
             },
         ]);
+    });
+    it("forwards plan gate settings in update_automation payloads", async () => {
+        const { callTauri, calls } = capturePost();
+        await callAutomationSetupTool("update_automation", callTauri, {
+            plan_approval_mode: "automatic",
+            pr_merge_mode: "automatic",
+            plan_deep_verification: true,
+        }, { conversationId: "conversation-1" });
+        expect(calls).toEqual([
+            {
+                path: "update_automation",
+                body: {
+                    plan_approval_mode: "automatic",
+                    pr_merge_mode: "automatic",
+                    plan_deep_verification: true,
+                },
+                options: {
+                    headers: {
+                        "X-RalphX-Caller-Session-Id": "conversation-1",
+                    },
+                },
+            },
+        ]);
+    });
+    it("exposes plan gate settings in the update_automation schema", () => {
+        const updateTool = AUTOMATION_SETUP_TOOLS.find((tool) => tool.name === "update_automation");
+        const properties = updateTool?.inputSchema.properties;
+        expect(properties.plan_approval_mode).toMatchObject({
+            type: "string",
+            enum: ["manual", "automatic"],
+        });
+        expect(properties.pr_merge_mode).toMatchObject({
+            type: "string",
+            enum: ["manual", "automatic"],
+        });
+        expect(properties.plan_deep_verification).toMatchObject({
+            type: "boolean",
+        });
     });
     it("forwards finalize_automation without a body payload", async () => {
         const { callTauri, calls } = capturePost();

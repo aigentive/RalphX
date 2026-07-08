@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -14,18 +15,23 @@ use crate::application::automation::plan_gate::{
 use crate::application::automation::transition::{
     AutomationEvent, AutomationEventEmitter, AutomationTransitionService,
 };
+use crate::application::services::pr_auto_merge_status::{
+    auto_merge_disable_failure_summary, AUTO_MERGE_SUPERVISION_STATUS_WAITING,
+};
 use crate::domain::entities::{
-    is_open_automation_run, Artifact, ArtifactBucketId, ArtifactContent, ArtifactId,
-    ArtifactMetadata, ArtifactType, Automation, AutomationId, AutomationJudgeState,
-    AutomationPlanApprovalMode, AutomationPlanJudgeState, AutomationPrMergeMode,
-    AutomationPromptAuthor, AutomationRun, AutomationRunId, AutomationRunStatus, AutomationStatus,
-    ChatConversationId, ProjectId,
+    is_open_automation_run, AgentConversationWorkspace, Artifact, ArtifactBucketId,
+    ArtifactContent, ArtifactId, ArtifactMetadata, ArtifactType, Automation, AutomationId,
+    AutomationJudgeState, AutomationPlanApprovalMode, AutomationPlanJudgeState,
+    AutomationPrMergeMode, AutomationPromptAuthor, AutomationRun, AutomationRunId,
+    AutomationRunStatus, AutomationStatus, ChatConversationId, ProjectId,
 };
 use crate::domain::repositories::{
-    ArtifactRepository, AutomationConfigPatch, AutomationRepository, AutomationRunRepository,
-    AutomationSettingsPatch,
+    AgentConversationWorkspaceRepository, ArtifactRepository, AutomationConfigPatch,
+    AutomationRepository, AutomationRunRepository, AutomationSettingsPatch,
 };
+use crate::domain::services::github_service::GithubServiceTrait;
 use crate::error::{AppError, AppResult};
+use crate::utils::path_safety::validate_absolute_non_root_path;
 
 const DEFAULT_AUTOMATION_NAME: &str = "Automation setup";
 const DEFAULT_PROVIDER_HARNESS: &str = "claude";
@@ -174,6 +180,8 @@ pub struct AutomationService {
     transition_service: AutomationTransitionService,
     event_emitter: Arc<dyn AutomationEventEmitter>,
     artifact_repo: Arc<dyn ArtifactRepository>,
+    workspace_repo: Option<Arc<dyn AgentConversationWorkspaceRepository>>,
+    github_service: Option<Arc<dyn GithubServiceTrait>>,
 }
 
 impl AutomationService {
@@ -194,7 +202,19 @@ impl AutomationService {
             transition_service,
             event_emitter,
             artifact_repo,
+            workspace_repo: None,
+            github_service: None,
         }
+    }
+
+    pub fn with_pr_auto_merge_controls(
+        mut self,
+        workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
+        github_service: Option<Arc<dyn GithubServiceTrait>>,
+    ) -> Self {
+        self.workspace_repo = Some(workspace_repo);
+        self.github_service = github_service;
+        self
     }
 
     pub async fn create_draft(&self, input: CreateAutomationDraftInput) -> AppResult<Automation> {
@@ -659,7 +679,17 @@ impl AutomationService {
         id: &AutomationId,
         run_id: &AutomationRunId,
     ) -> AppResult<AutomationRun> {
-        let run = self.require_run_for_automation(id, run_id).await?;
+        let automation = self.require_automation(id).await?;
+        let run = self
+            .run_repo
+            .get_by_id(run_id)
+            .await?
+            .ok_or_else(|| automation_run_not_found(run_id))?;
+        if run.automation_id != *id {
+            return Err(AppError::Validation(
+                "automation run is not owned by the requested automation".to_string(),
+            ));
+        }
         let cancelled = self
             .transition_run_status_or_conflict(
                 run_id,
@@ -669,8 +699,136 @@ impl AutomationService {
                 None,
             )
             .await?;
+        if automation.pr_merge_mode == AutomationPrMergeMode::Automatic {
+            self.disarm_cancelled_run_auto_merge(&run).await;
+        }
         self.run_repo.clear_plan_judge_state(run_id).await?;
         Ok(cancelled)
+    }
+
+    async fn disarm_cancelled_run_auto_merge(&self, run: &AutomationRun) {
+        let Some(workspace_repo) = self.workspace_repo.as_ref() else {
+            return;
+        };
+        let Some(conversation_id) = run.conversation_id.as_ref() else {
+            return;
+        };
+        let workspace = match workspace_repo.get_by_conversation_id(conversation_id).await {
+            Ok(Some(workspace)) => workspace,
+            Ok(None) => return,
+            Err(error) => {
+                tracing::warn!(
+                    run_id = run.id.as_str(),
+                    conversation_id = conversation_id.as_str(),
+                    error = %error,
+                    "Automation cancel could not load workspace to disarm automatic PR auto-merge"
+                );
+                return;
+            }
+        };
+        if !workspace.pr_auto_merge_desired {
+            return;
+        }
+        if let Err(error) = workspace_repo
+            .update_pr_supervision_preferences(
+                conversation_id,
+                workspace.pr_autofix_enabled,
+                false,
+                &workspace.pr_auto_merge_method,
+            )
+            .await
+        {
+            tracing::warn!(
+                run_id = run.id.as_str(),
+                conversation_id = conversation_id.as_str(),
+                error = %error,
+                "Automation cancel could not clear automatic PR auto-merge preference"
+            );
+        }
+        self.disable_cancelled_run_remote_auto_merge(run, &workspace)
+            .await;
+    }
+
+    async fn disable_cancelled_run_remote_auto_merge(
+        &self,
+        run: &AutomationRun,
+        workspace: &AgentConversationWorkspace,
+    ) {
+        let Some(github) = self.github_service.as_ref() else {
+            return;
+        };
+        let Some(pr_number) = run.pr_number.or(workspace.publication_pr_number) else {
+            return;
+        };
+        let working_dir = match validate_absolute_non_root_path(
+            Path::new(&workspace.worktree_path),
+            "cancelled automation workspace",
+        ) {
+            Ok(path) => path,
+            Err(error) => {
+                tracing::warn!(
+                    run_id = run.id.as_str(),
+                    conversation_id = workspace.conversation_id.as_str(),
+                    pr_number,
+                    error = %error,
+                    "Automation cancel could not disable GitHub auto-merge for an unsafe workspace path"
+                );
+                return;
+            }
+        };
+        match github.disable_pr_auto_merge(&working_dir, pr_number).await {
+            Ok(()) => {
+                let Some(workspace_repo) = self.workspace_repo.as_ref() else {
+                    return;
+                };
+                if let Err(error) = workspace_repo
+                    .update_pr_auto_merge_state(
+                        &workspace.conversation_id,
+                        Some(false),
+                        None,
+                        Some("GitHub auto-merge is disabled."),
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        run_id = run.id.as_str(),
+                        conversation_id = workspace.conversation_id.as_str(),
+                        pr_number,
+                        error = %error,
+                        "Automation cancel disabled GitHub auto-merge but could not persist workspace state"
+                    );
+                }
+            }
+            Err(error) => {
+                tracing::warn!(
+                    run_id = run.id.as_str(),
+                    conversation_id = workspace.conversation_id.as_str(),
+                    pr_number,
+                    error = %error,
+                    "Automation cancel could not disable GitHub auto-merge; preference was cleared"
+                );
+                let Some(workspace_repo) = self.workspace_repo.as_ref() else {
+                    return;
+                };
+                if let Err(update_error) = workspace_repo
+                    .update_pr_auto_merge_state(
+                        &workspace.conversation_id,
+                        Some(true),
+                        Some(AUTO_MERGE_SUPERVISION_STATUS_WAITING),
+                        Some(&auto_merge_disable_failure_summary(&error)),
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        run_id = run.id.as_str(),
+                        conversation_id = workspace.conversation_id.as_str(),
+                        pr_number,
+                        error = %update_error,
+                        "Automation cancel could not persist GitHub auto-merge disable warning"
+                    );
+                }
+            }
+        }
     }
 
     /// Row-deletion core for automation deletion.

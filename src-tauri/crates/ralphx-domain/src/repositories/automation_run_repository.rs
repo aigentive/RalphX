@@ -105,6 +105,14 @@ pub trait AutomationRunRepository: Send + Sync {
         id: &AutomationRunId,
     ) -> AppResult<Option<AutomationRun>>;
 
+    /// Update non-terminal warning/error fields for a published run without changing status.
+    async fn update_published_run_error(
+        &self,
+        id: &AutomationRunId,
+        error_code: Option<String>,
+        error_detail: Option<String>,
+    ) -> AppResult<Option<AutomationRun>>;
+
     async fn compare_and_swap_judge_state(
         &self,
         id: &AutomationRunId,

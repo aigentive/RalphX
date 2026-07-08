@@ -22,19 +22,23 @@ use crate::application::automation::transition::{
     AutomationEvent, AutomationEventEmitter, NoopAutomationEventEmitter,
 };
 use crate::domain::entities::{
-    Artifact, ArtifactId, Automation, AutomationId, AutomationJudgeState,
-    AutomationPlanApprovalMode, AutomationPlanJudgeState, AutomationPrMergeMode,
-    AutomationPromptAuthor, AutomationRun, AutomationRunId, AutomationRunStatus, AutomationStatus,
-    ChatConversationId, ProjectId,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, Artifact, ArtifactId, Automation,
+    AutomationId, AutomationJudgeState, AutomationPlanApprovalMode, AutomationPlanJudgeState,
+    AutomationPrMergeMode, AutomationPromptAuthor, AutomationRun, AutomationRunId,
+    AutomationRunStatus, AutomationStatus, ChatConversationId, IdeationAnalysisBaseRefKind,
+    ProjectId, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::repositories::{
-    ArtifactRepository, ArtifactVersionSummary, AutomationConfigPatch, AutomationRepository,
-    AutomationRunRepository, AutomationSettingsPatch,
+    AgentConversationWorkspaceRepository, ArtifactRepository, ArtifactVersionSummary,
+    AutomationConfigPatch, AutomationRepository, AutomationRunRepository, AutomationSettingsPatch,
 };
+use crate::domain::services::GithubServiceTrait;
 use crate::error::AppError;
 use crate::infrastructure::memory::{
-    MemoryArtifactRepository, MemoryAutomationRepository, MemoryAutomationRunRepository,
+    MemoryAgentConversationWorkspaceRepository, MemoryArtifactRepository,
+    MemoryAutomationRepository, MemoryAutomationRunRepository,
 };
+use crate::tests::mock_github_service::MockGithubService;
 
 /// Artifact repository fake that delegates storage to an in-memory repo while
 /// recording `create_with_previous_version` links so spec-versioning tests can
@@ -232,6 +236,30 @@ fn service_with_emitter_and_artifacts(
     (service, automation_repo, run_repo, artifact_repo)
 }
 
+fn service_with_auto_merge_controls(
+    event_emitter: Arc<dyn AutomationEventEmitter>,
+    workspace_repo: Arc<MemoryAgentConversationWorkspaceRepository>,
+    github: Arc<MockGithubService>,
+) -> (
+    AutomationService,
+    Arc<MemoryAutomationRepository>,
+    Arc<MemoryAutomationRunRepository>,
+) {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let artifact_repo = Arc::new(RecordingArtifactRepository::default());
+    let workspace_repo_trait: Arc<dyn AgentConversationWorkspaceRepository> = workspace_repo;
+    let github_trait: Arc<dyn GithubServiceTrait> = github;
+    let service = AutomationService::new(
+        automation_repo.clone(),
+        run_repo.clone(),
+        event_emitter,
+        artifact_repo,
+    )
+    .with_pr_auto_merge_controls(workspace_repo_trait, Some(github_trait));
+    (service, automation_repo, run_repo)
+}
+
 fn automation(id: &str, status: AutomationStatus) -> Automation {
     let now = Utc::now();
     Automation {
@@ -323,6 +351,20 @@ fn automation_run(
         created_at: now,
         updated_at: now,
     }
+}
+
+fn workspace(conversation_id: &ChatConversationId) -> AgentConversationWorkspace {
+    AgentConversationWorkspace::new(
+        conversation_id.clone(),
+        ProjectId::from_string("project-1".to_string()),
+        AgentConversationWorkspaceMode::Edit,
+        IdeationAnalysisBaseRefKind::ProjectDefault,
+        "main".to_string(),
+        Some("main".to_string()),
+        None,
+        "ralphx/automation-run".to_string(),
+        "/tmp/ralphx-automation-run".to_string(),
+    )
 }
 
 struct LostStatusAutomationRepository {
@@ -650,6 +692,17 @@ impl AutomationRunRepository for SkipJudgeLosesRunRepository {
         ))
     }
 
+    async fn update_published_run_error(
+        &self,
+        _id: &AutomationRunId,
+        _error_code: Option<String>,
+        _error_detail: Option<String>,
+    ) -> crate::error::AppResult<Option<AutomationRun>> {
+        Err(AppError::Validation(
+            "unused test repository method".to_string(),
+        ))
+    }
+
     async fn compare_and_swap_judge_state(
         &self,
         _id: &AutomationRunId,
@@ -678,10 +731,7 @@ impl AutomationRunRepository for SkipJudgeLosesRunRepository {
         ))
     }
 
-    async fn clear_plan_judge_state(
-        &self,
-        _id: &AutomationRunId,
-    ) -> crate::error::AppResult<bool> {
+    async fn clear_plan_judge_state(&self, _id: &AutomationRunId) -> crate::error::AppResult<bool> {
         Err(AppError::Validation(
             "unused test repository method".to_string(),
         ))
@@ -881,7 +931,11 @@ async fn service_update_settings_rejects_automatic_merge_for_stacked_chain() {
     assert!(
         matches!(error, AppError::Validation(message) if message.contains(AUTOMATION_STACKED_AUTO_MERGE_ERROR_CODE))
     );
-    let stored = automation_repo.get_by_id(&active.id).await.unwrap().unwrap();
+    let stored = automation_repo
+        .get_by_id(&active.id)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(stored.pr_merge_mode, AutomationPrMergeMode::Manual);
     assert!(emitter.events().is_empty());
 }
@@ -1968,6 +2022,94 @@ async fn service_cancel_run_clears_parked_plan_judge_state() {
     assert_eq!(updated.plan_judge_state, AutomationPlanJudgeState::None);
     assert!(updated.plan_judge_lease_expires_at.is_none());
     assert!(updated.plan_judge_verdict_json.is_none());
+}
+
+#[tokio::test]
+async fn service_cancel_running_automatic_pr_run_disarms_auto_merge() {
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let github = Arc::new(MockGithubService::new());
+    let (service, automation_repo, run_repo) = service_with_auto_merge_controls(
+        Arc::new(NoopAutomationEventEmitter),
+        Arc::clone(&workspace_repo),
+        Arc::clone(&github),
+    );
+    let mut active = automation("automation-1", AutomationStatus::Active);
+    active.pr_merge_mode = AutomationPrMergeMode::Automatic;
+    automation_repo.create(active.clone()).await.unwrap();
+    let run = automation_run(
+        "run-1",
+        &active.id,
+        1,
+        AutomationRunStatus::Running,
+        AutomationJudgeState::None,
+    );
+    run_repo.create_run(run.clone()).await.unwrap();
+    let conversation_id = run.conversation_id.clone().unwrap();
+    let mut workspace = workspace(&conversation_id);
+    workspace.publication_pr_number = Some(101);
+    workspace.pr_autofix_enabled = true;
+    workspace.pr_auto_merge_desired = true;
+    workspace.pr_auto_merge_current = Some(true);
+    workspace.pr_auto_merge_method = DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD.to_string();
+    workspace_repo.create_or_update(workspace).await.unwrap();
+
+    let cancelled = service.cancel_run(&active.id, &run.id).await.unwrap();
+
+    assert_eq!(cancelled.status, AutomationRunStatus::Cancelled);
+    let workspace = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!workspace.pr_auto_merge_desired);
+    assert_eq!(workspace.pr_auto_merge_current, Some(false));
+    let github_state = github.state();
+    assert_eq!(github_state.disable_pr_auto_merge_calls, 1);
+    assert_eq!(github_state.last_disable_pr_auto_merge_number, Some(101));
+}
+
+#[tokio::test]
+async fn service_cancel_published_automatic_pr_run_disarms_auto_merge() {
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let github = Arc::new(MockGithubService::new());
+    let (service, automation_repo, run_repo) = service_with_auto_merge_controls(
+        Arc::new(NoopAutomationEventEmitter),
+        Arc::clone(&workspace_repo),
+        Arc::clone(&github),
+    );
+    let mut active = automation("automation-1", AutomationStatus::Active);
+    active.pr_merge_mode = AutomationPrMergeMode::Automatic;
+    automation_repo.create(active.clone()).await.unwrap();
+    let run = automation_run(
+        "run-1",
+        &active.id,
+        1,
+        AutomationRunStatus::Published,
+        AutomationJudgeState::None,
+    );
+    run_repo.create_run(run.clone()).await.unwrap();
+    let conversation_id = run.conversation_id.clone().unwrap();
+    let mut workspace = workspace(&conversation_id);
+    workspace.publication_pr_number = Some(101);
+    workspace.pr_autofix_enabled = true;
+    workspace.pr_auto_merge_desired = true;
+    workspace.pr_auto_merge_current = Some(true);
+    workspace.pr_auto_merge_method = DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD.to_string();
+    workspace_repo.create_or_update(workspace).await.unwrap();
+
+    let cancelled = service.cancel_run(&active.id, &run.id).await.unwrap();
+
+    assert_eq!(cancelled.status, AutomationRunStatus::Cancelled);
+    let workspace = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!workspace.pr_auto_merge_desired);
+    assert_eq!(workspace.pr_auto_merge_current, Some(false));
+    let github_state = github.state();
+    assert_eq!(github_state.disable_pr_auto_merge_calls, 1);
+    assert_eq!(github_state.last_disable_pr_auto_merge_number, Some(101));
 }
 
 #[tokio::test]

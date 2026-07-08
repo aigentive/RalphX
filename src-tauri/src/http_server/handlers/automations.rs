@@ -11,7 +11,9 @@ use crate::application::automation::api::{
     automation_detail_response_for_state, automation_service_for_state, AutomationDetailResponse,
     AutomationResponse,
 };
-use crate::domain::entities::{Automation, AutomationId, ChatConversationId};
+use crate::domain::entities::{
+    Automation, AutomationId, AutomationPlanApprovalMode, AutomationPrMergeMode, ChatConversationId,
+};
 use crate::error::AppError;
 use crate::http_server::types::{HttpError, HttpServerState};
 
@@ -25,6 +27,12 @@ pub struct UpdateAutomationRequest {
     pub max_runs: Option<i64>,
     #[serde(default)]
     pub max_consecutive_failures: Option<i64>,
+    #[serde(default)]
+    pub plan_approval_mode: Option<String>,
+    #[serde(default)]
+    pub pr_merge_mode: Option<String>,
+    #[serde(default)]
+    pub plan_deep_verification: Option<bool>,
     #[serde(default)]
     pub goal_prompt: Option<String>,
     #[serde(default)]
@@ -103,6 +111,10 @@ pub async fn update_automation(
     let setup_conversation_id = automation.setup_conversation_id.clone();
     let automation_id = automation.id;
     let apply_config = request.has_config_fields();
+    let plan_approval_mode =
+        parse_plan_approval_mode(request.plan_approval_mode.as_deref()).map_err(map_app_err)?;
+    let pr_merge_mode =
+        parse_pr_merge_mode(request.pr_merge_mode.as_deref()).map_err(map_app_err)?;
     let requested_name = request
         .name
         .as_deref()
@@ -118,9 +130,9 @@ pub async fn update_automation(
                 name: request.name,
                 max_runs: request.max_runs,
                 max_consecutive_failures: request.max_consecutive_failures,
-                plan_approval_mode: None,
-                pr_merge_mode: None,
-                plan_deep_verification: None,
+                plan_approval_mode,
+                pr_merge_mode,
+                plan_deep_verification: request.plan_deep_verification,
             },
         )
         .await
@@ -176,6 +188,26 @@ pub async fn finalize_automation(
         .await
         .map_err(map_app_err)?;
     Ok(Json(AutomationResponse::from(finalized)))
+}
+
+fn parse_plan_approval_mode(
+    value: Option<&str>,
+) -> Result<Option<AutomationPlanApprovalMode>, AppError> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    AutomationPlanApprovalMode::parse(value)
+        .map(Some)
+        .ok_or_else(|| AppError::Validation(format!("invalid plan_approval_mode: {value}")))
+}
+
+fn parse_pr_merge_mode(value: Option<&str>) -> Result<Option<AutomationPrMergeMode>, AppError> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    AutomationPrMergeMode::parse(value)
+        .map(Some)
+        .ok_or_else(|| AppError::Validation(format!("invalid pr_merge_mode: {value}")))
 }
 
 async fn resolve_bound_automation(

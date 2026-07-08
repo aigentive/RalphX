@@ -46,6 +46,10 @@ use crate::application::harness_runtime_registry::{
     default_automation_signal_failure_pause_threshold, resolve_harness_agent_bootstrap,
 };
 use crate::application::plan_artifact_approval::PlanArtifactApprovalWriter;
+use crate::application::services::pr_auto_merge_status::{
+    AUTO_MERGE_ENABLE_FAILURE_SUMMARY_PREFIX, AUTO_MERGE_ENABLE_WARNING_CODE,
+    AUTO_MERGE_SUPERVISION_STATUS_WAITING,
+};
 use crate::application::AppState;
 use crate::domain::agents::{
     plan_judge_model_for_provider, AgentConfig, AgentHarnessKind, AgentRole, DEFAULT_AGENT_HARNESS,
@@ -53,8 +57,9 @@ use crate::domain::agents::{
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunStatus,
     ArtifactContent, ArtifactId, Automation, AutomationId, AutomationJudgeState,
-    AutomationPlanApprovalMode, AutomationPlanJudgeState, AutomationRun, AutomationRunStatus,
-    AutomationStatus, ChatConversationId,
+    AutomationPlanApprovalMode, AutomationPlanJudgeState, AutomationPrMergeMode, AutomationRun,
+    AutomationRunStatus, AutomationStatus, ChatConversationId,
+    DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, ArtifactRepository,
@@ -1615,6 +1620,10 @@ impl AutomationScheduler {
                 .await?
             {
                 summary.published_runs += 1;
+                if automation.pr_merge_mode == AutomationPrMergeMode::Automatic {
+                    self.enable_run_auto_merge_preference_for_run(&run.id, &workspace)
+                        .await;
+                }
             }
             return Ok(());
         }
@@ -2567,6 +2576,16 @@ impl AutomationScheduler {
                 .await?;
         }
 
+        if automation.pr_merge_mode == AutomationPrMergeMode::Automatic
+            && !workspace.pr_auto_merge_desired
+        {
+            self.enable_run_auto_merge_preference_for_run(&run.id, &workspace)
+                .await;
+        }
+
+        self.sync_auto_merge_enable_warning_from_workspace(run, &workspace)
+            .await?;
+
         match self
             .signal_checker
             .check_pr_status(&workspace, pr_number)
@@ -2661,6 +2680,88 @@ impl AutomationScheduler {
         }
         Ok(())
     }
+
+    async fn enable_run_auto_merge_preference(
+        &self,
+        workspace: &AgentConversationWorkspace,
+    ) -> AppResult<()> {
+        self.workspace_repo
+            .update_pr_supervision_preferences(
+                &workspace.conversation_id,
+                workspace.pr_autofix_enabled,
+                true,
+                DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn enable_run_auto_merge_preference_for_run(
+        &self,
+        run_id: &crate::domain::entities::AutomationRunId,
+        workspace: &AgentConversationWorkspace,
+    ) {
+        if let Err(error) = self.enable_run_auto_merge_preference(workspace).await {
+            tracing::warn!(
+                run_id = run_id.as_str(),
+                conversation_id = workspace.conversation_id.as_str(),
+                error = %error,
+                "Automation scheduler could not arm automatic PR auto-merge preference; continuing publication"
+            );
+        }
+    }
+
+    async fn sync_auto_merge_enable_warning_from_workspace(
+        &self,
+        run: &AutomationRun,
+        workspace: &AgentConversationWorkspace,
+    ) -> AppResult<()> {
+        if let Some(detail) = auto_merge_enable_warning_from_workspace(workspace) {
+            if run
+                .error_code
+                .as_deref()
+                .is_some_and(|code| code != AUTO_MERGE_ENABLE_WARNING_CODE)
+            {
+                return Ok(());
+            }
+            if run.error_code.as_deref() == Some(AUTO_MERGE_ENABLE_WARNING_CODE)
+                && run.error_detail.as_deref() == Some(detail.as_str())
+            {
+                return Ok(());
+            }
+            self.run_repo
+                .update_published_run_error(
+                    &run.id,
+                    Some(AUTO_MERGE_ENABLE_WARNING_CODE.to_string()),
+                    Some(detail),
+                )
+                .await?;
+        } else if run.error_code.as_deref() == Some(AUTO_MERGE_ENABLE_WARNING_CODE) {
+            self.run_repo
+                .update_published_run_error(&run.id, None, None)
+                .await?;
+        }
+        Ok(())
+    }
+}
+
+fn auto_merge_enable_warning_from_workspace(
+    workspace: &AgentConversationWorkspace,
+) -> Option<String> {
+    if !workspace.pr_auto_merge_desired {
+        return None;
+    }
+    if workspace.pr_auto_merge_current != Some(false) {
+        return None;
+    }
+    if workspace.pr_supervision_status.as_deref() != Some(AUTO_MERGE_SUPERVISION_STATUS_WAITING) {
+        return None;
+    }
+    let summary = workspace.pr_supervision_summary.as_deref()?.trim();
+    if !summary.contains(AUTO_MERGE_ENABLE_FAILURE_SUMMARY_PREFIX) {
+        return None;
+    }
+    Some(summary.to_string())
 }
 
 pub(crate) fn spawn_automation_judge_task(

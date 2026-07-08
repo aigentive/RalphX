@@ -101,6 +101,7 @@ const AUTOMATION_SETUP_PROPOSAL_APPLY_VALUE = "apply_automation_proposal";
 const STACKED_CHAIN_MODE = "pr_head_stacked";
 const AUTOMATION_STACKED_AUTO_MERGE_ERROR_CODE =
   "automation_stacked_auto_merge_unsupported";
+const AUTOMATION_AUTO_MERGE_ENABLE_WARNING_CODE = "auto_merge_enable_failed";
 const PLAN_GATE_PAUSED_REASON_CODES = new Set([
   "plan_revision_exhausted",
   "plan_judge_failed",
@@ -281,6 +282,17 @@ function runRowDetail(run: AutomationRun): string {
     return `PR #${run.prNumber}`;
   }
   return run.errorCode ? `Failed: ${run.errorCode}` : "No PR";
+}
+
+function runRowWarning(run: AutomationRun): string | null {
+  if (
+    run.status === "published" &&
+    run.errorCode === AUTOMATION_AUTO_MERGE_ENABLE_WARNING_CODE &&
+    run.errorDetail
+  ) {
+    return run.errorDetail;
+  }
+  return null;
 }
 
 function automationSettingsErrorToast(error: unknown): string {
@@ -503,6 +515,7 @@ function AutomationRunsList({
         const canOpenPlanGate =
           run.status === "awaiting_plan_approval" &&
           Boolean(conversationId && onFocusAutomationRun);
+        const warning = runRowWarning(run);
         const statusPill = (
           <span
             className={cn(
@@ -533,11 +546,22 @@ function AutomationRunsList({
             >
               #{run.runIndex}
             </span>
-            <span
-              className="min-w-0 truncate text-xs"
-              style={{ color: "var(--text-secondary)" }}
-            >
-              {runRowDetail(run)}
+            <span className="min-w-0">
+              <span
+                className="block truncate text-xs"
+                style={{ color: "var(--text-secondary)" }}
+              >
+                {runRowDetail(run)}
+              </span>
+              {warning ? (
+                <span
+                  className="mt-0.5 block truncate text-[0.6875rem]"
+                  style={{ color: "var(--status-warning)" }}
+                  data-testid={`agents-automation-run-${run.runIndex}-warning`}
+                >
+                  {warning}
+                </span>
+              ) : null}
             </span>
             <span className="flex shrink-0 items-center gap-2">
               {canOpenPlanGate && conversationId ? (

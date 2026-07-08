@@ -24,6 +24,11 @@ use super::scheduler::{
 };
 use super::transition::NoopAutomationEventEmitter;
 use crate::application::plan_artifact_approval::PlanArtifactApprovalWriter;
+use crate::application::services::pr_auto_merge_status::{
+    auto_merge_enable_failure_summary, AUTO_MERGE_ENABLE_WARNING_CODE,
+    AUTO_MERGE_SUPERVISION_STATUS_WAITING,
+};
+use crate::application::services::pr_merge_poller::sync_agent_workspace_auto_merge_preference_for_workspace;
 use crate::domain::agents::AgentHarnessKind;
 use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunStatus, Artifact,
@@ -31,7 +36,7 @@ use crate::domain::entities::{
     AutomationPlanApprovalMode, AutomationPlanJudgeState, AutomationPrMergeMode,
     AutomationPromptAuthor, AutomationRun, AutomationRunId, AutomationRunStatus, AutomationStatus,
     ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow,
-    ProjectId,
+    ProjectId, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, ArtifactRepository,
@@ -39,7 +44,8 @@ use crate::domain::repositories::{
     IdeationSessionRepository, PlanApprovalActor, PlanArtifactApproval,
     PlanArtifactApprovalRepository,
 };
-use crate::domain::services::github_service::PrStatus;
+use crate::domain::services::github_service::{PrHealth, PrMergeableState, PrStatus, PrSyncState};
+use crate::domain::services::GithubServiceTrait;
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::AutomationsRuntimeConfig;
 use crate::infrastructure::memory::{
@@ -47,6 +53,7 @@ use crate::infrastructure::memory::{
     MemoryAutomationRepository, MemoryAutomationRunRepository, MemoryChatConversationRepository,
     MemoryIdeationSessionRepository, MemoryPlanArtifactApprovalRepository,
 };
+use crate::tests::mock_github_service::MockGithubService;
 
 #[derive(Default)]
 struct RecordingStarter;
@@ -607,6 +614,25 @@ fn workspace(conversation_id: &ChatConversationId) -> AgentConversationWorkspace
         "ralphx/automation-run-1".to_string(),
         "/tmp/ralphx-automation-run-1".to_string(),
     )
+}
+
+fn open_pr_health(head: &str) -> PrHealth {
+    PrHealth {
+        sync_state: PrSyncState {
+            status: PrStatus::Open,
+            merge_state_status: None,
+            mergeable: Some(PrMergeableState::Mergeable),
+            is_draft: false,
+            head_ref_name: "feature/pr".to_string(),
+            base_ref_name: "main".to_string(),
+            head_ref_oid: Some(head.to_string()),
+            base_ref_oid: Some("base".to_string()),
+        },
+        review_decision: None,
+        checks: Vec::new(),
+        issue_comments: Vec::new(),
+        auto_merge_request: None,
+    }
 }
 
 fn plan_workspace_with_session(
@@ -1298,6 +1324,312 @@ async fn automation_scheduler_marks_running_run_published_from_workspace_pr() {
 }
 
 #[tokio::test]
+async fn automation_scheduler_enables_workspace_auto_merge_preference_for_automatic_pr_merge() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let automation_id = AutomationId::from_string("automation-1");
+    let mut automation = automation(automation_id.as_str(), AutomationStatus::Active);
+    automation.pr_merge_mode = AutomationPrMergeMode::Automatic;
+    automation_repo.create(automation).await.unwrap();
+    let conversation_id = ChatConversationId::from_string("conversation-1");
+    run_repo
+        .create_run(automation_run(
+            "run-1",
+            &automation_id,
+            AutomationRunStatus::Running,
+            Some(conversation_id.clone()),
+        ))
+        .await
+        .unwrap();
+    let mut workspace = workspace(&conversation_id);
+    workspace.pr_autofix_enabled = true;
+    workspace.publication_pr_number = Some(77);
+    workspace.publication_pr_url = Some("https://github.com/acme/project/pull/77".to_string());
+    workspace.publication_pr_status = Some("open".to_string());
+    workspace.publication_push_status = Some("pushed".to_string());
+    workspace_repo.create_or_update(workspace).await.unwrap();
+    let scheduler = scheduler_with(
+        Arc::clone(&automation_repo),
+        Arc::clone(&run_repo),
+        Arc::clone(&workspace_repo),
+        Arc::new(RecordingSignalChecker::default()),
+        AutomationSchedulerConfig::default(),
+    );
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.published_runs, 1);
+    let latest = run_repo
+        .latest_for_automation(&automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest.status, AutomationRunStatus::Published);
+    let workspace = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(workspace.pr_autofix_enabled);
+    assert!(workspace.pr_auto_merge_desired);
+    assert_eq!(
+        workspace.pr_auto_merge_method,
+        DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD
+    );
+    assert_eq!(
+        workspace.pr_supervision_status.as_deref(),
+        Some("monitoring")
+    );
+}
+
+#[tokio::test]
+async fn automation_scheduler_keeps_autofix_disabled_when_automatic_pr_merge_publishes() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let automation_id = AutomationId::from_string("automation-1");
+    let mut automation = automation(automation_id.as_str(), AutomationStatus::Active);
+    automation.pr_merge_mode = AutomationPrMergeMode::Automatic;
+    automation_repo.create(automation).await.unwrap();
+    let conversation_id = ChatConversationId::from_string("conversation-1");
+    run_repo
+        .create_run(automation_run(
+            "run-1",
+            &automation_id,
+            AutomationRunStatus::Running,
+            Some(conversation_id.clone()),
+        ))
+        .await
+        .unwrap();
+    let mut workspace = workspace(&conversation_id);
+    workspace.pr_autofix_enabled = false;
+    workspace.publication_pr_number = Some(77);
+    workspace.publication_pr_url = Some("https://github.com/acme/project/pull/77".to_string());
+    workspace.publication_pr_status = Some("open".to_string());
+    workspace.publication_push_status = Some("pushed".to_string());
+    workspace_repo.create_or_update(workspace).await.unwrap();
+    let scheduler = scheduler_with(
+        Arc::clone(&automation_repo),
+        Arc::clone(&run_repo),
+        Arc::clone(&workspace_repo),
+        Arc::new(RecordingSignalChecker::default()),
+        AutomationSchedulerConfig::default(),
+    );
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.published_runs, 1);
+    let workspace = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!workspace.pr_autofix_enabled);
+    assert!(workspace.pr_auto_merge_desired);
+}
+
+#[tokio::test]
+async fn automation_scheduler_does_not_arm_auto_merge_when_publication_cas_loses() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    run_repo.lose_next_running_to_published_cas();
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let automation_id = AutomationId::from_string("automation-1");
+    let mut automation = automation(automation_id.as_str(), AutomationStatus::Active);
+    automation.pr_merge_mode = AutomationPrMergeMode::Automatic;
+    automation_repo.create(automation).await.unwrap();
+    let conversation_id = ChatConversationId::from_string("conversation-1");
+    run_repo
+        .create_run(automation_run(
+            "run-1",
+            &automation_id,
+            AutomationRunStatus::Running,
+            Some(conversation_id.clone()),
+        ))
+        .await
+        .unwrap();
+    let mut workspace = workspace(&conversation_id);
+    workspace.publication_pr_number = Some(77);
+    workspace.publication_pr_url = Some("https://github.com/acme/project/pull/77".to_string());
+    workspace.publication_pr_status = Some("open".to_string());
+    workspace.publication_push_status = Some("pushed".to_string());
+    workspace_repo.create_or_update(workspace).await.unwrap();
+    let scheduler = scheduler_with(
+        Arc::clone(&automation_repo),
+        Arc::clone(&run_repo),
+        Arc::clone(&workspace_repo),
+        Arc::new(RecordingSignalChecker::default()),
+        AutomationSchedulerConfig::default(),
+    );
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.published_runs, 0);
+    let latest = run_repo
+        .latest_for_automation(&automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest.status, AutomationRunStatus::Running);
+    let workspace = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!workspace.pr_auto_merge_desired);
+}
+
+#[tokio::test]
+async fn automation_scheduler_publishes_when_auto_merge_preference_write_fails() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    workspace_repo.fail_next_pr_supervision_preference_update("workspace repo unavailable");
+    let automation_id = AutomationId::from_string("automation-1");
+    let mut automation = automation(automation_id.as_str(), AutomationStatus::Active);
+    automation.pr_merge_mode = AutomationPrMergeMode::Automatic;
+    automation_repo.create(automation).await.unwrap();
+    let conversation_id = ChatConversationId::from_string("conversation-1");
+    run_repo
+        .create_run(automation_run(
+            "run-1",
+            &automation_id,
+            AutomationRunStatus::Running,
+            Some(conversation_id.clone()),
+        ))
+        .await
+        .unwrap();
+    let mut workspace = workspace(&conversation_id);
+    workspace.publication_pr_number = Some(77);
+    workspace.publication_pr_url = Some("https://github.com/acme/project/pull/77".to_string());
+    workspace.publication_pr_status = Some("open".to_string());
+    workspace.publication_push_status = Some("pushed".to_string());
+    workspace_repo.create_or_update(workspace).await.unwrap();
+    let scheduler = scheduler_with(
+        Arc::clone(&automation_repo),
+        Arc::clone(&run_repo),
+        Arc::clone(&workspace_repo),
+        Arc::new(RecordingSignalChecker::default()),
+        AutomationSchedulerConfig::default(),
+    );
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.published_runs, 1);
+    let latest = run_repo
+        .latest_for_automation(&automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest.status, AutomationRunStatus::Published);
+    let workspace = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!workspace.pr_auto_merge_desired);
+}
+
+#[tokio::test]
+async fn automation_scheduler_rearms_published_automatic_run_after_crash_window() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let automation_id = AutomationId::from_string("automation-1");
+    let mut automation = automation(automation_id.as_str(), AutomationStatus::Active);
+    automation.pr_merge_mode = AutomationPrMergeMode::Automatic;
+    automation_repo.create(automation).await.unwrap();
+    let conversation_id = ChatConversationId::from_string("conversation-1");
+    let mut run = automation_run(
+        "run-1",
+        &automation_id,
+        AutomationRunStatus::Published,
+        Some(conversation_id.clone()),
+    );
+    run.pr_number = Some(77);
+    run_repo.create_run(run).await.unwrap();
+    let mut workspace = workspace(&conversation_id);
+    workspace.publication_pr_number = Some(77);
+    workspace.publication_pr_url = Some("https://github.com/acme/project/pull/77".to_string());
+    workspace.publication_pr_status = Some("open".to_string());
+    workspace.publication_push_status = Some("pushed".to_string());
+    workspace.pr_auto_merge_desired = false;
+    workspace_repo.create_or_update(workspace).await.unwrap();
+    let checker = Arc::new(RecordingSignalChecker::default());
+    let scheduler = scheduler_with(
+        Arc::clone(&automation_repo),
+        Arc::clone(&run_repo),
+        Arc::clone(&workspace_repo),
+        checker.clone(),
+        AutomationSchedulerConfig::default(),
+    );
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.signal_check_errors, 0);
+    assert_eq!(checker.call_count(), 1);
+    let workspace = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(workspace.pr_auto_merge_desired);
+}
+
+#[tokio::test]
+async fn automation_scheduler_leaves_auto_merge_preference_untouched_for_manual_pr_merge() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let automation_id = AutomationId::from_string("automation-1");
+    automation_repo
+        .create(automation(automation_id.as_str(), AutomationStatus::Active))
+        .await
+        .unwrap();
+    let conversation_id = ChatConversationId::from_string("conversation-1");
+    run_repo
+        .create_run(automation_run(
+            "run-1",
+            &automation_id,
+            AutomationRunStatus::Running,
+            Some(conversation_id.clone()),
+        ))
+        .await
+        .unwrap();
+    let mut workspace = workspace(&conversation_id);
+    workspace.pr_autofix_enabled = true;
+    workspace.publication_pr_number = Some(77);
+    workspace.publication_pr_url = Some("https://github.com/acme/project/pull/77".to_string());
+    workspace.publication_pr_status = Some("open".to_string());
+    workspace.publication_push_status = Some("pushed".to_string());
+    workspace_repo.create_or_update(workspace).await.unwrap();
+    let scheduler = scheduler_with(
+        Arc::clone(&automation_repo),
+        Arc::clone(&run_repo),
+        Arc::clone(&workspace_repo),
+        Arc::new(RecordingSignalChecker::default()),
+        AutomationSchedulerConfig::default(),
+    );
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.published_runs, 1);
+    let workspace = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(workspace.pr_autofix_enabled);
+    assert!(!workspace.pr_auto_merge_desired);
+    assert_eq!(
+        workspace.pr_auto_merge_method,
+        DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD
+    );
+    assert!(workspace.pr_supervision_status.is_none());
+}
+
+#[tokio::test]
 async fn automation_scheduler_provisions_pending_successor_runs() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
     let run_repo = Arc::new(MemoryAutomationRunRepository::new());
@@ -1343,10 +1675,9 @@ async fn automation_scheduler_marks_published_run_merged_from_github_signal() {
     let run_repo = Arc::new(MemoryAutomationRunRepository::new());
     let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
     let automation_id = AutomationId::from_string("automation-1");
-    automation_repo
-        .create(automation(automation_id.as_str(), AutomationStatus::Active))
-        .await
-        .unwrap();
+    let mut automation = automation(automation_id.as_str(), AutomationStatus::Active);
+    automation.pr_merge_mode = AutomationPrMergeMode::Automatic;
+    automation_repo.create(automation).await.unwrap();
     let conversation_id = ChatConversationId::from_string("conversation-1");
     let mut run = automation_run(
         "run-1",
@@ -1510,6 +1841,188 @@ async fn automation_scheduler_pauses_after_bounded_signal_check_errors() {
 }
 
 #[tokio::test]
+async fn automation_scheduler_surfaces_auto_merge_enable_warning_without_signal_penalty() {
+    let worktree = tempfile::tempdir().expect("worktree path");
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let automation_id = AutomationId::from_string("automation-1");
+    let mut automation = automation(automation_id.as_str(), AutomationStatus::Active);
+    automation.pr_merge_mode = AutomationPrMergeMode::Automatic;
+    automation_repo.create(automation).await.unwrap();
+    let conversation_id = ChatConversationId::from_string("conversation-1");
+    let mut run = automation_run(
+        "run-1",
+        &automation_id,
+        AutomationRunStatus::Published,
+        Some(conversation_id.clone()),
+    );
+    run.pr_number = Some(79);
+    run_repo.create_run(run).await.unwrap();
+    let mut workspace = workspace(&conversation_id);
+    workspace.worktree_path = worktree.path().to_string_lossy().to_string();
+    workspace.publication_pr_number = Some(79);
+    workspace.publication_pr_status = Some("open".to_string());
+    workspace.publication_push_status = Some("pushed".to_string());
+    workspace.pr_auto_merge_desired = true;
+    workspace_repo
+        .create_or_update(workspace.clone())
+        .await
+        .unwrap();
+    let github = Arc::new(MockGithubService::new());
+    {
+        let mut github_state = github.state();
+        github_state.fetch_pr_health_result = Some(Ok(open_pr_health("auto-merge-warning-head")));
+        github_state.enable_pr_auto_merge_result = Some(Err(AppError::Infrastructure(
+            "branch protection blocks it".to_string(),
+        )));
+    }
+    let github_trait: Arc<dyn GithubServiceTrait> = github;
+    let workspace_repo_trait: Arc<dyn AgentConversationWorkspaceRepository> =
+        workspace_repo.clone();
+    let current = sync_agent_workspace_auto_merge_preference_for_workspace(
+        github_trait,
+        worktree.path(),
+        79,
+        &workspace,
+        workspace_repo_trait,
+    )
+    .await
+    .unwrap();
+    assert!(!current);
+    let scheduler = scheduler_with(
+        Arc::clone(&automation_repo),
+        Arc::clone(&run_repo),
+        workspace_repo,
+        Arc::new(RecordingSignalChecker::default()),
+        AutomationSchedulerConfig::default(),
+    );
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.signal_check_errors, 0);
+    assert_eq!(summary.paused_automations, 0);
+    let automation = automation_repo
+        .get_by_id(&automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(automation.status, AutomationStatus::Active);
+    let latest = run_repo
+        .latest_for_automation(&automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest.status, AutomationRunStatus::Published);
+    assert_eq!(latest.signal_check_failures, 0);
+    assert_eq!(
+        latest.error_code.as_deref(),
+        Some(AUTO_MERGE_ENABLE_WARNING_CODE)
+    );
+    assert!(latest
+        .error_detail
+        .as_deref()
+        .unwrap_or_default()
+        .contains("branch protection blocks it"));
+}
+
+#[tokio::test]
+async fn automation_scheduler_does_not_rewrite_identical_auto_merge_warning() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let automation_id = AutomationId::from_string("automation-1");
+    let mut automation = automation(automation_id.as_str(), AutomationStatus::Active);
+    automation.pr_merge_mode = AutomationPrMergeMode::Automatic;
+    automation_repo.create(automation).await.unwrap();
+    let conversation_id = ChatConversationId::from_string("conversation-1");
+    let mut run = automation_run(
+        "run-1",
+        &automation_id,
+        AutomationRunStatus::Published,
+        Some(conversation_id.clone()),
+    );
+    let warning = auto_merge_enable_failure_summary("branch protection blocks it");
+    run.pr_number = Some(79);
+    run.error_code = Some(AUTO_MERGE_ENABLE_WARNING_CODE.to_string());
+    run.error_detail = Some(warning.clone());
+    run_repo.create_run(run).await.unwrap();
+    let mut workspace = workspace(&conversation_id);
+    workspace.publication_pr_number = Some(79);
+    workspace.publication_pr_status = Some("open".to_string());
+    workspace.publication_push_status = Some("pushed".to_string());
+    workspace.pr_auto_merge_desired = true;
+    workspace.pr_auto_merge_current = Some(false);
+    workspace.pr_supervision_status = Some(AUTO_MERGE_SUPERVISION_STATUS_WAITING.to_string());
+    workspace.pr_supervision_summary = Some(warning);
+    workspace_repo.create_or_update(workspace).await.unwrap();
+    let scheduler = scheduler_with(
+        Arc::clone(&automation_repo),
+        Arc::clone(&run_repo),
+        workspace_repo,
+        Arc::new(RecordingSignalChecker::default()),
+        AutomationSchedulerConfig::default(),
+    );
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.signal_check_errors, 0);
+    assert_eq!(run_repo.published_run_error_update_count(), 0);
+}
+
+#[tokio::test]
+async fn automation_scheduler_does_not_clobber_unrelated_published_run_error() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let automation_id = AutomationId::from_string("automation-1");
+    let mut automation = automation(automation_id.as_str(), AutomationStatus::Active);
+    automation.pr_merge_mode = AutomationPrMergeMode::Automatic;
+    automation_repo.create(automation).await.unwrap();
+    let conversation_id = ChatConversationId::from_string("conversation-1");
+    let mut run = automation_run(
+        "run-1",
+        &automation_id,
+        AutomationRunStatus::Published,
+        Some(conversation_id.clone()),
+    );
+    run.pr_number = Some(79);
+    run.error_code = Some("manual_review_note".to_string());
+    run.error_detail = Some("Human added a note".to_string());
+    run_repo.create_run(run).await.unwrap();
+    let mut workspace = workspace(&conversation_id);
+    workspace.publication_pr_number = Some(79);
+    workspace.publication_pr_status = Some("open".to_string());
+    workspace.publication_push_status = Some("pushed".to_string());
+    workspace.pr_auto_merge_desired = true;
+    workspace.pr_auto_merge_current = Some(false);
+    workspace.pr_supervision_status = Some(AUTO_MERGE_SUPERVISION_STATUS_WAITING.to_string());
+    workspace.pr_supervision_summary = Some(auto_merge_enable_failure_summary(
+        "branch protection blocks it",
+    ));
+    workspace_repo.create_or_update(workspace).await.unwrap();
+    let scheduler = scheduler_with(
+        Arc::clone(&automation_repo),
+        Arc::clone(&run_repo),
+        workspace_repo,
+        Arc::new(RecordingSignalChecker::default()),
+        AutomationSchedulerConfig::default(),
+    );
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.signal_check_errors, 0);
+    assert_eq!(run_repo.published_run_error_update_count(), 0);
+    let latest = run_repo
+        .latest_for_automation(&automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest.error_code.as_deref(), Some("manual_review_note"));
+    assert_eq!(latest.error_detail.as_deref(), Some("Human added a note"));
+}
+
+#[tokio::test]
 async fn automation_scheduler_holds_signals_while_automation_is_paused() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
     let run_repo = Arc::new(MemoryAutomationRunRepository::new());
@@ -1644,6 +2157,64 @@ async fn automation_scheduler_completes_agent_completed_run_from_agent_run_statu
         .unwrap();
     assert_eq!(latest.status, AutomationRunStatus::Completed);
     assert!(latest.finished_at.is_some());
+}
+
+#[tokio::test]
+async fn automation_scheduler_does_not_enable_auto_merge_for_agent_completed_run_without_pr() {
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
+    let automation_id = AutomationId::from_string("automation-1");
+    let mut automation = automation(automation_id.as_str(), AutomationStatus::Active);
+    automation.run_mode = "plan".to_string();
+    automation.completion_signal = "agent_completed".to_string();
+    automation.pr_merge_mode = AutomationPrMergeMode::Automatic;
+    automation_repo.create(automation).await.unwrap();
+    let conversation_id = ChatConversationId::from_string("conversation-1");
+    run_repo
+        .create_run(automation_run(
+            "run-1",
+            &automation_id,
+            AutomationRunStatus::Running,
+            Some(conversation_id.clone()),
+        ))
+        .await
+        .unwrap();
+    let mut workspace = workspace(&conversation_id);
+    workspace.pr_autofix_enabled = true;
+    workspace_repo.create_or_update(workspace).await.unwrap();
+    let mut agent_run = AgentRun::new(conversation_id.clone());
+    agent_run.status = crate::domain::entities::AgentRunStatus::Completed;
+    agent_run.completed_at = Some(Utc::now());
+    agent_run_repo.create(agent_run).await.unwrap();
+    let scheduler = scheduler_with_judge_and_agent_runs(
+        Arc::clone(&automation_repo),
+        Arc::clone(&run_repo),
+        Arc::clone(&workspace_repo),
+        agent_run_repo,
+        Arc::new(RecordingSignalChecker::default()),
+        Arc::new(RecordingJudgeInvoker::default()),
+        AutomationSchedulerConfig::default(),
+    );
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.completed_runs, 1);
+    let latest = run_repo
+        .latest_for_automation(&automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest.status, AutomationRunStatus::Completed);
+    let workspace = workspace_repo
+        .get_by_conversation_id(&conversation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(workspace.pr_autofix_enabled);
+    assert!(!workspace.pr_auto_merge_desired);
+    assert!(workspace.pr_supervision_status.is_none());
 }
 
 #[tokio::test]
@@ -2777,8 +3348,7 @@ async fn automation_scheduler_delivered_plan_revision_is_consumed_and_repeat_the
     scenario
         .seed_plan_artifact("plan-artifact-1", "Plan needs a revision.", 1)
         .await;
-    let instructions =
-        "Add explicit recovery coverage before implementing the automation run.";
+    let instructions = "Add explicit recovery coverage before implementing the automation run.";
     let repeated = " Add explicit recovery coverage before implementing the automation run! ";
     let plan_judge = Arc::new(RecordingPlanJudgeInvoker::with_outputs(vec![
         valid_plan_revise_verdict("plan-artifact-1", instructions),
@@ -2998,7 +3568,9 @@ async fn automation_scheduler_plan_judge_revision_limit_counts_judge_issued_revi
         )
         .await;
         scheduler.tick_once().await.unwrap();
-        scenario.seed_plan_artifact(artifact_id, body, version).await;
+        scenario
+            .seed_plan_artifact(artifact_id, body, version)
+            .await;
         scenario
             .session_repo
             .update_plan_artifact_id(&scenario.session_id, Some(artifact_id.to_string()))
