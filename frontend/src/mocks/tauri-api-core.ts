@@ -752,7 +752,7 @@ const mockTicketingTickets = [
     reporter: { id: "user-2", name: "Platform", email: null, avatarUrl: null },
     labels: ["backend", "race-condition"],
     priority: "High",
-    updatedAt: "2026-06-19T22:00:00.000Z",
+    updatedAt: "2026-06-20T12:00:00.000Z",
     url: "https://example.atlassian.net/browse/RX-1",
     associationCount: 2,
   },

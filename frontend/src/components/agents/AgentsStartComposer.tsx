@@ -55,6 +55,10 @@ import {
   AgentComposerSurface,
   type AgentComposerSurfaceProps,
 } from "./AgentComposerSurface";
+import {
+  buildAgentStartConversationRetryInput,
+  parseLinkedSetupFailure,
+} from "./agentStartErrors";
 import { AgentProviderSettingsButton } from "./AgentProviderSettingsButton";
 import type { AgentQueueHaltState } from "./agentExecutionPause";
 import {
@@ -83,6 +87,19 @@ interface PendingAttachment {
   mimeType?: string;
 }
 
+interface AgentsStartComposerSubmitInput {
+  projectId: string;
+  content: string;
+  runtime: AgentRuntimeSelection;
+  mode: AgentConversationWorkspaceMode;
+  base: AgentConversationBaseSelection | null;
+  files: File[];
+  codexFastMode?: boolean | null;
+  composerArtifactReferences?: ComposerArtifactReference[] | undefined;
+  composerProjectReferences?: ComposerProjectReference[] | undefined;
+  composerIntegrationReferences?: ComposerIntegrationReference[] | undefined;
+}
+
 interface AgentsStartComposerProps {
   projects: Project[];
   defaultProjectId: string | null;
@@ -93,18 +110,7 @@ interface AgentsStartComposerProps {
   modelRegistry: AgentModelRegistry;
   onCreateProject: () => void;
   onRuntimePreferenceChange?: (projectId: string, runtime: AgentRuntimeSelection) => void;
-  onSubmit: (input: {
-    projectId: string;
-    content: string;
-    runtime: AgentRuntimeSelection;
-    mode: AgentConversationWorkspaceMode;
-    base: AgentConversationBaseSelection | null;
-    files: File[];
-    codexFastMode?: boolean | null;
-    composerArtifactReferences?: ComposerArtifactReference[] | undefined;
-    composerProjectReferences?: ComposerProjectReference[] | undefined;
-    composerIntegrationReferences?: ComposerIntegrationReference[] | undefined;
-  }) => Promise<void>;
+  onSubmit: (input: AgentsStartComposerSubmitInput) => Promise<void>;
 }
 
 const MAX_FILES = 5;
@@ -128,10 +134,47 @@ const AGENTS_START_COMPOSER_DRAFT_KEY = "agents:start";
 
 type StarterTypingPhase = "holding" | "typing" | "deleting";
 
+type StartComposerError =
+  | { kind: "plain"; message: string }
+  | { kind: "linked_setup"; message: string };
+
 function isPendingAttachment(
   attachment: ChatComposerAttachment,
 ): attachment is PendingAttachment {
   return attachment.file !== undefined;
+}
+
+function plainStartComposerError(message: string): StartComposerError {
+  return { kind: "plain", message };
+}
+
+function startComposerErrorFromUnknown(error: unknown): StartComposerError {
+  const linked = parseLinkedSetupFailure(error);
+  if (linked) {
+    return { kind: "linked_setup", message: linked.message };
+  }
+  return plainStartComposerError(
+    error instanceof Error ? error.message : "Failed to start agent conversation"
+  );
+}
+
+function composerIntegrationReferencesEqual(
+  left: ComposerIntegrationReference[],
+  right: ComposerIntegrationReference[],
+): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+  return left.every((reference, index) => {
+    const other = right[index];
+    return (
+      other !== undefined &&
+      reference.provider === other.provider &&
+      reference.kind === other.kind &&
+      reference.id === other.id &&
+      reference.key === other.key
+    );
+  });
 }
 
 const AGENT_MODE_OPTIONS: Array<{
@@ -199,11 +242,12 @@ export function AgentsStartComposer({
   const [codexFastModeOverride, setCodexFastModeOverride] = useState<
     boolean | null
   >(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<StartComposerError | null>(null);
   const startFromRequestRef = useRef(0);
   const pullRequestStartFromRequestRef = useRef(0);
   const ticketStartFromRequestRef = useRef(0);
   const userSelectedStartFromRef = useRef(false);
+  const lastStartAttemptRef = useRef<AgentsStartComposerSubmitInput | null>(null);
   const openModal = useUiStore((s) => s.openModal);
   const {
     settings: providerSettings,
@@ -219,6 +263,12 @@ export function AgentsStartComposer({
   );
   const setLastBranchBaseSelectionForProject = useAgentSessionStore(
     (s) => s.setLastBranchBaseSelectionForProject
+  );
+  const startConversationFailure = useAgentSessionStore(
+    (s) => s.startConversationFailure
+  );
+  const setStartConversationFailure = useAgentSessionStore(
+    (s) => s.setStartConversationFailure
   );
   const lastModelEffortByProvider = useAgentSessionStore(
     (s) => s.lastModelEffortByProvider
@@ -314,6 +364,11 @@ export function AgentsStartComposer({
   const openProviderSettings = useCallback(() => {
     openModal("settings", { section: "providers" });
   }, [openModal]);
+  const clearStartError = useCallback(() => {
+    lastStartAttemptRef.current = null;
+    setStartConversationFailure(null);
+    setError(null);
+  }, [setStartConversationFailure]);
 
   useEffect(() => {
     setProjectId(defaultProjectId ?? projects[0]?.id ?? "");
@@ -341,6 +396,25 @@ export function AgentsStartComposer({
     setComposerDraftContent,
     startConversationDraft,
   ]);
+
+  useEffect(() => {
+    if (!startConversationFailure) {
+      return;
+    }
+    const { retryInput } = startConversationFailure;
+    setProjectId(retryInput.projectId);
+    setProvider(retryInput.runtime.provider);
+    setModelId(retryInput.runtime.modelId);
+    setEffort(retryInput.runtime.effort);
+    setMode(retryInput.mode);
+    if (retryInput.base) {
+      setIsStartFromIsolatedBranch(retryInput.base.branchMode === "isolated");
+    }
+    setError({
+      kind: "linked_setup",
+      message: startConversationFailure.message,
+    });
+  }, [startConversationFailure]);
 
   useEffect(() => {
     setProvider(normalizedRuntime.provider);
@@ -413,10 +487,12 @@ export function AgentsStartComposer({
   }, [activeProject]);
   const selectedStartFromSelection =
     selectedStartFrom?.selection ?? fallbackStartFrom;
-  const startFromForcesIsolatedBranch =
+  const selectionForcesIsolatedBranch =
     selectedStartFromSelection
       ? startSelectionForcesIsolatedBranch(selectedStartFromSelection)
       : false;
+  const startFromForcesIsolatedBranch =
+    mode === "review_pr" || selectionForcesIsolatedBranch;
   const effectiveStartFromIsolatedBranch =
     startFromForcesIsolatedBranch || isStartFromIsolatedBranch;
 
@@ -465,12 +541,13 @@ export function AgentsStartComposer({
 
   const handleProjectChange = useCallback(
     (nextProjectId: string) => {
+      clearStartError();
       userSelectedStartFromRef.current = false;
       setIsStartFromIsolatedBranch(false);
       setProjectId(nextProjectId);
       persistRuntimePreference(nextProjectId, { provider, modelId, effort });
     },
-    [effort, modelId, persistRuntimePreference, provider]
+    [clearStartError, effort, modelId, persistRuntimePreference, provider]
   );
 
   const handleProviderChange = useCallback(
@@ -479,6 +556,7 @@ export function AgentsStartComposer({
       if (providerOptions.find((option) => option.id === nextProvider)?.disabled) {
         return;
       }
+      clearStartError();
       const remembered = lastModelEffortByProvider[nextProvider];
       const nextRuntime = normalizeRuntimeSelection(
         {
@@ -495,11 +573,19 @@ export function AgentsStartComposer({
       setEffort(nextRuntime.effort);
       persistRuntimePreference(projectId, nextRuntime);
     },
-    [lastModelEffortByProvider, modelRegistry, persistRuntimePreference, projectId, providerOptions]
+    [
+      clearStartError,
+      lastModelEffortByProvider,
+      modelRegistry,
+      persistRuntimePreference,
+      projectId,
+      providerOptions,
+    ]
   );
 
   const handleModelChange = useCallback(
     (nextModelId: string) => {
+      clearStartError();
       const nextRuntime = normalizeRuntimeSelection(
         {
           provider,
@@ -516,6 +602,7 @@ export function AgentsStartComposer({
       persistRuntimePreference(projectId, nextRuntime);
     },
     [
+      clearStartError,
       modelRegistry,
       persistRuntimePreference,
       projectId,
@@ -527,6 +614,7 @@ export function AgentsStartComposer({
 
   const handleEffortChange = useCallback(
     (nextEffort: AgentEffort) => {
+      clearStartError();
       const nextRuntime = normalizeRuntimeSelection(
         {
           provider,
@@ -543,6 +631,7 @@ export function AgentsStartComposer({
       persistRuntimePreference(projectId, nextRuntime);
     },
     [
+      clearStartError,
       modelId,
       modelRegistry,
       persistRuntimePreference,
@@ -555,36 +644,59 @@ export function AgentsStartComposer({
 
   const handleStartFromChange = useCallback(
     (nextKey: string) => {
+      clearStartError();
       userSelectedStartFromRef.current = true;
       setSelectedStartFromKey(nextKey);
       const nextSelection =
         allStartFromOptions.find((option) => option.key === nextKey)?.selection ??
         null;
       setIsStartFromIsolatedBranch(
-        nextSelection ? startSelectionForcesIsolatedBranch(nextSelection) : false
+        startSelectionDefaultsToIsolatedBranch(nextSelection)
       );
       if (activeProjectId && !isTransientStartFromKey(nextKey)) {
         setLastBranchBaseSelectionForProject(activeProjectId, nextKey);
       }
     },
-    [activeProjectId, allStartFromOptions, setLastBranchBaseSelectionForProject]
+    [
+      activeProjectId,
+      allStartFromOptions,
+      clearStartError,
+      setLastBranchBaseSelectionForProject,
+    ]
+  );
+
+  const handleComposerIntegrationReferencesChange = useCallback(
+    (references: ComposerIntegrationReference[]) => {
+      if (
+        !composerIntegrationReferencesEqual(
+          composerIntegrationReferences,
+          references,
+        )
+      ) {
+        clearStartError();
+      }
+      setComposerIntegrationReferences(references);
+    },
+    [clearStartError, composerIntegrationReferences]
   );
 
   const handleFilesSelected = (files: File[]) => {
     if (attachments.length + files.length > MAX_FILES) {
-      setError(`Cannot upload more than ${MAX_FILES} files total`);
+      setError(plainStartComposerError(`Cannot upload more than ${MAX_FILES} files total`));
       return;
     }
 
     const oversizedFiles = files.filter((file) => file.size > MAX_FILE_SIZE);
     if (oversizedFiles.length > 0) {
       setError(
-        `Files exceed 10MB limit: ${oversizedFiles.map((file) => file.name).join(", ")}`
+        plainStartComposerError(
+          `Files exceed 10MB limit: ${oversizedFiles.map((file) => file.name).join(", ")}`
+        )
       );
       return;
     }
 
-    setError(null);
+    clearStartError();
     setComposerDraftAttachments(AGENTS_START_COMPOSER_DRAFT_KEY, [
       ...attachments,
       ...files.map((file) => ({
@@ -629,11 +741,17 @@ export function AgentsStartComposer({
       rememberedBranchBaseByProjectId[activeProjectId] ??
       cached?.selectedKey ??
       fallback.selectedKey;
-    setStartFromOptions(options);
-    setSelectedStartFromKey(
+    const nextSelectedStartFromKey =
       resolveBranchSelectionKey(options, preferredKey) ??
-        resolveBranchSelectionKey(options, fallback.selectedKey) ??
-        fallback.selectedKey
+      resolveBranchSelectionKey(options, fallback.selectedKey) ??
+      fallback.selectedKey;
+    const nextStartFromSelection =
+      options.find((option) => option.key === nextSelectedStartFromKey)?.selection ??
+      null;
+    setStartFromOptions(options);
+    setSelectedStartFromKey(nextSelectedStartFromKey);
+    setIsStartFromIsolatedBranch(
+      startSelectionDefaultsToIsolatedBranch(nextStartFromSelection)
     );
     setIsLoadingStartFrom(false);
   }, [
@@ -702,6 +820,19 @@ export function AgentsStartComposer({
     activeProjectId,
     composerIntegrationReferences,
   ]);
+
+  useEffect(() => {
+    if (
+      userSelectedStartFromRef.current ||
+      !ticketStartFromOption ||
+      selectedStartFromKey !== ticketStartFromOption.key
+    ) {
+      return;
+    }
+    setIsStartFromIsolatedBranch(
+      startSelectionDefaultsToIsolatedBranch(ticketStartFromOption.selection)
+    );
+  }, [selectedStartFromKey, ticketStartFromOption]);
 
   const searchPullRequestStartFromOptions = useCallback(
     (query: string) => {
@@ -816,63 +947,119 @@ export function AgentsStartComposer({
   ]);
 
   const handleRemoveAttachment = (attachmentId: string) => {
+    clearStartError();
     setComposerDraftAttachments(
       AGENTS_START_COMPOSER_DRAFT_KEY,
       attachments.filter((attachment) => attachment.id !== attachmentId),
     );
   };
 
+  const submitStartInput = useCallback(
+    async (input: AgentsStartComposerSubmitInput) => {
+      lastStartAttemptRef.current = input;
+      setStartConversationFailure(null);
+      setError(null);
+      try {
+        await onSubmit(input);
+        lastStartAttemptRef.current = null;
+        setStartConversationFailure(null);
+        clearComposerDraft(AGENTS_START_COMPOSER_DRAFT_KEY);
+      } catch (err) {
+        const nextError = startComposerErrorFromUnknown(err);
+        setError(nextError);
+        if (nextError.kind === "linked_setup") {
+          setStartConversationFailure({
+            kind: "linked_setup",
+            message: nextError.message,
+            retryInput: buildAgentStartConversationRetryInput(input),
+          });
+        }
+      }
+    },
+    [clearComposerDraft, onSubmit, setStartConversationFailure]
+  );
+
+  const handleRetryWithIsolatedBranch = useCallback(async () => {
+    const lastAttempt =
+      lastStartAttemptRef.current ??
+      (startConversationFailure
+        ? {
+            ...startConversationFailure.retryInput,
+            files: attachments.map((attachment) => attachment.file),
+          }
+        : null);
+    if (!lastAttempt) {
+      return;
+    }
+    const isolatedAttempt: AgentsStartComposerSubmitInput = {
+      ...lastAttempt,
+      base: lastAttempt.base
+        ? {
+            ...lastAttempt.base,
+            branchMode: "isolated",
+          }
+        : lastAttempt.base,
+    };
+    setIsStartFromIsolatedBranch(true);
+    await submitStartInput(isolatedAttempt);
+  }, [attachments, startConversationFailure, submitStartInput]);
+
   const handleSubmit: AgentComposerSurfaceProps["onSend"] = async (
     message,
     options,
   ) => {
     if (!projectId) {
-      setError("Project is required");
+      setError(plainStartComposerError("Project is required"));
       return;
     }
     if (!message.trim()) {
-      setError("Prompt is required");
+      setError(plainStartComposerError("Prompt is required"));
       return;
     }
     /* c8 ignore next 3 -- submit is disabled for this state; keep this guard for direct calls. */
     if (!hasSelectableProvider || providerStatusMessage) {
-      setError(providerStatusMessage ?? "Enable a provider with a validated CLI in Settings.");
+      setError(
+        plainStartComposerError(
+          providerStatusMessage ?? "Enable a provider with a validated CLI in Settings."
+        )
+      );
+      return;
+    }
+    if (
+      mode === "review_pr" &&
+      !selectedStartFromSelection?.sourcePullRequest
+    ) {
+      setError(plainStartComposerError("Select a pull request to review."));
       return;
     }
 
-    setError(null);
-    try {
-      const base = selectedStartFromSelection
-        ? {
-            ...selectedStartFromSelection,
-            branchMode: branchModeForStartSelection(
-              selectedStartFromSelection,
-              effectiveStartFromIsolatedBranch
-            ),
-          }
-        : null;
-      await onSubmit({
-        projectId,
-        content: message.trim(),
-        runtime: { provider, modelId, effort },
-        mode,
-        base,
-        files: attachments.map((attachment) => attachment.file),
-        codexFastMode: provider === "codex" ? selectableCodexFastMode : null,
-        ...(options?.projectReferences?.length
-          ? { composerProjectReferences: options.projectReferences }
-          : {}),
-        ...(options?.integrationReferences?.length
-          ? { composerIntegrationReferences: options.integrationReferences }
-          : {}),
-        ...(options?.artifactReferences?.length
-          ? { composerArtifactReferences: options.artifactReferences }
-          : {}),
-      });
-      clearComposerDraft(AGENTS_START_COMPOSER_DRAFT_KEY);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to start agent conversation");
-    }
+    const base = selectedStartFromSelection
+      ? {
+          ...selectedStartFromSelection,
+          branchMode: branchModeForStartSelection(
+            selectedStartFromSelection,
+            effectiveStartFromIsolatedBranch
+          ),
+        }
+      : null;
+    await submitStartInput({
+      projectId,
+      content: message.trim(),
+      runtime: { provider, modelId, effort },
+      mode,
+      base,
+      files: attachments.map((attachment) => attachment.file),
+      codexFastMode: provider === "codex" ? selectableCodexFastMode : null,
+      ...(options?.projectReferences?.length
+        ? { composerProjectReferences: options.projectReferences }
+        : {}),
+      ...(options?.integrationReferences?.length
+        ? { composerIntegrationReferences: options.integrationReferences }
+        : {}),
+      ...(options?.artifactReferences?.length
+        ? { composerArtifactReferences: options.artifactReferences }
+        : {}),
+    });
   };
 
   return (
@@ -969,9 +1156,10 @@ export function AgentsStartComposer({
             textareaTestId="agents-start-textarea"
             actionTestId="agents-start-submit"
             value={content}
-            onChange={(value) =>
-              setComposerDraftContent(AGENTS_START_COMPOSER_DRAFT_KEY, value)
-            }
+            onChange={(value) => {
+              clearStartError();
+              setComposerDraftContent(AGENTS_START_COMPOSER_DRAFT_KEY, value);
+            }}
             onSend={handleSubmit}
             placeholder={
               mode === "review_pr"
@@ -984,7 +1172,7 @@ export function AgentsStartComposer({
             initialProjectReferences={draftProjectReferences}
             initialIntegrationReferences={draftIntegrationReferences}
             initialArtifactReferences={draftArtifactReferences}
-            onIntegrationReferencesChange={setComposerIntegrationReferences}
+            onIntegrationReferencesChange={handleComposerIntegrationReferencesChange}
             enableAttachments
             onFilesSelected={handleFilesSelected}
             onRemoveAttachment={handleRemoveAttachment}
@@ -996,7 +1184,10 @@ export function AgentsStartComposer({
               : {})}
             mode={{
               value: mode,
-              onValueChange: (value) => setMode(value as AgentConversationWorkspaceMode),
+              onValueChange: (value) => {
+                clearStartError();
+                setMode(value as AgentConversationWorkspaceMode);
+              },
               options: AGENT_MODE_OPTIONS,
               testId: "agents-start-mode",
             }}
@@ -1132,22 +1323,64 @@ export function AgentsStartComposer({
               closeOnSelect={false}
               isolatedBranch={effectiveStartFromIsolatedBranch}
               isolatedBranchDisabled={startFromForcesIsolatedBranch}
-              onIsolatedBranchChange={setIsStartFromIsolatedBranch}
+              onIsolatedBranchChange={(value) => {
+                clearStartError();
+                setIsStartFromIsolatedBranch(value);
+              }}
             />
           </div>
 
-          {error && (
+          {error?.kind === "linked_setup" ? (
+            <div
+              className="mx-auto mt-4 flex max-w-[620px] flex-col items-start gap-2 rounded-md border px-4 py-3 text-left text-[0.8125rem]"
+              style={{
+                color: "var(--status-error)",
+                backgroundColor: "var(--status-error-muted)",
+                borderColor: "var(--status-error-border)",
+                borderStyle: "solid",
+                borderWidth: 1,
+              }}
+              data-testid="agents-start-linked-setup-error"
+            >
+              <div>
+                <p className="font-medium leading-snug">Linked branch setup failed</p>
+                <p
+                  className="mt-1 leading-relaxed"
+                  style={{ color: "var(--text-secondary)" }}
+                >
+                  {error.message} Branch isolation creates a separate RalphX
+                  branch and worktree from the same base, avoiding the checkout
+                  conflict.
+                </p>
+              </div>
+              <button
+                type="button"
+                className="rounded-md px-3 py-1.5 text-[0.75rem] font-medium"
+                style={{
+                  color: "var(--accent-primary)",
+                  backgroundColor: "var(--accent-muted)",
+                }}
+                onClick={handleRetryWithIsolatedBranch}
+                disabled={isSubmitting}
+                data-testid="agents-start-linked-setup-retry"
+              >
+                Retry with isolated branch
+              </button>
+            </div>
+          ) : error ? (
             <div
               className="mx-auto mt-4 inline-flex max-w-full items-center gap-2 rounded-full border px-4 py-2 text-[0.8125rem]"
               style={{
                 color: "var(--status-error)",
-                background: "var(--status-error-muted)",
+                backgroundColor: "var(--status-error-muted)",
                 borderColor: "var(--status-error-border)",
+                borderStyle: "solid",
+                borderWidth: 1,
               }}
             >
-              {error}
+              {error.message}
             </div>
-          )}
+          ) : null}
         </div>
       </div>
     </div>
@@ -1209,6 +1442,12 @@ function startSelectionForcesIsolatedBranch(
   selection: AgentConversationBaseSelection
 ): boolean {
   return selection.kind === "project_default" || selection.kind === "current_branch";
+}
+
+function startSelectionDefaultsToIsolatedBranch(
+  selection: AgentConversationBaseSelection | null
+): boolean {
+  return selection !== null;
 }
 
 type TicketProvider = "jira" | "linear" | "clickup";

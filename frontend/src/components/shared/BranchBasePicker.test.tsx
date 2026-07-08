@@ -130,6 +130,10 @@ describe("BranchBasePicker", () => {
     expect(
       screen.getByRole("button", { name: /About isolated branch/i }),
     ).toBeInTheDocument();
+    await user.hover(screen.getByRole("button", { name: /About isolated branch/i }));
+    expect(
+      (await screen.findAllByText(/Starts isolated by default/i)).length,
+    ).toBeGreaterThan(0);
     const isolatedSwitch = screen.getByRole("switch", {
       name: /Use isolated branch/i,
     });

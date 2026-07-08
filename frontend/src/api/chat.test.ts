@@ -3468,6 +3468,39 @@ describe("startAgentConversationInvokeInput", () => {
     expect(out).not.toHaveProperty("baseSourcePullRequest");
   });
 
+  it("serializes isolated branch mode for pull request start bases", () => {
+    const out = startAgentConversationInvokeInput({
+      projectId: "project-1",
+      content: "review the PR",
+      mode: "review_pr",
+      base: {
+        kind: "local_branch",
+        branchMode: "isolated",
+        ref: "feature/pr-default",
+        displayName: "PR #42",
+        sourcePullRequest: {
+          number: 42,
+          title: "Default isolated PR",
+          url: "https://github.com/owner/repo/pull/42",
+          headRefName: "feature/pr-default",
+          baseRefName: "main",
+          headRefOid: "abc123",
+        },
+      },
+    });
+
+    expect(out).toMatchObject({
+      mode: "review_pr",
+      baseRefKind: "local_branch",
+      baseBranchMode: "isolated",
+      baseRef: "feature/pr-default",
+      baseSourcePullRequest: expect.objectContaining({
+        number: 42,
+        headRefName: "feature/pr-default",
+      }),
+    });
+  });
+
   it("filters out empty composer reference arrays", () => {
     const out = startAgentConversationInvokeInput({
       projectId: "project-1",
