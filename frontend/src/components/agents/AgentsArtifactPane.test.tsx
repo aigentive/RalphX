@@ -1743,6 +1743,7 @@ describe("AgentsArtifactPane", () => {
     );
 
     expect(screen.getByTestId("agents-artifact-tab-pr")).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "Loading pull request..." })).toBeInTheDocument();
     expect(await screen.findByTestId("mock-pr-detail-panel")).toHaveTextContent("PR #42");
   });
 

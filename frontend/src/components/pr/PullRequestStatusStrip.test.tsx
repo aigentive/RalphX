@@ -46,7 +46,11 @@ describe("PullRequestStatusStrip", () => {
   it("shows a skeleton while loading", () => {
     render(<PullRequestStatusStrip reviewSummary={null} checks={[]} loading />);
 
-    expect(screen.getByTestId("pr-status-strip-skeleton")).toBeInTheDocument();
+    const skeleton = screen.getByTestId("pr-status-strip-skeleton");
+    expect(skeleton).toBeInTheDocument();
+    expect(
+      skeleton.querySelector("[data-testid='pr-status-skeleton-chip']"),
+    ).toHaveStyle("background-color: var(--bg-hover)");
     expect(screen.queryByTestId("pr-status-strip")).not.toBeInTheDocument();
   });
 
