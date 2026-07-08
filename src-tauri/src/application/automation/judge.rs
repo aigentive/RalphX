@@ -349,9 +349,20 @@ pub fn automation_judge_loop_suspected(
     if verdict.decision != AutomationJudgeDecision::Continue {
         return false;
     }
+    // A repeated prompt is only a judge loop when the previous run actually produced an
+    // outcome that failed to advance the goal (e.g. a PR that was closed unmerged). It is NOT
+    // a loop when the previous run made progress (Merged/Completed) or never got a fair
+    // attempt: an agent that crashed, timed out, or was killed/cancelled legitimately reruns
+    // the same prompt. Repeated genuine agent failures are bounded separately by
+    // `max_consecutive_failures`, so excluding them here does not risk an infinite loop — it
+    // just lets an automation recover from infrastructure failures (e.g. a full disk) instead
+    // of pausing permanently with no way to resume.
     if matches!(
         previous_run.status,
-        AutomationRunStatus::Completed | AutomationRunStatus::Merged
+        AutomationRunStatus::Completed
+            | AutomationRunStatus::Merged
+            | AutomationRunStatus::AgentFailed
+            | AutomationRunStatus::Cancelled
     ) {
         return false;
     }

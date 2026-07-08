@@ -470,9 +470,11 @@ fn applies_all_goal_item_status_variants_and_rejects_missing_storage() {
 }
 
 #[test]
-fn detects_continue_loop_when_prompt_repeats_after_non_merged_run() {
+fn detects_continue_loop_when_prompt_repeats_after_produced_but_unmerged_run() {
+    // A run that produced a PR which was closed unmerged, then the judge proposes the exact
+    // same prompt again -> a genuine judge loop.
     let automation = automation_with_goal_items(Some(goal_items_json()));
-    let mut run = automation_run(1, AutomationRunStatus::AgentFailed);
+    let mut run = automation_run(1, AutomationRunStatus::PrClosed);
     run.run_prompt =
         "Implement item 2 from spec with targeted tests and publish the scoped PR".to_string();
     let output = valid_continue_output().replace(
@@ -483,6 +485,30 @@ fn detects_continue_loop_when_prompt_repeats_after_non_merged_run() {
         parse_automation_judge_verdict(&output, validation_context(&automation, &run)).unwrap();
 
     assert!(automation_judge_loop_suspected(&run, &verdict));
+}
+
+#[test]
+fn retry_after_agent_failed_run_is_not_a_loop() {
+    // Runs that crashed / timed out / were killed never got a fair attempt, so re-issuing the
+    // same prompt is a legitimate retry, not a judge loop (repeated agent failures are bounded
+    // by max_consecutive_failures instead). Regression for an automation that could not be
+    // resumed after its agent was killed by a full disk.
+    let automation = automation_with_goal_items(Some(goal_items_json()));
+    let mut failed = automation_run(1, AutomationRunStatus::AgentFailed);
+    failed.run_prompt =
+        "Implement item 2 from spec with targeted tests and publish the scoped PR".to_string();
+    let output = valid_continue_output().replace(
+        "Implement item 2 from the migration spec. Keep the PR scoped, include tests, and publish the PR.",
+        " Implement item 2 from spec with targeted tests and publish the scoped PR! ",
+    );
+    let verdict =
+        parse_automation_judge_verdict(&output, validation_context(&automation, &failed)).unwrap();
+    assert!(!automation_judge_loop_suspected(&failed, &verdict));
+
+    // Cancelled runs are likewise a retry, not a loop.
+    let mut cancelled = failed.clone();
+    cancelled.status = AutomationRunStatus::Cancelled;
+    assert!(!automation_judge_loop_suspected(&cancelled, &verdict));
 }
 
 #[test]
