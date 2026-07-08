@@ -41,13 +41,13 @@ pub(crate) struct StartupSchedulerDeps<R: Runtime = tauri::Wry> {
     pub interactive_process_registry: Arc<InteractiveProcessRegistry>,
     pub github_service: Option<Arc<dyn GithubServiceTrait>>,
     pub pr_poller_registry: Arc<PrPollerRegistry>,
-    pub app_handle: tauri::AppHandle<R>,
+    pub _app_handle: tauri::AppHandle<R>,
 }
 
 pub(crate) fn build_startup_task_scheduler<R: Runtime>(
     deps: StartupSchedulerDeps<R>,
 ) -> Arc<dyn TaskScheduler> {
-    let mut scheduler = TaskSchedulerService::<R>::new(
+    let mut scheduler = TaskSchedulerService::new(
         Arc::clone(&deps.execution_state),
         deps.project_repo,
         deps.task_repo,
@@ -62,7 +62,7 @@ pub(crate) fn build_startup_task_scheduler<R: Runtime>(
         deps.message_queue,
         deps.running_agent_registry,
         deps.memory_event_repo,
-        Some(deps.app_handle),
+        None,
     )
     .with_agent_clients(deps.agent_clients)
     .with_agent_provider_settings_repo(deps.agent_provider_settings_repo)
@@ -108,7 +108,7 @@ pub(crate) struct StartupChatResumptionDeps {
 pub(crate) fn build_startup_chat_resumption_runner(
     deps: StartupChatResumptionDeps,
 ) -> ChatResumptionRunner {
-    ChatResumptionRunner::<tauri::Wry>::new(
+    ChatResumptionRunner::new(
         deps.agent_run_repo,
         deps.task_repo,
         deps.execution_state,
@@ -239,7 +239,7 @@ mod tests {
             interactive_process_registry: Arc::clone(&app_state.interactive_process_registry),
             github_service: None,
             pr_poller_registry: Arc::clone(&app_state.pr_poller_registry),
-            app_handle: create_mock_app_handle(),
+            _app_handle: create_mock_app_handle(),
         });
 
         scheduler.try_schedule_ready_tasks().await;

@@ -17,7 +17,7 @@ use crate::domain::entities::{InternalStatus, MergeValidationMode, Project, Proj
 use crate::domain::services::{MemoryRunningAgentRegistry, MessageQueue};
 use crate::domain::state_machine::TransitionHandler;
 
-fn build_transition_service(app_state: &AppState) -> Arc<TaskTransitionService<tauri::Wry>> {
+fn build_transition_service(app_state: &AppState) -> Arc<TaskTransitionService> {
     let execution_state = Arc::new(ExecutionState::new());
     let message_queue = Arc::new(MessageQueue::new());
     let running_registry = Arc::new(MemoryRunningAgentRegistry::new());

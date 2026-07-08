@@ -476,7 +476,7 @@ async fn slot_counter_corrected_after_prune_via_reconciler() {
     let app_state = AppState::new_test();
     let execution_state = Arc::new(ExecutionState::new());
 
-    let transition_service = Arc::new(TaskTransitionService::<tauri::Wry>::new(
+    let transition_service = Arc::new(TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
         Arc::clone(&app_state.project_repo),
@@ -493,7 +493,7 @@ async fn slot_counter_corrected_after_prune_via_reconciler() {
         Arc::clone(&app_state.memory_event_repo),
     ));
 
-    let reconciler: ReconciliationRunner<tauri::Wry> = ReconciliationRunner::new(
+    let reconciler: ReconciliationRunner = ReconciliationRunner::new(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
         Arc::clone(&app_state.project_repo),

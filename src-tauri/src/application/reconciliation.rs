@@ -21,7 +21,7 @@ pub mod verification_reconciliation;
 
 use std::collections::HashSet;
 use std::sync::Arc;
-use tauri::{AppHandle, Runtime};
+use tauri::AppHandle;
 use tokio::sync::Mutex;
 
 use crate::application::interactive_process_registry::InteractiveProcessRegistry;
@@ -42,7 +42,7 @@ pub use policy::{
 };
 pub use policy::UserRecoveryAction;
 
-pub struct ReconciliationRunner<R: Runtime = tauri::Wry> {
+pub struct ReconciliationRunner {
     pub(crate) task_repo: Arc<dyn TaskRepository>,
     pub(crate) task_dep_repo: Arc<dyn TaskDependencyRepository>,
     pub(crate) project_repo: Arc<dyn ProjectRepository>,
@@ -56,20 +56,20 @@ pub struct ReconciliationRunner<R: Runtime = tauri::Wry> {
     pub(crate) running_agent_registry: Arc<dyn RunningAgentRegistry>,
     pub(crate) memory_event_repo: Arc<dyn MemoryEventRepository>,
     pub(crate) agent_run_repo: Arc<dyn AgentRunRepository>,
-    pub(crate) transition_service: Arc<TaskTransitionService<R>>,
+    pub(crate) transition_service: Arc<TaskTransitionService>,
     pub(crate) execution_state: Arc<ExecutionState>,
     pub(crate) execution_settings_repo: Option<Arc<dyn ExecutionSettingsRepository>>,
     pub(crate) plan_branch_repo: Option<Arc<dyn PlanBranchRepository>>,
     pub(crate) interactive_process_registry: Option<Arc<InteractiveProcessRegistry>>,
     pub(crate) review_repo: Option<Arc<dyn ReviewRepository>>,
-    pub(crate) app_handle: Option<AppHandle<R>>,
+    pub(crate) app_handle: Option<AppHandle>,
     pub(crate) policy: RecoveryPolicy,
     pub(crate) prompt_tracker: Arc<Mutex<HashSet<String>>>,
     /// PR poller registry for GitHub PR polling (own DI, separate from TaskServices — AD18).
     pub(crate) pr_poller_registry: Option<Arc<crate::application::PrPollerRegistry>>,
 }
 
-impl<R: Runtime> ReconciliationRunner<R> {
+impl ReconciliationRunner {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         task_repo: Arc<dyn TaskRepository>,
@@ -85,9 +85,9 @@ impl<R: Runtime> ReconciliationRunner<R> {
         running_agent_registry: Arc<dyn RunningAgentRegistry>,
         memory_event_repo: Arc<dyn MemoryEventRepository>,
         agent_run_repo: Arc<dyn AgentRunRepository>,
-        transition_service: Arc<TaskTransitionService<R>>,
+        transition_service: Arc<TaskTransitionService>,
         execution_state: Arc<ExecutionState>,
-        app_handle: Option<AppHandle<R>>,
+        app_handle: Option<AppHandle>,
     ) -> Self {
         Self {
             task_repo,
@@ -116,7 +116,7 @@ impl<R: Runtime> ReconciliationRunner<R> {
         }
     }
 
-    pub fn with_app_handle(mut self, app_handle: AppHandle<R>) -> Self {
+    pub fn with_app_handle(mut self, app_handle: AppHandle) -> Self {
         self.app_handle = Some(app_handle);
         self
     }

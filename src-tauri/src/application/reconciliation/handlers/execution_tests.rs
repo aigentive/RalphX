@@ -18,7 +18,7 @@ use super::execution::is_deterministic_agent_command_error;
 fn build_reconciler_for_execution_tests(
     app_state: &AppState,
     execution_state: &Arc<ExecutionState>,
-) -> ReconciliationRunner<tauri::Wry> {
+) -> ReconciliationRunner {
     let transition_service = Arc::new(TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),

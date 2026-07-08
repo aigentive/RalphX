@@ -28,7 +28,7 @@ async fn setup_test_state() -> (Arc<ExecutionState>, AppState) {
 fn build_scheduler(
     app_state: &AppState,
     execution_state: &Arc<ExecutionState>,
-) -> TaskSchedulerService<tauri::Wry> {
+) -> TaskSchedulerService {
     TaskSchedulerService::new(
         Arc::clone(execution_state),
         Arc::clone(&app_state.project_repo),

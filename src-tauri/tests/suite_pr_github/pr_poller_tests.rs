@@ -42,7 +42,7 @@ fn empty_startup_blocked_projects() -> Arc<HashSet<ProjectId>> {
 fn build_transition_service(
     app_state: &AppState,
     execution_state: &Arc<ExecutionState>,
-) -> Arc<TaskTransitionService<tauri::Wry>> {
+) -> Arc<TaskTransitionService> {
     Arc::new(TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
@@ -65,7 +65,7 @@ fn build_transition_service_with_pr_deps(
     app_state: &AppState,
     execution_state: &Arc<ExecutionState>,
     plan_branch_repo: Arc<dyn PlanBranchRepository>,
-) -> Arc<TaskTransitionService<tauri::Wry>> {
+) -> Arc<TaskTransitionService> {
     Arc::new(
         TaskTransitionService::new(
             Arc::clone(&app_state.task_repo),

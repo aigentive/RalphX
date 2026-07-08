@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use tauri::{Emitter, Runtime};
+use tauri::Emitter;
 use tracing::{error, info, warn};
 
 use crate::application::chat_service::{reconcile_merge_auto_complete, MergeAutoCompleteContext};
@@ -38,7 +38,7 @@ use super::super::ReconciliationRunner;
 /// After this many clean-slate re-executions, the task permanently fails.
 const MAX_AUTO_RECOVERIES: u32 = 2;
 
-impl<R: Runtime> ReconciliationRunner<R> {
+impl ReconciliationRunner {
     async fn project_has_execution_capacity(&self, project_id: &ProjectId) -> bool {
         let Some(settings_repo) = &self.execution_settings_repo else {
             return true;

@@ -1,6 +1,6 @@
 // Evidence building, event recording, prompts, and lookups for reconciliation.
 
-use tauri::{Emitter, Runtime};
+use tauri::Emitter;
 use tracing::warn;
 
 use crate::domain::entities::{
@@ -14,7 +14,7 @@ use crate::application::harness_runtime_registry::default_reconciliation_merger_
 use super::policy::{RecoveryContext, RecoveryEvidence, RecoveryPromptAction, RecoveryPromptEvent};
 use super::ReconciliationRunner;
 
-impl<R: Runtime> ReconciliationRunner<R> {
+impl ReconciliationRunner {
     pub(crate) async fn build_run_evidence(
         &self,
         task: &Task,

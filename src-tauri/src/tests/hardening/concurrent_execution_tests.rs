@@ -537,7 +537,7 @@ async fn test_double_scheduler_with_guard_check() {
 fn build_transition_service(
     app_state: &AppState,
     execution_state: &Arc<ExecutionState>,
-) -> TaskTransitionService<tauri::Wry> {
+) -> TaskTransitionService {
     TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
@@ -560,7 +560,7 @@ fn build_transition_service(
 fn build_scheduler(
     app_state: &AppState,
     execution_state: &Arc<ExecutionState>,
-) -> TaskSchedulerService<tauri::Wry> {
+) -> TaskSchedulerService {
     TaskSchedulerService::new(
         Arc::clone(execution_state),
         Arc::clone(&app_state.project_repo),

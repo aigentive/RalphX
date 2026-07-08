@@ -261,7 +261,7 @@ pub(crate) async fn run_startup_pipeline(deps: StartupPipelineDeps) -> AppResult
         github_service: github_service.as_ref().map(Arc::clone),
         pr_poller_registry: Arc::clone(&pr_poller_registry),
         interactive_process_registry: Arc::clone(&interactive_process_registry),
-        app_handle: app_handle.clone(),
+        _app_handle: app_handle.clone(),
     });
     startup_phase_completed("task_scheduler_build", phase_started_at);
 

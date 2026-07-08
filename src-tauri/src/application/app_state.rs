@@ -745,11 +745,11 @@ impl AppState {
         self.build_transition_service_for_runtime(execution_state, self.app_handle.clone())
     }
 
-    pub fn build_transition_service_for_runtime<R: Runtime>(
+    pub fn build_transition_service_for_runtime(
         &self,
         execution_state: Arc<ExecutionState>,
-        app_handle: Option<AppHandle<R>>,
-    ) -> TaskTransitionService<R> {
+        app_handle: Option<AppHandle>,
+    ) -> TaskTransitionService {
         let started_at = Instant::now();
         let deps = RuntimeFactoryDeps::from_app_state(self);
         tracing::info!(
@@ -777,11 +777,11 @@ impl AppState {
         service
     }
 
-    pub fn build_task_scheduler_for_runtime<R: Runtime>(
+    pub fn build_task_scheduler_for_runtime(
         &self,
         execution_state: Arc<ExecutionState>,
-        app_handle: Option<AppHandle<R>>,
-    ) -> TaskSchedulerService<R> {
+        app_handle: Option<AppHandle>,
+    ) -> TaskSchedulerService {
         let deps = RuntimeFactoryDeps::from_app_state(self);
 
         build_task_scheduler_from_deps(app_handle, execution_state, &deps)

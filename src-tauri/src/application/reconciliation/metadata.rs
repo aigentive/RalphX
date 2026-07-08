@@ -1,6 +1,5 @@
 // Retry counters, SHA tracking, backoff delays for reconciliation.
 
-use tauri::Runtime;
 use tracing::warn;
 
 use crate::application::harness_runtime_registry::{
@@ -26,7 +25,7 @@ use crate::domain::entities::{
 use super::policy::ShaComparisonResult;
 use super::ReconciliationRunner;
 
-impl<R: Runtime> ReconciliationRunner<R> {
+impl ReconciliationRunner {
     /// Count `AttemptFailed` events in merge recovery metadata (Merging state retries).
     #[doc(hidden)]
     pub fn merging_auto_retry_count(task: &Task) -> u32 {
@@ -524,7 +523,7 @@ impl<R: Runtime> ReconciliationRunner<R> {
 
 // ── Execution Recovery Helpers ────────────────────────────────────────────────
 // Called by reconcile_failed_execution_task() (Wave 3 handler in execution.rs).
-impl<R: Runtime> ReconciliationRunner<R> {
+impl ReconciliationRunner {
     /// Count `AutoRetryTriggered` events in execution recovery metadata.
     #[doc(hidden)]
     pub fn execution_failed_auto_retry_count(task: &Task) -> u32 {

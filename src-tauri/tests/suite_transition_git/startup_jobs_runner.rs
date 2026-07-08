@@ -57,7 +57,7 @@ fn setup_git_repo() -> TempDir {
 fn build_runner(
     app_state: &AppState,
     execution_state: &Arc<ExecutionState>,
-) -> (StartupJobRunner<tauri::Wry>, Arc<dyn AppStateRepository>) {
+) -> (StartupJobRunner, Arc<dyn AppStateRepository>) {
     let transition_service = Arc::new(TaskTransitionService::new(
         Arc::clone(&app_state.task_repo),
         Arc::clone(&app_state.task_dependency_repo),
@@ -2084,7 +2084,7 @@ async fn test_startup_quota_sync_before_resumption() {
 #[test]
 fn is_waiting_for_global_idle_returns_false_when_no_metadata() {
     let task = Task::new(ProjectId::new(), "Test".to_string());
-    assert!(!StartupJobRunner::<tauri::Wry>::is_waiting_for_global_idle(
+    assert!(!StartupJobRunner::is_waiting_for_global_idle(
         &task, 1
     ));
 }
@@ -2093,7 +2093,7 @@ fn is_waiting_for_global_idle_returns_false_when_no_metadata() {
 fn is_waiting_for_global_idle_returns_false_when_no_main_merge_deferred_flag() {
     let mut task = Task::new(ProjectId::new(), "Test".to_string());
     task.metadata = Some(r#"{"other": "data"}"#.to_string());
-    assert!(!StartupJobRunner::<tauri::Wry>::is_waiting_for_global_idle(
+    assert!(!StartupJobRunner::is_waiting_for_global_idle(
         &task, 1
     ));
 }
@@ -2103,7 +2103,7 @@ fn is_waiting_for_global_idle_returns_false_when_main_merge_deferred_but_no_agen
     let mut task = Task::new(ProjectId::new(), "Test".to_string());
     task.metadata = Some(serde_json::json!({"main_merge_deferred": true}).to_string());
     // running_count = 0 means all agents completed
-    assert!(!StartupJobRunner::<tauri::Wry>::is_waiting_for_global_idle(
+    assert!(!StartupJobRunner::is_waiting_for_global_idle(
         &task, 0
     ));
 }
@@ -2113,10 +2113,10 @@ fn is_waiting_for_global_idle_returns_true_when_main_merge_deferred_and_agents_r
     let mut task = Task::new(ProjectId::new(), "Test".to_string());
     task.metadata = Some(serde_json::json!({"main_merge_deferred": true}).to_string());
     // running_count > 0 means agents are still running
-    assert!(StartupJobRunner::<tauri::Wry>::is_waiting_for_global_idle(
+    assert!(StartupJobRunner::is_waiting_for_global_idle(
         &task, 1
     ));
-    assert!(StartupJobRunner::<tauri::Wry>::is_waiting_for_global_idle(
+    assert!(StartupJobRunner::is_waiting_for_global_idle(
         &task, 5
     ));
 }
