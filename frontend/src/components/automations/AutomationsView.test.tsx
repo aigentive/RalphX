@@ -62,6 +62,7 @@ function automation(overrides: Partial<Automation> = {}): Automation {
     pausedReasonDetail: null,
     goalPrompt: "Keep landing migration tasks.",
     setupConversationId: "conversation-1",
+    specArtifactId: null,
     providerHarness: "codex",
     modelId: "gpt-5.4",
     logicalEffort: "high",
@@ -73,6 +74,9 @@ function automation(overrides: Partial<Automation> = {}): Automation {
     goalItemsJson: null,
     chainMode: "merged_base",
     completionSignal: "pr_merged",
+    planApprovalMode: "manual",
+    prMergeMode: "manual",
+    planDeepVerification: false,
     maxRuns: 25,
     maxConsecutiveFailures: 3,
     firstRunPrompt: null,
@@ -92,6 +96,9 @@ function run(overrides: Partial<AutomationRun> = {}): AutomationRun {
     status: "merged",
     judgeState: "done",
     judgeLeaseExpiresAt: null,
+    planJudgeState: "none",
+    planRevisionRound: 0,
+    planRevisionPending: false,
     conversationId: "conversation-1",
     runPrompt: "Continue the automation.",
     promptAuthor: "judge",
@@ -267,6 +274,7 @@ describe("AutomationsView", () => {
       automation({ id: "judging", name: "Judging automation" }),
       automation({ id: "judge-failed", name: "Judge failed automation" }),
       automation({ id: "running", name: "Running automation" }),
+      automation({ id: "awaiting-plan", name: "Awaiting plan automation" }),
       automation({ id: "published-no-pr", name: "Published without PR automation" }),
       automation({ id: "published-with-pr", name: "Published with PR automation" }),
       automation({ id: "waiting-judge", name: "Waiting judge automation" }),
@@ -276,6 +284,7 @@ describe("AutomationsView", () => {
       ["judging", [run({ automationId: "judging", judgeState: "in_progress" })]],
       ["judge-failed", [run({ automationId: "judge-failed", judgeState: "failed" })]],
       ["running", [run({ automationId: "running", runIndex: 2, status: "running", judgeState: "none" })]],
+      ["awaiting-plan", [run({ automationId: "awaiting-plan", runIndex: 2, status: "awaiting_plan_approval", judgeState: "none" })]],
       ["published-no-pr", [run({ automationId: "published-no-pr", status: "published", judgeState: "none" })]],
       ["published-with-pr", [run({ automationId: "published-with-pr", status: "published", judgeState: "none", prNumber: 593 })]],
       ["waiting-judge", [run({ automationId: "waiting-judge", status: "merged", judgeState: "none" })]],
@@ -300,6 +309,16 @@ describe("AutomationsView", () => {
     expect(screen.getByText("Judging")).toBeInTheDocument();
     expect(screen.getByText("Paused: judge failed")).toBeInTheDocument();
     expect(screen.getByText("Run 2 in progress")).toBeInTheDocument();
+    expect(
+      within(screen.getByTestId("automation-row-awaiting-plan")).getByText(
+        "Run 2 Awaiting plan approval",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(screen.getByTestId("automation-row-awaiting-plan")).getByText(
+        "Awaiting plan approval",
+      ),
+    ).toBeInTheDocument();
     expect(screen.getByText("Waiting for PR merge")).toBeInTheDocument();
     expect(screen.getByText("Waiting for PR #593 to merge")).toBeInTheDocument();
     expect(screen.getByText("Waiting for judge")).toBeInTheDocument();

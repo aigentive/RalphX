@@ -118,6 +118,9 @@ pub async fn update_automation(
                 name: request.name,
                 max_runs: request.max_runs,
                 max_consecutive_failures: request.max_consecutive_failures,
+                plan_approval_mode: None,
+                pr_merge_mode: None,
+                plan_deep_verification: None,
             },
         )
         .await

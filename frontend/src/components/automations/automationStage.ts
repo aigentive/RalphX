@@ -1,4 +1,8 @@
 import type { Automation, AutomationRun } from "@/api/automations";
+import {
+  OPEN_AUTOMATION_RUN_STATUS_SET,
+  SIGNAL_TERMINAL_AUTOMATION_RUN_STATUS_SET,
+} from "./automationRunStatusSets";
 
 /** Human labels for known automation run error codes. */
 const ERROR_CODE_LABELS: Record<string, string> = {
@@ -82,11 +86,11 @@ export function isOpenAutomationRun(run: AutomationRun | null): run is Automatio
   if (!run) {
     return false;
   }
-  if (["pending", "provisioning", "running", "published"].includes(run.status)) {
+  if (OPEN_AUTOMATION_RUN_STATUS_SET.has(run.status)) {
     return true;
   }
   return (
-    ["merged", "pr_closed", "agent_failed"].includes(run.status)
+    SIGNAL_TERMINAL_AUTOMATION_RUN_STATUS_SET.has(run.status)
     && ["none", "in_progress", "failed"].includes(run.judgeState)
   );
 }
@@ -115,6 +119,11 @@ export function describeAutomationStage(
   }
   if (!run) {
     return "Waiting for first run";
+  }
+  if (run.status === "awaiting_plan_approval") {
+    return run.planJudgeState === "in_progress"
+      ? "Judging plan"
+      : "Awaiting plan approval";
   }
   if (run.judgeState === "in_progress") {
     return "Judging";

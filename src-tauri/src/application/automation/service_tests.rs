@@ -16,7 +16,7 @@ use crate::application::automation::service::{
     run_status_blocks_trigger_run_now, run_status_is_cancellable, ApplyAutomationJudgeVerdictInput,
     AutomationRunNowAction, AutomationService, CreateAutomationDraftInput,
     CreateAutomationRunInput, CreateMergedBaseSuccessorRunInput, UpdateAutomationConfigInput,
-    UpdateAutomationSettingsInput,
+    UpdateAutomationSettingsInput, AUTOMATION_STACKED_AUTO_MERGE_ERROR_CODE,
 };
 use crate::application::automation::transition::{
     AutomationEvent, AutomationEventEmitter, NoopAutomationEventEmitter,
@@ -398,6 +398,15 @@ impl AutomationRepository for LostStatusAutomationRepository {
         }
         if let Some(max_consecutive_failures) = patch.max_consecutive_failures {
             automation.max_consecutive_failures = max_consecutive_failures;
+        }
+        if let Some(plan_approval_mode) = patch.plan_approval_mode {
+            automation.plan_approval_mode = plan_approval_mode;
+        }
+        if let Some(pr_merge_mode) = patch.pr_merge_mode {
+            automation.pr_merge_mode = pr_merge_mode;
+        }
+        if let Some(plan_deep_verification) = patch.plan_deep_verification {
+            automation.plan_deep_verification = plan_deep_verification;
         }
         automation.updated_at = Utc::now();
         Ok(Some(automation.clone()))
@@ -785,6 +794,9 @@ async fn service_creates_lists_gets_and_updates_mechanical_settings() {
             name: Some("Renamed automation".to_string()),
             max_runs: Some(7),
             max_consecutive_failures: Some(2),
+            plan_approval_mode: None,
+            pr_merge_mode: None,
+            plan_deep_verification: None,
         })
         .await
         .unwrap();
@@ -808,6 +820,154 @@ async fn service_creates_lists_gets_and_updates_mechanical_settings() {
             automation_id: draft.id
         }]
     );
+}
+
+#[tokio::test]
+async fn service_update_settings_writes_plan_gate_settings_on_active_automation() {
+    let emitter = Arc::new(RecordingEmitter::default());
+    let (service, automation_repo, _run_repo) = service_with_emitter(emitter.clone());
+    let active = automation("automation-1", AutomationStatus::Active);
+    automation_repo.create(active.clone()).await.unwrap();
+
+    let updated = service
+        .update_settings(UpdateAutomationSettingsInput {
+            id: active.id.clone(),
+            name: None,
+            max_runs: None,
+            max_consecutive_failures: None,
+            plan_approval_mode: Some(AutomationPlanApprovalMode::Automatic),
+            pr_merge_mode: Some(AutomationPrMergeMode::Automatic),
+            plan_deep_verification: Some(true),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        updated.plan_approval_mode,
+        AutomationPlanApprovalMode::Automatic
+    );
+    assert_eq!(updated.pr_merge_mode, AutomationPrMergeMode::Automatic);
+    assert!(updated.plan_deep_verification);
+    assert_eq!(updated.status, AutomationStatus::Active);
+    assert_eq!(
+        emitter.events(),
+        vec![AutomationEvent::AutomationUpdated {
+            automation_id: active.id
+        }]
+    );
+}
+
+#[tokio::test]
+async fn service_update_settings_rejects_automatic_merge_for_stacked_chain() {
+    let emitter = Arc::new(RecordingEmitter::default());
+    let (service, automation_repo, _run_repo) = service_with_emitter(emitter.clone());
+    let mut active = automation("automation-1", AutomationStatus::Active);
+    active.chain_mode = "pr_head_stacked".to_string();
+    automation_repo.create(active.clone()).await.unwrap();
+
+    let error = service
+        .update_settings(UpdateAutomationSettingsInput {
+            id: active.id.clone(),
+            name: None,
+            max_runs: None,
+            max_consecutive_failures: None,
+            plan_approval_mode: None,
+            pr_merge_mode: Some(AutomationPrMergeMode::Automatic),
+            plan_deep_verification: None,
+        })
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(error, AppError::Validation(message) if message.contains(AUTOMATION_STACKED_AUTO_MERGE_ERROR_CODE))
+    );
+    let stored = automation_repo.get_by_id(&active.id).await.unwrap().unwrap();
+    assert_eq!(stored.pr_merge_mode, AutomationPrMergeMode::Manual);
+    assert!(emitter.events().is_empty());
+}
+
+#[tokio::test]
+async fn service_update_settings_allows_unrelated_edits_for_existing_stacked_auto_merge() {
+    let emitter = Arc::new(RecordingEmitter::default());
+    let (service, automation_repo, _run_repo) = service_with_emitter(emitter.clone());
+    let mut active = automation("automation-1", AutomationStatus::Active);
+    active.chain_mode = "pr_head_stacked".to_string();
+    active.pr_merge_mode = AutomationPrMergeMode::Automatic;
+    automation_repo.create(active.clone()).await.unwrap();
+
+    let updated = service
+        .update_settings(UpdateAutomationSettingsInput {
+            id: active.id.clone(),
+            name: Some("Renamed while repairing".to_string()),
+            max_runs: Some(9),
+            max_consecutive_failures: None,
+            plan_approval_mode: None,
+            pr_merge_mode: None,
+            plan_deep_verification: None,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(updated.name, "Renamed while repairing");
+    assert_eq!(updated.max_runs, 9);
+    assert_eq!(updated.chain_mode, "pr_head_stacked");
+    assert_eq!(updated.pr_merge_mode, AutomationPrMergeMode::Automatic);
+    assert_eq!(
+        emitter.events(),
+        vec![AutomationEvent::AutomationUpdated {
+            automation_id: active.id
+        }]
+    );
+}
+
+#[tokio::test]
+async fn service_update_config_rejects_stacked_chain_when_auto_merge_is_enabled() {
+    let emitter = Arc::new(RecordingEmitter::default());
+    let (service, automation_repo, _run_repo) = service_with_emitter(emitter.clone());
+    let mut draft = automation("automation-1", AutomationStatus::Draft);
+    draft.pr_merge_mode = AutomationPrMergeMode::Automatic;
+    automation_repo.create(draft.clone()).await.unwrap();
+
+    let error = service
+        .update_config(UpdateAutomationConfigInput {
+            chain_mode: Some("pr_head_stacked".to_string()),
+            ..empty_config_input(draft.id.clone())
+        })
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(error, AppError::Validation(message) if message.contains(AUTOMATION_STACKED_AUTO_MERGE_ERROR_CODE))
+    );
+    let stored = automation_repo.get_by_id(&draft.id).await.unwrap().unwrap();
+    assert_eq!(stored.chain_mode, "merged_base");
+    assert!(emitter.events().is_empty());
+}
+
+#[tokio::test]
+async fn service_finalize_rejects_stacked_chain_when_auto_merge_is_enabled() {
+    let emitter = Arc::new(RecordingEmitter::default());
+    let (service, automation_repo, _run_repo) = service_with_emitter(emitter.clone());
+    let mut draft = automation("automation-1", AutomationStatus::Draft);
+    draft.chain_mode = "pr_head_stacked".to_string();
+    draft.pr_merge_mode = AutomationPrMergeMode::Automatic;
+    automation_repo.create(draft.clone()).await.unwrap();
+
+    let error = service.finalize(&draft.id).await.unwrap_err();
+
+    assert!(
+        matches!(error, AppError::Validation(message) if message.contains(AUTOMATION_STACKED_AUTO_MERGE_ERROR_CODE))
+    );
+    assert_eq!(
+        automation_repo
+            .get_by_id(&draft.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        AutomationStatus::Draft
+    );
+    assert!(emitter.events().is_empty());
 }
 
 #[tokio::test]

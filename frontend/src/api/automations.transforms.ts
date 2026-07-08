@@ -75,6 +75,7 @@ export function transformAutomationRun(raw: RawAutomationRun): AutomationRun {
     judgeLeaseExpiresAt: raw.judge_lease_expires_at,
     planJudgeState: raw.plan_judge_state,
     planRevisionRound: raw.plan_revision_round,
+    planRevisionPending: raw.plan_revision_pending,
     conversationId: raw.conversation_id,
     runPrompt: raw.run_prompt,
     promptAuthor: raw.prompt_author,
@@ -150,6 +151,13 @@ export function transformUpdateAutomationSettingsInput(
     ...(input.maxRuns !== undefined && { maxRuns: input.maxRuns }),
     ...(input.maxConsecutiveFailures !== undefined && {
       maxConsecutiveFailures: input.maxConsecutiveFailures,
+    }),
+    ...(input.planApprovalMode !== undefined && {
+      planApprovalMode: input.planApprovalMode,
+    }),
+    ...(input.prMergeMode !== undefined && { prMergeMode: input.prMergeMode }),
+    ...(input.planDeepVerification !== undefined && {
+      planDeepVerification: input.planDeepVerification,
     }),
   };
 }

@@ -1348,6 +1348,7 @@ export function useAgentsViewController({
       taskArtifactFocusRequest,
       terminalArchivedReason,
       terminalUnavailableReason,
+      onFocusAutomationRun: handleFocusAutomationRun,
       onFocusVerificationSession: handleFocusVerificationSession,
       onFocusWorkspaceReview: handleFocusWorkspaceReview,
       onFocusTaskRuntime: handleFocusTaskRuntime,

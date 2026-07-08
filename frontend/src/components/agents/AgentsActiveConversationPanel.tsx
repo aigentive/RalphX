@@ -31,6 +31,10 @@ import {
   type Automation,
   type AutomationRun,
 } from "@/api/automations";
+import {
+  OPEN_AUTOMATION_RUN_STATUS_SET,
+  TERMINAL_AUTOMATION_RUN_STATUS_SET,
+} from "@/components/automations/automationRunStatusSets";
 import { verificationApi } from "@/api/verification";
 import {
   IntegratedChatPanel,
@@ -148,18 +152,6 @@ const AUTOMATION_SETUP_PROPOSAL_APPLY_VALUE = "apply_automation_proposal";
 const PLAN_MODE_SWITCH_EVENT_RETRY_DELAY_MS = 150;
 const PLAN_MODE_SWITCH_FALLBACK_RETRY_DELAY_MS = 750;
 const PLAN_MODE_SWITCH_MAX_RETRY_ATTEMPTS = 40;
-const TERMINAL_AUTOMATION_RUN_STATUSES = new Set([
-  "merged",
-  "pr_closed",
-  "agent_failed",
-  "cancelled",
-]);
-const OPEN_AUTOMATION_RUN_STATUSES = new Set<AutomationRun["status"]>([
-  "pending",
-  "provisioning",
-  "running",
-  "published",
-]);
 function getWorkspaceBasePickerKey(
   workspace: AgentConversationWorkspace | null,
   freshness: AgentConversationWorkspaceFreshness | undefined,
@@ -603,7 +595,10 @@ function PlanComposerCtaRow({
 }
 
 function formatAutomationRunStatus(status: AutomationRun["status"]): string {
-  if (OPEN_AUTOMATION_RUN_STATUSES.has(status)) {
+  if (status === "awaiting_plan_approval") {
+    return "Awaiting plan approval";
+  }
+  if (OPEN_AUTOMATION_RUN_STATUS_SET.has(status)) {
     return "Running";
   }
   return status
@@ -654,7 +649,7 @@ function isAutomationApprovalReady(automation: Automation): boolean {
 }
 
 function hasOpenAutomationRun(runs: readonly AutomationRun[]): boolean {
-  return runs.some((run) => OPEN_AUTOMATION_RUN_STATUSES.has(run.status));
+  return runs.some((run) => OPEN_AUTOMATION_RUN_STATUS_SET.has(run.status));
 }
 
 function AutomationRunsWidget({
@@ -1079,7 +1074,9 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
   );
   const automationRunReadOnlyReason =
     activeAutomationRunId &&
-    (!automationRun || !TERMINAL_AUTOMATION_RUN_STATUSES.has(automationRun.status))
+    (!automationRun ||
+      (automationRun.status !== "awaiting_plan_approval" &&
+        !TERMINAL_AUTOMATION_RUN_STATUS_SET.has(automationRun.status)))
       ? "Automation run conversations are read-only until the run reaches a terminal state."
       : null;
   // Automation SETUP conversation: automationId present, no run yet. Editable —
@@ -2743,6 +2740,7 @@ export const AgentsActiveConversationPanel = memo(function AgentsActiveConversat
                             // inherit and display it read-only.
                             disabled:
                               isFocusedChildChat ||
+                              Boolean(activeAutomationRunId) ||
                               composerProps.isSending ||
                               composerProps.agentStatus === "generating" ||
                               switchingConversationModeId ===

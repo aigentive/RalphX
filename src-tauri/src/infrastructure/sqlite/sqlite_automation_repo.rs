@@ -197,12 +197,20 @@ impl AutomationRepository for SqliteAutomationRepository {
                      SET name = COALESCE(?1, name),
                          max_runs = COALESCE(?2, max_runs),
                          max_consecutive_failures = COALESCE(?3, max_consecutive_failures),
-                         updated_at = ?4
-                     WHERE id = ?5",
+                         plan_approval_mode = COALESCE(?4, plan_approval_mode),
+                         pr_merge_mode = COALESCE(?5, pr_merge_mode),
+                         plan_deep_verification = COALESCE(?6, plan_deep_verification),
+                         updated_at = ?7
+                     WHERE id = ?8",
                     params![
                         patch.name,
                         patch.max_runs,
                         patch.max_consecutive_failures,
+                        patch.plan_approval_mode.map(|mode| mode.as_str().to_string()),
+                        patch.pr_merge_mode.map(|mode| mode.as_str().to_string()),
+                        patch
+                            .plan_deep_verification
+                            .map(|enabled| if enabled { 1_i64 } else { 0_i64 }),
                         Utc::now().to_rfc3339(),
                         id,
                     ],

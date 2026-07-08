@@ -73,6 +73,7 @@ function mockRun(overrides: Partial<AutomationRun> = {}): AutomationRun {
     judgeLeaseExpiresAt: null,
     planJudgeState: "none",
     planRevisionRound: 0,
+    planRevisionPending: false,
     conversationId: null,
     runPrompt: "Mock automation run",
     promptAuthor: "setup_agent",
@@ -131,6 +132,13 @@ export const mockAutomationsApi = {
       ...(input.maxRuns !== undefined && { maxRuns: input.maxRuns }),
       ...(input.maxConsecutiveFailures !== undefined && {
         maxConsecutiveFailures: input.maxConsecutiveFailures,
+      }),
+      ...(input.planApprovalMode !== undefined && {
+        planApprovalMode: input.planApprovalMode,
+      }),
+      ...(input.prMergeMode !== undefined && { prMergeMode: input.prMergeMode }),
+      ...(input.planDeepVerification !== undefined && {
+        planDeepVerification: input.planDeepVerification,
       }),
     }),
 

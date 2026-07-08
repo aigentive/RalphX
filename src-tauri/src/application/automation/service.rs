@@ -40,6 +40,8 @@ const DEFAULT_MAX_RUNS: i64 = 25;
 const DEFAULT_MAX_CONSECUTIVE_FAILURES: i64 = 3;
 const SPEC_ARTIFACT_BUCKET: &str = "prd-library";
 const SPEC_ARTIFACT_CREATED_BY: &str = "automation-setup";
+pub const AUTOMATION_STACKED_AUTO_MERGE_ERROR_CODE: &str =
+    "automation_stacked_auto_merge_unsupported";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AutomationDetail {
@@ -64,6 +66,9 @@ pub struct UpdateAutomationSettingsInput {
     pub name: Option<String>,
     pub max_runs: Option<i64>,
     pub max_consecutive_failures: Option<i64>,
+    pub plan_approval_mode: Option<AutomationPlanApprovalMode>,
+    pub pr_merge_mode: Option<AutomationPrMergeMode>,
+    pub plan_deep_verification: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -249,6 +254,10 @@ impl AutomationService {
     ) -> AppResult<Automation> {
         validate_positive("max_runs", input.max_runs)?;
         validate_positive("max_consecutive_failures", input.max_consecutive_failures)?;
+        let automation = self.require_automation(&input.id).await?;
+        if let Some(pr_merge_mode) = input.pr_merge_mode {
+            validate_stacked_chain_merge_mode(automation.chain_mode.as_str(), pr_merge_mode)?;
+        }
         let name = match input.name.as_deref() {
             Some(value) => Some(normalize_name(Some(value))?),
             None => None,
@@ -257,6 +266,9 @@ impl AutomationService {
             name,
             max_runs: input.max_runs,
             max_consecutive_failures: input.max_consecutive_failures,
+            plan_approval_mode: input.plan_approval_mode,
+            pr_merge_mode: input.pr_merge_mode,
+            plan_deep_verification: input.plan_deep_verification,
         };
         let updated = self
             .automation_repo
@@ -293,6 +305,9 @@ impl AutomationService {
                 .map(completion_signal_for_run_mode)
                 .map(str::to_string)
         });
+        if let Some(chain_mode) = input.chain_mode.as_deref() {
+            validate_stacked_chain_merge_mode(chain_mode, automation.pr_merge_mode)?;
+        }
         let spec_artifact_id = self
             .resolve_spec_artifact_id(&automation, input.spec_content, input.spec_artifact_id)
             .await?;
@@ -1359,6 +1374,18 @@ fn validate_positive(field: &str, value: Option<i64>) -> AppResult<()> {
     Ok(())
 }
 
+fn validate_stacked_chain_merge_mode(
+    chain_mode: &str,
+    pr_merge_mode: AutomationPrMergeMode,
+) -> AppResult<()> {
+    if chain_mode == STACKED_CHAIN_MODE && pr_merge_mode == AutomationPrMergeMode::Automatic {
+        return Err(AppError::Validation(format!(
+            "{AUTOMATION_STACKED_AUTO_MERGE_ERROR_CODE}: automatic PR merge is not supported for stacked PR chains"
+        )));
+    }
+    Ok(())
+}
+
 fn validate_finalizable(automation: &Automation) -> AppResult<()> {
     if automation.status != AutomationStatus::Draft {
         return Err(AppError::InvalidTransition {
@@ -1425,6 +1452,7 @@ fn validate_finalizable(automation: &Automation) -> AppResult<()> {
         "max_consecutive_failures",
         Some(automation.max_consecutive_failures),
     )?;
+    validate_stacked_chain_merge_mode(&automation.chain_mode, automation.pr_merge_mode)?;
     Ok(())
 }
 

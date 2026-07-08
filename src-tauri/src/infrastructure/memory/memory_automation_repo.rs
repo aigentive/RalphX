@@ -97,6 +97,15 @@ impl AutomationRepository for MemoryAutomationRepository {
         if let Some(max_consecutive_failures) = patch.max_consecutive_failures {
             automation.max_consecutive_failures = max_consecutive_failures;
         }
+        if let Some(plan_approval_mode) = patch.plan_approval_mode {
+            automation.plan_approval_mode = plan_approval_mode;
+        }
+        if let Some(pr_merge_mode) = patch.pr_merge_mode {
+            automation.pr_merge_mode = pr_merge_mode;
+        }
+        if let Some(plan_deep_verification) = patch.plan_deep_verification {
+            automation.plan_deep_verification = plan_deep_verification;
+        }
         automation.updated_at = Utc::now();
         Ok(Some(automation.clone()))
     }

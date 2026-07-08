@@ -9,6 +9,7 @@ import {
   describeAutomationStage,
   latestRun,
 } from "@/components/automations/automationStage";
+import { OPEN_AUTOMATION_RUN_STATUS_SET } from "@/components/automations/automationRunStatusSets";
 import { preloadAutomationDetailView } from "@/components/automations/preloadAutomationDetailView";
 import { useAutomationDetail, useAutomationsList } from "@/hooks/useAutomations";
 import { withAlpha } from "@/lib/theme-colors";
@@ -66,9 +67,10 @@ function formatLastRun(run: AutomationRun | null): string {
     return "No runs yet";
   }
   const pr = run.prNumber ? ` · PR #${run.prNumber}` : "";
-  const status = ["pending", "provisioning", "running", "published"].includes(
-    run.status,
-  )
+  if (run.status === "awaiting_plan_approval") {
+    return `Run ${run.runIndex} Awaiting plan approval${pr}`;
+  }
+  const status = OPEN_AUTOMATION_RUN_STATUS_SET.has(run.status)
     ? "Running"
     : run.status;
   return `Run ${run.runIndex} ${status}${pr}`;

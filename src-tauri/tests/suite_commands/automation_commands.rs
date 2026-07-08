@@ -207,6 +207,9 @@ async fn ipc_contract_automation_command_wrappers_drive_draft_listing_and_contro
             name: Some("Renamed nightly automation".to_string()),
             max_runs: Some(9),
             max_consecutive_failures: Some(2),
+            plan_approval_mode: Some("automatic".to_string()),
+            pr_merge_mode: Some("automatic".to_string()),
+            plan_deep_verification: Some(true),
         },
         app.state::<AppState>(),
     )
@@ -214,6 +217,9 @@ async fn ipc_contract_automation_command_wrappers_drive_draft_listing_and_contro
     .expect("settings should update");
     assert_eq!(updated.name, "Renamed nightly automation");
     assert_eq!(updated.max_runs, 9);
+    assert_eq!(updated.plan_approval_mode, "automatic");
+    assert_eq!(updated.pr_merge_mode, "automatic");
+    assert!(updated.plan_deep_verification);
 
     let active = active_automation("automation-controls");
     app.state::<AppState>()

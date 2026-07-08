@@ -8,7 +8,8 @@ use super::automation_commands::{
     AutomationRunScopedInput, CreateAutomationDraftInput, UpdateAutomationSettingsInput,
 };
 use crate::application::automation::api::{
-    automation_detail_response_for_state, AutomationResponse, AutomationScheduleResponse,
+    automation_detail_response_for_state, AutomationResponse, AutomationRunResponse,
+    AutomationScheduleResponse,
 };
 use crate::application::automation::service::{AutomationDetail, AutomationScheduleOutcome};
 use crate::application::AppState;
@@ -160,12 +161,18 @@ fn command_inputs_accept_camel_case_wrapped_payloads() {
     let input: UpdateAutomationSettingsInput = serde_json::from_value(json!({
         "id": "automation-1",
         "maxRuns": 12,
-        "maxConsecutiveFailures": 4
+        "maxConsecutiveFailures": 4,
+        "planApprovalMode": "automatic",
+        "prMergeMode": "automatic",
+        "planDeepVerification": true
     }))
     .unwrap();
 
     assert_eq!(input.max_runs, Some(12));
     assert_eq!(input.max_consecutive_failures, Some(4));
+    assert_eq!(input.plan_approval_mode.as_deref(), Some("automatic"));
+    assert_eq!(input.pr_merge_mode.as_deref(), Some("automatic"));
+    assert_eq!(input.plan_deep_verification, Some(true));
 
     let run_input: AutomationRunScopedInput = serde_json::from_value(json!({
         "id": "automation-1",
@@ -183,6 +190,17 @@ fn automation_response_serializes_with_api_layer_snake_case() {
     assert_eq!(value["max_runs"], 25);
     assert!(value.get("projectId").is_none());
     assert!(value.get("maxRuns").is_none());
+}
+
+#[test]
+fn automation_run_response_derives_plan_revision_pending() {
+    let mut run = automation_run(&AutomationId::from_string("automation-1"));
+    run.plan_pending_instructions = Some("Revise the plan before approval.".to_string());
+
+    let value = serde_json::to_value(AutomationRunResponse::from(run)).unwrap();
+
+    assert_eq!(value["plan_revision_pending"], true);
+    assert!(value.get("planRevisionPending").is_none());
 }
 
 #[test]

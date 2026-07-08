@@ -29,8 +29,8 @@ use crate::application::agent_conversation_workspace::{
 use crate::application::AppState;
 use crate::domain::entities::{
     AgentConversationWorkspaceBranchMode, AgentConversationWorkspaceMode, AutomationId,
-    AutomationJudgeState, AutomationRunId, ChatConversation, IdeationAnalysisBaseRefKind,
-    ProjectId,
+    AutomationJudgeState, AutomationPlanApprovalMode, AutomationPrMergeMode, AutomationRunId,
+    ChatConversation, IdeationAnalysisBaseRefKind, ProjectId,
 };
 
 #[derive(Debug, Clone, Deserialize)]
@@ -64,6 +64,12 @@ pub struct UpdateAutomationSettingsInput {
     pub max_runs: Option<i64>,
     #[serde(default)]
     pub max_consecutive_failures: Option<i64>,
+    #[serde(default)]
+    pub plan_approval_mode: Option<String>,
+    #[serde(default)]
+    pub pr_merge_mode: Option<String>,
+    #[serde(default)]
+    pub plan_deep_verification: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -231,12 +237,17 @@ pub async fn update_automation_settings(
     state: State<'_, AppState>,
 ) -> Result<AutomationResponse, String> {
     let id = parse_automation_id(&input.id)?;
+    let plan_approval_mode = parse_plan_approval_mode(input.plan_approval_mode)?;
+    let pr_merge_mode = parse_pr_merge_mode(input.pr_merge_mode)?;
     automation_service(&state)
         .update_settings(ServiceUpdateSettingsInput {
             id,
             name: input.name,
             max_runs: input.max_runs,
             max_consecutive_failures: input.max_consecutive_failures,
+            plan_approval_mode,
+            pr_merge_mode,
+            plan_deep_verification: input.plan_deep_verification,
         })
         .await
         .map(AutomationResponse::from)
@@ -431,6 +442,28 @@ pub(crate) fn parse_project_id(value: &str) -> Result<ProjectId, String> {
         return Err("project id is required".to_string());
     }
     Ok(ProjectId::from_string(trimmed.to_string()))
+}
+
+fn parse_plan_approval_mode(
+    value: Option<String>,
+) -> Result<Option<AutomationPlanApprovalMode>, String> {
+    value
+        .map(|value| {
+            let trimmed = value.trim();
+            AutomationPlanApprovalMode::parse(trimmed)
+                .ok_or_else(|| format!("invalid planApprovalMode: {trimmed}"))
+        })
+        .transpose()
+}
+
+fn parse_pr_merge_mode(value: Option<String>) -> Result<Option<AutomationPrMergeMode>, String> {
+    value
+        .map(|value| {
+            let trimmed = value.trim();
+            AutomationPrMergeMode::parse(trimmed)
+                .ok_or_else(|| format!("invalid prMergeMode: {trimmed}"))
+        })
+        .transpose()
 }
 
 pub(crate) fn trim_optional(value: Option<String>) -> Option<String> {

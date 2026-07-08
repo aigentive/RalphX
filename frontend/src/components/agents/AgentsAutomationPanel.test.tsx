@@ -177,6 +177,9 @@ const automationFixture = (
     '[{"id":"phase-1","title":"Build shared context model","status":"pending"}]',
   chainMode: "merged_base",
   completionSignal: "pr_merged",
+  planApprovalMode: "manual",
+  prMergeMode: "manual",
+  planDeepVerification: false,
   maxRuns: 25,
   maxConsecutiveFailures: 3,
   firstRunPrompt: "Build the shared context model in a scoped PR.",
@@ -195,6 +198,9 @@ const automationRunFixture = (
   status: "published",
   judgeState: "none",
   judgeLeaseExpiresAt: null,
+  planJudgeState: "none",
+  planRevisionRound: 0,
+  planRevisionPending: false,
   conversationId: "conversation-1",
   runPrompt: "Continue the release automation.",
   promptAuthor: "judge",
@@ -238,7 +244,27 @@ const automationDetailFixture = (
   ...overrides,
 });
 
-function renderPanel(onOpenAutomation: ((automationId: string) => void) | null = vi.fn()) {
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+function renderPanel({
+  onOpenAutomation = vi.fn(),
+  onFocusAutomationRun,
+}: {
+  onOpenAutomation?: ((automationId: string) => void) | null;
+  onFocusAutomationRun?: (
+    automationId: string,
+    runId: string,
+    conversationId: string,
+  ) => void;
+} = {}) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
@@ -248,6 +274,7 @@ function renderPanel(onOpenAutomation: ((automationId: string) => void) | null =
       <AgentsAutomationPanel
         automationId="automation-1"
         {...(onOpenAutomation ? { onOpenAutomation } : {})}
+        {...(onFocusAutomationRun ? { onFocusAutomationRun } : {})}
       />
     </QueryClientProvider>,
   );
@@ -476,6 +503,245 @@ describe("AgentsAutomationPanel", () => {
       expect(toastSuccessMock).toHaveBeenCalledWith("Max runs updated"),
     );
   });
+
+  it("updates plan approval, PR merge, and deep verification settings", async () => {
+    updateSettingsMock.mockResolvedValue(
+      automationFixture({
+        planApprovalMode: "automatic",
+        prMergeMode: "automatic",
+        planDeepVerification: true,
+      }),
+    );
+
+    renderPanel();
+
+    expect(
+      screen.getByRole("option", { name: "Automatic (judge)" }),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("agents-automation-settings")).toHaveTextContent(
+      "Adversarially verify each run plan before it can be approved.",
+    );
+
+    fireEvent.change(screen.getByTestId("agents-automation-plan-approval-mode"), {
+      target: { value: "automatic" },
+    });
+    await waitFor(() =>
+      expect(updateSettingsMock).toHaveBeenCalledWith({
+        id: "automation-1",
+        planApprovalMode: "automatic",
+      }),
+    );
+
+    fireEvent.change(screen.getByTestId("agents-automation-pr-merge-mode"), {
+      target: { value: "automatic" },
+    });
+    await waitFor(() =>
+      expect(updateSettingsMock).toHaveBeenCalledWith({
+        id: "automation-1",
+        prMergeMode: "automatic",
+      }),
+    );
+
+    fireEvent.click(screen.getByTestId("agents-automation-plan-deep-verification"));
+    await waitFor(() =>
+      expect(updateSettingsMock).toHaveBeenCalledWith({
+        id: "automation-1",
+        planDeepVerification: true,
+      }),
+    );
+  });
+
+  it("keeps changed settings visible while the save is still pending", async () => {
+    const pendingUpdate = deferred<Automation>();
+    updateSettingsMock.mockReturnValue(pendingUpdate.promise);
+
+    renderPanel();
+
+    const planApprovalSelect = screen.getByTestId(
+      "agents-automation-plan-approval-mode",
+    ) as HTMLSelectElement;
+    const prMergeSelect = screen.getByTestId(
+      "agents-automation-pr-merge-mode",
+    ) as HTMLSelectElement;
+    const deepVerificationSwitch = screen.getByTestId(
+      "agents-automation-plan-deep-verification",
+    );
+
+    expect(planApprovalSelect).toHaveValue("manual");
+
+    fireEvent.change(planApprovalSelect, {
+      target: { value: "automatic" },
+    });
+
+    expect(planApprovalSelect).toHaveValue("automatic");
+    expect(planApprovalSelect).toBeDisabled();
+    expect(prMergeSelect).not.toBeDisabled();
+    expect(deepVerificationSwitch).not.toBeDisabled();
+
+    pendingUpdate.resolve(
+      automationFixture({ planApprovalMode: "automatic" }),
+    );
+    await waitFor(() =>
+      expect(toastSuccessMock).toHaveBeenCalledWith("Automation settings updated"),
+    );
+  });
+
+  it("shows the stacked-chain merge-mode failure reason", async () => {
+    updateSettingsMock.mockRejectedValue(
+      new Error(
+        "automation_stacked_auto_merge_unsupported: automatic PR merge is not supported for stacked PR chains",
+      ),
+    );
+
+    renderPanel();
+
+    fireEvent.change(screen.getByTestId("agents-automation-pr-merge-mode"), {
+      target: { value: "automatic" },
+    });
+
+    await waitFor(() =>
+      expect(toastErrorMock).toHaveBeenCalledWith(
+        "Stacked PR chains require manual merge.",
+      ),
+    );
+  });
+
+  it("disables automatic PR merge for stacked-chain automations", () => {
+    useAutomationDetailMock.mockReturnValue({
+      data: automationDetailFixture({
+        automation: automationFixture({
+          chainMode: "pr_head_stacked",
+          prMergeMode: "manual",
+        }),
+      }),
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel();
+
+    expect(screen.getByTestId("agents-automation-pr-merge-mode")).toBeDisabled();
+    expect(screen.getByTestId("agents-automation-settings")).toHaveTextContent(
+      "Stacked PR chains require manual merge",
+    );
+  });
+
+  it("shows the parked run pill, allows cancel, and opens the run conversation synchronously", () => {
+    const onFocusAutomationRun = vi.fn();
+    useAutomationDetailMock.mockReturnValue({
+      data: automationDetailFixture({
+        runs: [
+          automationRunFixture({
+            id: "run-3",
+            runIndex: 3,
+            status: "awaiting_plan_approval",
+            planJudgeState: "in_progress",
+            conversationId: "conversation-run-3",
+            prNumber: null,
+          }),
+        ],
+      }),
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel({ onFocusAutomationRun });
+
+    expect(screen.getByTestId("agents-automation-stage")).toHaveTextContent(
+      "Judging plan",
+    );
+    expect(
+      within(screen.getByTestId("agents-automation-run-3-status")).getByText(
+        "Judging plan",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Awaiting plan approval")).toBeInTheDocument();
+    expect(screen.getByTestId("agents-automation-run-3-cancel")).toBeInTheDocument();
+    expect(screen.getByLabelText("Open run conversation")).toHaveClass(
+      "cursor-pointer",
+    );
+
+    fireEvent.click(screen.getByTestId("agents-automation-run-3-status"));
+
+    expect(onFocusAutomationRun).toHaveBeenCalledWith(
+      "automation-1",
+      "run-3",
+      "conversation-run-3",
+    );
+  });
+
+  it("labels parked runs with pending judge revisions", () => {
+    useAutomationDetailMock.mockReturnValue({
+      data: automationDetailFixture({
+        runs: [
+          automationRunFixture({
+            id: "run-3",
+            runIndex: 3,
+            status: "awaiting_plan_approval",
+            planRevisionPending: true,
+            conversationId: "conversation-run-3",
+            prNumber: null,
+          }),
+        ],
+      }),
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel();
+
+    expect(screen.getByText("Revision pending")).toBeInTheDocument();
+  });
+
+  it.each([
+    [
+      "plan_judge_failed",
+      "Plan judge failed — review and approve the plan to resume this automation.",
+    ],
+    [
+      "plan_revision_exhausted",
+      "Plan revision limit reached — review and approve the plan to resume this automation.",
+    ],
+  ])(
+    "deep-links %s plan-gate pause banners to the parked run conversation",
+    (pausedReasonCode, pausedCopy) => {
+      const onFocusAutomationRun = vi.fn();
+      useAutomationDetailMock.mockReturnValue({
+        data: automationDetailFixture({
+          automation: automationFixture({
+            status: "paused",
+            pausedReasonCode,
+            pausedReasonDetail: "Judge could not parse the verdict.",
+          }),
+          runs: [
+            automationRunFixture({
+              id: "run-3",
+              runIndex: 3,
+              status: "awaiting_plan_approval",
+              conversationId: "conversation-run-3",
+              prNumber: null,
+            }),
+          ],
+        }),
+        isLoading: false,
+        isError: false,
+      });
+
+      renderPanel({ onFocusAutomationRun });
+
+      expect(screen.getByTestId("agents-automation-plan-gate-paused")).toHaveTextContent(
+        `${pausedCopy} Judge could not parse the verdict.`,
+      );
+
+      fireEvent.click(screen.getByTestId("agents-automation-plan-gate-open"));
+
+      expect(onFocusAutomationRun).toHaveBeenCalledWith(
+        "automation-1",
+        "run-3",
+        "conversation-run-3",
+      );
+    },
+  );
 
   it("hides the max runs editor while the automation is active", () => {
     useAutomationDetailMock.mockReturnValue({
@@ -903,7 +1169,7 @@ describe("AgentsAutomationPanel", () => {
       isError: false,
     });
 
-    renderPanel(null);
+    renderPanel({ onOpenAutomation: null });
 
     expect(screen.getByText("Completed")).toBeInTheDocument();
     expect(screen.getByText("0 of 3")).toBeInTheDocument();

@@ -92,6 +92,7 @@ export interface AutomationRun {
   judgeLeaseExpiresAt: string | null;
   planJudgeState: AutomationPlanJudgeState;
   planRevisionRound: number;
+  planRevisionPending: boolean;
   conversationId: string | null;
   runPrompt: string;
   promptAuthor: AutomationPromptAuthor;
@@ -157,6 +158,9 @@ export interface UpdateAutomationSettingsInput {
   name?: string | undefined;
   maxRuns?: number | undefined;
   maxConsecutiveFailures?: number | undefined;
+  planApprovalMode?: AutomationPlanApprovalMode | undefined;
+  prMergeMode?: AutomationPrMergeMode | undefined;
+  planDeepVerification?: boolean | undefined;
 }
 
 export interface PauseAutomationInput {

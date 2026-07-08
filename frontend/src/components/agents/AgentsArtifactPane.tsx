@@ -399,6 +399,11 @@ interface AgentsArtifactPaneProps {
   publishFocusRequest?: AgentPublishFocusRequest | null;
   taskFocusRequest?: AgentTaskArtifactFocusRequest | null;
   onOpenAutomation?: (automationId: string) => void;
+  onFocusAutomationRun?: (
+    automationId: string,
+    runId: string,
+    conversationId: string,
+  ) => void;
   onFocusVerificationSession:
     ((parentSessionId: string, childSessionId: string) => void) | undefined;
   onFocusWorkspaceReview?: (conversationId: string) => void;
@@ -426,6 +431,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   publishFocusRequest = null,
   taskFocusRequest = null,
   onOpenAutomation,
+  onFocusAutomationRun,
   onFocusVerificationSession,
   onFocusWorkspaceReview,
   onFocusTaskRuntime,
@@ -747,6 +753,7 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
   const issueConversationId =
     conversation?.contextType === "project" ? conversation.id : null;
   const automationId = conversation?.automationId ?? null;
+  const isAutomationRunConversation = Boolean(conversation?.automationRunId);
   const conversationIssuesQuery =
     useAgentConversationIssues(issueConversationId);
   const hasConversationIssues = hasOpenAgentConversationIssues(
@@ -1293,7 +1300,9 @@ export const AgentsArtifactPane = memo(function AgentsArtifactPane({
           activeWorkspaceFreshness={activeWorkspaceFreshness}
           conversationTitle={conversation?.title ?? null}
           automationId={automationId}
+          isAutomationRunConversation={isAutomationRunConversation}
           {...(onOpenAutomation ? { onOpenAutomation } : {})}
+          {...(onFocusAutomationRun ? { onFocusAutomationRun } : {})}
           projectBaseBranch={projectBaseBranch}
           isLoading={conversationQuery.isLoading || sessionQuery.isLoading}
           attachedSessionId={attachedSessionId}
@@ -1357,7 +1366,13 @@ type ArtifactContentProps = {
   activeWorkspaceFreshness: AgentConversationWorkspaceFreshness | undefined;
   conversationTitle: string | null;
   automationId: string | null;
+  isAutomationRunConversation: boolean;
   onOpenAutomation?: (automationId: string) => void;
+  onFocusAutomationRun?: (
+    automationId: string,
+    runId: string,
+    conversationId: string,
+  ) => void;
   projectBaseBranch: string | null;
   isLoading: boolean;
   attachedSessionId: string | null;
@@ -1416,7 +1431,9 @@ function ArtifactContent({
   activeWorkspaceFreshness,
   conversationTitle,
   automationId,
+  isAutomationRunConversation,
   onOpenAutomation,
+  onFocusAutomationRun,
   projectBaseBranch,
   isLoading,
   attachedSessionId,
@@ -1488,6 +1505,7 @@ function ArtifactContent({
           automationId={automationId}
           conversationTitle={conversationTitle}
           {...(onOpenAutomation ? { onOpenAutomation } : {})}
+          {...(onFocusAutomationRun ? { onFocusAutomationRun } : {})}
         />
       </Suspense>
     );
@@ -1607,6 +1625,7 @@ function ArtifactContent({
         session={session}
         sessionTitle={sessionTitle}
         planArtifact={planArtifact}
+        isAutomationRunConversation={isAutomationRunConversation}
         isPlanLoading={isPlanLoading}
         proposals={proposals}
         dependencyGraph={dependencyGraph}
@@ -1675,6 +1694,7 @@ function AgentPlanPanel({
   session,
   sessionTitle,
   planArtifact,
+  isAutomationRunConversation,
   isPlanLoading,
   proposals,
   dependencyGraph,
@@ -1691,6 +1711,7 @@ function AgentPlanPanel({
   session: IdeationSession | null;
   sessionTitle: string | null;
   planArtifact: Artifact | null;
+  isAutomationRunConversation: boolean;
   isPlanLoading: boolean;
   proposals: TaskProposal[];
   dependencyGraph: DependencyGraphResponse | null;
@@ -1844,6 +1865,8 @@ function AgentPlanPanel({
     planApprovalStatus === "draft";
   const canShowApprovedPlanActions =
     canShowPlanModeControls && !isImplementingPlanDirectly;
+  const canShowManualPlanContinuationActions =
+    canShowApprovedPlanActions && !isAutomationRunConversation;
   const isPlanVerificationSatisfied =
     verificationState === "verified" ||
     verificationState === "imported_verified";
@@ -1852,11 +1875,11 @@ function AgentPlanPanel({
     isOwnedCurrentPlan &&
     !isPlanVerificationSatisfied;
   const canCreateProposals =
-    canShowApprovedPlanActions &&
+    canShowManualPlanContinuationActions &&
     session !== null &&
     (!isPlanningSession || isPlanApproved);
   const canImplementDirectly = Boolean(
-    canShowApprovedPlanActions &&
+    canShowManualPlanContinuationActions &&
     isOwnedCurrentPlan &&
     isPlanApproved &&
     session?.projectId &&
@@ -1875,7 +1898,7 @@ function AgentPlanPanel({
       session &&
       isOwnedCurrentPlan &&
       isPlanApproved &&
-      canShowApprovedPlanActions,
+      canShowManualPlanContinuationActions,
     ),
     staleTime: 5_000,
     refetchInterval: (query) => (query.state.data ? false : 4_000),
@@ -2290,6 +2313,20 @@ function AgentPlanPanel({
                 })}
               />
             )}
+            {isAutomationRunConversation ? (
+              <div
+                className="rounded-md px-3 py-2 text-xs"
+                style={{
+                  backgroundColor: "var(--bg-surface)",
+                  borderColor: "var(--border-default)",
+                  borderStyle: "solid",
+                  borderWidth: "1px",
+                  color: "var(--text-secondary)",
+                }}
+              >
+                RalphX continues this run automatically after approval.
+              </div>
+            ) : null}
             <Suspense fallback={<EmptyArtifactState title="Loading plan..." />}>
               <LazyPlanDisplay
                 plan={planArtifact}
@@ -2299,9 +2336,8 @@ function AgentPlanPanel({
                 onBodyModeChange={setPlanBodyMode}
                 onEdit={() => setIsEditing(true)}
                 onExport={() => setExportDialogOpen(true)}
-                {...(planReferenceSessionId && {
-                  onStartNewConversationWithPlan:
-                    handleStartNewConversationWithPlan,
+                {...(planReferenceSessionId && !isAutomationRunConversation && {
+                  onStartNewConversationWithPlan: handleStartNewConversationWithPlan,
                 })}
                 isExpanded={isPlanExpanded}
                 onExpandedChange={setIsPlanExpanded}

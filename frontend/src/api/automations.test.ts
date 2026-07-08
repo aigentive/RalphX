@@ -51,6 +51,7 @@ function runResponse(overrides: Record<string, unknown> = {}) {
     judge_lease_expires_at: null,
     plan_judge_state: "none",
     plan_revision_round: 0,
+    plan_revision_pending: false,
     conversation_id: "conversation-run-1",
     run_prompt: "Open a docs PR",
     prompt_author: "setup_agent",
@@ -141,6 +142,9 @@ describe("automationsApi", () => {
       id: "automation-1",
       maxRuns: 12,
       maxConsecutiveFailures: 2,
+      planApprovalMode: "automatic",
+      prMergeMode: "automatic",
+      planDeepVerification: true,
     });
     await automationsApi.pause({
       id: "automation-1",
@@ -153,6 +157,9 @@ describe("automationsApi", () => {
         id: "automation-1",
         maxRuns: 12,
         maxConsecutiveFailures: 2,
+        planApprovalMode: "automatic",
+        prMergeMode: "automatic",
+        planDeepVerification: true,
       },
     });
     expect(invoke).toHaveBeenNthCalledWith(2, "pause_automation", {
@@ -224,6 +231,7 @@ describe("automationsApi", () => {
           status: "awaiting_plan_approval",
           plan_judge_state: "in_progress",
           plan_revision_round: 2,
+          plan_revision_pending: true,
         }),
       ],
       usage: usageResponse(),
@@ -246,6 +254,7 @@ describe("automationsApi", () => {
             judgeState: "in_progress",
             planJudgeState: "in_progress",
             planRevisionRound: 2,
+            planRevisionPending: true,
             prNumber: 593,
             signalCheckFailures: 0,
           }),

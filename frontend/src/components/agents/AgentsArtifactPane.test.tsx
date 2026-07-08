@@ -643,6 +643,10 @@ const automationFixture = (
   goalItemsJson: null,
   chainMode: "merged_base",
   completionSignal: "pr_merged",
+  specArtifactId: null,
+  planApprovalMode: "manual",
+  prMergeMode: "manual",
+  planDeepVerification: false,
   maxRuns: 25,
   maxConsecutiveFailures: 3,
   firstRunPrompt: null,
@@ -661,6 +665,9 @@ const automationRunFixture = (
   status: "published",
   judgeState: "none",
   judgeLeaseExpiresAt: null,
+  planJudgeState: "none",
+  planRevisionRound: 0,
+  planRevisionPending: false,
   conversationId: "conversation-1",
   runPrompt: "Continue the release automation.",
   promptAuthor: "judge",
@@ -5851,6 +5858,104 @@ describe("AgentsArtifactPane", () => {
         artifactId: "artifact-1",
       }),
     );
+    expect(switchAgentConversationModeMock).not.toHaveBeenCalled();
+    expect(sendAgentMessageMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps Approve Plan visible for automation-run plan conversations", async () => {
+    const draftPlan = {
+      ...approvedPlanArtifact(),
+      planApproval: { status: "draft" as const },
+    };
+    getIdeationSessionMock.mockResolvedValue(ideationSessionResponse());
+    getSessionPlanMock.mockResolvedValue(draftPlan);
+    approvePlanArtifactMock.mockResolvedValue({
+      ...draftPlan,
+      planApproval: {
+        status: "approved",
+        approvedArtifactId: "artifact-1",
+        approvedVersion: 1,
+        approvedAt: "2026-04-23T09:30:00Z",
+      },
+    });
+
+    renderPane(
+      "plan",
+      workspace({
+        mode: "plan",
+        linkedIdeationSessionId: "session-1",
+      }),
+      vi.fn(),
+      false,
+      {
+        ...conversation(),
+        automationId: "automation-1",
+        automationRunId: "run-1",
+      },
+    );
+
+    expect(
+      await screen.findByText("RalphX continues this run automatically after approval."),
+    ).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: /Approve Plan/i }));
+
+    await waitFor(() =>
+      expect(approvePlanArtifactMock).toHaveBeenCalledWith({
+        sessionId: "session-1",
+        artifactId: "artifact-1",
+      }),
+    );
+  });
+
+  it("suppresses manual continuation actions for automation-run plan conversations", async () => {
+    const user = userEvent.setup();
+    getIdeationSessionMock.mockResolvedValue(ideationSessionResponse());
+    getSessionPlanMock.mockResolvedValue(approvedPlanArtifact());
+    getPlanComplexityAssessmentMock.mockResolvedValue({
+      id: "assessment-1",
+      sessionId: "session-1",
+      artifactId: "artifact-1",
+      artifactVersion: 1,
+      level: "straightforward",
+      score: 20,
+      recommendedAction: "implement_directly",
+      confidence: 0.9,
+      reasonSummary: "Single scoped change.",
+      signals: {},
+      assessedBy: "ralphx-utility-plan-complexity",
+      createdAt: "2026-04-23T09:31:00Z",
+      updatedAt: "2026-04-23T09:31:00Z",
+    });
+
+    renderPane(
+      "plan",
+      workspace({
+        mode: "plan",
+        linkedIdeationSessionId: "session-1",
+      }),
+      vi.fn(),
+      false,
+      {
+        ...conversation(),
+        automationId: "automation-1",
+        automationRunId: "run-1",
+      },
+    );
+
+    expect(
+      await screen.findByText("RalphX continues this run automatically after approval."),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Implement Directly/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Create Proposals/i }),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByLabelText("Plan actions"));
+    expect(
+      screen.queryByRole("menuitem", { name: /New Conversation/i }),
+    ).not.toBeInTheDocument();
     expect(switchAgentConversationModeMock).not.toHaveBeenCalled();
     expect(sendAgentMessageMock).not.toHaveBeenCalled();
   });

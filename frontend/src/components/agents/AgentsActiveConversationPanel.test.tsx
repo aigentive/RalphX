@@ -1059,6 +1059,121 @@ describe("AgentsActiveConversationPanel", () => {
     );
   });
 
+  it("allows chat feedback while an automation run awaits plan approval", () => {
+    useAutomationDetailMock.mockReturnValue({
+      data: {
+        runs: [{ id: "run-1", status: "awaiting_plan_approval" }],
+      },
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel({
+      activeConversation: {
+        ...projectConversation(),
+        agentMode: "automation",
+        automationId: "automation-1",
+        automationRunId: "run-1",
+      },
+    });
+
+    expect(
+      screen.queryByTestId("agents-automation-run-readonly-banner"),
+    ).not.toBeInTheDocument();
+    expect(screen.getByTestId("workspace-composer-readonly")).toHaveTextContent(
+      "false",
+    );
+    expect(screen.getByTestId("workspace-composer-disabled-reason")).toHaveTextContent(
+      "",
+    );
+  });
+
+  it("labels parked automation setup run chips as awaiting plan approval", () => {
+    useAutomationDetailMock.mockReturnValue({
+      data: {
+        automation: { status: "active" },
+        runs: [
+          {
+            id: "run-1",
+            runIndex: 1,
+            status: "awaiting_plan_approval",
+            conversationId: "conversation-run-1",
+          },
+        ],
+      },
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel({
+      activeConversation: {
+        ...projectConversation(),
+        agentMode: "automation",
+        automationId: "automation-1",
+        automationRunId: null,
+      },
+    });
+
+    const widget = screen.getByTestId("agents-automation-runs-widget");
+    expect(within(widget).getByText("Awaiting plan approval")).toBeInTheDocument();
+    expect(within(widget).queryByText("Running")).not.toBeInTheDocument();
+  });
+
+  it.each(["running", "provisioning"] as const)(
+    "keeps automation run conversations read-only while %s",
+    (status) => {
+      useAutomationDetailMock.mockReturnValue({
+        data: {
+          runs: [{ id: "run-1", status }],
+        },
+        isLoading: false,
+        isError: false,
+      });
+
+      renderPanel({
+        activeConversation: {
+          ...projectConversation(),
+          agentMode: "automation",
+          automationId: "automation-1",
+          automationRunId: "run-1",
+        },
+      });
+
+      expect(screen.getByTestId("agents-automation-run-readonly-banner")).toHaveTextContent(
+        "Automation run conversations are read-only",
+      );
+      expect(screen.getByTestId("workspace-composer-readonly")).toHaveTextContent(
+        "true",
+      );
+    },
+  );
+
+  it("disables the composer mode picker for automation-run conversations", async () => {
+    useAutomationDetailMock.mockReturnValue({
+      data: {
+        runs: [{ id: "run-1", status: "awaiting_plan_approval" }],
+      },
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel({
+      activeConversation: {
+        ...projectConversation(),
+        agentMode: "automation",
+        automationId: "automation-1",
+        automationRunId: "run-1",
+      },
+      activeWorkspace: {
+        ...workspace(),
+        mode: "plan",
+        modeSwitchLocked: false,
+      },
+    });
+
+    expect(screen.getByTestId("agent-composer-mode-chip")).toBeDisabled();
+  });
+
   it("keeps automation-owned run conversations editable after terminal run status", () => {
     useAutomationDetailMock.mockReturnValue({
       data: {

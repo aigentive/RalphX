@@ -106,6 +106,7 @@ export const AutomationRunSchema = z.object({
   judge_lease_expires_at: z.string().nullable(),
   plan_judge_state: AutomationPlanJudgeStateSchema,
   plan_revision_round: z.number().int().nonnegative(),
+  plan_revision_pending: z.boolean(),
   conversation_id: z.string().nullable(),
   run_prompt: z.string(),
   prompt_author: AutomationPromptAuthorSchema,

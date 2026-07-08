@@ -162,6 +162,9 @@ async fn memory_automation_repo_cas_and_project_listing() {
                 name: Some("Renamed".to_string()),
                 max_runs: Some(9),
                 max_consecutive_failures: Some(4),
+                plan_approval_mode: Some(AutomationPlanApprovalMode::Automatic),
+                pr_merge_mode: Some(AutomationPrMergeMode::Automatic),
+                plan_deep_verification: Some(true),
             },
         )
         .await
@@ -170,6 +173,12 @@ async fn memory_automation_repo_cas_and_project_listing() {
     assert_eq!(updated.name, "Renamed");
     assert_eq!(updated.max_runs, 9);
     assert_eq!(updated.max_consecutive_failures, 4);
+    assert_eq!(
+        updated.plan_approval_mode,
+        AutomationPlanApprovalMode::Automatic
+    );
+    assert_eq!(updated.pr_merge_mode, AutomationPrMergeMode::Automatic);
+    assert!(updated.plan_deep_verification);
     assert_eq!(updated.status, AutomationStatus::Draft);
     assert!(repo
         .compare_and_swap_status(
