@@ -5,16 +5,17 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 
-use crate::application::agent_conversation_mode_switch::{
-    system_switch_automation_run_to_edit,
-};
+use crate::application::agent_conversation_mode_switch::system_switch_automation_run_to_edit;
 use crate::application::agent_conversation_start_service::{
     AgentConversationStartDeps, AgentConversationStartService,
 };
 use crate::application::agent_workspace_bridge::{
     dispatch_agent_workspace_bridge_events_once_with_deps, AgentWorkspaceBridgeDeps,
 };
-use crate::application::automation::plan_gate::AutomationRunResumer;
+use crate::application::automation::plan_gate::{
+    AutomationPlanVerificationStartOutcome, AutomationPlanVerificationStartRequest,
+    AutomationPlanVerificationStarter, AutomationRunResumer,
+};
 use crate::application::automation::provisioning::{
     AutomationRunStartOutcome, AutomationRunStartRequest, AutomationRunStarter,
 };
@@ -28,13 +29,20 @@ use crate::application::chat_service::{ChatService, SendCallerContext, SendMessa
 use crate::application::harness_runtime_registry::resolve_default_external_mcp_bootstrap;
 use crate::application::plan_artifact_approval::DbPlanArtifactApprovalWriter;
 use crate::application::runtime_factory::{build_chat_service_from_deps, ChatRuntimeFactoryDeps};
+use crate::application::verification_child_session::{
+    repair_blank_orphaned_verification_generation, spawn_verification_agent,
+    trigger_auto_verify_generation,
+};
 use crate::application::{AppState, TeamService};
 use crate::commands::ExecutionState;
-use crate::domain::entities::{ChatContextType, ChatConversationId};
+use crate::domain::entities::{
+    ChatContextType, ChatConversationId, VerificationConfirmationStatus, VerificationStatus,
+};
 use crate::domain::repositories::{
     ExternalEventsRepository, MemoryArchiveRepository, MemoryEntryRepository, ProjectRepository,
     TaskRepository,
 };
+use crate::domain::services::load_effective_verification_status;
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::sqlite::SqlitePlanArtifactApprovalRepository;
 use crate::infrastructure::{ExternalMcpHandle, ExternalMcpSupervisor};
@@ -124,7 +132,7 @@ impl<R: tauri::Runtime + 'static> AgentConversationAutomationRunResumer<R> {
         }
     }
 
-    fn chat_service(&self) -> impl ChatService {
+    fn chat_service(&self) -> crate::application::AppChatService<R> {
         let chat_deps = ChatRuntimeFactoryDeps::from_app_state(&self.state);
         build_chat_service_from_deps(
             Some(self.app_handle.clone()),
@@ -179,6 +187,128 @@ impl<R: tauri::Runtime + 'static> AutomationRunResumer
             prompt,
         )
         .await
+    }
+}
+
+pub struct AgentConversationAutomationPlanVerificationStarter<R: tauri::Runtime + 'static> {
+    state: AppState,
+    execution_state: Arc<ExecutionState>,
+    app_handle: tauri::AppHandle<R>,
+}
+
+impl<R: tauri::Runtime + 'static> AgentConversationAutomationPlanVerificationStarter<R> {
+    pub fn new(
+        state: AppState,
+        execution_state: Arc<ExecutionState>,
+        app_handle: tauri::AppHandle<R>,
+    ) -> Self {
+        Self {
+            state,
+            execution_state,
+            app_handle,
+        }
+    }
+
+    fn chat_service(&self) -> impl ChatService {
+        let chat_deps = ChatRuntimeFactoryDeps::from_app_state(&self.state);
+        build_chat_service_from_deps(
+            Some(self.app_handle.clone()),
+            Some(Arc::clone(&self.execution_state)),
+            &chat_deps,
+        )
+    }
+}
+
+#[async_trait]
+impl<R: tauri::Runtime + 'static> AutomationPlanVerificationStarter
+    for AgentConversationAutomationPlanVerificationStarter<R>
+{
+    async fn start_verification(
+        &self,
+        request: AutomationPlanVerificationStartRequest,
+    ) -> AppResult<AutomationPlanVerificationStartOutcome> {
+        let session_id = request.session_id;
+        self.state
+            .ideation_session_repo
+            .set_verification_confirmation_status(
+                &session_id,
+                Some(VerificationConfirmationStatus::Accepted),
+            )
+            .await?;
+
+        let session = self
+            .state
+            .ideation_session_repo
+            .get_by_id(&session_id)
+            .await?
+            .ok_or_else(|| {
+                AppError::NotFound(format!(
+                    "Planning session {} not found",
+                    session_id.as_str()
+                ))
+            })?;
+
+        repair_blank_orphaned_verification_generation(&self.state, &session).await?;
+
+        if session
+            .plan_artifact_id
+            .as_ref()
+            .is_none_or(|artifact_id| artifact_id.as_str() != request.artifact_id)
+        {
+            return Ok(AutomationPlanVerificationStartOutcome::Unavailable {
+                detail: format!(
+                    "current planning session artifact does not match parked artifact {}",
+                    request.artifact_id
+                ),
+            });
+        }
+
+        let (status, in_progress) =
+            load_effective_verification_status(self.state.ideation_session_repo.as_ref(), &session)
+                .await?;
+        if in_progress || status == VerificationStatus::Reviewing {
+            return Ok(AutomationPlanVerificationStartOutcome::AlreadyInProgress {
+                generation: session.verification_generation,
+            });
+        }
+
+        let maybe_generation = trigger_auto_verify_generation(&self.state, &session_id).await?;
+
+        let Some(generation) = maybe_generation else {
+            let Some((status, in_progress)) = self
+                .state
+                .ideation_session_repo
+                .get_verification_status(&session_id)
+                .await?
+            else {
+                return Ok(AutomationPlanVerificationStartOutcome::Unavailable {
+                    detail: "verification trigger did not update a known session".to_string(),
+                });
+            };
+            if in_progress || status == VerificationStatus::Reviewing {
+                return Ok(AutomationPlanVerificationStartOutcome::AlreadyInProgress {
+                    generation: session.verification_generation,
+                });
+            }
+            return Ok(AutomationPlanVerificationStartOutcome::AlreadyTerminal {
+                generation: session.verification_generation,
+                status,
+            });
+        };
+
+        let spawn = spawn_verification_agent(&self.state, &session_id, generation, &[], |_| {
+            self.chat_service()
+        })
+        .await;
+        if spawn.spawned {
+            Ok(AutomationPlanVerificationStartOutcome::Started { generation })
+        } else {
+            Ok(AutomationPlanVerificationStartOutcome::Unavailable {
+                detail: spawn.failure_detail.unwrap_or_else(|| {
+                    "verification agent failed to spawn for an unknown reason".to_string()
+                }),
+            })
+        }
     }
 }
 
@@ -331,6 +461,12 @@ pub fn spawn_automation_scheduler(
     ));
     let judge_invoker = Arc::new(HarnessAutomationJudgeInvoker::new(state.clone()));
     let plan_judge_invoker = Arc::new(HarnessAutomationPlanJudgeInvoker::new(state.clone()));
+    let plan_verification_starter =
+        Arc::new(AgentConversationAutomationPlanVerificationStarter::new(
+            state.clone(),
+            Arc::clone(&execution_state),
+            app_handle.clone(),
+        ));
     let event_emitter = Arc::new(TauriAutomationEventEmitter::new(app_handle.clone()));
 
     let scheduler = AutomationScheduler::new(
@@ -347,6 +483,7 @@ pub fn spawn_automation_scheduler(
         signal_checker,
         judge_invoker,
         plan_judge_invoker,
+        plan_verification_starter,
         event_emitter,
         Arc::clone(&state.artifact_repo),
         registry,

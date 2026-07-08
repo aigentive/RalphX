@@ -5,7 +5,8 @@ use super::judge::AutomationJudgeAttachmentContext;
 use super::plan_judge::{
     append_automation_plan_judge_retry_instruction, build_automation_plan_judge_prompt,
     parse_automation_plan_judge_verdict, AutomationPlanJudgeDecision,
-    AutomationPlanJudgeValidationContext, BuildAutomationPlanJudgePromptInput,
+    AutomationPlanJudgeValidationContext, AutomationPlanVerificationGapSummary,
+    AutomationPlanVerificationJudgeContext, BuildAutomationPlanJudgePromptInput,
     AUTOMATION_PLAN_JUDGE_PROMPT_MAX_BYTES,
 };
 use crate::domain::entities::{
@@ -134,6 +135,7 @@ fn plan_judge_prompt_includes_budgeted_sections_current_phase_and_artifact_pin()
         run: &run,
         evaluated_artifact_id: "plan-artifact-1",
         plan_content: &oversized_plan,
+        verification_context: None,
         spec_attachments: &spec_attachments,
         previous_verdict_json: Some(&previous),
     })
@@ -149,6 +151,7 @@ fn plan_judge_prompt_includes_budgeted_sections_current_phase_and_artifact_pin()
     assert!(prompt.contains("<run_prompt "));
     assert!(prompt.contains("Author the automatic plan judge"));
     assert!(prompt.contains("<plan artifact_id=\"plan-artifact-1\" truncated=\"true\">"));
+    assert!(!prompt.contains("<verification "));
     assert!(prompt.contains("<previous_verdict "));
     assert!(prompt.contains("\"planRevisionRound\": 2"));
     assert!(prompt.contains("artifact pinning"));
@@ -165,6 +168,7 @@ fn plan_judge_retry_instruction_respects_prompt_budget() {
         run: &run,
         evaluated_artifact_id: "plan-artifact-1",
         plan_content: "Plan body.",
+        verification_context: None,
         spec_attachments: &spec_attachments,
         previous_verdict_json: None,
     })
@@ -175,6 +179,49 @@ fn plan_judge_retry_instruction_respects_prompt_budget() {
 
     let mut full = "x".repeat(AUTOMATION_PLAN_JUDGE_PROMPT_MAX_BYTES);
     assert!(!append_automation_plan_judge_retry_instruction(&mut full));
+}
+
+#[test]
+fn plan_judge_prompt_includes_budgeted_verification_context_when_present() {
+    let automation = automation_with_goal_items();
+    let run = automation_run();
+    let verification = AutomationPlanVerificationJudgeContext {
+        status: "needs_revision".to_string(),
+        in_progress: false,
+        generation: Some(7),
+        current_round: Some(3),
+        max_rounds: Some(5),
+        convergence_reason: Some("max_rounds".to_string()),
+        gap_count: Some(1),
+        gap_score: Some(10),
+        gaps: vec![AutomationPlanVerificationGapSummary {
+            severity: "critical".to_string(),
+            category: "state_machine".to_string(),
+            description: "Plan misses the stale-cache falsification path.".to_string(),
+            why_it_matters: Some("The judge could approve a false success.".to_string()),
+            source: Some("implementation_feasibility".to_string()),
+        }],
+        unavailable_reason: None,
+    };
+
+    let prompt = build_automation_plan_judge_prompt(BuildAutomationPlanJudgePromptInput {
+        automation: &automation,
+        run: &run,
+        evaluated_artifact_id: "plan-artifact-1",
+        plan_content: "Plan body.",
+        verification_context: Some(&verification),
+        spec_attachments: &[],
+        previous_verdict_json: None,
+    })
+    .unwrap();
+
+    assert!(prompt.len() <= AUTOMATION_PLAN_JUDGE_PROMPT_MAX_BYTES);
+    assert!(prompt.contains("<verification "));
+    assert!(prompt.contains("\"status\": \"needs_revision\""));
+    assert!(prompt.contains("\"convergenceReason\": \"max_rounds\""));
+    assert!(prompt.contains("stale-cache falsification"));
+    assert!(prompt.contains("advisory verification outcome"));
+    assert!(prompt.contains("Verification gap findings inform the verdict"));
 }
 
 #[test]

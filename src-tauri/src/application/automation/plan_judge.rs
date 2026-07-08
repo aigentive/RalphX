@@ -14,6 +14,7 @@ const GOAL_MAX_BYTES: usize = 10 * 1024;
 const GOAL_ITEMS_MAX_BYTES: usize = 12 * 1024;
 const RUN_PROMPT_MAX_BYTES: usize = 8 * 1024;
 const PLAN_MAX_BYTES: usize = 28 * 1024;
+const VERIFICATION_MAX_BYTES: usize = 8 * 1024;
 const PREVIOUS_VERDICT_MAX_BYTES: usize = 8 * 1024;
 const MIN_REVISION_INSTRUCTIONS_CHARS: usize = 40;
 
@@ -26,8 +27,44 @@ pub struct BuildAutomationPlanJudgePromptInput<'a> {
     pub run: &'a AutomationRun,
     pub evaluated_artifact_id: &'a str,
     pub plan_content: &'a str,
+    pub verification_context: Option<&'a AutomationPlanVerificationJudgeContext>,
     pub spec_attachments: &'a [AutomationJudgeAttachmentContext],
     pub previous_verdict_json: Option<&'a str>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutomationPlanVerificationJudgeContext {
+    pub status: String,
+    pub in_progress: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub generation: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_round: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_rounds: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub convergence_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gap_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gap_score: Option<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gaps: Vec<AutomationPlanVerificationGapSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unavailable_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutomationPlanVerificationGapSummary {
+    pub severity: String,
+    pub category: String,
+    pub description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub why_it_matters: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -121,6 +158,20 @@ pub fn build_automation_plan_judge_prompt(
     );
     remaining = remaining.saturating_sub(plan.len());
 
+    let verification = input
+        .verification_context
+        .map(|context| {
+            budgeted_xml_section(
+                "verification",
+                &format_verification_context(context),
+                VERIFICATION_MAX_BYTES,
+                remaining,
+                &[],
+            )
+        })
+        .unwrap_or_default();
+    remaining = remaining.saturating_sub(verification.len());
+
     let previous_verdict = budgeted_xml_section(
         "previous_verdict",
         &format_previous_verdict(input.run, input.previous_verdict_json),
@@ -130,7 +181,7 @@ pub fn build_automation_plan_judge_prompt(
     );
 
     let prompt =
-        format!("{goal}{goal_items}{spec}{run_prompt}{plan}{previous_verdict}{output_contract}");
+        format!("{goal}{goal_items}{spec}{run_prompt}{plan}{verification}{previous_verdict}{output_contract}");
     if prompt.len() > AUTOMATION_PLAN_JUDGE_PROMPT_MAX_BYTES {
         return Err(AppError::Validation(
             "automation plan judge prompt exceeded the 64KB argv-safe budget".to_string(),
@@ -306,6 +357,10 @@ fn format_spec_attachments(attachments: &[AutomationJudgeAttachmentContext]) -> 
     serde_json::to_string_pretty(&attachments).expect("spec attachment JSON should serialize")
 }
 
+fn format_verification_context(context: &AutomationPlanVerificationJudgeContext) -> String {
+    serde_json::to_string_pretty(context).expect("verification context JSON should serialize")
+}
+
 fn format_previous_verdict(run: &AutomationRun, previous_verdict_json: Option<&str>) -> String {
     serde_json::to_string_pretty(&json!({
         "planRevisionRound": run.plan_revision_round,
@@ -329,7 +384,8 @@ Return exactly one JSON object:
 }
 
 Rules:
-- Judge only the run plan against the automation goal, goal items, current phase, run prompt, and advisory spec context.
+- Judge only the run plan against the automation goal, goal items, current phase, run prompt, advisory spec context, and advisory verification outcome.
+- Verification gap findings inform the verdict but never mandate revise on their own; if verification is unavailable, proceed on the other evidence.
 - Choose approve only when the plan is aligned with the current phase, scoped, plausible, and ready for implementation.
 - Choose revise when the plan is missing required scope, recovery, validation, phase alignment, or feasibility detail.
 - `evaluatedArtifactId` must exactly match the `artifact_id` attribute on the plan section.

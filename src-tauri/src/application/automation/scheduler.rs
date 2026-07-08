@@ -20,13 +20,16 @@ use crate::application::automation::plan_gate::{
     approval_delivery_prompt, arm_plan_reminder, clear_plan_phase_publication_metadata,
     current_plan_artifact_id_for_workspace, is_plan_gate_pause_reason,
     matching_plan_approval_for_workspace, refresh_plan_park_baseline, revision_delivery_prompt,
-    AutomationRunResumer, AUTOMATION_PLAN_REMINDER_PROMPT, PLAN_JUDGE_FAILED_PAUSED_REASON_CODE,
-    PLAN_RESUME_FAILED_ERROR_CODE, PLAN_REVISION_EXHAUSTED_PAUSED_REASON_CODE,
+    AutomationPlanVerificationStartOutcome, AutomationPlanVerificationStartRequest,
+    AutomationPlanVerificationStarter, AutomationRunResumer, AUTOMATION_PLAN_REMINDER_PROMPT,
+    PLAN_JUDGE_FAILED_PAUSED_REASON_CODE, PLAN_RESUME_FAILED_ERROR_CODE,
+    PLAN_REVISION_EXHAUSTED_PAUSED_REASON_CODE,
 };
 use crate::application::automation::plan_judge::{
     append_automation_plan_judge_retry_instruction, build_automation_plan_judge_prompt,
     parse_automation_plan_judge_verdict, AutomationPlanJudgeDecision,
     AutomationPlanJudgeValidationContext, AutomationPlanJudgeVerdict,
+    AutomationPlanVerificationGapSummary, AutomationPlanVerificationJudgeContext,
     BuildAutomationPlanJudgePromptInput,
 };
 use crate::application::automation::provisioning::{
@@ -58,8 +61,8 @@ use crate::domain::entities::{
     AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunStatus,
     ArtifactContent, ArtifactId, Automation, AutomationId, AutomationJudgeState,
     AutomationPlanApprovalMode, AutomationPlanJudgeState, AutomationPrMergeMode, AutomationRun,
-    AutomationRunStatus, AutomationStatus, ChatConversationId,
-    DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+    AutomationRunStatus, AutomationStatus, ChatConversationId, IdeationSession,
+    VerificationRunSnapshot, VerificationStatus, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, ArtifactRepository,
@@ -68,6 +71,9 @@ use crate::domain::repositories::{
     PlanArtifactApprovalRepository,
 };
 use crate::domain::services::github_service::{GithubServiceTrait, PrStatus};
+use crate::domain::services::{
+    gap_score, load_current_verification_snapshot_or_default, load_effective_verification_status,
+};
 use crate::error::{AppError, AppResult};
 use crate::infrastructure::agents::claude::agent_names;
 use crate::infrastructure::agents::claude::AutomationsRuntimeConfig;
@@ -82,6 +88,7 @@ pub struct AutomationSchedulerConfig {
     pub max_run_duration: Duration,
     pub plan_judge_models: HashMap<AgentHarnessKind, String>,
     pub plan_max_revision_rounds: i64,
+    pub plan_verification_hold_timeout: Duration,
 }
 
 impl AutomationSchedulerConfig {
@@ -95,6 +102,11 @@ impl AutomationSchedulerConfig {
             plan_judge_models: config.plan_judge_model.clone(),
             plan_max_revision_rounds: i64::try_from(config.plan_max_revision_rounds.max(1))
                 .unwrap_or(i64::MAX),
+            plan_verification_hold_timeout: Duration::from_secs(
+                crate::application::harness_runtime_registry::default_verification_reconciliation_config()
+                    .auto_verify_stale_secs
+                    .max(1),
+            ),
         }
     }
 }
@@ -436,6 +448,7 @@ pub struct AutomationPlanJudgeInvocation {
     pub run: AutomationRun,
     pub plan_artifact_id: String,
     pub plan_content: String,
+    pub verification_context: Option<AutomationPlanVerificationJudgeContext>,
     pub previous_verdict_json: Option<String>,
     pub retry_reminder: bool,
     pub timeout: Duration,
@@ -479,6 +492,7 @@ impl AutomationPlanJudgeInvoker for HarnessAutomationPlanJudgeInvoker {
             run: &input.run,
             evaluated_artifact_id: &input.plan_artifact_id,
             plan_content: &input.plan_content,
+            verification_context: input.verification_context.as_ref(),
             spec_attachments: &attachments,
             previous_verdict_json: input.previous_verdict_json.as_deref(),
         })?;
@@ -597,6 +611,7 @@ struct AutomationPlanJudgeTask {
     artifact_repo: Arc<dyn ArtifactRepository>,
     plan_judge_invoker: Arc<dyn AutomationPlanJudgeInvoker>,
     config: AutomationSchedulerConfig,
+    verification_context: Option<AutomationPlanVerificationJudgeContext>,
 }
 
 #[derive(Debug, Default)]
@@ -713,6 +728,7 @@ impl AutomationPlanJudgeTask {
         Ok(AutomationPlanJudgePayload {
             plan_artifact_id: plan_artifact_id.as_str().to_string(),
             plan_content: text,
+            verification_context: self.verification_context.clone(),
         })
     }
 
@@ -736,6 +752,7 @@ impl AutomationPlanJudgeTask {
                 run: run.clone(),
                 plan_artifact_id: payload.plan_artifact_id.clone(),
                 plan_content: payload.plan_content.clone(),
+                verification_context: payload.verification_context.clone(),
                 previous_verdict_json: run.plan_judge_verdict_json.clone(),
                 retry_reminder,
                 timeout: self.config.judge_timeout,
@@ -1065,12 +1082,111 @@ impl AutomationPlanJudgeTask {
 struct AutomationPlanJudgePayload {
     plan_artifact_id: String,
     plan_content: String,
+    verification_context: Option<AutomationPlanVerificationJudgeContext>,
 }
 
 #[derive(Debug, Clone)]
 struct PlanApplicationContext {
     session_id: crate::domain::entities::IdeationSessionId,
     plan_artifact_id: String,
+}
+
+#[derive(Debug, Clone, Default)]
+struct PlanVerificationJudgeGate {
+    hold_judge: bool,
+    context: Option<AutomationPlanVerificationJudgeContext>,
+}
+
+fn verification_status_is_terminal(status: VerificationStatus, in_progress: bool) -> bool {
+    !in_progress && status != VerificationStatus::Reviewing
+}
+
+fn verification_status_is_in_progress(status: VerificationStatus, in_progress: bool) -> bool {
+    in_progress || status == VerificationStatus::Reviewing
+}
+
+fn verification_status_allows_deep_start(status: VerificationStatus, in_progress: bool) -> bool {
+    !in_progress
+        && matches!(
+            status,
+            VerificationStatus::Unverified | VerificationStatus::Skipped
+        )
+}
+
+fn verification_hold_timed_out(session: &IdeationSession, timeout: Duration) -> bool {
+    Utc::now()
+        .signed_duration_since(session.updated_at)
+        .to_std()
+        .unwrap_or_default()
+        >= timeout
+}
+
+fn verification_snapshot_judge_context(
+    snapshot: &VerificationRunSnapshot,
+) -> AutomationPlanVerificationJudgeContext {
+    AutomationPlanVerificationJudgeContext {
+        status: snapshot.status.to_string(),
+        in_progress: snapshot.in_progress,
+        generation: Some(snapshot.generation),
+        current_round: (snapshot.current_round > 0).then_some(snapshot.current_round),
+        max_rounds: (snapshot.max_rounds > 0).then_some(snapshot.max_rounds),
+        convergence_reason: snapshot.convergence_reason.clone(),
+        gap_count: Some(snapshot.current_gaps.len()),
+        gap_score: (!snapshot.current_gaps.is_empty()).then(|| gap_score(&snapshot.current_gaps)),
+        gaps: snapshot
+            .current_gaps
+            .iter()
+            .take(20)
+            .map(|gap| AutomationPlanVerificationGapSummary {
+                severity: gap.severity.clone(),
+                category: gap.category.clone(),
+                description: truncate_utf8_to_bytes(&gap.description, 1024).0,
+                why_it_matters: gap
+                    .why_it_matters
+                    .as_ref()
+                    .map(|text| truncate_utf8_to_bytes(text, 1024).0),
+                source: gap.source.clone(),
+            })
+            .collect(),
+        unavailable_reason: None,
+    }
+}
+
+fn verification_summary_judge_context(
+    session: &IdeationSession,
+    status: VerificationStatus,
+    in_progress: bool,
+) -> AutomationPlanVerificationJudgeContext {
+    AutomationPlanVerificationJudgeContext {
+        status: status.to_string(),
+        in_progress,
+        generation: Some(session.verification_generation),
+        current_round: session.verification_current_round,
+        max_rounds: session.verification_max_rounds,
+        convergence_reason: session.verification_convergence_reason.clone(),
+        gap_count: Some(session.verification_gap_count as usize),
+        gap_score: session.verification_gap_score,
+        gaps: Vec::new(),
+        unavailable_reason: None,
+    }
+}
+
+fn verification_unavailable_judge_context(
+    session: Option<&IdeationSession>,
+    detail: String,
+) -> AutomationPlanVerificationJudgeContext {
+    AutomationPlanVerificationJudgeContext {
+        status: "unavailable".to_string(),
+        in_progress: false,
+        generation: session.map(|session| session.verification_generation),
+        current_round: session.and_then(|session| session.verification_current_round),
+        max_rounds: session.and_then(|session| session.verification_max_rounds),
+        convergence_reason: None,
+        gap_count: None,
+        gap_score: None,
+        gaps: Vec::new(),
+        unavailable_reason: Some(detail),
+    }
 }
 
 impl AutomationJudgeTask {
@@ -1214,6 +1330,7 @@ pub struct AutomationScheduler {
     signal_checker: Arc<dyn AutomationSignalChecker>,
     judge_invoker: Arc<dyn AutomationJudgeInvoker>,
     plan_judge_invoker: Arc<dyn AutomationPlanJudgeInvoker>,
+    plan_verification_starter: Arc<dyn AutomationPlanVerificationStarter>,
     registry: Arc<AutomationSchedulerRegistry>,
     config: AutomationSchedulerConfig,
 }
@@ -1233,6 +1350,7 @@ impl AutomationScheduler {
         signal_checker: Arc<dyn AutomationSignalChecker>,
         judge_invoker: Arc<dyn AutomationJudgeInvoker>,
         plan_judge_invoker: Arc<dyn AutomationPlanJudgeInvoker>,
+        plan_verification_starter: Arc<dyn AutomationPlanVerificationStarter>,
         event_emitter: Arc<dyn AutomationEventEmitter>,
         artifact_repo: Arc<dyn ArtifactRepository>,
         registry: Arc<AutomationSchedulerRegistry>,
@@ -1273,6 +1391,7 @@ impl AutomationScheduler {
             signal_checker,
             judge_invoker,
             plan_judge_invoker,
+            plan_verification_starter,
             registry,
             config,
         }
@@ -1520,7 +1639,7 @@ impl AutomationScheduler {
             .await?;
         if let Some(workspace) = workspace.as_ref() {
             if workspace.mode == AgentConversationWorkspaceMode::Plan {
-                self.observe_plan_phase_running_run(run, workspace, summary)
+                self.observe_plan_phase_running_run(automation, run, workspace, summary)
                     .await?;
                 return Ok(());
             }
@@ -1696,6 +1815,7 @@ impl AutomationScheduler {
 
     async fn observe_plan_phase_running_run(
         &self,
+        automation: &Automation,
         run: &AutomationRun,
         workspace: &AgentConversationWorkspace,
         summary: &mut AutomationSchedulerTickSummary,
@@ -1750,7 +1870,46 @@ impl AutomationScheduler {
                         )
                         .await?
                     {
-                        refresh_plan_park_baseline(&self.run_repo, run, plan_artifact_id).await?;
+                        let baseline_changed = refresh_plan_park_baseline(
+                            &self.run_repo,
+                            run,
+                            plan_artifact_id.clone(),
+                        )
+                        .await?;
+                        let parked_run = self
+                            .run_repo
+                            .get_by_id(&run.id)
+                            .await?
+                            .unwrap_or_else(|| run.clone());
+                        if automation.plan_deep_verification
+                            && matching_plan_approval_for_workspace(
+                                &self.ideation_session_repo,
+                                &self.plan_approval_repo,
+                                workspace,
+                            )
+                            .await?
+                            .is_none()
+                        {
+                            let verification_gate = self
+                                .build_plan_verification_gate(
+                                    automation,
+                                    workspace,
+                                    plan_artifact_id.as_deref(),
+                                    baseline_changed,
+                                )
+                                .await;
+                            if automation.plan_approval_mode
+                                == AutomationPlanApprovalMode::Automatic
+                            {
+                                self.observe_automatic_plan_judge(
+                                    automation,
+                                    &parked_run,
+                                    &verification_gate,
+                                    summary,
+                                )
+                                .await?;
+                            }
+                        }
                     }
                     return Ok(());
                 }
@@ -1932,6 +2091,258 @@ impl AutomationScheduler {
         Ok(())
     }
 
+    async fn build_plan_verification_gate(
+        &self,
+        automation: &Automation,
+        workspace: &AgentConversationWorkspace,
+        plan_artifact_id: Option<&str>,
+        baseline_changed: bool,
+    ) -> PlanVerificationJudgeGate {
+        if !automation.plan_deep_verification {
+            return PlanVerificationJudgeGate::default();
+        }
+
+        let Some(session_id) = workspace.linked_ideation_session_id.clone() else {
+            return PlanVerificationJudgeGate {
+                context: Some(verification_unavailable_judge_context(
+                    None,
+                    "planning session is unavailable".to_string(),
+                )),
+                ..PlanVerificationJudgeGate::default()
+            };
+        };
+
+        let mut session = match self.ideation_session_repo.get_by_id(&session_id).await {
+            Ok(Some(session)) => session,
+            Ok(None) => {
+                return PlanVerificationJudgeGate {
+                    context: Some(verification_unavailable_judge_context(
+                        None,
+                        "planning session was not found".to_string(),
+                    )),
+                    ..PlanVerificationJudgeGate::default()
+                };
+            }
+            Err(error) => {
+                tracing::warn!(
+                    automation_id = %automation.id,
+                    session_id = %session_id.as_str(),
+                    error = %error,
+                    "Automation plan verification state read failed"
+                );
+                return PlanVerificationJudgeGate {
+                    context: Some(verification_unavailable_judge_context(
+                        None,
+                        format!("verification state read failed: {error}"),
+                    )),
+                    ..PlanVerificationJudgeGate::default()
+                };
+            }
+        };
+
+        let mut effective_status =
+            match load_effective_verification_status(self.ideation_session_repo.as_ref(), &session)
+                .await
+            {
+                Ok(status) => status,
+                Err(error) => {
+                    tracing::warn!(
+                        automation_id = %automation.id,
+                        session_id = %session_id.as_str(),
+                        error = %error,
+                        "Automation plan verification effective status read failed"
+                    );
+                    return PlanVerificationJudgeGate {
+                        context: Some(verification_unavailable_judge_context(
+                            Some(&session),
+                            format!("verification effective status read failed: {error}"),
+                        )),
+                        ..PlanVerificationJudgeGate::default()
+                    };
+                }
+            };
+
+        let mut force_hold_after_start = false;
+        if baseline_changed
+            && verification_status_allows_deep_start(effective_status.0, effective_status.1)
+        {
+            if let Some(artifact_id) = plan_artifact_id {
+                match self
+                    .plan_verification_starter
+                    .start_verification(AutomationPlanVerificationStartRequest {
+                        session_id: session_id.clone(),
+                        artifact_id: artifact_id.to_string(),
+                    })
+                    .await
+                {
+                    Ok(AutomationPlanVerificationStartOutcome::Unavailable { detail }) => {
+                        tracing::warn!(
+                            automation_id = %automation.id,
+                            session_id = %session_id.as_str(),
+                            artifact_id,
+                            detail,
+                            "Automation plan verification could not be started"
+                        );
+                        return PlanVerificationJudgeGate {
+                            context: Some(verification_unavailable_judge_context(
+                                Some(&session),
+                                detail,
+                            )),
+                            ..PlanVerificationJudgeGate::default()
+                        };
+                    }
+                    Ok(outcome) => {
+                        force_hold_after_start = matches!(
+                            outcome,
+                            AutomationPlanVerificationStartOutcome::Started { .. }
+                                | AutomationPlanVerificationStartOutcome::AlreadyInProgress { .. }
+                        );
+                        match self.ideation_session_repo.get_by_id(&session_id).await {
+                            Ok(Some(updated)) => {
+                                session = updated;
+                                effective_status = match load_effective_verification_status(
+                                    self.ideation_session_repo.as_ref(),
+                                    &session,
+                                )
+                                .await
+                                {
+                                    Ok(status) => status,
+                                    Err(error) => {
+                                        tracing::warn!(
+                                            automation_id = %automation.id,
+                                            session_id = %session_id.as_str(),
+                                            error = %error,
+                                            "Automation plan verification post-start effective status read failed"
+                                        );
+                                        return PlanVerificationJudgeGate {
+                                            context: Some(verification_unavailable_judge_context(
+                                                Some(&session),
+                                                format!(
+                                                    "verification post-start effective status read failed: {error}"
+                                                ),
+                                            )),
+                                            ..PlanVerificationJudgeGate::default()
+                                        };
+                                    }
+                                };
+                            }
+                            Ok(None) => {
+                                return PlanVerificationJudgeGate {
+                                    context: Some(verification_unavailable_judge_context(
+                                        None,
+                                        "planning session disappeared after verification start"
+                                            .to_string(),
+                                    )),
+                                    ..PlanVerificationJudgeGate::default()
+                                };
+                            }
+                            Err(error) => {
+                                tracing::warn!(
+                                    automation_id = %automation.id,
+                                    session_id = %session_id.as_str(),
+                                    error = %error,
+                                    "Automation plan verification post-start state read failed"
+                                );
+                                return PlanVerificationJudgeGate {
+                                    context: Some(verification_unavailable_judge_context(
+                                        Some(&session),
+                                        format!(
+                                            "verification post-start state read failed: {error}"
+                                        ),
+                                    )),
+                                    ..PlanVerificationJudgeGate::default()
+                                };
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            automation_id = %automation.id,
+                            session_id = %session_id.as_str(),
+                            artifact_id,
+                            error = %error,
+                            "Automation plan verification start failed"
+                        );
+                        return PlanVerificationJudgeGate {
+                            context: Some(verification_unavailable_judge_context(
+                                Some(&session),
+                                format!("verification start failed: {error}"),
+                            )),
+                            ..PlanVerificationJudgeGate::default()
+                        };
+                    }
+                }
+            }
+        }
+
+        let (status, in_progress) = effective_status;
+
+        let context = match load_current_verification_snapshot_or_default(
+            self.ideation_session_repo.as_ref(),
+            &session,
+            status,
+            in_progress,
+        )
+        .await
+        {
+            Ok(snapshot) => verification_snapshot_judge_context(&snapshot),
+            Err(error) => {
+                tracing::warn!(
+                    automation_id = %automation.id,
+                    session_id = %session_id.as_str(),
+                    error = %error,
+                    "Automation plan verification snapshot read failed"
+                );
+                verification_summary_judge_context(&session, status, in_progress)
+            }
+        };
+
+        if force_hold_after_start && verification_status_allows_deep_start(status, in_progress) {
+            return PlanVerificationJudgeGate {
+                hold_judge: true,
+                context: Some(context),
+            };
+        }
+
+        if verification_status_is_in_progress(status, in_progress) {
+            if verification_hold_timed_out(&session, self.config.plan_verification_hold_timeout) {
+                tracing::warn!(
+                    automation_id = %automation.id,
+                    session_id = %session_id.as_str(),
+                    timeout_secs = self.config.plan_verification_hold_timeout.as_secs(),
+                    "Automation plan verification hold timed out; proceeding with advisory marker"
+                );
+                return PlanVerificationJudgeGate {
+                    context: Some(verification_unavailable_judge_context(
+                        Some(&session),
+                        format!(
+                            "verification did not reach a terminal state within {} seconds",
+                            self.config.plan_verification_hold_timeout.as_secs()
+                        ),
+                    )),
+                    ..PlanVerificationJudgeGate::default()
+                };
+            }
+
+            return PlanVerificationJudgeGate {
+                hold_judge: true,
+                context: Some(context),
+            };
+        }
+
+        if verification_status_is_terminal(status, in_progress) {
+            return PlanVerificationJudgeGate {
+                hold_judge: false,
+                context: Some(context),
+            };
+        }
+
+        PlanVerificationJudgeGate {
+            context: Some(context),
+            ..PlanVerificationJudgeGate::default()
+        }
+    }
+
     async fn observe_awaiting_plan_approval_run(
         &self,
         automation: &Automation,
@@ -1964,7 +2375,8 @@ impl AutomationScheduler {
 
         let plan_artifact_id =
             current_plan_artifact_id_for_workspace(&self.ideation_session_repo, &workspace).await?;
-        refresh_plan_park_baseline(&self.run_repo, run, plan_artifact_id).await?;
+        let baseline_changed =
+            refresh_plan_park_baseline(&self.run_repo, run, plan_artifact_id.clone()).await?;
         let run = self
             .run_repo
             .get_by_id(&run.id)
@@ -1983,6 +2395,15 @@ impl AutomationScheduler {
             return Ok(());
         }
 
+        let verification_gate = self
+            .build_plan_verification_gate(
+                automation,
+                &workspace,
+                plan_artifact_id.as_deref(),
+                baseline_changed,
+            )
+            .await;
+
         if let Some(instructions) = run.plan_pending_instructions.as_deref() {
             if workspace.mode == AgentConversationWorkspaceMode::Plan {
                 self.deliver_plan_revision(&run, conversation_id, instructions, summary)
@@ -1992,7 +2413,7 @@ impl AutomationScheduler {
         }
 
         if automation.plan_approval_mode == AutomationPlanApprovalMode::Automatic {
-            self.observe_automatic_plan_judge(automation, &run, summary)
+            self.observe_automatic_plan_judge(automation, &run, &verification_gate, summary)
                 .await?;
         }
         Ok(())
@@ -2002,6 +2423,7 @@ impl AutomationScheduler {
         &self,
         automation: &Automation,
         run: &AutomationRun,
+        verification_gate: &PlanVerificationJudgeGate,
         summary: &mut AutomationSchedulerTickSummary,
     ) -> AppResult<()> {
         // N = max judge-issued revisions; the (N+1)th plan version parks for human review.
@@ -2012,6 +2434,10 @@ impl AutomationScheduler {
                 summary,
             )
             .await?;
+            return Ok(());
+        }
+
+        if verification_gate.hold_judge {
             return Ok(());
         }
 
@@ -2041,6 +2467,7 @@ impl AutomationScheduler {
                         self.config.clone(),
                         automation.clone(),
                         run.clone(),
+                        verification_gate.context.clone(),
                     );
                 }
             }
@@ -2819,6 +3246,7 @@ pub(crate) fn spawn_automation_plan_judge_task(
     config: AutomationSchedulerConfig,
     automation: Automation,
     run: AutomationRun,
+    verification_context: Option<AutomationPlanVerificationJudgeContext>,
 ) {
     let task = AutomationPlanJudgeTask {
         transition_service,
@@ -2830,6 +3258,7 @@ pub(crate) fn spawn_automation_plan_judge_task(
         artifact_repo,
         plan_judge_invoker,
         config,
+        verification_context,
     };
     tauri::async_runtime::spawn(async move {
         let automation_id = automation.id.clone();

@@ -10,7 +10,9 @@ use tokio::time::{sleep, timeout};
 
 use super::judge::SPEC_ATTACHMENT_MAX_BYTES;
 use super::plan_gate::{
-    AutomationRunResumer, AUTOMATION_PLAN_REMINDER_PROMPT, PLAN_JUDGE_FAILED_PAUSED_REASON_CODE,
+    AutomationPlanVerificationStartOutcome, AutomationPlanVerificationStartRequest,
+    AutomationPlanVerificationStarter, AutomationRunResumer, NoopAutomationPlanVerificationStarter,
+    AUTOMATION_PLAN_REMINDER_PROMPT, PLAN_JUDGE_FAILED_PAUSED_REASON_CODE,
     PLAN_RESUME_FAILED_ERROR_CODE, PLAN_REVISION_EXHAUSTED_PAUSED_REASON_CODE,
 };
 use super::provisioning::{
@@ -36,7 +38,8 @@ use crate::domain::entities::{
     AutomationPlanApprovalMode, AutomationPlanJudgeState, AutomationPrMergeMode,
     AutomationPromptAuthor, AutomationRun, AutomationRunId, AutomationRunStatus, AutomationStatus,
     ChatConversationId, IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow,
-    ProjectId, DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
+    ProjectId, VerificationGap, VerificationRunSnapshot, VerificationStatus,
+    DEFAULT_AGENT_WORKSPACE_PR_AUTO_MERGE_METHOD,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, ArtifactRepository,
@@ -67,6 +70,82 @@ impl AutomationRunStarter for RecordingStarter {
         Ok(AutomationRunStartOutcome {
             branch_name: Some("ralphx/automation-run-1".to_string()),
         })
+    }
+}
+
+#[derive(Default)]
+struct RecordingPlanVerificationStarter {
+    calls: Mutex<Vec<AutomationPlanVerificationStartRequest>>,
+    responses: Mutex<VecDeque<AppResult<AutomationPlanVerificationStartOutcome>>>,
+    reviewing_session_repo: Option<Arc<MemoryIdeationSessionRepository>>,
+}
+
+impl RecordingPlanVerificationStarter {
+    fn with_outcomes(outcomes: Vec<AutomationPlanVerificationStartOutcome>) -> Self {
+        Self {
+            calls: Mutex::new(Vec::new()),
+            responses: Mutex::new(VecDeque::from(
+                outcomes.into_iter().map(Ok).collect::<Vec<_>>(),
+            )),
+            reviewing_session_repo: None,
+        }
+    }
+
+    fn with_errors(errors: Vec<&str>) -> Self {
+        Self {
+            calls: Mutex::new(Vec::new()),
+            responses: Mutex::new(VecDeque::from(
+                errors
+                    .into_iter()
+                    .map(|error| Err(AppError::Infrastructure(error.to_string())))
+                    .collect::<Vec<_>>(),
+            )),
+            reviewing_session_repo: None,
+        }
+    }
+
+    fn with_reviewing_side_effect(session_repo: Arc<MemoryIdeationSessionRepository>) -> Self {
+        Self {
+            calls: Mutex::new(Vec::new()),
+            responses: Mutex::new(VecDeque::new()),
+            reviewing_session_repo: Some(session_repo),
+        }
+    }
+
+    fn call_count(&self) -> usize {
+        self.calls.lock().unwrap().len()
+    }
+
+    fn calls(&self) -> Vec<AutomationPlanVerificationStartRequest> {
+        self.calls.lock().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl AutomationPlanVerificationStarter for RecordingPlanVerificationStarter {
+    async fn start_verification(
+        &self,
+        request: AutomationPlanVerificationStartRequest,
+    ) -> AppResult<AutomationPlanVerificationStartOutcome> {
+        self.calls.lock().unwrap().push(request.clone());
+        let response = self.responses.lock().unwrap().pop_front().unwrap_or(Ok(
+            AutomationPlanVerificationStartOutcome::Started { generation: 1 },
+        ));
+        if matches!(
+            &response,
+            Ok(AutomationPlanVerificationStartOutcome::Started { .. }
+                | AutomationPlanVerificationStartOutcome::AlreadyInProgress { .. })
+        ) {
+            if let Some(repo) = self.reviewing_session_repo.as_ref() {
+                repo.update_verification_state(
+                    &request.session_id,
+                    VerificationStatus::Reviewing,
+                    true,
+                )
+                .await?;
+            }
+        }
+        response
     }
 }
 
@@ -328,9 +407,7 @@ impl AutomationPlanJudgeInvoker for MutatingPlanJudgeInvoker {
             )
             .await?;
         Ok(AutomationPlanJudgeInvocationOutput {
-            raw_output: self
-                .output
-                .replace("plan-artifact-1", &input.plan_artifact_id),
+            raw_output: self.output.replace("plan-artifact-1", &input.plan_artifact_id),
             model_id: Some("plan-judge-model".to_string()),
         })
     }
@@ -376,9 +453,7 @@ impl AutomationPlanJudgeInvoker for ApprovingPlanJudgeInvoker {
             PlanApprovalActor::User,
         );
         Ok(AutomationPlanJudgeInvocationOutput {
-            raw_output: self
-                .output
-                .replace("plan-artifact-1", &input.plan_artifact_id),
+            raw_output: self.output.replace("plan-artifact-1", &input.plan_artifact_id),
             model_id: Some("plan-judge-model".to_string()),
         })
     }
@@ -661,6 +736,7 @@ struct ParkedPlanGateScenario {
     automation_repo: Arc<MemoryAutomationRepository>,
     run_repo: Arc<MemoryAutomationRunRepository>,
     workspace_repo: Arc<MemoryAgentConversationWorkspaceRepository>,
+    agent_run_repo: Arc<MemoryAgentRunRepository>,
     session_repo: Arc<MemoryIdeationSessionRepository>,
     approval_repo: Arc<MemoryPlanArtifactApprovalRepository>,
     artifact_repo: Arc<MemoryArtifactRepository>,
@@ -679,6 +755,7 @@ impl ParkedPlanGateScenario {
         let automation_repo = Arc::new(MemoryAutomationRepository::new());
         let run_repo = Arc::new(MemoryAutomationRunRepository::new());
         let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+        let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
         let session_repo = Arc::new(MemoryIdeationSessionRepository::new());
         let approval_repo = Arc::new(MemoryPlanArtifactApprovalRepository::new());
         let artifact_repo = Arc::new(MemoryArtifactRepository::new());
@@ -707,6 +784,7 @@ impl ParkedPlanGateScenario {
             automation_repo,
             run_repo,
             workspace_repo,
+            agent_run_repo,
             session_repo,
             approval_repo,
             artifact_repo,
@@ -715,6 +793,61 @@ impl ParkedPlanGateScenario {
             conversation_id,
             session_id,
         }
+    }
+
+    async fn new_running(automation_status: AutomationStatus, plan_artifact_id: &str) -> Self {
+        let automation_repo = Arc::new(MemoryAutomationRepository::new());
+        let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+        let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+        let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
+        let session_repo = Arc::new(MemoryIdeationSessionRepository::new());
+        let approval_repo = Arc::new(MemoryPlanArtifactApprovalRepository::new());
+        let artifact_repo = Arc::new(MemoryArtifactRepository::new());
+        let resumer = Arc::new(RecordingResumer::default());
+        let automation_id = AutomationId::from_string("automation-1");
+        automation_repo
+            .create(automation(automation_id.as_str(), automation_status))
+            .await
+            .unwrap();
+        let conversation_id = ChatConversationId::from_string("conversation-1");
+        run_repo
+            .create_run(automation_run(
+                "run-1",
+                &automation_id,
+                AutomationRunStatus::Running,
+                Some(conversation_id.clone()),
+            ))
+            .await
+            .unwrap();
+        let (workspace, session) =
+            plan_workspace_with_session(&conversation_id, Some(plan_artifact_id));
+        let session_id = session.id.clone();
+        session_repo.create(session).await.unwrap();
+        workspace_repo.create_or_update(workspace).await.unwrap();
+
+        Self {
+            automation_repo,
+            run_repo,
+            workspace_repo,
+            agent_run_repo,
+            session_repo,
+            approval_repo,
+            artifact_repo,
+            resumer,
+            automation_id,
+            conversation_id,
+            session_id,
+        }
+    }
+
+    async fn complete_planning_agent_run(&self) {
+        self.agent_run_repo
+            .create(agent_run_with_status(
+                self.conversation_id.clone(),
+                AgentRunStatus::Completed,
+            ))
+            .await
+            .unwrap();
     }
 
     fn approve(&self, artifact_id: &str, artifact_version: u32) {
@@ -749,6 +882,19 @@ impl ParkedPlanGateScenario {
             .unwrap();
     }
 
+    async fn enable_plan_deep_verification(&self) {
+        self.automation_repo
+            .update_settings(
+                &self.automation_id,
+                AutomationSettingsPatch {
+                    plan_deep_verification: Some(true),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+    }
+
     fn scheduler(&self) -> AutomationScheduler {
         self.scheduler_with_plan_judge(Arc::new(RecordingPlanJudgeInvoker::default()))
     }
@@ -757,22 +903,54 @@ impl ParkedPlanGateScenario {
         &self,
         plan_judge_invoker: Arc<dyn AutomationPlanJudgeInvoker>,
     ) -> AutomationScheduler {
+        self.scheduler_with_plan_judge_verification_and_config(
+            plan_judge_invoker,
+            Arc::new(NoopAutomationPlanVerificationStarter),
+            AutomationSchedulerConfig::default(),
+        )
+    }
+
+    fn scheduler_with_plan_judge_and_verification(
+        &self,
+        plan_judge_invoker: Arc<dyn AutomationPlanJudgeInvoker>,
+        plan_verification_starter: Arc<dyn AutomationPlanVerificationStarter>,
+    ) -> AutomationScheduler {
+        self.scheduler_with_plan_judge_verification_and_config(
+            plan_judge_invoker,
+            plan_verification_starter,
+            AutomationSchedulerConfig::default(),
+        )
+    }
+
+    fn scheduler_with_plan_judge_verification_and_config(
+        &self,
+        plan_judge_invoker: Arc<dyn AutomationPlanJudgeInvoker>,
+        plan_verification_starter: Arc<dyn AutomationPlanVerificationStarter>,
+        config: AutomationSchedulerConfig,
+    ) -> AutomationScheduler {
         let session_repo: Arc<dyn IdeationSessionRepository> = self.session_repo.clone();
         let resumer: Arc<dyn AutomationRunResumer> = self.resumer.clone();
         let artifact_repo: Arc<dyn ArtifactRepository> = self.artifact_repo.clone();
-        scheduler_with_judge_agent_runs_plan_deps_and_artifacts(
+        let plan_approval_writer: Arc<dyn PlanArtifactApprovalWriter> =
+            Arc::new(MemoryPlanArtifactApprovalWriter {
+                approval_repo: Arc::clone(&self.approval_repo),
+                artifact_repo: Arc::clone(&artifact_repo),
+            });
+        scheduler_with_judge_agent_runs_plan_deps_artifacts_writer_and_verification(
             Arc::clone(&self.automation_repo),
             Arc::clone(&self.run_repo),
             Arc::clone(&self.workspace_repo),
-            Arc::new(MemoryAgentRunRepository::new()),
+            self.agent_run_repo.clone(),
             session_repo,
             self.approval_repo.clone(),
+            plan_approval_writer,
             resumer,
             Arc::new(RecordingSignalChecker::default()),
             Arc::new(RecordingJudgeInvoker::default()),
             plan_judge_invoker,
+            plan_verification_starter,
             artifact_repo,
-            AutomationSchedulerConfig::default(),
+            config,
         )
     }
 
@@ -786,6 +964,20 @@ impl ParkedPlanGateScenario {
         artifact.id = ArtifactId::from_string(artifact_id.to_string());
         artifact.metadata.version = version;
         self.artifact_repo.create(artifact).await.unwrap();
+    }
+
+    async fn update_plan_artifact_id(&self, artifact_id: &str) {
+        self.session_repo
+            .update_plan_artifact_id(&self.session_id, Some(artifact_id.to_string()))
+            .await
+            .unwrap();
+    }
+
+    async fn seed_verification_snapshot(&self, snapshot: VerificationRunSnapshot) {
+        self.session_repo
+            .save_verification_run_snapshot(&self.session_id, &snapshot)
+            .await
+            .unwrap();
     }
 }
 
@@ -933,6 +1125,40 @@ fn scheduler_with_judge_agent_runs_plan_deps_artifacts_and_writer(
     artifact_repo: Arc<dyn ArtifactRepository>,
     config: AutomationSchedulerConfig,
 ) -> AutomationScheduler {
+    scheduler_with_judge_agent_runs_plan_deps_artifacts_writer_and_verification(
+        automation_repo,
+        run_repo,
+        workspace_repo,
+        agent_run_repo,
+        ideation_session_repo,
+        plan_approval_repo,
+        plan_approval_writer,
+        resumer,
+        signal_checker,
+        judge_invoker,
+        plan_judge_invoker,
+        Arc::new(NoopAutomationPlanVerificationStarter),
+        artifact_repo,
+        config,
+    )
+}
+
+fn scheduler_with_judge_agent_runs_plan_deps_artifacts_writer_and_verification(
+    automation_repo: Arc<MemoryAutomationRepository>,
+    run_repo: Arc<MemoryAutomationRunRepository>,
+    workspace_repo: Arc<MemoryAgentConversationWorkspaceRepository>,
+    agent_run_repo: Arc<dyn AgentRunRepository>,
+    ideation_session_repo: Arc<dyn IdeationSessionRepository>,
+    plan_approval_repo: Arc<MemoryPlanArtifactApprovalRepository>,
+    plan_approval_writer: Arc<dyn PlanArtifactApprovalWriter>,
+    resumer: Arc<dyn AutomationRunResumer>,
+    signal_checker: Arc<dyn AutomationSignalChecker>,
+    judge_invoker: Arc<dyn AutomationJudgeInvoker>,
+    plan_judge_invoker: Arc<dyn AutomationPlanJudgeInvoker>,
+    plan_verification_starter: Arc<dyn AutomationPlanVerificationStarter>,
+    artifact_repo: Arc<dyn ArtifactRepository>,
+    config: AutomationSchedulerConfig,
+) -> AutomationScheduler {
     let plan_approval_repo_trait: Arc<dyn PlanArtifactApprovalRepository> =
         plan_approval_repo.clone();
     AutomationScheduler::new(
@@ -949,6 +1175,7 @@ fn scheduler_with_judge_agent_runs_plan_deps_artifacts_and_writer(
         signal_checker,
         judge_invoker,
         plan_judge_invoker,
+        plan_verification_starter,
         Arc::new(NoopAutomationEventEmitter),
         artifact_repo,
         Arc::new(AutomationSchedulerRegistry::default()),
@@ -1087,6 +1314,40 @@ async fn wait_for_plan_judge_call_count(
         sleep(Duration::from_millis(10)).await;
     }
     panic!("timed out waiting for {expected} plan judge calls");
+}
+
+fn reviewing_verification_snapshot(generation: i32) -> VerificationRunSnapshot {
+    VerificationRunSnapshot {
+        generation,
+        status: VerificationStatus::Reviewing,
+        in_progress: true,
+        current_round: 1,
+        max_rounds: 3,
+        best_round_index: None,
+        convergence_reason: None,
+        current_gaps: Vec::new(),
+        rounds: Vec::new(),
+    }
+}
+
+fn needs_revision_verification_snapshot(generation: i32) -> VerificationRunSnapshot {
+    VerificationRunSnapshot {
+        generation,
+        status: VerificationStatus::NeedsRevision,
+        in_progress: false,
+        current_round: 2,
+        max_rounds: 3,
+        best_round_index: Some(1),
+        convergence_reason: Some("gaps_remaining".to_string()),
+        current_gaps: vec![VerificationGap {
+            severity: "critical".to_string(),
+            category: "state_machine".to_string(),
+            description: "Plan omits stale-cache falsification.".to_string(),
+            why_it_matters: Some("The judge could approve a false success.".to_string()),
+            source: Some("implementation_feasibility".to_string()),
+        }],
+        rounds: Vec::new(),
+    }
 }
 
 async fn wait_for_resetting_plan_judge_call_count(
@@ -1235,6 +1496,7 @@ async fn automation_scheduler_tick_only_leases_active_automations() {
         Arc::new(RecordingSignalChecker::default()),
         Arc::new(RecordingJudgeInvoker::default()),
         Arc::new(RecordingPlanJudgeInvoker::default()),
+        Arc::new(NoopAutomationPlanVerificationStarter),
         Arc::new(NoopAutomationEventEmitter),
         artifact_repo,
         registry,
@@ -2749,6 +3011,415 @@ async fn automation_scheduler_refreshes_plan_baseline_for_parked_revision_withou
     );
     assert_eq!(latest.plan_revision_round, 3);
     assert_eq!(latest.plan_judge_state, AutomationPlanJudgeState::None);
+}
+
+#[tokio::test]
+async fn automation_scheduler_plan_deep_verification_triggers_once_for_first_park_from_running() {
+    let scenario =
+        ParkedPlanGateScenario::new_running(AutomationStatus::Active, "plan-artifact-1").await;
+    scenario.enable_plan_deep_verification().await;
+    scenario.complete_planning_agent_run().await;
+    let starter = Arc::new(RecordingPlanVerificationStarter::default());
+    let scheduler = scenario.scheduler_with_plan_judge_and_verification(
+        Arc::new(RecordingPlanJudgeInvoker::default()),
+        starter.clone(),
+    );
+
+    scheduler.tick_once().await.unwrap();
+
+    assert_eq!(starter.call_count(), 1);
+    let calls = starter.calls();
+    assert_eq!(calls[0].session_id, scenario.session_id);
+    assert_eq!(calls[0].artifact_id, "plan-artifact-1");
+    let latest = scenario
+        .run_repo
+        .latest_for_automation(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest.status, AutomationRunStatus::AwaitingPlanApproval);
+    assert_eq!(
+        latest.plan_last_parked_artifact_id.as_deref(),
+        Some("plan-artifact-1")
+    );
+    assert_eq!(latest.plan_revision_round, 1);
+
+    scheduler.tick_once().await.unwrap();
+
+    assert_eq!(starter.call_count(), 1);
+}
+
+#[tokio::test]
+async fn automation_scheduler_automatic_plan_judge_holds_until_first_verification_terminates() {
+    let scenario =
+        ParkedPlanGateScenario::new_running(AutomationStatus::Active, "plan-artifact-1").await;
+    scenario.use_automatic_plan_approval("claude").await;
+    scenario.enable_plan_deep_verification().await;
+    scenario
+        .seed_plan_artifact("plan-artifact-1", "Plan body.", 1)
+        .await;
+    scenario.complete_planning_agent_run().await;
+    let starter = Arc::new(
+        RecordingPlanVerificationStarter::with_reviewing_side_effect(scenario.session_repo.clone()),
+    );
+    let plan_judge = Arc::new(RecordingPlanJudgeInvoker::with_outputs(vec![
+        valid_plan_approve_verdict("plan-artifact-1"),
+    ]));
+    let scheduler =
+        scenario.scheduler_with_plan_judge_and_verification(plan_judge.clone(), starter.clone());
+
+    let park_summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(starter.call_count(), 1);
+    assert_eq!(park_summary.judges_started, 0);
+    assert_eq!(plan_judge.call_count(), 0);
+
+    let hold_summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(starter.call_count(), 1);
+    assert_eq!(hold_summary.judges_started, 0);
+    assert_eq!(plan_judge.call_count(), 0);
+
+    scenario
+        .session_repo
+        .update_verification_state(&scenario.session_id, VerificationStatus::Verified, false)
+        .await
+        .unwrap();
+
+    let terminal_summary = scheduler.tick_once().await.unwrap();
+    wait_for_plan_judge_call_count(&plan_judge, 1).await;
+
+    assert_eq!(terminal_summary.judges_started, 1);
+    assert_eq!(plan_judge.calls()[0].plan_artifact_id, "plan-artifact-1");
+}
+
+#[tokio::test]
+async fn automation_scheduler_plan_deep_verification_off_makes_zero_verification_calls() {
+    let scenario =
+        ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-artifact-1").await;
+    scenario.use_automatic_plan_approval("claude").await;
+    scenario.update_plan_artifact_id("plan-artifact-2").await;
+    scenario
+        .seed_plan_artifact("plan-artifact-2", "Updated plan body.", 2)
+        .await;
+    let starter = Arc::new(RecordingPlanVerificationStarter::default());
+    let plan_judge = Arc::new(RecordingPlanJudgeInvoker::with_outputs(vec![
+        valid_plan_approve_verdict("plan-artifact-2"),
+    ]));
+    let scheduler =
+        scenario.scheduler_with_plan_judge_and_verification(plan_judge.clone(), starter.clone());
+
+    let summary = scheduler.tick_once().await.unwrap();
+    wait_for_plan_judge_call_count(&plan_judge, 1).await;
+
+    assert_eq!(summary.judges_started, 1);
+    assert_eq!(starter.call_count(), 0);
+    assert_eq!(plan_judge.calls()[0].plan_artifact_id, "plan-artifact-2");
+}
+
+#[tokio::test]
+async fn automation_scheduler_plan_judge_holds_while_verification_in_progress() {
+    let scenario =
+        ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-artifact-1").await;
+    scenario.use_automatic_plan_approval("claude").await;
+    scenario.enable_plan_deep_verification().await;
+    scenario
+        .seed_plan_artifact("plan-artifact-1", "Plan body.", 1)
+        .await;
+    scenario
+        .seed_verification_snapshot(reviewing_verification_snapshot(0))
+        .await;
+    let plan_judge = Arc::new(RecordingPlanJudgeInvoker::default());
+    let scheduler = scenario.scheduler_with_plan_judge(plan_judge.clone());
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.judges_started, 0);
+    assert_eq!(plan_judge.call_count(), 0);
+    let latest = scenario
+        .run_repo
+        .latest_for_automation(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest.plan_judge_state, AutomationPlanJudgeState::None);
+}
+
+#[tokio::test]
+async fn automation_scheduler_plan_approval_delivery_ignores_verification_hold() {
+    let scenario =
+        ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-artifact-1").await;
+    scenario.enable_plan_deep_verification().await;
+    scenario
+        .seed_verification_snapshot(reviewing_verification_snapshot(0))
+        .await;
+    scenario.approve("plan-artifact-1", 1);
+    let scheduler = scenario.scheduler();
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.failed_runs, 0);
+    let latest = scenario
+        .run_repo
+        .latest_for_automation(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest.status, AutomationRunStatus::Running);
+    assert_eq!(scenario.resumer.prompts().len(), 1);
+}
+
+#[tokio::test]
+async fn automation_scheduler_skips_verification_start_when_matching_approval_already_exists() {
+    let scenario =
+        ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-artifact-1").await;
+    scenario.enable_plan_deep_verification().await;
+    scenario.update_plan_artifact_id("plan-artifact-2").await;
+    scenario.approve("plan-artifact-2", 2);
+    let starter = Arc::new(RecordingPlanVerificationStarter::default());
+    let scheduler = scenario.scheduler_with_plan_judge_and_verification(
+        Arc::new(RecordingPlanJudgeInvoker::default()),
+        starter.clone(),
+    );
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(starter.call_count(), 0);
+    assert_eq!(summary.judges_started, 0);
+    let latest = scenario
+        .run_repo
+        .latest_for_automation(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest.status, AutomationRunStatus::Running);
+    assert_eq!(
+        latest.plan_last_parked_artifact_id.as_deref(),
+        Some("plan-artifact-2")
+    );
+    assert_eq!(latest.plan_revision_round, 2);
+    assert_eq!(scenario.resumer.prompts().len(), 1);
+}
+
+#[tokio::test]
+async fn automation_scheduler_plan_judge_receives_terminal_verification_payload() {
+    let scenario =
+        ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-artifact-1").await;
+    scenario.use_automatic_plan_approval("claude").await;
+    scenario.enable_plan_deep_verification().await;
+    scenario
+        .seed_plan_artifact("plan-artifact-1", "Plan body.", 1)
+        .await;
+    scenario
+        .seed_verification_snapshot(needs_revision_verification_snapshot(0))
+        .await;
+    let plan_judge = Arc::new(RecordingPlanJudgeInvoker::with_outputs(vec![
+        valid_plan_approve_verdict("plan-artifact-1"),
+    ]));
+    let scheduler = scenario.scheduler_with_plan_judge(plan_judge.clone());
+
+    scheduler.tick_once().await.unwrap();
+    wait_for_plan_judge_call_count(&plan_judge, 1).await;
+
+    let context = plan_judge.calls()[0]
+        .verification_context
+        .clone()
+        .expect("verification context should be included");
+    assert_eq!(context.status, "needs_revision");
+    assert!(!context.in_progress);
+    assert_eq!(context.generation, Some(0));
+    assert_eq!(context.current_round, Some(2));
+    assert_eq!(context.gap_count, Some(1));
+    assert_eq!(context.gap_score, Some(10));
+    assert!(context.gaps[0].description.contains("stale-cache"));
+}
+
+#[tokio::test]
+async fn automation_scheduler_verification_unavailable_proceeds_to_plan_judge() {
+    let scenario =
+        ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-artifact-1").await;
+    scenario.use_automatic_plan_approval("claude").await;
+    scenario.enable_plan_deep_verification().await;
+    scenario.update_plan_artifact_id("plan-artifact-2").await;
+    scenario
+        .seed_plan_artifact("plan-artifact-2", "Updated plan body.", 2)
+        .await;
+    let starter = Arc::new(RecordingPlanVerificationStarter::with_outcomes(vec![
+        AutomationPlanVerificationStartOutcome::Unavailable {
+            detail: "verification worker unavailable".to_string(),
+        },
+    ]));
+    let plan_judge = Arc::new(RecordingPlanJudgeInvoker::with_outputs(vec![
+        valid_plan_approve_verdict("plan-artifact-2"),
+    ]));
+    let scheduler =
+        scenario.scheduler_with_plan_judge_and_verification(plan_judge.clone(), starter.clone());
+
+    let summary = scheduler.tick_once().await.unwrap();
+    wait_for_plan_judge_call_count(&plan_judge, 1).await;
+
+    assert_eq!(summary.judges_started, 1);
+    assert_eq!(starter.call_count(), 1);
+    let context = plan_judge.calls()[0]
+        .verification_context
+        .clone()
+        .expect("verification context should be included");
+    assert_eq!(context.status, "unavailable");
+    assert!(context
+        .unavailable_reason
+        .as_deref()
+        .unwrap()
+        .contains("verification worker unavailable"));
+    let automation = scenario
+        .automation_repo
+        .get_by_id(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(automation.status, AutomationStatus::Active);
+}
+
+#[tokio::test]
+async fn automation_scheduler_verification_starter_err_proceeds_to_plan_judge_without_failing_run()
+{
+    let scenario =
+        ParkedPlanGateScenario::new_running(AutomationStatus::Active, "plan-artifact-1").await;
+    scenario.use_automatic_plan_approval("claude").await;
+    scenario.enable_plan_deep_verification().await;
+    scenario
+        .seed_plan_artifact("plan-artifact-1", "Plan body.", 1)
+        .await;
+    scenario.complete_planning_agent_run().await;
+    let starter = Arc::new(RecordingPlanVerificationStarter::with_errors(vec![
+        "starter exploded",
+    ]));
+    let plan_judge = Arc::new(RecordingPlanJudgeInvoker::with_outputs(vec![
+        valid_plan_approve_verdict("plan-artifact-1"),
+    ]));
+    let scheduler =
+        scenario.scheduler_with_plan_judge_and_verification(plan_judge.clone(), starter.clone());
+
+    let summary = scheduler.tick_once().await.unwrap();
+    wait_for_plan_judge_call_count(&plan_judge, 1).await;
+
+    assert_eq!(starter.call_count(), 1);
+    assert_eq!(summary.judges_started, 1);
+    let context = plan_judge.calls()[0]
+        .verification_context
+        .clone()
+        .expect("verification context should be included");
+    assert_eq!(context.status, "unavailable");
+    assert!(context
+        .unavailable_reason
+        .as_deref()
+        .unwrap()
+        .contains("starter exploded"));
+    let latest = scenario
+        .run_repo
+        .latest_for_automation(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_ne!(latest.status, AutomationRunStatus::AgentFailed);
+    assert!(latest.error_code.is_none());
+    let automation = scenario
+        .automation_repo
+        .get_by_id(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(automation.status, AutomationStatus::Active);
+}
+
+#[tokio::test]
+async fn automation_scheduler_verification_hold_timeout_proceeds_with_unavailable_payload() {
+    let scenario =
+        ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-artifact-1").await;
+    scenario.use_automatic_plan_approval("claude").await;
+    scenario.enable_plan_deep_verification().await;
+    scenario
+        .seed_plan_artifact("plan-artifact-1", "Plan body.", 1)
+        .await;
+    scenario
+        .seed_verification_snapshot(reviewing_verification_snapshot(0))
+        .await;
+    let mut session = scenario
+        .session_repo
+        .get_by_id(&scenario.session_id)
+        .await
+        .unwrap()
+        .unwrap();
+    session.updated_at = Utc::now() - chrono::Duration::seconds(30);
+    scenario.session_repo.create(session).await.unwrap();
+    let plan_judge = Arc::new(RecordingPlanJudgeInvoker::with_outputs(vec![
+        valid_plan_approve_verdict("plan-artifact-1"),
+    ]));
+    let scheduler = scenario.scheduler_with_plan_judge_verification_and_config(
+        plan_judge.clone(),
+        Arc::new(NoopAutomationPlanVerificationStarter),
+        AutomationSchedulerConfig {
+            plan_verification_hold_timeout: Duration::from_secs(1),
+            ..AutomationSchedulerConfig::default()
+        },
+    );
+
+    let summary = scheduler.tick_once().await.unwrap();
+    wait_for_plan_judge_call_count(&plan_judge, 1).await;
+
+    assert_eq!(summary.judges_started, 1);
+    let context = plan_judge.calls()[0]
+        .verification_context
+        .clone()
+        .expect("verification context should be included");
+    assert_eq!(context.status, "unavailable");
+    assert!(context
+        .unavailable_reason
+        .as_deref()
+        .unwrap()
+        .contains("terminal state"));
+}
+
+#[tokio::test]
+async fn automation_scheduler_verifier_revision_counts_toward_round_exhaustion() {
+    let scenario =
+        ParkedPlanGateScenario::new(AutomationStatus::Active, None, "plan-artifact-1").await;
+    scenario.use_automatic_plan_approval("claude").await;
+    scenario.enable_plan_deep_verification().await;
+    scenario.update_plan_artifact_id("plan-artifact-2").await;
+    let starter = Arc::new(RecordingPlanVerificationStarter::default());
+    let plan_judge = Arc::new(RecordingPlanJudgeInvoker::default());
+    let scheduler = scenario.scheduler_with_plan_judge_verification_and_config(
+        plan_judge.clone(),
+        starter.clone(),
+        AutomationSchedulerConfig {
+            plan_max_revision_rounds: 1,
+            ..AutomationSchedulerConfig::default()
+        },
+    );
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.paused_automations, 1);
+    assert_eq!(summary.judges_started, 0);
+    assert_eq!(starter.call_count(), 1);
+    assert_eq!(plan_judge.call_count(), 0);
+    let automation = scenario
+        .automation_repo
+        .get_by_id(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        automation.paused_reason_code.as_deref(),
+        Some(PLAN_REVISION_EXHAUSTED_PAUSED_REASON_CODE)
+    );
+    let latest = scenario
+        .run_repo
+        .latest_for_automation(&scenario.automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest.plan_revision_round, 2);
 }
 
 #[tokio::test]

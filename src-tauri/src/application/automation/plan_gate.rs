@@ -5,6 +5,7 @@ use chrono::Utc;
 
 use crate::domain::entities::{
     AgentConversationWorkspace, AutomationPlanJudgeState, AutomationRun, ChatConversationId,
+    IdeationSessionId, VerificationStatus,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AutomationRunRepository, IdeationSessionRepository,
@@ -32,6 +33,52 @@ pub trait AutomationRunResumer: Send + Sync {
         conversation_id: &ChatConversationId,
         prompt: &str,
     ) -> AppResult<()>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AutomationPlanVerificationStartRequest {
+    pub session_id: IdeationSessionId,
+    pub artifact_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AutomationPlanVerificationStartOutcome {
+    Started {
+        generation: i32,
+    },
+    AlreadyInProgress {
+        generation: i32,
+    },
+    AlreadyTerminal {
+        generation: i32,
+        status: VerificationStatus,
+    },
+    Unavailable {
+        detail: String,
+    },
+}
+
+#[async_trait]
+pub trait AutomationPlanVerificationStarter: Send + Sync {
+    async fn start_verification(
+        &self,
+        request: AutomationPlanVerificationStartRequest,
+    ) -> AppResult<AutomationPlanVerificationStartOutcome>;
+}
+
+#[derive(Debug, Default)]
+pub struct NoopAutomationPlanVerificationStarter;
+
+#[async_trait]
+impl AutomationPlanVerificationStarter for NoopAutomationPlanVerificationStarter {
+    async fn start_verification(
+        &self,
+        _request: AutomationPlanVerificationStartRequest,
+    ) -> AppResult<AutomationPlanVerificationStartOutcome> {
+        Ok(AutomationPlanVerificationStartOutcome::Unavailable {
+            detail: "automation plan verification starter is not configured".to_string(),
+        })
+    }
 }
 
 pub(crate) fn is_plan_gate_pause_reason(reason: Option<&str>) -> bool {
@@ -125,9 +172,9 @@ pub(crate) async fn refresh_plan_park_baseline(
     run_repo: &Arc<dyn AutomationRunRepository>,
     run: &AutomationRun,
     plan_artifact_id: Option<String>,
-) -> AppResult<()> {
+) -> AppResult<bool> {
     if run.plan_last_parked_artifact_id == plan_artifact_id {
-        return Ok(());
+        return Ok(false);
     }
 
     let next_round = run.plan_revision_round.saturating_add(1);
@@ -150,7 +197,7 @@ pub(crate) async fn refresh_plan_park_baseline(
             .await?;
     }
 
-    Ok(())
+    Ok(true)
 }
 
 pub(crate) async fn arm_plan_reminder(
