@@ -94,7 +94,7 @@ import {
 } from "./agentArtifactTabs";
 import { resolveAttachedIdeationSessionId } from "./attachedIdeationSession";
 import type { ProposalDetailEnrichment } from "@/components/Ideation/ProposalDetailSheet";
-import { EmptyArtifactState } from "./AgentsArtifactEmptyState";
+import { ArtifactLoadingState, EmptyArtifactState } from "./AgentsArtifactEmptyState";
 import { AgentPublishPanel } from "./AgentsPublishPanel";
 import { shouldShowAgentWorkspacePublishSurface } from "./agentWorkspacePublishState";
 import type { AgentPublishFocusRequest } from "./agentPublishFocus";
@@ -1527,9 +1527,7 @@ function ArtifactContent({
 
   if (activeTab === "pr") {
     return (
-      <Suspense
-        fallback={<EmptyArtifactState title="Loading pull request..." />}
-      >
+      <Suspense fallback={<ArtifactLoadingState title="Loading pull request..." />}>
         <LazyPullRequestDetailPanel workspace={workspace} />
       </Suspense>
     );
