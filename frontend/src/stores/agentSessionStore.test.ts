@@ -141,6 +141,41 @@ describe("agentSessionStore", () => {
     });
   });
 
+  it("migrates stale persisted Proposals artifact tabs to Plan", () => {
+    expect(
+      migrateAgentSessionStore(
+        {
+          artifactByConversationId: {
+            "conversation-1": {
+              isOpen: true,
+              activeTab: "proposal",
+              taskMode: "graph",
+            },
+            "conversation-2": {
+              isOpen: true,
+              activeTab: "verification",
+              taskMode: "kanban",
+            },
+          },
+        },
+        6,
+      ),
+    ).toMatchObject({
+      artifactByConversationId: {
+        "conversation-1": {
+          isOpen: true,
+          activeTab: "plan",
+          taskMode: "graph",
+        },
+        "conversation-2": {
+          isOpen: true,
+          activeTab: "verification",
+          taskMode: "kanban",
+        },
+      },
+    });
+  });
+
   it("passes through non-object persistedState", () => {
     expect(migrateAgentSessionStore(null, 0)).toBeNull();
     expect(migrateAgentSessionStore("nope", 0)).toBe("nope");

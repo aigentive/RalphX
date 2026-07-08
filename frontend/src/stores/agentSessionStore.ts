@@ -167,7 +167,22 @@ export const DEFAULT_SIDEBAR_PUBLICATION_STATE_FILTERS: AgentSidebarPublicationS
   "uncommitted",
   "unpushed",
 ];
-const AGENT_SESSION_STORE_VERSION = 6;
+const AGENT_SESSION_STORE_VERSION = 7;
+
+export function normalizeAgentArtifactTab(
+  tab: AgentArtifactTab,
+): AgentArtifactTab {
+  return tab === "proposal" ? "plan" : tab;
+}
+
+function normalizeAgentArtifactState(
+  artifactState: AgentArtifactState,
+): AgentArtifactState {
+  return {
+    ...artifactState,
+    activeTab: normalizeAgentArtifactTab(artifactState.activeTab),
+  };
+}
 
 function normalizeRuntimeRecord(value: unknown): Record<string, AgentRuntimeSelection> {
   if (!value || typeof value !== "object") {
@@ -179,6 +194,24 @@ function normalizeRuntimeRecord(value: unknown): Record<string, AgentRuntimeSele
       key,
       normalizeAgentRuntimeSelection(runtime),
     ])
+  );
+}
+
+function migrateArtifactStateRecord(value: unknown): unknown {
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+
+  return Object.fromEntries(
+    Object.entries(value).map(([conversationId, artifactState]) => {
+      if (!artifactState || typeof artifactState !== "object") {
+        return [conversationId, artifactState];
+      }
+      const state = artifactState as Record<string, unknown>;
+      return state.activeTab === "proposal"
+        ? [conversationId, { ...state, activeTab: "plan" }]
+        : [conversationId, artifactState];
+    }),
   );
 }
 
@@ -227,14 +260,21 @@ export function migrateAgentSessionStore(
     nextState.lastModelEffortByProvider = {};
   }
 
+  if (version < 7) {
+    nextState.artifactByConversationId = migrateArtifactStateRecord(
+      nextState.artifactByConversationId,
+    );
+  }
+
   return nextState;
 }
 
 function ensureArtifactState(state: AgentSessionState, conversationId: string): AgentArtifactState {
-  if (!state.artifactByConversationId[conversationId]) {
-    state.artifactByConversationId[conversationId] = { ...DEFAULT_ARTIFACT_STATE };
-  }
-  return state.artifactByConversationId[conversationId];
+  const current =
+    state.artifactByConversationId[conversationId] ?? DEFAULT_ARTIFACT_STATE;
+  const normalized = normalizeAgentArtifactState(current);
+  state.artifactByConversationId[conversationId] = normalized;
+  return normalized;
 }
 
 function expandOnlyProject(state: AgentSessionState, projectId: string) {
@@ -428,13 +468,14 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
       setArtifactTab: (conversationId, tab) =>
         set((state) => {
           const artifactState = ensureArtifactState(state, conversationId);
-          artifactState.activeTab = tab;
+          artifactState.activeTab = normalizeAgentArtifactTab(tab);
           artifactState.isOpen = true;
         }),
 
       setArtifactState: (conversationId, artifactState) =>
         set((state) => {
-          state.artifactByConversationId[conversationId] = { ...artifactState };
+          state.artifactByConversationId[conversationId] =
+            normalizeAgentArtifactState(artifactState);
         }),
 
       setTaskArtifactMode: (conversationId, mode) =>
