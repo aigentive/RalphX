@@ -13,6 +13,7 @@ const {
   stopAutomationMock,
   deleteAutomationMock,
   cancelRunMock,
+  updateSettingsMock,
   updateAutomationSetupMock,
   sendAgentMessageMock,
   useAskUserQuestionMock,
@@ -28,6 +29,7 @@ const {
   stopAutomationMock: vi.fn(),
   deleteAutomationMock: vi.fn(),
   cancelRunMock: vi.fn(),
+  updateSettingsMock: vi.fn(),
   updateAutomationSetupMock: vi.fn(),
   sendAgentMessageMock: vi.fn(),
   useAskUserQuestionMock: vi.fn(),
@@ -141,6 +143,7 @@ vi.mock("@/api/automations", async (importOriginal) => {
       stop: (...args: unknown[]) => stopAutomationMock(...args),
       delete: (...args: unknown[]) => deleteAutomationMock(...args),
       cancelRun: (...args: unknown[]) => cancelRunMock(...args),
+      updateSettings: (...args: unknown[]) => updateSettingsMock(...args),
       setupAgent: {
         ...actual.automationsApi.setupAgent,
         updateAutomation: (...args: unknown[]) =>
@@ -265,6 +268,7 @@ describe("AgentsAutomationPanel", () => {
     stopAutomationMock.mockResolvedValue(automationFixture({ status: "stopped" }));
     deleteAutomationMock.mockResolvedValue(undefined);
     cancelRunMock.mockResolvedValue(automationRunFixture({ status: "cancelled" }));
+    updateSettingsMock.mockResolvedValue(automationFixture({ maxRuns: 8 }));
     updateAutomationSetupMock.mockResolvedValue(automationFixture({ status: "draft" }));
     sendAgentMessageMock.mockResolvedValue({
       conversationId: "conversation-setup",
@@ -429,6 +433,63 @@ describe("AgentsAutomationPanel", () => {
     );
     expect(
       screen.queryByTestId("agents-automation-runs-list"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("extends the run budget from a paused, budget-exhausted automation", async () => {
+    // 4/4 runs used, paused because the budget is exhausted.
+    useAutomationDetailMock.mockReturnValue({
+      data: automationDetailFixture({
+        automation: automationFixture({
+          status: "paused",
+          pausedReasonCode: "judge_stopped_unmet",
+          maxRuns: 4,
+        }),
+        runs: [
+          automationRunFixture({ id: "run-1", runIndex: 1, status: "merged" }),
+          automationRunFixture({ id: "run-2", runIndex: 2, status: "agent_failed" }),
+          automationRunFixture({ id: "run-3", runIndex: 3, status: "agent_failed" }),
+          automationRunFixture({ id: "run-4", runIndex: 4, status: "agent_failed" }),
+        ],
+      }),
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel();
+
+    const input = screen.getByLabelText("Max runs");
+    expect(input).toHaveValue(4);
+    // Cannot save the unchanged value.
+    expect(screen.getByTestId("agents-automation-max-runs-save")).toBeDisabled();
+
+    fireEvent.change(input, { target: { value: "8" } });
+    fireEvent.click(screen.getByTestId("agents-automation-max-runs-save"));
+
+    await waitFor(() =>
+      expect(updateSettingsMock).toHaveBeenCalledWith({
+        id: "automation-1",
+        maxRuns: 8,
+      }),
+    );
+    await waitFor(() =>
+      expect(toastSuccessMock).toHaveBeenCalledWith("Max runs updated"),
+    );
+  });
+
+  it("hides the max runs editor while the automation is active", () => {
+    useAutomationDetailMock.mockReturnValue({
+      data: automationDetailFixture({
+        automation: automationFixture({ status: "active" }),
+      }),
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel();
+
+    expect(
+      screen.queryByTestId("agents-automation-max-runs"),
     ).not.toBeInTheDocument();
   });
 

@@ -1,4 +1,4 @@
-import { useCallback, useMemo, type ReactNode } from "react";
+import { useCallback, useMemo, useState, type ReactNode } from "react";
 import {
   CheckCircle2,
   ExternalLink,
@@ -241,6 +241,69 @@ function runRowDetail(run: AutomationRun): string {
     return `PR #${run.prNumber}`;
   }
   return run.errorCode ? `Failed: ${run.errorCode}` : "No PR";
+}
+
+/**
+ * Inline editor for the automation's run budget (`maxRuns`). The backend only allows settings
+ * edits while the automation is Draft or Paused, so this renders only in those states. It lets
+ * a user extend an exhausted budget (e.g. after a `judge_stopped_unmet` pause) and then resume
+ * to schedule another run, instead of being stuck with no way to continue.
+ */
+function MaxRunsEditor({
+  currentMaxRuns,
+  runsUsed,
+  isSaving,
+  onSave,
+}: {
+  currentMaxRuns: number;
+  runsUsed: number;
+  isSaving: boolean;
+  onSave: (maxRuns: number) => void;
+}) {
+  const min = Math.max(1, runsUsed);
+  const [value, setValue] = useState(String(currentMaxRuns));
+  const parsed = Number.parseInt(value, 10);
+  const isValid = Number.isFinite(parsed) && parsed >= min;
+  const isChanged = parsed !== currentMaxRuns;
+  return (
+    <div
+      className="mb-3 flex flex-wrap items-center gap-2"
+      data-testid="agents-automation-max-runs"
+    >
+      <span className="text-xs font-medium" style={{ color: "var(--text-muted)" }}>
+        Max runs
+      </span>
+      <input
+        type="number"
+        min={min}
+        value={value}
+        onChange={(event) => setValue(event.target.value)}
+        aria-label="Max runs"
+        className="w-16 rounded px-2 py-1 text-xs outline-none focus:ring-0 focus:outline-none focus-visible:outline-none"
+        style={{
+          backgroundColor: "var(--bg-surface)",
+          borderColor: "var(--border-default)",
+          borderStyle: "solid",
+          borderWidth: "1px",
+          color: "var(--text-primary)",
+          boxShadow: "none",
+        }}
+      />
+      <Button
+        type="button"
+        variant="secondary"
+        size="sm"
+        disabled={!isValid || !isChanged || isSaving}
+        onClick={() => onSave(parsed)}
+        data-testid="agents-automation-max-runs-save"
+      >
+        {isSaving ? "Saving..." : "Save"}
+      </Button>
+      <span className="text-xs" style={{ color: "var(--text-muted)" }}>
+        {runsUsed} used
+      </span>
+    </div>
+  );
 }
 
 /**
@@ -505,6 +568,15 @@ export function AgentsAutomationPanel({
       toast.success("Run canceled");
     },
     onError: () => toast.error("Failed to cancel run"),
+  });
+  const maxRunsMutation = useMutation({
+    mutationFn: (maxRuns: number) =>
+      automationsApi.updateSettings({ id: automationId, maxRuns }),
+    onSuccess: () => {
+      invalidate();
+      toast.success("Max runs updated");
+    },
+    onError: () => toast.error("Failed to update max runs"),
   });
   const deleteMutation = useMutation({
     mutationFn: () => automationsApi.delete(automationId),
@@ -794,6 +866,15 @@ export function AgentsAutomationPanel({
       </div>
 
       <DetailSection title="Runs" testId="agents-automation-runs">
+        {automation.status === "draft" || automation.status === "paused" ? (
+          <MaxRunsEditor
+            key={automation.maxRuns}
+            currentMaxRuns={automation.maxRuns}
+            runsUsed={runs.length}
+            isSaving={maxRunsMutation.isPending}
+            onSave={(maxRuns) => maxRunsMutation.mutate(maxRuns)}
+          />
+        ) : null}
         <AutomationRunsList
           runs={runs}
           onCancelRun={(runId) => cancelRunMutation.mutate(runId)}
