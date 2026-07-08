@@ -48,6 +48,7 @@ import { useAskUserQuestion } from "@/hooks/useAskUserQuestion";
 import { useAgentModels } from "@/hooks/useAgentModels";
 import { useConfirmation } from "@/hooks/useConfirmation";
 import { useHarnessProviders } from "@/hooks/useHarnessProviders";
+import { cn } from "@/lib/utils";
 import { withAlpha } from "@/lib/theme-colors";
 import type {
   AgentEffort,
@@ -206,6 +207,95 @@ function formatPrState(run: AutomationRun | null): string {
     return status;
   }
   return `PR #${run.prNumber} · ${status}`;
+}
+
+const RUN_STATUS_LABELS: Record<AutomationRun["status"], string> = {
+  pending: "Running",
+  provisioning: "Running",
+  running: "Running",
+  published: "Running",
+  completed: "Completed",
+  merged: "Merged",
+  pr_closed: "PR closed",
+  agent_failed: "Agent failed",
+  cancelled: "Cancelled",
+};
+
+/** Tone color token for a run-status pill — success / warning / error / neutral. */
+function runStatusToneClass(status: AutomationRun["status"]): string {
+  if (["running", "published", "merged", "completed"].includes(status)) {
+    return "text-[var(--status-success)]";
+  }
+  if (["agent_failed", "pr_closed"].includes(status)) {
+    return "text-[var(--status-warning)]";
+  }
+  if (status === "cancelled") {
+    return "text-[var(--status-error)]";
+  }
+  return "text-[var(--text-secondary)]";
+}
+
+/** Secondary line for a run row: PR link text or the prompt author. */
+function runRowDetail(run: AutomationRun): string {
+  if (run.prNumber) {
+    return `PR #${run.prNumber}`;
+  }
+  return run.errorCode ? `Failed: ${run.errorCode}` : "No PR";
+}
+
+/**
+ * Compact newest-first list of an automation's runs with their statuses, mirroring the
+ * runtime/task list rows in the Agents surface. Replaces the single "Run: N of M" summary
+ * line with an actual per-run ledger so failed/succeeded runs are visible at a glance.
+ */
+function AutomationRunsList({ runs }: { runs: AutomationRun[] }) {
+  if (runs.length === 0) {
+    return (
+      <p className="text-xs" style={{ color: "var(--text-muted)" }}>
+        No runs yet.
+      </p>
+    );
+  }
+  const ordered = [...runs].sort((a, b) => b.runIndex - a.runIndex);
+  return (
+    <ul className="flex flex-col gap-1" data-testid="agents-automation-runs-list">
+      {ordered.map((run) => (
+        <li
+          key={run.id}
+          className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 rounded-md px-2 py-1.5"
+          style={{ backgroundColor: "var(--bg-hover)" }}
+          data-testid={`agents-automation-run-${run.runIndex}`}
+        >
+          <span
+            className="font-mono text-xs font-semibold tabular-nums"
+            style={{ color: "var(--text-muted)" }}
+          >
+            #{run.runIndex}
+          </span>
+          <span
+            className="min-w-0 truncate text-xs"
+            style={{ color: "var(--text-secondary)" }}
+          >
+            {runRowDetail(run)}
+          </span>
+          <span
+            className={cn(
+              "inline-flex w-fit shrink-0 items-center rounded-full px-2 py-0.5 text-[0.6875rem] font-semibold",
+              runStatusToneClass(run.status),
+            )}
+            style={{
+              backgroundColor: "var(--bg-surface)",
+              borderColor: "var(--border-default)",
+              borderStyle: "solid",
+              borderWidth: "1px",
+            }}
+          >
+            {RUN_STATUS_LABELS[run.status]}
+          </span>
+        </li>
+      ))}
+    </ul>
+  );
 }
 
 function PanelShell() {
@@ -665,6 +755,10 @@ export function AgentsAutomationPanel({
         <SummaryRow label="Run" value={formatRunSummary(run, automation.maxRuns)} />
         <SummaryRow label="Current PR" value={formatPrState(run)} />
       </div>
+
+      <DetailSection title="Runs" testId="agents-automation-runs">
+        <AutomationRunsList runs={runs} />
+      </DetailSection>
 
       {showAutomationProposalCta && activeAutomationSetupQuestion ? (
         <AutomationProposalCallout

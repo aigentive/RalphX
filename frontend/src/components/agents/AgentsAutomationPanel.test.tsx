@@ -322,6 +322,68 @@ describe("AgentsAutomationPanel", () => {
     expect(useAutomationEventsMock).toHaveBeenCalledWith("automation-1");
   });
 
+  it("lists every run with its status, newest first", () => {
+    useAutomationDetailMock.mockReturnValue({
+      data: automationDetailFixture({
+        runs: [
+          automationRunFixture({
+            id: "run-1",
+            runIndex: 1,
+            status: "merged",
+            prNumber: 100,
+          }),
+          automationRunFixture({
+            id: "run-2",
+            runIndex: 2,
+            status: "agent_failed",
+            prNumber: null,
+            errorCode: "timeout",
+          }),
+          automationRunFixture({
+            id: "run-3",
+            runIndex: 3,
+            status: "running",
+            prNumber: null,
+          }),
+        ],
+      }),
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel();
+
+    const list = screen.getByTestId("agents-automation-runs-list");
+    expect(list).toBeInTheDocument();
+    // Newest run (#3) renders first.
+    const rows = within(list).getAllByRole("listitem");
+    expect(rows[0]).toHaveAttribute("data-testid", "agents-automation-run-3");
+    expect(rows[2]).toHaveAttribute("data-testid", "agents-automation-run-1");
+    // Each run shows its status label; the failed run surfaces its error code.
+    expect(within(rows[0]!).getByText("Running")).toBeInTheDocument();
+    expect(within(rows[1]!).getByText("Agent failed")).toBeInTheDocument();
+    expect(within(rows[1]!).getByText("Failed: timeout")).toBeInTheDocument();
+    expect(within(rows[2]!).getByText("Merged")).toBeInTheDocument();
+    expect(within(rows[2]!).getByText("PR #100")).toBeInTheDocument();
+  });
+
+  it("shows an empty runs state when no runs exist", () => {
+    useAutomationDetailMock.mockReturnValue({
+      data: automationDetailFixture({ runs: [] }),
+      isLoading: false,
+      isError: false,
+    });
+
+    renderPanel();
+
+    expect(screen.getByTestId("agents-automation-runs")).toHaveTextContent(
+      "No runs yet.",
+    );
+    expect(
+      screen.queryByTestId("agents-automation-runs-list"),
+    ).not.toBeInTheDocument();
+  });
+
   it("renders the linked spec name and preview in the Spec section", () => {
     useArtifactMock.mockReturnValue({
       data: {
@@ -625,7 +687,8 @@ describe("AgentsAutomationPanel", () => {
     renderPanel();
 
     expect(screen.getByText("Paused")).toBeInTheDocument();
-    expect(screen.getByText("Running")).toBeInTheDocument();
+    // "Running" appears both in the Current PR summary and the runs list row.
+    expect(screen.getAllByText("Running").length).toBeGreaterThan(0);
     expect(screen.queryByTestId("agents-automation-pause")).not.toBeInTheDocument();
     expect(screen.getByTestId("agents-automation-resume")).toBeInTheDocument();
 
