@@ -1026,6 +1026,9 @@ pub async fn update_review_settings(
     if let Some(v) = input.auto_create_followup_agent_conversation {
         settings.auto_create_followup_agent_conversation = v;
     }
+    if let Some(v) = input.autofix_workspace_review_blocking_findings {
+        settings.autofix_workspace_review_blocking_findings = v;
+    }
     if let Some(v) = input.run_task_validations {
         settings.run_task_validations = v;
     }
@@ -1058,6 +1061,7 @@ mod settings_command_tests {
                 max_fix_attempts: None,
                 max_revision_cycles: None,
                 auto_create_followup_agent_conversation: None,
+                autofix_workspace_review_blocking_findings: None,
                 run_task_validations: Some(false),
             },
             app.state::<AppState>(),
@@ -1073,5 +1077,37 @@ mod settings_command_tests {
             .await
             .expect("settings should be persisted");
         assert!(!settings.run_task_validations);
+    }
+
+    #[tokio::test]
+    async fn update_review_settings_toggles_workspace_review_autofix() {
+        let app = tauri::test::mock_builder()
+            .manage(AppState::new_test())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("mock app should build");
+
+        let response = update_review_settings(
+            UpdateReviewSettingsInput {
+                require_human_review: None,
+                require_workspace_review: None,
+                max_fix_attempts: None,
+                max_revision_cycles: None,
+                auto_create_followup_agent_conversation: None,
+                autofix_workspace_review_blocking_findings: Some(false),
+                run_task_validations: None,
+            },
+            app.state::<AppState>(),
+        )
+        .await
+        .expect("review settings update should succeed");
+
+        assert!(!response.autofix_workspace_review_blocking_findings);
+        let settings = app
+            .state::<AppState>()
+            .review_settings_repo
+            .get_settings()
+            .await
+            .expect("settings should be persisted");
+        assert!(!settings.autofix_workspace_review_blocking_findings);
     }
 }

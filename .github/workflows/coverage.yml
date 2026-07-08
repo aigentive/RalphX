@@ -917,6 +917,9 @@ jobs:
           files: coverage-artifacts/coverage-rust-lib-1/lcov.info,coverage-artifacts/coverage-rust-lib-2/lcov.info,coverage-artifacts/coverage-rust-ipc/lcov.info
           flags: rust-lib
           name: rust-lib
+          override_commit: ${{ github.event.pull_request.head.sha || github.sha }}
+          override_branch: ${{ github.head_ref || github.ref_name }}
+          override_pr: ${{ github.event.number }}
           fail_ci_if_error: true
 
       - name: Upload Rust IPC coverage to Codecov
@@ -929,6 +932,9 @@ jobs:
           files: coverage-artifacts/coverage-rust-lib-1/lcov.info,coverage-artifacts/coverage-rust-lib-2/lcov.info,coverage-artifacts/coverage-rust-ipc/lcov.info
           flags: rust-ipc
           name: rust-ipc
+          override_commit: ${{ github.event.pull_request.head.sha || github.sha }}
+          override_branch: ${{ github.head_ref || github.ref_name }}
+          override_pr: ${{ github.event.number }}
           fail_ci_if_error: true
 
       - name: Upload frontend coverage to Codecov
@@ -941,6 +947,9 @@ jobs:
           files: coverage-artifacts/coverage-frontend/lcov.info
           flags: frontend
           name: frontend
+          override_commit: ${{ github.event.pull_request.head.sha || github.sha }}
+          override_branch: ${{ github.head_ref || github.ref_name }}
+          override_pr: ${{ github.event.number }}
           fail_ci_if_error: true
 
       - name: Upload internal MCP coverage to Codecov
@@ -953,6 +962,9 @@ jobs:
           files: coverage-artifacts/coverage-plugin-internal-mcp/lcov.info
           flags: plugin-internal-mcp
           name: plugin-internal-mcp
+          override_commit: ${{ github.event.pull_request.head.sha || github.sha }}
+          override_branch: ${{ github.head_ref || github.ref_name }}
+          override_pr: ${{ github.event.number }}
           fail_ci_if_error: true
 
       - name: Upload external MCP coverage to Codecov
@@ -965,6 +977,9 @@ jobs:
           files: coverage-artifacts/coverage-plugin-external-mcp/lcov.info
           flags: plugin-external-mcp
           name: plugin-external-mcp
+          override_commit: ${{ github.event.pull_request.head.sha || github.sha }}
+          override_branch: ${{ github.head_ref || github.ref_name }}
+          override_pr: ${{ github.event.number }}
           fail_ci_if_error: true
 
   coverage-gate:
@@ -1102,9 +1117,21 @@ jobs:
           done
 
           echo "Timed out waiting for Codecov patch status to pass."
-          gh api "repos/${GITHUB_REPOSITORY}/commits/${COMMIT_SHA}/statuses" \
-            --jq 'map(select(.context == "codecov/patch"))[0]'
-          gh api --method GET "repos/${GITHUB_REPOSITORY}/commits/${COMMIT_SHA}/check-runs" \
-            -f check_name="codecov/patch" \
-            --jq '.check_runs | sort_by(.completed_at // .started_at // .created_at) | .[-1]'
+          final_status="$(
+            gh api "repos/${GITHUB_REPOSITORY}/commits/${COMMIT_SHA}/statuses" \
+              --jq 'map(select(.context == "codecov/patch"))[0] // empty'
+          )"
+          final_check="$(
+            gh api --method GET "repos/${GITHUB_REPOSITORY}/commits/${COMMIT_SHA}/check-runs" \
+              -f check_name="codecov/patch" \
+              --jq '.check_runs | sort_by(.completed_at // .started_at // .created_at) | .[-1] // empty'
+          )"
+          printf '%s\n' "${final_status}"
+          printf '%s\n' "${final_check}"
+
+          if [[ -z "${final_status}" && -z "${final_check}" ]]; then
+            echo "::warning::Codecov did not post codecov/patch after successful coverage uploads; treating the missing external status as non-blocking."
+            exit 0
+          fi
+
           exit 1

@@ -37,13 +37,19 @@ describe("ReviewPolicySection", () => {
           ai_review_auto_fix: true,
           require_fix_approval: false,
           auto_create_followup_agent_conversation: true,
+          autofix_workspace_review_blocking_findings: true,
           run_task_validations: true,
         };
       }
       if (command === "update_review_settings") {
-        const input = (args as {
-          input: { requireHumanReview?: boolean; runTaskValidations?: boolean };
-        }).input;
+        const input = (
+          args as {
+            input: {
+              requireHumanReview?: boolean;
+              runTaskValidations?: boolean;
+            };
+          }
+        ).input;
         return {
           require_human_review: input.requireHumanReview ?? false,
           require_workspace_review: true,
@@ -53,6 +59,7 @@ describe("ReviewPolicySection", () => {
           ai_review_auto_fix: true,
           require_fix_approval: false,
           auto_create_followup_agent_conversation: true,
+          autofix_workspace_review_blocking_findings: true,
           run_task_validations: input.runTaskValidations ?? true,
         };
       }
