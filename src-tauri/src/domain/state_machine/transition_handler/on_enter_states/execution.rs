@@ -454,16 +454,24 @@ impl<'a> TransitionHandler<'a> {
                         );
                         if let Some(ref stored_wt) = task.worktree_path.clone() {
                             let stored = std::path::PathBuf::from(stored_wt);
-                            if stored.exists() {
-                                let _ = GitService::delete_worktree(repo_path, &stored).await;
-                            }
+                            delete_existing_execution_worktree_or_block(
+                                repo_path,
+                                &stored,
+                                task_id_str,
+                                "deleted branch self-heal stored path cleanup",
+                            )
+                            .await?;
                         }
                         let expected_wt_path_str =
                             compute_task_worktree_path(&project, task_id_str);
                         let expected_wt_path = std::path::PathBuf::from(&expected_wt_path_str);
-                        if expected_wt_path.exists() {
-                            let _ = GitService::delete_worktree(repo_path, &expected_wt_path).await;
-                        }
+                        delete_existing_execution_worktree_or_block(
+                            repo_path,
+                            &expected_wt_path,
+                            task_id_str,
+                            "deleted branch self-heal expected path cleanup",
+                        )
+                        .await?;
                         task.task_branch = None;
                         task.worktree_path = None;
                         task.merge_commit_sha = None;
@@ -1029,5 +1037,53 @@ mod execution_worktree_validation_tests {
 
         validate_persisted_execution_worktree_path(&task, &project, task_id_str)
             .expect("existing expected execution worktree should validate");
+    }
+
+    #[test]
+    fn stale_execution_worktree_cleanup_failure_blocks() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let worktree_path = temp.path().join("task-cleanup-blocked");
+
+        let error = super::super::stale_execution_worktree_cleanup_blocked_error(
+            "task-cleanup-blocked",
+            &worktree_path,
+            "delete denied",
+            "test cleanup",
+        );
+
+        let AppError::ExecutionBlocked(message) = error else {
+            panic!("cleanup failure should become ExecutionBlocked");
+        };
+        assert!(message.contains(GIT_ISOLATION_ERROR_PREFIX));
+        assert!(message.contains("task-cleanup-blocked"));
+        assert!(message.contains("delete denied"));
+    }
+
+    #[test]
+    fn registered_task_worktree_reuse_requires_exact_path_and_branch() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let expected_path = temp.path().join("task-reusable");
+        let branch = "ralphx/validation-project/task-reusable";
+        let worktrees = vec![crate::application::git_service::WorktreeInfo {
+            path: expected_path.to_string_lossy().to_string(),
+            branch: Some(branch.to_string()),
+            head: Some("abc123".to_string()),
+        }];
+
+        assert!(super::super::registered_task_worktree_matches_branch(
+            &worktrees,
+            &expected_path,
+            branch,
+        ));
+        assert!(!super::super::registered_task_worktree_matches_branch(
+            &worktrees,
+            &expected_path,
+            "ralphx/validation-project/task-other",
+        ));
+        assert!(!super::super::registered_task_worktree_matches_branch(
+            &worktrees,
+            &temp.path().join("task-other"),
+            branch,
+        ));
     }
 }

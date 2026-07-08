@@ -99,6 +99,17 @@ fn build_transition_chat_service_fallback<R: Runtime>(
     build_chat_service_with_fallback(&app_handle, Some(execution_state), &deps)
 }
 
+struct ExecutionEntryGuard {
+    execution_state: Arc<ExecutionState>,
+    task_id: String,
+}
+
+impl Drop for ExecutionEntryGuard {
+    fn drop(&mut self) {
+        self.execution_state.finish_execution_entry(&self.task_id);
+    }
+}
+
 fn github_pr_review_feedback_title(pr_number: i64) -> String {
     format!("Address GitHub PR #{pr_number} review feedback")
 }
@@ -3033,6 +3044,10 @@ impl<R: Runtime> TaskTransitionService<R> {
             context::TaskContext, machine::TaskStateMachine, transition_handler::TransitionHandler,
         };
 
+        let guard_execution_entry = matches!(
+            status,
+            InternalStatus::Executing | InternalStatus::ReExecuting
+        );
         let state = internal_status_to_state(status);
 
         // Per-task team_mode override: check builder flag OR task metadata.
@@ -3094,7 +3109,36 @@ impl<R: Runtime> TaskTransitionService<R> {
 
         // Execute entry action via TransitionHandler
         tracing::debug!(?state, "Calling TransitionHandler::on_enter");
-        if let Err(e) = handler.on_enter(&state).await {
+        let _execution_entry_guard = if guard_execution_entry {
+            if !self
+                .execution_state
+                .try_start_execution_entry(task_id.as_str())
+            {
+                tracing::info!(
+                    task_id = task_id.as_str(),
+                    status = status.as_str(),
+                    "Skipping duplicate execution entry action already in flight"
+                );
+                return;
+            }
+            Some(ExecutionEntryGuard {
+                execution_state: Arc::clone(&self.execution_state),
+                task_id: task_id.as_str().to_string(),
+            })
+        } else {
+            None
+        };
+
+        let on_enter_result = handler.on_enter(&state).await;
+
+        if let Err(e) = on_enter_result {
+            debug_assert!(
+                !guard_execution_entry
+                    || self
+                        .execution_state
+                        .is_execution_entry_in_flight(task_id.as_str()),
+                "execution entry guard must stay scoped through on_enter error handling"
+            );
             tracing::error!(error = %e, "on_enter failed");
 
             // If execution was blocked (e.g., git isolation failure), transition task to Failed.

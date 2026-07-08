@@ -678,14 +678,45 @@ impl<'a> TransitionHandler<'a> {
                 return;
             }
             Ok(merge_coordination::SourceUpdateResult::Error(err)) => {
-                tracing::warn!(
+                tracing::error!(
                     task_id = task_id_str,
                     error = %err,
                     elapsed_ms = source_update_elapsed.as_millis() as u64,
-                    "Source branch update from target failed (non-fatal) — proceeding with merge"
+                    "Source branch update from target failed — aborting merge because freshness could not be proven"
                 );
-                // Non-fatal: continue with merge anyway. The source branch may still merge cleanly.
-                false
+                emit_merge_progress(
+                    event_sink,
+                    task_id_str,
+                    MergePhase::new(MergePhase::BRANCH_FRESHNESS),
+                    MergePhaseStatus::Failed,
+                    "Source branch freshness update failed".to_string(),
+                );
+                self.emit_merge_activity_event(
+                    task_id_str,
+                    "Merge pipeline: source branch freshness update failed",
+                    MergePhase::BRANCH_FRESHNESS,
+                    "failed",
+                )
+                .await;
+                let metadata = serde_json::json!({
+                    "error": format!("Source branch update failed: {}", err),
+                    "source_branch": source_branch,
+                    "target_branch": target_branch,
+                    "source_update_error": true,
+                    "merge_failure_source": serde_json::to_value(MergeFailureSource::TransientGit).unwrap_or_default(),
+                });
+                self.transition_to_merge_incomplete(
+                    TaskCore {
+                        task: &mut *task,
+                        task_id: &task_id,
+                        task_id_str,
+                        task_repo,
+                    },
+                    metadata,
+                    true,
+                )
+                .await;
+                return;
             }
         };
 

@@ -202,6 +202,105 @@ async fn test_merge_missing_source_branch_with_real_repo() {
     );
 }
 
+/// Verify a source-update git error stops the programmatic merge at branch freshness.
+///
+/// The source branch and target branch exist, but the source branch is checked out
+/// in a dirty worktree. That makes update_source_from_target return SourceUpdateResult::Error
+/// when it tries to merge the target into that existing worktree. The merge pipeline
+/// must route directly to MergeIncomplete with freshness metadata instead of
+/// treating branch freshness as passed and continuing into strategy dispatch.
+#[tokio::test]
+async fn test_source_update_error_routes_to_merge_incomplete() {
+    let git_repo = setup_real_git_repo();
+    let path = git_repo.path();
+
+    std::fs::write(path.join("README.md"), "# test repo\nmain update\n").unwrap();
+    let _ = std::process::Command::new("git")
+        .args(["add", "README.md"])
+        .current_dir(path)
+        .output();
+    let _ = std::process::Command::new("git")
+        .args(["commit", "-m", "update readme on main"])
+        .current_dir(path)
+        .output();
+
+    let source_wt_dir = tempfile::tempdir().unwrap();
+    let source_wt = source_wt_dir.path().join("dirty-source-worktree");
+    let add_wt = std::process::Command::new("git")
+        .args([
+            "worktree",
+            "add",
+            &source_wt.to_string_lossy(),
+            &git_repo.task_branch,
+        ])
+        .current_dir(path)
+        .output()
+        .expect("git worktree add source branch");
+    assert!(
+        add_wt.status.success(),
+        "source branch worktree should be created: {}",
+        String::from_utf8_lossy(&add_wt.stderr)
+    );
+    std::fs::write(
+        source_wt.join("README.md"),
+        "# test repo\nlocal dirty source edit\n",
+    )
+    .unwrap();
+
+    let setup = setup_pending_merge_with_real_repo(
+        "Source update error test",
+        &git_repo.task_branch,
+        &git_repo.path_string(),
+        MergeStrategy::Merge,
+    )
+    .await;
+
+    let task_id = setup.task_id.clone();
+    let task_repo = Arc::clone(&setup.task_repo);
+    let (mut machine, _task_repo, _task_id) = setup.into_machine();
+    let handler = TransitionHandler::new(&mut machine);
+
+    let _ = handler.on_enter(&State::PendingMerge).await;
+
+    let updated_task = task_repo.get_by_id(&task_id).await.unwrap().unwrap();
+    assert_eq!(
+        updated_task.internal_status,
+        InternalStatus::MergeIncomplete,
+        "Source-update errors should stop at MergeIncomplete, got {:?}. Metadata: {:?}",
+        updated_task.internal_status,
+        updated_task.metadata,
+    );
+
+    let meta: serde_json::Value =
+        serde_json::from_str(updated_task.metadata.as_deref().unwrap_or("{}")).unwrap();
+    let error = meta.get("error").and_then(|v| v.as_str()).unwrap_or("");
+    assert!(
+        error.contains("Source branch update failed"),
+        "MergeIncomplete should preserve source-update error context. Metadata: {:?}",
+        meta
+    );
+    assert_eq!(meta.get("source_branch"), Some(&serde_json::json!(git_repo.task_branch)));
+    assert_eq!(
+        meta.get("target_branch"),
+        Some(&serde_json::json!("main"))
+    );
+    assert_eq!(meta.get("source_update_error"), Some(&serde_json::json!(true)));
+    assert_eq!(
+        meta.get("merge_failure_source"),
+        Some(&serde_json::json!("transient_git"))
+    );
+
+    let _ = std::process::Command::new("git")
+        .args([
+            "worktree",
+            "remove",
+            "--force",
+            &source_wt.to_string_lossy(),
+        ])
+        .current_dir(path)
+        .output();
+}
+
 /// Verify that merge with conflict (diverged branches) transitions to Merging
 /// and spawns a merger agent.
 ///
