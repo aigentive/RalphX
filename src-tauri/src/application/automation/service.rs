@@ -8,6 +8,9 @@ use crate::application::automation::judge::{
     AutomationJudgeDecision, AutomationJudgeNextBaseBranch, AutomationJudgeValidationContext,
     AutomationJudgeVerdict,
 };
+use crate::application::automation::plan_gate::{
+    is_plan_gate_pause_reason, AUTOMATION_PLAN_GATE_TRIGGER_RUN_NOW_ERROR_CODE,
+};
 use crate::application::automation::transition::{
     AutomationEvent, AutomationEventEmitter, AutomationTransitionService,
 };
@@ -475,6 +478,11 @@ impl AutomationService {
         match automation.status {
             AutomationStatus::Active => {}
             AutomationStatus::Paused => {
+                if is_plan_gate_pause_reason(automation.paused_reason_code.as_deref()) {
+                    return Err(AppError::Validation(format!(
+                        "{AUTOMATION_PLAN_GATE_TRIGGER_RUN_NOW_ERROR_CODE} This automation is paused at the plan gate. Review the run plan and approve it from the plan artifact pane."
+                    )));
+                }
                 automation = self
                     .transition_automation_status_or_conflict(
                         id,
@@ -637,14 +645,17 @@ impl AutomationService {
         run_id: &AutomationRunId,
     ) -> AppResult<AutomationRun> {
         let run = self.require_run_for_automation(id, run_id).await?;
-        self.transition_run_status_or_conflict(
-            run_id,
-            run.status,
-            AutomationRunStatus::Cancelled,
-            None,
-            None,
-        )
-        .await
+        let cancelled = self
+            .transition_run_status_or_conflict(
+                run_id,
+                run.status,
+                AutomationRunStatus::Cancelled,
+                None,
+                None,
+            )
+            .await?;
+        self.run_repo.clear_plan_judge_state(run_id).await?;
+        Ok(cancelled)
     }
 
     /// Row-deletion core for automation deletion.

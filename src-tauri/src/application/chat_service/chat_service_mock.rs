@@ -43,6 +43,10 @@ pub struct MockChatService {
     sent_messages: Mutex<Vec<String>>,
     /// Records the send options passed to send_message for replay/resume assertions.
     sent_options: Mutex<Vec<SendMessageOptions>>,
+    /// Records each (context_type, context_id, message_id) passed to delete_queued_message.
+    delete_queued_message_calls: Mutex<Vec<(ChatContextType, String, String)>>,
+    /// When set, the next delete_queued_message call returns an error.
+    fail_next_delete_queued_message: Mutex<bool>,
 }
 
 pub struct MockChatResponse {
@@ -65,6 +69,8 @@ impl MockChatService {
             stop_agent_calls: Mutex::new(Vec::new()),
             sent_messages: Mutex::new(Vec::new()),
             sent_options: Mutex::new(Vec::new()),
+            delete_queued_message_calls: Mutex::new(Vec::new()),
+            fail_next_delete_queued_message: Mutex::new(false),
         }
     }
 
@@ -81,6 +87,8 @@ impl MockChatService {
             stop_agent_calls: Mutex::new(Vec::new()),
             sent_messages: Mutex::new(Vec::new()),
             sent_options: Mutex::new(Vec::new()),
+            delete_queued_message_calls: Mutex::new(Vec::new()),
+            fail_next_delete_queued_message: Mutex::new(false),
         }
     }
 
@@ -97,6 +105,14 @@ impl MockChatService {
 
     pub async fn get_sent_options(&self) -> Vec<SendMessageOptions> {
         self.sent_options.lock().await.clone()
+    }
+
+    pub async fn get_delete_queued_message_calls(&self) -> Vec<(ChatContextType, String, String)> {
+        self.delete_queued_message_calls.lock().await.clone()
+    }
+
+    pub async fn fail_next_delete_queued_message(&self) {
+        *self.fail_next_delete_queued_message.lock().await = true;
     }
 
     /// Set the agent running state for a specific context.
@@ -230,6 +246,16 @@ impl ChatService for MockChatService {
         context_id: &str,
         message_id: &str,
     ) -> Result<bool, ChatServiceError> {
+        self.delete_queued_message_calls.lock().await.push((
+            context_type,
+            context_id.to_string(),
+            message_id.to_string(),
+        ));
+        if std::mem::take(&mut *self.fail_next_delete_queued_message.lock().await) {
+            return Err(ChatServiceError::RepositoryError(
+                "delete failed".to_string(),
+            ));
+        }
         Ok(self
             .message_queue
             .delete(context_type, context_id, message_id))

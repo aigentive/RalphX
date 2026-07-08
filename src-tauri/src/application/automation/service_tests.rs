@@ -9,11 +9,14 @@ use crate::application::automation::judge::{
     automation_judge_loop_suspected, AutomationJudgeDecision, AutomationJudgeNextBaseBranch,
     AutomationJudgeVerdict,
 };
+use crate::application::automation::plan_gate::{
+    AUTOMATION_PLAN_GATE_TRIGGER_RUN_NOW_ERROR_CODE, PLAN_JUDGE_FAILED_PAUSED_REASON_CODE,
+};
 use crate::application::automation::service::{
-    run_status_blocks_trigger_run_now, run_status_is_cancellable,
-    ApplyAutomationJudgeVerdictInput, AutomationRunNowAction, AutomationService,
-    CreateAutomationDraftInput, CreateAutomationRunInput, CreateMergedBaseSuccessorRunInput,
-    UpdateAutomationConfigInput, UpdateAutomationSettingsInput,
+    run_status_blocks_trigger_run_now, run_status_is_cancellable, ApplyAutomationJudgeVerdictInput,
+    AutomationRunNowAction, AutomationService, CreateAutomationDraftInput,
+    CreateAutomationRunInput, CreateMergedBaseSuccessorRunInput, UpdateAutomationConfigInput,
+    UpdateAutomationSettingsInput,
 };
 use crate::application::automation::transition::{
     AutomationEvent, AutomationEventEmitter, NoopAutomationEventEmitter,
@@ -575,6 +578,19 @@ impl AutomationRunRepository for SkipJudgeLosesRunRepository {
         ))
     }
 
+    async fn compare_and_swap_status_clearing_plan_pending_instructions(
+        &self,
+        _id: &AutomationRunId,
+        _from: AutomationRunStatus,
+        _to: AutomationRunStatus,
+        _error_code: Option<String>,
+        _error_detail: Option<String>,
+    ) -> crate::error::AppResult<bool> {
+        Err(AppError::Validation(
+            "unused test repository method".to_string(),
+        ))
+    }
+
     async fn update_start_metadata(
         &self,
         _id: &AutomationRunId,
@@ -647,6 +663,15 @@ impl AutomationRunRepository for SkipJudgeLosesRunRepository {
         _to: AutomationPlanJudgeState,
         _plan_judge_verdict_json: Option<String>,
         _plan_judge_lease_expires_at: Option<chrono::DateTime<Utc>>,
+    ) -> crate::error::AppResult<bool> {
+        Err(AppError::Validation(
+            "unused test repository method".to_string(),
+        ))
+    }
+
+    async fn clear_plan_judge_state(
+        &self,
+        _id: &AutomationRunId,
     ) -> crate::error::AppResult<bool> {
         Err(AppError::Validation(
             "unused test repository method".to_string(),
@@ -1758,6 +1783,34 @@ async fn service_cancel_run_and_stop_use_run_transition_service() {
 }
 
 #[tokio::test]
+async fn service_cancel_run_clears_parked_plan_judge_state() {
+    let (service, automation_repo, run_repo) =
+        service_with_emitter(Arc::new(NoopAutomationEventEmitter));
+    let active = automation("automation-1", AutomationStatus::Active);
+    automation_repo.create(active.clone()).await.unwrap();
+    let mut run = automation_run(
+        "run-1",
+        &active.id,
+        1,
+        AutomationRunStatus::AwaitingPlanApproval,
+        AutomationJudgeState::None,
+    );
+    run.plan_judge_state = AutomationPlanJudgeState::InProgress;
+    run.plan_judge_lease_expires_at = Some(Utc::now() + chrono::Duration::minutes(5));
+    run.plan_judge_verdict_json = Some(r#"{"decision":"revise"}"#.to_string());
+    run_repo.create_run(run.clone()).await.unwrap();
+
+    let cancelled = service.cancel_run(&active.id, &run.id).await.unwrap();
+
+    assert_eq!(cancelled.status, AutomationRunStatus::Cancelled);
+    let updated = run_repo.get_by_id(&run.id).await.unwrap().unwrap();
+    assert_eq!(updated.status, AutomationRunStatus::Cancelled);
+    assert_eq!(updated.plan_judge_state, AutomationPlanJudgeState::None);
+    assert!(updated.plan_judge_lease_expires_at.is_none());
+    assert!(updated.plan_judge_verdict_json.is_none());
+}
+
+#[tokio::test]
 async fn service_delete_is_terminal_only_and_removes_runs() {
     let emitter = Arc::new(RecordingEmitter::default());
     let (service, automation_repo, run_repo) = service_with_emitter(emitter.clone());
@@ -1838,6 +1891,41 @@ async fn service_run_now_applies_stored_continue_verdict_after_resume() {
         "Implement the next automation item with focused tests and publish the follow-up PR."
     );
     assert_eq!(runs[1].base_from_run_id, Some(runs[0].id.clone()));
+}
+
+#[tokio::test]
+async fn service_run_now_refuses_plan_gate_paused_automation_without_unpausing() {
+    let (service, automation_repo, run_repo) =
+        service_with_emitter(Arc::new(NoopAutomationEventEmitter));
+    let mut paused = automation("automation-1", AutomationStatus::Paused);
+    paused.paused_reason_code = Some(PLAN_JUDGE_FAILED_PAUSED_REASON_CODE.to_string());
+    automation_repo.create(paused.clone()).await.unwrap();
+    run_repo
+        .create_run(automation_run(
+            "run-1",
+            &paused.id,
+            1,
+            AutomationRunStatus::AwaitingPlanApproval,
+            AutomationJudgeState::None,
+        ))
+        .await
+        .unwrap();
+
+    let error = service.trigger_run_now(&paused.id).await.unwrap_err();
+
+    assert!(
+        matches!(error, AppError::Validation(message) if message.contains(AUTOMATION_PLAN_GATE_TRIGGER_RUN_NOW_ERROR_CODE))
+    );
+    let automation = automation_repo
+        .get_by_id(&paused.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(automation.status, AutomationStatus::Paused);
+    assert_eq!(
+        automation.paused_reason_code.as_deref(),
+        Some(PLAN_JUDGE_FAILED_PAUSED_REASON_CODE)
+    );
 }
 
 #[tokio::test]

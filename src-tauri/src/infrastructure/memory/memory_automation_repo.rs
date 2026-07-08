@@ -383,6 +383,50 @@ impl AutomationRunRepository for MemoryAutomationRunRepository {
         Ok(true)
     }
 
+    async fn compare_and_swap_status_clearing_plan_pending_instructions(
+        &self,
+        id: &AutomationRunId,
+        from: AutomationRunStatus,
+        to: AutomationRunStatus,
+        error_code: Option<String>,
+        error_detail: Option<String>,
+    ) -> AppResult<bool> {
+        let mut runs = self.runs.write().unwrap();
+        let Some(position) = runs.iter().position(|run| run.id == *id) else {
+            return Ok(false);
+        };
+        if runs[position].status != from {
+            return Ok(false);
+        }
+        let mut updated = runs[position].clone();
+        let now = Utc::now();
+        updated.status = to;
+        updated.error_code = error_code;
+        updated.error_detail = error_detail;
+        updated.plan_pending_instructions = None;
+        if to == AutomationRunStatus::Running {
+            updated.agent_phase_started_at = Some(now);
+        }
+        if matches!(
+            to,
+            AutomationRunStatus::Merged
+                | AutomationRunStatus::Completed
+                | AutomationRunStatus::PrClosed
+                | AutomationRunStatus::AgentFailed
+                | AutomationRunStatus::Cancelled
+        ) {
+            updated.finished_at.get_or_insert(now);
+        }
+        updated.updated_at = now;
+        if Self::has_conflicting_open_run(&runs, &updated) {
+            return Err(AppError::Conflict(
+                "automation already has an open run".to_string(),
+            ));
+        }
+        runs[position] = updated;
+        Ok(true)
+    }
+
     async fn update_start_metadata(
         &self,
         id: &AutomationRunId,
@@ -426,6 +470,23 @@ impl AutomationRunRepository for MemoryAutomationRunRepository {
         run.pr_title = metadata.pr_title;
         run.pr_head_ref_name = metadata.pr_head_ref_name;
         run.pr_base_ref_name = metadata.pr_base_ref_name;
+        run.updated_at = Utc::now();
+        Ok(Some(run.clone()))
+    }
+
+    async fn clear_publication_metadata(
+        &self,
+        id: &AutomationRunId,
+    ) -> AppResult<Option<AutomationRun>> {
+        let mut runs = self.runs.write().unwrap();
+        let Some(run) = runs.iter_mut().find(|run| run.id == *id) else {
+            return Ok(None);
+        };
+        run.pr_number = None;
+        run.pr_url = None;
+        run.pr_title = None;
+        run.pr_head_ref_name = None;
+        run.pr_base_ref_name = None;
         run.updated_at = Utc::now();
         Ok(Some(run.clone()))
     }
@@ -547,6 +608,24 @@ impl AutomationRunRepository for MemoryAutomationRunRepository {
         } else {
             run.plan_judge_lease_expires_at = None;
         }
+        run.updated_at = Utc::now();
+        Ok(true)
+    }
+
+    async fn clear_plan_judge_state(&self, id: &AutomationRunId) -> AppResult<bool> {
+        let mut runs = self.runs.write().unwrap();
+        let Some(run) = runs.iter_mut().find(|run| run.id == *id) else {
+            return Ok(false);
+        };
+        let changed = run.plan_judge_state != AutomationPlanJudgeState::None
+            || run.plan_judge_lease_expires_at.is_some()
+            || run.plan_judge_verdict_json.is_some();
+        if !changed {
+            return Ok(false);
+        }
+        run.plan_judge_state = AutomationPlanJudgeState::None;
+        run.plan_judge_lease_expires_at = None;
+        run.plan_judge_verdict_json = None;
         run.updated_at = Utc::now();
         Ok(true)
     }

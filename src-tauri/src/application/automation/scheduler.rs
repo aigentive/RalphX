@@ -16,8 +16,10 @@ use crate::application::automation::judge::{
     BuildAutomationJudgePromptInput, SPEC_ATTACHMENT_MAX_BYTES,
 };
 use crate::application::automation::plan_gate::{
-    arm_plan_reminder, current_plan_artifact_id_for_workspace, refresh_plan_park_baseline,
-    AutomationRunResumer, AUTOMATION_PLAN_REMINDER_PROMPT,
+    approval_delivery_prompt, arm_plan_reminder, clear_plan_phase_publication_metadata,
+    current_plan_artifact_id_for_workspace, is_plan_gate_pause_reason,
+    matching_plan_approval_for_workspace, refresh_plan_park_baseline, revision_delivery_prompt,
+    AutomationRunResumer, AUTOMATION_PLAN_REMINDER_PROMPT, PLAN_RESUME_FAILED_ERROR_CODE,
 };
 use crate::application::automation::provisioning::{
     AutomationRunProvisioner, AutomationRunStarter,
@@ -37,14 +39,15 @@ use crate::application::harness_runtime_registry::{
 use crate::application::AppState;
 use crate::domain::agents::{AgentConfig, AgentHarnessKind, AgentRole, DEFAULT_AGENT_HARNESS};
 use crate::domain::entities::{
-    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRunStatus, ArtifactContent,
-    ArtifactId, Automation, AutomationId, AutomationJudgeState, AutomationRun, AutomationRunStatus,
-    AutomationStatus,
+    AgentConversationWorkspace, AgentConversationWorkspaceMode, AgentRun, AgentRunStatus,
+    ArtifactContent, ArtifactId, Automation, AutomationId, AutomationJudgeState, AutomationRun,
+    AutomationRunStatus, AutomationStatus, ChatConversationId,
 };
 use crate::domain::repositories::{
     AgentConversationWorkspaceRepository, AgentRunRepository, ArtifactRepository,
     AutomationRepository, AutomationRunPublicationMetadata, AutomationRunRepository,
-    ChatConversationRepository, IdeationSessionRepository,
+    ChatConversationRepository, IdeationSessionRepository, PlanArtifactApproval,
+    PlanArtifactApprovalRepository,
 };
 use crate::domain::services::github_service::{GithubServiceTrait, PrStatus};
 use crate::error::{AppError, AppResult};
@@ -104,6 +107,7 @@ pub struct AutomationSchedulerTickSummary {
     pub successor_runs: usize,
     pub signal_check_errors: usize,
     pub paused_automations: usize,
+    pub resumed_automations: usize,
     pub completed_automations: usize,
     pub provisioning_errors: usize,
     pub automation_errors: usize,
@@ -561,6 +565,7 @@ pub struct AutomationScheduler {
     run_repo: Arc<dyn AutomationRunRepository>,
     workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
     ideation_session_repo: Arc<dyn IdeationSessionRepository>,
+    plan_approval_repo: Arc<dyn PlanArtifactApprovalRepository>,
     transition_service: AutomationTransitionService,
     resumer: Arc<dyn AutomationRunResumer>,
     signal_checker: Arc<dyn AutomationSignalChecker>,
@@ -577,6 +582,7 @@ impl AutomationScheduler {
         conversation_repo: Arc<dyn ChatConversationRepository>,
         workspace_repo: Arc<dyn AgentConversationWorkspaceRepository>,
         ideation_session_repo: Arc<dyn IdeationSessionRepository>,
+        plan_approval_repo: Arc<dyn PlanArtifactApprovalRepository>,
         starter: Arc<dyn AutomationRunStarter>,
         resumer: Arc<dyn AutomationRunResumer>,
         signal_checker: Arc<dyn AutomationSignalChecker>,
@@ -613,6 +619,7 @@ impl AutomationScheduler {
             run_repo,
             workspace_repo,
             ideation_session_repo,
+            plan_approval_repo,
             transition_service,
             resumer,
             signal_checker,
@@ -633,76 +640,150 @@ impl AutomationScheduler {
             ..AutomationSchedulerTickSummary::default()
         };
 
-        for automation in automations
-            .into_iter()
-            .filter(|automation| automation.status == AutomationStatus::Active)
-        {
-            summary.active_automations += 1;
-            let Some(_lease) = self.registry.try_acquire_automation(
-                &automation.id,
-                Instant::now(),
-                self.config.poll_interval,
-            ) else {
-                continue;
-            };
-            summary.leased_automations += 1;
+        for automation in automations {
+            match automation.status {
+                AutomationStatus::Active => {
+                    summary.active_automations += 1;
+                    let Some(_lease) = self.registry.try_acquire_automation(
+                        &automation.id,
+                        Instant::now(),
+                        self.config.poll_interval,
+                    ) else {
+                        continue;
+                    };
+                    summary.leased_automations += 1;
 
-            match self.service.get_automation_detail(&automation.id).await {
-                Ok(detail) if detail.runs.is_empty() => {
-                    summary.active_without_runs += 1;
-                    match self
-                        .provisioner
-                        .provision_first_run(&detail.automation)
-                        .await
-                    {
-                        Ok(Some(_run)) => {
-                            summary.provisioned_runs += 1;
+                    match self.service.get_automation_detail(&automation.id).await {
+                        Ok(detail) if detail.runs.is_empty() => {
+                            summary.active_without_runs += 1;
+                            match self
+                                .provisioner
+                                .provision_first_run(&detail.automation)
+                                .await
+                            {
+                                Ok(Some(_run)) => {
+                                    summary.provisioned_runs += 1;
+                                }
+                                Ok(None) => {}
+                                Err(error) => {
+                                    summary.provisioning_errors += 1;
+                                    tracing::warn!(
+                                        automation_id = %automation.id,
+                                        error = %error,
+                                        "Automation scheduler failed to provision first run"
+                                    );
+                                }
+                            }
                         }
-                        Ok(None) => {}
+                        Ok(detail) => {
+                            summary.active_with_runs += 1;
+                            if let Some(latest_run) = detail.runs.last() {
+                                if let Err(error) = self
+                                    .observe_latest_run(
+                                        &detail.automation,
+                                        &detail.runs,
+                                        latest_run,
+                                        &mut summary,
+                                    )
+                                    .await
+                                {
+                                    summary.automation_errors += 1;
+                                    tracing::warn!(
+                                        automation_id = %detail.automation.id,
+                                        run_id = %latest_run.id,
+                                        error = %error,
+                                        "Automation scheduler failed to observe latest run"
+                                    );
+                                }
+                            }
+                        }
                         Err(error) => {
-                            summary.provisioning_errors += 1;
+                            summary.automation_errors += 1;
                             tracing::warn!(
                                 automation_id = %automation.id,
                                 error = %error,
-                                "Automation scheduler failed to provision first run"
+                                "Automation scheduler failed to load automation detail"
                             );
                         }
                     }
                 }
-                Ok(detail) => {
-                    summary.active_with_runs += 1;
-                    if let Some(latest_run) = detail.runs.last() {
-                        if let Err(error) = self
-                            .observe_latest_run(
-                                &detail.automation,
-                                &detail.runs,
-                                latest_run,
-                                &mut summary,
-                            )
-                            .await
-                        {
-                            summary.automation_errors += 1;
-                            tracing::warn!(
-                                automation_id = %detail.automation.id,
-                                run_id = %latest_run.id,
-                                error = %error,
-                                "Automation scheduler failed to observe latest run"
-                            );
-                        }
+                AutomationStatus::Paused
+                    if is_plan_gate_pause_reason(automation.paused_reason_code.as_deref()) =>
+                {
+                    let Some(_lease) = self.registry.try_acquire_automation(
+                        &automation.id,
+                        Instant::now(),
+                        self.config.poll_interval,
+                    ) else {
+                        continue;
+                    };
+                    summary.leased_automations += 1;
+                    if let Err(error) = self
+                        .resume_plan_gate_paused_automation_on_approval(&automation, &mut summary)
+                        .await
+                    {
+                        summary.automation_errors += 1;
+                        tracing::warn!(
+                            automation_id = %automation.id,
+                            error = %error,
+                            "Automation scheduler failed to scan paused plan gate approval"
+                        );
                     }
                 }
-                Err(error) => {
-                    summary.automation_errors += 1;
-                    tracing::warn!(
-                        automation_id = %automation.id,
-                        error = %error,
-                        "Automation scheduler failed to load automation detail"
-                    );
-                }
+                _ => {}
             }
         }
 
         Ok(summary)
+    }
+
+    async fn resume_plan_gate_paused_automation_on_approval(
+        &self,
+        automation: &Automation,
+        summary: &mut AutomationSchedulerTickSummary,
+    ) -> AppResult<()> {
+        let detail = self.service.get_automation_detail(&automation.id).await?;
+        let Some(latest_run) = detail.runs.last() else {
+            return Ok(());
+        };
+        if latest_run.status != AutomationRunStatus::AwaitingPlanApproval {
+            return Ok(());
+        }
+        let Some(conversation_id) = latest_run.conversation_id.as_ref() else {
+            return Ok(());
+        };
+        let Some(workspace) = self
+            .workspace_repo
+            .get_by_conversation_id(conversation_id)
+            .await?
+        else {
+            return Ok(());
+        };
+        if matching_plan_approval_for_workspace(
+            &self.ideation_session_repo,
+            &self.plan_approval_repo,
+            &workspace,
+        )
+        .await?
+        .is_none()
+        {
+            return Ok(());
+        }
+
+        if self
+            .transition_service
+            .transition_automation_status(
+                &automation.id,
+                AutomationStatus::Paused,
+                AutomationStatus::Active,
+                None,
+                None,
+            )
+            .await?
+        {
+            summary.resumed_automations += 1;
+        }
+        Ok(())
     }
 
     async fn observe_latest_run(
@@ -727,7 +808,8 @@ impl AutomationScheduler {
                 self.observe_running_run(automation, run, summary).await?;
             }
             AutomationRunStatus::AwaitingPlanApproval => {
-                self.observe_awaiting_plan_approval_run(run).await?;
+                self.observe_awaiting_plan_approval_run(run, summary)
+                    .await?;
             }
             AutomationRunStatus::Published => {
                 self.observe_published_run(automation, run, summary).await?;
@@ -812,13 +894,17 @@ impl AutomationScheduler {
             return Ok(());
         }
 
+        let latest_agent_run = self
+            .latest_agent_run_for_current_phase(conversation_id, run)
+            .await?;
+
+        if latest_agent_run.is_none() {
+            self.redeliver_plan_approval_after_crashed_resume(run, workspace.as_ref(), summary)
+                .await?;
+        }
+
         if automation.completion_signal == "agent_completed" {
-            match self
-                .agent_run_repo
-                .get_latest_for_conversation(conversation_id)
-                .await?
-                .map(|run| run.status)
-            {
+            match latest_agent_run.as_ref().map(|run| run.status) {
                 Some(AgentRunStatus::Completed) => {
                     if self
                         .transition_service
@@ -928,12 +1014,7 @@ impl AutomationScheduler {
             // "pushed" mid-publish, or "needs_agent" still within grace) is left untouched
             // so an in-flight publish is not raced.
             None => {
-                if let Some(status) = self
-                    .agent_run_repo
-                    .get_latest_for_conversation(conversation_id)
-                    .await?
-                    .map(|agent_run| agent_run.status)
-                {
+                if let Some(status) = latest_agent_run.as_ref().map(|agent_run| agent_run.status) {
                     // Only a genuinely dead agent is failed promptly here: `Failed`, or a
                     // process killed and pruned as `pid_missing` (-> agent_run `Cancelled`).
                     // A `Completed` agent is deliberately NOT failed: a cleanly-finished
@@ -971,8 +1052,7 @@ impl AutomationScheduler {
         };
 
         let agent_status = self
-            .agent_run_repo
-            .get_latest_for_conversation(conversation_id)
+            .latest_agent_run_for_current_phase(conversation_id, run)
             .await?
             .map(|agent_run| agent_run.status);
 
@@ -1034,8 +1114,121 @@ impl AutomationScheduler {
                         summary,
                     )
                     .await?;
+                    return Ok(());
+                }
+                if agent_status.is_none() {
+                    self.redeliver_plan_reminder_after_crashed_resume(
+                        run,
+                        conversation_id,
+                        summary,
+                    )
+                    .await?;
                 }
             }
+        }
+
+        Ok(())
+    }
+
+    async fn latest_agent_run_for_current_phase(
+        &self,
+        conversation_id: &ChatConversationId,
+        run: &AutomationRun,
+    ) -> AppResult<Option<AgentRun>> {
+        let Some(agent_run) = self
+            .agent_run_repo
+            .get_latest_for_conversation(conversation_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+        if agent_run_is_current_for_phase(run, &agent_run) {
+            Ok(Some(agent_run))
+        } else {
+            Ok(None)
+        }
+    }
+
+    async fn redeliver_plan_approval_after_crashed_resume(
+        &self,
+        run: &AutomationRun,
+        workspace: Option<&AgentConversationWorkspace>,
+        summary: &mut AutomationSchedulerTickSummary,
+    ) -> AppResult<()> {
+        if run.agent_phase_started_at.is_none() {
+            return Ok(());
+        }
+        let Some(workspace) = workspace else {
+            return Ok(());
+        };
+        if workspace.mode != AgentConversationWorkspaceMode::Edit {
+            return Ok(());
+        }
+        let Some(conversation_id) = run.conversation_id.as_ref() else {
+            return Ok(());
+        };
+        let Some(approval) = matching_plan_approval_for_workspace(
+            &self.ideation_session_repo,
+            &self.plan_approval_repo,
+            workspace,
+        )
+        .await?
+        else {
+            return Ok(());
+        };
+        if self.resumer.is_agent_running(conversation_id).await? {
+            return Ok(());
+        }
+        if self.resumer.launches_paused().await? {
+            return Ok(());
+        }
+
+        self.resumer.switch_to_edit(conversation_id).await?;
+        let prompt = approval_delivery_prompt(&approval);
+        if let Err(error) = self
+            .resumer
+            .resume_with_prompt(conversation_id, &prompt)
+            .await
+        {
+            self.fail_running_run(
+                run,
+                PLAN_RESUME_FAILED_ERROR_CODE,
+                &format!("Automation plan approval delivery failed: {error}"),
+                summary,
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    async fn redeliver_plan_reminder_after_crashed_resume(
+        &self,
+        run: &AutomationRun,
+        conversation_id: &ChatConversationId,
+        summary: &mut AutomationSchedulerTickSummary,
+    ) -> AppResult<()> {
+        if run.agent_phase_started_at.is_none() || run.plan_reminder_count == 0 {
+            return Ok(());
+        }
+        if self.resumer.is_agent_running(conversation_id).await? {
+            return Ok(());
+        }
+        if self.resumer.launches_paused().await? {
+            return Ok(());
+        }
+
+        if let Err(error) = self
+            .resumer
+            .resume_with_prompt(conversation_id, AUTOMATION_PLAN_REMINDER_PROMPT)
+            .await
+        {
+            self.fail_running_run(
+                run,
+                "plan_reminder_failed",
+                &format!("Automation plan reminder failed: {error}"),
+                summary,
+            )
+            .await?;
         }
 
         Ok(())
@@ -1086,7 +1279,11 @@ impl AutomationScheduler {
         Ok(())
     }
 
-    async fn observe_awaiting_plan_approval_run(&self, run: &AutomationRun) -> AppResult<()> {
+    async fn observe_awaiting_plan_approval_run(
+        &self,
+        run: &AutomationRun,
+        summary: &mut AutomationSchedulerTickSummary,
+    ) -> AppResult<()> {
         let Some(conversation_id) = run.conversation_id.as_ref() else {
             return Ok(());
         };
@@ -1097,9 +1294,6 @@ impl AutomationScheduler {
         else {
             return Ok(());
         };
-        if workspace.mode != AgentConversationWorkspaceMode::Plan {
-            return Ok(());
-        }
 
         if self.resumer.is_agent_running(conversation_id).await? {
             self.transition_service
@@ -1118,6 +1312,123 @@ impl AutomationScheduler {
             current_plan_artifact_id_for_workspace(&self.ideation_session_repo, &workspace).await?;
         refresh_plan_park_baseline(&self.run_repo, run, plan_artifact_id).await?;
 
+        if let Some(approval) = matching_plan_approval_for_workspace(
+            &self.ideation_session_repo,
+            &self.plan_approval_repo,
+            &workspace,
+        )
+        .await?
+        {
+            self.deliver_plan_approval(run, &workspace, &approval, summary)
+                .await?;
+            return Ok(());
+        }
+
+        if let Some(instructions) = run.plan_pending_instructions.as_deref() {
+            if workspace.mode == AgentConversationWorkspaceMode::Plan {
+                self.deliver_plan_revision(run, conversation_id, instructions, summary)
+                    .await?;
+            }
+            return Ok(());
+        }
+
+        // Manual mode waits indefinitely here. Automatic judge orchestration is the PR 5 arm.
+        Ok(())
+    }
+
+    async fn deliver_plan_approval(
+        &self,
+        run: &AutomationRun,
+        workspace: &AgentConversationWorkspace,
+        approval: &PlanArtifactApproval,
+        summary: &mut AutomationSchedulerTickSummary,
+    ) -> AppResult<()> {
+        let Some(conversation_id) = run.conversation_id.as_ref() else {
+            return Ok(());
+        };
+        if self.resumer.is_agent_running(conversation_id).await? {
+            return Ok(());
+        }
+        if self.resumer.launches_paused().await? {
+            return Ok(());
+        }
+
+        clear_plan_phase_publication_metadata(&self.run_repo, &self.workspace_repo, run, workspace)
+            .await?;
+        self.resumer.switch_to_edit(conversation_id).await?;
+        if !self
+            .transition_service
+            .transition_run_status(
+                &run.id,
+                AutomationRunStatus::AwaitingPlanApproval,
+                AutomationRunStatus::Running,
+                None,
+                None,
+            )
+            .await?
+        {
+            return Ok(());
+        }
+
+        let prompt = approval_delivery_prompt(approval);
+        if let Err(error) = self
+            .resumer
+            .resume_with_prompt(conversation_id, &prompt)
+            .await
+        {
+            self.fail_running_run(
+                run,
+                PLAN_RESUME_FAILED_ERROR_CODE,
+                &format!("Automation plan approval delivery failed: {error}"),
+                summary,
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    async fn deliver_plan_revision(
+        &self,
+        run: &AutomationRun,
+        conversation_id: &ChatConversationId,
+        instructions: &str,
+        summary: &mut AutomationSchedulerTickSummary,
+    ) -> AppResult<()> {
+        if self.resumer.is_agent_running(conversation_id).await? {
+            return Ok(());
+        }
+        if self.resumer.launches_paused().await? {
+            return Ok(());
+        }
+
+        if !self
+            .transition_service
+            .transition_run_status_clearing_plan_pending_instructions(
+                &run.id,
+                AutomationRunStatus::AwaitingPlanApproval,
+                AutomationRunStatus::Running,
+                None,
+                None,
+            )
+            .await?
+        {
+            return Ok(());
+        }
+
+        let prompt = revision_delivery_prompt(instructions);
+        if let Err(error) = self
+            .resumer
+            .resume_with_prompt(conversation_id, &prompt)
+            .await
+        {
+            self.fail_running_run(
+                run,
+                PLAN_RESUME_FAILED_ERROR_CODE,
+                &format!("Automation plan revision delivery failed: {error}"),
+                summary,
+            )
+            .await?;
+        }
         Ok(())
     }
 
@@ -1500,6 +1811,11 @@ fn running_run_has_exceeded(run: &AutomationRun, limit: Duration) -> bool {
         .agent_phase_started_at
         .unwrap_or_else(|| run.started_at.unwrap_or(run.created_at));
     elapsed_since(started_at).is_some_and(|elapsed| elapsed >= limit)
+}
+
+fn agent_run_is_current_for_phase(run: &AutomationRun, agent_run: &AgentRun) -> bool {
+    run.agent_phase_started_at
+        .is_none_or(|phase_started_at| agent_run.started_at >= phase_started_at)
 }
 
 fn judge_has_exceeded(run: &AutomationRun, limit: Duration) -> bool {

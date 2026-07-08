@@ -28,6 +28,11 @@ use tauri::{Emitter, Manager, Runtime, State};
 use crate::application::agent_conversation_fork::{
     fork_agent_conversation as fork_agent_conversation_in_state, AgentConversationForkResult,
 };
+use crate::application::agent_conversation_mode_switch::{
+    automation_run_mode_locked_error_message, is_automation_run_mode_switch_locked,
+};
+#[doc(hidden)]
+pub use crate::application::agent_conversation_mode_switch::AUTOMATION_RUN_MODE_LOCKED_ERROR_CODE;
 use crate::application::agent_conversation_archive::{
     archive_agent_conversation_for_state, close_agent_workspace_pr_for_state,
 };
@@ -134,8 +139,6 @@ const AGENT_WORKSPACE_REPAIR_ACTION_PUBLISH: &str = "publish";
 const AGENT_WORKSPACE_REPAIR_ACTION_UPDATE_ONLY: &str = "update_only";
 pub const AGENT_WORKSPACE_PUBLISH_IN_PROGRESS_MESSAGE: &str =
     "Agent workspace publish is already in progress";
-#[doc(hidden)]
-pub const AUTOMATION_RUN_MODE_LOCKED_ERROR_CODE: &str = "[ralphx:automation_run_mode_locked]";
 
 fn agent_workspace_interactive_slot_key(conversation_id: &ChatConversationId) -> String {
     format!("{}/{}", ChatContextType::Project, conversation_id.as_str())
@@ -3117,10 +3120,10 @@ async fn switch_agent_conversation_mode_for_state_with_running_policy(
     if conversation.context_type != ChatContextType::Project {
         return Err("Only project agent conversations can change mode".to_string());
     }
-    if initiator == ModeSwitchInitiator::User && conversation.automation_run_id.is_some() {
-        return Err(format!(
-            "{AUTOMATION_RUN_MODE_LOCKED_ERROR_CODE} Automation run conversations cannot be switched manually"
-        ));
+    if initiator == ModeSwitchInitiator::User
+        && is_automation_run_mode_switch_locked(&conversation)
+    {
+        return Err(automation_run_mode_locked_error_message());
     }
 
     let running_key = RunningAgentKey::new(

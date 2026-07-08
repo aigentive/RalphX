@@ -660,6 +660,59 @@ impl AutomationRunRepository for SqliteAutomationRunRepository {
             .await
     }
 
+    async fn compare_and_swap_status_clearing_plan_pending_instructions(
+        &self,
+        id: &AutomationRunId,
+        from: AutomationRunStatus,
+        to: AutomationRunStatus,
+        error_code: Option<String>,
+        error_detail: Option<String>,
+    ) -> AppResult<bool> {
+        let id = id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                let now = Utc::now().to_rfc3339();
+                let terminal = matches!(
+                    to,
+                    AutomationRunStatus::Merged
+                        | AutomationRunStatus::Completed
+                        | AutomationRunStatus::PrClosed
+                        | AutomationRunStatus::AgentFailed
+                        | AutomationRunStatus::Cancelled
+                );
+                let entering_running = to == AutomationRunStatus::Running;
+                let affected = conn.execute(
+                    "UPDATE automation_runs
+                     SET status = ?1,
+                         error_code = ?2,
+                         error_detail = ?3,
+                         plan_pending_instructions = NULL,
+                         finished_at = CASE
+                             WHEN ?4 = 1 THEN COALESCE(finished_at, ?5)
+                             ELSE finished_at
+                         END,
+                         agent_phase_started_at = CASE
+                             WHEN ?6 = 1 THEN ?5
+                             ELSE agent_phase_started_at
+                         END,
+                         updated_at = ?5
+                     WHERE id = ?7 AND status = ?8",
+                    params![
+                        to.as_str(),
+                        error_code,
+                        error_detail,
+                        if terminal { 1_i64 } else { 0_i64 },
+                        now,
+                        if entering_running { 1_i64 } else { 0_i64 },
+                        id,
+                        from.as_str(),
+                    ],
+                )?;
+                Ok(affected == 1)
+            })
+            .await
+    }
+
     async fn update_start_metadata(
         &self,
         id: &AutomationRunId,
@@ -719,6 +772,37 @@ impl AutomationRunRepository for SqliteAutomationRunRepository {
                         metadata.pr_base_ref_name,
                         now,
                     ],
+                )?;
+                if affected == 0 {
+                    return Ok(None);
+                }
+
+                let sql = format!("{SELECT_RUN} WHERE id = ?1");
+                conn.query_row(&sql, [id], Self::row_to_run)
+                    .optional()
+                    .map_err(AppError::from)
+            })
+            .await
+    }
+
+    async fn clear_publication_metadata(
+        &self,
+        id: &AutomationRunId,
+    ) -> AppResult<Option<AutomationRun>> {
+        let id = id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                let now = Utc::now().to_rfc3339();
+                let affected = conn.execute(
+                    "UPDATE automation_runs
+                     SET pr_number = NULL,
+                         pr_url = NULL,
+                         pr_title = NULL,
+                         pr_head_ref_name = NULL,
+                         pr_base_ref_name = NULL,
+                         updated_at = ?2
+                     WHERE id = ?1",
+                    params![id, now],
                 )?;
                 if affected == 0 {
                     return Ok(None);
@@ -903,6 +987,27 @@ impl AutomationRunRepository for SqliteAutomationRunRepository {
                         id,
                         from.as_str(),
                     ],
+                )?;
+                Ok(affected == 1)
+            })
+            .await
+    }
+
+    async fn clear_plan_judge_state(&self, id: &AutomationRunId) -> AppResult<bool> {
+        let id = id.as_str().to_string();
+        self.db
+            .run(move |conn| {
+                let affected = conn.execute(
+                    "UPDATE automation_runs
+                     SET plan_judge_state = 'none',
+                         plan_judge_lease_expires_at = NULL,
+                         plan_judge_verdict_json = NULL,
+                         updated_at = ?2
+                     WHERE id = ?1
+                       AND (plan_judge_state <> 'none'
+                            OR plan_judge_lease_expires_at IS NOT NULL
+                            OR plan_judge_verdict_json IS NOT NULL)",
+                    params![id, Utc::now().to_rfc3339()],
                 )?;
                 Ok(affected == 1)
             })

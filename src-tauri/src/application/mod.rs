@@ -7,6 +7,7 @@ pub mod agent_conversation_fork;
 pub mod agent_conversation_granola_note;
 pub mod agent_conversation_jira_issue;
 pub mod agent_conversation_linear_issue;
+pub(crate) mod agent_conversation_mode_switch;
 pub mod agent_conversation_start_service;
 pub mod agent_conversation_workspace;
 pub mod agent_conversation_workspace_base;
@@ -259,6 +260,8 @@ pub use validation_service::{
 pub use webhook_service::WebhookService;
 
 #[cfg(test)]
+mod agent_conversation_mode_switch_tests;
+#[cfg(test)]
 mod agent_conversation_workspace_base_tests;
 #[cfg(test)]
 mod agent_issue_report_tests;
@@ -322,6 +325,8 @@ mod session_export_service_tests;
 mod session_namer_agent_tests;
 #[cfg(test)]
 mod session_namer_prompt_tests;
+#[cfg(test)]
+mod startup_background_tests;
 #[cfg(test)]
 mod task_transition_service_tests;
 #[cfg(test)]

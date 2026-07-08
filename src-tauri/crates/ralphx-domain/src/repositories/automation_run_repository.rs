@@ -51,6 +51,15 @@ pub trait AutomationRunRepository: Send + Sync {
         error_detail: Option<String>,
     ) -> AppResult<bool>;
 
+    async fn compare_and_swap_status_clearing_plan_pending_instructions(
+        &self,
+        id: &AutomationRunId,
+        from: AutomationRunStatus,
+        to: AutomationRunStatus,
+        error_code: Option<String>,
+        error_detail: Option<String>,
+    ) -> AppResult<bool>;
+
     /// Attach the started conversation/workspace metadata while the run is still provisioning.
     /// Implementations return `None` when the run is missing or has already left provisioning.
     async fn update_start_metadata(
@@ -67,6 +76,14 @@ pub trait AutomationRunRepository: Send + Sync {
         id: &AutomationRunId,
         metadata: AutomationRunPublicationMetadata,
     ) -> AppResult<Option<AutomationRun>>;
+
+    async fn clear_publication_metadata(
+        &self,
+        id: &AutomationRunId,
+    ) -> AppResult<Option<AutomationRun>> {
+        self.update_publication_metadata(id, AutomationRunPublicationMetadata::default())
+            .await
+    }
 
     /// Record PR merge metadata while the run is still waiting for a published PR signal.
     async fn update_merge_metadata(
@@ -107,6 +124,8 @@ pub trait AutomationRunRepository: Send + Sync {
         plan_judge_verdict_json: Option<String>,
         plan_judge_lease_expires_at: Option<DateTime<Utc>>,
     ) -> AppResult<bool>;
+
+    async fn clear_plan_judge_state(&self, id: &AutomationRunId) -> AppResult<bool>;
 
     async fn set_plan_pending_instructions(
         &self,

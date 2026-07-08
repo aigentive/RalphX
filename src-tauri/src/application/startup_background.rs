@@ -5,6 +5,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 
+use crate::application::agent_conversation_mode_switch::{
+    system_switch_automation_run_to_edit,
+};
 use crate::application::agent_conversation_start_service::{
     AgentConversationStartDeps, AgentConversationStartService,
 };
@@ -31,6 +34,7 @@ use crate::domain::repositories::{
     TaskRepository,
 };
 use crate::error::{AppError, AppResult};
+use crate::infrastructure::sqlite::SqlitePlanArtifactApprovalRepository;
 use crate::infrastructure::{ExternalMcpHandle, ExternalMcpSupervisor};
 use crate::utils::backend_endpoint::backend_http_port;
 use tauri::Manager;
@@ -60,6 +64,18 @@ impl<R: tauri::Runtime + 'static> AgentConversationAutomationRunStarter<R> {
             app_handle,
         }
     }
+}
+
+#[cfg(test)]
+pub(crate) fn automation_run_starter_for_test(
+    state: AppState,
+) -> AgentConversationAutomationRunStarter<tauri::test::MockRuntime> {
+    AgentConversationAutomationRunStarter::new(
+        state,
+        Arc::new(ExecutionState::new()),
+        None,
+        crate::testing::create_mock_app_handle(),
+    )
 }
 
 #[async_trait]
@@ -116,6 +132,17 @@ impl<R: tauri::Runtime + 'static> AgentConversationAutomationRunResumer<R> {
     }
 }
 
+#[cfg(test)]
+pub(crate) fn automation_run_resumer_for_test(
+    state: AppState,
+) -> AgentConversationAutomationRunResumer<tauri::test::MockRuntime> {
+    AgentConversationAutomationRunResumer::new(
+        state,
+        Arc::new(ExecutionState::new()),
+        crate::testing::create_mock_app_handle(),
+    )
+}
+
 #[async_trait]
 impl<R: tauri::Runtime + 'static> AutomationRunResumer
     for AgentConversationAutomationRunResumer<R>
@@ -132,73 +159,91 @@ impl<R: tauri::Runtime + 'static> AutomationRunResumer
         Ok(self.execution_state.is_paused())
     }
 
+    async fn switch_to_edit(&self, conversation_id: &ChatConversationId) -> AppResult<()> {
+        system_switch_automation_run_to_edit(conversation_id, &self.state).await?;
+        Ok(())
+    }
+
     async fn resume_with_prompt(
         &self,
         conversation_id: &ChatConversationId,
         prompt: &str,
     ) -> AppResult<()> {
-        let conversation = self
-            .state
-            .chat_conversation_repo
-            .get_by_id(conversation_id)
-            .await?
-            .ok_or_else(|| {
-                AppError::NotFound(format!(
-                    "automation run conversation {} not found",
-                    conversation_id
-                ))
-            })?;
-        if conversation.context_type != ChatContextType::Project {
-            return Err(AppError::Validation(format!(
-                "automation run conversation {} is not project-backed",
-                conversation_id
-            )));
-        }
-
         let chat_service = self.chat_service();
-        let runtime_context_id = conversation_id.as_str();
-
-        let result = chat_service
-            .send_message(
-                ChatContextType::Project,
-                &conversation.context_id,
-                prompt,
-                SendMessageOptions {
-                    conversation_id_override: Some(conversation_id.clone()),
-                    caller_context: SendCallerContext::StartupResumption,
-                    ..SendMessageOptions::default()
-                },
-            )
-            .await
-            .map_err(|error| {
-                AppError::Infrastructure(format!("automation plan reminder send failed: {error}"))
-            })?;
-
-        if result.was_queued {
-            if let Some(queued_message_id) = result.queued_message_id.as_deref() {
-                if let Err(error) = chat_service
-                    .delete_queued_message(
-                        ChatContextType::Project,
-                        &runtime_context_id,
-                        queued_message_id,
-                    )
-                    .await
-                {
-                    warn!(
-                        conversation_id = conversation_id.as_str(),
-                        queued_message_id,
-                        error = %error,
-                        "Failed to purge queued automation plan reminder"
-                    );
-                }
-            }
-            return Err(AppError::Infrastructure(
-                "automation plan reminder send was queued instead of spawning".to_string(),
-            ));
-        }
-
-        Ok(())
+        resume_automation_run_with_prompt_via_chat_service(
+            &self.state,
+            &chat_service,
+            conversation_id,
+            prompt,
+        )
+        .await
     }
+}
+
+pub(crate) async fn resume_automation_run_with_prompt_via_chat_service<S: ChatService + ?Sized>(
+    state: &AppState,
+    chat_service: &S,
+    conversation_id: &ChatConversationId,
+    prompt: &str,
+) -> AppResult<()> {
+    let conversation = state
+        .chat_conversation_repo
+        .get_by_id(conversation_id)
+        .await?
+        .ok_or_else(|| {
+            AppError::NotFound(format!(
+                "automation run conversation {} not found",
+                conversation_id
+            ))
+        })?;
+    if conversation.context_type != ChatContextType::Project {
+        return Err(AppError::Validation(format!(
+            "automation run conversation {} is not project-backed",
+            conversation_id
+        )));
+    }
+
+    let runtime_context_id = conversation_id.as_str();
+    let result = chat_service
+        .send_message(
+            ChatContextType::Project,
+            &conversation.context_id,
+            prompt,
+            SendMessageOptions {
+                conversation_id_override: Some(conversation_id.clone()),
+                caller_context: SendCallerContext::StartupResumption,
+                ..SendMessageOptions::default()
+            },
+        )
+        .await
+        .map_err(|error| {
+            AppError::Infrastructure(format!("automation plan gate send failed: {error}"))
+        })?;
+
+    if result.was_queued {
+        if let Some(queued_message_id) = result.queued_message_id.as_deref() {
+            if let Err(error) = chat_service
+                .delete_queued_message(
+                    ChatContextType::Project,
+                    &runtime_context_id,
+                    queued_message_id,
+                )
+                .await
+            {
+                warn!(
+                    conversation_id = conversation_id.as_str(),
+                    queued_message_id,
+                    error = %error,
+                    "Failed to purge queued automation plan gate prompt"
+                );
+            }
+        }
+        return Err(AppError::Infrastructure(
+            "automation plan gate send was queued instead of spawning".to_string(),
+        ));
+    }
+
+    Ok(())
 }
 
 pub async fn recover_memory_archive_jobs_on_startup(
@@ -292,6 +337,7 @@ pub fn spawn_automation_scheduler(
         Arc::clone(&state.chat_conversation_repo),
         Arc::clone(&state.agent_conversation_workspace_repo),
         Arc::clone(&state.ideation_session_repo),
+        Arc::new(SqlitePlanArtifactApprovalRepository::new(state.db.clone())),
         starter,
         resumer,
         signal_checker,
@@ -327,6 +373,7 @@ pub fn spawn_automation_scheduler(
                         successor_runs = summary.successor_runs,
                         signal_check_errors = summary.signal_check_errors,
                         paused_automations = summary.paused_automations,
+                        resumed_automations = summary.resumed_automations,
                         completed_automations = summary.completed_automations,
                         provisioning_errors = summary.provisioning_errors,
                         automation_errors = summary.automation_errors,
@@ -525,46 +572,4 @@ pub fn spawn_recovery_queue_processor(
     tauri::async_runtime::spawn(async move {
         recovery_processor.run().await;
     });
-}
-
-#[cfg(test)]
-mod tests {
-    use std::sync::Arc;
-
-    use super::*;
-    use crate::domain::entities::ChatConversationId;
-    use crate::error::AppError;
-
-    #[tokio::test]
-    async fn automation_run_starter_validates_request_before_runtime_start() {
-        let starter = AgentConversationAutomationRunStarter::new(
-            AppState::new_test(),
-            Arc::new(ExecutionState::new()),
-            None,
-            crate::testing::create_mock_app_handle(),
-        );
-        let request = AutomationRunStartRequest {
-            project_id: "project-1".to_string(),
-            conversation_id: ChatConversationId::from_string(
-                "11111111-1111-4111-8111-111111111111",
-            ),
-            run_prompt: "Run the automation".to_string(),
-            provider_harness: "codex".to_string(),
-            model_id: "gpt-5.4".to_string(),
-            logical_effort: Some("impossible".to_string()),
-            run_mode: "edit".to_string(),
-            base_ref_kind: "local_branch".to_string(),
-            base_ref: "main".to_string(),
-            base_display_name: Some("main".to_string()),
-            base_source_pull_request_json: None,
-            composer_project_references: Vec::new(),
-            composer_integration_references: Vec::new(),
-            composer_artifact_references: Vec::new(),
-            automation_context: None,
-        };
-
-        let error = starter.start_run(request).await.unwrap_err();
-
-        assert!(matches!(error, AppError::Validation(message) if message.contains("impossible")));
-    }
 }
