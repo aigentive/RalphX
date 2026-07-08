@@ -12,6 +12,7 @@ import {
 import { QueuedTaskRow } from "./QueuedTaskRow";
 import { useQueuedTasks } from "@/hooks/useQueuedTasks";
 import { shouldPreserveExecutionPopoverForTarget } from "./executionPopoverDismissal";
+import type { ExecutionBarTaskNavigationTarget } from "./executionTaskNavigation";
 
 interface QueuedTasksPopoverProps {
   /** The project ID */
@@ -26,6 +27,8 @@ interface QueuedTasksPopoverProps {
   open?: boolean;
   /** Optional controlled open-state handler */
   onOpenChange?: (open: boolean) => void;
+  /** Called when a queued task should open its Agent conversation task detail */
+  onNavigateToTask?: (target: ExecutionBarTaskNavigationTarget) => void;
 }
 
 export function QueuedTasksPopover({
@@ -35,6 +38,7 @@ export function QueuedTasksPopover({
   alignOffset = -24,
   open,
   onOpenChange,
+  onNavigateToTask,
 }: QueuedTasksPopoverProps) {
   const { data: queuedTasks, isLoading } = useQueuedTasks(projectId);
   const controlledProps =
@@ -110,6 +114,10 @@ export function QueuedTasksPopover({
                 key={task.id}
                 position={index + 1}
                 task={task}
+                onNavigateToTask={(target) => {
+                  onOpenChange?.(false);
+                  onNavigateToTask?.(target);
+                }}
               />
             ))
           )}

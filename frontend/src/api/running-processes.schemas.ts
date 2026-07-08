@@ -2,6 +2,7 @@
 
 import { z } from "zod";
 import { TaskStepResponseSchema } from "@/types/task-step";
+import { ExecutionTaskAgentWorkspaceSchema } from "./execution-task-agent-workspace";
 
 /**
  * Step progress summary schema from Rust (snake_case)
@@ -44,6 +45,7 @@ export const RunningProcessSchema = z.object({
   elapsed_seconds: z.number().int().nullable(),
   trigger_origin: z.string().nullable(),
   task_branch: z.string().nullable(),
+  agent_workspace: ExecutionTaskAgentWorkspaceSchema.nullable().optional(),
   team_name: z.string().optional(),
   teammates: z.array(TeammateSummarySchema).optional(),
   current_wave: z.number().int().nonnegative().optional(),

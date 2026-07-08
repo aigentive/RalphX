@@ -49,6 +49,11 @@ export interface AgentArtifactState {
   taskMode: AgentTaskArtifactMode;
 }
 
+export interface AgentTaskArtifactFocusRequest {
+  taskId: string;
+  requestId: number;
+}
+
 export interface AgentBranchBaseCacheEntry {
   options: BranchBaseOption[];
   selectedKey: string;
@@ -97,6 +102,10 @@ interface AgentSessionState {
   sidebarPublicationStateFilters: AgentSidebarPublicationState[];
   pinnedConversationIds: Record<string, true>;
   artifactByConversationId: Record<string, AgentArtifactState>;
+  taskArtifactFocusRequestByConversationId: Record<
+    string,
+    AgentTaskArtifactFocusRequest
+  >;
   runtimeByConversationId: Record<string, AgentRuntimeSelection>;
   lastRuntimeByProjectId: Record<string, AgentRuntimeSelection>;
   branchBaseCacheByProjectId: Record<string, AgentBranchBaseCacheEntry>;
@@ -129,6 +138,7 @@ interface AgentSessionActions {
   setArtifactTab: (conversationId: string, tab: AgentArtifactTab) => void;
   setArtifactState: (conversationId: string, artifactState: AgentArtifactState) => void;
   setTaskArtifactMode: (conversationId: string, mode: AgentTaskArtifactMode) => void;
+  focusTaskArtifact: (conversationId: string, taskId: string) => void;
   setRuntimeForConversation: (
     conversationId: string,
     projectId: string,
@@ -282,6 +292,7 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
       sidebarPublicationStateFilters: [...DEFAULT_SIDEBAR_PUBLICATION_STATE_FILTERS],
       pinnedConversationIds: {},
       artifactByConversationId: {},
+      taskArtifactFocusRequestByConversationId: {},
       runtimeByConversationId: {},
       lastRuntimeByProjectId: {},
       branchBaseCacheByProjectId: {},
@@ -429,6 +440,19 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
       setTaskArtifactMode: (conversationId, mode) =>
         set((state) => {
           ensureArtifactState(state, conversationId).taskMode = mode;
+        }),
+
+      focusTaskArtifact: (conversationId, taskId) =>
+        set((state) => {
+          const artifactState = ensureArtifactState(state, conversationId);
+          artifactState.activeTab = "tasks";
+          artifactState.isOpen = true;
+          const current =
+            state.taskArtifactFocusRequestByConversationId[conversationId];
+          state.taskArtifactFocusRequestByConversationId[conversationId] = {
+            taskId,
+            requestId: (current?.requestId ?? 0) + 1,
+          };
         }),
 
       setRuntimeForConversation: (conversationId, projectId, runtime) =>

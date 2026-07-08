@@ -7,18 +7,26 @@
 import { PriorityBadge } from "@/components/Ideation/PriorityBadge";
 import { priorityFromScore } from "@/lib/priority";
 import type { QueuedTask } from "@/hooks/useQueuedTasks";
-import { useUiStore } from "@/stores/uiStore";
+import {
+  taskRowNavigationTarget,
+  type ExecutionBarTaskNavigationTarget,
+} from "./executionTaskNavigation";
 
 interface QueuedTaskRowProps {
   /** Queue position (1-indexed) */
   position: number;
   /** Task with plan title */
   task: QueuedTask;
+  /** Called when the task title should open its Agent conversation task detail */
+  onNavigateToTask?: (target: ExecutionBarTaskNavigationTarget) => void;
 }
 
-export function QueuedTaskRow({ position, task }: QueuedTaskRowProps) {
+export function QueuedTaskRow({
+  position,
+  task,
+  onNavigateToTask,
+}: QueuedTaskRowProps) {
   const priority = priorityFromScore(task.priority);
-  const navigateToTask = useUiStore((s) => s.navigateToTask);
 
   return (
     <div
@@ -34,7 +42,7 @@ export function QueuedTaskRow({ position, task }: QueuedTaskRowProps) {
       <button
         className="flex-1 text-xs font-medium truncate min-w-0 text-left cursor-pointer hover:opacity-75 transition-opacity"
         style={{ color: "var(--text-primary)" }}
-        onClick={() => navigateToTask(task.id)}
+        onClick={() => onNavigateToTask?.(taskRowNavigationTarget(task, "queued"))}
       >
         {task.title}
       </button>

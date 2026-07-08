@@ -26,8 +26,7 @@ type PhaseStatusStyle = {
   Icon: typeof Circle;
 };
 
-// Literal-value fallbacks alongside the semantic tokens keep the badges painted
-// in WKWebView even if a var() chain fails to cascade.
+// Semantic tokens keep the badges aligned with the active theme.
 const PHASE_STATUS_STYLES: Record<AutomationPhaseStatus, PhaseStatusStyle> = {
   done: {
     label: AUTOMATION_PHASE_STATUS_LABELS.done,
