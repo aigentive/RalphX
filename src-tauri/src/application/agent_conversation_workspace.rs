@@ -1666,6 +1666,272 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn effective_workspace_path_resolves_direct_workspace_path() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let repo_path = temp.path().join("repo");
+        let worktree_parent = temp.path().join("worktrees");
+        setup_repo(&repo_path);
+        let mut project = Project::new(
+            "Direct Effective Checkout".to_string(),
+            repo_path.to_string_lossy().to_string(),
+        );
+        project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+        let conversation_id =
+            ChatConversationId::from_string("conversation-effective-direct".to_string());
+        let workspace = prepare_agent_conversation_workspace(
+            &project,
+            &conversation_id,
+            AgentConversationWorkspaceMode::Edit,
+            AgentConversationWorkspaceBaseSelection {
+                kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
+                branch_mode: None,
+                base_ref: Some("main".to_string()),
+                display_name: None,
+                source_pull_request: None,
+            },
+        )
+        .await
+        .expect("workspace should be prepared");
+        let plan_branch_repo = MemoryPlanBranchRepository::new();
+
+        let resolved = resolve_effective_agent_conversation_workspace_path(
+            &project,
+            &workspace,
+            &plan_branch_repo,
+        )
+        .await
+        .expect("direct effective path should resolve");
+
+        assert_eq!(resolved.path, PathBuf::from(&workspace.worktree_path));
+        assert_eq!(resolved.branch_name, workspace.branch_name);
+    }
+
+    #[tokio::test]
+    async fn effective_workspace_path_rejects_workspace_project_mismatch() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let repo_path = temp.path().join("repo");
+        setup_repo(&repo_path);
+        let project = Project::new(
+            "Workspace Project".to_string(),
+            repo_path.to_string_lossy().to_string(),
+        );
+        let other_project = Project::new(
+            "Other Project".to_string(),
+            repo_path.to_string_lossy().to_string(),
+        );
+        let workspace = AgentConversationWorkspace::new(
+            ChatConversationId::from_string("conversation-project-mismatch".to_string()),
+            other_project.id.clone(),
+            AgentConversationWorkspaceMode::Edit,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main".to_string(),
+            Some("Project default (main)".to_string()),
+            None,
+            "ralphx/ralphx/agent-project-mismatch".to_string(),
+            temp.path().join("missing").to_string_lossy().to_string(),
+        );
+        let plan_branch_repo = MemoryPlanBranchRepository::new();
+
+        let error = resolve_effective_agent_conversation_workspace_path(
+            &project,
+            &workspace,
+            &plan_branch_repo,
+        )
+        .await
+        .expect_err("workspace project mismatch should be rejected");
+
+        assert!(error.to_string().contains("belongs to project"));
+    }
+
+    #[tokio::test]
+    async fn effective_workspace_path_rejects_missing_linked_plan_branch() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let repo_path = temp.path().join("repo");
+        setup_repo(&repo_path);
+        let project = Project::new(
+            "Missing Plan Branch".to_string(),
+            repo_path.to_string_lossy().to_string(),
+        );
+        let session_id = IdeationSessionId::from_string("session-missing-plan-branch");
+        let plan_branch = PlanBranch::new(
+            ArtifactId::from_string("artifact-missing-plan-branch"),
+            session_id.clone(),
+            project.id.clone(),
+            "feature/missing-plan-branch".to_string(),
+            "main".to_string(),
+        );
+        let mut workspace = AgentConversationWorkspace::new(
+            ChatConversationId::from_string("conversation-missing-plan-branch".to_string()),
+            project.id.clone(),
+            AgentConversationWorkspaceMode::Ideation,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main".to_string(),
+            Some("Project default (main)".to_string()),
+            None,
+            plan_branch.branch_name.clone(),
+            temp.path().join("missing").to_string_lossy().to_string(),
+        );
+        workspace.linked_ideation_session_id = Some(session_id);
+        workspace.linked_plan_branch_id = Some(plan_branch.id);
+        let plan_branch_repo = MemoryPlanBranchRepository::new();
+
+        let error = resolve_effective_agent_conversation_workspace_path(
+            &project,
+            &workspace,
+            &plan_branch_repo,
+        )
+        .await
+        .expect_err("missing linked plan branch should be rejected");
+
+        assert!(error.to_string().contains("Linked plan branch not found"));
+    }
+
+    #[tokio::test]
+    async fn effective_workspace_path_rejects_linked_plan_project_mismatch() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let repo_path = temp.path().join("repo");
+        setup_repo(&repo_path);
+        let project = Project::new(
+            "Linked Plan Project".to_string(),
+            repo_path.to_string_lossy().to_string(),
+        );
+        let other_project = Project::new(
+            "Other Linked Plan Project".to_string(),
+            repo_path.to_string_lossy().to_string(),
+        );
+        let session_id = IdeationSessionId::from_string("session-plan-project-mismatch");
+        let plan_branch = PlanBranch::new(
+            ArtifactId::from_string("artifact-plan-project-mismatch"),
+            session_id.clone(),
+            other_project.id.clone(),
+            "feature/plan-project-mismatch".to_string(),
+            "main".to_string(),
+        );
+        let mut workspace = AgentConversationWorkspace::new(
+            ChatConversationId::from_string("conversation-plan-project-mismatch".to_string()),
+            project.id.clone(),
+            AgentConversationWorkspaceMode::Ideation,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main".to_string(),
+            Some("Project default (main)".to_string()),
+            None,
+            plan_branch.branch_name.clone(),
+            temp.path().join("missing").to_string_lossy().to_string(),
+        );
+        workspace.linked_ideation_session_id = Some(session_id);
+        workspace.linked_plan_branch_id = Some(plan_branch.id.clone());
+        let plan_branch_repo = MemoryPlanBranchRepository::new();
+        plan_branch_repo
+            .create(plan_branch)
+            .await
+            .expect("plan branch should be seeded");
+
+        let error = resolve_effective_agent_conversation_workspace_path(
+            &project,
+            &workspace,
+            &plan_branch_repo,
+        )
+        .await
+        .expect_err("linked plan project mismatch should be rejected");
+
+        assert!(error.to_string().contains("belongs to project"));
+    }
+
+    #[tokio::test]
+    async fn effective_workspace_path_rejects_linked_plan_session_mismatch() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let repo_path = temp.path().join("repo");
+        setup_repo(&repo_path);
+        let project = Project::new(
+            "Linked Plan Session".to_string(),
+            repo_path.to_string_lossy().to_string(),
+        );
+        let plan_branch = PlanBranch::new(
+            ArtifactId::from_string("artifact-plan-session-mismatch"),
+            IdeationSessionId::from_string("session-plan-branch"),
+            project.id.clone(),
+            "feature/plan-session-mismatch".to_string(),
+            "main".to_string(),
+        );
+        let mut workspace = AgentConversationWorkspace::new(
+            ChatConversationId::from_string("conversation-plan-session-mismatch".to_string()),
+            project.id.clone(),
+            AgentConversationWorkspaceMode::Ideation,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main".to_string(),
+            Some("Project default (main)".to_string()),
+            None,
+            plan_branch.branch_name.clone(),
+            temp.path().join("missing").to_string_lossy().to_string(),
+        );
+        workspace.linked_ideation_session_id =
+            Some(IdeationSessionId::from_string("session-workspace"));
+        workspace.linked_plan_branch_id = Some(plan_branch.id.clone());
+        let plan_branch_repo = MemoryPlanBranchRepository::new();
+        plan_branch_repo
+            .create(plan_branch)
+            .await
+            .expect("plan branch should be seeded");
+
+        let error = resolve_effective_agent_conversation_workspace_path(
+            &project,
+            &workspace,
+            &plan_branch_repo,
+        )
+        .await
+        .expect_err("linked plan session mismatch should be rejected");
+
+        assert!(error.to_string().contains("belongs to ideation session"));
+    }
+
+    #[tokio::test]
+    async fn effective_workspace_path_rejects_linked_plan_branch_mismatch() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let repo_path = temp.path().join("repo");
+        setup_repo(&repo_path);
+        let project = Project::new(
+            "Linked Plan Branch".to_string(),
+            repo_path.to_string_lossy().to_string(),
+        );
+        let session_id = IdeationSessionId::from_string("session-plan-branch-mismatch");
+        let plan_branch = PlanBranch::new(
+            ArtifactId::from_string("artifact-plan-branch-mismatch"),
+            session_id.clone(),
+            project.id.clone(),
+            "feature/plan-branch-mismatch".to_string(),
+            "main".to_string(),
+        );
+        let mut workspace = AgentConversationWorkspace::new(
+            ChatConversationId::from_string("conversation-plan-branch-mismatch".to_string()),
+            project.id.clone(),
+            AgentConversationWorkspaceMode::Ideation,
+            IdeationAnalysisBaseRefKind::ProjectDefault,
+            "main".to_string(),
+            Some("Project default (main)".to_string()),
+            None,
+            "feature/workspace-branch-mismatch".to_string(),
+            temp.path().join("missing").to_string_lossy().to_string(),
+        );
+        workspace.linked_ideation_session_id = Some(session_id);
+        workspace.linked_plan_branch_id = Some(plan_branch.id.clone());
+        let plan_branch_repo = MemoryPlanBranchRepository::new();
+        plan_branch_repo
+            .create(plan_branch)
+            .await
+            .expect("plan branch should be seeded");
+
+        let error = resolve_effective_agent_conversation_workspace_path(
+            &project,
+            &workspace,
+            &plan_branch_repo,
+        )
+        .await
+        .expect_err("linked plan branch mismatch should be rejected");
+
+        assert!(error.to_string().contains("records branch"));
+    }
+
+    #[tokio::test]
     async fn linked_plan_branch_worktree_refuses_file_at_expected_path() {
         let temp = tempfile::tempdir().expect("tempdir should be created");
         let repo_path = temp.path().join("repo");
