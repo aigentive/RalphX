@@ -756,7 +756,7 @@ describe("AgentsView artifact pane", () => {
     );
   });
 
-  it("shows the Proposals shortcut after a plan-mode session has proposals", async () => {
+  it("keeps Proposals out of header shortcuts after a plan-mode session has proposals", async () => {
     mockAgentViewData(conversation({ agentMode: "plan" }));
     getAgentConversationWorkspaceMock.mockResolvedValue(
       conversationWorkspace({
@@ -771,10 +771,10 @@ describe("AgentsView artifact pane", () => {
           id: "proposal-1",
           sessionId: "session-1",
           title: "Gate proposal tab visibility",
-          description: "Show Proposals only when proposal content exists.",
+          description: "Keep proposal content inside the Plan tab.",
           category: "frontend",
           steps: ["Update artifact tabs"],
-          acceptanceCriteria: ["Proposals shortcut appears with content"],
+          acceptanceCriteria: ["Proposals shortcut stays hidden"],
           suggestedPriority: "high",
           priorityScore: 90,
           priorityReason: "Avoids empty navigation",
@@ -810,7 +810,7 @@ describe("AgentsView artifact pane", () => {
       expect(screen.getByLabelText("Open artifacts")).toBeInTheDocument()
     );
     expect(screen.getByLabelText("Plan")).toBeInTheDocument();
-    expect(screen.getByLabelText("Proposals")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Proposals")).not.toBeInTheDocument();
   });
 
 });
