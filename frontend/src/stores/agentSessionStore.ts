@@ -9,6 +9,7 @@ import {
   type AgentRuntimeSelection,
 } from "@/lib/agent-models";
 import type {
+  AgentConversationBaseSelection,
   AgentConversationWorkspaceMode,
   ComposerArtifactReference,
   ComposerIntegrationReference,
@@ -63,11 +64,30 @@ export interface AgentStartConversationDraft {
   composerIntegrationReferences?: ComposerIntegrationReference[];
 }
 
+export interface AgentStartConversationRetryInput {
+  projectId: string;
+  content: string;
+  runtime: AgentRuntimeSelection;
+  mode: AgentConversationWorkspaceMode;
+  base: AgentConversationBaseSelection | null;
+  codexFastMode?: boolean | null;
+  composerArtifactReferences?: ComposerArtifactReference[];
+  composerProjectReferences?: ComposerProjectReference[];
+  composerIntegrationReferences?: ComposerIntegrationReference[];
+}
+
+export interface AgentStartConversationFailure {
+  kind: "linked_setup";
+  message: string;
+  retryInput: AgentStartConversationRetryInput;
+}
+
 interface AgentSessionState {
   focusedProjectId: string | null;
   selectedProjectId: string | null;
   selectedConversationId: string | null;
   startConversationDraft: AgentStartConversationDraft | null;
+  startConversationFailure: AgentStartConversationFailure | null;
   lastSelectedConversationByProjectId: Record<string, string>;
   expandedProjectIds: Record<string, boolean>;
   showAllProjects: boolean;
@@ -90,6 +110,7 @@ interface AgentSessionActions {
   clearSelection: () => void;
   setStartConversationDraft: (draft: AgentStartConversationDraft) => void;
   consumeStartConversationDraft: () => AgentStartConversationDraft | null;
+  setStartConversationFailure: (failure: AgentStartConversationFailure | null) => void;
   setProjectExpanded: (projectId: string, expanded: boolean) => void;
   toggleProjectExpanded: (projectId: string) => void;
   setShowAllProjects: (showAllProjects: boolean) => void;
@@ -251,6 +272,7 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
       selectedProjectId: null,
       selectedConversationId: null,
       startConversationDraft: null,
+      startConversationFailure: null,
       lastSelectedConversationByProjectId: {},
       expandedProjectIds: {},
       showAllProjects: DEFAULT_SHOW_ALL_PROJECTS,
@@ -305,6 +327,11 @@ export const useAgentSessionStore = create<AgentSessionState & AgentSessionActio
         });
         return consumedDraft;
       },
+
+      setStartConversationFailure: (failure) =>
+        set((state) => {
+          state.startConversationFailure = failure;
+        }),
 
       setProjectExpanded: (projectId, expanded) =>
         set((state) => {

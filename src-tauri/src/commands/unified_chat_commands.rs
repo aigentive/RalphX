@@ -16176,12 +16176,13 @@ mod tests {
 
         let workspace = response.workspace.expect("workspace should be returned");
         assert_eq!(workspace.mode, "edit");
-        assert_eq!(workspace.branch_mode, "linked");
-        assert_eq!(workspace.base_ref_kind, "project_default");
-        assert_eq!(workspace.base_ref, "main");
-        assert_eq!(workspace.branch_name, "feature/source-pr");
-        assert_eq!(workspace.publication_pr_number, Some(456));
-        assert_eq!(workspace.publication_pr_status.as_deref(), Some("open"));
+        assert_eq!(workspace.branch_mode, "isolated");
+        assert_eq!(workspace.base_ref_kind, "local_branch");
+        assert_eq!(workspace.base_ref, "feature/source-pr");
+        assert_ne!(workspace.branch_name, "feature/source-pr");
+        assert!(workspace.branch_name.contains("/agent-"));
+        assert_eq!(workspace.publication_pr_number, None);
+        assert_eq!(workspace.publication_pr_status.as_deref(), None);
         let source = workspace
             .source_pull_request
             .expect("source PR metadata should be returned");
@@ -16198,20 +16199,21 @@ mod tests {
             .expect("workspace should persist");
         assert_eq!(
             persisted.branch_mode,
-            AgentConversationWorkspaceBranchMode::Linked
+            AgentConversationWorkspaceBranchMode::Isolated
         );
         assert_eq!(
             persisted.base_ref_kind,
-            IdeationAnalysisBaseRefKind::ProjectDefault
+            IdeationAnalysisBaseRefKind::LocalBranch
         );
-        assert_eq!(persisted.base_ref, "main");
-        assert_eq!(persisted.branch_name, "feature/source-pr");
-        assert_eq!(persisted.publication_pr_number, Some(456));
+        assert_eq!(persisted.base_ref, "feature/source-pr");
+        assert_ne!(persisted.branch_name, "feature/source-pr");
+        assert!(persisted.branch_name.contains("/agent-"));
+        assert_eq!(persisted.publication_pr_number, None);
         assert_eq!(
             persisted.publication_pr_url.as_deref(),
-            Some("https://github.com/owner/repo/pull/456")
+            None
         );
-        assert_eq!(persisted.publication_pr_status.as_deref(), Some("open"));
+        assert_eq!(persisted.publication_pr_status.as_deref(), None);
         assert_eq!(
             persisted
                 .source_pull_request

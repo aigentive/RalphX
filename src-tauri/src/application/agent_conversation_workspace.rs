@@ -27,6 +27,8 @@ use crate::infrastructure::agents::claude::agent_names::{
 
 pub const AGENT_CONVERSATION_WORKSPACE_CONTINUATION_MESSAGE: &str =
     "A new workspace branch has been created automatically.";
+pub(crate) const REVIEW_PR_SOURCE_PULL_REQUEST_REQUIRED_ERROR: &str =
+    "Review PR mode requires a selected pull request";
 
 #[derive(Debug, Clone, Default)]
 pub struct AgentConversationWorkspaceBaseSelection {
@@ -152,6 +154,7 @@ pub async fn prepare_agent_conversation_workspace_with_setup_mode_and_defaults(
     let selected_kind = selection.kind;
     let selected_branch_mode = selection.branch_mode;
     let source_pull_request = selection.source_pull_request;
+    validate_review_pr_workspace_source_pull_request(mode, source_pull_request.as_ref())?;
     let selected_base_ref = selection
         .base_ref
         .as_deref()
@@ -262,17 +265,8 @@ pub async fn prepare_agent_conversation_workspace_with_setup_mode_and_defaults(
         ));
     }
 
-    let branch_mode = if kind == IdeationAnalysisBaseRefKind::ProjectDefault {
-        AgentConversationWorkspaceBranchMode::Isolated
-    } else {
-        selected_branch_mode.unwrap_or_else(|| {
-            if source_pull_request.is_some() {
-                AgentConversationWorkspaceBranchMode::Linked
-            } else {
-                AgentConversationWorkspaceBranchMode::Isolated
-            }
-        })
-    };
+    let branch_mode =
+        resolve_agent_conversation_workspace_branch_mode(mode, kind, selected_branch_mode);
 
     let selected_work_ref = match kind {
         IdeationAnalysisBaseRefKind::ProjectDefault => selected_base_ref
@@ -660,6 +654,31 @@ pub async fn rollover_agent_conversation_workspace_with_setup_mode(
 
 pub fn is_terminal_agent_conversation_publication_status(status: Option<&str>) -> bool {
     is_terminal_publication_pr_status(status)
+}
+
+pub(crate) fn validate_review_pr_workspace_source_pull_request(
+    mode: AgentConversationWorkspaceMode,
+    source_pull_request: Option<&AgentWorkspaceSourcePullRequest>,
+) -> AppResult<()> {
+    if mode == AgentConversationWorkspaceMode::ReviewPr && source_pull_request.is_none() {
+        return Err(AppError::Validation(
+            REVIEW_PR_SOURCE_PULL_REQUEST_REQUIRED_ERROR.to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn resolve_agent_conversation_workspace_branch_mode(
+    mode: AgentConversationWorkspaceMode,
+    kind: IdeationAnalysisBaseRefKind,
+    selected_branch_mode: Option<AgentConversationWorkspaceBranchMode>,
+) -> AgentConversationWorkspaceBranchMode {
+    if mode == AgentConversationWorkspaceMode::ReviewPr
+        || kind == IdeationAnalysisBaseRefKind::ProjectDefault
+    {
+        return AgentConversationWorkspaceBranchMode::Isolated;
+    }
+    selected_branch_mode.unwrap_or_default()
 }
 
 fn log_agent_workspace_phase(
@@ -1736,6 +1755,171 @@ mod tests {
             &["branch", "--show-current"],
         );
         assert_eq!(checked_out, branch_name);
+        assert_eq!(git(&repo_path, &["branch", "--show-current"]), "main");
+    }
+
+    #[tokio::test]
+    async fn pr_workspace_omitted_branch_mode_defaults_to_isolated() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let repo_path = temp.path().join("repo");
+        let worktree_parent = temp.path().join("worktrees");
+        setup_repo(&repo_path);
+        let branch_name = "feature/pr-default-isolated";
+        git(&repo_path, &["checkout", "-b", branch_name]);
+        git(&repo_path, &["checkout", "main"]);
+        let mut project = Project::new(
+            "Default PR Isolated Workspace".to_string(),
+            repo_path.to_string_lossy().to_string(),
+        );
+        project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+        let conversation_id =
+            ChatConversationId::from_string("36363636-3636-4636-8636-363636363636");
+
+        let workspace = prepare_agent_conversation_workspace_with_setup_mode(
+            &project,
+            &conversation_id,
+            AgentConversationWorkspaceMode::Edit,
+            AgentConversationWorkspaceBaseSelection {
+                kind: Some(IdeationAnalysisBaseRefKind::LocalBranch),
+                branch_mode: None,
+                base_ref: Some(branch_name.to_string()),
+                display_name: Some("PR #42: Default isolated".to_string()),
+                source_pull_request: Some(AgentWorkspaceSourcePullRequest {
+                    number: 42,
+                    url: Some("https://example.test/pull/42".to_string()),
+                    title: Some("Default isolated".to_string()),
+                    head_ref_name: branch_name.to_string(),
+                    base_ref_name: Some("main".to_string()),
+                    head_ref_oid: None,
+                }),
+            },
+            AgentConversationWorkspaceSetupMode::Deferred,
+        )
+        .await
+        .expect("PR workspace should prepare");
+
+        assert_eq!(
+            workspace.branch_mode,
+            AgentConversationWorkspaceBranchMode::Isolated
+        );
+        assert_eq!(
+            workspace.base_ref_kind,
+            IdeationAnalysisBaseRefKind::LocalBranch
+        );
+        assert_eq!(workspace.base_ref, branch_name);
+        assert_ne!(workspace.branch_name, branch_name);
+        assert!(workspace.branch_name.contains("/agent-"));
+        assert_eq!(
+            workspace
+                .source_pull_request
+                .as_ref()
+                .map(|source| source.number),
+            Some(42)
+        );
+        assert_eq!(workspace.publication_pr_number, None);
+        assert_eq!(git(&repo_path, &["branch", "--show-current"]), "main");
+    }
+
+    #[tokio::test]
+    async fn review_pr_workspace_forces_isolated_even_when_linked_requested() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let repo_path = temp.path().join("repo");
+        let worktree_parent = temp.path().join("worktrees");
+        setup_repo(&repo_path);
+        let branch_name = "feature/review-pr-isolated";
+        git(&repo_path, &["checkout", "-b", branch_name]);
+        git(&repo_path, &["checkout", "main"]);
+        let mut project = Project::new(
+            "Review PR Isolated Workspace".to_string(),
+            repo_path.to_string_lossy().to_string(),
+        );
+        project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+        let conversation_id =
+            ChatConversationId::from_string("37373737-3737-4737-8737-373737373737");
+
+        let workspace = prepare_agent_conversation_workspace_with_setup_mode(
+            &project,
+            &conversation_id,
+            AgentConversationWorkspaceMode::ReviewPr,
+            AgentConversationWorkspaceBaseSelection {
+                kind: Some(IdeationAnalysisBaseRefKind::LocalBranch),
+                branch_mode: Some(AgentConversationWorkspaceBranchMode::Linked),
+                base_ref: Some(branch_name.to_string()),
+                display_name: Some("PR #77: Review isolated".to_string()),
+                source_pull_request: Some(AgentWorkspaceSourcePullRequest {
+                    number: 77,
+                    url: Some("https://example.test/pull/77".to_string()),
+                    title: Some("Review isolated".to_string()),
+                    head_ref_name: branch_name.to_string(),
+                    base_ref_name: Some("main".to_string()),
+                    head_ref_oid: None,
+                }),
+            },
+            AgentConversationWorkspaceSetupMode::Deferred,
+        )
+        .await
+        .expect("Review PR workspace should prepare");
+
+        assert_eq!(
+            workspace.branch_mode,
+            AgentConversationWorkspaceBranchMode::Isolated
+        );
+        assert_eq!(
+            workspace.base_ref_kind,
+            IdeationAnalysisBaseRefKind::LocalBranch
+        );
+        assert_eq!(workspace.base_ref, branch_name);
+        assert_ne!(workspace.branch_name, branch_name);
+        assert_eq!(workspace.publication_pr_number, None);
+        assert_eq!(
+            workspace
+                .source_pull_request
+                .as_ref()
+                .map(|source| source.number),
+            Some(77)
+        );
+        assert_eq!(git(&repo_path, &["branch", "--show-current"]), "main");
+    }
+
+    #[tokio::test]
+    async fn review_pr_workspace_without_source_pull_request_fails_closed() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let repo_path = temp.path().join("repo");
+        let worktree_parent = temp.path().join("worktrees");
+        setup_repo(&repo_path);
+        let branch_name = "feature/review-pr-missing-source";
+        git(&repo_path, &["checkout", "-b", branch_name]);
+        git(&repo_path, &["checkout", "main"]);
+        let mut project = Project::new(
+            "Review PR Missing Source".to_string(),
+            repo_path.to_string_lossy().to_string(),
+        );
+        project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+        let conversation_id =
+            ChatConversationId::from_string("38383838-3838-4838-8838-383838383838");
+
+        let error = prepare_agent_conversation_workspace_with_setup_mode(
+            &project,
+            &conversation_id,
+            AgentConversationWorkspaceMode::ReviewPr,
+            AgentConversationWorkspaceBaseSelection {
+                kind: Some(IdeationAnalysisBaseRefKind::LocalBranch),
+                branch_mode: Some(AgentConversationWorkspaceBranchMode::Linked),
+                base_ref: Some(branch_name.to_string()),
+                display_name: Some("Local branch without PR".to_string()),
+                source_pull_request: None,
+            },
+            AgentConversationWorkspaceSetupMode::Deferred,
+        )
+        .await
+        .expect_err("Review PR without PR metadata should fail closed");
+
+        assert!(
+            error
+                .to_string()
+                .contains("Review PR mode requires a selected pull request"),
+            "unexpected error: {error}"
+        );
         assert_eq!(git(&repo_path, &["branch", "--show-current"]), "main");
     }
 

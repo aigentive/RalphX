@@ -1,4 +1,3 @@
-
 use std::collections::HashSet;
 use std::path::Path;
 use std::process::Command;
@@ -18,9 +17,9 @@ use ralphx_lib::commands::unified_chat_commands::{
     agent_workspace_post_repair_action_from_events, get_agent_running_states_for_service,
     mark_agent_workspace_publish_failure, parse_context_type,
     send_agent_workspace_publish_repair_message, switch_agent_conversation_mode_for_state,
-    switch_agent_conversation_mode_for_state_stopping_running_agent,
-    AgentRunStatusResponse, AgentWorkspacePostRepairAction, AgentWorkspaceRepairRuntimeOverrides,
-    QueuedMessageResponse, SendAgentMessageResponse, SwitchAgentConversationModeInput,
+    switch_agent_conversation_mode_for_state_stopping_running_agent, AgentRunStatusResponse,
+    AgentWorkspacePostRepairAction, AgentWorkspaceRepairRuntimeOverrides, QueuedMessageResponse,
+    SendAgentMessageResponse, SwitchAgentConversationModeInput,
 };
 use ralphx_lib::commands::ExecutionState;
 use ralphx_lib::domain::agents::{AgentHarnessKind, LogicalEffort, ProviderSessionRef};
@@ -227,7 +226,7 @@ async fn unlinked_ideation_conversation_can_switch_to_chat_and_updates_workspace
             conversation_id: conversation_id.as_str(),
             mode: "chat".to_string(),
             base_ref_kind: None,
-                base_branch_mode: None,
+            base_branch_mode: None,
             base_ref: None,
             base_display_name: None,
             base_source_pull_request: None,
@@ -281,7 +280,7 @@ async fn active_linked_ideation_session_blocks_mode_switch() {
             conversation_id: conversation_id.as_str(),
             mode: "edit".to_string(),
             base_ref_kind: None,
-                base_branch_mode: None,
+            base_branch_mode: None,
             base_ref: None,
             base_display_name: None,
             base_source_pull_request: None,
@@ -329,7 +328,7 @@ async fn mode_switch_stopping_running_agent_stops_current_run_and_switches() {
             conversation_id: conversation_id.as_str(),
             mode: "edit".to_string(),
             base_ref_kind: None,
-                base_branch_mode: None,
+            base_branch_mode: None,
             base_ref: None,
             base_display_name: None,
             base_source_pull_request: None,
@@ -341,7 +340,10 @@ async fn mode_switch_stopping_running_agent_stops_current_run_and_switches() {
     .expect("stop-and-switch mode change should succeed");
 
     assert_eq!(response.conversation.agent_mode.as_deref(), Some("edit"));
-    assert_eq!(response.workspace.expect("workspace should remain").mode, "edit");
+    assert_eq!(
+        response.workspace.expect("workspace should remain").mode,
+        "edit"
+    );
     assert!(
         !state.running_agent_registry.is_running(&running_key).await,
         "running agent registry entry should be stopped before switching"
@@ -383,7 +385,7 @@ async fn mode_switch_stopping_running_agent_applies_to_other_valid_mode_switches
             conversation_id: conversation_id.as_str(),
             mode: "plan".to_string(),
             base_ref_kind: None,
-                base_branch_mode: None,
+            base_branch_mode: None,
             base_ref: None,
             base_display_name: None,
             base_source_pull_request: None,
@@ -395,7 +397,10 @@ async fn mode_switch_stopping_running_agent_applies_to_other_valid_mode_switches
     .expect("stop-and-switch should apply to any valid mode switch");
 
     assert_eq!(response.conversation.agent_mode.as_deref(), Some("plan"));
-    assert_eq!(response.workspace.expect("workspace should remain").mode, "plan");
+    assert_eq!(
+        response.workspace.expect("workspace should remain").mode,
+        "plan"
+    );
     assert!(
         !state.running_agent_registry.is_running(&running_key).await,
         "running agent registry entry should be stopped before switching"
@@ -443,7 +448,7 @@ async fn abandoned_pipeline_link_can_switch_to_edit_and_detaches_links() {
             conversation_id: conversation_id.as_str(),
             mode: "edit".to_string(),
             base_ref_kind: None,
-                base_branch_mode: None,
+            base_branch_mode: None,
             base_ref: None,
             base_display_name: None,
             base_source_pull_request: None,
@@ -518,7 +523,7 @@ async fn superseded_execution_plan_link_can_switch_to_edit_and_detaches_links() 
             conversation_id: conversation_id.as_str(),
             mode: "edit".to_string(),
             base_ref_kind: None,
-                base_branch_mode: None,
+            base_branch_mode: None,
             base_ref: None,
             base_display_name: None,
             base_source_pull_request: None,
@@ -574,7 +579,7 @@ async fn active_pipeline_link_blocks_mode_switch() {
             conversation_id: conversation_id.as_str(),
             mode: "edit".to_string(),
             base_ref_kind: None,
-                base_branch_mode: None,
+            base_branch_mode: None,
             base_ref: None,
             base_display_name: None,
             base_source_pull_request: None,
@@ -652,7 +657,7 @@ async fn setup_ipc_workspace_state(
         AgentConversationWorkspaceMode::Edit,
         AgentConversationWorkspaceBaseSelection {
             kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
-                branch_mode: None,
+            branch_mode: None,
             base_ref: Some("main".to_string()),
             display_name: None,
             source_pull_request: None,
@@ -747,7 +752,7 @@ async fn ipc_contract_startup_terminal_pr_cleanup_removes_plan_and_workspace_art
         AgentConversationWorkspaceMode::Edit,
         AgentConversationWorkspaceBaseSelection {
             kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
-                branch_mode: None,
+            branch_mode: None,
             base_ref: Some("main".to_string()),
             display_name: None,
             source_pull_request: None,
@@ -868,7 +873,7 @@ async fn ipc_contract_startup_terminal_pr_cleanup_respects_safety_guards() {
         AgentConversationWorkspaceMode::Edit,
         AgentConversationWorkspaceBaseSelection {
             kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
-                branch_mode: None,
+            branch_mode: None,
             base_ref: Some("main".to_string()),
             display_name: None,
             source_pull_request: None,
@@ -895,7 +900,7 @@ async fn ipc_contract_startup_terminal_pr_cleanup_respects_safety_guards() {
         AgentConversationWorkspaceMode::Edit,
         AgentConversationWorkspaceBaseSelection {
             kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
-                branch_mode: None,
+            branch_mode: None,
             base_ref: Some("main".to_string()),
             display_name: None,
             source_pull_request: None,
@@ -966,7 +971,7 @@ async fn ipc_contract_agent_workspace_poller_cleans_merged_pr_artifacts() {
         AgentConversationWorkspaceMode::Edit,
         AgentConversationWorkspaceBaseSelection {
             kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
-                branch_mode: None,
+            branch_mode: None,
             base_ref: Some("main".to_string()),
             display_name: None,
             source_pull_request: None,
@@ -1058,7 +1063,7 @@ async fn ipc_contract_agent_workspace_poller_cleans_closed_pr_worktree_only() {
         AgentConversationWorkspaceMode::Edit,
         AgentConversationWorkspaceBaseSelection {
             kind: Some(IdeationAnalysisBaseRefKind::ProjectDefault),
-                branch_mode: None,
+            branch_mode: None,
             base_ref: Some("main".to_string()),
             display_name: None,
             source_pull_request: None,
@@ -1445,15 +1450,15 @@ fn test_agent_run_status_response_serializes_model_absent() {
 
 #[cfg(test)]
 mod ipc_contract {
+    use ralphx_lib::application::agent_conversation_workspace::{
+        prepare_agent_conversation_workspace, AgentConversationWorkspaceBaseSelection,
+    };
     use ralphx_lib::application::agent_workspace_bridge::{
         dispatch_prepared_agent_workspace_bridge_wakeup, prepare_agent_workspace_bridge_wakeup,
         wake_agent_workspace_for_bridge_events,
         wake_agent_workspace_for_bridge_events_with_service_factory,
     };
     use ralphx_lib::application::agent_workspace_publish_recovery::recover_stale_agent_workspace_publish_repairs_on_startup;
-    use ralphx_lib::application::agent_conversation_workspace::{
-        prepare_agent_conversation_workspace, AgentConversationWorkspaceBaseSelection,
-    };
     use ralphx_lib::application::{AppState, MockChatService, TeamService, TeamStateTracker};
     use ralphx_lib::commands::agent_model_commands::{
         delete_custom_agent_model, list_agent_models, upsert_custom_agent_model,
@@ -1465,8 +1470,8 @@ mod ipc_contract {
         get_agent_conversation_summary_for_app_state, get_agent_conversation_workspace,
         get_agent_conversation_workspace_freshness, get_agent_message_tool_call_detail,
         publish_agent_conversation_workspace_for_app_state, start_agent_conversation,
-        switch_agent_conversation_mode_for_state, CreateAgentConversationInput,
-        AgentWorkspaceSourcePullRequestInput, QueueAgentMessageInput, SendAgentMessageInput,
+        switch_agent_conversation_mode_for_state, AgentWorkspaceSourcePullRequestInput,
+        CreateAgentConversationInput, QueueAgentMessageInput, SendAgentMessageInput,
         StartAgentConversationInput, SwitchAgentConversationModeInput,
         UpdateAgentConversationTitleInput,
     };
@@ -1479,13 +1484,12 @@ mod ipc_contract {
     use ralphx_lib::domain::entities::plan_branch::PrStatus as DbPrStatus;
     use ralphx_lib::domain::entities::{
         AgentConversationWorkspace, AgentConversationWorkspaceBranchMode,
-        AgentConversationWorkspaceMode,
-        AgentConversationWorkspaceStatus, AgentRun, Artifact, ArtifactId, ArtifactType,
-        ChatContextType, ChatConversation, ChatConversationId, ChatMessage, ExecutionPlan,
-        ExecutionPlanStatus,
-        IdeationAnalysisBaseRefKind, IdeationSession, IdeationSessionFlow,
-        IdeationSessionId, IdeationSessionStatus, MessageRole, PlanBranch, PlanBranchStatus,
-        Priority, Project, ProjectId, ProposalCategory, Task, TaskProposal, VerificationStatus,
+        AgentConversationWorkspaceMode, AgentConversationWorkspaceStatus, AgentRun, Artifact,
+        ArtifactId, ArtifactType, ChatContextType, ChatConversation, ChatConversationId,
+        ChatMessage, ExecutionPlan, ExecutionPlanStatus, IdeationAnalysisBaseRefKind,
+        IdeationSession, IdeationSessionFlow, IdeationSessionId, IdeationSessionStatus,
+        MessageRole, PlanBranch, PlanBranchStatus, Priority, Project, ProjectId, ProposalCategory,
+        Task, TaskProposal, VerificationStatus,
     };
     use ralphx_lib::domain::repositories::{
         AgentConversationWorkspaceRepository, AgentModelRegistryRepository,
@@ -2412,12 +2416,13 @@ mod ipc_contract {
         assert!(response.send_result.was_queued);
         let workspace = response.workspace.expect("workspace should be returned");
         assert_eq!(workspace.mode, "chat");
-        assert_eq!(workspace.branch_mode, "linked");
-        assert_eq!(workspace.base_ref_kind, "project_default");
-        assert_eq!(workspace.base_ref, "main");
-        assert_eq!(workspace.branch_name, "feature/source-pr-chat");
-        assert_eq!(workspace.publication_pr_number, Some(42));
-        assert_eq!(workspace.publication_pr_status.as_deref(), Some("open"));
+        assert_eq!(workspace.branch_mode, "isolated");
+        assert_eq!(workspace.base_ref_kind, "local_branch");
+        assert_eq!(workspace.base_ref, "feature/source-pr-chat");
+        assert_ne!(workspace.branch_name, "feature/source-pr-chat");
+        assert!(workspace.branch_name.contains("/agent-"));
+        assert_eq!(workspace.publication_pr_number, None);
+        assert_eq!(workspace.publication_pr_status.as_deref(), None);
         assert_ne!(
             workspace.worktree_path.as_str(),
             repo_path.to_string_lossy().as_ref()
@@ -2444,14 +2449,15 @@ mod ipc_contract {
         );
         assert_eq!(
             persisted_workspace.branch_mode,
-            AgentConversationWorkspaceBranchMode::Linked
+            AgentConversationWorkspaceBranchMode::Isolated
         );
         assert_eq!(
             persisted_workspace.base_ref_kind,
-            IdeationAnalysisBaseRefKind::ProjectDefault
+            IdeationAnalysisBaseRefKind::LocalBranch
         );
-        assert_eq!(persisted_workspace.base_ref, "main");
-        assert_eq!(persisted_workspace.branch_name, "feature/source-pr-chat");
+        assert_eq!(persisted_workspace.base_ref, "feature/source-pr-chat");
+        assert_ne!(persisted_workspace.branch_name, "feature/source-pr-chat");
+        assert!(persisted_workspace.branch_name.contains("/agent-"));
         assert_eq!(
             persisted_workspace
                 .source_pull_request
@@ -2459,7 +2465,7 @@ mod ipc_contract {
                 .map(|source| source.number),
             Some(42)
         );
-        assert_eq!(persisted_workspace.publication_pr_number, Some(42));
+        assert_eq!(persisted_workspace.publication_pr_number, None);
 
         let switched = switch_agent_conversation_mode_for_state(
             SwitchAgentConversationModeInput {
@@ -2479,11 +2485,12 @@ mod ipc_contract {
             .workspace
             .expect("workspace should be returned after switch");
         assert_eq!(switched_workspace.mode, "edit");
-        assert_eq!(switched_workspace.branch_mode, "linked");
-        assert_eq!(switched_workspace.base_ref_kind, "project_default");
-        assert_eq!(switched_workspace.base_ref, "main");
-        assert_eq!(switched_workspace.branch_name, "feature/source-pr-chat");
-        assert_eq!(switched_workspace.publication_pr_number, Some(42));
+        assert_eq!(switched_workspace.branch_mode, "isolated");
+        assert_eq!(switched_workspace.base_ref_kind, "local_branch");
+        assert_eq!(switched_workspace.base_ref, "feature/source-pr-chat");
+        assert_ne!(switched_workspace.branch_name, "feature/source-pr-chat");
+        assert!(switched_workspace.branch_name.contains("/agent-"));
+        assert_eq!(switched_workspace.publication_pr_number, None);
         assert_eq!(
             switched_workspace
                 .source_pull_request
@@ -2684,7 +2691,7 @@ mod ipc_contract {
         let fix = setup_plan_reference_start_fixture("mode-matrix").await;
         let state = fix.app.state::<AppState>();
 
-        for mode in ["chat", "edit", "plan", "ideation", "review_pr"] {
+        for mode in ["chat", "edit", "plan", "ideation"] {
             let response = start_agent_conversation(
                 StartAgentConversationInput {
                     project_id: fix.project_id.as_str().to_string(),
@@ -2826,6 +2833,48 @@ mod ipc_contract {
             Some(&fix.source_artifact_id)
         );
         assert_eq!(source_session.status, IdeationSessionStatus::Accepted);
+    }
+
+    #[tokio::test]
+    async fn ipc_contract_start_agent_conversation_review_pr_requires_source_pull_request() {
+        let _fake_claude = FakeCliOnPath::new("claude");
+        let fix = setup_plan_reference_start_fixture("review-pr-source-required").await;
+        let state = fix.app.state::<AppState>();
+
+        let error = start_agent_conversation(
+            StartAgentConversationInput {
+                project_id: fix.project_id.as_str().to_string(),
+                content: "Review the selected PR".to_string(),
+                conversation_id: None,
+                parent_conversation_id: None,
+                title: None,
+                provider_harness: None,
+                model_override: None,
+                codex_fast_mode: None,
+                logical_effort: Some(LogicalEffort::Medium),
+                mode: Some("review_pr".to_string()),
+                base_ref_kind: Some("project_default".to_string()),
+                base_branch_mode: None,
+                base_ref: None,
+                base_display_name: None,
+                base_source_pull_request: None,
+                composer_project_references: Vec::new(),
+                composer_integration_references: Vec::new(),
+                composer_artifact_references: vec![plan_reference(&fix)],
+                team_intent: None,
+            },
+            state.clone(),
+            fix.app.state::<Arc<ExecutionState>>(),
+            fix.app.state::<Arc<TeamService>>(),
+            fix.app.handle().clone(),
+        )
+        .await
+        .expect_err("Review PR start without PR metadata should fail early");
+
+        assert!(
+            error.contains("Review PR mode requires a selected pull request"),
+            "unexpected error: {error}"
+        );
     }
 
     #[tokio::test]
@@ -3001,6 +3050,221 @@ mod ipc_contract {
         let workspace = response.workspace.expect("workspace should be returned");
         assert_eq!(workspace.branch_name, linked_branch);
         assert_eq!(workspace.branch_mode, "linked");
+    }
+
+    #[tokio::test]
+    async fn ipc_contract_start_agent_conversation_linked_conflict_returns_retryable_error() {
+        let _fake_claude = FakeCliOnPath::new("claude");
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let repo_path = temp.path().join("repo");
+        let worktree_parent = temp.path().join("worktrees");
+        super::setup_publish_repo(&repo_path);
+        let linked_branch = "feature/already-linked-start";
+        super::git(&repo_path, &["checkout", "-b", linked_branch]);
+        super::git(&repo_path, &["checkout", "main"]);
+
+        let state = AppState::new_test();
+        let project_id =
+            ProjectId::from_string("project-start-agent-linked-conflict-ipc".to_string());
+        let mut project = Project::new(
+            "Start Agent Linked Conflict".to_string(),
+            repo_path.to_string_lossy().to_string(),
+        );
+        project.id = project_id.clone();
+        project.base_branch = Some("main".to_string());
+        project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+        let project = state
+            .project_repo
+            .create(project)
+            .await
+            .expect("project should persist");
+        let existing = state
+            .chat_conversation_repo
+            .create(ChatConversation::new_project(project_id.clone()))
+            .await
+            .expect("existing conversation should persist");
+        let workspace = prepare_agent_conversation_workspace(
+            &project,
+            &existing.id,
+            AgentConversationWorkspaceMode::Edit,
+            AgentConversationWorkspaceBaseSelection {
+                kind: Some(IdeationAnalysisBaseRefKind::LocalBranch),
+                branch_mode: Some(AgentConversationWorkspaceBranchMode::Linked),
+                base_ref: Some(linked_branch.to_string()),
+                display_name: Some(linked_branch.to_string()),
+                source_pull_request: None,
+            },
+        )
+        .await
+        .expect("linked workspace should prepare");
+        state
+            .agent_conversation_workspace_repo
+            .create_or_update(workspace)
+            .await
+            .expect("linked workspace should persist");
+
+        let execution_state = Arc::new(ExecutionState::new());
+        execution_state.pause();
+        let team_service = Arc::new(TeamService::new_without_events(Arc::new(
+            TeamStateTracker::new(),
+        )));
+        let app = mock_builder()
+            .manage(state)
+            .manage(Arc::clone(&execution_state))
+            .manage(team_service)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        let error = start_agent_conversation(
+            StartAgentConversationInput {
+                project_id: project_id.as_str().to_string(),
+                content: "Start on linked branch".to_string(),
+                conversation_id: None,
+                parent_conversation_id: None,
+                title: None,
+                provider_harness: None,
+                model_override: None,
+                codex_fast_mode: None,
+                logical_effort: Some(LogicalEffort::Medium),
+                mode: Some("edit".to_string()),
+                base_ref_kind: Some("local_branch".to_string()),
+                base_branch_mode: Some("linked".to_string()),
+                base_ref: Some(linked_branch.to_string()),
+                base_display_name: Some(linked_branch.to_string()),
+                base_source_pull_request: None,
+                composer_project_references: Vec::new(),
+                composer_integration_references: Vec::new(),
+                composer_artifact_references: Vec::new(),
+                team_intent: None,
+            },
+            app.state::<AppState>(),
+            app.state::<Arc<ExecutionState>>(),
+            app.state::<Arc<TeamService>>(),
+            app.handle().clone(),
+        )
+        .await
+        .expect_err("linked branch conflict should fail before creating a new chat");
+
+        assert!(
+            error.contains("[ralphx:linked_setup_failure]"),
+            "unexpected error: {error}"
+        );
+        let existing_id = existing.id.as_str();
+        assert!(
+            error.contains(linked_branch) && error.contains(&existing_id),
+            "error should explain the conflicting branch and conversation: {error}"
+        );
+        let conversations = app
+            .state::<AppState>()
+            .chat_conversation_repo
+            .get_by_context(ChatContextType::Project, project_id.as_str())
+            .await
+            .expect("project conversations should load");
+        assert_eq!(conversations.len(), 1);
+        assert_eq!(conversations[0].id, existing.id);
+    }
+
+    #[tokio::test]
+    async fn ipc_contract_start_agent_conversation_archives_seeded_draft_on_linked_setup_failure() {
+        let _fake_claude = FakeCliOnPath::new("claude");
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let repo_path = temp.path().join("repo");
+        let worktree_parent = temp.path().join("worktrees");
+        super::setup_publish_repo(&repo_path);
+        let linked_branch = "feature/primary-linked-start";
+        super::git(&repo_path, &["checkout", "-b", linked_branch]);
+
+        let state = AppState::new_test();
+        let project_id =
+            ProjectId::from_string("project-start-agent-linked-archive-ipc".to_string());
+        let mut project = Project::new(
+            "Start Agent Linked Archive".to_string(),
+            repo_path.to_string_lossy().to_string(),
+        );
+        project.id = project_id.clone();
+        project.base_branch = Some("main".to_string());
+        project.worktree_parent_directory = Some(worktree_parent.to_string_lossy().to_string());
+        state
+            .project_repo
+            .create(project)
+            .await
+            .expect("project should persist");
+        let mut draft = ChatConversation::new_project(project_id.clone());
+        draft.set_agent_mode(Some(AgentConversationWorkspaceMode::Edit));
+        let draft = state
+            .chat_conversation_repo
+            .create(draft)
+            .await
+            .expect("draft conversation should persist");
+
+        let execution_state = Arc::new(ExecutionState::new());
+        execution_state.pause();
+        let team_service = Arc::new(TeamService::new_without_events(Arc::new(
+            TeamStateTracker::new(),
+        )));
+        let app = mock_builder()
+            .manage(state)
+            .manage(Arc::clone(&execution_state))
+            .manage(team_service)
+            .build(mock_context(noop_assets()))
+            .expect("mock app should build");
+
+        let error = start_agent_conversation(
+            StartAgentConversationInput {
+                project_id: project_id.as_str().to_string(),
+                content: "Start on checked-out linked branch".to_string(),
+                conversation_id: Some(draft.id.as_str()),
+                parent_conversation_id: None,
+                title: None,
+                provider_harness: None,
+                model_override: None,
+                codex_fast_mode: None,
+                logical_effort: Some(LogicalEffort::Medium),
+                mode: Some("edit".to_string()),
+                base_ref_kind: Some("local_branch".to_string()),
+                base_branch_mode: Some("linked".to_string()),
+                base_ref: Some(linked_branch.to_string()),
+                base_display_name: Some(linked_branch.to_string()),
+                base_source_pull_request: None,
+                composer_project_references: Vec::new(),
+                composer_integration_references: Vec::new(),
+                composer_artifact_references: Vec::new(),
+                team_intent: None,
+            },
+            app.state::<AppState>(),
+            app.state::<Arc<ExecutionState>>(),
+            app.state::<Arc<TeamService>>(),
+            app.handle().clone(),
+        )
+        .await
+        .expect_err("linked primary checkout should fail setup");
+
+        assert!(
+            error.contains("[ralphx:linked_setup_failure]"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            error.contains("checked out in the project root"),
+            "error should explain the checkout conflict: {error}"
+        );
+        let stored_draft = app
+            .state::<AppState>()
+            .chat_conversation_repo
+            .get_by_id(&draft.id)
+            .await
+            .expect("draft should load")
+            .expect("draft should still exist");
+        assert!(
+            stored_draft.archived_at.is_some(),
+            "failed seeded draft should be hidden from active conversations"
+        );
+        let workspace = app
+            .state::<AppState>()
+            .agent_conversation_workspace_repo
+            .get_by_conversation_id(&draft.id)
+            .await
+            .expect("workspace lookup should succeed");
+        assert!(workspace.is_none());
     }
 
     #[tokio::test]
@@ -3264,8 +3528,7 @@ mod ipc_contract {
         let sonnet_4_6 = built_ins
             .iter()
             .find(|model| {
-                model.provider == AgentHarnessKind::Claude
-                    && model.model_id == "claude-sonnet-4-6"
+                model.provider == AgentHarnessKind::Claude && model.model_id == "claude-sonnet-4-6"
             })
             .expect("Sonnet 4.6 should be exposed as a built-in Claude model");
         assert_eq!(sonnet_4_6.source, AgentModelSource::BuiltIn);
@@ -3273,17 +3536,14 @@ mod ipc_contract {
         let sonnet_5 = built_ins
             .iter()
             .find(|model| {
-                model.provider == AgentHarnessKind::Claude
-                    && model.model_id == "claude-sonnet-5"
+                model.provider == AgentHarnessKind::Claude && model.model_id == "claude-sonnet-5"
             })
             .expect("Sonnet 5 should be exposed as a built-in Claude model");
         assert_eq!(sonnet_5.source, AgentModelSource::BuiltIn);
         assert_eq!(sonnet_5.default_effort, LogicalEffort::High);
         let fable = built_ins
             .iter()
-            .find(|model| {
-                model.provider == AgentHarnessKind::Claude && model.model_id == "fable"
-            })
+            .find(|model| model.provider == AgentHarnessKind::Claude && model.model_id == "fable")
             .expect("Fable should be exposed as a built-in Claude model");
         assert_eq!(fable.source, AgentModelSource::BuiltIn);
         assert_eq!(fable.default_effort, LogicalEffort::High);
