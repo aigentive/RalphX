@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { chatApi, type ConversationStatsResponse } from "@/api/chat";
+import { useConversationStats } from "@/hooks/useConversationStats";
 import { useConversationTicket } from "@/hooks/useTicketing";
 import { useChatStore } from "@/stores/chatStore";
 import { useProjectStore } from "@/stores/projectStore";
@@ -25,6 +26,10 @@ vi.mock("sonner", () => ({
 
 vi.mock("@/hooks/useTicketing", () => ({
   useConversationTicket: vi.fn(),
+}));
+
+vi.mock("@/hooks/useConversationStats", () => ({
+  useConversationStats: vi.fn(),
 }));
 
 function conversationStats(
@@ -87,16 +92,24 @@ describe("AgentsChatHeader", () => {
       isError: false,
       error: null,
     } as ReturnType<typeof useConversationTicket>);
+    vi.mocked(useConversationStats).mockReturnValue({
+      data: conversationStats(),
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof useConversationStats>);
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
     vi.useRealTimers();
     window.localStorage.clear();
-    useChatStore.setState({ agentStatus: {}, isSending: {} });
-    useTicketingStore.getState().reset();
-    useProjectStore.setState({ activeProjectId: null });
-    useUiStore.setState({ currentView: "agents" });
+    act(() => {
+      useChatStore.setState({ agentStatus: {}, isSending: {} });
+      useTicketingStore.getState().reset();
+      useProjectStore.setState({ activeProjectId: null });
+      useUiStore.setState({ currentView: "agents" });
+    });
   });
 
   it("opens the linked ticket in the artifact sidebar from the header ticket button", () => {
@@ -622,11 +635,19 @@ describe("AgentsChatHeader", () => {
   });
 
   it("marks conversation stats as pending while the active Agents turn has no usage yet", async () => {
-    vi.spyOn(chatApi, "getConversationStats").mockResolvedValue(conversationStats());
-    useChatStore
-      .getState()
-      .setAgentStatus("project:conversation-1", "generating");
+    vi.mocked(useConversationStats).mockReturnValue({
+      data: conversationStats(),
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as ReturnType<typeof useConversationStats>);
+    act(() => {
+      useChatStore
+        .getState()
+        .setAgentStatus("project:conversation-1", "generating");
+    });
 
+    const user = userEvent.setup();
     renderWithProviders(
       <AgentsChatHeader
         conversation={conversation()}
@@ -640,7 +661,7 @@ describe("AgentsChatHeader", () => {
       />
     );
 
-    fireEvent.click(screen.getByTestId("chat-session-stats-button"));
+    await user.click(screen.getByTestId("chat-session-stats-button"));
 
     expect(
       await screen.findByText(
@@ -648,6 +669,15 @@ describe("AgentsChatHeader", () => {
       ),
     ).toBeInTheDocument();
     expect(screen.getAllByText("Pending")).toHaveLength(4);
+
+    await user.keyboard("{Escape}");
+    await waitFor(() => {
+      expect(
+        screen.queryByText(
+          "Usage totals are pending until the provider reports the current turn.",
+        ),
+      ).not.toBeInTheDocument();
+    });
   });
 
   it("shows workspace status in the left header group", () => {
