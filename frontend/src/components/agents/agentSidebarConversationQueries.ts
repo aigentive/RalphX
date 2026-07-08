@@ -7,119 +7,12 @@ import {
   type AgentSidebarPublicationState,
   type AgentSidebarSort,
 } from "@/api/chat";
+import { agentSidebarConversationKeys } from "@/hooks/agentSidebarConversationKeys";
 
 export const AGENT_SIDEBAR_GROUP_PAGE_SIZE = 8;
 export const AGENT_SIDEBAR_GROUP_MAX_PAGE_SIZE = 100;
 
-export const agentSidebarConversationKeys = {
-  all: ["agents", "sidebar-conversations"] as const,
-  publicationGroup: (
-    projectIds: string[],
-    publicationState: AgentSidebarPublicationState,
-    archivedOnly: boolean,
-    search = "",
-    pinnedConversationIds: string[] = [],
-    priorityConversationIds: string[] = [],
-    sort: AgentSidebarSort = "latest"
-  ) =>
-    [
-      ...agentSidebarConversationKeys.all,
-      "publication",
-      publicationState,
-      "projects",
-      projectIds,
-      "archived",
-      archivedOnly,
-      "search",
-      search.trim().toLowerCase(),
-      "pinned",
-      pinnedConversationIds,
-      "priority",
-      priorityConversationIds,
-      "sort",
-      sort,
-    ] as const,
-  projectGroup: (
-    projectId: string | null | undefined,
-    archivedOnly: boolean,
-    search = "",
-    publicationStates: AgentSidebarPublicationState[] = [],
-    pinnedConversationIds: string[] = [],
-    priorityConversationIds: string[] = []
-  ) =>
-    [
-      ...agentSidebarConversationKeys.all,
-      "project",
-      projectId ?? "",
-      "archived",
-      archivedOnly,
-      "search",
-      search.trim().toLowerCase(),
-      "states",
-      publicationStates,
-      "pinned",
-      pinnedConversationIds,
-      "priority",
-      priorityConversationIds,
-    ] as const,
-  automationIndex: (
-    projectIds: string[],
-    archivedOnly: boolean,
-    search = "",
-    publicationStates: AgentSidebarPublicationState[] = [],
-    pinnedConversationIds: string[] = [],
-    priorityConversationIds: string[] = [],
-    sort: AgentSidebarSort = "latest"
-  ) =>
-    [
-      ...agentSidebarConversationKeys.all,
-      "automation",
-      "index",
-      "projects",
-      projectIds,
-      "archived",
-      archivedOnly,
-      "search",
-      search.trim().toLowerCase(),
-      "states",
-      publicationStates,
-      "pinned",
-      pinnedConversationIds,
-      "priority",
-      priorityConversationIds,
-      "sort",
-      sort,
-    ] as const,
-  automationGroup: (
-    groupKey: string,
-    projectIds: string[],
-    archivedOnly: boolean,
-    search = "",
-    publicationStates: AgentSidebarPublicationState[] = [],
-    pinnedConversationIds: string[] = [],
-    priorityConversationIds: string[] = [],
-    sort: AgentSidebarSort = "latest"
-  ) =>
-    [
-      ...agentSidebarConversationKeys.all,
-      "automation",
-      groupKey,
-      "projects",
-      projectIds,
-      "archived",
-      archivedOnly,
-      "search",
-      search.trim().toLowerCase(),
-      "states",
-      publicationStates,
-      "pinned",
-      pinnedConversationIds,
-      "priority",
-      priorityConversationIds,
-      "sort",
-      sort,
-    ] as const,
-};
+export { agentSidebarConversationKeys };
 
 export function useAgentSidebarGroup({
   groupBy,
