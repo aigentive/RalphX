@@ -902,12 +902,16 @@ impl AutomationScheduler {
                     .await?
                     .map(|agent_run| agent_run.status)
                 {
-                    if matches!(
-                        status,
-                        AgentRunStatus::Completed
-                            | AgentRunStatus::Failed
-                            | AgentRunStatus::Cancelled
-                    ) {
+                    // Only a genuinely dead agent is failed promptly here: `Failed`, or a
+                    // process killed and pruned as `pid_missing` (-> agent_run `Cancelled`).
+                    // A `Completed` agent is deliberately NOT failed: a cleanly-finished
+                    // `pr_merged` run is legitimately awaiting the workspace review ->
+                    // auto-publish handoff, which can take minutes and does not set a push
+                    // status until review passes. The scheduler is intentionally
+                    // review-unaware, so failing on `Completed` would kill healthy runs
+                    // mid-review; the `max_run_duration` backstop covers the rare
+                    // genuinely-stuck `Completed` case instead.
+                    if matches!(status, AgentRunStatus::Failed | AgentRunStatus::Cancelled) {
                         self.fail_running_run(
                             run,
                             "agent_failed",

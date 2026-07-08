@@ -1098,6 +1098,62 @@ async fn automation_scheduler_keeps_running_pr_merged_run_while_agent_is_alive()
 }
 
 #[tokio::test]
+async fn automation_scheduler_keeps_running_pr_merged_run_when_agent_completed_awaiting_review() {
+    // Regression guard for the review -> auto-publish handoff (PR #628): a cleanly-finished
+    // `pr_merged` run has agent_run `Completed` with no publication yet while the workspace
+    // review runs (auto-publish defers until review passes, so no push status is set). The
+    // scheduler is intentionally review-unaware, so it MUST NOT fail such a run — doing so
+    // would kill healthy runs mid-review. Only a dead agent (Failed/Cancelled) fails here.
+    let automation_repo = Arc::new(MemoryAutomationRepository::new());
+    let run_repo = Arc::new(MemoryAutomationRunRepository::new());
+    let workspace_repo = Arc::new(MemoryAgentConversationWorkspaceRepository::new());
+    let agent_run_repo = Arc::new(MemoryAgentRunRepository::new());
+    let automation_id = AutomationId::from_string("automation-1");
+    automation_repo
+        .create(automation(automation_id.as_str(), AutomationStatus::Active))
+        .await
+        .unwrap();
+    let conversation_id = ChatConversationId::from_string("conversation-1");
+    run_repo
+        .create_run(automation_run(
+            "run-1",
+            &automation_id,
+            AutomationRunStatus::Running,
+            Some(conversation_id.clone()),
+        ))
+        .await
+        .unwrap();
+    // Workspace exists but nothing has been published yet (review still pending).
+    workspace_repo
+        .create_or_update(workspace(&conversation_id))
+        .await
+        .unwrap();
+    // Agent finished cleanly and is awaiting the review -> publish handoff.
+    let mut agent_run = AgentRun::new(conversation_id);
+    agent_run.status = crate::domain::entities::AgentRunStatus::Completed;
+    agent_run_repo.create(agent_run).await.unwrap();
+    let scheduler = scheduler_with_judge_and_agent_runs(
+        Arc::clone(&automation_repo),
+        Arc::clone(&run_repo),
+        workspace_repo,
+        agent_run_repo,
+        Arc::new(RecordingSignalChecker::default()),
+        Arc::new(RecordingJudgeInvoker::default()),
+        AutomationSchedulerConfig::default(),
+    );
+
+    let summary = scheduler.tick_once().await.unwrap();
+
+    assert_eq!(summary.failed_runs, 0);
+    let latest = run_repo
+        .latest_for_automation(&automation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest.status, AutomationRunStatus::Running);
+}
+
+#[tokio::test]
 async fn automation_scheduler_marks_publish_failure_as_agent_failed() {
     let automation_repo = Arc::new(MemoryAutomationRepository::new());
     let run_repo = Arc::new(MemoryAutomationRunRepository::new());
