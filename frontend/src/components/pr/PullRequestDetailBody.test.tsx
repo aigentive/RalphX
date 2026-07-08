@@ -206,6 +206,38 @@ describe("PullRequestDetailBody", () => {
     expect(await screen.findByTestId("rx-chat-panel")).toHaveTextContent("conversation-1");
   });
 
+  it("renders GitHub details blocks in the pull request description", () => {
+    const detail = loadedDetail();
+    const { container } = renderBody(
+      {
+        ...detail,
+        description: {
+          ...detail.description!,
+          body: [
+            "## Summary",
+            "Ready for review.",
+            "",
+            "<details>",
+            "<summary>View full plan</summary>",
+            "",
+            "### Implementation",
+            "- Keep markdown formatting",
+            "</details>",
+          ].join("\n"),
+        },
+      },
+      {},
+      { showRxConversation: false },
+    );
+
+    const details = screen.getByTestId("pr-markdown-details");
+    expect(details).toHaveTextContent("View full plan");
+    expect(screen.getByRole("heading", { name: "Implementation" })).toBeInTheDocument();
+    expect(screen.getByText("Keep markdown formatting")).toBeInTheDocument();
+    expect(container.textContent).not.toContain("<details>");
+    expect(container.textContent).not.toContain("<summary>");
+  });
+
   it("orders the sections description -> review -> checks -> comments", () => {
     renderBody(loadedDetail(), {}, { showRxConversation: false });
 
