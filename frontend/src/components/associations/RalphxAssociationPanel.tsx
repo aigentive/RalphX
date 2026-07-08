@@ -15,7 +15,6 @@ import type {
 import { Button } from "@/components/ui/button";
 import { TicketSearchableSelect } from "@/components/ticketing/TicketSearchableSelect";
 import { openExternalTicketUrl } from "@/components/ticketing/ticketing-open-external";
-import { ticketCanonicalBranchName } from "@/components/ticketing/ticketing-utils";
 
 const ASSOCIATION_GROUPS: Array<{
   key: keyof Omit<TicketAssociations, "fetchedAt">;
@@ -370,9 +369,8 @@ export function RalphxAssociationPanel({
   onNavigate?: ((deepLink: TicketDeepLink) => void) | undefined;
   onStartWork?: (() => void) | undefined;
 }) {
-  const ticketBranchName = ticket ? ticketCanonicalBranchName(ticket.ref) : null;
   const hasTicketPr = Boolean(ticket?.openPrNumber);
-  const hasTicketGitMetadata = Boolean(ticketBranchName || hasTicketPr);
+  const hasTicketGitMetadata = hasTicketPr;
   const activeCount = ASSOCIATION_GROUPS.reduce((count, group) => {
     return count + (associations?.[group.key].filter((item) => item.active).length ?? 0);
   }, 0);
@@ -454,16 +452,6 @@ export function RalphxAssociationPanel({
                   borderWidth: "1px",
                 }}
               >
-                {ticketBranchName && (
-                  <div>
-                    <p className="text-[11px] font-medium uppercase text-[var(--text-muted)]">
-                      Branch
-                    </p>
-                    <p className="mt-1 break-all font-mono text-xs text-[var(--text-primary)]">
-                      {ticketBranchName}
-                    </p>
-                  </div>
-                )}
                 {hasTicketPr && (
                   <div>
                     <p className="text-[11px] font-medium uppercase text-[var(--text-muted)]">
