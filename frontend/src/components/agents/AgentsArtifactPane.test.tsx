@@ -3184,6 +3184,109 @@ describe("AgentsArtifactPane", () => {
     );
   });
 
+  it("keeps the GitHub auto-merge switch off after a successful disable settles", async () => {
+    renderPane(
+      "publish",
+      workspace({
+        mode: "edit",
+        publicationPrNumber: 90,
+        publicationPrUrl: "https://github.com/mock/project/pull/90",
+        publicationPrStatus: "open",
+        publicationPushStatus: "pushed",
+        prAutofixEnabled: true,
+        prAutoMergeDesired: true,
+        prAutoMergeCurrent: true,
+        prSupervisionStatus: "monitoring",
+      }),
+    );
+
+    const autoMergeSwitch = await screen.findByRole("switch", {
+      name: "GitHub auto-merge",
+    });
+    expect(autoMergeSwitch).toBeChecked();
+
+    fireEvent.click(autoMergeSwitch);
+
+    await waitFor(() =>
+      expect(setWorkspacePrSupervisionMock).toHaveBeenLastCalledWith(
+        "conversation-1",
+        {
+          autoFixEnabled: true,
+          autoMergeDesired: false,
+          autoMergeMethod: "squash",
+        },
+      ),
+    );
+    await waitFor(() =>
+      expect(
+        screen.queryByText("Saving PR supervision"),
+      ).not.toBeInTheDocument(),
+    );
+    expect(
+      screen.getByRole("switch", { name: "GitHub auto-merge" }),
+    ).not.toBeChecked();
+  });
+
+  it("surfaces object-shaped backend reasons when PR supervision updates fail", async () => {
+    setWorkspacePrSupervisionMock.mockRejectedValueOnce({
+      message: "Branch is checked out by an active merge worktree",
+    });
+
+    renderPane(
+      "publish",
+      workspace({
+        mode: "edit",
+        publicationPrNumber: 90,
+        publicationPrUrl: "https://github.com/mock/project/pull/90",
+        publicationPrStatus: "open",
+        publicationPushStatus: "pushed",
+        prAutofixEnabled: true,
+        prAutoMergeDesired: true,
+        prSupervisionStatus: "monitoring",
+      }),
+    );
+
+    fireEvent.click(
+      await screen.findByRole("switch", { name: "GitHub auto-merge" }),
+    );
+
+    await waitFor(() =>
+      expect(toastErrorMock).toHaveBeenCalledWith(
+        "Branch is checked out by an active merge worktree",
+      ),
+    );
+  });
+
+  it("surfaces string backend reasons when PR supervision updates fail", async () => {
+    setWorkspacePrSupervisionMock.mockRejectedValueOnce(
+      "GitHub auto-merge disable could not be confirmed",
+    );
+
+    renderPane(
+      "publish",
+      workspace({
+        mode: "edit",
+        publicationPrNumber: 90,
+        publicationPrUrl: "https://github.com/mock/project/pull/90",
+        publicationPrStatus: "open",
+        publicationPushStatus: "pushed",
+        prAutofixEnabled: true,
+        prAutoMergeDesired: true,
+        prSupervisionStatus: "monitoring",
+      }),
+    );
+
+    fireEvent.click(
+      await screen.findByRole("switch", { name: "GitHub auto-merge" }),
+    );
+
+    await waitFor(() =>
+      expect(toastErrorMock).toHaveBeenCalledWith(
+        "GitHub auto-merge disable could not be confirmed",
+      ),
+    );
+  });
+
   it("opens Execution settings from PR automation tooltip actions", async () => {
     const user = userEvent.setup();
     renderPane(
